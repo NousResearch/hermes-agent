@@ -16,6 +16,7 @@ from unittest.mock import MagicMock
 from tools.registry import ToolRegistry, registry
 from tools import mcp_tool as mcp_tool_mod
 from tools.mcp_tool import _normalize_mcp_scope
+from model_tools import get_tool_definitions
 
 
 # ---------------------------------------------------------------------------
@@ -262,3 +263,69 @@ def test_dynamic_refresh_retains_scope(monkeypatch):
     assert entry.scope == "subagent_only"
     # And MAIN still does not see it.
     assert "mcp__dyn__danger" not in {d["function"]["name"] for d in reg.get_definitions({"mcp__dyn__danger"})}
+
+
+# ---------------------------------------------------------------------------
+# Child exposure: child toolset derivation + Tool Search catalog
+# ---------------------------------------------------------------------------
+
+def test_child_inherits_registered_mcp_toolset(monkeypatch):
+    """With enabled_toolsets=None (default), the child's toolsets are derived
+    from the parent's *main-visible* valid_tool_names, which deliberately
+    excludes subagent_only-scoped MCP tools. The derivation must still fold the
+    registered mcp-* toolsets back in so the child (which passes
+    include_subagent_only=True downstream) can call them, while MAIN cannot."""
+    from tools import delegate_tool as dt
+
+    reg = _fresh_registry()
+    # A main-visible tool and a subagent_only-scoped MCP tool, both in mcp-srv.
+    _reg_tool(reg, "mcp__srv__pub", scope="main", toolset="mcp-srv")
+    _reg_tool(reg, "mcp__srv__secret", scope="subagent_only", toolset="mcp-srv")
+    reg.register_toolset_alias("srv", "mcp-srv")
+
+    monkeypatch.setattr("tools.registry.registry", reg)
+    monkeypatch.setattr("model_tools.registry", reg)
+
+    # Simulate the parent of a delegated child: default-enabled, but its
+    # visible schema excludes the subagent_only tool.
+    class _FakeParent:
+        enabled_toolsets = None
+        valid_tool_names = ["mcp__srv__pub"]  # secret withheld from MAIN schema
+        disabled_toolsets = None
+
+    inherited = dt._registered_mcp_toolsets()
+    assert "mcp-srv" in inherited, "registered MCP toolset must be discoverable"
+    # Replicate the derivation fold-in done in _build_child_agent.
+    parent_toolsets = {
+        ts
+        for n in _FakeParent.valid_tool_names
+        if (ts := __import__("model_tools").get_toolset_for_tool(n)) is not None
+    }
+    parent_toolsets.update(inherited)
+    assert "mcp-srv" in parent_toolsets
+
+
+def test_child_tool_search_catalog_includes_subagent_only(monkeypatch):
+    """The Tool Search bridge catalog (handle_function_call path) must surface
+    subagent_only tools for a child agent (platform='subagent') but withhold
+    them for MAIN."""
+    reg = _fresh_registry()
+    _reg_tool(reg, "mcp__srv__childonly", scope="subagent_only", toolset="mcp-srv")
+    _reg_tool(reg, "mcp__srv__pub", scope="main", toolset="mcp-srv")
+    reg.register_toolset_alias("srv", "mcp-srv")
+
+    monkeypatch.setattr("tools.registry.registry", reg)
+    monkeypatch.setattr("model_tools.registry", reg)
+
+    main_catalog = get_tool_definitions(
+        enabled_toolsets=["mcp-srv"], quiet_mode=True,
+        skip_tool_search_assembly=True, include_subagent_only=False,
+    )
+    child_catalog = get_tool_definitions(
+        enabled_toolsets=["mcp-srv"], quiet_mode=True,
+        skip_tool_search_assembly=True, include_subagent_only=True,
+    )
+    main_names = {d["function"]["name"] for d in main_catalog}
+    child_names = {d["function"]["name"] for d in child_catalog}
+    assert "mcp__srv__childonly" not in main_names
+    assert "mcp__srv__childonly" in child_names

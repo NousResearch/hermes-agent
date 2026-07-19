@@ -2601,6 +2601,7 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
                 skip_tool_request_middleware=True,
                 enabled_toolsets=getattr(agent, "enabled_toolsets", None),
                 disabled_toolsets=getattr(agent, "disabled_toolsets", None),
+                include_subagent_only=(getattr(agent, "platform", None) == "subagent"),
                 tool_request_middleware_trace=list(_tool_middleware_trace),
             )
 

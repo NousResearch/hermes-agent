@@ -5196,7 +5196,10 @@ def _schedule_mcp_late_refresh(sid: str, agent) -> None:
             try:
                 from tools.mcp_tool import refresh_agent_mcp_tools
 
-                added = refresh_agent_mcp_tools(agent, quiet_mode=True)
+                added = refresh_agent_mcp_tools(
+                    agent, quiet_mode=True,
+                    include_subagent_only=(getattr(agent, "platform", None) == "subagent"),
+                )
             except Exception as exc:
                 logger.warning(
                     "Late MCP refresh: tool snapshot rebuild failed for %s: %s",
@@ -13725,6 +13728,7 @@ def _(rid, params: dict) -> dict:
                     agent,
                     enabled_override=_load_enabled_toolsets(),
                     quiet_mode=True,
+                    include_subagent_only=(getattr(agent, "platform", None) == "subagent"),
                 )
             except Exception as _exc:
                 logger.warning(

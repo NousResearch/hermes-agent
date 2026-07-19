@@ -410,7 +410,10 @@ def build_turn_context(
             if "tools.mcp_tool" in _sys.modules:
                 from tools.mcp_tool import has_registered_mcp_tools, refresh_agent_mcp_tools
                 if has_registered_mcp_tools():
-                    refresh_agent_mcp_tools(agent, quiet_mode=True)
+                    refresh_agent_mcp_tools(
+                        agent, quiet_mode=True,
+                        include_subagent_only=(getattr(agent, "platform", None) == "subagent"),
+                    )
     except Exception:
         logger.debug("between-turns MCP tool refresh skipped", exc_info=True)
 

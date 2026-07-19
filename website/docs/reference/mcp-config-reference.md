@@ -185,8 +185,11 @@ Behavior:
 2. **`tools:`-level** — applies only to the tool set selected by
    `tools.include` / `tools.exclude`. Precedence mirrors `include` over
    `exclude`: if `include` is set and `tools.scope: subagent_only`, only those
-   included tools are scoped; the rest of the server's tools remain `main`
-   (visible to MAIN).
+   included tools are registered **and** scoped `subagent_only`. Tools the
+   `include` list does not select are *not* registered at all (the `include`
+   filter is a whitelist), so there is no `main`-visible remainder from this
+   server — the scoped tools are simply hidden from MAIN and exposed to
+   children, while the server contributes no other tools.
 
    ```yaml
    mcp_servers:

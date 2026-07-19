@@ -109,5 +109,8 @@ export function usePluginI18n(pluginId: string): PluginTranslate {
   // reads the live registry, so the memoized closure needs only id + locale.
   useStore($version)
 
-  return useCallback((key: string, ...args: unknown[]) => translatePlugin(pluginId, locale, key, args), [pluginId, locale])
+  return useCallback(
+    (key: string, ...args: unknown[]) => translatePlugin(pluginId, locale, key, args),
+    [pluginId, locale]
+  )
 }

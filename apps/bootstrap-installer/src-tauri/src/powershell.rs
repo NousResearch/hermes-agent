@@ -13,6 +13,94 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::mpsc;
 
+/// CP1252 mapping for bytes `0x80..=0x9F` (the range that differs from Latin-1).
+/// Undefined slots keep the C1 control code points, matching Windows-1252
+/// best-fit behavior used by `encoding_rs::WINDOWS_1252`.
+const CP1252_80_9F: [char; 32] = [
+    '\u{20AC}', // 0x80 €
+    '\u{0081}', // 0x81
+    '\u{201A}', // 0x82 ‚
+    '\u{0192}', // 0x83 ƒ
+    '\u{201E}', // 0x84 „
+    '\u{2026}', // 0x85 …
+    '\u{2020}', // 0x86 †
+    '\u{2021}', // 0x87 ‡
+    '\u{02C6}', // 0x88 ˆ
+    '\u{2030}', // 0x89 ‰
+    '\u{0160}', // 0x8A Š
+    '\u{2039}', // 0x8B ‹
+    '\u{0152}', // 0x8C Œ
+    '\u{008D}', // 0x8D
+    '\u{017D}', // 0x8E Ž
+    '\u{008F}', // 0x8F
+    '\u{0090}', // 0x90
+    '\u{2018}', // 0x91 ‘
+    '\u{2019}', // 0x92 ’
+    '\u{201C}', // 0x93 “
+    '\u{201D}', // 0x94 ”
+    '\u{2022}', // 0x95 •
+    '\u{2013}', // 0x96 –
+    '\u{2014}', // 0x97 —
+    '\u{02DC}', // 0x98 ˜
+    '\u{2122}', // 0x99 ™
+    '\u{0161}', // 0x9A š
+    '\u{203A}', // 0x9B ›
+    '\u{0153}', // 0x9C œ
+    '\u{009D}', // 0x9D
+    '\u{017E}', // 0x9E ž
+    '\u{0178}', // 0x9F Ÿ
+];
+
+fn decode_cp1252_byte(b: u8) -> char {
+    match b {
+        0x00..=0x7F => b as char,
+        0x80..=0x9F => CP1252_80_9F[(b - 0x80) as usize],
+        // 0xA0..=0xFF match Unicode Latin-1 / Windows-1252.
+        _ => b as char,
+    }
+}
+
+/// Decode one stdout/stderr line from a child process.
+///
+/// Tokio's `BufReader::lines()` requires valid UTF-8 and aborts the line (with
+/// `stream did not contain valid UTF-8`) at the first accented byte. Windows
+/// PowerShell 5.1 emits localized ParserError text in the console ANSI code
+/// page (often CP1252), so Portuguese/Spanish/etc. users only saw a truncated
+/// `No` instead of `Não foi fornecido o terminador...` (#67193).
+///
+/// Prefer UTF-8 when the bytes are valid; otherwise decode as Windows-1252 so
+/// both Western-European letters and CP1252-only punctuation (e.g. `0x91` →
+/// U+2018) survive rather than disappearing into a read-error warning.
+pub(crate) fn decode_console_bytes(bytes: &[u8]) -> String {
+    match std::str::from_utf8(bytes) {
+        Ok(s) => s.to_string(),
+        Err(_) => bytes.iter().copied().map(decode_cp1252_byte).collect(),
+    }
+}
+
+/// Read one line (LF or CRLF) and decode it with [`decode_console_bytes`].
+/// Returns `Ok(None)` on EOF with no bytes pending.
+pub(crate) async fn read_decoded_line<R>(
+    reader: &mut R,
+    buf: &mut Vec<u8>,
+) -> std::io::Result<Option<String>>
+where
+    R: AsyncBufReadExt + Unpin,
+{
+    buf.clear();
+    let n = reader.read_until(b'\n', buf).await?;
+    if n == 0 {
+        return Ok(None);
+    }
+    if buf.last() == Some(&b'\n') {
+        buf.pop();
+    }
+    if buf.last() == Some(&b'\r') {
+        buf.pop();
+    }
+    Ok(Some(decode_console_bytes(buf)))
+}
+
 /// Hooks the caller installs to receive output.
 pub struct StreamSink {
     pub on_stdout_line: Box<dyn Fn(&str) + Send + Sync>,
@@ -77,8 +165,13 @@ pub async fn run_script(
     let stdout = child.stdout.take().expect("stdout was piped");
     let stderr = child.stderr.take().expect("stderr was piped");
 
-    let mut stdout_reader = BufReader::new(stdout).lines();
-    let mut stderr_reader = BufReader::new(stderr).lines();
+    // Byte-oriented readers + [`decode_console_bytes`]: do NOT use
+    // `BufReader::lines()`, which requires valid UTF-8 and hides localized
+    // PowerShell errors on non-English Windows (#67193).
+    let mut stdout_reader = BufReader::new(stdout);
+    let mut stderr_reader = BufReader::new(stderr);
+    let mut stdout_buf = Vec::new();
+    let mut stderr_buf = Vec::new();
 
     let mut combined_stdout = String::new();
     let mut combined_stderr = String::new();
@@ -87,7 +180,7 @@ pub async fn run_script(
     // Loop: poll stdout, stderr, cancel, and child exit concurrently.
     loop {
         tokio::select! {
-            line = stdout_reader.next_line() => {
+            line = read_decoded_line(&mut stdout_reader, &mut stdout_buf) => {
                 match line {
                     Ok(Some(l)) => {
                         (sink.on_stdout_line)(&l);
@@ -104,7 +197,7 @@ pub async fn run_script(
                     }
                 }
             }
-            line = stderr_reader.next_line() => {
+            line = read_decoded_line(&mut stderr_reader, &mut stderr_buf) => {
                 match line {
                     Ok(Some(l)) => {
                         (sink.on_stderr_line)(&l);
@@ -130,12 +223,12 @@ pub async fn run_script(
     }
 
     // Drain remaining lines after the loop exited.
-    while let Ok(Some(l)) = stdout_reader.next_line().await {
+    while let Ok(Some(l)) = read_decoded_line(&mut stdout_reader, &mut stdout_buf).await {
         (sink.on_stdout_line)(&l);
         combined_stdout.push_str(&l);
         combined_stdout.push('\n');
     }
-    while let Ok(Some(l)) = stderr_reader.next_line().await {
+    while let Ok(Some(l)) = read_decoded_line(&mut stderr_reader, &mut stderr_buf).await {
         (sink.on_stderr_line)(&l);
         combined_stderr.push_str(&l);
         combined_stderr.push('\n');

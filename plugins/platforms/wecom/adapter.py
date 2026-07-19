@@ -1035,9 +1035,17 @@ class WeComAdapter(BasePlatformAdapter):
     # Aligns with official SDK replyStreamNonBlocking:
     #   - intermediate frame: skip if pending ack on this req_id
     #   - final frame: wait for pending ack to drain before sending
-    #   - ack timeout: 5 seconds
+    #   - ack timeout: 15 seconds
+    #
+    # Matches the official @wecom/wecom-openclaw-plugin's REPLY_SEND_TIMEOUT_MS
+    # = 15_000. The prior 5s value was too aggressive for the bilibili WeCom
+    # environment where ack > 5s is not rare on long replies (server-side queue
+    # lag, WS jitter, concurrent replies on the same WS). A short window widens
+    # the race where the final-frame ack is still in flight while the gateway's
+    # normal final-send fires, producing duplicate messages
+    # (see docs/rca-wecom-stream-final-ack-timeout-duplicate.md).
 
-    _REPLY_ACK_TIMEOUT = 5.0
+    _REPLY_ACK_TIMEOUT = 15.0
 
     async def _send_reply_queued(
         self,

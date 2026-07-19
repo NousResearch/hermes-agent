@@ -316,8 +316,8 @@ model:
 Or for custom endpoints, add it per-model:
 
 ```yaml
-custom_providers:
-  - name: "My Server"
+providers:
+  my-server:
     base_url: "http://localhost:11434/v1"
     models:
       qwen3.5:27b:

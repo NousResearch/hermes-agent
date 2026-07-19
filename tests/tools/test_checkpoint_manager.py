@@ -557,9 +557,12 @@ class TestDirFileCount:
         target.mkdir()
         for idx in range(10):
             (target / f"generated-{idx}.txt").write_text("generated")
-        (Path(work_dir) / "linked-output").symlink_to(
-            target, target_is_directory=True
-        )
+        try:
+            (Path(work_dir) / "linked-output").symlink_to(
+                target, target_is_directory=True
+            )
+        except (OSError, NotImplementedError) as exc:
+            pytest.skip(f"symlinks unavailable in test environment: {exc}")
 
         assert _dir_file_count(work_dir) == 3
 

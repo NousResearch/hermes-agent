@@ -2398,6 +2398,8 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
                 old_text=next_args.get("old_text"),
                 operations=operations,
                 store=agent._memory_store,
+                override=bool(next_args.get("override")),
+                rationale=next_args.get("rationale"),
             )
             # Mirror successful built-in memory writes to external providers.
             # All gating/op-expansion lives behind the manager interface

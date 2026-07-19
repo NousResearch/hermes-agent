@@ -186,3 +186,113 @@ class TestMemoryToolDispatch:
         monkeypatch.setattr(mt._ledger, "record", boom)
         result = store.add("memory", "User prefers dark mode")
         assert result["success"] is True
+
+
+# =========================================================================
+# Executor + staging propagation (review feedback, PR #67059)
+# =========================================================================
+
+class TestExecutorForwarding:
+    """override/rationale must survive both normal agent dispatch paths."""
+
+    def _assert_memory_call_includes(self, source: str, path: str):
+        import inspect, importlib
+        mod = importlib.import_module(path)
+        src = inspect.getsource(mod)
+        # Both executor paths call memory_tool(...) with keyword args pulled
+        # from next_args — assert override and rationale are among them.
+        assert 'override=bool(next_args.get("override"))' in src, \
+            f"{path} does not forward override to memory_tool"
+        assert 'rationale=next_args.get("rationale")' in src, \
+            f"{path} does not forward rationale to memory_tool"
+
+    def test_agent_runtime_helpers_forwards(self):
+        self._assert_memory_call_includes("", "agent.agent_runtime_helpers")
+
+    def test_tool_executor_forwards(self):
+        self._assert_memory_call_includes("", "agent.tool_executor")
+
+
+class TestStagingPreservesOverride:
+    @staticmethod
+    def _stub_write_approval(monkeypatch, captured, pending_id):
+        """Replace tools.write_approval with a staging double.
+
+        ``_apply_write_gate`` imports ``from tools import write_approval`` at
+        call time, so we patch the ATTRIBUTE on the tools package (and the
+        module in sys.modules) rather than monkeypatching module functions.
+        """
+        import sys
+        import types
+
+        class _Decision:
+            allow = False
+            blocked = False
+            message = "staged"
+
+        fake = types.SimpleNamespace(
+            MEMORY="memory",
+            evaluate_gate=lambda *a, **kw: _Decision(),
+            stage_write=lambda subsystem, payload, summary=None, origin=None: (
+                captured.update(payload) or {"id": pending_id}
+            ),
+            current_origin=lambda: "test",
+        )
+        monkeypatch.setitem(sys.modules, "tools.write_approval", fake)
+        import tools as tools_pkg
+        monkeypatch.setattr(tools_pkg, "write_approval", fake, raising=False)
+
+    def test_single_payload_carries_override(self, store, monkeypatch):
+        captured: dict = {}
+        self._stub_write_approval(monkeypatch, captured, "p1")
+        raw = memory_tool(action="add", target="memory",
+                          content="Always verify with real commands",
+                          store=store, override=True, rationale="standing rule")
+        result = json.loads(raw)
+        assert result.get("staged") is True
+        assert captured.get("override") is True
+        assert captured.get("rationale") == "standing rule"
+
+    def test_batch_payload_carries_override(self, store, monkeypatch):
+        captured: dict = {}
+        self._stub_write_approval(monkeypatch, captured, "p2")
+        raw = memory_tool(target="memory",
+                          operations=[{"action": "add", "content": "x"}],
+                          store=store, override=True, rationale="batch rule")
+        result = json.loads(raw)
+        assert result.get("staged") is True
+        assert captured.get("override") is True
+        assert captured.get("rationale") == "batch rule"
+
+
+class TestNoAgentStore:
+    def test_load_on_disk_store_honours_classification_gate(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        import tools.memory_tool as mt
+        import hermes_cli.config as cfg
+
+        monkeypatch.setattr(cfg, "load_config",
+                            lambda: {"memory": {"classification_gate": False}})
+        store = mt.load_on_disk_store()
+        assert store.classification_gate is False
+
+    def test_load_on_disk_store_defaults_gate_on(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        import tools.memory_tool as mt
+        import hermes_cli.config as cfg
+
+        monkeypatch.setattr(cfg, "load_config", lambda: {"memory": {}})
+        store = mt.load_on_disk_store()
+        assert store.classification_gate is True
+
+
+class TestContentFreeLedger:
+    def test_ledger_records_no_raw_text(self, store, tmp_path):
+        secret = "my secret memory entry text"
+        store.add("memory", secret)
+        store.remove("memory", "secret memory entry")
+        raw = (tmp_path / "memories" / "LEDGER.jsonl").read_text()
+        assert secret not in raw
+        assert "preview" not in raw
+        lines = [json.loads(l) for l in raw.splitlines()]
+        assert all("sha256" in k for l in lines for k in l if "sha256" in k)

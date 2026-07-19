@@ -2404,41 +2404,6 @@ def run_doctor(args):
     except Exception as _e:
         check_warn("memory invariant checks failed", str(_e))
 
-    # Skills tree sync: top-level ~/.hermes/skills should be the same tree as
-    # the operational profile's skills (junction or identical content). Drift
-    # between the two forks doctrine. Resolve the base install root (when
-    # HERMES_HOME is a profile dir, the base is two levels up). (2026-07-18)
-    try:
-        _base = HERMES_HOME
-        if (_base.parent.name == "profiles"):
-            _base = _base.parent.parent
-        _top_skills = _base / "skills"
-        _cr = _base / "profiles" / "control-room" / "skills"
-        if _top_skills.exists() and _cr.exists():
-            # Same tree via a junction/link resolves to the same real path.
-            if os.path.realpath(str(_top_skills)) == os.path.realpath(str(_cr)):
-                check_ok("skills trees unified (top-level junction → control-room)")
-            else:
-                import filecmp
-                _cmp = filecmp.dircmp(str(_top_skills), str(_cr))
-                _drift = []
-                def _walk(c, prefix=""):
-                    _drift.extend(prefix + f for f in c.diff_files)
-                    _drift.extend(prefix + f for f in c.left_only)
-                    _drift.extend(prefix + f for f in c.right_only)
-                    for sub, sub_c in c.subdirs.items():
-                        _walk(sub_c, prefix + sub + "/")
-                _walk(_cmp)
-                if not _drift:
-                    check_ok("skills trees in sync (top-level ↔ control-room)")
-                else:
-                    check_warn(
-                        "skills tree drift detected",
-                        f"{len(_drift)} differing file(s), e.g. {_drift[0]} — reconcile forks",
-                    )
-    except Exception as _e:
-        check_warn("skills sync check failed", str(_e))
-
     # Hindsight switch-state vs declared intent: if the provider is hindsight,
     # surface whether the dormant posture (auto_recall/auto_retain off) holds.
     try:

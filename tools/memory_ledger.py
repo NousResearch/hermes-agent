@@ -16,6 +16,14 @@ provenance standard applied everywhere else in this stack (source-grounded
 research, verified commands). Tier-2 classification overrides are recorded
 with their rationale so fuzzy accepts are auditable rather than silent.
 
+Content policy (review feedback, NousResearch/hermes-agent#67059): the ledger
+is deliberately CONTENT-FREE. Removed/replaced entries must not leave a
+second durable copy behind — removal has to mean removal, including for
+legacy or gate-disabled sensitive content. Records carry sha256 digests
+(proof a specific entry existed/changed, verifiable against the live files
+while they still contain it) plus non-sensitive metadata (lengths, override
+rationale, warnings) — never raw previews.
+
 The ledger is deliberately dumb: append-only, human-readable, no rotation
 (one line per mutation is tiny). Failure to write a ledger line never
 blocks a memory mutation — it is logged and the write proceeds (the ledger
@@ -37,7 +45,7 @@ LEDGER_NAME = "LEDGER.jsonl"
 def _sha(text: Optional[str]) -> Optional[str]:
     if text is None:
         return None
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
 def ledger_path(memory_dir: Path) -> Path:
@@ -57,11 +65,9 @@ def record(memory_dir: Path, *, action: str, target: str,
             "target": target,
             "old_sha256": _sha(old_text),
             "new_sha256": _sha(new_content),
+            "old_len": len(old_text) if old_text is not None else None,
+            "new_len": len(new_content) if new_content is not None else None,
         }
-        if old_text is not None:
-            entry["old_preview"] = old_text[:80]
-        if new_content is not None:
-            entry["new_preview"] = new_content[:80]
         if override:
             entry["override"] = True
             entry["rationale"] = (rationale or "").strip() or None

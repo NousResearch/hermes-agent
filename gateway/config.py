@@ -639,6 +639,26 @@ class PlatformConfig:
         if _typing_text is None:
             _typing_text = extra.get("typing_status_text")
 
+        # Multi-account blocks (#8287): ``accounts:`` may arrive top-level
+        # (``platforms.telegram.accounts`` in YAML) or bridged into extra by
+        # the shared-key loop. Normalize account names (lowercased) into
+        # ``extra["accounts"]`` so the adapter registry has a single read
+        # path. Tokens are secrets and load from ``<PLATFORM>_BOT_TOKEN_<ACCOUNT>``
+        # env vars in ``_apply_env_overrides`` — a ``token`` key inside a YAML
+        # account block is honored for parity but ``.env`` is the supported
+        # home for credentials.
+        _accounts = data.get("accounts")
+        if _accounts is None:
+            _accounts = extra.get("accounts")
+        if isinstance(_accounts, dict):
+            _norm_accounts: Dict[str, Any] = {}
+            for _acct_name, _acct_block in _accounts.items():
+                _acct_key = str(_acct_name).strip().lower()
+                if _acct_key:
+                    _norm_accounts[_acct_key] = _coerce_dict(_acct_block)
+            if _norm_accounts:
+                extra["accounts"] = _norm_accounts
+
         channel_overrides: Dict[str, ChannelOverride] = {}
         raw_overrides = data.get("channel_overrides") or {}
         if isinstance(raw_overrides, dict):
@@ -1644,6 +1664,32 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     if telegram_token:
         telegram_config = _enable_from_env(Platform.TELEGRAM)
         telegram_config.token = telegram_token
+
+    # Multi-account tokens (#8287): ``TELEGRAM_BOT_TOKEN_<ACCOUNT>`` declares
+    # an additional bot account named ``<account>`` (lowercased). The
+    # unsuffixed ``TELEGRAM_BOT_TOKEN`` remains the default account, so
+    # single-bot setups are byte-identical to before. Candidate names are
+    # enumerated from the process env (dotenv loads ``.env`` there) and each
+    # value is read back through ``getenv`` so profile-scoped secrets win
+    # when a scope is active. Behavioral per-account settings (allowlists,
+    # home channels, display names) belong in ``platforms.telegram.accounts``
+    # in config.yaml — env vars carry only the credential.
+    _tg_account_prefix = "TELEGRAM_BOT_TOKEN_"
+    for _env_name in sorted(os.environ):
+        if not _env_name.startswith(_tg_account_prefix):
+            continue
+        _acct_name = _env_name[len(_tg_account_prefix):].strip().lower()
+        _acct_token = getenv(_env_name)
+        if not _acct_name or not _acct_token:
+            continue
+        _tg_cfg = _enable_from_env(Platform.TELEGRAM)
+        _tg_accounts = _tg_cfg.extra.setdefault("accounts", {})
+        if not isinstance(_tg_accounts, dict):
+            _tg_accounts = {}
+            _tg_cfg.extra["accounts"] = _tg_accounts
+        _acct_block = _tg_accounts.setdefault(_acct_name, {})
+        if isinstance(_acct_block, dict):
+            _acct_block["token"] = _acct_token
     
     # Reply threading mode for Telegram (off/first/all)
     telegram_reply_mode = getenv("TELEGRAM_REPLY_TO_MODE", "").lower()

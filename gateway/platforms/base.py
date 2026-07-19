@@ -3527,6 +3527,45 @@ class BasePlatformAdapter(ABC):
             text = f"{caption}\n{text}"
         return await self.send(chat_id=chat_id, content=text, reply_to=reply_to, metadata=metadata)
 
+    async def _notify_media_delivery_failure(
+        self,
+        chat_id: str,
+        media_path: str,
+        *,
+        is_voice: bool = False,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Send a user-visible notice when a MEDIA attachment could not be delivered.
+
+        The non-streaming dispatch loop strips ``MEDIA:`` tags before sending
+        attachments. When the subsequent upload returns ``success=False`` (for
+        example Discord accepted the message but attached nothing), the user
+        must see a failure notice instead of a silent drop (#66797).
+        """
+        ext = Path(media_path).suffix.lower()
+        _VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".3gp"}
+        if is_voice or should_send_media_as_audio(self.platform, ext, is_voice=is_voice):
+            text = "⚠️ Couldn't deliver the audio attachment."
+        elif ext in _VIDEO_EXTS:
+            text = "⚠️ Couldn't deliver the video attachment."
+        else:
+            file_name = os.path.basename(media_path)
+            text = f"⚠️ Couldn't deliver the file attachment ({file_name})."
+        try:
+            notice = await self.send(chat_id=chat_id, content=text, metadata=metadata)
+            if not notice.success:
+                logger.debug(
+                    "[%s] Could not send media-delivery-failure notice: %s",
+                    self.name,
+                    notice.error,
+                )
+        except Exception as notify_err:
+            logger.debug(
+                "[%s] Could not send media-delivery-failure notice: %s",
+                self.name,
+                notify_err,
+            )
+
     async def send_image_file(
         self,
         chat_id: str,
@@ -5250,6 +5289,12 @@ class BasePlatformAdapter(ABC):
 
                         if not media_result.success:
                             logger.warning("[%s] Failed to send media (%s): %s", self.name, ext, media_result.error)
+                            await self._notify_media_delivery_failure(
+                                event.source.chat_id,
+                                media_path,
+                                is_voice=is_voice,
+                                metadata=_final_thread_metadata,
+                            )
                     except Exception as media_err:
                         logger.warning("[%s] Error sending media: %s", self.name, media_err)
 
@@ -5260,15 +5305,27 @@ class BasePlatformAdapter(ABC):
                     try:
                         ext = Path(file_path).suffix.lower()
                         if ext in _VIDEO_EXTS:
-                            await self.send_video(
+                            file_result = await self.send_video(
                                 chat_id=event.source.chat_id,
                                 video_path=file_path,
                                 metadata=_final_thread_metadata,
                             )
                         else:
-                            await self.send_document(
+                            file_result = await self.send_document(
                                 chat_id=event.source.chat_id,
                                 file_path=file_path,
+                                metadata=_final_thread_metadata,
+                            )
+                        if not file_result.success:
+                            logger.warning(
+                                "[%s] Failed to send local file (%s): %s",
+                                self.name,
+                                ext,
+                                file_result.error,
+                            )
+                            await self._notify_media_delivery_failure(
+                                event.source.chat_id,
+                                file_path,
                                 metadata=_final_thread_metadata,
                             )
                     except Exception as file_err:

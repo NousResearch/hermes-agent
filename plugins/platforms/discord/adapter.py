@@ -2376,6 +2376,30 @@ class DiscordAdapter(BasePlatformAdapter):
         starter_msg = getattr(thread, "message", None)
         message_id = str(getattr(starter_msg, "id", thread_id)) if starter_msg else thread_id
 
+        if file is not None or files:
+            attachments = getattr(starter_msg, "attachments", None) or []
+            if not attachments:
+                filename = ""
+                if file is not None:
+                    filename = getattr(file, "filename", "") or ""
+                elif files:
+                    filename = getattr(files[0], "filename", "") or ""
+                logger.warning(
+                    "[%s] Forum thread %s starter has no attachments for %s",
+                    self.name,
+                    thread_id,
+                    filename or "file",
+                )
+                return SendResult(
+                    success=False,
+                    error=(
+                        "Discord created the forum thread but attached no files"
+                        + (f" ({filename})" if filename else "")
+                    ),
+                    message_id=message_id or None,
+                    raw_response={"thread_id": thread_id},
+                )
+
         return SendResult(
             success=True,
             message_id=message_id,

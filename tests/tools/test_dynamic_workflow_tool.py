@@ -111,7 +111,7 @@ def test_workflows_are_scoped_to_parent_session():
 def test_workflow_stays_retrievable_when_compression_rotates_session_id():
     parent = SimpleNamespace(
         session_id="before-compression",
-        _gateway_session_key="agent:main:telegram:dm:42",
+        _gateway_session_key=None,
     )
     _call(
         {
@@ -134,6 +134,7 @@ def test_workflow_stays_retrievable_when_compression_rotates_session_id():
     )
 
     parent.session_id = "after-compression"
+    dwt.migrate_workflow_scope(parent, "before-compression")
     status = _call(
         {"action": "status", "workflow_id": "wf_compression"},
         parent_agent=parent,

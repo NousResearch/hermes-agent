@@ -1148,6 +1148,15 @@ def compress_context(
                         agent._session_db_created = True
                         raise
                     agent._session_db_created = True
+                    try:
+                        from tools.dynamic_workflow_tool import migrate_workflow_scope
+
+                        migrate_workflow_scope(agent, old_session_id)
+                    except Exception as _workflow_scope_err:
+                        logger.debug(
+                            "Could not migrate dynamic workflow scope on compression: %s",
+                            _workflow_scope_err,
+                        )
                     # Carry a persistent /goal onto the continuation session.
                     # Compression mints a fresh child id; load_goal does a flat
                     # per-session lookup with no parent walk, so without this an

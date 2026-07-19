@@ -51,15 +51,33 @@ def _new_workflow_id() -> str:
     return f"wf_{uuid.uuid4().hex[:10]}"
 
 
-def _workflow_scope(parent_agent: Any = None) -> str:
+def _workflow_scope(parent_agent: Any = None, *, session_id: Any = None) -> str:
     """Return the in-process visibility scope for a workflow."""
     # Compression rotates session_id. Prefer the stable gateway identity when
     # available so workflow state remains visible across a compressed turn.
     for attr in ("_gateway_session_key", "session_id"):
-        value = getattr(parent_agent, attr, None)
+        value = session_id if attr == "session_id" and session_id is not None else getattr(parent_agent, attr, None)
         if value:
             return f"{attr}:{value}"
     return "global"
+
+
+def migrate_workflow_scope(parent_agent: Any, old_session_id: Any) -> None:
+    """Carry CLI workflow state into a compression continuation session."""
+    old_scope = _workflow_scope(parent_agent, session_id=old_session_id)
+    new_scope = _workflow_scope(parent_agent)
+    if old_scope == new_scope:
+        return
+    with _workflows_lock:
+        for key, workflow in list(_workflows.items()):
+            if key[0] != old_scope:
+                continue
+            new_key = (new_scope, key[1])
+            if new_key in _workflows:
+                continue
+            _workflows.pop(key)
+            workflow["scope"] = new_scope
+            _workflows[new_key] = workflow
 
 
 def _cap_text(value: Any, *, default: str = "") -> str:

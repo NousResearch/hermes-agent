@@ -113,6 +113,10 @@ _DEFAULT_PROVIDER_MODELS = {
         "Qwen/Qwen3-Coder-480B-A35B-Instruct", "deepseek-ai/DeepSeek-R1-0528",
         "deepseek-ai/DeepSeek-V3.2", "moonshotai/Kimi-K2.5",
     ],
+    "sference": [
+        "zai-org/GLM-5.2", "deepseek-ai/DeepSeek-V4-Flash",
+        "Qwen/Qwen3.6-35B-A3B", "bottlecapai/ThinkingCap-Qwen3.6-27B",
+    ],
 }
 
 

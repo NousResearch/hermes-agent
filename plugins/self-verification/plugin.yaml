@@ -1,0 +1,7 @@
+name: self-verification
+version: "0.3.0"
+description: "Self-Verification framework — audits AI output and intermediate tool results for factual accuracy, logic consistency, and output completeness using confidence scoring (0-100), self-refute adversarial verification, and auto-fix retry loops. v0.3.0 adds transform_tool_result hook for write_file compile checks, patch success verification, terminal exit code checking, and web_search emptiness detection."
+author: "WeilaiSun + NousResearch"
+hooks:
+  - transform_llm_output
+  - transform_tool_result

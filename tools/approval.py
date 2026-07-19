@@ -2136,7 +2136,20 @@ def prompt_gateway_approval(
 
     choice = decision.get("choice") or "deny"
     if choice == "always" and not approval_data["allow_permanent"]:
-        return "session"
+        choice = "session"
+
+    # Persist the resolved choice — mirrors the identical convention used by
+    # every other gateway/CLI approval call site in this module (see the
+    # "session"/"always" handling after prompt_dangerous_approval() above).
+    # Without this, is_approved(session_key, pattern_key) above never finds
+    # a prior approval, so every subsequent Codex exec/apply_patch request
+    # in the same session re-prompts even after the user picked "session".
+    if choice == "session":
+        approve_session(session_key, pattern_key)
+    elif choice == "always":
+        approve_session(session_key, pattern_key)
+        approve_permanent(pattern_key)
+        save_permanent_allowlist(_permanent_approved)
     return choice
 
 

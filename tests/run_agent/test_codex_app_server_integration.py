@@ -170,6 +170,77 @@ class TestRunConversationCodexPath:
         callback = _resolve_codex_approval_callback()
         assert callback is None
 
+    def test_gateway_session_approval_persists_through_full_turn_construction(
+        self, monkeypatch
+    ):
+        """Lifecycle coverage (not just the resolver in isolation): drive a
+        REAL run_conversation() turn so agent_codex_runtime constructs an
+        actual CodexAppServerSession with the gateway-resolved
+        approval_callback wired in exactly as production does, simulate a
+        mid-turn Codex exec-approval request through that stored callback,
+        and prove a "session" choice is persisted — a second request for the
+        same pattern must NOT re-prompt the notifier.
+        """
+        from tools.approval import (
+            register_gateway_notify,
+            reset_current_session_key,
+            resolve_gateway_approval,
+            set_current_session_key,
+            unregister_gateway_notify,
+        )
+
+        session_key = "test-codex-gateway-session-persist"
+        notify_calls = []
+
+        def notify(data):
+            notify_calls.append(data)
+            resolve_gateway_approval(session_key, "session")
+
+        def fake_run_turn(self, user_input: str, **kwargs):
+            # Simulate Codex asking for exec approval mid-turn, exactly as
+            # codex_app_server_session._decide_exec_approval would via
+            # self._approval_callback — using the REAL callback the real
+            # constructor stored, not a hand-built stand-in.
+            first = self._approval_callback(
+                "git status", "Codex requests exec", allow_permanent=False
+            )
+            second = self._approval_callback(
+                "git status", "Codex requests exec", allow_permanent=False
+            )
+            return TurnResult(
+                final_text=f"first={first} second={second}",
+                projected_messages=[
+                    {"role": "assistant", "content": f"first={first} second={second}"}
+                ],
+                tool_iterations=1,
+                interrupted=False,
+                error=None,
+                turn_id="turn-persist-1",
+                thread_id="thread-persist-1",
+            )
+
+        monkeypatch.setattr(CodexAppServerSession, "run_turn", fake_run_turn)
+        monkeypatch.setattr(
+            CodexAppServerSession, "ensure_started", lambda self: "thread-persist-1"
+        )
+        monkeypatch.setattr("tools.approval._get_approval_mode", lambda: "manual")
+
+        token = set_current_session_key(session_key)
+        register_gateway_notify(session_key, notify)
+        try:
+            agent = _make_codex_agent()
+            with patch.object(agent, "_spawn_background_review", return_value=None):
+                result = agent.run_conversation("check status")
+            assert agent._codex_session._approval_callback is not None
+            assert result["final_response"] == "first=session second=session"
+            # The notifier must have fired exactly once — the second request
+            # for the same pattern_key was resolved from persisted state
+            # (is_approved), not re-prompted.
+            assert len(notify_calls) == 1
+        finally:
+            unregister_gateway_notify(session_key)
+            reset_current_session_key(token)
+
     def test_codex_app_server_token_usage_updates_session_accounting(self, monkeypatch):
         def fake_run_turn(self, user_input: str, **kwargs):
             return TurnResult(

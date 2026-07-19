@@ -1,0 +1,18 @@
+services:
+  hermes-hub:
+    build: .
+    ports:
+      - "8787:8787"
+    volumes:
+      - hub-data:/data
+    environment:
+      # Access code required by every device (leave set when exposing beyond localhost).
+      HERMES_HUB_TOKEN: ${HERMES_HUB_TOKEN:-change-me}
+      # Optional: Anthropic API key → live Jarvis agent, summaries, briefings.
+      HERMES_HUB_API_KEY: ${HERMES_HUB_API_KEY:-}
+      # Optional: override the Claude model used by the agent.
+      HERMES_HUB_MODEL: ${HERMES_HUB_MODEL:-}
+    restart: unless-stopped
+
+volumes:
+  hub-data:

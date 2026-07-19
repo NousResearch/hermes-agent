@@ -15,6 +15,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from gateway import delivery_ledger as dl
+from gateway.config import Platform
 
 
 @pytest.fixture(autouse=True)
@@ -257,17 +258,26 @@ class TestGatewayRedeliverySweep:
         assert _row("ob-1")["state"] == "failed"
 
     @pytest.mark.asyncio
-    async def test_missing_adapter_leaves_row_recoverable(self):
+    async def test_missing_adapter_leaves_row_unclaimed_for_reconnect(self):
         _record()
         _orphan("ob-1")
+        orphan_owner = _row("ob-1")["owner_pid"]
         runner = self._runner(adapter=None)  # slack not connected
 
         n = await runner._redeliver_pending_obligations()
 
         assert n == 0
-        # Row still claimed by us but NOT delivered/abandoned — a later boot
-        # (attempts cap permitting) can retry once the platform connects.
-        assert _row("ob-1")["state"] == "pending"
+        row = _row("ob-1")
+        assert row["state"] == "pending"
+        assert row["owner_pid"] == orphan_owner
+
+        adapter = self._adapter()
+        runner.adapters[Platform.SLACK] = adapter
+        assert await runner._redeliver_pending_obligations(
+            platform=Platform.SLACK
+        ) == 1
+        adapter.send.assert_awaited_once()
+        assert _row("ob-1")["state"] == "delivered"
 
     @pytest.mark.asyncio
     async def test_disabled_gate_short_circuits(self):

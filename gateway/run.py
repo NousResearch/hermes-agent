@@ -7116,17 +7116,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         redelivered = 0
         for row in claimed:
             try:
-                platform = Platform(row["platform"])
+                row_platform = Platform(row["platform"])
             except Exception:
                 logger.debug(
                     "obligation %s: unknown platform %r",
                     row["obligation_id"], row.get("platform"),
                 )
                 continue
-            adapter = self.adapters.get(platform)
+            adapter = self.adapters.get(row_platform)
             if adapter is None:
-                # Platform not connected this boot — leave the row claimed;
-                # attempts cap + stale cutoff bound the retries on later boots.
+                # Defensive race guard: an adapter can disconnect after the
+                # eligible-platform snapshot but before this send loop. Leave
+                # the claimed row pending; a future gateway boot can reclaim it.
                 continue
             content = row["content"]
             if row.get("needs_marker"):

@@ -7,7 +7,6 @@ import pytest
 
 from gateway import delivery_ledger as dl
 from gateway.config import Platform
-from gateway.platforms.base import MessageEvent
 from gateway.run import GatewayRunner
 from gateway.session import SessionEntry, SessionSource
 

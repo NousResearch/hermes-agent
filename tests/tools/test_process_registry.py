@@ -827,6 +827,81 @@ class TestBackgroundShellMode:
         # Use the registry_mod import so the linter doesn't complain.
         _ = registry_mod
 
+    def _spawn_pty_args(self, registry, *, config_override=None):
+        """Run spawn_local with use_pty=True and capture the PtyProcess.spawn argv.
+
+        Synthesises a fake ptyprocess module via sys.modules so the
+        PTY import path succeeds on hosts without the optional dep, then
+        captures the argv passed to PtyProcess.spawn for assertion.
+        Returns [shell, flags, command].
+        """
+        import sys as _sys
+        import types
+
+        captured = {}
+
+        class _FakePty:
+            def __init__(self):
+                self.pid = 4321
+
+            @classmethod
+            def spawn(cls, argv, **kwargs):
+                captured["argv"] = argv
+                return cls()
+
+        # Fake both POSIX (ptyprocess) and Windows (winpty) so the
+        # platform-specific import in process_registry always succeeds.
+        fake_pty_module = types.ModuleType("ptyprocess")
+        fake_pty_module.PtyProcess = _FakePty
+        fake_winpty_module = types.ModuleType("winpty")
+        fake_winpty_module.PtyProcess = _FakePty
+
+        fake_thread = MagicMock()
+
+        if config_override is not None:
+            config_patch = patch(
+                "hermes_cli.config.load_config",
+                return_value={"terminal": config_override},
+            )
+        else:
+            config_patch = patch(
+                "hermes_cli.config.load_config", return_value={}
+            )
+
+        with patch.dict(os.environ, {"PATH": "/usr/bin:/bin"}, clear=True),             patch.dict(_sys.modules, {"ptyprocess": fake_pty_module, "winpty": fake_winpty_module}),             patch("tools.process_registry._find_shell", return_value="/bin/bash"),             patch("threading.Thread", return_value=fake_thread),             patch.object(registry, "_write_checkpoint"),             config_patch:
+            registry.spawn_local(
+                "echo hello",
+                cwd="/tmp",
+                use_pty=True,
+            )
+
+        return captured["argv"]
+
+    def test_pty_default_uses_non_login_shell(self, registry):
+        """The PTY branch matches the standard Popen default: ``-c``, not ``-lic``.
+
+        Without this coverage the same regression the Popen default-guard
+        prevents could slip back in via the PTY path. Both branches MUST
+        share the same shell-flag contract so agent commands behave
+        identically regardless of which spawn path is taken.
+        """
+        argv = self._spawn_pty_args(registry)
+        assert argv[0] == "/bin/bash"
+        assert argv[1] == "-c", (
+            f"PTY default must be non-login (-c), got {argv[1]!r} — aliases "
+            "and exec-swap wrappers would silently rewrite agent commands"
+        )
+        assert "-l" not in argv[1]
+        assert argv[2].startswith("set +m; ")
+
+    def test_pty_opt_in_login_shell_when_config_set(self, registry):
+        """PTY branch honours the same ``background_login_shell`` opt-in."""
+        argv = self._spawn_pty_args(
+            registry, config_override={"background_login_shell": True}
+        )
+        assert argv[0] == "/bin/bash"
+        assert argv[1] == "-lic"
+
     def test_spawn_via_env_uses_backend_temp_dir_for_artifacts(self, registry):
         class FakeEnv:
             def __init__(self):

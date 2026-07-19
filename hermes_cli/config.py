@@ -1127,6 +1127,17 @@ DEFAULT_CONFIG = {
         # this off if your rc files misbehave when sourced
         # non-interactively (e.g. one that hard-exits on TTY checks).
         "auto_source_bashrc": True,
+        # When True, background ``terminal(background=true)`` processes
+        # are spawned through the user's login shell (``$SHELL -lic``),
+        # mirroring the foreground ``init_session`` snapshot path so the
+        # captured PATH / aliases / functions carry through. **Default is
+        # False** because login shells also pick up user-defined aliases
+        # (``alias rm='rsync …'``) and ``exec``-swap wrappers, which
+        # silently rewrite otherwise ordinary agent commands and diverge
+        # from the foreground ``bash -c`` contract (#67200). Opt in only
+        # when your tools genuinely depend on login-shell PATH or env —
+        # the per-process spawn path stays unchanged otherwise.
+        "background_login_shell": False,
         "docker_image": "nikolaik/python-nodejs:python3.11-nodejs20",
         "docker_forward_env": [],
         # Explicit environment variables to set inside Docker containers.

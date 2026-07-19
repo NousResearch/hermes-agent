@@ -1,4 +1,5 @@
 import asyncio
+import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -170,6 +171,29 @@ async def test_gateway_stop_launchd_service_restart_keeps_nonzero_exit(tmp_path,
         await runner.stop(restart=True, service_restart=True)
 
     assert runner._exit_code == GATEWAY_SERVICE_RESTART_EXIT_CODE
+
+
+@pytest.mark.asyncio
+async def test_plain_graceful_stop_writes_home_startup_marker(tmp_path, monkeypatch):
+    # A plain graceful stop (SIGTERM from systemctl restart / launchctl
+    # kickstart -k / host reboot) has no restart requested and no chat
+    # command source, yet must still write the planned-restart marker so
+    # the next boot posts the home-channel "Gateway online" notice.
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    runner, adapter = make_restart_runner()
+    adapter.disconnect = AsyncMock()
+
+    assert runner._restart_requested is False
+    assert runner._restart_command_source is None
+
+    with patch("gateway.status.remove_pid_file"), patch("gateway.status.write_runtime_status"):
+        await runner.stop()
+
+    marker = tmp_path / ".restart_pending.json"
+    assert marker.exists()
+    payload = json.loads(marker.read_text())
+    assert payload["via_service"] is False
+    assert payload["detached"] is False
 
 
 @pytest.mark.asyncio

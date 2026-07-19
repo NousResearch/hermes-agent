@@ -1297,6 +1297,17 @@ class AsyncCodexAuxiliaryClient:
         # gateway restarts.
         self._real_client = sync_wrapper._real_client
 
+    def close(self):
+        # Mirrors CodexAuxiliaryClient.close. This shim is what gets CACHED on
+        # the async path — the sync wrapper it was built from is a transient
+        # inside _to_async_client — so without this method nothing ever closes
+        # the underlying client: _close_cached_client finds no ``close``, and
+        # _force_close_async_httpx finds no ``_client`` on a shim. Both
+        # _evict_cached_clients (fired on every credential refresh) and
+        # shutdown_cached_clients then become no-ops here, leaking the
+        # transport.
+        self._real_client.close()
+
 
 class _AnthropicCompletionsAdapter:
     """OpenAI-client-compatible adapter for Anthropic Messages API."""
@@ -1474,6 +1485,13 @@ class AsyncAnthropicAuxiliaryClient:
         # eviction on a poisoned underlying client also drops this entry.
         self._real_client = sync_wrapper._real_client
 
+    def close(self):
+        # Mirrors AnthropicAuxiliaryClient.close — see AsyncCodexAuxiliaryClient
+        # for why the cached async shim must close its own underlying client.
+        close_fn = getattr(self._real_client, "close", None)
+        if callable(close_fn):
+            close_fn()
+
 
 class _BedrockCompletionsAdapter:
     """Translates ``chat.completions.create(**kwargs)`` into Bedrock Converse."""
@@ -1563,6 +1581,12 @@ class AsyncBedrockAuxiliaryClient:
         self.chat = _AsyncBedrockChatShim(async_adapter)
         self.api_key = sync_wrapper.api_key
         self.base_url = sync_wrapper.base_url
+
+    def close(self):
+        # Mirrors BedrockAuxiliaryClient.close: Bedrock builds its client
+        # per-call, so there is no persistent transport to release. Defined for
+        # symmetry so every cached wrapper answers the close protocol.
+        pass
 
 
 def _endpoint_speaks_anthropic_messages(base_url: str) -> bool:

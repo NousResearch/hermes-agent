@@ -83,49 +83,44 @@ export function createZoomCoordinator() {
   }
 }
 
-// Chromium can drop webContents zoom when a BrowserWindow is minimized,
-// restored, resized, or crosses onto a monitor with different display scaling.
-// WSLg runs Electron as Linux, where the cross-platform `resize` event is
-// available but the one-shot `resized` event is not.
-export const ZOOM_REASSERT_WINDOW_EVENTS = ['show', 'restore', 'moved', 'resize']
-export const ZOOM_RESIZE_REASSERT_DELAY_MS = 120
+// Chromium can drop webContents zoom when a BrowserWindow is resized, minimized
+// and restored, or crosses onto a monitor with different display scaling. macOS
+// and Windows provide trailing `resized`/`moved` events; Linux only provides the
+// noisy `resize`/`move` pair, so debounce those fallbacks before re-applying the
+// persisted level.
+export const ZOOM_RESIZE_REASSERT_DELAY_MS = 100
 
-export function installZoomReassertOnWindowEvents(
-  win,
-  reassert,
-  { clearTimer = clearTimeout, setTimer = setTimeout } = {}
-) {
+export function zoomReassertWindowEvents(platform = process.platform) {
+  return platform === 'linux' ? ['show', 'restore', 'resize', 'move'] : ['show', 'restore', 'resized', 'moved']
+}
+
+export function installZoomReassertOnWindowEvents(win, reassert, platform = process.platform) {
   if (!win?.on) {
     return
   }
 
-  const run = () => {
-    if (!win.isDestroyed?.()) {
-      reassert()
-    }
-  }
-
-  win.on('show', run)
-  win.on('restore', run)
-  win.on('moved', run)
-
   let resizeTimer
-  win.on('resize', () => {
-    if (resizeTimer !== undefined) {
-      clearTimer(resizeTimer)
-    }
 
-    resizeTimer = setTimer(() => {
-      resizeTimer = undefined
-      run()
-    }, ZOOM_RESIZE_REASSERT_DELAY_MS)
-  })
+  for (const event of zoomReassertWindowEvents(platform)) {
+    win.on(event, () => {
+      if (win.isDestroyed?.()) {
+        return
+      }
 
-  win.once?.('closed', () => {
-    if (resizeTimer !== undefined) {
-      clearTimer(resizeTimer)
-    }
-  })
+      if (event !== 'resize' && event !== 'move') {
+        reassert()
+
+        return
+      }
+
+      clearTimeout(resizeTimer)
+      resizeTimer = setTimeout(() => {
+        if (!win.isDestroyed?.()) {
+          reassert()
+        }
+      }, ZOOM_RESIZE_REASSERT_DELAY_MS)
+    })
+  }
 }
 
 /**

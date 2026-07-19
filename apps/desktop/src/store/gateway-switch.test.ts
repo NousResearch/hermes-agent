@@ -19,7 +19,7 @@ import {
 import { $gatewaySwitching, wipeSessionListsForGatewaySwitch } from './gateway-switch'
 
 vi.mock('@/lib/query-client', () => ({
-  queryClient: { invalidateQueries: vi.fn() }
+  invalidateProfileScopedQueries: vi.fn()
 }))
 
 describe('wipeSessionListsForGatewaySwitch', () => {

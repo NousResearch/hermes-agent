@@ -114,7 +114,7 @@ import {
   SESSION_WINDOW_MIN_WIDTH
 } from './session-windows'
 import { ensureSpawnHelperExecutable } from './spawn-helper-perms'
-import { nativeOverlayWidth as computeNativeOverlayWidth, titleBarOverlayOptions } from './titlebar-overlay-width'
+import { nativeOverlayWidth as computeNativeOverlayWidth, macTitleBarOverlayHeight } from './titlebar-overlay-width'
 import { resolveBehindCount, shouldCountCommits } from './update-count'
 import { readLiveUpdateMarker, writeUpdateMarker } from './update-marker'
 import { runRebuildWithRetry } from './update-rebuild'
@@ -130,11 +130,9 @@ import {
 import { isOfficialSshRemote, OFFICIAL_REPO_HTTPS_URL } from './update-remote'
 import { spawnUpdaterProcess } from './updater-process'
 import { fetchMarketplaceThemes, searchMarketplaceThemes } from './vscode-marketplace'
-import { performWindowControl, windowControlState } from './window-controls'
 import {
   computeWindowOptions,
   debounce,
-  maximizedBoundsCorrection,
   sanitizeWindowState,
   MIN_HEIGHT as WINDOW_MIN_HEIGHT,
   MIN_WIDTH as WINDOW_MIN_WIDTH
@@ -154,11 +152,11 @@ import {
   grantAllApplicationPackagesAcl,
   markerAfterSuccessfulBoot,
   readSandboxMarker,
+  type SandboxFallbackReason,
   shouldAttemptAclRepair,
   shouldRelaunchForGpuSandboxCrash,
   shouldRelaunchForRendererSandboxCrashLoop,
-  writeSandboxMarker,
-  type SandboxFallbackReason
+  writeSandboxMarker
 } from './windows-sandbox-fallback'
 import { installWindowsSystemCaTrust } from './windows-system-ca'
 import { readWindowsUserEnvVar } from './windows-user-env'
@@ -685,20 +683,36 @@ function getWindowBackgroundColor() {
 // to GetFrameColor() on some Electron builds; rgba(1,0,0,0) is the escape hatch.
 const TITLEBAR_OVERLAY_COLOR = 'rgba(1, 0, 0, 0)'
 
-function getTitleBarOverlayOptions({ customWslgControls = true } = {}) {
-  return titleBarOverlayOptions({
-    platform: IS_MAC ? 'mac' : IS_WSL && customWslgControls ? 'wslg' : IS_WINDOWS ? 'windows' : 'linux',
-    darwinMajor: DARWIN_MAJOR,
-    titlebarHeight: TITLEBAR_HEIGHT,
+function getTitleBarOverlayOptions() {
+  if (IS_MAC) {
+    // Tahoe (Darwin 25+) misplaces the traffic lights when the overlay has a
+    // nonzero height (electron#49183); 0 there keeps them at the configured
+    // inset. See macTitleBarOverlayHeight.
+    return { height: macTitleBarOverlayHeight({ darwinMajor: DARWIN_MAJOR, titlebarHeight: TITLEBAR_HEIGHT }) }
+  }
+
+  // WSLg paints WCO via the RDP host's own min/max/close, so requesting
+  // an Electron overlay there just leaves a dead gap. Plain Linux (KDE,
+  // GNOME) can use the native overlay — let it through.
+  if (!IS_WINDOWS && IS_WSL) {
+    return false
+  }
+
+  return {
     color: TITLEBAR_OVERLAY_COLOR,
-    foreground:
-      rendererTitleBarTheme && isHexColor(rendererTitleBarTheme.foreground) ? rendererTitleBarTheme.foreground : null,
-    dark: nativeTheme.shouldUseDarkColors
-  })
+    height: TITLEBAR_HEIGHT,
+    symbolColor:
+      rendererTitleBarTheme && isHexColor(rendererTitleBarTheme.foreground)
+        ? rendererTitleBarTheme.foreground
+        : nativeTheme.shouldUseDarkColors
+          ? '#f7f7f7'
+          : '#242424'
+  }
 }
 
 // Push refreshed overlay options to a live window after a theme/appearance
-// change. The try/catch guards builds where
+// change. No-op only on plain (non-WSL) Linux, where getTitleBarOverlayOptions()
+// returns false; the try/catch additionally guards builds where
 // setTitleBarOverlay isn't supported.
 function applyTitleBarOverlay(win) {
   const options = getTitleBarOverlayOptions()
@@ -2062,6 +2076,33 @@ function persistWindowState() {
 
 // resized/moved fire many times mid-drag on Linux; debounce to one write.
 const schedulePersistWindowState = debounce(persistWindowState, 250)
+
+// Zoom's primary store is a main-process JSON file. The renderer localStorage
+// mirror lives under Electron's cache/storage folders, which crash recovery
+// can move or recreate — wiping the zoom setting exactly when the user just
+// recovered from a crash (#56726). JSON survives; localStorage is kept as a
+// secondary mirror so pre-JSON installs migrate transparently on first read.
+const DESKTOP_ZOOM_STATE_PATH = path.join(app.getPath('userData'), 'zoom-state.json')
+
+function readZoomState() {
+  try {
+    const raw = JSON.parse(fs.readFileSync(DESKTOP_ZOOM_STATE_PATH, 'utf8'))
+    const level = Number(raw?.zoomLevel)
+
+    return Number.isFinite(level) ? level : null
+  } catch {
+    return null
+  }
+}
+
+function writeZoomState(zoomLevel) {
+  try {
+    fs.mkdirSync(path.dirname(DESKTOP_ZOOM_STATE_PATH), { recursive: true })
+    writeFileAtomic(DESKTOP_ZOOM_STATE_PATH, JSON.stringify({ zoomLevel }, null, 2))
+  } catch (error) {
+    rememberLog(`[zoom] json persist failed: ${error?.message || error}`)
+  }
+}
 
 // Match the backend's source resolution but bias toward a real git checkout.
 // Dev → SOURCE_REPO_ROOT. Packaged/CLI install → ACTIVE_HERMES_ROOT.
@@ -4573,8 +4614,7 @@ function getWindowState() {
   return {
     isFullscreen: Boolean(mainWindow?.isFullScreen?.()),
     nativeOverlayWidth: getNativeOverlayWidth(),
-    windowButtonPosition: getWindowButtonPosition(),
-    ...windowControlState(mainWindow, IS_WSL)
+    windowButtonPosition: getWindowButtonPosition()
   }
 }
 
@@ -4850,10 +4890,10 @@ function installPreviewShortcut(window) {
   })
 }
 
-// Zoom level is persisted in the renderer's own localStorage (per-origin,
-// survives reloads/restarts) rather than a main-process JSON file. The main
-// process owns setZoomLevel, so we mirror each change into localStorage and
-// read it back on did-finish-load to re-apply after reloads or crash recovery.
+// Zoom level is persisted primarily in a main-process JSON file so crash
+// recovery cannot wipe it. Renderer localStorage remains a compatibility
+// mirror for older installs and downgrades. The main process owns setZoomLevel
+// and re-applies the coordinated value after reloads and window transitions.
 import {
   applyZoomLevel,
   createZoomCoordinator,
@@ -4875,6 +4915,11 @@ function setAndPersistZoomLevel(window, zoomLevel) {
   // changes made via the keyboard shortcuts or the View menu.
   const next = zoomCoordinator.setDesired(zoomLevel)
   applyZoomLevel(window.webContents, next)
+
+  // Primary store: main-process JSON (survives crash recovery — #56726).
+  writeZoomState(next)
+  // Secondary mirror: renderer localStorage (legacy store; kept in sync so a
+  // downgrade or JSON read failure still finds a sane value).
   window.webContents
     .executeJavaScript(
       `try { localStorage.setItem(${JSON.stringify(ZOOM_STORAGE_KEY)}, ${JSON.stringify(String(next))}) } catch {}`
@@ -4895,6 +4940,19 @@ function restorePersistedZoomLevel(window) {
     return
   }
 
+  // Prefer the JSON file — it survives crash recovery wiping Electron's
+  // cache/storage folders (#56726). applyZoomLevel notifies the renderer so
+  // the Appearance UI Scale control stays in sync.
+  const saved = readZoomState()
+
+  if (saved != null) {
+    applyZoomLevel(window.webContents, zoomCoordinator.setDesired(saved))
+
+    return
+  }
+
+  // Fall back to localStorage for installs that predate zoom-state.json,
+  // migrating the value into the JSON store on first read.
   const commitRestore = zoomCoordinator.beginRestore()
 
   window.webContents
@@ -4915,24 +4973,9 @@ function restorePersistedZoomLevel(window) {
       // Notify the renderer too — otherwise the Appearance UI Scale control
       // can stay stuck at 100% even though the window zoom was restored.
       applyZoomLevel(window.webContents, desired)
+      writeZoomState(desired)
     })
     .catch(error => rememberLog(`[zoom] restore failed: ${error?.message || error}`))
-}
-
-function reassertDesiredZoomLevel(window) {
-  if (!window || window.isDestroyed()) {
-    return
-  }
-
-  const desired = zoomCoordinator.getDesired()
-
-  if (desired === undefined) {
-    restorePersistedZoomLevel(window)
-
-    return
-  }
-
-  applyZoomLevel(window.webContents, desired)
 }
 
 function installZoomShortcuts(window) {
@@ -4944,22 +4987,46 @@ function installZoomShortcuts(window) {
   window.webContents.on('before-input-event', (event, input) => {
     const mod = IS_MAC ? input.meta : input.control
 
-    if (!mod || input.alt || input.shift) {
+    if (!mod || input.alt) {
       return
     }
 
     const key = input.key
 
     if (key === '0') {
+      if (input.shift) {
+        return // Ctrl/Cmd+Shift+0 is not a zoom chord — leave it alone
+      }
+
       event.preventDefault()
       setAndPersistZoomLevel(window, 0)
     } else if (key === '=' || key === '+') {
+      // Zoom-in must accept the shift modifier: on US layouts Plus is
+      // physically Shift+=, so Cmd+Plus arrives as Cmd+Shift+'+' (or '='
+      // depending on platform). The old blanket shift guard silently
+      // dropped keyboard zoom-in on macOS (#43517).
       event.preventDefault()
       setAndPersistZoomLevel(window, window.webContents.getZoomLevel() + ZOOM_STEP)
     } else if (key === '-') {
+      if (input.shift) {
+        return // Shift+'-' is '_' territory on most layouts, not zoom-out
+      }
+
       event.preventDefault()
       setAndPersistZoomLevel(window, window.webContents.getZoomLevel() - ZOOM_STEP)
     }
+  })
+
+  // Ctrl/Cmd + mouse wheel — the standard desktop/browser zoom gesture
+  // (#40295). Chromium surfaces it as the main-process 'zoom-changed' event
+  // (wheel events are DOM-side, so before-input-event never sees them).
+  // Route through the same persist+notify funnel as the keyboard shortcuts
+  // so wheel zoom survives restarts and the settings Scale control stays in
+  // sync, and use the same half step for consistency.
+  window.webContents.on('zoom-changed', (event, zoomDirection) => {
+    event.preventDefault()
+    const delta = zoomDirection === 'in' ? ZOOM_STEP : -ZOOM_STEP
+    setAndPersistZoomLevel(window, window.webContents.getZoomLevel() + delta)
   })
 }
 
@@ -7150,11 +7217,14 @@ function wireCommonWindowHandlers(win, { zoom = true }: { zoom?: boolean } = {})
 
   if (zoom) {
     installZoomShortcuts(win)
-    // Re-apply cached zoom after show/restore, a cross-display move, and a
-    // coalesced resize; read localStorage only on first load or before the
-    // cache has been populated.
-    installZoomReassertOnWindowEvents(win, () => reassertDesiredZoomLevel(win))
-    win.webContents.once('did-finish-load', () => restorePersistedZoomLevel(win))
+    // Re-apply persisted zoom on show/restore/resize/cross-display move
+    // (Chromium can drop webContents zoom after these window transitions) and
+    // on EVERY full load — not once. The crash-recovery path calls
+    // webContents.reload(), which fires did-finish-load again after a `once`
+    // listener is spent, so zoom was silently lost on renderer crash
+    // recovery and any in-place reload/navigation (#46429).
+    installZoomReassertOnWindowEvents(win, () => restorePersistedZoomLevel(win))
+    win.webContents.on('did-finish-load', () => restorePersistedZoomLevel(win))
   }
 
   installContextMenu(win)
@@ -7210,10 +7280,7 @@ function spawnSecondaryWindow({
     minHeight: SESSION_WINDOW_MIN_HEIGHT,
     title: 'Hermes',
     titleBarStyle: 'hidden',
-    // Compact secondary windows do not render the full titlebar cluster. Keep
-    // Electron's native overlay there; only the main WSLg window uses the
-    // larger renderer-owned controls.
-    titleBarOverlay: getTitleBarOverlayOptions({ customWslgControls: false }),
+    titleBarOverlay: getTitleBarOverlayOptions(),
     trafficLightPosition: IS_MAC ? WINDOW_BUTTON_POSITION : undefined,
     vibrancy: IS_MAC ? 'sidebar' : undefined,
     opacity: windowOpacity(),
@@ -7409,25 +7476,6 @@ function closePetOverlay() {
   petOverlayWindow = null
 }
 
-// WSLg only: after a native maximize the frameless window can settle offset
-// from the display work area (gap at the top/left, content clipped bottom/right;
-// reported on WSLg 1.0.65). Snap it back onto the work area. maximizedBoundsCorrection
-// returns null when the window already fills the work area, so this is a no-op
-// wherever the native maximize is correct (plain Linux, most WSLg versions) and
-// cannot loop — one settled correction leaves bounds matching the work area.
-function correctWslgMaximizedGap(win) {
-  if (!IS_WSL || !win || win.isDestroyed()) {
-    return
-  }
-
-  const bounds = win.getBounds()
-  const corrected = maximizedBoundsCorrection(bounds, screen.getDisplayMatching(bounds).workArea)
-
-  if (corrected) {
-    win.setBounds(corrected)
-  }
-}
-
 function createWindow() {
   const icon = getAppIconPath()
   const savedWindowState = readWindowState()
@@ -7486,6 +7534,10 @@ function createWindow() {
       mainWindow.show()
     }
 
+    // Persist geometry as soon as the window is visible so a crash before the
+    // first clean resize/move/close still captures the restored bounds (#56726).
+    schedulePersistWindowState()
+
     // #38216: clear the mid-boot marker only after a window is actually usable.
     // Keep sticky `fallback` when we launched with --no-sandbox so the next
     // Start Menu click does not re-enter the GPU FATAL crash loop. The marker
@@ -7515,15 +7567,8 @@ function createWindow() {
   // the cross-platform backstop, flushed synchronously before the window is gone.
   mainWindow.on('resized', schedulePersistWindowState)
   mainWindow.on('moved', schedulePersistWindowState)
-  mainWindow.on('maximize', () => {
-    correctWslgMaximizedGap(mainWindow)
-    schedulePersistWindowState()
-    sendWindowStateChanged()
-  })
-  mainWindow.on('unmaximize', () => {
-    schedulePersistWindowState()
-    sendWindowStateChanged()
-  })
+  mainWindow.on('maximize', schedulePersistWindowState)
+  mainWindow.on('unmaximize', schedulePersistWindowState)
   mainWindow.on('close', () => schedulePersistWindowState.flush())
 
   // the closed wrapper remains truthy, so clear only the window this callback owns.
@@ -7561,8 +7606,7 @@ function createWindow() {
           shouldRelaunchForRendererSandboxCrashLoop({
             reason: details?.reason,
             exitCode: details?.exitCode,
-            alreadyNoSandbox:
-              windowsSandboxFallbackActive || alreadyHasNoSandbox(process.argv, process.env),
+            alreadyNoSandbox: windowsSandboxFallbackActive || alreadyHasNoSandbox(process.argv, process.env),
             relaunchAttempted: windowsNoSandboxRelaunchAttempted
           })
         ) {
@@ -7572,17 +7616,12 @@ function createWindow() {
           windowsSandboxFallbackReason = 'renderer-crash-loop'
 
           try {
-            writeSandboxMarker(
-              app.getPath('userData'),
-              fallbackMarker('renderer-crash-loop', app.getVersion())
-            )
+            writeSandboxMarker(app.getPath('userData'), fallbackMarker('renderer-crash-loop', app.getVersion()))
           } catch {
             void 0
           }
 
-          rememberLog(
-            '[renderer] Windows sandbox crash loop detected; relaunching once with --no-sandbox (#38216)'
-          )
+          rememberLog('[renderer] Windows sandbox crash loop detected; relaunching once with --no-sandbox (#38216)')
 
           try {
             app.relaunch({ args: buildNoSandboxRelaunchArgs(process.argv.slice(1)) })
@@ -7636,12 +7675,20 @@ function createWindow() {
     mainWindow.loadURL(pathToFileURL(resolveRendererIndex()).toString())
   }
 
+  // Start the Python backend NOW, in parallel with the renderer load — not on
+  // did-finish-load. The backend cold boot (spawn → port announce → /api/status)
+  // is the dominant startup cost, and serializing it behind Chromium's load
+  // added the whole renderer load time to first-usable-composer. The promise is
+  // shared (backendConnectionState), so the renderer's getConnection() joins
+  // this in-flight boot instead of duplicating it; early boot-progress events
+  // the renderer misses are recovered by its getBootProgress() pull on mount.
+  startHermes().catch(error => rememberLog(error.stack || error.message))
+
   mainWindow.webContents.once('did-finish-load', () => {
     // Zoom restore is handled by wireCommonWindowHandlers (shared with session
     // windows); no need to reapply it here.
     broadcastBootProgress()
     sendWindowStateChanged()
-    startHermes().catch(error => rememberLog(error.stack || error.message))
   })
 }
 
@@ -7710,9 +7757,6 @@ ipcMain.handle('hermes:window:openNewSession', async () => {
   createNewSessionWindow()
 
   return { ok: true }
-})
-ipcMain.on('hermes:window-control', (event, action) => {
-  performWindowControl(BrowserWindow.fromWebContents(event.sender), action)
 })
 
 // --- Text size (zoom) -------------------------------------------------------
@@ -8065,6 +8109,71 @@ async function interceptSessionRequestForRemote(request) {
     return mergeRemoteProfileSessions(searchParams, remoteProfiles)
   }
 
+  // Batched sidebar slices. With no remote profiles the local batched endpoint
+  // (one DB open per profile) serves it directly — take the fast path. When
+  // remotes exist, fan the three slices back out to the per-slice
+  // /api/profiles/sessions path (which already merges remote rows correctly) and
+  // reassemble; local profiles fall back to three primary reads there, but
+  // remote correctness is preserved.
+  if (method === 'GET' && pathname === '/api/profiles/sessions/sidebar') {
+    const remoteProfiles = configuredRemoteProfileNames()
+
+    if (remoteProfiles.length === 0) {
+      return undefined // local fast path → batched endpoint's single DB open
+    }
+
+    const recentsProfile = (searchParams.get('recents_profile') || 'all').trim() || 'all'
+
+    const sliceParams = (limitKey, defaultLimit, extra) => {
+      const sp = new URLSearchParams({
+        limit: searchParams.get(limitKey) || defaultLimit,
+        offset: '0',
+        min_messages: '1',
+        archived: 'exclude',
+        order: 'recent',
+        ...extra
+      })
+
+      return sp
+    }
+
+    const recentsSp = sliceParams('recents_limit', '20', { profile: recentsProfile })
+    const recentsExclude = searchParams.get('recents_exclude')
+
+    if (recentsExclude) {
+      recentsSp.set('exclude_sources', recentsExclude)
+    }
+
+    const cronSp = sliceParams('cron_limit', '50', { profile: 'all', source: 'cron' })
+
+    const messagingSp = sliceParams('messaging_limit', '100', { profile: 'all' })
+    const messagingExclude = searchParams.get('messaging_exclude')
+
+    if (messagingExclude) {
+      messagingSp.set('exclude_sources', messagingExclude)
+    }
+
+    const [recents, cron, messaging] = await Promise.all([
+      fetchProfilesSessionSlice(recentsSp, remoteProfiles),
+      fetchProfilesSessionSlice(cronSp, remoteProfiles),
+      fetchProfilesSessionSlice(messagingSp, remoteProfiles)
+    ])
+
+    return {
+      recents: {
+        sessions: rowsOf(recents),
+        total: Number(recents?.total) || 0,
+        profile_totals: recents?.profile_totals || {}
+      },
+      cron: { sessions: rowsOf(cron) },
+      messaging: {
+        sessions: rowsOf(messaging),
+        total: Number(messaging?.total) || rowsOf(messaging).length
+      },
+      errors: []
+    }
+  }
+
   // Per-session read/mutation. Owner is in ?profile= (reads) or request.profile
   // (mutations). Two remote shapes:
   //  - per-profile override: route to that profile's own remote, sans profile
@@ -8127,6 +8236,30 @@ async function remoteSessionList(profile, searchParams) {
   }
 
   return { ...(data as any), sessions: rowsOf(data) }
+}
+
+// Resolve one /api/profiles/sessions slice with remote profiles spliced in —
+// the same branch logic as the GET /api/profiles/sessions intercept, but always
+// returns data (never `undefined`) so a batched caller can compose slices. A
+// specific local profile reads from the local primary; a remote-override profile
+// reads from its remote; 'all' merges every remote into the primary aggregate.
+async function fetchProfilesSessionSlice(searchParams, remoteProfiles) {
+  const requested = (searchParams.get('profile') || 'all').trim() || 'all'
+
+  if (requested !== 'all') {
+    if (profileHasRemoteOverride(requested)) {
+      return remoteSessionList(requested, searchParams)
+    }
+
+    const primary = await ensureBackend(null)
+
+    return fetchJson(`${primary.baseUrl}/api/profiles/sessions?${searchParams}`, primary.token, {
+      method: 'GET',
+      timeoutMs: DEFAULT_FETCH_TIMEOUT_MS
+    }).catch(() => ({ sessions: [], total: 0, profile_totals: {} }))
+  }
+
+  return mergeRemoteProfileSessions(searchParams, remoteProfiles)
 }
 
 // Unified list: primary's local aggregate, with each remote profile's stale local

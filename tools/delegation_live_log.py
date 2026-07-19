@@ -109,7 +109,7 @@ class LiveTranscriptWriter:
                 "=" * 40,
             ]
             self.path.write_text("\n".join(header) + "\n", encoding="utf-8")
-            self.event("system", "kickoff: " + _one_line(goal, _KICKOFF_MAX)
+            self.event("user", "kickoff: " + _one_line(goal, _KICKOFF_MAX)
                        + (f" | context: {_one_line(context, _KICKOFF_MAX)}" if context else ""))
         except Exception as exc:
             logger.debug("Live transcript init failed (%s task %s): %s",

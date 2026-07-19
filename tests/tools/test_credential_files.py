@@ -530,3 +530,32 @@ class TestIterCacheFiles:
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
 
         assert iter_cache_files() == []
+
+    def test_mounts_clipboard_images_directory(self, tmp_path, monkeypatch):
+        """Clipboard images saved under ~/.hermes/images must mount into sandboxes."""
+        hermes_home = tmp_path / ".hermes"
+        images_dir = hermes_home / "images"
+        images_dir.mkdir(parents=True)
+        (images_dir / "clip_test.png").write_bytes(b"PNG")
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        mounts = get_cache_directory_mounts()
+        assert {
+            "host_path": str(images_dir),
+            "container_path": "/root/.hermes/images",
+        } in mounts
+
+    def test_iterates_clipboard_images_directory(self, tmp_path, monkeypatch):
+        """Modal-style per-file sync should include ~/.hermes/images files too."""
+        hermes_home = tmp_path / ".hermes"
+        images_dir = hermes_home / "images"
+        images_dir.mkdir(parents=True)
+        image_file = images_dir / "clip_test.png"
+        image_file.write_bytes(b"PNG")
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        entries = iter_cache_files()
+        assert {
+            "host_path": str(image_file),
+            "container_path": "/root/.hermes/images/clip_test.png",
+        } in entries

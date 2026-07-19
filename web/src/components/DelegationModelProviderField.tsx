@@ -55,10 +55,12 @@ export function DelegationModelProviderField({
     null,
   );
   const [loadFailed, setLoadFailed] = useState(false);
+  const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
     let cancelled = false;
 
+    setIsLoading(true);
     api
       .getModelOptions()
       .then((res) => {
@@ -66,6 +68,9 @@ export function DelegationModelProviderField({
       })
       .catch(() => {
         if (!cancelled) setLoadFailed(true);
+      })
+      .finally(() => {
+        if (!cancelled) setIsLoading(false);
       });
 
     return () => {
@@ -136,6 +141,7 @@ export function DelegationModelProviderField({
     <div className="grid gap-1.5">
       <Label className="text-sm">{c.delegationProviderLabel}</Label>
       <Select
+        disabled={isLoading}
         value={isInherit ? INHERIT_VALUE : delegationProvider}
         onValueChange={(next) => {
           if (next === INHERIT_VALUE) {
@@ -156,6 +162,9 @@ export function DelegationModelProviderField({
           </SelectOption>
         ))}
       </Select>
+      {isLoading ? (
+        <p className="text-xs text-text-secondary">{c.delegationLoading}</p>
+      ) : null}
 
       {isInherit ? (
         <p className="text-xs text-text-secondary">

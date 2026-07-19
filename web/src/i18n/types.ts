@@ -471,6 +471,7 @@ export interface Translations {
     delegationInheritUnknown: string;
     delegationCurrentlyInheriting: (model: string) => string;
     delegationLoadFailed: string;
+    delegationLoading: string;
     delegationProviderLabel: string;
     delegationModelLabel: string;
     delegationCustomModelPlaceholder: string;

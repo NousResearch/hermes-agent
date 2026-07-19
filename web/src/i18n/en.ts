@@ -455,6 +455,7 @@ export const en: Translations = {
       `Currently inheriting: ${model}`,
     delegationLoadFailed:
       "Couldn't load provider catalog — type provider and model IDs directly.",
+    delegationLoading: "Loading subagent catalog…",
     delegationProviderLabel: "Subagent provider",
     delegationModelLabel: "Subagent model",
     delegationCustomModelPlaceholder: "Custom model ID…",

@@ -430,9 +430,17 @@ export default function ConfigPage() {
               <DelegationModelProviderField
                 config={config}
                 onChange={next => {
-                  let updated = setNestedValue(config, "delegation.model", next.model)
-                  updated = setNestedValue(updated, "delegation.provider", next.provider)
-                  setConfig(updated)
+                  // Single merged update — both `delegation.model` and
+                  // `delegation.provider` change in one `setConfig` call so
+                  // no transient invalid pair can be observed by a re-render
+                  // between two separate updates.
+                  setConfig(prev =>
+                    setNestedValue(
+                      setNestedValue(prev ?? {}, "delegation.model", next.model),
+                      "delegation.provider",
+                      next.provider,
+                    ),
+                  )
                 }}
               />
             ) : isDelegationModelPickerKey(key) ? (

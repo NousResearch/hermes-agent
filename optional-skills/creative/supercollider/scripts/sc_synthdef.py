@@ -419,13 +419,16 @@ class SynthDef:
                     if g.name == GAIN_OBJECT and g.special == BINOP["*"]:
                         const_operands = [x for x in g.inputs if not isinstance(x, OutRef)]
                         for value in const_operands:
-                            if float(value) <= MAX_MASTER_GAIN:
+                            # Bound by the documented range: a negative gain has
+                            # magnitude too, so `value <= MAX` alone would wrongly
+                            # pass -10.0. Require 0 <= gain <= MAX_MASTER_GAIN.
+                            if 0 <= float(value) <= MAX_MASTER_GAIN:
                                 gain_ok = True
                             else:
                                 violations.append(
                                     f"master gain [* {value}] (ugen {gain_in.ugen}) "
-                                    f"exceeds {MAX_MASTER_GAIN}; lower it to protect "
-                                    f"ears/gear"
+                                    f"is outside 0..{MAX_MASTER_GAIN}; set it within "
+                                    f"that range to protect ears/gear"
                                 )
                         if not const_operands:
                             violations.append(

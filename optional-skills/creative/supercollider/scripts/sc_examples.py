@@ -195,9 +195,11 @@ def _main(argv=None) -> int:
             print(f"failed to reach scsynth at {args.host}:{args.port}: {e}",
                   file=sys.stderr)
             return 1
-        if not client.sync():
-            print("sent, but scsynth did not confirm (/sync timed out); is the "
-                  "server booted? see templates/boot_scsynth.sh", file=sys.stderr)
+        ok, err = client.verify()
+        if not ok:
+            print(f"scsynth did not confirm playback ({err}); the SynthDef may "
+                  "have been rejected, or the server is not booted "
+                  "(see templates/boot_scsynth.sh)", file=sys.stderr)
             return 1
         print(f"playing {args.name} as node {nid} "
               f"(stop: python3 sc_client.py --free-all)")

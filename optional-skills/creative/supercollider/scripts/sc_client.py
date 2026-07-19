@@ -80,6 +80,41 @@ def encode_message(address: str, *args: Any) -> bytes:
     return _osc_string(address) + _osc_string(tags) + bytes(payload)
 
 
+def decode_message(data: bytes):
+    """Minimal OSC message decoder -> (address, [args]). Best-effort.
+
+    Used to read scsynth replies (``/done``, ``/fail``, ``/synced``, ...). Only
+    the common tags (i/f/s/b) are decoded; anything unexpected stops parsing and
+    returns what was read so far.
+    """
+    def read_string(buf: bytes, i: int):
+        end = buf.index(b"\x00", i)
+        s = buf[i:end].decode("utf-8", "replace")
+        return s, (end // 4 + 1) * 4          # advance past NUL, 4-byte aligned
+
+    try:
+        address, i = read_string(data, 0)
+        if i >= len(data) or data[i:i + 1] != b",":
+            return address, []
+        tags, i = read_string(data, i)
+        args: List[Any] = []
+        for t in tags[1:]:
+            if t == "i":
+                args.append(struct.unpack(">i", data[i:i + 4])[0]); i += 4
+            elif t == "f":
+                args.append(struct.unpack(">f", data[i:i + 4])[0]); i += 4
+            elif t == "s":
+                s, i = read_string(data, i); args.append(s)
+            elif t == "b":
+                n = struct.unpack(">i", data[i:i + 4])[0]; i += 4
+                args.append(data[i:i + n]); i += (n + 3) // 4 * 4
+            else:
+                break
+        return address, args
+    except Exception:
+        return "", []
+
+
 def _coerce_cli_arg(tok: str) -> Any:
     """Turn a CLI token into an OSC arg: int if it looks like one, else float, else str."""
     try:
@@ -177,19 +212,40 @@ class SCClient:
             pairs.append(float(v))
         self.send("/n_set", node_id, *pairs)
 
-    def sync(self, sync_id: int = 1, timeout: float = 2.0) -> bool:
-        """Block until the server has processed all prior async commands.
+    def verify(self, sync_id: int = 1, timeout: float = 2.0):
+        """Confirm the preceding commands landed *and* were accepted.
 
-        Sends ``/sync`` and waits for the matching ``/synced``. Returns ``False``
-        on timeout -- use it to confirm a ``play``/``load`` actually landed
-        instead of assuming a fire-and-forget UDP packet arrived.
+        Sends ``/sync`` and drains replies until the matching ``/synced``. A
+        ``/d_recv`` reports success as ``/done`` and rejection as ``/fail``; a
+        bare ``/synced`` only proves the async queue drained, not that the
+        SynthDef loaded. So this watches for ``/fail`` arriving before
+        ``/synced`` and reports it. Returns ``(ok, error)``: ``ok`` is ``False``
+        on a ``/fail`` or on timeout, and ``error`` carries the ``/fail`` text.
         """
+        self.send("/sync", sync_id)
+        error: Optional[str] = None
         old = self._sock.gettimeout()
         self._sock.settimeout(timeout)
         try:
-            return self.send_recv("/sync", sync_id, match="/synced") is not None
+            while True:
+                try:
+                    data, _ = self._sock.recvfrom(65536)
+                except socket.timeout:
+                    return (False, error or "no /synced reply from scsynth")
+                address, args = decode_message(data)
+                if address == "/fail":
+                    error = " ".join(str(a) for a in args) or "/fail"
+                elif address == "/synced":
+                    return (error is None, error)
         finally:
             self._sock.settimeout(old)
+
+    def sync(self, sync_id: int = 1, timeout: float = 2.0) -> bool:
+        """Confirm the preceding commands landed and were accepted (bool form).
+
+        Thin wrapper over :meth:`verify` -- ``False`` on a ``/fail`` or timeout.
+        """
+        return self.verify(sync_id, timeout)[0]
 
     def free(self, node_id: int) -> None:
         self.send("/n_free", node_id)

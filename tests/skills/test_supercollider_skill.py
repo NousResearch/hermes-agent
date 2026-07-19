@@ -105,7 +105,18 @@ def test_master_gain_over_limit_is_flagged():
     sd = m.SynthDef("t_loud")
     sd.to_out(sd.sinosc(440), gain=0.9)   # 0.9 > MAX_MASTER_GAIN (0.2)
     assert not sd.is_safe()
-    assert any("exceeds" in v for v in sd.safety_violations())
+    assert any("outside 0" in v for v in sd.safety_violations())
+
+
+def test_negative_master_gain_is_flagged():
+    import sc_synthdef as m
+
+    # A negative gain has magnitude too: -10.0 must NOT pass just because
+    # -10.0 <= 0.2. The linter requires 0 <= gain <= MAX_MASTER_GAIN.
+    sd = m.SynthDef("t_neg")
+    sd.to_out(sd.sinosc(440), gain=-10.0)
+    assert not sd.is_safe()
+    assert any("outside 0" in v for v in sd.safety_violations())
 
 
 # --- sc_client: OSC encoding ----------------------------------------------
@@ -146,6 +157,71 @@ def test_synthdef_name_extracted_from_bytes():
 
     blob = m.build_simple_synth(name="named_def").compile()
     assert c._synthdef_name(blob) == "named_def"
+
+
+def test_decode_message_roundtrips_args():
+    import sc_client as c
+
+    addr, args = c.decode_message(c.encode_message("/fail", "/d_recv", "boom", 3))
+    assert addr == "/fail"
+    assert args == ["/d_recv", "boom", 3]
+
+
+class _FakeSock:
+    """Stand-in socket that replays a fixed list of reply datagrams."""
+
+    def __init__(self, replies):
+        self._replies = list(replies)
+        self._timeout = None
+
+    def gettimeout(self):
+        return self._timeout
+
+    def settimeout(self, t):
+        self._timeout = t
+
+    def sendto(self, payload, addr):
+        pass
+
+    def recvfrom(self, n):
+        import socket as _s
+        if self._replies:
+            return self._replies.pop(0), ("127.0.0.1", 57110)
+        raise _s.timeout()
+
+
+def test_verify_succeeds_on_done_then_synced():
+    import sc_client as c
+
+    client = c.SCClient()
+    client._sock = _FakeSock([
+        c.encode_message("/done", "/d_recv"),
+        c.encode_message("/synced", 1),
+    ])
+    ok, err = client.verify(timeout=0.5)
+    assert ok is True and err is None
+
+
+def test_verify_fails_when_synthdef_rejected():
+    import sc_client as c
+
+    client = c.SCClient()
+    client._sock = _FakeSock([
+        c.encode_message("/fail", "/d_recv", "SynthDef not found"),
+        c.encode_message("/synced", 1),
+    ])
+    ok, err = client.verify(timeout=0.5)
+    assert ok is False
+    assert "SynthDef not found" in err
+
+
+def test_verify_fails_on_timeout():
+    import sc_client as c
+
+    client = c.SCClient()
+    client._sock = _FakeSock([])          # no replies -> timeout
+    ok, err = client.verify(timeout=0.2)
+    assert ok is False and "synced" in err
 
 
 def test_play_sends_d_recv_with_completion(monkeypatch):

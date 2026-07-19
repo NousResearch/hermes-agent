@@ -81,6 +81,21 @@ class TestDerivation:
         # "a.b" sanitizes to "ab" → must hash so it doesn't collide with "ab"
         assert a != b
 
+    def test_long_prefix_keeps_sender_digest(self):
+        # A max-length (64-char) prefix must not truncate the sender digest away:
+        # distinct senders that fall into the fully-hashed tail must stay distinct,
+        # and each name must remain a valid, <=64-char profile id.
+        from hermes_cli.profiles import validate_profile_name
+
+        long_prefix = "p" * 64
+        a = user_profiles.derive_user_profile_name(_src("Alice@Example.COM"), prefix=long_prefix)
+        b = user_profiles.derive_user_profile_name(_src("Bob@Example.COM"), prefix=long_prefix)
+        assert a is not None and b is not None
+        assert a != b, "long prefix collapsed distinct senders onto one profile"
+        for name in (a, b):
+            assert len(name) <= 64
+            validate_profile_name(name)  # must not raise
+
     def test_derived_name_is_valid_profile_id(self):
         from hermes_cli.profiles import validate_profile_name
         validate_profile_name(user_profiles.derive_user_profile_name(_src("1271274566")))

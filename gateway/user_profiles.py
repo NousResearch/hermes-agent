@@ -107,8 +107,14 @@ def derive_user_profile_name(source: Any, prefix: str = "u") -> Optional[str]:
 
     if len(name) > _MAX_LEN:
         # Pathological prefix/platform lengths — fall back to a fully hashed tail.
+        # Reserve room for ``-<digest>`` BEFORE truncating, then bound only the
+        # prefix. A blind ``[:_MAX_LEN]`` here would slice the sender-specific
+        # digest off a max-length prefix and collapse every sender onto one
+        # profile; bounding the prefix keeps the full digest, so distinct senders
+        # stay distinct while the name still fits ``_MAX_LEN``.
         digest = hashlib.sha1(f"{plat_seg}:{uid}".encode("utf-8")).hexdigest()[:16]
-        name = f"{prefix_seg}-{digest}"[:_MAX_LEN]
+        prefix_bounded = prefix_seg[: _MAX_LEN - len(digest) - 1].rstrip("-_") or "u"
+        name = f"{prefix_bounded}-{digest}"
 
     return name
 

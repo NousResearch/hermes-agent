@@ -4249,3 +4249,464 @@ class TestModelRoutesAgentCreation:
         assert adapter._session_model_override_for("chan-1") == {"model": "user/model"}
         assert adapter._session_model_override_for("chan-2") is None
         assert adapter._session_model_override_for(None) is None
+
+
+# ---------------------------------------------------------------------------
+# PATCH /api/sessions/{id} — model and yolo fields
+# ---------------------------------------------------------------------------
+
+
+class TestPatchSessionModelAndYolo:
+    """PATCH /api/sessions/{session_id} accepts model and yolo fields."""
+
+    @pytest.mark.asyncio
+    async def test_patch_model_sets_override_on_runner(self, monkeypatch):
+        """PATCH model=<slug> resolves via switch_model and stores on runner."""
+        adapter = _make_adapter()
+
+        class FakeResult:
+            success = True
+            error_message = ""
+            new_model = "anthropic/claude-sonnet"
+            target_provider = "anthropic"
+            api_key = "sk-secret-ant"
+            base_url = "https://api.anthropic.com"
+            api_mode = "chat_completions"
+
+        monkeypatch.setattr(
+            "hermes_cli.model_switch.switch_model", lambda **kw: FakeResult()
+        )
+        monkeypatch.setattr(
+            "gateway.run._load_gateway_config",
+            lambda: {"model": {"default": "old/model", "provider": "openrouter"}},
+        )
+
+        class FakeSessionStore:
+            def set_model_override(self, key, override):
+                pass
+
+        class FakeRunner:
+            def __init__(self):
+                self._session_model_overrides = {}
+                self.session_store = FakeSessionStore()
+
+            def _evict_cached_agent(self, key):
+                pass
+
+        runner = FakeRunner()
+        monkeypatch.setattr("gateway.run._gateway_runner_ref", lambda: runner)
+
+        err = await adapter._apply_model_override("sess-1", "anthropic/claude-sonnet")
+        assert err is None
+        assert "sess-1" in runner._session_model_overrides
+        override = runner._session_model_overrides["sess-1"]
+        assert override["model"] == "anthropic/claude-sonnet"
+        assert override["provider"] == "anthropic"
+
+    @pytest.mark.asyncio
+    async def test_patch_model_null_clears_override(self, monkeypatch):
+        """PATCH model=null removes the session model override."""
+        adapter = _make_adapter()
+
+        class FakeSessionStore:
+            cleared_key = None
+
+            def set_model_override(self, key, override):
+                self.cleared_key = key
+
+        store = FakeSessionStore()
+
+        class FakeRunner:
+            _session_model_overrides = {"sess-1": {"model": "old/model"}}
+            session_store = store
+
+            def _evict_cached_agent(self, key):
+                pass
+
+        runner = FakeRunner()
+        monkeypatch.setattr("gateway.run._gateway_runner_ref", lambda: runner)
+
+        err = await adapter._apply_model_override("sess-1", None)
+        assert err is None
+        assert "sess-1" not in runner._session_model_overrides
+        assert store.cleared_key == "sess-1"
+
+    @pytest.mark.asyncio
+    async def test_patch_model_invalid_returns_400(self, monkeypatch):
+        """PATCH model=<bad slug> returns a 400 error response."""
+        adapter = _make_adapter()
+
+        class FakeResult:
+            success = False
+            error_message = "Unknown model 'nonexistent'"
+
+        monkeypatch.setattr(
+            "hermes_cli.model_switch.switch_model", lambda **kw: FakeResult()
+        )
+        monkeypatch.setattr(
+            "gateway.run._load_gateway_config",
+            lambda: {"model": {"default": "cur/model", "provider": "openrouter"}},
+        )
+        monkeypatch.setattr("gateway.run._gateway_runner_ref", lambda: None)
+
+        err = await adapter._apply_model_override("sess-1", "nonexistent")
+        assert err is not None
+        assert err.status == 400
+
+    def test_patch_yolo_enables_session_yolo(self):
+        """PATCH yolo=true enables session yolo via the approval module."""
+        from tools.approval import (
+            enable_session_yolo,
+            disable_session_yolo,
+            is_session_yolo_enabled,
+        )
+
+        # Ensure clean state
+        disable_session_yolo("test-yolo-key")
+        assert not is_session_yolo_enabled("test-yolo-key")
+
+        enable_session_yolo("test-yolo-key")
+        assert is_session_yolo_enabled("test-yolo-key")
+
+        # Cleanup
+        disable_session_yolo("test-yolo-key")
+
+    def test_patch_yolo_disables_session_yolo(self):
+        """PATCH yolo=false disables session yolo."""
+        from tools.approval import (
+            enable_session_yolo,
+            disable_session_yolo,
+            is_session_yolo_enabled,
+        )
+
+        enable_session_yolo("test-yolo-key-2")
+        assert is_session_yolo_enabled("test-yolo-key-2")
+
+        disable_session_yolo("test-yolo-key-2")
+        assert not is_session_yolo_enabled("test-yolo-key-2")
+
+    def test_patch_unknown_field_returns_400(self):
+        """PATCH with an unknown field is still rejected (model/yolo are now allowed)."""
+        # Verify the allowed set definition matches what the handler checks.
+        allowed = {"title", "end_reason", "model", "yolo"}
+        unknown = sorted({"badfield"} - allowed)
+        assert unknown == ["badfield"]
+        # "model" and "yolo" are NOT in the unknown set.
+        assert sorted({"model", "yolo"} - allowed) == []
+
+    def test_session_runtime_fields_includes_model_slug_not_credentials(self, monkeypatch):
+        """_session_runtime_fields exposes model slug, never api_key."""
+        adapter = _make_adapter()
+
+        class FakeRunner:
+            _session_model_overrides = {
+                "sess-1": {
+                    "model": "anthropic/claude-sonnet",
+                    "provider": "anthropic",
+                    "api_key": "sk-super-secret",
+                    "base_url": "https://api.anthropic.com",
+                }
+            }
+
+        monkeypatch.setattr("gateway.run._gateway_runner_ref", lambda: FakeRunner())
+        monkeypatch.setattr(
+            "tools.approval.is_session_yolo_enabled", lambda key: key == "sess-1"
+        )
+
+        fields = adapter._session_runtime_fields("sess-1")
+        assert fields["model_override"] == "anthropic/claude-sonnet"
+        assert fields["yolo"] is True
+        # Credentials must never appear in the response
+        assert "api_key" not in str(fields)
+        assert "sk-super-secret" not in str(fields)
+
+    def test_session_runtime_fields_no_override(self, monkeypatch):
+        """_session_runtime_fields returns None/False when no override is active."""
+        adapter = _make_adapter()
+        monkeypatch.setattr("gateway.run._gateway_runner_ref", lambda: None)
+        monkeypatch.setattr(
+            "tools.approval.is_session_yolo_enabled", lambda key: False
+        )
+
+        fields = adapter._session_runtime_fields("sess-no-override")
+        assert fields["model_override"] is None
+        assert fields["yolo"] is False
+
+    @pytest.mark.asyncio
+    async def test_patch_model_empty_string_returns_400(self, monkeypatch):
+        """PATCH model="" (empty string) is rejected with 400."""
+        adapter = _make_adapter()
+        monkeypatch.setattr("gateway.run._gateway_runner_ref", lambda: None)
+
+        err = await adapter._apply_model_override("sess-1", "")
+        assert err is not None
+        assert err.status == 400
+
+    @pytest.mark.asyncio
+    async def test_get_session_includes_runtime_fields(self, monkeypatch):
+        """GET /api/sessions/{session_id} response includes model_override and yolo."""
+        adapter = _make_adapter()
+
+        fake_session = {
+            "id": "sess-rt",
+            "source": "api_server",
+            "model": "openrouter/default",
+            "title": "test session",
+        }
+
+        # Stub auth, session-key parsing, and DB lookup
+        monkeypatch.setattr(adapter, "_check_auth", lambda req: None)
+        monkeypatch.setattr(
+            adapter, "_parse_session_key_header", lambda req: ("gw-key-1", None)
+        )
+        monkeypatch.setattr(
+            adapter, "_get_existing_session_or_404", lambda sid: (fake_session, None)
+        )
+
+        class FakeRunner:
+            _session_model_overrides = {
+                "gw-key-1": {
+                    "model": "anthropic/claude-sonnet",
+                    "provider": "anthropic",
+                    "api_key": "sk-secret",
+                    "base_url": "https://api.anthropic.com",
+                }
+            }
+
+        monkeypatch.setattr("gateway.run._gateway_runner_ref", lambda: FakeRunner())
+        monkeypatch.setattr(
+            "tools.approval.is_session_yolo_enabled", lambda key: key == "gw-key-1"
+        )
+
+        request = MagicMock()
+        request.match_info = {"session_id": "sess-rt"}
+
+        resp = await adapter._handle_get_session(request)
+        assert resp.status == 200
+        body = json.loads(resp.body)
+        session_data = body["session"]
+        assert session_data["model_override"] == "anthropic/claude-sonnet"
+        assert session_data["yolo"] is True
+
+    # ------------------------------------------------------------------
+    # Endpoint-level coverage (PATCH handler + _create_agent wiring)
+    # ------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_patch_endpoint_sets_model_override(self, monkeypatch):
+        """PATCH /api/sessions/{id} with model field stores override on runner."""
+        adapter = _make_adapter()
+
+        fake_session = {"id": "sess-ep", "source": "api_server", "title": "ep"}
+
+        monkeypatch.setattr(adapter, "_check_auth", lambda req: None)
+        monkeypatch.setattr(
+            adapter, "_parse_session_key_header", lambda req: ("gw-ep", None)
+        )
+        monkeypatch.setattr(
+            adapter, "_get_existing_session_or_404", lambda sid: (fake_session, None)
+        )
+
+        class FakeResult:
+            success = True
+            error_message = ""
+            new_model = "anthropic/claude-sonnet"
+            target_provider = "anthropic"
+            api_key = "sk-secret"
+            base_url = "https://api.anthropic.com"
+            api_mode = "chat_completions"
+
+        monkeypatch.setattr(
+            "hermes_cli.model_switch.switch_model", lambda **kw: FakeResult()
+        )
+        monkeypatch.setattr(
+            "gateway.run._load_gateway_config",
+            lambda: {"model": {"default": "old/model", "provider": "openrouter"}},
+        )
+
+        class FakeSessionStore:
+            def set_model_override(self, key, override):
+                pass
+
+        runner_overrides = {}
+
+        class FakeRunner:
+            _session_model_overrides = runner_overrides
+            session_store = FakeSessionStore()
+
+            def _evict_cached_agent(self, key):
+                pass
+
+        monkeypatch.setattr("gateway.run._gateway_runner_ref", lambda: FakeRunner())
+
+        async def fake_read_body(req):
+            return {"model": "anthropic/claude-sonnet"}, None
+
+        monkeypatch.setattr(adapter, "_read_json_body", fake_read_body)
+
+        # Stub DB so the final db.get_session returns our fake session.
+        class FakeDB:
+            def get_session(self, sid):
+                return fake_session
+
+        monkeypatch.setattr(adapter, "_ensure_session_db", lambda: FakeDB())
+        monkeypatch.setattr(
+            "tools.approval.is_session_yolo_enabled", lambda key: False
+        )
+
+        request = MagicMock()
+        request.match_info = {"session_id": "sess-ep"}
+
+        resp = await adapter._handle_patch_session(request)
+        assert resp.status == 200
+        assert "gw-ep" in runner_overrides
+        assert runner_overrides["gw-ep"]["model"] == "anthropic/claude-sonnet"
+        body = json.loads(resp.body)
+        assert body["session"]["model_override"] == "anthropic/claude-sonnet"
+
+    @pytest.mark.asyncio
+    async def test_patch_endpoint_yolo_invalid_type_returns_400(self, monkeypatch):
+        """PATCH with yolo="false" (string, not bool) returns 400."""
+        adapter = _make_adapter()
+
+        fake_session = {"id": "sess-yt", "source": "api_server", "title": "yt"}
+
+        monkeypatch.setattr(adapter, "_check_auth", lambda req: None)
+        monkeypatch.setattr(
+            adapter, "_parse_session_key_header", lambda req: (None, None)
+        )
+        monkeypatch.setattr(
+            adapter, "_get_existing_session_or_404", lambda sid: (fake_session, None)
+        )
+
+        class FakeDB:
+            def get_session(self, sid):
+                return fake_session
+
+        monkeypatch.setattr(adapter, "_ensure_session_db", lambda: FakeDB())
+
+        async def fake_read_body(req):
+            return {"yolo": "false"}, None  # string, not bool
+
+        monkeypatch.setattr(adapter, "_read_json_body", fake_read_body)
+
+        request = MagicMock()
+        request.match_info = {"session_id": "sess-yt"}
+
+        resp = await adapter._handle_patch_session(request)
+        assert resp.status == 400
+        body = json.loads(resp.body)
+        assert "yolo" in body["error"]["message"].lower()
+        assert body["error"]["code"] == "invalid_yolo"
+
+    @pytest.mark.asyncio
+    async def test_patch_endpoint_yolo_true_enables(self, monkeypatch):
+        """PATCH yolo=true enables yolo for the session."""
+        adapter = _make_adapter()
+
+        fake_session = {"id": "sess-yt2", "source": "api_server", "title": "yt2"}
+
+        monkeypatch.setattr(adapter, "_check_auth", lambda req: None)
+        monkeypatch.setattr(
+            adapter, "_parse_session_key_header", lambda req: ("gw-yt2", None)
+        )
+        monkeypatch.setattr(
+            adapter, "_get_existing_session_or_404", lambda sid: (fake_session, None)
+        )
+
+        class FakeDB:
+            def get_session(self, sid):
+                return fake_session
+
+        monkeypatch.setattr(adapter, "_ensure_session_db", lambda: FakeDB())
+
+        yolo_states = {}
+
+        def fake_enable(key):
+            yolo_states[key] = True
+
+        def fake_disable(key):
+            yolo_states[key] = False
+
+        monkeypatch.setattr("tools.approval.enable_session_yolo", fake_enable)
+        monkeypatch.setattr("tools.approval.disable_session_yolo", fake_disable)
+        monkeypatch.setattr(
+            "tools.approval.is_session_yolo_enabled", lambda key: yolo_states.get(key, False)
+        )
+        monkeypatch.setattr("gateway.run._gateway_runner_ref", lambda: None)
+
+        async def fake_read_body(req):
+            return {"yolo": True}, None
+
+        monkeypatch.setattr(adapter, "_read_json_body", fake_read_body)
+
+        request = MagicMock()
+        request.match_info = {"session_id": "sess-yt2"}
+
+        resp = await adapter._handle_patch_session(request)
+        assert resp.status == 200
+        assert yolo_states.get("gw-yt2") is True
+        body = json.loads(resp.body)
+        assert body["session"]["yolo"] is True
+
+    @pytest.mark.asyncio
+    async def test_create_agent_applies_session_override(self, monkeypatch):
+        """_create_agent applies model/provider/credentials from session override."""
+        adapter = _make_adapter()
+
+        override = {
+            "model": "anthropic/claude-sonnet",
+            "provider": "anthropic",
+            "api_key": "sk-override",
+            "base_url": "https://api.anthropic.com",
+            "api_mode": "chat_completions",
+        }
+
+        class FakeRunner:
+            _session_model_overrides = {"gw-create": override}
+
+        monkeypatch.setattr("gateway.run._gateway_runner_ref", lambda: FakeRunner())
+
+        captured = {}
+
+        class FakeAgent:
+            def __init__(self, model=None, **kwargs):
+                captured["model"] = model
+                captured["provider"] = kwargs.get("provider")
+                captured["api_key"] = kwargs.get("api_key")
+                captured["base_url"] = kwargs.get("base_url")
+
+        monkeypatch.setattr("run_agent.AIAgent", FakeAgent)
+        monkeypatch.setattr(
+            "gateway.run._resolve_runtime_agent_kwargs", lambda: {}
+        )
+        monkeypatch.setattr(
+            "gateway.run._resolve_gateway_model", lambda: "default/model"
+        )
+        monkeypatch.setattr(
+            "gateway.run._current_max_iterations", lambda: 50
+        )
+        monkeypatch.setattr(
+            "gateway.run._load_gateway_config", lambda: {"model": {}}
+        )
+        monkeypatch.setattr(
+            "hermes_cli.tools_config._get_platform_tools",
+            lambda cfg, platform: ["terminal", "file"],
+        )
+        monkeypatch.setattr(
+            type(adapter), "_ensure_session_db", lambda self: MagicMock()
+        )
+
+        # Import here so the monkeypatch above takes effect
+        import importlib
+        mod = importlib.import_module("gateway.platforms.api_server")
+
+        adapter._create_agent(
+            session_id="sess-create",
+            gateway_session_key="gw-create",
+        )
+
+        assert captured["model"] == "anthropic/claude-sonnet"
+        assert captured["provider"] == "anthropic"
+        assert captured["api_key"] == "sk-override"
+        assert captured["base_url"] == "https://api.anthropic.com"

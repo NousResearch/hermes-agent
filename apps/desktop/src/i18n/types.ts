@@ -1704,6 +1704,7 @@ export interface Translations {
       refreshModels: string
       fast: string
       medium: string
+      current: string
     }
     modelOptions: {
       noOptions: string

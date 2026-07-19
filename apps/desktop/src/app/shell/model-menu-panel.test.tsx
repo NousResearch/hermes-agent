@@ -1,9 +1,9 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { cleanup, fireEvent, render } from '@testing-library/react'
+import { cleanup, findAllByText, findByText, fireEvent, render } from '@testing-library/react'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { DropdownMenu, DropdownMenuContent } from '@/components/ui/dropdown-menu'
-import { $activeSessionId, $currentModel, $currentProvider } from '@/store/session'
+import { $activeSessionId, $currentModel, $currentProvider, $currentReasoningEffort } from '@/store/session'
 
 import { ModelMenuPanel } from './model-menu-panel'
 
@@ -25,10 +25,20 @@ vi.mock('@/hermes', () => ({
 // REST config.
 const MOA_PROVIDER = { models: ['default', 'BeastMode'], name: 'Mixture of Agents', slug: 'moa' }
 
+const ANTHROPIC_PROVIDER = {
+  capabilities: {
+    'anthropic/claude-sonnet-4-6': { fast: true, reasoning: true }
+  },
+  models: ['anthropic/claude-opus-4-8', 'anthropic/claude-sonnet-4-6'],
+  name: 'Anthropic',
+  slug: 'anthropic'
+}
+
 beforeEach(() => {
   $activeSessionId.set('runtime-1')
   $currentModel.set('')
   $currentProvider.set('')
+  $currentReasoningEffort.set('')
   getGlobalModelOptions.mockResolvedValue({ providers: [MOA_PROVIDER] })
 })
 
@@ -52,6 +62,37 @@ function renderPanel(onSelectModel = vi.fn()) {
 
   return { onSelectModel, content }
 }
+
+describe('ModelMenuPanel current model row', () => {
+  it('pins the current model below the scrollable model list and above MoA presets', async () => {
+    $currentProvider.set('anthropic')
+    $currentModel.set('anthropic/claude-sonnet-4-6')
+    $currentReasoningEffort.set('high')
+    getGlobalModelOptions.mockResolvedValue({
+      model: 'anthropic/claude-sonnet-4-6',
+      provider: 'anthropic',
+      providers: [ANTHROPIC_PROVIDER, MOA_PROVIDER]
+    })
+
+    renderPanel()
+
+    await findAllByText(document.body, 'Sonnet 4 6')
+    await findByText(document.body, 'Current')
+    await findByText(document.body, 'MoA presets')
+
+    const bodyText = document.body.textContent ?? ''
+    const listIndex = bodyText.indexOf('Anthropic')
+    const currentIndex = bodyText.indexOf('Current')
+    const moaIndex = bodyText.indexOf('MoA presets')
+    const currentSection = bodyText.slice(currentIndex, moaIndex)
+
+    expect(listIndex).toBeGreaterThanOrEqual(0)
+    expect(listIndex).toBeLessThan(currentIndex)
+    expect(currentIndex).toBeLessThan(moaIndex)
+    expect(currentSection).toContain('Sonnet 4 6')
+    expect(currentSection).toContain('High')
+  })
+})
 
 describe('ModelMenuPanel MoA presets', () => {
   it('selecting a MoA preset switches PERSISTENTLY via onSelectModel (not the one-shot dispatch)', async () => {

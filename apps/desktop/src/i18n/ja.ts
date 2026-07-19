@@ -1993,7 +1993,8 @@ export const ja = defineLocale({
       editModels: 'モデルを編集…',
       refreshModels: 'モデルを更新',
       fast: '高速',
-      medium: '中'
+      medium: '中',
+      current: '現在'
     },
     modelOptions: {
       noOptions: 'このモデルにはオプションがありません',

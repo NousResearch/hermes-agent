@@ -2074,7 +2074,8 @@ export const en: Translations = {
       editModels: 'Edit Models…',
       refreshModels: 'Refresh Models',
       fast: 'Fast',
-      medium: 'Med'
+      medium: 'Med',
+      current: 'Current'
     },
     modelOptions: {
       noOptions: 'No options for this model',

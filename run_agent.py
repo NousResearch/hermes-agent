@@ -6645,13 +6645,23 @@ class AIAgent:
         # responses.stream(); keep those on the SDK-compatible path.
         return type(active_client).__module__.startswith("openai")
 
-    def _run_codex_stream(self, api_kwargs: dict, client: Any = None, on_first_delta: callable = None):
+    def _run_codex_stream(
+        self,
+        api_kwargs: dict,
+        client: Any = None,
+        on_first_delta: callable = None,
+        _call_state: Optional[dict] = None,
+    ):
         """Execute one streaming Responses API request and return the final response."""
         import httpx as _httpx
 
         active_client = client or self._ensure_primary_openai_client(reason="codex_stream_direct")
         if self._should_use_raw_codex_responses_stream(active_client):
-            return self._run_codex_raw_responses_stream(api_kwargs, on_first_delta=on_first_delta)
+            return self._run_codex_raw_responses_stream(
+                api_kwargs,
+                on_first_delta=on_first_delta,
+                _call_state=_call_state,
+            )
 
         max_stream_retries = 1
         has_tool_calls = False
@@ -6864,7 +6874,28 @@ class AIAgent:
             return terminal_response
         raise RuntimeError("Responses create(stream=True) fallback did not emit a terminal response.")
 
-    def _run_codex_raw_responses_stream(self, api_kwargs: dict, *, on_first_delta: callable = None):
+    def _close_codex_raw_httpx_client(self, raw_client: Any, *, reason: str) -> None:
+        """Close one worker-local raw Codex httpx client."""
+        close_fn = getattr(raw_client, "close", None)
+        if not callable(close_fn):
+            return
+        try:
+            close_fn()
+            logger.info(
+                "Codex raw httpx client closed (%s). %s",
+                reason,
+                self._client_log_context(),
+            )
+        except Exception:
+            logger.debug("Failed to close Codex raw httpx client (%s)", reason, exc_info=True)
+
+    def _run_codex_raw_responses_stream(
+        self,
+        api_kwargs: dict,
+        *,
+        on_first_delta: callable = None,
+        _call_state: Optional[dict] = None,
+    ):
         """Stream chatgpt.com Codex Responses with httpx directly.
 
         The ChatGPT Codex backend returns valid SSE but currently omits the
@@ -6912,91 +6943,107 @@ class AIAgent:
         current_event_type: Optional[str] = None
 
         with _httpx.Client(timeout=timeout, follow_redirects=False) as raw_client:
-            with raw_client.stream("POST", url, headers=headers, json=payload) as response:
-                if response.status_code >= 400:
-                    body = response.read()
-                    body_text = body.decode("utf-8", errors="replace")
-                    err = RuntimeError(f"Codex Responses HTTP {response.status_code}: {body_text[:500]}")
-                    setattr(err, "status_code", response.status_code)
-                    try:
-                        setattr(err, "body", json.loads(body_text))
-                    except Exception:
-                        setattr(err, "body", {"message": body_text[:500]})
-                    raise err
+            if _call_state is not None:
+                with _call_state["lock"]:
+                    _call_state["raw_client"] = raw_client
+                    cancelled_before_publish = _call_state["cancelled"]
+                if cancelled_before_publish:
+                    self._close_codex_raw_httpx_client(raw_client, reason="cancelled_before_publication")
+                    with _call_state["lock"]:
+                        if _call_state.get("raw_client") is raw_client:
+                            _call_state["raw_client"] = None
+                    raise InterruptedError("Codex raw stream cancelled before client publication")
+            try:
+                with raw_client.stream("POST", url, headers=headers, json=payload) as response:
+                    if response.status_code >= 400:
+                        body = response.read()
+                        body_text = body.decode("utf-8", errors="replace")
+                        err = RuntimeError(f"Codex Responses HTTP {response.status_code}: {body_text[:500]}")
+                        setattr(err, "status_code", response.status_code)
+                        try:
+                            setattr(err, "body", json.loads(body_text))
+                        except Exception:
+                            setattr(err, "body", {"message": body_text[:500]})
+                        raise err
 
-                for line in response.iter_lines():
-                    self._touch_activity("receiving stream response")
-                    if self._interrupt_requested:
-                        break
-                    if not line:
-                        continue
-                    if line.startswith("event:"):
-                        current_event_type = line.split(":", 1)[1].strip()
-                        continue
-                    if not line.startswith("data:"):
-                        continue
+                    for line in response.iter_lines():
+                        self._touch_activity("receiving stream response")
+                        if self._interrupt_requested:
+                            break
+                        if not line:
+                            continue
+                        if line.startswith("event:"):
+                            current_event_type = line.split(":", 1)[1].strip()
+                            continue
+                        if not line.startswith("data:"):
+                            continue
 
-                    data = line.split(":", 1)[1].strip()
-                    if not data or data == "[DONE]":
-                        continue
-                    try:
-                        event = json.loads(data)
-                    except json.JSONDecodeError:
-                        logger.debug("Codex raw stream skipped non-JSON SSE data: %r", data[:200])
-                        continue
-                    if not isinstance(event, dict):
-                        continue
+                        data = line.split(":", 1)[1].strip()
+                        if not data or data == "[DONE]":
+                            continue
+                        try:
+                            event = json.loads(data)
+                        except json.JSONDecodeError:
+                            logger.debug("Codex raw stream skipped non-JSON SSE data: %r", data[:200])
+                            continue
+                        if not isinstance(event, dict):
+                            continue
 
-                    event_type = str(event.get("type") or current_event_type or "")
-                    if "output_text.delta" in event_type or event_type == "response.output_text.delta":
-                        delta_text = event.get("delta") or ""
-                        if isinstance(delta_text, str) and delta_text:
-                            collected_text_deltas.append(delta_text)
-                            self._codex_streamed_text_parts.append(delta_text)
-                            if not has_tool_calls:
-                                if not first_delta_fired:
-                                    first_delta_fired = True
-                                    if on_first_delta:
-                                        try:
-                                            on_first_delta()
-                                        except Exception:
-                                            pass
-                                self._fire_stream_delta(delta_text)
-                    elif "function_call" in event_type:
-                        has_tool_calls = True
-                    elif "reasoning" in event_type and "delta" in event_type:
-                        reasoning_text = event.get("delta") or ""
-                        if isinstance(reasoning_text, str) and reasoning_text:
-                            self._fire_reasoning_delta(reasoning_text)
-                    elif event_type == "response.output_item.added":
-                        item = event.get("item")
-                        if isinstance(item, dict) and item.get("type") in {"function_call", "custom_tool_call"}:
+                        event_type = str(event.get("type") or current_event_type or "")
+                        if "output_text.delta" in event_type or event_type == "response.output_text.delta":
+                            delta_text = event.get("delta") or ""
+                            if isinstance(delta_text, str) and delta_text:
+                                collected_text_deltas.append(delta_text)
+                                self._codex_streamed_text_parts.append(delta_text)
+                                if not has_tool_calls:
+                                    if not first_delta_fired:
+                                        first_delta_fired = True
+                                        if on_first_delta:
+                                            try:
+                                                on_first_delta()
+                                            except Exception:
+                                                pass
+                                    self._fire_stream_delta(delta_text)
+                        elif "function_call" in event_type:
                             has_tool_calls = True
-                    elif event_type == "response.output_item.done":
-                        item = event.get("item")
-                        if isinstance(item, dict):
-                            if item.get("type") in {"function_call", "custom_tool_call"}:
+                        elif "reasoning" in event_type and "delta" in event_type:
+                            reasoning_text = event.get("delta") or ""
+                            if isinstance(reasoning_text, str) and reasoning_text:
+                                self._fire_reasoning_delta(reasoning_text)
+                        elif event_type == "response.output_item.added":
+                            item = event.get("item")
+                            if isinstance(item, dict) and item.get("type") in {"function_call", "custom_tool_call"}:
                                 has_tool_calls = True
-                            collected_output_items.append(item)
-                    elif event_type in ("response.incomplete", "response.failed"):
-                        resp_obj = event.get("response")
-                        status = resp_obj.get("status") if isinstance(resp_obj, dict) else None
-                        incomplete_details = (
-                            resp_obj.get("incomplete_details") if isinstance(resp_obj, dict) else None
-                        )
-                        logger.warning(
-                            "Codex raw Responses stream received terminal event %s "
-                            "(status=%s, incomplete_details=%s, streamed_chars=%d). %s",
-                            event_type, status, incomplete_details,
-                            sum(len(p) for p in collected_text_deltas),
-                            self._client_log_context(),
-                        )
-                        if isinstance(resp_obj, dict):
-                            final_response_data = resp_obj
-                    elif event_type == "response.completed":
-                        resp_obj = event.get("response")
-                        if isinstance(resp_obj, dict):
-                            final_response_data = resp_obj
+                        elif event_type == "response.output_item.done":
+                            item = event.get("item")
+                            if isinstance(item, dict):
+                                if item.get("type") in {"function_call", "custom_tool_call"}:
+                                    has_tool_calls = True
+                                collected_output_items.append(item)
+                        elif event_type in ("response.incomplete", "response.failed"):
+                            resp_obj = event.get("response")
+                            status = resp_obj.get("status") if isinstance(resp_obj, dict) else None
+                            incomplete_details = (
+                                resp_obj.get("incomplete_details") if isinstance(resp_obj, dict) else None
+                            )
+                            logger.warning(
+                                "Codex raw Responses stream received terminal event %s "
+                                "(status=%s, incomplete_details=%s, streamed_chars=%d). %s",
+                                event_type, status, incomplete_details,
+                                sum(len(p) for p in collected_text_deltas),
+                                self._client_log_context(),
+                            )
+                            if isinstance(resp_obj, dict):
+                                final_response_data = resp_obj
+                        elif event_type == "response.completed":
+                            resp_obj = event.get("response")
+                            if isinstance(resp_obj, dict):
+                                final_response_data = resp_obj
+            finally:
+                if _call_state is not None:
+                    with _call_state["lock"]:
+                        if _call_state.get("raw_client") is raw_client:
+                            _call_state["raw_client"] = None
 
         if final_response_data is None:
             raise RuntimeError("Codex raw Responses stream did not emit response.completed.")
@@ -7385,19 +7432,46 @@ class AIAgent:
         provider fallback.
         """
         result = {"response": None, "error": None}
-        request_client_holder = {"client": None}
+        # All cancellation state is scoped to this invocation.  The lock makes
+        # cancellation-before-publication atomic, while per-call storage keeps
+        # overlapping/orphaned workers from replacing one another's clients.
+        call_state = {
+            "lock": threading.Lock(),
+            "cancelled": False,
+            "request_client": None,
+            "raw_client": None,
+        }
+
+        def _publish_request_client(client: Any) -> bool:
+            with call_state["lock"]:
+                call_state["request_client"] = client
+                return not call_state["cancelled"]
+
+        def _cancel_call(*, reason: str) -> None:
+            with call_state["lock"]:
+                call_state["cancelled"] = True
+                request_client = call_state.get("request_client")
+                raw_client = call_state.get("raw_client")
+            if raw_client is not None:
+                self._close_codex_raw_httpx_client(raw_client, reason=reason)
+            if request_client is not None:
+                self._close_request_openai_client(request_client, reason=reason)
 
         def _call():
             try:
                 if self.api_mode == "codex_responses":
-                    request_client_holder["client"] = self._create_request_openai_client(
+                    request_client = self._create_request_openai_client(
                         reason="codex_stream_request",
                         api_kwargs=api_kwargs,
                     )
+                    if not _publish_request_client(request_client):
+                        self._close_request_openai_client(request_client, reason="cancelled_before_publication")
+                        raise InterruptedError("API call cancelled before request client publication")
                     result["response"] = self._run_codex_stream(
                         api_kwargs,
-                        client=request_client_holder["client"],
+                        client=request_client,
                         on_first_delta=getattr(self, "_codex_on_first_delta", None),
+                        _call_state=call_state,
                     )
                 elif self.api_mode == "anthropic_messages":
                     result["response"] = self._anthropic_messages_create(api_kwargs)
@@ -7425,15 +7499,21 @@ class AIAgent:
                         raise
                     result["response"] = normalize_converse_response(raw_response)
                 else:
-                    request_client_holder["client"] = self._create_request_openai_client(
+                    request_client = self._create_request_openai_client(
                         reason="chat_completion_request",
                         api_kwargs=api_kwargs,
                     )
-                    result["response"] = request_client_holder["client"].chat.completions.create(**api_kwargs)
+                    if not _publish_request_client(request_client):
+                        self._close_request_openai_client(request_client, reason="cancelled_before_publication")
+                        raise InterruptedError("API call cancelled before request client publication")
+                    result["response"] = request_client.chat.completions.create(**api_kwargs)
             except Exception as e:
                 result["error"] = e
             finally:
-                request_client = request_client_holder.get("client")
+                with call_state["lock"]:
+                    request_client = call_state.get("request_client")
+                    if request_client is not None:
+                        call_state["request_client"] = None
                 if request_client is not None:
                     self._close_request_openai_client(request_client, reason="request_complete")
 
@@ -7456,6 +7536,12 @@ class AIAgent:
         while t.is_alive():
             t.join(timeout=0.3)
             _poll_count += 1
+
+            # The worker may have completed while join() was waiting. Decide
+            # whether cancellation is still needed from the post-join state so
+            # a valid response/provider error is not replaced by a timeout.
+            if not t.is_alive():
+                break
 
             # Touch activity every ~30s so the gateway's inactivity
             # monitor knows we're alive while waiting for the response.
@@ -7486,9 +7572,7 @@ class AIAgent:
                         self._anthropic_client.close()
                         self._rebuild_anthropic_client()
                     else:
-                        rc = request_client_holder.get("client")
-                        if rc is not None:
-                            self._close_request_openai_client(rc, reason="stale_call_kill")
+                        _cancel_call(reason="stale_call_kill")
                 except Exception:
                     pass
                 self._touch_activity(
@@ -7496,11 +7580,14 @@ class AIAgent:
                 )
                 # Wait briefly for the thread to notice the closed connection.
                 t.join(timeout=2.0)
-                if result["error"] is None and result["response"] is None:
-                    result["error"] = TimeoutError(
-                        f"Non-streaming API call timed out after {int(_elapsed)}s "
-                        f"with no response (threshold: {int(_stale_timeout)}s)"
-                    )
+                # Prefer the stale-timeout error once the stale detector has
+                # intentionally closed the transport. The worker may wake up
+                # and report a secondary stream-closed/no-terminal-event error;
+                # surfacing that hides the real cancellation cause.
+                result["error"] = TimeoutError(
+                    f"Non-streaming API call timed out after {int(_elapsed)}s "
+                    f"with no response (threshold: {int(_stale_timeout)}s)"
+                )
                 break
 
             if self._interrupt_requested:
@@ -7512,11 +7599,12 @@ class AIAgent:
                         self._anthropic_client.close()
                         self._rebuild_anthropic_client()
                     else:
-                        request_client = request_client_holder.get("client")
-                        if request_client is not None:
-                            self._close_request_openai_client(request_client, reason="interrupt_abort")
+                        _cancel_call(reason="interrupt_abort")
                 except Exception:
                     pass
+                # Cleanup is best-effort: do not delay the prompt interrupt
+                # response for a transport that ignores close().
+                t.join(timeout=0.05)
                 raise InterruptedError("Agent interrupted during API call")
         if result["error"] is not None:
             raise result["error"]

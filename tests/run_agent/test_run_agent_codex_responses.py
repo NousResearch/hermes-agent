@@ -566,6 +566,371 @@ def test_run_codex_raw_responses_stream_parses_sse_without_content_type(monkeypa
     assert response.output[0].content[0].text == "RAW_OK"
 
 
+def test_interruptible_stale_kill_closes_blocked_codex_raw_httpx_stream(monkeypatch):
+    """Regression: stale-killing Codex must close the raw httpx SSE client.
+
+    _run_codex_raw_responses_stream creates a local httpx.Client separate from
+    the per-request OpenAI SDK client. Closing only the SDK client leaves a
+    blocked response.iter_lines() worker orphaned.
+    """
+    import threading
+    import time
+
+    agent = _build_agent(monkeypatch)
+    agent._compute_non_stream_stale_timeout = lambda messages: 0.05
+    agent._emit_status = lambda *args, **kwargs: None
+    agent._touch_activity = lambda *args, **kwargs: None
+    monkeypatch.setattr(agent, "_should_use_raw_codex_responses_stream", lambda client: True)
+
+    raw_client_ref = {}
+    release = threading.Event()
+
+    class _FakeOpenAIClient:
+        __module__ = "openai.fake"
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(
+        agent,
+        "_create_request_openai_client",
+        lambda **kwargs: _FakeOpenAIClient(),
+    )
+
+    class _BlockingRawResponse:
+        status_code = 200
+
+        def __init__(self, client):
+            self._client = client
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def iter_lines(self):
+            while not self._client.closed and not release.is_set():
+                time.sleep(0.01)
+            return iter(())
+
+    class _BlockingRawClient:
+        def __init__(self, **kwargs):
+            self.closed = False
+            raw_client_ref["client"] = self
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            self.close()
+            return False
+
+        def close(self):
+            self.closed = True
+            release.set()
+
+        def stream(self, method, url, headers, json):
+            return _BlockingRawResponse(self)
+
+    import httpx
+    monkeypatch.setattr(httpx, "Client", _BlockingRawClient)
+
+    try:
+        with pytest.raises(TimeoutError, match="Non-streaming API call timed out"):
+            agent._interruptible_api_call(_codex_request_kwargs())
+        assert raw_client_ref["client"].closed is True
+    finally:
+        release.set()
+
+
+def test_stale_check_preserves_response_completed_during_poll_join(monkeypatch):
+    """A worker completing inside the poll join must not be stale-cancelled."""
+    import threading
+
+    agent = _build_agent(monkeypatch)
+    agent.api_mode = "chat_completions"
+    agent._compute_non_stream_stale_timeout = lambda messages: 0.0
+    agent._touch_activity = lambda *args, **kwargs: None
+
+    release_worker = threading.Event()
+    expected_response = object()
+
+    class _FakeOpenAIClient:
+        def __init__(self):
+            self.chat = SimpleNamespace(
+                completions=SimpleNamespace(create=self._create),
+            )
+
+        def _create(self, **kwargs):
+            assert release_worker.wait(timeout=2.0)
+            return expected_response
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(
+        agent,
+        "_create_request_openai_client",
+        lambda **kwargs: _FakeOpenAIClient(),
+    )
+
+    real_thread = threading.Thread
+
+    class _ReleaseOnPollJoinThread(real_thread):
+        def join(self, timeout=None):
+            if timeout == 0.3:
+                release_worker.set()
+            return super().join(timeout)
+
+    monkeypatch.setattr(threading, "Thread", _ReleaseOnPollJoinThread)
+
+    assert agent._interruptible_api_call(_codex_request_kwargs()) is expected_response
+
+
+def test_interruptible_interrupt_closes_blocked_codex_raw_httpx_stream(monkeypatch):
+    """User interrupt must also close a blocked raw Codex httpx stream."""
+    import threading
+    import time
+
+    agent = _build_agent(monkeypatch)
+    agent._compute_non_stream_stale_timeout = lambda messages: 30.0
+    agent._emit_status = lambda *args, **kwargs: None
+    agent._touch_activity = lambda *args, **kwargs: None
+    monkeypatch.setattr(agent, "_should_use_raw_codex_responses_stream", lambda client: True)
+
+    raw_client_ref = {}
+    raw_started = threading.Event()
+    release = threading.Event()
+    worker_exited = threading.Event()
+
+    class _FakeOpenAIClient:
+        __module__ = "openai.fake"
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(
+        agent,
+        "_create_request_openai_client",
+        lambda **kwargs: _FakeOpenAIClient(),
+    )
+
+    class _BlockingRawResponse:
+        status_code = 200
+
+        def __init__(self, client):
+            self._client = client
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def iter_lines(self):
+            raw_started.set()
+            while not self._client.closed and not release.is_set():
+                time.sleep(0.01)
+            return iter(())
+
+    class _BlockingRawClient:
+        def __init__(self, **kwargs):
+            self.closed = False
+            raw_client_ref["client"] = self
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            self.close()
+            worker_exited.set()
+            return False
+
+        def close(self):
+            self.closed = True
+            release.set()
+
+        def stream(self, method, url, headers, json):
+            return _BlockingRawResponse(self)
+
+    import httpx
+    monkeypatch.setattr(httpx, "Client", _BlockingRawClient)
+
+    def _request_interrupt_when_raw_stream_blocks():
+        assert raw_started.wait(timeout=2.0)
+        agent._interrupt_requested = True
+
+    interrupter = threading.Thread(target=_request_interrupt_when_raw_stream_blocks)
+    interrupter.start()
+    try:
+        with pytest.raises(InterruptedError, match="Agent interrupted during API call"):
+            agent._interruptible_api_call(_codex_request_kwargs())
+        assert raw_client_ref["client"].closed is True
+        assert worker_exited.is_set(), "interrupt cleanup must briefly join the raw worker"
+        assert not hasattr(agent, "_active_codex_raw_httpx_client")
+    finally:
+        release.set()
+        interrupter.join(timeout=2.0)
+
+
+def test_stale_cancel_before_raw_client_publication_is_honored(monkeypatch):
+    """Cancellation while Client() is being built must close it on publication."""
+    import gc
+    import threading
+    import weakref
+
+    agent = _build_agent(monkeypatch)
+    agent._compute_non_stream_stale_timeout = lambda messages: 0.05
+    agent._emit_status = lambda *args, **kwargs: None
+    agent._touch_activity = lambda *args, **kwargs: None
+    monkeypatch.setattr(agent, "_should_use_raw_codex_responses_stream", lambda client: True)
+
+    constructor_entered = threading.Event()
+    allow_publication = threading.Event()
+    raw_closed = threading.Event()
+    raw_exited = threading.Event()
+    stream_entered = threading.Event()
+    raw_client_ref = {}
+
+    class _FakeOpenAIClient:
+        __module__ = "openai.fake"
+
+        def close(self):
+            # Stale cancellation closes this published SDK client while the raw
+            # client constructor is paused, deterministically exposing the race.
+            allow_publication.set()
+
+    monkeypatch.setattr(agent, "_create_request_openai_client", lambda **kwargs: _FakeOpenAIClient())
+
+    class _DelayedRawClient:
+        def __init__(self, **kwargs):
+            raw_client_ref["weak"] = weakref.ref(self)
+            constructor_entered.set()
+            assert allow_publication.wait(timeout=2.0)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            self.close()
+            raw_exited.set()
+            return False
+
+        def close(self):
+            raw_closed.set()
+
+        def stream(self, method, url, headers, json):
+            stream_entered.set()
+            raise AssertionError("cancelled raw client must not start a request")
+
+    import httpx
+    monkeypatch.setattr(httpx, "Client", _DelayedRawClient)
+
+    with pytest.raises(TimeoutError, match="Non-streaming API call timed out"):
+        agent._interruptible_api_call(_codex_request_kwargs())
+
+    assert constructor_entered.is_set()
+    assert raw_closed.is_set()
+    assert raw_exited.is_set()
+    assert not stream_entered.is_set()
+    assert not hasattr(agent, "_active_codex_raw_httpx_client")
+    gc.collect()
+    assert raw_client_ref["weak"]() is None, "completed worker must release its raw-client reference"
+
+
+def test_overlapping_raw_attempts_cancel_their_own_clients(monkeypatch):
+    """Per-call tracking prevents overlapping attempts from replacing clients."""
+    import threading
+
+    agent = _build_agent(monkeypatch)
+    agent._compute_non_stream_stale_timeout = lambda messages: 0.05
+    agent._emit_status = lambda *args, **kwargs: None
+    agent._touch_activity = lambda *args, **kwargs: None
+    monkeypatch.setattr(agent, "_should_use_raw_codex_responses_stream", lambda client: True)
+
+    clients = []
+    clients_lock = threading.Lock()
+    both_streaming = threading.Event()
+
+    class _FakeOpenAIClient:
+        __module__ = "openai.fake"
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(agent, "_create_request_openai_client", lambda **kwargs: _FakeOpenAIClient())
+
+    class _BlockingResponse:
+        status_code = 200
+
+        def __init__(self, client):
+            self.client = client
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def iter_lines(self):
+            with clients_lock:
+                self.client.streaming = True
+                if len(clients) == 2 and all(client.streaming for client in clients):
+                    both_streaming.set()
+            assert self.client.release.wait(timeout=3.0)
+            return iter(())
+
+    class _BlockingRawClient:
+        def __init__(self, **kwargs):
+            self.closed = False
+            self.streaming = False
+            self.release = threading.Event()
+            self.exited = threading.Event()
+            with clients_lock:
+                clients.append(self)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            self.close()
+            self.exited.set()
+            return False
+
+        def close(self):
+            self.closed = True
+            self.release.set()
+
+        def stream(self, method, url, headers, json):
+            return _BlockingResponse(self)
+
+    import httpx
+    monkeypatch.setattr(httpx, "Client", _BlockingRawClient)
+
+    errors = []
+
+    def _run_attempt():
+        try:
+            agent._interruptible_api_call(_codex_request_kwargs())
+        except Exception as exc:
+            errors.append(exc)
+
+    callers = [threading.Thread(target=_run_attempt) for _ in range(2)]
+    for caller in callers:
+        caller.start()
+    assert both_streaming.wait(timeout=2.0)
+    for caller in callers:
+        caller.join(timeout=3.0)
+
+    assert all(not caller.is_alive() for caller in callers)
+    assert len(errors) == 2
+    assert all(isinstance(exc, TimeoutError) for exc in errors)
+    assert len(clients) == 2
+    assert all(client.closed and client.exited.is_set() for client in clients)
+    assert not hasattr(agent, "_active_codex_raw_httpx_client")
+
+
 def test_run_conversation_codex_plain_text(monkeypatch):
     agent = _build_agent(monkeypatch)
     monkeypatch.setattr(agent, "_interruptible_api_call", lambda api_kwargs: _codex_message_response("OK"))

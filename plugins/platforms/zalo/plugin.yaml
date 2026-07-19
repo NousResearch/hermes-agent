@@ -1,0 +1,36 @@
+name: zalo-platform
+label: Zalo
+kind: platform
+version: 1.0.0
+description: >
+  Official Zalo Bot Platform channel for Hermes Agent. Uses long polling for
+  local development or an authenticated HTTPS webhook for production.
+author: Hermes Agent contributors
+requires_env:
+  - name: ZALO_BOT_TOKEN
+    description: "Bot token sent by Zalo Bot Manager after bot creation"
+    prompt: "Zalo bot token"
+    password: true
+    url: "https://docs.zaloplatforms.com/docs/BOT/create_bot"
+optional_env:
+  - name: ZALO_WEBHOOK_SECRET
+    description: "8-256 character secret used to authenticate Zalo webhook requests"
+    prompt: "Webhook secret (production webhook mode only)"
+    password: true
+    url: "https://docs.zaloplatforms.com/docs/BOT/apis/setWebhook"
+  - name: ZALO_ALLOWED_USERS
+    description: "Comma-separated Zalo user IDs allowed to use Hermes"
+    prompt: "Allowed Zalo users"
+    password: false
+  - name: ZALO_ALLOW_ALL_USERS
+    description: "Explicitly allow every Zalo user (development only)"
+    prompt: "Allow all Zalo users? (true/false)"
+    password: false
+  - name: ZALO_HOME_CHANNEL
+    description: "Default Zalo chat ID for cron and notification delivery"
+    prompt: "Home chat ID"
+    password: false
+  - name: ZALO_HOME_CHANNEL_NAME
+    description: "Display name for the default Zalo chat"
+    prompt: "Home chat name"
+    password: false

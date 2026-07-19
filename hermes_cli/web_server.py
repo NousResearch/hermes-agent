@@ -7433,10 +7433,31 @@ def _messaging_platform_catalog() -> tuple[dict[str, Any], ...]:
     in :data:`_PLATFORM_OVERRIDES`; anything not overridden gets reasonable
     defaults derived from the platform id and required_env.
     """
+    # Populate deferred bundled platform entries before taking the catalog
+    # snapshot. Without this, the first Channels API request can omit every
+    # plugin channel; config loading later in that same request discovers the
+    # plugins, so they only appear after a refresh.
+    try:
+        from hermes_cli.plugins import discover_plugins
+
+        discover_plugins()
+    except Exception:
+        _log.debug("plugin discovery unavailable for messaging catalog", exc_info=True)
+
     from gateway.config import Platform
 
     seen: set[str] = set()
     entries: list[dict[str, Any]] = []
+
+    plugin_entries_by_name: dict[str, Any] = {}
+    try:
+        from gateway.platform_registry import platform_registry
+
+        plugin_entries_by_name = {
+            entry.name: entry for entry in platform_registry.plugin_entries()
+        }
+    except Exception:
+        _log.debug("plugin platform registry unavailable", exc_info=True)
 
     for member in Platform.__members__.values():
         if member.value == "local":
@@ -7444,18 +7465,18 @@ def _messaging_platform_catalog() -> tuple[dict[str, Any], ...]:
         if member.value in seen:
             continue
         seen.add(member.value)
-        entries.append(_build_catalog_entry(member.value))
+        entries.append(
+            _build_catalog_entry(
+                member.value,
+                plugin_entries_by_name.get(member.value),
+            )
+        )
 
-    try:
-        from gateway.platform_registry import platform_registry
-
-        for plugin_entry in platform_registry.plugin_entries():
-            if plugin_entry.name in seen:
-                continue
-            seen.add(plugin_entry.name)
-            entries.append(_build_catalog_entry(plugin_entry.name, plugin_entry))
-    except Exception:
-        _log.debug("plugin platform registry unavailable", exc_info=True)
+    for plugin_entry in plugin_entries_by_name.values():
+        if plugin_entry.name in seen:
+            continue
+        seen.add(plugin_entry.name)
+        entries.append(_build_catalog_entry(plugin_entry.name, plugin_entry))
 
     order = {pid: idx for idx, pid in enumerate(_PLATFORM_ORDER)}
     entries.sort(

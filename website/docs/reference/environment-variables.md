@@ -572,6 +572,19 @@ Used by the bundled LINE platform plugin (`plugins/platforms/line/`). See [Messa
 | `LINE_DELIVERED_TEXT` | Reply when an already-delivered postback is tapped again (default: `Already replied ✅`). |
 | `LINE_INTERRUPTED_TEXT` | Reply when a `/stop`-orphaned postback button is tapped (default: `Run was interrupted before completion.`). |
 
+### Zalo Bot Platform
+
+Used by the bundled Zalo platform plugin (`plugins/platforms/zalo/`). See [Messaging Gateway → Zalo](/user-guide/messaging/zalo) for full setup. Credentials stay in environment variables; transport and behavior settings belong under `platforms.zalo` in `config.yaml`.
+
+| Variable | Description |
+|----------|-------------|
+| `ZALO_BOT_TOKEN` | Bot Platform token from Zalo Bot Manager. Required. |
+| `ZALO_WEBHOOK_SECRET` | 8-256 character secret used to authenticate webhook requests in production webhook mode. |
+| `ZALO_ALLOWED_USERS` | Comma-separated Zalo user IDs allowed to talk to the bot. YAML `allow_from` is also supported. |
+| `ZALO_ALLOW_ALL_USERS` | Dev-only escape hatch that accepts any user. Default: `false`. |
+| `ZALO_HOME_CHANNEL` | Default delivery target for cron jobs with `deliver: zalo`. |
+| `ZALO_HOME_CHANNEL_NAME` | Human label for the home channel. |
+
 ### ntfy (push notifications)
 
 [ntfy](https://ntfy.sh/) is a lightweight HTTP-based push notification service. Subscribe to a topic from the [ntfy mobile app](https://ntfy.sh/docs/subscribe/phone/), publish to that topic to talk to the agent.

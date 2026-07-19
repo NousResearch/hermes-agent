@@ -3246,6 +3246,22 @@ class TestWebServerEndpoints:
             "https://hermes-agent.nousresearch.com/docs/user-guide/messaging/google_chat"
         )
 
+    def test_zalo_plugin_is_exposed_as_a_configurable_channel(self):
+        """Bundled platform plugins must appear on the dashboard Channels page."""
+        resp = self.client.get("/api/messaging/platforms")
+
+        assert resp.status_code == 200
+        zalo = next(
+            platform
+            for platform in resp.json()["platforms"]
+            if platform["id"] == "zalo"
+        )
+        assert zalo["name"] == "Zalo"
+        fields = {field["key"]: field for field in zalo["env_vars"]}
+        assert fields["ZALO_BOT_TOKEN"]["required"] is True
+        assert fields["ZALO_BOT_TOKEN"]["is_password"] is True
+        assert "ZALO_ALLOWED_USERS" in fields
+
     def test_messaging_catalog_covers_gateway_platforms(self):
         """Catalog is derived from the Platform enum, so every built-in shows up."""
         from gateway.config import Platform

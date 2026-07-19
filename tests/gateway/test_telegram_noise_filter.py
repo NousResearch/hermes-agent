@@ -26,6 +26,7 @@ CHAT_PLATFORMS = [
     "qqbot",
     "homeassistant",
     "sms",
+    "zalo",
 ]
 
 NOISY_STATUS_MESSAGES = [

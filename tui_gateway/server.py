@@ -139,7 +139,9 @@ _prompt_lock = threading.Lock()
 _cfg_cache: dict | None = None
 _cfg_mtime: float | None = None
 _cfg_path = None
-_session_resume_lock = threading.Lock()
+# Re-entrant because the shared transport-binding helper is also called by
+# session.resume while it holds this lock.
+_session_resume_lock = threading.RLock()
 try:
     _slash_timeout = float(os.environ.get("HERMES_TUI_SLASH_TIMEOUT_S") or "45")
 except (ValueError, TypeError):
@@ -855,25 +857,62 @@ def _close_sessions_for_transport(
     independent reap loop in ``handle_ws``.
 
     Returns ``(reaped, detached)`` counts for disconnect-path observability."""
-    with _sessions_lock:
-        owned = [(sid, s) for sid, s in _sessions.items() if s.get("transport") is transport]
     reaped = 0
     detached = 0
-    for sid, session in owned:
-        if session.get("close_on_disconnect"):
-            _close_session_by_id(sid, end_reason=end_reason)
-            reaped += 1
-        else:
-            # Point detached sessions at the drop sentinel (NOT real stdio) so
-            # _ws_session_is_orphaned recognizes them and the grace-reap can
-            # actually fire; a standalone `hermes --tui` keeps real _stdio.
-            session["transport"] = _detached_ws_transport
-            detached += 1
-            try:
-                _schedule_ws_orphan_reap(sid)
-            except Exception:
-                pass
+    # Serialize against session.resume/session.close so a reconnect that
+    # re-binds a live transport cannot be immediately overwritten by the
+    # disconnecting socket's stale teardown pass.
+    with _session_resume_lock:
+        with _sessions_lock:
+            owned = [
+                sid for sid, session in _sessions.items()
+                if session.get("transport") is transport
+            ]
+        for sid in owned:
+            with _sessions_lock:
+                session = _sessions.get(sid)
+                if not session or session.get("transport") is not transport:
+                    continue
+                close_on_disconnect = bool(session.get("close_on_disconnect"))
+                if not close_on_disconnect:
+                    # Point detached sessions at the drop sentinel (NOT real
+                    # stdio) so _ws_session_is_orphaned recognizes them and the
+                    # grace-reap can actually fire; a standalone `hermes --tui`
+                    # keeps real _stdio.
+                    session["transport"] = _detached_ws_transport
+            if close_on_disconnect:
+                if _close_session_by_id(sid, end_reason=end_reason):
+                    reaped += 1
+            else:
+                detached += 1
+                try:
+                    _schedule_ws_orphan_reap(sid)
+                except Exception:
+                    pass
     return reaped, detached
+
+
+def _bind_session_transport(
+    sid: str,
+    session: dict,
+    transport: Transport,
+    *,
+    allow_unregistered: bool = False,
+) -> bool:
+    """Bind a live session to ``transport`` without racing WS teardown.
+
+    Transport rebinds and disconnect teardown share this ownership boundary:
+    the resume lock prevents a stale disconnect pass from detaching a freshly
+    rebound session, while the sessions lock confirms that ``session`` still
+    belongs to ``sid`` before mutating it.
+    """
+    with _session_resume_lock:
+        with _sessions_lock:
+            registered = _sessions.get(sid)
+            if registered is not session and (registered is not None or not allow_unregistered):
+                return False
+            session["transport"] = transport
+    return True
 
 
 def _shutdown_sessions() -> None:
@@ -5651,8 +5690,9 @@ def _drain_queued_prompt(rid, sid: str, session: dict) -> bool:
             return False
         session["queued_prompt"] = None
         session["running"] = True
-        if queued.get("transport") is not None:
-            session["transport"] = queued["transport"]
+        transport = queued.get("transport")
+    if transport is not None:
+        _bind_session_transport(sid, session, transport, allow_unregistered=True)
     try:
         if _session_uses_compute_host(session):
             resp = _submit_prompt_to_compute_host(rid, sid, session, queued["text"])
@@ -6608,11 +6648,11 @@ def _live_session_payload(
     touch: bool = False,
     transport: Transport | None = None,
 ) -> dict:
+    if transport is not None:
+        _bind_session_transport(sid, session, transport)
     with session["history_lock"]:
         if cols is not None:
             session["cols"] = cols
-        if transport is not None:
-            session["transport"] = transport
         if touch:
             session["last_active"] = time.time()
         history = list(session.get("display_history_prefix") or []) + list(
@@ -9348,7 +9388,8 @@ def _(rid, params: dict) -> dict:
     # streaming events on the active websocket even if an earlier disconnect
     # or fallback moved the session transport to stdio.
     if (t := current_transport()) is not None:
-        session["transport"] = t
+        if not _bind_session_transport(sid, session, t):
+            return _err(rid, 4001, "session not found")
     while True:
         busy_transport = None
         with session["history_lock"]:
@@ -9366,7 +9407,6 @@ def _(rid, params: dict) -> dict:
         # The old turn finished between the two lock acquisitions. Retry the
         # claim so this prompt starts normally instead of being stranded in a
         # queue whose drain already ran.
-
     with session["history_lock"]:
         # A watch session's run lives in the PARENT turn, so its own running
         # flag is False — without this, typing mid-run builds a second agent

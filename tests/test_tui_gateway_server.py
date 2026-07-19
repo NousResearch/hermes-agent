@@ -10128,6 +10128,80 @@ def test_close_sessions_for_transport_closes_flagged_repoints_rest(monkeypatch):
         server._sessions.clear()
 
 
+def test_prompt_submit_rebind_waits_for_ws_teardown_and_keeps_live_transport(monkeypatch):
+    monkeypatch.setattr(server, "_WS_ORPHAN_REAP_GRACE_S", 0)
+    old_transport = object()
+    new_transport = object()
+    real_thread = threading.Thread
+    close_started = threading.Event()
+    rebind_attempted = threading.Event()
+    close_result = []
+    prompt_result = []
+
+    class _NoopThread:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def start(self):
+            pass
+
+    original_bind = server._bind_session_transport
+
+    def _observed_bind(*args, **kwargs):
+        rebind_attempted.set()
+        return original_bind(*args, **kwargs)
+
+    monkeypatch.setattr(server.threading, "Thread", _NoopThread)
+    monkeypatch.setattr(server, "_bind_session_transport", _observed_bind)
+    monkeypatch.setattr(server, "_ensure_session_db_row", lambda session: None)
+    monkeypatch.setattr(server, "_persist_branch_seed", lambda session: None)
+    monkeypatch.setattr(server, "_start_agent_build", lambda sid, session: None)
+    server._sessions.clear()
+    session = _session(transport=old_transport, close_on_disconnect=False)
+    server._sessions["a"] = session
+
+    def _run_close():
+        close_started.set()
+        close_result.append(
+            server._close_sessions_for_transport(old_transport, end_reason="ws_disconnect")
+        )
+
+    def _run_submit():
+        token = server.bind_transport(new_transport)
+        try:
+            prompt_result.append(
+                server.handle_request(
+                    {
+                        "id": "1",
+                        "method": "prompt.submit",
+                        "params": {"session_id": "a", "text": "reconnect"},
+                    }
+                )
+            )
+        finally:
+            server.reset_transport(token)
+
+    try:
+        with server._session_resume_lock:
+            closer = real_thread(target=_run_close)
+            closer.start()
+            assert close_started.wait(timeout=1)
+            submitter = real_thread(target=_run_submit)
+            submitter.start()
+            assert rebind_attempted.wait(timeout=1)
+            assert session["transport"] is old_transport
+        closer.join(timeout=2)
+        submitter.join(timeout=2)
+
+        assert closer.is_alive() is False
+        assert submitter.is_alive() is False
+        assert prompt_result[0]["result"] == {"status": "streaming"}
+        assert close_result[0] in {(0, 0), (0, 1)}
+        assert server._sessions["a"]["transport"] is new_transport
+    finally:
+        server._sessions.clear()
+
+
 def test_session_create_records_close_on_disconnect_flag(monkeypatch):
     monkeypatch.setattr(server, "_start_agent_build", lambda sid, session: None)
     server._sessions.clear()

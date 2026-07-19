@@ -78,7 +78,6 @@ interface GatewayEventDeps {
   flushQueuedDeltas: (sessionId?: string) => void
   queryClient: QueryClient
   refreshHermesConfig: () => Promise<void>
-  sessionStateByRuntimeIdRef: MutableRefObject<Map<string, ClientSessionState>>
   sessionInterrupted: (sessionId: string) => boolean
   sessionStateByRuntimeIdRef: MutableRefObject<Map<string, ClientSessionState>>
   updateSessionState: (
@@ -108,7 +107,6 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
     flushQueuedDeltas,
     queryClient,
     refreshHermesConfig,
-    sessionStateByRuntimeIdRef,
     sessionInterrupted,
     sessionStateByRuntimeIdRef,
     updateSessionState,

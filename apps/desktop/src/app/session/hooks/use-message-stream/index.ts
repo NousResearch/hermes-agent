@@ -562,7 +562,6 @@ export function useMessageStream({
     flushQueuedDeltas,
     queryClient,
     refreshHermesConfig,
-    sessionStateByRuntimeIdRef,
     sessionInterrupted,
     sessionStateByRuntimeIdRef,
     updateSessionState,

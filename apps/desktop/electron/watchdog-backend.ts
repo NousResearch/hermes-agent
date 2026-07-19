@@ -65,6 +65,7 @@ async function resolveWatchdogPrewarmedBackend(
 
   const port = Number(raw.port)
   const token = typeof raw.token === 'string' ? raw.token.trim() : ''
+
   const baseUrl =
     typeof raw.baseUrl === 'string' && raw.baseUrl.trim()
       ? raw.baseUrl.trim()

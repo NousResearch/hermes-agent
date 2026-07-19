@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+
 import { afterEach, beforeEach, describe, test, vi } from 'vitest'
 
 import { resolveWatchdogPrewarmedBackend } from './watchdog-backend'

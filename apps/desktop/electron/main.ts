@@ -56,7 +56,6 @@ import {
   tokenPreview
 } from './connection-config'
 import { adoptServedDashboardToken } from './dashboard-token'
-import { resolveWatchdogPrewarmedBackend } from './watchdog-backend'
 import { resolveDashboardWebDist as resolveDashboardWebDistPath } from './dashboard-web-dist'
 import {
   buildPosixCleanupScript,
@@ -119,6 +118,7 @@ import {
   SESSION_WINDOW_MIN_WIDTH
 } from './session-windows'
 import { ensureSpawnHelperExecutable } from './spawn-helper-perms'
+import { installStdioPipeErrorGuards } from './stdio-pipe-guards'
 import { nativeOverlayWidth as computeNativeOverlayWidth, macTitleBarOverlayHeight } from './titlebar-overlay-width'
 import { resolveBehindCount, shouldCountCommits } from './update-count'
 import { readLiveUpdateMarker, writeUpdateMarker } from './update-marker'
@@ -135,6 +135,7 @@ import {
 import { isOfficialSshRemote, OFFICIAL_REPO_HTTPS_URL } from './update-remote'
 import { spawnUpdaterProcess } from './updater-process'
 import { fetchMarketplaceThemes, searchMarketplaceThemes } from './vscode-marketplace'
+import { resolveWatchdogPrewarmedBackend } from './watchdog-backend'
 import {
   computeWindowOptions,
   debounce,
@@ -4127,10 +4128,12 @@ function fetchHtmlTitleWithCurl(rawUrl: string): Promise<string> {
     .then(parseHtmlTitle)
     .catch(() => '')
 }
+
 const fetchQueuedLinkTitle = createBoundedLinkTitleQueue(fetchHtmlTitleWithCurl, {
   maxConcurrent: LINK_TITLE_MAX_CONCURRENT,
   maxQueued: LINK_TITLE_QUEUE_LIMIT
 })
+
 // Strips known error/captcha titles (e.g. "GetYourGuide – Error", "Just a
 // moment...") so they don't get cached as the resolved title.
 function usableTitle(value: string): string {

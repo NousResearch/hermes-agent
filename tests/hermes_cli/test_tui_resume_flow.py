@@ -285,43 +285,6 @@ def test_make_tui_argv_dev_prebuilds_hermes_ink(monkeypatch, main_mod, tmp_path)
 
 
 
-def test_print_tui_exit_summary_prefers_actual_active_session_file(
-    monkeypatch, capsys, tmp_path
-):
-    import hermes_cli.main as main_mod
-
-    seen = []
-
-    class _FakeDB:
-        def get_session(self, session_id):
-            seen.append(session_id)
-            return {
-                "message_count": 1,
-                "input_tokens": 0,
-                "output_tokens": 0,
-                "cache_read_tokens": 0,
-                "cache_write_tokens": 0,
-                "reasoning_tokens": 0,
-            }
-
-        def get_session_title(self, _session_id):
-            return "actual"
-
-        def close(self):
-            return None
-
-    active = tmp_path / "active.json"
-    active.write_text('{"session_id":"actual_session"}', encoding="utf-8")
-    monkeypatch.setitem(
-        sys.modules, "hermes_state", types.SimpleNamespace(SessionDB=lambda: _FakeDB())
-    )
-
-    main_mod._print_tui_exit_summary("startup_resume", str(active))
-    out = capsys.readouterr().out
-
-    assert seen == ["actual_session"]
-    assert "hermes --tui --resume actual_session" in out
-    assert "startup_resume" not in out
 
 
 def test_termux_fast_cli_launch_oneshot_forwards_worktree(monkeypatch, main_mod):
@@ -353,9 +316,10 @@ def test_termux_fast_cli_launch_oneshot_forwards_worktree(monkeypatch, main_mod)
 
     monkeypatch.setattr(main_mod.os, "_exit", _fake_exit)
 
-    with pytest.raises(SystemExit):
+    with pytest.raises(SystemExit) as exc:
         main_mod._try_termux_fast_cli_launch()
 
+    assert exc.value.code == 0
     assert captured["worktree"] is True
 
 

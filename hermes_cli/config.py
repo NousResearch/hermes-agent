@@ -5518,6 +5518,7 @@ _EXTRA_KNOWN_ROOT_KEYS = {
     "signal",            # Signal settings bridged to env vars by gateway/config.py
     # Keys read/written by Hermes flows but absent from DEFAULT_CONFIG:
     "group_sessions_per_user",   # top-level form read by gateway/config.py:1206
+    "thread_sessions_per_user",  # immediately after group_sessions_per_user at gateway/config.py:1209
     "known_plugin_toolsets",     # written by `hermes tools` (tools_config.py:1859,2012-2013)
 }
 _KNOWN_ROOT_KEYS = frozenset(DEFAULT_CONFIG.keys()) | _EXTRA_KNOWN_ROOT_KEYS

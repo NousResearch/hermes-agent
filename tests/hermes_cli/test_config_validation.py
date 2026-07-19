@@ -253,6 +253,15 @@ class TestUnknownTopLevelKeys:
         assert _EXTRA_KNOWN_ROOT_KEYS.issubset(_KNOWN_ROOT_KEYS)
         assert _KNOWN_ROOT_KEYS == frozenset(DEFAULT_CONFIG.keys()) | _EXTRA_KNOWN_ROOT_KEYS
 
+    def test_group_sessions_per_user_known_root_accepted(self):
+        """group_sessions_per_user, thread_sessions_per_user, and known_plugin_toolsets
+        must NOT produce unknown-key warnings — they are live read/write roots."""
+        for key in ("group_sessions_per_user", "thread_sessions_per_user", "known_plugin_toolsets"):
+            config = {key: {}}
+            issues = validate_config_structure(config)
+            unknown = [i for i in issues if "Unknown top-level config key" in i.message]
+            assert unknown == [], f"{key} produced unknown-key warning: {unknown}"
+
     def test_provider_like_unknown_root_keeps_misplaced_message(self):
         """Preserve existing base_url/api_key root-level guidance (not generic unknown)."""
         issues = validate_config_structure({

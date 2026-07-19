@@ -466,15 +466,22 @@ class TestAdapterModule(unittest.TestCase):
 
         fake_client = _FakeWSClient()
         fake_adapter = SimpleNamespace(
+            _loop=None,
             _ws_thread_loop=None,
             _ws_reconnect_nonce=2,
             _ws_reconnect_interval=3,
             _ws_ping_interval=None,
             _ws_ping_timeout=None,
         )
+        # The SDK client the WS-isolation install patches (Client._receive_message_loop).
+        class _FakeSdkClient:
+            async def _receive_message_loop(self):
+                return None
+
         fake_client_module = ModuleType("lark_oapi.ws.client")
         fake_client_module.loop = None
         fake_client_module.websockets = SimpleNamespace(connect=_fake_connect)
+        fake_client_module.Client = _FakeSdkClient
         fake_ws_module = ModuleType("lark_oapi.ws")
         fake_ws_module.client = fake_client_module
         fake_root_module = ModuleType("lark_oapi")
@@ -497,6 +504,22 @@ class TestAdapterModule(unittest.TestCase):
             sys.modules.update(original_modules)
 
         self.assertEqual(captured["kwargs"].get("proxy"), "socks5h://127.0.0.1:8687")
+
+    def test_proxy_log_mode_never_leaks_credentials(self):
+        # A proxy URL can carry user:password@ userinfo the global log formatter
+        # leaves unmasked; the connect-override log must emit only the scheme.
+        from plugins.platforms.feishu.adapter import _proxy_log_mode
+
+        for url, expected in (
+            ("socks5h://user:s3cret@127.0.0.1:8687", "socks5h proxy"),
+            ("http://alice:hunter2@127.0.0.1:8686", "http proxy"),
+            (None, "direct connection"),
+        ):
+            mode = _proxy_log_mode(url)
+            self.assertEqual(mode, expected)
+            self.assertNotIn("s3cret", mode)
+            self.assertNotIn("hunter2", mode)
+            self.assertNotIn("127.0.0.1", mode)
 
 
 def _admits_group(adapter, message, sender_id, chat_id=""):

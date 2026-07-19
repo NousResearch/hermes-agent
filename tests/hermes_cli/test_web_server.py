@@ -4986,6 +4986,56 @@ class TestNewEndpoints:
         else:
             assert data["active_provider"] is None
 
+    def test_get_toolset_config_reports_truthful_provider_status(self, monkeypatch):
+        """Each provider row carries a server-computed readiness `status`.
+
+        Regression: the GUI pilled every zero-env-var row "Ready" — including
+        logged-out Nous Subscription rows, xAI TTS without Grok OAuth, and
+        never-installed KittenTTS/Piper. The endpoint now reports the honest
+        state so keyless ≠ ready.
+        """
+        import hermes_cli.tools_config as tools_config
+        from hermes_cli.nous_account import NousPortalAccountInfo
+
+        # Logged out of Nous Portal → managed subscription rows need sign-in.
+        monkeypatch.setattr(
+            "hermes_cli.nous_subscription.get_nous_portal_account_info",
+            lambda *a, **k: NousPortalAccountInfo(
+                logged_in=False, source="none", fresh=False, paid_service_access=None
+            ),
+        )
+        # No xAI credentials → the Grok OAuth-backed row needs sign-in.
+        monkeypatch.setattr(tools_config, "_xai_credentials_present", lambda: False)
+        # Local TTS engines not installed → their rows need setup.
+        monkeypatch.setattr(tools_config, "_module_installed", lambda name: False)
+        monkeypatch.delenv("ELEVENLABS_API_KEY", raising=False)
+
+        resp = self.client.get("/api/tools/toolsets/tts/config")
+        assert resp.status_code == 200
+        data = resp.json()
+        by_name = {p["name"]: p for p in data["providers"]}
+
+        valid = {"ready", "needs_keys", "needs_auth", "needs_setup"}
+        assert all(p["status"] in valid for p in data["providers"])
+        # Genuinely-free keyless row stays Ready.
+        assert by_name["Microsoft Edge TTS"]["status"] == "ready"
+        # Keyless ≠ ready for gated rows:
+        assert by_name["Nous Subscription"]["status"] == "needs_auth"
+        assert by_name["xAI TTS"]["status"] == "needs_auth"
+        assert by_name["KittenTTS"]["status"] == "needs_setup"
+        assert by_name["Piper"]["status"] == "needs_setup"
+        # Keyed row with the key unset:
+        assert by_name["ElevenLabs"]["status"] == "needs_keys"
+
+    def test_get_toolset_config_status_ready_when_key_set(self, monkeypatch):
+        """A keyed provider flips to status=ready once its env var is set."""
+        monkeypatch.setenv("ELEVENLABS_API_KEY", "sk-test")
+
+        resp = self.client.get("/api/tools/toolsets/tts/config")
+        assert resp.status_code == 200
+        by_name = {p["name"]: p for p in resp.json()["providers"]}
+        assert by_name["ElevenLabs"]["status"] == "ready"
+
     def test_get_toolset_config_reflects_selected_provider(self):
         """Selecting a provider is reflected in the next /config read.
 

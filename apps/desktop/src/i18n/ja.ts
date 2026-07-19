@@ -853,6 +853,8 @@ export const ja = defineLocale({
         'このツールセットにはプロバイダーのオプションがありません。有効にすれば現在の設定で動作します。',
       noProviders: '現在このツールセットに利用可能なプロバイダーがありません。',
       ready: '準備完了',
+      needsSignIn: 'サインインが必要',
+      needsSetup: 'セットアップが必要',
       nousIncluded: 'Nous サブスクリプションに含まれています。有効にするには Nous Portal にサインインしてください。',
       noApiKeyRequired: 'API キーは不要です。',
       postSetupHint: step =>

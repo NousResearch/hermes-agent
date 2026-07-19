@@ -22,6 +22,7 @@ import type {
   ActionStatusResponse,
   ToolEnvVar,
   ToolProvider,
+  ToolProviderStatus,
   ToolsetConfig,
   ToolsetModelsResponse
 } from '@/types/hermes'
@@ -46,6 +47,28 @@ function providerConfigured(provider: ToolProvider, envState: Record<string, boo
   }
 
   return provider.env_vars.every(ev => envState[ev.key])
+}
+
+/**
+ * Resolve the readiness pill state for a provider row. Prefers the honest
+ * server-computed `status` (keys ∧ Nous entitlement ∧ post-setup install
+ * state). Older backends don't send `status` — fall back to the legacy
+ * env-var heuristic, mapped onto the same state space (`ready` /
+ * `needs_keys`), so the pill still renders against an outdated runtime.
+ */
+function providerStatus(provider: ToolProvider, envState: Record<string, boolean>): ToolProviderStatus {
+  if (provider.status) {
+    // Env-var edits patch envState locally without a refetch — a stale
+    // server `status` must not keep saying "needs keys" (or "ready") after
+    // the user just saved (or cleared) a key in this panel.
+    if (provider.env_vars.length > 0) {
+      return provider.env_vars.every(ev => envState[ev.key]) ? 'ready' : 'needs_keys'
+    }
+
+    return provider.status
+  }
+
+  return providerConfigured(provider, envState) ? 'ready' : 'needs_keys'
 }
 
 interface EnvVarFieldProps {
@@ -538,7 +561,7 @@ export function ToolsetConfigPanel({ toolset, onConfiguredChange }: ToolsetConfi
     <div className="grid gap-2">
       {providers.map(provider => {
         const isActive = activeProvider === provider.name
-        const configured = providerConfigured(provider, envState)
+        const status = providerStatus(provider, envState)
 
         return (
           <div className="overflow-hidden rounded-xl bg-background/60" key={provider.name}>
@@ -554,12 +577,14 @@ export function ToolsetConfigPanel({ toolset, onConfiguredChange }: ToolsetConfi
               <span className="flex min-w-0 items-center gap-2">
                 <span className="truncate text-sm font-medium">{provider.name}</span>
                 {provider.badge && <Pill>{provider.badge}</Pill>}
-                {configured && (
+                {status === 'ready' && (
                   <Pill tone="primary">
                     <Check className="size-3" />
                     {copy.ready}
                   </Pill>
                 )}
+                {status === 'needs_auth' && <Pill tone="warn">{copy.needsSignIn}</Pill>}
+                {status === 'needs_setup' && <Pill tone="warn">{copy.needsSetup}</Pill>}
               </span>
               {selecting === provider.name && <Loader2 className="size-3.5 shrink-0 animate-spin" />}
             </button>

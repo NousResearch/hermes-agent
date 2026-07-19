@@ -14214,8 +14214,10 @@ async def get_toolset_config(name: str, profile: Optional[str] = None):
         _get_effective_configurable_toolsets,
         _is_provider_active,
         _visible_providers,
+        provider_readiness_status,
     )
     from hermes_cli.config import get_env_value
+    from hermes_cli.nous_subscription import get_nous_subscription_features
 
     valid = {ts_key for ts_key, _, _ in _get_effective_configurable_toolsets()}
     if name not in valid:
@@ -14227,6 +14229,10 @@ async def get_toolset_config(name: str, profile: Optional[str] = None):
         providers = []
         active_provider = None
         if cat:
+            # Fetch portal/entitlement state once for the whole matrix — the
+            # per-provider readiness computation below reuses it instead of
+            # re-probing per row.
+            features = get_nous_subscription_features(config, force_fresh=True)
             for prov in _visible_providers(cat, config, force_fresh=True):
                 env_vars = [
                     {
@@ -14253,6 +14259,13 @@ async def get_toolset_config(name: str, profile: Optional[str] = None):
                     "post_setup": prov.get("post_setup"),
                     "requires_nous_auth": bool(prov.get("requires_nous_auth")),
                     "is_active": is_active,
+                    # Honest server-side readiness. The GUI's old client-side
+                    # heuristic showed "Ready" for every zero-env-var row —
+                    # including logged-out Nous Subscription rows and never-run
+                    # post_setup installs (see provider_readiness_status).
+                    "status": provider_readiness_status(
+                        prov, config, features=features, is_active=is_active
+                    ),
                 })
     return {
         "name": name,

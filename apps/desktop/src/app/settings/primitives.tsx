@@ -20,8 +20,10 @@ export function SettingsContent({ children, bare = false }: { children: ReactNod
   )
 }
 
-export function Pill({ tone = 'muted', children }: { tone?: 'muted' | 'primary'; children: ReactNode }) {
-  return <Badge variant={tone === 'primary' ? 'default' : 'muted'}>{children}</Badge>
+const PILL_VARIANT = { muted: 'muted', primary: 'default', warn: 'warn' } as const
+
+export function Pill({ tone = 'muted', children }: { tone?: keyof typeof PILL_VARIANT; children: ReactNode }) {
+  return <Badge variant={PILL_VARIANT[tone]}>{children}</Badge>
 }
 
 export function SectionHeading({ icon: Icon, title, meta }: { icon: IconComponent; title: string; meta?: string }) {

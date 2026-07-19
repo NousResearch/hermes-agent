@@ -358,4 +358,140 @@ describe('ToolsetConfigPanel', () => {
       timeout: 4000
     })
   })
+
+  describe('readiness pills', () => {
+    it('renders the server status instead of assuming keyless rows are Ready', async () => {
+      // The false-Ready bug: a logged-out Nous Subscription row and a
+      // never-installed local TTS both have zero env vars — the old client
+      // heuristic pilled every such row "Ready". The server now sends an
+      // honest per-provider status; the pill must follow it.
+      getToolsetConfig.mockResolvedValue(
+        config({
+          providers: [
+            {
+              name: 'Microsoft Edge TTS',
+              badge: 'free',
+              tag: 'No API key needed',
+              env_vars: [],
+              post_setup: null,
+              requires_nous_auth: false,
+              is_active: true,
+              status: 'ready'
+            },
+            {
+              name: 'Nous Subscription',
+              badge: 'subscription',
+              tag: 'Managed OpenAI TTS',
+              env_vars: [],
+              post_setup: null,
+              requires_nous_auth: true,
+              is_active: false,
+              status: 'needs_auth'
+            },
+            {
+              name: 'KittenTTS',
+              badge: 'local · free',
+              tag: 'Lightweight local ONNX TTS',
+              env_vars: [],
+              post_setup: 'kittentts',
+              requires_nous_auth: false,
+              is_active: false,
+              status: 'needs_setup'
+            }
+          ]
+        })
+      )
+
+      const { ToolsetConfigPanel } = await import('./toolset-config-panel')
+      render(<ToolsetConfigPanel onConfiguredChange={vi.fn()} toolset="tts" />)
+
+      await screen.findByText('Microsoft Edge TTS')
+      // Exactly one Ready pill — the genuinely keyless Edge TTS row.
+      expect(screen.getAllByText('Ready')).toHaveLength(1)
+      expect(screen.getByText('Needs sign-in')).toBeTruthy()
+      expect(screen.getByText('Needs setup')).toBeTruthy()
+    })
+
+    it('shows no Ready pill for a keyed provider the server marks needs_keys', async () => {
+      getToolsetConfig.mockResolvedValue(
+        config({
+          providers: [
+            {
+              name: 'ElevenLabs',
+              badge: 'paid',
+              tag: 'Most natural voices',
+              env_vars: [
+                { key: 'ELEVENLABS_API_KEY', prompt: 'ElevenLabs API key', url: 'https://x', default: null, is_set: false }
+              ],
+              post_setup: null,
+              requires_nous_auth: false,
+              is_active: false,
+              status: 'needs_keys'
+            }
+          ]
+        })
+      )
+
+      const { ToolsetConfigPanel } = await import('./toolset-config-panel')
+      render(<ToolsetConfigPanel onConfiguredChange={vi.fn()} toolset="tts" />)
+
+      await screen.findByText('ElevenLabs')
+      expect(screen.queryByText('Ready')).toBeNull()
+      // Missing keys are signalled by the env-var fields, not a warn pill.
+      expect(screen.queryByText('Needs sign-in')).toBeNull()
+      expect(screen.queryByText('Needs setup')).toBeNull()
+    })
+
+    it('falls back to the env-var heuristic when the backend sends no status', async () => {
+      // Older backend (no `status` field): keyless rows keep the legacy
+      // Ready pill, keyed-and-unset rows keep no pill. Narrow compat path —
+      // desktop and backend update on separate clocks.
+      const { ToolsetConfigPanel } = await import('./toolset-config-panel')
+      render(<ToolsetConfigPanel onConfiguredChange={vi.fn()} toolset="tts" />)
+
+      await screen.findByText('Microsoft Edge TTS')
+      // Default config(): keyless Edge TTS (ready) + unset ElevenLabs (not).
+      expect(screen.getAllByText('Ready')).toHaveLength(1)
+      expect(screen.queryByText('Needs sign-in')).toBeNull()
+      expect(screen.queryByText('Needs setup')).toBeNull()
+    })
+
+    it('flips a needs_keys provider to Ready locally after its key is saved', async () => {
+      getToolsetConfig.mockResolvedValue(
+        config({
+          active_provider: 'ElevenLabs',
+          providers: [
+            {
+              name: 'ElevenLabs',
+              badge: 'paid',
+              tag: 'Most natural voices',
+              env_vars: [
+                { key: 'ELEVENLABS_API_KEY', prompt: 'ElevenLabs API key', url: 'https://x', default: null, is_set: false }
+              ],
+              post_setup: null,
+              requires_nous_auth: false,
+              is_active: true,
+              status: 'needs_keys'
+            }
+          ]
+        })
+      )
+
+      const { ToolsetConfigPanel } = await import('./toolset-config-panel')
+      render(<ToolsetConfigPanel onConfiguredChange={vi.fn()} toolset="tts" />)
+
+      expect(await screen.findByText('ELEVENLABS_API_KEY')).toBeTruthy()
+      expect(screen.queryByText('Ready')).toBeNull()
+
+      // Save a key: the pill must go Ready from the local envState patch even
+      // though the (now stale) server status still says needs_keys.
+      const trigger = await screen.findByRole('button', { name: /Actions for ELEVENLABS_API_KEY/ })
+      fireEvent.pointerDown(trigger, { button: 0, ctrlKey: false, pointerType: 'mouse' })
+      fireEvent.click(await screen.findByRole('menuitem', { name: 'Set' }))
+      fireEvent.change(await screen.findByPlaceholderText('ElevenLabs API key'), { target: { value: 'sk-live' } })
+      fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+
+      await waitFor(() => expect(screen.getByText('Ready')).toBeTruthy())
+    })
+  })
 })

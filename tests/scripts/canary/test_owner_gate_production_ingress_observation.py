@@ -315,12 +315,57 @@ def test_provenance_checked_bundle_executes_under_isolated_python_without_repo(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    observed_paths: list[Path] = []
+
     def local_digest(self, release_revision: str) -> str:
         assert release_revision == REVISION
+        observed_paths.append(self._module_path)
         return hashlib.sha256(self._module_path.read_bytes()).hexdigest()
 
-    monkeypatch.setattr(launcher.LocalLauncherProvenance, "__call__", local_digest)
+    checkout_root = Path(launcher.__file__).absolute().parents[2]
+    sealed_source = tmp_path / f"owner-support-{REVISION}" / "source"
+    sealed_observer = (
+        sealed_source
+        / "scripts/canary/owner_gate_production_ingress_observation.py"
+    )
+    sealed_contract = (
+        sealed_source
+        / "scripts/canary/owner_gate_production_ingress_contract.py"
+    )
+    sealed_observer.parent.mkdir(parents=True)
+    sealed_observer.write_bytes(
+        (
+            checkout_root
+            / "scripts/canary/owner_gate_production_ingress_observation.py"
+        ).read_bytes()
+    )
+    sealed_contract.write_bytes(
+        (
+            checkout_root
+            / "scripts/canary/owner_gate_production_ingress_contract.py"
+        ).read_bytes()
+    )
+    monkeypatch.setattr(
+        ingress,
+        "__file__",
+        str(sealed_observer),
+    )
+    monkeypatch.setattr(
+        contract,
+        "__file__",
+        str(sealed_contract),
+    )
+    monkeypatch.setattr(
+        launcher.LocalLauncherProvenance,
+        "__call__",
+        local_digest,
+    )
     source, source_sha256 = ingress._observer_source(REVISION)
+    assert observed_paths == [
+        checkout_root
+        / "scripts/canary/owner_gate_production_ingress_observation.py",
+        checkout_root / "scripts/canary/owner_gate_production_ingress_contract.py",
+    ]
     assert source_sha256 == hashlib.sha256(source).hexdigest()
     assert len(source) <= ingress.MAX_REMOTE_SOURCE_BYTES
 
@@ -355,6 +400,53 @@ def test_provenance_checked_bundle_executes_under_isolated_python_without_repo(
         assert result["error_code"] != (
             "owner_gate_production_ingress_unexpected_failure"
         )
+
+
+def test_provenance_checked_bundle_rejects_changed_sealed_source(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    checkout_root = Path(launcher.__file__).absolute().parents[2]
+    sealed_source = tmp_path / f"owner-support-{REVISION}" / "source"
+    sealed_observer = (
+        sealed_source
+        / "scripts/canary/owner_gate_production_ingress_observation.py"
+    )
+    sealed_contract = (
+        sealed_source
+        / "scripts/canary/owner_gate_production_ingress_contract.py"
+    )
+    sealed_observer.parent.mkdir(parents=True)
+    sealed_observer.write_bytes(
+        (
+            checkout_root
+            / "scripts/canary/owner_gate_production_ingress_observation.py"
+        ).read_bytes()
+    )
+    sealed_contract.write_bytes(
+        (
+            checkout_root
+            / "scripts/canary/owner_gate_production_ingress_contract.py"
+        ).read_bytes()
+        + b"\n"
+    )
+
+    def local_digest(self, release_revision: str) -> str:
+        assert release_revision == REVISION
+        return hashlib.sha256(self._module_path.read_bytes()).hexdigest()
+
+    monkeypatch.setattr(ingress, "__file__", str(sealed_observer))
+    monkeypatch.setattr(contract, "__file__", str(sealed_contract))
+    monkeypatch.setattr(
+        launcher.LocalLauncherProvenance,
+        "__call__",
+        local_digest,
+    )
+    with pytest.raises(
+        ingress.ProductionIngressObservationError,
+        match="owner_gate_production_ingress_source_invalid",
+    ):
+        ingress._observer_source(REVISION)
 
 
 def _resign_envelope(

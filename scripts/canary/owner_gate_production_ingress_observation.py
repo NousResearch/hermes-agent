@@ -1474,13 +1474,18 @@ def _observer_source(release_revision: str) -> tuple[bytes, str]:
             "scripts/canary/owner_gate_production_ingress_contract.py"
         )
 
+    # The imported support modules intentionally live below the sealed
+    # owner-support root, which is not a Git checkout.  Prove the corresponding
+    # tracked blobs through the canonical launcher checkout, then require the
+    # sealed bytes actually streamed below to match those Git digests.
+    checkout_root = Path(launcher.__file__).absolute().parents[2]
     observer_path = Path(__file__).resolve()
     contract_path = Path(contract.__file__).resolve()
     observer_digest = ObserverProvenance(
-        module_path=observer_path
+        module_path=checkout_root / ObserverProvenance._RELATIVE_MODULE
     )(release_revision)
     contract_digest = ContractProvenance(
-        module_path=contract_path
+        module_path=checkout_root / ContractProvenance._RELATIVE_MODULE
     )(release_revision)
 
     def stable_component(path: Path, digest: str) -> bytes:

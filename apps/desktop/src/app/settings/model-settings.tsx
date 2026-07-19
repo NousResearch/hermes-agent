@@ -634,17 +634,13 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
     }
   }, [onMainModelChanged, refresh, selectedModel, selectedProvider])
 
-  const setAuxiliaryToMain = useCallback(
+  const setAuxiliaryToAuto = useCallback(
     async (task: string) => {
-      if (!mainModel) {
-        return
-      }
-
       setApplying(true)
       setError('')
 
       try {
-        await setModelAssignment({ model: mainModel.model, provider: mainModel.provider, scope: 'auxiliary', task })
+        await setModelAssignment({ model: '', provider: 'auto', scope: 'auxiliary', task })
         await refresh()
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err))
@@ -652,7 +648,7 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
         setApplying(false)
       }
     },
-    [mainModel, refresh]
+    [refresh]
   )
 
   const applyAuxiliaryDraft = useCallback(
@@ -850,12 +846,12 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
         <div className="mb-2.5 flex items-center justify-between">
           <SectionHeading icon={Cpu} title={m.auxiliaryTitle} />
           <Button
-            disabled={!mainModel || applying}
+            disabled={applying}
             onClick={() => void resetAuxiliaryModels()}
             size="sm"
             variant="textStrong"
           >
-            {m.resetAllToMain}
+            {m.resetAllToAuto}
           </Button>
         </div>
         <p className="mb-2 text-xs text-muted-foreground">{m.auxiliaryDesc}</p>
@@ -882,12 +878,12 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
                   !isEditing && (
                     <div className="flex shrink-0 items-center gap-1.5">
                       <Button
-                        disabled={!mainModel || applying}
-                        onClick={() => void setAuxiliaryToMain(meta.key)}
+                        disabled={isAuto || applying}
+                        onClick={() => void setAuxiliaryToAuto(meta.key)}
                         size="sm"
                         variant="text"
                       >
-                        {m.setToMain}
+                        {m.setToAuto}
                       </Button>
                       <Button
                         disabled={!providers.length || applying}

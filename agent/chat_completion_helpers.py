@@ -1906,6 +1906,13 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
         "Please provide a final response summarizing what you've found and accomplished so far, "
         "without calling any more tools."
     )
+    # Inject current time so the summary reflects the actual wall-clock time,
+    # not the frozen session-start timestamp in the system prompt.
+    try:
+        from hermes_time import format_current_time_context
+        summary_request = format_current_time_context() + "\n\n" + summary_request
+    except Exception:
+        pass
     messages.append({"role": "user", "content": summary_request})
 
     try:

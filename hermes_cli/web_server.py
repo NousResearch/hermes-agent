@@ -14803,6 +14803,16 @@ async def select_toolset_provider(
     support the requested capability (a search-only backend can't be the
     extract backend). Omitting ``capability`` keeps the legacy whole-provider
     behavior (writes ``web.backend``).
+
+    Managed Nous rows (``managed_nous_feature``) additionally report the
+    Portal entitlement state: the CLI flow gates these selections on
+    ``ensure_nous_portal_access`` (inline login), but the GUI has no inline
+    prompt, so selecting one while logged out / unentitled used to write the
+    config keys and then never activate (``_is_provider_active`` requires
+    ``managed_by_nous``). The response now carries an additive
+    ``needs_nous_auth: true`` + ``feature`` so the client can drive the
+    existing Nous Portal OAuth flow (``POST /api/providers/oauth/nous/start``)
+    and refetch.
     """
     from hermes_cli.tools_config import (
         TOOL_CATEGORIES,
@@ -14810,6 +14820,10 @@ async def select_toolset_provider(
         web_provider_capabilities,
         _get_effective_configurable_toolsets,
         _visible_providers,
+    )
+    from hermes_cli.nous_subscription import (
+        MANAGED_FEATURE_COVERAGE_CATEGORY,
+        get_nous_subscription_features,
     )
 
     valid = {ts_key for ts_key, _, _ in _get_effective_configurable_toolsets()}
@@ -14865,10 +14879,41 @@ async def select_toolset_provider(
             except KeyError as exc:
                 raise HTTPException(status_code=400, detail=str(exc).strip('"'))
         save_config(config)
-    result = {"ok": True, "name": name, "provider": body.provider}
-    if body.capability is not None:
-        result["capability"] = body.capability
-    return result
+        response: Dict[str, Any] = {"ok": True, "name": name, "provider": body.provider}
+        if body.capability is not None:
+            response["capability"] = body.capability
+
+        # Entitlement check for managed Nous rows — mirrors the gate the CLI
+        # applies via ensure_nous_portal_access at selection time.
+        cat = TOOL_CATEGORIES.get(name)
+        row = None
+        if cat:
+            row = next(
+                (
+                    p
+                    for p in _visible_providers(cat, config, force_fresh=True)
+                    if p.get("name") == body.provider
+                ),
+                None,
+            )
+        managed_feature = (row or {}).get("managed_nous_feature")
+        if managed_feature:
+            features = get_nous_subscription_features(config, force_fresh=True)
+            acct = features.account_info
+            category = MANAGED_FEATURE_COVERAGE_CATEGORY.get(managed_feature)
+            entitled = bool(
+                acct
+                and acct.logged_in
+                and (
+                    acct.tool_gateway_entitled_for(category)
+                    if category
+                    else acct.tool_gateway_entitled
+                )
+            )
+            if not entitled:
+                response["needs_nous_auth"] = True
+                response["feature"] = managed_feature
+    return response
 
 
 class ToolsetEnvUpdate(BaseModel):

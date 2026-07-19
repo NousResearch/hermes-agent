@@ -51,6 +51,31 @@ from hermes_cli.config import get_hermes_home
 logger = logging.getLogger(__name__)
 
 
+def _background_login_shell_enabled() -> bool:
+    """Read ``terminal.background_login_shell`` from config; default False.
+
+    Issue #67200: background ``terminal`` calls previously used ``-lic``
+    (login + interactive + set +m) which sources the user's rc/profile
+    files and silently rewrites agent-authored commands with user-defined
+    aliases (``alias rm='rsync …'``, ``exec /bin/zsh -l``, etc.). The
+    foreground path already uses the non-interactive shape (``[bash,
+    "-c", cmd]``); this knob lets background match it by default while
+    preserving the old login behaviour as an explicit opt-in for users
+    whose tools genuinely depend on login-shell PATH or env.
+
+    Best-effort: any config read failure (missing key, malformed YAML,
+    first-run before config exists) returns False — the safer default
+    — and never raises into the spawn path.
+    """
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config() or {}
+    except Exception:
+        return False
+    terminal_cfg = cfg.get("terminal") or {}
+    return bool(terminal_cfg.get("background_login_shell", False))
+
+
 # Checkpoint file for crash recovery (gateway only)
 CHECKPOINT_PATH = get_hermes_home() / "processes.json"
 
@@ -715,10 +740,14 @@ class ProcessRegistry:
                 else:
                     from ptyprocess import PtyProcess as _PtyProcessCls
                 user_shell = _find_shell()
+                use_login = _background_login_shell_enabled()
                 pty_env = _sanitize_subprocess_env(os.environ, env_vars)
                 pty_env["PYTHONUNBUFFERED"] = "1"
+                # Match the non-PTY path: only invoke login-shell mode when
+                # the user has opted in via ``terminal.background_login_shell``.
+                pty_flags = "-lic" if use_login else "-c"
                 pty_proc = _PtyProcessCls.spawn(
-                    [user_shell, "-lic", f"set +m; {command}"],
+                    [user_shell, pty_flags, f"set +m; {command}"],
                     cwd=session.cwd,
                     env=pty_env,
                     dimensions=(30, 120),
@@ -751,9 +780,21 @@ class ProcessRegistry:
                 logger.warning("PTY spawn failed (%s), falling back to pipe mode", e)
 
         # Standard Popen path (non-PTY or PTY fallback)
-        # Use the user's login shell for consistency with LocalEnvironment --
-        # ensures rc files are sourced and user tools are available.
+        # Use the user's $SHELL — preferring it over /bin/bash preserves
+        # the #42203 macOS background-process fix — but invoke WITHOUT
+        # ``-l`` (login) so the shell does NOT source ``~/.bash_profile``
+        # / ``~/.zprofile`` / ``~/.profile``. Login shells pick up
+        # user-defined aliases (``alias rm='...'``) and ``exec``-swap
+        # wrappers that silently rewrite otherwise ordinary commands,
+        # turning the foreground-vs-background contract into a guessing
+        # game (issue #67200). Foreground ``LocalEnvironment._run_bash``
+        # uses the same non-interactive shape (``[bash, "-c", cmd]``),
+        # so agent-authored commands resolve predictably regardless of
+        # whether they were spawned foreground or background. Users who
+        # genuinely need login-shell PATH / tool availability can opt
+        # in via ``terminal.background_login_shell: true`` in config.
         user_shell = _find_shell()
+        use_login = _background_login_shell_enabled()
         # Force unbuffered output for Python scripts so progress is visible
         # during background execution (libraries like tqdm/datasets buffer when
         # stdout is a pipe, hiding output from process(action="poll")).
@@ -761,8 +802,9 @@ class ProcessRegistry:
         bg_env["PYTHONUNBUFFERED"] = "1"
         _popen_kwargs = {"creationflags": windows_hide_flags()} if _IS_WINDOWS else {}
 
+        shell_flags = "-lic" if use_login else "-c"
         proc = subprocess.Popen(
-            [user_shell, "-lic", f"set +m; {command}"],
+            [user_shell, shell_flags, f"set +m; {command}"],
             text=True,
             cwd=session.cwd,
             env=bg_env,

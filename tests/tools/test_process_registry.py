@@ -17,6 +17,7 @@ from tools.process_registry import (
     FINISHED_TTL_SECONDS,
     MAX_PROCESSES,
     MAX_ACTIVE_PROCESS_AGE,
+    _background_login_shell_enabled,
 )
 
 
@@ -698,6 +699,133 @@ class TestSpawnEnvSanitization:
         assert "FIRECRAWL_API_KEY" not in env
         assert f"{_HERMES_PROVIDER_ENV_FORCE_PREFIX}TELEGRAM_BOT_TOKEN" not in env
         assert env["PYTHONUNBUFFERED"] == "1"
+
+
+class TestBackgroundShellMode:
+    """Regression for #67200 — background commands must NOT silently inherit
+    user-defined aliases from rc/profile files.
+
+    Foreground ``LocalEnvironment._run_bash`` runs commands through a
+    non-interactive shell (``[bash, "-c", cmd]``) so the foreground
+    contract is the deterministic one. Background was previously invoked
+    as ``[user_shell, "-lic", cmd]`` (login + interactive + set +m), which
+    sources ``~/.bash_profile`` / ``~/.zprofile`` and pulls in user
+    aliases — so an agent-written ``rm -f <path>`` could resolve to
+    ``rsync …`` (or worse, an ``exec``-swap shell wrapper) and the
+    foreground/background contracts would diverge silently.
+
+    Default is non-login (``-c``). Users who genuinely need login-shell
+    PATH or env can opt in via ``terminal.background_login_shell: true``.
+    """
+
+    def _spawn_popen_args(self, registry, *, config_override=None):
+        """Run spawn_local with everything mocked out, return the Popen call args."""
+        captured = {}
+
+        def fake_popen(cmd, **kwargs):
+            captured["cmd"] = cmd
+            captured["kwargs"] = kwargs
+            proc = MagicMock()
+            proc.pid = 4321
+            proc.stdout = iter([])
+            proc.stdin = MagicMock()
+            proc.poll.return_value = None
+            return proc
+
+        fake_thread = MagicMock()
+
+        if config_override is not None:
+            config_patch = patch(
+                "hermes_cli.config.load_config",
+                return_value={"terminal": config_override},
+            )
+        else:
+            config_patch = patch(
+                "hermes_cli.config.load_config", return_value={}
+            )
+
+        with patch.dict(os.environ, {"PATH": "/usr/bin:/bin"}, clear=True), \
+            patch("tools.process_registry._find_shell", return_value="/bin/bash"), \
+            patch("subprocess.Popen", side_effect=fake_popen), \
+            patch("threading.Thread", return_value=fake_thread), \
+            patch.object(registry, "_write_checkpoint"), \
+            config_patch:
+            registry.spawn_local("echo hello", cwd="/tmp")
+
+        return captured["cmd"], captured["kwargs"]
+
+    def test_default_uses_non_login_shell(self, registry):
+        """No config → background matches the foreground non-interactive shape.
+
+        ``-lic`` would source ``~/.bash_profile`` (the #67200 trigger).
+        The default ``-c`` matches ``LocalEnvironment._run_bash`` so
+        agent commands resolve identically regardless of how they were
+        spawned.
+        """
+        cmd, _ = self._spawn_popen_args(registry)
+        # Popen argv is [shell, flags, command]
+        assert cmd[0] == "/bin/bash"
+        assert cmd[1] == "-c", f"expected non-login -c, got {cmd[1]!r}"
+        assert "-l" not in cmd[1], "login shell must be opt-in, not default"
+        assert cmd[2].startswith("set +m; ")
+
+    def test_opt_in_login_shell_when_config_set(self, registry):
+        """``terminal.background_login_shell: true`` preserves the old shape.
+
+        Documents the opt-in contract so users who relied on the prior
+        login behaviour (custom tool PATH, ``exec``-swap wrappers) can
+        recover it explicitly rather than via implicit ``-lic`` defaults.
+        """
+        cmd, _ = self._spawn_popen_args(
+            registry, config_override={"background_login_shell": True}
+        )
+        assert cmd[0] == "/bin/bash"
+        assert cmd[1] == "-lic", (
+            "opt-in flag must restore the prior login + interactive shape"
+        )
+
+    def test_helper_defaults_to_false_on_config_failure(self, monkeypatch):
+        """The config helper must not raise into the spawn path on failure."""
+        # First-run before config exists, malformed YAML, missing key —
+        # every code path returns False (the safer default).
+        import tools.process_registry as registry_mod
+
+        # No config at all.
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config", lambda: None
+        )
+        assert _background_login_shell_enabled() is False
+
+        # Config raises during load.
+        def raise_load_config():
+            raise RuntimeError("config broken")
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config", raise_load_config
+        )
+        assert _background_login_shell_enabled() is False
+
+        # Terminal key absent.
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config", lambda: {"terminal": {}}
+        )
+        assert _background_login_shell_enabled() is False
+
+        # Explicitly off.
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"terminal": {"background_login_shell": False}},
+        )
+        assert _background_login_shell_enabled() is False
+
+        # Explicitly on.
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"terminal": {"background_login_shell": True}},
+        )
+        assert _background_login_shell_enabled() is True
+
+        # Use the registry_mod import so the linter doesn't complain.
+        _ = registry_mod
 
     def test_spawn_via_env_uses_backend_temp_dir_for_artifacts(self, registry):
         class FakeEnv:

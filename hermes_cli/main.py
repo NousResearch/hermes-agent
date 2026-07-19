@@ -1396,7 +1396,7 @@ def _print_tui_exit_summary(
     )
 
 
-_NPM_LOCK_RUNTIME_KEYS = frozenset({"ideallyInert", "peer"})
+_NPM_LOCK_RUNTIME_KEYS = frozenset({"ideallyInert", "peer", "deprecated"})
 """Lockfile fields npm writes non-deterministically at install time.
 
 ``ideallyInert`` is npm's runtime annotation for packages it skipped installing
@@ -1535,10 +1535,11 @@ def _tui_need_npm_install(root: Path) -> bool:
                 continue
             return True
 
-        if isinstance(installed[name], dict) and comparable(pkg) != comparable(
-            installed[name]
-        ):
-            return True
+        if isinstance(installed[name], dict):
+            if pkg.get("optional") and "version" not in installed[name]:
+                continue
+            if comparable(pkg) != comparable(installed[name]):
+                return True
 
     return False
 

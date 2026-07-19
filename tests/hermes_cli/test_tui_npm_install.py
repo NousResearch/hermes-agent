@@ -604,3 +604,60 @@ def test_make_tui_argv_omits_workspace_when_tui_has_own_lockfile(
     assert install_cmd[:2] == ["/bin/npm", "install"]
     # cwd must be tui_dir (standalone), not parent
     assert calls[0][1]["cwd"] == str(tui_dir)
+
+
+def test_tui_need_npm_install_ignores_deprecated_and_skipped_optional(
+    tmp_path: Path, main_mod
+) -> None:
+    """_tui_need_npm_install should ignore deprecation warnings and skipped optional platform packages."""
+    import json
+
+    tui_dir = tmp_path / "ui-tui"
+    tui_dir.mkdir()
+    (tui_dir / "package.json").write_text("{}")
+
+    # Simulate a lockfile at workspace root (tmp_path)
+    # package 'boolean' has a deprecation warning in wanted, but not in installed
+    # package '@tailwindcss/oxide-darwin-arm64' is optional in wanted, but is missing/skipped in installed (version not present)
+    wanted_lock = {
+        "packages": {
+            "node_modules/boolean": {
+                "version": "3.2.0",
+                "resolved": "https://registry.npmjs.org/boolean/-/boolean-3.2.0.tgz",
+                "deprecated": "Package no longer supported.",
+                "optional": True,
+            },
+            "node_modules/@tailwindcss/oxide-darwin-arm64": {
+                "version": "4.3.1",
+                "optional": True,
+                "os": ["darwin"],
+            },
+        }
+    }
+
+    installed_marker = {
+        "packages": {
+            "node_modules/boolean": {
+                "version": "3.2.0",
+                "resolved": "https://registry.npmjs.org/boolean/-/boolean-3.2.0.tgz",
+                "optional": True,
+            },
+            "node_modules/@tailwindcss/oxide-darwin-arm64": {
+                "resolved": "https://registry.npmjs.org/@tailwindcss/oxide-darwin-arm64/-/oxide-darwin-arm64-4.3.1.tgz",
+                "optional": True,
+            },
+        }
+    }
+
+    (tmp_path / "package-lock.json").write_text(json.dumps(wanted_lock))
+
+    node_modules = tmp_path / "node_modules"
+    node_modules.mkdir()
+    (node_modules / ".package-lock.json").write_text(json.dumps(installed_marker))
+
+    # Also fake the @hermes/ink package.json
+    ink_dir = node_modules / "@hermes" / "ink"
+    ink_dir.mkdir(parents=True)
+    (ink_dir / "package.json").write_text("{}")
+
+    assert main_mod._tui_need_npm_install(tui_dir) is False

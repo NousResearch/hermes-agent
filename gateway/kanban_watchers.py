@@ -46,9 +46,14 @@ def _project_finalizer_delivery_receipt(receipt: Mapping[str, Any]) -> dict[str,
             getattr(provider_result, "message_id", None),
             getattr(provider_result, "id", None),
         )
-    message_id = next((value for value in candidates if value is not None), None)
-    if message_id is not None:
-        return {"provider_message_id": str(message_id)}
+    for candidate in candidates:
+        # Preserve the historical ``message_id or id`` fallback while refusing
+        # falsey or whitespace-only values that cannot identify a real send.
+        if not candidate:
+            continue
+        message_id = str(candidate).strip()
+        if message_id:
+            return {"provider_message_id": message_id}
     return {}
 
 

@@ -89,6 +89,24 @@ def test_project_finalizer_normalizes_delivery_router_send_result(tmp_path, monk
     }
 
 
+def test_project_finalizer_normalizes_mapping_fallback_and_rejection():
+    assert _project_finalizer_delivery_receipt(
+        {
+            "success": True,
+            "result": {"message_id": "", "id": "legacy-42"},
+        }
+    ) == {"provider_message_id": "legacy-42"}
+    assert _project_finalizer_delivery_receipt(
+        {
+            "success": True,
+            "result": {"message_id": 0, "id": False},
+        }
+    ) == {}
+    assert _project_finalizer_delivery_receipt(
+        {"success": False, "error": "provider rejected send"}
+    ) == {"rejected": True, "error": "provider rejected send"}
+
+
 def test_singleton_dispatcher_lock_is_exclusive(tmp_path):
     """Only one holder of the dispatcher lock at a time — the backstop that
     stops concurrent dispatchers double reclaiming and corrupting shared

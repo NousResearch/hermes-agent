@@ -40,13 +40,14 @@ import pubmed from "./widgets/pubmed.js";
 import trials from "./widgets/trials.js";
 import drug from "./widgets/drug.js";
 import calc from "./widgets/calc.js";
+import meded from "./widgets/meded.js";
 import worldstate from "./widgets/worldstate.js";
 import reading from "./widgets/reading.js";
 import focus from "./widgets/focus.js";
 import system from "./widgets/system.js";
 
 const WIDGETS = Object.fromEntries(
-  [clock, glance, worldstate, agent, weather, launcher, news, reading, tasks, notes, calendar, markets, scores, socials, gaming, stocks, worldclock, quakes, fx, convert, air, space, alerts, flights, podcasts, medbot, pubmed, trials, drug, calc, focus, system]
+  [clock, glance, worldstate, agent, weather, launcher, news, reading, tasks, notes, calendar, markets, scores, socials, gaming, stocks, worldclock, quakes, fx, convert, air, space, alerts, flights, podcasts, medbot, pubmed, trials, drug, calc, meded, focus, system]
     .map((w) => [w.type, w]),
 );
 

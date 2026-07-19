@@ -123,7 +123,7 @@ const WIDGET_PAGES = {
   Feeds: ["news", "reading", "socials", "gaming", "podcasts"],
   Sports: ["scores"],
   Intel: ["worldclock", "quakes", "fx", "convert", "air", "space", "alerts", "flights"],
-  Health: ["medbot", "pubmed", "trials", "drug", "calc"],
+  Health: ["medbot", "pubmed", "trials", "drug", "calc", "meded"],
 };
 const pageOf = (type) => Object.keys(WIDGET_PAGES).find((p) => WIDGET_PAGES[p].includes(type)) || "Main";
 const gotoPage = async (name) => {
@@ -707,6 +707,18 @@ check("clinical calc computes GCS from labelled selects", true);
 await page.locator(".widget-calc .calc-picker").selectOption("reference");
 await page.waitForSelector(".widget-calc .calc-ref-table tr", { timeout: 5000 });
 check("clinical calc lists SA reference ranges", (await page.locator(".widget-calc .calc-ref-table tr").count()) >= 10);
+// med education / OSCE
+await gotoWidget("meded");
+check("med ed lists OSCE stations", (await page.locator(".widget-meded .meded-station").count()) >= 10);
+const medMsgsB = await page.locator(".widget-medbot .med-msg").count();
+await page.locator(".widget-meded .meded-station .btn-primary").first().click();
+await page.waitForFunction((n) =>
+  document.querySelectorAll(".widget-medbot .med-msg").length > n, medMsgsB, { timeout: 10000 });
+check("OSCE 'Practice' launches a MedBot station",
+  (await page.locator(".widget-medbot .med-msg.med-user").last().innerText()).toLowerCase().includes("osce"));
+await page.locator(".widget-meded .meded-modes .tab", { hasText: "Study" }).click();
+await page.waitForSelector(".widget-meded .meded-card", { timeout: 5000 });
+check("med ed study cards render", (await page.locator(".widget-meded .meded-card").count()) >= 4);
 await gotoWidget("medbot");
 check("medbot shows the SA decision-support intro", /South African/i.test(await page.locator(".widget-medbot").innerText()));
 await page.locator(".widget-medbot .med-input").fill("First-line HIV-TB co-infection management?");

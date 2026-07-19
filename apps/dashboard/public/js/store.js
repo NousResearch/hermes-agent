@@ -25,6 +25,7 @@ function defaultPages() {
     ] },
     { id: uid(), name: "Health", layout: [
       w("medbot", "l"), w("pubmed", "m"), w("trials", "m"), w("drug", "m"), w("calc", "m"),
+      w("meded", "l"),
     ] },
   ];
 }

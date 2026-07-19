@@ -1094,6 +1094,28 @@ a { color: inherit; }
 .calc-ref-range { font-variant-numeric: tabular-nums; text-align: right; white-space: nowrap; }
 .calc-ref-unit { font-size: 11px; padding-left: 4px !important; }
 
+/* ---------- med education & OSCE ---------- */
+.meded-modes { margin-bottom: 10px; }
+.meded-domains { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 8px; }
+.meded-chip { font-size: 11px; padding: 3px 9px; border: 1px solid var(--hairline-2); border-radius: 999px; background: var(--surface-2); color: var(--ink-2); cursor: pointer; }
+.meded-chip-on { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+.meded-random { margin-bottom: 8px; display: inline-block; }
+.meded-stations { display: flex; flex-direction: column; gap: 6px; max-height: 380px; overflow-y: auto; }
+.meded-station { display: flex; align-items: center; gap: 10px; border: 1px solid var(--hairline); border-radius: 5px; padding: 8px 10px; }
+.meded-station-main { flex: 1; min-width: 0; }
+.meded-station-title { font-weight: 600; line-height: 1.3; }
+.meded-station-brief { margin-top: 2px; }
+.meded-dom { color: var(--accent); font-weight: 600; }
+.meded-station-actions { display: flex; gap: 5px; flex: 0 0 auto; }
+.meded-study { display: flex; flex-direction: column; gap: 8px; max-height: 380px; overflow-y: auto; }
+.meded-card { border: 1px solid var(--hairline); border-left: 3px solid var(--accent); border-radius: 5px; padding: 9px 11px; }
+.meded-card-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.meded-card-title { font-weight: 650; }
+.meded-points { margin: 6px 0 0; padding-left: 18px; display: flex; flex-direction: column; gap: 3px; font-size: 13px; color: var(--ink-2); line-height: 1.4; }
+.meded-note { margin-bottom: 8px; }
+.meded-topic { width: 100%; margin-bottom: 8px; }
+.meded-ask-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+
 /* ---------- podcasts ---------- */
 .pod-head { display: flex; align-items: center; gap: 8px; }
 .pod-add { margin-left: auto; }

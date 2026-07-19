@@ -20,6 +20,11 @@ import {
   DropdownMenuTrigger,
   host,
   Input,
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
   useMutation,
   useQuery,
   useQueryClient,
@@ -27,12 +32,47 @@ import {
 } from '@hermes/plugin-sdk'
 import { useEffect, useState } from 'react'
 
-import { $boardSlug, BOARDS_KEY, createBoard, fetchBoards } from './api'
-import { errText } from './ui'
+import { $boardSlug, BOARDS_KEY, createBoard, fetchBoards, fetchProjects, PROJECTS_KEY, updateBoard } from './api'
+import type { BoardMeta } from './types'
+import { errText, FIELD_LABEL } from './ui'
+
+const NO_PROJECT = '__none__'
+
+/** Board scope = a first-class Hermes project. Its primary repo becomes the
+ *  board's default workspace root; new tasks inherit it as a worktree with a
+ *  deterministic branch. "No project" falls back to scratch sandboxes. */
+function ProjectPicker({ onChange, value }: { onChange: (id: string) => void; value: string }) {
+  const { data } = useQuery({ queryKey: PROJECTS_KEY, queryFn: fetchProjects, staleTime: 30_000 })
+  const projects = data?.projects ?? []
+
+  return (
+    <label className="flex flex-col gap-1">
+      <span className={FIELD_LABEL}>Project</span>
+      <Select onValueChange={id => onChange(id === NO_PROJECT ? '' : id)} value={value || NO_PROJECT}>
+        <SelectTrigger>
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          <SelectItem value={NO_PROJECT}>No project (scratch sandboxes)</SelectItem>
+          {projects.map(project => (
+            <SelectItem key={project.id} value={project.id}>
+              {project.name}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+      <span className="text-[0.6875rem] leading-relaxed text-(--ui-text-quaternary)">
+        New tasks run in the project’s repo (a worktree per task); each task can still override its workspace at
+        creation. Manage projects with <span className="font-mono">hermes project</span>.
+      </span>
+    </label>
+  )
+}
 
 function NewBoardDialog({ onClose, open }: { onClose: () => void; open: boolean }) {
   const qc = useQueryClient()
   const [name, setName] = useState('')
+  const [project, setProject] = useState('')
 
   const slug = name
     .trim()
@@ -43,11 +83,12 @@ function NewBoardDialog({ onClose, open }: { onClose: () => void; open: boolean 
   useEffect(() => {
     if (open) {
       setName('')
+      setProject('')
     }
   }, [open])
 
   const create = useMutation({
-    mutationFn: () => createBoard(slug, name.trim()),
+    mutationFn: () => createBoard(slug, name.trim(), project || undefined),
     onError: err => host.notify({ kind: 'error', message: errText(err) }),
     onSuccess: result => {
       $boardSlug.set(result.board.slug)
@@ -58,19 +99,23 @@ function NewBoardDialog({ onClose, open }: { onClose: () => void; open: boolean 
 
   return (
     <Dialog onOpenChange={o => !o && onClose()} open={open}>
-      <DialogContent className="max-w-sm">
+      <DialogContent className="max-w-md">
         <DialogHeader>
           <DialogTitle>New board</DialogTitle>
         </DialogHeader>
-        <div className="flex flex-col gap-1.5">
-          <Input
-            autoFocus
-            onChange={event => setName(event.target.value)}
-            onKeyDown={event => event.key === 'Enter' && slug && create.mutate()}
-            placeholder="Board name"
-            value={name}
-          />
-          {slug && <span className="text-[0.6875rem] text-(--ui-text-quaternary)">slug: {slug}</span>}
+        <div className="flex flex-col gap-3">
+          <label className="flex flex-col gap-1">
+            <span className={FIELD_LABEL}>Name</span>
+            <Input
+              autoFocus
+              onChange={event => setName(event.target.value)}
+              onKeyDown={event => event.key === 'Enter' && slug && !project && create.mutate()}
+              placeholder="Board name"
+              value={name}
+            />
+            {slug && <span className="text-[0.6875rem] text-(--ui-text-quaternary)">slug: {slug}</span>}
+          </label>
+          <ProjectPicker onChange={setProject} value={project} />
         </div>
         <DialogFooter>
           <Button onClick={onClose} variant="text">
@@ -85,10 +130,61 @@ function NewBoardDialog({ onClose, open }: { onClose: () => void; open: boolean 
   )
 }
 
+function BoardSettingsDialog({ board, onClose }: { board: BoardMeta | null; onClose: () => void }) {
+  const qc = useQueryClient()
+  const [name, setName] = useState('')
+  const [project, setProject] = useState('')
+
+  useEffect(() => {
+    if (board) {
+      setName(board.name || '')
+      setProject(board.project_id || '')
+    }
+  }, [board])
+
+  const save = useMutation({
+    // Slug is immutable; send name + project_id ('' clears the scope, which
+    // also drops the mirrored default_workdir on the backend).
+    mutationFn: () => updateBoard(board!.slug, { name: name.trim(), project_id: project }),
+    onError: err => host.notify({ kind: 'error', message: errText(err) }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: BOARDS_KEY })
+      onClose()
+    }
+  })
+
+  return (
+    <Dialog onOpenChange={o => !o && onClose()} open={Boolean(board)}>
+      <DialogContent className="max-w-md">
+        <DialogHeader>
+          <DialogTitle>Board settings{board ? ` — ${board.name || board.slug}` : ''}</DialogTitle>
+        </DialogHeader>
+        <div className="flex flex-col gap-3">
+          <label className="flex flex-col gap-1">
+            <span className={FIELD_LABEL}>Name</span>
+            <Input onChange={event => setName(event.target.value)} placeholder="Board name" value={name} />
+            {board && <span className="text-[0.6875rem] text-(--ui-text-quaternary)">slug: {board.slug}</span>}
+          </label>
+          <ProjectPicker onChange={setProject} value={project} />
+        </div>
+        <DialogFooter>
+          <Button onClick={onClose} variant="text">
+            Cancel
+          </Button>
+          <Button disabled={save.isPending} onClick={() => save.mutate()}>
+            Save
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
 export function BoardSwitcher() {
   const slug = useValue($boardSlug)
   const { data: boards } = useQuery({ queryFn: fetchBoards, queryKey: BOARDS_KEY, staleTime: 30_000 })
   const [adding, setAdding] = useState(false)
+  const [settingsFor, setSettingsFor] = useState<BoardMeta | null>(null)
 
   if (!boards) {
     return null
@@ -124,6 +220,12 @@ export function BoardSwitcher() {
             </DropdownMenuItem>
           ))}
           <DropdownMenuSeparator />
+          {current && (
+            <DropdownMenuItem onSelect={() => setSettingsFor(current)}>
+              <Codicon name="settings-gear" size="0.8rem" />
+              Board settings…
+            </DropdownMenuItem>
+          )}
           <DropdownMenuItem onSelect={() => setAdding(true)}>
             <Codicon name="add" size="0.8rem" />
             New board…
@@ -131,6 +233,7 @@ export function BoardSwitcher() {
         </DropdownMenuContent>
       </DropdownMenu>
       <NewBoardDialog onClose={() => setAdding(false)} open={adding} />
+      <BoardSettingsDialog board={settingsFor} onClose={() => setSettingsFor(null)} />
     </>
   )
 }

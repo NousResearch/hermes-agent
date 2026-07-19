@@ -121,9 +121,29 @@ export interface KanbanTaskDetail {
 export interface BoardMeta {
   slug: string
   name?: null | string
+  description?: null | string
   is_current?: boolean
   total?: number
+  /** Board-level project directory new tasks inherit (empty = none). */
+  default_workdir?: null | string
+  /** Recommended workspace kind derived from default_workdir by the backend
+   *  (`scratch` when unset, `worktree` in a git repo, else `dir`). */
+  default_workspace_kind?: null | string
+  /** First-class Project the board is scoped to (id) + resolved name. */
+  project_id?: null | string
+  project_name?: null | string
 }
+
+/** GET /projects — first-class Hermes projects available to scope a board. */
+export interface KanbanProject {
+  id: string
+  slug: string
+  name: string
+  primary_path?: null | string
+  icon?: null | string
+  color?: null | string
+}
+
 
 export interface BoardsResponse {
   boards: BoardMeta[]

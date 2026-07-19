@@ -64,10 +64,12 @@ import {
   $introDismissed,
   $lanesByProfile,
   boardKey,
+  BOARDS_KEY,
   bulkTasks,
   createTask,
   deleteTask,
   fetchBoard,
+  fetchBoards,
   fetchProfiles,
   patchTask,
   PROFILES_KEY
@@ -536,20 +538,34 @@ function NewTaskDialog({
   // (ultimately the active profile), applied at create time. Never silently
   // unassigned — parking a card is the explicit choice, not the default.
   const resolvedDefault = useOrchestration()?.resolved_default_assignee || 'default'
+
+  // Board-level workspace default: a task inherits the current board's project
+  // workspace (scratch when unscoped, worktree in a git repo, else dir) unless
+  // overridden below. Set the board's project in the switcher's "Board settings…".
+  const selectedSlug = useValue($boardSlug)
+  const { data: boards } = useQuery({ queryKey: BOARDS_KEY, queryFn: fetchBoards, staleTime: 30_000 })
+  const currentBoard = boards?.boards.find(b => b.slug === (selectedSlug || boards.current))
+  const boardDefaultKind = currentBoard?.default_workspace_kind || 'scratch'
+  const boardDefaultDir = currentBoard?.default_workdir || ''
+
   const isTriage = target === 'triage'
   const [title, setTitle] = useState('')
   const [bodyText, setBodyText] = useState('')
   const [assignee, setAssignee] = useState('')
   const [priority, setPriority] = useState('0')
   const [skills, setSkills] = useState('')
-  const [workspaceKind, setWorkspaceKind] = useState<string>('scratch')
+  const [workspaceKind, setWorkspaceKind] = useState<string>(boardDefaultKind)
+  // Empty = inherit the board's project dir (backend resolves it); a path here
+  // overrides just this task. Only meaningful for dir/worktree.
+  const [workspacePath, setWorkspacePath] = useState('')
   const [parent, setParent] = useState('')
   const [goalMode, setGoalMode] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<null | string>(null)
 
   // Reset per open — the dialog is externally controlled (open = target set),
-  // so onOpenChange(true) never fires; key the reset off `target` instead.
+  // so onOpenChange(true) never fires; key the reset off `target` (and the
+  // resolved board default, which may arrive after the first open).
   useEffect(() => {
     if (target) {
       setTitle('')
@@ -557,13 +573,14 @@ function NewTaskDialog({
       setAssignee('')
       setPriority('0')
       setSkills('')
-      setWorkspaceKind('scratch')
+      setWorkspaceKind(boardDefaultKind)
+      setWorkspacePath('')
       setParent('')
       setGoalMode(false)
       setError(null)
       setBusy(false)
     }
-  }, [target])
+  }, [target, boardDefaultKind])
 
   const submit = async () => {
     const trimmed = title.trim()
@@ -592,7 +609,9 @@ function NewTaskDialog({
         skills: skillList.length ? skillList : undefined,
         title: trimmed,
         triage: isTriage,
-        workspace_kind: workspaceKind
+        workspace_kind: workspaceKind,
+        // Empty → backend inherits the board's project dir.
+        workspace_path: workspaceKind !== 'scratch' && workspacePath.trim() ? workspacePath.trim() : undefined
       })
 
       if (task && task.status !== target) {
@@ -652,12 +671,28 @@ function NewTaskDialog({
                   {WORKSPACE_KINDS.map(kind => (
                     <SelectItem key={kind} value={kind}>
                       {kind}
+                      {kind === boardDefaultKind ? ' · board default' : ''}
                     </SelectItem>
                   ))}
                 </SelectContent>
               </Select>
             </Field>
           </div>
+
+          {workspaceKind !== 'scratch' && (
+            <Field label="Workspace path (optional override)">
+              <Input
+                onChange={event => setWorkspacePath(event.target.value)}
+                placeholder={boardDefaultDir || 'Inherits the board’s project directory'}
+                value={workspacePath}
+              />
+              <span className="text-[0.625rem] text-(--ui-text-quaternary)">
+                {boardDefaultDir
+                  ? `Leave empty to inherit ${boardDefaultDir}`
+                  : 'Leave empty to inherit the board’s project directory.'}
+              </span>
+            </Field>
+          )}
 
           <Field label="Assignee">
             <Select onValueChange={v => setAssignee(v === NO_PARENT ? '' : v)} value={assignee || NO_PARENT}>

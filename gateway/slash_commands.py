@@ -34,6 +34,7 @@ from agent.i18n import t
 from agent.turn_context import extract_api_content_sidecar
 from gateway.config import HomeChannel, Platform, PlatformConfig
 from gateway.platforms.base import EphemeralReply, MessageEvent, MessageType
+from gateway.delivery import looks_like_telegram_private_chat_id
 from gateway.session import (
     AsyncSessionStore,
     SessionSource,
@@ -4031,12 +4032,22 @@ class GatewaySlashCommandsMixin:
             title=title,
         )
 
+    # Platforms whose adapters can host a fresh sibling thread for a branch.
+    _BRANCH_THREAD_PLATFORMS = (Platform.DISCORD, Platform.TELEGRAM, Platform.SLACK)
+
     async def _handle_branch_command(self, event: MessageEvent) -> str:
         """Handle /branch [name] — fork the current session into a new independent copy.
 
         Copies conversation history to a new session so the user can explore
         a different approach without losing the original.
         Inspired by Claude Code's /branch command.
+
+        On thread-capable platforms (Discord, Telegram, Slack), ``/branch``
+        defaults to cloning into a **new sibling thread** and binding that
+        thread's session key to the clone, leaving the origin conversation
+        active on the current surface. ``--here`` opts out and switches the
+        current surface onto the clone (the legacy in-place behavior);
+        non-thread platforms always behave in-place.
         """
         import uuid as _uuid
 
@@ -4053,7 +4064,22 @@ class GatewaySlashCommandsMixin:
         if not history:
             return t("gateway.branch.no_conversation")
 
-        branch_name = event.get_command_args().strip()
+        # Parse args. ``--here`` opts out of the new-thread default; ``--thread``
+        # is a common misfire (users typing the behavior they expect) — treat it
+        # as a branch name so it never becomes a session titled "--thread".
+        raw_args = event.get_command_args().strip()
+        use_here = False
+        branch_name = raw_args
+        if raw_args == "--here":
+            use_here = True
+            branch_name = ""
+        elif raw_args.startswith("--here "):
+            use_here = True
+            branch_name = raw_args[len("--here "):].strip()
+        elif raw_args == "--thread":
+            branch_name = ""
+        elif raw_args.startswith("--thread "):
+            branch_name = raw_args[len("--thread "):].strip()
 
         # Generate the new session ID
         from datetime import datetime as _dt
@@ -4071,6 +4097,29 @@ class GatewaySlashCommandsMixin:
             branch_title = await self._session_db.get_next_title_in_lineage(base)
 
         parent_session_id = current_entry.session_id
+
+        # Thread-capable platforms default to cloning into a NEW sibling thread
+        # so the origin conversation stays live on the current surface. A
+        # /branch issued INSIDE a thread must parent the new thread on the real
+        # channel — adapters reject a thread as a thread parent — so use
+        # ``parent_chat_id`` (the channel behind a thread source) when present.
+        new_thread_id: Optional[str] = None
+        if not use_here and source.platform in self._BRANCH_THREAD_PLATFORMS:
+            adapter = self.adapters.get(source.platform) if getattr(self, "adapters", None) else None
+            if adapter is not None:
+                parent_chat_id = source.parent_chat_id or source.chat_id
+                try:
+                    new_thread_id = await adapter.create_handoff_thread(
+                        str(parent_chat_id), f"Hermes — {branch_title}",
+                    )
+                except Exception as exc:
+                    # Fall back to in-place cloning if thread creation fails
+                    # (no permission, topics-mode off, parent is a DM, …).
+                    logger.debug(
+                        "Branch: create_handoff_thread raised on %s: %s",
+                        source.platform, exc, exc_info=True,
+                    )
+                    new_thread_id = None
 
         # Create the new session with parent link.
         # Persist a stable ``_branched_from`` marker in model_config so
@@ -4119,18 +4168,66 @@ class GatewaySlashCommandsMixin:
         except Exception:
             pass
 
-        # Switch the session store entry to the new session
-        new_entry = await self.async_session_store.switch_session(session_key, new_session_id)
-        if not new_entry:
-            return t("gateway.branch.switch_failed")
-        self._clear_session_boundary_security_state(session_key)
+        # Bind the clone to a routing entry.
+        #
+        # New-thread mode: build the destination source for the freshly created
+        # sibling thread, materialize its session-store entry, and switch THAT
+        # key to the clone — leaving the origin key on its existing session so
+        # the original conversation stays active on the current surface. This is
+        # the same destination-key handoff the CLI→platform handoff uses; simply
+        # persisting a thread_id on the clone would never create a routing entry
+        # for the new thread, so follow-ups there would miss the branch.
+        if new_thread_id:
+            parent_chat_id = str(source.parent_chat_id or source.chat_id)
+            # Telegram DM topics are keyed as DMs (with the real user id), not
+            # as generic threads — mirror the inbound adapter so the branching
+            # user's next message in the topic shares this same session.
+            is_telegram_private_chat = (
+                source.platform == Platform.TELEGRAM
+                and looks_like_telegram_private_chat_id(parent_chat_id)
+            )
+            if is_telegram_private_chat:
+                dest_chat_type = "dm"
+            else:
+                dest_chat_type = "thread"
+            dest_source = SessionSource(
+                platform=source.platform,
+                chat_id=parent_chat_id,
+                chat_name=source.chat_name,
+                chat_type=dest_chat_type,
+                user_id=source.user_id,
+                user_name=source.user_name,
+                thread_id=str(new_thread_id),
+                scope_id=source.scope_id,
+                profile=source.profile,
+            )
+            dest_key = self._session_key_for_source(dest_source)
+            await self.async_session_store.get_or_create_session(dest_source)
+            switched = await self.async_session_store.switch_session(dest_key, new_session_id)
+            if switched is None:
+                # Destination bind failed — fall back to in-place so the clone
+                # is never orphaned (unroutable).
+                new_thread_id = None
+            else:
+                self._clear_session_boundary_security_state(dest_key)
+                self._evict_cached_agent(dest_key)
+                self._release_running_agent_state(dest_key)
 
-        # Evict any cached agent for this session
-        self._evict_cached_agent(session_key)
+        if not new_thread_id:
+            # In-place mode (``--here``, non-thread platforms, or a failed
+            # thread bind): switch the ORIGIN key onto the clone (legacy).
+            new_entry = await self.async_session_store.switch_session(session_key, new_session_id)
+            if not new_entry:
+                return t("gateway.branch.switch_failed")
+            self._clear_session_boundary_security_state(session_key)
+            self._evict_cached_agent(session_key)
 
         msg_count = len([m for m in history if m.get("role") == "user"])
         key = "gateway.branch.branched_one" if msg_count == 1 else "gateway.branch.branched_many"
-        return t(key, title=branch_title, count=msg_count, parent=parent_session_id, new=new_session_id)
+        message = t(key, title=branch_title, count=msg_count, parent=parent_session_id, new=new_session_id)
+        if new_thread_id:
+            message += "\n\n" + t("gateway.branch.new_thread", thread=str(new_thread_id))
+        return message
 
     async def _handle_topup_command(self, event: MessageEvent) -> str:
         """Handle /topup -- show the Nous balance and hand off to the portal.

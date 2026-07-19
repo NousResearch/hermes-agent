@@ -19,6 +19,7 @@ Bug scenario (pre-fix):
 import os
 import tempfile
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 
@@ -190,6 +191,125 @@ class TestFlushAfterCompression:
                 "tool result",
                 "final answer",
             ]
+
+    def test_abort_after_in_place_compaction_preserves_flush_baseline(self):
+        """An aborted retry must retain both compacted rows and new turns."""
+        from agent.conversation_compression import (
+            compress_context,
+            conversation_history_after_compression,
+        )
+        from hermes_state import SessionDB
+
+        class SuccessCompressor:
+            _last_compress_aborted = False
+            _last_summary_error = None
+            compression_count = 1
+            _last_compression_made_progress = True
+            _last_summary_fallback_used = False
+            last_compression_rough_tokens = 0
+            last_prompt_tokens = 0
+            last_completion_tokens = 0
+            awaiting_real_usage_after_compression = False
+
+            def compress(self, _messages, **_kwargs):
+                return [
+                    {"role": "user", "content": "[summary] earlier state"},
+                    {"role": "assistant", "content": "retained tail"},
+                ]
+
+        class AbortCompressor:
+            _last_compress_aborted = False
+            _last_summary_error = "simulated auxiliary timeout"
+            compression_count = 2
+            _last_compression_made_progress = False
+            _last_summary_fallback_used = False
+            last_compression_rough_tokens = 0
+            last_prompt_tokens = 0
+            last_completion_tokens = 0
+            awaiting_real_usage_after_compression = False
+
+            def compress(self, messages, **_kwargs):
+                self._last_compress_aborted = True
+                return messages
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = SessionDB(db_path=Path(tmpdir) / "test.db")
+            agent = self._make_agent(db)
+            agent.compression_in_place = True
+            original = [
+                {"role": "user", "content": "old question"},
+                {"role": "assistant", "content": "old answer"},
+            ]
+            agent._flush_messages_to_session_db(original, [])
+
+            agent.context_compressor = SuccessCompressor()
+            compacted, _ = compress_context(
+                agent, original, "system", approx_tokens=100_000
+            )
+            history = conversation_history_after_compression(
+                agent, compacted, None
+            )
+
+            messages = compacted + [
+                {"role": "user", "content": "new request"},
+                {"role": "assistant", "content": "new answer"},
+            ]
+            agent.context_compressor = AbortCompressor()
+            returned, _ = compress_context(
+                agent, messages, "system", approx_tokens=100_000
+            )
+            history = conversation_history_after_compression(
+                agent, returned, history
+            )
+            agent._flush_messages_to_session_db(returned, history)
+
+            assert [message["content"] for message in db.get_messages_as_conversation(
+                agent.session_id
+            )] == [
+                "[summary] earlier state",
+                "retained tail",
+                "new request",
+                "new answer",
+            ]
+
+    def test_new_run_clears_stale_in_place_compaction_state(self, monkeypatch):
+        """A cached agent must not report a prior turn's compaction boundary."""
+        import agent.conversation_loop as loop
+
+        observed = {}
+
+        def fake_build_turn_context(agent, *_args, **_kwargs):
+            observed["in_place"] = agent._last_compaction_in_place
+            observed["attempt_recorded"] = agent._last_compression_attempt_recorded
+            observed["attempt_in_place"] = agent._last_compression_attempt_in_place
+            return SimpleNamespace(
+                user_message="hello",
+                original_user_message="hello",
+                messages=[],
+                conversation_history=[],
+                active_system_prompt="system",
+                effective_task_id="default",
+                turn_id="turn-1",
+                current_turn_user_idx=0,
+                should_review_memory=False,
+                plugin_user_context={},
+                ext_prefetch_cache=None,
+            )
+
+        agent = SimpleNamespace(
+            api_mode="codex_app_server",
+            _last_compaction_in_place=True,
+            _last_compression_attempt_recorded=True,
+            _last_compression_attempt_in_place=True,
+        )
+        agent._run_codex_app_server_turn = lambda **_kwargs: dict(observed)
+        monkeypatch.setattr(loop, "build_turn_context", fake_build_turn_context)
+
+        assert loop.run_conversation(agent, "hello") == {
+            "in_place": False,
+            "attempt_recorded": False,
+            "attempt_in_place": None,
+        }
 
     def test_rotation_child_session_flushes_full_compressed_transcript_with_markers(self):
         """Regression for #57491: live cached-agent markers must not block child flush."""

@@ -3258,16 +3258,15 @@ def test_connect_falls_back_to_delete_on_locking_protocol(tmp_path, monkeypatch,
 
     real_connect = _sqlite3.connect
 
-    class _WalBlockingConnection(_sqlite3.Connection):
+    class _WalBlockingConnection(kb._KanbanConnection):
         def execute(self, sql, *args, **kwargs):  # type: ignore[override]
             if "journal_mode=wal" in sql.lower().replace(" ", ""):
                 raise _sqlite3.OperationalError("locking protocol")
             return super().execute(sql, *args, **kwargs)
 
     def wal_blocking_connect(*args, **kwargs):
-        return real_connect(
-            *args, factory=_WalBlockingConnection, **kwargs
-        )
+        kwargs["factory"] = _WalBlockingConnection
+        return real_connect(*args, **kwargs)
 
     with _patch("hermes_cli.kanban_db.sqlite3.connect", side_effect=wal_blocking_connect):
         with caplog.at_level("WARNING", logger="hermes_state"):

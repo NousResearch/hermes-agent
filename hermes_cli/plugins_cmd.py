@@ -15,6 +15,7 @@ import json
 import logging
 import os
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -448,23 +449,109 @@ def _require_installed_plugin(name: str, plugins_dir: Path, console) -> Path:
 # ---------------------------------------------------------------------------
 
 
-def _run_inspect_git(command: list[str], *, cwd: Path | None = None) -> str:
+MAX_INSPECT_MANIFEST_BYTES = 256 * 1024
+
+
+def _inspection_git_env() -> dict[str, str]:
+    """Return an environment that cannot inherit Git execution configuration."""
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if not key.startswith(("GIT_", "GCM_")) and key != "SSH_ASKPASS"
+    }
+    env.update(
+        {
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_CONFIG_GLOBAL": os.devnull,
+            "GIT_TERMINAL_PROMPT": "0",
+            "GCM_INTERACTIVE": "Never",
+            "GIT_ALLOW_PROTOCOL": "file:https:http:ssh",
+        }
+    )
+    return env
+
+
+def _run_inspect_git(
+    command: list[str], *, operation: str, cwd: Path | None = None
+) -> str:
+    failures = {
+        "clone": "Git clone failed.",
+        "checkout": "Git checkout failed.",
+        "resolve commit": "Git resolve commit failed.",
+    }
+    failure = failures.get(operation, "Git operation failed.")
+    safe_command = [command[0], "-c", f"core.hooksPath={os.devnull}", *command[1:]]
     try:
         result = subprocess.run(
-            command,
+            safe_command,
             cwd=str(cwd) if cwd else None,
             capture_output=True,
             text=True,
             timeout=60,
+            env=_inspection_git_env(),
         )
     except FileNotFoundError as exc:
         raise PluginOperationError("git is not installed or not in PATH.") from exc
     except subprocess.TimeoutExpired as exc:
-        raise PluginOperationError("Git operation timed out after 60 seconds.") from exc
+        raise PluginOperationError(f"{failure[:-1]} (timed out).") from exc
     if result.returncode != 0:
-        detail = (result.stderr or result.stdout or "").strip()
-        raise PluginOperationError(f"Git operation failed:\n{detail}")
+        raise PluginOperationError(failure)
     return result.stdout.strip()
+
+
+def _read_inspection_manifest(plugin_dir: Path) -> dict[str, Any]:
+    """Read an untrusted manifest through a bounded, non-following descriptor."""
+    manifest_path = plugin_dir / "plugin.yaml"
+    try:
+        before = manifest_path.lstat()
+    except OSError as exc:
+        raise PluginOperationError("Plugin manifest plugin.yaml is missing.") from exc
+    if stat.S_ISLNK(before.st_mode):
+        raise PluginOperationError("Plugin manifest plugin.yaml must not be a symlink.")
+    if not stat.S_ISREG(before.st_mode):
+        raise PluginOperationError("Plugin manifest plugin.yaml must be a regular file.")
+
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NONBLOCK", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(manifest_path, flags)
+        try:
+            opened = os.fstat(descriptor)
+            if not stat.S_ISREG(opened.st_mode):
+                raise PluginOperationError("Plugin manifest plugin.yaml must be a regular file.")
+            if (before.st_dev, before.st_ino) != (opened.st_dev, opened.st_ino):
+                raise PluginOperationError("Plugin manifest plugin.yaml changed during inspection.")
+            chunks: list[bytes] = []
+            remaining = MAX_INSPECT_MANIFEST_BYTES + 1
+            while remaining:
+                chunk = os.read(descriptor, min(65536, remaining))
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                remaining -= len(chunk)
+        finally:
+            os.close(descriptor)
+    except PluginOperationError:
+        raise
+    except OSError as exc:
+        raise PluginOperationError("Plugin manifest plugin.yaml could not be read safely.") from exc
+
+    raw = b"".join(chunks)
+    if len(raw) > MAX_INSPECT_MANIFEST_BYTES:
+        raise PluginOperationError("Plugin manifest plugin.yaml is too large.")
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise PluginOperationError("Plugin manifest plugin.yaml is not valid UTF-8.") from exc
+    try:
+        import yaml
+
+        manifest = yaml.safe_load(text)
+    except Exception as exc:
+        raise PluginOperationError("Plugin manifest plugin.yaml is malformed.") from exc
+    if not isinstance(manifest, dict) or not manifest:
+        raise PluginOperationError("Plugin manifest plugin.yaml is malformed.")
+    return manifest
 
 
 def inspect_plugin_source(
@@ -494,13 +581,17 @@ def inspect_plugin_source(
 
     with tempfile.TemporaryDirectory() as temporary:
         clone_root = Path(temporary) / "plugin"
-        _run_inspect_git([git_exe, "clone", source_url, str(clone_root)])
+        _run_inspect_git(
+            [git_exe, "clone", source_url, str(clone_root)], operation="clone"
+        )
         if requested_ref is not None:
             _run_inspect_git(
-                [git_exe, "checkout", "--detach", requested_ref], cwd=clone_root
+                [git_exe, "checkout", "--detach", requested_ref],
+                operation="checkout",
+                cwd=clone_root,
             )
         resolved_commit = _run_inspect_git(
-            [git_exe, "rev-parse", "HEAD"], cwd=clone_root
+            [git_exe, "rev-parse", "HEAD"], operation="resolve commit", cwd=clone_root
         )
         try:
             resolved_commit = validate_full_commit_sha(resolved_commit)
@@ -514,12 +605,7 @@ def inspect_plugin_source(
         plugin_dir = (
             _resolve_subdir_within(clone_root, subdir) if subdir else clone_root
         )
-        manifest_path = plugin_dir / "plugin.yaml"
-        if not manifest_path.is_file():
-            raise PluginOperationError("Plugin manifest plugin.yaml is missing.")
-        manifest = _read_manifest(plugin_dir)
-        if not isinstance(manifest, dict) or not manifest:
-            raise PluginOperationError("Plugin manifest plugin.yaml is malformed.")
+        manifest = _read_inspection_manifest(plugin_dir)
         capability = asdict(build_capability_report(plugin_dir, manifest))
         capability = {
             key: list(value) if isinstance(value, tuple) else value
@@ -555,7 +641,7 @@ def inspect_plugin_source(
         }
 
 
-def cmd_inspect(
+def _cmd_inspect_impl(
     identifier: str, *, requested_ref: str | None = None, json_output: bool = False
 ) -> dict[str, Any]:
     """Inspect and print a remote plugin's declared metadata."""
@@ -569,6 +655,15 @@ def cmd_inspect(
 
             Console().print(f"[red]Error:[/red] {exc}")
         raise SystemExit(1) from exc
+    except Exception:
+        message = "Plugin inspection failed unexpectedly."
+        if json_output:
+            print(json.dumps({"error": message}, sort_keys=True))
+        else:
+            from rich.console import Console
+
+            Console().print(f"[red]Error:[/red] {message}")
+        raise SystemExit(1) from None
 
     if json_output:
         try:
@@ -597,6 +692,25 @@ def cmd_inspect(
         console.print(f"Tools: {', '.join(capabilities['tools']) or '(none)'}")
         console.print("[yellow]This inspection is not a security audit.[/yellow]")
     return result
+
+
+def cmd_inspect(
+    identifier: str, *, requested_ref: str | None = None, json_output: bool = False
+) -> dict[str, Any]:
+    """Inspect a plugin while containing unexpected boundary failures."""
+    try:
+        return _cmd_inspect_impl(
+            identifier, requested_ref=requested_ref, json_output=json_output
+        )
+    except Exception:
+        message = "Plugin inspection failed unexpectedly."
+        if json_output:
+            print(json.dumps({"error": message}, sort_keys=True))
+        else:
+            from rich.console import Console
+
+            Console().print(f"[red]Error:[/red] {message}")
+        raise SystemExit(1) from None
 
 
 def _install_plugin_core(identifier: str, *, force: bool) -> tuple[Path, dict, str]:

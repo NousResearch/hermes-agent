@@ -966,6 +966,127 @@ class TestSubdirInstallE2E:
 
 
 class TestInspectPlugin:
+    def test_inspection_manifest_rejects_absolute_symlink(self, tmp_path):
+        from hermes_cli import plugins_cmd as pc
+
+        outside = tmp_path / "outside.yaml"
+        outside.write_text("name: outside\n")
+        plugin = tmp_path / "plugin"
+        plugin.mkdir()
+        (plugin / "plugin.yaml").symlink_to(outside)
+
+        with pytest.raises(PluginOperationError, match="manifest"):
+            pc._read_inspection_manifest(plugin)
+
+    def test_inspection_manifest_rejects_oversized_regular_file(self, tmp_path):
+        from hermes_cli import plugins_cmd as pc
+
+        plugin = tmp_path / "plugin"
+        plugin.mkdir()
+        (plugin / "plugin.yaml").write_bytes(b"x" * (pc.MAX_INSPECT_MANIFEST_BYTES + 1))
+
+        with pytest.raises(PluginOperationError, match="too large"):
+            pc._read_inspection_manifest(plugin)
+
+    @pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="FIFO unsupported")
+    def test_inspection_manifest_rejects_nonregular_file(self, tmp_path):
+        from hermes_cli import plugins_cmd as pc
+
+        plugin = tmp_path / "plugin"
+        plugin.mkdir()
+        os.mkfifo(plugin / "plugin.yaml")
+
+        with pytest.raises(PluginOperationError, match="regular file"):
+            pc._read_inspection_manifest(plugin)
+
+    @pytest.mark.parametrize("content", [b"\xff", b": : malformed [[", b"{}\n", b"\n"])
+    def test_inspection_manifest_rejects_unsafe_content(self, tmp_path, content):
+        from hermes_cli import plugins_cmd as pc
+
+        plugin = tmp_path / "plugin"
+        plugin.mkdir()
+        (plugin / "plugin.yaml").write_bytes(content)
+
+        with pytest.raises(PluginOperationError, match="manifest"):
+            pc._read_inspection_manifest(plugin)
+
+    def test_cmd_json_malformed_manifest_is_one_document_with_empty_stderr(self, capsys):
+        from hermes_cli import plugins_cmd as pc
+
+        with patch.object(pc, "inspect_plugin_source", side_effect=PluginOperationError("Plugin manifest plugin.yaml is malformed.")):
+            with pytest.raises(SystemExit, match="1"):
+                pc.cmd_inspect("owner/repo", json_output=True)
+
+        captured = capsys.readouterr()
+        assert captured.err == ""
+        assert len(captured.out.splitlines()) == 1
+        assert json.loads(captured.out) == {"error": "Plugin manifest plugin.yaml is malformed."}
+
+    def test_cmd_json_unexpected_exception_does_not_leak(self, capsys):
+        from hermes_cli import plugins_cmd as pc
+
+        with patch.object(pc, "inspect_plugin_source", side_effect=RuntimeError("SECRET_REPR")):
+            with pytest.raises(SystemExit, match="1"):
+                pc.cmd_inspect("owner/repo", json_output=True)
+
+        captured = capsys.readouterr()
+        assert captured.err == ""
+        assert len(captured.out.splitlines()) == 1
+        assert json.loads(captured.out) == {"error": "Plugin inspection failed unexpectedly."}
+        assert "SECRET_REPR" not in captured.out
+
+    def test_inspect_git_sanitizes_environment_and_failure_details(self, monkeypatch):
+        from hermes_cli import plugins_cmd as pc
+
+        monkeypatch.setenv("GIT_SSH_COMMAND", "helper SECRET_TOKEN")
+        monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
+        monkeypatch.setenv("GCM_SECRET", "SECRET_TOKEN")
+        monkeypatch.setenv("SSH_ASKPASS", "SECRET_TOKEN")
+        monkeypatch.setenv("SSH_AUTH_SOCK", "/agent.sock")
+        completed = subprocess.CompletedProcess([], 1, stdout="", stderr="remote SECRET_TOKEN")
+        with patch.object(pc.subprocess, "run", return_value=completed) as run:
+            with pytest.raises(PluginOperationError, match="clone failed") as exc_info:
+                pc._run_inspect_git(["git", "clone"], operation="clone")
+
+        env = run.call_args.kwargs["env"]
+        assert not any(key.startswith("GIT_") for key in env if key not in {
+            "GIT_CONFIG_NOSYSTEM", "GIT_CONFIG_GLOBAL", "GIT_TERMINAL_PROMPT", "GIT_ALLOW_PROTOCOL"
+        })
+        assert not any(key.startswith("GCM_") for key in env if key != "GCM_INTERACTIVE")
+        assert "SSH_ASKPASS" not in env
+        assert env["SSH_AUTH_SOCK"] == "/agent.sock"
+        assert env["GIT_ALLOW_PROTOCOL"] == "file:https:http:ssh"
+        assert "SECRET_TOKEN" not in str(exc_info.value)
+
+    def test_inspect_git_unknown_operation_has_sanitized_failure(self):
+        from hermes_cli import plugins_cmd as pc
+
+        completed = subprocess.CompletedProcess([], 1, stdout="", stderr="SECRET_TOKEN")
+        with patch.object(pc.subprocess, "run", return_value=completed):
+            with pytest.raises(PluginOperationError, match="Git operation failed") as exc_info:
+                pc._run_inspect_git(["git", "status"], operation="status")
+
+        assert "SECRET_TOKEN" not in str(exc_info.value)
+
+    def test_real_inspect_ignores_malicious_global_git_filter(self, tmp_path, monkeypatch):
+        from hermes_cli import plugins_cmd as pc
+
+        repo = tmp_path / "repo"
+        _make_inspect_repo(repo)
+        (repo / ".gitattributes").write_text("payload filter=pwn\n")
+        (repo / "payload").write_text("payload\n")
+        subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+        subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "payload"], cwd=repo, check=True)
+        marker = tmp_path / "marker"
+        config = tmp_path / "evil.gitconfig"
+        config.write_text(f"[filter \"pwn\"]\n\tsmudge = sh -c 'touch {marker}; cat'\n")
+        monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(config))
+
+        result = pc.inspect_plugin_source(f"file://{repo}")
+
+        assert result["plugin"]["name"] == "inspect-me"
+        assert not marker.exists()
+
     def test_returns_capabilities_and_commit_without_installing(self, tmp_path, monkeypatch):
         from hermes_cli import plugins_cmd as pc
 

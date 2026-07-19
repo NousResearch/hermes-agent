@@ -570,6 +570,18 @@ def _resolve_api_key_provider_secret(
 ) -> tuple[str, str]:
     """Resolve an API-key provider's token and indicate where it came from."""
     if provider_id == "copilot":
+        # Generic GitHub tokens are commonly present for git, the GitHub CLI,
+        # or CI.  Do not probe Copilot during status/credential resolution
+        # unless the user explicitly configured that provider; otherwise a
+        # classic ghp_* PAT can trigger a validation warning on every probe.
+        try:
+            if not is_provider_explicitly_configured("copilot"):
+                return "", ""
+        except Exception:
+            # Preserve the existing resolver behavior if configuration
+            # inspection itself is unavailable; configured-provider errors
+            # must still be surfaced by the Copilot resolver below.
+            pass
         # Use the dedicated copilot auth module for proper token validation
         try:
             from hermes_cli.copilot_auth import resolve_copilot_token, get_copilot_api_token

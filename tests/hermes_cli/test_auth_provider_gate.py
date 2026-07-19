@@ -248,7 +248,7 @@ def test_copilot_status_preserves_provider_specific_token(tmp_path, monkeypatch)
     )
     monkeypatch.setattr(
         "hermes_cli.copilot_auth.get_copilot_api_token",
-        lambda token: "api-token:" + token,
+        lambda token: ("api-token:" + token, "https://api.githubcopilot.com"),
     )
     api_key, source = auth._resolve_api_key_provider_secret(
         "copilot", auth.PROVIDER_REGISTRY["copilot"]
@@ -269,7 +269,7 @@ def test_copilot_status_preserves_explicit_provider_config(tmp_path, monkeypatch
     )
     monkeypatch.setattr(
         "hermes_cli.copilot_auth.get_copilot_api_token",
-        lambda token: "api-token:" + token,
+        lambda token: ("api-token:" + token, "https://api.githubcopilot.com"),
     )
     api_key, source = auth._resolve_api_key_provider_secret(
         "copilot", auth.PROVIDER_REGISTRY["copilot"]

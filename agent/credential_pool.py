@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import os
 import random
@@ -786,10 +785,6 @@ class CredentialPool:
         # Re-armed to None on every successful selection so a recover→re-exhaust
         # transition logs promptly instead of being swallowed by a stale window.
         self._last_no_entries_log_at: Optional[float] = None
-        # If selection happens on an asyncio event-loop thread, Codex live-usage
-        # reconciliation must not perform blocking HTTP there. Track the single
-        # in-flight worker so repeated empty-pool selections do not fan out probes.
-        self._codex_reconcile_future = None
 
     def has_credentials(self) -> bool:
         return bool(self._entries)
@@ -805,6 +800,22 @@ class CredentialPool:
         if not self._current_id:
             return None
         return next((entry for entry in self._entries if entry.id == self._current_id), None)
+
+    def entry_id_for_api_key(self, api_key: Optional[str]) -> Optional[str]:
+        """Return the pool entry that supplied a known runtime API key.
+
+        This is a read-only identity lookup for runtime rebinds. It deliberately
+        avoids ``select()`` so model/fallback switches do not trigger refresh or
+        Codex usage probes a second time after credentials were already resolved.
+        """
+        if not api_key:
+            return None
+        with self._lock:
+            entry = next(
+                (candidate for candidate in self._entries if candidate.runtime_api_key == api_key),
+                None,
+            )
+        return entry.id if entry is not None else None
 
     def _entry_by_id(self, credential_id: Optional[str]) -> Optional[PooledCredential]:
         if not credential_id:
@@ -1918,33 +1929,9 @@ class CredentialPool:
         self._last_no_entries_log_at = now
         logger.info("credential pool: no available entries (all exhausted or empty)")
 
-    def _schedule_codex_usage_reconcile_from_running_loop(self) -> bool:
-        """Offload an empty Codex pool's live usage probe from an event loop.
-
-        Returns True only when called from a running asyncio loop. The caller
-        then returns promptly with no credential; a later selection sees state
-        updated by the worker. Synchronous CLI callers keep the immediate probe
-        contract and run reconciliation inline.
-        """
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            return False
-        future = self._codex_reconcile_future
-        if future is None or future.done():
-            self._codex_reconcile_future = loop.run_in_executor(
-                None,
-                self.reconcile_live_usage,
-            )
-        return True
-
     def _select_unlocked(self, *, refresh: bool = True) -> Optional[PooledCredential]:
         available = self._available_entries(clear_expired=True, refresh=refresh)
         if not available and self.provider == "openai-codex":
-            if self._schedule_codex_usage_reconcile_from_running_loop():
-                self._current_id = None
-                self._log_no_available_entries()
-                return None
             if self._reconcile_codex_usage_unlocked():
                 available = self._available_entries(
                     clear_expired=True,

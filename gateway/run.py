@@ -4228,6 +4228,28 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         return model, runtime_kwargs
 
+    async def _resolve_session_agent_runtime_off_loop(
+        self,
+        *,
+        source: Optional[SessionSource] = None,
+        session_key: Optional[str] = None,
+        user_config: Optional[dict] = None,
+    ) -> tuple[str, dict]:
+        """Resolve session credentials without blocking the gateway event loop.
+
+        Credential-pool selection may perform bounded OAuth refresh or Codex
+        live-usage probes. Keep the synchronous resolver contract for CLI and
+        agent worker threads, while async gateway surfaces use a dedicated
+        worker call. ``asyncio.to_thread`` copies profile/session contextvars
+        without sharing the separately-mockable model-turn executor contract.
+        """
+        return await asyncio.to_thread(
+            self._resolve_session_agent_runtime,
+            source=source,
+            session_key=session_key,
+            user_config=user_config,
+        )
+
     def _resolve_turn_agent_config(self, user_message: str, model: str, runtime_kwargs: dict) -> dict:
         """Build the effective model/runtime config for a single turn.
 
@@ -11558,7 +11580,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     # than consulting process-global compatibility mirrors.
                     vision_runtime = None
                     try:
-                        turn_model, runtime_kwargs = self._resolve_session_agent_runtime(
+                        turn_model, runtime_kwargs = await self._resolve_session_agent_runtime_off_loop(
                             source=source,
                             session_key=session_key,
                         )
@@ -11764,7 +11786,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # self.model/self.base_url), so using them here always raised
                 # AttributeError, silently caught below, meaning this feature
                 # never ran.
-                _msg_model, _msg_runtime = self._resolve_session_agent_runtime(
+                _msg_model, _msg_runtime = await self._resolve_session_agent_runtime_off_loop(
                     source=source,
                     session_key=session_key,
                     user_config=_msg_cfg,
@@ -12314,7 +12336,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                 pass
 
                 try:
-                    _hyg_model, _hyg_runtime = self._resolve_session_agent_runtime(
+                    _hyg_model, _hyg_runtime = await self._resolve_session_agent_runtime_off_loop(
                         source=source,
                         session_key=session_key,
                         user_config=_hyg_data if isinstance(_hyg_data, dict) else None,
@@ -12420,7 +12442,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     try:
                         from run_agent import AIAgent
 
-                        _hyg_model, _hyg_runtime = self._resolve_session_agent_runtime(
+                        _hyg_model, _hyg_runtime = await self._resolve_session_agent_runtime_off_loop(
                             source=source,
                             session_key=session_key,
                             user_config=_hyg_data if isinstance(_hyg_data, dict) else None,
@@ -14659,7 +14681,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         try:
             user_config = _load_gateway_config()
-            model, runtime_kwargs = self._resolve_session_agent_runtime(
+            model, runtime_kwargs = await self._resolve_session_agent_runtime_off_loop(
                 source=source,
                 user_config=user_config,
             )

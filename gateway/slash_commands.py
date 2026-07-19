@@ -3398,7 +3398,7 @@ class GatewaySlashCommandsMixin:
             platform_key = (
                 _platform_config_key(source.platform) if source.platform else None
             )
-            model, runtime_kwargs = self._resolve_session_agent_runtime(
+            model, runtime_kwargs = await self._resolve_session_agent_runtime_off_loop(
                 source=source,
                 session_key=session_key,
             )

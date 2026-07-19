@@ -5,12 +5,15 @@ from agent.agent_runtime_helpers import restore_primary_runtime, switch_model
 from agent.chat_completion_helpers import try_activate_fallback
 
 
-def _pool(provider: str, entry_id: str):
+def _pool(provider: str, entry_id: str, api_key: str | None = None):
     pool = MagicMock()
     pool.provider = provider
     pool.has_credentials.return_value = True
     pool.has_available.return_value = False
     pool.current.return_value = SimpleNamespace(id=entry_id)
+    pool.entry_id_for_api_key.side_effect = (
+        lambda candidate: entry_id if candidate == api_key else None
+    )
     return pool
 
 
@@ -48,9 +51,9 @@ def _switch_agent(pool):
     return agent
 
 
-def test_switch_model_clears_entry_id_when_pool_is_rebound():
-    agent = _switch_agent(_pool("provider-a", "entry-a"))
-    rebound_pool = _pool("provider-b", "entry-b")
+def test_switch_model_rebinds_entry_id_to_new_runtime_key():
+    agent = _switch_agent(_pool("provider-a", "entry-a", "key-a"))
+    rebound_pool = _pool("provider-b", "entry-b", "key-b")
 
     with patch("agent.credential_pool.load_pool", return_value=rebound_pool):
         switch_model(
@@ -63,11 +66,11 @@ def test_switch_model_clears_entry_id_when_pool_is_rebound():
         )
 
     assert agent._credential_pool is rebound_pool
-    assert agent._credential_pool_entry_id is None
+    assert agent._credential_pool_entry_id == "entry-b"
 
 
-def test_fallback_attach_clears_primary_entry_id():
-    agent = _switch_agent(_pool("provider-a", "entry-a"))
+def test_fallback_attach_rebinds_entry_id_to_fallback_runtime_key():
+    agent = _switch_agent(_pool("provider-a", "entry-a", "key-a"))
     agent._fallback_chain = [{"provider": "provider-b", "model": "model-b"}]
     agent._buffer_status = MagicMock()
     agent._is_azure_openai_url.return_value = False
@@ -79,7 +82,7 @@ def test_fallback_attach_clears_primary_entry_id():
         base_url="https://b.example/v1",
         _custom_headers={},
     )
-    fallback_pool = _pool("provider-b", "entry-b")
+    fallback_pool = _pool("provider-b", "entry-b", "key-b")
 
     with (
         patch(
@@ -91,7 +94,7 @@ def test_fallback_attach_clears_primary_entry_id():
         assert try_activate_fallback(agent) is True
 
     assert agent._credential_pool is fallback_pool
-    assert agent._credential_pool_entry_id is None
+    assert agent._credential_pool_entry_id == "entry-b"
 
 
 def test_restore_primary_clears_fallback_entry_id_when_pool_is_rebound():

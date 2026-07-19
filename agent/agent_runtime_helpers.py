@@ -2103,6 +2103,11 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
             try:
                 from agent.credential_pool import load_pool
                 agent._credential_pool = load_pool(new_provider)
+                identity_lookup = getattr(
+                    agent._credential_pool, "entry_id_for_api_key", None
+                )
+                if callable(identity_lookup):
+                    agent._credential_pool_entry_id = identity_lookup(api_key)
             except Exception as _pool_exc:  # noqa: BLE001
                 logger.warning(
                     "switch_model: credential pool reload failed for %s (%s); "

@@ -16973,6 +16973,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         ("compression", "protect_last_n"),
         ("agent", "disabled_toolsets"),
         ("memory", "provider"),
+        # memory_char_limit / user_char_limit are passed to MemoryStore at
+        # agent construction; changing them mid-session must rebuild the
+        # cached agent so the new limits take effect on the next message.
+        ("memory", "memory_char_limit"),
+        ("memory", "user_char_limit"),
     )
 
     _HONCHO_CACHE_BUSTING_KEYS = (

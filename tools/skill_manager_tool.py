@@ -410,6 +410,29 @@ def _move_skill_dir(src: Path, dest: Path) -> None:
         shutil.move(str(src), str(dest))
 
 
+def _rewrite_cron_skill_refs_after_rename(
+    old_name: str,
+    new_name: str,
+    old_frontmatter_name: Optional[str] = None,
+) -> None:
+    """Keep scheduled jobs aligned with a successfully renamed skill."""
+    consolidated = {old_name: new_name}
+    if old_frontmatter_name and old_frontmatter_name != old_name:
+        consolidated[old_frontmatter_name] = new_name
+
+    try:
+        from cron.jobs import rewrite_skill_refs
+
+        rewrite_skill_refs(consolidated=consolidated, pruned=[])
+    except Exception as exc:
+        logger.warning(
+            "Failed to rewrite cron skill references after renaming %s to %s: %s",
+            old_name,
+            new_name,
+            exc,
+        )
+
+
 def _pinned_guard(name: str) -> Optional[str]:
     """Return a refusal message if *name* is pinned, else None.
 
@@ -575,7 +598,14 @@ def _background_review_preflight(action: str, name: str) -> Optional[Dict[str, A
     existing = _find_skill(name)
     if not existing:
         return None
-    return _background_review_write_guard(name, existing["path"], action)
+    write_guard = _background_review_write_guard(name, existing["path"], action)
+    if write_guard:
+        return write_guard
+    if action == "rename":
+        return _background_review_read_before_write_guard(
+            name, existing["path"] / "SKILL.md", action, "SKILL.md"
+        )
+    return None
 
 
 def _curator_consolidation_delete_guard(
@@ -1215,6 +1245,12 @@ def _rename_skill(name: str, new_name: str) -> Dict[str, Any]:
         return {"success": False, "error": unsafe}
 
     skill_md = skill_dir / "SKILL.md"
+    read_guard = _background_review_read_before_write_guard(
+        name, skill_md, "rename", "SKILL.md"
+    )
+    if read_guard:
+        return read_guard
+
     try:
         original_content = skill_md.read_text(encoding="utf-8")
     except OSError as exc:
@@ -1267,6 +1303,8 @@ def _rename_skill(name: str, new_name: str) -> Dict[str, Any]:
             except Exception:
                 logger.error("Failed to roll back skill rename %s -> %s", name, new_name, exc_info=True)
         return {"success": False, "error": f"Failed to rename skill '{name}' to '{new_name}': {exc}"}
+
+    _rewrite_cron_skill_refs_after_rename(name, new_name, old_frontmatter_name)
 
     return {
         "success": True,

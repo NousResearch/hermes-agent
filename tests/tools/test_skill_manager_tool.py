@@ -707,6 +707,96 @@ class TestSkillManageDispatcher:
         assert result["success"] is True, result
         rename_record.assert_called_once_with("dir-skill", "new-skill", aliases=["front-skill"])
 
+    def test_rename_rewrites_cron_skill_and_legacy_references(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        skills_root = hermes_home / "skills"
+        cron_root = hermes_home / "cron"
+        (cron_root / "output").mkdir(parents=True)
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        import cron.jobs as jobs_mod
+
+        monkeypatch.setattr(jobs_mod, "HERMES_DIR", hermes_home)
+        monkeypatch.setattr(jobs_mod, "CRON_DIR", cron_root)
+        monkeypatch.setattr(jobs_mod, "JOBS_FILE", cron_root / "jobs.json")
+        monkeypatch.setattr(jobs_mod, "OUTPUT_DIR", cron_root / "output")
+
+        with _skill_dir(skills_root):
+            _create_skill("old-skill", _skill_content("old-skill"))
+            skills_job = jobs_mod.create_job(
+                prompt="",
+                schedule="every 1h",
+                skills=["old-skill", "keep"],
+            )
+            legacy_job = jobs_mod.create_job(
+                prompt="",
+                schedule="every 1h",
+                skill="old-skill",
+            )
+            with patch.object(
+                jobs_mod,
+                "rewrite_skill_refs",
+                wraps=jobs_mod.rewrite_skill_refs,
+            ) as rewrite_skill_refs:
+                raw = skill_manage(
+                    action="rename",
+                    name="old-skill",
+                    new_name="new-skill",
+                )
+
+        result = json.loads(raw)
+        assert result["success"] is True, result
+        rewrite_skill_refs.assert_called_once_with(
+            consolidated={"old-skill": "new-skill"},
+            pruned=[],
+        )
+        assert jobs_mod.get_job(skills_job["id"])["skills"] == ["new-skill", "keep"]
+        legacy = jobs_mod.get_job(legacy_job["id"])
+        assert legacy["skills"] == ["new-skill"]
+        assert legacy["skill"] == "new-skill"
+
+    def test_background_review_rename_requires_skill_view_first(self, tmp_path, monkeypatch):
+        from tools.skill_manager_tool import _reset_background_review_read_marks
+        from tools.skills_tool import skill_view
+
+        _reset_background_review_read_marks()
+        try:
+            with _curator_pass(tmp_path, monkeypatch=monkeypatch):
+                created = json.loads(
+                    skill_manage(
+                        action="create",
+                        name="reviewed",
+                        content=_skill_content("reviewed"),
+                    )
+                )
+                assert created["success"] is True, created
+
+                blocked = json.loads(
+                    skill_manage(
+                        action="rename",
+                        name="reviewed",
+                        new_name="renamed",
+                    )
+                )
+                assert blocked["success"] is False
+                assert blocked.get("_read_before_write_required") is True
+                assert (tmp_path / ".hermes" / "skills" / "reviewed").exists()
+                assert not (tmp_path / ".hermes" / "skills" / "renamed").exists()
+
+                viewed = json.loads(skill_view("reviewed"))
+                assert viewed["success"] is True
+
+                allowed = json.loads(
+                    skill_manage(
+                        action="rename",
+                        name="reviewed",
+                        new_name="renamed",
+                    )
+                )
+                assert allowed["success"] is True, allowed
+        finally:
+            _reset_background_review_read_marks()
+
     def test_background_review_delete_refuses_bundled_even_with_absorbed_into(self, tmp_path):
         from tools.skill_provenance import (
             BACKGROUND_REVIEW,

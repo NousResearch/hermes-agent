@@ -863,7 +863,8 @@ export const ja = defineLocale({
       needsSetup: 'セットアップが必要',
       nousIncluded: 'Nous サブスクリプションに含まれています。有効にするには Nous Portal にサインインしてください。',
       nousAuthNeededTitle: 'Nous Portal にサインイン',
-      nousAuthNeededMessage: provider => `${provider} は保存されましたが、Nous Portal にサインインするまで有効になりません。`,
+      nousAuthNeededMessage: provider =>
+        `${provider} は保存されましたが、Nous Portal にサインインするまで有効になりません。`,
       nousAuthSignIn: 'サインイン',
       nousAuthDoneTitle: 'Nous Portal に接続しました',
       nousAuthDoneMessage: 'サブスクリプションのバックエンドが有効になりました。',

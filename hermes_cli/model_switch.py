@@ -620,18 +620,31 @@ def resolve_alias(
             mid for mid in catalog
             if mid.lower().startswith(prefix)
         ]
+        prefix_for_sort = f"{vendor}/{family}"
     else:
         family_lower = family.lower()
         matches = [
             mid for mid in catalog
             if mid.lower().startswith(family_lower)
         ]
+        prefix_for_sort = family
+        # Non-aggregator providers may use vendor/prefix model IDs
+        # (e.g. nvidia/nemotron-3-ultra-550b-a55b).  When the bare
+        # family prefix yields no matches, fall back to the full
+        # vendor/family prefix so aliases still resolve.
+        if not matches:
+            vendor_family_lower = f"{vendor}/{family}".lower()
+            matches = [
+                mid for mid in catalog
+                if mid.lower().startswith(vendor_family_lower)
+            ]
+            if matches:
+                prefix_for_sort = f"{vendor}/{family}"
 
     if not matches:
         return None
 
     # Sort by version descending — prefer the latest/highest version
-    prefix_for_sort = f"{vendor}/{family}" if aggregator else family
     matches.sort(key=lambda m: _model_sort_key(m, prefix_for_sort))
     return (current_provider, matches[0], key)
 
@@ -1135,12 +1148,21 @@ def switch_model(
             or ("localhost" in _base or "127.0.0.1" in _base)
         )
 
+        # Vendor-prefixed model names (e.g. "anthropic/claude-..." on a local
+        # custom endpoint) are a clear signal that the user wants that provider.
+        # Even when the current provider is custom, detect_provider_for_model()
+        # must be allowed to route such names to the correct provider (#59000).
+        _has_vendor_prefix = "/" in new_model
+
         if (
             target_provider == current_provider
-            and not is_custom
             and not resolved_alias
             and not resolved_in_current_catalog
             and not config_routed
+            and (
+                not is_custom  # non-custom: always try detection
+                or (is_custom and _has_vendor_prefix)  # custom: only on vendor-prefixed names
+            )
         ):
             detected = detect_provider_for_model(new_model, current_provider)
             if detected:

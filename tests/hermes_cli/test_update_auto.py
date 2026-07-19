@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 import plistlib
+import queue
 import subprocess
 import sys
 import threading
@@ -394,6 +395,101 @@ def test_scheduler_reports_nonzero_when_run_loses_status_ownership(
     assert exc.value.code == update_auto.EXIT_UPDATE_FAILED
 
 
+def test_scheduled_dispatcher_rechecks_status_after_disable_completes(
+    tmp_path, monkeypatch
+):
+    hermes_home = tmp_path / "home"
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    update_auto.write_status(
+        {
+            "enabled": True,
+            "mode": "scheduled",
+            "schedule": "03:00",
+            "planSchedule": [],
+        }
+    )
+
+    allow_persisted_status_read = threading.Event()
+    disable_completed = threading.Event()
+    progress = queue.Queue()
+    dispatches = []
+    thread_errors = []
+
+    class FakeLock:
+        def release(self):
+            return None
+
+    def acquire(_project_root):
+        if threading.current_thread().name == "scheduled-dispatcher":
+            progress.put("lock")
+            if not disable_completed.wait(timeout=2):
+                raise AssertionError("disable did not complete before dispatcher lock")
+        return FakeLock()
+
+    monkeypatch.setattr(update_auto, "acquire_update_lock", acquire)
+    monkeypatch.setattr(update_auto, "_disable_scheduler", lambda _status: None)
+    monkeypatch.setattr(update_auto, "_validate_scheduler_status", lambda _status: None)
+    monkeypatch.setattr(update_auto, "_scheduled_action_for_now", lambda _status: "run")
+
+    original_read = update_auto._read_persisted_scheduler_status
+
+    def gated_read():
+        snapshot = original_read()
+        progress.put("read")
+        if not allow_persisted_status_read.wait(timeout=2):
+            raise AssertionError("test did not release the persisted scheduler read")
+        return snapshot
+
+    monkeypatch.setattr(update_auto, "_read_persisted_scheduler_status", gated_read)
+    monkeypatch.setattr(
+        update_auto,
+        "cmd_auto_run_now",
+        lambda _args: dispatches.append("unlocked-dispatch"),
+    )
+    monkeypatch.setattr(
+        update_auto,
+        "_cmd_auto_run_now_locked",
+        lambda _args: dispatches.append("locked-dispatch"),
+    )
+
+    def run_scheduled():
+        try:
+            update_auto.cmd_auto_run_scheduled(_args())
+        except Exception as exc:  # pragma: no cover - assertion below reports it
+            thread_errors.append(exc)
+
+    scheduled_thread = threading.Thread(
+        target=run_scheduled,
+        name="scheduled-dispatcher",
+    )
+    scheduled_thread.start()
+
+    phase = progress.get(timeout=2)
+    assert phase in {"lock", "read"}
+
+    disable_errors = []
+
+    def disable_scheduler():
+        try:
+            update_auto.cmd_auto_disable(_args())
+        except Exception as exc:  # pragma: no cover - assertion below reports it
+            disable_errors.append(exc)
+
+    disable_thread = threading.Thread(target=disable_scheduler, name="disable")
+    disable_thread.start()
+    disable_thread.join(timeout=2)
+    assert not disable_thread.is_alive()
+    assert disable_errors == []
+    disable_completed.set()
+    allow_persisted_status_read.set()
+    scheduled_thread.join(timeout=2)
+
+    assert not scheduled_thread.is_alive()
+    assert thread_errors == []
+    assert dispatches == []
+    assert _read_status(hermes_home)["enabled"] is False
+
+
 def test_pip_auto_update_rejects_an_unchanged_fresh_distribution_version(
     tmp_path, monkeypatch
 ):
@@ -632,6 +728,30 @@ def test_scheduled_command_pins_default_profile_selector(tmp_path, monkeypatch):
     ]
 
 
+@pytest.mark.live_system_guard_bypass  # starts only a throwaway source launcher
+def test_scheduled_command_source_launcher_argv_can_start(tmp_path, monkeypatch):
+    script_path = tmp_path / "hermes_source.py"
+    script_path.write_text(
+        "import sys\nprint('started:' + ' '.join(sys.argv[1:]))\n",
+        encoding="utf-8",
+    )
+    script_path.chmod(0o644)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "default-home"))
+    monkeypatch.setattr(update_auto.sys, "argv", [str(script_path)])
+
+    scheduled_argv = update_auto._scheduled_command()
+    result = subprocess.run(
+        scheduled_argv,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0
+    assert scheduled_argv[:2] == [sys.executable, str(script_path)]
+    assert "started:--profile default update auto run-scheduled" in result.stdout
+
+
 def test_default_scheduler_stays_default_after_active_profile_switch(
     tmp_path, monkeypatch
 ):
@@ -688,7 +808,9 @@ def test_default_scheduler_stays_default_after_active_profile_switch(
 
     dispatched_homes = []
     monkeypatch.setattr(
-        update_auto, "cmd_auto_run_now", lambda _args: dispatched_homes.append(update_auto.get_hermes_home())
+        update_auto,
+        "_cmd_auto_run_now_locked",
+        lambda _args: dispatched_homes.append(update_auto.get_hermes_home()),
     )
     update_auto.cmd_auto_run_scheduled(_args())
     assert dispatched_homes == [hermes_root]
@@ -1075,6 +1197,131 @@ def test_disable_launchd_keeps_file_and_status_when_bootout_fails(
     error = capsys.readouterr().err
     assert "bootout stdout" in error
     assert "bootout stderr" in error
+
+
+def test_disable_launchd_rolls_back_when_bootout_false_success_keeps_job_loaded(
+    tmp_path, monkeypatch
+):
+    hermes_home, calls = _set_macos_scheduler_env(tmp_path, monkeypatch)
+    plist_path = update_auto._launchd_plist_path()
+    plist_path.parent.mkdir(parents=True)
+    prior_bytes = b"prior launchd bytes\n"
+    plist_path.write_bytes(prior_bytes)
+    plist_path.chmod(0o640)
+    prior_mode = plist_path.stat().st_mode & 0o7777
+    manager = {"loaded": True, "enabled": True, "running": True, "bootouts": 0}
+    update_auto.write_status(
+        {
+            "enabled": True,
+            "mode": "scheduled",
+            "schedule": "03:00",
+            "schedulerType": "launchd",
+            "schedulerPath": str(plist_path),
+            "schedulerIdentity": update_auto._scheduler_identity(),
+        }
+    )
+
+    def launchctl(args):
+        calls.append(args)
+        if args[0] == "print":
+            if manager["loaded"]:
+                return subprocess.CompletedProcess(
+                    ["launchctl"] + args,
+                    0,
+                    stdout="state = running\n",
+                    stderr="",
+                )
+            return subprocess.CompletedProcess(
+                ["launchctl"] + args,
+                1,
+                stdout="",
+                stderr="Could not find service",
+            )
+        if args[0] == "print-disabled":
+            return subprocess.CompletedProcess(
+                ["launchctl"] + args,
+                0,
+                stdout='"com.hermes.agent.auto-update" => false\n',
+                stderr="",
+            )
+        if args[0] == "bootout":
+            manager["bootouts"] += 1
+            if manager["bootouts"] > 1:
+                manager["loaded"] = False
+                manager["running"] = False
+        elif args[0] == "bootstrap":
+            manager["loaded"] = True
+        elif args[0] == "enable":
+            manager["enabled"] = True
+        elif args[0] == "disable":
+            manager["enabled"] = False
+        elif args[0] == "kickstart":
+            manager["running"] = True
+        return subprocess.CompletedProcess(["launchctl"] + args, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(update_auto, "_run_launchctl", launchctl)
+
+    with pytest.raises(SystemExit) as exc:
+        update_auto.cmd_auto_disable(_args())
+
+    assert exc.value.code == 1
+    assert plist_path.read_bytes() == prior_bytes
+    assert plist_path.stat().st_mode & 0o7777 == prior_mode
+    assert manager["loaded"] is True
+    assert manager["enabled"] is True
+    status = _read_status(hermes_home)
+    assert status["enabled"] is True
+    assert status["schedulerType"] == "launchd"
+    assert status["schedulerPath"] == str(plist_path)
+    assert len([call for call in calls if call[0] == "bootout"]) == 2
+    assert any(call[0] == "bootstrap" for call in calls)
+    assert any(call[0] == "enable" for call in calls)
+
+
+def test_disable_launchd_rolls_back_when_post_bootout_state_is_unknown(
+    tmp_path, monkeypatch
+):
+    hermes_home, calls = _set_macos_scheduler_env(tmp_path, monkeypatch)
+    plist_path = update_auto._launchd_plist_path()
+    plist_path.parent.mkdir(parents=True)
+    prior_bytes = b"prior launchd bytes\n"
+    plist_path.write_bytes(prior_bytes)
+    plist_path.chmod(0o600)
+    prior_mode = plist_path.stat().st_mode & 0o7777
+    states = iter(
+        [
+            {"loaded": True, "enabled": True, "running": False},
+            {"loaded": None, "enabled": None, "running": None},
+            {"loaded": True, "enabled": True, "running": False},
+        ]
+    )
+    update_auto.write_status(
+        {
+            "enabled": True,
+            "mode": "scheduled",
+            "schedule": "03:00",
+            "schedulerType": "launchd",
+            "schedulerPath": str(plist_path),
+            "schedulerIdentity": update_auto._scheduler_identity(),
+        }
+    )
+    monkeypatch.setattr(update_auto, "_launchd_state", lambda _target: next(states))
+    monkeypatch.setattr(
+        update_auto,
+        "_run_launchctl",
+        lambda args: calls.append(args)
+        or subprocess.CompletedProcess(["launchctl"] + args, 0, stdout="", stderr=""),
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        update_auto.cmd_auto_disable(_args())
+
+    assert exc.value.code == 1
+    assert plist_path.read_bytes() == prior_bytes
+    assert plist_path.stat().st_mode & 0o7777 == prior_mode
+    assert _read_status(hermes_home)["enabled"] is True
+    assert any(call[0] == "bootstrap" for call in calls)
+    assert any(call[0] == "enable" for call in calls)
 
 
 def test_disable_is_idempotent_when_launchd_plist_missing(tmp_path, monkeypatch, capsys):

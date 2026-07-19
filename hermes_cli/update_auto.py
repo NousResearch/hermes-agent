@@ -919,9 +919,20 @@ def _parse_time(value: str) -> tuple[int, int, str]:
 def _hermes_command_prefix() -> list[str]:
     argv0 = Path(sys.argv[0])
     if argv0.name and not argv0.name.startswith("python"):
-        resolved = shutil.which(str(argv0)) if not argv0.is_absolute() else str(argv0)
+        if argv0.suffix.lower() in {".py", ".pyw"}:
+            return [sys.executable, str(argv0)]
+        resolved = (
+            str(argv0)
+            if argv0.is_file() or argv0.is_absolute()
+            else shutil.which(str(argv0))
+        )
         if resolved:
-            return [resolved]
+            resolved_path = Path(resolved)
+            if resolved_path.suffix.lower() in {".py", ".pyw"} or not os.access(
+                resolved_path, os.X_OK
+            ):
+                return [sys.executable, str(resolved_path)]
+            return [str(resolved_path)]
 
     hermes = shutil.which("hermes")
     if hermes:
@@ -1357,6 +1368,12 @@ def _disable_launchd() -> _SchedulerHandle:
         )
         if existed:
             plist_path.unlink()
+        final_state = _launchd_state(target)
+        if final_state.get("loaded") is not False:
+            raise RuntimeError(
+                "launchd disable completed without unloading the expected job: "
+                f"loaded={final_state.get('loaded')!r}"
+            )
     except Exception as exc:
         receipt = _restore_launchd(
                 target=target,
@@ -2116,12 +2133,88 @@ def _auto_plan_ownership_error(status: dict[str, Any]) -> str | None:
     return None
 
 
-def cmd_auto_plan(args) -> None:
+def _cmd_auto_plan_locked(args) -> None:
     from hermes_cli.main import (
-        PROJECT_ROOT,
         _get_update_check_result,
         _resolve_update_branch,
     )
+
+    # Read and validate ownership only after the lock is held. This keeps a
+    # scheduled plan from probing git or publishing status for a different
+    # active profile or a run that has already claimed the file.
+    status = read_status()
+    ownership_error = _auto_plan_ownership_error(status)
+    if ownership_error:
+        raise RuntimeError(f"auto-update plan ownership check failed: {ownership_error}")
+
+    branch = _resolve_update_branch(args)
+    planned_at = _utc_now()
+    update_time = status.get("schedule") or "not configured"
+
+    try:
+        check = _get_update_check_result(
+            branch=branch,
+            branch_explicit=bool(getattr(args, "branch", None)),
+        )
+    except Exception as exc:
+        update_status_fields(
+            status=STATUS_CHECK_FAILED,
+            lastPlanAt=planned_at,
+            error=f"update check failed: {exc}",
+            logPath=str(get_log_path()),
+        )
+        append_log("plan", result=STATUS_CHECK_FAILED, error=str(exc))
+        print(f"✗ Auto-update plan check failed: {exc}", file=sys.stderr)
+        raise SystemExit(EXIT_CHECK_FAILED) from exc
+
+    current_version = check.get("current_version") or _current_version()
+    latest_version = check.get("latest_version") or None
+    if not check.get("update_available"):
+        update_status_fields(
+            status=STATUS_UP_TO_DATE,
+            lastPlanAt=planned_at,
+            previousVersion=current_version,
+            latestVersion=latest_version,
+            plannedVersion=None,
+            currentVersion=current_version,
+            error=None,
+            logPath=str(get_log_path()),
+        )
+        append_log(
+            "plan",
+            result=STATUS_UP_TO_DATE,
+            previous_version=current_version,
+            latest_version=latest_version,
+            current_version=current_version,
+        )
+        print("✓ No Hermes update planned; already up to date.")
+        return
+
+    update_status_fields(
+        status=STATUS_PLANNED,
+        lastPlanAt=planned_at,
+        previousVersion=current_version,
+        latestVersion=latest_version,
+        plannedVersion=latest_version,
+        currentVersion=current_version,
+        error=None,
+        logPath=str(get_log_path()),
+    )
+    append_log(
+        "plan",
+        result=STATUS_PLANNED,
+        previous_version=current_version,
+        latest_version=latest_version,
+        current_version=current_version,
+    )
+    print("☀ Hermes update available")
+    if current_version and latest_version:
+        print(f"{current_version} → {latest_version}")
+    print(f"Scheduled auto-update: {update_time}")
+
+
+def cmd_auto_plan(args) -> None:
+    from hermes_cli.main import PROJECT_ROOT
 
     try:
         update_lock = acquire_update_lock(PROJECT_ROOT)
@@ -2133,98 +2226,40 @@ def cmd_auto_plan(args) -> None:
         _record_lock_failure(f"could not acquire the auto-update lock: {exc}")
 
     try:
-        # Read and validate ownership only after the lock is held. This keeps a
-        # scheduled plan from probing git or publishing status for a different
-        # active profile or a run that has already claimed the file.
-        status = read_status()
-        ownership_error = _auto_plan_ownership_error(status)
-        if ownership_error:
-            raise RuntimeError(f"auto-update plan ownership check failed: {ownership_error}")
-
-        branch = _resolve_update_branch(args)
-        planned_at = _utc_now()
-        update_time = status.get("schedule") or "not configured"
-
-        try:
-            check = _get_update_check_result(
-                branch=branch,
-                branch_explicit=bool(getattr(args, "branch", None)),
-            )
-        except Exception as exc:
-            update_status_fields(
-                status=STATUS_CHECK_FAILED,
-                lastPlanAt=planned_at,
-                error=f"update check failed: {exc}",
-                logPath=str(get_log_path()),
-            )
-            append_log("plan", result=STATUS_CHECK_FAILED, error=str(exc))
-            print(f"✗ Auto-update plan check failed: {exc}", file=sys.stderr)
-            raise SystemExit(EXIT_CHECK_FAILED) from exc
-
-        current_version = check.get("current_version") or _current_version()
-        latest_version = check.get("latest_version") or None
-        if not check.get("update_available"):
-            update_status_fields(
-                status=STATUS_UP_TO_DATE,
-                lastPlanAt=planned_at,
-                previousVersion=current_version,
-                latestVersion=latest_version,
-                plannedVersion=None,
-                currentVersion=current_version,
-                error=None,
-                logPath=str(get_log_path()),
-            )
-            append_log(
-                "plan",
-                result=STATUS_UP_TO_DATE,
-                previous_version=current_version,
-                latest_version=latest_version,
-                current_version=current_version,
-            )
-            print("✓ No Hermes update planned; already up to date.")
-            return
-
-        update_status_fields(
-            status=STATUS_PLANNED,
-            lastPlanAt=planned_at,
-            previousVersion=current_version,
-            latestVersion=latest_version,
-            plannedVersion=latest_version,
-            currentVersion=current_version,
-            error=None,
-            logPath=str(get_log_path()),
-        )
-        append_log(
-            "plan",
-            result=STATUS_PLANNED,
-            previous_version=current_version,
-            latest_version=latest_version,
-            current_version=current_version,
-        )
-        print("☀ Hermes update available")
-        if current_version and latest_version:
-            print(f"{current_version} → {latest_version}")
-        print(f"Scheduled auto-update: {update_time}")
+        return _cmd_auto_plan_locked(args)
     finally:
         update_lock.release()
 
 
 def cmd_auto_run_scheduled(_args) -> None:
+    from hermes_cli.main import PROJECT_ROOT
+
     try:
-        persisted = _read_persisted_scheduler_status()
-    except ValueError as exc:
-        _record_scheduler_state_failure(str(exc))
-        return None
-    if persisted.get("enabled") is False:
-        return
-    validation_error = _validate_scheduler_status(persisted)
-    if validation_error:
-        _record_scheduler_state_failure(validation_error)
-        return None
-    status = read_status()
-    if _scheduled_action_for_now(status) == "plan":
-        return cmd_auto_plan(SimpleNamespace(branch=None))
-    return cmd_auto_run_now(SimpleNamespace(branch=None, force=False))
+        update_lock = acquire_update_lock(PROJECT_ROOT)
+    except UpdateLockBusyError as exc:
+        _record_lock_failure(
+            f"another Hermes update is already running; auto-update is busy ({exc})"
+        )
+    except UpdateLockError as exc:
+        _record_lock_failure(f"could not acquire the auto-update lock: {exc}")
+
+    try:
+        try:
+            persisted = _read_persisted_scheduler_status()
+        except ValueError as exc:
+            _record_scheduler_state_failure(str(exc))
+            return None
+        if persisted.get("enabled") is False:
+            return
+        validation_error = _validate_scheduler_status(persisted)
+        if validation_error:
+            _record_scheduler_state_failure(validation_error)
+            return None
+        if _scheduled_action_for_now(persisted) == "plan":
+            return _cmd_auto_plan_locked(SimpleNamespace(branch=None))
+        return _cmd_auto_run_now_locked(SimpleNamespace(branch=None, force=False))
+    finally:
+        update_lock.release()
 
 
 def _read_valid_terminal_receipt() -> dict[str, Any] | None:

@@ -185,6 +185,19 @@ None of this requires additional config — it ships on by default in recent sig
 
 The bot sends typing indicators while processing messages, refreshing every 8 seconds.
 
+### Read Receipts
+
+Hermes can mark an inbound message as read in the background when it passes Signal's story/content/group/mention filters and is authorized by gateway policy. This is disabled by default because read receipts reveal message-consumption state. Enable it in `~/.hermes/config.yaml`:
+
+```yaml
+signal:
+  send_read_receipts: true
+```
+
+Receipts are best effort and apply to both direct and group messages. For groups, Hermes sends the receipt to the original message author, not the group ID. Messages rejected by Signal's adapter filters, unauthorized senders, and Note-to-Self messages are never acknowledged. A receipt means Hermes accepted the transport message; a later `pre_gateway_dispatch` plugin may still consume an already-authorized message without running an agent turn.
+
+Do not combine this option with signal-cli daemon's `--send-read-receipts` flag. That flag emits receipts inside signal-cli before Hermes can apply its filters or authorization policy; remove the daemon flag if you want Hermes-controlled behavior. signal-cli also respects the Signal account's read-receipt privacy setting, so an accepted RPC does not guarantee that the remote sender sees a receipt.
+
 ### Tool Progress Display
 
 Signal does not support editing already-sent messages. Hermes therefore suppresses gateway tool-progress bubbles on Signal, even when `/verbose` is enabled and saves a non-`off` mode for the platform.

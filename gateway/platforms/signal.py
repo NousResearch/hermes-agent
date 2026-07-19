@@ -55,6 +55,7 @@ from gateway.platforms.signal_rate_limit import (
     _signal_send_timeout,
     get_scheduler,
 )
+from utils import is_truthy_value
 
 logger = logging.getLogger(__name__)
 
@@ -268,7 +269,13 @@ class SignalAdapter(BasePlatformAdapter):
         self.http_url = extra.get("http_url", "http://127.0.0.1:8080").rstrip("/")
         self.account = extra.get("account", "")
         self.ignore_stories = extra.get("ignore_stories", True)
-        self.send_read_receipts = extra.get("send_read_receipts", False)
+        # Read receipts reveal message-consumption state to remote senders, so
+        # preserve existing behavior unless the operator explicitly opts in via
+        # config.yaml (signal.send_read_receipts, bridged into config.extra).
+        self.send_read_receipts = is_truthy_value(
+            extra.get("send_read_receipts"),
+            default=False,
+        )
 
         # Parse allowlists — group policy is derived from presence of group allowlist
         group_allowed_str = os.getenv("SIGNAL_GROUP_ALLOWED_USERS", "")
@@ -734,8 +741,14 @@ class SignalAdapter(BasePlatformAdapter):
                 # WhatsApp/Slack/BlueBubbles/Mattermost).
                 msg_type = MessageType.DOCUMENT
 
-        # Parse timestamp from envelope data (milliseconds since epoch)
-        ts_ms = envelope_data.get("timestamp", 0)
+        # Receipts/reactions target the data message's sent timestamp. It is
+        # normally identical to the envelope timestamp, which remains the
+        # compatibility fallback for older signal-cli envelope shapes.
+        raw_ts_ms = data_message.get("timestamp") or envelope_data.get("timestamp", 0)
+        try:
+            ts_ms = int(raw_ts_ms) if raw_ts_ms and not isinstance(raw_ts_ms, bool) else 0
+        except (TypeError, ValueError):
+            ts_ms = 0
         if ts_ms:
             try:
                 timestamp = datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc)
@@ -756,7 +769,11 @@ class SignalAdapter(BasePlatformAdapter):
             timestamp=timestamp,
             raw_message={
                 "sender": sender,
+                # Prefer the sender's ACI for receipt delivery when signal-cli
+                # supplies it; phone-number identifiers remain the fallback.
+                "sender_uuid": sender_uuid or None,
                 "timestamp_ms": ts_ms,
+                "is_note_to_self": is_note_to_self,
                 "quote": quote_data if quote_data else None,
             },
             reply_to_message_id=reply_to_id,
@@ -769,11 +786,12 @@ class SignalAdapter(BasePlatformAdapter):
         logger.debug("Signal: message from %s in %s: %s",
                       redact_phone(sender), chat_id[:20], (text or "")[:50])
 
+        # Receipt scheduling happens at adapter acceptance rather than in the
+        # processing-start hook so messages handled by the busy/steer path are
+        # acknowledged consistently too. _read_receipt_target repeats the full
+        # gateway auth decision and fails closed before any RPC is scheduled.
+        self._schedule_read_receipt(event)
         await self.handle_message(event)
-
-        # Send read receipt if enabled
-        if self.send_read_receipts and sender and ts_ms:
-            await self._send_read_receipt(sender, ts_ms)
 
     def _remember_recipient_identifiers(self, number: Optional[str], service_id: Optional[str]) -> None:
         """Cache any number↔UUID mapping observed from Signal envelopes."""
@@ -883,17 +901,85 @@ class SignalAdapter(BasePlatformAdapter):
 
             return self._recipient_uuid_by_number.get(chat_id, chat_id)
 
-    async def _send_read_receipt(self, sender: str, timestamp: int) -> None:
-        """Send a read receipt for a message."""
+    async def send_read_receipt(self, recipient: str, target_timestamp: int) -> None:
+        """Best-effort Signal ``read`` receipt for one inbound message.
+
+        ``recipient`` is always the original message author, including for a
+        group message. An accepted RPC or empty ``results`` list does not prove
+        the remote sender received a receipt, so this primitive intentionally
+        makes no remote-client delivery claim.
+        """
         try:
-            await self._rpc("sendReceipt", {
-                "account": self.account,
-                "recipient": sender,
-                "type": "read",
-                "targetTimestamp": timestamp,
-            }, rpc_id="receipt")
+            await self._rpc(
+                "sendReceipt",
+                {
+                    "account": self.account,
+                    "recipient": recipient,
+                    "type": "read",
+                    "targetTimestamp": target_timestamp,
+                },
+                log_failures=False,
+            )
         except Exception:
-            logger.debug("Signal: failed to send read receipt to %s", redact_phone(sender))
+            # _rpc already treats transport / JSON-RPC failures as best effort;
+            # retain this guard for test doubles and future implementations that
+            # may raise.
+            logger.debug(
+                "Signal: failed to send read receipt to %s",
+                redact_phone(recipient),
+                exc_info=True,
+            )
+
+    def _read_receipt_target(self, event: MessageEvent) -> Optional[Tuple[str, int]]:
+        """Return an authorized ``(recipient, timestamp)`` receipt target.
+
+        Lifecycle hooks run before GatewayRunner's normal dispatch/auth path.
+        Reuse its registered authorization callback here and fail closed when
+        no callback is available, so an opt-in receipt never acknowledges an
+        unauthorized contact merely for reaching the Signal SSE listener.
+        """
+        if not self.send_read_receipts:
+            return None
+
+        raw = event.raw_message
+        if not isinstance(raw, dict) or raw.get("is_note_to_self"):
+            return None
+
+        source = event.source
+        if source is None:
+            return None
+        authorized = self._is_sender_authorized(
+            source.user_id,
+            source.chat_type,
+            source.chat_id,
+        )
+        if authorized is not True:
+            return None
+
+        recipient = raw.get("sender_uuid") or raw.get("sender")
+        timestamp = raw.get("timestamp_ms")
+        if not recipient or timestamp is None or isinstance(timestamp, bool):
+            return None
+        try:
+            timestamp = int(timestamp)
+        except (TypeError, ValueError):
+            return None
+        if timestamp <= 0:
+            return None
+
+        recipient = str(recipient).strip()
+        if not recipient or recipient == self._account_normalized:
+            return None
+        return recipient, timestamp
+
+    def _schedule_read_receipt(self, event: MessageEvent) -> None:
+        """Schedule a lifecycle-managed receipt without delaying processing."""
+        target = self._read_receipt_target(event)
+        if target is None:
+            return
+        task = asyncio.create_task(self.send_read_receipt(*target))
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
 
     # ------------------------------------------------------------------
     # Attachment Handling

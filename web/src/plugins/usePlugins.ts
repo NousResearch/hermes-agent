@@ -17,9 +17,9 @@ import {
   setPluginLoadError,
 } from "./registry";
 
-const MANIFEST_CACHE_KEY = "hermes:plugin-manifests";
+export const MANIFEST_CACHE_KEY = "hermes:plugin-manifests";
 
-function getCachedManifests(): PluginManifest[] | null {
+export function getCachedManifests(): PluginManifest[] | null {
   try {
     const raw = sessionStorage.getItem(MANIFEST_CACHE_KEY);
     if (!raw) return null;
@@ -30,7 +30,7 @@ function getCachedManifests(): PluginManifest[] | null {
   }
 }
 
-function cacheManifests(manifests: PluginManifest[]): void {
+export function cacheManifests(manifests: PluginManifest[]): void {
   try {
     sessionStorage.setItem(MANIFEST_CACHE_KEY, JSON.stringify(manifests));
   } catch {

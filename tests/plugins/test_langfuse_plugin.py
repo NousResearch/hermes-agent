@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import importlib
 import logging
+import os
 import sys
 from pathlib import Path
 
@@ -47,6 +48,11 @@ class TestManifest:
 # ---------------------------------------------------------------------------
 
 class TestDiscovery:
+    @staticmethod
+    def _write_config(home: Path, text: str) -> None:
+        home.mkdir()
+        (home / "config.yaml").write_text(text, encoding="utf-8")
+
     def test_plugin_is_discovered_as_standalone_opt_in(self, tmp_path, monkeypatch):
         """Scanner should find the plugin but NOT load it by default."""
         from hermes_cli import plugins as plugins_mod
@@ -66,6 +72,90 @@ class TestDiscovery:
         # … but is not loaded (opt-in default → no config.yaml means nothing enabled)
         assert loaded.enabled is False
         assert "not enabled" in (loaded.error or "").lower()
+
+    @pytest.mark.parametrize("service_name", ["", "unknown_service"])
+    def test_invalid_service_name_prevents_plugin_loading_without_breaking_agent(
+        self, tmp_path, monkeypatch, service_name
+    ):
+        from hermes_cli import plugins as plugins_mod
+
+        home = tmp_path / ".hermes"
+        rendered_service = f"  service_name: {service_name!r}\n"
+        self._write_config(
+            home,
+            "plugins:\n"
+            "  enabled:\n"
+            "    - observability/langfuse\n"
+            "observability:\n"
+            f"{rendered_service}",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        monkeypatch.setenv("HERMES_LANGFUSE_PUBLIC_KEY", "pk-lf-real-public-xyz")
+        monkeypatch.setenv("HERMES_LANGFUSE_SECRET_KEY", "sk-lf-real-secret-xyz")
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+        manager = plugins_mod.PluginManager()
+        manager.discover_and_load()
+
+        loaded = manager._plugins["observability/langfuse"]
+        assert loaded.enabled is False
+        assert "observability.service_name" in (loaded.error or "")
+
+    def test_credential_only_legacy_config_uses_service_name_default(
+        self, tmp_path, monkeypatch
+    ):
+        from hermes_cli import plugins as plugins_mod
+
+        home = tmp_path / ".hermes"
+        self._write_config(
+            home,
+            "plugins:\n"
+            "  enabled:\n"
+            "    - observability/langfuse\n",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        monkeypatch.setenv("HERMES_LANGFUSE_PUBLIC_KEY", "pk-lf-real-public-xyz")
+        monkeypatch.setenv("HERMES_LANGFUSE_SECRET_KEY", "sk-lf-real-secret-xyz")
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+        manager = plugins_mod.PluginManager()
+        manager.discover_and_load()
+
+        loaded = manager._plugins["observability/langfuse"]
+        assert loaded.enabled is True
+
+    def test_service_name_config_read_failures_are_fail_closed(self, tmp_path, monkeypatch):
+        langfuse_plugin = importlib.import_module("plugins.observability.langfuse")
+
+        home = tmp_path / ".hermes"
+        home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        monkeypatch.setenv("HERMES_LANGFUSE_PUBLIC_KEY", "pk-lf-real-public-xyz")
+        monkeypatch.setenv("HERMES_LANGFUSE_SECRET_KEY", "sk-lf-real-secret-xyz")
+
+        with pytest.raises(langfuse_plugin.LangfuseServiceNameError, match="does not exist"):
+            langfuse_plugin._require_service_name()
+
+        (home / "config.yaml").write_text("observability: [", encoding="utf-8")
+
+        with pytest.raises(langfuse_plugin.LangfuseServiceNameError, match="could not be read"):
+            langfuse_plugin._require_service_name()
+
+    def test_plugin_hook_errors_remain_isolated(self, caplog):
+        from hermes_cli import plugins as plugins_mod
+        from plugins.observability.langfuse import LangfuseServiceNameError
+
+        manager = plugins_mod.PluginManager()
+        manager._hooks["pre_api_request"] = [
+            lambda **_: (_ for _ in ()).throw(
+                LangfuseServiceNameError("unknown_service")
+            )
+        ]
+
+        with caplog.at_level(logging.WARNING, logger="hermes_cli.plugins"):
+            manager.invoke_hook("pre_api_request")
+
+        assert "unknown_service" in caplog.text
 
 
 # ---------------------------------------------------------------------------
@@ -467,8 +557,17 @@ class TestPlaceholderKeyDetection:
         for k in (
             "HERMES_LANGFUSE_PUBLIC_KEY", "HERMES_LANGFUSE_SECRET_KEY",
             "LANGFUSE_PUBLIC_KEY", "LANGFUSE_SECRET_KEY",
+            "HERMES_HOME",
+            "OTEL_SERVICE_NAME",
+            "OTEL_RESOURCE_ATTRIBUTES",
         ):
             monkeypatch.delenv(k, raising=False)
+
+    @staticmethod
+    def _write_config(tmp_path, text: str) -> None:
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(text, encoding="utf-8")
 
     # -- helper unit tests (no SDK stub needed: these don't go through
     #    _get_langfuse, they exercise the pure-Python helpers directly) ------
@@ -668,7 +767,7 @@ class TestPlaceholderKeyDetection:
                     and r.name == self.LOGGER_NAME]
         assert warnings == []
 
-    def test_valid_prefixes_do_not_trigger_placeholder_warning(self, monkeypatch, caplog):
+    def test_valid_prefixes_do_not_trigger_placeholder_warning(self, monkeypatch, caplog, tmp_path):
         """Real Langfuse keys (``pk-lf-…`` / ``sk-lf-…``) must pass the
         guard and proceed to SDK init.  We stub the SDK constructor with
         a recording fake so the assertion can confirm BOTH that the
@@ -676,6 +775,8 @@ class TestPlaceholderKeyDetection:
         constructed — the latter is the success signal the bug report
         wanted."""
         self._clear_env(monkeypatch)
+        self._write_config(tmp_path, "observability:\n  service_name: riemann\n")
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
         monkeypatch.setenv("HERMES_LANGFUSE_PUBLIC_KEY", "pk-lf-real-public-xyz")
         monkeypatch.setenv("HERMES_LANGFUSE_SECRET_KEY", "sk-lf-real-secret-xyz")
         plugin = self._fresh_plugin(monkeypatch)
@@ -687,6 +788,81 @@ class TestPlaceholderKeyDetection:
         assert "placeholders" not in caplog.text.lower(), (
             f"Valid Langfuse keys tripped the placeholder guard: {caplog.text!r}"
         )
+
+    def test_missing_service_name_uses_compatibility_default(self, monkeypatch, tmp_path):
+        self._clear_env(monkeypatch)
+        self._write_config(tmp_path, "observability: {}\n")
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+        monkeypatch.setenv("HERMES_LANGFUSE_PUBLIC_KEY", "pk-lf-real-public-xyz")
+        monkeypatch.setenv("HERMES_LANGFUSE_SECRET_KEY", "sk-lf-real-secret-xyz")
+        plugin = self._fresh_plugin(monkeypatch)
+
+        client = plugin._get_langfuse()
+
+        assert isinstance(client, _FakeLangfuse)
+        assert os.environ["OTEL_SERVICE_NAME"] == "hermes-agent"
+
+    def test_unknown_service_name_fails_closed(self, monkeypatch, tmp_path):
+        self._clear_env(monkeypatch)
+        self._write_config(
+            tmp_path,
+            "observability:\n  service_name: unknown_service\n",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+        monkeypatch.setenv("HERMES_LANGFUSE_PUBLIC_KEY", "pk-lf-real-public-xyz")
+        monkeypatch.setenv("HERMES_LANGFUSE_SECRET_KEY", "sk-lf-real-secret-xyz")
+        plugin = self._fresh_plugin(monkeypatch)
+
+        with pytest.raises(RuntimeError, match="unknown_service"):
+            plugin._get_langfuse()
+
+        assert _FakeLangfuse.instances == []
+
+    def test_service_name_sets_otel_resource_before_client_init(self, monkeypatch, tmp_path):
+        self._clear_env(monkeypatch)
+        self._write_config(
+            tmp_path,
+            "observability:\n  service_name: riemann\n",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+        monkeypatch.setenv("HERMES_LANGFUSE_PUBLIC_KEY", "pk-lf-real-public-xyz")
+        monkeypatch.setenv("HERMES_LANGFUSE_SECRET_KEY", "sk-lf-real-secret-xyz")
+        monkeypatch.setenv("OTEL_RESOURCE_ATTRIBUTES", "deployment.environment=staging")
+        plugin = self._fresh_plugin(monkeypatch)
+
+        client = plugin._get_langfuse()
+
+        assert isinstance(client, _FakeLangfuse)
+        assert os.environ["OTEL_SERVICE_NAME"] == "riemann"
+        assert os.environ["OTEL_RESOURCE_ATTRIBUTES"].split(",") == [
+            "service.name=riemann",
+            "deployment.environment=staging",
+        ]
+
+    def test_service_name_overwrites_stale_otel_identity(self, monkeypatch, tmp_path):
+        self._clear_env(monkeypatch)
+        self._write_config(
+            tmp_path,
+            "observability:\n  service_name: riemann\n",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+        monkeypatch.setenv("HERMES_LANGFUSE_PUBLIC_KEY", "pk-lf-real-public-xyz")
+        monkeypatch.setenv("HERMES_LANGFUSE_SECRET_KEY", "sk-lf-real-secret-xyz")
+        monkeypatch.setenv("OTEL_SERVICE_NAME", "unknown_service")
+        monkeypatch.setenv(
+            "OTEL_RESOURCE_ATTRIBUTES",
+            "deployment.environment=staging,service.name=unknown_service",
+        )
+        plugin = self._fresh_plugin(monkeypatch)
+
+        client = plugin._get_langfuse()
+
+        assert isinstance(client, _FakeLangfuse)
+        assert os.environ["OTEL_SERVICE_NAME"] == "riemann"
+        assert os.environ["OTEL_RESOURCE_ATTRIBUTES"].split(",") == [
+            "service.name=riemann",
+            "deployment.environment=staging",
+        ]
 
 
 class TestRequestMessageCoercion:

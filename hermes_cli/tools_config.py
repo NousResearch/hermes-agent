@@ -1418,6 +1418,23 @@ def _run_post_setup(post_setup_key: str):
                 _print_success("    langfuse SDK installed")
             else:
                 _print_warning("    langfuse SDK install failed — run manually: uv pip install langfuse")
+        # Service identity is configuration, rather than a credential.  Save
+        # it alongside the rest of the setup so Langfuse never relies on an
+        # unattributable OpenTelemetry default.
+        config = load_config()
+        observability = config.setdefault("observability", {})
+        if not isinstance(observability, dict):
+            observability = {}
+            config["observability"] = observability
+        service_name = _prompt(
+            "Langfuse service name",
+            default=str(observability.get("service_name") or "hermes-agent"),
+        ).strip()
+        observability["service_name"] = service_name or "hermes-agent"
+        save_config(config)
+        _print_success(
+            f"    Langfuse service identity set to {observability['service_name']!r}"
+        )
         # Opt the bundled observability/langfuse plugin into plugins.enabled.
         # The plugin ships in the repo but doesn't load until the user enables
         # it (standalone plugins are opt-in).

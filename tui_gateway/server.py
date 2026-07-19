@@ -4283,6 +4283,49 @@ def _mirror_subagent_to_child(event_type: str, payload: dict) -> None:
             _child_mirrors.pop(child_key, None)
 
 
+def _make_reasoning_update_callback(sid: str):
+    """Platform hook for the reasoning_effort tool (TUI/desktop surface).
+
+    Mirrors the ``config.set key=reasoning`` handler: session scope lands on
+    ``create_reasoning_override`` so lazily-built/resumed sessions keep the
+    level (the agent's own ``reasoning_config`` mutation would be dropped on
+    rebuild), and ``persist=True`` writes ``agent.reasoning_effort`` to
+    config.yaml — clearing the now-redundant session override so the global
+    value takes effect on rebuild. Returns True only when durably persisted.
+    """
+
+    def _callback(level: str, parsed_config: dict, persist: bool = False) -> bool:
+        persisted = False
+        if persist:
+            try:
+                _write_config_key("agent.reasoning_effort", level)
+                persisted = True
+            except Exception:
+                logger.error("failed to persist reasoning_effort from tool", exc_info=True)
+
+        with _sessions_lock:
+            session = _sessions.get(sid)
+        if session is not None:
+            if persisted:
+                session.pop("create_reasoning_override", None)
+            else:
+                session["create_reasoning_override"] = parsed_config
+            agent = session.get("agent")
+            if agent is not None:
+                # Set eagerly (the agent loop re-applies it right after) so the
+                # footer emit below and the durable session row both see the
+                # new level, not the pre-tool one.
+                agent.reasoning_config = parsed_config
+                try:
+                    _persist_live_session_runtime(session)
+                    _emit("session.info", sid, _session_info(agent, session))
+                except Exception:
+                    logger.debug("failed to publish reasoning update", exc_info=True)
+        return persisted
+
+    return _callback
+
+
 def _agent_cbs(sid: str) -> dict:
     return {
         "tool_start_callback": lambda tc_id, name, args: _on_tool_start(
@@ -5102,6 +5145,10 @@ def _make_agent(
         skip_context_files=is_truthy_value(os.environ.get("HERMES_IGNORE_RULES")),
         skip_memory=is_truthy_value(os.environ.get("HERMES_IGNORE_RULES")),
         fallback_model=_load_fallback_model(),
+        # Session-scoped hook for the reasoning_effort tool — without it a
+        # TUI/desktop `persist: true` (or any tool-set level on a rebuilt
+        # session) is silently dropped. See _make_reasoning_update_callback.
+        reasoning_update_callback=_make_reasoning_update_callback(sid),
         **_agent_cbs(sid),
     )
 

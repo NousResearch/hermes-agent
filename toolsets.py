@@ -236,7 +236,18 @@ TOOLSETS = {
         "tools": ["clarify"],
         "includes": []
     },
-    
+
+    "reasoning": {
+        "description": (
+            "Adjust runtime reasoning effort for the active session. "
+            "Off by default (deliberately not in _HERMES_CORE_TOOLS — zero "
+            "schema footprint unless wanted); enable in `hermes tools` → "
+            "Reasoning Effort."
+        ),
+        "tools": ["reasoning_effort"],
+        "includes": []
+    },
+
     "code_execution": {
         "description": "Run Python scripts that call tools programmatically (reduces LLM round trips)",
         "tools": ["execute_code"],

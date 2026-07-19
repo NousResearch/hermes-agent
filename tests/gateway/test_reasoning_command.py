@@ -475,3 +475,95 @@ class TestLoadShowReasoningCoercion:
             tmp_path, monkeypatch,
             'display: {}\n',
         ) is False
+
+
+class TestReasoningUpdateCallback:
+    """The reasoning_effort tool's platform hook must survive the cached-agent
+    path: every gateway message re-applies _resolve_session_reasoning_config()
+    to agent.reasoning_config, so a tool change is only durable if the callback
+    records it as a session override (or persists it globally)."""
+
+    def _runner_with_home(self, tmp_path, monkeypatch, yaml_body="agent:\n  reasoning_effort: medium\n"):
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(yaml_body, encoding="utf-8")
+        monkeypatch.setattr(gateway_run, "_hermes_home", hermes_home)
+        return _make_runner(), hermes_home
+
+    def test_non_persistent_update_survives_per_message_reset(self, tmp_path, monkeypatch):
+        runner, _ = self._runner_with_home(tmp_path, monkeypatch)
+        source = _make_event("hello").source
+        session_key = runner._session_key_for_source(source)
+
+        callback = runner._make_reasoning_update_callback(session_key)
+        persisted = callback("xhigh", {"enabled": True, "effort": "xhigh"}, False)
+
+        assert persisted is False
+        # The next message resolves reasoning config through the session
+        # override — this is what keeps the tool's change alive.
+        assert runner._resolve_session_reasoning_config(source=source) == {
+            "enabled": True,
+            "effort": "xhigh",
+        }
+
+    def test_non_persistent_update_does_not_touch_config(self, tmp_path, monkeypatch):
+        runner, hermes_home = self._runner_with_home(tmp_path, monkeypatch)
+        callback = runner._make_reasoning_update_callback("session-a")
+
+        callback("high", {"enabled": True, "effort": "high"}, False)
+
+        saved = yaml.safe_load((hermes_home / "config.yaml").read_text(encoding="utf-8"))
+        assert saved["agent"]["reasoning_effort"] == "medium"
+
+    def test_persistent_update_writes_config_and_clears_override(self, tmp_path, monkeypatch):
+        runner, hermes_home = self._runner_with_home(tmp_path, monkeypatch)
+        source = _make_event("hello").source
+        session_key = runner._session_key_for_source(source)
+        runner._session_reasoning_overrides[session_key] = {"enabled": True, "effort": "low"}
+
+        callback = runner._make_reasoning_update_callback(session_key)
+        persisted = callback("high", {"enabled": True, "effort": "high"}, True)
+
+        assert persisted is True
+        saved = yaml.safe_load((hermes_home / "config.yaml").read_text(encoding="utf-8"))
+        assert saved["agent"]["reasoning_effort"] == "high"
+        assert session_key not in runner._session_reasoning_overrides
+        assert runner._resolve_session_reasoning_config(source=source) == {
+            "enabled": True,
+            "effort": "high",
+        }
+
+    def test_persist_failure_falls_back_to_session_override(self, tmp_path, monkeypatch):
+        runner, _ = self._runner_with_home(tmp_path, monkeypatch)
+        source = _make_event("hello").source
+        session_key = runner._session_key_for_source(source)
+        monkeypatch.setattr(
+            runner, "_persist_reasoning_effort_config", lambda level: False
+        )
+
+        callback = runner._make_reasoning_update_callback(session_key)
+        persisted = callback("high", {"enabled": True, "effort": "high"}, True)
+
+        assert persisted is False
+        # Config write failed, but the session still gets the new level.
+        assert runner._resolve_session_reasoning_config(source=source) == {
+            "enabled": True,
+            "effort": "high",
+        }
+
+    def test_isolated_between_sessions(self, tmp_path, monkeypatch):
+        runner, _ = self._runner_with_home(tmp_path, monkeypatch)
+        source_a = _make_event("hello", chat_id="chat-a").source
+        source_b = _make_event("hello", chat_id="chat-b").source
+        key_a = runner._session_key_for_source(source_a)
+
+        runner._make_reasoning_update_callback(key_a)("xhigh", {"enabled": True, "effort": "xhigh"}, False)
+
+        assert runner._resolve_session_reasoning_config(source=source_a) == {
+            "enabled": True,
+            "effort": "xhigh",
+        }
+        assert runner._resolve_session_reasoning_config(source=source_b) == {
+            "enabled": True,
+            "effort": "medium",
+        }

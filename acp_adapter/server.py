@@ -1926,6 +1926,10 @@ class HermesACPAgent(acp.Agent):
         ``load_session`` / ``resume_session`` does not revive the discarded
         transcript. Rows stay on disk for audit; compaction archives
         (``compacted=1``) are untouched.
+
+        Legacy compression may rotate ``state.agent.session_id`` to a child
+        while the ACP handle stays put — archive both distinct ids so the
+        durable live set is empty before the flush cursor resets.
         """
         state.history.clear()
 
@@ -1934,7 +1938,14 @@ class HermesACPAgent(acp.Agent):
             try:
                 # Soft-archive only — never DELETE. Matches rewind/undo
                 # durability; compaction archives remain searchable.
-                db.archive_live_messages(state.session_id)
+                # Archive the stable ACP handle and, when compression has
+                # rotated the agent head, the current agent session id too.
+                ids_to_archive = {state.session_id}
+                agent_sid = getattr(state.agent, "session_id", None)
+                if isinstance(agent_sid, str) and agent_sid.strip():
+                    ids_to_archive.add(agent_sid.strip())
+                for sid in ids_to_archive:
+                    db.archive_live_messages(sid)
             except Exception:
                 logger.warning(
                     "Failed to soft-archive live SessionDB messages for ACP reset %s",

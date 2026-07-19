@@ -1599,6 +1599,7 @@ class TestSlashCommands:
         manager = SessionManager(agent_factory=factory, db=db)
         acp_agent = HermesACPAgent(session_manager=manager)
         state = manager.create_session(cwd="/tmp")
+        state.agent.session_id = state.session_id
         db.append_message(state.session_id, "user", "discard me")
         db.append_message(state.session_id, "assistant", "old reply")
         db.archive_and_compact(
@@ -1628,6 +1629,77 @@ class TestSlashCommands:
         assert int(inactive["live after compact"].get("compacted") or 0) == 0
         hits = {r["session_id"] for r in db.search_messages("discard")}
         assert state.session_id in hits
+
+        # Restart contract: evict memory and restore via SessionManager._restore
+        # (load_session / resume_session path) — restored history must stay empty.
+        session_id = state.session_id
+        with manager._lock:
+            manager._sessions.pop(session_id, None)
+        restored = manager.get_session(session_id)
+        assert restored is not None
+        assert restored.history == []
+        assert db.get_messages_as_conversation(session_id) == []
+
+    def test_reset_soft_archives_compression_rotated_child(self, tmp_path):
+        """Legacy compression rotates agent.session_id to a child; /reset must
+        soft-archive both the stable ACP id and the live child head.
+        """
+        db = SessionDB(tmp_path / "state.db")
+
+        def factory(**_kwargs):
+            agent = MagicMock(name="MockAIAgent")
+            agent.model = "test-model"
+            agent.provider = "openrouter"
+            agent._session_db = db
+            agent._session_db_created = True
+            agent._last_flushed_db_idx = 3
+            agent.reset_session_state = MagicMock()
+            return agent
+
+        manager = SessionManager(agent_factory=factory, db=db)
+        acp_agent = HermesACPAgent(session_manager=manager)
+        state = manager.create_session(cwd="/tmp")
+        parent_id = state.session_id
+        child_id = "20260719_120000_abc123"
+
+        db.append_message(parent_id, "user", "parent live leftover")
+        db.create_session(
+            session_id=child_id,
+            source="acp",
+            parent_session_id=parent_id,
+        )
+        db.append_message(child_id, "user", "child live after rotation")
+        db.append_message(child_id, "assistant", "child reply")
+        state.agent.session_id = child_id
+        state.history = [
+            {"role": "user", "content": "child live after rotation"},
+            {"role": "assistant", "content": "child reply"},
+        ]
+
+        result = acp_agent._handle_slash_command("/reset", state)
+
+        assert "cleared" in result.lower()
+        assert state.history == []
+        assert state.agent._last_flushed_db_idx == 0
+        assert db.get_messages_as_conversation(parent_id) == []
+        assert db.get_messages_as_conversation(child_id) == []
+        parent_inactive = {
+            m["content"]: m
+            for m in db.get_messages(parent_id, include_inactive=True)
+        }
+        child_inactive = {
+            m["content"]: m
+            for m in db.get_messages(child_id, include_inactive=True)
+        }
+        assert parent_inactive["parent live leftover"]["active"] == 0
+        assert child_inactive["child live after rotation"]["active"] == 0
+        assert child_inactive["child reply"]["active"] == 0
+
+        with manager._lock:
+            manager._sessions.pop(parent_id, None)
+        restored = manager.get_session(parent_id)
+        assert restored is not None
+        assert restored.history == []
 
     def test_version(self, agent, mock_manager):
         state = self._make_state(mock_manager)

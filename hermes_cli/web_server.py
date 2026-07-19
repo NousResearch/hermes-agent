@@ -862,91 +862,152 @@ for _k, _v in CONFIG_SCHEMA.items():
 CONFIG_SCHEMA = _ordered_schema
 
 
-def _custom_provider_options(kind: str, builtin_names: List[str]) -> List[str]:
+def _is_command_provider_block(value: Any) -> bool:
+    """Return True when *value* declares a command-type voice provider.
+
+    Mirrors the runtime discriminators
+    (``tools.tts_tool._is_command_provider_config`` /
+    ``tools.transcription_tools._is_command_stt_provider_config``) and the
+    desktop's ``isCommandProvider`` in
+    ``apps/desktop/src/app/settings/helpers.ts``: ``type`` is OPTIONAL and
+    case/space-insensitive (absent or normalizing to ``"command"``), and
+    ``command`` MUST be a non-empty string. Built-in blocks (which carry
+    ``voice``/``model`` and no ``command``) and the ``providers`` container
+    itself are rejected.
+    """
+    if not isinstance(value, dict):
+        return False
+    ptype = str(value.get("type") or "").strip().lower()
+    if ptype and ptype != "command":
+        return False
+    command = value.get("command")
+    return isinstance(command, str) and bool(command.strip())
+
+
+def _custom_provider_options(
+    kind: str,
+    builtin_names: List[str],
+    cfg: Dict[str, Any],
+) -> List[str]:
     """Return a merged provider option list without hard-coding vendor names.
 
-    *kind* is ``"tts"`` or ``"stt"``.  The result keeps the built-in names
-    first, then appends:
+    *kind* is ``"tts"`` or ``"stt"``. The result keeps the built-in display
+    names first (original order — NOT re-sorted), then appends:
 
-    1. ``tts.providers.*`` / ``stt.providers.*`` keys declared in
-       ``config.yaml`` (these are command-type providers the user already
-       configured).
-    2. Any additional ``kind.provider`` value found on disk that is not yet
-       in the list — this covers custom names that only appear as the active
-       provider without a dedicated ``providers.<name>`` block.
+    1. Command-type providers declared under the canonical
+       ``<kind>.providers.<name>`` location, plus the legacy top-level
+       ``<kind>.<name>`` fallback — exactly the dual resolution the runtime
+       performs in ``_get_named_provider_config`` /
+       ``_get_named_stt_provider_config``. Names colliding with a RUNTIME
+       built-in are excluded case-insensitively (the runtime rejects a
+       built-in name as a command provider before any config lookup), so a
+       ``providers.EDGE`` command block is not offered.
+    2. Plugin-registered provider names from ``agent.tts_registry`` /
+       ``agent.transcription_registry`` — opportunistic only: plugins
+       register at runtime via ``ctx.register_tts_provider()``, and this
+       process does not necessarily call ``discover_plugins()``, so the
+       registry may legitimately be empty here. (There is no static
+       ``provides: [tts]`` manifest convention to scan — real manifests only
+       carry ``provides_tools``/``provides_hooks``.)
+    3. The current ``<kind>.provider`` value when not already present — a
+       custom name that only appears as the active provider stays
+       selectable (matches desktop ``enumOptionsFor``'s current-value
+       preservation).
+
+    Guard semantics deliberately mirror
+    ``apps/desktop/src/app/settings/helpers.ts:commandProviderNames`` so the
+    backend schema (web dashboard) and the desktop client agree on which
+    names are offered.
     """
+    names = [str(n) for n in builtin_names]
+    seen = {n.strip().lower() for n in names}
 
-    names = list(builtin_names)
-    seen = {n.lower() for n in names}
+    # Guard against the RUNTIME built-in sets, not the display shortlist
+    # above: the display list drifts from the runtime sets (e.g. omits
+    # ``deepinfra``), and filtering on it would offer names the runtime
+    # would never honour as command providers.
+    if kind == "tts":
+        from tools.tts_tool import BUILTIN_TTS_PROVIDERS as _runtime_builtins
+    else:
+        from tools.transcription_tools import BUILTIN_STT_PROVIDERS as _runtime_builtins
 
-    def _add(name: str) -> None:
-        if isinstance(name, str):
-            normalized = name.strip().lower()
-            if normalized and normalized not in seen:
-                names.append(name.strip())
-                seen.add(normalized)
+    def _add(name: Any) -> None:
+        if not isinstance(name, str):
+            return
+        stripped = name.strip()
+        key = stripped.lower()
+        if stripped and key not in seen:
+            names.append(stripped)
+            seen.add(key)
 
-    cfg = load_config()
-    cfg_provider = cfg_get(cfg, f"{kind}.provider")
-    _add(cfg_provider)
+    section = cfg.get(kind)
+    if not isinstance(section, dict):
+        section = {}
 
-    providers_map = cfg.get(kind, {}).get("providers") or {}
+    # Canonical nested location first, then the legacy top-level fallback —
+    # the same order the runtime resolves them in.
+    candidate_blocks: List[Any] = []
+    providers_map = section.get("providers")
     if isinstance(providers_map, dict):
-        for name in providers_map.keys():
-            _add(name)
+        candidate_blocks.append(providers_map)
+    candidate_blocks.append(
+        {k: v for k, v in section.items() if k != "providers"}
+    )
+    for block in candidate_blocks:
+        for name, value in block.items():
+            if (
+                isinstance(name, str)
+                and name.strip().lower() not in _runtime_builtins
+                and _is_command_provider_block(value)
+            ):
+                _add(name)
+
+    # Plugin-registered providers (only populated when plugins are loaded in
+    # this process). Registry names can never collide with built-ins — the
+    # registries reject such registrations.
+    try:
+        if kind == "tts":
+            from agent.tts_registry import list_providers as _list_voice_providers
+        else:
+            from agent.transcription_registry import list_providers as _list_voice_providers
+        for _p in _list_voice_providers():
+            _add(getattr(_p, "name", None))
+    except Exception:  # pragma: no cover - registry import should not break schema
+        pass
+
+    # Current-value preservation (``cfg_get`` takes *keys*, not dotted paths).
+    _add(cfg_get(cfg, kind, "provider"))
 
     return names
 
 
-def _installed_tts_plugin_names() -> List[str]:
-    """Return ``name`` values from user-installed TTS plugin manifests."""
+def _schema_with_voice_provider_options() -> Dict[str, Dict[str, Any]]:
+    """Return CONFIG_SCHEMA with per-request voice provider options merged.
 
-    plugin_dir = get_hermes_home() / "plugins"
-    names: List[str] = []
-    if not plugin_dir.is_dir():
-        return names
-
-    cfg = load_config()
-    enabled = set()
-    raw_enabled = (cfg.get("plugins") or {}).get("enabled") or []
-    if isinstance(raw_enabled, list):
-        for item in raw_enabled:
-            if isinstance(item, str):
-                enabled.add(item.strip().lower())
-
-    for child in sorted(plugin_dir.iterdir()):
-        manifest = child / "plugin.yaml"
-        if not manifest.is_file():
+    Computed at request time (not import time) so options reflect the
+    CURRENT config.yaml — including providers added after the server
+    started, and the profile-scoped config when the request carries a
+    ``profile`` param. The module-level ``CONFIG_SCHEMA`` is never mutated;
+    entries that change are shallow-copied onto a copied mapping.
+    """
+    try:
+        cfg = load_config()
+    except Exception:  # pragma: no cover - schema must survive config errors
+        return CONFIG_SCHEMA
+    overlay: Dict[str, Dict[str, Any]] = {}
+    for kind in ("tts", "stt"):
+        key = f"{kind}.provider"
+        entry = CONFIG_SCHEMA.get(key)
+        if not isinstance(entry, dict) or not isinstance(entry.get("options"), list):
             continue
-
-        if child.name.lower() not in enabled:
-            continue
-
-        try:
-            data = yaml.safe_load(manifest.read_text(encoding="utf-8")) or {}
-        except Exception:
-            continue
-
-        provides = data.get("provides") or []
-        if "tts" in provides:
-            name = str(data.get("name") or child.name).strip()
-            if name:
-                names.append(name)
-
-    return names
-
-
-# Dynamically surface user-configured / plugin-backed provider names so the
-# Desktop settings page does not silently drop custom providers.
-for _audio_kind in ("tts", "stt"):
-    _key = f"{_audio_kind}.provider"
-    _override = _SCHEMA_OVERRIDES.get(_key)
-    if isinstance(_override, dict) and isinstance(_override.get("options"), list):
-        _builtin_names = list(_override["options"])
-        _custom_names = _custom_provider_options(_audio_kind, _builtin_names)
-        if _audio_kind == "tts":
-            _custom_names.extend(_installed_tts_plugin_names())
-        _override["options"] = sorted(set(_custom_names), key=str.lower)
+        merged = _custom_provider_options(kind, list(entry["options"]), cfg)
+        if merged != entry["options"]:
+            overlay[key] = {**entry, "options": merged}
+    if not overlay:
+        return CONFIG_SCHEMA
+    fields = dict(CONFIG_SCHEMA)
+    fields.update(overlay)
+    return fields
 
 
 class ConfigUpdate(BaseModel):
@@ -5876,8 +5937,13 @@ async def get_defaults():
 
 
 @app.get("/api/config/schema")
-async def get_schema():
-    return {"fields": CONFIG_SCHEMA, "category_order": _CATEGORY_ORDER}
+async def get_schema(profile: Optional[str] = None):
+    # Voice provider options are merged per-request so user-declared
+    # command providers (tts.providers.* / stt.providers.*) added after
+    # server start still show up, scoped to the requested profile's config.
+    with _config_profile_scope(profile):
+        fields = _schema_with_voice_provider_options()
+    return {"fields": fields, "category_order": _CATEGORY_ORDER}
 
 
 _EMPTY_MODEL_INFO: dict = {

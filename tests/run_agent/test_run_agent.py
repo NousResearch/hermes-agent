@@ -5587,12 +5587,14 @@ class TestRunConversation:
         ]
 
         mock_record_failure = MagicMock(return_value=False)
+        mock_add_comment = MagicMock(return_value=1)
         mock_connect = MagicMock(return_value=MagicMock())
 
         with (
             patch("run_agent.handle_function_call", return_value="ok"),
             patch("hermes_cli.kanban_db._record_task_failure",
                   mock_record_failure),
+            patch("hermes_cli.kanban_db.add_comment", mock_add_comment),
             patch("hermes_cli.kanban_db.connect", mock_connect),
             patch.object(agent, "_persist_session"),
             patch.object(agent, "_save_trajectory"),
@@ -5616,7 +5618,57 @@ class TestRunConversation:
         assert call.kwargs.get("outcome") == "timed_out"
         assert call.kwargs.get("release_claim") is True
         assert call.kwargs.get("end_run") is True
+        assert call.kwargs.get("summary") == "Could not finish — budget exhausted."
         assert "Iteration budget exhausted" in call.kwargs.get("error", "")
+        assert mock_add_comment.call_count == 1
+        assert "Could not finish" in mock_add_comment.call_args.args[3]
+
+    def test_kanban_pre_stop_budget_guard_records_handoff_before_hard_limit(self, agent, monkeypatch):
+        """Kanban workers stop before the hard budget edge (default 5 calls
+        early), ask for a no-tools summary, and persist that handoff on the
+        run-failure bridge.
+        """
+        self._setup_agent(agent)
+        agent.max_iterations = 10
+
+        monkeypatch.setenv("HERMES_KANBAN_TASK", "t_test_task_456")
+        monkeypatch.setenv("HERMES_KANBAN_BUDGET_PRESTOP_REMAINING", "5")
+
+        tc = _mock_tool_call(name="web_search", arguments="{}", call_id="c1")
+        tool_resp = _mock_response(
+            content="", finish_reason="tool_calls", tool_calls=[tc],
+        )
+        summary_resp = _mock_response(
+            content="Pre-stop handoff: partial work is usable.", finish_reason="stop",
+        )
+        agent.client.chat.completions.create.side_effect = [
+            tool_resp, tool_resp, tool_resp, tool_resp, tool_resp, summary_resp,
+        ]
+
+        mock_record_failure = MagicMock(return_value=False)
+        mock_add_comment = MagicMock(return_value=1)
+        mock_connect = MagicMock(return_value=MagicMock())
+
+        with (
+            patch("run_agent.handle_function_call", return_value="ok"),
+            patch("hermes_cli.kanban_db._record_task_failure",
+                  mock_record_failure),
+            patch("hermes_cli.kanban_db.add_comment", mock_add_comment),
+            patch("hermes_cli.kanban_db.connect", mock_connect),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("do the long kanban work")
+
+        assert result["completed"] is False
+        assert result["api_calls"] == 5
+        assert result["turn_exit_reason"] == "kanban_pre_stop_budget_guard(5/10)"
+        call = mock_record_failure.call_args_list[0]
+        assert call.args[1] == "t_test_task_456"
+        assert call.kwargs.get("summary") == "Pre-stop handoff: partial work is usable."
+        assert call.kwargs["event_payload_extra"]["pre_stop_guard"] is True
+        assert mock_add_comment.call_count == 1
 
     def test_no_kanban_block_when_not_in_kanban_mode(self, agent, monkeypatch):
         """The exhaustion bridge must NOT fire when HERMES_KANBAN_TASK

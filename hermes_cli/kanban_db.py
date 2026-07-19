@@ -7025,6 +7025,7 @@ def _record_task_failure(
     error: str,
     *,
     outcome: str,
+    summary: Optional[str] = None,
     failure_limit: int = None,
     force_trip: bool = False,
     release_claim: bool = False,
@@ -7126,12 +7127,14 @@ def _record_task_failure(
                 run_id = _end_run(
                     conn, task_id,
                     outcome="gave_up", status="gave_up",
+                    summary=summary,
                     error=error[:500],
                     metadata={
                         "failures": failures,
                         "trigger_outcome": outcome,
                         "effective_limit": effective_limit,
                         "limit_source": limit_source,
+                        **({"handoff_summary_len": len(summary)} if summary else {}),
                     },
                 )
             payload = {
@@ -7171,8 +7174,12 @@ def _record_task_failure(
                 run_id = _end_run(
                     conn, task_id,
                     outcome=outcome, status=outcome,
+                    summary=summary,
                     error=error[:500],
-                    metadata={"failures": failures},
+                    metadata={
+                        "failures": failures,
+                        **({"handoff_summary_len": len(summary)} if summary else {}),
+                    },
                 )
                 _append_event(
                     conn, task_id, outcome,

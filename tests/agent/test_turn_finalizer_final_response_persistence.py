@@ -280,3 +280,51 @@ def test_final_response_does_not_clobber_tool_call_tail_with_text(monkeypatch):
     )
 
     assert agent.persisted_messages[-1]["content"] == "partial text"
+
+
+def test_fill_pops_db_persisted_marker_for_durable_rewrite(monkeypatch):
+    """The incremental tool-call persist stamps ``_db_persisted`` on the row.
+
+    If finalize_turn fills the tail's content but leaves the marker, the next
+    ``_flush_messages_to_session_db`` skips the row and the durable SQLite
+    store keeps ``content=""`` — so ``/resume`` reloads the empty content and
+    the bug resurfaces cross-session. The fix pops the marker so the filled
+    content is re-written.
+    """
+    agent = FakeAgent()
+    messages = [
+        {"role": "user", "content": "q"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {"id": "t1", "type": "function",
+                 "function": {"name": "f", "arguments": "{}"}}
+            ],
+            "_db_persisted": True,  # stamped by conversation_loop.py:4990
+        },
+    ]
+
+    finalize_turn(
+        agent,
+        final_response="Here is your answer.",
+        api_call_count=3,
+        interrupted=False,
+        failed=False,
+        messages=messages,
+        conversation_history=[],
+        effective_task_id="t",
+        turn_id="tid",
+        user_message="q",
+        original_user_message="q",
+        _should_review_memory=False,
+        _turn_exit_reason="text_response(final)",
+    )
+
+    persisted = agent.persisted_messages
+    assert persisted is not None
+    assert persisted[-1]["content"] == "Here is your answer."
+    assert persisted[-1]["tool_calls"]
+    assert "_db_persisted" not in persisted[-1], (
+        "marker must be popped so the next flush re-writes the filled content"
+    )

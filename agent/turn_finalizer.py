@@ -25,6 +25,21 @@ from __future__ import annotations
 import os
 
 from agent.codex_responses_adapter import _summarize_user_message_for_log
+from agent.message_content import flatten_message_text
+
+
+def _is_pure_tool_call_tail(msg: dict) -> bool:
+    """An assistant row with ``tool_calls`` but no visible text content of its own.
+
+    Such a row satisfies the role check (``tail role == "assistant"``) while
+    carrying none of the delivered answer — see the #43849/#44100 invariant
+    block in :func:`finalize_turn`. Uses :func:`flatten_message_text` so that
+    multimodal (list-type) content is evaluated by its text parts, not just
+    its type.
+    """
+    if not msg.get("tool_calls"):
+        return False
+    return not flatten_message_text(msg.get("content")).strip()
 
 
 def finalize_turn(
@@ -228,19 +243,25 @@ def finalize_turn(
             _tail_role = _tail.get("role") if isinstance(_tail, dict) else None
             if _tail_role != "assistant":
                 messages.append({"role": "assistant", "content": final_response})
-            elif _tail.get("tool_calls") and not (
-                _tail.get("content") if isinstance(_tail.get("content"), str) else ""
-            ).strip():
+            elif isinstance(_tail, dict) and _is_pure_tool_call_tail(_tail):
                 # The tail IS an assistant row, but a *pure tool-call turn*:
-                # tool_calls with no text of its own. It carries none of the
-                # delivered answer, so the role check alone leaves the invariant
-                # unmet — the user saw a response that never reached the
-                # transcript, and the next turn replays the user backlog and
-                # re-answers it (the very symptom this block was added for).
-                # Fill that row's empty content instead of appending, so the
-                # durable turn ends with the answer without disturbing the
-                # tool-call structure or creating an assistant→assistant pair.
+                # tool_calls with no text of its own. The role check alone
+                # leaves the #43849/#44100 invariant unmet — the user saw a
+                # response that never reached the transcript, and the next turn
+                # replays the user backlog and re-answers it (the very symptom
+                # this block was added for). Fill that row's empty content
+                # instead of appending, so the durable turn ends with the answer
+                # without disturbing the tool-call structure or creating an
+                # assistant→assistant pair.
                 _tail["content"] = final_response
+                # The row may have already been flushed to SQLite by the
+                # incremental tool-call persist (conversation_loop.py:4990),
+                # which stamps ``_DB_PERSISTED_MARKER`` so subsequent flushes
+                # skip it. Pop the marker so the next ``_persist_session``
+                # re-writes the filled content to the durable store —
+                # otherwise ``/resume`` reloads ``content=""`` and the bug
+                # resurfaces cross-session.
+                _tail.pop("_db_persisted", None)
 
         # The model has completed its request, so replace API-local
         # voice/model/skill guidance with the clean user input before writing the

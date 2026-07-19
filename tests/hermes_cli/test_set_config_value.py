@@ -459,6 +459,48 @@ class TestSecretRedactionInDisplay:
         assert secret not in captured.out
         assert "Set model.api_key" in captured.out
 
+    @pytest.mark.parametrize("key, secret", [
+        # Suffix-shaped credential keys previously echoed in plaintext:
+        # exact-match against _SECRET_CONFIG_KEYS missed them entirely.
+        ("platforms.webhook.extra.secret", "fabricated-webhook-hmac-0123456789abcdef"),
+        ("platforms.telegram.extra.bot_token", "1234567890:FAKEFAKEFAKEfakefakefake_fake"),
+        ("platforms.slack.extra.signing_secret", "fabricatedslacksigningsecret12345678"),
+        ("platforms.example.extra.app_password", "fabricated-app-password-abcdef123456"),
+        ("some_service.dashscope_api_key", "sk-fabricated1234567890abcdefghij"),
+    ])
+    def test_set_echo_masks_suffix_shaped_secret_keys(
+        self, key, secret, _isolated_hermes_home, capsys
+    ):
+        set_config_value(key, secret)
+
+        captured = capsys.readouterr()
+        assert secret not in captured.out
+        assert f"Set {key}" in captured.out
+
+    @pytest.mark.parametrize("key, value", [
+        # Identifier-shaped keys that merely end in `_key` are NOT credentials
+        # and must keep echoing their value for debuggability.
+        ("dashboard.session_key", "hermes-session"),
+        ("records.record_key", "customer-42"),
+    ])
+    def test_set_echo_keeps_identifier_shaped_key_values(
+        self, key, value, _isolated_hermes_home, capsys
+    ):
+        set_config_value(key, value)
+
+        captured = capsys.readouterr()
+        assert f"= {value}" in captured.out
+
+    def test_redact_config_value_masks_suffix_shaped_keys(self):
+        from hermes_cli.config import redact_config_value
+        secret = "fabricated-signing-secret-1234567890"
+        cfg = {"extra": {"signing_secret": secret, "port": 8644}}
+
+        out = redact_config_value(cfg)
+
+        assert secret not in str(out)
+        assert out["extra"]["port"] == 8644
+
     def test_set_echo_keeps_nonsecret_value(self, _isolated_hermes_home, capsys):
         set_config_value("model.reasoning_effort", "high")
 

@@ -8253,6 +8253,39 @@ _SECRET_CONFIG_KEYS = frozenset({
     "jwt",
 })
 
+# Suffix forms of the same credential shapes: ``bot_token``, ``app_password``,
+# ``webhook_secret``, ``dashscope_api_key``, ``signing_secret`` … all carry a
+# credential in their VALUE but miss the exact-match set above, so they echoed
+# in plaintext (`hermes config set platforms.telegram.extra.bot_token 123:AAA…`
+# printed the full token). Kept separate from _SECRET_CONFIG_KEYS so
+# identifier-shaped keys that merely *end* in ``_key`` (``provider_key``,
+# ``session_key``, ``field_key``, ``ssh_key`` — names/paths, not credentials)
+# keep printing unmasked; bare ``_key`` and ``_auth`` are deliberately NOT in
+# this tuple for that reason (``basic_auth``/``drain_auth`` are dict nodes and
+# their credential leaves are covered by the exact-match set).
+_SECRET_CONFIG_KEY_SUFFIXES = (
+    "_api_key",
+    "_apikey",
+    "_token",
+    "_secret",
+    "_password",
+    "_passwd",
+    "_credential",
+    "_credentials",
+)
+
+
+def _is_secret_config_key_name(name: str) -> bool:
+    """True when a config key name is credential-shaped.
+
+    Exact match against ``_SECRET_CONFIG_KEYS`` or suffix match against
+    ``_SECRET_CONFIG_KEY_SUFFIXES`` (both case-insensitive). Shared by
+    :func:`redact_config_value` and the ``config set`` echo so the two display
+    paths can never disagree about what counts as a secret.
+    """
+    lowered = name.lower()
+    return lowered in _SECRET_CONFIG_KEYS or lowered.endswith(_SECRET_CONFIG_KEY_SUFFIXES)
+
 
 def redact_config_value(value: Any, _depth: int = 0) -> Any:
     """Return a copy of ``value`` with credential-shaped keys masked for display.
@@ -8273,7 +8306,7 @@ def redact_config_value(value: Any, _depth: int = 0) -> Any:
     if isinstance(value, dict):
         out = {}
         for k, v in value.items():
-            if isinstance(k, str) and k.lower() in _SECRET_CONFIG_KEYS and isinstance(v, str) and v:
+            if isinstance(k, str) and isinstance(v, str) and v and _is_secret_config_key_name(k):
                 out[k] = mask_secret(v)
             else:
                 out[k] = redact_config_value(v, _depth + 1)
@@ -8823,9 +8856,11 @@ def set_config_value(key: str, value: str, force: bool = False):
     # Mask the echoed value when the (possibly nested) key is credential-shaped
     # — e.g. `hermes config set model.api_key cfut_...` routes to config.yaml
     # (lowercase, so it misses the .env api_keys list above) and would otherwise
-    # print the raw secret to the terminal.
-    _leaf_key = key.rsplit(".", 1)[-1].lower()
-    if _leaf_key in _SECRET_CONFIG_KEYS and isinstance(value, str) and value:
+    # print the raw secret to the terminal. Suffix forms count too:
+    # `platforms.webhook.extra.secret`, `platforms.telegram.extra.bot_token`,
+    # `platforms.slack.extra.signing_secret` all carry credentials.
+    _leaf_key = key.rsplit(".", 1)[-1]
+    if _is_secret_config_key_name(_leaf_key) and isinstance(value, str) and value:
         from agent.redact import mask_secret
         _display_value = mask_secret(value)
     else:

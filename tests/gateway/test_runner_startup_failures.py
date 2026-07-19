@@ -1,5 +1,8 @@
-import pytest
+import asyncio
+import json
 from unittest.mock import AsyncMock
+
+import pytest
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter
@@ -62,6 +65,160 @@ class _SuccessfulAdapter(BasePlatformAdapter):
 
     async def get_chat_info(self, chat_id):
         return {"id": chat_id}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("first_outcome", "expect_reconnect"),
+    [
+        ("false", True),
+        ("exception", True),
+        ("nonretryable", False),
+    ],
+)
+async def test_running_transition_reconnects_retryable_secondary_startup_failure(
+    monkeypatch,
+    tmp_path,
+    first_outcome,
+    expect_reconnect,
+):
+    from gateway.account_usage_presence import (
+        AccountUsagePresenceCapabilities,
+        AccountUsagePresenceRestoreResult,
+    )
+    from hermes_cli.profiles import get_profile_dir
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    profile_home = get_profile_dir("work")
+    profile_home.mkdir(parents=True)
+    state_path = (
+        profile_home
+        / "state"
+        / "account-usage-presence"
+        / "journal.json"
+    )
+    state_path.parent.mkdir(parents=True)
+    state_path.write_text(
+        json.dumps(
+            {
+                "version": 2,
+                "entries": {
+                    "telegram": {
+                        "baseline": {"display_name": "Hermes"},
+                        "owned": {"display_name": "Hermes · Session 75%"},
+                        "phase": "owned",
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    reconnect_gate = asyncio.Event()
+
+    class _SecondaryAdapter(BasePlatformAdapter):
+        def __init__(self):
+            super().__init__(
+                PlatformConfig(enabled=True, token="secondary-token"),
+                Platform.TELEGRAM,
+            )
+            self.connect_calls = 0
+            self.remote_state = {"display_name": "Hermes · Session 75%"}
+
+        @property
+        def account_usage_presence_capabilities(self):
+            return AccountUsagePresenceCapabilities(display_name=True)
+
+        async def connect(self, *, is_reconnect: bool = False) -> bool:
+            self.connect_calls += 1
+            if self.connect_calls == 1:
+                if first_outcome == "exception":
+                    raise OSError("temporary startup exception")
+                self._set_fatal_error(
+                    "telegram_connect_error",
+                    "temporary startup failure",
+                    retryable=first_outcome != "nonretryable",
+                )
+                return False
+            await reconnect_gate.wait()
+            self._mark_connected()
+            return True
+
+        async def disconnect(self) -> None:
+            self._mark_disconnected()
+
+        async def send(self, chat_id, content, reply_to=None, metadata=None):
+            raise NotImplementedError
+
+        async def get_chat_info(self, chat_id):
+            return {"id": chat_id}
+
+        def account_usage_presence_state_key(self):
+            return "telegram"
+
+        async def restore_account_usage_presence(self, baseline, owned):
+            if self.remote_state == owned:
+                self.remote_state = dict(baseline)
+                return AccountUsagePresenceRestoreResult.RESTORED
+            if self.remote_state == baseline:
+                return AccountUsagePresenceRestoreResult.ALREADY_BASELINE
+            return AccountUsagePresenceRestoreResult.EXTERNAL
+
+    adapter = _SecondaryAdapter()
+    runner = GatewayRunner(
+        GatewayConfig(
+            multiplex_profiles=True,
+            platforms={},
+            sessions_dir=tmp_path / "sessions",
+        )
+    )
+    monkeypatch.setattr(
+        "hermes_cli.profiles.get_active_profile_name",
+        lambda: "default",
+    )
+    monkeypatch.setattr(
+        "hermes_cli.profiles.profiles_to_serve",
+        lambda multiplex: [("default", tmp_path), ("work", profile_home)],
+    )
+    monkeypatch.setattr(
+        "gateway.config.load_gateway_config",
+        lambda: GatewayConfig(
+            platforms={
+                Platform.TELEGRAM: PlatformConfig(
+                    enabled=True,
+                    token="secondary-token",
+                )
+            }
+        ),
+    )
+    monkeypatch.setattr(runner, "_create_adapter", lambda platform, cfg: adapter)
+    monkeypatch.setattr(
+        runner,
+        "_configure_profile_adapter",
+        lambda adapter, profile, platform: None,
+    )
+
+    ok = await runner.start()
+
+    assert ok is True
+    if not expect_reconnect:
+        assert not getattr(runner, "_pending_secondary_profile_reconnects", {})
+        assert "work" not in runner._profile_failed_platforms
+        assert adapter.connect_calls == 1
+        assert json.loads(state_path.read_text(encoding="utf-8"))["entries"]
+        await runner.stop()
+        return
+
+    reconnect_task = runner._profile_failed_platforms["work"][Platform.TELEGRAM]
+    assert not reconnect_task.done()
+    assert json.loads(state_path.read_text(encoding="utf-8"))["entries"]
+
+    reconnect_gate.set()
+    await asyncio.wait_for(reconnect_task, timeout=2)
+
+    assert runner._profile_adapters["work"][Platform.TELEGRAM] is adapter
+    assert adapter.remote_state == {"display_name": "Hermes"}
+    assert json.loads(state_path.read_text(encoding="utf-8"))["entries"] == {}
+    await runner.stop()
 
 
 @pytest.mark.asyncio

@@ -1989,6 +1989,39 @@ def _load_cursorrules(cwd_path: Path, context_length: Optional[int] = None) -> s
     )
 
 
+def _load_user_md(context_length: Optional[int] = None) -> str:
+    """USER.md — user-scoped (NOT project-scoped) preferences.
+
+    Distinct from AGENTS.md:
+      - AGENTS.md = rules for AI coding assistants in this repo (project rules)
+      - USER.md   = the user's working preferences (fleet pins, communication
+                    style, hygiene rules, what NOT to do)
+    Lives at ~/.hermes/memories/USER.md (per the platform's memory store
+    contract — see tools/memory_tool.py:189 and hermes_cli/profiles.py:67-68).
+    Read on every prompt; cap is `user_char_limit` in config.yaml (default
+    2200, bump when adding entries). Distinct from the memory_store path
+    (which loads USER.md for the memory provider's snapshot) — this loader
+    surfaces the file as a context block in the system prompt, so the agent
+    sees the user's preferences directly when assembling the prompt.
+    """
+    user_path = get_hermes_home() / "memories" / "USER.md"
+    if not user_path.exists():
+        return ""
+    try:
+        content = user_path.read_text(encoding="utf-8").strip()
+        if not content:
+            return ""
+        content = _scan_context_content(content, "USER.md")
+        result = f"## USER.md\n\n{content}"
+        return _truncate_content(
+            result, "USER.md", context_length=context_length,
+            read_path=str(user_path),
+        )
+    except Exception as e:
+        logger.debug("Could not read USER.md from %s: %s", user_path, e)
+        return ""
+
+
 def build_context_files_prompt(
     cwd: Optional[str] = None,
     skip_soul: bool = False,
@@ -2054,6 +2087,18 @@ def build_context_files_prompt(
         )
     if project_context:
         sections.append(project_context)
+
+    # USER.md — user-scoped (NOT project-scoped) preferences. Always appended
+    # when present, regardless of which project context file won the
+    # priority race. Lives at ~/.hermes/memories/USER.md (per the platform's
+    # memory store contract; see hermes_cli/profiles.py:67-68). Distinct
+    # from the memory_store snapshot path — this surfaces the file as a
+    # visible context block, so the user-editable preferences are present
+    # in the prompt every turn. Cap is `user_char_limit` in config.yaml
+    # (default 2200).
+    user_md = _load_user_md(context_length)
+    if user_md:
+        sections.append(user_md)
 
     # SOUL.md from HERMES_HOME only — skip when already loaded as identity
     if not skip_soul:

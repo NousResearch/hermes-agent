@@ -3209,15 +3209,21 @@ def ensure_lmstudio_model_loaded(
     model: str,
     base_url: Optional[str],
     api_key: Optional[str],
-    target_context_length: int,
+    target_context_length: Optional[int] = None,
     timeout: float = 120.0,
 ) -> Optional[int]:
     """Ensure LM Studio has ``model`` loaded with at least ``target_context_length``.
 
     No-op when an instance is already loaded with sufficient context. Otherwise
-    POSTs ``/api/v1/models/load`` to (re)load with the target context, capped
-    at the model's ``max_context_length``. Returns the resolved loaded context
-    length, or ``None`` when the probe / load failed.
+    POSTs ``/api/v1/models/load`` to (re)load. When ``target_context_length`` is
+    ``None`` the request omits the field, so LM Studio uses its stored
+    per-model config (or its global default if no per-model override exists) —
+    matching what ``lms load <model>`` does from the CLI. This is the right
+    default: forcing an explicit ``context_length`` here clobbers whatever
+    the user has tuned in the LM Studio UI (per-model window, KV cache, TTL).
+
+    Returns the resolved loaded context length, or ``None`` when the probe
+    / load failed.
     """
     server_root = _lmstudio_server_root(base_url)
     if not server_root:
@@ -3242,20 +3248,30 @@ def ensure_lmstudio_model_loaded(
     if target_entry is None:
         return None
 
-    max_ctx = target_entry.get("max_context_length")
-    if isinstance(max_ctx, int) and max_ctx > 0:
-        target_context_length = min(target_context_length, max_ctx)
+    # If the caller asked for a specific context, cap it at the model's
+    # indexed max. When target_context_length is None, skip this step entirely
+    # so LM Studio keeps its stored per-model config / global default.
+    if target_context_length is not None:
+        max_ctx = target_entry.get("max_context_length")
+        if isinstance(max_ctx, int) and max_ctx > 0:
+            target_context_length = min(target_context_length, max_ctx)
 
     for inst in target_entry.get("loaded_instances") or []:
         cfg = inst.get("config") if isinstance(inst, dict) else None
         loaded_ctx = cfg.get("context_length") if isinstance(cfg, dict) else None
-        if isinstance(loaded_ctx, int) and loaded_ctx >= target_context_length:
-            return loaded_ctx
+        if isinstance(loaded_ctx, int):
+            # If the caller didn't pin a target, any loaded instance is good.
+            # If they did, only skip reload if the existing context is enough.
+            if target_context_length is None or loaded_ctx >= target_context_length:
+                return loaded_ctx
 
-    body = json.dumps({
-        "model": model,
-        "context_length": target_context_length,
-    }).encode()
+    # Build the load body. Omit `context_length` when the caller didn't pin
+    # one — that lets LM Studio use whatever it has stored (per-model config
+    # or global default) rather than being clobbered by Hermes.
+    body_dict: dict = {"model": model}
+    if target_context_length is not None:
+        body_dict["context_length"] = target_context_length
+    body = json.dumps(body_dict).encode()
     load_headers = dict(headers)
     load_headers["Content-Type"] = "application/json"
     try:
@@ -3269,6 +3285,25 @@ def ensure_lmstudio_model_loaded(
             resp.read()
     except Exception:
         return None
+    # When target_context_length was None, return the actual loaded value
+    # (LM Studio's chosen context) by re-probing; otherwise return what we asked
+    # for. Probing keeps the caller from having to round-trip again to learn
+    # the value the user actually got.
+    if target_context_length is None:
+        try:
+            raw_models = _lmstudio_fetch_raw_models(api_key=api_key, base_url=base_url, timeout=10)
+            if raw_models:
+                for raw in raw_models:
+                    if not isinstance(raw, dict):
+                        continue
+                    if raw.get("key") == model or raw.get("id") == model:
+                        for inst in raw.get("loaded_instances") or []:
+                            cfg = inst.get("config") if isinstance(inst, dict) else None
+                            loaded_ctx = cfg.get("context_length") if isinstance(cfg, dict) else None
+                            if isinstance(loaded_ctx, int):
+                                return loaded_ctx
+        except Exception:
+            pass
     return target_context_length
 
 

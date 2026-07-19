@@ -775,6 +775,13 @@ class AIAgent:
     def _ensure_lmstudio_runtime_loaded(self, config_context_length: Optional[int] = None) -> None:
         """
         Preload the LM Studio model unless configured to rely on LM Studio JIT loading.
+
+        Honors whatever context length the user has configured in LM Studio
+        (per-model config, or the global default if no per-model override
+        exists). Does NOT inject a 64K floor or any other synthetic target —
+        that would clobber the user's tuned settings. Only forces a specific
+        context when ``_config_context_length`` is set in ``config.yaml``'s
+        ``model.context_length`` block (an explicit user override).
         """
         if (self.provider or "").strip().lower() != "lmstudio":
             return
@@ -782,11 +789,16 @@ class AIAgent:
             logger.debug("LM Studio explicit preload skipped: lmstudio_load_mode=jit")
             return
         try:
-            from agent.model_metadata import MINIMUM_CONTEXT_LENGTH
             from hermes_cli.models import ensure_lmstudio_model_loaded
             if config_context_length is None:
                 config_context_length = getattr(self, "_config_context_length", None)
-            target_ctx = max(config_context_length or 0, MINIMUM_CONTEXT_LENGTH)
+            # Pass None when the user hasn't set a model.context_length in
+            # config.yaml — that lets ensure_lmstudio_model_loaded omit the
+            # context_length field from /api/v1/models/load so LM Studio uses
+            # its stored per-model config / global default. The previous
+            # behavior (max(0, MINIMUM_CONTEXT_LENGTH) == 64000) was the
+            # root cause of the 64K override bug — see session-summary-2026-07-19.md.
+            target_ctx = config_context_length if isinstance(config_context_length, int) and config_context_length > 0 else None
             loaded_ctx = ensure_lmstudio_model_loaded(
                 self.model, self.base_url, getattr(self, "api_key", ""), target_ctx,
             )

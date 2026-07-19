@@ -2,12 +2,13 @@ import type { GatewayEventPayload } from '@/lib/chat-messages'
 import { normalizePersonalityValue } from '@/lib/chat-runtime'
 
 import type { ClientSessionState } from '../../../types'
+import type { UsageStats } from '@/types/hermes'
 
 type SessionRuntimeStatePatch = Partial<
   Pick<
     ClientSessionState,
     'branch' | 'cwd' | 'fast' | 'model' | 'personality' | 'provider' | 'reasoningEffort' | 'serviceTier' | 'yolo'
-  >
+  > & { usage?: Partial<UsageStats> }
 >
 
 export function sessionInfoStatePatch(payload: GatewayEventPayload | undefined): SessionRuntimeStatePatch {
@@ -47,6 +48,10 @@ export function sessionInfoStatePatch(payload: GatewayEventPayload | undefined):
 
   if (typeof payload?.yolo === 'boolean') {
     patch.yolo = payload.yolo
+  }
+
+  if (payload?.usage && typeof payload.usage === 'object') {
+    patch.usage = payload.usage as Partial<UsageStats>
   }
 
   return patch

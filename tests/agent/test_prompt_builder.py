@@ -943,6 +943,94 @@ class TestBuildContextFilesPrompt:
 # .hermes.md helper functions
 # =========================================================================
 
+class TestLoadUserMd:
+    """USER.md — user-scoped preferences loaded from HERMES_HOME/memories/USER.md.
+
+    Distinct from AGENTS.md (project rules, cwd-scoped) and SOUL.md
+    (agent identity, HERMES_HOME). USER.md is user-scoped — always appended
+    when present, regardless of which project-context file won the
+    priority race. See agent/prompt_builder.py:_load_user_md.
+    """
+
+    def test_loads_user_md_from_hermes_home(self, tmp_path, monkeypatch):
+        from agent.prompt_builder import _load_user_md
+
+        hermes_home = tmp_path / "hermes_home"
+        (hermes_home / "memories").mkdir(parents=True)
+        (hermes_home / "memories" / "USER.md").write_text(
+            "Concise E2E-verified answers only.", encoding="utf-8"
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        result = _load_user_md()
+        assert "Concise E2E-verified answers only." in result
+        assert "## USER.md" in result  # section header for the prompt
+
+    def test_returns_empty_when_user_md_absent(self, tmp_path, monkeypatch):
+        from agent.prompt_builder import _load_user_md
+
+        hermes_home = tmp_path / "hermes_home"
+        hermes_home.mkdir()  # no memories/USER.md
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        assert _load_user_md() == ""
+
+    def test_does_not_load_cwd_user_md(self, tmp_path, monkeypatch):
+        # USER.md is HERMES_HOME-scoped only; a cwd-level USER.md is ignored.
+        # (Keeps the loader deterministic and prevents untrusted cwd content
+        # from reaching the prompt as "user preferences".)
+        from agent.prompt_builder import _load_user_md
+
+        hermes_home = tmp_path / "hermes_home"
+        (hermes_home / "memories").mkdir(parents=True)
+        # No USER.md in HERMES_HOME
+        (tmp_path / "USER.md").write_text("cwd USER.md should be ignored", encoding="utf-8")
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        result = _load_user_md()
+        assert "cwd USER.md should be ignored" not in result
+
+    def test_truncates_user_md_over_cap(self, tmp_path, monkeypatch):
+        # When USER.md exceeds the cap, the loader truncates with a marker.
+        from agent import prompt_builder
+
+        hermes_home = tmp_path / "hermes_home"
+        (hermes_home / "memories").mkdir(parents=True)
+        (hermes_home / "memories" / "USER.md").write_text("X" * 5000, encoding="utf-8")
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        # Force a tiny cap to make truncation observable
+        monkeypatch.setattr(
+            prompt_builder, "_get_context_file_max_chars", lambda context_length=None: 200
+        )
+        result = prompt_builder._load_user_md()
+        # Truncation marker must be present
+        assert "[..." in result
+        # And the full 5000-byte payload must NOT be in the output
+        assert "X" * 1000 not in result
+
+    def test_user_md_section_appears_in_full_prompt(self, tmp_path, monkeypatch):
+        # End-to-end: build_context_files_prompt() should include USER.md
+        # after the project context block and before SOUL.md.
+        from agent.prompt_builder import build_context_files_prompt
+
+        hermes_home = tmp_path / "hermes_home"
+        (hermes_home / "memories").mkdir(parents=True)
+        (hermes_home / "memories" / "USER.md").write_text(
+            "USER_MD_TEST_MARKER", encoding="utf-8"
+        )
+        (hermes_home / "SOUL.md").write_text("SOUL_MD_TEST_MARKER", encoding="utf-8")
+        (tmp_path / "AGENTS.md").write_text("AGENTS_MD_TEST_MARKER", encoding="utf-8")
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        result = build_context_files_prompt(cwd=str(tmp_path), context_length=200_000)
+        # All three sections present
+        assert "AGENTS_MD_TEST_MARKER" in result
+        assert "USER_MD_TEST_MARKER" in result
+        assert "SOUL_MD_TEST_MARKER" in result
+        # Order: AGENTS.md → USER.md → SOUL.md
+        agents_idx = result.index("AGENTS_MD_TEST_MARKER")
+        user_idx = result.index("USER_MD_TEST_MARKER")
+        soul_idx = result.index("SOUL_MD_TEST_MARKER")
+        assert agents_idx < user_idx < soul_idx, (
+            f"Section order wrong: agents={agents_idx} user={user_idx} soul={soul_idx}"
+        )
+
 
 class TestFindHermesMd:
     def test_finds_in_cwd(self, tmp_path):

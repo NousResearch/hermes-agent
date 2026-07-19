@@ -44,7 +44,30 @@ def test_lmstudio_explicit_load_mode_preserves_preload(monkeypatch):
 
     assert len(calls) == 1
     assert calls[0][0][:3] == ("test/model", "http://127.0.0.1:1234/v1", "")
-    assert calls[0][0][3] == 64000
+    # No _config_context_length set → pass None so LM Studio uses its stored
+    # per-model config / global default. The previous behavior (64000 floor)
+    # was the root cause of the 64K override bug.
+    assert calls[0][0][3] is None
+
+
+def test_lmstudio_explicit_load_mode_honors_explicit_config_override(monkeypatch):
+    # When the user has set model.context_length in config.yaml, that value
+    # IS forwarded to ensure_lmstudio_model_loaded — the explicit override
+    # path still works.
+    calls = []
+
+    def fake_ensure(*args, **kwargs):
+        calls.append((args, kwargs))
+        return 262144
+
+    monkeypatch.setattr("hermes_cli.models.ensure_lmstudio_model_loaded", fake_ensure)
+
+    agent = _agent("explicit")
+    agent._config_context_length = 262144
+    AIAgent._ensure_lmstudio_runtime_loaded(cast(Any, agent))
+
+    assert len(calls) == 1
+    assert calls[0][0][3] == 262144
 
 
 def test_missing_lmstudio_load_mode_defaults_to_explicit(monkeypatch):
@@ -61,3 +84,5 @@ def test_missing_lmstudio_load_mode_defaults_to_explicit(monkeypatch):
     AIAgent._ensure_lmstudio_runtime_loaded(cast(Any, agent))
 
     assert len(calls) == 1
+    # Same contract: no _config_context_length → pass None
+    assert calls[0][0][3] is None

@@ -278,6 +278,21 @@ TOOLSETS = {
         "includes": [],
     },
 
+    # Internal dispatcher surface for tasks with an explicit per-task
+    # authority allowlist.  Unlike the full ``kanban`` toolset, this contains
+    # only the worker's own lifecycle/evidence operations: no board listing,
+    # unblocking, task creation, or link mutation.  The dispatcher adds this
+    # bundle at process start; users do not configure it on profiles.
+    "kanban_worker": {
+        "description": "Task-scoped Kanban worker lifecycle tools",
+        "tools": [
+            "kanban_show", "kanban_complete", "kanban_block",
+            "kanban_heartbeat", "kanban_comment", "kanban_attach",
+            "kanban_attach_url", "kanban_attachments",
+        ],
+        "includes": [],
+    },
+
     "discord": {
         "description": "Discord read and participate tools (fetch messages, search members, create threads)",
         "tools": ["discord"],

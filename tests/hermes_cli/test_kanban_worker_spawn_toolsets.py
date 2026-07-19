@@ -89,6 +89,91 @@ agent:
         assert required in pinned
 
 
+def test_default_spawn_empty_task_allowlist_ignores_profile_tools(monkeypatch, tmp_path):
+    """An explicit [] is deny-by-default, not a profile fallback."""
+    root = tmp_path / ".hermes"
+    profile = root / "profiles" / "elias"
+    profile.mkdir(parents=True)
+    profile.joinpath("config.yaml").write_text(
+        "platform_toolsets:\n  cli:\n    - terminal\n    - delegation\n    - memory\n",
+        encoding="utf-8",
+    )
+    root.joinpath("config.yaml").write_text("{}\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(root))
+
+    from hermes_cli import kanban_db as kb
+
+    monkeypatch.setattr(kb, "_resolve_hermes_argv", lambda: ["hermes"])
+    captured = {}
+
+    class FakeProc:
+        pid = 4245
+
+    def fake_popen(cmd, *args, **kwargs):
+        captured["cmd"] = list(cmd)
+        return FakeProc()
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    task = _make_task(kb, assignee="elias")
+    task.toolsets = []
+
+    kb._default_spawn(task, str(workspace))
+
+    idx = captured["cmd"].index("--toolsets")
+    assert captured["cmd"][idx + 1] == "kanban_worker"
+    assert "--ignore-rules" in captured["cmd"]
+    assert "terminal" not in captured["cmd"][idx + 1]
+    assert "delegation" not in captured["cmd"][idx + 1]
+    assert "memory" not in captured["cmd"][idx + 1]
+
+
+def test_default_spawn_uses_exact_task_allowlist_plus_lifecycle(monkeypatch, tmp_path):
+    root = tmp_path / ".hermes"
+    profile = root / "profiles" / "elias"
+    profile.mkdir(parents=True)
+    profile.joinpath("config.yaml").write_text(
+        "platform_toolsets:\n  cli:\n    - terminal\n    - delegation\n",
+        encoding="utf-8",
+    )
+    root.joinpath("config.yaml").write_text("{}\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(root))
+
+    from hermes_cli import kanban_db as kb
+    from hermes_cli._parser import build_top_level_parser
+
+    monkeypatch.setattr(kb, "_resolve_hermes_argv", lambda: ["hermes"])
+    captured = {}
+
+    class FakeProc:
+        pid = 4246
+
+    def fake_popen(cmd, *args, **kwargs):
+        captured["cmd"] = list(cmd)
+        return FakeProc()
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    task = _make_task(kb, assignee="elias")
+    task.toolsets = ["file", "web"]
+
+    kb._default_spawn(task, str(workspace))
+
+    idx = captured["cmd"].index("--toolsets")
+    assert captured["cmd"][idx + 1].split(",") == ["file", "web", "kanban_worker"]
+    assert "--ignore-rules" in captured["cmd"]
+
+    parser, _subparsers, _chat_parser = build_top_level_parser()
+    assert captured["cmd"][1:3] == ["-p", "elias"]
+    args = parser.parse_args(captured["cmd"][3:])
+    assert args.command == "chat"
+    assert args.toolsets == "file,web,kanban_worker"
+    assert args.ignore_rules is True
+
+
+
 def test_default_spawn_never_boots_the_tui(monkeypatch, tmp_path):
     """Workers are headless: an inherited HERMES_TUI=1 (or a TUI-default
     config) must not send the quiet chat run into the Ink TUI, whose no-TTY

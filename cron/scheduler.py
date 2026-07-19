@@ -3038,6 +3038,23 @@ def run_job(
         reset_secret_source_cache()
         load_hermes_dotenv(hermes_home=_get_hermes_home())
 
+        # ``load_hermes_dotenv`` intentionally uses override=True for the
+        # profile's .env.  Re-assert config.yaml afterwards: terminal tools
+        # read only TERMINAL_* and config.yaml is authoritative whenever it
+        # contains a terminal section.  This is especially important for
+        # standalone ``hermes cron run``, which has no gateway/TUI startup
+        # bridge, but placing it at the shared execution boundary also keeps
+        # tick and external-provider fires from drifting.
+        from hermes_cli.config import apply_terminal_config_to_env
+        apply_terminal_config_to_env()
+
+        # A job-scoped workdir is more specific than terminal.cwd.  Both the
+        # dotenv reload and the canonical config bridge above can replace the
+        # value installed before the lock was acquired, so restore it before
+        # any agent/tool initialization.
+        if _job_workdir:
+            os.environ["TERMINAL_CWD"] = _job_workdir
+
         delivery_target = _resolve_delivery_target(job)
         if delivery_target:
             _VAR_MAP["HERMES_CRON_AUTO_DELIVER_PLATFORM"].set(delivery_target["platform"])

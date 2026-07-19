@@ -1514,6 +1514,54 @@ DEFAULT_CONFIG = {
                                       # session_search and recoverable, not deleted.
                                       # Default False during rollout; will flip on
                                       # after live validation.
+        "background": {               # Background-prepared ("async") compression.
+                                      # Pre-computes a compression candidate on a
+                                      # worker thread so the compaction pause is
+                                      # replaced by an instant swap between turns.
+                                      # Preparation never mutates live state; the
+                                      # candidate only applies after revalidation
+                                      # (same session, unchanged prefix digest, no
+                                      # open tool call) under the same SQLite lock
+                                      # as synchronous compression. Kill switch:
+                                      #   hermes config set compression.background.enabled false
+                                      #   hermes gateway restart   (or just send the
+                                      #   next gateway message — the key is
+                                      #   cache-busting and hot-reloads)
+            "enabled": False,         # Master switch. Off = behavior identical to
+                                      # the synchronous baseline.
+            "shadow_only": True,      # Generate + validate candidates and record
+                                      # telemetry, but NEVER apply. Rollout gate.
+            "prepare_threshold": 0.65,  # Start preparing at this fraction of the
+                                      # context window. Upper bound, not a
+                                      # promise: the effective gate is derived
+                                      # per model from the engine's live sync
+                                      # trigger (min(this, 80% of the trigger))
+                                      # so preparation always starts before
+                                      # synchronous compaction could fire.
+            "apply_threshold": 0.82,  # Apply the candidate at this fraction —
+                                      # also an upper bound, clamped to 96% of
+                                      # the effective sync trigger so the swap
+                                      # lands before the pause would for EVERY
+                                      # profile (default 0.50, small-context
+                                      # floor 0.75, Codex autoraise 0.85):
+                                      # prepare < apply < sync always holds.
+                                      # A ready valid candidate additionally
+                                      # preempts a sync run outright on the
+                                      # same preflight.
+            "min_delta_tokens": 20000,  # Don't re-prepare until the context grew
+                                      # this many tokens past the last candidate.
+            "min_frozen_messages": 12,  # Minimum aligned prefix length worth
+                                      # summarising.
+            "max_candidate_age_turns": 12,  # Discard candidates older than this
+                                      # many turns.
+            "max_workers": 1,         # Single worker — no summary storms.
+            "foreground_priority": True,  # Reserved: background work must never
+                                      # compete with the user's turn.
+            "fallback_sync": True,    # Candidate missing/stale/failed → the
+                                      # existing synchronous path runs unchanged.
+            "apply_only_between_turns": True,  # Never swap mid-turn or while a
+                                      # tool call is open.
+        },
     },
 
     # Kanban subsystem (orchestrator workers + dispatcher-driven child tasks).

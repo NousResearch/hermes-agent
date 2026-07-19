@@ -139,6 +139,53 @@ class ContextEngine(ABC):
         """
         return True
 
+    # -- Optional: background compression preparation ----------------------
+    #
+    # Engines may opt in to background-prepared compression: a frozen,
+    # deep-copied prefix of the conversation is summarized off-thread and
+    # the result is applied later, between turns, after revalidation. All
+    # three hooks default to no-ops so engines written before this feature
+    # keep working unchanged (the feature stays inert for them).
+
+    def can_prepare_compression(
+        self, messages: List[Dict[str, Any]], current_tokens: int = None
+    ) -> bool:
+        """Whether this engine supports preparing compression in background.
+
+        Default False: legacy/plugin engines never receive background work
+        unless they explicitly opt in. Implementations should also return
+        False while temporarily unable to compress (e.g. failure cooldown).
+        """
+        return False
+
+    def prepare_compression(
+        self,
+        messages: List[Dict[str, Any]],
+        current_tokens: int = None,
+        focus_topic: str = None,
+    ):
+        """Produce a compressed message list WITHOUT mutating engine state.
+
+        Called from a background worker thread with a frozen deep copy of a
+        conversation prefix. Implementations must run on a dedicated
+        instance/state copy — never on the live engine, whose counters and
+        iterative-summary state belong to the foreground.
+
+        Returns a list of messages, an
+        ``agent.async_context_compression.PrepareResult``, or None when no
+        useful candidate could be produced.
+        """
+        return None
+
+    def adopt_prepared_state(self, candidate) -> None:
+        """Adopt bookkeeping AFTER a prepared candidate was committed.
+
+        ``candidate`` is an
+        ``agent.async_context_compression.PreparedCompressionCandidate``.
+        The default is a no-op.
+        """
+        return None
+
     # -- Optional: session lifecycle ---------------------------------------
 
     def on_session_start(self, session_id: str, **kwargs) -> None:

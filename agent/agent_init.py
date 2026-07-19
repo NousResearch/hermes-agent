@@ -1933,6 +1933,30 @@ def init_agent(
     agent.compression_in_place = compression_in_place
     agent.codex_app_server_auto_compaction = codex_app_server_auto_compaction
 
+    # Background (asynchronous) compression preparation — compression.background
+    # in config.yaml, parsed once here so the loop/gateway never re-read config.
+    # Ships disabled; when enabled it defaults to shadow mode (generate and
+    # validate candidates, never apply). The controller itself is created
+    # lazily on the first qualifying trigger.
+    from agent.async_context_compression import BackgroundCompressionConfig
+
+    _bg_compression_raw = _compression_cfg.get("background")
+    agent.background_compression_config = BackgroundCompressionConfig.from_dict(
+        _bg_compression_raw if isinstance(_bg_compression_raw, dict) else None
+    )
+    agent.background_compression = None
+    if agent.background_compression_config.enabled:
+        _ra().logger.info(
+            "background compression enabled: shadow_only=%s prepare<=%.0f%% "
+            "apply<=%.0f%% (effective gates derived per model so "
+            "prepare < apply < sync trigger) min_delta=%d workers=%d",
+            agent.background_compression_config.shadow_only,
+            agent.background_compression_config.prepare_threshold * 100,
+            agent.background_compression_config.apply_threshold * 100,
+            agent.background_compression_config.min_delta_tokens,
+            agent.background_compression_config.max_workers,
+        )
+
     # Reject models whose context window is below the minimum required
     # for reliable tool-calling workflows (64K tokens).
     _ctx = getattr(agent.context_compressor, "context_length", 0)

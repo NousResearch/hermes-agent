@@ -97,6 +97,33 @@ These have sensible defaults in the ABC. Override as needed:
 | `handle_tool_call(name, args, **kwargs)` | Returns error JSON | You implement tool handlers |
 | `should_compress_preflight(messages)` | Returns `False` | You can do a cheap pre-API-call estimate |
 | `get_status()` | Standard token/threshold dict | You have custom metrics to expose |
+| `can_prepare_compression(messages, current_tokens)` | Returns `False` | Your engine supports background-prepared compression |
+| `prepare_compression(messages, current_tokens, focus_topic)` | Returns `None` | See background preparation below |
+| `adopt_prepared_state(candidate)` | No-op | See background preparation below |
+
+### Background compression preparation (opt-in)
+
+When `compression.background.enabled` is on, Hermes can pre-compute a
+compression candidate off-thread and swap it in between turns instead of
+pausing the conversation. Engines participate only if they opt in:
+
+- `can_prepare_compression(messages, current_tokens=None)` — return `True`
+  when your engine can produce a candidate right now. Return `False` while
+  in a failure cooldown or otherwise unable to compress. The default is
+  `False`, so engines that predate this feature are never scheduled.
+- `prepare_compression(messages, current_tokens=None, focus_topic=None)` —
+  called on a **background worker thread** with a frozen deep copy of a
+  conversation prefix. It must not mutate the live engine: run on a
+  dedicated instance or state copy (the built-in compressor uses
+  `clone_for_background()`). Return the compressed list, an
+  `agent.async_context_compression.PrepareResult` (adds
+  `used_fallback`/`summary_error` metadata), or `None` when no useful
+  candidate could be produced.
+- `adopt_prepared_state(candidate)` — called on the foreground thread after
+  a `PreparedCompressionCandidate` was committed, so the live engine can
+  adopt bookkeeping (counters, iterative-summary base, token sentinels).
+
+All three default to no-ops; existing plugins keep working unchanged.
 
 ## Engine tools
 

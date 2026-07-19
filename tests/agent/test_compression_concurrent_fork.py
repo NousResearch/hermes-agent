@@ -847,3 +847,99 @@ def test_lease_refresher_stops_on_persistent_raise() -> None:
     _no_sleep(refresher)
     refresher._run()  # must not propagate
     assert db.calls == refresher._max_consecutive_failures
+
+
+def test_background_apply_and_sync_compression_never_double_rotate(
+    tmp_path: Path,
+) -> None:
+    """A background-candidate apply racing a synchronous compression must
+    yield exactly one rotation: both paths contend on the same per-session
+    SQLite lock, and the loser steps aside without touching the DB."""
+    from agent.async_context_compression import (
+        PreparedCompressionCandidate,
+        canonical_prefix_digest,
+    )
+    from agent.conversation_compression import apply_prepared_candidate
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    parent_sid = "race-apply-vs-sync"
+    db.create_session(parent_sid, "gateway", model="test/model")
+
+    sync_agent = _build_agent_with_db(db, parent_sid)
+    apply_agent = _build_agent_with_db(db, parent_sid)
+    apply_agent.context_compressor.adopt_prepared_state = lambda c: None
+
+    messages = [
+        {"role": "user" if i % 2 == 0 else "assistant", "content": f"message {i}"}
+        for i in range(12)
+    ]
+    prefix_count = len(messages) - 2
+    candidate = PreparedCompressionCandidate(
+        session_id=parent_sid,
+        generation=1,
+        prefix_message_count=prefix_count,
+        prefix_digest=canonical_prefix_digest(messages, prefix_count),
+        prepared_messages=(
+            {"role": "user", "content": "[CONTEXT COMPACTION] summary"},
+            dict(messages[prefix_count - 1]),
+        ),
+        source_prompt_tokens=120_000,
+        created_at_monotonic=0.0,
+        created_at_turn=1,
+        used_fallback=False,
+        summary_error=None,
+    )
+
+    # Same determinism trick as test_compression_concurrent_sessions: barrier
+    # INSIDE the lock acquisition so both paths contend simultaneously. (The
+    # lock serializes concurrent rotation; a stale-session-id holder acquiring
+    # AFTER the winner released is the gateway's SessionEntry re-baseline
+    # problem, covered by the gateway suites.)
+    orig_acquire = db.try_acquire_compression_lock
+    acquire_barrier = threading.Barrier(2)
+
+    def _barriered_acquire(sid, holder, **kw):
+        try:
+            acquire_barrier.wait(timeout=5.0)
+        except threading.BrokenBarrierError:
+            pass
+        return orig_acquire(sid, holder, **kw)
+
+    db.try_acquire_compression_lock = _barriered_acquire
+
+    results: dict = {}
+
+    def _sync_path():
+        results["sync"] = sync_agent._compress_context(
+            [dict(m) for m in messages], "sys", approx_tokens=120_000
+        )
+
+    def _apply_path():
+        results["apply"] = apply_prepared_candidate(
+            apply_agent, candidate, [dict(m) for m in messages], "sys"
+        )
+
+    threads = [
+        threading.Thread(target=_sync_path, name="sync_compress"),
+        threading.Thread(target=_apply_path, name="bg_apply"),
+    ]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=15.0)
+
+    children = _count_children(db, parent_sid)
+    sync_rotated = sync_agent.session_id != parent_sid
+    apply_rotated = apply_agent.session_id != parent_sid
+
+    # Exactly one path rotated; the loser returned without touching state.
+    assert children == 1, f"expected exactly 1 child session, got {children}"
+    assert sync_rotated != apply_rotated, (
+        f"exactly one rotation expected (sync={sync_rotated}, "
+        f"apply={apply_rotated})"
+    )
+    if not apply_rotated:
+        assert results["apply"] is None or results["apply"][0] is not None
+    # Lock on the parent id is fully released afterwards.
+    assert db.get_compression_lock_holder(parent_sid) is None
+    db.close()

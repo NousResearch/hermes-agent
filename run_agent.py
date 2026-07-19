@@ -742,6 +742,16 @@ class AIAgent:
         # False for tool-loop follow-ups (#3040).
         self._is_user_initiated_turn = False
 
+        # A session boundary (/new, /reset, model switch) invalidates any
+        # background compression candidate: its frozen prefix belongs to the
+        # previous transcript and must never be applied to the new one.
+        _bg_controller = getattr(self, "background_compression", None)
+        if _bg_controller is not None:
+            try:
+                _bg_controller.reset()
+            except Exception:
+                pass
+
         # Context engine reset/transition (works for built-in compressor and plugins)
         self._transition_context_engine_session(
             old_session_id=old_session_id,
@@ -3528,6 +3538,18 @@ class AIAgent:
         hard teardown for actual session boundaries (/new, /reset, session
         expiry).
         """
+        # Stop background compression work. The candidate and its worker are
+        # bound to THIS instance; the rebuilt agent starts with a fresh
+        # controller, so keeping the old worker alive would only leak a
+        # thread (and a candidate nobody can ever apply).
+        try:
+            _bg_controller = getattr(self, "background_compression", None)
+            if _bg_controller is not None:
+                _bg_controller.shutdown(wait=False)
+                self.background_compression = None
+        except Exception:
+            pass
+
         # Close active child agents (per-turn; no cross-turn persistence).
         try:
             with self._active_children_lock:
@@ -3601,7 +3623,17 @@ class AIAgent:
         except Exception:
             pass
 
-        # 5. Close the OpenAI/httpx client
+        # 5. Stop background compression work — a hard teardown must not leave
+        # a summariser worker running against a dead session.
+        try:
+            _bg_controller = getattr(self, "background_compression", None)
+            if _bg_controller is not None:
+                _bg_controller.shutdown(wait=False)
+                self.background_compression = None
+        except Exception:
+            pass
+
+        # 6. Close the OpenAI/httpx client
         try:
             client = getattr(self, "client", None)
             if client is not None:
@@ -3610,7 +3642,7 @@ class AIAgent:
         except Exception:
             pass
 
-        # 6. Free conversation history.  Mirrors _release_evicted_agent_soft's
+        # 7. Free conversation history.  Mirrors _release_evicted_agent_soft's
         # soft-eviction clear — close() is the hard teardown for true session
         # boundaries (/new, /reset, session expiry), so the message list won't
         # be reused.  Drops the reference proactively rather than waiting for
@@ -3621,7 +3653,7 @@ class AIAgent:
         except Exception:
             pass
 
-        # 7. Finalize the owned SQLite session row unless this agent is only a
+        # 8. Finalize the owned SQLite session row unless this agent is only a
         # temporary helper that deliberately handed session ownership forward
         # (manual compression helpers that rotate to a continuation session_id,
         # or background-review forks that share the live parent's session_id and
@@ -5969,6 +6001,55 @@ class AIAgent:
             approx_tokens=approx_tokens, task_id=task_id, focus_topic=focus_topic,
             force=force,
         )
+
+    def _maybe_prepare_background_compression(
+        self, messages: list, *, current_tokens: int = None
+    ) -> bool:
+        """Between-turns trigger for background compression preparation.
+
+        Called by the turn finalizer after a completed turn. All trigger
+        conditions (feature flag, thresholds, open tool calls, in-flight
+        work) live in ``agent.async_context_compression``; this wrapper only
+        guarantees a background failure can never surface on the foreground.
+        """
+        try:
+            from agent.async_context_compression import (
+                maybe_prepare_background_compression,
+            )
+            return maybe_prepare_background_compression(
+                self, messages,
+                current_tokens=current_tokens,
+                current_turn=getattr(self, "_user_turn_count", 0),
+            )
+        except Exception:
+            logger.debug(
+                "background compression preparation trigger failed", exc_info=True
+            )
+            return False
+
+    def _maybe_apply_prepared_compression(
+        self, messages: list, system_message: str, *, current_tokens: int = None
+    ):
+        """Preflight apply gate for a background-prepared candidate.
+
+        Returns ``(compressed_messages, new_system_prompt)`` when a valid
+        candidate was applied, or None in every other case — callers then
+        continue with the synchronous compression path unchanged.
+        """
+        try:
+            from agent.async_context_compression import (
+                maybe_apply_prepared_candidate,
+            )
+            return maybe_apply_prepared_candidate(
+                self, messages, system_message,
+                current_tokens=current_tokens,
+                current_turn=getattr(self, "_user_turn_count", 0),
+            )
+        except Exception:
+            logger.debug(
+                "background compression apply gate failed", exc_info=True
+            )
+            return None
 
     def _set_tool_guardrail_halt(self, decision: ToolGuardrailDecision) -> None:
         """Record the first guardrail decision that should stop this turn."""

@@ -765,6 +765,46 @@ Older configs with `compression.summary_model`, `compression.summary_provider`, 
 
 `protect_first_n` controls how many **non-system** head messages are pinned across every compaction. Default `3` — the opening user/assistant exchange survives every summarizer pass so the original goal stays visible. On long-running rolling-compaction sessions where the opening turn is no longer relevant, set `protect_first_n: 0` to pin nothing but the system prompt + summary + tail. The system prompt itself is always preserved regardless of this setting.
 
+### Background (asynchronous) compression
+
+Normally, when the conversation crosses the compression threshold the next turn pauses while the summarizer runs. Background compression removes that pause: a candidate summary is pre-computed on a worker thread while you keep chatting, and swapped in between turns after strict revalidation (same session, byte-identical frozen prefix, no open tool call) under the same per-session lock as synchronous compression. If anything doesn't match, the candidate is discarded and the normal synchronous path runs — the feature can only make things faster, never different.
+
+```yaml
+compression:
+  background:
+    enabled: false                # Master switch — off by default
+    shadow_only: true             # Generate + validate + measure, but never apply (rollout gate)
+    prepare_threshold: 0.65       # Ceiling: start preparing at 65% of the window,
+                                  # clamped to 80% of the live sync trigger
+    apply_threshold: 0.82         # Ceiling: swap in at 82% of the window, clamped
+                                  # to 96% of the live sync trigger
+    min_delta_tokens: 20000       # Don't re-prepare until the context grew this much
+    min_frozen_messages: 12       # Minimum prefix length worth summarising
+    max_candidate_age_turns: 12   # Discard candidates older than this many turns
+    max_workers: 1                # Single worker — no summary storms
+    foreground_priority: true     # Background work never competes with your turn
+    fallback_sync: true           # Missing/stale candidate → synchronous path as before
+    apply_only_between_turns: true  # Never swap mid-turn or during a tool call
+```
+
+The two thresholds are **ceilings, not promises**: the effective gates are
+derived per model from the compressor's live synchronous trigger (which folds
+in the configured `compression.threshold`, the small-context floor and the
+Codex autoraise), keeping `prepare < apply < synchronous` for every profile —
+with the stock `threshold: 0.50` the real gates land at 40%/48% of the window.
+A ready valid candidate also preempts a synchronous run outright if one would
+fire first (for example on the message-count hygiene trigger).
+
+Rollout is staged: enable with `shadow_only: true` first — candidates are generated and validated and telemetry is recorded, but the conversation is never touched. Only after shadow metrics look clean should `shadow_only` be set to `false`.
+
+**Kill switch** (restores baseline behavior immediately):
+
+```bash
+hermes config set compression.background.enabled false
+hermes gateway restart   # optional — the key is cache-busting, so the next
+                         # gateway message picks it up without a restart
+```
+
 :::tip Gateway hot-reload of compression and context length
 As of recent releases, editing `model.context_length` or any `compression.*` key in `config.yaml` on a running gateway takes effect on the next message — no gateway restart, no `/reset`, no session rotation required. The cached-agent signature includes these keys, so the gateway transparently rebuilds the agent when it sees a change. API keys and tool/skill config still require the usual reload paths.
 :::

@@ -16,6 +16,7 @@ Improvements over v2:
   - Richer tool call/result detail in summarizer input
 """
 
+import copy
 import hashlib
 import json
 import logging
@@ -3119,6 +3120,112 @@ This compaction should PRIORITISE preserving all information related to the focu
     # ------------------------------------------------------------------
     # Main compression entry point
     # ------------------------------------------------------------------
+
+    # ------------------------------------------------------------------
+    # Background preparation (ContextEngine optional hooks)
+    # ------------------------------------------------------------------
+
+    def clone_for_background(self) -> "ContextCompressor":
+        """Dedicated instance for a background worker.
+
+        ``compress()`` mutates counters, cooldowns and the iterative-summary
+        state, so a background worker must never drive the live instance.
+        The clone carries the same effective configuration plus a copy of the
+        previous summary (for iterative updates), but deliberately no session
+        binding — it cannot persist cooldowns/streaks or touch state.db.
+        """
+        clone = ContextCompressor(
+            model=self.model,
+            threshold_percent=self.threshold_percent,
+            protect_first_n=self.protect_first_n,
+            protect_last_n=self.protect_last_n,
+            summary_target_ratio=self.summary_target_ratio,
+            quiet_mode=self.quiet_mode,
+            summary_model_override=self.summary_model or None,
+            base_url=self.base_url,
+            api_key=self.api_key,
+            config_context_length=self.context_length,
+            provider=self.provider,
+            api_mode=self.api_mode,
+            abort_on_summary_failure=self.abort_on_summary_failure,
+            max_tokens=self.max_tokens,
+        )
+        # Live tuning may have drifted from constructor-derived values
+        # (aux-feasibility auto-lowering, small-context floors, manual
+        # overrides). Copy the effective values so the clone compacts with
+        # exactly the same boundaries the live instance would.
+        clone.threshold_percent = self.threshold_percent
+        clone.threshold_tokens = self.threshold_tokens
+        clone.context_length = self.context_length
+        clone.protect_first_n = self.protect_first_n
+        clone.protect_last_n = self.protect_last_n
+        clone.tail_token_budget = self.tail_token_budget
+        clone._previous_summary = self._previous_summary
+        clone.last_prompt_tokens = self.last_prompt_tokens
+        return clone
+
+    def can_prepare_compression(
+        self, messages: List[Dict[str, Any]], current_tokens: int = None
+    ) -> bool:
+        """Built-in compressor opts in unless automatic compaction is blocked.
+
+        The same cooldown/anti-thrashing breaker that stops synchronous
+        auto-compaction also stops background preparation — a candidate the
+        apply path would refuse is wasted summariser spend.
+        """
+        return not self._automatic_compression_blocked()
+
+    def prepare_compression(
+        self,
+        messages: List[Dict[str, Any]],
+        current_tokens: int = None,
+        focus_topic: str = None,
+    ):
+        """Compress a frozen prefix on a dedicated clone.
+
+        Runs inside the background worker. The input is deep-copied before
+        the clone touches it, so neither the live compressor nor the
+        caller's list is ever mutated. Returns a PrepareResult, or None when
+        the clone aborted or made no structural progress.
+        """
+        from agent.async_context_compression import PrepareResult
+
+        clone = self.clone_for_background()
+        frozen = copy.deepcopy(list(messages))
+        compressed = clone.compress(
+            frozen, current_tokens=current_tokens, focus_topic=focus_topic
+        )
+        if clone._last_compress_aborted or not clone._last_compression_made_progress:
+            if not self.quiet_mode:
+                logger.debug(
+                    "background preparation produced no candidate (aborted=%s error=%s)",
+                    clone._last_compress_aborted, clone._last_summary_error,
+                )
+            return None
+        return PrepareResult(
+            messages=compressed,
+            used_fallback=bool(clone._last_summary_fallback_used),
+            summary_error=clone._last_summary_error,
+        )
+
+    def adopt_prepared_state(self, candidate) -> None:
+        """Adopt live bookkeeping after a prepared candidate was committed.
+
+        Mirrors the synchronous post-compression state: the compaction count
+        advances, the candidate's summary becomes the base for the next
+        iterative update, and threshold decisions wait for the next
+        provider-reported usage instead of trusting rough estimates.
+        """
+        self.compression_count += 1
+        prepared = list(candidate.prepared_messages)
+        _idx, summary_body = self._find_latest_context_summary(
+            prepared, 0, len(prepared)
+        )
+        if summary_body:
+            self._previous_summary = summary_body
+        self.last_prompt_tokens = -1
+        self.last_completion_tokens = 0
+        self.awaiting_real_usage_after_compression = True
 
     def compress(self, messages: List[Dict[str, Any]], current_tokens: int = None, focus_topic: str = None, force: bool = False) -> List[Dict[str, Any]]:
         """Compress conversation messages by summarizing middle turns.

@@ -541,6 +541,24 @@ def finalize_turn(
         messages=messages,
     )
 
+    # Background compression preparation — the between-turns window is the
+    # only safe place to freeze a prefix: the provider response is complete
+    # and no tool batch is executing. Interrupted/failed turns are skipped
+    # (the transcript may still be settling). Every other trigger condition
+    # (feature flag, thresholds, open tool calls, in-flight work) is
+    # re-checked inside the hook, and a failure here must never affect the
+    # turn result.
+    if not interrupted and not failed:
+        _prepare_bg = getattr(agent, "_maybe_prepare_background_compression", None)
+        if callable(_prepare_bg):
+            try:
+                _prepare_bg(messages)
+            except Exception:
+                logger.debug(
+                    "background compression preparation trigger failed",
+                    exc_info=True,
+                )
+
     # Background memory/skill review — runs AFTER the response is delivered
     # so it never competes with the user's task for model attention.
     if final_response and not interrupted and (_should_review_memory or _should_review_skills):

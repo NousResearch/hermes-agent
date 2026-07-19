@@ -423,6 +423,30 @@ def build_turn_context(
             tools=agent.tools or None,
         )
         _compressor = agent.context_compressor
+        # Background-prepared candidate (compression.background): swap in a
+        # pre-computed compression BEFORE the synchronous preflight chain.
+        # When it applies, the re-estimated tokens fall below threshold and
+        # the sync path below is naturally skipped; in every other case
+        # (feature off, no/invalid candidate, shadow mode) this returns None
+        # and the chain continues unchanged.
+        _bg_result = agent._maybe_apply_prepared_compression(
+            messages, system_message, current_tokens=_preflight_tokens
+        )
+        if _bg_result is not None:
+            messages, active_system_prompt = _bg_result
+            conversation_history = conversation_history_after_compression(
+                agent, messages
+            )
+            _preflight_tokens = estimate_request_tokens_rough(
+                messages,
+                system_prompt=active_system_prompt or "",
+                tools=agent.tools or None,
+            )
+            agent._empty_content_retries = 0
+            agent._thinking_prefill_retries = 0
+            agent._last_content_with_tools = None
+            agent._last_content_tools_all_housekeeping = False
+            agent._mute_post_response = False
         _defer_preflight = getattr(
             _compressor,
             "should_defer_preflight_to_real_usage",

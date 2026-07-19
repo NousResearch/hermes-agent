@@ -73,6 +73,60 @@ Located in `agent/context_compressor.py`. This is the **primary compression
 system** that runs inside the agent's tool loop with access to accurate,
 API-reported token counts.
 
+## Background (asynchronous) compression
+
+`agent/async_context_compression.py` adds an optional third layer that removes
+the user-visible compaction pause. It is **off by default** and, when enabled,
+starts in `shadow_only` mode (see the
+[user guide](/user-guide/configuration#background-asynchronous-compression)
+for the config block and rollout/kill-switch procedure).
+
+**Preparation** (between turns, above the effective prepare gate — see
+`resolve_effective_gate_tokens()`, which clamps the configured thresholds
+against the live synchronous trigger so `prepare < apply < sync` always
+holds): the turn finalizer
+calls `agent._maybe_prepare_background_compression()`. The controller freezes a
+deep-copied prefix of the conversation (boundary aligned so a tool-call group
+is never split), records its canonical digest, and submits the summarisation to
+a single-worker executor. The worker runs `ContextCompressor.prepare_compression()`
+on a **dedicated clone** of the live compressor — the live engine, the live
+`messages` list, the session id and the database are never touched from the
+worker thread, and no SQLite compression lock is taken, so the gateway never
+sees the session as blocked during preparation.
+
+**Apply** (preflight of the next turn, above the effective apply gate, or
+whenever the synchronous path would fire on that same preflight): `turn_context`
+calls `agent._maybe_apply_prepared_compression()` before the synchronous
+preflight chain. `apply_prepared_candidate()` acquires the same per-session
+SQLite lock as synchronous compression, revalidates the candidate **inside the
+lock** (same session id, current generation, unchanged prefix digest, no open
+tool call), merges the prepared prefix with the live suffix (suffix objects
+preserved verbatim) and commits through the shared
+`_commit_compressed_transcript()` — the exact code path the synchronous
+compressor uses, so persistence semantics (in-place archive vs legacy rotation,
+memory flush, system-prompt rebuild, flush rebaseline) can never diverge. Any
+validation failure discards the candidate and the synchronous path runs as if
+the feature did not exist.
+
+**Invalidation**: `/new`, `/reset`, model switches and session changes reach
+`reset_session_state()` / `close()` / `release_clients()`, all of which reset
+or shut down the controller. The background-review fork shares the parent's
+live session id but has `compression_enabled=False`, which gates both prepare
+and apply.
+
+**Telemetry**: `BackgroundCompressionController.telemetry_snapshot()` returns
+stable-shaped counters and duration distributions:
+
+| Metric | Meaning |
+|---|---|
+| `candidate_started` / `candidate_ready` / `candidate_failed` | Preparation lifecycle |
+| `candidate_discarded_stale` | Candidate rejected (digest/session/generation/age) |
+| `candidate_applied` / `candidate_shadow_validated` | Real applies vs shadow would-have-applied |
+| `candidate_cancelled` | Best-effort cancels (interrupt/reset) |
+| `sync_fallback_count` | Apply attempts that fell back to the synchronous path |
+| `suffix_messages_preserved` | Total live-suffix messages carried across applies |
+| `background_provider_error` | Worker failures (summariser provider errors) |
+| `candidate_prepare_ms` / `candidate_apply_ms` | count/p50/p95/max duration distributions |
 
 ## Configuration
 

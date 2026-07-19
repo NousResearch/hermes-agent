@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import type { DesktopUpdateStatus } from '@/global'
+import type { DesktopUpdateProgress, DesktopUpdateStatus } from '@/global'
 
 const storage = new Map<string, string>()
 
@@ -547,5 +547,33 @@ describe('startUpdatePoller', () => {
     await vi.advanceTimersByTimeAsync(0)
 
     expect(checkMock).toHaveBeenCalled()
+  })
+
+  it('carries installKind from a manual progress event into $updateApply (#66095)', () => {
+    // Main emits installKind on the progress channel before apply() resolves
+    // (preload → onProgress → ingestProgress). The apply()-result tests above
+    // do not cover this path; the overlay reads installKind from $updateApply
+    // either way, so both transports need to carry it.
+    resetUpdateApplyState()
+    startUpdatePoller()
+
+    const onProgress = onProgressMock.mock.calls[0]?.[0] as
+      | ((payload: DesktopUpdateProgress) => void)
+      | undefined
+    expect(onProgress).toEqual(expect.any(Function))
+
+    onProgress!({
+      stage: 'manual',
+      message: 'hermes update',
+      percent: null,
+      error: null,
+      at: 1,
+      installKind: 'installer'
+    })
+
+    expect($updateApply.get().stage).toBe('manual')
+    expect($updateApply.get().command).toBe('hermes update')
+    expect($updateApply.get().installKind).toBe('installer')
+    expect($updateApply.get().applying).toBe(false)
   })
 })

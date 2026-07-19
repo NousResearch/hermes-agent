@@ -885,6 +885,80 @@ class TestMessageStorage:
         assert active == 1
         assert len(db.get_messages_as_conversation("s1")) == 1
 
+    def test_append_message_stores_model_and_provider(self, db):
+        db.create_session(session_id="s1", source="cli")
+        db.append_message(
+            "s1", role="user", content="Hello",
+            model="claude-sonnet-5", provider="anthropic",
+        )
+        db.append_message(
+            "s1", role="assistant", content="Hi there!",
+            model="claude-sonnet-5", provider="anthropic",
+        )
+
+        messages = db.get_messages("s1")
+        assert messages[0]["model"] == "claude-sonnet-5"
+        assert messages[0]["provider"] == "anthropic"
+        assert messages[1]["model"] == "claude-sonnet-5"
+        assert messages[1]["provider"] == "anthropic"
+
+        conv = db.get_messages_as_conversation("s1")
+        assert conv[0]["model"] == "claude-sonnet-5"
+        assert conv[0]["provider"] == "anthropic"
+        assert conv[1]["model"] == "claude-sonnet-5"
+        assert conv[1]["provider"] == "anthropic"
+
+    def test_append_message_without_model_leaves_column_null(self, db):
+        """Historical-shaped writes (no model/provider passed) stay NULL —
+        never backfilled, never defaulted to an empty string."""
+        db.create_session(session_id="s1", source="cli")
+        db.append_message("s1", role="user", content="Hello")
+
+        messages = db.get_messages("s1")
+        assert messages[0]["model"] is None
+        assert messages[0]["provider"] is None
+
+        conv = db.get_messages_as_conversation("s1")
+        assert "model" not in conv[0]
+        assert "provider" not in conv[0]
+
+    def test_model_switch_mid_conversation_keeps_old_rows_attributed(self, db):
+        """A message written after a mid-conversation model switch carries the
+        NEW model; earlier rows in the same session keep the OLD model."""
+        db.create_session(session_id="s1", source="cli")
+        db.append_message(
+            "s1", role="user", content="first prompt",
+            model="claude-sonnet-5", provider="anthropic",
+        )
+        db.append_message(
+            "s1", role="assistant", content="first reply",
+            model="claude-sonnet-5", provider="anthropic",
+        )
+        # Simulate an in-place /model switch (agent.switch_model) — the next
+        # turn's rows are written with the new model, the session/thread and
+        # earlier rows are untouched.
+        db.append_message(
+            "s1", role="user", content="second prompt",
+            model="grok-4", provider="xai",
+        )
+        db.append_message(
+            "s1", role="assistant", content="second reply",
+            model="grok-4", provider="xai",
+        )
+
+        messages = db.get_messages("s1")
+        assert len(messages) == 4
+        assert [m["model"] for m in messages] == [
+            "claude-sonnet-5", "claude-sonnet-5", "grok-4", "grok-4",
+        ]
+        assert [m["provider"] for m in messages] == [
+            "anthropic", "anthropic", "xai", "xai",
+        ]
+        # All four rows stayed in the SAME session (one thread) — no new
+        # session was created by the switch.
+        session_ids = {m["session_id"] for m in messages}
+        assert session_ids == {"s1"}
+
     def test_append_message_active_one_when_column_has_no_default(self, tmp_path):
         """Legacy DBs may have active added without a working INSERT default."""
         db_path = tmp_path / "legacy_state.db"
@@ -3808,6 +3882,65 @@ class TestSchemaInit:
         db2.close()
 
         assert cols1 == cols2
+
+    def test_reconciliation_adds_model_provider_columns(self, tmp_path):
+        """A legacy messages table without model/provider gets both columns
+        added automatically via _reconcile_columns — no manual ALTER TABLE
+        migration block is needed for this addition.
+        """
+        import sqlite3
+
+        db_path = tmp_path / "pre_attribution.db"
+        conn = sqlite3.connect(str(db_path))
+        conn.executescript("""
+            CREATE TABLE schema_version (version INTEGER NOT NULL);
+            INSERT INTO schema_version (version) VALUES (1);
+
+            CREATE TABLE sessions (
+                id TEXT PRIMARY KEY,
+                source TEXT NOT NULL,
+                parent_session_id TEXT,
+                started_at REAL NOT NULL
+            );
+
+            CREATE TABLE messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                role TEXT NOT NULL,
+                content TEXT,
+                timestamp REAL NOT NULL
+            );
+        """)
+        conn.execute(
+            "INSERT INTO sessions (id, source, started_at) VALUES (?, ?, ?)",
+            ("s1", "cli", 1000.0),
+        )
+        conn.execute(
+            "INSERT INTO messages (session_id, role, content, timestamp) "
+            "VALUES (?, ?, ?, ?)",
+            ("s1", "assistant", "hello", 1001.0),
+        )
+        conn.commit()
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(messages)").fetchall()}
+        assert "model" not in cols
+        assert "provider" not in cols
+        conn.close()
+
+        migrated_db = SessionDB(db_path=db_path)
+        msg_cols = {
+            r[1]
+            for r in migrated_db._conn.execute("PRAGMA table_info(messages)").fetchall()
+        }
+        assert "model" in msg_cols
+        assert "provider" in msg_cols
+
+        # Pre-existing row is NULL, not backfilled.
+        row = migrated_db._conn.execute(
+            "SELECT model, provider FROM messages WHERE session_id = ?", ("s1",)
+        ).fetchone()
+        assert row[0] is None
+        assert row[1] is None
+        migrated_db.close()
 
     def test_schema_sql_is_source_of_truth(self, db):
         """Every column in SCHEMA_SQL exists in the live database.

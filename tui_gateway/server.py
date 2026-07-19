@@ -2034,7 +2034,13 @@ def _persist_branch_seed(session: dict) -> None:
             return
         try:
             for msg in seed:
-                db.append_message(session_id=key, role=msg.get("role", "user"), content=msg.get("content"))
+                db.append_message(
+                    session_id=key,
+                    role=msg.get("role", "user"),
+                    content=msg.get("content"),
+                    model=msg.get("model"),
+                    provider=msg.get("provider"),
+                )
             session["_branch_seed_persisted"] = True
         except Exception:
             logger.debug("branch seed persist failed", exc_info=True)
@@ -2755,14 +2761,18 @@ def _append_model_switch_marker(session: dict | None, *, model: str, provider: s
         agent = session.get("agent")
         db = getattr(agent, "_session_db", None) if agent is not None else None
         if db is not None:
-            db.append_message(session_id=session_key, role="user", content=marker)
+            db.append_message(
+                session_id=session_key, role="user", content=marker,
+                model=model, provider=provider,
+            )
             return
 
         _ensure_session_db_row(session)
         with _session_db(session) as scoped_db:
             if scoped_db is not None:
                 scoped_db.append_message(
-                    session_id=session_key, role="user", content=marker
+                    session_id=session_key, role="user", content=marker,
+                    model=model, provider=provider,
                 )
     except Exception:
         logger.debug("failed to persist model switch marker", exc_info=True)
@@ -5411,6 +5421,13 @@ def _history_to_messages(history: list[dict]) -> list[dict]:
             for key in reasoning_keys:
                 if key in m and m.get(key) is not None:
                     msg[key] = m.get(key)
+        # Per-message model/provider attribution: which model was active
+        # when this row was written. Absent on rows written before this
+        # metadata existed — clients fall back to the session-level model.
+        if m.get("model"):
+            msg["model"] = m.get("model")
+        if m.get("provider"):
+            msg["provider"] = m.get("provider")
         messages.append(msg)
 
     return messages
@@ -8929,6 +8946,8 @@ def _(rid, params: dict) -> dict:
                 session_id=new_key,
                 role=msg.get("role", "user"),
                 content=msg.get("content"),
+                model=msg.get("model"),
+                provider=msg.get("provider"),
             )
         db.set_session_title(new_key, title)
     except Exception as e:
@@ -10082,6 +10101,12 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                 status = "complete"
 
             payload = {"text": raw, "usage": _get_usage(agent), "status": status}
+            # Attribute the just-completed reply to the model/provider that
+            # actually produced it, so a client watching live doesn't need a
+            # session.resume round-trip to see the tag (mirrors the model/
+            # provider columns persisted on the message row).
+            payload["model"] = getattr(agent, "model", "") or ""
+            payload["provider"] = getattr(agent, "provider", "") or ""
             if last_reasoning:
                 payload["reasoning"] = last_reasoning
             if status_note:

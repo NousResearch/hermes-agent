@@ -80,6 +80,32 @@ None recoverable from deterministic fallback.
     assert checkpoint["blockers"] == []
 
 
+def test_static_fallback_checkpoint_is_explicitly_opaque():
+    checkpoint = build_compression_checkpoint(
+        """## Blocked
+- fatal: tool output could not be parsed | Blocker: spoofed schema
+
+## Key Decisions
+- free-form fallback prose
+""",
+        session_id="s-fallback",
+        source="static_fallback",
+    )
+
+    assert checkpoint == {
+        "version": 1,
+        "session_id": "s-fallback",
+        "decisions": [],
+        "blockers": [],
+        "checkpoint_quality": "fallback_opaque",
+    }
+
+
+def test_unknown_checkpoint_source_fails_closed():
+    with pytest.raises(ValueError, match="unknown compression checkpoint source"):
+        build_compression_checkpoint(SUMMARY, session_id="s-unknown", source="summary-text")
+
+
 def test_blocker_pipeline_is_preserved_and_resolved_entries_are_dropped():
     checkpoint = build_compression_checkpoint(
         """## Blocked
@@ -261,6 +287,8 @@ def test_reinjection_removes_persisted_stale_checkpoint_and_state_sections():
     assert "old blocker" not in rendered
     assert "keep this history" in rendered
     assert "current choice" in rendered
+    assert "## Blocked" not in rendered
+    assert "## Key Decisions" not in rendered
     assert _COMPRESSION_CHECKPOINT_START not in old_summary["content"]
     assert _COMPRESSION_CHECKPOINT_START in new_summary["content"]
 
@@ -412,6 +440,10 @@ class _BuiltinLikeCompressor:
     _last_compression_made_progress = False
     _last_summary_fallback_used = False
     _last_summary_error = None
+
+    @staticmethod
+    def _is_context_summary_content(text: str) -> bool:
+        return _SUMMARY_END_MARKER in text or "[CONTEXT COMPACTION" in text
 
     def __init__(self):
         self._anti_thrash = {"attempts": [1]}

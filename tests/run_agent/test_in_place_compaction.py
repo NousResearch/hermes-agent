@@ -124,6 +124,91 @@ class TestInPlaceCompaction:
             )
             assert checkpoint["decisions"][0]["decision"] == "retain multimodal content"
 
+    def test_static_fallback_with_tool_error_commits_opaque_checkpoint(self):
+        from agent.conversation_compression import (
+            _COMPRESSION_CHECKPOINT_META_PREFIX,
+            _COMPRESSION_CHECKPOINT_START,
+            compress_context,
+        )
+        from hermes_state import SessionDB
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db = SessionDB(db_path=Path(tmp) / "t.db")
+            sid = "20260719_opaque_fallback"
+            _seed(db, sid, "opaque-fallback", n=11)
+            agent = _make_agent(db, sid, in_place=True)
+            compressor = getattr(agent, "context_compressor")
+            del compressor.__dict__["compress"]
+            compressor.protect_first_n = 2
+            compressor.protect_last_n = 3
+            compressor._previous_summary = None
+            compressor.compression_count = 0
+            compressor._last_summary_auth_failure = False
+            compressor._last_summary_network_failure = False
+            compressor.abort_on_summary_failure = False
+            messages = [
+                {"role": "system", "content": "system prompt"},
+                {"role": "user", "content": "inspect the project"},
+                {"role": "assistant", "content": "I will inspect it."},
+                {"role": "user", "content": "run the failing command"},
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "call-error",
+                            "type": "function",
+                            "function": {
+                                "name": "terminal",
+                                "arguments": json.dumps({"command": "false"}),
+                            },
+                        }
+                    ],
+                },
+                {
+                    "role": "tool",
+                    "tool_call_id": "call-error",
+                    "name": "terminal",
+                    "content": "fatal error: command failed with exit code 1",
+                },
+                {"role": "assistant", "content": "The command failed."},
+                {"role": "user", "content": "record that and continue"},
+                {"role": "assistant", "content": "Recorded."},
+                {"role": "user", "content": "what is the current state?"},
+                {"role": "assistant", "content": "Checking now."},
+            ]
+
+            with patch.object(compressor, "_generate_summary", return_value=None):
+                compressed, _ = compress_context(
+                    agent,
+                    messages,
+                    approx_tokens=100_000,
+                    system_message="sys",
+                )
+
+            assert compressed is not messages
+            assert len(compressed) < len(messages)
+            checkpoint = json.loads(
+                db.get_meta(_COMPRESSION_CHECKPOINT_META_PREFIX + sid) or "{}"
+            )
+            assert checkpoint == {
+                "version": 1,
+                "session_id": sid,
+                "decisions": [],
+                "blockers": [],
+                "checkpoint_quality": "fallback_opaque",
+            }
+            rendered = "\n".join(
+                str(message.get("content") or "") for message in compressed
+            )
+            assert _COMPRESSION_CHECKPOINT_START in rendered
+            assert "structured decision and blocker state is opaque" in rendered.casefold()
+            assert "## Blocked" not in rendered
+            assert "## Key Decisions" not in rendered
+            assert "fatal error: command failed with exit code 1" in rendered
+            assert getattr(agent, "_last_compression_checkpoint") == checkpoint
+            assert db.get_compression_fallback_streak(sid) == 1
+
     def test_checkpoint_failure_restores_real_compressor_durable_state(self):
         from agent.conversation_compression import (
             _COMPRESSION_CHECKPOINT_META_PREFIX,

@@ -240,8 +240,31 @@ def _required_checkpoint_field(
     return value if key == "resume" else value.strip()
 
 
-def build_compression_checkpoint(summary: str, *, session_id: str) -> dict[str, Any]:
-    """Build the durable decision/blocker sidecar from a generated summary."""
+def build_compression_checkpoint(
+    summary: str,
+    *,
+    session_id: str,
+    source: str = "model",
+) -> dict[str, Any]:
+    """Build the durable decision/blocker sidecar from a generated summary.
+
+    Model summaries are untrusted and must satisfy the strict structured
+    schema below. The deterministic static fallback is trusted control flow,
+    but its narrative error bullets cannot reliably supply that schema. Keep
+    its structured state explicitly opaque rather than fabricating fields or
+    weakening validation for model output.
+    """
+    if source == "static_fallback":
+        return {
+            "version": _COMPRESSION_CHECKPOINT_VERSION,
+            "session_id": str(session_id or ""),
+            "decisions": [],
+            "blockers": [],
+            "checkpoint_quality": "fallback_opaque",
+        }
+    if source != "model":
+        raise ValueError(f"unknown compression checkpoint source: {source}")
+
     decision_entries = _checkpoint_entries(_summary_section(summary, "Key Decisions"))
     blocker_entries = _checkpoint_entries(_summary_section(summary, "Blocked"))
     if len(decision_entries) + len(blocker_entries) > _MAX_CHECKPOINT_ENTRIES:
@@ -350,10 +373,16 @@ def _inject_compression_checkpoint(
     except Exception:
         return False
 
+    checkpoint_note = (
+        "Structured decision and blocker state is opaque because this checkpoint "
+        "came from the deterministic static fallback. Re-verify current state."
+        if checkpoint.get("checkpoint_quality") == "fallback_opaque"
+        else "Only current decisions and unresolved blockers are authoritative here."
+    )
     block = (
         f"{_COMPRESSION_CHECKPOINT_START}\n"
         "## Durable Compression Checkpoint\n"
-        "Only current decisions and unresolved blockers are authoritative here.\n"
+        f"{checkpoint_note}\n"
         f"```json\n{_checkpoint_json(checkpoint)}\n```\n"
         f"{_COMPRESSION_CHECKPOINT_END}"
     )
@@ -362,7 +391,8 @@ def _inject_compression_checkpoint(
         rf"{re.escape(_COMPRESSION_CHECKPOINT_END)}\n*"
     )
     stale_state_re = re.compile(
-        r"(?ims)^##\s+(?:Blocked|Key Decisions)\s*$\n?.*?(?=^##\s+|\Z)"
+        rf"(?ims)^##\s+(?:Blocked|Key Decisions)\s*$\n?.*?"
+        rf"(?=^##\s+|^{re.escape(_SUMMARY_END_MARKER)}|\Z)"
     )
 
     def _copy_content(content: Any) -> Any:
@@ -457,7 +487,11 @@ def _inject_compression_checkpoint(
         return combined
 
     def _inject_content(content: Any) -> Any:
-        copied = _remove_spans(content, remove_stale_state=False)
+        # The checkpoint is the canonical decision/blocker state for the target
+        # summary too. Remove its narrative copies before injection so an opaque
+        # fallback cannot retain unstructured blocker prose beside an empty
+        # structured list, and a model summary cannot expose two authorities.
+        copied = _remove_spans(content, remove_stale_state=True)
         if copied is None:
             return None
         combined, segments = _text_segments(copied)
@@ -1709,6 +1743,7 @@ def compress_context(
             _checkpoint = build_compression_checkpoint(
                 _summary_body_for_checkpoint(agent.context_compressor, compressed),
                 session_id=_lock_sid,
+                source=("static_fallback" if _compression_used_fallback else "model"),
             )
             if not _inject_compression_checkpoint(compressed, _checkpoint):
                 raise RuntimeError("compressed summary message was not found")

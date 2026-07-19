@@ -14,6 +14,7 @@ import importlib.metadata
 import json
 import logging
 import os
+import shlex
 import shutil
 import stat
 import subprocess
@@ -28,9 +29,11 @@ from hermes_constants import get_hermes_home
 from hermes_cli.config import cfg_get
 from hermes_cli.secret_prompt import masked_secret_prompt
 from hermes_cli.plugin_supply_chain import (
+    LOCK_FILENAME,
     PluginCapabilityReport,
     PluginProvenance,
     build_capability_report,
+    read_provenance_lock,
     validate_full_commit_sha,
     validate_source_url,
     write_provenance_lock,
@@ -1064,6 +1067,12 @@ def cmd_update(name: str) -> None:
         console.print(f"[red]Error:[/red] {e}")
         sys.exit(1)
 
+    try:
+        provenance = _update_provenance_preflight(target, name)
+    except PluginOperationError as exc:
+        console.print(f"[red]Error:[/red] {exc}")
+        sys.exit(1)
+
     if not (target / ".git").exists():
         console.print(
             f"[red]Error:[/red] Plugin '{name}' was not installed from git "
@@ -1077,6 +1086,15 @@ def cmd_update(name: str) -> None:
     if not ok:
         console.print(f"[red]Error:[/red] {output}")
         sys.exit(1)
+
+    if provenance is not None:
+        try:
+            _refresh_update_provenance(target, provenance)
+        except Exception:
+            console.print(
+                "[red]Error:[/red] Plugin updated, but provenance lock refresh failed."
+            )
+            sys.exit(1)
 
     # Copy any new .example files
     _copy_example_files(target, console)
@@ -2403,6 +2421,11 @@ def dashboard_update_user_plugin(name: str) -> dict[str, Any]:
             "error": f"Plugin '{name}' was not found under {_plugins_dir()}.",
         }
 
+    try:
+        provenance = _update_provenance_preflight(target, name)
+    except PluginOperationError as exc:
+        return {"ok": False, "error": str(exc), "name": name}
+
     if not (target / ".git").exists():
         return {
             "ok": False,
@@ -2413,11 +2436,76 @@ def dashboard_update_user_plugin(name: str) -> dict[str, Any]:
     if not ok:
         return {"ok": False, "error": msg}
 
+    if provenance is not None:
+        try:
+            _refresh_update_provenance(target, provenance)
+        except Exception:
+            return {
+                "ok": False,
+                "updated": True,
+                "error": "Plugin updated, but provenance lock refresh failed.",
+                "name": name,
+            }
+
     from rich.console import Console
 
     _copy_example_files(target, Console())
     unchanged = "Already up to date" in msg
     return {"ok": True, "name": name, "output": msg, "unchanged": unchanged}
+
+
+def _update_provenance_preflight(
+    target: Path, name: str
+) -> PluginProvenance | None:
+    """Fail closed on unsafe locks and reject drift of pinned installs."""
+    lock_path = target / LOCK_FILENAME
+    try:
+        lock_path.lstat()
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise PluginOperationError(
+            "Plugin provenance lock is malformed or unreadable."
+        ) from exc
+    try:
+        provenance = read_provenance_lock(target)
+    except (OSError, ValueError) as exc:
+        raise PluginOperationError(
+            "Plugin provenance lock is malformed or unreadable."
+        ) from exc
+    if provenance is None:
+        raise PluginOperationError("Plugin provenance lock is malformed or unreadable.")
+    if provenance.requested_ref is not None:
+        source = provenance.source_url
+        if provenance.subdir:
+            source = f"{source}#{provenance.subdir}"
+        raise PluginOperationError(
+            "Pinned plugins cannot be updated in place. Reinstall with a new exact SHA: "
+            f"`hermes plugins install {shlex.quote(source)} "
+            "--ref <40-char-sha> --force`."
+        )
+    return provenance
+
+
+def _refresh_update_provenance(target: Path, provenance: PluginProvenance) -> None:
+    """Atomically advance an unpinned install lock after a successful pull."""
+    git_exe = _resolve_git_executable()
+    if not git_exe:
+        raise PluginOperationError("git is not installed or not in PATH.")
+    head = _run_inspect_git(
+        [git_exe, "rev-parse", "HEAD"], operation="resolve commit", cwd=target
+    )
+    head = validate_full_commit_sha(head)
+    write_provenance_lock(
+        target,
+        PluginProvenance(
+            source_url=provenance.source_url,
+            subdir=provenance.subdir,
+            resolved_commit=head,
+            requested_ref=None,
+            inspected_at=datetime.now(timezone.utc).isoformat(),
+        ),
+    )
 
 
 def _git_pull_plugin_dir(target: Path) -> tuple[bool, str]:
@@ -2426,11 +2514,12 @@ def _git_pull_plugin_dir(target: Path) -> tuple[bool, str]:
         return False, "git is not installed or not in PATH."
     try:
         result = subprocess.run(
-            [git_exe, "pull", "--ff-only"],
+            [git_exe, "-c", f"core.hooksPath={os.devnull}", "pull", "--ff-only"],
             capture_output=True,
             text=True,
             timeout=60,
             cwd=str(target),
+            env=_inspection_git_env(),
         )
     except FileNotFoundError:
         return False, "git is not installed or not in PATH."
@@ -2438,9 +2527,10 @@ def _git_pull_plugin_dir(target: Path) -> tuple[bool, str]:
         return False, "Git pull timed out after 60 seconds."
 
     if result.returncode != 0:
-        err = (result.stderr or "").strip() or result.stdout.strip()
-        return False, err or "git pull failed."
-    return True, result.stdout.strip()
+        return False, "Git pull failed."
+    if "Already up to date" in result.stdout:
+        return True, "Already up to date."
+    return True, "Updated."
 
 
 def dashboard_remove_user_plugin(name: str) -> dict[str, Any]:

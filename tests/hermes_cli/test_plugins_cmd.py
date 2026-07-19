@@ -487,10 +487,13 @@ class TestCmdInstall:
 class TestCmdUpdate:
     """Test the update command."""
 
+    @patch("hermes_cli.plugins_cmd._update_provenance_preflight", return_value=None)
     @patch("hermes_cli.plugins_cmd._sanitize_plugin_name")
     @patch("hermes_cli.plugins_cmd._plugins_dir")
     @patch("hermes_cli.plugins_cmd.subprocess.run")
-    def test_update_git_pull_success(self, mock_run, mock_plugins_dir, mock_sanitize):
+    def test_update_git_pull_success(
+        self, mock_run, mock_plugins_dir, mock_sanitize, mock_preflight
+    ):
         from hermes_cli.plugins_cmd import cmd_update
 
         mock_plugins_dir_val = MagicMock()

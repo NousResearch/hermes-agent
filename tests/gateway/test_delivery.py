@@ -352,6 +352,28 @@ async def test_long_output_preserved_for_chunking_adapter(tmp_path, monkeypatch)
 
 
 @pytest.mark.asyncio
+async def test_long_output_preserved_for_sms_adapter(tmp_path, monkeypatch):
+    from plugins.platforms.sms.adapter import SmsAdapter
+
+    monkeypatch.setattr("gateway.delivery.get_hermes_home", lambda: tmp_path)
+    adapter = object.__new__(SmsAdapter)
+    delivered = []
+
+    async def capture_send(chat_id, content, metadata=None):
+        delivered.append(content)
+        return SendResult(success=True)
+
+    adapter.send = capture_send
+    router = DeliveryRouter(GatewayConfig(), adapters={Platform.SMS: adapter})
+    target = DeliveryTarget.parse("sms:+15551234567")
+    long_content = "x" * 5000
+
+    await router._deliver_to_platform(target, long_content, metadata={"job_id": "sms-long"})
+
+    assert delivered == [long_content]
+
+
+@pytest.mark.asyncio
 async def test_short_output_never_truncated(tmp_path, monkeypatch):
     """Output under the limit passes through untouched for any adapter."""
     monkeypatch.setattr("gateway.delivery.get_hermes_home", lambda: tmp_path)

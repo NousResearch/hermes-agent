@@ -272,20 +272,24 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "copilot-acp",
     ],
     "copilot": [
+        # Anthropic
+        "claude-fable-5",
+        "claude-opus-4.8",
+        "claude-opus-4.7",
+        "claude-opus-4.6",
+        "claude-opus-4.6-fast",
+        "claude-opus-4.5",
+        "claude-sonnet-4.6",
+        "claude-sonnet-4.5",
+        "claude-haiku-4.5",
+        # OpenAI
+        "gpt-5.5",
         "gpt-5.4",
         "gpt-5.4-mini",
         "gpt-5-mini",
-        "gpt-5.3-codex",
-        "gpt-5.2-codex",
-        "gpt-4.1",
-        "gpt-4o",
-        "gpt-4o-mini",
-        "claude-sonnet-4.6",
-        "claude-sonnet-4",
-        "claude-sonnet-4.5",
-        "claude-haiku-4.5",
+        # Google
         "gemini-3.1-pro-preview",
-        "gemini-3-pro-preview",
+        "gemini-3.5-flash",
         "gemini-3-flash-preview",
         "gemini-2.5-pro",
     ],
@@ -2442,7 +2446,16 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
         try:
             live = _fetch_github_models(_resolve_copilot_catalog_api_key())
             if live:
-                return live
+                # Merge: curated first (pinned order), then append any live-only
+                # models not already in the curated list so newly-enabled models
+                # surface even if the static list lags.
+                curated = list(_PROVIDER_MODELS.get("copilot", []))
+                curated_lower = {m.lower() for m in curated}
+                merged = list(curated)
+                for m in live:
+                    if m.lower() not in curated_lower:
+                        merged.append(m)
+                return merged
         except Exception:
             pass
         if normalized == "copilot-acp":

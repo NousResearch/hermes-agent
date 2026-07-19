@@ -1008,10 +1008,53 @@ def test_create_happy_path(worker_env):
         conn.close()
 
 
-def test_create_inherits_worker_dir_workspace(monkeypatch, worker_env):
-    """A worker scoped to a dir: task that spawns a child without a
-    workspace arg inherits the dir, not scratch (so follow-up code-gen
-    lands in the same project)."""
+def test_create_default_child_isolates_materialized_scratch_workspace(
+    monkeypatch, worker_env,
+):
+    """A worker-created default-scratch child must not reuse its parent's path."""
+    from tools import kanban_tools as kt
+    from hermes_cli import kanban_db as kb
+
+    conn = kb.connect()
+    try:
+        parent = kb.get_task(conn, worker_env)
+        assert parent is not None
+        parent_workspace = kb.resolve_workspace(parent)
+        kb.set_workspace_path(conn, worker_env, parent_workspace)
+    finally:
+        conn.close()
+
+    # This file represents immutable evidence produced by the parent review.
+    evidence = parent_workspace / "review-evidence.txt"
+    evidence.write_text("parent-only", encoding="utf-8")
+
+    d = json.loads(kt._handle_create({
+        "title": "remediation", "assignee": "peer", "parents": [worker_env],
+    }))
+    assert d["ok"] is True
+    assert d["workspace_kind"] == "scratch"
+    assert d["workspace_path"] is None
+    assert d["project_id"] is None
+    conn = kb.connect()
+    try:
+        child = kb.get_task(conn, d["task_id"])
+        assert child is not None
+        assert child.workspace_kind == "scratch"
+        assert child.workspace_path is None
+        child_workspace = kb.resolve_workspace(child)
+    finally:
+        conn.close()
+
+    assert child_workspace != parent_workspace
+    (child_workspace / "child-write.txt").write_text("child", encoding="utf-8")
+    assert not (parent_workspace / "child-write.txt").exists()
+    assert evidence.read_text(encoding="utf-8") == "parent-only"
+
+
+def test_create_default_child_does_not_implicitly_share_worker_dir(
+    monkeypatch, worker_env,
+):
+    """Persistent directory sharing requires explicit child workspace args."""
     from tools import kanban_tools as kt
     from hermes_cli import kanban_db as kb
 
@@ -1032,14 +1075,57 @@ def test_create_inherits_worker_dir_workspace(monkeypatch, worker_env):
     conn = kb.connect()
     try:
         child = kb.get_task(conn, d["task_id"])
-        assert child.workspace_kind == "dir"
-        assert child.workspace_path == proj
+        assert child is not None
+        assert child.workspace_kind == "scratch"
+        assert child.workspace_path is None
     finally:
         conn.close()
 
 
-def test_create_explicit_workspace_beats_inheritance(monkeypatch, worker_env):
-    """An explicit workspace arg overrides worker-task inheritance."""
+def test_create_explicit_dir_workspace_shares_parent_path(monkeypatch, worker_env):
+    """An explicit dir workspace remains the intentional sharing escape hatch."""
+    from tools import kanban_tools as kt
+    from hermes_cli import kanban_db as kb
+
+    proj = "/home/teknium/proj"
+    conn = kb.connect()
+    try:
+        self_tid = kb.create_task(
+            conn, title="dir worker", assignee="test-worker",
+            workspace_kind="dir", workspace_path=proj,
+        )
+        kb.claim_task(conn, self_tid)
+    finally:
+        conn.close()
+    monkeypatch.setenv("HERMES_KANBAN_TASK", self_tid)
+
+    d = json.loads(kt._handle_create({
+        "title": "shared child", "assignee": "peer",
+        "workspace_kind": "dir", "workspace_path": proj,
+    }))
+    assert d["ok"] is True
+    assert d["workspace_kind"] == "dir"
+    assert d["workspace_path"] == proj
+    conn = kb.connect()
+    try:
+        child = kb.get_task(conn, d["task_id"])
+        assert child is not None
+        assert child.workspace_kind == "dir"
+        assert child.workspace_path == proj
+        created = next(
+            event for event in kb.list_events(conn, child.id)
+            if event.kind == "created"
+        )
+        assert created.payload is not None
+        assert created.payload["workspace_kind"] == "dir"
+        assert created.payload["workspace_path"] == proj
+        assert created.payload["project_id"] is None
+    finally:
+        conn.close()
+
+
+def test_create_explicit_scratch_beats_parent_workspace(monkeypatch, worker_env):
+    """Explicit scratch remains isolated even when the parent uses a directory."""
     from tools import kanban_tools as kt
     from hermes_cli import kanban_db as kb
 
@@ -1062,14 +1148,110 @@ def test_create_explicit_workspace_beats_inheritance(monkeypatch, worker_env):
     conn = kb.connect()
     try:
         child = kb.get_task(conn, d["task_id"])
+        assert child is not None
         assert child.workspace_kind == "scratch"
+        assert child.workspace_path is None
+    finally:
+        conn.close()
+
+
+def test_create_nested_default_scratch_children_each_get_own_workspace(
+    monkeypatch, worker_env,
+):
+    """Isolation remains stable throughout a worker-created task graph."""
+    from tools import kanban_tools as kt
+    from hermes_cli import kanban_db as kb
+
+    conn = kb.connect()
+    try:
+        parent = kb.get_task(conn, worker_env)
+        assert parent is not None
+        parent_workspace = kb.resolve_workspace(parent)
+        kb.set_workspace_path(conn, worker_env, parent_workspace)
+    finally:
+        conn.close()
+
+    child_result = json.loads(kt._handle_create({
+        "title": "child", "assignee": "peer", "parents": [worker_env],
+    }))
+    monkeypatch.setenv("HERMES_KANBAN_TASK", child_result["task_id"])
+    grandchild_result = json.loads(kt._handle_create({
+        "title": "grandchild", "assignee": "reviewer",
+        "parents": [child_result["task_id"]],
+    }))
+
+    conn = kb.connect()
+    try:
+        child = kb.get_task(conn, child_result["task_id"])
+        grandchild = kb.get_task(conn, grandchild_result["task_id"])
+        assert child is not None
+        assert grandchild is not None
+        assert child.workspace_path is None
+        assert grandchild.workspace_path is None
+        workspaces = {
+            kb.resolve_workspace(parent),
+            kb.resolve_workspace(child),
+            kb.resolve_workspace(grandchild),
+        }
+    finally:
+        conn.close()
+    assert len(workspaces) == 3
+
+
+def test_create_default_child_inherits_project_without_reusing_worktree(
+    monkeypatch, worker_env, tmp_path,
+):
+    """Project context propagates while each task keeps its own worktree path."""
+    from tools import kanban_tools as kt
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import projects_db as pdb
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    with pdb.connect_closing() as project_conn:
+        project_id = pdb.create_project(
+            project_conn, name="Isolated Project", folders=[str(repo)],
+        )
+
+    conn = kb.connect()
+    try:
+        parent_id = kb.create_task(
+            conn, title="implementation", assignee="test-worker",
+            project_id=project_id,
+        )
+        kb.claim_task(conn, parent_id)
+        parent = kb.get_task(conn, parent_id)
+        assert parent is not None
+    finally:
+        conn.close()
+    monkeypatch.setenv("HERMES_KANBAN_TASK", parent_id)
+
+    result = json.loads(kt._handle_create({
+        "title": "independent review", "assignee": "reviewer",
+        "parents": [parent_id],
+    }))
+    assert result["ok"] is True
+    assert result["workspace_kind"] == "worktree"
+    assert result["workspace_path"] == str(
+        repo / ".worktrees" / result["task_id"]
+    )
+    assert result["project_id"] == parent.project_id
+
+    conn = kb.connect()
+    try:
+        child = kb.get_task(conn, result["task_id"])
+        assert child is not None
+        assert child.project_id == parent.project_id
+        assert child.workspace_kind == "worktree"
+        assert child.workspace_path != parent.workspace_path
+        assert child.workspace_path == str(repo / ".worktrees" / child.id)
+        assert child.branch_name != parent.branch_name
     finally:
         conn.close()
 
 
 def test_create_no_worker_task_stays_scratch(monkeypatch, worker_env):
-    """Orchestrator/CLI callers (no HERMES_KANBAN_TASK) still default to
-    scratch — inheritance only applies to task-scoped workers."""
+    """Orchestrator/CLI callers keep the same isolated scratch default."""
     from tools import kanban_tools as kt
     from hermes_cli import kanban_db as kb
 

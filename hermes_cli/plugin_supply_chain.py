@@ -14,7 +14,7 @@ import stat
 import tempfile
 from dataclasses import asdict, dataclass
 from pathlib import Path, PurePosixPath
-from typing import Any, Mapping
+from typing import Any, Mapping, cast
 from urllib.parse import urlsplit
 
 LOCK_FILENAME = ".hermes-plugin-lock.json"
@@ -70,7 +70,8 @@ def _required_env_names(value: object) -> tuple[str, ...]:
         if isinstance(item, str) and item:
             names.add(item)
         elif isinstance(item, Mapping):
-            name = item.get("name")
+            item_mapping = cast(Mapping[object, object], item)
+            name = item_mapping.get("name")
             if isinstance(name, str) and name:
                 names.add(name)
     return tuple(sorted(names))

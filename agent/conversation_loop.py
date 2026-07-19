@@ -1072,6 +1072,21 @@ def run_conversation(
         # the OpenAI SDK. Sanitizing here prevents the 3-retry cycle.
         _sanitize_messages_surrogates(api_messages)
 
+        # Evict old tool-result screenshots from the outbound payload.
+        # Mirrors the Anthropic adapter's request-build-time
+        # _evict_old_screenshots: keep the most recent 3 image-bearing tool
+        # results, placeholder the rest.  chat_completions only — the
+        # anthropic_messages path already evicts inside
+        # convert_messages_to_anthropic during format conversion, and other
+        # modes are out of scope here.  Operates on the per-call copy
+        # (returns new dicts for affected messages); the stored conversation
+        # history keeps its images.  The helper is shared with
+        # handle_max_iterations' summary request, which builds its own
+        # payload outside this loop.
+        if agent.api_mode == "chat_completions":
+            from agent.chat_completion_helpers import _evict_old_screenshots_openai
+            api_messages = _evict_old_screenshots_openai(api_messages)
+
         # Calculate approximate request size for logging and pressure checks.
         # estimate_messages_tokens_rough(api_messages) includes the system
         # prompt copy but not the tool schema payload, which is sent as a

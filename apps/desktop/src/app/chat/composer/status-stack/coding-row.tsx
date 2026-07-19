@@ -229,8 +229,8 @@ export const CodingStatusRow = memo(function CodingStatusRow({
                 <DropdownMenuItem onSelect={() => startBranch(undefined, 'create')}>
                   <span className="truncate">{p.startWork}</span>
                 </DropdownMenuItem>
-                {/* Create a fresh worktree off the current HEAD (the generic
-                    "spin up a worktree here", mirroring the sidebar's + button). */}
+                {/* Enter the existing-branch conversion flow directly rather
+                    than opening create mode and switching after the dialog mounts. */}
                 {onConvertBranch && (
                   <DropdownMenuItem onSelect={() => startBranch(undefined, 'convert')}>
                     <span className="truncate">{p.convertBranch}</span>

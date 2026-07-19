@@ -2,6 +2,8 @@ import type { Translations } from "./types";
 
 export const zhHant: Translations = {
   common: {
+    gateway: "閘道",
+    gatewayHint: "傳訊平台、API 伺服器與 webhook 在「頻道」頁面設定。這些是整個閘道層級的設定（代理／轉發模式與全域允許清單）。",
     save: "儲存",
     saving: "儲存中...",
     cancel: "取消",
@@ -50,6 +52,9 @@ export const zhHant: Translations = {
   },
 
   app: {
+    managingProfile: "管理設定檔",
+    currentProfileOption: "此儀表板（{name}）",
+    managingProfileBanner: "正在管理設定檔「{name}」——設定、金鑰、技能、MCP、模型與新對話都會套用到該設定檔。",
     brand: "Hermes Agent",
     brandShort: "HA",
     closeNavigation: "關閉導覽",
@@ -93,6 +98,12 @@ export const zhHant: Translations = {
   },
 
   status: {
+    disabled: "已停用",
+    restartGatewayConfirmMessage: "這會重新啟動 Hermes 閘道程序。已連線的頻道與使用中的工作階段會在之後重新連線。",
+    restartGatewayConfirmTitle: "重新啟動閘道？",
+    updateHermesConfirmMessage: "這會執行 hermes update，並在完成後重新啟動閘道。使用中的工作階段會保留其 prompt 快取直到那時。",
+    updateHermesConfirmNow: "立即更新",
+    updateHermesConfirmTitle: "更新 Hermes？",
     actionFailed: "動作失敗",
     actionFinished: "已完成",
     actions: "動作",
@@ -271,6 +282,8 @@ export const zhHant: Translations = {
     resume: "繼續",
     triggerNow: "立即觸發",
     delivery: {
+      needsHomeChannel: "請先設定主頻道",
+      noneConfigured: "尚未設定任何傳訊平台。請在「頻道」設定一個以傳送報告。",
       local: "本機",
       telegram: "Telegram",
       discord: "Discord",
@@ -280,13 +293,44 @@ export const zhHant: Translations = {
   },
 
   profiles: {
+    activeProfile: "使用中設定檔",
+    activeBadge: "使用中",
+    setActive: "設為使用中",
+    activeSet: "已設定使用中設定檔",
+    gatewayRunning: "閘道執行中",
+    gatewayStopped: "閘道已停止",
+    gatewayRunningWarning: "此設定檔的閘道正在執行——它將會被停止。",
+    aliasBadge: "別名",
+    description: "描述",
+    descriptionPlaceholder: "這個設定檔擅長什麼？用於依角色分派看板任務。",
+    noDescription: "無描述",
+    editDescription: "編輯描述",
+    descriptionSaved: "已儲存描述",
+    reviewBadge: "審查",
+    autoGenerate: "自動產生",
+    generating: "產生中…",
+    describeFailed: "無法產生描述",
+    distribution: "分配",
+    advancedOptions: "進階選項",
+    cloneAll: "複製全部（記憶、工作階段、技能、狀態）",
+    noSkillsOption: "不要植入內建技能",
+    descriptionOptional: "描述（選填）",
+    modelOptional: "模型（選填）",
+    modelInherit: "繼承自複製來源／預設",
+    modelLoading: "載入模型中…",
+    modelNone: "沒有已驗證的提供者——請先設定金鑰",
+    editModel: "變更模型",
+    modelSaved: "已更新模型",
+    modelSelect: "選擇模型",
+    actions: "動作",
     newProfile: "新增設定檔",
     name: "名稱",
     namePlaceholder: "例如：coder、writer 等",
     nameRequired: "名稱為必填",
     nameRule:
       "僅允許小寫字母、數字、底線及連字號；首字必須為字母或數字；最多 64 個字元。",
-    invalidName: "設定檔名稱無效",    cloneFrom: "從設定檔複製",
+    invalidName: "設定檔名稱無效",
+    cloneFrom: "設定複製來源",
     cloneFromNone: "無（空白）",
     allProfiles: "設定檔",
     noProfiles: "找不到設定檔。",
@@ -353,6 +397,9 @@ export const zhHant: Translations = {
   },
 
   skills: {
+    profileSelector: "設定檔",
+    currentProfile: "目前（{name}）",
+    managingProfile: "正在管理設定檔「{name}」——切換會套用到該設定檔，而非此儀表板。",
     title: "技能",
     searchPlaceholder: "搜尋技能與工具集...",
     enabledOf: "已啟用 {enabled}/{total}",
@@ -489,6 +536,12 @@ export const zhHant: Translations = {
   },
 
   theme: {
+    fontTitle: "字型",
+    fontDefault: "主題預設",
+    fontDefaultHint: "使用目前主題的字型",
+    fontSans: "無襯線",
+    fontSerif: "襯線",
+    fontMono: "等寬",
     title: "主題",
     switchTheme: "切換主題",
   },
@@ -600,6 +653,9 @@ export const zhHant: Translations = {
     },
   },
   kanban: {
+    needsAssignee: "需要負責人",
+    needsAssigneeHint: "相依條件已滿足，但 dispatcher 會略過此任務，直到你指派設定檔。",
+    confirmScheduled: "將此任務移至「已排程」？請用於已知的時間延遲，而非人為阻塞。",
     loading: "正在載入看板…",
     loadFailed: "載入看板失敗：",
     loadFailedHint:
@@ -760,5 +816,25 @@ export const zhHant: Translations = {
       "工作區路徑（選填，留空則依負責人推導）",
     logTruncated: "（顯示最後 100 KB — 完整日誌位於 ",
     logAt: "）",
+    newTaskTitle: "新增任務：{column}",
+    taskTitleLabel: "標題",
+    assigneeLabel: "負責人",
+    assigneeLabelHint: "（留空 = 由 dispatcher 挑選）",
+    skillsLabel: "技能",
+    skillsLabelHint: "（選填，以逗號分隔）",
+    parentLabel: "上層任務",
+    parentLabelHint: "（下層任務會保持封鎖，直到上層任務完成）",
+    create: "建立",
+    boardSettings: "設定",
+    boardSettingsTitle:
+      "看板設定：名稱、描述，以及新任務繼承的預設專案目錄",
+    boardSettingsTitleFor: "看板設定：{name}",
+    projectDirectoryOverrideHint:
+      "新任務會以此作為預設工作區；每個任務仍可在建立對話框中覆寫。",
+    saving: "儲存中…",
+    commentHint:
+      "留言會在工作者下次執行或呼叫 kanban_show() 時送達，不需要先封鎖任務。",
+    commentHintTitle:
+      "留言是與任務工作者溝通的管道。留言會立即出現在討論串上，不需要先封鎖任務。執行中的工作者會在下次 kanban_show() 或重新啟動時讀取討論串；只有當你希望工作者「停止」並等待你的輸入時，才需要封鎖。",
   },
 };

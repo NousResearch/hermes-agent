@@ -711,6 +711,141 @@ class TestAdapterModule(unittest.TestCase):
         self.assertEqual(fake_client._reconnect_interval, 3)
         self.assertEqual(fake_client._ping_interval, 4)
 
+    def test_ws_socks_proxy_alias_rewritten_to_socks5h_when_runtime_present(self):
+        # Windows getproxies_registry() reports a system SOCKS proxy as the bare
+        # 'socks://' alias that websockets rejects (issue #67244); with
+        # python-socks available it must become 'socks5h://' (remote DNS).
+        from plugins.platforms.feishu.adapter import _resolve_ws_socks_proxy_override
+
+        proxies = {
+            "http": "http://127.0.0.1:8686",
+            "https": "http://127.0.0.1:8686",
+            "socks": "socks://127.0.0.1:8687",
+        }
+        with patch("urllib.request.getproxies", return_value=proxies), \
+                patch("urllib.request.proxy_bypass", return_value=False), \
+                patch("plugins.platforms.feishu.adapter._socks_runtime_available", return_value=True):
+            override, proxy_url = _resolve_ws_socks_proxy_override("wss://open.feishu.cn/callback/ws")
+        self.assertTrue(override)
+        self.assertEqual(proxy_url, "socks5h://127.0.0.1:8687")
+
+    def test_ws_socks_proxy_alias_falls_back_to_http_proxy_without_runtime(self):
+        # No python-socks runtime: reuse the HTTP(S) proxy the main channel
+        # already connects through instead of retrying the SOCKS alias forever.
+        from plugins.platforms.feishu.adapter import _resolve_ws_socks_proxy_override
+
+        proxies = {
+            "https": "http://127.0.0.1:8686",
+            "socks": "socks://127.0.0.1:8687",
+        }
+        with patch("urllib.request.getproxies", return_value=proxies), \
+                patch("urllib.request.proxy_bypass", return_value=False), \
+                patch("plugins.platforms.feishu.adapter._socks_runtime_available", return_value=False):
+            override, proxy_url = _resolve_ws_socks_proxy_override("wss://open.feishu.cn/callback/ws")
+        self.assertTrue(override)
+        self.assertEqual(proxy_url, "http://127.0.0.1:8686")
+
+    def test_ws_socks_proxy_alias_direct_when_no_http_proxy_and_no_runtime(self):
+        from plugins.platforms.feishu.adapter import _resolve_ws_socks_proxy_override
+
+        proxies = {"socks": "socks://127.0.0.1:8687"}
+        with patch("urllib.request.getproxies", return_value=proxies), \
+                patch("urllib.request.proxy_bypass", return_value=False), \
+                patch("plugins.platforms.feishu.adapter._socks_runtime_available", return_value=False):
+            override, proxy_url = _resolve_ws_socks_proxy_override("wss://open.feishu.cn/callback/ws")
+        self.assertTrue(override)
+        self.assertIsNone(proxy_url)
+
+    def test_ws_proxy_override_left_untouched_for_plain_http_proxy(self):
+        # A normal HTTP(S) system proxy is handled natively by websockets — do
+        # not override and do not disturb the default behaviour.
+        from plugins.platforms.feishu.adapter import _resolve_ws_socks_proxy_override
+
+        proxies = {"https": "http://127.0.0.1:8686"}
+        with patch("urllib.request.getproxies", return_value=proxies), \
+                patch("urllib.request.proxy_bypass", return_value=False):
+            override, proxy_url = _resolve_ws_socks_proxy_override("wss://open.feishu.cn/callback/ws")
+        self.assertFalse(override)
+        self.assertIsNone(proxy_url)
+
+    def test_ws_proxy_override_noop_when_no_proxy_configured(self):
+        from plugins.platforms.feishu.adapter import _resolve_ws_socks_proxy_override
+
+        with patch("urllib.request.getproxies", return_value={}), \
+                patch("urllib.request.proxy_bypass", return_value=False):
+            override, proxy_url = _resolve_ws_socks_proxy_override("wss://open.feishu.cn/callback/ws")
+        self.assertFalse(override)
+        self.assertIsNone(proxy_url)
+
+    def test_ws_proxy_override_respects_proxy_bypass(self):
+        from plugins.platforms.feishu.adapter import _resolve_ws_socks_proxy_override
+
+        proxies = {"socks": "socks://127.0.0.1:8687"}
+        with patch("urllib.request.getproxies", return_value=proxies), \
+                patch("urllib.request.proxy_bypass", return_value=True):
+            override, proxy_url = _resolve_ws_socks_proxy_override("wss://open.feishu.cn/callback/ws")
+        self.assertFalse(override)
+        self.assertIsNone(proxy_url)
+
+    def test_connect_override_injects_rewritten_socks_proxy(self):
+        # End-to-end: the websockets.connect override the WS thread installs must
+        # inject the repaired proxy kwarg so the Lark SDK's bare connect() call
+        # no longer trips over the SOCKS alias.
+        import sys
+        from types import ModuleType
+
+        captured = {}
+
+        def _fake_connect(*args, **kwargs):
+            captured["args"] = args
+            captured["kwargs"] = kwargs
+            raise RuntimeError("stop test client")
+
+        class _FakeWSClient:
+            def __init__(self):
+                self._reconnect_nonce = 30
+                self._reconnect_interval = 120
+                self._ping_interval = 120
+
+            def start(self):
+                # Emulate the Lark SDK calling connect(conn_url) with no proxy.
+                ws_module = sys.modules["lark_oapi.ws.client"]
+                ws_module.websockets.connect("wss://open.feishu.cn/callback/ws")
+
+        fake_client = _FakeWSClient()
+        fake_adapter = SimpleNamespace(
+            _ws_thread_loop=None,
+            _ws_reconnect_nonce=2,
+            _ws_reconnect_interval=3,
+            _ws_ping_interval=None,
+            _ws_ping_timeout=None,
+        )
+        fake_client_module = ModuleType("lark_oapi.ws.client")
+        fake_client_module.loop = None
+        fake_client_module.websockets = SimpleNamespace(connect=_fake_connect)
+        fake_ws_module = ModuleType("lark_oapi.ws")
+        fake_ws_module.client = fake_client_module
+        fake_root_module = ModuleType("lark_oapi")
+        fake_root_module.ws = fake_ws_module
+
+        proxies = {"socks": "socks://127.0.0.1:8687"}
+        original_modules = sys.modules.copy()
+        sys.modules["lark_oapi"] = fake_root_module
+        sys.modules["lark_oapi.ws"] = fake_ws_module
+        sys.modules["lark_oapi.ws.client"] = fake_client_module
+        try:
+            from plugins.platforms.feishu.adapter import _run_official_feishu_ws_client
+
+            with patch("urllib.request.getproxies", return_value=proxies), \
+                    patch("urllib.request.proxy_bypass", return_value=False), \
+                    patch("plugins.platforms.feishu.adapter._socks_runtime_available", return_value=True):
+                _run_official_feishu_ws_client(fake_client, fake_adapter)
+        finally:
+            sys.modules.clear()
+            sys.modules.update(original_modules)
+
+        self.assertEqual(captured["kwargs"].get("proxy"), "socks5h://127.0.0.1:8687")
+
 
 def _admits_group(adapter, message, sender_id, chat_id=""):
     """Group-path shim: run a message through ``_admit`` and return a bool."""

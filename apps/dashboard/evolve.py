@@ -70,6 +70,11 @@ class Reflection:
             return sum(1 for p in self._data["proposals"] if p["status"] == "pending")
 
     def _add(self, kind: str, title: str, rationale: str, payload: dict) -> dict:
+        payload = dict(payload)
+        # Provenance: model-written proposals set source="model"; everything
+        # else is a deterministic heuristic. Surfaced in the approval UI so a
+        # human can weigh who authored a self-modification before applying it.
+        payload.setdefault("source", "heuristic")
         prop = {
             "id": self._data["next_id"],
             "created": datetime.now(timezone.utc).isoformat(timespec="seconds"),
@@ -77,6 +82,7 @@ class Reflection:
             "title": title,
             "rationale": rationale,
             "payload": payload,
+            "source": payload["source"],
             "status": "pending",
         }
         self._data["next_id"] += 1

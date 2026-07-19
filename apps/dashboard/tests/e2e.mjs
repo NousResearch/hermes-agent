@@ -419,6 +419,8 @@ check("agent proposals panel opens", true);
 await page.locator(".evolve-head .btn-primary").click(); // Reflect now
 await page.waitForSelector(".evolve-row .evolve-actions .btn-primary", { timeout: 10000 });
 check("reflection queues a pending proposal", true);
+check("proposal shows a provenance badge",
+  (await page.locator(".evolve-row .evolve-source").first().innerText()).replace(/\s/g, "").length >= 3);
 const pendingBefore = await page.locator(".evolve-row .evolve-actions").count();
 await page.locator(".evolve-row .evolve-actions .btn-primary").first().click(); // Apply
 await page.waitForFunction((n) =>

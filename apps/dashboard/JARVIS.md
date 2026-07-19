@@ -79,8 +79,12 @@ changes touch data files only — never code: `memory_prune` (auto) and
 `prompt_addendum` (approval; appended to `data/agent_notes.md` and injected into
 the system prompt). Every apply snapshots the whole hub first (the backup
 system) so it is one-click reversible, and a `reflect` automation action lets it
-run nightly. Model-augmented reflection (letting Claude write richer proposals)
-is a future enhancement on top of the current deterministic heuristics.
+run nightly. **Model-augmented reflection is live**: in claude mode the deep
+tier (`assistant.reflect_candidates`) reviews telemetry + memory and proposes
+richer `prompt_addendum` guidelines — deep-tier-gated, capped at 3, validated
+server-side, and **advisory only** (they never auto-apply). Every proposal
+carries a `source` (`model` vs `heuristic`) surfaced as a badge in the approval
+inbox, so a human can see who authored a self-modification before applying it.
 
 **Phase 7 — Relevance-ranked memory recall (Layer E). ✅ DONE.** Instead of
 dumping the tail of `data/memory.md` into every system prompt (newest-biased,

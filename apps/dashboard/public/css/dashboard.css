@@ -875,7 +875,11 @@ a { color: inherit; }
 }
 .evolve-row:last-child { border-bottom: none; }
 .evolve-main { min-width: 0; }
+.evolve-title-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .evolve-title { font-weight: 600; font-size: 13px; }
+.evolve-source { font-family: ui-monospace, Menlo, monospace; font-size: 9px; letter-spacing: 0.08em; padding: 1px 6px; border-radius: 3px; border: 1px solid var(--hairline); flex: 0 0 auto; }
+.evolve-source-model { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, transparent); background: var(--accent-dim); }
+.evolve-source-heuristic { color: var(--muted); }
 .evolve-payload { margin-top: 3px; color: var(--ink-2); font-style: italic; overflow-wrap: anywhere; }
 .evolve-actions { display: flex; gap: 6px; flex: 0 0 auto; }
 .evolve-actions .btn { padding: 4px 12px; font-size: 12px; }

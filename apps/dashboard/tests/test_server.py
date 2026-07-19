@@ -1982,6 +1982,16 @@ class EvolveTests(unittest.TestCase):
         self.assertEqual(len(model), 1)
         self.assertEqual(model[0]["status"], "pending")   # advisory — never auto-applies
         self.assertEqual(model[0]["kind"], "prompt_addendum")
+        self.assertEqual(model[0]["source"], "model")     # provenance surfaced to the UI
+
+    def test_heuristic_proposals_tagged_source(self):
+        api = self._api()
+        api.memory_append("Likes espresso")
+        api.memory_append("Likes espresso")            # duplicate → prune finding
+        api.evolve.reflect()
+        prune = [p for p in api.evolve.list_proposals() if p["kind"] == "memory_prune"]
+        self.assertTrue(prune)
+        self.assertEqual(prune[0]["source"], "heuristic")   # default provenance
 
     def test_model_reflection_failure_is_swallowed(self):
         from unittest import mock

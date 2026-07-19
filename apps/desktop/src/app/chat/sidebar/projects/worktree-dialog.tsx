@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
@@ -69,47 +69,79 @@ export function WorktreeDialog({
   open,
   repoPath
 }: WorktreeDialogProps) {
+  if (!open) {
+    return null
+  }
+
+  return (
+    <OpenWorktreeDialog
+      initialBase={initialBase}
+      initialMode={initialMode}
+      key={`${repoPath}\0${initialMode}\0${initialBase ?? ''}`}
+      onOpenChange={onOpenChange}
+      onStarted={onStarted}
+      repoPath={repoPath}
+    />
+  )
+}
+
+function OpenWorktreeDialog({
+  initialBase,
+  initialMode,
+  onOpenChange,
+  onStarted,
+  repoPath
+}: Omit<WorktreeDialogProps, 'open'> & { initialMode: WorktreeDialogMode }) {
   const { t } = useI18n()
   const p = t.sidebar.projects
   const [name, setName] = useState('')
   const [pending, setPending] = useState(false)
-  const [convertMode, setConvertMode] = useState<WorktreeDialogMode>('create')
+  const [convertMode, setConvertMode] = useState<WorktreeDialogMode>(initialMode)
   const [branches, setBranches] = useState<HermesGitBranch[]>([])
   const [branchesLoading, setBranchesLoading] = useState(false)
-  const [selectedBase, setSelectedBase] = useState('')
+  const [selectedBase, setSelectedBase] = useState(initialMode === 'convert' ? '' : (initialBase ?? ''))
+  const branchLoadGenerationRef = useRef(0)
 
   const loadBranches = useCallback(async () => {
     if (!repoPath) {
       return
     }
 
+    const generation = ++branchLoadGenerationRef.current
     setBranchesLoading(true)
 
     try {
-      setBranches(await listRepoBranches(repoPath))
+      const nextBranches = await listRepoBranches(repoPath)
+
+      if (generation === branchLoadGenerationRef.current) {
+        setBranches(nextBranches)
+      }
     } catch {
-      setBranches([])
+      if (generation === branchLoadGenerationRef.current) {
+        setBranches([])
+      }
     } finally {
-      setBranchesLoading(false)
+      if (generation === branchLoadGenerationRef.current) {
+        setBranchesLoading(false)
+      }
     }
   }, [repoPath])
 
-  // Reset to a fresh state each time the dialog opens, applying any pre-selected
-  // base branch from the caller (e.g. "branch off from main" in the coding row's
-  // dropdown menu). When `initialBase` changes while open (shouldn't happen in
-  // practice), the effect re-syncs.
+  // The open session mounts with the requested mode, so its first committed
+  // content and autofocus target already match the caller's intent. Invalidate
+  // any outstanding branch request when this session closes or is replaced.
   useEffect(() => {
-    if (open) {
-      setName('')
-      setConvertMode(initialMode)
-      setSelectedBase(initialMode === 'convert' ? '' : (initialBase ?? ''))
-
-      if (initialMode === 'convert') {
-        setBranches([])
-        void loadBranches()
-      }
+    if (initialMode === 'convert') {
+      void loadBranches()
     }
-  }, [initialMode, loadBranches, open, initialBase])
+  }, [initialMode, loadBranches])
+
+  useEffect(
+    () => () => {
+      branchLoadGenerationRef.current += 1
+    },
+    []
+  )
 
   const submit = async () => {
     const branch = name.trim()
@@ -171,7 +203,7 @@ export function WorktreeDialog({
   }
 
   return (
-    <Dialog onOpenChange={next => !pending && onOpenChange(next)} open={open}>
+    <Dialog onOpenChange={next => !pending && onOpenChange(next)} open>
       <DialogContent className="max-w-md">
         <DialogHeader>
           <DialogTitle>{convertMode === 'convert' ? p.convertBranchTitle : p.newWorktreeTitle}</DialogTitle>

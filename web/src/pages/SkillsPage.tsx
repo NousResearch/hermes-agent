@@ -791,7 +791,10 @@ function SkillRow({
         size="icon"
         className="shrink-0 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100 hover:text-foreground"
         title={t.skills.editSkill ?? "Edit SKILL.md"}
-        aria-label={`${t.skills.editSkill ?? "Edit SKILL.md"} ${skill.name}`}
+        aria-label={(t.skills.editSkillAria ?? "Edit {name}").replace(
+          "{name}",
+          skill.name,
+        )}
         onClick={onEdit}
       >
         <Pencil />
@@ -1223,7 +1226,11 @@ function ConnectedHubs({
   }
   if (sources.length === 0) {
     return (
-      <p className="text-xs text-muted-foreground">{copy.sourceFallback}</p>
+      <p className="text-xs text-muted-foreground">
+        {copy.sourceFallbackBefore}
+        <span className="font-mono">hermes skills search</span>
+        {copy.sourceFallbackAfter}
+      </p>
     );
   }
   return (
@@ -1278,7 +1285,10 @@ function SearchMeta({
   return (
     <div className="flex flex-wrap items-center gap-2 px-1 text-xs text-text-tertiary">
       <Badge tone="secondary" className="text-xs">
-        {interpolate(copy.resultsCount, { count })}
+        {interpolate(
+          count === 1 ? copy.resultsCountOne : copy.resultsCountOther,
+          { count },
+        )}
       </Badge>
       {ms != null && <span>{(ms / 1000).toFixed(1)}s</span>}
       {entries.length > 0 && (
@@ -1336,7 +1346,7 @@ function HubResultCard({
             </Badge>
             {installed && (
               <Badge tone="success" className="text-xs">
-                {copy.installed}
+                {copy.installedBadge}
               </Badge>
             )}
           </div>
@@ -1465,7 +1475,7 @@ function SkillDetailDialog({
             </Badge>
             {installed && (
               <Badge tone="success" className="text-xs">
-                {copy.installed}
+                {copy.installedBadge}
               </Badge>
             )}
           </DialogTitle>
@@ -1652,10 +1662,15 @@ function ScanPanel({
             </Badge>
           </div>
           <span className="text-xs text-text-tertiary">
-            {interpolate(copy.sourceFindings, {
-              trust: copy[scan.trust_level] ?? scan.trust_level,
-              count: scan.findings.length,
-            })}
+            {interpolate(
+              scan.findings.length === 1
+                ? copy.sourceFindingsOne
+                : copy.sourceFindingsOther,
+              {
+                trust: copy[scan.trust_level] ?? scan.trust_level,
+                count: scan.findings.length,
+              },
+            )}
           </span>
         </div>
         <Badge tone={policyTone} className="ms-auto text-xs">

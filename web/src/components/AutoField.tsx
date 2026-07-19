@@ -145,7 +145,7 @@ export function AutoField({
         <Select value={String(value ?? "")} onValueChange={(v) => onChange(v)}>
           {options.map((opt) => (
             <SelectOption key={opt} value={opt}>
-              {opt || `(${t.common.none})`}
+              {opt || (t.common.noneOption ?? "(none)")}
             </SelectOption>
           ))}
         </Select>

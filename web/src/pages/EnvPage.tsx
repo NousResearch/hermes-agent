@@ -259,7 +259,10 @@ function EnvVarRow({
               size="icon"
               onClick={() => onReveal(varKey)}
               title={isRevealed ? t.env.hideValue : t.env.showValue}
-              aria-label={`${isRevealed ? t.env.hideValue : t.env.showValue} ${varKey}`}
+              aria-label={(isRevealed
+                ? (t.env.hideValueAria ?? "Hide {key}")
+                : (t.env.revealValueAria ?? "Reveal {key}")
+              ).replace("{key}", varKey)}
             >
               {isRevealed ? <EyeOff /> : <Eye />}
             </Button>

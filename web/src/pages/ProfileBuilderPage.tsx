@@ -285,10 +285,12 @@ export default function ProfileBuilderPage() {
       const pending = (res.hub_installs ?? []).filter((h) => h.pid).length;
       showToast(
         pending
-          ? interpolate(copy.createdWithInstalls, {
-              name: n,
-              count: pending,
-            })
+          ? interpolate(
+              pending === 1
+                ? copy.createdWithInstallsOne
+                : copy.createdWithInstallsOther,
+              { name: n, count: pending },
+            )
           : interpolate(copy.created, { name: n }),
         "success",
       );
@@ -581,7 +583,7 @@ export default function ProfileBuilderPage() {
                     <div
                       className="grid grid-cols-2 border border-border bg-background/30 p-0.5"
                       role="group"
-                      aria-label={mcpCopy.transport}
+                      aria-label={mcpCopy.transportAria}
                     >
                       {(
                         [
@@ -626,7 +628,7 @@ export default function ProfileBuilderPage() {
                       <div
                         className="grid grid-cols-3 border border-border bg-background/30 p-0.5 md:max-w-md"
                         role="group"
-                        aria-label={mcpCopy.authentication}
+                        aria-label={mcpCopy.authenticationAria}
                       >
                         {(
                           [
@@ -699,7 +701,7 @@ export default function ProfileBuilderPage() {
                         />
                       </div>
                       <div className="grid gap-1.5">
-                        <Label htmlFor="pb-mcp-args">{mcpCopy.args}</Label>
+                        <Label htmlFor="pb-mcp-args">{mcpCopy.argsLabel}</Label>
                         <Input
                           id="pb-mcp-args"
                           placeholder="-y @modelcontextprotocol/server"

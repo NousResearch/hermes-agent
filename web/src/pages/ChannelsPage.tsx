@@ -361,7 +361,8 @@ export default function ChannelsPage() {
             <WifiOff className="h-4 w-4 shrink-0" />
             <span>
               {copy.gatewayNotRunning}{" "}
-              <code className="font-courier">{gatewayStartCommand}</code>.
+              <code className="font-courier">{gatewayStartCommand}</code>
+              {copy.gatewayNotRunningAfter}
             </span>
           </CardContent>
         </Card>
@@ -371,7 +372,8 @@ export default function ChannelsPage() {
         {copy.configuredCount
           .replace("{configured}", String(configured))
           .replace("{total}", String(platforms.length))}{" "}
-        <code className="font-courier">{envPath}</code>.
+        <code className="font-courier">{envPath}</code>
+        {copy.configuredCountAfter}
       </p>
 
       {/* Config modal */}
@@ -890,7 +892,7 @@ function WhatsAppOnboardingPanel({
     setup?.status === "installing"
       ? copy.preparing
       : setup?.status === "starting"
-        ? copy.starting
+        ? copy.startingStatus
         : copy.waiting;
   const setupHelp =
     phase === "connected" || phase === "applying"
@@ -1254,7 +1256,7 @@ function TelegramOnboardingPanel({
         if (st.exit_code !== 0 && st.exit_code !== null) {
           onRestartNeeded();
           showToast(
-            `${copy.restartManually} (${st.exit_code})`,
+            copy.restartManually.replace("{code}", String(st.exit_code)),
             "error",
           );
         }

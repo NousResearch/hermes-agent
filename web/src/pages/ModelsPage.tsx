@@ -661,7 +661,9 @@ function AuxiliaryTasksModal({
             </Button>
           </div>
           <p className="text-xs text-text-secondary mt-2">
-            {copy.auxiliaryDescription}
+            {copy.auxiliaryDescriptionBefore}
+            <span className="font-mono">auto</span>
+            {copy.auxiliaryDescriptionAfter}
           </p>
         </header>
 
@@ -1021,10 +1023,15 @@ function ModelSettingsPanel({
             </div>
             <div className="text-xs font-mono text-text-secondary truncate">
               {auxOverrideCount > 0
-                ? interpolate(copy.overridesSummary, {
-                    overrides: auxOverrideCount,
-                    auto: AUX_TASKS.length - auxOverrideCount,
-                  })
+                ? interpolate(
+                    auxOverrideCount > 1
+                      ? copy.overridesSummaryOther
+                      : copy.overridesSummaryOne,
+                    {
+                      overrides: auxOverrideCount,
+                      auto: AUX_TASKS.length - auxOverrideCount,
+                    },
+                  )
                 : interpolate(copy.allAutoSummary, {
                     count: AUX_TASKS.length,
                   })}
@@ -1312,7 +1319,13 @@ export default function ModelsPage() {
               </div>
               {!showTokens && (
                 <p className="mt-4 text-xs text-text-tertiary leading-relaxed">
-                  {copy.analyticsHidden}
+                  {copy.analyticsHiddenBefore}
+                  <span className="font-mono">dashboard.show_token_analytics</span>
+                  {copy.analyticsHiddenMiddle}
+                  <a href="/config" className="underline">
+                    {copy.analyticsHiddenConfigLink}
+                  </a>
+                  {copy.analyticsHiddenAfter}
                 </p>
               )}
             </CardContent>

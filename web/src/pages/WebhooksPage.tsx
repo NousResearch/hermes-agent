@@ -120,7 +120,7 @@ export default function WebhooksPage() {
           setRestartNeeded(true);
           setRestartError(copy.restartFailedExit.replace("{code}", String(st.exit_code)));
           showToast(
-            `${copy.restartManually} (${st.exit_code})`,
+            copy.restartManually.replace("{code}", String(st.exit_code)),
             "error",
           );
         } else {
@@ -149,11 +149,11 @@ export default function WebhooksPage() {
     } catch (e) {
       setRestartNeeded(true);
       setRestartError(String(e));
-      showToast(`${copy.gatewayRestartFailed}: ${e}`, "error");
+      showToast(`${copy.restartRequestFailed}: ${e}`, "error");
     } finally {
       setRestarting(false);
     }
-  }, [copy.gatewayRestartFailed, copy.gatewayRestarting, loadWebhooks, showToast, watchRestartOutcome]);
+  }, [copy.restartRequestFailed, copy.gatewayRestarting, loadWebhooks, showToast, watchRestartOutcome]);
 
   const handleEnableWebhooks = useCallback(async () => {
     setEnabling(true);
@@ -172,14 +172,14 @@ export default function WebhooksPage() {
         setRestartMessage(null);
         setRestartNeeded(true);
         setRestartError(`${copy.gatewayRestartFailed}${detail}`);
-        showToast(`${copy.gatewayRestartFailed}${detail}`, "error");
+        showToast(`${copy.webhooksEnabledRestartFailed}${detail}`, "error");
       }
     } catch (e) {
       showToast(`${copy.enableFailed}: ${e}`, "error");
     } finally {
       setEnabling(false);
     }
-  }, [copy.enableFailed, copy.gatewayRestartFailed, copy.webhooksEnabledRestarting, loadWebhooks, showToast, watchRestartOutcome]);
+  }, [copy.enableFailed, copy.gatewayRestartFailed, copy.webhooksEnabledRestartFailed, copy.webhooksEnabledRestarting, loadWebhooks, showToast, watchRestartOutcome]);
 
   const resetForm = useCallback(() => {
     setName("");

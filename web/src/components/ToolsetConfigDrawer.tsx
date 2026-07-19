@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Check, ExternalLink, Loader2, Terminal, X } from "lucide-react";
 import { api } from "@/lib/api";
@@ -51,6 +51,14 @@ export function ToolsetConfigDrawer({
   const { toast, showToast } = useToast();
   const { t } = useI18n();
   const copy = { ...en.toolsetDrawer!, ...t.toolsetDrawer };
+  // `copy` is a fresh object literal every render, so it must never enter an
+  // effect's dependency array — doing so tears down and re-arms the post-setup
+  // poll on every render, which resets it to the 800ms initial timer and never
+  // reaches the 1200ms recurring one. Read the latest copy through a ref.
+  const copyRef = useRef(copy);
+  useEffect(() => {
+    copyRef.current = copy;
+  });
   const [config, setConfig] = useState<ToolsetConfig | null>(null);
   const [loading, setLoading] = useState(true);
   const [enabled, setEnabled] = useState(toolset.enabled);
@@ -114,7 +122,7 @@ export function ToolsetConfigDrawer({
           setPostSetupRunning(false);
           const ok = st.exit_code === 0;
           showToast(
-            ok ? copy.setupComplete : copy.setupErrors,
+            ok ? copyRef.current.setupComplete : copyRef.current.setupErrors,
             ok ? "success" : "error",
           );
           // Refresh — a backend may now report itself configured/available.
@@ -124,7 +132,7 @@ export function ToolsetConfigDrawer({
       } catch {
         if (!cancelled) {
           setPostSetupRunning(false);
-          showToast(copy.setupLost, "error");
+          showToast(copyRef.current.setupLost, "error");
         }
       }
     };
@@ -134,7 +142,7 @@ export function ToolsetConfigDrawer({
       cancelled = true;
       if (timer) clearTimeout(timer);
     };
-  }, [copy, postSetupTrigger, showToast, loadConfig, onChanged]);
+  }, [postSetupTrigger, showToast, loadConfig, onChanged]);
 
   const handleToggle = async (next: boolean) => {
     setToggling(true);
@@ -192,7 +200,10 @@ export function ToolsetConfigDrawer({
       });
       showToast(
         res.saved.length
-          ? interpolate(copy.keysSaved, { count: res.saved.length })
+          ? interpolate(
+              res.saved.length > 1 ? copy.keysSavedOther : copy.keysSavedOne,
+              { count: res.saved.length },
+            )
           : copy.nothingSave,
         "success",
       );
@@ -413,9 +424,11 @@ export function ToolsetConfigDrawer({
                   {provider.post_setup && (
                     <div className="mt-3 border-t border-border pt-3">
                       <p className="text-xs text-muted-foreground mb-1.5">
-                        {interpolate(copy.setupDescription, {
-                          command: provider.post_setup,
-                        })}
+                        {copy.setupDescriptionBefore}
+                        <span className="font-mono">
+                          ({provider.post_setup})
+                        </span>
+                        {copy.setupDescriptionAfter}
                       </p>
                       <Button
                         size="sm"

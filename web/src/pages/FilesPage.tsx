@@ -205,7 +205,13 @@ export default function FilesPage() {
       for (const file of Array.from(files)) {
         await api.uploadFile(joinPath(activePath, file.name), file, true);
       }
-      showToast(copy.uploaded.replace("{count}", String(files.length)), "success");
+      showToast(
+        (files.length === 1 ? copy.uploadedOne : copy.uploadedOther).replace(
+          "{count}",
+          String(files.length),
+        ),
+        "success",
+      );
       await load();
     } catch (e) {
       showToast(`${copy.uploadFailed}: ${e}`, "error");

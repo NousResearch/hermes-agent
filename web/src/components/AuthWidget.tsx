@@ -31,7 +31,6 @@ import { LogOut } from "lucide-react";
 
 interface AuthWidgetProps {
   className?: string;
-  authRequired?: boolean;
 }
 
 /** Truncate ``user_id`` to fit a small UI without revealing the full
@@ -42,14 +41,13 @@ function truncateUserId(id: string): string {
   return `${id.slice(0, 14)}…`;
 }
 
-export function AuthWidget({ className, authRequired }: AuthWidgetProps) {
+export function AuthWidget({ className }: AuthWidgetProps) {
   const { t } = useI18n();
   const [me, setMe] = useState<AuthMeResponse | null>(null);
   const [hidden, setHidden] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    if (authRequired !== true) return;
     let cancelled = false;
     api
       .getAuthMe()
@@ -69,14 +67,14 @@ export function AuthWidget({ className, authRequired }: AuthWidgetProps) {
           setHidden(true);
           return;
         }
-        setError(t.app.authStatusUnavailable ?? "Auth status unavailable");
+        setError(t.app.authStatusUnavailable ?? "auth status unavailable");
       });
     return () => {
       cancelled = true;
     };
-  }, [authRequired, t.app.authStatusUnavailable]);
+  }, [t.app.authStatusUnavailable]);
 
-  if (hidden || authRequired === false) return null;
+  if (hidden) return null;
 
   if (error) {
     return (

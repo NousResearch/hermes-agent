@@ -44,6 +44,10 @@ export interface Translations {
     unknown: string;
     untitled: string;
     none: string;
+    /** Parenthesised inline "no value" option label for a select entry
+     *  standing in for the empty string. Optional so the 15 locales that
+     *  predate it keep type-checking; call sites fall back to "(none)". */
+    noneOption?: string;
     form: string;
     noResults: string;
     of: string;
@@ -92,6 +96,11 @@ export interface Translations {
   // ── App shell ──
   app: {
     brand: string;
+    /** Sidebar wordmark, stacked over two lines. Optional so the 15 locales
+     *  that predate it keep type-checking; App.tsx falls back to the
+     *  hardcoded "Hermes" / "Agent" upstream rendered. */
+    brandLine1?: string;
+    brandLine2?: string;
     brandShort: string;
     closeNavigation: string;
     closeModelTools: string;
@@ -229,6 +238,9 @@ export interface Translations {
     renameSession?: string;
     contextHandoff?: string;
     exportSession?: string;
+    /** Accessible name for the export button — upstream "Export session",
+     *  distinct from the "Export session JSON" tooltip. */
+    exportSessionAria?: string;
     sessionTitle?: string;
     saveTitle?: string;
     cancelRename?: string;
@@ -237,6 +249,8 @@ export interface Translations {
     exportFailed?: string;
     invalidPruneDays?: string;
     prunedSessions?: string;
+    prunedSessionsOne?: string;
+    prunedSessionsOther?: string;
     pruneFailed?: string;
     pruneTitle?: string;
     pruneDescription?: string;
@@ -262,7 +276,8 @@ export interface Translations {
     folderNameRequired: string;
     folderCreated: string;
     createFailed: string;
-    uploaded: string;
+    uploadedOne: string;
+    uploadedOther: string;
     uploadFailed: string;
     downloadFailed: string;
     deleted: string;
@@ -346,7 +361,9 @@ export interface Translations {
     | "changesSaved"
     | "restartNow"
     | "gatewayNotRunning"
+    | "gatewayNotRunningAfter"
     | "configuredCount"
+    | "configuredCountAfter"
     | "close"
     | "configure"
     | "setupGuide"
@@ -376,6 +393,7 @@ export interface Translations {
     | "telegramSavedRestarting"
     | "telegramRestartFailed"
     | "starting"
+    | "startingStatus"
     | "setupQr"
     | "telegramConfigured"
     | "telegramConnectHeading"
@@ -447,7 +465,9 @@ export interface Translations {
     | "restartFailedExit"
     | "restartManually"
     | "webhooksEnabledRestarting"
+    | "webhooksEnabledRestartFailed"
     | "gatewayRestartFailed"
+    | "restartRequestFailed"
     | "enableFailed"
     | "nameRequired"
     | "created"
@@ -556,6 +576,8 @@ export interface Translations {
     avgPerSession: string;
     apiCalls: string;
     toolCalls: string;
+    /** Singular form, used in the tool-call expander accessible name. */
+    toolCall?: string;
     noModelsData: string;
     startSession: string;
   };
@@ -885,6 +907,9 @@ export interface Translations {
     managingProfile?: string;
     browseHub?: string;
     editSkill?: string;
+    /** Accessible name for the per-skill edit button — upstream rendered
+     *  "Edit {name}", distinct from the "Edit SKILL.md" tooltip. */
+    editSkillAria?: string;
     enableSkill?: string;
     disableSkill?: string;
     saved?: string;
@@ -968,6 +993,8 @@ export interface Translations {
     getKey: string;
     hideAdvanced: string;
     hideValue: string;
+    hideValueAria?: string;
+    revealValueAria?: string;
     keysCount: string;
     llmProviders: string;
     notConfigured: string;

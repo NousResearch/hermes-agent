@@ -418,7 +418,7 @@ export default function McpPage() {
                 id="create-mcp-title"
                 className="font-mondwest text-display text-base tracking-wider"
               >
-                {copy.addServer}
+                {copy.addMcpServerTitle}
               </h2>
             </header>
 
@@ -704,7 +704,12 @@ export default function McpPage() {
                     )}
                     {envCount > 0 && (
                       <span>
-                        {interpolate(copy.envCount, { count: envCount })}
+                        {interpolate(
+                          envCount === 1
+                            ? copy.envCountOne
+                            : copy.envCountOther,
+                          { count: envCount },
+                        )}
                       </span>
                     )}
                   </div>

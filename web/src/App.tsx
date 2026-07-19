@@ -235,11 +235,15 @@ function resolvePluginLabel(
   manifest: PluginManifest,
   t: Translations,
 ): string {
+  // Fall back to the manifest label, never to an unrelated catalog value:
+  // `hero.title` is "Hermes Achievements" and `board` is "Board", but the
+  // manifests say "Achievements" and "Kanban". Only a genuine localized nav
+  // label may override the manifest.
   if (manifest.name === "hermes-achievements") {
-    return t.achievements.navLabel ?? t.achievements.hero.title;
+    return t.achievements.navLabel ?? manifest.label;
   }
   if (manifest.name === "kanban") {
-    return t.kanban.navLabel ?? t.kanban.board;
+    return t.kanban.navLabel ?? manifest.label;
   }
   return manifest.label;
 }
@@ -576,9 +580,7 @@ export default function App() {
               collapsed && "lg:w-14",
             )}
             style={{
-              background: mobileOpen
-                ? "var(--background-base)"
-                : "var(--component-sidebar-background)",
+              background: "var(--component-sidebar-background)",
               clipPath: "var(--component-sidebar-clip-path)",
               borderImage: "var(--component-sidebar-border-image)",
             }}
@@ -599,7 +601,9 @@ export default function App() {
                 <PluginSlot name="header-left" />
 
                 <Typography className="font-bold text-[1.125rem] leading-[0.95] tracking-[0.0525rem] text-midground uppercase">
-                  {t.app.brand}
+                  {t.app.brandLine1 ?? "Hermes"}
+                  <br />
+                  {t.app.brandLine2 ?? "Agent"}
                 </Typography>
               </div>
 
@@ -731,7 +735,7 @@ export default function App() {
                 isDesktopCollapsed && "lg:hidden",
               )}
             >
-              <AuthWidget authRequired={sidebarStatus?.auth_required} />
+              <AuthWidget />
               <SidebarFooter status={sidebarStatus} />
             </div>
           </aside>
@@ -956,9 +960,14 @@ function SidebarSystemActions({
     if (updateConfirmInfo?.behind && updateConfirmInfo.behind > 0) {
       const cmd = updateConfirmInfo.update_command;
       const n = updateConfirmInfo.behind;
+      // Read both keys by literal name (not a computed index) so
+      // react-hooks/exhaustive-deps can match them to the dependency array.
       const template =
-        t.systemPage?.updateDialogBehind ??
-        en.systemPage!.updateDialogBehind;
+        n === 1
+          ? (t.systemPage?.updateDialogBehindOne ??
+            en.systemPage!.updateDialogBehindOne)
+          : (t.systemPage?.updateDialogBehindOther ??
+            en.systemPage!.updateDialogBehindOther);
       return template
         .replace("{command}", cmd)
         .replace("{count}", String(n));
@@ -970,7 +979,8 @@ function SidebarSystemActions({
     );
   }, [
     t.status.updateHermesConfirmMessage,
-    t.systemPage?.updateDialogBehind,
+    t.systemPage?.updateDialogBehindOne,
+    t.systemPage?.updateDialogBehindOther,
     updateConfirmInfo,
   ]);
 

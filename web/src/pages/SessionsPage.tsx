@@ -136,7 +136,7 @@ function ToolCallBlock({
     <div className="mt-2 border border-warning/20 bg-warning/5">
       <ListItem
         onClick={() => setOpen(!open)}
-        aria-label={`${open ? t.common.collapse : t.common.expand} ${t.models.toolCalls} ${toolCall.function.name}`}
+        aria-label={`${open ? t.common.collapse : t.common.expand} ${t.models.toolCall ?? "tool call"} ${toolCall.function.name}`}
         aria-expanded={open}
         className="px-3 py-2 text-xs text-warning hover:bg-warning/10 hover:text-warning"
       >
@@ -487,7 +487,7 @@ function SessionRow({
         ghost
         size="icon"
         className="text-muted-foreground hover:text-foreground"
-        aria-label={t.sessions.exportSession ?? "Export session JSON"}
+        aria-label={t.sessions.exportSessionAria ?? "Export session"}
         title={t.sessions.exportSession ?? "Export session JSON"}
         onClick={(e) => {
           e.stopPropagation();
@@ -1241,10 +1241,10 @@ export default function SessionsPage() {
     try {
       const resp = await api.pruneSessions(days);
       showToast(
-        (t.sessions.prunedSessions ?? "Pruned {count} session(s)").replace(
-          "{count}",
-          String(resp.removed),
-        ),
+        (resp.removed === 1
+          ? (t.sessions.prunedSessionsOne ?? "Pruned {count} session")
+          : (t.sessions.prunedSessionsOther ?? "Pruned {count} sessions")
+        ).replace("{count}", String(resp.removed)),
         "success",
       );
       setPruneOpen(false);

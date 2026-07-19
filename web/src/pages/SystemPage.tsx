@@ -576,7 +576,7 @@ export default function SystemPage() {
       setShareResult(res);
       const n = Object.keys(res.urls).length;
       showToast(
-        interpolate(copy.pastesUploaded, {
+        interpolate(n === 1 ? copy.pastesUploadedOne : copy.pastesUploadedOther, {
           count: n,
           redacted: res.redacted ? copy.redactedSuffix : "",
         }),
@@ -604,9 +604,12 @@ export default function SystemPage() {
           if (info.update_available) {
             showToast(
               info.behind && info.behind > 0
-                ? interpolate(copy.updateAvailableBehind, {
-                    count: info.behind,
-                  })
+                ? interpolate(
+                    info.behind === 1
+                      ? copy.updateAvailableBehindOne
+                      : copy.updateAvailableBehindOther,
+                    { count: info.behind },
+                  )
                 : copy.updateAvailable,
               "success",
             );
@@ -644,7 +647,7 @@ export default function SystemPage() {
       if (!resp.ok) {
         showToast(
           resp.message ?? copy.dockerUpdateUnsupported,
-          resp.error === "docker_update_unsupported" ? "error" : "success",
+          "success",
         );
         return;
       }
@@ -758,10 +761,15 @@ export default function SystemPage() {
         title={copy.updateDialogTitle}
         description={
           updateInfo && updateInfo.behind && updateInfo.behind > 0
-            ? interpolate(copy.updateDialogBehind, {
-                command: updateInfo.update_command,
-                count: updateInfo.behind,
-              })
+            ? interpolate(
+                updateInfo.behind === 1
+                  ? copy.updateDialogBehindOne
+                  : copy.updateDialogBehindOther,
+                {
+                  command: updateInfo.update_command,
+                  count: updateInfo.behind,
+                },
+              )
             : interpolate(copy.updateDialogDefault, {
                 command: updateInfo?.update_command ?? "hermes update",
               })
@@ -973,7 +981,7 @@ export default function SystemPage() {
                           ? interpolate(copy.behind, {
                               count: updateInfo.behind,
                             })
-                          : copy.updateAvailable}
+                          : copy.updateAvailableBadge}
                       </Badge>
                     ) : updateInfo.behind === 0 ? (
                       <Badge tone="success">{copy.latest}</Badge>
@@ -1040,7 +1048,9 @@ export default function SystemPage() {
             </div>
             {stats && !stats.psutil && (
               <p className="mt-3 text-xs text-muted-foreground">
-                {copy.psutilHint}
+                {copy.psutilHintBefore}
+                <span className="font-mono">psutil</span>
+                {copy.psutilHintAfter}
               </p>
             )}
             {canUpdateHermes && (
@@ -1139,7 +1149,9 @@ export default function SystemPage() {
             )}
             {!portal?.logged_in && (
               <p className="text-xs text-muted-foreground">
-                {copy.portalLoginHint}
+                {copy.portalLoginHintBefore}
+                <span className="font-mono">hermes portal</span>
+                {copy.portalLoginHintAfter}
               </p>
             )}
           </CardContent>

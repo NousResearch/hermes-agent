@@ -57,10 +57,9 @@ function formatExpiresAt(
       );
     }
     const days = Math.floor(hours / 24);
-    return expiresInTemplate.replace(
-      "{time}",
-      `${numberFormat.format(days)}${units.day}`,
-    );
+    // Raw number, not `numberFormat` — a grouping separator would render a
+    // >999-day token as "1,000d" where upstream showed "1000d".
+    return expiresInTemplate.replace("{time}", `${days}${units.day}`);
   } catch {
     return null;
   }
@@ -199,6 +198,9 @@ export function OAuthProvidersCard({ onError, onSuccess }: Props) {
               },
             );
             const isBusy = busyId === p.id;
+            const docsLabel = (
+              t.oauth.openProviderDocs ?? en.oauth.openProviderDocs!
+            ).replace("{name}", providerName);
             return (
               <div
                 key={p.id}
@@ -279,23 +281,18 @@ export function OAuthProvidersCard({ onError, onSuccess }: Props) {
 
                 <div className="flex items-center gap-1.5 shrink-0">
                   {p.docs_url && (
-                    <Button
-                      ghost
-                      size="icon"
-                      onClick={() =>
-                        window.open(p.docs_url, "_blank", "noopener,noreferrer")
-                      }
-                      title={(
-                        t.oauth.openProviderDocs ??
-                        en.oauth.openProviderDocs!
-                      ).replace("{name}", providerName)}
-                      aria-label={(
-                        t.oauth.openProviderDocs ??
-                        en.oauth.openProviderDocs!
-                      ).replace("{name}", providerName)}
+                    <a
+                      href={p.docs_url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex"
+                      title={docsLabel}
+                      aria-label={docsLabel}
                     >
-                      <ExternalLink />
-                    </Button>
+                      <Button ghost size="icon">
+                        <ExternalLink />
+                      </Button>
+                    </a>
                   )}
                   {!p.status.logged_in && p.flow !== "external" && (
                     <Button

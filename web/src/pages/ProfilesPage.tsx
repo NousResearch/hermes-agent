@@ -196,7 +196,9 @@ function ProfileActionsMenu({
             {isEditingSoul ? (
               <ChevronDown className="h-4 w-4" />
             ) : (
-              <Sparkles className="h-4 w-4" />
+              <span aria-hidden className="w-4 text-center text-xs font-bold">
+                S
+              </span>
             )}
             {labels.editSoul}
           </button>

@@ -468,16 +468,26 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
             // backend loop (#55578 symptom d) rejects the submit even though
             // the stored session is fine — resume + retry instead of erroring
             // out and losing the session binding.
-            const resumed = await requestGateway<{ session_id: string }>('session.resume', {
-              session_id: recoverStoredSessionId,
-              source: 'desktop'
-            })
+            let recoveredId: string | null | undefined
+            try {
+              const resumed = await requestGateway<{ session_id: string }>('session.resume', {
+                session_id: recoverStoredSessionId,
+                source: 'desktop'
+              })
+              recoveredId = resumed?.session_id
+            } catch (resumeErr) {
+              // The stored session row doesn't exist (never-persisted draft:
+              // session.create was called but the first prompt.submit never
+              // landed, so _ensure_session_db_row never ran). Mint a fresh
+              // backend session instead of surfacing the error (#67502).
+              if (isSessionNotFoundError(resumeErr)) {
+                recoveredId = await createBackendSessionForSend(visibleText)
+              }
+            }
 
             if (sessionContextDrifted()) {
               return abortForSessionSwitch(sessionId)
             }
-
-            const recoveredId = resumed?.session_id
 
             if (recoveredId) {
               if (targetIsCurrentView()) {

@@ -53,12 +53,19 @@ def _new_workflow_id() -> str:
 
 def _workflow_scope(parent_agent: Any = None, *, session_id: Any = None) -> str:
     """Return the in-process visibility scope for a workflow."""
-    # Compression rotates session_id. Prefer the stable gateway identity when
-    # available so workflow state remains visible across a compressed turn.
-    for attr in ("_gateway_session_key", "session_id"):
-        value = session_id if attr == "session_id" and session_id is not None else getattr(parent_agent, attr, None)
-        if value:
-            return f"{attr}:{value}"
+    # Compression rotates session_id, and migrate_workflow_scope carries the
+    # workflow to the continuation. Including the session keeps /new isolated
+    # on a stable gateway route, while including the route keeps peers isolated.
+    current_session_id = (
+        session_id if session_id is not None else getattr(parent_agent, "session_id", None)
+    )
+    gateway_session_key = getattr(parent_agent, "_gateway_session_key", None)
+    if gateway_session_key and current_session_id:
+        return f"gateway:{gateway_session_key}:session:{current_session_id}"
+    if current_session_id:
+        return f"session_id:{current_session_id}"
+    if gateway_session_key:
+        return f"_gateway_session_key:{gateway_session_key}"
     return "global"
 
 

@@ -108,7 +108,7 @@ def test_workflows_are_scoped_to_parent_session():
     assert [wf["objective"] for wf in status_b["workflows"]] == ["Session B workflow"]
 
 
-def test_gateway_workflow_scope_survives_session_id_rotation():
+def test_gateway_workflow_scope_migrates_without_leaking_new_sessions():
     parent = SimpleNamespace(
         session_id="before-compression",
         _gateway_session_key="agent:main:telegram:dm:42",
@@ -133,7 +133,18 @@ def test_gateway_workflow_scope_survives_session_id_rotation():
         parent_agent=parent,
     )
 
+    fresh_session = SimpleNamespace(
+        session_id="after-new",
+        _gateway_session_key="agent:main:telegram:dm:42",
+    )
+    fresh_status = _call(
+        {"action": "status", "workflow_id": "wf_compression"},
+        parent_agent=fresh_session,
+    )
+    assert fresh_status["error"] == "unknown workflow_id: wf_compression"
+
     parent.session_id = "after-compression"
+    dwt.migrate_workflow_scope(parent, "before-compression")
     status = _call(
         {"action": "status", "workflow_id": "wf_compression"},
         parent_agent=parent,

@@ -520,6 +520,31 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         term.options.fontSize = nextSize;
         term.options.lineHeight = nextLh;
       }
+      // Observed-condition guard (#47390 / #47772): only refit when the
+      // terminal's internal grid actually desyncs from the host's measured
+      // layout. A blind fit() against a still-settling host (CSS transition
+      // window, or a mid-burst sizing shift) is what produced the blank
+      // bottom viewport in #47772 — the grid was recomputed against a
+      // transient size and the prior content scrolled/cropped. proposeDimensions()
+      // is cheap and side-effect free, so we compare before committing to fit().
+      let desynced = fontChanged;
+      if (!desynced) {
+        try {
+          const proposed = fit.proposeDimensions();
+          if (proposed) {
+            desynced =
+              proposed.cols !== term.cols || proposed.rows !== term.rows;
+          }
+        } catch {
+          // If we can't propose, fall back to fitting (preserves old behavior
+          // for unusual host states rather than leaving a 1x1 grid).
+          desynced = true;
+        }
+      }
+      if (!desynced) {
+        // Grid already matches the host — do not disturb the buffer.
+        return;
+      }
       try {
         fit.fit();
       } catch {

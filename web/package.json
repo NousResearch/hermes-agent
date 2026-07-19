@@ -8,7 +8,8 @@
     "build": "tsc -b && vite build",
     "lint": "eslint .",
     "preview": "vite preview",
-    "typecheck": "tsc -p . --noEmit"
+    "typecheck": "tsc -p . --noEmit",
+    "test": "vitest run"
   },
   "dependencies": {
     "@nous-research/ui": "0.18.2",
@@ -48,6 +49,10 @@
     "three": "^0.180.0",
     "typescript": "^6.0.3",
     "typescript-eslint": "^8.56.1",
-    "vite": "^8.0.16"
+    "vite": "^8.0.16",
+    "vitest": "^3.2.4",
+    "happy-dom": "^15.11.7",
+    "@testing-library/react": "^16.3.0",
+    "@testing-library/jest-dom": "^6.6.3"
   }
 }

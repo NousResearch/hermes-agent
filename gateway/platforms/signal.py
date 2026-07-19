@@ -1082,13 +1082,11 @@ class SignalAdapter(BasePlatformAdapter):
             total = len(chunks)
             body_offsets_u16: list[tuple[int, int]] = []
             cumulative = 0
-            raw_bodies: list[str] = []
             for chunk_idx, chunk in enumerate(chunks):
                 body = chunk.rsplit(f" ({chunk_idx + 1}/{total})", 1)[0] if total > 1 else chunk
                 body_u16 = len(body.encode("utf-16-le")) // 2
                 body_offsets_u16.append((cumulative, cumulative + body_u16))
                 cumulative += body_u16
-                raw_bodies.append(body)
 
             # Parse text style strings into structured tuples
             parsed_styles: list[tuple[int, int, str]] = []

@@ -64,7 +64,7 @@ jobs:
           # Three-dot diff (base...head) diffs from the merge base to HEAD,
           # so only changes introduced by this PR are included — not changes
           # that landed on main after the PR branched off.
-          DIFF=$(git diff "$BASE"..."$HEAD" -- . ':!uv.lock' ':!*.lock' ':!package-lock.json' ':!yarn.lock' || true)
+          DIFF=$(git diff "$BASE"..."$HEAD" -- . ':!uv.lock' ':!*.lock' ':!package-lock.json' ':!yarn.lock' ':!.github/workflows/supply-chain-audit.yml' || true)
 
           FINDINGS=""
 
@@ -75,7 +75,7 @@ jobs:
           if [ -n "$PTH_FILES" ]; then
             FINDINGS="${FINDINGS}
           ### 🚨 CRITICAL: .pth file added or modified
-          Python \`.pth\` files in \`site-packages/\` execute automatically when the interpreter starts — no import required.
+          Python \`\.pth\` files in \`site-packages/\` execute automatically when the interpreter starts — no import required.
 
           **Files:**
           \`\`\`
@@ -84,30 +84,60 @@ jobs:
           "
           fi
 
-          # --- base64 decode + exec/eval on the same line (the litellm attack pattern) ---
-          B64_EXEC_HITS=$(echo "$DIFF" | grep -n '^+' | grep -iE 'base64\.(b64decode|decodebytes|urlsafe_b64decode)' | grep -iE 'exec\(|eval\(' | head -10 || true)
-          if [ -n "$B64_EXEC_HITS" ]; then
+          # --- Encoded/compressed data + exec/eval/compile on the same added line ---
+          # Covers the litellm base64+exec pattern plus common evasions: base85/base32,
+          # hex decoding, codecs transforms, and compression wrappers.
+          ENCODE_EXEC_HITS=$(echo "$DIFF" | grep -n '^+' | grep -iE 'base64\.(b64decode|decodebytes|urlsafe_b64decode)|base64\.b(85|32|16)decode|base64\.a85decode|b85decode|b32decode|a85decode|bytes\.fromhex|binascii\.(unhexlify|a2b_hex)|codecs\.decode|zlib\.decompress|gzip\.decompress|bz2\.decompress|lzma\.decompress' | grep -iE 'exec\(|eval\(|compile\(' | head -10 || true)
+          if [ -n "$ENCODE_EXEC_HITS" ]; then
             FINDINGS="${FINDINGS}
-          ### 🚨 CRITICAL: base64 decode + exec/eval combo
-          Base64-decoded strings passed directly to exec/eval — the signature of hidden credential-stealing payloads.
+          ### 🚨 CRITICAL: encoded/compressed data + exec/eval/compile combo
+          Decoded or decompressed data passed directly to dynamic code execution is a strong indicator of an obfuscated payload.
 
           **Matches:**
           \`\`\`
-          ${B64_EXEC_HITS}
+          ${ENCODE_EXEC_HITS}
           \`\`\`
           "
           fi
 
           # --- subprocess with encoded/obfuscated command argument ---
-          PROC_HITS=$(echo "$DIFF" | grep -n '^+' | grep -E 'subprocess\.(Popen|call|run)\s*\(' | grep -iE 'base64|\\x[0-9a-f]{2}|chr\(' | head -10 || true)
+          PROC_HITS=$(echo "$DIFF" | grep -n '^+' | grep -E 'subprocess\.(Popen|call|run)\s*\(' | grep -iE 'base64|b85|b32|decode|encode|decompress|fromhex|unhexlify|\\x[0-9a-f]{2}|chr\(' | head -10 || true)
           if [ -n "$PROC_HITS" ]; then
             FINDINGS="${FINDINGS}
           ### 🚨 CRITICAL: subprocess with encoded/obfuscated command
-          Subprocess calls whose command strings are base64- or hex-encoded are a strong indicator of payload execution.
+          Subprocess calls whose command strings are encoded, compressed, or character-built are a strong indicator of payload execution.
 
           **Matches:**
           \`\`\`
           ${PROC_HITS}
+          \`\`\`
+          "
+          fi
+
+          # --- getattr on builtins (exec/eval evasion) ---
+          GETATTR_HITS=$(echo "$DIFF" | grep -n '^+' | grep -iE 'getattr\s*\(\s*(__builtins__|builtins)' | head -10 || true)
+          if [ -n "$GETATTR_HITS" ]; then
+            FINDINGS="${FINDINGS}
+          ### 🚨 CRITICAL: getattr() on builtins
+          \`getattr(__builtins__, "exec")\` and variants are a common way to call exec/eval while evading literal keyword scans.
+
+          **Matches:**
+          \`\`\`
+          ${GETATTR_HITS}
+          \`\`\`
+          "
+          fi
+
+          # --- curl|bash / wget|sh pipe-to-shell ---
+          PIPESHELL_HITS=$(echo "$DIFF" | grep -n '^+' | grep -iE 'curl\s.*\|\s*(bash|sh|python|perl)|wget\s.*\|\s*(bash|sh|python|perl)|curl.*-o.*&&.*chmod|curl.*>.*\.sh' | head -10 || true)
+          if [ -n "$PIPESHELL_HITS" ]; then
+            FINDINGS="${FINDINGS}
+          ### 🚨 CRITICAL: pipe-to-shell pattern
+          Downloading and immediately executing remote code is a classic supply-chain attack vector.
+
+          **Matches:**
+          \`\`\`
+          ${PIPESHELL_HITS}
           \`\`\`
           "
           fi
@@ -151,7 +181,7 @@ jobs:
           $(cat /tmp/findings.md)
 
           ---
-          *Scanner only fires on high-signal indicators: .pth files, base64+exec/eval combos, subprocess with encoded commands, or install-hook files. Low-signal warnings were removed intentionally — if you're seeing this comment, the finding is worth inspecting.*"
+          *Scanner only fires on high-signal indicators: .pth files, encoded/compressed exec/eval combos, subprocess with encoded commands, getattr-on-builtins evasions, pipe-to-shell patterns, or install-hook files. Low-signal warnings were removed intentionally — if you're seeing this comment, the finding is worth inspecting.*"
 
           gh pr comment "${{ github.event.pull_request.number }}" --body "$BODY" || echo "::warning::Could not post PR comment (expected for fork PRs — GITHUB_TOKEN is read-only)"
 

@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import concurrent.futures as _cf
 import logging
-from typing import Any, Dict
+from typing import Any, Dict, List
 
 from agent.web_search_provider import WebSearchProvider
 
@@ -26,6 +26,35 @@ logger = logging.getLogger(__name__)
 # the (single, shared) agent loop indefinitely and block every platform
 # (#36776). Enforce a hard cap here via a worker thread.
 _SEARCH_TIMEOUT_SECS = 30
+
+# Per-URL wall-clock cap for a single ddgs extract() call. Same rationale as
+# _SEARCH_TIMEOUT_SECS above — DDGS(timeout=...) only bounds the individual
+# HTTP request, not any retry/redirect chasing ddgs does internally.
+_EXTRACT_TIMEOUT_SECS = 30
+
+# Map our tool-facing ``format`` values to ddgs's ``DDGS.extract(fmt=...)``
+# values. ddgs supports "text_markdown" (default), "text_plain", "text_rich",
+# "text" (raw HTML), and "content" (raw bytes) — we only expose the two that
+# make sense for an LLM-facing extract tool.
+_FORMAT_MAP = {
+    "markdown": "text_markdown",
+    "text_markdown": "text_markdown",
+    "text": "text_plain",
+    "text_plain": "text_plain",
+    "html": "text",
+}
+
+
+def _run_ddgs_extract(url: str, fmt: str) -> dict[str, Any]:
+    """Run the blocking ddgs extract call for a single URL.
+
+    Module-level (not a closure) so tests can patch it directly without
+    spawning a real worker thread, mirroring ``_run_ddgs_search`` above.
+    """
+    from ddgs import DDGS  # type: ignore
+
+    with DDGS(timeout=10) as client:
+        return client.extract(url, fmt=fmt)
 
 
 def _run_ddgs_search(query: str, safe_limit: int) -> list[dict[str, Any]]:
@@ -89,7 +118,7 @@ class DDGSWebSearchProvider(WebSearchProvider):
         return True
 
     def supports_extract(self) -> bool:
-        return False
+        return True
 
     def search(self, query: str, limit: int = 5) -> Dict[str, Any]:
         """Execute a DuckDuckGo search and return normalized results.
@@ -146,11 +175,73 @@ class DDGSWebSearchProvider(WebSearchProvider):
         logger.info("DDGS search '%s': %d results (limit %d)", query, len(web_results), limit)
         return {"success": True, "data": {"web": web_results}}
 
+    def extract(self, urls: List[str], **kwargs: Any) -> List[Dict[str, Any]]:
+        """Extract content from one or more URLs via ``DDGS().extract()``.
+
+        ``ddgs`` fetches and readability-parses each URL directly (no
+        rendering — plain HTTP GET + HTML parsing), so it works for static
+        and server-rendered pages but returns only page-shell content for
+        JS-rendered SPAs. Each URL is fetched in its own worker thread with
+        a hard wall-clock cap (mirrors ``search()``'s ``#36776`` fix) so one
+        slow/hanging fetch can't block the shared agent loop; per-URL
+        failures become result entries with an ``error`` field rather than
+        aborting the whole batch.
+        """
+        try:
+            import ddgs  # type: ignore  # noqa: F401 — availability probe
+        except ImportError:
+            return [
+                {
+                    "url": u, "title": "", "content": "",
+                    "error": "ddgs package is not installed — run `pip install ddgs`",
+                }
+                for u in urls
+            ]
+
+        fmt = _FORMAT_MAP.get((kwargs.get("format") or "markdown").lower(), "text_markdown")
+        documents: List[Dict[str, Any]] = []
+        for url in urls:
+            pool = _cf.ThreadPoolExecutor(max_workers=1)
+            try:
+                future = pool.submit(_run_ddgs_extract, url, fmt)
+                try:
+                    result = future.result(timeout=_EXTRACT_TIMEOUT_SECS)
+                    content = result.get("content", "") if isinstance(result, dict) else ""
+                    documents.append(
+                        {
+                            "url": url,
+                            "title": "",
+                            "content": content,
+                            "raw_content": content,
+                            "metadata": {"sourceURL": url},
+                        }
+                    )
+                except _cf.TimeoutError:
+                    logger.warning(
+                        "DDGS extract timed out after %ds for URL: %r",
+                        _EXTRACT_TIMEOUT_SECS, url,
+                    )
+                    documents.append(
+                        {
+                            "url": url, "title": "", "content": "",
+                            "error": f"DuckDuckGo extract timed out after {_EXTRACT_TIMEOUT_SECS}s",
+                        }
+                    )
+            except Exception as exc:  # noqa: BLE001 — ddgs raises its own exceptions
+                logger.warning("DDGS extract error for %s: %s", url, exc)
+                documents.append(
+                    {"url": url, "title": "", "content": "", "error": f"DuckDuckGo extract failed: {exc}"}
+                )
+            finally:
+                # Same rationale as search(): don't join a hung worker.
+                pool.shutdown(wait=False, cancel_futures=True)
+        return documents
+
     def get_setup_schema(self) -> Dict[str, Any]:
         return {
             "name": "DuckDuckGo (ddgs)",
-            "badge": "free · no key · search only",
-            "tag": "Search via the ddgs Python package — no API key (pair with any extract provider)",
+            "badge": "free · no key",
+            "tag": "Search + basic extract via the ddgs Python package — no API key. Extract is HTTP-fetch + readability parsing (no JS rendering), so it won't work on client-rendered SPAs; pair with a browser-based fallback for those.",
             "env_vars": [],
             # Trigger `_run_post_setup("ddgs")` after the user picks this row
             # so the ddgs Python package gets pip-installed on first selection.

@@ -5033,6 +5033,271 @@ class BasePlatformAdapter(ABC):
         try:
             await self._run_processing_hook("on_processing_start", event)
 
+            # ── Pre-agent expense capture fast-path ──────────────────────
+            # Deterministic route for spend messages so they bypass the agent
+            # and recur directly through `log_expense.py`.
+            #
+            # Guards:
+            # * TEXT messages only
+            # * no command prefix
+            # * amount pattern matched
+            if getattr(event, "message_type", None) is MessageType.TEXT and not getattr(event, "text", "").strip().startswith("/"):
+                try:
+                    from tools.expense_detection import classify_expense_intent
+                    expense_decision = classify_expense_intent(event.text or "")
+                except Exception:
+                    expense_decision = None
+
+                if expense_decision and expense_decision.get("is_expense"):
+                    logger.info(
+                        "[%s] Fast-path expense capture for session %s: %s",
+                        self.name,
+                        session_key,
+                        expense_decision,
+                    )
+                    try:
+                        from tools.log_expense_gateway import handle_expense_fast_path
+                        fast_path_text = await handle_expense_fast_path(
+                            event=event,
+                            session_key=session_key,
+                            expense_decision=expense_decision,
+                        )
+                    except Exception as fast_path_err:
+                        logger.exception(
+                            "[%s] Expense fast-path failed for session %s: %s",
+                            self.name,
+                            session_key,
+                            fast_path_err,
+                        )
+                        fast_path_text = f"Expense capture failed: {fast_path_err}"
+
+                    if fast_path_text:
+                        _thread_meta = _thread_metadata_for_source(
+                            event.source, _reply_anchor_for_event(event)
+                        )
+                        _r = await self._send_with_retry(
+                            chat_id=event.source.chat_id,
+                            content=fast_path_text,
+                            reply_to=_reply_anchor_for_event(event),
+                            metadata=_mark_notify_metadata(_thread_meta),
+                        )
+                        await self._run_processing_hook(
+                            "on_processing_complete",
+                            event,
+                            ProcessingOutcome.SUCCESS,
+                        )
+                        return
+                    # Handler returned None — fall through to next lane
+
+                # ── Habit confirmation fast-path ─────────────────────────
+                try:
+                    from tools.habit_detection import classify_habit_intent
+                    habit_decision = classify_habit_intent(event.text or "")
+                except Exception:
+                    habit_decision = None
+
+                if habit_decision and habit_decision.get("is_habit"):
+                    try:
+                        from tools.habit_gateway import handle_habit_fast_path
+                        fast_path_text = await handle_habit_fast_path(
+                            event=event,
+                            session_key=session_key,
+                            habit_decision=habit_decision,
+                        )
+                    except Exception as fast_path_err:
+                        logger.exception(
+                            "[%s] Habit fast-path failed for session %s: %s",
+                            self.name,
+                            session_key,
+                            fast_path_err,
+                        )
+                        fast_path_text = f"Habit capture failed: {fast_path_err}"
+
+                    if fast_path_text:
+                        _thread_meta = _thread_metadata_for_source(
+                            event.source, _reply_anchor_for_event(event)
+                        )
+                        _r = await self._send_with_retry(
+                            chat_id=event.source.chat_id,
+                            content=fast_path_text,
+                            reply_to=_reply_anchor_for_event(event),
+                            metadata=_mark_notify_metadata(_thread_meta),
+                        )
+                        await self._run_processing_hook(
+                            "on_processing_complete",
+                            event,
+                            ProcessingOutcome.SUCCESS,
+                        )
+                        return
+                    # Handler returned None — fall through to next lane
+
+                # ── Punch-in confirmation fast-path ──────────────────────
+                try:
+                    from tools.punch_in_detection import contains_punch_in
+                    is_punch_in = contains_punch_in(event.text or "")
+                except Exception:
+                    is_punch_in = False
+
+                if is_punch_in:
+                    try:
+                        from tools.punch_in_gateway import handle_punch_in_fast_path
+                        fast_path_text = await handle_punch_in_fast_path(
+                            event=event,
+                            session_key=session_key,
+                        )
+                    except Exception as fast_path_err:
+                        logger.exception(
+                            "[%s] Punch-in fast-path failed for session %s: %s",
+                            self.name,
+                            session_key,
+                            fast_path_err,
+                        )
+                        fast_path_text = f"Punch-in capture failed: {fast_path_err}"
+
+                    if fast_path_text:
+                        _thread_meta = _thread_metadata_for_source(
+                            event.source, _reply_anchor_for_event(event)
+                        )
+                        _r = await self._send_with_retry(
+                            chat_id=event.source.chat_id,
+                            content=fast_path_text,
+                            reply_to=_reply_anchor_for_event(event),
+                            metadata=_mark_notify_metadata(_thread_meta),
+                        )
+                        await self._run_processing_hook(
+                            "on_processing_complete",
+                            event,
+                            ProcessingOutcome.SUCCESS,
+                        )
+                        return
+                    # Handler returned None — fall through to next lane
+
+                # ── Entry confirmation fast-path ──────────────────────
+                try:
+                    from tools.entry_detection import classify_entry_intent
+                    entry_decision = classify_entry_intent(event.text or "")
+                except Exception:
+                    entry_decision = None
+
+                if entry_decision and entry_decision.get("is_entry"):
+                    try:
+                        from tools.entry_gateway import handle_entry_fast_path
+                        fast_path_text = await handle_entry_fast_path(
+                            event=event,
+                            session_key=session_key,
+                            decision=entry_decision,
+                        )
+                    except Exception as fast_path_err:
+                        logger.exception(
+                            "[%s] Entry fast-path failed for session %s: %s",
+                            self.name,
+                            session_key,
+                            fast_path_err,
+                        )
+                        fast_path_text = f"Entry capture failed: {fast_path_err}"
+
+                    if fast_path_text:
+                        _thread_meta = _thread_metadata_for_source(
+                            event.source, _reply_anchor_for_event(event)
+                        )
+                        _r = await self._send_with_retry(
+                            chat_id=event.source.chat_id,
+                            content=fast_path_text,
+                            reply_to=_reply_anchor_for_event(event),
+                            metadata=_mark_notify_metadata(_thread_meta),
+                        )
+                        await self._run_processing_hook(
+                            "on_processing_complete",
+                            event,
+                            ProcessingOutcome.SUCCESS,
+                        )
+                        return
+                    # Handler returned None — fall through to next lane
+
+                # ── Health confirmation fast-path ───────────────────────
+                try:
+                    from tools.health_detection import classify_health_intent
+                    health_decision = classify_health_intent(event.text or "")
+                except Exception:
+                    health_decision = None
+
+                if health_decision and health_decision.get("is_health"):
+                    try:
+                        from tools.health_gateway import handle_health_fast_path
+                        fast_path_text = await handle_health_fast_path(
+                            event=event,
+                            session_key=session_key,
+                            decision=health_decision,
+                        )
+                    except Exception as fast_path_err:
+                        logger.exception(
+                            "[%s] Health fast-path failed for session %s: %s",
+                            self.name,
+                            session_key,
+                            fast_path_err,
+                        )
+                        fast_path_text = f"Health capture failed: {fast_path_err}"
+
+                    if fast_path_text:
+                        _thread_meta = _thread_metadata_for_source(
+                            event.source, _reply_anchor_for_event(event)
+                        )
+                        _r = await self._send_with_retry(
+                            chat_id=event.source.chat_id,
+                            content=fast_path_text,
+                            reply_to=_reply_anchor_for_event(event),
+                            metadata=_mark_notify_metadata(_thread_meta),
+                        )
+                        await self._run_processing_hook(
+                            "on_processing_complete",
+                            event,
+                            ProcessingOutcome.SUCCESS,
+                        )
+                        return
+                    # Handler returned None — fall through to next lane
+
+                # ── Work confirmation fast-path ─────────────────────────
+                try:
+                    from tools.work_detection import classify_work_intent
+                    work_decision = classify_work_intent(event.text or "")
+                except Exception:
+                    work_decision = None
+
+                if work_decision and work_decision.get("is_work"):
+                    try:
+                        from tools.work_gateway import handle_work_fast_path
+                        fast_path_text = await handle_work_fast_path(
+                            event=event,
+                            session_key=session_key,
+                            decision=work_decision,
+                        )
+                    except Exception as fast_path_err:
+                        logger.exception(
+                            "[%s] Work fast-path failed for session %s: %s",
+                            self.name,
+                            session_key,
+                            fast_path_err,
+                        )
+                        fast_path_text = f"Work capture failed: {fast_path_err}"
+
+                    if fast_path_text:
+                        _thread_meta = _thread_metadata_for_source(
+                            event.source, _reply_anchor_for_event(event)
+                        )
+                        _r = await self._send_with_retry(
+                            chat_id=event.source.chat_id,
+                            content=fast_path_text,
+                            reply_to=_reply_anchor_for_event(event),
+                            metadata=_mark_notify_metadata(_thread_meta),
+                        )
+                        await self._run_processing_hook(
+                            "on_processing_complete",
+                            event,
+                            ProcessingOutcome.SUCCESS,
+                        )
+                        return
+                    # Handler returned None — fall through to next lane
+
             # Call the handler (this can take a while with tool calls)
             response = await self._message_handler(event)
             is_ephemeral_response = isinstance(response, EphemeralReply)

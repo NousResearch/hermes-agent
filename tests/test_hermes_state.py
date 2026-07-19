@@ -736,6 +736,66 @@ class TestSessionLifecycle:
         finally:
             repaired.close()
 
+    def test_pre_task_usage_repair_retries_after_reconciliation_lock(self, tmp_path):
+        """A locked pre-task table must add task inside the serialized repair."""
+        db_path = tmp_path / "locked-pre-task-v22.db"
+        db = SessionDB(db_path=db_path)
+        db.close()
+
+        conn = sqlite3.connect(db_path)
+        conn.executescript("""
+            DROP TABLE session_model_usage;
+            CREATE TABLE session_model_usage (
+                session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+                model TEXT NOT NULL,
+                billing_provider TEXT NOT NULL DEFAULT '',
+                billing_base_url TEXT NOT NULL DEFAULT '',
+                billing_mode TEXT NOT NULL DEFAULT '',
+                api_call_count INTEGER NOT NULL DEFAULT 0,
+                input_tokens INTEGER NOT NULL DEFAULT 0,
+                output_tokens INTEGER NOT NULL DEFAULT 0,
+                cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+                cache_write_tokens INTEGER NOT NULL DEFAULT 0,
+                reasoning_tokens INTEGER NOT NULL DEFAULT 0,
+                estimated_cost_usd REAL NOT NULL DEFAULT 0,
+                actual_cost_usd REAL NOT NULL DEFAULT 0,
+                cost_status TEXT,
+                cost_source TEXT,
+                first_seen REAL,
+                last_seen REAL,
+                PRIMARY KEY (
+                    session_id, model, billing_provider,
+                    billing_base_url, billing_mode
+                )
+            );
+            UPDATE schema_version SET version = 22;
+        """)
+        conn.commit()
+        conn.close()
+
+        blocker = sqlite3.connect(db_path, timeout=1.0, isolation_level=None)
+        blocker.execute("BEGIN IMMEDIATE")
+        try:
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(SessionDB, db_path=db_path)
+                time.sleep(1.2)
+                blocker.commit()
+                repaired = future.result(timeout=10)
+        finally:
+            if blocker.in_transaction:
+                blocker.rollback()
+            blocker.close()
+
+        try:
+            assert repaired._session_model_usage_primary_key(
+                repaired._conn.cursor()
+            ) == [
+                "session_id", "model", "billing_provider",
+                "billing_base_url", "billing_mode", "task",
+            ]
+        finally:
+            repaired.close()
+
     def test_concurrent_usage_primary_key_repair_retries_and_rechecks(
         self, tmp_path, monkeypatch,
     ):

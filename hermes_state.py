@@ -1067,8 +1067,33 @@ class SessionDB:
                 self._conn.execute("PRAGMA foreign_keys=ON")
                 self._init_schema()
 
+            def _connect_and_init_with_retry():
+                """Retry schema initialization while another process holds the writer lock."""
+                for attempt in range(self._WRITE_MAX_RETRIES):
+                    try:
+                        _connect_and_init()
+                        return
+                    except sqlite3.OperationalError as exc:
+                        err_msg = str(exc).lower()
+                        if "locked" not in err_msg and "busy" not in err_msg:
+                            raise
+                        try:
+                            if self._conn is not None:
+                                self._conn.rollback()
+                                self._conn.close()
+                        except sqlite3.Error:
+                            pass
+                        finally:
+                            self._conn = None
+                        if attempt >= self._WRITE_MAX_RETRIES - 1:
+                            raise
+                        time.sleep(random.uniform(
+                            self._WRITE_RETRY_MIN_S,
+                            self._WRITE_RETRY_MAX_S,
+                        ))
+
             try:
-                _connect_and_init()
+                _connect_and_init_with_retry()
             except sqlite3.DatabaseError as exc:
                 # The malformed-schema class (e.g. a duplicate sqlite_master
                 # row for messages_fts) fails on the very first statement —
@@ -1091,7 +1116,7 @@ class SessionDB:
                 report = repair_state_db_schema(self.db_path)
                 if not report.get("repaired"):
                     raise
-                _connect_and_init()
+                _connect_and_init_with_retry()
         except Exception as exc:
             # Capture the cause so /resume and friends can surface WHY the
             # session DB is unavailable instead of a bare "Session database
@@ -1530,7 +1555,11 @@ class SessionDB:
                         # Expected: "duplicate column name" from a race or
                         # re-run.  Unexpected: "Cannot add a NOT NULL column
                         # with default value NULL" from a schema mistake.
-                        # Log at DEBUG so it's visible in agent.log.
+                        # Locked/busy must escape so constructor-level retry
+                        # can restart reconciliation on a clean connection.
+                        err_msg = str(exc).lower()
+                        if "locked" in err_msg or "busy" in err_msg:
+                            raise
                         logger.debug(
                             "reconcile %s.%s: %s", table_name, col_name, exc,
                         )

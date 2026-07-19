@@ -211,7 +211,7 @@ def _write_moa_config(home, text):
     cfg_path.write_text(text)
 
 
-def test_moa_bare_switches_to_default_preset_model(server, session, hermes_home):
+def test_moa_bare_returns_usage(server, session, hermes_home):
     _write_moa_config(hermes_home, """
 moa:
   default_preset: default
@@ -226,13 +226,14 @@ moa:
 """)
     sid, _, s = session
     r = _call(server, "command.dispatch", name="moa", arg="", session_id=sid)
-    assert r["result"]["type"] == "exec"
-    assert "Model switched to MoA preset: default" in r["result"]["output"]
-    assert s["model_override"]["provider"] == "moa"
-    assert s["model_override"]["model"] == "default"
+    # Bare /moa is usage-only now; switching to a preset is via the model picker.
+    assert "error" in r
+    assert "model_override" not in s
 
 
-def test_moa_exact_preset_switches_to_named_preset_model(server, session, hermes_home):
+def test_moa_arg_is_always_one_shot(server, session, hermes_home):
+    # Any arg (even a preset name) is a one-shot prompt through the DEFAULT
+    # preset; /moa never does a sticky switch anymore.
     _write_moa_config(hermes_home, """
 moa:
   default_preset: default
@@ -248,9 +249,14 @@ moa:
 """)
     sid, _, s = session
     r = _call(server, "command.dispatch", name="moa", arg="review", session_id=sid)
-    assert r["result"]["type"] == "exec"
+    result = r["result"]
+    assert result["type"] == "send"
+    assert result["message"] == "review"
+    assert "one-shot" in result["notice"]
+    # Lazy session (no live agent) → MoA preset pinned via model_override for
+    # the build, and it is the DEFAULT preset, not the "review" arg.
     assert s["model_override"]["provider"] == "moa"
-    assert s["model_override"]["model"] == "review"
+    assert s["model_override"]["model"] == "default"
 
 
 def test_moa_non_preset_returns_one_shot_send(server, session, hermes_home):

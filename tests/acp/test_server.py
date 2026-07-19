@@ -1323,6 +1323,11 @@ class TestPrompt:
     async def test_prompt_auto_titles_session(self, agent):
         new_resp = await agent.new_session(cwd=".")
         state = agent.session_manager.get_session(new_resp.session_id)
+        state.agent.model = "gpt-5.6-sol"
+        state.agent.provider = "openai-codex"
+        state.agent.base_url = "https://chatgpt.example.test/backend-api/codex"
+        state.agent.api_key = object()
+        state.agent.api_mode = "codex_responses"
         state.agent.run_conversation = MagicMock(return_value={
             "final_response": "Here is the fix.",
             "messages": [
@@ -1343,6 +1348,13 @@ class TestPrompt:
         assert mock_title.call_args.args[1] == new_resp.session_id
         assert mock_title.call_args.args[2] == "fix the broken ACP history"
         assert mock_title.call_args.args[3] == "Here is the fix."
+        assert mock_title.call_args.kwargs["main_runtime"] == {
+            "model": "gpt-5.6-sol",
+            "provider": "openai-codex",
+            "base_url": "https://chatgpt.example.test/backend-api/codex",
+            "api_key": state.agent.api_key,
+            "api_mode": "codex_responses",
+        }
         assert callable(mock_title.call_args.kwargs["title_callback"])
 
     @pytest.mark.asyncio
@@ -1540,6 +1552,37 @@ class TestSlashCommands:
         result = agent._handle_slash_command("/reset", state)
         assert "cleared" in result.lower()
         assert len(state.history) == 0
+
+    def test_reset_resets_agent_session_state(self, agent, mock_manager):
+        state = self._make_state(mock_manager)
+        state.history = [{"role": "user", "content": "hello"}]
+        state.agent.reset_session_state = MagicMock()
+
+        with patch.object(agent.session_manager, "save_session") as mock_save:
+            result = agent._handle_slash_command("/reset", state)
+
+        assert "cleared" in result.lower()
+        assert state.history == []
+        state.agent.reset_session_state.assert_called_once_with()
+        mock_save.assert_called_once_with(state.session_id)
+
+    def test_reset_saves_session_when_agent_state_reset_fails(self, agent, mock_manager):
+        state = self._make_state(mock_manager)
+        state.history = [{"role": "user", "content": "hello"}]
+        state.agent.reset_session_state = MagicMock(side_effect=RuntimeError("boom"))
+
+        with (
+            patch.object(agent.session_manager, "save_session") as mock_save,
+            patch("acp_adapter.server.logger") as mock_logger,
+        ):
+            result = agent._handle_slash_command("/reset", state)
+
+        assert "cleared" in result.lower()
+        assert "state reset failed" in result.lower()
+        assert state.history == []
+        state.agent.reset_session_state.assert_called_once_with()
+        mock_save.assert_called_once_with(state.session_id)
+        mock_logger.warning.assert_called_once()
 
     def test_version(self, agent, mock_manager):
         state = self._make_state(mock_manager)

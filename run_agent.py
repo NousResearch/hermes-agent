@@ -2936,6 +2936,71 @@ class AIAgent:
             for path in targets:
                 state.pop(path, None)
 
+    _COMPLETION_CLAIM_HOUSEKEEPING_TOOLS = frozenset({
+        "todo",
+        "skill_view",
+        "memory",
+        "session_search",
+    })
+    _UNSUPPORTED_COMPLETION_CLAIM_RE = re.compile(
+        r"(?im)(?:"
+        r"^\s*STATUS\s*:\s*(?:DONE|COMPLETE|VERIFIED|DEPLOYED)\b"
+        r"|\b(?<!not )(?<!not yet )(?:implemented|patched|fixed|deployed)\b"
+        r"|\b(?<!not )(?<!not yet )(?:changed|modified)\s+(?:the\s+)?(?:file|files|code)\b"
+        r"|\b(?:tests?|checks?|verification)\s+(?:passed|complete|succeeded|green)\b"
+        r"|\b(?:verified|tested)\s+(?:the\s+)?"
+        r"(?:fix|change|code|implementation|deployment|build|application|feature)\b"
+        r"|\b(?:fix|change|code|implementation|deployment|build|application|feature)\s+"
+        r"(?:is|was|has been)\s+(?:verified|tested)\b"
+        r")"
+    )
+
+    def _record_turn_tool_evidence(
+        self,
+        tool_name: str,
+        *,
+        is_error: bool = False,
+    ) -> None:
+        """Record each unblocked tool execution for turn-end claim checks."""
+        ledger = getattr(self, "_turn_tool_evidence", None)
+        if ledger is None:
+            return
+        name = str(tool_name or "").strip()
+        if not name:
+            return
+        ledger.append({"tool": name, "is_error": bool(is_error)})
+
+    def _format_unsupported_completion_claim_footer(self, response_text: Any) -> str:
+        """Warn when strong completion claims have only housekeeping evidence."""
+        if not isinstance(response_text, str) or not response_text.strip():
+            return ""
+        if "not supported by this turn's tool evidence" in response_text:
+            return ""
+        if not self._UNSUPPORTED_COMPLETION_CLAIM_RE.search(response_text):
+            return ""
+
+        ledger = getattr(self, "_turn_tool_evidence", None) or []
+        names: list[str] = []
+        for entry in ledger:
+            if isinstance(entry, dict):
+                name = str(entry.get("tool") or "").strip()
+            else:
+                name = str(entry or "").strip()
+            if name:
+                names.append(name)
+        if not names:
+            return ""
+        if any(name not in self._COMPLETION_CLAIM_HOUSEKEEPING_TOOLS for name in names):
+            return ""
+
+        tools = ", ".join(dict.fromkeys(names))
+        return (
+            "Verifier note: This turn only used non-executing context tools "
+            f"({tools}), so any claim above that code was implemented, "
+            "deployed, verified, or tested is not supported by this turn's "
+            "tool evidence."
+        )
+
     def _file_mutation_verifier_enabled(self) -> bool:
         """Check whether the per-turn file-mutation verifier footer is on.
 

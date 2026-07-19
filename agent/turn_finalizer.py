@@ -27,6 +27,27 @@ import os
 from agent.codex_responses_adapter import _summarize_user_message_for_log
 
 
+def _sync_trailing_assistant_message(messages, final_response) -> bool:
+    """Mirror a final-response rewrite into the current turn's assistant text."""
+    if not isinstance(final_response, str):
+        return False
+    for msg in reversed(messages or []):
+        if not isinstance(msg, dict):
+            continue
+        role = msg.get("role")
+        if role == "user":
+            return False
+        if role != "assistant":
+            continue
+        if msg.get("tool_calls"):
+            continue
+        if msg.get("content") == final_response:
+            return False
+        msg["content"] = final_response
+        return True
+    return False
+
+
 def finalize_turn(
     agent,
     *,
@@ -311,6 +332,22 @@ def finalize_turn(
         except Exception as _ver_err:
             logger.debug("file-mutation verifier footer failed: %s", _ver_err)
 
+    # Unsupported completion-claim verifier footer.
+    # When a model only ran housekeeping/context tools (todo, skill_view,
+    # memory, session_search), strong claims such as "STATUS: DONE",
+    # "implemented", "deployed", or "tests passed" are not supported by
+    # the evidence from this turn. Append a conservative note to both the
+    # returned response and the trailing assistant transcript message.
+    if final_response and not interrupted:
+        try:
+            _unsupported_footer = agent._format_unsupported_completion_claim_footer(
+                final_response,
+            )
+            if _unsupported_footer:
+                final_response = final_response.rstrip() + "\n\n" + _unsupported_footer
+        except Exception as _claim_err:
+            logger.debug("unsupported completion-claim verifier failed: %s", _claim_err)
+
     # Turn-completion explainer.
     # When a turn ends abnormally after substantive work — empty content
     # after retries, a partial/truncated stream, a still-pending tool
@@ -391,6 +428,20 @@ def finalize_turn(
                     break  # First non-empty string wins
         except Exception as exc:
             logger.warning("transform_llm_output hook failed: %s", exc)
+
+    # Persist the exact text the caller will receive. Footer/explainer logic
+    # and transform_llm_output all run after the first durable write above;
+    # without this synchronization the transcript can disagree with the
+    # delivered response.
+    if final_response and not interrupted:
+        try:
+            if _sync_trailing_assistant_message(messages, final_response):
+                agent._persist_session(messages, conversation_history)
+        except Exception:
+            logger.warning(
+                "Failed to persist final transformed assistant response",
+                exc_info=True,
+            )
 
     # Plugin hook: post_llm_call
     # Fired once per turn after the tool-calling loop completes.

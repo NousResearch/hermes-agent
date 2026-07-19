@@ -2205,7 +2205,111 @@ def run_doctor(args):
             issues.append("Run 'hermes setup' to configure missing API keys for full tool access")
     except Exception as e:
         check_warn("Could not check tool availability", f"({e})")
-    
+
+    # =========================================================================
+    # Check: Model context length (local servers)
+    # =========================================================================
+    _section("Model Compatibility")
+
+    try:
+        from agent.model_metadata import (
+            MINIMUM_CONTEXT_LENGTH,
+            get_model_context_length,
+            is_local_endpoint,
+        )
+        from hermes_cli.config import (
+            get_compatible_custom_providers,
+            get_custom_provider_context_length,
+            load_config,
+        )
+
+        _cfg = load_config()
+        _model_cfg = _cfg.get("model", {}) or {}
+        _model = str(_model_cfg.get("default") or "").strip()
+        _provider = str(_model_cfg.get("provider") or "").strip()
+        _base_url = str(_model_cfg.get("base_url") or "").strip()
+        _inference_cfg = _cfg.get("inference", {}) or {}
+        if not _base_url:
+            _base_url = str(_inference_cfg.get("api_base") or _inference_cfg.get("base_url") or "").strip()
+
+        if not _model or not _base_url:
+            if _model:
+                check_info(f"Model: {_model} (no base_url configured — skipping context check)")
+            else:
+                check_warn("No model configured", "(set model.default in config.yaml)")
+        elif not is_local_endpoint(_base_url):
+            check_info(f"Model: {_model} (remote provider — context length managed by provider)")
+        else:
+            # Resolve effective config_context_length the same way the agent does
+            _config_context_length: int | None = None
+            if isinstance(_model_cfg, dict):
+                _raw_ctx = _model_cfg.get("context_length")
+                if _raw_ctx is not None:
+                    try:
+                        _config_context_length = int(_raw_ctx)
+                    except (TypeError, ValueError):
+                        pass
+
+            # Resolve custom_providers for per-model context_length overrides
+            _custom_providers: list = []
+            try:
+                _custom_providers = get_compatible_custom_providers(_cfg)
+            except Exception:
+                pass
+
+            # Resolve custom-provider per-model override if no explicit config context_length
+            if _config_context_length is None and _custom_providers:
+                try:
+                    _cp_ctx = get_custom_provider_context_length(
+                        model=_model,
+                        base_url=_base_url,
+                        custom_providers=_custom_providers,
+                    )
+                    if _cp_ctx:
+                        _config_context_length = int(_cp_ctx)
+                except Exception:
+                    pass
+
+            _ctx = get_model_context_length(
+                _model,
+                base_url=_base_url,
+                provider=_provider,
+                config_context_length=_config_context_length,
+                custom_providers=_custom_providers,
+            )
+
+            if _ctx >= MINIMUM_CONTEXT_LENGTH:
+                check_ok(f"Model context length: {_ctx:,} tokens")
+            else:
+                check_fail(
+                    f"Model context length: {_ctx:,} tokens",
+                    f"(minimum {MINIMUM_CONTEXT_LENGTH:,} needed)",
+                )
+                issues.append(
+                    f"Model '{_model}' has insufficient context ({_ctx:,} tokens). "
+                    f"Hermes requires at least {MINIMUM_CONTEXT_LENGTH:,} tokens. "
+                    f"Load the model with context_length >= {MINIMUM_CONTEXT_LENGTH:,} "
+                    f"or set model.context_length in config.yaml to the real value."
+                )
+
+            # Also check inference.model if configured separately
+            _inf_model = str(_inference_cfg.get("model") or "").strip()
+            if _inf_model and _inf_model != _model:
+                _inf_ctx = get_model_context_length(
+                    _inf_model,
+                    base_url=_base_url,
+                    provider=_provider,
+                    config_context_length=_config_context_length,
+                    custom_providers=_custom_providers,
+                )
+                if _inf_ctx < MINIMUM_CONTEXT_LENGTH:
+                    check_warn(
+                        f"Inference model context: {_inf_ctx:,} tokens",
+                        f"(below {MINIMUM_CONTEXT_LENGTH:,} minimum)",
+                    )
+    except Exception as e:
+        check_warn("Model compatibility check", f"(could not verify: {e})")
+
     _section("Skills Hub")
     hub_dir = HERMES_HOME / "skills" / ".hub"
     if hub_dir.exists():

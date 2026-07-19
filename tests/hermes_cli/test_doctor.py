@@ -1488,3 +1488,275 @@ def test_npm_audit_fix_hint_avoids_crashing_workspace_flag(monkeypatch, tmp_path
     assert "build-time tooling" in out
     assert "known npm bug" in out
     assert "lockfile bump" in out
+
+
+# ---------------------------------------------------------------------------
+# ◆ Model Compatibility context length checks
+# ---------------------------------------------------------------------------
+
+
+class TestDoctorModelCompatibility:
+    """The ◆ Model Compatibility section must validate local model context length.
+
+    Regression for PR #3375: the original implementation used a hardcoded 16K
+    threshold instead of MINIMUM_CONTEXT_LENGTH (64K) from agent.model_metadata,
+    and it did not pass the full effective configuration (config_context_length,
+    custom_providers) to get_model_context_length().
+    """
+
+    MIN_CTX: int
+
+    @classmethod
+    def setup_class(cls):
+        from agent.model_metadata import MINIMUM_CONTEXT_LENGTH
+        cls.MIN_CTX = MINIMUM_CONTEXT_LENGTH
+
+    def _make_config(self, tmp_path, model="local-model", base_url="http://localhost:1234/v1",
+                     provider="custom", context_length=None, inference_model=None):
+        """Create a minimal HERMES_HOME with config.yaml for the test."""
+        home = tmp_path / ".hermes"
+        home.mkdir(parents=True, exist_ok=True)
+        cfg = {
+            "model": {
+                "default": model,
+                "provider": provider,
+                "base_url": base_url,
+            }
+        }
+        if context_length is not None:
+            cfg["model"]["context_length"] = context_length
+        if inference_model:
+            cfg.setdefault("inference", {})["model"] = inference_model
+        import yaml
+        (home / "config.yaml").write_text(yaml.dump(cfg), encoding="utf-8")
+        return home
+
+    def _run_doctor_compat(self, monkeypatch, tmp_path, home, ctx_length_return=128_000,
+                           is_local=True, ctx_side_effect=None):
+        """Run doctor and return stdout, short-circuiting at the Skills Hub section.
+
+        Mocks get_model_context_length() and is_local_endpoint() so the
+        Model Compatibility section returns controlled values.
+        """
+        from unittest import mock
+
+        monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
+        monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", tmp_path / "project")
+        monkeypatch.setattr(doctor_mod, "_DHH", str(home))
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        (tmp_path / "project").mkdir(exist_ok=True)
+
+        # Stub tool availability so doctor runs past Tool Availability
+        fake_model_tools = types.SimpleNamespace(
+            check_tool_availability=lambda *a, **kw: ([], []),
+            TOOLSET_REQUIREMENTS={},
+        )
+        monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+
+        # Stub auth checks to avoid real API calls
+        try:
+            from hermes_cli import auth as _auth_mod
+            monkeypatch.setattr(_auth_mod, "get_nous_auth_status", lambda: {})
+            monkeypatch.setattr(_auth_mod, "get_codex_auth_status", lambda: {})
+            monkeypatch.setattr(_auth_mod, "get_minimax_oauth_auth_status", lambda: {})
+            monkeypatch.setattr(_auth_mod, "get_xai_oauth_auth_status", lambda: {})
+        except Exception:
+            pass
+
+        # Mock model_metadata functions
+        import agent.model_metadata as _mm
+        if ctx_side_effect is not None:
+            monkeypatch.setattr(_mm, "get_model_context_length", mock.Mock(side_effect=ctx_side_effect))
+        else:
+            monkeypatch.setattr(_mm, "get_model_context_length", mock.Mock(return_value=ctx_length_return))
+        monkeypatch.setattr(_mm, "is_local_endpoint", mock.Mock(return_value=is_local))
+
+        import io, contextlib
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            doctor_mod.run_doctor(Namespace(fix=False))
+        return buf.getvalue()
+
+    def _model_compat_lines(self, output):
+        """Return lines from the ◆ Model Compatibility section."""
+        lines = output.splitlines()
+        start = None
+        end = None
+        for i, line in enumerate(lines):
+            if "◆ Model Compatibility" in line:
+                start = i
+            elif start is not None and line.startswith("◆"):
+                end = i
+                break
+        if start is None:
+            return []
+        return lines[start:end]
+
+    def test_sufficient_context_passes(self, monkeypatch, tmp_path):
+        """Exactly MINIMUM_CONTEXT_LENGTH should pass (64K)."""
+        from agent.model_metadata import MINIMUM_CONTEXT_LENGTH
+        home = self._make_config(tmp_path)
+        out = self._run_doctor_compat(monkeypatch, tmp_path, home,
+                                      ctx_length_return=MINIMUM_CONTEXT_LENGTH)
+        compat_lines = self._model_compat_lines(out)
+        joined = "\n".join(compat_lines)
+        assert "✓ Model context length" in joined
+        assert "✗" not in joined
+
+    def test_insufficient_context_fails(self, monkeypatch, tmp_path):
+        """Below MINIMUM_CONTEXT_LENGTH should fail."""
+        from agent.model_metadata import MINIMUM_CONTEXT_LENGTH
+        low_ctx = MINIMUM_CONTEXT_LENGTH - 1
+        home = self._make_config(tmp_path)
+        out = self._run_doctor_compat(monkeypatch, tmp_path, home,
+                                      ctx_length_return=low_ctx)
+        compat_lines = self._model_compat_lines(out)
+        joined = "\n".join(compat_lines)
+        assert "✗ Model context length" in joined
+        assert f"{low_ctx:,}" in joined
+
+    def test_remote_provider_skipped(self, monkeypatch, tmp_path):
+        """Remote endpoints should be skipped with an info message."""
+        home = self._make_config(tmp_path, base_url="https://api.openai.com/v1")
+        out = self._run_doctor_compat(monkeypatch, tmp_path, home, is_local=False)
+        compat_lines = self._model_compat_lines(out)
+        joined = "\n".join(compat_lines)
+        assert "remote provider" in joined
+        assert "✓" not in joined
+        assert "✗" not in joined
+
+    def test_no_model_configured(self, monkeypatch, tmp_path):
+        """No model.default should show a warning."""
+        home = self._make_config(tmp_path, model="")
+        out = self._run_doctor_compat(monkeypatch, tmp_path, home)
+        compat_lines = self._model_compat_lines(out)
+        joined = "\n".join(compat_lines)
+        assert "No model configured" in joined
+
+    def test_config_context_length_override(self, monkeypatch, tmp_path):
+        """A model.context_length override must be passed to get_model_context_length."""
+        from agent.model_metadata import MINIMUM_CONTEXT_LENGTH
+        from unittest import mock
+
+        home = self._make_config(tmp_path, context_length=MINIMUM_CONTEXT_LENGTH)
+
+        import agent.model_metadata as _mm
+        mock_fn = mock.Mock(return_value=MINIMUM_CONTEXT_LENGTH)
+        monkeypatch.setattr(_mm, "get_model_context_length", mock_fn)
+        monkeypatch.setattr(_mm, "is_local_endpoint", mock.Mock(return_value=True))
+
+        monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
+        monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", tmp_path / "project")
+        monkeypatch.setattr(doctor_mod, "_DHH", str(home))
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        (tmp_path / "project").mkdir(exist_ok=True)
+
+        fake_model_tools = types.SimpleNamespace(
+            check_tool_availability=lambda *a, **kw: ([], []),
+            TOOLSET_REQUIREMENTS={},
+        )
+        monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+        try:
+            from hermes_cli import auth as _auth_mod
+            monkeypatch.setattr(_auth_mod, "get_nous_auth_status", lambda: {})
+            monkeypatch.setattr(_auth_mod, "get_codex_auth_status", lambda: {})
+            monkeypatch.setattr(_auth_mod, "get_minimax_oauth_auth_status", lambda: {})
+            monkeypatch.setattr(_auth_mod, "get_xai_oauth_auth_status", lambda: {})
+        except Exception:
+            pass
+
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            doctor_mod.run_doctor(Namespace(fix=False))
+
+        # Verify config_context_length was passed to get_model_context_length
+        assert mock_fn.called
+        call_kwargs = mock_fn.call_args[1]
+        assert call_kwargs.get("config_context_length") == MINIMUM_CONTEXT_LENGTH
+
+    def test_custom_provider_context_length_override(self, monkeypatch, tmp_path):
+        """A custom_providers per-model context_length must be passed to get_model_context_length."""
+        from agent.model_metadata import MINIMUM_CONTEXT_LENGTH
+        from unittest import mock
+
+        home = tmp_path / ".hermes"
+        home.mkdir(parents=True, exist_ok=True)
+        cfg = {
+            "model": {
+                "default": "local-model",
+                "provider": "custom:my-server",
+                "base_url": "http://localhost:1234/v1",
+            },
+            "custom_providers": [
+                {
+                    "name": "my-server",
+                    "base_url": "http://localhost:1234/v1",
+                    "models": {
+                        "local-model": {"context_length": MINIMUM_CONTEXT_LENGTH}
+                    },
+                }
+            ],
+        }
+        import yaml
+        (home / "config.yaml").write_text(yaml.dump(cfg), encoding="utf-8")
+
+        import agent.model_metadata as _mm
+        mock_fn = mock.Mock(return_value=MINIMUM_CONTEXT_LENGTH)
+        monkeypatch.setattr(_mm, "get_model_context_length", mock_fn)
+        monkeypatch.setattr(_mm, "is_local_endpoint", mock.Mock(return_value=True))
+
+        monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
+        monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", tmp_path / "project")
+        monkeypatch.setattr(doctor_mod, "_DHH", str(home))
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        (tmp_path / "project").mkdir(exist_ok=True)
+
+        fake_model_tools = types.SimpleNamespace(
+            check_tool_availability=lambda *a, **kw: ([], []),
+            TOOLSET_REQUIREMENTS={},
+        )
+        monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+        try:
+            from hermes_cli import auth as _auth_mod
+            monkeypatch.setattr(_auth_mod, "get_nous_auth_status", lambda: {})
+            monkeypatch.setattr(_auth_mod, "get_codex_auth_status", lambda: {})
+            monkeypatch.setattr(_auth_mod, "get_minimax_oauth_auth_status", lambda: {})
+            monkeypatch.setattr(_auth_mod, "get_xai_oauth_auth_status", lambda: {})
+        except Exception:
+            pass
+
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            doctor_mod.run_doctor(Namespace(fix=False))
+
+        # Verify custom_providers was passed to get_model_context_length
+        assert mock_fn.called
+        call_kwargs = mock_fn.call_args[1]
+        assert call_kwargs.get("custom_providers") is not None
+        assert len(call_kwargs["custom_providers"]) == 1
+
+    def test_insufficient_context_appends_issue(self, monkeypatch, tmp_path):
+        """A failing context check must append a fix instruction to issues."""
+        from agent.model_metadata import MINIMUM_CONTEXT_LENGTH
+        low_ctx = MINIMUM_CONTEXT_LENGTH - 1
+        home = self._make_config(tmp_path, model="test-model")
+        out = self._run_doctor_compat(monkeypatch, tmp_path, home,
+                                      ctx_length_return=low_ctx)
+        # The issues list is printed at the end of doctor output
+        assert f"test-model" in out
+        assert f"{low_ctx:,}" in out
+        assert f"context_length >= {MINIMUM_CONTEXT_LENGTH:,}" in out
+
+    def test_inference_model_separately_checked(self, monkeypatch, tmp_path):
+        """If inference.model differs from model.default, both are checked."""
+        from agent.model_metadata import MINIMUM_CONTEXT_LENGTH
+        low_ctx = MINIMUM_CONTEXT_LENGTH - 1
+        home = self._make_config(tmp_path, model="main-model", inference_model="inf-model")
+        # First call returns OK (main model), second returns low (inference model)
+        out = self._run_doctor_compat(monkeypatch, tmp_path, home,
+                                      ctx_side_effect=[MINIMUM_CONTEXT_LENGTH, low_ctx])
+        compat_lines = self._model_compat_lines(out)
+        joined = "\n".join(compat_lines)
+        assert "✓ Model context length" in joined
+        assert "Inference model context" in joined
+        assert f"{low_ctx:,}" in joined

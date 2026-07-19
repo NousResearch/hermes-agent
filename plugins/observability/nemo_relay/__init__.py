@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
 
-from hermes_cli.observability import relay_runtime
+from agent import relay_runtime
 
 logger = logging.getLogger(__name__)
 
@@ -325,17 +325,23 @@ class _Runtime:
         filename = self.settings.atif_filename_template.format(session_id=state.session_id)
         Path(output_dir, filename).write_text(state.atif_exporter.export_json(), encoding="utf-8")
 
-    def close_session(self, kwargs: dict[str, Any]) -> None:
+    def close_session(
+        self,
+        kwargs: dict[str, Any],
+        *,
+        close_host: bool = True,
+    ) -> None:
         session_id = _session_id(kwargs)
         self.subagent_contexts.pop(session_id, None)
         state = self.sessions.pop(session_id, None)
         if state is None:
             return
         failures: list[str] = []
-        try:
-            self.host.close_session(kwargs)
-        except Exception as exc:
-            failures.append(f"core session close failed: {exc}")
+        if close_host:
+            try:
+                self.host.close_session(kwargs)
+            except Exception as exc:
+                failures.append(f"core session close failed: {exc}")
         try:
             self.export_atif(state)
         except Exception as exc:
@@ -402,7 +408,6 @@ class _Runtime:
         )
 
     def mark_subagent_start(self, kwargs: dict[str, Any]) -> None:
-        self.host.register_subagent(kwargs)
         parent_state = self.ensure_session(kwargs)
         metadata = _metadata(kwargs)
         child_session_id = _child_session_id(kwargs)
@@ -421,10 +426,12 @@ class _Runtime:
         )
 
     def mark_subagent_stop(self, kwargs: dict[str, Any]) -> None:
-        self.host.unregister_subagent(kwargs)
         child_session_id = _child_session_id(kwargs)
         if child_session_id:
-            self.close_session({"session_id": child_session_id})
+            self.close_session(
+                {"session_id": child_session_id},
+                close_host=False,
+            )
             self.subagent_contexts.pop(child_session_id, None)
         self.mark("hermes.subagent.stop", kwargs)
 
@@ -589,8 +596,6 @@ def register(ctx) -> None:
     ctx.register_hook("post_approval_response", on_post_approval_response)
     ctx.register_hook("subagent_start", on_subagent_start)
     ctx.register_hook("subagent_stop", on_subagent_stop)
-    ctx.register_middleware("llm_execution", on_llm_execution_middleware)
-    ctx.register_middleware("tool_execution", on_tool_execution_middleware)
 
 
 def on_session_start(**kwargs: Any) -> None:

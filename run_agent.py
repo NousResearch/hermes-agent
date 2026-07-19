@@ -6242,7 +6242,8 @@ class AIAgent:
                      tool_call_id: Optional[str] = None, messages: list = None,
                      pre_tool_block_checked: bool = False,
                      skip_tool_request_middleware: bool = False,
-                     tool_request_middleware_trace: Optional[list[dict[str, Any]]] = None) -> str:
+                     tool_request_middleware_trace: Optional[list[dict[str, Any]]] = None,
+                     skip_tool_execution_middleware: bool = False) -> str:
         """Forwarder — see ``agent.agent_runtime_helpers.invoke_tool``."""
         from agent.agent_runtime_helpers import invoke_tool
         return invoke_tool(
@@ -6255,6 +6256,7 @@ class AIAgent:
             pre_tool_block_checked,
             skip_tool_request_middleware,
             tool_request_middleware_trace,
+            skip_tool_execution_middleware,
         )
 
     @staticmethod
@@ -6342,6 +6344,7 @@ class AIAgent:
             reset_accounting_context,
             set_accounting_context,
         )
+        from agent import relay_runtime
         from agent.conversation_loop import run_conversation
         from agent.portal_tags import (
             reset_conversation_context,
@@ -6357,6 +6360,26 @@ class AIAgent:
             "task_id": effective_task_id,
             "platform": getattr(self, "platform", None) or "",
         }
+        relay_turn_id = (
+            f"{self.session_id or 'session'}:{effective_task_id}:{uuid.uuid4().hex[:8]}"
+        )
+        self._relay_pending_turn_id = relay_turn_id
+        relay_parent_session_id = (
+            str(getattr(self, "_parent_session_id", None) or "")
+            if task_context["platform"] == "subagent"
+            else ""
+        )
+        relay_lease = relay_runtime.SESSION_COORDINATOR.acquire_conversation(
+            profile_key=relay_runtime.current_profile_key(),
+            session_id=task_context["session_id"],
+            platform=task_context["platform"],
+            parent_session_id=relay_parent_session_id,
+        )
+        relay_turn = relay_runtime.SESSION_COORDINATOR.begin_turn(
+            relay_lease,
+            turn_id=relay_turn_id,
+            task_id=effective_task_id,
+        )
         start_task_run(
             **task_context,
             parent_session_id=getattr(self, "_parent_session_id", None) or "",
@@ -6381,6 +6404,7 @@ class AIAgent:
         # Keep the scope local instead of storing ContextVar tokens on the agent,
         # which may be observed from another thread.
         with scoped_runtime_main({}):
+            relay_outcome = "failed"
             try:
                 result = run_conversation(
                     self,
@@ -6394,12 +6418,39 @@ class AIAgent:
                     moa_config=moa_config,
                 )
             except BaseException as exc:
+                if isinstance(exc, (KeyboardInterrupt, InterruptedError)) or (
+                    type(exc).__name__ == "CancelledError"
+                ):
+                    relay_outcome = "cancelled"
+                elif isinstance(exc, TimeoutError):
+                    relay_outcome = "timed_out"
                 finish_task_run(**task_context, error=exc)
                 raise
             else:
+                terminal = result if isinstance(result, dict) else {}
+                if terminal.get("interrupted") is True:
+                    relay_outcome = "cancelled"
+                elif terminal.get("failed") is True:
+                    relay_outcome = "failed"
+                else:
+                    relay_outcome = "success"
                 finish_task_run(**task_context, result=result)
                 return result
             finally:
+                try:
+                    relay_runtime.SESSION_COORDINATOR.end_turn(
+                        relay_turn,
+                        outcome=relay_outcome,
+                    )
+                finally:
+                    if relay_lease.parent_session_id:
+                        relay_runtime.SESSION_COORDINATOR.finalize_conversation(
+                            profile_key=relay_lease.profile_key,
+                            session_id=relay_lease.session_id,
+                        )
+                    relay_runtime.SESSION_COORDINATOR.release_conversation(relay_lease)
+                if getattr(self, "_relay_pending_turn_id", None) == relay_turn_id:
+                    self._relay_pending_turn_id = None
                 reset_accounting_context(acct_token)
                 reset_conversation_context(token)
 

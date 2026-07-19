@@ -4,7 +4,10 @@ Hermes includes NeMo Relay as a normal runtime dependency on platforms for
 which Relay publishes a native wheel. The shared-metrics integration is built
 into Hermes and does not require `hermes plugins enable
 observability/nemo_relay`. Hermes remains importable without Relay on other
-native targets, but Relay-backed instrumentation is unavailable there.
+native targets. Those targets use an explicit reduced-capability no-op host:
+Hermes execution remains available, while Relay scopes, middleware, plugins,
+and subscribers are unavailable. The `hermes-agent[nemo-relay]` extra remains
+as a no-op compatibility alias for existing installation commands.
 
 Collection remains off unless Hermes policy enables it:
 

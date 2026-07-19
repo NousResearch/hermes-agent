@@ -3612,24 +3612,10 @@ class TestAgentRuntimePostHookOwnershipSync:
     AGENT_RUNTIME_POST_HOOK_TOOL_NAMES has to match exactly the static
     `function_name == "..."` branches in the inline dispatch chain.
 
-    The chain is the if/elif tower anchored on `_block_msg is not None`.
-    Pre-dispatch `function_name == "..."` checks (counter resets, checkpoint
-    triggers) live outside the dispatch chain and are explicitly skipped.
+    The chain is the if/elif tower anchored on the first agent-runtime tool,
+    ``function_name == "todo"``. Pre-dispatch tool-name checks live outside
+    that tower and are explicitly skipped.
     """
-
-    _DISPATCH_ANCHOR_LEFT = "_block_msg"
-
-    @classmethod
-    def _is_dispatch_anchor(cls, test_node) -> bool:
-        # Looking for `_block_msg is not None`.
-        if not isinstance(test_node, ast.Compare):
-            return False
-        if not (isinstance(test_node.left, ast.Name) and test_node.left.id == cls._DISPATCH_ANCHOR_LEFT):
-            return False
-        if not (len(test_node.ops) == 1 and isinstance(test_node.ops[0], ast.IsNot)):
-            return False
-        comparator = test_node.comparators[0]
-        return isinstance(comparator, ast.Constant) and comparator.value is None
 
     @staticmethod
     def _function_name_literal(test_node) -> str | None:
@@ -3647,15 +3633,14 @@ class TestAgentRuntimePostHookOwnershipSync:
 
     @classmethod
     def _extract_dispatch_chain_names(cls, func) -> set[str]:
-        """Find the if/elif chain anchored on `_block_msg is not None`, return its
-        `function_name == "..."` literals."""
+        """Return literals from the if/elif chain anchored on ``todo``."""
         source = inspect.cleandoc("\n" + inspect.getsource(func))
         tree = ast.parse(source)
         names: set[str] = set()
         for node in ast.walk(tree):
             if not isinstance(node, ast.If):
                 continue
-            if not cls._is_dispatch_anchor(node.test):
+            if cls._function_name_literal(node.test) != "todo":
                 continue
             current = node
             while current is not None:
@@ -3691,10 +3676,8 @@ class TestAgentRuntimePostHookOwnershipSync:
             tool_executor.execute_tool_calls_sequential
         )
         assert inline_names, (
-            "Could not find the dispatch chain (anchored on "
-            "`_block_msg is not None`) in execute_tool_calls_sequential. "
-            "If the dispatcher was refactored, update _DISPATCH_ANCHOR_LEFT "
-            "and the walker in this test."
+            "Could not find the agent-runtime dispatch chain anchored on "
+            "`function_name == 'todo'` in execute_tool_calls_sequential."
         )
         assert inline_names == set(AGENT_RUNTIME_POST_HOOK_TOOL_NAMES), (
             "Inline dispatch chain in "

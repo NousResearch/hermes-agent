@@ -1209,8 +1209,13 @@ async def _standalone_send(
             )
             cmd_str = f"/_send #{group_id} json {composed}"
         else:
-            # Direct contacts are addressed by display name without brackets.
-            cmd_str = f"@{chat_id} {message}"
+            # Direct contacts addressed by numeric contactId via the structured
+            # form (same as send()); the bare "@<id> text" form is parsed as a
+            # display-name lookup and silently drops for numeric contactIds.
+            composed = json.dumps(
+                [{"msgContent": {"type": "text", "text": message}}]
+            )
+            cmd_str = f"/_send @{chat_id} json {composed}"
 
         payload = {
             "corrId": f"{_CORR_PREFIX}snd-{int(time.time() * 1000)}",

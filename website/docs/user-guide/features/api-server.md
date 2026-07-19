@@ -280,8 +280,8 @@ that want to attach/detach without losing state.
 
 Subagent tool calls are emitted immediately as structured
 `subagent.progress` events. The event preserves stable delegation identifiers
-when available, while deliberately omitting raw tool arguments and internal
-thinking:
+when available. Raw tool arguments and internal thinking are omitted, and
+previews are redacted at this API boundary before they enter the SSE stream:
 
 ```json
 {

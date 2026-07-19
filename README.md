@@ -1,9 +1,11 @@
-# Hermes Agent - Zapabob's Applied AI Engineering Fork
-
 <p align="center">
   <img src="assets/banner.png" alt="Hermes Agent" width="100%">
 </p>
 
+# Hermes Agent ☤
+<p align="center">
+  <a href="https://hermes-agent.nousresearch.com/">Hermes Agent</a> | <a href="https://hermes-agent.nousresearch.com/">Hermes Desktop</a>
+</p>
 <p align="center">
   <a href="https://hermes-agent.nousresearch.com/docs/"><img src="https://img.shields.io/badge/Docs-hermes--agent.nousresearch.com-FFD700?style=for-the-badge" alt="Documentation"></a>
   <a href="https://discord.gg/NousResearch"><img src="https://img.shields.io/badge/Discord-5865F2?style=for-the-badge&logo=discord&logoColor=white" alt="Discord"></a>
@@ -14,76 +16,53 @@
   <a href="README.es.md"><img src="https://img.shields.io/badge/Lang-Español-orange?style=for-the-badge" alt="Español"></a>
 </p>
 
-This repository is a working engineering fork of
-[NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent). It
-keeps the official Hermes runtime as the authority, then adds the operator
-features I rely upon in daily work: Windows-first service recovery, local LLM
-fallback, controlled social publishing, NotebookLM source packaging, LINE bot
-conversation policy, Galaxy-friendly AITuber sessions, VRChat tooling, and
-provider routing for cost-conscious AI operations.
+**The self-improving AI agent built by [Nous Research](https://nousresearch.com).** It's the only agent with a built-in learning loop — it creates skills from experience, improves them during use, nudges itself to persist knowledge, searches its own past conversations, and builds a deepening model of who you are across sessions. Run it on a $5 VPS, a GPU cluster, or serverless infrastructure that costs nearly nothing when idle. It's not tied to your laptop — talk to it from Telegram while it works on a cloud VM.
 
 Use any model you want — [Nous Portal](https://portal.nousresearch.com), OpenRouter, OpenAI, your own endpoint, and [many others](https://hermes-agent.nousresearch.com/docs/integrations/providers). Switch with `hermes model` — no code changes, no lock-in.
 
-The aim is not to outgrow upstream Hermes. The aim is to keep the official
-agent current whilst proving that a long-lived personal fork can remain
-disciplined: official security and bug fixes come in promptly, equivalent
-features are based on upstream behaviour, and fork-only advantages are carried
-as explicit overlays rather than private drift.
+<table>
+<tr><td><b>A real terminal interface</b></td><td>Full TUI with multiline editing, slash-command autocomplete, conversation history, interrupt-and-redirect, and streaming tool output.</td></tr>
+<tr><td><b>Lives where you do</b></td><td>Telegram, Discord, Slack, WhatsApp, Signal, and CLI — all from a single gateway process. Voice memo transcription, cross-platform conversation continuity.</td></tr>
+<tr><td><b>A closed learning loop</b></td><td>Agent-curated memory with periodic nudges. Autonomous skill creation after complex tasks. Skills self-improve during use. FTS5 session search with LLM summarization for cross-session recall. <a href="https://github.com/plastic-labs/honcho">Honcho</a> dialectic user modeling. Compatible with the <a href="https://agentskills.io">agentskills.io</a> open standard.</td></tr>
+<tr><td><b>Scheduled automations</b></td><td>Built-in cron scheduler with delivery to any platform. Daily reports, nightly backups, weekly audits — all in natural language, running unattended.</td></tr>
+<tr><td><b>Delegates and parallelizes</b></td><td>Spawn isolated subagents for parallel workstreams. Write Python scripts that call tools via RPC, collapsing multi-step pipelines into zero-context-cost turns.</td></tr>
+<tr><td><b>Runs anywhere, not just your laptop</b></td><td>Six terminal backends — local, Docker, SSH, Singularity, Modal, and Daytona. Daytona and Modal offer serverless persistence — your agent's environment hibernates when idle and wakes on demand, costing nearly nothing between sessions. Run it on a $5 VPS or a GPU cluster.</td></tr>
+<tr><td><b>Research-ready</b></td><td>Batch trajectory generation, trajectory compression for training the next generation of tool-calling models.</td></tr>
+</table>
 
-## Current Official Baseline
+---
 
-This branch has been synchronised from `origin/main`, then merged with the
-latest `upstream/main` from NousResearch. The present upstream intake includes:
+## Quick Install
 
-- Desktop composer pop-out support, including a draggable floating composer,
-  Electron link-title window handling, and desktop platform test coverage.
-- Signal gateway fixes for quoted reply context, self-mention stripping in
-  groups, explicit stop-typing RPC cancellation, shared markdown formatting,
-  and ADTS AAC voice note remuxing.
-- Safer malformed environment-variable handling through guarded int and float
-  parsing paths.
-- Gateway, reply-injection, and send-message test updates that harden the
-  messaging surface.
-- Dependency and release maintenance in the official package metadata and
-  release tooling.
+### Linux, macOS, WSL2, Termux
 
-Official changes are treated as the base whenever upstream now covers the same
-problem. Where this fork has a genuine local advantage, the local behaviour is
-kept as an overlay on top of the current upstream API.
-
-## Fork-Only Work Kept On Top
-
-### Policy-Driven Upstream Merges
-
-Upstream integration is handled with Python tooling rather than ad hoc manual
-patching. The main entry point is:
-
-```powershell
-py -3 scripts\sync_all.py --dry-run --allow-preflight-blockers
-py -3 scripts\sync_all.py --merge --target main --allow-preflight-blockers
+```bash
+curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
 ```
 
-The policy lives under `scripts/merge_tools/`. It classifies files as
-`upstream`, `preserve_custom`, `official_with_overlay`, or
-`manual_api_followup`. Lockfiles and workflow updates favour upstream. Local
-operator features, VRChat tooling, and fork-owned plugins are preserved. Core
-agent and gateway files take official fixes first, then carry only the required
-local overlay.
+### Windows (native, PowerShell)
 
-### Windows-First Operations
+> **Heads up:** Native Windows runs Hermes without WSL — CLI, gateway, TUI, and tools all work natively. If you'd rather use WSL2, the Linux/macOS one-liner above works there too. Found a bug? Please [file issues](https://github.com/NousResearch/hermes-agent/issues).
 
-The fork is maintained on a real Windows workstation where Desktop, dashboard,
-gateway, scheduled tasks, local LLM endpoints, and helper services all have to
-survive restarts. The repository therefore includes PowerShell launchers,
-Task Scheduler registration, process health checks, port verification, and
-recovery scripts under `scripts/windows/`.
-
-Representative entry points:
+Run this in PowerShell:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File scripts\windows\start-hermes-stack.ps1
-powershell -ExecutionPolicy Bypass -File scripts\windows\check-local-llm.ps1
-powershell -ExecutionPolicy Bypass -File scripts\windows\restart-hermes-stack.ps1
+iex (irm https://hermes-agent.nousresearch.com/install.ps1)
+```
+
+The installer handles everything: uv, Python 3.11, Node.js, ripgrep, ffmpeg, **and a portable Git Bash** (MinGit, unpacked to `%LOCALAPPDATA%\hermes\git` — no admin required, completely isolated from any system Git install). Hermes uses this bundled Git Bash to run shell commands.
+
+If you already have Git installed, the installer detects it and uses that instead. Otherwise a ~45MB MinGit download is all you need — it won't touch or interfere with any system Git.
+
+> **Android / Termux:** The tested manual path is documented in the [Termux guide](https://hermes-agent.nousresearch.com/docs/getting-started/termux). On Termux, Hermes installs a curated `.[termux]` extra because the full `.[all]` extra currently pulls Android-incompatible voice dependencies.
+>
+> **Windows:** Native Windows is fully supported — the PowerShell one-liner above installs everything. If you'd rather use WSL2, the Linux command works there too. Native Windows install lives under `%LOCALAPPDATA%\hermes`; WSL2 installs under `~/.hermes` as on Linux.
+
+After installation:
+
+```bash
+source ~/.bashrc    # reload shell (or: source ~/.zshrc)
+hermes              # start chatting!
 ```
 
 ### Troubleshooting
@@ -123,145 +102,177 @@ For more context, see the upstream Astral reports: [astral-sh/uv#13553](https://
 
 ---
 
-The local secretary path uses llama.cpp-compatible OpenAI endpoints as a
-private fallback for moments when a cloud provider is unavailable, unsuitable,
-or needlessly expensive. It is not a sketch: the fork carries start scripts,
-health checks, context-size validation, chat completion checks, and
-tool-calling contracts.
+## Getting Started
 
-### LINE Conversation Policy
-
-`plugins/line_ai_bot` now registers a conversation plugin through
-`PluginContext.register_conversation_plugin`. LINE messages receive a
-channel-scoped prompt that names the bot, records the LINE chat type, and
-treats user text as untrusted channel content. Slash commands and non-LINE
-platforms are deliberately excluded.
-
-The LINE platform adapter also supports configurable API bases, which makes
-tests and local gateways easier to run without hard-wiring the production LINE
-endpoints.
-
-### AITuber OnAir And Galaxy Sessions
-
-`plugins/aituber_onair` provides Hakua-oriented avatar operation, local speech,
-YouTube comment reactions, provider rotation, and Galaxy S9+ friendly VRM
-sessions. The Galaxy session command starts the VRM surface on a LAN-visible
-host, starts the audio WebSocket, and can optionally start TTS, autonomous
-talk, and local comment reactions.
-
-```powershell
-hermes aituber-onair galaxy-session --public-host 192.168.1.23 --audio-ws-port 5176 --force
+```bash
+hermes              # Interactive CLI — start a conversation
+hermes model        # Choose your LLM provider and model
+hermes tools        # Configure which tools are enabled
+hermes config set   # Set individual config values
+hermes config get   # Print individual config values
+hermes gateway      # Start the messaging gateway (Telegram, Discord, etc.)
+hermes setup        # Run the full setup wizard (configures everything at once)
+hermes claw migrate # Migrate from OpenClaw (if coming from OpenClaw)
+hermes update       # Update to the latest version
+hermes doctor       # Diagnose any issues
 ```
 
-Provider rotation now recovers from rate-limit style failures whilst keeping
-avatar speech attached to the final reply, so the public-facing character does
-not lose voice output merely because the first provider was exhausted.
+📖 **[Full documentation →](https://hermes-agent.nousresearch.com/docs/)**
 
-### LM-twitterer
+---
 
-`plugins/lm-twitterer` turns Hermes into a controlled X publishing assistant.
-It supports dry-runs, live posts, whitelist-gated replies, cron installation,
-topic validation, explicit reviewed text, and local media attachments.
+## Skip the API-key collection — Nous Portal
 
-```powershell
-hermes plugins enable lm-twitterer
-hermes lm-twitterer install-deps --yes
-hermes lm-twitterer post --text "Reviewed release note" --media output\daily_posts\clip.mp4 --live
+Hermes works with whatever provider you want — that's not changing. But if you'd rather not collect five separate API keys for the model, web search, image generation, TTS, and a cloud browser, **[Nous Portal](https://portal.nousresearch.com)** covers all of them under one subscription:
+
+- **300+ models** — pick any of them with `/model <name>`
+- **Tool Gateway** — web search (Firecrawl), image generation (FAL), text-to-speech (OpenAI), cloud browser (Browser Use), all routed through your sub. No extra accounts.
+
+One command from a fresh install:
+
+```bash
+hermes setup --portal
 ```
 
-### NotebookLM Source Packaging
+That logs you in via OAuth, sets Nous as your provider, and turns on the Tool Gateway. Check what's wired up any time with `hermes portal info`. Full details on the [Tool Gateway docs page](https://hermes-agent.nousresearch.com/docs/user-guide/features/tool-gateway).
 
-`plugins/notebooklm` collects redacted operational material into reusable
-research bundles. It is intended for turning agent work, logs, and notes into
-reviewable sources without placing secrets into a cloud notebook.
+You can still bring your own keys per-tool whenever you want — the gateway is per-backend, not all-or-nothing.
 
-```powershell
-hermes plugins enable notebooklm
-hermes notebooklm collect
-hermes notebooklm brainstorm
+---
+
+## CLI vs Messaging Quick Reference
+
+Hermes has two entry points: start the terminal UI with `hermes`, or run the gateway and talk to it from Telegram, Discord, Slack, WhatsApp, Signal, or Email. Once you're in a conversation, many slash commands are shared across both interfaces.
+
+| Action                         | CLI                                           | Messaging platforms                                                              |
+| ------------------------------ | --------------------------------------------- | -------------------------------------------------------------------------------- |
+| Start chatting                 | `hermes`                                      | Run `hermes gateway setup` + `hermes gateway start`, then send the bot a message |
+| Start fresh conversation       | `/new` or `/reset`                            | `/new` or `/reset`                                                               |
+| Change model                   | `/model [provider:model]`                     | `/model [provider:model]`                                                        |
+| Set a personality              | `/personality [name]`                         | `/personality [name]`                                                            |
+| Retry or undo the last turn    | `/retry`, `/undo`                             | `/retry`, `/undo`                                                                |
+| Compress context / check usage | `/compress`, `/usage`, `/insights [--days N]` | `/compress`, `/usage`, `/insights [days]`                                        |
+| Browse skills                  | `/skills` or `/<skill-name>`                  | `/<skill-name>`                                                                  |
+| Interrupt current work         | `Ctrl+C` or send a new message                | `/stop` or send a new message                                                    |
+| Platform-specific status       | `/platforms`                                  | `/status`, `/sethome`                                                            |
+
+For the full command lists, see the [CLI guide](https://hermes-agent.nousresearch.com/docs/user-guide/cli) and the [Messaging Gateway guide](https://hermes-agent.nousresearch.com/docs/user-guide/messaging).
+
+---
+
+## Documentation
+
+All documentation lives at **[hermes-agent.nousresearch.com/docs](https://hermes-agent.nousresearch.com/docs/)**:
+
+| Section                                                                                             | What's Covered                                             |
+| --------------------------------------------------------------------------------------------------- | ---------------------------------------------------------- |
+| [Quickstart](https://hermes-agent.nousresearch.com/docs/getting-started/quickstart)                 | Install → setup → first conversation in 2 minutes          |
+| [CLI Usage](https://hermes-agent.nousresearch.com/docs/user-guide/cli)                              | Commands, keybindings, personalities, sessions             |
+| [Configuration](https://hermes-agent.nousresearch.com/docs/user-guide/configuration)                | Config file, providers, models, all options                |
+| [Messaging Gateway](https://hermes-agent.nousresearch.com/docs/user-guide/messaging)                | Telegram, Discord, Slack, WhatsApp, Signal, Home Assistant |
+| [Security](https://hermes-agent.nousresearch.com/docs/user-guide/security)                          | Command approval, DM pairing, container isolation          |
+| [Tools & Toolsets](https://hermes-agent.nousresearch.com/docs/user-guide/features/tools)            | 40+ tools, toolset system, terminal backends               |
+| [Skills System](https://hermes-agent.nousresearch.com/docs/user-guide/features/skills)              | Procedural memory, Skills Hub, creating skills             |
+| [Memory](https://hermes-agent.nousresearch.com/docs/user-guide/features/memory)                     | Persistent memory, user profiles, best practices           |
+| [MCP Integration](https://hermes-agent.nousresearch.com/docs/user-guide/features/mcp)               | Connect any MCP server for extended capabilities           |
+| [Cron Scheduling](https://hermes-agent.nousresearch.com/docs/user-guide/features/cron)              | Scheduled tasks with platform delivery                     |
+| [Context Files](https://hermes-agent.nousresearch.com/docs/user-guide/features/context-files)       | Project context that shapes every conversation             |
+| [Architecture](https://hermes-agent.nousresearch.com/docs/developer-guide/architecture)             | Project structure, agent loop, key classes                 |
+| [Contributing](https://hermes-agent.nousresearch.com/docs/developer-guide/contributing)             | Development setup, PR process, code style                  |
+| [CLI Reference](https://hermes-agent.nousresearch.com/docs/reference/cli-commands)                  | All commands and flags                                     |
+| [Environment Variables](https://hermes-agent.nousresearch.com/docs/reference/environment-variables) | Complete env var reference                                 |
+
+---
+
+## Migrating from OpenClaw
+
+If you're coming from OpenClaw, Hermes can automatically import your settings, memories, skills, and API keys.
+
+**During first-time setup:** The setup wizard (`hermes setup`) automatically detects `~/.openclaw` and offers to migrate before configuration begins.
+
+**Anytime after install:**
+
+```bash
+hermes claw migrate              # Interactive migration (full preset)
+hermes claw migrate --dry-run    # Preview what would be migrated
+hermes claw migrate --preset user-data   # Migrate without secrets
+hermes claw migrate --overwrite  # Overwrite existing conflicts
 ```
 
-### VRChat And Local Automation
+What gets imported:
 
-The fork includes VRChat and Quest 2 operational tooling, OSC helpers, runtime
-doctors, OpenXR repair scripts, and related skills. These are examples of
-Hermes acting as a local systems operator rather than merely a chat surface.
+- **SOUL.md** — persona file
+- **Memories** — MEMORY.md and USER.md entries
+- **Skills** — user-created skills → `~/.hermes/skills/openclaw-imports/`
+- **Command allowlist** — approval patterns
+- **Messaging settings** — platform configs, allowed users, working directory
+- **API keys** — allowlisted secrets (Telegram, OpenRouter, OpenAI, Anthropic, ElevenLabs)
+- **TTS assets** — workspace audio files
+- **Workspace instructions** — AGENTS.md (with `--workspace-target`)
 
-Relevant areas include `skills/gaming/vrchat/`, `scripts/vrchat_runtime_doctor.py`,
-and the VRChat repair scripts under `scripts/windows/`.
+See `hermes claw migrate --help` for all options, or use the `openclaw-migration` skill for an interactive agent-guided migration with dry-run previews.
 
-## Engineering Rules
+---
 
-This fork follows the Hermes narrow-waist design. The model tool surface stays
-small; capabilities belong first in plugins, skills, CLI commands, service-gated
-tools, or MCP servers. Per-conversation prompt caching is protected. Secrets
-belong in `~/.hermes/.env`; behaviour belongs in `config.yaml`. Runtime claims
-are checked with concrete evidence: ports, processes, response contracts,
-tests, and logs.
+## Contributing
 
-For upstream merges, the tie-breaker is explicit: if official Hermes and a
-local feature solve the same problem equally well, use the official
-implementation as the base and carry only the fork's additional advantage.
+We welcome contributions! See the [Contributing Guide](https://hermes-agent.nousresearch.com/docs/developer-guide/contributing) for development setup, code style, and PR process.
 
-## Quick Start
+Quick start for contributors — use the standard installer, then work from the
+full git checkout it creates at `$HERMES_HOME/hermes-agent` (usually
+`~/.hermes/hermes-agent`). This matches the layout used by `hermes update`, the
+managed venv, lazy dependencies, gateway, and docs tooling.
 
-For development from this fork on Windows:
+```bash
+curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
+cd "${HERMES_HOME:-$HOME/.hermes}/hermes-agent"
+uv pip install -e ".[all,dev]"
+scripts/run_tests.sh
+```
 
-Create the venv outside the cloned source tree. A venv inside the directory
+Manual clone fallback (for throwaway clones/CI where you intentionally do not
+want the managed install layout):
+
+Create the venv outside the cloned source tree — a venv inside the directory
 the agent operates from can be wiped by a relative-path command the agent runs
 against its own checkout, destroying the running runtime mid-session.
 
-```powershell
-git clone https://github.com/zapabob/hermes-agent.git
-cd hermes-agent
-py -3 -m venv "$env:USERPROFILE/.hermes/venvs/hermes-dev"
-& "$env:USERPROFILE/.hermes/venvs/hermes-dev/Scripts/Activate.ps1"
-python -m pip install -U pip
-pip install -e ".[all,dev]"
-python -m hermes_cli.main setup
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh
+uv venv ~/.hermes/venvs/hermes-dev --python 3.11
+source ~/.hermes/venvs/hermes-dev/bin/activate
+uv pip install -e ".[all,dev]"
+scripts/run_tests.sh
 ```
 
-For the Windows installer path, use `scripts/install.ps1`.
+---
 
-Run the main surfaces:
+## Community
+
+- 💬 [Discord](https://discord.gg/NousResearch)
+- 📚 [Skills Hub](https://agentskills.io)
+- 🐛 [Issues](https://github.com/NousResearch/hermes-agent/issues)
+- 🔌 [computer-use-linux](https://github.com/avifenesh/computer-use-linux) — Linux desktop-control MCP server for Hermes and other MCP hosts, with AT-SPI accessibility trees, Wayland/X11 input, screenshots, and compositor window targeting.
+- 🔌 [HermesClaw](https://github.com/AaronWong1999/hermesclaw) — Community WeChat bridge: Run Hermes Agent and OpenClaw on the same WeChat account.
+
+---
+
+## Fork Navigation
+
+This repository tracks upstream Hermes while keeping fork-only behavior at the
+extension and operations edges. See [`fork/README.md`](fork/README.md) for the
+layout and merge policy. Before upstream intake, run the policy dry-run; on
+Windows, use the stack restart script for routine recovery:
 
 ```powershell
-hermes --tui
-hermes dashboard
-hermes gateway run
+py -3 scripts\sync_all.py --dry-run --allow-preflight-blockers
+powershell -ExecutionPolicy Bypass -File scripts\windows\restart-hermes-stack.ps1
 ```
 
-Enable selected fork plugins:
+---
 
-```powershell
-hermes plugins enable lm-twitterer
-hermes plugins enable notebooklm
-hermes plugins enable aituber-onair
-hermes plugins enable line-ai-bot
-```
+## License
 
-## Repository Map
+MIT — see [LICENSE](LICENSE).
 
-| Area | Purpose |
-| --- | --- |
-| `scripts/sync_all.py` | Python-driven upstream sync and fork-preserving merge workflow. |
-| `scripts/merge_tools/` | Merge classification, overlay policy, and conflict-resolution helpers. |
-| `scripts/windows/` | Windows launch, restart, local LLM, gateway, desktop, and recovery scripts. |
-| `plugins/aituber_onair/` | Hakua avatar operation, speech, Galaxy sessions, and live-comment loops. |
-| `plugins/line_ai_bot/` | LINE bot reply tooling and conversation prompt policy. |
-| `plugins/lm-twitterer/` | X publishing, replies, cron, explicit text, and media workflows. |
-| `plugins/notebooklm/` | Redacted source collection and NotebookLM-oriented research packaging. |
-| `gateway/` | Messaging gateway and platform adapters. |
-| `apps/desktop/` | Electron desktop chat application, including current upstream composer work. |
-| `ui-tui/` | Ink-based terminal interface. |
-| `tui_gateway/` | JSON-RPC backend used by the TUI and Desktop surfaces. |
-| `agent/` | Core conversation loop, provider adapters, prompts, memory, and runtime helpers. |
-
-## Upstream Credit
-
-Hermes Agent is developed by NousResearch. This repository is an applied
-operations and portfolio fork on top of that work. Upstream documentation
-remains the best starting point for the base platform:
-
-- <https://hermes-agent.nousresearch.com/docs/>
-- <https://github.com/NousResearch/hermes-agent>
+Built by [Nous Research](https://nousresearch.com).

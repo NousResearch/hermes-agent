@@ -1302,6 +1302,69 @@ class TestMessageStorage:
 
         assert [m["content"] for m in conv if m["role"] == "user"] == ["same prompt", "next prompt"]
 
+    def test_get_resume_conversations_matches_separate_reads(self, db):
+        """The one-fetch resume projections must be byte-identical to the two
+        separate get_messages_as_conversation reads they replace — the whole
+        point of the single-SELECT optimization (desktop audit P1). Includes a
+        dangling tool-call tail so repair_alternation drops rows and the model /
+        display lengths diverge (exercises session.resume's prefix computation).
+        """
+        db.create_session("root", "tui")
+        db.append_message("root", role="user", content="first prompt")
+        db.append_message("root", role="assistant", content="first answer")
+        db.create_session("child", "tui", parent_session_id="root")
+        db.append_message("child", role="user", content="second prompt")
+        db.append_message(
+            "child", role="assistant", content="second answer", finish_reason="stop"
+        )
+        # Dangling assistant(tool_calls) tail with no tool response → repair
+        # drops it, so model_history is shorter than display_history.
+        db.append_message(
+            "child",
+            role="assistant",
+            content="",
+            tool_calls=[
+                {"id": "t1", "type": "function", "function": {"name": "x", "arguments": "{}"}}
+            ],
+        )
+
+        model_expected = db.get_messages_as_conversation("child", repair_alternation=True)
+        display_expected = db.get_messages_as_conversation("child", include_ancestors=True)
+
+        model_history, display_history = db.get_resume_conversations("child")
+
+        assert model_history == model_expected
+        assert display_history == display_expected
+        # Sanity: the tail really did diverge the two projections.
+        assert len(display_history) > len(model_history)
+
+    def test_get_resume_conversations_single_session_no_ancestors(self, db):
+        db.create_session("solo", "cli")
+        db.append_message("solo", role="user", content="hi")
+        db.append_message("solo", role="assistant", content="hello")
+
+        model_expected = db.get_messages_as_conversation("solo", repair_alternation=True)
+        display_expected = db.get_messages_as_conversation("solo", include_ancestors=True)
+        model_history, display_history = db.get_resume_conversations("solo")
+
+        assert model_history == model_expected
+        assert display_history == display_expected
+
+    def test_get_resume_conversations_dedupes_replayed_ancestor_user(self, db):
+        db.create_session("root", "tui")
+        db.append_message("root", role="user", content="same prompt")
+        db.append_message("root", role="user", content="same prompt")
+        db.append_message("root", role="assistant", content="answer")
+        db.create_session("child", "tui", parent_session_id="root")
+        db.append_message("child", role="user", content="next prompt")
+
+        model_expected = db.get_messages_as_conversation("child", repair_alternation=True)
+        display_expected = db.get_messages_as_conversation("child", include_ancestors=True)
+        model_history, display_history = db.get_resume_conversations("child")
+
+        assert model_history == model_expected
+        assert display_history == display_expected
+
     def test_finish_reason_stored(self, db):
         db.create_session(session_id="s1", source="cli")
         db.append_message("s1", role="assistant", content="Done", finish_reason="stop")
@@ -2990,6 +3053,12 @@ class TestSessionTitle:
         session = db.get_session("s1")
         assert session["title"] == "Updated Title"
 
+    def test_auto_title_only_sets_an_empty_title(self, db):
+        db.create_session(session_id="s1", source="cli")
+        assert db.set_auto_title_if_empty("s1", "Generated Title") is True
+        assert db.set_auto_title_if_empty("s1", "Replacement Title") is False
+        assert db.get_session_title("s1") == "Generated Title"
+
     def test_title_in_search_sessions(self, db):
         db.create_session(session_id="s1", source="cli")
         db.set_session_title("s1", "Debugging Auth")
@@ -3044,6 +3113,81 @@ class TestSessionTitle:
         session = db.get_session("s1")
         assert session["title"] == "Before End"
         assert session["ended_at"] is not None
+
+
+class TestSessionTitleIndexRepair:
+    @staticmethod
+    def _seed_legacy_database(tmp_path, *, duplicate_titles):
+        db_path = tmp_path / "legacy_titles.db"
+        session_db = SessionDB(db_path=db_path)
+        session_db.create_session("older", "cli")
+        session_db.append_message("older", role="user", content="keep older message")
+        session_db.create_session("newer", "cli")
+        session_db.append_message(
+            "newer", role="assistant", content="keep newer message"
+        )
+        session_db.create_session("unique", "cli")
+        session_db.set_session_title("unique", "unique-title")
+        session_db.close()
+
+        with sqlite3.connect(db_path) as conn:
+            conn.execute("DROP INDEX idx_sessions_title_unique")
+            if duplicate_titles:
+                conn.execute(
+                    "UPDATE sessions SET title = 'shared-title' "
+                    "WHERE id IN ('older', 'newer')"
+                )
+
+        return db_path
+
+    def test_duplicate_titles_are_repaired_without_deleting_sessions(self, tmp_path):
+        db_path = self._seed_legacy_database(tmp_path, duplicate_titles=True)
+
+        reopened = SessionDB(db_path=db_path)
+        try:
+            conn = reopened._conn
+            assert conn is not None
+            rows = {
+                row["id"]: row
+                for row in conn.execute(
+                    "SELECT id, title FROM sessions ORDER BY rowid"
+                ).fetchall()
+            }
+            assert set(rows) == {"older", "newer", "unique"}
+            assert rows["older"]["title"] is None
+            assert rows["newer"]["title"] == "shared-title"
+            assert rows["unique"]["title"] == "unique-title"
+            assert reopened.get_messages("older")[0]["content"] == "keep older message"
+            assert reopened.get_messages("newer")[0]["content"] == "keep newer message"
+            index = conn.execute(
+                "SELECT sql FROM sqlite_master "
+                "WHERE type = 'index' AND name = 'idx_sessions_title_unique'"
+            ).fetchone()
+            assert index is not None
+        finally:
+            reopened.close()
+
+    def test_repaired_index_rejects_future_duplicate_title(self, tmp_path):
+        db_path = self._seed_legacy_database(tmp_path, duplicate_titles=True)
+
+        reopened = SessionDB(db_path=db_path)
+        try:
+            reopened.create_session("future", "cli")
+            with pytest.raises(ValueError, match="already in use"):
+                reopened.set_session_title("future", "shared-title")
+        finally:
+            reopened.close()
+
+    def test_clean_legacy_database_keeps_existing_titles(self, tmp_path):
+        db_path = self._seed_legacy_database(tmp_path, duplicate_titles=False)
+
+        reopened = SessionDB(db_path=db_path)
+        try:
+            assert reopened.get_session_title("unique") == "unique-title"
+            assert reopened.get_session_title("older") is None
+            assert reopened.get_session_title("newer") is None
+        finally:
+            reopened.close()
 
 
 class TestSessionTitleLineage:

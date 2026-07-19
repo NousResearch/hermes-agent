@@ -1163,3 +1163,164 @@ class TestDebugShareEndpoint:
             headers={self.header: "wrong-token"},
         )
         assert r.status_code == 401
+
+
+class TestToolsConfigEndpoints:
+    """Provider selection, API-key save, and post-setup spawn for toolsets —
+    the dashboard surface that replicates the `hermes tools` configurator."""
+
+    @pytest.fixture(autouse=True)
+    def _setup(self, _isolate_hermes_home):
+        self.client, self.header = _client()
+
+    def test_list_toolsets_shape(self):
+        r = self.client.get("/api/tools/toolsets")
+        assert r.status_code == 200
+        rows = r.json()
+        assert isinstance(rows, list) and rows
+        row = rows[0]
+        for k in ("name", "label", "enabled", "configured", "tools"):
+            assert k in row
+
+    def test_toolset_config_provider_matrix(self):
+        # `web` has a TOOL_CATEGORIES entry → providers list populated.
+        r = self.client.get("/api/tools/toolsets/web/config")
+        assert r.status_code == 200
+        body = r.json()
+        assert body["has_category"] is True
+        assert isinstance(body["providers"], list)
+
+    def test_unknown_toolset_config_400(self):
+        r = self.client.get("/api/tools/toolsets/not_a_toolset/config")
+        assert r.status_code == 400
+
+    def test_save_env_writes_key_and_validates_allowlist(self):
+        from hermes_cli.config import get_env_value
+
+        cfg = self.client.get("/api/tools/toolsets/web/config").json()
+        # Find a real env-var key from the visible provider matrix.
+        key = None
+        for prov in cfg["providers"]:
+            for e in prov.get("env_vars", []):
+                key = e["key"]
+                break
+            if key:
+                break
+        if not key:
+            pytest.skip("no env-var-bearing web provider in this build")
+
+        r = self.client.put(
+            "/api/tools/toolsets/web/env", json={"env": {key: "test-secret-123"}}
+        )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert key in body["saved"]
+        assert body["is_set"][key] is True
+        # CLI-config parity: the key landed in the .env store the CLI reads.
+        assert get_env_value(key) == "test-secret-123"
+
+    def test_save_env_rejects_unknown_key(self):
+        r = self.client.put(
+            "/api/tools/toolsets/web/env",
+            json={"env": {"TOTALLY_BOGUS_KEY": "x"}},
+        )
+        assert r.status_code == 400
+
+    def test_save_env_blank_value_skipped(self):
+        cfg = self.client.get("/api/tools/toolsets/web/config").json()
+        key = None
+        for prov in cfg["providers"]:
+            for e in prov.get("env_vars", []):
+                key = e["key"]
+                break
+            if key:
+                break
+        if not key:
+            pytest.skip("no env-var-bearing web provider in this build")
+        r = self.client.put(
+            "/api/tools/toolsets/web/env", json={"env": {key: "   "}}
+        )
+        assert r.status_code == 200
+        assert key in r.json()["skipped"]
+
+    def test_post_setup_unknown_key_400(self):
+        r = self.client.post(
+            "/api/tools/toolsets/browser/post-setup", json={"key": "bogus"}
+        )
+        assert r.status_code == 400
+
+    def test_post_setup_unknown_toolset_400(self):
+        r = self.client.post(
+            "/api/tools/toolsets/not_a_toolset/post-setup",
+            json={"key": "agent_browser"},
+        )
+        assert r.status_code == 400
+
+    def test_post_setup_spawns_action(self, monkeypatch):
+        import hermes_cli.web_server as ws
+
+        spawned = {}
+
+        class _FakeProc:
+            pid = 4321
+
+        def _fake_spawn(subcommand, name):
+            spawned["subcommand"] = subcommand
+            spawned["name"] = name
+            return _FakeProc()
+
+        monkeypatch.setattr(ws, "_spawn_hermes_action", _fake_spawn)
+        r = self.client.post(
+            "/api/tools/toolsets/browser/post-setup",
+            json={"key": "agent_browser"},
+        )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["name"] == "tools-post-setup"
+        assert body["pid"] == 4321
+        assert spawned["subcommand"] == ["tools", "post-setup", "agent_browser"]
+
+    def test_endpoints_require_session_token(self):
+        for method, path, payload in [
+            ("get", "/api/tools/toolsets/web/config", None),
+            ("put", "/api/tools/toolsets/web/env", {"env": {}}),
+            ("post", "/api/tools/toolsets/web/post-setup", {"key": "ddgs"}),
+        ]:
+            fn = getattr(self.client, method)
+            kwargs = {"headers": {self.header: "wrong-token"}}
+            if payload is not None:
+                kwargs["json"] = payload
+            r = fn(path, **kwargs)
+            assert r.status_code == 401, f"{method} {path} not gated"
+
+
+# ---------------------------------------------------------------------------
+# _spawn_hermes_action env scrubbing (#52470)
+# ---------------------------------------------------------------------------
+
+def test_spawn_hermes_action_scrubs_gateway_loop_guard_env(monkeypatch, tmp_path):
+    """The dashboard runs inside the gateway, so os.environ has
+    _HERMES_GATEWAY=1. Spawned actions (e.g. `gateway restart`) must NOT inherit
+    it, or the in-process restart-loop guard rejects the restart and it silently
+    fails (#52470).
+    """
+    import hermes_cli.web_server as ws
+
+    monkeypatch.setenv("_HERMES_GATEWAY", "1")
+    monkeypatch.setattr(ws, "_ACTION_LOG_DIR", tmp_path)
+
+    captured = {}
+
+    class _FakeProc:
+        pid = 1234
+
+    def _fake_popen(cmd, **kwargs):
+        captured["env"] = kwargs.get("env")
+        return _FakeProc()
+
+    monkeypatch.setattr(ws.subprocess, "Popen", _fake_popen)
+
+    ws._spawn_hermes_action(["gateway", "restart"], "gateway-restart")
+
+    assert "_HERMES_GATEWAY" not in captured["env"]
+    assert captured["env"]["HERMES_NONINTERACTIVE"] == "1"

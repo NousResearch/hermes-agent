@@ -19,6 +19,7 @@
   },
   "dependencies": {
     "@hermes/ink": "file:./packages/hermes-ink",
+    "@hermes/shared": "file:../apps/shared",
     "@nanostores/react": "^1.1.0",
     "ink": "^6.8.0",
     "ink-text-input": "^6.0.0",

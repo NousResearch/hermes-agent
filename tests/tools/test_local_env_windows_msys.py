@@ -188,7 +188,7 @@ class TestFindBashWindows:
         with pytest.raises(RuntimeError, match="Git Bash not found"):
             _find_bash()
 
-    def test_windows_session_files_are_quoted_as_git_bash_paths(
+    def test_windows_snapshot_path_and_cwd_marker_use_git_bash_paths(
         self, monkeypatch, tmp_path,
     ):
         monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
@@ -206,7 +206,9 @@ class TestFindBashWindows:
         script = env._wrap_command("pwd", r"C:\Users\NVIDIA")
 
         assert "source /c/Users/NVIDIA/.hermes/cache/terminal/snap.sh" in script
-        assert "pwd -P > /c/Users/NVIDIA/.hermes/cache/terminal/cwd.txt" in script
+        assert "__HERMES_CWD_" in script
+        assert '"$(pwd -P)"' in script
+        assert "pwd -P > /c/Users/NVIDIA/.hermes/cache/terminal/cwd.txt" not in script
 
 
 # ---------------------------------------------------------------------------
@@ -301,15 +303,15 @@ class TestResolveSafeCwdWindows:
 
 
 # ---------------------------------------------------------------------------
-# End-to-end: _update_cwd via marker file (Windows simulation)
+# End-to-end: _update_cwd via stdout marker (Windows simulation)
 # ---------------------------------------------------------------------------
 
 class TestUpdateCwdWindowsMsys:
-    def test_marker_file_msys_path_stored_in_native_form(
+    def test_marker_output_msys_path_stored_in_native_form(
         self, monkeypatch, tmp_path,
     ):
-        """When Git Bash writes ``/c/Users/x`` to the cwd marker file on
-        Windows, ``_update_cwd`` must translate to native form before
+        """When Git Bash emits ``/c/Users/x`` in the cwd marker on Windows,
+        ``_update_cwd`` must translate to native form before
         validating and storing — otherwise ``os.path.isdir`` rejects a
         perfectly real directory."""
         original = tmp_path / "starting"
@@ -326,18 +328,21 @@ class TestUpdateCwdWindowsMsys:
         # Pretend Git Bash wrote an MSYS path that maps to tmp_path/"next"
         new_dir = tmp_path / "next"
         new_dir.mkdir()
+        marker = env._cwd_marker
 
-        with open(env._cwd_file, "w") as f:
-            f.write("/c/whatever/from/bash")
-
-        # Translate the synthetic MSYS string to the real native dir.
+        # Translate the synthetic MSYS marker path to the real native dir.
         def fake_translate(p):
             if p == "/c/whatever/from/bash":
                 return str(new_dir)
             return p
 
         with patch.object(local_mod, "_msys_to_windows_path", side_effect=fake_translate):
-            env._update_cwd({"output": "", "returncode": 0})
+            env._update_cwd(
+                {
+                    "output": f"x\n{marker}/c/whatever/from/bash{marker}\n",
+                    "returncode": 0,
+                }
+            )
 
         assert env.cwd == str(new_dir)
 

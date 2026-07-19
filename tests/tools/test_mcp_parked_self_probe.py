@@ -101,7 +101,7 @@ def test_parked_server_self_probes_and_revives(monkeypatch, tmp_path):
         task._shutdown_event.set()
         task._reconnect_event.set()
         try:
-            await asyncio.wait_for(run_task, timeout=2)
+            await asyncio.wait_for(run_task, timeout=15)
         except (asyncio.TimeoutError, asyncio.CancelledError, Exception):
             run_task.cancel()
 

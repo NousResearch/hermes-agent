@@ -1165,6 +1165,7 @@ class GitHubSource(SkillSource):
     @staticmethod
     def _parse_frontmatter_quick(content: str) -> dict:
         """Parse YAML frontmatter from SKILL.md content."""
+        content = content.lstrip("\ufeff")  # tolerate UTF-8 BOM (Windows editors)
         if not content.startswith("---"):
             return {}
         match = re.search(r'\n---\s*\n', content[3:])
@@ -3317,6 +3318,7 @@ class OptionalSkillSource(SkillSource):
     @staticmethod
     def _parse_frontmatter(content: str) -> dict:
         """Parse YAML frontmatter from SKILL.md content."""
+        content = content.lstrip("\ufeff")  # tolerate UTF-8 BOM (Windows editors)
         if not content.startswith("---"):
             return {}
         match = re.search(r'\n---\s*\n', content[3:])

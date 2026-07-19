@@ -198,6 +198,7 @@ export const en: Translations = {
   keybinds: {
     title: 'Keyboard shortcuts',
     subtitle: open => `Click a shortcut to rebind it · ${open} reopens this panel.`,
+    search: 'Search shortcuts…',
     rebind: 'Rebind',
     reset: 'Reset to default',
     resetAll: 'Reset all',
@@ -315,11 +316,13 @@ export const en: Translations = {
       providerApiKeys: 'API keys',
       gateway: 'Gateway',
       apiKeys: 'Tools & Keys',
+      keybinds: 'Keyboard Shortcuts',
       keysTools: 'Tools',
       keysSettings: 'Settings',
       mcp: 'MCP',
       archivedChats: 'Archived Chats',
       about: 'About',
+      billing: 'Billing',
       notifications: 'Notifications',
       plugins: 'Plugins'
     },
@@ -764,6 +767,10 @@ export const en: Translations = {
       noProviderKeys: 'No provider API keys available.',
       searchKeys: 'Search providers…',
       noKeysMatch: 'No providers match your search.',
+      localEndpoint: {
+        title: 'Local / custom endpoint',
+        description: 'Point Hermes at any OpenAI-compatible endpoint (Zyphra, vLLM, llama.cpp, Ollama, etc).'
+      },
       loading: 'Loading providers...'
     },
     sessions: {
@@ -1658,6 +1665,7 @@ export const en: Translations = {
       finishedUnread: 'Finished — unread',
       backgroundRunning: 'Background task running',
       handoffOrigin: platform => `Handed off from ${platform}`,
+      ownedByProfile: profile => `Profile: ${profile}`,
       renamed: 'Renamed',
       renameFailed: 'Rename failed',
       renameTitle: 'Rename session',
@@ -1969,6 +1977,7 @@ export const en: Translations = {
     recommended: 'Recommended',
     connected: 'Connected',
     featuredPitch: 'One subscription, 300+ frontier models — the recommended way to run Hermes',
+    fireworksPitch: 'Direct model API — Fireworks-hosted frontier models',
     openRouterPitch: 'One key, hundreds of models — a solid default',
     apiKeyOptions: {
       fireworks: {
@@ -2171,6 +2180,7 @@ export const en: Translations = {
       noModel: 'no model',
       switchModel: 'Switch model',
       openModelPicker: 'Open model picker',
+      modelPinned: 'pinned by you; new chats use this instead of the Settings default',
       modelTitle: (provider, model) => `Model · ${provider}: ${model}`,
       providerModelTitle: (provider, model) => `${provider} · ${model}`
     }

@@ -738,7 +738,7 @@ class TestAudioRecorderProperties:
         # Force start time to 1 second ago
         recorder._start_time = time.monotonic() - 1.0
         elapsed = recorder.elapsed_seconds
-        assert 0.9 < elapsed < 2.0
+        assert 0.9 < elapsed < 10.0  # loose upper bound; only the lower bound is the property
 
         recorder.cancel()
 

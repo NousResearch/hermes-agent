@@ -960,14 +960,10 @@ def _patch_skill(
         }
     if new_string is None:
         return {"success": False, "error": "new_string is required for 'patch'. Use an empty string to delete matched text."}
-    if old_string == new_string:
-        return {
-            "success": False,
-            "error": (
-                "old_string and new_string are identical — this patch would change nothing. "
-                "Supply the actual replacement text."
-            ),
-        }
+    # No old_string == new_string guard here: fuzzy_find_and_replace already
+    # rejects that with "old_string and new_string are identical"
+    # (tools/fuzzy_match.py), and its error carries a file_preview this layer
+    # cannot produce. Duplicating it here would only shadow the richer message.
 
     existing = _find_skill(name)
     if not existing:

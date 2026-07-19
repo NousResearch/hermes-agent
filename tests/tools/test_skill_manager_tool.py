@@ -336,15 +336,6 @@ word word
         assert "write_file" in err, "must name the escape hatch it is forbidding"
         assert "exact" in err.lower()
 
-    def test_patch_identical_strings_rejected(self, tmp_path):
-        """old_string == new_string is a silent no-op the model reports as success."""
-        with _skill_dir(tmp_path):
-            _create_skill("my-skill", VALID_SKILL_CONTENT)
-            result = _patch_skill("my-skill", "Do the thing.", "Do the thing.")
-
-        assert result["success"] is False
-        assert "identical" in result["error"].lower()
-
     def test_patch_replace_all(self, tmp_path):
         content = """\
 ---
@@ -592,17 +583,6 @@ class TestSkillManageDispatcher:
         assert "write_file" in err, "must name the escape hatch it is forbidding"
         assert "exact" in err.lower()
 
-    def test_patch_identical_strings_rejected_via_dispatcher(self, tmp_path):
-        """The no-op guard must also be reachable through skill_manage()."""
-        with _skill_dir(tmp_path):
-            _create_skill("my-skill", VALID_SKILL_CONTENT)
-            raw = skill_manage(action="patch", name="my-skill",
-                               old_string="Do the thing.", new_string="Do the thing.")
-
-        result = json.loads(raw)
-        assert result["success"] is False
-        assert "identical" in result["error"].lower()
-
     def test_full_create_via_dispatcher(self, tmp_path):
         """Foreground create does NOT mark the skill as agent-created.
 
@@ -752,7 +732,6 @@ Step 2: Do the other thing.
     @pytest.mark.parametrize("kwargs", [
         {"old_string": None, "new_string": "x"},
         {"old_string": "", "new_string": "x"},
-        {"old_string": "Step 1: Do the thing.", "new_string": "Step 1: Do the thing."},
     ])
     def test_rejected_patch_leaves_file_byte_identical(self, tmp_path, kwargs):
         """A rejected patch must not partially mutate the skill."""

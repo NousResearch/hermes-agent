@@ -4702,7 +4702,9 @@ class APIServerAdapter(BasePlatformAdapter):
                 path_to_file[file_path] = file_obj
 
         if not path_to_file:
-            return _resolve_media_to_data_urls(text).strip(), []
+            _, cleaned = BasePlatformAdapter.extract_media(text)
+            cleaned = _resolve_media_to_data_urls(cleaned)
+            return cleaned.strip(), []
 
         # 3. Replace file references in the original text with markdown
         #    links at the original positions.  Process MEDIA: tags first

@@ -3247,7 +3247,19 @@ This compaction should PRIORITISE preserving all information related to the focu
         # monotonic — the tail can only grow, never shrink.
         cut_idx = self._ensure_last_assistant_message_in_tail(messages, cut_idx, head_end)
 
-        return max(cut_idx, head_end + 1)
+        # The floor guarantees forward progress — compression must always claim
+        # at least one message or the caller's compress_start >= compress_end
+        # guard turns the pass into a no-op that re-runs forever (the same loop
+        # the soft-ceiling re-walk above guards against).  But raising
+        # cut_idx here discards the tool-group alignment computed above, and the
+        # raised index can land *inside* a group: the parent
+        # ``assistant(tool_calls)`` falls in the summarised region while its
+        # ``tool`` results start the tail, and _sanitize_tool_pairs then drops
+        # those orphans outright — the silent tool-result loss the alignment
+        # exists to prevent.  Re-align FORWARD (never backward, which would give
+        # the floor's message back) so a raised cut skips to the end of the
+        # group and the whole call/result pair is summarised together.
+        return self._align_boundary_forward(messages, max(cut_idx, head_end + 1))
 
     # ------------------------------------------------------------------
     # ContextEngine: manual /compress preflight

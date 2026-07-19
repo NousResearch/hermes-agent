@@ -1637,15 +1637,20 @@ class SessionStore:
         survives sessions.json pruning/loss.
 
         ``clear_model_override=False`` preserves the give-up path's original
-        behavior (flag only, no override drop).
+        behavior (flag only, no runtime-override drop). The parameter name is
+        retained for compatibility, but the normal finalization path clears
+        both persisted /model and /reasoning state because both are scoped to
+        the expired conversation.
         """
         with self._lock:
             entry.expiry_finalized = True
             if clear_model_override:
-                # Session finalization is a conversation boundary — drop the
-                # persisted /model override too so a later message doesn't
-                # rehydrate it after the in-memory override was popped.
+                # Session finalization is a conversation boundary — drop both
+                # persisted runtime overrides so a later message cannot
+                # rehydrate state already removed from the runner's in-memory
+                # conversation scope.
                 entry.model_override = None
+                entry.reasoning_override = None
             self._save()
         if self._db:
             setter = getattr(self._db, "set_expiry_finalized", None)

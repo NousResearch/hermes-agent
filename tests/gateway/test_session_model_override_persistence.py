@@ -141,6 +141,60 @@ def test_new_clears_persisted_override(store_factory, tmp_path):
     assert "gpt-5o" not in _sessions_json(tmp_path)
 
 
+def test_expiry_finalization_clears_all_persisted_runtime_overrides(store_factory):
+    """Expiry is a conversation boundary for both /model and /reasoning."""
+    store = store_factory()
+    entry = store.get_or_create_session(_make_source())
+    store.set_model_override(entry.session_key, OVERRIDE)
+    store.set_reasoning_override(
+        entry.session_key,
+        {"enabled": True, "effort": "high"},
+    )
+
+    store.set_expiry_finalized(entry)
+
+    assert store.get_model_override(entry.session_key) is None
+    assert store.get_reasoning_override(entry.session_key) is None
+
+    # Durable verification: neither override may reappear after reload.
+    store2 = store_factory()
+    assert store2.get_model_override(entry.session_key) is None
+    assert store2.get_reasoning_override(entry.session_key) is None
+
+
+def test_expiry_finalization_clears_overrides_from_state_db(tmp_path, monkeypatch):
+    """The primary SQLite routing row must not resurrect expired overrides."""
+    import hermes_state
+
+    real_session_db = hermes_state.SessionDB
+    db_path = tmp_path / "state.db"
+    monkeypatch.setattr(
+        hermes_state,
+        "SessionDB",
+        lambda: real_session_db(db_path=db_path),
+    )
+    config = GatewayConfig()
+    config.write_sessions_json = False
+
+    store = SessionStore(sessions_dir=tmp_path / "sessions", config=config)
+    entry = store.get_or_create_session(_make_source())
+    store.set_model_override(entry.session_key, OVERRIDE)
+    store.set_reasoning_override(
+        entry.session_key,
+        {"enabled": True, "effort": "high"},
+    )
+    store.set_expiry_finalized(entry)
+    store._db.close()
+
+    # A fresh store can only load from state.db because the JSON mirror is off.
+    store2 = SessionStore(sessions_dir=tmp_path / "sessions", config=config)
+    try:
+        assert store2.get_model_override(entry.session_key) is None
+        assert store2.get_reasoning_override(entry.session_key) is None
+    finally:
+        store2._db.close()
+
+
 def _make_runner(store):
     from gateway.run import GatewayRunner
 

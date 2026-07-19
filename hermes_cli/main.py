@@ -4666,24 +4666,185 @@ def _gateway_prompt(prompt_text: str, default: str = "", timeout: float = 300.0)
     return default
 
 
-def _web_ui_build_needed(web_dir: Path) -> bool:
+def _web_ui_build_input_hash(web_dir: Path) -> str | None:
+    """Content hash over the web UI sources that ``npm run build -w web`` consumes.
+
+    Returns None when the workspace is unbuildable (no web/package.json), so
+    a missing-hash case is treated as "unknown → rebuild" by the caller.
+
+    Covers:
+
+    * ``web/`` package.json + lockfile (when web has its own lock) +
+      vite.config.* + tsconfig.* config.
+    * every ``.ts/.tsx/.js/.jsx/.css/.html/.vue`` source under ``web/src``,
+      ``web/public``, ``web/index.html`` (pruned against node_modules/dist).
+    * the single workspace ``package-lock.json`` at the repo root, which
+      determines the dependency tree for the web workspace.
+
+    The hash is deterministic (sorted, content-based) and therefore immune to
+    the mtime skew bug where a ``git pull``/``npm`` rewrite leaves source
+    files with an *older* mtime than a previously-built ``web_dist`` — which
+    used to make ``_web_ui_build_needed`` skip a build whose inputs had in
+    fact changed (see docs/HOTFIX-HERMES-UPDATER-01-root-cause.md).
+    """
+    if not (web_dir / "package.json").is_file():
+        return None
+    project_root = (
+        web_dir.parent.parent if web_dir.parent.name == "apps" else web_dir.parent
+    )
+    h = hashlib.sha256()
+    # Workspace / config manifests.
+    for meta in (
+        "package.json",
+        "package-lock.json",
+        "yarn.lock",
+        "pnpm-lock.yaml",
+        "vite.config.ts",
+        "vite.config.js",
+        "tsconfig.json",
+        "tsconfig.build.json",
+    ):
+        mp = web_dir / meta
+        if mp.is_file():
+            try:
+                h.update(mp.read_bytes())
+            except OSError:
+                h.update(b"<missing>")
+    # Repo-root workspace lockfile (single lock covers all workspaces).
+    root_lock = project_root / "package-lock.json"
+    if root_lock.is_file():
+        try:
+            h.update(root_lock.read_bytes())
+        except OSError:
+            h.update(b"<missing>")
+    # Source trees, pruned against build output.
+    skip = frozenset({"node_modules", "dist"})
+    for base in (web_dir / "src", web_dir / "public"):
+        if not base.is_dir():
+            continue
+        for dirpath, dirnames, filenames in os.walk(base, topdown=True):
+            dirnames[:] = [d for d in dirnames if d not in skip]
+            for fn in filenames:
+                if fn.endswith(
+                    (".ts", ".tsx", ".js", ".jsx", ".css", ".html", ".vue")
+                ):
+                    fp = os.path.join(dirpath, fn)
+                    try:
+                        h.update(fp.encode())
+                        h.update(b"\0")
+                        h.update(Path(fp).read_bytes())
+                    except OSError:
+                        h.update(b"<missing>")
+    index_html = web_dir / "index.html"
+    if index_html.is_file():
+        try:
+            h.update(index_html.read_bytes())
+        except OSError:
+            h.update(b"<missing>")
+    return h.hexdigest()
+
+
+def _web_ui_build_stamp_path(web_dir: Path) -> Path:
+    """Path of the web build-content stamp under ``hermes_cli/web_dist``."""
+    project_root = (
+        web_dir.parent.parent if web_dir.parent.name == "apps" else web_dir.parent
+    )
+    return project_root / "hermes_cli" / "web_dist" / ".web_build_stamp.json"
+
+
+def _write_web_ui_build_stamp(web_dir: Path) -> None:
+    """Write the web build-content stamp after a successful build.
+
+    Mirrors ``_write_desktop_build_stamp`` but scoped to the web dashboard.
+    The stamp records the content hash of every input ``_build_web_ui`` just
+    consumed, so a subsequent ``_web_ui_build_needed`` call can skip
+    deterministically (content-based) instead of on mtime — fixing the
+    false-skip bug documented in docs/HOTFIX-HERMES-UPDATER-01-root-cause.md.
+
+    Never raises: a stamp write failure must not fail or block a build.
+    """
+    try:
+        content_hash = _web_ui_build_input_hash(web_dir)
+        if content_hash is None:
+            return
+        from datetime import datetime, timezone
+
+        stamp_file = _web_ui_build_stamp_path(web_dir)
+        stamp_file.parent.mkdir(parents=True, exist_ok=True)
+        stamp_data = {
+            "contentHash": content_hash,
+            "builtAt": datetime.now(timezone.utc).isoformat(),
+        }
+        stamp_file.write_text(
+            json.dumps(stamp_data, indent=2) + "\n", encoding="utf-8"
+        )
+    except Exception as exc:
+        logger.debug("Failed to write web UI build stamp: %s", exc)
+
+
+def _web_ui_build_needed(web_dir: Path, *, force: bool = False) -> bool:
     """Return True if the web UI dist is missing or stale.
 
     Mirrors the staleness logic used by ``_tui_build_needed()`` for the TUI.
     The dashboard source lives under ``web/``, but the Vite build
     still outputs to ``hermes_cli/web_dist/`` (per vite.config.ts
     outDir: "../hermes_cli/web_dist"), NOT to ``web/dist/``, so Python
-    packaging can continue serving the same static asset directory. Uses the
-    Vite manifest as the sentinel because it is written last and therefore
-    has the newest mtime of any build output.
+    packaging can continue serving the same static asset directory.
+
+    Args:
+        web_dir: Path to the ``web/`` dashboard source directory.
+        force: When True, bypass the staleness checks and always report a
+            build is needed. Used by ``hermes update`` after a dependency
+            sync or source pull so a changed lockfile/source tree can never
+            be skipped on mtime alone (which is what HOTFIX-HERMES-UPDATER-01
+            fixes).
+
+    Decision order:
+
+    1. ``force=True`` → always rebuild.
+    2. Missing dist sentinel → rebuild.
+    3. Content-hash stamp: if a stamp from a prior successful build exists
+       and matches the current input hash, the dist is current → skip. This
+       is the deterministic analogue of the desktop content-hash stamp and is
+       immune to the mtime-skew bug.
+    4. Fallback: mtime comparison (retained for pre-stamp checkouts and as a
+       secondary guard). A newer source/lockfile mtime than the dist sentinel
+       forces a rebuild.
     """
-    project_root = web_dir.parent.parent if web_dir.parent.name == "apps" else web_dir.parent
+    if force:
+        return True
+    project_root = (
+        web_dir.parent.parent if web_dir.parent.name == "apps" else web_dir.parent
+    )
     dist_dir = project_root / "hermes_cli" / "web_dist"
     sentinel = dist_dir / ".vite" / "manifest.json"
     if not sentinel.exists():
         sentinel = dist_dir / "index.html"
     if not sentinel.exists():
         return True
+    # Deterministic content-hash stamp — skip only when inputs are byte-identical.
+    try:
+        current_hash = _web_ui_build_input_hash(web_dir)
+    except Exception:
+        current_hash = None
+    if current_hash is not None:
+        stamp_file = _web_ui_build_stamp_path(web_dir)
+        if stamp_file.is_file():
+            try:
+                stamp = json.loads(stamp_file.read_text(encoding="utf-8"))
+                if stamp.get("contentHash") == current_hash:
+                    return False
+                # A stamp exists but the inputs have changed since it was
+                # written: that is a definitive "needs rebuild", independent of
+                # mtime. Returning here prevents the mtime fallback below
+                # from wrongly skipping the build when a git checkout left
+                # the changed sources with an *older* mtime than web_dist.
+                return True
+            except (OSError, json.JSONDecodeError):
+                # Unreadable stamp → treat as unknown and fall through to mtime.
+                pass
+        # No valid stamp yet: fall through to the mtime heuristic below so a
+        # freshly-installed tree still builds exactly once.
     dist_mtime = sentinel.stat().st_mtime
     skip = frozenset({"node_modules", "dist"})
     for dirpath, dirnames, filenames in os.walk(web_dir, topdown=True):
@@ -5046,15 +5207,19 @@ def _build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
                 _say(f"  Build error:\n  {stderr_tail}")
             return True
 
-        _say(
-            f"  {'✗' if fatal else '⚠'} Web UI build failed"
-            + ("" if fatal else " (hermes web will not be available)")
-        )
         _relay(r2)
         if fatal:
             _say("  Run manually:  npm install --workspace web && npm run build -w web")
         return False
     _say("  ✓ Web UI built")
+    # Record the content hash of the inputs we just built so the next
+    # ``_web_ui_build_needed`` call can skip deterministically instead of
+    # relying on mtime (which git checkouts / npm rewrites make unsafe).
+    # Never blocks a successful build on stamp write failure.
+    try:
+        _write_web_ui_build_stamp(web_dir)
+    except Exception as exc:
+        logger.debug("Could not write web UI build stamp: %s", exc)
     return True
 
 
@@ -10309,7 +10474,39 @@ def _cmd_update_impl(args, gateway_mode: bool):
         _refresh_active_lazy_features()
 
         node_failures = _update_node_dependencies()
-        _build_web_ui(PROJECT_ROOT / "web")
+        # Force the web UI rebuild whenever the inputs have changed, so a stale
+        # dist is never served after an update. The dependency sync above already
+        # detected a lockfile change via _npm_lockfile_changed(); additionally
+        # compare the web source content hash against the stamp from the last
+        # successful build. Either trigger forces force=True, which makes
+        # _web_ui_build_needed() skip its mtime heuristic entirely — fixing
+        # the false-skip bug in docs/HOTFIX-HERMES-UPDATER-01-root-cause.md.
+        web_dir = PROJECT_ROOT / "web"
+        web_build_forced = False
+        if web_dir.is_dir():
+            if _npm_lockfile_changed(get_default_hermes_root()):
+                web_build_forced = True
+            else:
+                try:
+                    current_hash = _web_ui_build_input_hash(web_dir)
+                    stamp_file = _web_ui_build_stamp_path(web_dir)
+                    if current_hash is None:
+                        web_build_forced = True
+                    elif stamp_file.is_file():
+                        try:
+                            stamp = json.loads(
+                                stamp_file.read_text(encoding="utf-8")
+                            )
+                            if stamp.get("contentHash") != current_hash:
+                                web_build_forced = True
+                        except (OSError, json.JSONDecodeError):
+                            web_build_forced = True
+                except Exception:
+                    # On any uncertainty, rebuild — safer than skipping.
+                    web_build_forced = True
+        if web_build_forced:
+            print("→ Web UI inputs changed — forcing rebuild")
+        _build_web_ui(web_dir, force=web_build_forced)
 
         # Rebuild the desktop app if the source tree changed since the last
         # build.  ``hermes desktop --build-only`` uses the content-hash stamp

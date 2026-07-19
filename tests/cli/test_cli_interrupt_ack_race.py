@@ -196,6 +196,50 @@ def test_acknowledged_interrupt_still_requeues_message():
     assert cli._last_turn_interrupted is True
 
 
+def test_acknowledged_internal_interrupt_stays_hidden_from_queue_management():
+    """Internal plugin turns retain their non-manageable identity after interrupt."""
+    from hermes_cli.queue_management import ManagedPromptQueue, UnmanagedPrompt
+
+    cli = _make_cli()
+
+    class _AckAgent(_StubAgent):
+        def run_conversation(self, **kwargs):
+            for _ in range(100):
+                if self._interrupt_requested:
+                    break
+                time.sleep(0.05)
+            return {
+                "final_response": "partial work",
+                "messages": [{"role": "assistant", "content": "partial work"}],
+                "api_calls": 1,
+                "completed": False,
+                "interrupted": True,
+                "interrupt_message": self._interrupt_message,
+                "partial": True,
+                "response_previewed": True,
+            }
+
+    agent = _AckAgent(cli.session_id)
+    cli.agent = agent
+    cli._interrupt_queue = queue.Queue()
+    cli._pending_input = ManagedPromptQueue()
+    cli._interrupt_queue.put(UnmanagedPrompt("[system] refresh internal state"))
+    cli._interrupt_queue.put("follow-up user turn")
+
+    with patch.object(cli, "_ensure_runtime_credentials", return_value=True), \
+         patch.object(cli, "_resolve_turn_agent_config", return_value={
+             "signature": cli._active_agent_route_signature,
+             "model": None, "runtime": None, "request_overrides": None,
+         }), \
+         patch.object(cli, "_init_agent", return_value=True):
+        cli.chat("original")
+
+    assert cli._pending_input.snapshot_items() == []
+    assert cli._pending_input.get_nowait() == (
+        "[system] refresh internal state\nfollow-up user turn"
+    )
+
+
 def test_chat_persists_clean_input_when_a_queued_note_changes_api_message():
     """Queued notes remain API-local and preserve close-handoff marker identity."""
     cli = _make_cli()

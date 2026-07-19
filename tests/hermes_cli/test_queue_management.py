@@ -10,6 +10,7 @@ import pytest
 from hermes_cli.queue_management import (
     ManagedPromptQueue,
     QueueSnapshotStore,
+    UnmanagedPrompt,
     format_queue_snapshot,
 )
 
@@ -171,6 +172,18 @@ def test_managed_prompt_queue_can_snapshot_empty_state_and_clear_frozen_ids_only
     remaining = pending.snapshot_items()
     assert [item.preview for item in remaining] == ["new arrival"]
     assert pending.get_nowait() == "new arrival"
+
+
+def test_system_prompt_stays_hidden_when_requeued_through_plain_put():
+    pending = ManagedPromptQueue()
+    pending.put_system("[system] refresh internal state")
+
+    system_prompt = pending.get_nowait()
+    assert isinstance(system_prompt, UnmanagedPrompt)
+    pending.put(system_prompt)
+
+    assert pending.snapshot_items() == []
+    assert pending.get_nowait() == "[system] refresh internal state"
 
 
 def test_managed_prompt_queue_removal_releases_join_waiters():

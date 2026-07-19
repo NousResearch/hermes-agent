@@ -3,7 +3,6 @@
 from contextlib import redirect_stdout
 from io import StringIO
 import os
-from queue import Queue
 import subprocess
 from unittest.mock import patch
 
@@ -15,6 +14,7 @@ from hermes_cli.browser_connect import (
     launch_chrome_debug,
     manual_chrome_debug_command,
 )
+from hermes_cli.queue_management import ManagedPromptQueue
 
 
 def _assert_chrome_debug_cmd(cmd, expected_chrome, expected_port):
@@ -339,7 +339,8 @@ class TestChromeDebugLaunch:
         everyday Chrome profile.
         """
         cli = HermesCLI.__new__(HermesCLI)
-        cli._pending_input = Queue()
+        cli._pending_input = ManagedPromptQueue()
+        cli._pending_input.put("user turn")
         monkeypatch.delenv("BROWSER_CDP_URL", raising=False)
 
         # The default-local path now resolves the endpoint via
@@ -356,6 +357,9 @@ class TestChromeDebugLaunch:
              redirect_stdout(StringIO()):
             cli._handle_browser_command("/browser connect")
 
+        visible = cli._pending_input.snapshot_items()
+        assert [item.preview for item in visible] == ["user turn"]
+        assert cli._pending_input.remove_ids([visible[0].queue_id]) == 1
         note = cli._pending_input.get_nowait()
         assert "Chromium-family" in note
         assert "dev/debug" in note
@@ -363,3 +367,20 @@ class TestChromeDebugLaunch:
         assert "live Chrome browser" not in note
         assert "real browser" not in note
         assert "Please await their instruction" not in note
+
+    def test_disconnect_context_note_is_not_manageable(self, monkeypatch):
+        cli = HermesCLI.__new__(HermesCLI)
+        cli._pending_input = ManagedPromptQueue()
+        cli._pending_input.put("user turn")
+        monkeypatch.setenv("BROWSER_CDP_URL", "http://127.0.0.1:9222")
+
+        with patch("tools.browser_tool.cleanup_all_browsers"), \
+             patch("tools.browser_tool._stop_cdp_supervisor"), \
+             redirect_stdout(StringIO()):
+            cli._handle_browser_command("/browser disconnect")
+
+        visible = cli._pending_input.snapshot_items()
+        assert [item.preview for item in visible] == ["user turn"]
+        assert cli._pending_input.remove_ids([visible[0].queue_id]) == 1
+        note = cli._pending_input.get_nowait()
+        assert "disconnected the browser tools" in note

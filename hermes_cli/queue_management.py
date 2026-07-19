@@ -23,6 +23,10 @@ DEFAULT_QUEUE_SNAPSHOT_TTL_SECONDS = 300.0
 DEFAULT_QUEUE_PREVIEW_CHARS = 160
 
 
+class UnmanagedPrompt(str):
+    """String-compatible internal prompt that must not enter queue snapshots."""
+
+
 def new_queue_id() -> str:
     """Return a process-local opaque identifier for one pending turn."""
 
@@ -370,7 +374,11 @@ class ManagedPromptQueue(queue.Queue):
         )
 
     def put(self, item: Any, block: bool = True, timeout: float | None = None) -> None:
-        super().put(self._entry(item, manageable=True), block=block, timeout=timeout)
+        super().put(
+            self._entry(item, manageable=not isinstance(item, UnmanagedPrompt)),
+            block=block,
+            timeout=timeout,
+        )
 
     def put_nowait(self, item: Any) -> None:
         self.put(item, block=False)
@@ -378,6 +386,8 @@ class ManagedPromptQueue(queue.Queue):
     def put_system(
         self, item: Any, block: bool = True, timeout: float | None = None
     ) -> None:
+        if isinstance(item, str) and not isinstance(item, UnmanagedPrompt):
+            item = UnmanagedPrompt(item)
         super().put(self._entry(item, manageable=False), block=block, timeout=timeout)
 
     def get(self, block: bool = True, timeout: float | None = None) -> Any:

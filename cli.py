@@ -12712,7 +12712,14 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                             all_parts.append(extra)
                     except queue.Empty:
                         break
+                from hermes_cli.queue_management import UnmanagedPrompt
+
+                has_unmanaged_part = any(
+                    isinstance(part, UnmanagedPrompt) for part in all_parts
+                )
                 combined = "\n".join(all_parts)
+                if has_unmanaged_part:
+                    combined = UnmanagedPrompt(combined)
                 n = len(all_parts)
                 preview = combined[:50] + ("..." if len(combined) > 50 else "")
                 if n > 1:

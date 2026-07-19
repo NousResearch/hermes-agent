@@ -1963,8 +1963,12 @@ class CLICommandsMixin:
 
             # Inject context message so the model knows this slash command
             # intentionally makes the dev/debug CDP browser available for use.
-            if hasattr(self, '_pending_input'):
-                self._pending_input.put(
+            pending_input = getattr(self, "_pending_input", None)
+            if pending_input is not None:
+                put_system = getattr(
+                    pending_input, "put_system", pending_input.put
+                )
+                put_system(
                     "[System note: The user invoked /browser connect and connected your browser tools to "
                     "a Chromium-family dev/debug browser via Chrome DevTools Protocol. "
                     "Your browser_navigate, browser_snapshot, browser_click, and other browser tools now "
@@ -1990,8 +1994,12 @@ class CLICommandsMixin:
                 print("   Browser tools reverted to default mode (local headless or cloud provider)")
                 print()
 
-                if hasattr(self, '_pending_input'):
-                    self._pending_input.put(
+                pending_input = getattr(self, "_pending_input", None)
+                if pending_input is not None:
+                    put_system = getattr(
+                        pending_input, "put_system", pending_input.put
+                    )
+                    put_system(
                         "[System note: The user has disconnected the browser tools from their live Chromium-family browser. "
                         "Browser tools are back to default mode (headless local browser or cloud provider).]"
                     )

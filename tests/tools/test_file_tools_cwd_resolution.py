@@ -16,6 +16,7 @@ Core invariant these tests pin:
 """
 
 import os
+import warnings as _warnings
 from pathlib import Path, PurePosixPath
 
 import pytest
@@ -459,3 +460,57 @@ def test_unregistered_session_never_inherits_another_sessions_record(
     assert not str(resolved).startswith(str(wt_a))
     assert not str(resolved).startswith(str(wt_b))
     assert resolved == (main / "target.py").resolve()
+
+
+class TestCwdShapedPathGuard:
+    """Regression: model echoes cwd-shaped relative path missing leading slash."""
+
+    def test_linux_doubled_base_is_detected_and_fixed(self, monkeypatch, tmp_path):
+        """Relative input missing leading '/' doubles the base when joined."""
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        monkeypatch.setenv("TERMINAL_CWD", str(workspace))
+        monkeypatch.setattr(terminal_tool, "_session_cwd", {})
+
+        cwd_shaped = str(workspace.relative_to("/")) + "/notes/x.md"
+        resolved = ft._resolve_path_for_task(cwd_shaped, task_id="default")
+        assert resolved == (workspace / "notes" / "x.md").resolve()
+
+    def test_linux_doubled_base_emits_warning(self, monkeypatch, tmp_path):
+        """The fix path must emit a _path_resolution_warning before correcting."""
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        monkeypatch.setenv("TERMINAL_CWD", str(workspace))
+        monkeypatch.setattr(terminal_tool, "_session_cwd", {})
+
+        cwd_shaped = str(workspace.relative_to("/")) + "/notes/x.md"
+        with _warnings.catch_warnings(record=True) as w:
+            _warnings.simplefilter("always")
+            ft._resolve_path_for_task(cwd_shaped, task_id="default")
+        assert any("doubled base" in str(warning.message).lower() for warning in w)
+
+    def test_linux_normal_relative_path_unchanged(self, monkeypatch, tmp_path):
+        """Normal relative paths must still resolve correctly."""
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        monkeypatch.setenv("TERMINAL_CWD", str(workspace))
+        monkeypatch.setattr(terminal_tool, "_session_cwd", {})
+
+        resolved = ft._resolve_path_for_task("notes/x.md", task_id="default")
+        assert resolved == (workspace / "notes" / "x.md").resolve()
+
+    def test_is_doubled_path_detects_duplication(self):
+        base = Path("/home/user/dev")
+        doubled = Path("/home/user/dev/home/user/dev/notes/x.md")
+        assert ft._is_doubled_path(base, doubled)
+
+    def test_is_doubled_path_passes_clean_path(self):
+        base = Path("/home/user/dev")
+        clean = Path("/home/user/dev/notes/x.md")
+        assert not ft._is_doubled_path(base, clean)
+
+    def test_strip_cwd_shaped_prefix_removes_both_copies(self):
+        base = Path("/home/user/dev")
+        doubled = Path("/home/user/dev/home/user/dev/notes/x.md")
+        stripped = ft._strip_cwd_shaped_prefix(base, doubled)
+        assert stripped == Path("notes/x.md")

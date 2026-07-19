@@ -88,6 +88,22 @@ class GatewaySlashCommandsMixin:
                 _cached = self._agent_cache.get(session_key)
                 _old_agent = _cached[0] if isinstance(_cached, tuple) else _cached if _cached else None
             if _old_agent is not None:
+                # === AUTO-SAVE: 保存/new或/reset前的对话 ===
+                try:
+                    _msgs = getattr(_old_agent, '_session_messages', None) or []
+                    if _msgs:
+                        import json as _json
+                        from hermes_constants import get_hermes_home as _gkh
+                        _save_dir = _gkh() / "last_session_context"
+                        _save_dir.mkdir(exist_ok=True)
+                        _save_file = _save_dir / "last_session.json"
+                        _clean = [m for m in _msgs if m.get("role") in ("user", "assistant") and m.get("content")]
+                        _clean = _clean[-100:]
+                        with open(_save_file, "w", encoding="utf-8") as _f:
+                            _json.dump(_clean, _f, ensure_ascii=False, indent=1)
+                except Exception:
+                    pass
+                # === END AUTO-SAVE ===
                 self._cleanup_agent_resources(_old_agent)
         self._evict_cached_agent(session_key)
 

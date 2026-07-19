@@ -203,17 +203,44 @@ export function clearAllSessionStates() {
 // are pure projections of it, not independently maintained atoms. This keeps the
 // data flow one-directional: gateway event → cache → $sessionStates → computed
 // views, eliminating the "projection atom out of sync with cache" bug class.
-export const $workingSessionIds = computed($sessionStates, states =>
-  Object.values(states)
-    .filter(s => s.busy && s.storedSessionId)
-    .map(s => s.storedSessionId!)
-)
+//
+// CRITICAL for streaming perf: `$sessionStates` is republished on EVERY message
+// delta (tens of times/sec during a turn), but the *membership* of these ID sets
+// only changes on busy/needsInput edges. `computed` notifies on `!==`, so
+// returning a fresh array each time would re-render the whole sidebar (and every
+// row) per token. Return the PREVIOUS array reference when the contents match so
+// nanostores skips the notify unless the set actually changed.
+function stableIds(previous: string[], next: string[]): string[] {
+  if (previous.length === next.length && previous.every((id, i) => id === next[i])) {
+    return previous
+  }
 
-export const $attentionSessionIds = computed($sessionStates, states =>
-  Object.values(states)
-    .filter(s => s.needsInput && s.storedSessionId)
-    .map(s => s.storedSessionId!)
-)
+  return next
+}
+
+let workingIdsCache: string[] = []
+export const $workingSessionIds = computed($sessionStates, states => {
+  workingIdsCache = stableIds(
+    workingIdsCache,
+    Object.values(states)
+      .filter(s => s.busy && s.storedSessionId)
+      .map(s => s.storedSessionId!)
+  )
+
+  return workingIdsCache
+})
+
+let attentionIdsCache: string[] = []
+export const $attentionSessionIds = computed($sessionStates, states => {
+  attentionIdsCache = stableIds(
+    attentionIdsCache,
+    Object.values(states)
+      .filter(s => s.needsInput && s.storedSessionId)
+      .map(s => s.storedSessionId!)
+  )
+
+  return attentionIdsCache
+})
 
 // ---------------------------------------------------------------------------
 // Session tiles.

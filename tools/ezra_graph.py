@@ -19,13 +19,22 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
+from hermes_constants import get_hermes_home
+
 SCHEMA_VERSION = 2
-DEFAULT_DB = Path(os.environ.get("EZRA_GRAPH_DB", "/Users/Prime/.ezra/graph/ezra-graph.sqlite"))
-DEFAULT_ROOTS = [
-    Path("/Users/Prime/.hermes/hermes-agent"),
-    Path("/Users/Prime/.openclaw/openclaw"),
-    Path("/Users/Prime/.openclaw/mission-control"),
-]
+DEFAULT_DB = Path(
+    os.environ.get(
+        "EZRA_GRAPH_DB",
+        str(get_hermes_home() / "ezra" / "graph" / "ezra-graph.sqlite"),
+    )
+)
+
+
+def _default_roots() -> list[Path]:
+    env_roots = os.environ.get("EZRA_GRAPH_ROOTS", "")
+    if env_roots:
+        return [Path(p).expanduser() for p in env_roots.split(os.pathsep) if p]
+    return [Path.cwd()]
 EXTS = {".py", ".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs"}
 SKIP_DIRS = {".git", "node_modules", "__pycache__", ".venv", "venv", "dist", "build", ".next", ".cache", "coverage"}
 
@@ -61,7 +70,7 @@ JS_KW = {"if", "for", "while", "switch", "catch", "function", "return", "console
 
 
 def roots_from_args(values: list[str] | None) -> list[Path]:
-    roots = [Path(v).expanduser() for v in values] if values else DEFAULT_ROOTS
+    roots = [Path(v).expanduser() for v in values] if values else _default_roots()
     return [p.resolve() for p in roots if p.exists() and p.is_dir()]
 
 
@@ -94,6 +103,15 @@ def connect(db: Path) -> sqlite3.Connection:
     con.executescript(SQL)
     ensure_schema(con)
     return con
+
+
+def _require_db(db: Path) -> None:
+    if not db.exists():
+        raise SystemExit(
+            f"Database not found: {db}. Run `ezra-graph refresh` first or pass an existing --db path."
+        )
+    if not db.is_file():
+        raise SystemExit(f"Database path is not a file: {db}")
 
 
 def ensure_schema(con: sqlite3.Connection) -> None:
@@ -164,8 +182,12 @@ def collect_top_level_aliases(tree: ast.Module) -> dict[str, str]:
     for node in tree.body:
         if isinstance(node, ast.Import):
             for item in node.names:
-                bound = item.asname or item.name.split(".", 1)[0]
-                aliases[bound] = item.name
+                # `import pkg.submodule` binds only the top-level name (`pkg`),
+                # so only store aliases when an explicit `as` name is used.
+                if item.asname:
+                    aliases[item.asname] = item.name
+                elif "." not in item.name:
+                    aliases[item.name] = item.name
         elif isinstance(node, ast.ImportFrom):
             if node.level:
                 # Relative imports depend on package context; keep the imported
@@ -259,7 +281,12 @@ def scan_python(con: sqlite3.Connection, file_id: int, text: str, alias_debug: b
 
 
 def scan_js(con: sqlite3.Connection, file_id: int, text: str) -> None:
-    current = None
+    """Lightweight regex-based JS/TS extraction.
+
+    Function declarations are recorded as symbols, but the declaration name on
+    the same line is *not* treated as a call. Caller scope is intentionally
+    line-local to avoid leaking the last detected function into unrelated code.
+    """
     for i, line in enumerate(text.splitlines(), 1):
         m = JS_IMPORT_RE.search(line)
         if m:
@@ -269,14 +296,26 @@ def scan_js(con: sqlite3.Connection, file_id: int, text: str) -> None:
                 "INSERT INTO imports(file_id,module,imported,alias,line) VALUES(?,?,?,?,?)",
                 (file_id, mod, what.strip(), "", i),
             )
+        current = None
+        decl_name: str | None = None
+        decl_start: int | None = None
         fm = JS_FUNC_RE.search(line)
         if fm:
-            name = fm.group("name") or fm.group("const") or fm.group("method")
-            if name and name not in JS_KW:
-                current = insert_symbol(con, file_id, name, name, "function", i)
+            group_used = (
+                "name"
+                if fm.group("name")
+                else ("const" if fm.group("const") else "method")
+            )
+            decl_name = fm.group(group_used)
+            if decl_name and decl_name not in JS_KW:
+                current = insert_symbol(con, file_id, decl_name, decl_name, "function", i)
+                decl_start = fm.start(group_used)
         for cm in CALL_RE.finditer(line):
             name = cm.group("name")
             if name.split(".", 1)[0] not in JS_KW:
+                # Skip the declaration name on its own line to avoid self-call artifacts.
+                if name == decl_name and cm.start("name") == decl_start:
+                    continue
                 con.execute(
                     "INSERT INTO calls(caller_symbol_id,file_id,callee,raw_callee,line) VALUES(?,?,?,?,?)",
                     (current, file_id, name, name, i),
@@ -344,7 +383,9 @@ def _locality(symbol: str, relpath: str) -> int:
 
 
 def callers(args: argparse.Namespace) -> None:
-    con = connect(Path(args.db))
+    db = Path(args.db)
+    _require_db(db)
+    con = connect(db)
     where, params = _matches_where(args.symbol)
     rows_raw = con.execute(
         f"""
@@ -387,16 +428,30 @@ def callers(args: argparse.Namespace) -> None:
 
 
 def blast_radius(args: argparse.Namespace) -> None:
-    con = connect(Path(args.db))
-    target = str(Path(args.file).expanduser())
+    db = Path(args.db)
+    _require_db(db)
+    con = connect(db)
+    target = str(Path(args.file).expanduser().resolve())
+    target_info = con.execute(
+        "SELECT relpath FROM files WHERE path=?", (target,)
+    ).fetchone()
+    target_module = (
+        target_info[0].replace("/", ".").removesuffix(".py")
+        if target_info
+        else Path(target).stem
+    )
     rows = con.execute(
         """
-      SELECT DISTINCT f2.path, i.module, i.line
+      SELECT DISTINCT f2.path, i.module, i.imported, i.line
       FROM files f1 JOIN files f2 JOIN imports i ON i.file_id=f2.id
-      WHERE f1.path=? AND (i.module LIKE '%' || replace(replace(f1.relpath,'/','.'),'.py','') || '%' OR i.module LIKE '%' || replace(f1.relpath,'.py','') || '%')
-      ORDER BY f2.path LIMIT ?
+      WHERE f1.path=? AND (
+        i.module = ?
+        OR i.module LIKE '%' || ? || '%'
+        OR (i.module || CASE WHEN i.imported = '' THEN '' ELSE '.' || i.imported END) = ?
+      )
+      ORDER BY f2.path, i.line LIMIT ?
     """,
-        (target, args.limit),
+        (target, target_module, target_module, target_module, args.limit),
     ).fetchall()
     syms = con.execute("SELECT qualname,name FROM symbols JOIN files ON files.id=symbols.file_id WHERE files.path=?", (target,)).fetchall()
     called = []
@@ -407,8 +462,9 @@ def blast_radius(args: argparse.Namespace) -> None:
         ).fetchall()
     print(f"Blast radius for {target}")
     print("Import reverse-deps:")
-    for path, mod, line in rows:
-        print(f"  {path}:{line} imports {mod}")
+    for path, mod, imported, line in rows:
+        imported_label = f"{mod}.{imported}" if imported else mod
+        print(f"  {path}:{line} imports {imported_label}")
     print("Call references:")
     seen = set()
     for path, line, callee in called:
@@ -421,7 +477,9 @@ def blast_radius(args: argparse.Namespace) -> None:
 
 
 def orphans(args: argparse.Namespace) -> None:
-    con = connect(Path(args.db))
+    db = Path(args.db)
+    _require_db(db)
+    con = connect(db)
     rows = con.execute(
         """
       SELECT s.qualname,s.name,f.path,s.line FROM symbols s JOIN files f ON f.id=s.file_id

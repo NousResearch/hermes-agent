@@ -87,5 +87,74 @@ class EzraGraphDottedCallTests(unittest.TestCase):
             self.assertIn("called_by=register", out)
 
 
+    def test_dotted_import_without_alias_keeps_top_level_binding(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td) / "repo"
+            root.mkdir()
+            (root / "sample.py").write_text(
+                "import json.tool\n\n"
+                "def emit(payload):\n"
+                "    return json.dumps(payload)\n"
+            )
+
+            db = Path(td) / "graph.sqlite"
+            _refresh(root, db)
+
+            # `json` is bound to the top-level package; `json.dumps` must not
+            # be rewritten to `json.tool.dumps`.
+            self.assertIn(("json.dumps", "json.dumps"), _callees(db))
+            self.assertNotIn(("json.tool.dumps", "json.dumps"), _callees(db))
+
+    def test_query_commands_fail_when_database_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            db = Path(td) / "missing.sqlite"
+            with self.assertRaises(SystemExit):
+                ezra_graph.callers(argparse.Namespace(db=str(db), symbol="x", limit=10, no_rank=False))
+
+    def test_js_function_declaration_is_not_self_call(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td) / "repo"
+            root.mkdir()
+            (root / "sample.js").write_text("function unused() {}\n")
+
+            db = Path(td) / "graph.sqlite"
+            _refresh(root, db)
+
+            self.assertEqual(_callees(db), [])
+
+    def test_js_one_liner_call_is_recorded_but_declaration_is_not(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td) / "repo"
+            root.mkdir()
+            (root / "sample.js").write_text("function foo() { bar(); }\n")
+
+            db = Path(td) / "graph.sqlite"
+            _refresh(root, db)
+
+            self.assertIn(("bar", "bar"), _callees(db))
+
+    def test_blast_radius_finds_from_package_import_reverse_dependency(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td) / "repo"
+            root.mkdir(parents=True)
+            (root / "pkg").mkdir(parents=True)
+            (root / "pkg" / "__init__.py").write_text("")
+            (root / "pkg" / "target.py").write_text("def helper(): pass\n")
+            (root / "client.py").write_text("from pkg import target\n")
+
+            db = Path(td) / "graph.sqlite"
+            _refresh(root, db)
+
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                ezra_graph.blast_radius(
+                    argparse.Namespace(db=str(db), file=str(root / "pkg" / "target.py"), limit=20)
+                )
+
+            out = buf.getvalue()
+            self.assertIn("client.py", out)
+            self.assertIn("imports pkg.target", out)
+
+
 if __name__ == "__main__":
     unittest.main()

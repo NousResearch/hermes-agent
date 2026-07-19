@@ -1,88 +1,54 @@
 ---
 name: codebase-semantic-graph
-description: Build and query the Ezra/Hermes static code graph with ezra-graph.
+description: Lightweight static code graph for impact analysis
+version: 1.0.0
+author: Anthony Lopez
+license: MIT
+platforms: [macos, linux, windows]
+metadata:
+  hermes:
+    tags: [software-development, static-analysis, impact-analysis, code-graph]
+    category: software-development
 ---
 
 # Codebase Semantic Graph
 
-Use `ezra-graph` when you need quick impact analysis across Hermes, OpenClaw, and Mission Control without blind grep.
+Use `ezra-graph` when you need quick impact analysis across local codebases without blind grep.
+
+## When to Use
+
+- Before refactoring a module and you want to see likely callers.
+- When scoping a change and need an initial blast-radius map.
+- To find orphan functions that may be dead code.
+
+## Quick Reference
+
+| Command | Purpose |
+|---|---|
+| `ezra-graph refresh` | Scan configured roots and rebuild the graph. |
+| `ezra-graph refresh --root /path/to/repo` | Use a non-default scan root. |
+| `ezra-graph callers <symbol>` | Show ranked callers of a symbol. |
+| `ezra-graph blast-radius <file>` | Files importing or calling symbols in `<file>`. |
+| `ezra-graph orphans` | Likely uncalled functions. |
 
 ## Artifact
 
-Default database:
+Default database: `~/.hermes/ezra/graph/ezra-graph.sqlite` (override with `EZRA_GRAPH_DB`).
 
-```bash
-/Users/Prime/.ezra/graph/ezra-graph.sqlite
-```
+Default scan roots: the current working directory, or a `:`-separated list via `EZRA_GRAPH_ROOTS`.
 
-Default scan roots:
+## Procedure
 
-- `/Users/Prime/.hermes/hermes-agent`
-- `/Users/Prime/.openclaw/openclaw`
-- `/Users/Prime/.openclaw/mission-control`
+1. Run `ezra-graph refresh` to populate the graph.
+2. Query with `ezra-graph callers json.dumps`, `ezra-graph blast-radius /path/to/module.py`, or `ezra-graph orphans`.
+3. Interpret results as triage hints, not proof — dynamic dispatch, string imports, and arbitrary expressions are intentionally skipped.
 
-## Refresh
+## Pitfalls
 
-```bash
-ezra-graph refresh
-```
+- `callers`, `blast-radius`, and `orphans` require an existing database. Run `refresh` first.
+- JS/TS extraction is regex-based and intentionally best-effort.
+- Use `EZRA_GRAPH_ROOTS` or repeated `--root` for large, non-local repositories.
 
-Optional scan roots:
+## Verification
 
-```bash
-ezra-graph refresh --root /path/to/repo --root /path/to/other
-```
-
-Alias debug mode emits a bounded sample of top-level Python import aliases that were used for call resolution:
-
-```bash
-ezra-graph refresh --alias-debug
-```
-
-## Resolution model
-
-Python extraction uses `ast` and records full dotted call paths for `ast.Attribute` chains, including:
-
-- `json.dumps(...)`
-- `subprocess.run(...)`
-- `ctx.register_tool(...)`
-- `self.client.messages.create(...)`
-
-Before persistence, top-level imports are used as an alias table:
-
-- `import json as j; j.dumps(...)` records as `json.dumps` with `raw_callee=j.dumps`
-- `from pathlib import Path as P; P.home(...)` records as `pathlib.Path.home` with `raw_callee=P.home`
-
-Calls on arbitrary expressions remain conservative; use ripgrep/manual review when dynamic dispatch matters.
-
-## Queries
-
-Who calls a symbol:
-
-```bash
-ezra-graph callers json.dumps --limit 2000
-```
-
-Caller rows are ranked by default: frequency descending, then file diversity, then module locality. For raw path/line order:
-
-```bash
-ezra-graph callers json.dumps --no-rank
-```
-
-Blast radius for a file:
-
-```bash
-ezra-graph blast-radius /Users/Prime/.hermes/hermes-agent/tools/registry.py
-```
-
-Likely orphan functions:
-
-```bash
-ezra-graph orphans --limit 25
-```
-
-## Notes
-
-- Python uses `ast`; JS/TS uses lightweight regex extraction.
-- Results are meant for PR descriptions and refactor triage, not as a sole correctness proof.
-- Refresh target for Prime should stay under 60s.
+Confirm `ezra-graph refresh` produced non-zero file and symbol counts, and verify the database path exists, before relying on query output.

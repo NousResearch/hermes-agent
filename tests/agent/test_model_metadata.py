@@ -332,6 +332,31 @@ class TestDefaultContextLengths:
             assert get_model_context_length("glm-5") == 202752
             assert get_model_context_length("glm-5.1") == 202752
 
+    def test_kimi_k3_context_1m(self):
+        """Kimi K3 must resolve to 1M, not the generic Kimi fallback of 256K.
+
+        Context window verified against platform.kimi.ai/docs/overview
+        (2026-07). Kimi K3 is the current flagship model with a 1M-token
+        context window.
+        """
+        from agent.model_metadata import get_model_context_length
+        from unittest.mock import patch as mock_patch
+
+        assert DEFAULT_CONTEXT_LENGTHS["kimi-k3"] == 1_000_000
+        assert DEFAULT_CONTEXT_LENGTHS["kimi"] == 262144
+
+        with mock_patch("agent.model_metadata.fetch_model_metadata", return_value={}), \
+             mock_patch("agent.model_metadata.fetch_endpoint_model_metadata", return_value={}), \
+             mock_patch("agent.model_metadata.get_cached_context_length", return_value=None):
+            # Kimi K3 (1M) must NOT fall through to the generic 256K entry
+            assert get_model_context_length("kimi-k3") == 1_000_000
+            # Vendor-prefixed forms (kimi provider, openrouter)
+            assert get_model_context_length("kimi/kimi-k3") == 1_000_000
+            assert get_model_context_length("moonshotai/kimi-k3") == 1_000_000
+            # Older/unknown Kimi models still resolve to 256K fallback
+            assert get_model_context_length("kimi-k2.6") == 262144
+            assert get_model_context_length("kimi-k2") == 262144
+
     def test_openrouter_live_metadata_beats_hardcoded_catchall(self):
         """OpenRouter-routed slugs resolve via the live OR catalog before the
         hardcoded family catch-all.

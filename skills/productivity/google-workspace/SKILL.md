@@ -129,13 +129,13 @@ This returns JSON with an `auth_url` field and also saves the exact URL to
 
 Agent rules for this step:
 - Extract the `auth_url` field and send that exact URL to the user as a single line.
-- Tell the user that the browser will likely fail on `http://localhost:1` after approval, and that this is expected.
+- Tell the user that after approval the browser may land on `http://localhost/?code=...` and show a blank or failed page, and that this is expected.
 - Tell them to copy the ENTIRE redirected URL from the browser address bar.
 - If the user gets `Error 403: access_denied`, send them directly to `https://console.cloud.google.com/auth/audience` to add themselves as a test user.
 
 ### Step 4: Exchange the code
 
-The user will paste back either a URL like `http://localhost:1/?code=4/0A...&scope=...`
+The user will paste back either a URL like `http://localhost/?code=4/0A...&scope=...`
 or just the code string. Either works. The `--auth-url` step stores a temporary
 pending OAuth session locally so `--auth-code` can complete the PKCE exchange
 later, even on headless systems:
@@ -321,7 +321,7 @@ All commands return JSON. Parse with `jq` or read directly. Key fields:
 | Problem | Fix |
 |---------|-----|
 | `NOT_AUTHENTICATED` | Run setup Steps 2-5 above |
-| `REFRESH_FAILED` | Token revoked or expired — redo Steps 3-5 |
+| `REFRESH_FAILED` | Token revoked or expired — redo Steps 3-5. If it started failing after about 7 days, the OAuth app is probably still in Testing mode. |
 | `HttpError 403: Insufficient Permission` | Missing API scope — `$GSETUP --revoke` then redo Steps 3-5 |
 | `AUTHENTICATED (partial)` or "Token missing scopes" | New write capabilities (Drive write/delete, Docs create/edit) require re-authorization. `$GSETUP --revoke` then redo Steps 3-5 to grant the upgraded scopes. |
 | `HttpError 403: Access Not Configured` | API not enabled — user needs to enable it in Google Cloud Console |

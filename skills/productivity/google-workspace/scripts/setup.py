@@ -59,7 +59,9 @@ REQUIRED_PACKAGES = ["google-api-python-client", "google-auth-oauthlib", "google
 # OAuth redirect for "out of band" manual code copy flow.
 # Google deprecated OOB, so we use a localhost redirect and tell the user to
 # copy the code from the browser's URL bar (or the page body).
-REDIRECT_URI = "http://localhost:1"
+# `localhost:1` is blocked by modern browsers as an unsafe port, so keep this
+# on the default HTTP portless localhost URL instead.
+REDIRECT_URI = "http://localhost"
 
 
 def _normalize_authorized_user_payload(payload: dict) -> dict:
@@ -244,6 +246,16 @@ def check_auth(quiet: bool = False):
             elif "token_revoked" in err_str or "invalid_grant" in err_str:
                 print(f"TOKEN_REVOKED: {e}")
                 print("  Re-run setup to re-authenticate.")
+                print(
+                    "  If this keeps happening after about 7 days, your Google OAuth app is likely still"
+                )
+                print(
+                    "  in Testing mode. Testing-mode refresh tokens can expire quickly; move the OAuth"
+                )
+                print(
+                    "  consent screen to Production/Internal if appropriate, or re-run setup after adding"
+                )
+                print("  the user as a test user in Google Cloud Console.")
             else:
                 print(f"REFRESH_FAILED: {e}")
             return False

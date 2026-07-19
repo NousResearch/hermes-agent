@@ -57,6 +57,20 @@ def refresh_token(token_data: dict) -> dict:
         body = e.read().decode("utf-8", errors="replace")
         print(f"ERROR: Token refresh failed (HTTP {e.code}): {body}", file=sys.stderr)
         print("Re-run setup.py to re-authenticate.", file=sys.stderr)
+        if "invalid_grant" in body.lower() or "token has been expired or revoked" in body.lower():
+            print(
+                "If this started happening after about 7 days, the OAuth app is likely still in",
+                file=sys.stderr,
+            )
+            print(
+                "Testing mode and the refresh token has expired. Move the consent screen to",
+                file=sys.stderr,
+            )
+            print(
+                "Production/Internal if appropriate, or re-authenticate after adding the user",
+                file=sys.stderr,
+            )
+            print("as a test user in Google Cloud Console.", file=sys.stderr)
         sys.exit(1)
     except (urllib.error.URLError, TimeoutError) as e:
         print(f"ERROR: Token refresh failed (network): {e}", file=sys.stderr)

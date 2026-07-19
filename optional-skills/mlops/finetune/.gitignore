@@ -1,0 +1,6 @@
+# Axolotl tokenized-dataset cache, written when training runs from this dir
+last_run_prepared/
+
+# Per-pyc clutter from running scripts in-place
+__pycache__/
+*.pyc

@@ -2932,6 +2932,80 @@ DEFAULT_CONFIG = {
         "backup_count": 3,     # Number of rotated backup files to keep
     },
 
+    # Fine-tuning pipeline — optional, used by the finetune skill.
+    # All sub-keys are ignored if absent.
+    "finetune": {
+        "enabled": False,
+        "extract": {
+            "min_turns": 2,
+            "exclude_sources": [],
+        },
+        "scoring": {
+            # Legacy (sentiment-based) mode weights — read only when
+            # scoring.mode == "legacy".
+            "weights": {
+                "conversation_signal": 0.3,
+                "turn_signal": 0.4,
+                "sentiment_modifier": 0.1,
+                "judge_score": 0.2,
+            },
+            # positive_signals mode weights (the default mode). Separate dict
+            # so legacy defaults can't bleed into the positive-signals math.
+            "weights_positive": {
+                "conversation_signal": 0.15,
+                "negative_turn_signals": 0.25,
+                "positive_turn_signals": 0.35,
+                "sentiment_modifier": 0.05,
+                "manual_override": 0.20,
+            },
+            "thresholds": {
+                "good": 0.7,
+                "neutral": 0.4,
+            },
+        },
+        "clustering": {
+            "embedding_model": "all-MiniLM-L6-v2",
+            "min_cluster_size": 30,
+            "confidence_threshold": 0.6,
+        },
+        "training": {
+            "base_model": "kai-os/Carnice-9b",
+            "chat_template": "chatml",
+            "quantization": "Q5_K_M",
+            "terminal_backend": "local",
+            # Per-turn extraction (see format.py::extract_training_turns)
+            "context_window_turns": 8,
+            "min_turn_score": 0.7,
+        },
+        "routing": {
+            "enabled": False,
+        },
+        "retraining": {
+            "data_growth_trigger": 0.2,
+            "schedule": "weekly",
+        },
+        "feedback": {
+            "cli_keybindings": False,
+        },
+        # Auto-redeploy llama-server with newly trained adapters.
+        # Off by default — requires user-specific paths to be set first.
+        "serving": {
+            "auto_redeploy": False,
+            # Empty = not configured; the user must point this at their
+            # llama.cpp convert_lora_to_gguf.py before using redeploy.
+            "converter": "",
+            "base_model_snapshot": "auto",
+            "server_command": "",
+            # Empty pid/log paths resolve at use-site to
+            # <hermes_home>/finetune/llama-server.{pid,log} (see the
+            # finetune skill's manage.py) — never world-writable /tmp.
+            "server_pid_file": "",
+            "server_log_path": "",
+            "health_check_url": "http://localhost:8008/v1/models",
+            "health_check_timeout": 30,
+        },
+    },
+
     # Remotely-hosted model catalog manifest.  When enabled, the CLI fetches
     # curated model lists for OpenRouter and Nous Portal from this URL,
     # falling back to the in-repo snapshot on network failure.  Lets us
@@ -5490,7 +5564,7 @@ _KNOWN_ROOT_KEYS = {
     "fallback_providers", "credential_pool_strategies", "toolsets",
     "agent", "terminal", "display", "compression", "delegation",
     "auxiliary", "moa", "custom_providers", "context", "memory", "gateway",
-    "sessions", "streaming", "updates", "mcp_servers",
+    "sessions", "streaming", "updates", "mcp_servers", "finetune",
 }
 
 # Valid fields inside a custom_providers list entry

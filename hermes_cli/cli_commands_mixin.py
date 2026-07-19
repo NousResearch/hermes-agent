@@ -39,6 +39,133 @@ from hermes_cli.browser_connect import (
 )
 
 
+# Serializes reads/writes of the CLI instance's ``_finetune_active_proc``
+# between the process_loop worker thread (which runs the finetune child) and
+# the prompt_toolkit UI thread (whose Ctrl+C handler kills it).
+_FINETUNE_PROC_LOCK = threading.Lock()
+
+
+def _signal_finetune_group(proc, sig) -> None:
+    """Signal ``proc``'s process group, falling back to the child alone."""
+    try:
+        if hasattr(os, "killpg"):
+            os.killpg(proc.pid, sig)
+        else:  # pragma: no cover - non-POSIX fallback
+            proc.kill()
+    except (ProcessLookupError, PermissionError, OSError):
+        try:
+            proc.kill()
+        except OSError:
+            pass
+
+
+def _stream_finetune_subprocess(cmd_args, *, cwd, env, timeout_seconds, print_fn,
+                                on_proc=None):
+    """Run ``cmd_args`` streaming stdout lines to ``print_fn`` with a hard deadline.
+
+    A reader thread feeds lines into a queue and the main loop polls it with
+    timed gets, so the deadline is enforced even when the child hangs without
+    producing any output (the old ``for line in proc.stdout`` pattern only
+    checked the clock when a line arrived, so a silently hung child spun the
+    TUI forever).
+
+    The child is launched with ``start_new_session=True`` so on timeout or
+    Ctrl+C the whole process group can be killed cleanly, including any
+    grandchildren the script spawned.
+
+    ``on_proc``, when given, is called with the live ``Popen`` right after
+    launch and with ``None`` once the child is done (always, via finally).
+    The TUI Ctrl+C handler uses this to find and kill the child: this
+    function runs in the process_loop worker thread, where the
+    ``KeyboardInterrupt`` branch below is unreachable in TUI mode because
+    prompt_toolkit consumes Ctrl+C on the UI thread.
+
+    Returns the child's exit code; raises ``subprocess.TimeoutExpired`` when
+    the deadline passes.
+    """
+    import queue as queue_mod
+    import signal
+    import subprocess
+
+    proc = subprocess.Popen(
+        cmd_args,
+        cwd=cwd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1,
+        env=env,
+        start_new_session=True,
+    )
+    if on_proc is not None:
+        on_proc(proc)
+
+    try:
+        lines: "queue_mod.Queue" = queue_mod.Queue()
+
+        def _reader() -> None:
+            try:
+                for line in proc.stdout:
+                    lines.put(line)
+            except Exception:
+                pass
+            finally:
+                lines.put(None)  # EOF sentinel
+
+        reader = threading.Thread(target=_reader, daemon=True)
+        reader.start()
+
+        deadline = time.time() + timeout_seconds
+        timed_out = False
+        try:
+            while True:
+                remaining = deadline - time.time()
+                if remaining <= 0:
+                    timed_out = True
+                    break
+                try:
+                    line = lines.get(timeout=min(remaining, 1.0))
+                except queue_mod.Empty:
+                    continue  # no output yet — loop re-checks the deadline
+                if line is None:
+                    break  # EOF — child closed stdout
+                print_fn(line.rstrip("\n"))
+        except KeyboardInterrupt:
+            _signal_finetune_group(proc, signal.SIGTERM)
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                _signal_finetune_group(proc, signal.SIGKILL)
+            raise
+
+        if timed_out:
+            _signal_finetune_group(proc, signal.SIGKILL)
+            try:
+                proc.wait(timeout=10)
+            except subprocess.TimeoutExpired:  # pragma: no cover - kill -9 raced
+                pass
+            raise subprocess.TimeoutExpired(cmd_args, timeout_seconds)
+
+        try:
+            proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            # The child closed stdout but is still alive >10s later (e.g. it
+            # redirected its own output and kept working). Kill the group and
+            # report what actually happened, instead of letting this
+            # TimeoutExpired escape to the caller and masquerade as the
+            # overall deadline ("timed out after 6h") with the child alive.
+            _signal_finetune_group(proc, signal.SIGKILL)
+            try:
+                proc.wait(timeout=10)
+            except subprocess.TimeoutExpired:  # pragma: no cover - kill -9 raced
+                pass
+            print_fn("Child closed stdout but kept running; killed its process group.")
+        return proc.returncode
+    finally:
+        if on_proc is not None:
+            on_proc(None)
+
+
 class CLICommandsMixin:
     """Mixin holding the interactive-CLI slash-command handlers.
 
@@ -1182,6 +1309,196 @@ class CLICommandsMixin:
 
         _set_active(result.slug)
         print(f"(^_^)b {result.display_name} hatched and adopted — it'll pop in shortly!")
+
+    def _set_finetune_active_proc(self, proc) -> None:
+        """Track the live /finetune child Popen (clear with ``None``).
+
+        Set/cleared by ``_stream_finetune_subprocess`` (via its ``on_proc``
+        callback) so the TUI Ctrl+C handler on the UI thread can find and
+        kill the child running in the process_loop worker thread.
+        """
+        with _FINETUNE_PROC_LOCK:
+            self._finetune_active_proc = proc
+
+    def _interrupt_finetune_subprocess(self, *, force: bool = False) -> bool:
+        """Signal the tracked /finetune child's process group.
+
+        SIGTERM by default, SIGKILL when ``force``. Returns True when a live
+        child was signalled, False when there is nothing to interrupt.
+        """
+        import signal
+
+        with _FINETUNE_PROC_LOCK:
+            proc = getattr(self, "_finetune_active_proc", None)
+        if proc is None or proc.poll() is not None:
+            return False
+        _signal_finetune_group(proc, signal.SIGKILL if force else signal.SIGTERM)
+        return True
+
+    def _handle_finetune_command(self, cmd: str):
+        """Handle the /finetune command — runs scripts from the finetune skill."""
+        import shlex
+        import subprocess
+        from pathlib import Path
+
+        import cli as _cli_mod
+        from cli import _cprint
+        from hermes_cli.config import get_hermes_home, load_config
+
+        # Master gate: the whole pipeline is opt-in via finetune.enabled.
+        # Refuse every subcommand while disabled so config alone decides
+        # whether any skill script can run.
+        try:
+            ft_enabled = bool(load_config().get("finetune", {}).get("enabled"))
+        except Exception:
+            ft_enabled = False
+        if not ft_enabled:
+            _cprint("Finetune is disabled.")
+            _cprint("  Enable it in config.yaml: finetune: { enabled: true }")
+            return
+
+        # Locate the skill scripts directory.
+        # Prefer the bundled optional-skills location; fall back to ~/.hermes/skills.
+        repo_root = Path(_cli_mod.__file__).resolve().parent
+        candidates = [
+            repo_root / "optional-skills" / "mlops" / "finetune" / "scripts",
+            get_hermes_home() / "skills" / "mlops" / "finetune" / "scripts",
+        ]
+        scripts_dir = next((p for p in candidates if p.exists()), None)
+        if scripts_dir is None:
+            _cprint("Finetune skill not found. Expected at optional-skills/mlops/finetune/scripts/")
+            return
+
+        # Parse subcommand + args
+        try:
+            parts = shlex.split(cmd)
+        except ValueError as e:
+            _cprint(f"Couldn't parse /finetune arguments: {e}")
+            return
+        if len(parts) < 2:
+            _cprint("Usage: /finetune <subcommand> [args]")
+            _cprint("Subcommands: status, extract, score, cluster, train, eval, bench, retro, promote, rollback, redeploy, route, run, cron, gc")
+            _cprint("  /finetune run             — full pipeline, auto-promote (no gate)")
+            _cprint("  /finetune run --with-bench — full pipeline, gate promote on bench, auto-rollback on regression")
+            _cprint("  /finetune bench           — run benchmark against current active model")
+            _cprint("  /finetune redeploy        — convert active adapter to GGUF and restart llama-server")
+            _cprint("  /finetune retro list      — show priority queue of unlabeled sessions")
+            _cprint("  /finetune retro show <id> — show a session's full conversation")
+            _cprint("  /finetune retro good <id> [turns] — label session/turns as good")
+            _cprint("  /finetune route enable    — install the adapter-routing plugin")
+            _cprint("  /finetune route disable   — remove the adapter-routing plugin")
+            return
+
+        subcommand = parts[1]
+        rest = parts[2:]
+
+        # Map subcommand → script
+        script_map = {
+            "status":   ("manage.py", ["status"]),
+            "run":      ("manage.py", ["run"]),
+            "bench":    ("manage.py", ["bench"]),
+            "promote":  ("manage.py", ["promote"]),
+            "rollback": ("manage.py", ["rollback"]),
+            "redeploy": ("manage.py", ["redeploy"]),
+            "cron":     ("manage.py", ["cron"]),
+            "gc":       ("manage.py", ["gc"]),
+            "extract":  ("extract.py", []),
+            "score":    ("score.py", []),
+            "cluster":  ("cluster.py", []),
+            "train":    ("train.py", []),
+            "eval":     ("eval.py", []),
+            "route":    ("route.py", []),
+            "retro":    ("retro.py", []),
+        }
+
+        if subcommand not in script_map:
+            _cprint(f"Unknown finetune subcommand: {subcommand}")
+            return
+
+        script_name, base_args = script_map[subcommand]
+        script_path = scripts_dir / script_name
+        if not script_path.exists():
+            _cprint(f"Script not found: {script_path}")
+            return
+
+        cmd_args = [sys.executable, str(script_path)] + base_args + rest
+        _cprint(f"Running: {' '.join(cmd_args)}")
+
+        # Per-subcommand timeouts. Long-running operations (full bench, full
+        # training pipeline, redeploy with fresh server start) need much
+        # more than the 1-hour default. The values here are upper bounds —
+        # the subprocess returns as soon as it's actually done.
+        long_running = {
+            "bench": 6 * 3600,    # 243 cases × ~21s each ≈ 85 min, with safety
+            "run":   6 * 3600,    # full pipeline including bench gate
+            "train": 4 * 3600,    # axolotl QLoRA on a 9B model
+            "redeploy": 10 * 60,  # GGUF conversion + server start + health check
+        }
+        timeout_seconds = long_running.get(subcommand, 3600)
+        timeout_label = (
+            f"{timeout_seconds // 3600}h" if timeout_seconds >= 3600
+            else f"{timeout_seconds // 60}m"
+        )
+
+        # Long-running subcommands stream their output line-by-line so users
+        # see progress (tqdm bars, per-case results) instead of staring at a
+        # frozen TUI for tens of minutes. Quick subcommands keep the buffered
+        # capture pattern because their output is small and arrives all at once.
+        streaming_commands = {"bench", "run", "train"}
+        stream_output = subcommand in streaming_commands
+
+        # Skill scripts resolve all state paths from HERMES_HOME (see
+        # scripts/common.py). Propagate it explicitly so profile isolation
+        # survives into the subprocess even when the active profile came
+        # from the context-local override rather than the environment.
+        child_env = os.environ.copy()
+        child_env["HERMES_HOME"] = str(get_hermes_home())
+
+        try:
+            with self._busy_command(f"finetune {subcommand}..."):
+                if stream_output:
+                    # Stream each line to _cprint as it appears so the bench
+                    # env's per-case progress prints surface in real time.
+                    # PYTHONUNBUFFERED=1 in the child env disables Python
+                    # stdout buffering for libraries that respect it.
+                    child_env.setdefault("PYTHONUNBUFFERED", "1")
+                    returncode = _stream_finetune_subprocess(
+                        cmd_args,
+                        cwd=str(scripts_dir),
+                        env=child_env,
+                        timeout_seconds=timeout_seconds,
+                        print_fn=_cprint,
+                        # Track the child on the CLI instance so the TUI
+                        # Ctrl+C handler can kill its process group.
+                        on_proc=self._set_finetune_active_proc,
+                    )
+                    if returncode != 0:
+                        _cprint(f"Command exited with code {returncode}")
+                else:
+                    result = subprocess.run(
+                        cmd_args,
+                        cwd=str(scripts_dir),
+                        capture_output=True,
+                        text=True,
+                        timeout=timeout_seconds,
+                        env=child_env,
+                    )
+                    if result.stdout:
+                        for line in result.stdout.rstrip("\n").split("\n"):
+                            _cprint(line)
+                    if result.stderr:
+                        for line in result.stderr.rstrip("\n").split("\n"):
+                            _cprint(line)
+                    if result.returncode != 0:
+                        _cprint(f"Command exited with code {result.returncode}")
+        except subprocess.TimeoutExpired:
+            _cprint(f"Command timed out after {timeout_label}")
+            _cprint(
+                "  For bench / run / train, partial state may be in "
+                f"{display_hermes_home()}/finetune/ and /tmp/finetune-bench/"
+            )
+        except Exception as e:
+            _cprint(f"Error running finetune command: {e}")
 
     def _handle_cron_command(self, cmd: str):
         """Handle the /cron command to manage scheduled tasks."""

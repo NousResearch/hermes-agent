@@ -8486,9 +8486,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         return str(value)
 
 
-    
-
-
+    # NOTE: _handle_finetune_command lives in CLICommandsMixin
+    # (hermes_cli/cli_commands_mixin.py) with the other _handle_*_command
+    # slash-command handlers.
 
     def _show_gateway_status(self):
         """Show status of the gateway and connected messaging platforms."""
@@ -8801,6 +8801,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             self.save_conversation()
         elif canonical == "cron":
             self._handle_cron_command(cmd_original)
+        elif canonical == "finetune":
+            self._handle_finetune_command(cmd_original)
         elif canonical == "suggestions":
             self._handle_suggestions_command(cmd_original)
         elif canonical == "blueprint":
@@ -12693,6 +12695,76 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             The main input widget, for wrappers that need to inspect or
             manipulate user input from a keybinding handler.
         """
+        return
+
+    @staticmethod
+    def _finetune_feedback_keys_enabled(config) -> bool:
+        """True when the Ctrl+Y/Ctrl+N feedback keybindings should register.
+
+        Requires BOTH the finetune.enabled master switch and the
+        finetune.feedback.cli_keybindings opt-in, so disabling the pipeline
+        also stops feedback collection.
+        """
+        ft_cfg = config.get("finetune", {}) or {}
+        return bool(ft_cfg.get("enabled")) and bool(
+            ft_cfg.get("feedback", {}).get("cli_keybindings")
+        )
+
+    def _register_finetune_feedback_keybindings(self, kb, *, input_area=None) -> None:
+        """Register Ctrl+Y / Ctrl+N for finetune quality feedback.
+
+        The bindings are guarded by a filter so they only fire when no modal
+        prompt (approval, clarify, slash-confirm, model picker, sudo, secret)
+        is active AND the input buffer is empty.  Without the filter they
+        would shadow emacs C-y (yank) / C-n (next-line) while typing and
+        silently record spurious feedback during modal prompts.
+        """
+        cli_self = self
+
+        def _feedback_keys_active() -> bool:
+            for attr in (
+                "_approval_state",
+                "_clarify_state",
+                "_slash_confirm_state",
+                "_model_picker_state",
+                "_sudo_state",
+                "_secret_state",
+            ):
+                if getattr(cli_self, attr, None):
+                    return False
+            if input_area is not None and input_area.buffer.text:
+                return False
+            return True
+
+        @kb.add("c-y", filter=Condition(_feedback_keys_active))
+        def _thumbs_up(event):
+            cli_self._record_finetune_feedback(1.0, "thumbs_up")
+
+        @kb.add("c-n", filter=Condition(_feedback_keys_active))
+        def _thumbs_down(event):
+            cli_self._record_finetune_feedback(0.0, "thumbs_down")
+
+    def _record_finetune_feedback(self, score: float, signal: str) -> None:
+        """Write a feedback record for the current session."""
+        import json
+        from datetime import datetime
+
+        record = {
+            "session_id": getattr(self, "session_id", ""),
+            "score": score,
+            "signal": signal,
+            "timestamp": datetime.now().isoformat(),
+        }
+        try:
+            # mkdir stays inside the try: this runs inside a prompt_toolkit
+            # key handler, so a read-only HERMES_HOME must not raise out of it.
+            feedback_path = get_hermes_home() / "finetune" / "feedback.jsonl"
+            feedback_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(feedback_path, "a", encoding="utf-8") as f:
+                f.write(json.dumps(record) + "\n")
+            _cprint(f"  {'👍' if score > 0.5 else '👎'} Feedback recorded")
+        except Exception:
+            pass
 
     def _build_tui_layout_children(
         self,
@@ -13477,6 +13549,20 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             # If we only cleared overlays and the agent is NOT running, stop here
             # (don't fall through to the interrupt/exit path).
             if _overlay_cleared and not (self._agent_running and self.agent):
+                return
+
+            # A /finetune train|bench|run child is streaming in the process_loop
+            # worker thread.  This handler runs on the UI thread, so the
+            # runner's own KeyboardInterrupt path never fires in TUI mode —
+            # kill the tracked child's process group directly instead.  First
+            # press SIGTERMs; a second press within 2s escalates to SIGKILL.
+            _finetune_force = now - self._last_ctrl_c_time < 2.0
+            if self._interrupt_finetune_subprocess(force=_finetune_force):
+                self._last_ctrl_c_time = now
+                if _finetune_force:
+                    print("\n⚡ Force-killing finetune subprocess (SIGKILL)...")
+                else:
+                    print("\n⚡ Stopping finetune subprocess (SIGTERM)... (press Ctrl+C again to force kill)")
                 return
 
             if self._agent_running and self.agent:
@@ -14543,6 +14629,19 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 and not getattr(cli_ref, "_status_bar_suppressed_after_resize", False)
             ),
         )
+
+        # Built-in finetune feedback keybindings (Ctrl+Y / Ctrl+N), gated by
+        # the finetune.enabled master switch AND finetune.feedback.cli_keybindings.
+        # Registered here in the normal setup path — NOT inside
+        # _register_extra_tui_keybindings — so wrapper CLIs that override that
+        # extension hook without calling super() can't silently disable a
+        # built-in feature.
+        try:
+            from hermes_cli.config import load_config as _load_ft_cfg
+            if self._finetune_feedback_keys_enabled(_load_ft_cfg()):
+                self._register_finetune_feedback_keybindings(kb, input_area=input_area)
+        except Exception:
+            pass
 
         # Allow wrapper CLIs to register extra keybindings.
         self._register_extra_tui_keybindings(kb, input_area=input_area)

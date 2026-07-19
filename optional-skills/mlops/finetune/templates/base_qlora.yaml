@@ -1,0 +1,109 @@
+# HuggingFace safetensors source for training. The GGUF at
+# ~/programs/carnice/Carnice-9b-Q8_0.gguf is for inference (llama.cpp serving)
+# only — Axolotl trains against the original safetensors.
+base_model: kai-os/Carnice-9b
+model_type: AutoModelForCausalLM
+tokenizer_type: AutoTokenizer
+chat_template: chatml
+
+load_in_4bit: true
+adapter: qlora
+lora_r: 16
+lora_alpha: 32
+lora_dropout: 0.05
+
+# Skip the embedding upcast on 4-bit-loaded models. By default axolotl
+# upcasts the embedding layer from 4-bit to fp32 for numerical stability,
+# which momentarily allocates ~3.8 GB on a 9B model with a 152K-vocab
+# tokenizer (the new fp32 tensor + the still-live original). On a 12GB
+# card with an active desktop, that single allocation OOMs the model
+# load. QLoRA trains LoRA adapters, not the embedding itself, so the
+# embedding receives no gradients and the upcast is essentially wasted.
+embeddings_skip_upcast: true
+lora_target_modules:
+  - q_proj
+  - k_proj
+  - v_proj
+  - o_proj
+  - gate_proj
+  - up_proj
+  - down_proj
+
+# VRAM-conservative settings for a single 12GB consumer GPU (e.g. RTX 4070)
+# with an active desktop session consuming ~0.5 GB. A 9B model at QLoRA fits
+# in ~9 GB peak VRAM with these settings, leaving ~2-3 GB headroom for
+# cross-entropy logits and gradient buffers.
+#
+# If you OOM despite these settings:
+#   1. Drop sequence_len to 512
+#   2. Set lora_r: 8 and lora_alpha: 16
+#   3. Drop to a TTY (Ctrl+Alt+F2) to free the desktop's ~0.5 GB
+sequence_len: 512
+
+# IMPORTANT: sample_packing is OFF for 12GB consumer cards. With packing on,
+# multiple sequences are packed per effective batch (~8x at typical efficiency),
+# which multiplies the cross-entropy logits tensor by the packing factor. For a
+# 9B model with a 152K vocabulary, packed logits hit ~2 GB per step plus the
+# softmax temporary, OOMing during loss computation. Without packing, each
+# step processes one sequence at most sequence_len long — ~234 MB of logits
+# per step. The trade-off is more individual training steps, but on small
+# personal datasets the wall-clock is dominated by model load, not steps.
+sample_packing: false
+pad_to_sequence_len: true
+
+# gradient_checkpointing trades ~30% slower training for ~40% less activation
+# memory. On a 12GB card this is the difference between OOMing during eval
+# and completing the run cleanly.
+gradient_checkpointing: true
+
+# Disable axolotl's auto-enabled LoRA kernel optimizations. They speed up
+# training by ~10-20% but allocate large intermediate tensors that push us
+# over the 12GB budget during eval (the 3.79 GiB OOM allocation we observed
+# matches the size of these kernels' workspace).
+lora_qkv_kernel: false
+lora_mlp_kernel: false
+lora_o_kernel: false
+lora_embedding_kernel: false
+
+# Chunked cross-entropy. Required for large-vocab models on 12GB cards.
+# Without this, computing the cross-entropy loss for a 152K vocab needs
+# to materialize the full logits tensor (~233 MB per sequence) plus its
+# softmax temporary plus its gradient — ~700 MB of contiguous allocation
+# per training step, which OOMs at the cross_entropy boundary even when
+# sample_packing is off and sequence_len is 768.
+#
+# axolotl's chunked_cross_entropy monkeypatches the standard CE loss to
+# process the sequence dimension in chunks, so the full logits tensor
+# never exists at once. Unlike liger_fused_linear_cross_entropy, this
+# doesn't require model-architecture-specific support and works with any
+# transformer (including Qwen3.5, which liger doesn't support yet).
+#
+# 16 chunks = ~44 MB per chunk for a 768-token seq with 152K vocab.
+# Lower chunk count = faster but more memory; higher = slower but less.
+chunked_cross_entropy: true
+chunked_cross_entropy_num_chunks: 32
+
+num_epochs: 3
+learning_rate: 0.0001
+warmup_ratio: 0.05
+gradient_accumulation_steps: 8
+micro_batch_size: 1
+
+weight_decay: 0.01
+max_grad_norm: 1.0
+
+# NOTE: train.py's generate_config sets val_set_size per dataset: 0.1
+# normally, but 0 for tiny datasets (< ~50 records), in which case it also
+# drops eval_steps / early_stopping_patience / metric_for_best_model /
+# greater_is_better from the generated config — axolotl rejects an eval
+# schedule with an empty eval split.
+eval_steps: 50
+save_steps: 50
+save_strategy: steps
+logging_steps: 10
+early_stopping_patience: 3
+metric_for_best_model: eval_loss
+greater_is_better: false
+
+bf16: auto
+tf32: true

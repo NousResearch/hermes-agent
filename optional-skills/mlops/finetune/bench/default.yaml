@@ -1,0 +1,45 @@
+env:
+  enabled_toolsets: ["terminal", "file"]
+  # Docker backend is REQUIRED and ENFORCED — setup() preflights the
+  # daemon (`docker info`) and hard-exits with code 4 if it is unusable,
+  # instead of letting every case fail as a bogus quality zero. Tier 3
+  # cases scaffold/refactor files and would otherwise scribble in the
+  # host filesystem. The bench env mounts /tmp/finetune-bench from host
+  # into the container at the same path so the per-case working dirs
+  # created by _rollout_case are visible inside the sandbox.
+  #
+  # Any non-docker backend executes agent-generated commands DIRECTLY ON
+  # THE HOST; the bench refuses to start unless you opt in explicitly with
+  # `allow_unsandboxed: true` here or FINETUNE_BENCH_ALLOW_UNSANDBOXED=1.
+  terminal_backend: docker
+  allow_unsandboxed: false
+  max_agent_turns: 15
+  agent_temperature: 0.1
+  # Fixed sampling seed sent with every request. Without it, run-to-run
+  # sampling noise at temperature 0.1 (~3% on the binary-scored tiers) is
+  # the same size as the 3% regression threshold, so the promotion gate
+  # flaps between PASS and FAIL on identical adapters.
+  seed: 1234
+  terminal_timeout: 60
+  terminal_lifetime: 600
+  # Per-response output cap. 2048 is too small — write_file calls with
+  # long content (shell scripts, multi-class Python files) get truncated
+  # mid-string and produce unparseable JSON tool calls, manifesting as
+  # format_compliance regressions. 4096 gives Tier 3 scaffolding cases
+  # enough headroom while staying well under typical server context limits.
+  max_token_length: 4096
+
+  # Benchmark-specific. Relative paths resolve against this file's
+  # directory, so the defaults work both from a repo checkout and from an
+  # installed skill.
+  prompt_bank_path: prompt_bank.yaml
+  custom_cases_dir: ~/.hermes/finetune/bench/custom
+  regression_threshold_tool_selection: 0.03
+  regression_threshold_execution: 0.05
+  regression_threshold_completion: 0.05
+  format_compliance_minimum: 0.95
+
+setup:
+  - model_name: carnice
+    base_url: http://localhost:8008/v1
+    api_key: none

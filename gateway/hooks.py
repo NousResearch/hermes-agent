@@ -70,11 +70,17 @@ class HookRegistry:
         return list(self._loaded_hooks)
 
     def _register_builtin_hooks(self) -> None:
-        """Register built-in hooks that are always active.
+        """Register built-in (shipped) hooks.
 
-        Currently empty — no shipped built-in hooks. Kept as the extension
-        point for future always-on gateway hooks so they drop in without
-        re-plumbing discover_and_load().
+        No built-ins currently ship. This stays as the extension point for
+        future always-on gateway hooks so they drop in without re-plumbing
+        discover_and_load().
+
+        Note: an earlier ``finetune-feedback`` builtin registered here for
+        ``reaction:add`` — an event no platform adapter emits — and recorded
+        any chat member's emoji as a session-level training label. It was
+        removed; platform reaction feedback needs a real design first
+        (per-turn attribution, reactor authorship checks).
         """
         return
 

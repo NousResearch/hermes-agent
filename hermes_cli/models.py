@@ -336,8 +336,9 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "kimi-k2-0905-preview",
     ],
     "stepfun": [
-        "step-3.5-flash",
+        "step-3.7-flash",
         "step-3.5-flash-2603",
+        "step-3.5-flash",
     ],
     "moonshot": [
         "kimi-k2.6",

@@ -7907,6 +7907,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             "profiles": profiles,
             "active_name": active_name,
             "selected": default_idx,
+            "_scroll_offset": 0,
         }
         self._invalidate(min_interval=0.0)
 
@@ -14597,8 +14598,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 term_rows = get_app().output.get_size().rows
             except Exception:
                 term_rows = shutil.get_terminal_size((100, 24)).lines
-            # Flatten the viewport — profile list is small, rarely needs scrolling
-            visible = min(len(choices), max(3, term_rows - 12))
+            # Scrolling viewport — same pattern as /model picker
+            scroll_offset, visible = HermesCLI._compute_model_picker_viewport(
+                selected, state.get("_scroll_offset", 0), len(choices), term_rows,
+            )
+            state["_scroll_offset"] = scroll_offset
 
             lines = []
             lines.append(('class:clarify-border', '╭─ '))
@@ -14607,9 +14611,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             _append_blank_panel_line(lines, 'class:clarify-border', box_width)
             _append_panel_line(lines, 'class:clarify-border', 'class:clarify-hint', hint, box_width)
             _append_blank_panel_line(lines, 'class:clarify-border', box_width)
-            for idx, choice in enumerate(choices):
-                if idx >= visible:
-                    break
+            for idx in range(scroll_offset, scroll_offset + visible):
+                choice = choices[idx]
                 style = 'class:clarify-selected' if idx == selected else 'class:clarify-choice'
                 prefix = '❯ ' if idx == selected else '  '
                 for wrapped in _wrap_panel_text(prefix + choice, inner_text_width, subsequent_indent='  '):

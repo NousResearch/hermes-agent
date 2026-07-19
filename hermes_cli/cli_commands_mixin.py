@@ -525,6 +525,7 @@ class CLICommandsMixin:
         # Resolve target home path
         root = get_default_hermes_root()
         target_home = str(root) if canon == "default" else str(root / "profiles" / canon)
+        target_home_path = root if canon == "default" else root / "profiles" / canon
 
         if not os.path.isdir(target_home):
             from cli import _cprint
@@ -537,12 +538,32 @@ class CLICommandsMixin:
         invalidate_env_cache()
         cfg = load_config()
 
+        # Persist for next session (same as `hermes profile use`)
+        from hermes_cli.profiles import set_active_profile
+        try:
+            set_active_profile(canon)
+        except Exception:
+            pass  # non-fatal — in-process switch still works
+
         # Update CLI state from new config
         model_cfg = cfg.get("model", {})
         self.model = model_cfg.get("default", self.model)
         self.provider = model_cfg.get("provider", self.provider)
         self.base_url = model_cfg.get("base_url", self.base_url)
         self.api_mode = model_cfg.get("api_mode", self.api_mode)
+        self.config = cfg
+
+        # Rebuild profile-scoped runtime state before creating new session
+        from hermes_state import SessionDB
+        self._session_db = None
+        self._session_db_unavailable = False
+        try:
+            self._session_db = SessionDB()
+        except Exception:
+            self._session_db_unavailable = True
+
+        # Rebuild history file for new profile
+        self._history_file = target_home_path / ".hermes_history"
 
         # Flush old session + reset agent
         self.new_session()

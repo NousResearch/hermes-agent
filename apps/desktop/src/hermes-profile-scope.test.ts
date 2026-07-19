@@ -2,13 +2,17 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import {
   checkHermesUpdate,
+  deleteSkillFile,
   getActionStatus,
   getMemoryProviderConfig,
+  getSkillContent,
+  getSkillFiles,
   getStatus,
   restartGateway,
   saveMemoryProviderConfig,
   setApiRequestProfile,
-  updateHermes
+  updateHermes,
+  updateSkillContent
 } from './hermes'
 
 // Contract: every backend-targeted action helper must carry the active gateway
@@ -54,6 +58,19 @@ describe('backend action helpers are profile-scoped', () => {
     void updateHermes()
     void checkHermesUpdate()
     void getActionStatus('gateway-restart')
+
+    for (const call of api.mock.calls) {
+      expect(call[0].profile).toBe('coder')
+    }
+  })
+
+  it('forwards the active profile to skill package file calls', () => {
+    setApiRequestProfile('coder')
+
+    void getSkillFiles('my-skill')
+    void getSkillContent('my-skill', 'references/guide.md')
+    void updateSkillContent('my-skill', 'references/guide.md', 'updated')
+    void deleteSkillFile('my-skill', 'references/guide.md')
 
     for (const call of api.mock.calls) {
       expect(call[0].profile).toBe('coder')

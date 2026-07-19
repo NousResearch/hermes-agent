@@ -9,6 +9,10 @@ import type * as HermesApi from '@/hermes'
 import { queryClient } from '@/lib/query-client'
 
 const getSkills = vi.fn()
+const getSkillFiles = vi.fn()
+const getSkillContent = vi.fn()
+const updateSkillContent = vi.fn()
+const deleteSkillFile = vi.fn()
 const getToolsets = vi.fn()
 const toggleSkill = vi.fn()
 const toggleToolset = vi.fn()
@@ -22,12 +26,37 @@ const getUsageAnalytics = vi.fn()
 vi.mock('@/hermes', async importOriginal => ({
   ...(await importOriginal<typeof HermesApi>()),
   getSkills: () => getSkills(),
+  getSkillFiles: (name: string) => getSkillFiles(name),
+  getSkillContent: (name: string, filePath: string) => getSkillContent(name, filePath),
+  updateSkillContent: (name: string, filePath: string, content: string) => updateSkillContent(name, filePath, content),
+  deleteSkillFile: (name: string, filePath: string) => deleteSkillFile(name, filePath),
   getToolsets: () => getToolsets(),
   toggleSkill: (name: string, enabled: boolean) => toggleSkill(name, enabled),
   toggleToolset: (name: string, enabled: boolean) => toggleToolset(name, enabled),
   getToolsetConfig: (name: string) => getToolsetConfig(name),
   selectToolsetProvider: (toolset: string, provider: string) => selectToolsetProvider(toolset, provider),
   getUsageAnalytics: (days: number) => getUsageAnalytics(days)
+}))
+
+vi.mock('@/components/chat/code-editor', () => ({
+  CodeEditor: ({
+    disabled,
+    filePath,
+    initialValue,
+    onChange
+  }: {
+    disabled?: boolean
+    filePath: string
+    initialValue: string
+    onChange: (value: string) => void
+  }) => (
+    <textarea
+      aria-label={`Editor ${filePath}`}
+      defaultValue={initialValue}
+      disabled={disabled}
+      onChange={event => onChange(event.currentTarget.value)}
+    />
+  )
 }))
 
 // Notifications hit nanostores/timers we don't care about here.
@@ -58,14 +87,25 @@ function toolset(overrides: Record<string, unknown> = {}) {
   }
 }
 
-async function renderSkills() {
+function skill(overrides: Record<string, unknown> = {}) {
+  return {
+    name: 'package-skill',
+    description: 'A package skill',
+    category: 'general',
+    enabled: true,
+    provenance: 'agent',
+    ...overrides
+  }
+}
+
+async function renderSkills(initialEntry = '/skills?tab=toolsets') {
   const { SkillsView } = await import('./index')
   let result: ReturnType<typeof render>
   await act(async () => {
     result = render(
       // SkillsView reads skills/toolsets via useQuery, so it needs a provider.
       <QueryClientProvider client={queryClient}>
-        <MemoryRouter initialEntries={['/skills?tab=toolsets']}>
+        <MemoryRouter initialEntries={[initialEntry]}>
           <SkillsView />
         </MemoryRouter>
       </QueryClientProvider>
@@ -77,6 +117,15 @@ async function renderSkills() {
 
 beforeEach(() => {
   getSkills.mockResolvedValue([])
+  getSkillFiles.mockResolvedValue({ name: 'package-skill', files: [] })
+  getSkillContent.mockResolvedValue({
+    name: 'package-skill',
+    file_path: 'SKILL.md',
+    path: '/skills/package-skill/SKILL.md',
+    content: '# Skill\n'
+  })
+  updateSkillContent.mockResolvedValue({ success: true, message: 'updated' })
+  deleteSkillFile.mockResolvedValue({ success: true, message: 'deleted' })
   getToolsets.mockResolvedValue([toolset()])
   toggleToolset.mockResolvedValue({ ok: true, name: 'web', enabled: false })
   getToolsetConfig.mockResolvedValue({ has_category: true, active_provider: null, providers: [] })
@@ -85,6 +134,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup()
+  vi.restoreAllMocks()
   vi.clearAllMocks()
   // Shared singleton client — drop cached skills/toolsets so each test refetches.
   queryClient.clear()
@@ -152,5 +202,86 @@ describe('SkillsView toolset management', () => {
     // Internal route change into the Models section with the aux slot target —
     // consumed by ModelSettings' deep-link highlight. Never an external URL.
     await waitFor(() => expect(navigateSpy).toHaveBeenCalledWith('/settings?tab=config:model&aux=vision'))
+  })
+})
+
+describe('SkillsView package files', () => {
+  const files = [
+    { path: 'SKILL.md', kind: 'skill', is_binary: false },
+    { path: 'references/guide.md', kind: 'references', is_binary: false },
+    { path: 'references/other.md', kind: 'references', is_binary: false },
+    { path: 'assets/logo.png', kind: 'assets', is_binary: true }
+  ]
+
+  beforeEach(() => {
+    getSkills.mockResolvedValue([skill()])
+    getSkillFiles.mockResolvedValue({ name: 'package-skill', files })
+    getSkillContent.mockImplementation((_name: string, filePath: string) =>
+      Promise.resolve({
+        name: 'package-skill',
+        file_path: filePath,
+        path: `/skills/package-skill/${filePath}`,
+        content: filePath === 'SKILL.md' ? '# Skill\n' : '# Guide\n'
+      })
+    )
+  })
+
+  it('opens and saves a support file by its real path', async () => {
+    await renderSkills('/skills?tab=skills')
+
+    fireEvent.click(await screen.findByRole('button', { name: 'references/guide.md' }))
+    const editor = await screen.findByRole('textbox', { name: 'Editor references/guide.md' })
+    fireEvent.change(editor, { target: { value: '# Updated guide\n' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+
+    await waitFor(() =>
+      expect(updateSkillContent).toHaveBeenCalledWith('package-skill', 'references/guide.md', '# Updated guide\n')
+    )
+  })
+
+  it('deletes support files but never offers delete for SKILL.md', async () => {
+    vi.spyOn(window, 'confirm').mockReturnValue(true)
+    await renderSkills('/skills?tab=skills')
+
+    expect(await screen.findByRole('button', { name: 'SKILL.md' })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Delete SKILL.md' })).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Delete references/guide.md' }))
+
+    await waitFor(() => expect(deleteSkillFile).toHaveBeenCalledWith('package-skill', 'references/guide.md'))
+  })
+
+  it('keeps bundled package files read-only', async () => {
+    getSkills.mockResolvedValue([skill({ provenance: 'bundled' })])
+    await renderSkills('/skills?tab=skills')
+
+    fireEvent.click(await screen.findByRole('button', { name: 'references/guide.md' }))
+    const editor = await screen.findByRole('textbox', { name: 'Editor references/guide.md' })
+
+    expect(editor.hasAttribute('disabled')).toBe(true)
+    expect(screen.queryByRole('button', { name: 'Delete references/guide.md' })).toBeNull()
+  })
+
+  it('does not open binary assets in the text editor', async () => {
+    await renderSkills('/skills?tab=skills')
+
+    fireEvent.click(await screen.findByRole('button', { name: 'assets/logo.png' }))
+
+    expect(await screen.findByText(/assets\/logo\.png is binary/)).toBeTruthy()
+    expect(screen.queryByRole('textbox', { name: 'Editor assets/logo.png' })).toBeNull()
+    expect(getSkillContent).not.toHaveBeenCalledWith('package-skill', 'assets/logo.png')
+  })
+
+  it('guards file switches when the current draft is dirty', async () => {
+    vi.spyOn(window, 'confirm').mockReturnValue(false)
+    await renderSkills('/skills?tab=skills')
+
+    fireEvent.click(await screen.findByRole('button', { name: 'references/guide.md' }))
+    const editor = await screen.findByRole('textbox', { name: 'Editor references/guide.md' })
+    fireEvent.change(editor, { target: { value: 'unsaved' } })
+    fireEvent.click(screen.getByRole('button', { name: 'references/other.md' }))
+
+    expect(window.confirm).toHaveBeenCalledWith('Discard unsaved changes and switch files?')
+    expect(getSkillContent).not.toHaveBeenCalledWith('package-skill', 'references/other.md')
+    expect(screen.getByRole('textbox', { name: 'Editor references/guide.md' })).toBeTruthy()
   })
 })

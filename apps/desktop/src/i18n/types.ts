@@ -813,6 +813,15 @@ export interface Translations {
     emptyNoneAvailable: (noun: string) => string
     changesApplyNewSessions: string
     skillUpdated: string
+    files: string
+    loadingFiles: string
+    filesLoadFailed: string
+    binary: string
+    binaryUnsupported: (path: string) => string
+    discardUnsaved: string
+    deleteFile: (path: string) => string
+    deleteFileConfirm: (path: string) => string
+    fileDeleted: string
     edit: string
     archive: string
     skillArchivedTitle: string

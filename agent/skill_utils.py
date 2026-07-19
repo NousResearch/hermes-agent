@@ -47,7 +47,41 @@ EXCLUDED_SKILL_DIRS = frozenset(
 # skill_view(skill, file_path=...). They are not standalone skills and must not
 # be scanned for active SKILL.md/DESCRIPTION.md entries, even if a Curator or
 # archive workflow preserves a complete old skill package under references/.
-SKILL_SUPPORT_DIRS = frozenset(("references", "templates", "assets", "scripts"))
+SKILL_SUPPORT_DIR_ORDER = ("references", "templates", "scripts", "assets")
+SKILL_SUPPORT_DIRS = frozenset(SKILL_SUPPORT_DIR_ORDER)
+
+
+def list_skill_support_files(skill_dir: Path) -> Dict[str, List[str]]:
+    """Return every regular file in a skill's allowlisted support directories.
+
+    Paths are relative POSIX paths so API clients and ``skill_view`` expose the
+    same stable package vocabulary on every operating system. Symlinks are not
+    package files: skipping them prevents a list entry from pointing outside
+    the skill even when a later reader forgets to resolve the target.
+    """
+    groups: Dict[str, List[str]] = {}
+
+    for kind in SKILL_SUPPORT_DIR_ORDER:
+        support_dir = skill_dir / kind
+        if not support_dir.is_dir() or support_dir.is_symlink():
+            continue
+
+        try:
+            files = sorted(
+                (
+                    path.relative_to(skill_dir).as_posix()
+                    for path in support_dir.rglob("*")
+                    if path.is_file() and not path.is_symlink()
+                ),
+                key=str.casefold,
+            )
+        except OSError:
+            files = []
+
+        if files:
+            groups[kind] = files
+
+    return groups
 
 
 def is_excluded_skill_path(path) -> bool:

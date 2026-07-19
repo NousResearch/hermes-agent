@@ -506,6 +506,21 @@ class TestSkillView:
         assert result["linked_files"] is not None
         assert "references" in result["linked_files"]
 
+    def test_view_discovers_nested_support_files_consistently(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            skill_dir = _make_skill(tmp_path, "my-skill")
+            nested_ref = skill_dir / "references" / "api" / "v2.md"
+            nested_ref.parent.mkdir(parents=True)
+            nested_ref.write_text("v2", encoding="utf-8")
+            nested_script = skill_dir / "scripts" / "checks" / "lint.py"
+            nested_script.parent.mkdir(parents=True)
+            nested_script.write_text("print('ok')", encoding="utf-8")
+            raw = skill_view("my-skill")
+
+        linked = json.loads(raw)["linked_files"]
+        assert linked["references"] == ["references/api/v2.md"]
+        assert linked["scripts"] == ["scripts/checks/lint.py"]
+
     def test_view_tags_from_metadata(self, tmp_path):
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
             _make_skill(

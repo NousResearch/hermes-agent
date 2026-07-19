@@ -83,6 +83,7 @@ from utils import env_var_enabled
 from agent.skill_utils import (
     EXCLUDED_SKILL_DIRS as _EXCLUDED_SKILL_DIRS,
     is_skill_support_path as _is_skill_support_path,
+    list_skill_support_files as _list_skill_support_files,
 )
 
 logger = logging.getLogger(__name__)
@@ -1318,40 +1319,7 @@ def skill_view(
                     ensure_ascii=False,
                 )
             if not target_file.exists():
-                # List available files in the skill directory, organized by type
-                available_files = {
-                    "references": [],
-                    "templates": [],
-                    "assets": [],
-                    "scripts": [],
-                    "other": [],
-                }
-
-                # Scan for all readable files
-                for f in skill_dir.rglob("*"):
-                    if f.is_file() and f.name != "SKILL.md":
-                        rel = str(f.relative_to(skill_dir))
-                        if rel.startswith("references/"):
-                            available_files["references"].append(rel)
-                        elif rel.startswith("templates/"):
-                            available_files["templates"].append(rel)
-                        elif rel.startswith("assets/"):
-                            available_files["assets"].append(rel)
-                        elif rel.startswith("scripts/"):
-                            available_files["scripts"].append(rel)
-                        elif f.suffix in {
-                            ".md",
-                            ".py",
-                            ".yaml",
-                            ".yml",
-                            ".json",
-                            ".tex",
-                            ".sh",
-                        }:
-                            available_files["other"].append(rel)
-
-                # Remove empty categories
-                available_files = {k: v for k, v in available_files.items() if v}
+                available_files = _list_skill_support_files(skill_dir)
 
                 return json.dumps(
                     {
@@ -1404,50 +1372,7 @@ def skill_view(
         # Reuse the parse from the platform check above
         frontmatter = parsed_frontmatter
 
-        # Get reference, template, asset, and script files if this is a directory-based skill
-        reference_files = []
-        template_files = []
-        asset_files = []
-        script_files = []
-
-        if skill_dir:
-            references_dir = skill_dir / "references"
-            if references_dir.exists():
-                reference_files = [
-                    str(f.relative_to(skill_dir)) for f in references_dir.glob("*.md")
-                ]
-
-            templates_dir = skill_dir / "templates"
-            if templates_dir.exists():
-                for ext in [
-                    "*.md",
-                    "*.py",
-                    "*.yaml",
-                    "*.yml",
-                    "*.json",
-                    "*.tex",
-                    "*.sh",
-                ]:
-                    template_files.extend(
-                        [
-                            str(f.relative_to(skill_dir))
-                            for f in templates_dir.rglob(ext)
-                        ]
-                    )
-
-            # assets/ — agentskills.io standard directory for supplementary files
-            assets_dir = skill_dir / "assets"
-            if assets_dir.exists():
-                for f in assets_dir.rglob("*"):
-                    if f.is_file():
-                        asset_files.append(str(f.relative_to(skill_dir)))
-
-            scripts_dir = skill_dir / "scripts"
-            if scripts_dir.exists():
-                for ext in ["*.py", "*.sh", "*.bash", "*.js", "*.ts", "*.rb"]:
-                    script_files.extend(
-                        [str(f.relative_to(skill_dir)) for f in scripts_dir.glob(ext)]
-                    )
+        linked_files = _list_skill_support_files(skill_dir) if skill_dir else {}
 
         # Read tags/related_skills with backward compat:
         # Check metadata.hermes.* first (agentskills.io convention), fall back to top-level
@@ -1460,17 +1385,6 @@ def skill_view(
         related_skills = _parse_tags(
             hermes_meta.get("related_skills") or frontmatter.get("related_skills", "")
         )
-
-        # Build linked files structure for clear discovery
-        linked_files = {}
-        if reference_files:
-            linked_files["references"] = reference_files
-        if template_files:
-            linked_files["templates"] = template_files
-        if asset_files:
-            linked_files["assets"] = asset_files
-        if script_files:
-            linked_files["scripts"] = script_files
 
         try:
             rel_path = str(skill_md.relative_to(active_skills_dir))

@@ -290,6 +290,14 @@ def decompose_task(
             task_id, False, f"task is not in triage (status={task.status!r})"
         )
 
+    board_meta = kb.read_board_metadata(kb.get_current_board())
+    if board_meta.get("inert_triage"):
+        return DecomposeOutcome(
+            task_id, False,
+            "board policy: inert triage — triage cards are inert until "
+            "deliberate COO routing; auto-decompose is disabled",
+        )
+
     cfg = _load_config()
     orchestrator = _resolve_orchestrator_profile(cfg)
     default_assignee = _resolve_default_assignee(cfg)

@@ -5,10 +5,6 @@ version: 1.0.0
 author: Nous Research
 license: MIT
 platforms: [linux, macos, windows]
-required_environment_variables:
-  - BLAND_API_KEY
-  - TWILIO_AUTH_TOKEN
-  - VAPI_API_KEY
 metadata:
   hermes:
     tags: [telephony, phone, sms, mms, voice, twilio, bland.ai, vapi, calling, texting]

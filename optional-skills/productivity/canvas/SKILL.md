@@ -9,7 +9,6 @@ prerequisites:
   env_vars: [CANVAS_API_TOKEN, CANVAS_BASE_URL]
 required_environment_variables:
   - CANVAS_API_TOKEN
-  - CANVAS_BASE_URL
 metadata:
   hermes:
     tags: [Canvas, LMS, Education, Courses, Assignments]

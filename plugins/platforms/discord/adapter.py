@@ -3234,6 +3234,17 @@ class DiscordAdapter(BasePlatformAdapter):
         }
         return plain or None
 
+    @staticmethod
+    def _status_transport_metadata(
+        metadata: Optional[Dict[str, Any]],
+    ) -> Optional[Dict[str, Any]]:
+        """Strip lifecycle-only receipt state before a direct Discord send."""
+        if not metadata:
+            return None
+        transport = dict(metadata)
+        transport.pop("reply_to_message_id", None)
+        return transport or None
+
     def _cache_status_message(
         self,
         key: tuple[str, str, str],
@@ -3399,13 +3410,23 @@ class DiscordAdapter(BasePlatformAdapter):
                 )
                 status_metadata: Optional[Dict[str, Any]] = dict(metadata or {})
                 status_metadata.pop("status_key", None)
-                status_metadata.pop("reply_to_message_id", None)
+                if reply_anchor is not None:
+                    # Direct cached edits do not receive ``reply_to``. Retain the
+                    # originating message identity as lifecycle metadata so a
+                    # terminal edit can complete Discord's recovery receipt.
+                    status_metadata["reply_to_message_id"] = str(reply_anchor)
                 if terminal:
                     status_metadata.pop("operator_card", None)
-                elif "operator_card" not in status_metadata:
-                    status_metadata["operator_card"] = self._task_run_operator_card(
-                        status_key, content
-                    )
+                else:
+                    # Running cards are operational UI, not assistant turns.
+                    # Enforce this at the keyed lifecycle boundary so every
+                    # producer (progress, stream, proxy, status) stays out of
+                    # history/backfill even if its caller omits the marker.
+                    status_metadata["non_conversational"] = True
+                    if "operator_card" not in status_metadata:
+                        status_metadata["operator_card"] = self._task_run_operator_card(
+                            status_key, content
+                        )
                 if not status_metadata:
                     status_metadata = None
 
@@ -3505,7 +3526,7 @@ class DiscordAdapter(BasePlatformAdapter):
                 send_metadata = (
                     self._plain_status_metadata(status_metadata)
                     if terminal or edit_failed
-                    else status_metadata
+                    else self._status_transport_metadata(status_metadata)
                 )
                 send_kwargs: Dict[str, Any] = {
                     "chat_id": str(chat_id),

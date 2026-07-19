@@ -14587,10 +14587,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # producing false-positive bare-path matches with the MEDIA: prefix
             # glued on. This matches the chain order in gateway/platforms/base.py.
             _, cleaned = adapter.extract_images(cleaned)
-            local_files, _ = adapter.extract_local_files(cleaned)
+            local_files, cleaned = adapter.extract_local_files(cleaned)
             local_files = BasePlatformAdapter.filter_local_delivery_paths(local_files)
 
-            _thread_meta = self._thread_metadata_for_source(event.source, self._reply_anchor_for_event(event))
+            _reply_anchor = self._reply_anchor_for_event(event)
+            _thread_meta = self._thread_metadata_for_source(event.source, _reply_anchor)
+            _attachment_deliveries = 0
 
             _VIDEO_EXTS = {'.mp4', '.mov', '.avi', '.mkv', '.webm', '.3gp'}
             _IMAGE_EXTS = {'.jpg', '.jpeg', '.png', '.webp', '.gif'}
@@ -14621,11 +14623,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if image_paths:
                 try:
                     images = [(f"file://{_quote(p)}", "") for p in image_paths]
-                    await adapter.send_multiple_images(
+                    image_result = await adapter.send_multiple_images(
                         chat_id=event.source.chat_id,
                         images=images,
                         metadata=_thread_meta,
                     )
+                    if image_result is None or getattr(image_result, "success", False):
+                        _attachment_deliveries += len(image_paths)
                 except Exception as e:
                     logger.warning("[%s] Post-stream image batch delivery failed: %s", adapter.name, e)
 
@@ -14633,23 +14637,25 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 try:
                     ext = Path(media_path).suffix.lower()
                     if should_send_media_as_audio(event.source.platform, ext, is_voice=is_voice):
-                        await adapter.send_voice(
+                        media_result = await adapter.send_voice(
                             chat_id=event.source.chat_id,
                             audio_path=media_path,
                             metadata=_thread_meta,
                         )
                     elif ext in _VIDEO_EXTS:
-                        await adapter.send_video(
+                        media_result = await adapter.send_video(
                             chat_id=event.source.chat_id,
                             video_path=media_path,
                             metadata=_thread_meta,
                         )
                     else:
-                        await adapter.send_document(
+                        media_result = await adapter.send_document(
                             chat_id=event.source.chat_id,
                             file_path=media_path,
                             metadata=_thread_meta,
                         )
+                    if media_result is None or getattr(media_result, "success", False):
+                        _attachment_deliveries += 1
                 except Exception as e:
                     logger.warning("[%s] Post-stream media delivery failed: %s", adapter.name, e)
 
@@ -14657,19 +14663,49 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 try:
                     ext = Path(file_path).suffix.lower()
                     if ext in _VIDEO_EXTS:
-                        await adapter.send_video(
+                        file_result = await adapter.send_video(
                             chat_id=event.source.chat_id,
                             video_path=file_path,
                             metadata=_thread_meta,
                         )
                     else:
-                        await adapter.send_document(
+                        file_result = await adapter.send_document(
                             chat_id=event.source.chat_id,
                             file_path=file_path,
                             metadata=_thread_meta,
                         )
+                    if file_result is None or getattr(file_result, "success", False):
+                        _attachment_deliveries += 1
                 except Exception as e:
                     logger.warning("[%s] Post-stream file delivery failed: %s", adapter.name, e)
+
+            _status_key = getattr(event, "_status_key", None)
+            if _status_key and not cleaned.strip() and _attachment_deliveries:
+                # Streaming owns the visible body, but attachment transports do
+                # not own Discord's keyed text lifecycle. For a MEDIA-only final,
+                # replace the retained running card after at least one attachment
+                # succeeds so the run cannot remain visibly stuck.
+                _terminal_metadata = dict(_thread_meta or {})
+                _terminal_metadata.update(
+                    {
+                        "notify": True,
+                        "status_key": str(_status_key),
+                        "status_terminal": True,
+                    }
+                )
+                if _reply_anchor is not None:
+                    _terminal_metadata["reply_to_message_id"] = str(_reply_anchor)
+                attachment_label = (
+                    "Attachment delivered."
+                    if _attachment_deliveries == 1
+                    else "Attachments delivered."
+                )
+                await adapter._send_with_retry(
+                    chat_id=event.source.chat_id,
+                    content=attachment_label,
+                    reply_to=_reply_anchor,
+                    metadata=_terminal_metadata,
+                )
 
         except Exception as e:
             logger.warning("Post-stream media extraction failed: %s", e)

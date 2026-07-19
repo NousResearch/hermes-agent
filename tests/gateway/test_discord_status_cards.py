@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
@@ -275,7 +275,10 @@ async def test_embed_send_failure_falls_back_once_to_plaintext_and_recaches(adap
     assert adapter.send.await_args_list[1].kwargs == {
         "chat_id": "555",
         "content": "Working",
-        "metadata": {"thread_id": "777"},
+        "metadata": {
+            "thread_id": "777",
+            "non_conversational": True,
+        },
     }
     assert adapter._status_message_ids[("555", "777", "run-1")] == "7002"
 
@@ -489,6 +492,8 @@ async def test_stream_edit_and_base_final_share_one_real_discord_message(
         lambda card: {"kind": card.card_type, "summary": card.summary},
     )
     instance = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+    record_response = Mock()
+    instance._record_discord_response = record_response
     retained = SimpleNamespace(id=7001, edit=AsyncMock())
     thread = SimpleNamespace(
         send=AsyncMock(return_value=retained),
@@ -505,7 +510,7 @@ async def test_stream_edit_and_base_final_share_one_real_discord_message(
         metadata={
             "thread_id": "777",
             "status_key": "task_run",
-            "non_conversational": True,
+            "reply_to_message_id": "42",
         },
     )
     assert "7001" in instance._nonconversational_messages
@@ -519,6 +524,7 @@ async def test_stream_edit_and_base_final_share_one_real_discord_message(
             "status_terminal": True,
             "expect_edits": True,
             "notify": True,
+            "reply_to_message_id": "42",
         },
     )
     base_final = await instance.send(
@@ -545,11 +551,26 @@ async def test_stream_edit_and_base_final_share_one_real_discord_message(
         "kind": "task_run",
         "summary": "Checking files",
     }
-    thread.fetch_message.assert_awaited_once_with(7001)
+    assert thread.fetch_message.await_count == 2
+    assert thread.fetch_message.await_args_list[0].args == (42,)
+    assert thread.fetch_message.await_args_list[1].args == (7001,)
     retained.edit.assert_awaited_once_with(
         content="Complete final result",
         embed=None,
     )
+    terminal_receipts = [
+        call.kwargs
+        for call in record_response.call_args_list
+        if call.kwargs.get("final")
+    ]
+    assert terminal_receipts == [
+        {
+            "reply_to": "42",
+            "result": SendResult(success=True, message_id="7001"),
+            "content": "Complete final result",
+            "final": True,
+        }
+    ]
 
 
 @pytest.mark.asyncio

@@ -2167,6 +2167,25 @@ class _HttpResponse:
         return raw
 
 
+def test_cloud_http_body_bound_accepts_large_role_and_rejects_oversize(
+) -> None:
+    current_large_role = b"x" * (600 * 1024)
+    chunked_response = _HttpResponse(current_large_role)
+    chunked_response._headers.pop("Content-Length")
+    assert (
+        collector._bounded_http_body(chunked_response)
+        == current_large_role
+    )
+
+    with pytest.raises(
+        collector.TrustedObservationError,
+        match="^trusted_observation_cloud_http_invalid$",
+    ):
+        collector._bounded_http_body(
+            _HttpResponse(b"x" * (collector.MAX_HTTP_BODY_BYTES + 1))
+        )
+
+
 class _HttpConnection:
     def __init__(self, responses: list[_HttpResponse]) -> None:
         self.responses = responses

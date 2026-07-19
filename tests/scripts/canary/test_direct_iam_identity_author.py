@@ -740,6 +740,29 @@ class _Response:
         return self._raw[:maximum]
 
 
+def test_http_body_bound_accepts_large_predefined_role_and_rejects_oversize(
+) -> None:
+    current_large_role = _Response({
+        "name": "roles/owner",
+        "description": "x" * (600 * 1024),
+    })
+    current_large_role._headers.pop("Content-Length")
+    assert 512 * 1024 < len(current_large_role._raw)
+    assert len(current_large_role._raw) <= author.MAX_HTTP_BODY_BYTES
+    assert author._bounded_http_body(current_large_role) == current_large_role._raw
+
+    oversized = _Response({
+        "name": "roles/owner",
+        "description": "x" * author.MAX_HTTP_BODY_BYTES,
+    })
+    assert len(oversized._raw) > author.MAX_HTTP_BODY_BYTES
+    with pytest.raises(
+        author.DirectIamIdentityAuthorError,
+        match="^direct_iam_identity_author_cloud_http_invalid$",
+    ):
+        author._bounded_http_body(oversized)
+
+
 class _Router:
     def __init__(self, routes: Mapping[tuple[str, str], Mapping[str, Any]]) -> None:
         self.routes = dict(routes)

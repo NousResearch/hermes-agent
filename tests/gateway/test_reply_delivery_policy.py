@@ -11,11 +11,13 @@ class _PolicyAdapter:
         self.policy = policy
         self.observed = []
         self.sent_voice = []
+        self.policy_calls = []
 
     def observe_inbound_message(self, event):
         self.observed.append(event)
 
     def reply_delivery_policy(self, event, response, *, voice_mode, already_sent):
+        self.policy_calls.append(event)
         return self.policy
 
     async def send_voice(self, **kwargs):
@@ -34,7 +36,7 @@ def _runner(adapter):
     return runner
 
 
-def _event(message_type=MessageType.TEXT):
+def _event(message_type=MessageType.TEXT, profile=None):
     return MessageEvent(
         text="hello",
         message_type=message_type,
@@ -43,6 +45,7 @@ def _event(message_type=MessageType.TEXT):
             chat_id="chat-1",
             chat_type="dm",
             user_id="user-1",
+            profile=profile,
         ),
     )
 
@@ -61,6 +64,33 @@ def test_runner_ignores_non_policy_adapter_return_and_preserves_legacy_gate():
     event = _event(MessageType.TEXT)
 
     assert runner._should_send_voice_reply(event, "hi", [], already_sent=False) is False
+
+
+def test_multiplex_source_resolves_secondary_profile_adapter_policy():
+    """Regression: a secondary-profile source must consult its own adapter's
+    policy, not the default profile's (see 8a9bc38c)."""
+    default_adapter = _PolicyAdapter(ReplyDeliveryPolicy(send_voice_reply=False))
+    secondary_adapter = _PolicyAdapter(ReplyDeliveryPolicy(send_voice_reply=True))
+    runner = _runner(default_adapter)
+    runner._profile_adapters = {"lars": {Platform.TELEGRAM: secondary_adapter}}
+    event = _event(MessageType.TEXT, profile="lars")
+
+    assert runner._should_send_voice_reply(event, "hi", [], already_sent=False) is True
+    assert secondary_adapter.policy_calls == [event]
+    assert default_adapter.policy_calls == []
+
+
+def test_multiplex_source_observes_secondary_profile_adapter():
+    default_adapter = _PolicyAdapter(ReplyDeliveryPolicy())
+    secondary_adapter = _PolicyAdapter(ReplyDeliveryPolicy())
+    runner = _runner(default_adapter)
+    runner._profile_adapters = {"lars": {Platform.TELEGRAM: secondary_adapter}}
+    event = _event(MessageType.TEXT, profile="lars")
+
+    runner._observe_inbound_message(event)
+
+    assert secondary_adapter.observed == [event]
+    assert default_adapter.observed == []
 
 
 def test_runner_observes_inbound_message_before_dispatch():

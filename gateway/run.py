@@ -18218,10 +18218,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
     def _observe_inbound_message(self, event: MessageEvent) -> None:
         """Let the source adapter observe an inbound event before dispatch."""
-        adapters = getattr(self, "adapters", None)
-        if not adapters:
-            return
-        adapter = adapters.get(event.source.platform)
+        # Resolve through _adapter_for_source so multiplex secondary profiles
+        # observe their own adapter, never the default profile's (8a9bc38c).
+        adapter = self._adapter_for_source(event.source)
         if not adapter or not hasattr(adapter, "observe_inbound_message"):
             return
         try:
@@ -18241,7 +18240,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         already_sent: bool = False,
     ):
         """Return the adapter's reply delivery policy for this turn."""
-        adapter = self.adapters.get(event.source.platform)
+        # self.adapters is the DEFAULT profile's adapter map; a multiplex
+        # secondary profile must consult its own adapter's policy (8a9bc38c).
+        adapter = self._adapter_for_source(event.source)
         chat_id = event.source.chat_id
         # Raw get — ``None`` (chat never set a voice mode) is distinct from an
         # explicit ``"off"``: the ``voice.auto_tts`` fallback below (and in the

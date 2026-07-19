@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from gateway.account_usage_presence import (
+    AccountUsagePresenceApplyResult,
     AccountUsagePresenceCapabilities,
     AccountUsagePresencePayload,
     AccountUsagePresenceRestoreResult,
@@ -89,6 +90,44 @@ async def test_telegram_sets_capacity_name_from_saved_baseline():
 
     assert changed is True
     adapter._bot.set_my_name.assert_awaited_once_with(name="Hermes · Session 75%")
+
+
+@pytest.mark.asyncio
+async def test_telegram_guarded_apply_requires_the_expected_owned_generation():
+    adapter = _adapter()
+    bot = adapter._bot
+    assert bot is not None
+    bot.get_my_name.return_value = SimpleNamespace(
+        name="Hermes · Session 75%"
+    )
+
+    result = await adapter.apply_account_usage_presence_if_owned(
+        _payload(74),
+        {"display_name": "Hermes"},
+        {"display_name": "Hermes · Session 75%"},
+    )
+
+    assert result is AccountUsagePresenceApplyResult.APPLIED
+    bot.set_my_name.assert_awaited_once_with(
+        name="Hermes · Session 74%"
+    )
+
+
+@pytest.mark.asyncio
+async def test_telegram_guarded_apply_preserves_external_name():
+    adapter = _adapter()
+    bot = adapter._bot
+    assert bot is not None
+    bot.get_my_name.return_value = SimpleNamespace(name="Operator override")
+
+    result = await adapter.apply_account_usage_presence_if_owned(
+        _payload(74),
+        {"display_name": "Hermes"},
+        {"display_name": "Hermes · Session 75%"},
+    )
+
+    assert result is AccountUsagePresenceApplyResult.EXTERNAL
+    bot.set_my_name.assert_not_awaited()
 
 
 @pytest.mark.asyncio

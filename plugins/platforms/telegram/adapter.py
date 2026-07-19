@@ -252,6 +252,7 @@ sys.path.insert(0, str(_Path(__file__).resolve().parents[3]))
 
 from gateway.config import Platform, PlatformConfig
 from gateway.account_usage_presence import (
+    AccountUsagePresenceApplyResult,
     AccountUsagePresenceCapabilities,
     AccountUsagePresencePayload,
     AccountUsagePresenceRestoreResult,
@@ -3862,6 +3863,27 @@ class TelegramAdapter(BasePlatformAdapter):
             return False
         await bot.set_my_name(name=name)
         return True
+
+    async def apply_account_usage_presence_if_owned(
+        self,
+        payload: AccountUsagePresencePayload,
+        baseline: Dict[str, Any],
+        expected_owned: Dict[str, Any],
+    ) -> AccountUsagePresenceApplyResult:
+        """Apply one name generation only while the prior generation is live."""
+
+        bot = self._bot
+        name = self._account_usage_presence_name(payload, baseline)
+        expected_name = str(expected_owned.get("display_name") or "").strip()
+        if bot is None or name is None or not expected_name:
+            return AccountUsagePresenceApplyResult.RETRY
+
+        current = await bot.get_my_name()
+        current_name = str(getattr(current, "name", "") or "").strip()
+        if current_name != expected_name:
+            return AccountUsagePresenceApplyResult.EXTERNAL
+        await bot.set_my_name(name=name)
+        return AccountUsagePresenceApplyResult.APPLIED
 
     async def restore_account_usage_presence(
         self,

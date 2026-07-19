@@ -129,6 +129,7 @@ async def test_runner_real_controller_lifecycle_with_journal(tmp_path):
 
     from agent.account_usage import AccountUsageFetchOutcome, AccountUsageSnapshot, AccountUsageWindow
     from gateway.account_usage_presence import (
+        AccountUsagePresenceApplyResult,
         AccountUsagePresenceCapabilities,
         AccountUsagePresenceController,
         AccountUsagePresenceRestoreResult,
@@ -162,6 +163,17 @@ async def test_runner_real_controller_lifecycle_with_journal(tmp_path):
             owned = self.build_account_usage_presence_owned_state(payload, baseline)
             self.current_name = owned["display_name"]
             return True
+
+        async def apply_account_usage_presence_if_owned(
+            self,
+            payload,
+            baseline,
+            expected_owned,
+        ):
+            if self.current_name != expected_owned["display_name"]:
+                return AccountUsagePresenceApplyResult.EXTERNAL
+            await self.apply_account_usage_presence(payload, baseline)
+            return AccountUsagePresenceApplyResult.APPLIED
 
         async def restore_account_usage_presence(self, baseline, owned):
             if self.current_name == baseline["display_name"]:

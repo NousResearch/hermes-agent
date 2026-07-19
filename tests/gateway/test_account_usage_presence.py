@@ -8,6 +8,7 @@ import pytest
 
 from agent.account_usage import AccountUsageSnapshot, AccountUsageWindow
 from gateway.account_usage_presence import (
+    AccountUsagePresenceApplyResult,
     AccountUsagePresenceCapabilities,
     AccountUsagePresenceController,
     AccountUsagePresenceRestoreResult,
@@ -87,6 +88,19 @@ class _Adapter:
             raise self.apply_error
         self.applied.append((payload, baseline))
         return True
+
+    async def apply_account_usage_presence_if_owned(
+        self,
+        payload,
+        baseline,
+        expected_owned,
+    ) -> AccountUsagePresenceApplyResult:
+        changed = await self.apply_account_usage_presence(payload, baseline)
+        return (
+            AccountUsagePresenceApplyResult.APPLIED
+            if changed
+            else AccountUsagePresenceApplyResult.RETRY
+        )
 
     async def restore_account_usage_presence(self, baseline, owned):
         self.restored.append((baseline, owned))
@@ -526,6 +540,131 @@ async def test_later_false_apply_recovers_prior_owned_after_rollback_write_failu
     ]
     assert telegram.remote_state == baseline
     assert not state_path.exists() or json.loads(state_path.read_text())["entries"] == {}
+
+
+@pytest.mark.asyncio
+async def test_pending_transition_blocks_reapply_until_restart_recovery(tmp_path):
+    class AmbiguousAdapter(_Adapter):
+        def __init__(self, *args, remote_state, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.remote_state = dict(remote_state)
+            self.guarded_calls = 0
+
+        async def apply_account_usage_presence_if_owned(
+            self,
+            payload,
+            baseline,
+            expected_owned,
+        ) -> AccountUsagePresenceApplyResult:
+            self.guarded_calls += 1
+            if self.remote_state != expected_owned:
+                return AccountUsagePresenceApplyResult.EXTERNAL
+            if self.guarded_calls == 2:
+                raise TimeoutError("ambiguous provider timeout")
+            desired = self.build_account_usage_presence_owned_state(payload, baseline)
+            assert desired is not None
+            self.remote_state = dict(desired)
+            self.applied.append((payload, baseline))
+            return AccountUsagePresenceApplyResult.APPLIED
+
+        async def restore_account_usage_presence(self, baseline, owned):
+            self.restored.append((baseline, owned))
+            if self.remote_state == owned:
+                self.remote_state = dict(baseline)
+                return AccountUsagePresenceRestoreResult.RESTORED
+            return AccountUsagePresenceRestoreResult.EXTERNAL
+
+    state_path = tmp_path / "journal.json"
+    baseline = {"display_name": "Hermes"}
+    telegram = AmbiguousAdapter(
+        "telegram",
+        capabilities=AccountUsagePresenceCapabilities(display_name=True),
+        baseline=baseline,
+        remote_state=baseline,
+    )
+    snapshots = iter(
+        (
+            _snapshot(used_percent=25),
+            _snapshot(used_percent=26),
+            _snapshot(used_percent=27),
+        )
+    )
+    controller = AccountUsagePresenceController(
+        _config(platforms=["telegram"]),
+        lambda: {"telegram": telegram},
+        fetcher=lambda provider: next(snapshots),
+        state_path=state_path,
+    )
+
+    await controller.refresh_once()
+    await controller.refresh_once()
+    await controller.refresh_once()
+
+    assert telegram.guarded_calls == 2
+    pending = json.loads(state_path.read_text())["entries"]["telegram"]
+    assert pending["phase"] == "pending"
+    assert pending["owned"] == {"display_name": "owned-74"}
+    assert pending["previous_owned"] == {"display_name": "owned-75"}
+
+    restarted = AccountUsagePresenceController(
+        _config(platforms=["telegram"]),
+        lambda: {"telegram": telegram},
+        fetcher=lambda provider: None,
+        state_path=state_path,
+    )
+    await restarted.stop()
+
+    assert telegram.restored == [
+        (baseline, {"display_name": "owned-74"}),
+        (baseline, {"display_name": "owned-75"}),
+    ]
+    assert telegram.remote_state == baseline
+
+
+@pytest.mark.asyncio
+async def test_external_identity_change_is_not_overwritten_by_next_generation(tmp_path):
+    class GuardedAdapter(_Adapter):
+        def __init__(self, *args, remote_state, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.remote_state = dict(remote_state)
+
+        async def apply_account_usage_presence_if_owned(
+            self,
+            payload,
+            baseline,
+            expected_owned,
+        ) -> AccountUsagePresenceApplyResult:
+            if self.remote_state != expected_owned:
+                return AccountUsagePresenceApplyResult.EXTERNAL
+            desired = self.build_account_usage_presence_owned_state(payload, baseline)
+            assert desired is not None
+            self.remote_state = dict(desired)
+            self.applied.append((payload, baseline))
+            return AccountUsagePresenceApplyResult.APPLIED
+
+    state_path = tmp_path / "journal.json"
+    baseline = {"display_name": "Hermes"}
+    telegram = GuardedAdapter(
+        "telegram",
+        capabilities=AccountUsagePresenceCapabilities(display_name=True),
+        baseline=baseline,
+        remote_state=baseline,
+    )
+    snapshots = iter((_snapshot(used_percent=25), _snapshot(used_percent=26)))
+    controller = AccountUsagePresenceController(
+        _config(platforms=["telegram"]),
+        lambda: {"telegram": telegram},
+        fetcher=lambda provider: next(snapshots),
+        state_path=state_path,
+    )
+
+    await controller.refresh_once()
+    telegram.remote_state = {"display_name": "Operator override"}
+    await controller.refresh_once()
+
+    assert telegram.remote_state == {"display_name": "Operator override"}
+    assert len(telegram.applied) == 1
+    assert json.loads(state_path.read_text())["entries"] == {}
 
 
 @pytest.mark.asyncio

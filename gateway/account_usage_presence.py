@@ -76,6 +76,14 @@ class AccountUsagePresenceRestoreResult(str, Enum):
         return self is not AccountUsagePresenceRestoreResult.RETRY
 
 
+class AccountUsagePresenceApplyResult(str, Enum):
+    """CAS result for a persistent identity-surface generation update."""
+
+    APPLIED = "applied"
+    EXTERNAL = "external"
+    RETRY = "retry"
+
+
 @dataclass(frozen=True)
 class _JournalEntry:
     baseline: dict[str, Any]
@@ -563,10 +571,15 @@ class AccountUsagePresenceController:
                 continue
             if self._last_applied.get(state_key) == (id(adapter), payload):
                 continue
-            if state_key in self._journal and state_key not in self._owned_in_process:
+            entry = self._journal.get(state_key)
+            if entry is not None and entry.phase == "pending":
+                # A pending transition may have changed the remote value even
+                # when its API call raised. Fail closed until stop/restart
+                # recovery reconciles the journaled generations.
+                continue
+            if entry is not None and state_key not in self._owned_in_process:
                 continue
 
-            entry = self._journal.get(state_key)
             prior_owned_entry = (
                 entry if entry is not None and entry.phase == "owned" else None
             )
@@ -593,6 +606,7 @@ class AccountUsagePresenceController:
                         baseline = dict(captured)
 
             pending_entry: Optional[_JournalEntry] = None
+            guarded_apply: Optional[Callable[..., Awaitable[Any]]] = None
             if baseline is not None:
                 build_owned = getattr(
                     adapter,
@@ -602,6 +616,17 @@ class AccountUsagePresenceController:
                 if not callable(build_owned):
                     logger.warning(
                         "Persistent account-usage surface %s has no ownership renderer",
+                        platform,
+                    )
+                    continue
+                guarded_apply = getattr(
+                    adapter,
+                    "apply_account_usage_presence_if_owned",
+                    None,
+                )
+                if not callable(guarded_apply):
+                    logger.warning(
+                        "Persistent account-usage surface %s has no guarded ownership updater",
                         platform,
                     )
                     continue
@@ -640,9 +665,38 @@ class AccountUsagePresenceController:
             if not callable(apply):
                 continue
             try:
-                changed = await self._await_adapter(
-                    cast(Awaitable[Any], apply(payload, baseline))
-                )
+                if baseline is not None:
+                    assert guarded_apply is not None
+                    expected_owned = (
+                        prior_owned_entry.owned
+                        if prior_owned_entry is not None
+                        else baseline
+                    )
+                    raw_apply_result = await self._await_adapter(
+                        cast(
+                            Awaitable[Any],
+                            guarded_apply(payload, baseline, expected_owned),
+                        )
+                    )
+                    try:
+                        apply_result = AccountUsagePresenceApplyResult(
+                            raw_apply_result
+                        )
+                    except (TypeError, ValueError):
+                        logger.warning(
+                            "Ignoring invalid guarded account-usage apply result from %s",
+                            platform,
+                        )
+                        apply_result = AccountUsagePresenceApplyResult.RETRY
+                else:
+                    changed = await self._await_adapter(
+                        cast(Awaitable[Any], apply(payload, baseline))
+                    )
+                    apply_result = (
+                        AccountUsagePresenceApplyResult.APPLIED
+                        if changed
+                        else AccountUsagePresenceApplyResult.RETRY
+                    )
             except Exception as exc:
                 retry_after = retry_after_seconds(exc)
                 if retry_after is not None:
@@ -660,7 +714,20 @@ class AccountUsagePresenceController:
                     )
                 continue
 
-            if not changed:
+            if apply_result is AccountUsagePresenceApplyResult.EXTERNAL:
+                candidate = dict(self._journal)
+                candidate.pop(state_key, None)
+                if self._persist_journal(candidate):
+                    self._journal = candidate
+                    self._owned_in_process.discard(state_key)
+                    self._last_applied.pop(state_key, None)
+                logger.info(
+                    "Account-usage presence no longer owns %s; preserving external value",
+                    state_key,
+                )
+                continue
+
+            if apply_result is not AccountUsagePresenceApplyResult.APPLIED:
                 if pending_entry is not None:
                     candidate = dict(self._journal)
                     if prior_owned_entry is None:

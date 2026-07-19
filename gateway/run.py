@@ -541,9 +541,10 @@ def _adapter_supports_streaming_edits(adapter: Any) -> bool:
 def _adapter_supports_progress_edits(adapter: Any) -> bool:
     """Return whether adapter edits are safe for tool/thinking progress.
 
-    Progress bubbles use the same high-frequency edit cadence as token
-    streaming. Platforms may expose explicit edit_message() for deliberate
-    user/operator edits while still opting out of automatic progress edits.
+    Progress bubbles are throttled and lower-frequency than token streaming,
+    but they are still automatic edits. Platforms may expose explicit
+    edit_message() for deliberate user/operator edits while choosing a separate
+    policy for automatic progress edits.
     """
     progress_capability = getattr(adapter, "SUPPORTS_PROGRESS_EDITS", None)
     if progress_capability is not None:

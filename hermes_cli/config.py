@@ -7901,6 +7901,33 @@ def _env_line_defines_key(line: str, key: str) -> bool:
     return stripped.startswith(f"{key}=")
 
 
+def _using_foreign_hermes_home() -> bool:
+    """Return whether this context targets a non-launch Hermes home."""
+    try:
+        return get_hermes_home().resolve() != get_process_hermes_home().resolve()
+    except OSError:
+        return os.path.abspath(str(get_hermes_home())) != os.path.abspath(
+            str(get_process_hermes_home())
+        )
+
+
+def _update_scoped_secret(key: str, value: Optional[str]) -> None:
+    """Keep a mutable request-local secret snapshot coherent after a write."""
+    try:
+        from collections.abc import MutableMapping
+        from agent.secret_scope import current_secret_scope
+
+        scope = current_secret_scope()
+        if not isinstance(scope, MutableMapping):
+            return
+        if value is None:
+            scope.pop(key, None)
+        else:
+            scope[key] = value
+    except ImportError:
+        pass
+
+
 def save_env_value(key: str, value: str):
     """Save or update a value in ~/.hermes/.env."""
     if is_managed():
@@ -7991,7 +8018,10 @@ def save_env_value(key: str, value: str):
             pass
         raise
 
-    os.environ[key] = value
+    if _using_foreign_hermes_home():
+        _update_scoped_secret(key, value)
+    else:
+        os.environ[key] = value
     invalidate_env_cache()
 
 
@@ -8019,7 +8049,10 @@ def remove_env_value(key: str) -> bool:
         raise ValueError(f"Invalid environment variable name: {key!r}")
     env_path = get_env_path()
     if not env_path.exists():
-        os.environ.pop(key, None)
+        if _using_foreign_hermes_home():
+            _update_scoped_secret(key, None)
+        else:
+            os.environ.pop(key, None)
         return False
 
     read_kw = {"encoding": "utf-8-sig", "errors": "replace"}
@@ -8063,7 +8096,10 @@ def remove_env_value(key: str) -> bool:
                 pass
             raise
 
-    os.environ.pop(key, None)
+    if _using_foreign_hermes_home():
+        _update_scoped_secret(key, None)
+    else:
+        os.environ.pop(key, None)
     invalidate_env_cache()
     return found
 
@@ -8112,6 +8148,11 @@ def reload_env() -> int:
     _EXTRA_ENV_KEYS — to avoid clobbering unrelated environment).
     """
     env_vars = load_env()
+    if _using_foreign_hermes_home():
+        # A multiplexed process cannot copy one profile's .env into the
+        # process environment. Profile-aware callers rebuild or update their
+        # request-local secret scope instead.
+        return 0
     known_keys = set(OPTIONAL_ENV_VARS.keys()) | _EXTRA_ENV_KEYS
     count = 0
     for key, value in env_vars.items():
@@ -8128,6 +8169,17 @@ def reload_env() -> int:
 
 def get_env_value(key: str) -> Optional[str]:
     """Get a value from ~/.hermes/.env or environment."""
+    if _using_foreign_hermes_home():
+        try:
+            from agent.secret_scope import current_secret_scope
+
+            scope = current_secret_scope()
+            if scope is not None:
+                return scope.get(key)
+        except ImportError:
+            pass
+        return load_env().get(key)
+
     # Check environment first
     if key in os.environ:
         return os.environ[key]
@@ -8151,16 +8203,28 @@ def get_env_value_prefer_dotenv(key: str) -> Optional[str]:
     is scope-checked rather than leaking another profile's raw ``os.environ``
     value — matching the credential-pool seeding path's behaviour.
     """
+    if _using_foreign_hermes_home():
+        env_vars = load_env()
+        try:
+            from agent.secret_scope import current_secret_scope
+
+            scope = current_secret_scope()
+        except ImportError:
+            scope = None
+        value = scope.get(key) if scope is not None else env_vars.get(key)
+        if isinstance(value, str) and value.strip().startswith("op://"):
+            return None
+        return value
+
     env_vars = load_env()
     val = env_vars.get(key)
     if val:
         return val
     try:
         from agent.secret_scope import get_secret as _get_secret
-
-        return _get_secret(key)
-    except Exception:
+    except ImportError:
         return os.environ.get(key)
+    return _get_secret(key)
 
 
 # =============================================================================

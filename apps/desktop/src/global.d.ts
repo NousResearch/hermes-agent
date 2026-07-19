@@ -387,7 +387,7 @@ export interface HermesConnection {
   mode?: 'local' | 'remote'
   authMode?: 'oauth' | 'token'
   nativeOverlayWidth: number
-  source?: 'env' | 'local' | 'settings'
+  source?: 'env' | 'local' | 'profile' | 'settings'
   token: string
   wsUrl: string
   logs: string[]

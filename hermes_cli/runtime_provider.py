@@ -885,7 +885,7 @@ def canonical_custom_identity(
         except Exception:
             candidate = ""
     if not candidate:
-        candidate = os.environ.get("HERMES_INFERENCE_PROVIDER", "").strip()
+        candidate = _getenv("HERMES_INFERENCE_PROVIDER", "").strip()
 
     candidate_norm = _normalize_custom_provider_name(candidate)
     # A bare/non-routable candidate cannot heal a bare custom override.
@@ -1330,8 +1330,9 @@ def _resolve_azure_foundry_runtime(
     api_key = explicit_api_key
     if not api_key:
         try:
-            from hermes_cli.config import get_env_value
-            api_key = get_env_value("AZURE_FOUNDRY_API_KEY") or ""
+            from hermes_cli.config import get_env_value_prefer_dotenv
+
+            api_key = get_env_value_prefer_dotenv("AZURE_FOUNDRY_API_KEY") or ""
         except Exception:
             api_key = ""
     if not api_key:
@@ -1982,6 +1983,9 @@ def resolve_runtime_provider(
         # credentials from session"). Route these users through the Converse
         # API regardless of model. Ref: #28156.
         _current_model = str(target_model or model_cfg.get("default") or "").strip()
+        # Bedrock currently executes through boto3's process credential chain;
+        # keep this routing decision at the same machine-global scope until the
+        # adapter can accept an explicit profile-scoped boto3 Session.
         _has_bearer_token = bool(os.environ.get("AWS_BEARER_TOKEN_BEDROCK", "").strip())
         if is_anthropic_bedrock_model(_current_model) and not _has_bearer_token:
             # Claude on Bedrock → AnthropicBedrock SDK → anthropic_messages path

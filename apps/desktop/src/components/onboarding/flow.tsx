@@ -236,8 +236,8 @@ function ConfirmingModelPanel({
   // Pull pricing + tier for the just-picked default so the confirm card
   // shows the same $/Mtok + Free/Pro info the picker and CLI do.
   const options = useQuery({
-    queryKey: ['onboarding-model-options', flow.providerSlug],
-    queryFn: () => getGlobalModelOptions({ includeUnconfigured: true, explicitOnly: false })
+    queryKey: ['onboarding-model-options', flow.profile, flow.providerSlug],
+    queryFn: () => getGlobalModelOptions({ includeUnconfigured: true, explicitOnly: false }, flow.profile)
   })
 
   const providerRow = options.data?.providers?.find(

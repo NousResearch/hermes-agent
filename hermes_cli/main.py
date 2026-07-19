@@ -823,6 +823,7 @@ def _has_any_provider_configured() -> bool:
     # OPENAI_BASE_URL alone counts — local models (vLLM, llama.cpp, etc.)
     # often don't require an API key.
     from hermes_cli.auth import PROVIDER_REGISTRY
+    from agent.secret_scope import get_secret
 
     # Collect all provider env vars
     provider_env_vars = {
@@ -835,7 +836,7 @@ def _has_any_provider_configured() -> bool:
     for pconfig in PROVIDER_REGISTRY.values():
         if pconfig.auth_type == "api_key":
             provider_env_vars.update(pconfig.api_key_env_vars)
-    if any(os.getenv(v) for v in provider_env_vars):
+    if any(get_secret(v) for v in provider_env_vars):
         return True
 
     # Check .env file for keys

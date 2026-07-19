@@ -1087,6 +1087,95 @@ def _profile_scoped(handler):
     return wrapper
 
 
+def _provider_profile_home(profile: object) -> Path | None:
+    """Strictly resolve provider RPC scope, or raise for invalid/missing input.
+
+    ``None`` means only one thing here: use the gateway's launch profile.  The
+    permissive ``_profile_home`` helper also returns ``None`` for malformed and
+    unknown names, which is appropriate for its legacy consumers but would let
+    readiness checks silently inspect the launch profile's credentials.
+    """
+    if profile is None:
+        return None
+    if not isinstance(profile, str):
+        raise ValueError("profile must be a string")
+
+    requested = profile.strip()
+    if not requested:
+        return None
+
+    from hermes_cli import profiles as profiles_mod
+
+    canon = profiles_mod.normalize_profile_name(requested)
+    profiles_mod.validate_profile_name(canon)
+    if not profiles_mod.profile_exists(canon):
+        raise FileNotFoundError(f"Profile {canon!r} does not exist.")
+
+    home = Path(profiles_mod.get_profile_dir(canon))
+    if home.resolve() == Path(_hermes_home).resolve():
+        return None
+    return home
+
+
+def _profile_provider_scoped(handler):
+    """Bind a named profile's home and isolated provider secrets for one RPC.
+
+    Global-remote Desktop connections share one dashboard gateway process, so
+    provider readiness for another profile must not read the launch profile's
+    config, auth store, or process-global environment.  Keep this separate from
+    ``_profile_scoped``: pet RPCs need filesystem/config routing but should not
+    rebuild a credential scope on their high-frequency paths.
+    """
+
+    def wrapper(rid, params):
+        requested_profile = (
+            params.get("profile") if isinstance(params, dict) else None
+        )
+        explicit_profile = (
+            isinstance(requested_profile, str) and bool(requested_profile.strip())
+        )
+        try:
+            home = _provider_profile_home(requested_profile)
+        except FileNotFoundError as exc:
+            return _err(rid, 4044, str(exc))
+        except (TypeError, ValueError) as exc:
+            return _err(rid, 4002, str(exc))
+
+        def invoke_scoped():
+            response = handler(rid, params)
+            result = response.get("result") if isinstance(response, dict) else None
+            if explicit_profile and isinstance(result, dict):
+                response = {
+                    **response,
+                    "result": {
+                        **result,
+                        "profile_name": _current_profile_name(),
+                    },
+                }
+            return response
+
+        if home is None:
+            return invoke_scoped()
+
+        from agent.secret_scope import (
+            build_profile_secret_scope,
+            reset_secret_scope,
+            set_secret_scope,
+        )
+
+        home_token = set_hermes_home_override(home)
+        try:
+            secret_token = set_secret_scope(build_profile_secret_scope(home))
+            try:
+                return invoke_scoped()
+            finally:
+                reset_secret_scope(secret_token)
+        finally:
+            reset_hermes_home_override(home_token)
+
+    return wrapper
+
+
 # Placeholder ``terminal.cwd`` values that don't name a real directory — the
 # gateway resolves these to the home dir at runtime, so they must NOT be treated
 # as an explicit workspace (mirrors gateway/run.py's config bridge).
@@ -3686,7 +3775,10 @@ def _current_profile_name() -> str:
 # cryptically downstream. Bump whenever the desktop's backend contract changes.
 # v2: adds the file.attach RPC (remote-gateway non-image file upload).
 # v3: adds approvals.mode config RPCs and session.info reconciliation.
-DESKTOP_BACKEND_CONTRACT = 3
+# v4: setup/reload provider RPCs resolve profiles strictly, use isolated
+# credential scopes, and echo the resolved profile identity for app-global
+# remote Desktop connections.
+DESKTOP_BACKEND_CONTRACT = 4
 
 
 def _session_usage_snapshot(session: dict | None) -> dict:
@@ -12425,6 +12517,7 @@ def _(rid, params: dict) -> dict:
 
 
 @method("setup.status")
+@_profile_provider_scoped
 def _(rid, params: dict) -> dict:
     try:
         from hermes_cli.main import _has_any_provider_configured
@@ -12435,6 +12528,7 @@ def _(rid, params: dict) -> dict:
 
 
 @method("setup.runtime_check")
+@_profile_provider_scoped
 def _(rid, params: dict) -> dict:
     """Strict provider check: does the configured/default model actually resolve to a usable runtime?
 
@@ -12669,6 +12763,7 @@ def _(rid, params: dict) -> dict:
 
 
 @method("reload.env")
+@_profile_provider_scoped
 def _(rid, params: dict) -> dict:
     """Re-read ``~/.hermes/.env`` into the gateway process via
     ``hermes_cli.config.reload_env``, matching classic CLI's ``/reload``
@@ -12681,6 +12776,14 @@ def _(rid, params: dict) -> dict:
     should follow with ``/new``.
     """
     try:
+        # A named profile's credential scope was freshly rebuilt by the
+        # decorator above.  Do not copy that profile's .env into process-global
+        # os.environ: one global-remote process may serve several profiles, and
+        # mutating it here would leak the last-reloaded profile into the rest.
+        requested_profile = str(params.get("profile") or "").strip()
+        if requested_profile and get_hermes_home_override() is not None:
+            return _ok(rid, {"updated": 0})
+
         from hermes_cli.config import reload_env
 
         count = reload_env()

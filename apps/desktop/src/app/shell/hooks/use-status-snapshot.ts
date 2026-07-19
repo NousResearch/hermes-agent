@@ -1,7 +1,10 @@
+import { useStore } from '@nanostores/react'
 import { useEffect, useState } from 'react'
 
 import { getStatus } from '@/hermes'
-import { evaluateRuntimeReadiness, type RuntimeReadinessResult } from '@/lib/runtime-readiness'
+import { evaluateRuntimeReadiness, requiresProfileIdentity, type RuntimeReadinessResult } from '@/lib/runtime-readiness'
+import { $activeGatewayProfile } from '@/store/profile'
+import { $connection } from '@/store/session'
 import type { StatusResponse } from '@/types/hermes'
 
 const REFRESH_MS = 15_000
@@ -9,6 +12,8 @@ const REFRESH_MS = 15_000
 type GatewayRequester = <T = unknown>(method: string, params?: Record<string, unknown>) => Promise<T>
 
 export function useStatusSnapshot(gatewayState: string | undefined, requestGateway: GatewayRequester) {
+  const profile = useStore($activeGatewayProfile)
+  const connection = useStore($connection)
   const [statusSnapshot, setStatusSnapshot] = useState<StatusResponse | null>(null)
   const [inferenceStatus, setInferenceStatus] = useState<RuntimeReadinessResult | null>(null)
 
@@ -20,7 +25,10 @@ export function useStatusSnapshot(gatewayState: string | undefined, requestGatew
         const [next, inference] = await Promise.all([
           getStatus(),
           gatewayState === 'open'
-            ? evaluateRuntimeReadiness(requestGateway).catch(error => ({
+            ? evaluateRuntimeReadiness(requestGateway, {
+                profile,
+                requireProfileIdentity: requiresProfileIdentity(connection)
+              }).catch(error => ({
                 checksDisagree: false,
                 ready: false,
                 reason: error instanceof Error ? error.message : String(error),
@@ -47,7 +55,7 @@ export function useStatusSnapshot(gatewayState: string | undefined, requestGatew
       cancelled = true
       window.clearInterval(timer)
     }
-  }, [gatewayState, requestGateway])
+  }, [connection, gatewayState, profile, requestGateway])
 
   return { inferenceStatus, statusSnapshot }
 }

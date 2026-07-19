@@ -1,10 +1,14 @@
+import type { HermesConnection } from '@/global'
+
 export interface SetupStatusSnapshot {
+  profile_name?: string
   provider_configured?: boolean
 }
 
 export interface RuntimeCheckSnapshot {
   error?: string
   ok?: boolean
+  profile_name?: string
 }
 
 export interface RuntimeReadinessSignals {
@@ -16,6 +20,8 @@ export interface RuntimeReadinessSignals {
 
 export interface RuntimeReadinessOptions {
   defaultReason?: string
+  profile?: string
+  requireProfileIdentity?: boolean
   requestedProvider?: string
   unknownReady?: boolean
 }
@@ -30,6 +36,12 @@ export interface RuntimeReadinessResult {
 export type RuntimeReadinessRequester = <T = unknown>(method: string, params?: Record<string, unknown>) => Promise<T>
 
 const DEFAULT_NOT_READY_REASON = 'Add a provider credential before sending your first message.'
+
+export function requiresProfileIdentity(
+  connection: null | Pick<HermesConnection, 'mode' | 'source'> | undefined
+): boolean {
+  return connection?.mode === 'remote' && (connection.source === 'env' || connection.source === 'settings')
+}
 
 function toErrorMessage(error: unknown): null | string {
   if (error instanceof Error) {
@@ -67,12 +79,20 @@ async function requestWithFallback<T>(
 
 export async function fetchRuntimeReadinessSignals(
   requestGateway: RuntimeReadinessRequester,
-  requestedProvider?: string
+  requestedProvider?: string,
+  profile?: string
 ): Promise<RuntimeReadinessSignals> {
-  const runtimeParams = requestedProvider?.trim() ? { provider: requestedProvider.trim() } : undefined
+  const requestedProfile = profile?.trim()
+  const profileParams = requestedProfile ? { profile: requestedProfile } : undefined
+  const requestedRuntimeProvider = requestedProvider?.trim()
+
+  const runtimeParams =
+    profileParams || requestedRuntimeProvider
+      ? { ...profileParams, ...(requestedRuntimeProvider ? { provider: requestedRuntimeProvider } : {}) }
+      : undefined
 
   const [setup, runtime] = await Promise.all([
-    requestWithFallback<SetupStatusSnapshot>(requestGateway, 'setup.status'),
+    requestWithFallback<SetupStatusSnapshot>(requestGateway, 'setup.status', profileParams),
     requestWithFallback<RuntimeCheckSnapshot>(requestGateway, 'setup.runtime_check', runtimeParams)
   ])
 
@@ -100,6 +120,35 @@ export function interpretRuntimeReadiness(
 
   const checksDisagree =
     typeof setupConfigured === 'boolean' && typeof runtimeOk === 'boolean' && setupConfigured !== runtimeOk
+
+  if (options.requireProfileIdentity) {
+    const requestedProfile = options.profile?.trim() || 'default'
+
+    const resolvedProfile =
+      typeof runtimeOk === 'boolean'
+        ? signals.runtime?.profile_name?.trim()
+        : typeof setupConfigured === 'boolean'
+          ? signals.setup?.profile_name?.trim()
+          : undefined
+
+    if (!resolvedProfile) {
+      return {
+        checksDisagree: false,
+        ready: false,
+        reason: `Update the Hermes backend before Desktop can verify readiness for profile "${requestedProfile}".`,
+        source: 'fallback'
+      }
+    }
+
+    if (resolvedProfile !== requestedProfile) {
+      return {
+        checksDisagree: false,
+        ready: false,
+        reason: `Hermes resolved readiness for profile "${resolvedProfile}" instead of requested profile "${requestedProfile}".`,
+        source: 'fallback'
+      }
+    }
+  }
 
   if (typeof runtimeOk === 'boolean') {
     if (runtimeOk) {
@@ -146,7 +195,11 @@ export async function evaluateRuntimeReadiness(
   requestGateway: RuntimeReadinessRequester,
   options: RuntimeReadinessOptions = {}
 ): Promise<RuntimeReadinessResult> {
-  const signals = await fetchRuntimeReadinessSignals(requestGateway, options.requestedProvider)
+  // Only an app-global remote backend needs the Desktop's local profile label.
+  // Local and per-profile remote connections already serve their own launch
+  // profile, and that label may not exist on a dedicated remote host.
+  const gatewayProfile = options.requireProfileIdentity ? options.profile : undefined
+  const signals = await fetchRuntimeReadinessSignals(requestGateway, options.requestedProvider, gatewayProfile)
 
   return interpretRuntimeReadiness(signals, options)
 }

@@ -6111,7 +6111,9 @@ def get_model_options(
 
 
 @app.get("/api/model/recommended-default")
-def get_recommended_default_model(provider: str = ""):
+def get_recommended_default_model(
+    provider: str = "", profile: Optional[str] = None
+):
     """Return the recommended default model for a freshly-authenticated provider.
 
     Mirrors the model-curation `hermes model` does so GUI onboarding lands on a
@@ -6123,7 +6125,16 @@ def get_recommended_default_model(provider: str = ""):
     Response: {"provider": str, "model": str, "free_tier": bool | None}
     where free_tier is True/False for Nous and None otherwise. `model` may be
     empty if nothing could be resolved (caller degrades gracefully).
+
+    ``profile`` binds auth, tier, config, and model discovery to the same
+    profile that onboarding just authenticated and will update.
     """
+    with _profile_scope(profile):
+        return _recommended_default_model_payload(provider)
+
+
+def _recommended_default_model_payload(provider: str = ""):
+    """Build the recommended-model response inside the caller's profile scope."""
     slug = (provider or "").strip().lower()
 
     if slug == "nous":

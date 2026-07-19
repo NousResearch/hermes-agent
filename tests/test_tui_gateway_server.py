@@ -3973,8 +3973,8 @@ def test_config_set_approval_mode_persists_three_way_value_and_emits_live_status
     assert emitted[0][2]["approval_mode"] == "manual"
 
 
-def test_desktop_contract_includes_approval_mode_rpc():
-    assert server.DESKTOP_BACKEND_CONTRACT >= 3
+def test_desktop_contract_includes_profile_scoped_provider_readiness():
+    assert server.DESKTOP_BACKEND_CONTRACT >= 4
 
 
 def test_config_set_approval_mode_rejects_unknown_value():
@@ -4448,6 +4448,110 @@ def test_setup_status_reports_provider_config(monkeypatch):
     assert resp["result"]["provider_configured"] is False
 
 
+def _provider_profile_homes(monkeypatch, tmp_path, *, launch: str = "default"):
+    """Build an isolated default + named-profile layout for readiness RPCs."""
+    from hermes_cli import profiles as profiles_mod
+
+    default_home = tmp_path / ".hermes"
+    coder_home = default_home / "profiles" / "coder"
+    coder_home.mkdir(parents=True)
+    (default_home / "config.yaml").write_text("{}\n", encoding="utf-8")
+    (coder_home / "config.yaml").write_text("{}\n", encoding="utf-8")
+
+    monkeypatch.setattr(profiles_mod, "_get_default_hermes_home", lambda: default_home)
+    monkeypatch.setattr(profiles_mod, "_get_profiles_root", lambda: default_home / "profiles")
+    monkeypatch.setattr(
+        server,
+        "_hermes_home",
+        coder_home if launch == "coder" else default_home,
+    )
+    return default_home, coder_home
+
+
+def test_setup_status_explicit_default_scopes_away_from_named_launch(
+    monkeypatch, tmp_path
+):
+    """Literal default must mean the root profile, not the gateway launch profile."""
+    from hermes_constants import get_hermes_home, get_hermes_home_override
+
+    default_home, _ = _provider_profile_homes(monkeypatch, tmp_path, launch="coder")
+    seen = []
+    monkeypatch.setattr(
+        "hermes_cli.main._has_any_provider_configured",
+        lambda: seen.append(get_hermes_home()) or True,
+    )
+
+    resp = server.handle_request(
+        {"id": "1", "method": "setup.status", "params": {"profile": "default"}}
+    )
+
+    assert resp["result"]["provider_configured"] is True
+    assert resp["result"]["profile_name"] == "default"
+    assert seen == [default_home]
+    assert get_hermes_home_override() is None
+
+
+def test_setup_status_echoes_explicit_named_profile(monkeypatch, tmp_path):
+    """Readiness results identify the profile whose credentials were inspected."""
+    _provider_profile_homes(monkeypatch, tmp_path)
+    monkeypatch.setattr("hermes_cli.main._has_any_provider_configured", lambda: True)
+
+    resp = server.handle_request(
+        {"id": "1", "method": "setup.status", "params": {"profile": "coder"}}
+    )
+
+    assert resp["result"] == {
+        "provider_configured": True,
+        "profile_name": "coder",
+    }
+
+
+@pytest.mark.parametrize("profile", ["../../escaped", "Bad Name!"])
+def test_setup_status_rejects_invalid_profile_without_using_launch_credentials(
+    monkeypatch, tmp_path, profile
+):
+    """Invalid profile input is an RPC error, never a launch-profile fallback."""
+    default_home, _ = _provider_profile_homes(monkeypatch, tmp_path)
+    # Prove traversal fails closed even when the old joined path would exist.
+    (default_home.parent / "escaped").mkdir(exist_ok=True)
+    calls = {"n": 0}
+
+    def _configured():
+        calls["n"] += 1
+        return True
+
+    monkeypatch.setattr("hermes_cli.main._has_any_provider_configured", _configured)
+
+    resp = server.handle_request(
+        {"id": "1", "method": "setup.status", "params": {"profile": profile}}
+    )
+
+    assert resp["error"]["code"] == 4002
+    assert calls["n"] == 0
+
+
+def test_setup_status_rejects_missing_profile_without_using_launch_credentials(
+    monkeypatch, tmp_path
+):
+    """A valid-but-unknown profile must not silently inspect the launch profile."""
+    _provider_profile_homes(monkeypatch, tmp_path)
+    calls = {"n": 0}
+
+    def _configured():
+        calls["n"] += 1
+        return True
+
+    monkeypatch.setattr("hermes_cli.main._has_any_provider_configured", _configured)
+
+    resp = server.handle_request(
+        {"id": "1", "method": "setup.status", "params": {"profile": "ghost"}}
+    )
+
+    assert resp["error"]["code"] == 4044
+    assert "ghost" in resp["error"]["message"]
+    assert calls["n"] == 0
+
+
 def test_setup_runtime_check_rejects_empty_runtime_key(monkeypatch):
     monkeypatch.setattr("hermes_cli.main._has_any_provider_configured", lambda: True)
     monkeypatch.setattr(
@@ -4480,6 +4584,37 @@ def test_setup_runtime_check_allows_no_key_custom_runtime(monkeypatch):
 
     assert resp["result"]["ok"] is True
     assert resp["result"]["provider"] == "custom"
+
+
+@pytest.mark.parametrize(
+    ("api_key", "expected_ok"),
+    [("", False), ("no-key-required", True)],
+)
+def test_setup_runtime_check_echoes_profile_for_ready_and_not_ready_results(
+    monkeypatch, tmp_path, api_key, expected_ok
+):
+    """Both successful JSON-RPC result shapes carry the resolved profile identity."""
+    _provider_profile_homes(monkeypatch, tmp_path)
+    monkeypatch.setattr("hermes_cli.main._has_any_provider_configured", lambda: True)
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        lambda requested=None: {
+            "provider": "custom",
+            "api_key": api_key,
+            "source": "env/config",
+        },
+    )
+
+    resp = server.handle_request(
+        {
+            "id": "1",
+            "method": "setup.runtime_check",
+            "params": {"profile": "coder"},
+        }
+    )
+
+    assert resp["result"]["ok"] is expected_ok
+    assert resp["result"]["profile_name"] == "coder"
 
 
 def test_setup_runtime_check_rejects_implicit_bedrock_when_unconfigured(monkeypatch):
@@ -9196,6 +9331,29 @@ def test_reload_env_rpc_calls_hermes_cli_reload_env(monkeypatch):
 
     assert resp["result"] == {"updated": 7}
     assert calls["n"] == 1
+
+
+def test_reload_env_named_profile_does_not_mutate_process_env(monkeypatch, tmp_path):
+    """Named-profile reloads use the isolated request scope, not os.environ."""
+    _, profile_home = _provider_profile_homes(monkeypatch, tmp_path)
+    calls = {"n": 0}
+
+    def _fake_reload():
+        calls["n"] += 1
+        return 7
+
+    fake = types.SimpleNamespace(reload_env=_fake_reload)
+    with patch.dict(sys.modules, {"hermes_cli.config": fake}):
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "reload.env",
+                "params": {"profile": "coder"},
+            }
+        )
+
+    assert resp["result"] == {"updated": 0, "profile_name": "coder"}
+    assert calls["n"] == 0
 
 
 def test_reload_env_rpc_surfaces_errors(monkeypatch):

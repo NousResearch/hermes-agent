@@ -22,6 +22,7 @@ These tests pin the corrected behavior.
 import asyncio
 import time
 from datetime import datetime, timezone
+from pathlib import Path
 from unittest.mock import patch
 
 import httpx
@@ -336,6 +337,98 @@ def test_codex_dashboard_worker_persists_inside_session_profile(tmp_path, monkey
 
         assert ws._oauth_sessions[sid]["status"] == "approved"
         assert saved_homes == [profile_home]
+    finally:
+        ws._oauth_sessions.pop(sid, None)
+
+
+def test_codex_profile_oauth_is_ready_through_profile_scoped_gateway(tmp_path, monkeypatch):
+    """A named-profile OAuth success must be usable by the readiness RPCs."""
+    default_home = tmp_path / ".hermes"
+    profile_home = default_home / "profiles" / "coder"
+    profile_home.mkdir(parents=True)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(default_home))
+
+    from hermes_cli import web_server as ws
+    from tui_gateway import server
+
+    class _Resp:
+        def __init__(self, status_code, payload):
+            self.status_code = status_code
+            self._payload = payload
+
+        def json(self):
+            return self._payload
+
+    class _Client:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def post(self, url, **kwargs):
+            if url.endswith("/deviceauth/usercode"):
+                return _Resp(
+                    200,
+                    {
+                        "device_auth_id": "synthetic-device-auth-id",
+                        "interval": 3,
+                        "user_code": "TEST-ONLY",
+                    },
+                )
+            if url.endswith("/deviceauth/token"):
+                return _Resp(
+                    200,
+                    {
+                        "authorization_code": "synthetic-authorization-code",
+                        "code_verifier": "synthetic-code-verifier",
+                    },
+                )
+            return _Resp(
+                200,
+                {
+                    "access_token": "h.eyJleHAiOjk5OTk5OTk5OTl9.synthetic",
+                    "refresh_token": "synthetic-refresh-value",
+                },
+            )
+
+    monkeypatch.setattr(httpx, "Client", _Client)
+    monkeypatch.setattr(ws.time, "sleep", lambda _: None)
+
+    sid, _ = ws._new_oauth_session(
+        "openai-codex",
+        "device_code",
+        profile="coder",
+    )
+    try:
+        ws._codex_full_login_worker(sid)
+        assert ws._oauth_sessions[sid]["status"] == "approved"
+
+        setup = server.handle_request(
+            {
+                "id": "setup",
+                "method": "setup.status",
+                "params": {"profile": "coder"},
+            }
+        )
+        runtime = server.handle_request(
+            {
+                "id": "runtime",
+                "method": "setup.runtime_check",
+                "params": {
+                    "profile": "coder",
+                    "provider": "openai-codex",
+                },
+            }
+        )
+
+        assert setup["result"]["provider_configured"] is True
+        assert runtime["result"]["ok"] is True
+        assert runtime["result"]["provider"] == "openai-codex"
     finally:
         ws._oauth_sessions.pop(sid, None)
 

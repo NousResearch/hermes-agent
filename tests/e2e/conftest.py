@@ -66,6 +66,9 @@ def _ensure_discord_mock():
     discord_mod.DMChannel = type("DMChannel", (), {})
     discord_mod.Thread = type("Thread", (), {})
     discord_mod.ForumChannel = type("ForumChannel", (), {})
+    discord_mod.Forbidden = type("Forbidden", (Exception,), {})
+    discord_mod.MessageType = SimpleNamespace(default=0, reply=19)
+    discord_mod.Object = lambda *, id: SimpleNamespace(id=id)
     discord_mod.Interaction = object
     discord_mod.app_commands = SimpleNamespace(
         describe=lambda **kwargs: (lambda fn: fn),
@@ -115,23 +118,23 @@ _ensure_discord_mock()
 _ensure_slack_mock()
 
 import discord  # noqa: E402 — mocked above
-from gateway.platforms.telegram import TelegramAdapter  # noqa: E402
-from gateway.platforms.discord import DiscordAdapter  # noqa: E402
+from plugins.platforms.telegram.adapter import TelegramAdapter  # noqa: E402
+from plugins.platforms.discord.adapter import DiscordAdapter  # noqa: E402
 
-import gateway.platforms.slack as _slack_mod  # noqa: E402
+import plugins.platforms.slack.adapter as _slack_mod  # noqa: E402
 _slack_mod.SLACK_AVAILABLE = True
-from gateway.platforms.slack import SlackAdapter  # noqa: E402
+from plugins.platforms.slack.adapter import SlackAdapter  # noqa: E402
 
 
 # Platform-generic factories
 
-def make_source(platform: Platform, chat_id: str = "e2e-chat-1", user_id: str = "e2e-user-1") -> SessionSource:
+def make_source(platform: Platform, chat_id: str = "e2e-chat-1", user_id: str = "e2e-user-1", chat_type: str = "dm") -> SessionSource:
     return SessionSource(
         platform=platform,
         chat_id=chat_id,
         user_id=user_id,
         user_name="e2e_tester",
-        chat_type="dm",
+        chat_type=chat_type,
     )
 
 
@@ -147,10 +150,16 @@ def make_session_entry(platform: Platform, source: SessionSource = None) -> Sess
     )
 
 
-def make_event(platform: Platform, text: str = "/help", chat_id: str = "e2e-chat-1", user_id: str = "e2e-user-1") -> MessageEvent:
+def make_event(
+    platform: Platform,
+    text: str = "/help",
+    chat_id: str = "e2e-chat-1",
+    user_id: str = "e2e-user-1",
+    chat_type: str = "dm",
+) -> MessageEvent:
     return MessageEvent(
         text=text,
-        source=make_source(platform, chat_id, user_id),
+        source=make_source(platform, chat_id, user_id, chat_type),
         message_id=f"msg-{uuid.uuid4().hex[:8]}",
     )
 
@@ -185,6 +194,23 @@ def make_runner(platform: Platform, session_entry: SessionEntry = None) -> "Gate
     runner._running_agents = {}
     runner._pending_messages = {}
     runner._pending_approvals = {}
+    runner._shutdown_event = asyncio.Event()
+    runner._exit_reason = None
+    runner._exit_code = None
+    runner._background_tasks = set()
+    runner._draining = False
+    runner._restart_requested = False
+    runner._restart_task_started = False
+    runner._restart_detached = False
+    runner._restart_via_service = False
+    from gateway.restart import DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT
+    runner._restart_drain_timeout = DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT
+    runner._stop_task = None
+    runner._busy_input_mode = "interrupt"
+    runner._running_agents_ts = {}
+    runner._pending_model_notes = {}
+    runner._update_prompt_pending = {}
+    runner._voice_mode = {}
     runner._session_db = None
     runner._reasoning_config = None
     runner._provider_routing = {}
@@ -193,10 +219,21 @@ def make_runner(platform: Platform, session_entry: SessionEntry = None) -> "Gate
 
     runner._is_user_authorized = lambda _source: True
     runner._set_session_env = lambda _context: None
+    runner._handle_message_with_agent = AsyncMock(return_value="agent-handled-default")
     runner._should_send_voice_reply = lambda *_a, **_kw: False
     runner._send_voice_reply = AsyncMock()
     runner._capture_gateway_honcho_if_configured = lambda *a, **kw: None
     runner._emit_gateway_run_progress = AsyncMock()
+
+    # Disable destructive slash confirm gate so /new executes immediately
+    runner._read_user_config = lambda: {"approvals": {"destructive_slash_confirm": False}}
+
+    # Keep /new hermetic: the real _reset_notice_session_info resolves provider
+    # credentials and may probe model context length over the network. CI has no
+    # credentials, so resolution walks the whole fallback chain and can exceed
+    # send_and_capture's poll window on slow runners (flaked in run 28856659216,
+    # telegram param only — first parametrization pays the cold-resolution cost).
+    runner._reset_notice_session_info = lambda source: ""
 
     runner.pairing_store = MagicMock()
     runner.pairing_store._is_rate_limited = MagicMock(return_value=False)
@@ -234,11 +271,18 @@ def make_adapter(platform: Platform, runner=None):
 
 
 async def send_and_capture(adapter, text: str, platform: Platform, **event_kwargs) -> AsyncMock:
-    """Send a message through the full e2e flow and return the send mock."""
+    """Send a message through the full e2e flow and return the send mock.
+
+    Polls for the send rather than waiting a fixed delay: handler DB work now
+    hops to worker threads (AsyncSessionDB), so completion latency varies.
+    """
     event = make_event(platform, text, **event_kwargs)
     adapter.send.reset_mock()
     await adapter.handle_message(event)
-    await asyncio.sleep(0.3)
+    for _ in range(40):  # up to ~2s; returns as soon as the send lands
+        if adapter.send.called:
+            break
+        await asyncio.sleep(0.05)
     return adapter.send
 
 
@@ -346,6 +390,7 @@ def make_discord_message(
 
     return SimpleNamespace(
         id=message_id, content=content, author=author, channel=channel,
+        guild=getattr(channel, "guild", None),
         mentions=mentions, attachments=attachments,
         type=getattr(discord, "MessageType", SimpleNamespace()).default,
         reference=None, created_at=datetime.now(timezone.utc),

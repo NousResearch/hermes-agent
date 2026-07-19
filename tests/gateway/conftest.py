@@ -2,7 +2,7 @@
 
 The ``_ensure_telegram_mock`` helper guarantees that a minimal mock of
 the ``telegram`` package is registered in :data:`sys.modules` **before**
-any test file triggers ``from gateway.platforms.telegram import ...``.
+any test file triggers ``from plugins.platforms.telegram.adapter import ...``.
 
 Without this, ``pytest-xdist`` workers that happen to collect
 ``test_telegram_caption_merge.py`` (bare top-level import, no per-file
@@ -12,10 +12,40 @@ ImportError fallback, causing 30+ downstream test failures wherever
 
 Individual test files may still call their own ``_ensure_telegram_mock``
 — it short-circuits when the mock is already present.
+
+Plugin-adapter anti-pattern guard
+---------------------------------
+Tests for platform plugins (``plugins/platforms/<name>/adapter.py``)
+must load the adapter via
+:func:`tests.gateway._plugin_adapter_loader.load_plugin_adapter`, not by
+adding the plugin directory to ``sys.path`` and doing a bare
+``from adapter import ...``. The guard at the bottom of this file
+scans test module ASTs at collection time and fails collection with a
+pointer to the helper if the anti-pattern is detected.
+
+Rationale: every plugin ships its own ``adapter.py``, and two tests each
+inserting their plugin dir on ``sys.path[0]`` race for
+``sys.modules["adapter"]`` in the same xdist worker. Whichever collects
+first wins; the other fails with ``ImportError``, and the polluted
+``sys.path`` cascades into unrelated tests. See PR #17764 for the
+incident.
 """
 
+import ast
 import sys
+from pathlib import Path
 from unittest.mock import MagicMock
+
+import pytest
+
+
+def make_async_session_db(sync_mock=None):
+    """Wrap a sync mock SessionDB in AsyncSessionDB so gateway code that awaits
+    the facade works in tests. Returns (facade, sync_mock); configure return
+    values and assert calls on sync_mock."""
+    from hermes_state import AsyncSessionDB
+    sync_mock = sync_mock if sync_mock is not None else MagicMock()
+    return AsyncSessionDB(sync_mock), sync_mock
 
 
 def _ensure_telegram_mock() -> None:
@@ -39,15 +69,21 @@ def _ensure_telegram_mock() -> None:
     mod.constants.ChatType.SUPERGROUP = "supergroup"
     mod.constants.ChatType.CHANNEL = "channel"
 
-    # Real exception classes so ``except (NetworkError, ...)`` clauses
-    # in production code don't blow up with TypeError.
-    mod.error.NetworkError = type("NetworkError", (OSError,), {})
-    mod.error.TimedOut = type("TimedOut", (OSError,), {})
-    mod.error.BadRequest = type("BadRequest", (Exception,), {})
-    mod.error.Forbidden = type("Forbidden", (Exception,), {})
-    mod.error.InvalidToken = type("InvalidToken", (Exception,), {})
-    mod.error.RetryAfter = type("RetryAfter", (Exception,), {"retry_after": 1})
-    mod.error.Conflict = type("Conflict", (Exception,), {})
+    # Mirror PTB's exception hierarchy: BadRequest is a semantic API error,
+    # but inherits from NetworkError in python-telegram-bot 22.x.
+    mod.error.TelegramError = type("TelegramError", (Exception,), {})
+    mod.error.NetworkError = type("NetworkError", (mod.error.TelegramError,), {})
+    mod.error.TimedOut = type("TimedOut", (mod.error.NetworkError,), {})
+    mod.error.BadRequest = type("BadRequest", (mod.error.NetworkError,), {})
+    mod.error.Forbidden = type("Forbidden", (mod.error.TelegramError,), {})
+    mod.error.InvalidToken = type("InvalidToken", (mod.error.TelegramError,), {})
+
+    class RetryAfter(mod.error.TelegramError):
+        def __init__(self, retry_after=1):
+            self.retry_after = retry_after
+
+    mod.error.RetryAfter = RetryAfter
+    mod.error.Conflict = type("Conflict", (mod.error.TelegramError,), {})
 
     # Update.ALL_TYPES used in start_polling()
     mod.Update.ALL_TYPES = []
@@ -88,11 +124,71 @@ def _ensure_discord_mock() -> None:
     discord_mod.Thread = type("Thread", (), {})
     discord_mod.ForumChannel = type("ForumChannel", (), {})
     discord_mod.Interaction = object
-    discord_mod.Embed = MagicMock
+    discord_mod.Message = type("Message", (), {})
+
+    # Embed: accept the kwargs production code / tests use
+    # (title, description, color). MagicMock auto-attributes work too,
+    # but some tests construct and inspect .title/.description directly.
+    class _FakeEmbed:
+        def __init__(self, *, title=None, description=None, color=None, **_):
+            self.title = title
+            self.description = description
+            self.color = color
+            self.fields = []
+            self.footer = None
+        def add_field(self, *, name=None, value=None, inline=False, **_):
+            self.fields.append({"name": name, "value": value, "inline": inline})
+            return self
+        def set_footer(self, *, text=None, icon_url=None, **_):
+            self.footer = {"text": text, "icon_url": icon_url}
+            return self
+    discord_mod.Embed = _FakeEmbed
+
+    # ui.View / ui.Select / ui.Button: real classes (not MagicMock) so
+    # tests that subclass ModelPickerView / iterate .children / clear
+    # items work.
+    class _FakeView:
+        def __init__(self, timeout=None):
+            self.timeout = timeout
+            self.children = []
+        def add_item(self, item):
+            self.children.append(item)
+        def clear_items(self):
+            self.children.clear()
+
+    class _FakeSelect:
+        def __init__(self, *, placeholder=None, options=None, custom_id=None, **_):
+            self.placeholder = placeholder
+            self.options = options or []
+            self.custom_id = custom_id
+            self.callback = None
+            self.disabled = False
+
+    class _FakeButton:
+        def __init__(self, *, label=None, style=None, custom_id=None, emoji=None,
+                     url=None, disabled=False, row=None, sku_id=None, **_):
+            self.label = label
+            self.style = style
+            self.custom_id = custom_id
+            self.emoji = emoji
+            self.url = url
+            self.disabled = disabled
+            self.row = row
+            self.sku_id = sku_id
+            self.callback = None
+
+    class _FakeSelectOption:
+        def __init__(self, *, label=None, value=None, description=None, **_):
+            self.label = label
+            self.value = value
+            self.description = description
+    discord_mod.SelectOption = _FakeSelectOption
+
     discord_mod.ui = SimpleNamespace(
-        View=object,
+        View=_FakeView,
+        Select=_FakeSelect,
+        Button=_FakeButton,
         button=lambda *a, **k: (lambda fn: fn),
-        Button=object,
     )
     discord_mod.ButtonStyle = SimpleNamespace(
         success=1, primary=2, secondary=2, danger=3,
@@ -100,7 +196,8 @@ def _ensure_discord_mock() -> None:
     )
     discord_mod.Color = SimpleNamespace(
         orange=lambda: 1, green=lambda: 2, blue=lambda: 3,
-        red=lambda: 4, purple=lambda: 5,
+        red=lambda: 4, purple=lambda: 5, greyple=lambda: 6,
+        gold=lambda: 7,
     )
 
     # app_commands — needed by _register_slash_commands auto-registration
@@ -145,3 +242,226 @@ def _ensure_discord_mock() -> None:
 # Run at collection time — before any test file's module-level imports.
 _ensure_telegram_mock()
 _ensure_discord_mock()
+
+
+# ---------------------------------------------------------------------------
+# Plugin-adapter anti-pattern guard
+# ---------------------------------------------------------------------------
+
+_GATEWAY_DIR = Path(__file__).resolve().parent
+_GUARD_HINT = (
+    "Plugin adapter tests must use "
+    "``from tests.gateway._plugin_adapter_loader import load_plugin_adapter`` "
+    "and call ``load_plugin_adapter('<plugin_name>')`` instead of inserting "
+    "``plugins/platforms/<name>/`` on sys.path and doing a bare ``import "
+    "adapter`` / ``from adapter import ...``. See the 'Plugin-adapter "
+    "anti-pattern guard' docstring in tests/gateway/conftest.py."
+)
+
+
+def _scan_for_plugin_adapter_antipattern(source: str) -> list[str]:
+    """Return a list of offending-line descriptions, or [] if clean.
+
+    Flags two things:
+    1. ``sys.path.insert(..., <something mentioning 'plugins/platforms'>)``
+    2. ``import adapter`` or ``from adapter import ...`` at module level.
+    """
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return []  # Let pytest surface the real syntax error.
+
+    offenses: list[str] = []
+
+    for node in ast.walk(tree):
+        # sys.path.insert(0, ".../plugins/platforms/...")
+        if isinstance(node, ast.Call):
+            func = node.func
+            target_name: str | None = None
+            if isinstance(func, ast.Attribute):
+                # sys.path.insert / sys.path.append
+                if (
+                    isinstance(func.value, ast.Attribute)
+                    and isinstance(func.value.value, ast.Name)
+                    and func.value.value.id == "sys"
+                    and func.value.attr == "path"
+                    and func.attr in {"insert", "append", "extend"}
+                ):
+                    target_name = f"sys.path.{func.attr}"
+
+            if target_name is not None:
+                call_src = ast.unparse(node)
+                # Match both the string-literal form
+                # ``.../plugins/platforms/...`` and the Path-operator form
+                # ``Path(...) / 'plugins' / 'platforms' / ...`` that
+                # plugin tests typically use.
+                _src_no_ws = "".join(call_src.split())
+                if (
+                    "plugins/platforms" in call_src
+                    or "plugins\\platforms" in call_src
+                    or "'plugins'/'platforms'" in _src_no_ws
+                    or '"plugins"/"platforms"' in _src_no_ws
+                ):
+                    offenses.append(
+                        f"line {node.lineno}: {target_name}(...) points into "
+                        f"plugins/platforms/"
+                    )
+
+    # Bare `import adapter` / `from adapter import ...` anywhere (module level
+    # OR inside functions — both are symptoms of the same pattern).
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == "adapter":
+                    offenses.append(
+                        f"line {node.lineno}: ``import adapter`` "
+                        f"(bare — resolves to whichever plugin's adapter.py "
+                        f"is first on sys.path)"
+                    )
+        elif isinstance(node, ast.ImportFrom):
+            if node.module == "adapter" and node.level == 0:
+                offenses.append(
+                    f"line {node.lineno}: ``from adapter import ...`` "
+                    f"(bare — resolves to whichever plugin's adapter.py "
+                    f"is first on sys.path)"
+                )
+
+    return offenses
+
+
+def _fingerprint_gateway_tests() -> str:
+    """Return a short fingerprint that changes when any gateway test file changes.
+
+    Uses (mtime, size) pairs instead of content hashing — fast to compute
+    (stat-only, no reads) and sufficient for cache invalidation across
+    per-file subprocess runs.
+    """
+    import hashlib
+
+    h = hashlib.sha256()
+    for path in sorted(_GATEWAY_DIR.rglob("test_*.py")):
+        try:
+            st = path.stat()
+            h.update(f"{path.name}:{st.st_mtime_ns}:{st.st_size}".encode())
+        except OSError:
+            h.update(f"{path.name}:missing".encode())
+    return h.hexdigest()[:16]
+
+
+def _run_adapter_antipattern_scan() -> list[str]:
+    """Scan gateway test files for the plugin-adapter anti-pattern.
+
+    Returns a list of violation strings (empty if clean).
+    """
+    violations: list[str] = []
+    for path in _GATEWAY_DIR.rglob("test_*.py"):
+        if path.name in {"_plugin_adapter_loader.py", "conftest.py"}:
+            continue
+        try:
+            source = path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        # Fast string pre-filter: skip files that can't possibly violate.
+        # A violating file MUST contain both (a) an adapter/plugins/platforms
+        # reference AND (b) either sys.path manipulation or a bare adapter import.
+        if "adapter" not in source and "plugins/platforms" not in source:
+            continue
+        if not (
+            "sys.path" in source
+            or "import adapter" in source
+            or "from adapter import" in source
+        ):
+            continue
+        offenses = _scan_for_plugin_adapter_antipattern(source)
+        if offenses:
+            violations.append(
+                f"  {path.relative_to(_GATEWAY_DIR.parent.parent)}:\n    "
+                + "\n    ".join(offenses)
+            )
+    return violations
+
+
+def pytest_configure(config):
+    """Reject plugin-adapter tests that use the sys.path anti-pattern.
+
+    Runs once per pytest session on the controller, BEFORE any xdist
+    worker is spawned. If any file under ``tests/gateway/`` matches the
+    anti-pattern, we fail the whole session with a clear message —
+    before a polluted ``sys.path`` can cascade across workers.
+
+    **Performance**: in the per-file subprocess isolation model (no xdist),
+    every subprocess is a "controller" — so the naive scan would run 257
+    times, each costing ~1s of AST walking.  We avoid this with two
+    strategies:
+
+    1. **Tight string pre-filter**: a file can only violate if it contains
+       *both* an adapter/plugins/platforms reference *and* a sys.path
+       manipulation or bare ``import adapter``.  This drops ~95% of files
+       from needing AST parsing.
+    2. **File-locked cache**: the scan result is cached in
+       ``.pytest-cache/gw-adapter-guard-<fingerprint>`` keyed on a
+       fingerprint of the gateway test file mtimes/sizes.  Concurrent
+       subprocesses acquire a lock; only the first performs the scan;
+       the rest wait and read the cached result.
+    """
+    # Only run on the xdist controller (or in non-xdist runs). Skip on
+    # worker subprocesses so we don't scan the filesystem N times.
+    if hasattr(config, "workerinput"):
+        return
+
+    fp = _fingerprint_gateway_tests()
+    cache_dir = Path.cwd() / ".pytest-cache"
+    cache_file = cache_dir / f"gw-adapter-guard-{fp}"
+    lock_file = cache_dir / f".gw-adapter-guard-{fp}.lock"
+
+    cache_dir.mkdir(parents=True, exist_ok=True)
+
+    # Evict stale cache entries from previous fingerprints (best-effort).
+    try:
+        for old in cache_dir.glob("gw-adapter-guard-*"):
+            if old.name != f"gw-adapter-guard-{fp}":
+                old.unlink(missing_ok=True)
+        for old in cache_dir.glob(".gw-adapter-guard-*.lock"):
+            if old.name != f".gw-adapter-guard-{fp}.lock":
+                old.unlink(missing_ok=True)
+    except OSError:
+        pass  # Non-critical; old files are harmless.
+
+    # Use filelock to ensure only one process scans at a time.
+    # Concurrent subprocesses all hit pytest_configure simultaneously;
+    # without a lock they'd all find no cache and all run the scan.
+    try:
+        from filelock import FileLock
+        lock = FileLock(str(lock_file), timeout=120)
+    except ImportError:
+        # Fallback: no locking (still correct, just slower under contention).
+
+        class _NoLock:
+            def __enter__(self):
+                return self
+            def __exit__(self, *a):
+                pass
+        lock = _NoLock()
+
+    with lock:
+        if cache_file.exists():
+            cached = cache_file.read_text(encoding="utf-8")
+            if cached == "clean":
+                return
+            raise pytest.UsageError(cached)
+
+        # Slow path: this process is the first to acquire the lock.
+        violations = _run_adapter_antipattern_scan()
+
+        if violations:
+            msg = (
+                "Plugin-adapter-import anti-pattern detected in gateway tests:\n"
+                + "\n".join(violations)
+                + "\n\n"
+                + _GUARD_HINT
+            )
+            cache_file.write_text(msg, encoding="utf-8")
+            raise pytest.UsageError(msg)
+        else:
+            cache_file.write_text("clean", encoding="utf-8")
+

@@ -13,8 +13,6 @@ The three-layer defence:
 """
 
 import asyncio
-import threading
-from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -103,7 +101,7 @@ class TestCleanupStaleAsyncClients:
         mock_client._client = MagicMock()
         mock_client._client.is_closed = False
 
-        key = ("test_stale", True, "", "", "", ())
+        key = ("test_stale", True, "", "", "", (), False)
         with _client_cache_lock:
             _client_cache[key] = (mock_client, "test-model", loop)
 
@@ -127,7 +125,7 @@ class TestCleanupStaleAsyncClients:
         loop = asyncio.new_event_loop()  # NOT closed
 
         mock_client = MagicMock()
-        key = ("test_live", True, "", "", "", ())
+        key = ("test_live", True, "", "", "", (), False)
         with _client_cache_lock:
             _client_cache[key] = (mock_client, "test-model", loop)
 
@@ -149,7 +147,7 @@ class TestCleanupStaleAsyncClients:
         )
 
         mock_client = MagicMock()
-        key = ("test_sync", False, "", "", "", ())
+        key = ("test_sync", False, "", "", "", (), False)
         with _client_cache_lock:
             _client_cache[key] = (mock_client, "test-model", None)
 
@@ -178,11 +176,16 @@ class TestClientCacheBoundedGrowth:
         """When the loop changes, the old entry should be replaced, not duplicated."""
         from agent.auxiliary_client import (
             _client_cache,
+            _client_cache_key,
             _client_cache_lock,
             _get_cached_client,
         )
 
-        key = ("test_replace", True, "", "", "", ())
+        key = _client_cache_key(
+            "test_replace",
+            async_mode=True,
+            task="",
+        )
 
         # Simulate a stale entry from a closed loop
         old_loop = asyncio.new_event_loop()
@@ -217,7 +220,7 @@ class TestClientCacheBoundedGrowth:
             _client_cache_lock,
         )
 
-        key = ("test_no_grow", True, "", "", "", ())
+        key = ("test_no_grow", True, "", "", "", (), False)
 
         loops = []
         try:
@@ -269,7 +272,7 @@ class TestClientCacheBoundedGrowth:
                 mock_client = MagicMock()
                 mock_client._client = MagicMock()
                 mock_client._client.is_closed = False
-                key = (f"evict_test_{i}", False, "", "", "", ())
+                key = (f"evict_test_{i}", False, "", "", "", (), False)
                 with _client_cache_lock:
                     # Inline the eviction logic (same as _get_cached_client)
                     while len(_client_cache) >= _CLIENT_CACHE_MAX_SIZE:
@@ -281,9 +284,9 @@ class TestClientCacheBoundedGrowth:
                 assert len(_client_cache) <= _CLIENT_CACHE_MAX_SIZE, \
                     f"Cache size {len(_client_cache)} exceeds max {_CLIENT_CACHE_MAX_SIZE}"
                 # The earliest entries should have been evicted
-                assert ("evict_test_0", False, "", "", "", ()) not in _client_cache
+                assert ("evict_test_0", False, "", "", "", (), False) not in _client_cache
                 # The latest entries should be present
-                assert (f"evict_test_{_CLIENT_CACHE_MAX_SIZE + 4}", False, "", "", "", ()) in _client_cache
+                assert (f"evict_test_{_CLIENT_CACHE_MAX_SIZE + 4}", False, "", "", "", (), False) in _client_cache
         finally:
             with _client_cache_lock:
                 _client_cache.clear()

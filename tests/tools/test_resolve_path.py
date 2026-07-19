@@ -2,8 +2,8 @@
 
 import os
 from pathlib import Path
+from types import SimpleNamespace
 
-import pytest
 
 
 class TestResolvePath:
@@ -22,8 +22,9 @@ class TestResolvePath:
         monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
         from tools.file_tools import _resolve_path
 
-        result = _resolve_path("/etc/hosts")
-        assert result == Path("/etc/hosts")
+        absolute = (tmp_path / "already-absolute.txt").resolve()
+        result = _resolve_path(str(absolute))
+        assert result == absolute
 
     def test_falls_back_to_cwd_without_terminal_cwd(self, monkeypatch):
         """Without TERMINAL_CWD, falls back to os.getcwd()."""
@@ -50,3 +51,24 @@ class TestResolvePath:
         result = _resolve_path("a/../b/file.txt")
         assert ".." not in str(result)
         assert result == (tmp_path / "b" / "file.txt")
+
+    def test_relative_path_prefers_recorded_session_cwd(self, monkeypatch, tmp_path):
+        """The session's recorded cwd must win after the terminal changes directory."""
+        start_dir = tmp_path / "start"
+        live_dir = tmp_path / "worktree"
+        start_dir.mkdir()
+        live_dir.mkdir()
+        monkeypatch.setenv("TERMINAL_CWD", str(start_dir))
+
+        from tools import file_tools, terminal_tool
+
+        task_id = "live-cwd"
+        # The session's completed `cd` recorded the new directory.
+        terminal_tool.record_session_cwd(task_id, str(live_dir))
+
+        try:
+            result = file_tools._resolve_path("nested/file.txt", task_id=task_id)
+        finally:
+            terminal_tool.clear_session_cwd(task_id)
+
+        assert result == live_dir / "nested" / "file.txt"

@@ -267,6 +267,29 @@ class TestWebServerEndpoints:
         assert "active_sessions" in data
         assert data["can_update_hermes"] is True
 
+    def test_dashboard_remote_access_returns_resolved_public_url(self, monkeypatch):
+        monkeypatch.setattr(
+            "hermes_cli.dashboard_auth.prefix.resolve_public_url",
+            lambda: "https://hermes.example.com/agent",
+        )
+
+        resp = self.client.get("/api/dashboard/remote-access")
+
+        assert resp.status_code == 200
+        assert resp.json() == {
+            "public_url": "https://hermes.example.com/agent",
+        }
+
+    def test_dashboard_remote_access_is_not_public(self):
+        from starlette.testclient import TestClient
+
+        from hermes_cli.web_server import app
+
+        with TestClient(app) as unauthenticated:
+            resp = unauthenticated.get("/api/dashboard/remote-access")
+
+        assert resp.status_code == 401
+
     def test_status_active_session_count_uses_read_only_db(self, monkeypatch, tmp_path):
         import hermes_cli.web_server as web_server
         import hermes_state

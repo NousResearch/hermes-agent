@@ -17,6 +17,7 @@ import type {
   CustomEndpointsResponse,
   CustomEndpointUpdate,
   CustomEndpointValidationResponse,
+  DashboardRemoteAccessResponse,
   DebugShareResponse,
   ElevenLabsVoicesResponse,
   EnvVarInfo,
@@ -112,6 +113,7 @@ export type {
   CustomEndpointsResponse,
   CustomEndpointUpdate,
   CustomEndpointValidationResponse,
+  DashboardRemoteAccessResponse,
   DebugShareResponse,
   ElevenLabsVoice,
   ElevenLabsVoicesResponse,
@@ -501,6 +503,13 @@ export function getStatus(): Promise<StatusResponse> {
   return window.hermesDesktop.api<StatusResponse>({
     ...profileScoped(),
     path: '/api/status'
+  })
+}
+
+export function getDashboardRemoteAccess(profile?: string): Promise<DashboardRemoteAccessResponse> {
+  return window.hermesDesktop.api<DashboardRemoteAccessResponse>({
+    ...(profile ? { profile } : profileScoped()),
+    path: '/api/dashboard/remote-access'
   })
 }
 

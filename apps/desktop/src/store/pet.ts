@@ -4,6 +4,8 @@ import { persistBoolean, storedBoolean } from '@/lib/storage'
 import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
 import { $busy } from '@/store/session'
 
+import { $petSignals, derivePetSignalState } from './pet-signals'
+
 /**
  * Petdex mascot state for the desktop floating pet.
  *
@@ -163,6 +165,18 @@ function deriveLivePetState(activity: PetActivity, busy: boolean): PetState {
 }
 
 /**
+ * Resolve native Hermes activity against an already-arbitrated external signal.
+ * Any non-idle native state wins: a provider's cosmetic/background activity
+ * must never hide local work, an approval wait, an error, or a completion beat.
+ * External activity animates the mascot only while native Hermes is at rest.
+ */
+export function deriveEffectivePetState(activity: PetActivity, busy: boolean, signalState: PetState): PetState {
+  const nativeState = deriveLivePetState(activity, busy)
+
+  return nativeState === 'idle' ? signalState : nativeState
+}
+
+/**
  * Opt-in: let the floating mascot wander around the window on its own while
  * idle. Pure desktop-client behavior (no agent/config dependency), so it lives
  * in localStorage like the pet's drag position — per-device, not per-profile.
@@ -190,23 +204,25 @@ export const $petMotion = atom<PetState | null>(null)
  */
 export const $petRoamDir = atom<-1 | 0 | 1>(0)
 
+/** Native + external state, deliberately independent of roam motion. */
+const $effectivePetState = computed(
+  [$petActivity, $busy, $petSignals],
+  (activity, busy, signals): PetState => deriveEffectivePetState(activity, busy, derivePetSignalState(signals))
+)
+
 /**
  * Whether the agent-driven state is at rest (plain `idle`). The roam loop gates
  * on this — never on `$petState` itself, which would feed back on its own
  * `$petMotion`-driven pose and stall the wander.
  */
-export const $petAtRest = computed(
-  [$petActivity, $busy],
-  (activity, busy): boolean => deriveLivePetState(activity, busy) === 'idle'
-)
+export const $petAtRest = computed($effectivePetState, (state): boolean => state === 'idle')
 
 /**
  * The live pet state. Activity always wins; only when the agent is at rest does
  * a roam pose (walking → `run`, hopping → `jump`) show through, so the wander
  * reads as deliberate movement.
  */
-export const $petState = computed([$petActivity, $busy, $petMotion], (activity, busy, motion): PetState => {
-  const base = deriveLivePetState(activity, busy)
-
-  return base === 'idle' && motion ? motion : base
-})
+export const $petState = computed(
+  [$effectivePetState, $petMotion],
+  (base, motion): PetState => (base === 'idle' && motion ? motion : base)
+)

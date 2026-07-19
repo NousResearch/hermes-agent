@@ -170,6 +170,8 @@ interface PluginContext {
   socket: (path: string, onMessage: (data: unknown) => void) => () => void
   /** Plugin-scoped JSON persistence (keys live under `hermes.plugin.<id>.`). */
   storage: PluginStorage
+  /** Bounded, expiring mascot activity owned by this plugin. */
+  pet: PluginPetSignals
 }
 ```
 
@@ -537,6 +539,37 @@ const tab = ctx.storage.get('lastTab', 'summary')
 ctx.storage.remove('lastTab')
 ```
 
+## Pet activity
+
+Use `ctx.pet` when a desktop plugin has useful background activity that should
+animate the user's selected in-window pet. The API is deliberately cosmetic:
+plugins can request a bounded activity state, but cannot inject pet copy or
+actions, spoof another plugin's source, or override active Hermes work.
+
+```javascript
+const clearSync = ctx.pet.publishActivity({
+  id: 'sync',
+  state: 'working',
+  ttlMs: 30_000
+})
+
+// Clear early when the work finishes. The signal also expires at its TTL.
+clearSync()
+```
+
+`state` is one of `working`, `thinking`, `blocked`, `done`, or `failed`.
+`ttlMs` must be between 1 second and 5 minutes. `priority` is optional and must
+be an integer from 0 to 100. IDs are plugin-local, trimmed, at most 128
+characters, and capped at 64 distinct identities per plugin process.
+
+Publishing the same ID replaces its older generation. The disposer returned by
+`publishActivity` is generation-guarded, so delayed cleanup cannot erase a
+newer replacement. You can also call `ctx.pet.clearActivity(id)`. All activity
+owned by a plugin is cleared when that plugin unloads, when its active profile
+changes, or when its TTL expires. Native Hermes activity always takes
+precedence; plugin activity drives the pet only while Hermes itself is idle.
+The detached desktop overlay is intentionally unchanged by this API.
+
 ## Bundled plugins
 
 A plugin can ship in-tree at `apps/desktop/src/plugins/<id>/plugin.tsx` (default
@@ -597,7 +630,7 @@ not treat this pipeline as a trust boundary.
 | Category | Exports |
 |----------|---------|
 | Host | `host` (`.state.*`, `.notify`, `.notifyError`, `.navigate`, `.onEvent`, `.logs`, `.status`, `.restartGateway`, `.request`) |
-| Plugin contract | `HermesPlugin`, `PluginContext`, `PluginContribution`, `PluginStorage`, `PluginRestOptions`, `Contribution` |
+| Plugin contract | `HermesPlugin`, `PluginContext`, `PluginContribution`, `PluginStorage`, `PluginRestOptions`, `PluginPetSignals`, `PluginPetActivityInput`, `PluginPetActivityState`, `Contribution` |
 | Area constants | `PANES_AREA`, `ROUTES_AREA`, `SIDEBAR_NAV_AREA`, `STATUSBAR_AREAS`, `TITLEBAR_AREAS`, `PALETTE_AREA`, `KEYBINDS_AREA`, `THEMES_AREA`, `COMPOSER_AREAS` |
 | Area payloads | `RouteContribution`, `SidebarNavContribution`, `StatusbarItem`, `TitlebarTool`, `PaletteContribution`, `KeybindContribution`, `ComposerMiddleware`, `ComposerAttachmentProvider` |
 | React / state | `useValue`, `atom`, `computed`, `useQuery`, `useMutation`, `useQueryClient`, `queryClient`, `Contribute` |

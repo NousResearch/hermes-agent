@@ -2,6 +2,7 @@ import { useStore } from '@nanostores/react'
 import { memo, useEffect, useRef, useState } from 'react'
 
 import { WorktreeDialog } from '@/app/chat/sidebar/projects/worktree-dialog'
+import type { WorktreeDialogMode } from '@/app/chat/sidebar/projects/worktree-dialog'
 import { StatusRow } from '@/components/chat/status-row'
 import {
   type ActionItemSpec,
@@ -83,6 +84,7 @@ export const CodingStatusRow = memo(function CodingStatusRow({
   // dropdown menu's "branch off" items and the global ⌘⇧B hotkey.
   const [worktreeOpen, setWorktreeOpen] = useState(false)
   const [worktreeBase, setWorktreeBase] = useState<string | undefined>(undefined)
+  const [worktreeMode, setWorktreeMode] = useState<WorktreeDialogMode>('create')
 
   const switchToBranch = async (branch: string) => {
     if (!onSwitchBranch) {
@@ -116,13 +118,15 @@ export const CodingStatusRow = memo(function CodingStatusRow({
     }
 
     setWorktreeBase(undefined)
+    setWorktreeMode('create')
     setWorktreeOpen(true)
   }, [onOpenWorktree, resolvedRepoPath, worktreeReq])
 
   // Open the worktree dialog from the dropdown menu with a pre-selected base.
-  const startBranch = (base: string | undefined) => {
+  const startBranch = (base: string | undefined, mode: WorktreeDialogMode) => {
+    setWorktreeMode(mode)
     setWorktreeBase(base)
-    setTimeout(() => setWorktreeOpen(true), 0)
+    setWorktreeOpen(true)
   }
 
   if (!status) {
@@ -172,7 +176,7 @@ export const CodingStatusRow = memo(function CodingStatusRow({
     const branchItems: ActionItemSpec[] = branchTargets.map(target => ({
       key: target.base ?? '__head__',
       label: <span className="truncate">{target.label}</span>,
-      onSelect: () => startBranch(target.base)
+      onSelect: () => startBranch(target.base, 'create')
     }))
 
     const worktreeItems: ActionItemSpec[] = otherWorktrees.map(worktree => ({
@@ -199,13 +203,13 @@ export const CodingStatusRow = memo(function CodingStatusRow({
         {renderActionItem(kit, {
           key: '__start__',
           label: <span className="truncate">{p.startWork}</span>,
-          onSelect: () => startBranch(undefined)
+          onSelect: () => startBranch(undefined, 'create')
         })}
         {onConvertBranch &&
           renderActionItem(kit, {
             key: '__convert__',
             label: <span className="truncate">{p.convertBranch}</span>,
-            onSelect: () => startBranch(undefined)
+            onSelect: () => startBranch(undefined, 'convert')
           })}
       </>
     )
@@ -337,6 +341,7 @@ export const CodingStatusRow = memo(function CodingStatusRow({
       {resolvedRepoPath && onOpenWorktree && (
         <WorktreeDialog
           initialBase={worktreeBase}
+          initialMode={worktreeMode}
           onOpenChange={setWorktreeOpen}
           onStarted={onOpenWorktree}
           open={worktreeOpen}

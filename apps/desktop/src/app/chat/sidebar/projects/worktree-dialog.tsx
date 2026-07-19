@@ -26,6 +26,8 @@ interface BranchActionCopy {
   branchSwitchHome: string
 }
 
+export type WorktreeDialogMode = 'create' | 'convert'
+
 const branchActionLabel = (branch: HermesGitBranch, copy: BranchActionCopy) => {
   if (branch.checkedOut) {
     return copy.branchOpenExisting
@@ -43,6 +45,8 @@ export interface WorktreeDialogProps {
   open: boolean
   /** Called when the user requests the dialog to close (cancel, Esc, backdrop). */
   onOpenChange: (open: boolean) => void
+  /** Open the dialog in create or convert mode. */
+  initialMode?: WorktreeDialogMode
   /** Pre-select a base branch when opening (from "branch off from X" menus). */
   initialBase?: string
 }
@@ -57,27 +61,22 @@ export interface WorktreeDialogProps {
  * The caller owns the open state so both the sidebar button and the global
  * hotkey can trigger the same dialog instance.
  */
-export function WorktreeDialog({ repoPath, onStarted, open, onOpenChange, initialBase }: WorktreeDialogProps) {
+export function WorktreeDialog({
+  initialBase,
+  initialMode = 'create',
+  onOpenChange,
+  onStarted,
+  open,
+  repoPath
+}: WorktreeDialogProps) {
   const { t } = useI18n()
   const p = t.sidebar.projects
   const [name, setName] = useState('')
   const [pending, setPending] = useState(false)
-  const [convertMode, setConvertMode] = useState(false)
+  const [convertMode, setConvertMode] = useState<WorktreeDialogMode>('create')
   const [branches, setBranches] = useState<HermesGitBranch[]>([])
   const [branchesLoading, setBranchesLoading] = useState(false)
   const [selectedBase, setSelectedBase] = useState('')
-
-  // Reset to a fresh state each time the dialog opens, applying any pre-selected
-  // base branch from the caller (e.g. "branch off from main" in the coding row's
-  // dropdown menu). When `initialBase` changes while open (shouldn't happen in
-  // practice), the effect re-syncs.
-  useEffect(() => {
-    if (open) {
-      setName('')
-      setConvertMode(false)
-      setSelectedBase(initialBase ?? '')
-    }
-  }, [open, initialBase])
 
   const loadBranches = useCallback(async () => {
     if (!repoPath) {
@@ -94,6 +93,23 @@ export function WorktreeDialog({ repoPath, onStarted, open, onOpenChange, initia
       setBranchesLoading(false)
     }
   }, [repoPath])
+
+  // Reset to a fresh state each time the dialog opens, applying any pre-selected
+  // base branch from the caller (e.g. "branch off from main" in the coding row's
+  // dropdown menu). When `initialBase` changes while open (shouldn't happen in
+  // practice), the effect re-syncs.
+  useEffect(() => {
+    if (open) {
+      setName('')
+      setConvertMode(initialMode)
+      setSelectedBase(initialMode === 'convert' ? '' : (initialBase ?? ''))
+
+      if (initialMode === 'convert') {
+        setBranches([])
+        void loadBranches()
+      }
+    }
+  }, [initialMode, loadBranches, open, initialBase])
 
   const submit = async () => {
     const branch = name.trim()
@@ -150,7 +166,7 @@ export function WorktreeDialog({ repoPath, onStarted, open, onOpenChange, initia
   }
 
   const enterConvert = () => {
-    setConvertMode(true)
+    setConvertMode('convert')
     void loadBranches()
   }
 
@@ -158,11 +174,11 @@ export function WorktreeDialog({ repoPath, onStarted, open, onOpenChange, initia
     <Dialog onOpenChange={next => !pending && onOpenChange(next)} open={open}>
       <DialogContent className="max-w-md">
         <DialogHeader>
-          <DialogTitle>{convertMode ? p.convertBranchTitle : p.newWorktreeTitle}</DialogTitle>
-          <DialogDescription>{convertMode ? p.convertBranchDesc : p.newWorktreeDesc}</DialogDescription>
+          <DialogTitle>{convertMode === 'convert' ? p.convertBranchTitle : p.newWorktreeTitle}</DialogTitle>
+          <DialogDescription>{convertMode === 'convert' ? p.convertBranchDesc : p.newWorktreeDesc}</DialogDescription>
         </DialogHeader>
 
-        {convertMode ? (
+        {convertMode === 'convert' ? (
           <Command
             className="rounded-md border border-(--ui-stroke-tertiary)"
             filter={(value, search) => (value.toLowerCase().includes(search.toLowerCase()) ? 1 : 0)}
@@ -215,12 +231,12 @@ export function WorktreeDialog({ repoPath, onStarted, open, onOpenChange, initia
           </>
         )}
 
-        {convertMode ? (
+        {convertMode === 'convert' ? (
           <DialogFooter className="sm:justify-start">
             <Button
               className="px-0 text-(--ui-text-secondary) hover:text-foreground"
               disabled={pending}
-              onClick={() => setConvertMode(false)}
+              onClick={() => setConvertMode('create')}
               type="button"
               variant="link"
             >

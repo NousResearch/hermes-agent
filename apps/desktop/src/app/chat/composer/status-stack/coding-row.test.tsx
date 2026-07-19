@@ -1,8 +1,38 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { atom } from 'nanostores'
+import type { ReactNode } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { $notifications, clearNotifications } from '@/store/notifications'
+import { $newWorktreeRequest } from '@/store/projects'
+
+const worktreeDialog = vi.fn()
+
+vi.mock('@/app/chat/sidebar/projects/worktree-dialog', () => ({
+  WorktreeDialog: (props: { initialMode: string; open: boolean }) => {
+    worktreeDialog(props)
+
+    return <div data-testid="worktree-dialog" />
+  }
+}))
+
+vi.mock('@/components/ui/actions-menu', () => ({
+  ActionsContextMenu: ({ children }: { children: ReactNode }) => <>{children}</>,
+  ActionsMenu: ({ children, items }: { children: ReactNode; items: (kit: unknown) => ReactNode }) => (
+    <>
+      {children}
+      {items({
+        Label: ({ children: label }: { children: ReactNode }) => <div>{label}</div>,
+        Separator: () => <div />
+      })}
+    </>
+  ),
+  renderActionItem: (_kit: unknown, item: { key: string; label: ReactNode; onSelect: () => void }) => (
+    <button key={item.key} onClick={item.onSelect} type="button">
+      {item.label}
+    </button>
+  )
+}))
 
 vi.mock('@/store/coding-status', () => ({
   registerRepoStatusCwd: () => undefined,
@@ -89,5 +119,66 @@ describe('CodingStatusRow', () => {
     // Confirmation is the button turning into a checkmark, not a notification.
     await waitFor(() => expect(screen.getByRole('button', { name: 'Copied' })).toBeTruthy())
     expect($notifications.get()).toHaveLength(0)
+  })
+})
+
+function renderWorktreeRow() {
+  worktreeDialog.mockClear()
+
+  render(
+    <CodingStatusRow
+      onBranchOff={() => Promise.resolve()}
+      onConvertBranch={() => Promise.resolve()}
+      onOpen={() => undefined}
+      onOpenWorktree={() => undefined}
+      repoPath="/repo"
+    />
+  )
+}
+
+function latestDialogProps() {
+  const props = worktreeDialog.mock.lastCall?.[0] as undefined | { initialMode: string; open: boolean }
+
+  if (!props) {
+    throw new Error('WorktreeDialog was not rendered')
+  }
+
+  return props
+}
+
+describe('CodingStatusRow worktree dialog mode', () => {
+  afterEach(() => {
+    cleanup()
+    vi.clearAllMocks()
+    $newWorktreeRequest.set(0)
+  })
+
+  it('opens Start Work in create mode', async () => {
+    renderWorktreeRow()
+
+    fireEvent.click(screen.getByRole('button', { name: 'New worktree' }))
+
+    await waitFor(() => {
+      expect(latestDialogProps()).toMatchObject({ initialMode: 'create', open: true })
+    })
+  })
+
+  it('opens Convert Branch in convert mode', async () => {
+    renderWorktreeRow()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Convert a branch…' }))
+
+    await waitFor(() => {
+      expect(latestDialogProps()).toMatchObject({ initialMode: 'convert', open: true })
+    })
+  })
+
+  it('opens the global new-worktree request in create mode', async () => {
+    renderWorktreeRow()
+    act(() => $newWorktreeRequest.set(1))
+
+    await waitFor(() => {
+      expect(latestDialogProps()).toMatchObject({ initialMode: 'create', open: true })
+    })
   })
 })

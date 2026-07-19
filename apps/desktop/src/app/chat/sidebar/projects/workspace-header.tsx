@@ -158,16 +158,24 @@ export function WorkspaceContextMenu({
 // inside it. Naming is explicit — no auto-generated `hermes/work-<ts>` trees.
 // The base branch defaults to the remote default (origin/HEAD); the user can
 // pick any local or remote-tracking branch via a filterable combobox.
-export function StartWorkButton({ repoPath, onStarted }: { repoPath: string; onStarted: (path: string) => void }) {
+export function StartWorkButton({
+  label,
+  repoPath,
+  onStarted
+}: {
+  label?: string
+  repoPath: string
+  onStarted: (path: string) => void
+}) {
   const { t } = useI18n()
   const p = t.sidebar.projects
   const [open, setOpen] = useState(false)
 
   return (
     <>
-      <Tip label={p.startWork}>
+      <Tip label={label ?? p.startWork}>
         <button
-          aria-label={p.startWork}
+          aria-label={label ?? p.startWork}
           className="grid size-4 shrink-0 place-items-center rounded-sm bg-transparent text-(--ui-text-quaternary) opacity-0 transition-opacity hover:bg-(--ui-control-hover-background) hover:text-foreground group-hover/section:opacity-100 focus-visible:opacity-100"
           onClick={() => setOpen(true)}
           type="button"

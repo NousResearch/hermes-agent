@@ -566,6 +566,22 @@ class TurnController {
     const rawText = (payload.text ?? payload.rendered ?? this.bufRef).trimStart()
     const split = splitReasoning(rawText)
     const finalText = finalTail(split.text, this.segmentMessages)
+
+    // Patch streaming with the full (non-truncated, non-deduped) payload
+    // text so the streaming area matches the committed message's height
+    // during the transition frame.  Without this, boundedLiveRenderText
+    // (called by scheduleStreaming) may have truncated the streaming text
+    // to LIVE_RENDER_MAX_CHARS/LIVE_RENDER_MAX_LINES, producing a
+    // streaming area that is shorter than the committed history message.
+    // When queueMicrotask(idle) clears the streaming area one frame later,
+    // the height mismatch causes the ScrollBox to snap, yanking the
+    // viewport and making earlier content appear to vanish (#55425).
+    //
+    // Only patch when the turn wasn't interrupted — during interrupt the
+    // streaming state is already being torn down by interruptTurn().
+    if (!this.interrupted && split.text) {
+      patchTurnState({ streaming: split.text })
+    }
     const existingReasoning = this.reasoningText.trim() || String(payload.reasoning ?? '').trim()
     const savedReasoning = [existingReasoning, existingReasoning ? '' : split.reasoning].filter(Boolean).join('\n\n')
     const savedToolTokens = this.toolTokenAcc
@@ -637,17 +653,44 @@ class TurnController {
       void this.persistSpawnTree?.(finishedSubagents, sessionId)
     }
 
-    this.idle()
-    this.clearReasoning()
-    this.turnTools = []
-    this.persistedToolLabels.clear()
-    this.bufRef = ''
-    this.interrupted = false
-    patchTurnState({ activity: [], outcome: '' })
-
-    // Real turn end: surface any notice held back while busy. Done after
-    // idle() flips busy=false so applyNotice() reaches the visible slot.
-    this.flushPendingNotice()
+    // Defer clearing the live streaming state until AFTER the caller has
+    // appended the committed messages to history.  This was the root cause
+    // of the "long response flash" (#55425): the streaming block unmounted
+    // in one React commit while the committed message landed in a separate
+    // commit, producing a frame where the live area was empty and the
+    // ScrollBox snapped to a smaller scrollHeight — yanking the viewport
+    // off the content the user was reading.  Keeping `streaming`,
+    // `streamSegments`, etc. set until the next microtask lets
+    // `appendMessage`'s `setHistoryItems` and the streaming-clear
+    // `patchTurnState` settle in the same React batch via concurrent-mode
+    // automatic batching of the gateway event handler.
+    //
+    // The streaming block will keep rendering its (now-frozen) final text
+    // for one extra commit — visually identical to the committed message
+    // and only on screen for a single frame.
+    if (!wasInterrupted) {
+      queueMicrotask(() => {
+        this.idle()
+        this.clearReasoning()
+        this.turnTools = []
+        this.persistedToolLabels.clear()
+        this.bufRef = ''
+        this.interrupted = false
+        patchTurnState({ activity: [], outcome: '' })
+        // Real turn end: surface any notice held back while busy. Done after
+        // idle() flips busy=false so applyNotice() reaches the visible slot.
+        this.flushPendingNotice()
+      })
+    } else {
+      this.idle()
+      this.clearReasoning()
+      this.turnTools = []
+      this.persistedToolLabels.clear()
+      this.bufRef = ''
+      this.interrupted = false
+      patchTurnState({ activity: [], outcome: '' })
+      this.flushPendingNotice()
+    }
 
     return { finalMessages, finalText, wasInterrupted }
   }

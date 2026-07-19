@@ -2799,7 +2799,7 @@ class MCPServerTask:
         revival must publish the freshly discovered tools again — otherwise
         the transport comes back alive with zero registered tools.
         """
-        if not self._ready.is_set() or self._registered_tool_names:
+        if self._registered_tool_names:
             return
         self._registered_tool_names = _register_server_tools(
             self.name, self, self._config

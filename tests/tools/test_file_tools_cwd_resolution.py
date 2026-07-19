@@ -677,14 +677,33 @@ def test_dotdot_hidden_echo_is_still_detected(_isolated_cwd, monkeypatch):
 @pytest.mark.skipif(sys.platform != "win32", reason="UNC path semantics are Windows-specific")
 def test_unc_root_echo_detection_and_no_false_positive():
     """UNC anchors hold server+share — they must join the comparison parts."""
-    root = Path(r"\server\share\work")
-    doubled = Path(r"\server\share\work\server\share\work\notes\x.md")
+    root = Path("\\\\server\\share\\work")
+    doubled = Path("\\\\server\\share\\work\\server\\share\\work\\notes\\x.md")
 
     warn = ft._cwd_echo_warning(r"server\share\work\notes\x.md", doubled, root)
     assert warn is not None
     assert warn.startswith(ft._DOUBLED_PATH_MARKER)
-    assert repr(r"\server\share\work\notes\x.md") in warn
+    assert repr(str(Path("\\\\server\\share\\work\\notes\\x.md"))) in warn
 
     # A path that merely starts with the root's LAST component is legitimate.
-    ok = ft._cwd_echo_warning(r"work\x.md", Path(r"\server\share\work\work\x.md"), root)
+    ok = ft._cwd_echo_warning(r"work\x.md", Path("\\\\server\\share\\work\\work\\x.md"), root)
     assert ok is None
+
+
+def test_doubled_warning_precedes_out_of_workspace_check(_isolated_cwd, monkeypatch):
+    """The echo check runs BEFORE the containment check in
+    _path_resolution_warning(): an input that replays the workspace root is
+    diagnosed as a doubled path even when the resolved location lies outside
+    the workspace, so the generic out-of-workspace message can't mask the
+    more specific diagnosis.
+    """
+    workspace, decoy = _isolated_cwd
+    terminal_tool.record_session_cwd("default", str(workspace))
+
+    echo_input = _workspace_echo_input(workspace, "notes", "x.md")
+    outside = decoy / "x.md"
+
+    warn = ft._path_resolution_warning(echo_input, outside, task_id="default")
+
+    assert warn is not None
+    assert warn.startswith(ft._DOUBLED_PATH_MARKER)

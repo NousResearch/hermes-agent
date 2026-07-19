@@ -439,6 +439,31 @@ def _looks_like_gateway_provider_error(text: str) -> bool:
     return bool(_GATEWAY_PROVIDER_ERROR_SHAPE_RE.search(body))
 
 
+_GATEWAY_SYNTHETIC_FAILURE_PREFIXES = (
+    "⚠️ Provider authentication failed",
+    "⏱️ The model provider is rate-limiting",
+    "⚠️ The model provider failed after retries",
+    "⚠️ Session too large for the model's context window.",
+    "The request failed:",
+    "⚠️ Processing stopped:",
+    "⚠️ Processing completed but no response was generated.",
+    "Sorry, I encountered an error",
+)
+
+
+def _looks_like_gateway_synthetic_failure(text: str) -> bool:
+    """True when a final-looking reply is gateway error text, not model work."""
+    if not text:
+        return False
+    body = str(text).strip()
+    if not body:
+        return False
+    if _looks_like_gateway_provider_error(body):
+        return True
+    lowered = body.lower()
+    return any(lowered.startswith(prefix.lower()) for prefix in _GATEWAY_SYNTHETIC_FAILURE_PREFIXES)
+
+
 def _sanitize_gateway_final_response(platform: Any, text: str) -> str:
     """Sanitize final gateway replies before sending them to chat surfaces.
 
@@ -1075,6 +1100,66 @@ def _wrap_current_message_with_observed_context(message: Any, observed_context: 
         return [{"type": "text", "text": prefix.rstrip()}] + wrapped
 
     return message
+
+
+def _last_usable_transcript_row(
+    history: Optional[List[Dict[str, Any]]],
+) -> Optional[Dict[str, Any]]:
+    """Return the last transcript row that would be replayed to the agent."""
+    if not history:
+        return None
+    for msg in reversed(history):
+        if not isinstance(msg, dict):
+            continue
+        role = msg.get("role")
+        if not role or role in {"session_meta", "system"}:
+            continue
+        return msg
+    return None
+
+
+def _last_user_message_id(
+    history: Optional[List[Dict[str, Any]]],
+) -> Optional[str]:
+    """Return the platform message id for the last persisted user turn."""
+    if not history:
+        return None
+    for msg in reversed(history):
+        if not isinstance(msg, dict) or msg.get("role") != "user":
+            continue
+        message_id = msg.get("message_id")
+        if message_id is not None:
+            text = str(message_id).strip()
+            if text:
+                return text
+        return None
+    return None
+
+
+def _transcript_tail_is_completed_assistant(
+    history: Optional[List[Dict[str, Any]]],
+) -> bool:
+    """True when the transcript already ends with a final assistant answer.
+
+    A lingering ``resume_pending`` marker plus a ``finish_reason=stop``
+    assistant tail is a stale recovery signal: synthesizing another empty
+    auto-resume turn would make the agent react to an already answered
+    message.  Assistant rows that still carry ``tool_calls`` — or lack an
+    explicit stop/end marker — are *not* complete; those are the normal
+    interrupted-tool-loop shape and must remain resumable.
+    """
+    msg = _last_usable_transcript_row(history)
+    if not msg or msg.get("role") != "assistant":
+        return False
+    if msg.get("tool_calls") or msg.get("function_call"):
+        return False
+    finish_reason = msg.get("finish_reason")
+    if finish_reason not in {"stop", "end_turn", "complete", "completed"}:
+        return False
+    content = msg.get("content")
+    if isinstance(content, str):
+        return bool(content.strip())
+    return bool(content)
 
 
 def _last_transcript_timestamp(history: Optional[List[Dict[str, Any]]]) -> Any:
@@ -2926,7 +3011,33 @@ def _should_clear_resume_pending_after_turn(agent_result: dict) -> bool:
         return False
     if agent_result.get("completed") is False:
         return False
+    final_response = str(agent_result.get("final_response") or "")
+    if _looks_like_gateway_synthetic_failure(final_response):
+        return False
     return True
+
+
+def _should_run_post_turn_goal_continuation(agent_result: Any) -> bool:
+    """Return True only after a real agent final answer, not gateway failures."""
+    if isinstance(agent_result, dict):
+        if (
+            agent_result.get("failed")
+            or agent_result.get("partial")
+            or agent_result.get("interrupted")
+            or agent_result.get("error")
+            or agent_result.get("compression_exhausted")
+            or agent_result.get("completed") is False
+        ):
+            return False
+        final_response = str(agent_result.get("final_response") or "")
+    elif isinstance(agent_result, str):
+        final_response = agent_result
+    else:
+        return False
+
+    if not final_response.strip():
+        return False
+    return not _looks_like_gateway_synthetic_failure(final_response)
 
 
 def _preserve_queued_followup_history_offset(
@@ -6147,9 +6258,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         notified: set[tuple[str, str, Optional[str]]] = set()
         for session_key in active:
-            source = None
+            # For currently running sessions, the in-memory source is the
+            # freshest one and carries the triggering platform message id.
+            # Persisted SessionEntry.origin is intentionally long-lived and
+            # may point at an older message in the same Telegram topic.
+            source = self._get_cached_session_source(session_key)
             try:
-                if getattr(self, "session_store", None) is not None:
+                if source is None and getattr(self, "session_store", None) is not None:
                     await self.async_session_store._ensure_loaded()
                     entry = self.session_store._entries.get(session_key)
                     source = getattr(entry, "origin", None) if entry else None
@@ -6159,9 +6274,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     session_key,
                     e,
                 )
-
-            if source is None:
-                source = self._get_cached_session_source(session_key)
 
             if source is not None:
                 platform_str = source.platform.value
@@ -6954,7 +7066,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if drained:
             logger.info("Drained %d inbound message(s) queued during startup restore", drained)
 
-    async def _redeliver_pending_obligations(self) -> int:
+    async def _redeliver_pending_obligations(
+        self,
+        platform: Optional[Platform] = None,
+    ) -> int:
         """Redeliver final responses recorded in the delivery ledger by a
         previous (now dead) gateway process.
 
@@ -6981,7 +7096,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             if not ledger_enabled():
                 return 0
-            claimed = await asyncio.to_thread(sweep_recoverable)
+            available_platforms = {
+                candidate.value
+                for candidate in self.adapters
+                if platform is None or candidate == platform
+            }
+            if not available_platforms:
+                return 0
+            claimed = await asyncio.to_thread(
+                sweep_recoverable,
+                platforms=available_platforms,
+            )
         except Exception:
             logger.debug("delivery ledger sweep failed", exc_info=True)
             return 0
@@ -6991,17 +7116,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         redelivered = 0
         for row in claimed:
             try:
-                platform = Platform(row["platform"])
+                row_platform = Platform(row["platform"])
             except Exception:
                 logger.debug(
                     "obligation %s: unknown platform %r",
                     row["obligation_id"], row.get("platform"),
                 )
                 continue
-            adapter = self.adapters.get(platform)
+            adapter = self.adapters.get(row_platform)
             if adapter is None:
-                # Platform not connected this boot — leave the row claimed;
-                # attempts cap + stale cutoff bound the retries on later boots.
+                # Defensive race guard: an adapter can disconnect after the
+                # eligible-platform snapshot but before this send loop. Leave
+                # the claimed row pending; a future gateway boot can reclaim it.
                 continue
             content = row["content"]
             if row.get("needs_marker"):
@@ -7052,7 +7178,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     )
         return redelivered
 
-    def _schedule_resume_pending_sessions(self, platform=None) -> int:
+    async def _schedule_resume_pending_sessions(self, platform=None) -> int:
         """Auto-continue fresh restart-interrupted sessions after startup.
 
         ``resume_pending`` already preserves the transcript AND the existing
@@ -7077,16 +7203,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         """
         window = _auto_continue_freshness_window()
         try:
-            with self.session_store._lock:  # noqa: SLF001 — snapshot under lock
-                self.session_store._ensure_loaded_locked()  # noqa: SLF001
-                candidates = [
-                    entry for entry in self.session_store._entries.values()  # noqa: SLF001
-                    if entry.resume_pending
-                    and not entry.suspended
-                    and entry.origin is not None
-                    and entry.resume_reason in self._AUTO_RESUME_REASONS
-                    and (platform is None or entry.origin.platform == platform)
-                ]
+            await self.async_session_store._ensure_loaded()
+            candidates = [
+                entry for entry in list(self.session_store._entries.values())  # noqa: SLF001
+                if entry.resume_pending
+                and not entry.suspended
+                and entry.origin is not None
+                and entry.resume_reason in self._AUTO_RESUME_REASONS
+                and (platform is None or entry.origin.platform == platform)
+            ]
         except Exception as exc:
             logger.warning("Failed to enumerate resume-pending sessions: %s", exc)
             return 0
@@ -7114,8 +7239,33 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         now = datetime.now()
         scheduled = 0
         for entry in candidates:
-            marker = entry.last_resume_marked_at or entry.updated_at
-            if marker is not None and (now - marker).total_seconds() > window:
+            effective_session_id = await self._effective_resume_session_id(entry)
+            entry_session_id = str(getattr(entry, "session_id", "") or "")
+            history = None
+            try:
+                history = await self.async_session_store.load_transcript(effective_session_id)
+                if not isinstance(history, list):
+                    history = None
+            except Exception as exc:
+                logger.debug(
+                    "Failed to load transcript while checking auto-resume freshness for %s: %s",
+                    entry.session_key,
+                    exc,
+                )
+
+            if _transcript_tail_is_completed_assistant(history):
+                logger.info(
+                    "Skipping auto-resume for %s: transcript already ends with assistant response; clearing stale resume_pending",
+                    entry.session_key,
+                )
+                try:
+                    await self.async_session_store.clear_resume_pending(entry.session_key)
+                except Exception as exc:
+                    logger.debug(
+                        "clear stale resume_pending failed for %s: %s",
+                        entry.session_key,
+                        exc,
+                    )
                 continue
 
             # Already being resumed (e.g. scheduled at startup and still
@@ -7123,7 +7273,68 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if entry.session_key in self._running_agents:
                 continue
 
+            if (
+                effective_session_id != entry_session_id
+                and not await self._has_resume_transcript(effective_session_id)
+            ):
+                logger.info(
+                    "Skipping auto-resume for %s: no transcript messages in %s",
+                    entry.session_key,
+                    effective_session_id or "<unknown>",
+                )
+                try:
+                    await self.async_session_store.clear_resume_pending(entry.session_key)
+                except Exception as exc:
+                    logger.debug(
+                        "clear stale resume_pending failed for %s: %s",
+                        entry.session_key,
+                        exc,
+                    )
+                continue
+            if await self._resume_pending_completed_after_marker(entry, effective_session_id):
+                logger.info(
+                    "Skipping auto-resume for %s: transcript already has a "
+                    "completed assistant reply after resume marker",
+                    entry.session_key,
+                )
+                try:
+                    await self.async_session_store.clear_resume_pending(entry.session_key)
+                except Exception:
+                    logger.debug(
+                        "clear_resume_pending after completed auto-resume skip failed for %s",
+                        entry.session_key,
+                        exc_info=True,
+                    )
+                continue
+
+            # Prefer the transcript's own timestamp over the session-index
+            # marker: ``last_resume_marked_at`` can be refreshed by repeated
+            # gateway restarts, while the transcript tells us when the user/task
+            # last actually produced replayable context.  If no transcript rows
+            # are available, fall back to the marker so empty/corrupt sessions
+            # don't auto-resume forever.
+            transcript_ts = _last_transcript_timestamp(history)
+            if history:
+                if not _is_fresh_gateway_interruption(
+                    transcript_ts,
+                    now=now.timestamp(),
+                    window_secs=window,
+                ):
+                    continue
+            else:
+                marker = entry.last_resume_marked_at or entry.updated_at
+                if marker is not None and (now - marker).total_seconds() > window:
+                    continue
+
             source = entry.origin
+            resume_message_id = _last_user_message_id(history)
+            try:
+                source = dataclasses.replace(
+                    source,
+                    message_id=resume_message_id,
+                )
+            except Exception:
+                pass
             adapter = self._adapter_for_source(source)
             if adapter is None:
                 logger.debug(
@@ -7170,6 +7381,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 text="",
                 message_type=MessageType.TEXT,
                 source=source,
+                message_id=resume_message_id,
+                reply_to_message_id=resume_message_id,
                 internal=True,
             )
             task = asyncio.create_task(
@@ -7190,6 +7403,116 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 scheduled,
             )
         return scheduled
+
+    async def _resume_pending_completed_after_marker(self, entry, session_id: Optional[str]) -> bool:
+        """Return True when the transcript already completed after resume marking.
+
+        Shutdown/restart marks active sessions as ``resume_pending`` before the
+        drain wait so a hard-killed process can recover.  A turn can still finish
+        during that drain window and persist/send a normal assistant answer.  In
+        that case startup auto-resume must not synthesize an empty user turn, or
+        the model repeats the just-delivered answer and replies to an old topic
+        anchor.
+        """
+        session_db = getattr(self, "_session_db", None)
+        if session_db is None or not session_id:
+            return False
+        marker = _coerce_gateway_timestamp(
+            getattr(entry, "last_resume_marked_at", None)
+            or getattr(entry, "updated_at", None)
+        )
+        if marker is None:
+            return False
+        try:
+            messages = await session_db.get_messages(session_id)
+        except Exception:
+            logger.debug(
+                "Could not inspect transcript completion for startup auto-resume",
+                exc_info=True,
+            )
+            return False
+
+        saw_visible_assistant_since_user = False
+        saw_visible_assistant_after_marker = False
+        for msg in reversed(messages or []):
+            if not isinstance(msg, dict):
+                continue
+            role = msg.get("role")
+            if not role or role in {"session_meta", "system"}:
+                continue
+            if role == "user" and msg.get("content"):
+                return saw_visible_assistant_since_user
+            if role == "assistant" and msg.get("content") and not msg.get("tool_calls"):
+                saw_visible_assistant_since_user = True
+
+        for msg in messages or []:
+            if not isinstance(msg, dict):
+                continue
+            role = msg.get("role")
+            if not role or role in {"session_meta", "system"}:
+                continue
+            timestamp = _coerce_gateway_timestamp(msg.get("timestamp"))
+            if timestamp is None or timestamp < marker:
+                continue
+            if role == "user" and msg.get("content"):
+                # A real post-marker user turn supersedes this stale startup
+                # marker; do not classify it as an already-completed drain.
+                return False
+            if role == "assistant" and msg.get("content") and not msg.get("tool_calls"):
+                saw_visible_assistant_after_marker = True
+        return saw_visible_assistant_since_user or saw_visible_assistant_after_marker
+
+    async def _effective_resume_session_id(self, entry) -> str:
+        """Return the transcript session id an auto-resume would actually use."""
+        session_id = str(getattr(entry, "session_id", "") or "")
+        source = getattr(entry, "origin", None)
+        session_db = getattr(self, "_session_db", None)
+        if (
+            source is not None
+            and session_db is not None
+            and getattr(source, "platform", None) == Platform.TELEGRAM
+            and getattr(source, "chat_type", None) == "dm"
+            and getattr(source, "chat_id", None)
+            and getattr(source, "thread_id", None)
+        ):
+            try:
+                binding = await session_db.get_telegram_topic_binding(
+                    chat_id=str(source.chat_id),
+                    thread_id=str(source.thread_id),
+                )
+                bound_session_id = str((binding or {}).get("session_id") or "")
+                if bound_session_id:
+                    try:
+                        canonical_session_id = await session_db.get_compression_tip(
+                            bound_session_id
+                        )
+                    except Exception:
+                        logger.debug(
+                            "Failed to resolve compression tip for Telegram topic resume binding %s",
+                            bound_session_id,
+                            exc_info=True,
+                        )
+                        canonical_session_id = bound_session_id
+                    return str(canonical_session_id or bound_session_id)
+            except Exception:
+                logger.debug("Failed to resolve Telegram topic resume binding", exc_info=True)
+        return session_id
+
+    async def _has_resume_transcript(self, session_id: str) -> bool:
+        """True when there is persisted conversation state worth auto-resuming."""
+        if not session_id:
+            return False
+        session_db = getattr(self, "_session_db", None)
+        if session_db is None:
+            return True
+        try:
+            return bool(await session_db.message_count(session_id))
+        except Exception:
+            logger.debug(
+                "Could not count transcript messages for startup auto-resume",
+                exc_info=True,
+            )
+            return True
 
     def _startup_should_abort(self) -> bool:
         return (
@@ -7893,7 +8216,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # that session) is strictly cheaper and more correct than re-running
         # the whole turn.
         await self._redeliver_pending_obligations()
-        self._schedule_resume_pending_sessions()
+        await self._schedule_resume_pending_sessions()
         await self._finish_startup_restore()
 
         # Drain any recovered process watchers (from crash recovery checkpoint)
@@ -8597,14 +8920,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         except Exception:
                             pass
 
-                        # A platform that was offline at gateway startup never
-                        # got its restart-interrupted sessions auto-resumed —
-                        # the startup pass skips sessions whose adapter isn't
-                        # connected yet. Now that it's back, retry the
-                        # auto-resume scoped to this platform so recovery
-                        # doesn't silently wait for a manual user message.
+                        # A platform that was offline at gateway startup may
+                        # have both completed responses waiting in the durable
+                        # delivery ledger and interrupted turns waiting to be
+                        # resumed. Redeliver completed responses first so their
+                        # resume markers are cleared before considering another
+                        # model turn for the same session.
                         try:
-                            self._schedule_resume_pending_sessions(platform=platform)
+                            await self._redeliver_pending_obligations(platform=platform)
+                        except Exception:
+                            logger.debug(
+                                "pending delivery redelivery after %s reconnect failed",
+                                platform.value,
+                                exc_info=True,
+                            )
+                        try:
+                            await self._schedule_resume_pending_sessions(platform=platform)
                         except Exception:
                             logger.debug(
                                 "resume-pending reschedule after %s reconnect failed",
@@ -11360,10 +11691,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _final_text = str(_agent_result.get("final_response") or "")
                 elif isinstance(_agent_result, str):
                     _final_text = _agent_result
-                # Skip for empty responses (interrupted / errored) — the
-                # judge would almost always say "continue" and we'd loop
-                # on error. Let the user drive the next turn.
-                if _final_text.strip():
+                # Skip for empty responses and gateway/provider failures — the
+                # judge would almost always say "continue" and we'd loop on
+                # infrastructure errors. Let the user drive the next turn.
+                if _should_run_post_turn_goal_continuation(_agent_result):
                     try:
                         session_entry = await self.async_session_store.get_or_create_session(source)
                     except Exception:
@@ -11999,6 +12330,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     ):
                         bound_session_id = canonical_session_id
                 if bound_session_id and bound_session_id != session_entry.session_id:
+                    resume_pending = bool(getattr(session_entry, "resume_pending", False))
+                    resume_reason = getattr(session_entry, "resume_reason", None)
+                    last_resume_marked_at = getattr(session_entry, "last_resume_marked_at", None)
                     # Route the override through SessionStore so the session_key
                     # → session_id mapping is persisted to disk and the previous
                     # lane session is ended cleanly. Mutating session_entry in
@@ -12006,6 +12340,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     # index pointed at one id but code downstream used another.
                     switched = await self.async_session_store.switch_session(session_key, bound_session_id)
                     if switched is not None:
+                        if resume_pending:
+                            switched.resume_pending = True
+                            switched.resume_reason = resume_reason
+                            switched.last_resume_marked_at = last_resume_marked_at
+                            try:
+                                await self.async_session_store._save()
+                            except Exception:
+                                logger.debug(
+                                    "Failed to preserve resume_pending after Telegram topic switch",
+                                    exc_info=True,
+                                )
                         session_entry = switched
                 # If the stored binding pointed at a parent, rewrite it to the
                 # canonical descendant now that we've followed the chain.
@@ -19886,6 +20231,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     "messages": [],
                     "api_calls": 0,
                     "tools": [],
+                    "failed": True,
+                    "completed": False,
+                    "error": str(exc),
                 }
 
             pr = self._provider_routing

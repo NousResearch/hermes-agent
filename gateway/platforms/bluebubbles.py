@@ -1104,10 +1104,12 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         # --- End attachment handling ---
 
         message_id = self._message_id_for_record(record)
+        is_update_notification = False
         if event_type == "updated-message" and not is_tapback:
             text = self._classify_updated_message(record, message_id, text) or ""
             if not text:
                 return web.Response(text="ok")
+            is_update_notification = True
         elif not is_tapback:
             self._remember_message_text(message_id, text)
 
@@ -1152,7 +1154,11 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         if not sender or not session_chat_id or not text:
             return web.json_response({"error": "missing message fields"}, status=400)
 
-        if is_group and self.require_mention:
+        if (
+            is_group
+            and self.require_mention
+            and not (is_tapback or is_update_notification)
+        ):
             if not self._message_matches_mention_patterns(text):
                 logger.debug(
                     "[bluebubbles] ignoring group message (require_mention=true, no mention pattern matched)"

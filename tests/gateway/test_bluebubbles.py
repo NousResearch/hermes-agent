@@ -234,6 +234,81 @@ class TestBlueBubblesMentionGating:
         assert [event.text for event in handled] == ["summarize this"]
 
     @pytest.mark.asyncio
+    async def test_group_tapback_bypasses_mention_gate(self, monkeypatch):
+        adapter = _make_adapter(
+            monkeypatch,
+            require_mention=True,
+            send_read_receipts=False,
+        )
+        handled = []
+
+        async def fake_handle_message(event):
+            handled.append(event)
+
+        monkeypatch.setattr(adapter, "handle_message", fake_handle_message)
+        response = await adapter._handle_webhook(_FakeBlueBubblesRequest({
+            "type": "new-message",
+            "data": {
+                "guid": "group-tapback-1",
+                "text": "Liked “Smoke test passed”",
+                "handle": {"address": "+155****0100"},
+                "isFromMe": False,
+                "isGroup": True,
+                "chats": [{"guid": "iMessage;+;group-chat"}],
+            },
+        }))
+        await asyncio.sleep(0)
+
+        assert response.status == 200
+        assert [event.text for event in handled] == [
+            "Reaction: User liked this message: Smoke test passed"
+        ]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("update_fields", "expected_fragment"),
+        [
+            ({"text": "second draft", "dateEdited": 123456789}, "Message edited."),
+            ({"dateRetracted": 123456789}, "Message retracted/unsent."),
+        ],
+    )
+    async def test_group_update_notification_bypasses_mention_gate(
+        self, monkeypatch, update_fields, expected_fragment
+    ):
+        adapter = _make_adapter(
+            monkeypatch,
+            require_mention=True,
+            send_read_receipts=False,
+        )
+        handled = []
+
+        async def fake_handle_message(event):
+            handled.append(event)
+
+        monkeypatch.setattr(adapter, "handle_message", fake_handle_message)
+        base = {
+            "guid": "group-update-1",
+            "handle": {"address": "+155****0100"},
+            "isFromMe": False,
+            "isGroup": True,
+            "chats": [{"guid": "iMessage;+;group-chat"}],
+        }
+        await adapter._handle_webhook(_FakeBlueBubblesRequest({
+            "type": "new-message",
+            "data": {**base, "text": "first draft"},
+        }))
+        response = await adapter._handle_webhook(_FakeBlueBubblesRequest({
+            "type": "updated-message",
+            "data": {**base, **update_fields},
+        }))
+        await asyncio.sleep(0)
+
+        assert response.status == 200
+        assert len(handled) == 1
+        assert expected_fragment in handled[0].text
+        assert "first draft" in handled[0].text
+
+    @pytest.mark.asyncio
     async def test_dm_message_does_not_require_mention(self, monkeypatch):
         adapter = _make_adapter(
             monkeypatch,

@@ -1485,6 +1485,30 @@ def _fallback_entry_key(fb: dict) -> tuple[str, str, str]:
     )
 
 
+def _fallback_entry_disables_streaming(fb: dict) -> bool:
+    """Whether a fallback chain entry opts out of streaming.
+
+    Some fallback backends expose an OpenAI-compatible /chat/completions
+    route but do not actually serve SSE; they answer ``stream=True`` with a
+    200 that carries no usable deltas.  ``disable_streaming: true`` on the
+    chain entry makes the swap send plain completion requests instead of
+    burning a round-trip on the reactive "stream not supported" recovery.
+    Accepts ``disableStreaming`` as an alias for camelCase configs.
+    """
+    value = fb.get("disable_streaming")
+    if value is None:
+        value = fb.get("disableStreaming")
+    if value is None:
+        return False
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on", "enabled"}
+    return False
+
+
 def _fallback_entry_unavailable_without_network(agent, fb: dict) -> Optional[str]:
     """Return a skip reason for fallback entries known to be unusable locally."""
     fb_provider = (fb.get("provider") or "").strip().lower()
@@ -1689,6 +1713,22 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         if hasattr(agent, "_transport_cache"):
             agent._transport_cache.clear()
         agent._fallback_activated = True
+
+        # Apply this entry's streaming preference.  Only entries that opt out
+        # touch the flag, and the marker records that WE set it so the primary
+        # restore can undo it.  A reactive disable (provider signalled "stream
+        # not supported" mid-session) must survive untouched.
+        if _fallback_entry_disables_streaming(fb):
+            agent._disable_streaming = True
+            agent._streaming_disabled_by_fallback = True
+            logger.info(
+                "Fallback %s/%s: streaming disabled by config entry",
+                fb_provider, fb_model,
+            )
+        elif getattr(agent, "_streaming_disabled_by_fallback", False):
+            # Chain advanced from a non-streaming entry to one that streams.
+            agent._disable_streaming = False
+            agent._streaming_disabled_by_fallback = False
 
         # Rebind the credential pool to the fallback provider when the provider
         # changes.  Keeping the primary pool attached would make downstream

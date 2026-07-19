@@ -13,6 +13,9 @@ Sidebar is updated to nest all per-skill pages under Skills → Bundled / Option
 """
 
 from __future__ import annotations
+
+import argparse
+import difflib
 import re
 from collections import defaultdict
 from pathlib import Path
@@ -29,9 +32,15 @@ SKILL_SOURCES = [
     ("optional", REPO / "optional-skills"),
 ]
 
-# Pages the user had previously hand-written in user-guide/skills/.
-# We leave these alone (they get first-class sidebar treatment separately).
-HAND_WRITTEN = {"google-workspace.md"}
+# Only pages carrying this exact marker are owned by this generator.  Stale
+# cleanup deliberately ignores every other Markdown file, even when it lives
+# below the bundled/optional output trees.
+GENERATED_PAGE_MARKER = (
+    "{/* This page is auto-generated from the skill's SKILL.md by "
+    "website/scripts/generate-skill-docs.py. Edit the source SKILL.md, "
+    "not this page. */}"
+)
+MAX_REPORTED_DIFF_LINES = 80
 
 
 _FENCE_RE = re.compile(r"^(?P<indent>\s*)(?P<fence>```+|~~~+)", re.MULTILINE)
@@ -429,7 +438,7 @@ def render_skill_page(
         f'description: "{fm_desc}"\n'
         "---\n"
         "\n"
-        "{/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}\n"
+        f"{GENERATED_PAGE_MARKER}\n"
         "\n"
         f"# {display_name}\n"
         "\n"
@@ -650,7 +659,8 @@ def _render_sidebar_item(item: Any, indent: int) -> list[str]:
     return lines
 
 
-def write_sidebar(entries):
+def render_sidebar(entries) -> str:
+    """Return sidebars.ts with only the generated Skills block replaced."""
     # Sidebar layout:
     #   Skills
     #   ├── reference/skills-catalog
@@ -696,16 +706,7 @@ def write_sidebar(entries):
 
     sidebar_path = REPO / "website" / "sidebars.ts"
     text = sidebar_path.read_text(encoding="utf-8")
-    # Replace the existing Skills block.
-    pattern = re.compile(
-        r"        \{\n"
-        r"          type: 'category',\n"
-        r"          label: 'Skills',\n"
-        r"(?:.*?\n)*?"
-        r"        \},\n",
-        re.DOTALL,
-    )
-    # Safer: match the exact current block shape.
+    # Match the exact current block shape.
     old_block_start = "        {\n          type: 'category',\n          label: 'Skills',\n"
     i = text.find(old_block_start)
     if i == -1:
@@ -727,47 +728,233 @@ def write_sidebar(entries):
     else:
         raise RuntimeError("Could not find end of Skills sidebar block")
 
-    new_text = text[:i] + skills_subtree + text[end:]
+    return text[:i] + skills_subtree + text[end:]
+
+
+def write_sidebar(entries):
+    sidebar_path = REPO / "website" / "sidebars.ts"
+    new_text = render_sidebar(entries)
     sidebar_path.write_text(new_text, encoding="utf-8")
     print(f"Updated sidebar: {sidebar_path}")
 
 
-def main():
-    entries = discover_skills()
-    print(f"Discovered {len(entries)} skills")
+def _generated_page_roots() -> tuple[Path, Path]:
+    return SKILLS_PAGES / "bundled", SKILLS_PAGES / "optional"
 
-    # Build name -> meta index for related-skill cross-linking
+
+def _is_owned_generated_page(path: Path) -> bool:
+    """Return whether ``path`` carries this generator's ownership marker."""
+    try:
+        return GENERATED_PAGE_MARKER in path.read_text(encoding="utf-8")
+    except OSError:
+        return False
+
+
+def _owned_generated_pages() -> set[Path]:
+    pages: set[Path] = set()
+    for root in _generated_page_roots():
+        if not root.exists():
+            continue
+        pages.update(
+            path.resolve()
+            for path in root.rglob("*.md")
+            if _is_owned_generated_page(path)
+        )
+    return pages
+
+
+def _stale_generated_pages(expected_page_paths: set[Path]) -> list[Path]:
+    expected = {path.resolve() for path in expected_page_paths}
+    return sorted(_owned_generated_pages() - expected)
+
+
+def _unowned_page_conflicts(expected_page_paths: set[Path]) -> list[Path]:
+    """Return expected output paths occupied by non-generated Markdown."""
+    conflicts = []
+    for path in sorted(expected_page_paths):
+        if path.exists() and not _is_owned_generated_page(path):
+            conflicts.append(path)
+    return conflicts
+
+
+def _display_path(path: Path) -> str:
+    try:
+        return str(path.resolve().relative_to(REPO.resolve()))
+    except ValueError:
+        return str(path)
+
+
+def _print_content_diff(path: Path, actual: str, expected: str) -> None:
+    rel = _display_path(path)
+    diff = list(
+        difflib.unified_diff(
+            actual.splitlines(),
+            expected.splitlines(),
+            fromfile=f"a/{rel}",
+            tofile=f"b/{rel}",
+            lineterm="",
+        )
+    )
+    for line in diff[:MAX_REPORTED_DIFF_LINES]:
+        print(line)
+    omitted = len(diff) - MAX_REPORTED_DIFF_LINES
+    if omitted > 0:
+        print(f"... {omitted} additional diff lines omitted")
+
+
+def check_generated_outputs(
+    expected_outputs: dict[Path, str],
+    expected_page_paths: set[Path],
+) -> bool:
+    """Check generated outputs without modifying the working tree."""
+    clean = True
+    conflicts = set(_unowned_page_conflicts(expected_page_paths))
+
+    for path in sorted(expected_outputs):
+        rel = _display_path(path)
+        if path in conflicts:
+            print(f"CONFLICT (not generator-owned): {rel}")
+            clean = False
+            continue
+        if not path.exists():
+            print(f"MISSING: {rel}")
+            clean = False
+            continue
+        actual = path.read_text(encoding="utf-8")
+        expected = expected_outputs[path]
+        if actual != expected:
+            print(f"OUTDATED: {rel}")
+            _print_content_diff(path, actual, expected)
+            clean = False
+
+    for path in _stale_generated_pages(expected_page_paths):
+        print(f"STALE: {_display_path(path)}")
+        clean = False
+
+    if clean:
+        print("Skill documentation is up to date.")
+    else:
+        print(
+            "Skill documentation drift detected. Run "
+            "`python3 website/scripts/generate-skill-docs.py` and commit the result."
+        )
+    return clean
+
+
+def _remove_stale_generated_pages(expected_page_paths: set[Path]) -> list[Path]:
+    """Remove only stale pages carrying ``GENERATED_PAGE_MARKER``."""
+    stale = _stale_generated_pages(expected_page_paths)
+    for path in stale:
+        path.unlink()
+        print(f"Removed stale generated page: {_display_path(path)}")
+
+    # Remove empty category directories left behind by moved/deleted skills.
+    for root in _generated_page_roots():
+        if not root.exists():
+            continue
+        directories = sorted(
+            (path for path in root.rglob("*") if path.is_dir()),
+            key=lambda path: len(path.parts),
+            reverse=True,
+        )
+        for directory in directories:
+            try:
+                directory.rmdir()
+            except OSError:
+                pass
+    return stale
+
+
+def build_expected_outputs(
+    entries: list[tuple[dict[str, Any], dict[str, Any]]],
+) -> tuple[dict[Path, str], set[Path]]:
+    """Build every generated file in memory."""
     skill_index: dict[str, dict[str, Any]] = {}
     for meta, parsed in entries:
         name = parsed["frontmatter"].get("name", meta["slug"])
-        # Prefer bundled over optional if a name collision exists
+        # Prefer bundled over optional if a name collision exists.
         if name not in skill_index or meta["source_kind"] == "bundled":
             skill_index[name] = meta
 
-    # Write per-skill pages
-    written = 0
+    page_outputs: dict[Path, str] = {}
     for meta, parsed in entries:
-        out_path = page_output_path(meta)
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        content = render_skill_page(
-            meta, parsed["frontmatter"], parsed["body"], skill_index=skill_index
+        page_outputs[page_output_path(meta)] = render_skill_page(
+            meta,
+            parsed["frontmatter"],
+            parsed["body"],
+            skill_index=skill_index,
         )
-        out_path.write_text(content, encoding="utf-8")
-        written += 1
-    print(f"Wrote {written} per-skill pages under {SKILLS_PAGES}")
 
-    # Regenerate catalogs
-    bundled_catalog = build_catalog_md_bundled(entries)
-    (DOCS / "reference" / "skills-catalog.md").write_text(bundled_catalog, encoding="utf-8")
+    outputs = dict(page_outputs)
+    outputs[DOCS / "reference" / "skills-catalog.md"] = build_catalog_md_bundled(
+        entries
+    )
+    outputs[
+        DOCS / "reference" / "optional-skills-catalog.md"
+    ] = build_catalog_md_optional(entries)
+    outputs[REPO / "website" / "sidebars.ts"] = render_sidebar(entries)
+    return outputs, set(page_outputs)
+
+
+def generate_skill_docs(*, check: bool = False) -> int:
+    entries = discover_skills()
+    print(f"Discovered {len(entries)} skills")
+    expected_outputs, expected_page_paths = build_expected_outputs(entries)
+
+    if check:
+        return 0 if check_generated_outputs(
+            expected_outputs, expected_page_paths
+        ) else 1
+
+    conflicts = _unowned_page_conflicts(expected_page_paths)
+    if conflicts:
+        for path in conflicts:
+            print(
+                "Refusing to overwrite non-generated page at expected output: "
+                f"{_display_path(path)}"
+            )
+        return 1
+
+    for path in sorted(expected_page_paths):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(expected_outputs[path], encoding="utf-8")
+    print(
+        f"Wrote {len(expected_page_paths)} per-skill pages under {SKILLS_PAGES}"
+    )
+
+    bundled_catalog = DOCS / "reference" / "skills-catalog.md"
+    bundled_catalog.write_text(
+        expected_outputs[bundled_catalog], encoding="utf-8"
+    )
     print("Updated reference/skills-catalog.md")
 
-    optional_catalog = build_catalog_md_optional(entries)
-    (DOCS / "reference" / "optional-skills-catalog.md").write_text(optional_catalog, encoding="utf-8")
+    optional_catalog = DOCS / "reference" / "optional-skills-catalog.md"
+    optional_catalog.write_text(
+        expected_outputs[optional_catalog], encoding="utf-8"
+    )
     print("Updated reference/optional-skills-catalog.md")
 
-    # Update sidebar
-    write_sidebar(entries)
+    sidebar_path = REPO / "website" / "sidebars.ts"
+    sidebar_path.write_text(expected_outputs[sidebar_path], encoding="utf-8")
+    print(f"Updated sidebar: {sidebar_path}")
+
+    _remove_stale_generated_pages(expected_page_paths)
+    return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--check",
+        action="store_true",
+        help=(
+            "Check generated pages, catalogs, and sidebar for drift without "
+            "writing files."
+        )
+    )
+    args = parser.parse_args(argv)
+    return generate_skill_docs(check=args.check)
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

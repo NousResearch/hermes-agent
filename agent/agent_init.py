@@ -1425,6 +1425,8 @@ def init_agent(
     agent._memory_enabled = False
     agent._user_profile_enabled = False
     agent._memory_nudge_interval = 10
+    agent._srl_auto_inject_enabled = False
+    agent._srl_auto_inject_char_limit = 6000
     agent._turns_since_memory = 0
     agent._iters_since_skill = 0
     if not skip_memory:
@@ -1433,6 +1435,8 @@ def init_agent(
             agent._memory_enabled = mem_config.get("memory_enabled", False)
             agent._user_profile_enabled = mem_config.get("user_profile_enabled", False)
             agent._memory_nudge_interval = int(mem_config.get("nudge_interval", 10))
+            agent._srl_auto_inject_enabled = is_truthy_value(mem_config.get("srl_auto_inject", False))
+            agent._srl_auto_inject_char_limit = int(mem_config.get("srl_char_limit", 6000))
             if agent._memory_enabled or agent._user_profile_enabled:
                 from tools.memory_tool import MemoryStore
                 agent._memory_store = MemoryStore(

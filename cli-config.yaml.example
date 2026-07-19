@@ -570,6 +570,11 @@ memory:
   memory_char_limit: 2200   # ~800 tokens
   user_char_limit: 1375     # ~500 tokens
 
+  # Optional local SRL recall: retrieve relevant state.db history before each
+  # LLM call and inject it into the current user message only.
+  srl_auto_inject: false
+  srl_char_limit: 6000
+
   # Periodic memory nudge: remind the agent to consider saving memories
   # every N user turns. Set to 0 to disable. Only active when memory is enabled.
   nudge_interval: 10        # Nudge every 10 user turns (0 = disabled)

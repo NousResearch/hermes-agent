@@ -13,7 +13,6 @@ import hashlib
 import os
 import plistlib
 import re
-import shlex
 import shutil
 import subprocess
 import sys
@@ -24,6 +23,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Callable, NoReturn
+
+from packaging.version import InvalidVersion, Version
 
 from hermes_constants import get_hermes_home
 from hermes_cli.update_lock import (
@@ -42,6 +43,7 @@ _UNSET = object()
 
 _HEALTH_STARTUP_GRACE_SECONDS = 10.0
 _HEALTH_POLL_INTERVAL_SECONDS = 0.25
+_GIT_SHA_RE = re.compile(r"[0-9a-fA-F]{7,40}")
 
 STATUS_NOT_CONFIGURED = "not_configured"
 STATUS_RUNNING = "running"
@@ -355,14 +357,23 @@ def _reported_runtime_fields(runtime: dict[str, Any] | None) -> dict[str, str | 
 def _version_matches(actual: str | None, expected: str | None) -> bool:
     if not actual or not expected:
         return False
-    actual = str(actual).strip()
-    expected = str(expected).strip()
-    return bool(actual and expected and (actual == expected or actual.startswith(expected) or expected.startswith(actual)))
+    try:
+        return Version(str(actual).strip()) == Version(str(expected).strip())
+    except InvalidVersion:
+        return False
 
 
 def _revision_matches(actual: str | None, expected: str | None) -> bool:
-    """Match a runtime Git revision without consulting its semver version."""
-    return _version_matches(actual, expected)
+    """Match a runtime Git revision, allowing prefixes only for Git SHAs."""
+    if not actual or not expected:
+        return False
+    actual = str(actual).strip()
+    expected = str(expected).strip()
+    if _GIT_SHA_RE.fullmatch(actual) and _GIT_SHA_RE.fullmatch(expected):
+        actual = actual.lower()
+        expected = expected.lower()
+        return actual.startswith(expected) or expected.startswith(actual)
+    return actual == expected
 
 
 def _installation_matches(identity: dict[str, Any] | None) -> bool:
@@ -518,7 +529,7 @@ def _capture_gateway_runtime(
     ):
         return None
     if expected_version:
-        if re.fullmatch(r"[0-9a-fA-F]{7,40}", expected_version):
+        if _GIT_SHA_RE.fullmatch(expected_version):
             if not _revision_matches(identity.get("runtime_revision"), expected_version):
                 return None
         elif not _version_matches(identity.get("runtime_version"), expected_version):
@@ -920,7 +931,7 @@ def _hermes_command_prefix() -> list[str]:
     argv0 = Path(sys.argv[0])
     if argv0.name and not argv0.name.startswith("python"):
         if argv0.suffix.lower() in {".py", ".pyw"}:
-            return [sys.executable, str(argv0)]
+            return [sys.executable, str(argv0.resolve())]
         resolved = (
             str(argv0)
             if argv0.is_file() or argv0.is_absolute()
@@ -1438,6 +1449,23 @@ def _systemd_available() -> bool:
     return result.returncode == 0
 
 
+def _systemd_escape(value: str) -> str:
+    if "\n" in value or "\r" in value:
+        raise ValueError("systemd unit values must not contain newlines")
+    return value.replace("\\", "\\\\").replace('"', '\\"').replace("%", "%%")
+
+
+def _systemd_quote(value: str) -> str:
+    return f'"{_systemd_escape(value)}"'
+
+
+def _systemd_word(value: str) -> str:
+    escaped = _systemd_escape(value)
+    if not value or any(char.isspace() or char in "'\"\\" for char in value):
+        return f'"{escaped}"'
+    return escaped
+
+
 def _systemd_state(timer_name: str) -> dict[str, Any]:
     result = _systemctl_user(
         ["show", timer_name, "--property=LoadState,UnitFileState,ActiveState"]
@@ -1633,7 +1661,7 @@ def _enable_systemd(
             "refusing to unload it"
         )
 
-    command = " ".join(shlex.quote(part) for part in _scheduled_command())
+    command = " ".join(_systemd_word(part) for part in _scheduled_command())
     on_calendar_lines = [
         f"OnCalendar=*-*-* {item['Hour']:02d}:{item['Minute']:02d}:00"
         for item in _calendar_intervals(schedule, plan_schedules)
@@ -1653,10 +1681,10 @@ def _enable_systemd(
                     "",
                     "[Service]",
                     "Type=oneshot",
-                    f"Environment=HERMES_HOME={shlex.quote(str(get_hermes_home()))}",
+                    f"Environment={_systemd_quote(f'HERMES_HOME={get_hermes_home()}')}",
                     f"ExecStart={command}",
-                    f"StandardOutput=append:{get_stdout_log_path()}",
-                    f"StandardError=append:{get_stderr_log_path()}",
+                    f"StandardOutput={_systemd_word(f'append:{get_stdout_log_path()}')}",
+                    f"StandardError={_systemd_word(f'append:{get_stderr_log_path()}')}",
                     "",
                 ]
             ),

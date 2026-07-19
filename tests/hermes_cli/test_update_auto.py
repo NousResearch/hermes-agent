@@ -5,6 +5,7 @@ import json
 import os
 import plistlib
 import queue
+import shlex
 import subprocess
 import sys
 import threading
@@ -192,7 +193,7 @@ def test_git_runtime_verification_matches_revision_not_semver(monkeypatch):
         "pid": 101,
         "start_time": 1,
         "runtime_version": "1.0.0",
-        "runtime_revision": "oldsha1234567",
+        "runtime_revision": "abcdef0123456789abcdef0123456789abcdef01",
         "installation_identity": "install-a",
         "profile_home": str(profile_home),
         "_live_validated": True,
@@ -202,7 +203,7 @@ def test_git_runtime_verification_matches_revision_not_semver(monkeypatch):
         "pid": 202,
         "start_time": 2,
         "runtime_version": "2.0.0",
-        "runtime_revision": "newsha1234567890",
+        "runtime_revision": "0123456789abcdef0123456789abcdef01234567",
         "installation_identity": "install-a",
         "profile_home": str(profile_home),
     }
@@ -223,11 +224,38 @@ def test_git_runtime_verification_matches_revision_not_semver(monkeypatch):
     monkeypatch.setattr(update_auto, "_HEALTH_STARTUP_GRACE_SECONDS", 0.0)
 
     ok, detail = update_auto._verify_health(
-        before, expected_revision="newsha1234567890"
+        before, expected_revision="0123456789abcdef0123456789abcdef01234567"
     )
 
     assert ok is True
     assert "202" in detail
+
+
+@pytest.mark.parametrize(
+    ("actual", "expected"),
+    [
+        ("0.18.20", "0.18.2"),
+        ("0.18.2.post1", "0.18.2"),
+        ("0.18.2", "0.18.2.post1"),
+    ],
+)
+def test_version_matching_rejects_prefix_and_post_release_false_positives(
+    actual, expected
+):
+    assert update_auto._version_matches(actual, expected) is False
+
+
+def test_version_matching_normalizes_semantic_versions_before_exact_comparison():
+    assert update_auto._version_matches("  v0.18.2 ", "0.18.2") is True
+    assert update_auto._version_matches("0.18.2.dev1", "0.18.2") is False
+
+
+def test_revision_matching_allows_short_prefixes_only_for_git_commit_shas():
+    full_sha = "0123456789abcdef0123456789abcdef01234567"
+
+    assert update_auto._revision_matches(full_sha, full_sha[:12]) is True
+    assert update_auto._revision_matches(full_sha, "fedcba987654") is False
+    assert update_auto._revision_matches("release-2026-07", "release-2026") is False
 
 
 def test_verify_health_accepts_absent_status_after_live_validated_stopped_pre_state(
@@ -730,25 +758,31 @@ def test_scheduled_command_pins_default_profile_selector(tmp_path, monkeypatch):
 
 @pytest.mark.live_system_guard_bypass  # starts only a throwaway source launcher
 def test_scheduled_command_source_launcher_argv_can_start(tmp_path, monkeypatch):
-    script_path = tmp_path / "hermes_source.py"
+    launcher_cwd = tmp_path / "launcher cwd"
+    launcher_cwd.mkdir()
+    run_cwd = tmp_path / "different cwd"
+    run_cwd.mkdir()
+    script_path = launcher_cwd / "hermes_source.py"
     script_path.write_text(
         "import sys\nprint('started:' + ' '.join(sys.argv[1:]))\n",
         encoding="utf-8",
     )
     script_path.chmod(0o644)
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "default-home"))
-    monkeypatch.setattr(update_auto.sys, "argv", [str(script_path)])
+    monkeypatch.chdir(launcher_cwd)
+    monkeypatch.setattr(update_auto.sys, "argv", [script_path.name])
 
     scheduled_argv = update_auto._scheduled_command()
     result = subprocess.run(
         scheduled_argv,
+        cwd=run_cwd,
         capture_output=True,
         text=True,
         check=False,
     )
 
     assert result.returncode == 0
-    assert scheduled_argv[:2] == [sys.executable, str(script_path)]
+    assert scheduled_argv[:2] == [sys.executable, str(script_path.resolve())]
     assert "started:--profile default update auto run-scheduled" in result.stdout
 
 
@@ -1348,8 +1382,8 @@ def test_enable_rejects_invalid_time_without_launchctl(tmp_path, monkeypatch, ba
     assert "Invalid schedule time" in capsys.readouterr().err
 
 
-def _set_linux_scheduler_env(tmp_path, monkeypatch):
-    hermes_home = tmp_path / "home"
+def _set_linux_scheduler_env(tmp_path, monkeypatch, *, hermes_home=None):
+    hermes_home = hermes_home or tmp_path / "home"
     hermes_home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
     monkeypatch.setattr(update_auto.sys, "platform", "linux")
@@ -1394,7 +1428,7 @@ def test_enable_creates_expected_systemd_user_timer_on_linux(tmp_path, monkeypat
     service_text = service_path.read_text(encoding="utf-8")
     timer_text = timer_path.read_text(encoding="utf-8")
     assert "ExecStart=hermes --profile default update auto run-scheduled" in service_text
-    assert f"Environment=HERMES_HOME={hermes_home}" in service_text
+    assert f'Environment="HERMES_HOME={hermes_home}"' in service_text
     assert f"StandardOutput=append:{hermes_home / 'logs' / 'update-auto.out.log'}" in service_text
     assert "OnCalendar=*-*-* 03:00:00" in timer_text
     assert "Persistent=true" in timer_text
@@ -1407,6 +1441,57 @@ def test_enable_creates_expected_systemd_user_timer_on_linux(tmp_path, monkeypat
     assert status["schedule"] == "03:00"
     assert status["schedulerType"] == "systemd-user"
     assert status["schedulerPath"] == str(timer_path)
+
+
+def _decode_systemd_words(value):
+    """Decode the quoted subset used by the generated unit files."""
+    return [word.replace("%%", "%") for word in shlex.split(value)]
+
+
+def test_systemd_unit_preserves_special_characters_in_environment_command_and_logs(
+    tmp_path, monkeypatch
+):
+    hermes_home = tmp_path / 'home with "quotes" and O\'Reilly %H'
+    hermes_home, _calls = _set_linux_scheduler_env(
+        tmp_path, monkeypatch, hermes_home=hermes_home
+    )
+    executable = tmp_path / 'bin with "quotes" and O\'Reilly %H' / "hermes"
+    monkeypatch.setattr(update_auto, "_hermes_command_prefix", lambda: [str(executable)])
+
+    update_auto.cmd_auto_enable(_args(time="03:00"))
+
+    service_path, _timer_path = update_auto._systemd_paths()
+    lines = service_path.read_text(encoding="utf-8").splitlines()
+    environment = next(line for line in lines if line.startswith("Environment="))
+    exec_start = next(line for line in lines if line.startswith("ExecStart="))
+    stdout = next(line for line in lines if line.startswith("StandardOutput="))
+    stderr = next(line for line in lines if line.startswith("StandardError="))
+
+    assert environment.startswith('Environment="HERMES_HOME=')
+    assert "%%H" in environment
+    assert _decode_systemd_words(environment.removeprefix("Environment=")) == [
+        f"HERMES_HOME={hermes_home}"
+    ]
+    assert _decode_systemd_words(exec_start.removeprefix("ExecStart=")) == [
+        str(executable),
+        "--profile",
+        "default",
+        "update",
+        "auto",
+        "run-scheduled",
+    ]
+    assert _decode_systemd_words(stdout.removeprefix("StandardOutput=")) == [
+        f"append:{hermes_home / 'logs' / 'update-auto.out.log'}"
+    ]
+    assert _decode_systemd_words(stderr.removeprefix("StandardError=")) == [
+        f"append:{hermes_home / 'logs' / 'update-auto.err.log'}"
+    ]
+
+
+@pytest.mark.parametrize("value", ["contains\nnewline", "contains\rreturn"])
+def test_systemd_quoting_rejects_newlines(value):
+    with pytest.raises(ValueError, match="newline"):
+        update_auto._systemd_quote(value)
 
 
 def test_disable_removes_only_hermes_systemd_user_files(tmp_path, monkeypatch):

@@ -2555,6 +2555,21 @@ def delegate_task(
     # Track goal labels for progress display (truncated for readability)
     task_labels = [t["goal"][:40] for t in task_list]
 
+    # Live transcripts: one pre-headered append-only log per task under
+    # cache/delegation/live/<delegation_id>/task-<n>.log so the caller can
+    # tail each child's operations while it runs (side-channel only — zero
+    # effect on message content or prompt caching). Best-effort: on failure
+    # live_paths is empty and delegation proceeds exactly as before.
+    from tools.delegation_live_log import (
+        create_live_transcripts,
+        update_manifest_statuses,
+        wrap_progress_callback,
+    )
+
+    live_deleg_id, live_writers, live_paths = create_live_transcripts(
+        task_list, context
+    )
+
     # Save parent tool names BEFORE any child construction mutates the global.
     # _build_child_agent() calls AIAgent() which calls get_tool_definitions(),
     # which overwrites model_tools._last_resolved_tool_names with child's toolset.
@@ -2594,6 +2609,17 @@ def delegate_task(
             )
             # Override with correct parent tool names (before child construction mutated global)
             child._delegate_saved_tool_names = _parent_tool_names
+            # Tee the child's progress events into its live transcript log.
+            # wrap_progress_callback preserves the inner callback contract
+            # (including the _flush attribute) and never lets writer failures
+            # reach the agent loop. When no parent display exists the inner
+            # callback is None and the wrapper still records events.
+            _writer = live_writers[i] if i < len(live_writers) else None
+            if _writer is not None:
+                child.tool_progress_callback = wrap_progress_callback(
+                    getattr(child, "tool_progress_callback", None), _writer
+                )
+                child._live_transcript_path = str(_writer.path)
             children.append((i, t, child))
     finally:
         # Authoritative restore: reset global to parent's tool names after all children built
@@ -2839,10 +2865,33 @@ def delegate_task(
 
         total_duration = round(time.monotonic() - overall_start, 2)
 
-        return {
+        # Close out the live transcripts: terminal marker per task + manifest
+        # status update. The files are retained (retention pruning happens on
+        # future dispatches) — they double as the full-fidelity operational
+        # record alongside the summary spill files.
+        for entry in results:
+            _idx = entry.get("task_index", -1)
+            _w = (
+                live_writers[_idx]
+                if isinstance(_idx, int) and 0 <= _idx < len(live_writers)
+                else None
+            )
+            if _w is not None:
+                try:
+                    _w.finalize(entry)
+                except Exception:
+                    logger.debug("Live transcript finalize failed", exc_info=True)
+                if _idx < len(live_paths):
+                    entry["live_transcript"] = live_paths[_idx]
+        update_manifest_statuses(live_deleg_id, results)
+
+        combined: Dict[str, Any] = {
             "results": results,
             "total_duration_seconds": total_duration,
         }
+        if live_paths:
+            combined["live_transcripts"] = list(live_paths)
+        return combined
 
     # ----- Background dispatch: run the WHOLE batch as one async unit -----
     # When background is true, the entire fan-out runs on the daemon executor
@@ -2964,6 +3013,9 @@ def delegate_task(
             runner=_batch_runner,
             interrupt_fn=_batch_interrupt,
             max_async_children=_get_max_async_children(),
+            # Reuse the live-transcript directory's id (when created) so the
+            # returned delegation_id matches cache/delegation/live/<id>/.
+            delegation_id=live_deleg_id,
         )
 
         if dispatch.get("status") == "dispatched":
@@ -2988,6 +3040,14 @@ def delegate_task(
                 "goals": _goals,
                 "note": note,
             }
+            if live_paths:
+                payload["live_transcripts"] = list(live_paths)
+                payload["live_transcripts_hint"] = (
+                    "Each subagent streams a human-readable transcript of its "
+                    "operations to the file listed above (append-only, one per "
+                    "task). Read or `tail -f` these paths at any time to watch "
+                    "a child work while it runs."
+                )
             return json.dumps(payload, ensure_ascii=False)
 
         # Pool at capacity / schedule failure — children are still attached
@@ -3330,6 +3390,13 @@ def _build_top_level_description() -> str:
         "batch returns one handle, runs N subagents concurrently, and delivers "
         "one consolidated result after ALL of them finish. Do NOT wait or poll; "
         "just continue with other work after dispatching.\n\n"
+        "LIVE TRANSCRIPTS: the dispatch response includes 'live_transcripts' — "
+        "one append-only human-readable log file per task (under "
+        "cache/delegation/live/<delegation_id>/). Each child streams its "
+        "assistant text, tool calls, and tool results there while it runs. "
+        "Read (or `tail -f` in a terminal) those paths any time you or the "
+        "user want to see what a subagent is actually doing instead of "
+        "waiting for the final summary.\n\n"
         "WHEN TO USE delegate_task:\n"
         "- Reasoning-heavy subtasks (debugging, code review, research synthesis)\n"
         "- Tasks that would flood your context with intermediate data\n"

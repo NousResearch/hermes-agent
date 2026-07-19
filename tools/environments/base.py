@@ -959,10 +959,16 @@ class BaseEnvironment(ABC):
         # it means the non-blocking loop itself stopped cooperating.
         drain_thread.join(timeout=2)
 
-        try:
-            proc.stdout.close()
-        except Exception:
-            pass
+        # On Windows, closing the fd while the drain thread is still blocked
+        # in os.read() serializes on the same MSVCRT per-fd lock, causing
+        # proc.stdout.close() to hang until the backgrounded child exits.
+        # Skip the close when the drain thread hasn't finished — the fd is
+        # left to the daemon thread / GC / Popen.__del__ (see #67362).
+        if not (os.name == "nt" and drain_thread.is_alive()):
+            try:
+                proc.stdout.close()
+            except Exception:
+                pass
 
         if _DEBUG_INTERRUPT:
             logger.info(

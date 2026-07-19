@@ -245,9 +245,10 @@ def save_provider_env_credential(env_var: str, value: str) -> Dict[str, Any]:
 def remove_provider_env_credential(env_var: str) -> Dict[str, Any]:
     """Remove a credential from EVERY store it lives in.
 
-    Clears the ``.env`` entry (and process env), prunes env-seeded
-    ``credential_pool`` entries, drops the affected providers' model-cache
-    rows, and removes any config.yaml mirror holding the same value.
+    Clears the ``.env`` entry, prunes env-seeded ``credential_pool`` entries,
+    drops the affected providers' model-cache rows, and removes any config.yaml
+    mirror holding the same value. Launch-profile calls also clear process env;
+    foreign-profile calls update only their request-local secret scope.
     OAuth/device-code/manual credentials are preserved (see module docstring).
 
     ``found`` is True when ANY store held the credential — callers that

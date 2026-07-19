@@ -3,6 +3,7 @@
 param(
     [switch]$SkipTunnels,
     [switch]$StartLlama,
+    [switch]$StartGoWatchdog,
     [int]$WaitModelsSeconds = 300
 )
 
@@ -124,6 +125,16 @@ if (Test-Path -LiteralPath $WebUiScript) {
     & $WebUiScript
 }
 & (Join-Path $PSScriptRoot "start-hermes-dashboard.ps1") -HermesRoot $ProjectRoot -HermesHome $HermesHome
+
+if ($StartGoWatchdog) {
+    $GoWd = Join-Path $PSScriptRoot "Start-HermesGoWatchdog.ps1"
+    if (Test-Path -LiteralPath $GoWd) {
+        Write-Step "Starting Go Desktop/backend watchdog (operator-only)"
+        & $GoWd -HermesRoot $ProjectRoot -HermesHome $HermesHome -BuildIfMissing
+    } else {
+        Write-Warning "Missing Go watchdog script: $GoWd"
+    }
+}
 
 Write-Step "Health checks"
 & $PythonExe -m hermes_cli.main gateway status

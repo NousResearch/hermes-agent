@@ -64,6 +64,10 @@ and run it only with an explicit temporary workspace and bounded permissions.
 | Implementation logs | `_docs/` (gitignored) |
 | Career / docs export | `career_docs_output/` (gitignored) |
 | Temp merge work | `tmp/`, `_tmp/` (gitignored) |
+| Accidental Windows path dumps (`%SystemDrive%/`) | `tmp/snapshots/windows-caches/` |
+| Root `media/` scratch | `output/media/root-media/` |
+| CI / scratch logs from `_tmp/` | `output/logs/` |
+| Broken path dumps / one-off briefs | `output/reports/` |
 
 ## Official vs scratch
 

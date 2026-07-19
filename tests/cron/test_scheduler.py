@@ -510,6 +510,10 @@ class TestRoutingIntents:
         """deliver='all' with nothing connected returns [] — delivery is recorded as failed upstream."""
         from cron.scheduler import _resolve_delivery_targets
 
+        # Isolate this unit contract from plugin-provided platforms and the
+        # operator's live .env. The test is about the built-in home targets.
+        monkeypatch.setattr("cron.scheduler._iter_home_target_platforms", lambda: iter(()))
+
         for var in ("TELEGRAM_HOME_CHANNEL", "DISCORD_HOME_CHANNEL", "SLACK_HOME_CHANNEL",
                     "SIGNAL_HOME_CHANNEL", "MATRIX_HOME_ROOM", "MATTERMOST_HOME_CHANNEL",
                     "SMS_HOME_CHANNEL", "EMAIL_HOME_ADDRESS", "DINGTALK_HOME_CHANNEL",
@@ -543,6 +547,13 @@ class TestRoutingIntents:
     def test_all_token_case_insensitive(self, monkeypatch):
         """'ALL' / 'All' / 'all' are all recognized."""
         from cron.scheduler import _resolve_delivery_targets
+
+        # Plugin discovery can add configured home targets in a real Hermes
+        # profile. Keep this resolver test deterministic and built-in-only.
+        monkeypatch.setattr(
+            "cron.scheduler._iter_home_target_platforms",
+            lambda: iter(("telegram", "discord")),
+        )
 
         monkeypatch.setenv("TELEGRAM_HOME_CHANNEL", "-111")
         monkeypatch.setenv("DISCORD_HOME_CHANNEL", "-222")

@@ -1,7 +1,14 @@
 # Upstream Merge Harness
 
-The **harness** keeps this fork aligned with `NousResearch/hermes-agent` without
-losing local plugins, VRChat tooling, evolution vendors, or Windows shell fixes.
+This folder is for **upstream merge / overlay** only.
+
+Hermes AI use of the Hypura **runtime** daemon (`hermes harness`, port 18794,
+`harness_*` tools) is documented in
+[`../agent-harness/`](../agent-harness/) — do not mix the two.
+
+The **merge harness** keeps this fork aligned with `NousResearch/hermes-agent`
+without losing local plugins, VRChat tooling, evolution vendors, or Windows
+shell fixes.
 
 ## Canonical paths (do not relocate)
 

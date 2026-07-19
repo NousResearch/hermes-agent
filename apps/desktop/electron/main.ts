@@ -53,6 +53,7 @@ import {
   tokenPreview
 } from './connection-config'
 import { adoptServedDashboardToken } from './dashboard-token'
+import { resolveWatchdogPrewarmedBackend } from './watchdog-backend'
 import { resolveDashboardWebDist as resolveDashboardWebDistPath } from './dashboard-web-dist'
 import {
   buildPosixCleanupScript,
@@ -6929,6 +6930,40 @@ async function startHermes() {
     // is detected stale), THEN start the backend. Local backends only; remote
     // connections returned above and never touch the install tree.
     await waitForUpdateToFinish()
+
+    const prewarmed = await resolveWatchdogPrewarmedBackend({
+      hermesRoot:
+        process.env.HERMES_DESKTOP_HERMES_ROOT && path.resolve(process.env.HERMES_DESKTOP_HERMES_ROOT)
+    })
+
+    if (prewarmed) {
+      if (!process.env.HERMES_DESKTOP_HERMES_ROOT && prewarmed.hermesRoot) {
+        process.env.HERMES_DESKTOP_HERMES_ROOT = prewarmed.hermesRoot
+        process.env.HERMES_DESKTOP_CWD = prewarmed.hermesRoot
+      }
+
+      await advanceBootProgress('backend.prewarm', 'Connecting to watchdog-managed Hermes backend', 84)
+      rememberLog(`Using watchdog pre-warmed backend at ${prewarmed.baseUrl}`)
+      await waitForHermes(prewarmed.baseUrl, prewarmed.token)
+      updateBootProgress({
+        phase: 'backend.ready',
+        message: 'Hermes backend is ready. Finalizing desktop startup',
+        progress: 94,
+        running: true,
+        error: null
+      })
+
+      return {
+        baseUrl: prewarmed.baseUrl,
+        mode: 'local',
+        source: 'watchdog',
+        authMode: 'token',
+        token: prewarmed.token,
+        wsUrl: `ws://127.0.0.1:${prewarmed.port}/api/ws?token=${encodeURIComponent(prewarmed.token)}`,
+        logs: hermesLog.slice(-80),
+        ...getWindowState()
+      }
+    }
 
     const token = crypto.randomBytes(32).toString('base64url')
     // --port 0: the OS assigns an ephemeral port; the child announces it on stdout.

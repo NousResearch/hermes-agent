@@ -50,7 +50,14 @@ for candidate in "$REPO_ROOT/.venv" "$REPO_ROOT/venv" "$HOME/.hermes/hermes-agen
 done
 
 if [ -n "$VENV" ]; then
-  PYTHON="$VENV/bin/python"
+  if [ -x "$VENV/bin/python" ]; then
+    PYTHON="$VENV/bin/python"
+  elif [ -x "$VENV/Scripts/python.exe" ]; then
+    PYTHON="$VENV/Scripts/python.exe"
+  else
+    echo "error: virtualenv found at $VENV but no usable Python executable exists" >&2
+    exit 1
+  fi
 elif [ -n "${HERMES_PYTHON:-}" ] && [ -x "$HERMES_PYTHON" ] \
     && "$HERMES_PYTHON" -c 'import pytest' 2>/dev/null; then
   # Guard with an import check: HERMES_PYTHON may point at the RELEASE
@@ -77,6 +84,15 @@ fi
 # ── Run in hermetic env ──────────────────────────────────────────────────────
 # env -i: start with empty environment, opt-in only what we need.
 # No credential var can leak — you'd have to explicitly add it here.
+# Windows Python subprocesses are substantially heavier than POSIX workers and
+# aggressive cpu_count*2 fan-out can cause DLL initialization failures and
+# cascading per-file timeouts. Keep an explicit operator override, but use a
+# conservative default on MSYS/Cygwin hosts.
+if [ -z "${HERMES_TEST_WORKERS:-}" ]; then
+  case "$(uname -s 2>/dev/null || true)" in
+    MINGW*|MSYS*|CYGWIN*) HERMES_TEST_WORKERS=4 ;;
+  esac
+fi
 echo "▶ running per-file parallel test suite via run_tests_parallel.py"
 echo "  (TZ=UTC LANG=C.UTF-8 PYTHONUTF8=1 PYTHONHASHSEED=0; clean env)"
 
@@ -100,6 +116,7 @@ exec env -i \
   LC_ALL=C.UTF-8 \
   PYTHONUTF8=1 \
   PYTHONHASHSEED=0 \
+  ${HERMES_TEST_WORKERS:+HERMES_TEST_WORKERS="$HERMES_TEST_WORKERS"} \
   ${HERMES_RUN_SLOW_PET_TESTS:+HERMES_RUN_SLOW_PET_TESTS="$HERMES_RUN_SLOW_PET_TESTS"} \
   ${EXTRA_PYTHONPATH:+PYTHONPATH="$EXTRA_PYTHONPATH"} \
   ${EXTRA_PYTEST_PLUGINS:+PYTEST_PLUGINS="$EXTRA_PYTEST_PLUGINS"} \

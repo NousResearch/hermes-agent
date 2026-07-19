@@ -118,7 +118,11 @@ def generate_tts_via_http(text: str, output_path: Path) -> bool:
         method="POST",
     )
     try:
-        with urllib.request.urlopen(req, timeout=120) as response:
+        # Irodori-TTS can spend several minutes loading/queuing a synthesis
+        # even when /health is already returning 200.  The server's configured
+        # synthesis wait timeout is 900 seconds; keep the cron client aligned
+        # with that contract instead of failing after the old 120-second limit.
+        with urllib.request.urlopen(req, timeout=900) as response:
             output_path.write_bytes(response.read())
         print(f"TTS generated via HTTP: {output_path}")
         return True

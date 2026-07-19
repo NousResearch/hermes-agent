@@ -6,6 +6,9 @@
 2. Run `py -3 scripts/sync_all.py --dry-run` and read the inventory output.
 3. Ensure working tree excludes `_docs/` and local logs from merge scope (listed in `dirty_tree_ignore`).
 
+For **Hypura agent harness** runtime (daemon / `harness_*` tools), use
+[`../agent-harness/AGENTS.md`](../agent-harness/AGENTS.md) instead of this file.
+
 ## During conflicts
 
 - **Never** resolve `toolsets.py` by keeping the whole fork file — use overlay sanitizer replay.

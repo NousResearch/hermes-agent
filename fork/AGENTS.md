@@ -16,6 +16,9 @@ Need new user-facing capability?
 Need to merge upstream/main?
   → harness/AGENTS.md — never hand-merge toolsets.py without overlay sanitizer.
 
+Need Hermes AI to use the Hypura agent harness (daemon :18794, harness_* tools)?
+  → agent-harness/AGENTS.md — not the merge harness folder.
+
 Need to restart services or fix desktop?
   → operations/AGENTS.md
 
@@ -53,6 +56,7 @@ Cherry-pick upstream-worthy fixes onto `upstream/main` branches only.
 | File | When to read |
 |------|----------------|
 | [harness/AGENTS.md](harness/AGENTS.md) | Merge, overlay, conflict resolution |
+| [agent-harness/AGENTS.md](agent-harness/AGENTS.md) | Hypura daemon, `hermes harness`, `harness_*` tools |
 | [extensions/AGENTS.md](extensions/AGENTS.md) | Plugins, toolsets, VRChat/voice/harness tools |
 | [operations/AGENTS.md](operations/AGENTS.md) | Stack restart, Tailscale, cron scripts |
 | [local-workspace/AGENTS.md](local-workspace/AGENTS.md) | Root clutter, gitignore boundaries |

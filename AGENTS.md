@@ -1441,3 +1441,17 @@ test('windowsHide defaults to true on Windows, is left alone elsewhere', () => {
 If the logic lives inline in a god-file (`main.ts`, `cli.py`,
 `gateway/run.py`) and extracting it feels disruptive: that's the actual
 signal to do the extraction, not to regex around it.
+
+## Learned User Preferences
+
+- On Windows Hermes stack restarts, include Desktop by default; keep llama excluded unless the operator explicitly asks for it.
+- Prefer a Desktop `.lnk` shortcut that reuses the Hermes icon over a `.ps1` launcher.
+- After stack restarts, keep Desktop↔backend mutual monitoring (watchdog) running so a dead side is recovered.
+- Operator watchdog / control-plane HTTP services (Go + Tailscale) must not be controllable from Hermes-agent AI tools or agent sessions.
+
+## Learned Workspace Facts
+
+- Packaged Desktop binary is typically at `%LOCALAPPDATA%\hermes\hermes-agent\apps\desktop\release\win-unpacked\Hermes.exe` (fallback: repo `apps/desktop/release/win-unpacked/Hermes.exe`).
+- PowerShell mutual watchdog: `scripts/windows/Start-HermesDesktopBackendWatchdog.ps1`.
+- Go watchdog lives under `scripts/windows/watchdog-go/` and is started via `scripts/windows/Start-HermesGoWatchdog.ps1` (default listen `127.0.0.1:9920`, optional Tailscale tsnet).
+- Local Windows port map for ops is in `fork/operations/AGENTS.md` (gateway 8787, `hermes serve` 9119, dashboard 9120).

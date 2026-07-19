@@ -47,7 +47,10 @@ class TestNormalizeWorkdir:
 
     def test_tilde_expands(self, tmp_path, monkeypatch):
         from cron.jobs import _normalize_workdir
+        # ``Path.expanduser`` consults USERPROFILE on Windows and HOME on
+        # POSIX. Set both so this contract test is platform-independent.
         monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("USERPROFILE", str(tmp_path))
         result = _normalize_workdir("~")
         assert result == str(tmp_path.resolve())
 

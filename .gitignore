@@ -269,3 +269,6 @@ tmp/snapshots/*
 tmp/snapshots/secrets/*
 !tmp/snapshots/secrets/AGENTS.md
 !tmp/snapshots/secrets/README.md
+
+# Go Desktop/backend watchdog binary (built by Build-HermesGoWatchdog.ps1)
+scripts/windows/watchdog-go/dist/

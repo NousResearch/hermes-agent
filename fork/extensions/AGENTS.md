@@ -16,6 +16,12 @@
 - Tool handlers accept `task_id` or `**kwargs`
 - Secrets in `~/.hermes/.env` only; behaviour in `config.yaml`
 
+## Agent harness (Hypura runtime)
+
+How Hermes AI starts the daemon and uses `harness_*` tools:
+[`../agent-harness/AGENTS.md`](../agent-harness/AGENTS.md).
+(Merge/upstream sync is a different folder: [`../harness/`](../harness/).)
+
 ## Fork tool files (preserve_custom)
 
 These are **not** plugins — they ship in `tools/` and merge as fork-owned:

@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+from collections import Counter
 import sys
 import time
 from datetime import datetime
@@ -153,8 +154,10 @@ def _market_summary(res: dict) -> list[str]:
             continue
         prices_i = [int(p) for p in prices]
         mid = sorted(prices_i)[len(prices_i) // 2]
+        mode = Counter(prices_i).most_common(1)[0][0]
         lines.append(
-            f"- {plat}: n={len(prices_i)} 最安¥{_fmt_yen(min(prices_i))} 中央¥{_fmt_yen(mid)}"
+            f"- {plat}: n={len(prices_i)} 最安¥{_fmt_yen(min(prices_i))} "
+            f"中央¥{_fmt_yen(mid)} 最頻¥{_fmt_yen(mode)} 最高¥{_fmt_yen(max(prices_i))}"
         )
     return lines
 

@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 
+import { SETTINGS_ROUTE } from '@/app/routes'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import {
@@ -81,10 +83,15 @@ interface EnvVarFieldProps {
 function EnvVarField({ envVar, isSet, onSaved, onCleared }: EnvVarFieldProps) {
   const { t } = useI18n()
   const copy = t.settings.toolsets
+  const navigate = useNavigate()
   const [editing, setEditing] = useState(false)
   const [value, setValue] = useState('')
   const [revealed, setRevealed] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
+
+  // Internal route change to Settings → API Keys (tools sub-view) with the
+  // deep-link param keys-settings consumes to scroll + flash this key's card.
+  const openInKeys = () => navigate(`${SETTINGS_ROUTE}?tab=keys&key=${encodeURIComponent(envVar.key)}`)
 
   async function handleSave() {
     if (!value) {
@@ -164,6 +171,7 @@ function EnvVarField({ envVar, isSet, onSaved, onCleared }: EnvVarFieldProps) {
             label={envVar.key}
             onClear={() => void handleClear()}
             onEdit={() => setEditing(true)}
+            onManageKeys={openInKeys}
             onReveal={() => void handleReveal()}
           >
             <EnvVarActionsTrigger label={envVar.key} onClick={event => event.stopPropagation()} />

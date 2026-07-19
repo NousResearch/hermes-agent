@@ -734,6 +734,7 @@ export const zh: Translations = {
     envActions: {
       actionsFor: label => `${label} 的操作`,
       credentialActions: '凭据操作',
+      manageInKeys: '在 API 密钥中管理',
       docs: '文档',
       hideValue: '隐藏值',
       revealValue: '显示值',
@@ -1077,6 +1078,8 @@ export const zh: Translations = {
     noDescription: '暂无描述。',
     configured: '已配置',
     needsKeys: '需要密钥',
+    visionModelHint: '视觉功能使用你的辅助模型配置——支持图像的模型在那里选择，而不是在此处按提供商选择。',
+    visionModelLink: '在 设置 → 模型 中选择视觉模型',
     toolsetsEnabled: (enabled, total) => `已启用 ${enabled}/${total} 个工具集`,
     configureToolset: label => `配置 ${label}`,
     toggleToolset: label => `切换 ${label} 工具集`,

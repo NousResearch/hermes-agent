@@ -623,6 +623,7 @@ export const zhHant = defineLocale({
     envActions: {
       actionsFor: label => `${label} 的動作`,
       credentialActions: '憑證動作',
+      manageInKeys: '在 API 金鑰中管理',
       docs: '文件',
       hideValue: '隱藏值',
       revealValue: '顯示值',
@@ -889,6 +890,8 @@ export const zhHant = defineLocale({
     noDescription: '無可用描述。',
     configured: '已設定',
     needsKeys: '需要金鑰',
+    visionModelHint: '視覺功能使用你的輔助模型設定——支援影像的模型在那裡選擇，而不是在此處按供應商選擇。',
+    visionModelLink: '在 設定 → 模型 中選擇視覺模型',
     toolsetsEnabled: (enabled, total) => `已啟用 ${enabled}/${total} 個工具集`,
     configureToolset: label => `設定 ${label}`,
     toggleToolset: label => `切換 ${label} 工具集`,

@@ -635,6 +635,7 @@ export const ja = defineLocale({
     envActions: {
       actionsFor: label => `${label} のアクション`,
       credentialActions: '認証情報のアクション',
+      manageInKeys: 'API キーで管理',
       docs: 'ドキュメント',
       hideValue: '値を非表示',
       revealValue: '値を表示',
@@ -917,6 +918,9 @@ export const ja = defineLocale({
     noDescription: '説明はありません。',
     configured: '設定済み',
     needsKeys: 'キーが必要',
+    visionModelHint:
+      'ビジョンは補助モデル設定を使用します。画像対応モデルはそこで選択され、ここでプロバイダーごとに選ぶものではありません。',
+    visionModelLink: '設定 → モデル でビジョンモデルを選択',
     toolsetsEnabled: (enabled, total) => `${enabled}/${total} ツールセットが有効`,
     configureToolset: label => `${label} を設定`,
     toggleToolset: label => `${label} ツールセットを切り替え`,

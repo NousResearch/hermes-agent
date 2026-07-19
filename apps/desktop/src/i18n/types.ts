@@ -448,6 +448,7 @@ export interface Translations {
     envActions: {
       actionsFor: (label: string) => string
       credentialActions: string
+      manageInKeys: string
       docs: string
       hideValue: string
       revealValue: string
@@ -775,6 +776,8 @@ export interface Translations {
     noDescription: string
     configured: string
     needsKeys: string
+    visionModelHint: string
+    visionModelLink: string
     toolsetsEnabled: (enabled: number, total: number) => string
     configureToolset: (label: string) => string
     toggleToolset: (label: string) => string

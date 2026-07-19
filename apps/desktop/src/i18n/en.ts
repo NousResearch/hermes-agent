@@ -537,6 +537,7 @@ export const en: Translations = {
     envActions: {
       actionsFor: label => `Actions for ${label}`,
       credentialActions: 'Credential actions',
+      manageInKeys: 'Manage in API Keys',
       docs: 'Docs',
       hideValue: 'Hide value',
       revealValue: 'Reveal value',
@@ -887,6 +888,9 @@ export const en: Translations = {
     noDescription: 'No description.',
     configured: 'Configured',
     needsKeys: 'Needs keys',
+    visionModelHint:
+      'Vision uses your auxiliary model configuration — the image-capable model is picked there, not per-provider here.',
+    visionModelLink: 'Choose vision model in Settings → Models',
     toolsetsEnabled: (enabled, total) => `${enabled}/${total} toolsets enabled`,
     configureToolset: label => `Configure ${label}`,
     toggleToolset: label => `Toggle ${label} toolset`,

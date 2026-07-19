@@ -1,7 +1,20 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, render as rtlRender, screen, waitFor } from '@testing-library/react'
+import type { ReactElement } from 'react'
+import { MemoryRouter } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { ToolsetConfig } from '@/types/hermes'
+
+// EnvVarField navigates to Settings → Keys via useNavigate, so every render
+// needs a router context. The navigate spy asserts the deep-link target.
+const navigateSpy = vi.fn()
+
+vi.mock('react-router-dom', async importOriginal => ({
+  ...(await importOriginal<typeof import('react-router-dom')>()),
+  useNavigate: () => navigateSpy
+}))
+
+const render = (ui: ReactElement) => rtlRender(ui, { wrapper: MemoryRouter })
 
 const getToolsetConfig = vi.fn()
 const getToolsetModels = vi.fn()
@@ -564,6 +577,62 @@ describe('ToolsetConfigPanel', () => {
       fireEvent.click(screen.getByRole('button', { name: 'Save' }))
 
       await waitFor(() => expect(screen.getByText('Ready')).toBeTruthy())
+    })
+  })
+
+  describe('API key deep link', () => {
+    it('offers "Manage in API Keys" on a set key and navigates to Settings → Keys', async () => {
+      getToolsetConfig.mockResolvedValue(
+        config({
+          active_provider: 'ElevenLabs',
+          providers: [
+            {
+              name: 'ElevenLabs',
+              badge: 'paid',
+              tag: 'Most natural voices',
+              env_vars: [
+                {
+                  key: 'ELEVENLABS_API_KEY',
+                  prompt: 'ElevenLabs API key',
+                  url: 'https://x',
+                  default: null,
+                  is_set: true
+                }
+              ],
+              post_setup: null,
+              requires_nous_auth: false,
+              is_active: true,
+              status: 'ready'
+            }
+          ]
+        })
+      )
+
+      const { ToolsetConfigPanel } = await import('./toolset-config-panel')
+      render(<ToolsetConfigPanel onConfiguredChange={vi.fn()} toolset="tts" />)
+
+      const trigger = await screen.findByRole('button', { name: /Actions for ELEVENLABS_API_KEY/ })
+      fireEvent.pointerDown(trigger, { button: 0, ctrlKey: false, pointerType: 'mouse' })
+      fireEvent.click(await screen.findByRole('menuitem', { name: 'Manage in API Keys' }))
+
+      await waitFor(() =>
+        expect(navigateSpy).toHaveBeenCalledWith('/settings?tab=keys&key=ELEVENLABS_API_KEY')
+      )
+    })
+
+    it('hides "Manage in API Keys" while the key is unset', async () => {
+      // Default config(): ElevenLabs key is not set. An unset key is managed
+      // right here via Set — no point bouncing the user to another page.
+      const { ToolsetConfigPanel } = await import('./toolset-config-panel')
+      render(<ToolsetConfigPanel onConfiguredChange={vi.fn()} toolset="tts" />)
+
+      // Expand the keyed provider so its env row renders.
+      fireEvent.click(await screen.findByRole('button', { name: /ElevenLabs/ }))
+      const trigger = await screen.findByRole('button', { name: /Actions for ELEVENLABS_API_KEY/ })
+      fireEvent.pointerDown(trigger, { button: 0, ctrlKey: false, pointerType: 'mouse' })
+
+      await screen.findByRole('menuitem', { name: 'Set' })
+      expect(screen.queryByRole('menuitem', { name: 'Manage in API Keys' })).toBeNull()
     })
   })
 

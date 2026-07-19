@@ -29,6 +29,11 @@ def _require_websockets():
     try:
         from websockets.sync.client import connect as _connect  # type: ignore
     except ImportError as exc:  # pragma: no cover - exercised via test
+        missing_websockets = exc.name == "websockets" or (
+            exc.name is not None and exc.name.startswith("websockets.")
+        )
+        if not missing_websockets:
+            raise
         raise RuntimeError(
             "websockets package is required for OpenAI Realtime; "
             "install with: pip install websockets"

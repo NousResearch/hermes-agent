@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import builtins
 import json
 from pathlib import Path
 
@@ -436,6 +437,40 @@ def test_server_handle_request_wraps_pm_exceptions(tmp_path, monkeypatch):
     assert "kaboom" in resp["error"]
 
 
+def _patch_import_failure(monkeypatch, target_name, missing_name):
+    real_import = builtins.__import__
+
+    def _import(name, globals=None, locals=None, fromlist=(), level=0):
+        if name == target_name:
+            raise ImportError(f"missing {missing_name}", name=missing_name)
+        return real_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr(builtins, "__import__", _import)
+
+
+def test_server_serve_reports_missing_websockets(tmp_path, monkeypatch):
+    from plugins.google_meet.node.server import NodeServer
+
+    _patch_import_failure(monkeypatch, "websockets", "websockets")
+
+    server = NodeServer(token_path=tmp_path / "t.json")
+    with pytest.raises(RuntimeError, match="pip install websockets"):
+        asyncio.run(server.serve())
+
+
+@pytest.mark.parametrize("missing_name", ["some_dependency", "websockets_extra", None])
+def test_server_serve_preserves_nested_websockets_import_error(
+    tmp_path, monkeypatch, missing_name
+):
+    from plugins.google_meet.node.server import NodeServer
+
+    _patch_import_failure(monkeypatch, "websockets", missing_name)
+
+    server = NodeServer(token_path=tmp_path / "t.json")
+    with pytest.raises(ImportError, match=f"missing {missing_name}"):
+        asyncio.run(server.serve())
+
+
 # ---------------------------------------------------------------------------
 # client.py
 # ---------------------------------------------------------------------------
@@ -474,6 +509,25 @@ def _install_fake_ws(monkeypatch, reply_builder):
     import websockets.sync.client as wsc  # type: ignore
     monkeypatch.setattr(wsc, "connect", _connect)
     return fake_ws_holder
+
+
+def test_client_rpc_reports_missing_websockets(monkeypatch):
+    from plugins.google_meet.node.client import NodeClient
+
+    _patch_import_failure(monkeypatch, "websockets.sync.client", "websockets.sync")
+
+    with pytest.raises(RuntimeError, match="pip install websockets"):
+        NodeClient("ws://x", "t")._rpc("ping", {})
+
+
+@pytest.mark.parametrize("missing_name", ["some_dependency", "websockets_extra", None])
+def test_client_rpc_preserves_nested_websockets_import_error(monkeypatch, missing_name):
+    from plugins.google_meet.node.client import NodeClient
+
+    _patch_import_failure(monkeypatch, "websockets.sync.client", missing_name)
+
+    with pytest.raises(ImportError, match=f"missing {missing_name}"):
+        NodeClient("ws://x", "t")._rpc("ping", {})
 
 
 def test_client_rpc_sends_correct_envelope_and_parses_response(monkeypatch):

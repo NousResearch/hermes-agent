@@ -6,6 +6,7 @@ Uses a scripted fake WebSocket — no network, no API key required.
 from __future__ import annotations
 
 import base64
+import builtins
 import json
 import sys
 import types
@@ -217,6 +218,24 @@ def test_connect_raises_clean_error_when_websockets_missing(monkeypatch):
         sess.connect()
 
 
+@pytest.mark.parametrize("missing_name", ["some_dependency", "websockets_extra", None])
+def test_connect_preserves_nested_websockets_import_error(monkeypatch, missing_name):
+    from plugins.google_meet.realtime.openai_client import RealtimeSession
+
+    real_import = builtins.__import__
+
+    def _import(name, globals=None, locals=None, fromlist=(), level=0):
+        if name == "websockets.sync.client":
+            raise ImportError("broken transitive dependency", name=missing_name)
+        return real_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr(builtins, "__import__", _import)
+
+    sess = RealtimeSession(api_key="sk-test")
+    with pytest.raises(ImportError, match="broken transitive dependency"):
+        sess.connect()
+
+
 # ---------------------------------------------------------------------------
 # RealtimeSpeaker
 # ---------------------------------------------------------------------------
@@ -253,9 +272,9 @@ def test_speaker_run_until_stopped_processes_queue(tmp_path):
     assert stub.spoken == ["hello one", "hello two"]
 
     # Processed file has both entries, in order.
-    lines = [json.loads(l) for l in processed.read_text().splitlines() if l.strip()]
-    assert [l["id"] for l in lines] == ["a", "b"]
-    assert all(l["result"]["ok"] for l in lines)
+    lines = [json.loads(line) for line in processed.read_text().splitlines() if line.strip()]
+    assert [line["id"] for line in lines] == ["a", "b"]
+    assert all(line["result"]["ok"] for line in lines)
 
     # Queue is empty (possibly empty string) after processing.
     assert queue.read_text().strip() == ""

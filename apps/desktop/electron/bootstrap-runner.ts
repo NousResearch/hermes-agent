@@ -58,10 +58,7 @@ type ResolveHeadFn = (activeRoot: string | null | undefined) => string | null
  * (all-zero) install stamps still produce a marker that
  * isBootstrapComplete() accepts (pinnedCommit length >= 7).
  */
-function resolveCheckoutHead(
-  activeRoot: string | null | undefined,
-  opts: { execGit?: ExecGitFn } = {}
-): string | null {
+function resolveCheckoutHead(activeRoot: string | null | undefined, opts: { execGit?: ExecGitFn } = {}): string | null {
   if (!activeRoot) {
     return null
   }
@@ -1027,8 +1024,8 @@ export {
   buildPosixPinArgs,
   cachedScriptPath,
   hasExistingGitCheckout,
-  installRefForStamp,
   installedAgentInstallScript,
+  installRefForStamp,
   isPinnedCommit,
   // Exposed for testability
   parseStageResult,

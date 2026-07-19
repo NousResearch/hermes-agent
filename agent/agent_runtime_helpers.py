@@ -639,8 +639,12 @@ def repair_message_sequence_with_cursor(agent, messages: List[Dict]) -> int:
 
 
 
-def strip_think_blocks(agent, content: str) -> str:
+def strip_think_blocks(agent, content: Any) -> str:
     """Remove reasoning/thinking blocks from content, returning only visible text.
+
+    Multimodal OpenAI-style content arrays are reduced to their text parts
+    before the regex scrubber runs. Image and other non-text blocks are
+    intentionally ignored here because this helper only produces display text.
 
     Handles four cases:
       1. Closed tag pairs (``<think>…</think>``) — the common path when
@@ -670,6 +674,21 @@ def strip_think_blocks(agent, content: str) -> str:
     after punctuation and carries a ``name="..."`` attribute) so prose
     mentions like "Use <function> in JavaScript" are preserved.
     """
+    if isinstance(content, list):
+        text_parts = []
+        for part in content:
+            if isinstance(part, str):
+                text_parts.append(part)
+            elif isinstance(part, dict) and part.get("type") in {
+                "text",
+                "input_text",
+                "output_text",
+            }:
+                text = part.get("text")
+                if isinstance(text, str):
+                    text_parts.append(text)
+        content = "\n".join(text_parts)
+
     if not content:
         return ""
     # 1. Closed tag pairs — case-insensitive for all variants so

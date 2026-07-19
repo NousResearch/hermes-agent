@@ -445,6 +445,40 @@ class TestStripThinkBlocks:
     def test_none_returns_empty(self, agent):
         assert agent._strip_think_blocks(None) == ""
 
+    def test_multimodal_content_extracts_visible_text(self, agent):
+        content = [
+            {"type": "text", "text": "Borderô com imagem"},
+            {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,..."}},
+        ]
+
+        assert agent._strip_think_blocks(content) == "Borderô com imagem"
+
+    def test_multimodal_content_supports_openai_text_block_variants(self, agent):
+        content = [
+            {"type": "input_text", "text": "entrada"},
+            {"type": "output_text", "text": "saída"},
+        ]
+
+        assert agent._strip_think_blocks(content) == "entrada\nsaída"
+
+    def test_multimodal_content_preserves_string_parts(self, agent):
+        assert agent._strip_think_blocks(["primeiro", "segundo"]) == "primeiro\nsegundo"
+
+    def test_image_only_multimodal_content_returns_empty(self, agent):
+        content = [
+            {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,..."}},
+        ]
+
+        assert agent._strip_think_blocks(content) == ""
+
+    def test_multimodal_text_still_strips_think_blocks(self, agent):
+        content = [
+            {"type": "text", "text": "<think>segredo</think> resposta"},
+            {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,..."}},
+        ]
+
+        assert agent._strip_think_blocks(content).strip() == "resposta"
+
     def test_no_blocks_unchanged(self, agent):
         assert agent._strip_think_blocks("hello world") == "hello world"
 

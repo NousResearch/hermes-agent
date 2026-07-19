@@ -471,6 +471,15 @@ describe('liveSessionProjectId', () => {
     expect(id).toBe('p_app')
   })
 
+  it('anchors a cwd-less session on its git_repo_root (backend groups it there too)', () => {
+    // Older/imported rows carry only a repo root; the sidebar files them under
+    // the repo's project, so membership (and color) must resolve from the root.
+    expect(liveSessionProjectId(makeSession(null, { git_repo_root: '/www/app' }), [])).toBe('/www/app')
+    expect(
+      liveSessionProjectId(makeSession(null, { git_repo_root: '/www/app' }), [makeProject('p_app', ['/www/app'])])
+    ).toBe('p_app')
+  })
+
   it('skips cwd-less, kanban-task, and out-of-tree (sibling) worktree sessions', () => {
     expect(liveSessionProjectId(makeSession(null), [])).toBeNull()
     // Kanban task worktree → folds into the kanban bucket, not a project preview.
@@ -536,6 +545,12 @@ describe('sessionProjectColor', () => {
     const session = makeSession('/www/app/src', { git_repo_root: '/www/app' })
 
     expect(sessionProjectColor(session, [makeProject('p_app', ['/www/app'])])).toBeNull()
+  })
+
+  it('colors a cwd-less session by its git_repo_root project (the grouped-but-grey fix)', () => {
+    const session = makeSession(null, { git_repo_root: '/www/app' })
+
+    expect(sessionProjectColor(session, [colored('p_app', ['/www/app'], '#4a9eff')])).toBe('#4a9eff')
   })
 
   it('returns null for a session that only maps to an auto repo root (no explicit project)', () => {

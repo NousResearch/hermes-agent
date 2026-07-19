@@ -412,15 +412,51 @@ def test_base_url_config_overrides_env(monkeypatch, tmp_path):
     assert p._client.base_url == "http://config-host:6767"
 
 
-def test_ingest_conversation_uses_custom_base_url(monkeypatch):
-    """The raw urllib conversations ingest hits the configured base URL, not the cloud."""
+def test_client_passes_custom_base_url_to_sdk(monkeypatch):
+    """SDK operations and raw conversation ingest share one normalized base URL."""
+    import sys
+    import types
+
+    from plugins.memory.supermemory import _SupermemoryClient
+
+    captured = {}
+
+    class StubSupermemory:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    module = types.ModuleType("supermemory")
+    module.Supermemory = StubSupermemory
+    monkeypatch.setitem(sys.modules, "supermemory", module)
+    monkeypatch.setattr("tools.lazy_deps.ensure", lambda *args, **kwargs: None)
+
+    client = _SupermemoryClient(
+        api_key="test-key",
+        timeout=1.0,
+        container_tag="hermes",
+        base_url="http://localhost:6767/",
+    )
+
+    assert client._base_url == "http://localhost:6767"
+    assert captured["base_url"] == "http://localhost:6767"
+
+
+@pytest.mark.parametrize(
+    ("base_url", "expected_url"),
+    [
+        ("https://api.supermemory.ai", "https://api.supermemory.ai/v4/conversations"),
+        ("http://localhost:6767", "http://localhost:6767/v4/conversations"),
+    ],
+)
+def test_ingest_conversation_uses_client_base_url(monkeypatch, base_url, expected_url):
+    """Raw conversation ingest follows the same endpoint as SDK operations."""
     from plugins.memory.supermemory import _SupermemoryClient
 
     client = _SupermemoryClient.__new__(_SupermemoryClient)
     client._api_key = "test-key"
     client._container_tag = "hermes"
     client._timeout = 1.0
-    client._base_url = "http://localhost:6767"
+    client._base_url = base_url
 
     captured = {}
 
@@ -437,7 +473,7 @@ def test_ingest_conversation_uses_custom_base_url(monkeypatch):
 
     monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
     client.ingest_conversation("s1", [{"role": "user", "content": "hello there"}])
-    assert captured["url"] == "http://localhost:6767/v4/conversations"
+    assert captured["url"] == expected_url
 
 
 # -- Multi-container tests ----------------------------------------------------
@@ -600,9 +636,13 @@ def _stub_supermemory_importable(monkeypatch):
 
 def test_probe_supermemory_connection_success(monkeypatch, tmp_path):
     _stub_supermemory_importable(monkeypatch)
-    monkeypatch.setattr("plugins.memory.supermemory._SupermemoryClient", FakeClient)
+    seen_base_urls = []
 
     class CountingClient(FakeClient):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            seen_base_urls.append(self.base_url)
+
         def get_profile(self, query=None, *, container_tag=None):
             return {
                 "static": ["Prefers TypeScript"],
@@ -611,10 +651,13 @@ def test_probe_supermemory_connection_success(monkeypatch, tmp_path):
             }
 
     monkeypatch.setattr("plugins.memory.supermemory._SupermemoryClient", CountingClient)
+    monkeypatch.setenv("SUPERMEMORY_BASE_URL", "http://env-host:6767")
+    _save_supermemory_config({"base_url": "http://localhost:6767/"}, str(tmp_path))
     status = _probe_supermemory_connection("test-key", str(tmp_path))
     assert status["ok"] is True
     assert status["profile_facts"] == 2
     assert status["auto_recall"] is True
+    assert seen_base_urls == ["http://localhost:6767"]
 
 
 def test_probe_supermemory_connection_client_error(monkeypatch, tmp_path):

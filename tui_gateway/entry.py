@@ -223,15 +223,25 @@ def wait_for_mcp_discovery(timeout: "float | None" = None) -> None:
     CLI path via ``hermes_cli.mcp_startup``); ``timeout`` overrides it.
     """
     thread = _mcp_discovery_thread
-    if thread is None or not thread.is_alive():
-        return
-    try:
-        from hermes_cli.mcp_startup import _resolve_discovery_timeout
+    if thread is not None and thread.is_alive():
+        try:
+            from hermes_cli.mcp_startup import _resolve_discovery_timeout
 
-        bound = _resolve_discovery_timeout(timeout)
+            bound = _resolve_discovery_timeout(timeout)
+        except Exception:
+            bound = timeout if timeout is not None else 0.75
+        thread.join(timeout=bound)
+        return
+    # The stdio TUI spawns discovery via the shared owner (see main()); wait
+    # on it so the first agent build still catches fast servers.
+    try:
+        from hermes_cli.mcp_startup import (
+            wait_for_mcp_discovery as _startup_wait,
+        )
+
+        _startup_wait(timeout)
     except Exception:
-        bound = timeout if timeout is not None else 0.75
-    thread.join(timeout=bound)
+        pass
 
 
 def mcp_discovery_in_flight() -> bool:
@@ -328,29 +338,23 @@ def main():
         # discovery (still backgrounded, so it can't block startup).
         _has_mcp_servers = True
     if _has_mcp_servers:
-        def _discover_mcp_background() -> None:
-            try:
-                from hermes_cli.mcp_startup import (
-                    _discover_mcp_tools_without_interactive_oauth,
-                )
+        # Spawn via the shared owner in hermes_cli.mcp_startup instead of
+        # a hand-rolled thread, so the stdio TUI gets the same restart
+        # semantics as every other surface: a discovery run that completed
+        # with zero connected servers may be retried by a later spawn call
+        # instead of latching the process into a no-MCP-tools state.
+        # wait_for_mcp_discovery/mcp_discovery_in_flight/
+        # join_mcp_discovery below already consult that owner.
+        try:
+            from hermes_cli.mcp_startup import start_background_mcp_discovery
 
-                _discover_mcp_tools_without_interactive_oauth()
-            except Exception:
-                logger.warning(
-                    "Background MCP tool discovery failed", exc_info=True
-                )
-
-        import threading as _mcp_threading
-        _mcp_thread = _mcp_threading.Thread(
-            target=_discover_mcp_background,
-            name="tui-mcp-discovery",
-            daemon=True,
-        )
-        _mcp_thread.start()
-        # Publish the handle so the first agent build can briefly wait for
-        # already-spawning fast servers to land (see wait_for_mcp_discovery).
-        global _mcp_discovery_thread
-        _mcp_discovery_thread = _mcp_thread
+            start_background_mcp_discovery(
+                logger=logger, thread_name="tui-mcp-discovery"
+            )
+        except Exception:
+            logger.warning(
+                "Background MCP tool discovery failed to start", exc_info=True
+            )
 
     if not write_json({
         "jsonrpc": "2.0",

@@ -99,8 +99,17 @@ def test_project_finalizer_normalizes_mapping_fallback_and_rejection():
     assert _project_finalizer_delivery_receipt(
         {
             "success": True,
-            "result": {"message_id": 0, "id": False},
+            "result": {"message_id": "   ", "id": "legacy-43"},
         }
+    ) == {"provider_message_id": "legacy-43"}
+    assert _project_finalizer_delivery_receipt(
+        {
+            "success": True,
+            "result": {"message_id": "\t", "id": "  "},
+        }
+    ) == {}
+    assert _project_finalizer_delivery_receipt(
+        {"success": True, "result": {"message_id": 0, "id": False}}
     ) == {}
     assert _project_finalizer_delivery_receipt(
         {"success": False, "error": "provider rejected send"}

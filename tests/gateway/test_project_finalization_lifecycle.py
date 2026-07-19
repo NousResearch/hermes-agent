@@ -141,6 +141,67 @@ def test_terminal_provider_payload_uses_durable_contract_and_excludes_private_da
     assert len(provider_payload) <= 512
 
 
+def test_delivery_router_send_result_persists_provider_id_through_ledger(board):
+    from gateway.config import GatewayConfig, Platform
+    from gateway.delivery import DeliveryRouter, DeliveryTarget
+    from gateway.kanban_watchers import _project_finalizer_delivery_receipt
+    from gateway.platforms.base import SendResult
+
+    class TelegramAdapter:
+        async def send(self, chat_id, content, metadata=None):
+            return SendResult(success=True, message_id="telegram-ledger-42")
+
+    root, _, _ = _setup(board, complete_checker=True, verdict="PASS")
+    router = DeliveryRouter(
+        GatewayConfig(),
+        adapters={Platform.TELEGRAM: TelegramAdapter()},
+    )
+
+    async def deliver(platform, chat_id, thread_id, content):
+        target = DeliveryTarget(
+            platform=Platform(platform),
+            chat_id=chat_id,
+            thread_id=thread_id,
+            is_explicit=True,
+        )
+        results = await router.deliver(
+            content,
+            [target],
+            metadata={"source": "project_finalizer"},
+        )
+        return _project_finalizer_delivery_receipt(results[target.to_string()])
+
+    service = ProjectFinalizationService(
+        kb.connect,
+        owner="test-owner",
+        now=lambda: 100,
+        deliver=deliver,
+        enabled=True,
+        canary_scope=("*",),
+    )
+
+    result = _run(service)
+
+    attempt = get_latest_delivery_attempt(
+        board,
+        board_id="default",
+        root_task_id=root,
+        generation=1,
+        platform="telegram",
+        destination_reference="-100-test",
+        message_kind="project_complete",
+    )
+    assert result.delivered == result.terminalized == 1
+    assert attempt.delivery_state == "accepted"
+    assert attempt.provider_message_id == "telegram-ledger-42"
+    assert get_project_finalization(
+        board,
+        board_id="default",
+        root_task_id=root,
+        generation=1,
+    ).terminal_outcome == "COMPLETE"
+
+
 def test_repairable_checker_failure_routes_one_durable_repair(board):
     root, _, _ = _setup(board, complete_checker=True, verdict="FAIL_REPAIRABLE")
     service, receipts = _service()
@@ -229,6 +290,41 @@ def test_blocked_checker_publishes_terminal_artifacts_and_delivers_once(board):
         )
     )
     assert "Checker: PASS" not in receipts[0][3]
+
+
+def test_failed_required_task_delivers_distinct_failed_payload(board):
+    root, _, _ = _setup(board)
+    board.execute(
+        "UPDATE tasks SET status='blocked', consecutive_failures=1, "
+        "last_failure_error='worker crashed' WHERE id=?",
+        (root,),
+    )
+    board.execute(
+        "INSERT INTO task_runs "
+        "(task_id, status, started_at, ended_at, outcome, error) "
+        "VALUES (?, 'gave_up', 1, 2, 'gave_up', 'worker crashed')",
+        (root,),
+    )
+    service, receipts = _service()
+
+    result = _run(service)
+
+    project = get_project_finalization(
+        board,
+        board_id="default",
+        root_task_id=root,
+        generation=1,
+    )
+    assert result.delivered == result.terminalized == 1
+    assert project.terminal_outcome == "FAILED"
+    assert receipts[0][3] == "\n".join(
+        (
+            "Result: FAILED",
+            f"Root: {root}",
+            "Checker: NOT_RECORDED",
+            "Artifacts: final-report.md, manifest.json, usage-summary.json",
+        )
+    )
 
 
 def test_ambiguous_receipt_is_persisted_without_blind_resend(board):

@@ -536,3 +536,106 @@ class TestRegression_ToolsetScoping:
         # core tools are never deferrable
         assert "terminal" not in names
 
+
+
+# ---------------------------------------------------------------------------
+# Active context-length resolution (tool-search gate)
+# ---------------------------------------------------------------------------
+
+
+class TestActiveContextLengthResolution:
+    """_resolve_active_context_length feeds should_activate's threshold gate.
+
+    It must agree with every other context-length consumer (AIAgent startup,
+    /model switch, resolve_display_context_length, /info), all of which honor
+    per-model ``custom_providers`` overrides — see #15779 — while preserving
+    the #46620 guarantee that CLI startup performs no endpoint probe.
+    """
+
+    CONFIG = {
+        "model": {
+            "default": "qwen3.6-35b-a3b@q4_k_s",
+            "provider": "custom:bigrickpc-lm-studio",
+        },
+        "custom_providers": [
+            {
+                "name": "BigRickPC LM Studio",
+                "base_url": "http://192.168.1.157:1234/v1",
+                "models": {"qwen3.6-35b-a3b@q4_k_s": {"context_length": 262144}},
+            }
+        ],
+    }
+
+    def _patch(self, monkeypatch, config, *, probe_result=131072):
+        """Point the resolver at ``config`` and record registry-fallback calls."""
+        import hermes_cli.config as cfg_mod
+        import hermes_cli.runtime_provider as rp_mod
+        import agent.model_metadata as meta_mod
+
+        monkeypatch.setattr(cfg_mod, "load_config", lambda *a, **k: config)
+        monkeypatch.setattr(
+            rp_mod, "resolve_runtime_provider",
+            lambda **k: {"base_url": "http://192.168.1.157:1234/v1"},
+        )
+        calls: List[Dict[str, Any]] = []
+
+        def _fake_get(model, **kwargs):
+            calls.append({"model": model, **kwargs})
+            # Mirror the real resolver's step 0: an explicit config override
+            # short-circuits every probe below it.
+            explicit = kwargs.get("config_context_length")
+            if isinstance(explicit, int) and explicit > 0:
+                return explicit
+            return probe_result
+
+        monkeypatch.setattr(meta_mod, "get_model_context_length", _fake_get)
+        return calls
+
+    def test_honors_custom_provider_per_model_override(self, monkeypatch):
+        """A pinned per-model context_length wins over the registry default.
+
+        Regression: the gate previously ignored custom_providers entirely and
+        returned the generic registry value (131072 for this model) even though
+        the user had pinned 262144, under-reporting the window by half.
+        """
+        from model_tools import _resolve_active_context_length
+
+        calls = self._patch(monkeypatch, self.CONFIG)
+        assert _resolve_active_context_length() == 262144
+        assert calls == [], (
+            "per-model override should short-circuit before the registry lookup"
+        )
+
+    def test_explicit_model_context_length_still_wins(self, monkeypatch):
+        """`model.context_length` outranks the custom_providers override."""
+        from model_tools import _resolve_active_context_length
+
+        config = {**self.CONFIG, "model": {**self.CONFIG["model"], "context_length": 65536}}
+        calls = self._patch(monkeypatch, config)
+        assert _resolve_active_context_length() == 65536
+        assert calls and calls[0]["config_context_length"] == 65536
+
+    def test_no_override_falls_back_without_probing_endpoint(self, monkeypatch):
+        """Without an override we fall back — but never pass base_url.
+
+        Passing base_url would enable get_model_context_length's endpoint
+        probes; against an unreachable local server those cost ~25s on every
+        CLI startup, the regression #46620 guards against.
+        """
+        from model_tools import _resolve_active_context_length
+
+        config = {"model": {"default": "some-model", "provider": "openrouter"}}
+        calls = self._patch(monkeypatch, config)
+
+        assert _resolve_active_context_length() == 131072
+        assert len(calls) == 1
+        assert not calls[0].get("base_url"), (
+            "tool-search gate must not trigger endpoint probes at startup (#46620)"
+        )
+
+    def test_unresolvable_model_returns_zero(self, monkeypatch):
+        """No configured model → 0, so should_activate uses its fixed cutoff."""
+        from model_tools import _resolve_active_context_length
+
+        self._patch(monkeypatch, {"model": {}})
+        assert _resolve_active_context_length() == 0

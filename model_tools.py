@@ -589,6 +589,45 @@ def _resolve_active_context_length() -> int:
         # CLI startup.  See issue #46620.
         raw_ctx = model_cfg.get("context_length")
         config_ctx = raw_ctx if isinstance(raw_ctx, int) and raw_ctx > 0 else None
+
+        # Honor per-model `custom_providers[].models.<id>.context_length` too.
+        # Every other consumer of that override (AIAgent startup, /model switch,
+        # resolve_display_context_length, /info) already does — see #15779 — but
+        # this gate did not, so a user who pinned e.g. 262144 for an LM Studio
+        # model still gated tool-search on the generic registry default. That
+        # under-reports the window and flips tool-search on earlier than the
+        # user's real context warrants.
+        #
+        # The lookup is deliberately config-only: get_custom_provider_context_length
+        # reads the already-loaded config, and resolve_runtime_provider resolves
+        # credentials without touching the network (~10ms). We must NOT pass
+        # base_url into get_model_context_length below to obtain the same value,
+        # because that enables its endpoint probes — on an unreachable endpoint
+        # (a local server that happens to be off) those cost ~25s at every CLI
+        # startup, which is exactly the regression #46620 guarded against.
+        if config_ctx is None:
+            try:
+                from hermes_cli.config import get_custom_provider_context_length
+                from hermes_cli.runtime_provider import resolve_runtime_provider
+
+                runtime = resolve_runtime_provider(
+                    requested=model_cfg.get("provider") or None,
+                    target_model=model_id,
+                )
+                cp_ctx = get_custom_provider_context_length(
+                    model=model_id,
+                    base_url=(runtime or {}).get("base_url") or "",
+                    custom_providers=cfg.get("custom_providers"),
+                )
+                if isinstance(cp_ctx, int) and cp_ctx > 0:
+                    return cp_ctx
+            except Exception:
+                logger.debug(
+                    "custom_providers context-length lookup failed for the "
+                    "tool-search gate; falling back to registry resolution",
+                    exc_info=True,
+                )
+
         return int(get_model_context_length(model_id, config_context_length=config_ctx) or 0)
     except Exception as e:
         logger.debug("Could not resolve active context length: %s", e)

@@ -1,6 +1,8 @@
 """Tests for tools/env_probe.py — local Python toolchain probe."""
 
+import subprocess
 import sys
+from types import SimpleNamespace
 
 import pytest
 
@@ -141,6 +143,68 @@ class TestCaching:
         # Only the first call probes — caller-counting confirms it.
         # Two calls (python3 + python) on first invocation, zero after.
         assert len(calls) == 2
+
+
+class TestWindowsSubprocesses:
+    def test_warm_probe_hides_every_windows_subprocess(self, monkeypatch):
+        """Every process reached by the async warm path must be windowless."""
+        captured = []
+        create_no_window = 0x08000000
+
+        class ImmediateThread:
+            def __init__(self, *, target, **_kwargs):
+                self.target = target
+
+            def start(self):
+                self.target()
+
+        def fake_which(name):
+            return None if name == "uv" else f"C:/bin/{name}.exe"
+
+        def fake_run(cmd, **kwargs):
+            captured.append((cmd, kwargs))
+            if cmd[:3] == ["python3", "-m", "pip"]:
+                stdout = "pip 24.0 from C:/pip (python 3.12)\n"
+            elif cmd == ["pip", "--version"]:
+                stdout = "pip 24.0 from C:/pip (python 3.12)\n"
+            elif "EXTERNALLY-MANAGED" in cmd[-1]:
+                stdout = "no\n"
+            else:
+                stdout = "3.12.4\n"
+            return SimpleNamespace(returncode=0, stdout=stdout, stderr="")
+
+        monkeypatch.setattr(env_probe, "IS_WINDOWS", True)
+        monkeypatch.setattr(
+            env_probe,
+            "windows_hide_flags",
+            lambda: create_no_window,
+        )
+        monkeypatch.setattr(env_probe.threading, "Thread", ImmediateThread)
+        monkeypatch.setattr(env_probe.shutil, "which", fake_which)
+        monkeypatch.setattr(env_probe.subprocess, "run", fake_run)
+
+        env_probe.warm_environment_probe_async()
+
+        assert len(captured) == 5, captured
+        commands = [cmd for cmd, _kwargs in captured]
+        assert [cmd[0] for cmd in commands] == [
+            "python3",
+            "python",
+            "python3",
+            "pip",
+            "python3",
+        ]
+        assert commands[2] == ["python3", "-m", "pip", "--version"]
+        assert commands[3] == ["pip", "--version"]
+        assert all(commands[index][1] == "-c" for index in (0, 1, 4))
+        assert all(
+            kwargs.get("creationflags") == create_no_window
+            for _cmd, kwargs in captured
+        ), captured
+        assert all(
+            kwargs.get("stdin") is subprocess.DEVNULL
+            for _cmd, kwargs in captured
+        ), captured
 
 
 class TestRobustness:

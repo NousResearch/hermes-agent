@@ -37,6 +37,8 @@ import sys
 import threading
 from typing import Optional
 
+from hermes_cli._subprocess_compat import IS_WINDOWS, windows_hide_flags
+
 logger = logging.getLogger(__name__)
 
 # Module-level cache.  The probe result is deterministic for the
@@ -59,6 +61,7 @@ def _run(cmd: list[str], timeout: float = 3.0) -> tuple[int, str, str]:
     Failures (binary missing, timeout, OSError) return (-1, "", "<reason>").
     """
     try:
+        run_kwargs = {"creationflags": windows_hide_flags()} if IS_WINDOWS else {}
         result = subprocess.run(
             cmd,
             capture_output=True,
@@ -66,6 +69,7 @@ def _run(cmd: list[str], timeout: float = 3.0) -> tuple[int, str, str]:
             timeout=timeout,
             check=False,
             stdin=subprocess.DEVNULL,
+            **run_kwargs,
         )
         return result.returncode, (result.stdout or "").strip(), (result.stderr or "").strip()
     except FileNotFoundError:

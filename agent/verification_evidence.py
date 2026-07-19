@@ -404,7 +404,13 @@ def classify_verification_command(
     verify_commands = list(facts.get("verifyCommands") or [])
     match = _find_canonical_match(command, verify_commands)
     is_ad_hoc = False
-    if match is None and not verify_commands:
+    # Allow ad-hoc evidence even when canonical verifyCommands exist.
+    # A passing ad-hoc run (tempfile.mkstemp + hermes-verify-* prefix) is valid
+    # evidence that the workspace verification is green. We gate on exit_code==0
+    # (not on heredoc-wrapper shape) because the intent is "passed = valid",
+    # not "specific implementation shape = valid". This fixes #47237 where
+    # passing ad-hoc runs were silently dropped when verifyCommands were present.
+    if match is None and (not verify_commands or int(exit_code) == 0):
         ad_hoc_args = _find_ad_hoc_match(command, facts.get("root"))
         if ad_hoc_args is not None:
             match = ("ad-hoc verification script", ad_hoc_args)

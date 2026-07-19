@@ -63,6 +63,7 @@ class ProjectEvaluation:
     blocker: Optional[str]
     failure_reason: Optional[str]
     evidence_references: tuple[str, ...]
+    candidate_snapshot_version: str = ""
 
 
 def evaluate_project(
@@ -159,6 +160,7 @@ def _read_snapshot(
         **rows,
     }
     snapshot["snapshot_version"] = _snapshot_version(snapshot)
+    snapshot["candidate_snapshot_version"] = _candidate_snapshot_version(snapshot)
     return snapshot
 
 
@@ -182,9 +184,12 @@ def _evaluate_snapshot(snapshot: dict[str, Any]) -> ProjectEvaluation:
     if malformed is not None:
         return _malformed(snapshot, generation=finalization.generation, reason=malformed[0], blocker=malformed[1], finalization=finalization)
 
-    closure, graph_error = _ancestor_closure(root_task_id, snapshot["task_links"], tasks)
-    if graph_error is not None:
-        return _malformed(snapshot, generation=finalization.generation, reason=graph_error[0], blocker=graph_error[1], finalization=finalization)
+    admitted = finalization.admission_key is not None
+    closure: set[str] = set()
+    if not admitted:
+        closure, graph_error = _ancestor_closure(root_task_id, snapshot["task_links"], tasks)
+        if graph_error is not None:
+            return _malformed(snapshot, generation=finalization.generation, reason=graph_error[0], blocker=graph_error[1], finalization=finalization)
 
     checker_task_id = finalization.final_checker_task_id
     checker_task = tasks.get(checker_task_id)
@@ -201,7 +206,9 @@ def _evaluate_snapshot(snapshot: dict[str, Any]) -> ProjectEvaluation:
         if member.membership_kind == "checker":
             if member.task_id != checker_task_id:
                 optional.add(member.task_id)
-        elif member.required:
+        elif admitted and member.membership_kind in {"required", "repair"}:
+            implementation_required.add(member.task_id)
+        elif not admitted and member.required:
             implementation_required.add(member.task_id)
         else:
             optional.add(member.task_id)
@@ -233,6 +240,7 @@ def _evaluate_snapshot(snapshot: dict[str, Any]) -> ProjectEvaluation:
         root_task_id=root_task_id,
         generation=finalization.generation,
         snapshot_version=snapshot["snapshot_version"],
+        candidate_snapshot_version=snapshot["candidate_snapshot_version"],
         required_task_ids=required_ids,
         optional_task_ids=optional_ids,
         unfinished_task_ids=unfinished,
@@ -498,6 +506,7 @@ def _malformed(
         root_task_id=snapshot["root_task_id"],
         generation=generation,
         snapshot_version=snapshot["snapshot_version"],
+        candidate_snapshot_version=snapshot["candidate_snapshot_version"],
         evaluation_state="MALFORMED",
         terminal_outcome=None,
         required_task_ids=(),
@@ -539,3 +548,115 @@ def _member_from_data(data: dict[str, Any]) -> ProjectMember:
 def _snapshot_version(snapshot: dict[str, Any]) -> str:
     canonical = json.dumps(snapshot, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
     return "sha256:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+_CANDIDATE_TASK_FIELDS: tuple[str, ...] = (
+    "id",
+    "title",
+    "body",
+    "assignee",
+    "status",
+    "result",
+    "contract",
+    "workspace_kind",
+    "workspace_path",
+    "branch_name",
+    "block_kind",
+    "block_recurrences",
+    "consecutive_failures",
+    "last_failure_error",
+    "workflow_template_id",
+    "current_step_key",
+)
+
+_CANDIDATE_RUN_FIELDS: tuple[str, ...] = (
+    "id",
+    "task_id",
+    "profile",
+    "step_key",
+    "status",
+    "started_at",
+    "ended_at",
+    "outcome",
+    "summary",
+    "metadata",
+    "error",
+)
+
+_TRANSIENT_CANDIDATE_EVENT_KINDS = frozenset(
+    {
+        "assigned",
+        "claimed",
+        "claim_extended",
+        "heartbeat",
+        "reclaim_deferred",
+        "reclaimed",
+        "respawn_guarded",
+        "spawned",
+        "stale",
+        "tip_scratch_workspace",
+    }
+)
+
+
+def _candidate_snapshot_version(snapshot: dict[str, Any]) -> str:
+    """Hash the implementation candidate, not the evaluator's live world.
+
+    Candidate identity deliberately excludes evaluation time, dependency graph
+    closure, task/run claim leases, checker authority and all project delivery
+    state.  This lets a checker bind to one completed implementation candidate
+    while registration, verdict recording and delivery continue to mutate the
+    broader project snapshot.
+    """
+    members = [
+        {
+            "task_id": item["task_id"],
+            "membership_kind": item["membership_kind"],
+            "required": bool(item["required"]),
+        }
+        for item in snapshot["members"]
+        if item["membership_kind"] in {"required", "repair"}
+    ]
+    members.sort(key=lambda item: (item["task_id"], item["membership_kind"], item["required"]))
+    task_ids = {item["task_id"] for item in members}
+
+    tasks = [
+        {field: row.get(field) for field in _CANDIDATE_TASK_FIELDS}
+        for row in snapshot["tasks"]
+        if row["id"] in task_ids
+    ]
+    tasks.sort(key=lambda item: item["id"])
+
+    runs = [
+        {field: row.get(field) for field in _CANDIDATE_RUN_FIELDS}
+        for row in snapshot["task_runs"]
+        if row["task_id"] in task_ids
+    ]
+    runs.sort(key=lambda item: (item["task_id"], item["id"]))
+
+    events = [
+        {
+            "id": row["id"],
+            "task_id": row["task_id"],
+            "run_id": row.get("run_id"),
+            "kind": row["kind"],
+            "payload": row.get("payload"),
+        }
+        for row in snapshot["task_events"]
+        if row["task_id"] in task_ids
+        and not str(row["kind"]).startswith("project_")
+        and row["kind"] not in _TRANSIENT_CANDIDATE_EVENT_KINDS
+        and not str(row["kind"]).startswith("notify_")
+    ]
+    events.sort(key=lambda item: (item["task_id"], item["id"]))
+
+    candidate = {
+        "board_id": snapshot["board_id"],
+        "root_task_id": snapshot["root_task_id"],
+        "generation": snapshot["selected_generation"],
+        "members": members,
+        "tasks": tasks,
+        "task_runs": runs,
+        "task_events": events,
+    }
+    return _snapshot_version(candidate)

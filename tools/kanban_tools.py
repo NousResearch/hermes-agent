@@ -685,6 +685,99 @@ def _handle_complete(args: dict, **kw) -> str:
         return tool_error(f"kanban_complete: {e}")
 
 
+_PROJECT_VERDICTS = frozenset({"PASS", "FAIL_REPAIRABLE", "FAIL_TERMINAL"})
+_PROJECT_EVIDENCE_KINDS = frozenset({"command", "file", "test", "review", "other"})
+
+
+def _project_verdict_evidence(value: Any) -> list[dict[str, str]] | None:
+    """Validate the intentionally narrow, durable checker-evidence shape."""
+    if not isinstance(value, list) or not value:
+        return None
+    normalized: list[dict[str, str]] = []
+    for item in value:
+        if not isinstance(item, dict):
+            return None
+        if set(item) != {"kind", "reference", "summary"}:
+            return None
+        kind = str(item.get("kind") or "").strip()
+        reference = str(item.get("reference") or "").strip()
+        summary = str(item.get("summary") or "").strip()
+        if kind not in _PROJECT_EVIDENCE_KINDS or not reference or not summary:
+            return None
+        normalized.append({"kind": kind, "reference": reference, "summary": summary})
+    return normalized
+
+
+def _handle_submit_project_verdict(args: dict, **kw) -> str:
+    """Record the current checker task's structured final project verdict."""
+    task_id = os.environ.get("HERMES_KANBAN_TASK")
+    if not task_id:
+        return tool_error(
+            "kanban_submit_project_verdict is only available to a dispatcher-run checker task"
+        )
+    verdict = str(args.get("verdict") or "").strip()
+    reason = str(args.get("reason") or "").strip()
+    evidence = _project_verdict_evidence(args.get("evidence"))
+    summary = args.get("summary")
+    if verdict not in _PROJECT_VERDICTS:
+        return tool_error("verdict must be PASS, FAIL_REPAIRABLE, or FAIL_TERMINAL")
+    if not reason:
+        return tool_error("reason is required")
+    if evidence is None:
+        return tool_error(
+            "evidence must be a non-empty list of {kind, reference, summary}; "
+            "kind is command, file, test, review, or other"
+        )
+    if summary is not None and not str(summary).strip():
+        return tool_error("summary must be non-empty when provided")
+    # Verdict records are durable project evidence. Apply the same defensive
+    # redaction boundary used by normal task handoffs before persisting any
+    # checker-supplied prose or command reference.
+    reason = redact_sensitive_text(reason, force=True)
+    if summary is not None:
+        summary = redact_sensitive_text(str(summary).strip(), force=True)
+    evidence = [
+        {
+            "kind": item["kind"],
+            "reference": redact_sensitive_text(item["reference"], force=True),
+            "summary": redact_sensitive_text(item["summary"], force=True),
+        }
+        for item in evidence
+    ]
+    run_id = _worker_run_id(task_id)
+    if run_id is None:
+        return tool_error("HERMES_KANBAN_RUN_ID is required for a checker verdict")
+    worker_profile = os.environ.get("HERMES_PROFILE")
+    if not worker_profile:
+        return tool_error("HERMES_PROFILE is required for a checker verdict")
+    try:
+        from hermes_cli.project_runtime_registration import submit_project_checker_verdict
+
+        kb, conn = _connect(board=args.get("board"))
+        try:
+            recorded = submit_project_checker_verdict(
+                conn,
+                board_id=args.get("board") or kb.get_current_board(),
+                task_id=task_id,
+                run_id=run_id,
+                worker_profile=worker_profile,
+                verdict=verdict,
+                reason=reason,
+                evidence=evidence,
+                summary=summary,
+            )
+            return _ok(
+                task_id=task_id,
+                verdict=verdict,
+                disposition=getattr(recorded, "disposition", "recorded"),
+            )
+        finally:
+            conn.close()
+    except ValueError as exc:
+        return tool_error(f"kanban_submit_project_verdict: {exc}")
+    except Exception as exc:
+        logger.exception("kanban_submit_project_verdict failed")
+        return tool_error(f"kanban_submit_project_verdict: {exc}")
 def _handle_block(args: dict, **kw) -> str:
     """Transition the task to blocked with a reason a human will read."""
     tid = _default_task_id(args.get("task_id"))
@@ -1547,6 +1640,56 @@ KANBAN_COMPLETE_SCHEMA = {
     },
 }
 
+KANBAN_SUBMIT_PROJECT_VERDICT_SCHEMA = {
+    "name": "kanban_submit_project_verdict",
+    "description": (
+        "Submit the durable final verdict for the admitted project you were "
+        "assigned to check. This tool identifies the checker task, run, and "
+        "profile from the dispatcher environment; do not try to complete the "
+        "checker with kanban_complete before submitting this verdict. Supply "
+        "concrete evidence references so the project record is auditable."
+    ),
+    "parameters": {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "verdict": {
+                "type": "string",
+                "enum": ["PASS", "FAIL_REPAIRABLE", "FAIL_TERMINAL"],
+                "description": "PASS, repairable failure, or terminal failure.",
+            },
+            "reason": {
+                "type": "string",
+                "description": "Non-empty explanation of the verdict.",
+            },
+            "evidence": {
+                "type": "array",
+                "minItems": 1,
+                "description": "One or more concrete, reviewable evidence records.",
+                "items": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "kind": {
+                            "type": "string",
+                            "enum": ["command", "file", "test", "review", "other"],
+                        },
+                        "reference": {"type": "string"},
+                        "summary": {"type": "string"},
+                    },
+                    "required": ["kind", "reference", "summary"],
+                },
+            },
+            "summary": {
+                "type": "string",
+                "description": "Optional concise human-facing verdict summary.",
+            },
+            "board": _board_schema_prop(),
+        },
+        "required": ["verdict", "reason", "evidence"],
+    },
+}
+
 KANBAN_BLOCK_SCHEMA = {
     "name": "kanban_block",
     "description": (
@@ -1976,6 +2119,15 @@ registry.register(
     handler=_handle_complete,
     check_fn=_check_kanban_mode,
     emoji="✔",
+)
+
+registry.register(
+    name="kanban_submit_project_verdict",
+    toolset="kanban",
+    schema=KANBAN_SUBMIT_PROJECT_VERDICT_SCHEMA,
+    handler=_handle_submit_project_verdict,
+    check_fn=_check_kanban_mode,
+    emoji="check",
 )
 
 registry.register(

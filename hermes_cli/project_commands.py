@@ -1,4 +1,4 @@
-"""Read-only Kanban project status commands.
+"""Kanban project admission and status commands.
 
 This module is the presentation boundary for finalized Kanban projects.  Query
 functions return privacy-safe dictionaries; rendering is kept separate so the
@@ -713,6 +713,60 @@ def project_cleanup_preview(
     }
 
 
+def project_admit(
+    conn: sqlite3.Connection,
+    *,
+    board_id: str,
+    root_task_id: str,
+    required_task_ids: Iterable[str],
+    checker_profile: str,
+    repair_budget: int = 1,
+    retention_days: int = 3,
+    notification_policy: str = "project_summary",
+) -> dict[str, Any]:
+    """Admit existing cards into the explicit project-finalization protocol."""
+    # Kept local so status/history remain usable while an older installation
+    # has only the read-side project tables.
+    from hermes_cli.project_runtime_registration import admit_existing_project
+
+    required = tuple(str(item) for item in required_task_ids)
+    admitted = admit_existing_project(
+        conn,
+        board_id=board_id,
+        root_task_id=root_task_id,
+        required_task_ids=required,
+        checker_profile=checker_profile,
+        repair_budget=repair_budget,
+        retention_days=retention_days,
+        notification_policy=notification_policy,
+    )
+    finalization = admitted.finalization
+    persisted_required = sorted(
+        member.task_id
+        for member in list_project_members(
+            conn,
+            board_id=board_id,
+            root_task_id=root_task_id,
+            generation=finalization.generation,
+        )
+        if member.membership_kind == "required" and member.required
+    )
+    return {
+        "ok": True,
+        "found": True,
+        "disposition": admitted.disposition,
+        "identity": _project_identity(finalization),
+        "state": _safe_text(_value(finalization, "state")),
+        "checker_profile": _safe_text(_value(finalization, "checker_profile")),
+        "checker_task_id": _safe_text(_value(finalization, "final_checker_task_id")),
+        "required_task_ids": persisted_required,
+        "repair_budget": int(_value(finalization, "repair_budget", 0) or 0),
+        "retention_days": int(_value(finalization, "retention_days", 0) or 0),
+        "notification_policy": _safe_text(_value(finalization, "notification_policy")),
+        "admission_key": _safe_text(admitted.admission_key),
+    }
+
+
 def _line(label: str, value: Any) -> str:
     if isinstance(value, bool):
         value = "yes" if value else "no"
@@ -775,6 +829,21 @@ def render_project_result(result: Mapping[str, Any], *, mode: str = "status") ->
                 f"next {project.get('next_action') or '—'}"
             )
         return "\n".join(lines)
+    if mode == "admit":
+        identity = result["identity"]
+        return "\n".join(
+            [
+                f"Project {result.get('disposition', 'admitted')}: {identity['root_task_id']} gen {identity['generation']}",
+                _line("Board", identity.get("board_id")),
+                _line("Checker profile", result.get("checker_profile")),
+                _line("Pending checker", result.get("checker_task_id")),
+                _line("Required tasks", ", ".join(result.get("required_task_ids", []))),
+                _line("Repair budget", result.get("repair_budget")),
+                _line("Retention days", result.get("retention_days")),
+                _line("Notification policy", result.get("notification_policy")),
+                _line("Admission key", result.get("admission_key")),
+            ]
+        )
     if mode == "show":
         return _render_status(result, include_details=True)
     if mode == "status":
@@ -858,6 +927,17 @@ def dispatch_project_command(
     root_task_id = getattr(args, "root_task_id", None)
     if action == "list-active":
         result = list_active_projects(conn, board_id=board)
+    elif action == "admit":
+        result = project_admit(
+            conn,
+            board_id=board,
+            root_task_id=root_task_id,
+            required_task_ids=getattr(args, "required_task_ids", ()),
+            checker_profile=getattr(args, "checker_profile", ""),
+            repair_budget=getattr(args, "repair_budget", 1),
+            retention_days=getattr(args, "retention_days", 3),
+            notification_policy=getattr(args, "notification_policy", "project_summary"),
+        )
     elif action == "status":
         result = project_status(conn, board_id=board, root_task_id=root_task_id, generation=generation)
     elif action == "show":
@@ -881,6 +961,7 @@ def dispatch_project_command(
 __all__ = [
     "dispatch_project_command",
     "list_active_projects",
+    "project_admit",
     "project_cleanup_preview",
     "project_delivery_status",
     "project_final_report",

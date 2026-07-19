@@ -5037,6 +5037,58 @@ class ArtifactPreservationError(RuntimeError):
     """Raised when a declared scratch deliverable cannot be preserved."""
 
 
+class ProjectCheckerVerdictRequiredError(ValueError):
+    """Raised when an admitted authoritative checker bypasses its protocol."""
+
+    def __init__(self, task_id: str):
+        self.task_id = task_id
+        super().__init__(
+            "completion blocked: the current admitted project checker must use "
+            "kanban_submit_project_verdict before ordinary completion"
+        )
+
+
+def _project_checker_requires_structured_verdict(
+    conn: sqlite3.Connection, task_id: str
+) -> bool:
+    """Return False for legacy/unmigrated DBs; fail closed for admitted checkers."""
+
+    table_names = {
+        row["name"]
+        for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' "
+            "AND name IN ('project_finalizations', 'project_finalization_members')"
+        )
+    }
+    if table_names != {"project_finalizations", "project_finalization_members"}:
+        return False
+    columns = {
+        row["name"] for row in conn.execute("PRAGMA table_info(project_finalizations)")
+    }
+    if "admission_key" not in columns:
+        return False
+    row = conn.execute(
+        """
+        SELECT 1
+          FROM project_finalizations AS f
+          JOIN project_finalization_members AS m
+            ON m.board_id = f.board_id
+           AND m.root_task_id = f.root_task_id
+           AND m.generation = f.generation
+         WHERE f.admission_key IS NOT NULL
+           AND f.terminal_outcome IS NULL
+           AND f.final_checker_task_id = ?
+           AND f.checker_verdict IS NULL
+           AND m.task_id = ?
+           AND m.membership_kind = 'checker'
+           AND m.required = 1
+         LIMIT 1
+        """,
+        (task_id, task_id),
+    ).fetchone()
+    return row is not None
+
+
 def complete_task(
     conn: sqlite3.Connection,
     task_id: str,
@@ -5076,6 +5128,9 @@ def complete_task(
     and never blocks.
     """
     now = int(time.time())
+
+    if _project_checker_requires_structured_verdict(conn, task_id):
+        raise ProjectCheckerVerdictRequiredError(task_id)
 
     # Gate: verify created_cards BEFORE the main write txn. A rejected
     # completion still needs an auditable event, so we emit it in a

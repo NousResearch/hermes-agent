@@ -55,7 +55,7 @@ def test_kanban_tools_visible_with_env_var(monkeypatch, tmp_path):
     names = {s["function"].get("name") for s in schema if "function" in s}
     kanban = {n for n in names if n and n.startswith("kanban_")}
     expected = {
-        "kanban_show", "kanban_complete", "kanban_block", "kanban_heartbeat",
+        "kanban_show", "kanban_complete", "kanban_submit_project_verdict", "kanban_block", "kanban_heartbeat",
         "kanban_comment", "kanban_create", "kanban_link",
         "kanban_attach", "kanban_attach_url", "kanban_attachments",
     }
@@ -136,12 +136,27 @@ def test_kanban_tools_visible_with_toolset_config(monkeypatch, tmp_path):
     kanban = {n for n in names if n and n.startswith("kanban_")}
     expected = {
         "kanban_list",
-        "kanban_show", "kanban_complete", "kanban_block", "kanban_heartbeat",
+        "kanban_show", "kanban_complete", "kanban_submit_project_verdict", "kanban_block", "kanban_heartbeat",
         "kanban_comment", "kanban_create", "kanban_link",
         "kanban_unblock",
         "kanban_attach", "kanban_attach_url", "kanban_attachments",
     }
     assert kanban == expected, f"expected {expected}, got {kanban}"
+
+
+def test_project_verdict_schema_is_checker_scoped_and_structured():
+    """The checker cannot nominate another task or submit unstructured evidence."""
+    from tools.kanban_tools import KANBAN_SUBMIT_PROJECT_VERDICT_SCHEMA
+
+    parameters = KANBAN_SUBMIT_PROJECT_VERDICT_SCHEMA["parameters"]
+    assert "task_id" not in parameters["properties"]
+    assert parameters["required"] == ["verdict", "reason", "evidence"]
+    assert parameters["properties"]["verdict"]["enum"] == [
+        "PASS", "FAIL_REPAIRABLE", "FAIL_TERMINAL"
+    ]
+    evidence = parameters["properties"]["evidence"]
+    assert evidence["minItems"] == 1
+    assert evidence["items"]["required"] == ["kind", "reference", "summary"]
 
 
 # ---------------------------------------------------------------------------

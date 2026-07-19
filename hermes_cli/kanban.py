@@ -227,12 +227,39 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     # --- init ---
     sub.add_parser("init", help="Create kanban.db if missing (idempotent)")
 
-    # --- project status/presentation (read-only) ---
+    # --- project admission + status/presentation ---
     p_project = sub.add_parser(
         "project",
-        help="Read-only project finalization status and history",
+        help="Admit and inspect durable project finalizations",
     )
     project_sub = p_project.add_subparsers(dest="project_action")
+
+    p_project_admit = project_sub.add_parser(
+        "admit",
+        help="Admit existing task cards as one explicitly governed project",
+    )
+    p_project_admit.add_argument("root_task_id", metavar="ROOT")
+    p_project_admit.add_argument(
+        "--required-task", dest="required_task_ids", action="append", required=True,
+        metavar="TASK", help="Existing task that must complete (repeat this option).",
+    )
+    p_project_admit.add_argument(
+        "--checker-profile", required=True, metavar="PROFILE",
+        help="Independent profile that will run the final checker.",
+    )
+    p_project_admit.add_argument(
+        "--repair-budget", type=int, choices=(0, 1), default=1,
+        help="Allow zero or one repair generation (default: 1).",
+    )
+    p_project_admit.add_argument(
+        "--retention-days", type=int, default=3, metavar="DAYS",
+        help="Retention period for terminal project evidence (default: 3).",
+    )
+    p_project_admit.add_argument(
+        "--notification-policy", choices=("project_summary",), default="project_summary",
+        help="Notification policy (only project_summary is supported).",
+    )
+    p_project_admit.add_argument("--json", action="store_true")
 
     p_project_list = project_sub.add_parser(
         "list-active",

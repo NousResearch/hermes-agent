@@ -3,6 +3,19 @@
 # This file configures the CLI behavior. Environment variables in .env take precedence.
 
 # =============================================================================
+# Kanban project finalizer (disabled by default)
+# =============================================================================
+# The gateway finalizes only the exact roots listed here. Each scope is
+# <board-slug>/<root-task-id>; wildcards and bare task IDs are rejected.
+# Cleanup is preview-only in this release.
+project_finalizer:
+  enabled: false
+  canary_scope: []
+  interval_seconds: 60
+  cleanup:
+    mode: preview
+
+# =============================================================================
 # Model Configuration
 # =============================================================================
 model:

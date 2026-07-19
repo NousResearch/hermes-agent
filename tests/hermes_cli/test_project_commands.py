@@ -400,6 +400,7 @@ def test_parser_registers_all_nested_project_commands():
     kanban_cli.build_parser(subparsers)
 
     commands_to_parse = [
+        ["kanban", "project", "admit", "root", "--required-task", "impl", "--checker-profile", "reviewer"],
         ["kanban", "project", "list-active"],
         ["kanban", "project", "status", "root"],
         ["kanban", "project", "show", "root"],
@@ -410,6 +411,7 @@ def test_parser_registers_all_nested_project_commands():
     ]
     parsed = [parser.parse_args(argv) for argv in commands_to_parse]
     assert [item.project_action for item in parsed] == [
+        "admit",
         "list-active",
         "status",
         "show",
@@ -418,6 +420,11 @@ def test_parser_registers_all_nested_project_commands():
         "delivery-status",
         "cleanup-preview",
     ]
+    admitted = parsed[0]
+    assert admitted.required_task_ids == ["impl"]
+    assert admitted.checker_profile == "reviewer"
+    assert admitted.repair_budget == 1
+    assert admitted.notification_policy == "project_summary"
 
 
 def test_read_commands_do_not_change_project_or_history_tables(board):

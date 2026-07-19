@@ -361,3 +361,121 @@ def test_evaluation_time_participates_in_snapshot_identity(board):
     later = evaluate_project(board, board_id="board-a", root_task_id=root, evaluation_time=101)
 
     assert earlier.snapshot_version != later.snapshot_version
+    assert earlier.candidate_snapshot_version == later.candidate_snapshot_version
+
+
+def test_admitted_project_uses_only_explicit_required_and_repair_members(board):
+    parent = _task(board, "legacy graph parent")
+    root = _task(board, "root")
+    repair = _task(board, "repair")
+    support = _task(board, "support marked required")
+    checker = _task(board, "checker that becomes pending authority")
+    kb.link_tasks(board, parent, root)
+    project = _project(board, root=root, checker=checker)
+    register_project_member(
+        board,
+        board_id="board-a",
+        root_task_id=root,
+        generation=project.generation,
+        task_id=repair,
+        membership_kind="repair",
+        required=True,
+    )
+    register_project_member(
+        board,
+        board_id="board-a",
+        root_task_id=root,
+        generation=project.generation,
+        task_id=support,
+        membership_kind="support",
+        required=True,
+    )
+    board.execute(
+        "DELETE FROM project_finalization_members "
+        "WHERE board_id = 'board-a' AND root_task_id = ? AND generation = ? "
+        "AND membership_kind = 'checker'",
+        (root, project.generation),
+    )
+    pending_checker = "pending-checker:sha256:" + "a" * 64
+    board.execute(
+        "UPDATE project_finalizations SET admission_key = ?, checker_profile = ?, "
+        "final_checker_task_id = ? WHERE board_id = 'board-a' AND root_task_id = ?",
+        ("sha256:" + "b" * 64, "checker-profile", pending_checker, root),
+    )
+    board.execute(
+        "UPDATE tasks SET status = 'done', result = 'done', completed_at = 99 WHERE id = ?",
+        (root,),
+    )
+    _complete(board, repair)
+
+    result = evaluate_project(
+        board, board_id="board-a", root_task_id=root, evaluation_time=100
+    )
+
+    assert result.evaluation_state == "WAITING"
+    assert result.failure_reason == "checker_required"
+    assert result.required_task_ids == tuple(sorted((root, repair, pending_checker)))
+    assert result.optional_task_ids == (support,)
+    assert parent not in result.required_task_ids
+    assert support not in result.required_task_ids
+    assert result.candidate_snapshot_version.startswith("sha256:")
+
+
+def test_candidate_digest_ignores_live_noise_but_binds_implementation_evidence(board):
+    root = _task(board, "root")
+    checker = _task(board, "checker")
+    project = _project(board, root=root, checker=checker)
+    board.execute(
+        "UPDATE project_finalizations SET admission_key = ?, checker_profile = ? "
+        "WHERE board_id = 'board-a' AND root_task_id = ?",
+        ("sha256:" + "c" * 64, "checker-profile", root),
+    )
+    _complete(board, root)
+
+    baseline = evaluate_project(
+        board, board_id="board-a", root_task_id=root, evaluation_time=100
+    )
+    _task(board, "unrelated board noise")
+    board.execute(
+        "UPDATE tasks SET claim_lock = 'lease-noise', claim_expires = 999, "
+        "worker_pid = 123, last_heartbeat_at = 998 WHERE id = ?",
+        (root,),
+    )
+    board.execute(
+        "INSERT INTO task_events (task_id, run_id, kind, payload, created_at) "
+        "VALUES (?, NULL, 'heartbeat', '{\"note\":\"noise\"}', 101)",
+        (root,),
+    )
+    board.execute(
+        "INSERT INTO task_events (task_id, run_id, kind, payload, created_at) "
+        "VALUES (?, NULL, 'project_delivery_attempted', '{}', 102)",
+        (root,),
+    )
+    noisy = evaluate_project(
+        board, board_id="board-a", root_task_id=root, evaluation_time=200
+    )
+
+    assert noisy.snapshot_version != baseline.snapshot_version
+    assert noisy.candidate_snapshot_version == baseline.candidate_snapshot_version
+
+    board.execute("UPDATE tasks SET result = 'new durable result' WHERE id = ?", (root,))
+    changed_result = evaluate_project(
+        board, board_id="board-a", root_task_id=root, evaluation_time=200
+    )
+    assert changed_result.candidate_snapshot_version != noisy.candidate_snapshot_version
+
+    board.execute(
+        "INSERT INTO task_events (task_id, run_id, kind, payload, created_at) "
+        "VALUES (?, NULL, 'specified', '{\"changed_fields\":[\"body\"]}', 103)",
+        (root,),
+    )
+    changed_event = evaluate_project(
+        board, board_id="board-a", root_task_id=root, evaluation_time=200
+    )
+    assert changed_event.candidate_snapshot_version != changed_result.candidate_snapshot_version
+
+    board.execute("UPDATE tasks SET assignee = 'checker-profile' WHERE id = ?", (root,))
+    changed_assignee = evaluate_project(
+        board, board_id="board-a", root_task_id=root, evaluation_time=200
+    )
+    assert changed_assignee.candidate_snapshot_version != changed_event.candidate_snapshot_version

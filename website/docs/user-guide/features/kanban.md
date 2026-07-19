@@ -242,6 +242,41 @@ the old standalone daemon alive for one release cycle, but running both
 a gateway-embedded dispatcher AND a standalone daemon against the same
 `kanban.db` causes claim races and is not supported.
 
+### Project finalizer canary
+
+Admission governs existing cards; it does not create or decompose work. Every
+required card must already have a valid task contract, the root must own exactly
+one Telegram notification route, and the checker profile must be different from
+the profiles assigned to required work.
+
+```bash
+hermes kanban project admit t_deadbeef \
+  --required-task t_badc0ffe \
+  --required-task t_cafebabe \
+  --checker-profile reviewer
+```
+
+After the required work completes, Hermes creates a checker card bound to that
+exact candidate. The checker must submit `kanban_submit_project_verdict` with a
+PASS, repairable failure, or terminal failure plus concrete evidence; ordinary
+`kanban_complete` is rejected for the authoritative checker until that verdict
+is durable.
+
+The project finalizer is off by default. When enabled, the gateway rereads
+this configuration on every tick and finalizes only the exact root IDs in
+`canary_scope`. A scope must be `<board-slug>/<root-task-id>` (for example,
+`release-board/t_deadbeef`); wildcards and bare task IDs are rejected. Cleanup
+is preview-only in this release, so no workspace cleanup is applied.
+
+```yaml
+project_finalizer:
+  enabled: false
+  canary_scope: []
+  interval_seconds: 60
+  cleanup:
+    mode: preview
+```
+
 ### Idempotent create (for automation / webhooks)
 
 ```bash

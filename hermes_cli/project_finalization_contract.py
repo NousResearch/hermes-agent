@@ -45,8 +45,10 @@ NOTIFICATION_POLICIES: tuple[str, ...] = ("project_summary", "verbose", "silent"
 
 MEMBERSHIP_KINDS: tuple[str, ...] = ("required", "support", "repair", "checker")
 
-SCHEMA_VERSION = "1"
-MIGRATION_MARKER = "hof002-v1"
+SCHEMA_VERSION = "2"
+MIGRATION_MARKER = "hermes-orch-finish-001-g3-v2"
+_LEGACY_SCHEMA_VERSION = "1"
+_LEGACY_MIGRATION_MARKER = "hof002-v1"
 
 # Regex for SHA-256 (64 lowercase hex)
 _SHA256_RE = re.compile(r"^[a-f0-9]{64}$")
@@ -60,6 +62,11 @@ PROJECT_FINALIZATIONS_COLS = [
     ("terminal_outcome", "TEXT"),
     ("final_checker_task_id", "TEXT NOT NULL"),
     ("checker_verdict", "TEXT"),
+    ("admission_key", "TEXT"),
+    ("checker_profile", "TEXT"),
+    ("notification_route_identity", "TEXT"),
+    ("checker_candidate_snapshot_version", "TEXT"),
+    ("checker_candidate_id", "TEXT"),
     ("repair_generation", "INTEGER NOT NULL DEFAULT 0"),
     ("repair_budget", "INTEGER NOT NULL DEFAULT 1"),
     ("notification_policy", "TEXT NOT NULL"),
@@ -96,6 +103,11 @@ class ProjectFinalization:
     terminal_outcome: Optional[str]
     final_checker_task_id: str
     checker_verdict: Optional[str]
+    admission_key: Optional[str]
+    checker_profile: Optional[str]
+    notification_route_identity: Optional[str]
+    checker_candidate_snapshot_version: Optional[str]
+    checker_candidate_id: Optional[str]
     repair_generation: int
     repair_budget: int
     notification_policy: str
@@ -203,6 +215,11 @@ CREATE TABLE IF NOT EXISTS project_finalizations (
     terminal_outcome      TEXT,
     final_checker_task_id TEXT NOT NULL,
     checker_verdict       TEXT,
+    admission_key         TEXT,
+    checker_profile       TEXT,
+    notification_route_identity TEXT,
+    checker_candidate_snapshot_version TEXT,
+    checker_candidate_id  TEXT,
     repair_generation     INTEGER NOT NULL DEFAULT 0,
     repair_budget         INTEGER NOT NULL DEFAULT 1,
     notification_policy   TEXT NOT NULL,
@@ -344,6 +361,11 @@ _PROJECT_FINALIZATION_COLUMNS = (
     _schema_column("terminal_outcome", "terminal_outcome TEXT"),
     _schema_column("final_checker_task_id", "final_checker_task_id TEXT NOT NULL", not_null=True),
     _schema_column("checker_verdict", "checker_verdict TEXT"),
+    _schema_column("admission_key", "admission_key TEXT"),
+    _schema_column("checker_profile", "checker_profile TEXT"),
+    _schema_column("notification_route_identity", "notification_route_identity TEXT"),
+    _schema_column("checker_candidate_snapshot_version", "checker_candidate_snapshot_version TEXT"),
+    _schema_column("checker_candidate_id", "checker_candidate_id TEXT"),
     _schema_column("repair_generation", "repair_generation INTEGER NOT NULL DEFAULT 0", not_null=True, default="0"),
     _schema_column("repair_budget", "repair_budget INTEGER NOT NULL DEFAULT 1", not_null=True, default="1"),
     _schema_column("notification_policy", "notification_policy TEXT NOT NULL", not_null=True),
@@ -601,19 +623,23 @@ def _validate_required_indexes(conn: sqlite3.Connection) -> None:
 def _validate_migration_metadata(conn: sqlite3.Connection) -> None:
     metadata = dict(conn.execute("SELECT key, value FROM project_finalization_meta"))
     version = metadata.get("version")
-    if version is not None:
-        try:
-            if int(version) > int(SCHEMA_VERSION):
-                raise ValueError("unsupported future schema version")
-        except ValueError as exc:
-            if str(exc) == "unsupported future schema version":
-                raise
-            raise ValueError(f"unsupported schema version: {version!r}") from exc
-        if version != SCHEMA_VERSION:
-            raise ValueError(f"unsupported schema version: {version!r}")
     migration = metadata.get("migration")
-    if migration is not None and migration != MIGRATION_MARKER:
-        raise ValueError(f"unsupported migration marker: {migration!r}")
+    if version is None and migration is None:
+        return
+    if (version, migration) in {
+        (_LEGACY_SCHEMA_VERSION, _LEGACY_MIGRATION_MARKER),
+        (SCHEMA_VERSION, MIGRATION_MARKER),
+    }:
+        return
+    try:
+        parsed_version = int(version) if version is not None else None
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"unsupported schema version: {version!r}") from exc
+    if parsed_version is not None and parsed_version > int(SCHEMA_VERSION):
+        raise ValueError("unsupported future schema version")
+    if version not in {_LEGACY_SCHEMA_VERSION, SCHEMA_VERSION}:
+        raise ValueError(f"unsupported schema version: {version!r}")
+    raise ValueError(f"unsupported migration marker: {migration!r}")
 
 
 def ensure_project_finalization_schema(conn: sqlite3.Connection) -> None:
@@ -634,11 +660,13 @@ def ensure_project_finalization_schema(conn: sqlite3.Connection) -> None:
         _validate_required_indexes(conn)
         _validate_migration_metadata(conn)
         conn.execute(
-            "INSERT OR IGNORE INTO project_finalization_meta (key, value) VALUES (?, ?)",
+            "INSERT INTO project_finalization_meta (key, value) VALUES (?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
             ("version", SCHEMA_VERSION),
         )
         conn.execute(
-            "INSERT OR IGNORE INTO project_finalization_meta (key, value) VALUES (?, ?)",
+            "INSERT INTO project_finalization_meta (key, value) VALUES (?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
             ("migration", MIGRATION_MARKER),
         )
 
@@ -674,6 +702,11 @@ def _row_to_project_finalization(row: sqlite3.Row) -> ProjectFinalization:
         terminal_outcome=row["terminal_outcome"],
         final_checker_task_id=row["final_checker_task_id"],
         checker_verdict=row["checker_verdict"],
+        admission_key=row["admission_key"],
+        checker_profile=row["checker_profile"],
+        notification_route_identity=row["notification_route_identity"],
+        checker_candidate_snapshot_version=row["checker_candidate_snapshot_version"],
+        checker_candidate_id=row["checker_candidate_id"],
         repair_generation=int(row["repair_generation"]),
         repair_budget=int(row["repair_budget"]),
         notification_policy=row["notification_policy"],
@@ -922,6 +955,8 @@ def create_project_finalization(
             INSERT INTO project_finalizations (
                 board_id, root_task_id, generation, state, terminal_outcome,
                 final_checker_task_id, checker_verdict,
+                admission_key, checker_profile, notification_route_identity,
+                checker_candidate_snapshot_version, checker_candidate_id,
                 repair_generation, repair_budget,
                 notification_policy, retention_days,
                 final_report_path, final_report_sha256,
@@ -931,11 +966,12 @@ def create_project_finalization(
                 evaluated_at, finalized_at,
                 cleanup_after, cleaned_at,
                 lock_owner, lock_expires_at, version
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """,
             (
                 board_id, root_task_id, generation, "open", None,
                 final_checker_task_id, None,
+                None, None, None, None, None,
                 0, repair_budget,
                 notification_policy, retention_days,
                 None, None, None, None, None, None,
@@ -985,6 +1021,10 @@ def reopen_project_finalization(
             raise ValueError("project finalization does not exist")
         if latest["terminal_outcome"] is None:
             raise ValueError("latest generation is not terminal")
+        if latest["admission_key"] is not None:
+            raise ValueError(
+                "admitted projects cannot be reopened without explicit re-admission"
+            )
 
         active_count = conn.execute(
             """
@@ -1002,6 +1042,8 @@ def reopen_project_finalization(
             INSERT INTO project_finalizations (
                 board_id, root_task_id, generation, state, terminal_outcome,
                 final_checker_task_id, checker_verdict,
+                admission_key, checker_profile, notification_route_identity,
+                checker_candidate_snapshot_version, checker_candidate_id,
                 repair_generation, repair_budget,
                 notification_policy, retention_days,
                 final_report_path, final_report_sha256,
@@ -1011,11 +1053,13 @@ def reopen_project_finalization(
                 evaluated_at, finalized_at,
                 cleanup_after, cleaned_at,
                 lock_owner, lock_expires_at, version
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """,
             (
                 board_id, root_task_id, generation, "open", None,
                 latest["final_checker_task_id"], None,
+                latest["admission_key"], latest["checker_profile"], latest["notification_route_identity"],
+                None, None,
                 0, latest["repair_budget"],
                 latest["notification_policy"], latest["retention_days"],
                 None, None, None, None, None, None,
@@ -1174,6 +1218,10 @@ def record_checker_verdict(
             raise ValueError(f"no project finalization for {board_id}/{root_task_id}/{generation}")
         if row["final_checker_task_id"] != checker_task_id:
             raise ValueError("checker_task_id does not match designated final_checker_task_id")
+        if row["admission_key"] is not None:
+            raise ValueError(
+                "admitted checker verdicts require the structured runtime submission protocol"
+            )
         _validate_immutable_persisted_value(row, "checker_verdict", verdict)
         if row["checker_verdict"] == verdict:
             return _row_to_project_finalization(row)

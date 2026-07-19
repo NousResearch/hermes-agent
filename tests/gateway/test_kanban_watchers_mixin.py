@@ -15,6 +15,7 @@ from gateway.delivery import DeliveryRouter, DeliveryTarget
 from gateway.kanban_watchers import (
     GatewayKanbanWatchersMixin,
     _project_finalizer_delivery_receipt,
+    _normalize_project_finalizer_config,
 )
 
 KANBAN_METHODS = [
@@ -114,6 +115,94 @@ def test_project_finalizer_normalizes_mapping_fallback_and_rejection():
     assert _project_finalizer_delivery_receipt(
         {"success": False, "error": "provider rejected send"}
     ) == {"rejected": True, "error": "provider rejected send"}
+
+
+def test_project_finalizer_config_accepts_only_exact_preview_canary_scopes():
+    assert _normalize_project_finalizer_config(
+        {
+            "project_finalizer": {
+                "enabled": True,
+                "canary_scope": ["release-board/t_deadbeef"],
+                "interval_seconds": 15,
+                "cleanup": {"mode": "preview"},
+            }
+        }
+    ) == (True, ("release-board/t_deadbeef",), 15.0)
+
+
+def test_project_finalizer_config_fails_closed_for_unsafe_or_malformed_values():
+    valid = {
+        "enabled": True,
+        "canary_scope": ["release-board/t_deadbeef"],
+        "interval_seconds": 15,
+        "cleanup": {"mode": "preview"},
+    }
+    invalid_overrides = (
+        {"canary_scope": ["release-board/*"]},
+        {"canary_scope": ["t_deadbeef"]},
+        {"canary_scope": ["release-board/t_deadbeef", "release-board/t_deadbeef"]},
+        {"interval_seconds": 0},
+        {"interval_seconds": float("inf")},
+        {"cleanup": {"mode": "apply"}},
+        {"cleanup_enabled": True},
+        {"cleanup": []},
+        {"canary_scope": "release-board/t_deadbeef"},
+    )
+    for overrides in invalid_overrides:
+        candidate = valid | overrides
+        assert _normalize_project_finalizer_config({"project_finalizer": candidate}) == (False, (), 60.0)
+
+
+def test_project_finalizer_watcher_uses_normalized_scope_and_never_enables_cleanup(monkeypatch):
+    """The gateway passes only the safe, normalized finalizer contract."""
+    from gateway import kanban_watchers
+    from gateway import project_finalization
+    from hermes_cli import config as hermes_config
+    from hermes_cli import kanban_db
+
+    captured = []
+
+    class Finalizer:
+        def __init__(self, *_args, **kwargs):
+            captured.append(kwargs)
+
+        async def tick(self, *, board_id):
+            runner._running = False
+
+    class Runner(GatewayKanbanWatchersMixin):
+        _running = True
+        delivery_router = None
+
+    runner = Runner()
+    monkeypatch.setattr(
+        hermes_config,
+        "load_config",
+        lambda: {
+            "project_finalizer": {
+                "enabled": True,
+                "canary_scope": ["release-board/t_deadbeef"],
+                "interval_seconds": 7,
+                "cleanup": {"mode": "preview"},
+            }
+        },
+    )
+    monkeypatch.setattr(kanban_db, "list_boards", lambda **_kwargs: [{"slug": "release-board"}])
+    monkeypatch.setattr(kanban_db, "connect", lambda **_kwargs: object())
+    monkeypatch.setattr(project_finalization, "ProjectFinalizationService", Finalizer)
+
+    async def no_sleep(_interval):
+        return None
+
+    monkeypatch.setattr(kanban_watchers.asyncio, "sleep", no_sleep)
+    asyncio.run(runner._kanban_project_finalizer_watcher())
+
+    assert len(captured) == 1
+    assert captured[0]["owner"] == f"gateway:{id(runner)}"
+    assert callable(captured[0]["now"])
+    assert callable(captured[0]["deliver"])
+    assert captured[0]["enabled"] is True
+    assert captured[0]["canary_scope"] == ("release-board/t_deadbeef",)
+    assert captured[0]["cleanup_enabled"] is False
 
 
 def test_singleton_dispatcher_lock_is_exclusive(tmp_path):

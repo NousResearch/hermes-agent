@@ -224,9 +224,12 @@ class ProjectFinalizationService:
                 return result.plus(skipped=1)
         destination = self._destination(conn, current)
         project = self._identity(current)
-        candidate_id = evaluation.snapshot_version
-        identity = checker_registration_identity(project, candidate_snapshot_version=evaluation.snapshot_version, candidate_id=candidate_id)
-        action = CheckerRegistrationAction(project=project, checker_identity=identity, idempotency_key=identity, candidate_snapshot_version=evaluation.snapshot_version, candidate_id=candidate_id, worker_profile=self._worker_profile(conn, current.root_task_id, "checker"), task_contract=self._task_contract(conn, current.root_task_id), notification_route_identities=self._route_identities(destination))
+        candidate_id = evaluation.candidate_snapshot_version
+        identity = checker_registration_identity(project, candidate_snapshot_version=evaluation.candidate_snapshot_version, candidate_id=candidate_id)
+        checker_profile = current.checker_profile or self._worker_profile(
+            conn, current.root_task_id, "checker"
+        )
+        action = CheckerRegistrationAction(project=project, checker_identity=identity, idempotency_key=identity, candidate_snapshot_version=evaluation.candidate_snapshot_version, candidate_id=candidate_id, worker_profile=checker_profile, task_contract=self._task_contract(conn, current.root_task_id), notification_route_identities=self._route_identities(destination))
         registered = register_project_checker(conn, action, self._version_token(current, evaluation), now=now)
         return result.plus(checkers_reconciled=1 if registered.disposition in {"created", "already_exists"} else 0, skipped=1 if registered.disposition == "stale_snapshot" else 0)
 

@@ -12,7 +12,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import os
+import re
 import sqlite3
 import time
 from pathlib import Path
@@ -23,6 +25,70 @@ from agent.i18n import t
 # Match the logger run.py uses (logging.getLogger(__name__) where __name__ ==
 # "gateway.run") so extracted log records keep their original logger name.
 logger = logging.getLogger("gateway.run")
+
+
+_PROJECT_FINALIZER_TASK_ID_RE = re.compile(r"^t_[0-9a-f]{8}$")
+
+
+def _normalize_project_finalizer_config(raw_config: Any) -> tuple[bool, tuple[str, ...], float]:
+    """Return safe project-finalizer settings, failing closed on bad input.
+
+    Canary scopes are intentionally exact ``<board-slug>/<root-task-id>``
+    identifiers. This is a gateway safety boundary: a hand-edited config must
+    never accidentally turn a one-root canary into a board-wide finalizer.
+    """
+    disabled = (False, (), 60.0)
+    if not isinstance(raw_config, Mapping):
+        return disabled
+
+    raw_finalizer = raw_config.get("project_finalizer")
+    if not isinstance(raw_finalizer, Mapping):
+        return disabled
+    if raw_finalizer.get("enabled") is not True:
+        return disabled
+    if raw_finalizer.get("cleanup_enabled") is True:
+        return disabled
+
+    cleanup = raw_finalizer.get("cleanup")
+    if not isinstance(cleanup, Mapping) or cleanup.get("mode") != "preview":
+        return disabled
+
+    raw_interval = raw_finalizer.get("interval_seconds")
+    if isinstance(raw_interval, bool) or not isinstance(raw_interval, (int, float)):
+        return disabled
+    interval = float(raw_interval)
+    if not math.isfinite(interval) or interval < 1:
+        return disabled
+
+    raw_scope = raw_finalizer.get("canary_scope")
+    if not isinstance(raw_scope, (list, tuple)) or not raw_scope:
+        return disabled
+
+    try:
+        from hermes_cli.kanban_db import _normalize_board_slug
+    except Exception:
+        return disabled
+
+    scope: list[str] = []
+    seen: set[str] = set()
+    for entry in raw_scope:
+        if not isinstance(entry, str) or entry.count("/") != 1:
+            return disabled
+        board_slug, root_task_id = entry.split("/", 1)
+        if not board_slug or not _PROJECT_FINALIZER_TASK_ID_RE.fullmatch(root_task_id):
+            return disabled
+        try:
+            # The existing board validator also prevents traversal and path
+            # separators. Require its canonical spelling for an exact scope.
+            if _normalize_board_slug(board_slug) != board_slug:
+                return disabled
+        except (TypeError, ValueError):
+            return disabled
+        if entry in seen:
+            return disabled
+        seen.add(entry)
+        scope.append(entry)
+    return True, tuple(scope), interval
 
 
 def _project_finalizer_delivery_receipt(receipt: Mapping[str, Any]) -> dict[str, Any]:
@@ -165,17 +231,7 @@ class GatewayKanbanWatchersMixin:
         gateway_loop = asyncio.get_running_loop()
         while self._running:
             try:
-                cfg = _load_config()
-                finalizer_cfg = cfg.get("project_finalizer", {}) if isinstance(cfg, dict) else {}
-                enabled = finalizer_cfg.get("enabled", False) is True
-                raw_scope = finalizer_cfg.get("canary_scope", ())
-                scope = tuple(raw_scope) if isinstance(raw_scope, (list, tuple)) and all(isinstance(item, str) for item in raw_scope) else ()
-                raw_interval = finalizer_cfg.get("interval_seconds", 60)
-                try:
-                    interval = max(1.0, float(raw_interval))
-                except (TypeError, ValueError):
-                    interval = 60.0
-                cleanup_enabled = finalizer_cfg.get("cleanup_enabled", False) is True
+                enabled, scope, interval = _normalize_project_finalizer_config(_load_config())
                 if enabled and scope:
                     async def _deliver(platform: str, chat_id: str, thread_id: str | None, content: str) -> Mapping[str, Any]:
                         target = DeliveryTarget(platform=Platform(platform), chat_id=chat_id, thread_id=thread_id, is_explicit=True)
@@ -199,7 +255,10 @@ class GatewayKanbanWatchersMixin:
                             deliver=_deliver,
                             enabled=True,
                             canary_scope=scope,
-                            cleanup_enabled=cleanup_enabled,
+                            # Cleanup is preview-only for this release. Keep
+                            # the service apply path unreachable even if a
+                            # legacy setting was left in a user config.
+                            cleanup_enabled=False,
                         )
                         # All SQLite/evaluator work is off the gateway loop.  The
                         # injected delivery closure safely hops back only for the

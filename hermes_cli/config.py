@@ -1545,6 +1545,18 @@ DEFAULT_CONFIG = {
         "auto_subscribe_on_create": True,
     },
 
+    # Project-finalization is deliberately opt-in and scoped to named canary
+    # roots. The gateway rejects malformed settings rather than broadening the
+    # feature's reach. Cleanup remains preview-only in this release.
+    "project_finalizer": {
+        "enabled": False,
+        "canary_scope": [],
+        "interval_seconds": 60,
+        "cleanup": {
+            "mode": "preview",
+        },
+    },
+
     # Anthropic prompt caching (Claude via OpenRouter or native Anthropic API).
     # cache_ttl must be "5m" or "1h" (Anthropic-supported tiers); other values are ignored.
     "prompt_caching": {

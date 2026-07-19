@@ -49,6 +49,7 @@ from hermes_cli.project_finalization_contract import (
     record_delivery_attempt,
     record_failure_envelope,
     record_cleanup_journal,
+    PROJECT_SCHEMA_SQL,
 )
 
 
@@ -124,8 +125,8 @@ def test_migration_is_idempotent_and_marker_queryable():
         ensure_project_finalization_schema(conn)
         marker1 = get_project_finalization_migration_marker(conn)
         ver1 = get_project_finalization_schema_version(conn)
-        assert marker1 == "hof002-v1"
-        assert ver1 == "1"
+        assert marker1 == "hermes-orch-finish-001-g3-v2"
+        assert ver1 == "2"
 
         # repeated call
         ensure_project_finalization_schema(conn)
@@ -134,7 +135,7 @@ def test_migration_is_idempotent_and_marker_queryable():
 
         # meta table has rows
         rows = list(conn.execute("SELECT key, value FROM project_finalization_meta"))
-        assert ("migration", "hof002-v1") in [(r[0], r[1]) for r in rows]
+        assert ("migration", "hermes-orch-finish-001-g3-v2") in [(r[0], r[1]) for r in rows]
     finally:
         _close_and_unlink(conn, path)
 
@@ -218,7 +219,92 @@ def test_empty_compatible_partial_table_is_additively_repaired():
         columns = {row["name"] for row in conn.execute("PRAGMA table_info(project_finalizations)")}
         assert {"checker_verdict", "repair_generation", "version"} <= columns
         assert conn.execute("SELECT COUNT(*) FROM project_finalizations").fetchone()[0] == 0
-        assert get_project_finalization_migration_marker(conn) == "hof002-v1"
+        assert get_project_finalization_migration_marker(conn) == "hermes-orch-finish-001-g3-v2"
+    finally:
+        _close_and_unlink(conn, path)
+
+
+def test_populated_v1_schema_migrates_additively_and_preserves_finalization_row():
+    conn, path = _make_temp_db()
+    try:
+        # Build the exact prior project_finalizations shape, then populate it
+        # before asking the v2 migration to add nullable G3 columns.
+        legacy_finalizations = PROJECT_SCHEMA_SQL.split(
+            "CREATE TABLE IF NOT EXISTS project_finalization_members", 1
+        )[0]
+        for column in (
+            "    admission_key         TEXT,\n",
+            "    checker_profile       TEXT,\n",
+            "    notification_route_identity TEXT,\n",
+            "    checker_candidate_snapshot_version TEXT,\n",
+            "    checker_candidate_id  TEXT,\n",
+        ):
+            legacy_finalizations = legacy_finalizations.replace(column, "")
+        conn.executescript(legacy_finalizations)
+        conn.executescript("""
+            CREATE TABLE project_finalization_meta (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
+            INSERT INTO project_finalization_meta (key, value) VALUES
+                ('version', '1'), ('migration', 'hof002-v1');
+            INSERT INTO project_finalizations (
+                board_id, root_task_id, generation, state, final_checker_task_id,
+                notification_policy, retention_days, created_at, updated_at, version
+            ) VALUES ('board', 'root', 1, 'open', 'checker', 'project_summary', 3, 11, 12, 1);
+        """)
+
+        ensure_project_finalization_schema(conn)
+
+        columns = {row["name"] for row in conn.execute("PRAGMA table_info(project_finalizations)")}
+        assert {
+            "admission_key",
+            "checker_profile",
+            "notification_route_identity",
+            "checker_candidate_snapshot_version",
+            "checker_candidate_id",
+        } <= columns
+        row = conn.execute("SELECT * FROM project_finalizations").fetchone()
+        assert row["board_id"] == "board"
+        assert row["root_task_id"] == "root"
+        assert row["created_at"] == 11
+        assert row["admission_key"] is None
+        assert get_project_finalization_schema_version(conn) == "2"
+        assert get_project_finalization_migration_marker(conn) == "hermes-orch-finish-001-g3-v2"
+    finally:
+        _close_and_unlink(conn, path)
+
+
+def test_mismatched_legacy_metadata_fails_closed_without_partial_v2_repair():
+    conn, path = _make_temp_db()
+    try:
+        conn.executescript("""
+            CREATE TABLE project_finalizations (
+                board_id TEXT NOT NULL,
+                root_task_id TEXT NOT NULL,
+                generation INTEGER NOT NULL,
+                state TEXT NOT NULL,
+                final_checker_task_id TEXT NOT NULL,
+                notification_policy TEXT NOT NULL,
+                retention_days INTEGER NOT NULL,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                PRIMARY KEY (board_id, root_task_id, generation)
+            );
+            CREATE TABLE project_finalization_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+            INSERT INTO project_finalization_meta (key, value) VALUES
+                ('version', '1'), ('migration', 'wrong-marker');
+        """)
+
+        with pytest.raises(ValueError, match="unsupported migration marker"):
+            ensure_project_finalization_schema(conn)
+
+        columns = {row["name"] for row in conn.execute("PRAGMA table_info(project_finalizations)")}
+        assert "admission_key" not in columns
+        assert dict(conn.execute("SELECT key, value FROM project_finalization_meta")) == {
+            "version": "1",
+            "migration": "wrong-marker",
+        }
     finally:
         _close_and_unlink(conn, path)
 
@@ -288,13 +374,13 @@ def test_future_schema_version_is_rejected_without_changing_marker():
     conn, path = _make_temp_db()
     try:
         ensure_project_finalization_schema(conn)
-        conn.execute("UPDATE project_finalization_meta SET value='2' WHERE key='version'")
+        conn.execute("UPDATE project_finalization_meta SET value='3' WHERE key='version'")
 
         with pytest.raises(ValueError, match="unsupported future schema version"):
             ensure_project_finalization_schema(conn)
 
-        assert get_project_finalization_schema_version(conn) == "2"
-        assert get_project_finalization_migration_marker(conn) == "hof002-v1"
+        assert get_project_finalization_schema_version(conn) == "3"
+        assert get_project_finalization_migration_marker(conn) == "hermes-orch-finish-001-g3-v2"
     finally:
         _close_and_unlink(conn, path)
 

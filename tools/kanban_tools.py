@@ -179,7 +179,9 @@ def _connect(board: Optional[str] = None):
     return kb, kb.connect(board=board)
 
 
-_GOAL_MODE_BLOCK_ALLOWED_KINDS = frozenset({"dependency", "needs_input"})
+_GOAL_MODE_BLOCK_ALLOWED_KINDS = frozenset(
+    {"dependency", "needs_input", "review_required"}
+)
 
 
 def _goal_judge_available() -> bool:
@@ -687,6 +689,8 @@ def _handle_block(args: dict, **kw) -> str:
         return tool_error("reason is required — explain what input you need")
     reason = redact_sensitive_text(str(reason), force=True)
     kind = args.get("kind")
+    if reason.casefold().startswith("review-required:"):
+        kind = "review_required"
     board = args.get("board")
     try:
         kb, conn = _connect(board=board)
@@ -1547,10 +1551,14 @@ KANBAN_BLOCK_SCHEMA = {
             },
             "kind": {
                 "type": "string",
-                "enum": ["dependency", "needs_input", "capability", "transient"],
+                "enum": [
+                    "dependency", "needs_input", "capability", "transient",
+                    "review_required",
+                ],
                 "description": (
                     "Why you're blocked. 'dependency' waits in todo and "
-                    "resumes automatically; the others surface to a human. "
+                    "resumes automatically; 'review_required' is a completed "
+                    "candidate awaiting human review; the others are blockers. "
                     "Omit only if none apply."
                 ),
             },

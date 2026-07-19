@@ -122,7 +122,9 @@ VALID_INITIAL_STATUSES = {"running", "blocked"}
 # ``BLOCK_RECURRENCE_LIMIT``) escalates them to ``triage`` if a cron keeps
 # unblocking them only to have the worker re-block for the same reason.
 # ``None`` = legacy/un-typed block (treated as a generic human blocker).
-VALID_BLOCK_KINDS = {"dependency", "needs_input", "capability", "transient"}
+VALID_BLOCK_KINDS = {
+    "dependency", "needs_input", "capability", "transient", "review_required",
+}
 
 # After a task has been blocked, unblocked, and re-blocked this many times for
 # the same (truly-blocked) reason, the unblock-loop breaker stops trusting the
@@ -1200,6 +1202,19 @@ CREATE TABLE IF NOT EXISTS task_events (
     kind       TEXT NOT NULL,
     payload    TEXT,
     created_at INTEGER NOT NULL
+);
+
+-- Compact state for per-tick respawn guards. The dispatcher updates this row
+-- every tick but emits task_events only on first sighting, identity/reason
+-- change, a bounded periodic roll-up, and clearing.
+CREATE TABLE IF NOT EXISTS respawn_guard_state (
+    task_id        TEXT PRIMARY KEY,
+    reason         TEXT NOT NULL,
+    identity       TEXT NOT NULL,
+    first_at       INTEGER NOT NULL,
+    last_at        INTEGER NOT NULL,
+    skipped_count  INTEGER NOT NULL DEFAULT 1,
+    last_event_at  INTEGER NOT NULL
 );
 
 -- Historical attempt record. Each time the dispatcher claims a task, a
@@ -3383,11 +3398,12 @@ def _has_sticky_block(conn: sqlite3.Connection, task_id: str) -> bool:
     """
     row = conn.execute(
         "SELECT kind FROM task_events "
-        "WHERE task_id = ? AND kind IN ('blocked', 'unblocked') "
+        "WHERE task_id = ? AND kind IN "
+        "('blocked', 'dispatch_admission_rejected', 'unblocked') "
         "ORDER BY id DESC LIMIT 1",
         (task_id,),
     ).fetchone()
-    return bool(row) and row["kind"] == "blocked"
+    return bool(row) and row["kind"] in {"blocked", "dispatch_admission_rejected"}
 
 
 def recompute_ready(
@@ -3487,6 +3503,8 @@ def claim_task(
     *,
     ttl_seconds: Optional[int] = None,
     claimer: Optional[str] = None,
+    failure_limit: Optional[int] = None,
+    failure_limit_source: str = "default",
 ) -> Optional[Task]:
     """Atomically transition ``ready -> running``.
 
@@ -3558,9 +3576,9 @@ def claim_task(
         if cur.rowcount != 1:
             return None
         # Look up the current task row so we can populate the run with
-        # its assignee / step / runtime cap.
+        # its assignee / step / runtime cap and effective failure policy.
         trow = conn.execute(
-            "SELECT assignee, max_runtime_seconds, current_step_key "
+            "SELECT assignee, max_runtime_seconds, current_step_key, max_retries "
             "FROM tasks WHERE id = ?",
             (task_id,),
         ).fetchone()
@@ -3587,9 +3605,20 @@ def claim_task(
             "UPDATE tasks SET current_run_id = ? WHERE id = ?",
             (run_id, task_id),
         )
+        task_limit = trow["max_retries"] if trow else None
+        effective_limit = int(
+            task_limit if task_limit is not None
+            else failure_limit if failure_limit is not None
+            else DEFAULT_FAILURE_LIMIT
+        )
+        limit_source = "task" if task_limit is not None else failure_limit_source
         _append_event(
             conn, task_id, "claimed",
-            {"lock": lock, "expires": expires, "run_id": run_id},
+            {
+                "lock": lock, "expires": expires, "run_id": run_id,
+                "effective_failure_limit": effective_limit,
+                "failure_limit_source": limit_source,
+            },
             run_id=run_id,
         )
         claimed = get_task(conn, task_id)
@@ -4981,7 +5010,10 @@ def block_task(
         # the work pool), so a stored block_kind that matches the incoming kind
         # means: blocked → unblocked → about-to-re-block for the same cause.
         # An un-typed (None) block compares as "same" to a prior un-typed block.
-        same_cause = prev_kind == kind
+        # Review handoff is completed producer work waiting for eyes, not a
+        # failed unblock attempt. A changed candidate may legitimately return
+        # to review repeatedly, so it never consumes the blocker-loop budget.
+        same_cause = prev_kind == kind and kind != "review_required"
         recurrences = prev_recurrences + 1 if same_cause else 1
 
         if recurrences >= BLOCK_RECURRENCE_LIMIT:
@@ -5736,7 +5768,34 @@ def _repo_root_for_worktree_target(path: Path) -> Optional[Path]:
         current = current.parent
 
 
-def _ensure_git_worktree(repo_root: Path, target: Path, branch_name: str) -> None:
+def _fetched_remote_default(repo_root: Path) -> str:
+    """Fetch and return the repository's canonical remote-default ref."""
+    fetched = subprocess.run(
+        ["git", "-C", str(repo_root), "fetch", "origin"],
+        capture_output=True, text=True, timeout=120, check=False,
+    )
+    if fetched.returncode != 0:
+        detail = (fetched.stderr or fetched.stdout or "").strip()
+        raise RuntimeError(f"could not fetch origin before provisioning: {detail}")
+    symbolic = subprocess.run(
+        ["git", "-C", str(repo_root), "symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"],
+        capture_output=True, text=True, timeout=30, check=False,
+    )
+    ref = (symbolic.stdout or "").strip()
+    if symbolic.returncode == 0 and ref:
+        return ref
+    probe = subprocess.run(
+        ["git", "-C", str(repo_root), "show-ref", "--verify", "refs/remotes/origin/main"],
+        capture_output=True, text=True, timeout=30, check=False,
+    )
+    if probe.returncode == 0:
+        return "refs/remotes/origin/main"
+    raise RuntimeError("origin has no resolvable default branch (origin/HEAD or origin/main)")
+
+
+def _ensure_git_worktree(
+    repo_root: Path, target: Path, branch_name: str, *, start_ref: str = "HEAD",
+) -> None:
     """Materialize ``target`` as a linked git worktree under ``repo_root``."""
     target = target.expanduser()
     repo_common = _git_common_dir(repo_root)
@@ -5750,7 +5809,7 @@ def _ensure_git_worktree(repo_root: Path, target: Path, branch_name: str) -> Non
     else:
         cmd = [
             "git", "-C", str(repo_root), "worktree", "add", "-b", branch_name,
-            str(target), "HEAD",
+            str(target), start_ref,
         ]
     result = subprocess.run(
         cmd,
@@ -5806,7 +5865,8 @@ def _resolve_worktree_workspace(
                 f"{board_slug!r} default_workdir {board_default!r} is not inside a git repo"
             )
         target = repo_root / ".worktrees" / task.id
-        _ensure_git_worktree(repo_root, target, branch_name)
+        start_ref = _fetched_remote_default(repo_root) if task.project_id else "HEAD"
+        _ensure_git_worktree(repo_root, target, branch_name, start_ref=start_ref)
         return target, branch_name
 
     requested = Path(task.workspace_path).expanduser()
@@ -5824,7 +5884,8 @@ def _resolve_worktree_workspace(
     repo_root = _git_toplevel(requested)
     if repo_root is not None and requested_resolved == repo_root:
         target = repo_root / ".worktrees" / task.id
-        _ensure_git_worktree(repo_root, target, branch_name)
+        start_ref = _fetched_remote_default(repo_root) if task.project_id else "HEAD"
+        _ensure_git_worktree(repo_root, target, branch_name, start_ref=start_ref)
         return target, branch_name
 
     repo_root = _repo_root_for_worktree_target(requested.parent)
@@ -5833,7 +5894,8 @@ def _resolve_worktree_workspace(
             f"task {task.id} worktree path {task.workspace_path!r} is not inside a git repo "
             "and does not point at a git repo root"
         )
-    _ensure_git_worktree(repo_root, requested, branch_name)
+    start_ref = _fetched_remote_default(repo_root) if task.project_id else "HEAD"
+    _ensure_git_worktree(repo_root, requested, branch_name, start_ref=start_ref)
     return requested, branch_name
 
 
@@ -6019,6 +6081,7 @@ _RESPAWN_GUARD_PR_URL_RE = re.compile(
     r"https?://github\.com/[^/\s]+/[^/\s]+/pull/\d+",
     re.IGNORECASE,
 )
+_RESPAWN_GUARD_HEAD_RE = re.compile(r"(?<![0-9a-f])[0-9a-f]{7,40}(?![0-9a-f])", re.I)
 
 
 @dataclass
@@ -6421,6 +6484,7 @@ def enforce_max_runtime(
     conn: sqlite3.Connection,
     *,
     signal_fn=None,
+    failure_limit: Optional[int] = None,
 ) -> list[str]:
     """Terminate workers whose per-task ``max_runtime_seconds`` has elapsed.
 
@@ -6488,6 +6552,7 @@ def enforce_max_runtime(
                 except (ProcessLookupError, OSError):
                     pass
 
+        run_id: Optional[int] = None
         with write_txn(conn):
             cur = conn.execute(
                 "UPDATE tasks SET status = 'ready', claim_lock = NULL, "
@@ -6524,8 +6589,10 @@ def enforce_max_runtime(
                 conn, tid,
                 error=f"elapsed {int(elapsed)}s > limit {int(row['max_runtime_seconds'])}s",
                 outcome="timed_out",
+                failure_limit=failure_limit,
                 release_claim=False,
                 end_run=False,
+                event_run_id=run_id,
                 event_payload_extra={"pid": pid, "sigkill": killed},
             )
     return timed_out
@@ -6749,7 +6816,9 @@ def _protocol_violation_streak(conn: sqlite3.Connection, task_id: str) -> int:
     return streak
 
 
-def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
+def detect_crashed_workers(
+    conn: sqlite3.Connection, *, failure_limit: Optional[int] = None,
+) -> list[str]:
     """Reclaim ``running`` tasks whose worker PID is no longer alive.
 
     Appends a ``crashed`` event and drops the task back to ``ready``.
@@ -6785,8 +6854,8 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
     # clean-exit-but-still-running case, which is accounted against its
     # own bounded violation streak instead of the unified failure
     # counter (see the post-txn loop below).
-    crash_details: list[tuple[str, int, str, bool, str]] = []
-    # (task_id, pid, claimer, protocol_violation, error_text)
+    crash_details: list[tuple[str, int, str, bool, str, Optional[int]]] = []
+    # (task_id, pid, claimer, protocol_violation, error_text, run_id)
     with write_txn(conn):
         rows = conn.execute(
             "SELECT id, worker_pid, claim_lock, started_at FROM tasks "
@@ -6923,7 +6992,7 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                     crashed.append(row["id"])
                     crash_details.append(
                         (row["id"], pid, row["claim_lock"],
-                         protocol_violation, error_text)
+                         protocol_violation, error_text, run_id)
                     )
     # Outside the main txn: account each crashed task and maybe trip the
     # breaker (the task transitions ready → blocked with a ``gave_up`` event
@@ -6945,10 +7014,10 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
     if crash_details:
         # Fingerprint errors to detect systemic failures.
         _fp_counts: dict[str, int] = {}
-        for _, _, _, _, err_text in crash_details:
+        for _, _, _, _, err_text, _ in crash_details:
             fp = _error_fingerprint(err_text)
             _fp_counts[fp] = _fp_counts.get(fp, 0) + 1
-        for tid, pid, claimer, protocol_violation, error_text in crash_details:
+        for tid, pid, claimer, protocol_violation, error_text, run_id in crash_details:
             if protocol_violation:
                 streak = _protocol_violation_streak(conn, tid)
                 trow = conn.execute(
@@ -6985,6 +7054,7 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                     force_trip=True,
                     release_claim=False,
                     end_run=False,
+                    event_run_id=run_id,
                     event_payload_extra={
                         "pid": pid,
                         "claimer": claimer,
@@ -7001,9 +7071,10 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                 conn, tid,
                 error=error_text,
                 outcome="crashed",
-                failure_limit=1 if is_systemic else None,
+                failure_limit=1 if is_systemic else failure_limit,
                 release_claim=False,
                 end_run=False,
+                event_run_id=run_id,
                 event_payload_extra={"pid": pid, "claimer": claimer},
             )
             if tripped:
@@ -7025,10 +7096,11 @@ def _record_task_failure(
     error: str,
     *,
     outcome: str,
-    failure_limit: int = None,
+    failure_limit: Optional[int] = None,
     force_trip: bool = False,
     release_claim: bool = False,
     end_run: bool = False,
+    event_run_id: Optional[int] = None,
     event_payload_extra: Optional[dict] = None,
 ) -> bool:
     """Record a non-success outcome (spawn_failed / crashed / timed_out)
@@ -7144,7 +7216,8 @@ def _record_task_failure(
             if event_payload_extra:
                 payload.update(event_payload_extra)
             _append_event(
-                conn, task_id, "gave_up", payload, run_id=run_id,
+                conn, task_id, "gave_up", payload,
+                run_id=run_id if run_id is not None else event_run_id,
             )
             blocked = True
         else:
@@ -7379,6 +7452,222 @@ def check_respawn_guard(conn: sqlite3.Connection, task_id: str) -> Optional[str]
     return None
 
 
+_RESPAWN_GUARD_ROLLUP_SECONDS = 3600
+
+
+def _respawn_guard_identity(
+    conn: sqlite3.Connection, task_id: str, reason: str,
+) -> str:
+    if reason == "active_pr":
+        rows = conn.execute(
+            "SELECT body FROM task_comments WHERE task_id = ? ORDER BY id DESC",
+            (task_id,),
+        ).fetchall()
+        for row in rows:
+            body = row["body"] or ""
+            match = _RESPAWN_GUARD_PR_URL_RE.search(body)
+            if match:
+                head = _RESPAWN_GUARD_HEAD_RE.search(
+                    body[:match.start()] + body[match.end():]
+                )
+                return f"{match.group(0)}@{head.group(0)}" if head else match.group(0)
+    row = conn.execute(
+        "SELECT COALESCE(last_failure_error, '') AS value FROM tasks WHERE id = ?",
+        (task_id,),
+    ).fetchone()
+    return str(row["value"] if row else "")[:200]
+
+
+def _record_respawn_guard(
+    conn: sqlite3.Connection, task_id: str, reason: Optional[str],
+) -> None:
+    """Persist bounded guard audit events while retaining per-tick state."""
+    now = int(time.time())
+    with write_txn(conn):
+        previous = conn.execute(
+            "SELECT * FROM respawn_guard_state WHERE task_id = ?", (task_id,),
+        ).fetchone()
+        if reason is None:
+            if previous is not None:
+                _append_event(
+                    conn, task_id, "respawn_guard_cleared",
+                    {
+                        "reason": previous["reason"],
+                        "identity": previous["identity"],
+                        "skipped_count": int(previous["skipped_count"]),
+                    },
+                )
+                conn.execute(
+                    "DELETE FROM respawn_guard_state WHERE task_id = ?", (task_id,),
+                )
+            return
+        identity = _respawn_guard_identity(conn, task_id, reason)
+        changed = (
+            previous is None
+            or previous["reason"] != reason
+            or previous["identity"] != identity
+        )
+        rollup = (
+            previous is not None
+            and now - int(previous["last_event_at"]) >= _RESPAWN_GUARD_ROLLUP_SECONDS
+        )
+        count = 1 if previous is None else int(previous["skipped_count"]) + 1
+        if previous is None:
+            conn.execute(
+                "INSERT INTO respawn_guard_state "
+                "(task_id, reason, identity, first_at, last_at, skipped_count, last_event_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (task_id, reason, identity, now, now, count, now),
+            )
+        else:
+            conn.execute(
+                "UPDATE respawn_guard_state SET reason=?, identity=?, last_at=?, "
+                "skipped_count=?, last_event_at=? WHERE task_id=?",
+                (
+                    reason, identity, now, count,
+                    now if changed or rollup else int(previous["last_event_at"]),
+                    task_id,
+                ),
+            )
+        if changed or rollup:
+            _append_event(
+                conn, task_id, "respawn_guarded",
+                {"reason": reason, "identity": identity, "skipped_count": count},
+            )
+
+
+def _available_profile_skills(profile_name: str) -> set[str]:
+    """Discover exact enabled skill names under the assignee profile."""
+    from agent.skill_utils import get_all_skills_dirs, is_excluded_skill_path, parse_frontmatter
+    from hermes_cli.profiles import get_profile_dir
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    token = set_hermes_home_override(get_profile_dir(profile_name))
+    try:
+        from tools.skills_tool import _get_disabled_skill_names
+        disabled = set(_get_disabled_skill_names())
+        names: set[str] = set()
+        for root in get_all_skills_dirs():
+            if not root.exists():
+                continue
+            for skill_md in root.rglob("SKILL.md"):
+                if is_excluded_skill_path(skill_md):
+                    continue
+                try:
+                    frontmatter, _ = parse_frontmatter(skill_md.read_text(encoding="utf-8"))
+                except (OSError, UnicodeError):
+                    continue
+                name = str(frontmatter.get("name") or skill_md.parent.name)
+                if name in disabled:
+                    continue
+                names.update((name, skill_md.parent.name))
+                try:
+                    names.add(skill_md.parent.relative_to(root).as_posix())
+                except ValueError:
+                    pass
+        return names
+    finally:
+        reset_hermes_home_override(token)
+
+
+def _validate_forced_skills(task: Task) -> Optional[dict[str, Any]]:
+    if not task.skills:
+        return None
+    try:
+        available = _available_profile_skills(task.assignee or "default")
+    except Exception as exc:
+        return {"code": "skill_discovery_failed", "detail": str(exc)[:300]}
+    missing = sorted({str(skill) for skill in task.skills} - available)
+    if not missing:
+        return None
+    return {
+        "code": "missing_forced_skills",
+        "detail": f"profile {task.assignee!r} lacks forced skills: {', '.join(missing)}",
+        "missing_skills": missing,
+    }
+
+
+def _git_text(path: Path, *args: str) -> tuple[int, str]:
+    result = subprocess.run(
+        ["git", "-C", str(path), *args], capture_output=True, text=True,
+        timeout=30, check=False,
+    )
+    return result.returncode, (result.stdout or result.stderr or "").strip()
+
+
+def _validate_mutable_workspace(
+    conn: sqlite3.Connection, task: Task, workspace: Path,
+    resolved_branch: Optional[str],
+) -> Optional[dict[str, Any]]:
+    if task.workspace_kind not in {"dir", "worktree"}:
+        return None
+    expected = os.path.realpath(str(workspace))
+    current = conn.execute(
+        "SELECT created_at FROM tasks WHERE id = ?", (task.id,),
+    ).fetchone()
+    for row in conn.execute(
+        "SELECT id, status, workspace_path, created_at FROM tasks "
+        "WHERE id != ? AND workspace_kind IN ('dir', 'worktree') "
+        "AND status NOT IN ('done', 'archived') AND workspace_path IS NOT NULL",
+        (task.id,),
+    ):
+        if os.path.realpath(os.path.expanduser(row["workspace_path"])) != expected:
+            continue
+        older_owner = current is not None and (
+            int(row["created_at"]), row["id"]
+        ) < (int(current["created_at"]), task.id)
+        if row["status"] == "running" or older_owner:
+            return {
+                "code": "workspace_owned",
+                "detail": f"mutable workspace is already owned by nonterminal task {row['id']} ({row['status']})",
+                "owner_task_id": row["id"],
+            }
+    if task.workspace_kind != "worktree":
+        return None
+    rc, dirty = _git_text(workspace, "status", "--porcelain")
+    if rc != 0 or dirty:
+        return {"code": "workspace_dirty", "detail": dirty[:300] or "git status failed"}
+    expected_branch = (resolved_branch or task.branch_name or f"wt/{task.id}").strip()
+    rc, actual_branch = _git_text(workspace, "branch", "--show-current")
+    if rc != 0 or actual_branch != expected_branch:
+        return {
+            "code": "branch_mismatch",
+            "detail": f"expected branch {expected_branch!r}, found {actual_branch!r}",
+        }
+    if task.project_id:
+        repo_root = _git_toplevel(workspace)
+        if repo_root is None:
+            return {"code": "workspace_invalid", "detail": "worktree has no repository root"}
+        try:
+            remote_default = _fetched_remote_default(repo_root)
+        except Exception as exc:
+            return {"code": "remote_default_unavailable", "detail": str(exc)[:300]}
+        rc, _ = _git_text(workspace, "merge-base", "--is-ancestor", remote_default, "HEAD")
+        if rc != 0:
+            return {
+                "code": "stale_worktree_base",
+                "detail": f"HEAD does not contain fetched remote default {remote_default}",
+            }
+    return None
+
+
+def _reject_dispatch_admission(
+    conn: sqlite3.Connection, task_id: str, evidence: dict[str, Any],
+) -> bool:
+    """Block a deterministic pre-spawn error without creating a worker run."""
+    with write_txn(conn):
+        cur = conn.execute(
+            "UPDATE tasks SET status='blocked', block_kind='capability', "
+            "claim_lock=NULL, claim_expires=NULL, worker_pid=NULL, "
+            "last_failure_error=? WHERE id=? AND status='ready' AND current_run_id IS NULL",
+            (str(evidence.get("detail") or evidence.get("code"))[:500], task_id),
+        )
+        if cur.rowcount != 1:
+            return False
+        _append_event(conn, task_id, "dispatch_admission_rejected", evidence)
+        return True
+
+
 def has_spawnable_ready(conn: sqlite3.Connection) -> bool:
     """Return True iff there is at least one ready+assigned+unclaimed task
     whose assignee maps to a real Hermes profile.
@@ -7553,7 +7842,7 @@ def _dispatch_once_locked(
     result.stale = detect_stale_running(
         conn, stale_timeout_seconds=stale_timeout_seconds,
     )
-    result.crashed = detect_crashed_workers(conn)
+    result.crashed = detect_crashed_workers(conn, failure_limit=failure_limit)
     # detect_crashed_workers stashes protocol-violation auto-blocks on
     # itself so the public list-return stays stable. Pull them into the
     # DispatchResult here so telemetry / tests see the trip.
@@ -7570,7 +7859,7 @@ def _dispatch_once_locked(
     )
     if _crash_rate_limited:
         result.rate_limited.extend(_crash_rate_limited)
-    result.timed_out = enforce_max_runtime(conn)
+    result.timed_out = enforce_max_runtime(conn, failure_limit=failure_limit)
     result.promoted = recompute_ready(conn, failure_limit=failure_limit)
 
     # Count tasks already running so max_spawn enforces concurrency rather
@@ -7736,17 +8025,10 @@ def _dispatch_once_locked(
         # consecutive failures, so a persistent auth error eventually
         # blocks via the normal path rather than on first occurrence.
         guard_reason = check_respawn_guard(conn, row["id"])
+        if not dry_run:
+            _record_respawn_guard(conn, row["id"], guard_reason)
         if guard_reason is not None:
             result.respawn_guarded.append((row["id"], guard_reason))
-            # Emit an event so operators can see why the task was
-            # skipped when reading `hermes kanban tail` — without
-            # this the task appears stuck in ready with no diagnosis.
-            if not dry_run:
-                with write_txn(conn):
-                    _append_event(
-                        conn, row["id"], "respawn_guarded",
-                        {"reason": guard_reason},
-                    )
             continue
         if dry_run:
             result.spawned.append((row["id"], row_assignee, ""))
@@ -7759,12 +8041,55 @@ def _dispatch_once_locked(
                     _per_profile_running.get(row_assignee, 0) + 1
                 )
             continue
-        claimed = claim_task(conn, row["id"], ttl_seconds=ttl_seconds)
+        precomputed_workspace: Optional[Path] = None
+        precomputed_branch: Optional[str] = None
+        if spawn_fn is None:
+            candidate = get_task(conn, row["id"])
+            if candidate is None:
+                continue
+            admission_error = _validate_forced_skills(candidate)
+            if admission_error is not None:
+                if _reject_dispatch_admission(conn, candidate.id, admission_error):
+                    result.auto_blocked.append(candidate.id)
+                continue
+            try:
+                if candidate.workspace_kind == "worktree":
+                    precomputed_workspace, precomputed_branch = _resolve_worktree_workspace(
+                        candidate, board=board,
+                    )
+                else:
+                    precomputed_workspace = resolve_workspace(candidate, board=board)
+            except Exception as exc:
+                evidence = {"code": "workspace_provision_failed", "detail": str(exc)[:300]}
+                if _reject_dispatch_admission(conn, candidate.id, evidence):
+                    result.auto_blocked.append(candidate.id)
+                continue
+            admission_error = _validate_mutable_workspace(
+                conn, candidate, precomputed_workspace, precomputed_branch,
+            )
+            if admission_error is not None:
+                if _reject_dispatch_admission(conn, candidate.id, admission_error):
+                    result.auto_blocked.append(candidate.id)
+                continue
+            set_workspace_path(conn, candidate.id, str(precomputed_workspace))
+            if candidate.workspace_kind == "worktree":
+                set_branch_name(
+                    conn, candidate.id,
+                    precomputed_branch or candidate.branch_name or f"wt/{candidate.id}",
+                )
+
+        claimed = claim_task(
+            conn, row["id"], ttl_seconds=ttl_seconds,
+            failure_limit=failure_limit,
+            failure_limit_source="dispatcher",
+        )
         if claimed is None:
             continue
         try:
-            resolved_branch_name = None
-            if claimed.workspace_kind == "worktree":
+            resolved_branch_name = precomputed_branch
+            if precomputed_workspace is not None:
+                workspace = precomputed_workspace
+            elif claimed.workspace_kind == "worktree":
                 workspace, resolved_branch_name = _resolve_worktree_workspace(claimed, board=board)
             else:
                 workspace = resolve_workspace(claimed, board=board)

@@ -331,9 +331,8 @@ def test_max_retries_none_falls_through_to_dispatcher_limit(kanban_home, all_ass
         conn.close()
 
 
-def test_workspace_resolution_failure_also_counts(kanban_home, all_assignees_spawnable):
-    """`dir:` workspace with no path should fail workspace resolution AND
-    count against the failure budget — not just crash the tick."""
+def test_workspace_resolution_failure_is_rejected_before_run(kanban_home, all_assignees_spawnable):
+    """A deterministic workspace admission failure blocks without retrying."""
     conn = kb.connect()
     try:
         # Manually insert a broken task: dir workspace but workspace_path is NULL
@@ -349,15 +348,15 @@ def test_workspace_resolution_failure_also_counts(kanban_home, all_assignees_spa
             )
         res = kb.dispatch_once(conn, failure_limit=3)
         task = kb.get_task(conn, tid)
-        assert task.consecutive_failures == 1
-        assert task.status == "ready"
-        assert task.last_failure_error and "workspace" in task.last_failure_error
-        # Run twice more → auto-blocked.
-        kb.dispatch_once(conn, failure_limit=3)
-        res = kb.dispatch_once(conn, failure_limit=3)
-        assert tid in res.auto_blocked
-        task = kb.get_task(conn, tid)
+        assert task is not None
+        assert task.consecutive_failures == 0
         assert task.status == "blocked"
+        assert task.current_run_id is None
+        assert kb.list_runs(conn, tid) == []
+        assert task.last_failure_error and "workspace" in task.last_failure_error
+        assert tid in res.auto_blocked
+        events = kb.list_events(conn, tid)
+        assert sum(e.kind == "dispatch_admission_rejected" for e in events) == 1
     finally:
         conn.close()
 

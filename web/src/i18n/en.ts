@@ -1922,6 +1922,8 @@ export const en: Translations = {
     needsAssigneeHint:
       "Dependencies are satisfied, but the dispatcher skips this task until you assign a profile.",
     untitled: "(untitled)",
+    // Bare form for the card's accessible name — upstream used no parens there.
+    untitledPlain: "untitled",
     loadingDetail: "Loading…",
     addComment: "Add a comment… (Enter to submit)",
     comment: "Comment",

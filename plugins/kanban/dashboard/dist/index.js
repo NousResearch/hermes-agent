@@ -2892,7 +2892,7 @@
       tabIndex: 0,
       role: "button",
       "aria-label": tx(i18n, "taskText.selectedStatus", "{title} — {id} — {status}", {
-        title: t.title || tx(i18n, "untitled", "untitled"),
+        title: t.title || tx(i18n, "untitledPlain", "untitled"),
         id: t.id,
         status: getColumnLabel(i18n, t.status),
       }),

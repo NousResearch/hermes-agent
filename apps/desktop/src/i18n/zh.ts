@@ -939,7 +939,7 @@ export const zh: Translations = {
       genericProvider: '提供方',
       model: '模型',
       applying: '应用中...',
-      pasteProviderKey: key => `Paste ${key}`,
+      pasteProviderKey: key => `粘贴 ${key}`,
       activatingProvider: '激活中...',
       activateProvider: '激活',
       setUpProvider: provider => `配置 ${provider}`,

@@ -3595,6 +3595,8 @@ export const ar: Translations = {
     needsAssigneeHint:
       "اكتملت التبعيات، لكن الموزّع سيتجاوز المهمة حتى تُسند إلى ملف شخصي.",
     untitled: "(بلا عنوان)",
+    // Bare form for the card's accessible name — upstream used no parens there.
+    untitledPlain: "بلا عنوان",
     loadingDetail: "جارٍ التحميل...",
     addComment: "أضف تعليقًا... واضغط الإدخال للإرسال",
     comment: "تعليق",

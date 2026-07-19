@@ -1267,6 +1267,8 @@ export interface Translations {
     needsAssignee?: string;
     needsAssigneeHint?: string;
     untitled: string;
+    /** Bare form (no parentheses) for the card's accessible name. */
+    untitledPlain?: string;
     loadingDetail: string;
     addComment: string;
     comment: string;

@@ -1775,10 +1775,14 @@ class ShellFileOperations(FileOperations):
         # resolved against the current drive root -> ``Cannot find module
         # E:\e\project\x.js`` (#66494).  Hand these tools the same
         # Windows-native path the terminal backend already uses for its
-        # cwd instead of the ``/e/...`` bash form.  Off Windows the path is
-        # left untouched so genuine POSIX names (backslashes and all) survive.
+        # cwd instead of the ``/e/...`` bash form.
+        #
+        # Gate on LocalEnvironment as well as Windows: ShellFileOperations
+        # is shared by Docker/SSH/Modal/etc., and a Windows host must not
+        # rewrite valid in-backend POSIX paths like ``/e/...`` to ``E:/...``.
+        # Off Windows, or on a remote backend, leave the path untouched.
         from tools.environments.local import _IS_WINDOWS, _msys_to_windows_path
-        if _IS_WINDOWS:
+        if _IS_WINDOWS and self._lsp_local_only():
             native = _msys_to_windows_path(path).replace("\\", "/")
             file_arg = "'" + native.replace("'", "'\"'\"'") + "'"
         else:

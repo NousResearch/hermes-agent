@@ -154,27 +154,43 @@ class TestCheckLintBracePaths:
 
 class TestCheckLintWindowsNativePath:
     """#66494: the shell linters shell out to native Windows toolchains
-    (node, tsc, go, rustfmt, python).  On Windows the {file} argument must
-    be a Windows-native path, not a Git Bash ``/e/...`` path.  Native node
-    resolves ``/e/project/x.js`` against the current drive root, producing
-    ``E:\\e\\project\\x.js`` -> ``Cannot find module``.  The lint must reuse
-    the same MSYS->Windows translation the terminal backend uses for its cwd.
+    (node, tsc, go, rustfmt, python).  On a LocalEnvironment Windows host
+    the {file} argument must be a Windows-native path, not a Git Bash
+    ``/e/...`` path.  Native node resolves ``/e/project/x.js`` against the
+    current drive root, producing ``E:\\e\\project\\x.js`` -> ``Cannot find
+    module``.  The lint must reuse the same MSYS->Windows translation the
+    terminal backend uses for its cwd — but only for the local backend.
+    Remote backends keep POSIX paths even when the host is Windows.
     """
 
     @pytest.fixture()
-    def ops(self):
-        obj = ShellFileOperations.__new__(ShellFileOperations)
-        obj._command_cache = {}
-        return obj
+    def local_ops(self):
+        from tools.environments.local import LocalEnvironment
 
-    def test_msys_path_translated_to_windows_native(self, ops):
+        env = object.__new__(LocalEnvironment)
+        env.cwd = r"E:\project"
+        ops = ShellFileOperations(env)
+        ops._command_cache = {}
+        return ops
+
+    @pytest.fixture()
+    def docker_ops(self):
+        from tools.environments.docker import DockerEnvironment
+
+        env = object.__new__(DockerEnvironment)
+        env.cwd = "/workspace"
+        ops = ShellFileOperations(env)
+        ops._command_cache = {}
+        return ops
+
+    def test_msys_path_translated_to_windows_native_on_local(self, local_ops):
         import tools.environments.local as local_env
 
         with patch.object(local_env, "_IS_WINDOWS", True), \
-             patch.object(ops, "_has_command", return_value=True), \
-             patch.object(ops, "_exec") as mock_exec:
+             patch.object(local_ops, "_has_command", return_value=True), \
+             patch.object(local_ops, "_exec") as mock_exec:
             mock_exec.return_value = MagicMock(exit_code=0, stdout="")
-            result = ops._check_lint("/e/project/Fina/js/models.js")
+            result = local_ops._check_lint("/e/project/Fina/js/models.js")
 
         assert result.success is True
         cmd = mock_exec.call_args[0][0]
@@ -184,14 +200,32 @@ class TestCheckLintWindowsNativePath:
         assert "/e/project/Fina/js/models.js" not in cmd
         assert cmd.startswith("node --check")
 
-    def test_posix_path_unchanged_off_windows(self, ops):
+    def test_msys_path_unchanged_on_remote_windows_host(self, docker_ops):
+        """Windows host + Docker/SSH must not rewrite in-backend POSIX paths."""
+        import tools.environments.local as local_env
+
+        with patch.object(local_env, "_IS_WINDOWS", True), \
+             patch.object(docker_ops, "_has_command", return_value=True), \
+             patch.object(docker_ops, "_exec") as mock_exec:
+            mock_exec.return_value = MagicMock(exit_code=0, stdout="")
+            result = docker_ops._check_lint("/e/project/Fina/js/models.js")
+
+        assert result.success is True
+        cmd = mock_exec.call_args[0][0]
+        # Remote Linux path stays POSIX — rewriting to E:/... would break
+        # the in-container toolchain.
+        assert "'/e/project/Fina/js/models.js'" in cmd
+        assert "E:/project/Fina/js/models.js" not in cmd
+        assert cmd.startswith("node --check")
+
+    def test_posix_path_unchanged_off_windows(self, local_ops):
         import tools.environments.local as local_env
 
         with patch.object(local_env, "_IS_WINDOWS", False), \
-             patch.object(ops, "_has_command", return_value=True), \
-             patch.object(ops, "_exec") as mock_exec:
+             patch.object(local_ops, "_has_command", return_value=True), \
+             patch.object(local_ops, "_exec") as mock_exec:
             mock_exec.return_value = MagicMock(exit_code=0, stdout="")
-            result = ops._check_lint("/home/user/app/models.js")
+            result = local_ops._check_lint("/home/user/app/models.js")
 
         assert result.success is True
         cmd = mock_exec.call_args[0][0]

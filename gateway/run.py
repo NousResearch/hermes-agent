@@ -7270,20 +7270,29 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     exc_info=True,
                 )
 
-    async def _recover_secondary_profile_account_usage_presence(self) -> None:
+    async def _recover_secondary_profile_account_usage_presence(
+        self, profile_name: Optional[str] = None
+    ) -> None:
         """Fetchless CAS recovery for each secondary multiplex profile journal."""
 
         profile_adapters = getattr(self, "_profile_adapters", None) or {}
-        if not profile_adapters:
+        if profile_name is not None:
+            adapters = profile_adapters.get(profile_name)
+            profile_items = [(profile_name, adapters)] if adapters else []
+        else:
+            profile_items = list(profile_adapters.items())
+        if not profile_items:
             return
 
         from gateway.account_usage_presence import account_usage_presence_state_path
+        from hermes_cli.profiles import get_profile_dir
 
-        for profile_name, adapters in list(profile_adapters.items()):
+        for profile_name, adapters in profile_items:
             if not adapters:
                 continue
             try:
-                with self._profile_runtime_scope(profile_name):
+                profile_home = get_profile_dir(profile_name)
+                with _profile_runtime_scope(profile_home):
                     controller = AccountUsagePresenceController(
                         AccountUsagePresenceConfig(),
                         lambda adapters=adapters: adapters,
@@ -9615,6 +9624,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                 "✓ %s reconnected (profile: %s)",
                                 platform.value,
                                 profile_name,
+                            )
+                            await self._recover_secondary_profile_account_usage_presence(
+                                profile_name
                             )
                             return
                         # A newer reconnect already won the slot while this

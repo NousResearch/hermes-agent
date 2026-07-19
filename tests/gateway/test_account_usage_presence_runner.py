@@ -1,9 +1,14 @@
-from contextlib import nullcontext
+import json
 from unittest.mock import AsyncMock
 
 import pytest
 
-from gateway.config import AccountUsagePresenceConfig, GatewayConfig
+from gateway.config import (
+    AccountUsagePresenceConfig,
+    GatewayConfig,
+    Platform,
+    PlatformConfig,
+)
 from gateway.run import GatewayRunner
 
 
@@ -30,7 +35,6 @@ def _runner(config):
     runner.config = config
     runner.adapters = {"telegram": object()}
     runner._profile_adapters = {}
-    runner._profile_runtime_scope = lambda profile: nullcontext()
     runner._account_usage_presence_controller = None
     return runner
 
@@ -59,8 +63,10 @@ async def test_runner_starts_account_usage_presence_with_live_adapter_getter(mon
 
 
 @pytest.mark.asyncio
-async def test_runner_multiplex_mode_only_runs_disabled_recovery(monkeypatch):
+async def test_runner_multiplex_mode_only_runs_disabled_recovery(monkeypatch, tmp_path):
     monkeypatch.setattr("gateway.run.AccountUsagePresenceController", _Controller)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / "profiles" / "work").mkdir(parents=True)
     config = GatewayConfig(
         multiplex_profiles=True,
         account_usage_presence=AccountUsagePresenceConfig.from_dict(
@@ -81,9 +87,94 @@ async def test_runner_multiplex_mode_only_runs_disabled_recovery(monkeypatch):
     secondary_controller, controller = _Controller.instances
     assert secondary_controller.config.enabled is False
     secondary_controller.recover_saved_baselines.assert_awaited_once_with()
+    assert secondary_controller.kwargs["state_path"] == (
+        tmp_path
+        / "profiles"
+        / "work"
+        / "state"
+        / "account-usage-presence"
+        / "journal.json"
+    )
     assert controller.config.enabled is False
     assert controller.config.is_configured is False
     controller.start.assert_awaited_once_with()
+
+
+@pytest.mark.asyncio
+async def test_secondary_reconnect_recovers_profile_journal_after_startup_offline(
+    monkeypatch, tmp_path
+):
+    from gateway.account_usage_presence import (
+        AccountUsagePresenceCapabilities,
+        AccountUsagePresenceRestoreResult,
+    )
+    from hermes_cli.profiles import get_profile_dir
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    profile_home = get_profile_dir("work")
+    profile_home.mkdir(parents=True)
+    state_path = profile_home / "state" / "account-usage-presence" / "journal.json"
+    state_path.parent.mkdir(parents=True)
+    state_path.write_text(
+        json.dumps(
+            {
+                "version": 2,
+                "entries": {
+                    "telegram": {
+                        "baseline": {"display_name": "Hermes"},
+                        "owned": {"display_name": "Hermes · Session 75%"},
+                        "phase": "owned",
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    class RecoveringAdapter:
+        platform = Platform.TELEGRAM
+        account_usage_presence_capabilities = AccountUsagePresenceCapabilities(
+            display_name=True
+        )
+
+        def __init__(self):
+            self.remote_state = {"display_name": "Hermes · Session 75%"}
+
+        def account_usage_presence_state_key(self):
+            return "telegram"
+
+        async def restore_account_usage_presence(self, baseline, owned):
+            if self.remote_state == owned:
+                self.remote_state = dict(baseline)
+                return AccountUsagePresenceRestoreResult.RESTORED
+            if self.remote_state == baseline:
+                return AccountUsagePresenceRestoreResult.ALREADY_BASELINE
+            return AccountUsagePresenceRestoreResult.EXTERNAL
+
+    adapter = RecoveringAdapter()
+    runner = _runner(GatewayConfig(multiplex_profiles=True))
+    runner._profile_adapters = {}
+    runner._profile_failed_platforms = {}
+    runner._running = True
+    runner._create_adapter = lambda platform, config: adapter
+    runner._configure_profile_adapter = lambda adapter, profile, platform: None
+    runner._connect_adapter_with_timeout = AsyncMock(return_value=True)
+    runner._sync_voice_mode_state_to_adapter = lambda adapter: None
+    monkeypatch.setattr(
+        "gateway.config.load_gateway_config",
+        lambda: GatewayConfig(
+            platforms={Platform.TELEGRAM: PlatformConfig(enabled=True)}
+        ),
+    )
+
+    await runner._recover_secondary_profile_account_usage_presence()
+    assert json.loads(state_path.read_text(encoding="utf-8"))["entries"]
+
+    await runner._run_secondary_profile_reconnect("work", Platform.TELEGRAM)
+
+    assert runner._profile_adapters["work"][Platform.TELEGRAM] is adapter
+    assert adapter.remote_state == {"display_name": "Hermes"}
+    assert json.loads(state_path.read_text(encoding="utf-8"))["entries"] == {}
 
 
 @pytest.mark.asyncio

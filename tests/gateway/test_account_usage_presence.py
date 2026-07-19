@@ -831,6 +831,83 @@ async def test_disabled_recovery_retries_after_late_adapter_connect(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_restore_and_apply_are_serialized_per_state_key(tmp_path):
+    class RacingAdapter(_Adapter):
+        def __init__(self, *args, remote_state, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.remote_state = dict(remote_state)
+            self.restore_started = asyncio.Event()
+            self.release_restore = asyncio.Event()
+            self.apply_b_started = asyncio.Event()
+
+        async def apply_account_usage_presence_if_owned(
+            self,
+            payload,
+            baseline,
+            expected_owned,
+        ) -> AccountUsagePresenceApplyResult:
+            if payload.remaining_percent == 74:
+                self.apply_b_started.set()
+            if self.remote_state != expected_owned:
+                return AccountUsagePresenceApplyResult.EXTERNAL
+            owned = self.build_account_usage_presence_owned_state(payload, baseline)
+            assert owned is not None
+            self.remote_state = dict(owned)
+            self.applied.append((payload, baseline))
+            return AccountUsagePresenceApplyResult.APPLIED
+
+        async def restore_account_usage_presence(self, baseline, owned):
+            self.restored.append((baseline, owned))
+            self.restore_started.set()
+            await self.release_restore.wait()
+            if self.remote_state == owned:
+                self.remote_state = dict(baseline)
+                return AccountUsagePresenceRestoreResult.RESTORED
+            if self.remote_state == baseline:
+                return AccountUsagePresenceRestoreResult.ALREADY_BASELINE
+            return AccountUsagePresenceRestoreResult.EXTERNAL
+
+    state_path = tmp_path / "journal.json"
+    baseline = {"display_name": "Hermes"}
+    adapter = RacingAdapter(
+        "telegram",
+        capabilities=AccountUsagePresenceCapabilities(display_name=True),
+        baseline=baseline,
+        remote_state=baseline,
+    )
+    snapshots = iter((_snapshot(used_percent=25), _snapshot(used_percent=26)))
+
+    def fetch(_provider):
+        return next(snapshots)
+
+    controller = AccountUsagePresenceController(
+        _config(platforms=["telegram"]),
+        lambda: {"telegram": adapter},
+        fetcher=fetch,
+        state_path=state_path,
+    )
+
+    await controller.refresh_once()
+    restore_task = asyncio.create_task(controller.recover_saved_baselines())
+    await asyncio.wait_for(adapter.restore_started.wait(), timeout=1)
+
+    apply_task = asyncio.create_task(controller.refresh_once())
+    await asyncio.sleep(0.01)
+    assert not adapter.apply_b_started.is_set()
+    assert not apply_task.done()
+
+    adapter.release_restore.set()
+    await restore_task
+    await apply_task
+
+    assert adapter.remote_state == {"display_name": "owned-74"}
+    journal = json.loads(state_path.read_text(encoding="utf-8"))
+    assert journal["entries"]["telegram"]["owned"] == {
+        "display_name": "owned-74"
+    }
+
+
+@pytest.mark.asyncio
 async def test_malformed_journal_blocks_identity_mutation(tmp_path):
     state_path = tmp_path / "journal.json"
     state_path.write_text("{not-json", encoding="utf-8")

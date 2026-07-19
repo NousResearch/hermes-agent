@@ -315,6 +315,7 @@ class AccountUsagePresenceController:
         self._state_loaded = False
         self._journal_blocked = False
         self._journal: dict[str, _JournalEntry] = {}
+        self._state_locks: dict[str, asyncio.Lock] = {}
         self._owned_in_process: set[str] = set()
         self._last_payload: Optional[AccountUsagePresencePayload] = None
         self._last_success_at: Optional[float] = None
@@ -544,6 +545,9 @@ class AccountUsagePresenceController:
     async def _await_adapter(self, result: Awaitable[Any]) -> Any:
         return await asyncio.wait_for(result, timeout=self._adapter_timeout_seconds)
 
+    def _state_lock(self, state_key: str) -> asyncio.Lock:
+        return self._state_locks.setdefault(state_key, asyncio.Lock())
+
     async def _apply_to_selected_adapters(
         self,
         payload: AccountUsagePresencePayload,
@@ -573,190 +577,234 @@ class AccountUsagePresenceController:
                 continue
 
             state_key = self._state_key(platform, adapter)
-            if now < self._adapter_retry_until.get(state_key, 0.0):
-                continue
-            if self._last_applied.get(state_key) == (id(adapter), payload):
-                continue
-            entry = self._journal.get(state_key)
-            if entry is not None and entry.phase == "pending":
-                # A pending transition may have changed the remote value even
-                # when its API call raised. Fail closed until stop/restart
-                # recovery reconciles the journaled generations.
-                continue
-            if entry is not None and state_key not in self._owned_in_process:
-                continue
-
-            prior_owned_entry = (
-                entry if entry is not None and entry.phase == "owned" else None
-            )
-            baseline = entry.baseline if entry is not None else None
-            if entry is None:
-                capture = getattr(adapter, "capture_account_usage_presence_baseline", None)
-                if callable(capture):
-                    try:
-                        captured = await self._await_adapter(cast(Awaitable[Any], capture()))
-                    except Exception:
-                        logger.warning(
-                            "Could not capture %s account-usage presence baseline",
-                            platform,
-                            exc_info=True,
-                        )
-                        continue
-                    if captured is not None:
-                        if not _valid_state_mapping(captured):
-                            logger.warning(
-                                "Ignoring invalid %s account-usage presence baseline",
-                                platform,
-                            )
-                            continue
-                        baseline = dict(captured)
-
-            pending_entry: Optional[_JournalEntry] = None
-            guarded_apply: Optional[Callable[..., Awaitable[Any]]] = None
-            if baseline is not None:
-                build_owned = getattr(
+            async with self._state_lock(state_key):
+                await self._apply_one(
+                    platform,
                     adapter,
-                    "build_account_usage_presence_owned_state",
-                    None,
+                    state_key,
+                    payload,
+                    now=now,
                 )
-                if not callable(build_owned):
-                    logger.warning(
-                        "Persistent account-usage surface %s has no ownership renderer",
-                        platform,
-                    )
-                    continue
-                guarded_apply = getattr(
-                    adapter,
-                    "apply_account_usage_presence_if_owned",
-                    None,
-                )
-                if not callable(guarded_apply):
-                    logger.warning(
-                        "Persistent account-usage surface %s has no guarded ownership updater",
-                        platform,
-                    )
-                    continue
+
+    async def _apply_one(
+        self,
+        platform: str,
+        adapter: Any,
+        state_key: str,
+        payload: AccountUsagePresencePayload,
+        *,
+        now: float,
+    ) -> None:
+        if now < self._adapter_retry_until.get(state_key, 0.0):
+            return
+        if self._last_applied.get(state_key) == (id(adapter), payload):
+            return
+        entry = self._journal.get(state_key)
+        if entry is not None and entry.phase == "pending":
+            # A pending transition may have changed the remote value even
+            # when its API call raised. Fail closed until stop/restart
+            # recovery reconciles the journaled generations.
+            return
+        if entry is not None and state_key not in self._owned_in_process:
+            return
+
+        prior_owned_entry = (
+            entry if entry is not None and entry.phase == "owned" else None
+        )
+        baseline = entry.baseline if entry is not None else None
+        if entry is None:
+            capture = getattr(adapter, "capture_account_usage_presence_baseline", None)
+            if callable(capture):
                 try:
-                    owned = build_owned(payload, baseline)
+                    captured = await self._await_adapter(cast(Awaitable[Any], capture()))
                 except Exception:
                     logger.warning(
-                        "Could not render %s account-usage ownership state",
+                        "Could not capture %s account-usage presence baseline",
                         platform,
                         exc_info=True,
                     )
-                    continue
-                if not _valid_state_mapping(owned):
-                    logger.warning(
-                        "Ignoring invalid %s account-usage ownership state",
-                        platform,
-                    )
-                    continue
-                pending_entry = _JournalEntry(
-                    baseline=dict(baseline),
-                    owned=dict(owned),
-                    phase="pending",
-                    previous_owned=(
-                        dict(prior_owned_entry.owned)
-                        if prior_owned_entry is not None
-                        else None
-                    ),
-                )
-                candidate = dict(self._journal)
-                candidate[state_key] = pending_entry
-                if not self._persist_journal(candidate):
-                    continue
-                self._journal = candidate
-
-            apply = getattr(adapter, "apply_account_usage_presence", None)
-            if not callable(apply):
-                continue
-            try:
-                if baseline is not None:
-                    assert guarded_apply is not None
-                    expected_owned = (
-                        prior_owned_entry.owned
-                        if prior_owned_entry is not None
-                        else baseline
-                    )
-                    raw_apply_result = await self._await_adapter(
-                        cast(
-                            Awaitable[Any],
-                            guarded_apply(payload, baseline, expected_owned),
-                        )
-                    )
-                    try:
-                        apply_result = AccountUsagePresenceApplyResult(
-                            raw_apply_result
-                        )
-                    except (TypeError, ValueError):
+                    return
+                if captured is not None:
+                    if not _valid_state_mapping(captured):
                         logger.warning(
-                            "Ignoring invalid guarded account-usage apply result from %s",
+                            "Ignoring invalid %s account-usage presence baseline",
                             platform,
                         )
-                        apply_result = AccountUsagePresenceApplyResult.RETRY
-                else:
-                    changed = await self._await_adapter(
-                        cast(Awaitable[Any], apply(payload, baseline))
-                    )
-                    apply_result = (
-                        AccountUsagePresenceApplyResult.APPLIED
-                        if changed
-                        else AccountUsagePresenceApplyResult.RETRY
-                    )
-            except Exception as exc:
-                retry_after = retry_after_seconds(exc)
-                if retry_after is not None:
-                    self._adapter_retry_until[state_key] = now + retry_after
-                    logger.warning(
-                        "Account-usage presence rate-limited by %s; retrying in %.0fs",
-                        platform,
-                        retry_after,
-                    )
-                else:
-                    logger.warning(
-                        "Account-usage presence update failed for %s",
-                        platform,
-                        exc_info=True,
-                    )
-                continue
+                        return
+                    baseline = dict(captured)
 
-            if apply_result is AccountUsagePresenceApplyResult.EXTERNAL:
-                candidate = dict(self._journal)
-                candidate.pop(state_key, None)
-                if self._persist_journal(candidate):
-                    self._journal = candidate
-                    self._owned_in_process.discard(state_key)
-                    self._last_applied.pop(state_key, None)
-                logger.info(
-                    "Account-usage presence no longer owns %s; preserving external value",
-                    state_key,
+        pending_entry: Optional[_JournalEntry] = None
+        guarded_apply: Optional[Callable[..., Awaitable[Any]]] = None
+        if baseline is not None:
+            build_owned = getattr(
+                adapter,
+                "build_account_usage_presence_owned_state",
+                None,
+            )
+            if not callable(build_owned):
+                logger.warning(
+                    "Persistent account-usage surface %s has no ownership renderer",
+                    platform,
                 )
-                continue
+                return
+            guarded_apply = getattr(
+                adapter,
+                "apply_account_usage_presence_if_owned",
+                None,
+            )
+            if not callable(guarded_apply):
+                logger.warning(
+                    "Persistent account-usage surface %s has no guarded ownership updater",
+                    platform,
+                )
+                return
+            try:
+                owned = build_owned(payload, baseline)
+            except Exception:
+                logger.warning(
+                    "Could not render %s account-usage ownership state",
+                    platform,
+                    exc_info=True,
+                )
+                return
+            if not _valid_state_mapping(owned):
+                logger.warning(
+                    "Ignoring invalid %s account-usage ownership state",
+                    platform,
+                )
+                return
+            pending_entry = _JournalEntry(
+                baseline=dict(baseline),
+                owned=dict(owned),
+                phase="pending",
+                previous_owned=(
+                    dict(prior_owned_entry.owned)
+                    if prior_owned_entry is not None
+                    else None
+                ),
+            )
+            candidate = dict(self._journal)
+            candidate[state_key] = pending_entry
+            if not self._persist_journal(candidate):
+                return
+            self._journal = candidate
 
-            if apply_result is not AccountUsagePresenceApplyResult.APPLIED:
-                if pending_entry is not None:
-                    candidate = dict(self._journal)
-                    if prior_owned_entry is None:
-                        candidate.pop(state_key, None)
-                    else:
-                        candidate[state_key] = prior_owned_entry
-                    if self._persist_journal(candidate):
-                        self._journal = candidate
-                continue
+        apply = getattr(adapter, "apply_account_usage_presence", None)
+        if not callable(apply):
+            return
+        try:
+            if baseline is not None:
+                assert guarded_apply is not None
+                expected_owned = (
+                    prior_owned_entry.owned
+                    if prior_owned_entry is not None
+                    else baseline
+                )
+                raw_apply_result = await self._await_adapter(
+                    cast(
+                        Awaitable[Any],
+                        guarded_apply(payload, baseline, expected_owned),
+                    )
+                )
+                try:
+                    apply_result = AccountUsagePresenceApplyResult(raw_apply_result)
+                except (TypeError, ValueError):
+                    logger.warning(
+                        "Ignoring invalid guarded account-usage apply result from %s",
+                        platform,
+                    )
+                    apply_result = AccountUsagePresenceApplyResult.RETRY
+            else:
+                changed = await self._await_adapter(
+                    cast(Awaitable[Any], apply(payload, baseline))
+                )
+                apply_result = (
+                    AccountUsagePresenceApplyResult.APPLIED
+                    if changed
+                    else AccountUsagePresenceApplyResult.RETRY
+                )
+        except Exception as exc:
+            retry_after = retry_after_seconds(exc)
+            if retry_after is not None:
+                self._adapter_retry_until[state_key] = now + retry_after
+                logger.warning(
+                    "Account-usage presence rate-limited by %s; retrying in %.0fs",
+                    platform,
+                    retry_after,
+                )
+            else:
+                logger.warning(
+                    "Account-usage presence update failed for %s",
+                    platform,
+                    exc_info=True,
+                )
+            return
 
+        if apply_result is AccountUsagePresenceApplyResult.EXTERNAL:
+            candidate = dict(self._journal)
+            candidate.pop(state_key, None)
+            if self._persist_journal(candidate):
+                self._journal = candidate
+                self._owned_in_process.discard(state_key)
+                self._last_applied.pop(state_key, None)
+            logger.info(
+                "Account-usage presence no longer owns %s; preserving external value",
+                state_key,
+            )
+            return
+
+        if apply_result is not AccountUsagePresenceApplyResult.APPLIED:
             if pending_entry is not None:
-                self._owned_in_process.add(state_key)
                 candidate = dict(self._journal)
-                candidate[state_key] = replace(
-                    pending_entry,
-                    phase="owned",
-                    previous_owned=None,
-                )
+                if prior_owned_entry is None:
+                    candidate.pop(state_key, None)
+                else:
+                    candidate[state_key] = prior_owned_entry
                 if self._persist_journal(candidate):
                     self._journal = candidate
-            self._last_applied[state_key] = (id(adapter), payload)
+            return
+
+        if pending_entry is not None:
+            self._owned_in_process.add(state_key)
+            candidate = dict(self._journal)
+            candidate[state_key] = replace(
+                pending_entry,
+                phase="owned",
+                previous_owned=None,
+            )
+            if self._persist_journal(candidate):
+                self._journal = candidate
+        self._last_applied[state_key] = (id(adapter), payload)
 
     async def _restore_one(
+        self,
+        state_key: str,
+        platform: str,
+        adapter: Any,
+        entry: _JournalEntry,
+    ) -> AccountUsagePresenceRestoreResult:
+        async with self._state_lock(state_key):
+            current = self._journal.get(state_key)
+            if current != entry:
+                return AccountUsagePresenceRestoreResult.RETRY
+
+            result = await self._restore_remote_one(platform, adapter, current)
+            if not result.can_retire:
+                return result
+
+            if self._journal.get(state_key) != current:
+                return AccountUsagePresenceRestoreResult.RETRY
+            candidate = dict(self._journal)
+            candidate.pop(state_key, None)
+            if not self._persist_journal(candidate):
+                return AccountUsagePresenceRestoreResult.RETRY
+            self._journal = candidate
+            self._owned_in_process.discard(state_key)
+            self._last_applied.pop(state_key, None)
+            self._adapter_retry_until.pop(state_key, None)
+            return result
+
+    async def _restore_remote_one(
         self,
         platform: str,
         adapter: Any,
@@ -817,36 +865,18 @@ class AccountUsagePresenceController:
                 continue
             platform, adapter = connected_entry
             jobs[state_key] = asyncio.create_task(
-                self._restore_one(platform, adapter, entry)
+                self._restore_one(state_key, platform, adapter, entry)
             )
         if not jobs:
             return
 
         results = await asyncio.gather(*jobs.values())
-        retired = {
-            state_key
-            for state_key, result in zip(jobs, results)
-            if result.can_retire
-        }
         for state_key, result in zip(jobs, results):
             if result is AccountUsagePresenceRestoreResult.EXTERNAL:
                 logger.info(
                     "Account-usage presence no longer owns %s; preserving external value",
                     state_key,
                 )
-        if not retired:
-            return
-
-        candidate = {
-            key: value for key, value in self._journal.items() if key not in retired
-        }
-        if not self._persist_journal(candidate):
-            return
-        self._journal = candidate
-        self._owned_in_process.difference_update(retired)
-        for key in retired:
-            self._last_applied.pop(key, None)
-            self._adapter_retry_until.pop(key, None)
 
     def _load_state(self) -> None:
         if self._state_loaded:

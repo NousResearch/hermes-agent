@@ -4680,8 +4680,14 @@ def run_conversation(
                             agent, api_messages, active_system_prompt
                         )
                         # If the triggering response consumed the turn budget,
-                        # grant exactly one bounded grace call so the fallback
-                        # actually runs instead of the loop exiting first.
+                        # grant one bounded grace call so the fallback actually
+                        # runs instead of the loop exiting first. This stays
+                        # bounded to a single grace call per turn structurally:
+                        # a grace iteration consumes the flag without consuming
+                        # budget, so the loop exits right after it, and each
+                        # activation resets the streak to 0 — re-reaching streak
+                        # 3 for a second activation would need more iterations
+                        # than the one grace call provides.
                         if (
                             api_call_count >= agent.max_iterations
                             or agent.iteration_budget.remaining <= 0

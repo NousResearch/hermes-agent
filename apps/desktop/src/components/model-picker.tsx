@@ -4,6 +4,7 @@ import { useState } from 'react'
 import { useI18n } from '@/i18n'
 import { requestModelOptions } from '@/lib/model-options'
 import { currentPickerSelection } from '@/lib/model-status-label'
+import { modelSearchText } from '@/lib/model-search-text'
 import { normalize } from '@/lib/text'
 import type { ModelOptionProvider, ModelPricing } from '@/types/hermes'
 
@@ -171,7 +172,7 @@ function ModelResults({
 
   const matches = (provider: ModelOptionProvider, model: string) =>
     !q ||
-    model.toLowerCase().includes(q) ||
+    modelSearchText(model).toLowerCase().includes(q) ||
     provider.name.toLowerCase().includes(q) ||
     provider.slug.toLowerCase().includes(q)
 

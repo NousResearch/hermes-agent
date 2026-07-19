@@ -11,6 +11,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { cn, themedBody } from "@/lib/utils";
 import { fuzzyRank } from "@/lib/fuzzy";
+import { modelSearchText } from "@/lib/model-search-text";
 
 /**
  * Two-stage model picker modal.
@@ -227,12 +228,14 @@ export function ModelPickerDialog(props: Props) {
   );
 
   // Fuzzy-ranked models carrying the matched character positions so the model
-  // list can highlight why each entry matched.
+  // list can highlight why each entry matched. modelSearchText adds aliases
+  // for brand-less wire ids (e.g. Kimi Coding `k3` ↔ search "kimi").
   const filteredModels = useMemo(
     () =>
-      fuzzyRank(models, trimmedQuery, (m) => m).map((r) => ({
+      fuzzyRank(models, trimmedQuery, modelSearchText).map((r) => ({
         model: r.item,
-        positions: r.positions,
+        // Positions may land in alias suffixes — keep only in-id highlights.
+        positions: r.positions.filter((i) => i >= 0 && i < r.item.length),
       })),
     [models, trimmedQuery],
   );

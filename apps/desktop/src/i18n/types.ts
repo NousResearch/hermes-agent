@@ -1571,6 +1571,24 @@ export interface Translations {
       ghMissing: string
       agentShip: string
       agentShipPrompt: string
+      verification: string
+      verificationPassed: string
+      verificationFailed: string
+      verificationStale: string
+      verificationUnverified: string
+      verificationUnavailable: string
+      verificationChecking: string
+      verificationCheckingDetail: string
+      verificationNoEvidence: string
+      verificationUnavailableDetail: string
+      verificationChangesAfterCheck: string
+      verificationPathsChanged: (count: number) => string
+      verificationExit: (code: number) => string
+      verificationFull: string
+      verificationTargeted: string
+      verificationRun: string
+      verificationRunAgain: string
+      verificationPrompt: string
       newBranch: string
       branchOffFrom: (base: string) => string
       switchTo: (branch: string) => string

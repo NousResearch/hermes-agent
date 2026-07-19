@@ -2961,6 +2961,24 @@ DEFAULT_CONFIG = {
         "force_ipv4": False,
     },
 
+    # Interlocutor capability policy. Disabled by default: existing messaging
+    # allowlists still decide who may talk to the bot; this optional layer can
+    # mark selected Discord users as operator or chat-only for runtime guardrails.
+    "interlocutor_policy": {
+        "enabled": False,
+        "audit_log_enabled": True,
+        "audit_log_path": "~/.hermes/policy/interlocutor-events.jsonl",
+        "operator_user_ids": [],
+        "chat_only_user_ids": [],
+        "chat_only_default_response": (
+            "I can talk generally, but private information or substantial "
+            "actions need Andrew's approval."
+        ),
+        "block_privileged_slash_commands": True,
+        "block_sensitive_plaintext_requests": True,
+        "redact_event_text": True,
+    },
+
     # Gateway settings — control how messaging platforms (Telegram, Discord,
     # Slack, etc.) deliver agent-produced files as native attachments.
     "gateway": {
@@ -5490,7 +5508,7 @@ _KNOWN_ROOT_KEYS = {
     "fallback_providers", "credential_pool_strategies", "toolsets",
     "agent", "terminal", "display", "compression", "delegation",
     "auxiliary", "moa", "custom_providers", "context", "memory", "gateway",
-    "sessions", "streaming", "updates", "mcp_servers",
+    "interlocutor_policy", "sessions", "streaming", "updates", "mcp_servers",
 }
 
 # Valid fields inside a custom_providers list entry

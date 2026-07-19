@@ -36,6 +36,30 @@ Hermes on Discord is not a webhook that replies statelessly. It runs through the
 5. normal Hermes agent execution, including tools, memory, and slash commands
 6. response delivery back to Discord
 
+Optional second-layer capability policy can run after allowlist authorization and
+before agent execution. This is disabled by default and does not replace
+`DISCORD_ALLOWED_USERS`: it lets an operator mark selected Discord users as
+`operator` or `chat_only` in `config.yaml` so chat-only users can still have safe
+conversation while protected requests are blocked before the agent sees them.
+
+```yaml
+interlocutor_policy:
+  enabled: false
+  operator_user_ids: []
+  chat_only_user_ids: []
+  block_privileged_slash_commands: true
+  block_sensitive_plaintext_requests: true
+  audit_log_enabled: true
+  audit_log_path: "~/.hermes/policy/interlocutor-events.jsonl"
+  redact_event_text: true
+```
+
+When enabled, chat-only users are blocked from privileged slash commands and
+requests involving credentials, private conversations, private code/work,
+behavior changes, cron/scheduler actions, coding/repo actions, or gateway/config
+changes. The refusal is fixed and short, and the audit log stores
+hashes/fingerprints by default rather than raw message text.
+
 That matters because behavior in a busy server depends on both Discord routing and Hermes session policy.
 
 ### Session Model in Discord

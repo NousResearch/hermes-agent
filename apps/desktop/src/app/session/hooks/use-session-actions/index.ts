@@ -773,9 +773,22 @@ export function useSessionActions({
 
   // Shared fork: create a child session seeded with `branchMessages`, linked to
   // `parentStoredId` so it nests under its parent, then make it the active chat.
+  // `idempotencyKey` lets a caller-driven retry reuse the SAME key so the
+  // backend can dedupe (without it, every call generates a fresh key and a
+  // response-lost retry would spawn a duplicate child).
   const forkBranch = useCallback(
-    async (branchMessages: BranchMessage[], parentStoredId: null | string, cwd?: string): Promise<boolean> => {
+    async (
+      branchMessages: BranchMessage[],
+      parentStoredId: null | string,
+      cwd?: string,
+      idempotencyKey?: string
+    ): Promise<boolean> => {
       creatingSessionRef.current = true
+
+      // Stable per-attempt key so a backend retry after a lost response returns
+      // the SAME child session instead of spawning a duplicate. Generated here
+      // for first-time calls; supplied by the retry action on subsequent tries.
+      const key = idempotencyKey ?? `branch-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
 
       try {
         // No title: the backend auto-names the branch from its parent's lineage.
@@ -784,7 +797,8 @@ export function useSessionActions({
           source: 'desktop',
           ...(cwd && { cwd }),
           messages: branchMessages.map(({ content, role }) => ({ content, role })),
-          ...(parentStoredId && { parent_session_id: parentStoredId })
+          ...(parentStoredId && { parent_session_id: parentStoredId }),
+          idempotency_key: key
         })
 
         const routedSessionId = branched.stored_session_id ?? branched.session_id
@@ -836,16 +850,13 @@ export function useSessionActions({
       } catch (err) {
         // Backend restart / WS drop mid-RPC leaves the branch uncreated with no
         // recovery path. Surface a persistent error with a retry action so the
-        // user can re-attempt without re-doing the whole branch flow.
-        notify({
-          kind: 'error',
-          title: copy.branchFailed,
-          message: err instanceof Error ? err.message : String(err),
-          action: {
-            label: t.common.retry,
-            onClick: () => {
-              void forkBranch(branchMessages, parentStoredId, cwd)
-            }
+        // user can re-attempt without re-doing the whole branch flow. The retry
+        // passes the SAME idempotency key so the backend can dedupe if the
+        // first create actually committed but its response was lost.
+        notifyError(err, copy.branchFailed, {
+          label: t.common.retry,
+          onClick: () => {
+            void forkBranch(branchMessages, parentStoredId, cwd, key)
           }
         })
 

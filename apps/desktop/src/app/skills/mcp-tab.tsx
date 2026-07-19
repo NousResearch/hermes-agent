@@ -13,6 +13,7 @@ import {
 import { useStore } from '@nanostores/react'
 import { useQuery } from '@tanstack/react-query'
 import { type ComponentType, type SVGProps, useEffect, useMemo, useRef, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 
 import { type CodeEditorApi } from '@/components/chat/code-editor'
 import { JsonDocumentEditor } from '@/components/chat/json-document-editor'
@@ -544,6 +545,44 @@ export function McpTab({ gateway }: { gateway: HermesGateway | null }) {
     param: 'server',
     ready: serverName => blocks.some(block => block.name === serverName)
   })
+
+  // hermes://mcp/<name>?url=... -> seed the editor draft with the incoming
+  // server and let the user review + Save through the normal flow (probe,
+  // tool enablement, persistence). Nothing touches config.yaml until Save.
+  // If the name already exists, just focus it — a deep link never overwrites.
+  const [addParams, setAddParams] = useSearchParams()
+  const deepAddConsumed = useRef(false)
+
+  useEffect(() => {
+    if (deepAddConsumed.current || profilePending || !config) {
+      return
+    }
+
+    const addName = addParams.get('addName')
+    const addUrl = addParams.get('addUrl')
+
+    if (!addName || !addUrl || !/^https?:\/\//i.test(addUrl)) {
+      return
+    }
+
+    deepAddConsumed.current = true
+
+    const next = new URLSearchParams(addParams)
+    next.delete('addName')
+    next.delete('addUrl')
+
+    if (servers[addName]) {
+      // Already configured — highlight the existing row instead of seeding.
+      next.set('server', addName)
+      setAddParams(next, { replace: true })
+
+      return
+    }
+
+    patchDraft(doc => (doc[addName] ? doc : { ...doc, [addName]: { url: addUrl } }))
+    setDirty(true)
+    setAddParams(next, { replace: true })
+  }, [addParams, config, profilePending, servers, setAddParams])
 
   const runProbe = async (serverName: string) => {
     const epoch = profileEpoch.current

@@ -9,7 +9,7 @@ import { openUpdatesWindow, startUpdatePoller, stopUpdatePoller } from '@/store/
 import { isSecondaryWindow } from '@/store/windows'
 
 import { requestComposerFocus, requestComposerInsert } from '../../chat/composer/focus'
-import { appViewForPath, isOverlayView, NEW_CHAT_ROUTE, sessionRoute } from '../../routes'
+import { appViewForPath, isOverlayView, NEW_CHAT_ROUTE, sessionRoute, SKILLS_ROUTE } from '../../routes'
 
 interface DesktopIntegrationsParams {
   chatOpen: boolean
@@ -125,10 +125,35 @@ export function useDesktopIntegrations({
     return () => unsubscribe?.()
   }, [])
 
-  // hermes:// deep links -> a reviewable /blueprint command in the composer.
+  // hermes:// deep links. Two kinds, both review-first:
+  //   blueprint -> a reviewable /blueprint command in the composer.
+  //   mcp       -> the Skills > MCP editor, seeded with the server entry;
+  //                the user reviews and saves through the normal flow. A
+  //                website "Add to Hermes" button can emit
+  //                hermes://mcp/<name>?url=<https-endpoint> and nothing is
+  //                installed until the user presses Save.
   useEffect(() => {
     const unsubscribe = window.hermesDesktop?.onDeepLink?.(payload => {
-      if (!payload || payload.kind !== 'blueprint' || !payload.name) {
+      if (!payload || !payload.name) {
+        return
+      }
+
+      if (payload.kind === 'mcp') {
+        const url = payload.params?.url
+
+        // Only hosted HTTP(S) servers can arrive by link; anything else
+        // (stdio commands, file paths) stays a manual, deliberate edit.
+        if (!url || !/^https?:\/\//i.test(url)) {
+          return
+        }
+
+        const query = new URLSearchParams({ addName: payload.name, addUrl: url })
+        navigate(`${SKILLS_ROUTE}?tab=mcp&${query.toString()}`)
+
+        return
+      }
+
+      if (payload.kind !== 'blueprint') {
         return
       }
 
@@ -148,7 +173,7 @@ export function useDesktopIntegrations({
     void window.hermesDesktop?.signalDeepLinkReady?.()
 
     return () => unsubscribe?.()
-  }, [])
+  }, [navigate])
 
   // ⌘W via the macOS menu accelerator → close the focused tab; if nothing is
   // closeable, fall back to closing the window (so ⌘W still works as the

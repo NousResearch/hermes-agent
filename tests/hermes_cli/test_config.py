@@ -2313,3 +2313,102 @@ def test_save_config_forked_child_reacquires_file_lock(tmp_path, monkeypatch):
     assert saved["writer_a"]["value"] == 1
     assert saved["writer_b"]["value"] == 1
 
+
+@pytest.mark.skipif(not hasattr(os, "fork"), reason="requires POSIX fork")
+def test_save_config_reinitializes_process_locks_after_multithreaded_fork(
+    tmp_path, monkeypatch
+):
+    import multiprocessing
+    import threading
+
+    import hermes_cli.config as config_mod
+
+    home = tmp_path / "thread-fork-home"
+    home.mkdir()
+    (home / "config.yaml").write_text("base:\n  keep: true\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    lock_held = threading.Event()
+    release_lock = threading.Event()
+
+    def hold_process_lock():
+        with config_mod._CONFIG_LOCK:
+            lock_held.set()
+            release_lock.wait(timeout=5)
+
+    holder_thread = threading.Thread(target=hold_process_lock)
+    holder_thread.start()
+    assert lock_held.wait(timeout=2)
+
+    ctx = multiprocessing.get_context("fork")
+    completed = ctx.Event()
+
+    def child_save():
+        config_mod.save_config(
+            {"child_writer": {"value": 1}},
+            merge_existing=True,
+        )
+        completed.set()
+
+    process = ctx.Process(target=child_save)
+    try:
+        process.start()
+        assert completed.wait(timeout=3)
+        process.join(timeout=3)
+        assert process.exitcode == 0
+    finally:
+        release_lock.set()
+        holder_thread.join(timeout=3)
+        if process.is_alive():
+            process.terminate()
+            process.join(timeout=3)
+
+    saved = config_mod.read_raw_config()
+    assert saved["base"]["keep"] is True
+    assert saved["child_writer"]["value"] == 1
+
+
+@pytest.mark.skipif(not hasattr(os, "fork"), reason="requires POSIX fork")
+def test_fork_waits_for_descriptor_registration_guard():
+    import multiprocessing
+    import threading
+
+    import hermes_cli.config as config_mod
+
+    guard_held = threading.Event()
+    release_guard = threading.Event()
+
+    def hold_registration_guard():
+        with config_mod._CONFIG_FILE_LOCK_HOLDERS_GUARD:
+            guard_held.set()
+            release_guard.wait(timeout=5)
+
+    holder_thread = threading.Thread(target=hold_registration_guard)
+    holder_thread.start()
+    assert guard_held.wait(timeout=2)
+
+    ctx = multiprocessing.get_context("fork")
+    process = ctx.Process(target=lambda: None)
+    start_returned = threading.Event()
+
+    def start_process():
+        process.start()
+        start_returned.set()
+
+    starter_thread = threading.Thread(target=start_process)
+    starter_thread.start()
+    try:
+        assert not start_returned.wait(timeout=0.2)
+        release_guard.set()
+        assert start_returned.wait(timeout=3)
+        starter_thread.join(timeout=3)
+        process.join(timeout=3)
+        assert process.exitcode == 0
+    finally:
+        release_guard.set()
+        holder_thread.join(timeout=3)
+        starter_thread.join(timeout=3)
+        if process.is_alive():
+            process.terminate()
+            process.join(timeout=3)
+

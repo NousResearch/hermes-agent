@@ -1,0 +1,47 @@
+{
+  "_meta": {
+    "note": "Median of 5 runs, darwin-arm64, `npm run perf -- --spawn` (dev renderer, gateway waited-for-connected, realistic block-settling stream chunk). Absolute values are dev-build (React dev mode is ~3x prod) so treat them as regression guards, not shipped numbers; re-baseline per device with `npm run perf -- --update-baseline`. Tolerances are loose to absorb cross-machine variance.",
+    "platform": "darwin-arm64",
+    "node": "v24.11.0",
+    "updated": "2026-07-19T21:24:19.047Z"
+  },
+  "scenarios": {
+    "stream": {
+      "tolerance": {
+        "tolFrac": 0.6,
+        "tolAbs": 5
+      },
+      "metrics": {
+        "longtasks_n": 1,
+        "longtask_max_ms": 145,
+        "frame_p95_ms": 23.5,
+        "frame_p99_ms": 26.9,
+        "slow_frames_33": 1,
+        "intermut_p95_ms": 48.2
+      }
+    },
+    "keystroke": {
+      "tolerance": {
+        "tolFrac": 0.6,
+        "tolAbs": 4
+      },
+      "metrics": {
+        "keystroke_p50_ms": 2,
+        "keystroke_p95_ms": 8.2,
+        "keystroke_p99_ms": 17.4,
+        "keystroke_slow_16": 2
+      }
+    },
+    "transcript": {
+      "tolerance": {
+        "tolFrac": 0.75,
+        "tolAbs": 40
+      },
+      "metrics": {
+        "transcript_mount_ms": 280.1,
+        "transcript_longtask_ms": 431,
+        "transcript_longtask_max_ms": 221
+      }
+    }
+  }
+}

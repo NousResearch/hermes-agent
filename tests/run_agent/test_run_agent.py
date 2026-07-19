@@ -3087,6 +3087,53 @@ class TestConcurrentToolExecution:
             )
             assert result == "result"
 
+    def test_sequential_dynamic_workflow_dispatch_uses_active_agent(self, agent, monkeypatch):
+        """Sequential dynamic workflows retain their active dispatch parent."""
+        from tools import delegate_tool
+        from tools import dynamic_workflow_tool as dwt
+
+        def fake_delegate_task(**kwargs):
+            return json.dumps(
+                {
+                    "status": "dispatched",
+                    "delegation_id": f"deleg_{kwargs['goal']}",
+                }
+            )
+
+        monkeypatch.setattr(delegate_tool, "delegate_task", fake_delegate_task)
+        agent.valid_tool_names.add("dynamic_workflow")
+        try:
+            for quiet_mode in (True, False):
+                workflow_id = f"wf_sequential_{quiet_mode}"
+                tool_call = _mock_tool_call(
+                    name="dynamic_workflow",
+                    arguments=json.dumps(
+                        {
+                            "action": "create",
+                            "workflow_id": workflow_id,
+                            "objective": "Dispatch through the sequential executor",
+                            "dispatch_ready": True,
+                            "nodes": [{"node_id": "worker", "goal": workflow_id}],
+                        }
+                    ),
+                )
+                messages = []
+                agent.quiet_mode = quiet_mode
+
+                agent._execute_tool_calls_sequential(
+                    _mock_assistant_msg(content="", tool_calls=[tool_call]),
+                    messages,
+                    "task-1",
+                )
+
+                result = json.loads(messages[0]["content"])
+                assert result["workflow"]["nodes"][0]["status"] == "dispatched"
+                assert result["dispatched"] == [
+                    {"node_id": "worker", "delegation_id": f"deleg_{workflow_id}"}
+                ]
+        finally:
+            dwt._reset_for_tests()
+
     def test_sequential_tool_callbacks_fire_in_order(self, agent):
         tool_call = _mock_tool_call(name="web_search", arguments='{"query":"hello"}', call_id="c1")
         mock_msg = _mock_assistant_msg(content="", tool_calls=[tool_call])

@@ -128,7 +128,7 @@ export function formatModelStatusLabel(
   // Always surface the effort (empty = Hermes default of medium) so the
   // current reasoning level is visible at a glance, not just when non-default.
   // Pass the i18n labels through so localized catalogs (zh/"中") are respected.
-  parts.push(reasoningEffortLabel(options?.reasoningEffort ?? '', options?.effortLabels) || 'Med')
+  parts.push(reasoningEffortLabel(options?.reasoningEffort ?? '', options?.effortLabels) || (options?.effortLabels?.medium ?? 'Med'))
 
   return `${name} · ${parts.join(' ')}`
 }

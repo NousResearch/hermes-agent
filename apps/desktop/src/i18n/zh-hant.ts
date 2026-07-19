@@ -1964,6 +1964,7 @@ export const zhHant = defineLocale({
       xhigh: '極高',
       max: '最高',
       ultra: '超高',
+      none: '關閉',
       updateFailed: '模型選項更新失敗',
       fastFailed: '快速模式更新失敗'
     },

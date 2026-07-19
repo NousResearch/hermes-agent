@@ -94,7 +94,7 @@ const isFastTier = (tier: unknown): boolean =>
   )
 
 // Reuse the composer's effort labels.
-const effortLabelKey = (v: string) => v as 'high' | 'low' | 'max' | 'medium' | 'minimal' | 'ultra' | 'xhigh'
+const effortLabelKey = (v: string) => v as 'high' | 'low' | 'max' | 'medium' | 'minimal' | 'none' | 'ultra' | 'xhigh'
 
 // A provider row is "ready" to pick a model from when it reports models. The
 // backend now surfaces the full `hermes model` universe (every canonical
@@ -814,7 +814,7 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
                   <SelectContent>
                     {EFFORT_VALUES.map(value => (
                       <SelectItem key={value} value={value}>
-                        {value === 'none' ? m.reasoningOff : t.shell.modelOptions[effortLabelKey(value)]}
+                        {t.shell.modelOptions[effortLabelKey(value)]}
                       </SelectItem>
                     ))}
                   </SelectContent>

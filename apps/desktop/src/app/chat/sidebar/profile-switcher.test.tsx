@@ -90,6 +90,10 @@ describe('ProfileRail activity indicators', () => {
     expect(claireButton.getAttribute('data-profile-activity')).toBe('working')
     expect(wallaceButton.getAttribute('data-profile-activity')).toBe('unread')
     expect(claireButton.querySelector('[data-profile-activity-border="working"]')).toBeTruthy()
+    const reducedMotionMarker = claireButton.querySelector('[data-profile-activity-static="working"]')
+    expect(reducedMotionMarker?.classList.contains('motion-reduce:block')).toBe(true)
+    expect(reducedMotionMarker?.classList.contains('rounded-full')).toBe(true)
+    expect(reducedMotionMarker?.classList.contains('border')).toBe(true)
     expect(wallaceButton.querySelector('[data-profile-activity-border="unread"]')).toBeTruthy()
     expect(wallaceButton.querySelector('[data-profile-activity-pip="unread"]')).toBeTruthy()
 

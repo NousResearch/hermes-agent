@@ -132,10 +132,10 @@ function SwitcherDot({ attention, working, unread }: { attention: boolean; worki
         'size-1.5 shrink-0',
         attention
           ? 'rotate-45 rounded-[1px] bg-amber-400'
-          : working
-            ? 'animate-pulse rounded-full border border-(--ui-accent) bg-transparent motion-reduce:animate-none'
-            : unread
-              ? 'rounded-[1px] bg-emerald-500'
+          : unread
+            ? 'rounded-[1px] bg-emerald-500'
+            : working
+              ? 'animate-pulse rounded-full border border-(--ui-accent) bg-transparent motion-reduce:animate-none'
               : 'rounded-full bg-(--ui-text-quaternary)/50'
       )}
     />

@@ -82,6 +82,31 @@ describe('SessionSwitcher background review activity', () => {
     expect(screen.queryByText('New result, not viewed')).toBeNull()
   })
 
+  it('shows unread above a still-running independent review', () => {
+    $unreadFinishedSessionIds.set(['parent'])
+    upsertSubagent(
+      'runtime-parent',
+      { child_session_id: 'review-child', status: 'running', subagent_id: 'review' },
+      true,
+      'subagent.start',
+      'parent',
+      'default'
+    )
+
+    render(
+      <MemoryRouter>
+        <SessionSwitcher />
+      </MemoryRouter>
+    )
+
+    const row = screen.getByText('Parent session').closest('.row-hover')
+    const dot = row?.querySelector('[aria-hidden="true"]')
+
+    expect(screen.getByText('New result, not viewed').classList.contains('sr-only')).toBe(true)
+    expect(dot?.classList.contains('rounded-[1px]')).toBe(true)
+    expect(dot?.classList.contains('border')).toBe(false)
+  })
+
   it('forwards the clicked row profile to the resume boundary', () => {
     const onResume = vi.fn()
     $switcherSessions.set([{ ...session('same', 'Beta session'), profile: 'beta' }])

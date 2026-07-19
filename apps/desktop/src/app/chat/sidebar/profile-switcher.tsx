@@ -148,6 +148,14 @@ function ProfileActivityBorder({ activity, hue }: { activity: ProfileActivity; h
           style={{ backgroundColor: signalHue }}
         />
       )}
+      {activity === 'working' && (
+        <span
+          aria-hidden="true"
+          className="pointer-events-none absolute right-0.5 top-0.5 z-2 hidden size-1.5 rounded-full border bg-transparent motion-reduce:block"
+          data-profile-activity-static="working"
+          style={{ borderColor: signalHue }}
+        />
+      )}
     </>
   )
 }

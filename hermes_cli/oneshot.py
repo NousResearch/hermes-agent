@@ -28,6 +28,7 @@ from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from typing import Optional
 
+from gateway.session_context import declare_stateless_channel
 from hermes_cli.fallback_config import get_fallback_chain
 
 
@@ -150,6 +151,12 @@ def _write_usage_file(path: Optional[str], result: dict, failure: Optional[str] 
             "session_id": result.get("session_id"),
             "completed": result.get("completed"),
             "failed": bool(result.get("failed")) or failure is not None,
+            # Billing-audit field: the service tier this run REQUESTED via
+            # request_overrides.extra_body (e.g. OpenAI "flex"). None when
+            # unset. Lets batch pipelines verify the tier they think they're
+            # paying for actually went out on the wire (July 2026 incident:
+            # a config-matching bug silently dropped flex -> 2.3x billing).
+            "service_tier": result.get("service_tier"),
         }
         if failure is not None:
             report["failure"] = failure
@@ -213,6 +220,15 @@ def run_oneshot(
     # definition — a prompt would hang forever.
     os.environ["HERMES_YOLO_MODE"] = "1"
     os.environ["HERMES_ACCEPT_HOOKS"] = "1"
+
+    # One-shot prints a single final response and exits: there is no later turn
+    # for a detached subagent's completion to re-enter, and nothing here drains
+    # process_registry.completion_queue (only cli.py's interactive process_loop
+    # and the gateway watchers do). Left unbound, async_delivery_supported()
+    # defaults True, delegate_task is forced background, and every subagent
+    # result is discarded. Declaring the channel stateless routes delegate_task
+    # to its inline/synchronous path. See declare_stateless_channel().
+    declare_stateless_channel()
 
     # Redirect stderr AND stdout to devnull for the entire call tree.
     # We'll print the final response to the real stdout at the end.

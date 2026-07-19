@@ -387,6 +387,20 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             return True
         return super()._open_dm_opted_in()
 
+    def _is_interactive_sender_authorized(self, sender_id: str) -> bool:
+        """Authorize inbound button/list taps before running resolvers.
+
+        Interactive replies bypass the normal ``_build_message_event_from_cloud``
+        path (which calls ``_should_process_message``), so approval /
+        slash-confirm / clarify taps must re-check DM policy here. Uses the
+        strict ``_is_dm_allowed`` gate (not intake/pairing) so a stale prompt
+        cannot be answered after the sender is removed from the allowlist.
+        """
+        principal = str(sender_id or "").strip()
+        if not principal:
+            return False
+        return self._is_dm_allowed(principal)
+
     # ------------------------------------------------------------------ lifecycle
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         if not check_whatsapp_cloud_requirements():
@@ -805,6 +819,8 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         session_key: str,
         description: str = "dangerous command",
         metadata: Optional[Dict[str, Any]] = None,
+        allow_permanent: bool = True,
+        smart_denied: bool = False,
     ) -> SendResult:
         """Render a dangerous-command approval prompt with native buttons.
 
@@ -816,6 +832,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         if self._http_client is None:
             return SendResult(success=False, error="Not connected")
 
+        del allow_permanent  # This adapter already offers one-shot Approve / Deny only.
         # WhatsApp body caps at 1024 chars; reserve room for the
         # framing prose around the command.
         cmd = command or ""
@@ -824,6 +841,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             f"⚠️ *Command Approval Required*\n\n"
             f"```\n{cmd_preview}\n```\n\n"
             f"Reason: {description}"
+            + ("\n\nSmart DENY: owner override applies to this one operation only." if smart_denied else "")
         )
 
         approval_id = uuid.uuid4().hex[:12]
@@ -1395,10 +1413,11 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             return web.Response(status=400, text="bad mode")
 
         # Constant-time compare to avoid token-length / token-content leaks
-        # via timing. ``hmac.compare_digest`` works on str.
+        # via timing. Compare as bytes: ``compare_digest`` raises TypeError on
+        # a str with non-ASCII characters, and the token is a raw query param.
         import hmac as _hmac
 
-        if not _hmac.compare_digest(token, self._verify_token):
+        if not _hmac.compare_digest(token.encode(), self._verify_token.encode()):
             return web.Response(status=403, text="verify_token mismatch")
         if not challenge:
             return web.Response(status=400, text="missing challenge")
@@ -1491,7 +1510,11 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             raw_body,
             hashlib.sha256,
         ).hexdigest()
-        return hmac.compare_digest(computed.lower(), expected_hex.lower())
+        # Compare as bytes: compare_digest raises TypeError on a str with
+        # non-ASCII characters, and the signature is a raw request header.
+        return hmac.compare_digest(
+            computed.lower().encode(), expected_hex.lower().encode()
+        )
 
     # ------------------------------------------------------------------ dispatch
     def _dedup_wamid(self, wamid: str) -> bool:
@@ -1634,6 +1657,18 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         button_id = str(inner.get("id") or "").strip()
         if not button_id:
             return False
+
+        sender_id = str(raw_message.get("from") or "").strip()
+        if not self._is_interactive_sender_authorized(sender_id):
+            logger.warning(
+                "[whatsapp_cloud] Rejected unauthorized interactive tap "
+                "from %s (button_id=%r)",
+                sender_id or "<unknown>",
+                button_id,
+            )
+            # Claim the webhook entry so the tap is not re-dispatched as
+            # plain text (which could re-enter the agent loop).
+            return True
 
         # Clarify: cl:<clarify_id>:<idx|other>
         if button_id.startswith("cl:"):

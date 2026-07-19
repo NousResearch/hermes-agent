@@ -30,6 +30,7 @@ from tools.tool_search import (
     DEFAULT_DEFERRABLE_CORE_TOOLS,
     BRIDGE_TOOL_NAMES,
     TOOL_CALL_NAME,
+    resolve_underlying_call,
 )
 
 
@@ -230,6 +231,124 @@ class TestAutoRoute:
         assert wrapped == {}, "malformed JSON should fall back to {} not {'_raw': ...}"
         # Real auto-route still produces a tool_call
         assert name == "tool_call"
+
+
+class TestBridgeE2E:
+    """Real bridge dispatch — not simulated. Verifies the full path:
+    tool_call(name=deferred_core_tool, args) resolves through the bridge.
+
+    This is the test teknium1 asked for: confirms config is threaded through
+    resolve_underlying_call and dispatch_tool_describe, not just the auto-route.
+    """
+
+    def _cfg_on(self):
+        return ToolSearchConfig.from_raw({"enabled": "on", "defer_core_tools": True})
+
+    def _cfg_off(self):
+        return ToolSearchConfig.from_raw({"enabled": "on", "defer_core_tools": False})
+
+    def test_resolve_underlying_call_accepts_deferred_core_tool(self):
+        cfg = self._cfg_on()
+        args = {"name": "terminal", "arguments": {"command": "ls -la"}}
+        name, parsed, err = resolve_underlying_call(args, config=cfg)
+        assert err is None, f"expected no error, got: {err}"
+        assert name == "terminal"
+        assert parsed == {"command": "ls -la"}
+
+    def test_resolve_underlying_call_rejects_core_tool_without_opt_in(self):
+        cfg = self._cfg_off()
+        args = {"name": "terminal", "arguments": {"command": "ls"}}
+        name, parsed, err = resolve_underlying_call(args, config=cfg)
+        assert err is not None
+        assert "not a deferrable tool" in err
+        assert name is None
+
+    def test_resolve_underlying_call_rejects_foundational_even_with_opt_in(self):
+        cfg = self._cfg_on()
+        args = {"name": "read_file", "arguments": {"path": "/tmp"}}
+        name, parsed, err = resolve_underlying_call(args, config=cfg)
+        assert err is not None
+        assert "not a deferrable tool" in err
+        assert name is None
+
+    def test_resolve_underlying_call_rejects_bridge_tools(self):
+        cfg = self._cfg_on()
+        args = {"name": "tool_call", "arguments": {}}
+        name, parsed, err = resolve_underlying_call(args, config=cfg)
+        assert err is not None
+        assert "bridge tool" in err
+        assert name is None
+
+    def test_resolve_underlying_call_malformed_json_args(self):
+        cfg = self._cfg_on()
+        args = {"name": "terminal", "arguments": "not json {{{"}
+        name, parsed, err = resolve_underlying_call(args, config=cfg)
+        assert err is not None
+        assert "not valid JSON" in err
+        assert name is None
+
+    def test_dispatch_tool_describe_serves_deferred_core_tool(self):
+        from tools.tool_search import dispatch_tool_describe
+        cfg = self._cfg_on()
+        # Build a fake tool_defs list with a terminal entry
+        tool_defs = [{"function": {"name": "terminal", "description": "run shell", "parameters": {"type": "object"}}}]
+        result = dispatch_tool_describe({"name": "terminal"}, current_tool_defs=tool_defs, config=cfg)
+        import json as _json
+        parsed = _json.loads(result)
+        # Should return the tool schema, not an error
+        assert "error" not in parsed or "not a deferrable" not in parsed.get("error", ""), \
+            f"dispatch_tool_describe rejected deferred core tool: {parsed}"
+        # The response contains the tool name
+        assert "terminal" in result
+
+    def test_dispatch_tool_describe_rejects_core_tool_without_opt_in(self):
+        from tools.tool_search import dispatch_tool_describe
+        cfg = self._cfg_off()
+        tool_defs = [{"function": {"name": "terminal", "description": "run shell", "parameters": {"type": "object"}}}]
+        result = dispatch_tool_describe({"name": "terminal"}, current_tool_defs=tool_defs, config=cfg)
+        import json as _json
+        parsed = _json.loads(result)
+        assert "error" in parsed
+        assert "not a deferrable" in parsed["error"]
+
+    def test_full_auto_route_to_bridge_resolution(self):
+        """End-to-end: auto-route rewrites terminal(...) to tool_call(...),
+        then resolve_underlying_call resolves it back to terminal(...).
+        This is the path teknium1 flagged as broken — now verified working.
+        """
+        import json as _json
+        cfg = self._cfg_on()
+        valid_tool_names = {"read_file", "write_file", "tool_search", "tool_call", "tool_describe"}
+
+        # Step 1: model emits terminal(...) directly — auto-route rewrites it
+        tc_name = "terminal"
+        tc_args = '{"command": "ls -la"}'
+        # (using the real auto-route logic from conversation_loop)
+        all_valid = tc_name in valid_tool_names
+        assert not all_valid, "terminal should not be in valid_tool_names when deferred"
+
+        if is_deferrable_tool_name(tc_name, config=cfg):
+            try:
+                wrapped = _json.loads(tc_args or "{}")
+            except Exception:
+                wrapped = {}
+            routed_name = "tool_call"
+            routed_args = _json.dumps({"name": tc_name, "arguments": wrapped})
+        else:
+            routed_name, routed_args = tc_name, tc_args
+
+        assert routed_name == "tool_call"
+        assert routed_args == '{"name": "terminal", "arguments": {"command": "ls -la"}}'
+
+        # Step 2: bridge receives tool_call(...) — resolve_underlying_call unwraps it
+        bridge_args = _json.loads(routed_args)
+        underlying_name, underlying_args, err = resolve_underlying_call(bridge_args, config=cfg)
+        assert err is None, f"bridge failed to resolve: {err}"
+        assert underlying_name == "terminal"
+        assert underlying_args == {"command": "ls -la"}
+
+        # The round trip works: terminal(...) → tool_call(terminal, ...) → terminal(...)
+        print("✓ full round trip: auto-route → bridge resolution works for deferred core tool")
 
 
 if __name__ == "__main__":

@@ -1108,7 +1108,9 @@ def handle_function_call(
             return _ts_mod.dispatch_tool_describe(function_args or {},
                                                   current_tool_defs=current_defs)
         if function_name == _ts_mod.TOOL_CALL_NAME:
-            underlying_name, underlying_args, err = _ts_mod.resolve_underlying_call(function_args or {})
+            underlying_name, underlying_args, err = _ts_mod.resolve_underlying_call(
+                function_args or {}, config=_ts_mod.load_config()
+            )
             if err or not underlying_name:
                 return json.dumps({"error": err or "tool_call could not be resolved"},
                                   ensure_ascii=False)

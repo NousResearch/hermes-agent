@@ -544,6 +544,8 @@ class TestTavilyProxy:
             "plugins.web.tavily.provider._load_tavily_config",
             return_value={},
         ), patch(
+            "hermes_cli.config.get_env_value", return_value=None,
+        ), patch(
             "httpx.post", return_value=mock_resp
         ) as mock_post:
             from plugins.web.tavily.provider import _tavily_request

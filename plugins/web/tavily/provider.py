@@ -76,7 +76,13 @@ def _tavily_request(endpoint: str, payload: Dict[str, Any]) -> Dict[str, Any]:
     logger.info("Tavily %s request to %s", endpoint, url)
 
     tavily_cfg = _load_tavily_config()
-    proxy = tavily_cfg.get("search_proxy") or os.getenv("WEB_SEARCH_PROXY")
+    proxy = tavily_cfg.get("search_proxy")
+    if not proxy:
+        try:
+            from hermes_cli.config import get_env_value
+            proxy = get_env_value("WEB_SEARCH_PROXY")
+        except Exception:
+            proxy = None
     response = httpx.post(url, json=payload, timeout=60, proxy=proxy)
     response.raise_for_status()
     return response.json()

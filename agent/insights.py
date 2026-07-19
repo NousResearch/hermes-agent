@@ -188,6 +188,46 @@ class InsightsEngine:
         " ORDER BY started_at DESC"
     )
 
+    # Assistant ``tool_calls`` scan for tool/skill usage.  ``INDEXED BY`` pins
+    # the partial index ``idx_messages_assistant_calls_by_session`` so the plan
+    # is deterministic on a freshly initialized state.db (before ANALYZE has
+    # run) for BOTH the unfiltered and source-filtered branches — without the
+    # hint the optimizer falls back to ``idx_messages_session_active`` for the
+    # source-filtered probe and scans each session's non-tool-call rows.  Safe
+    # because the index is declared in ``SCHEMA_SQL`` (created by every
+    # read-write ``SessionDB._init_schema``); every ``InsightsEngine`` caller
+    # opens a read-write ``SessionDB`` — read-only attachments (which skip
+    # schema init) are never used for insights.
+    _MESSAGES_ASSISTANT_CALLS_INDEX = "idx_messages_assistant_calls_by_session"
+    _GET_TOOL_CALLS_WITH_SOURCE = (
+        "SELECT m.tool_calls"
+        f" FROM messages m INDEXED BY {_MESSAGES_ASSISTANT_CALLS_INDEX}"
+        " JOIN sessions s ON s.id = m.session_id"
+        " WHERE s.started_at >= ? AND s.source = ?"
+        " AND m.role = 'assistant' AND m.tool_calls IS NOT NULL"
+    )
+    _GET_TOOL_CALLS_ALL = (
+        "SELECT m.tool_calls"
+        f" FROM messages m INDEXED BY {_MESSAGES_ASSISTANT_CALLS_INDEX}"
+        " JOIN sessions s ON s.id = m.session_id"
+        " WHERE s.started_at >= ?"
+        " AND m.role = 'assistant' AND m.tool_calls IS NOT NULL"
+    )
+    _GET_SKILL_CALLS_WITH_SOURCE = (
+        "SELECT m.tool_calls, m.timestamp"
+        f" FROM messages m INDEXED BY {_MESSAGES_ASSISTANT_CALLS_INDEX}"
+        " JOIN sessions s ON s.id = m.session_id"
+        " WHERE s.started_at >= ? AND s.source = ?"
+        " AND m.role = 'assistant' AND m.tool_calls IS NOT NULL"
+    )
+    _GET_SKILL_CALLS_ALL = (
+        "SELECT m.tool_calls, m.timestamp"
+        f" FROM messages m INDEXED BY {_MESSAGES_ASSISTANT_CALLS_INDEX}"
+        " JOIN sessions s ON s.id = m.session_id"
+        " WHERE s.started_at >= ?"
+        " AND m.role = 'assistant' AND m.tool_calls IS NOT NULL"
+    )
+
     def _get_sessions(self, cutoff: float, source: str = None) -> List[Dict]:
         """Fetch sessions within the time window."""
         if source:
@@ -236,22 +276,10 @@ class InsightsEngine:
         # (covers CLI sessions where tool_name is NULL on tool responses)
         if source:
             cursor2 = self._conn.execute(
-                """SELECT m.tool_calls
-                   FROM messages m
-                   JOIN sessions s ON s.id = m.session_id
-                   WHERE s.started_at >= ? AND s.source = ?
-                     AND m.role = 'assistant' AND m.tool_calls IS NOT NULL""",
-                (cutoff, source),
+                self._GET_TOOL_CALLS_WITH_SOURCE, (cutoff, source)
             )
         else:
-            cursor2 = self._conn.execute(
-                """SELECT m.tool_calls
-                   FROM messages m
-                   JOIN sessions s ON s.id = m.session_id
-                   WHERE s.started_at >= ?
-                     AND m.role = 'assistant' AND m.tool_calls IS NOT NULL""",
-                (cutoff,),
-            )
+            cursor2 = self._conn.execute(self._GET_TOOL_CALLS_ALL, (cutoff,))
 
         tool_calls_counts = Counter()
         for row in cursor2.fetchall():
@@ -294,22 +322,10 @@ class InsightsEngine:
 
         if source:
             cursor = self._conn.execute(
-                """SELECT m.tool_calls, m.timestamp
-                   FROM messages m
-                   JOIN sessions s ON s.id = m.session_id
-                   WHERE s.started_at >= ? AND s.source = ?
-                     AND m.role = 'assistant' AND m.tool_calls IS NOT NULL""",
-                (cutoff, source),
+                self._GET_SKILL_CALLS_WITH_SOURCE, (cutoff, source)
             )
         else:
-            cursor = self._conn.execute(
-                """SELECT m.tool_calls, m.timestamp
-                   FROM messages m
-                   JOIN sessions s ON s.id = m.session_id
-                   WHERE s.started_at >= ?
-                     AND m.role = 'assistant' AND m.tool_calls IS NOT NULL""",
-                (cutoff,),
-            )
+            cursor = self._conn.execute(self._GET_SKILL_CALLS_ALL, (cutoff,))
 
         for row in cursor.fetchall():
             try:

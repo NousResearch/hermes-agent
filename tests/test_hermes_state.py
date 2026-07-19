@@ -6407,32 +6407,15 @@ class TestInsightsToolCallIndex:
         finally:
             db2.close()
 
-    def test_index_serves_assistant_tool_call_scan(self, db):
-        """The planner uses the partial index for the exact Insights predicate.
+    def test_index_predicate_is_partial(self, db):
+        """The index covers only the assistant tool-call rows Insights reads.
 
-        Seed enough rows that the optimizer prefers the partial index over a
-        full table scan, then assert the plan names it.
+        Query-plan coverage (that the Insights queries actually select this
+        index, for both scopes, without ANALYZE) lives with the queries in
+        tests/agent/test_insights.py.
         """
-        db.create_session(session_id="s1", source="cli")
-        for i in range(200):
-            if i % 5 == 0:
-                db.append_message(
-                    "s1", role="assistant", content=f"m{i}",
-                    tool_calls=[{"function": {"name": "search_files"}}],
-                )
-            else:
-                db.append_message("s1", role="user", content=f"m{i}")
-        db._conn.execute("ANALYZE")
-        db._conn.commit()
-
-        plan = "\n".join(
-            row["detail"]
-            for row in db._conn.execute(
-                "EXPLAIN QUERY PLAN "
-                "SELECT m.tool_calls FROM messages m "
-                "JOIN sessions s ON s.id = m.session_id "
-                "WHERE s.started_at >= 0 "
-                "AND m.role = 'assistant' AND m.tool_calls IS NOT NULL"
-            ).fetchall()
-        )
-        assert self._INDEX in plan, plan
+        sql = self._index_defn(db._conn)
+        assert sql is not None
+        assert "WHERE" in sql
+        assert "role = 'assistant'" in sql
+        assert "tool_calls IS NOT NULL" in sql

@@ -205,3 +205,47 @@ describe('refreshSessions batches slices into one request', () => {
     )
   })
 })
+
+describe('refreshMessagingSessions request guard', () => {
+  const msgRow = (id: string, source: string, over: Partial<SessionInfo> = {}): SessionInfo =>
+    ({ archived: false, cwd: null, ended_at: null, id, input_tokens: 0, is_active: false, last_active: 0, message_count: 2, model: null, output_tokens: 0, preview: null, source, started_at: 0, title: id, tool_call_count: 0, ...over }) as SessionInfo
+
+  it('ignores a stale refresh that resolves after a newer one', async () => {
+    let resolveOlder!: (value: { limit: number; offset: number; sessions: SessionInfo[]; total: number }) => void
+    let resolveNewer!: typeof resolveOlder
+
+    const older = new Promise<Parameters<typeof resolveOlder>[0]>(r => { resolveOlder = r })
+    const newer = new Promise<Parameters<typeof resolveNewer>[0]>(r => { resolveNewer = r })
+
+    const olderRows = [msgRow('feishu-old', 'feishu')]
+    const newerRows = [msgRow('feishu-new-0', 'feishu'), msgRow('feishu-new-1', 'feishu')]
+
+    listAllProfileSessions
+      .mockImplementationOnce(() => older)
+      .mockImplementationOnce(() => newer)
+
+    const { result } = renderHook(() => useSessionListActions({ profileScope: 'all' }))
+
+    let olderDone!: Promise<void>
+    let newerDone!: Promise<void>
+    await act(async () => {
+      olderDone = result.current.refreshMessagingSessions()
+      newerDone = result.current.refreshMessagingSessions()
+    })
+
+    // Newer finishes first
+    await act(async () => {
+      resolveNewer({ limit: newerRows.length, offset: 0, sessions: newerRows, total: newerRows.length })
+      await newerDone
+    })
+
+    // Then stale older resolves — must not clobber
+    await act(async () => {
+      resolveOlder({ limit: olderRows.length, offset: 0, sessions: olderRows, total: olderRows.length })
+      await olderDone
+    })
+
+    const feishu = $messagingSessions.get().filter(r => r.source === 'feishu')
+    expect(feishu.map(r => r.id)).toEqual(['feishu-new-0', 'feishu-new-1'])
+  })
+})

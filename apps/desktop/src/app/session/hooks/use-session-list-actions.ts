@@ -18,6 +18,7 @@ import {
   CRON_SECTION_LIMIT,
   mergeSessionPage,
   MESSAGING_SECTION_LIMIT,
+  reconcileMessagingRefresh,
   setCronSessions,
   setMessagingPlatformTotals,
   setMessagingSessions,
@@ -74,12 +75,15 @@ interface UseSessionListActionsArgs {
  *  wires into the sidebar and refresh effects. */
 export function useSessionListActions({ profileScope }: UseSessionListActionsArgs) {
   const refreshSessionsRequestRef = useRef(0)
+  const refreshMessagingRequestRef = useRef(0)
 
   // Messaging-platform sessions as their own slice, fetched separately from
   // local recents so each platform renders a self-managed section and never
   // competes with local chats for the recents page budget. One combined fetch
   // seeds every platform; the sidebar splits the rows per source.
   const refreshMessagingSessions = useCallback(async () => {
+    const requestId = ++refreshMessagingRequestRef.current
+
     try {
       const result = await listAllProfileSessions(MESSAGING_SECTION_LIMIT, 1, 'exclude', 'recent', 'all', {
         excludeSources: MESSAGING_EXCLUDED_SOURCES
@@ -87,12 +91,21 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
 
       // Drop any non-messaging source the broad exclude didn't catch (custom
       // sources) — those stay in local recents, not a platform section.
-      const rows = result.sessions.filter(s => isMessagingSource(s.source))
+      if (refreshMessagingRequestRef.current !== requestId) {
+        return
+      }
 
-      setMessagingSessions(prev => (sameCronSignature(prev, rows) ? prev : rows))
+      const rows = result.sessions.filter(s => isMessagingSource(s.source))
+      const truncated = result.sessions.length >= MESSAGING_SECTION_LIMIT
+
+      setMessagingSessions(prev => {
+        const next = reconcileMessagingRefresh(prev, rows, truncated)
+
+        return sameCronSignature(prev, next) ? prev : next
+      })
       // Hit the cap → at least one platform may have more on disk than loaded,
       // so platform sections offer their own per-platform "load more".
-      setMessagingTruncated(result.sessions.length >= MESSAGING_SECTION_LIMIT)
+      setMessagingTruncated(truncated)
     } catch {
       // Non-fatal: the messaging sections just stay empty/stale.
     }

@@ -1069,6 +1069,31 @@ a { color: inherit; }
 .drug-sa-actions .btn { font-size: 12px; padding: 5px 10px; }
 .drug-sa-link { text-decoration: none; }
 
+/* ---------- clinical calculators ---------- */
+.calc-picker { width: 100%; margin-bottom: 8px; }
+.calc-blurb { margin-bottom: 10px; }
+.calc-inputs { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 8px; margin-bottom: 12px; }
+.calc-inputs.calc-checks { grid-template-columns: 1fr; gap: 4px; }
+.calc-field { display: flex; flex-direction: column; gap: 3px; }
+.calc-label { font-size: 12px; color: var(--ink-2); }
+.calc-check { display: flex; align-items: center; gap: 8px; font-size: 13px; padding: 5px 2px; cursor: pointer; }
+.calc-result { border-top: 1px solid var(--hairline); padding-top: 10px; }
+.calc-out { display: flex; align-items: baseline; gap: 8px; }
+.calc-val { font-size: 30px; font-weight: 700; font-variant-numeric: tabular-nums; line-height: 1; }
+.calc-out.calc-good .calc-val { color: var(--status-stable); }
+.calc-out.calc-warn .calc-val { color: var(--status-elevated, orange); }
+.calc-out.calc-bad .calc-val { color: var(--status-critical); }
+.calc-out.calc-info .calc-val { color: var(--accent); }
+.calc-unit { font-size: 13px; color: var(--muted); }
+.calc-interp { margin-top: 6px; line-height: 1.45; color: var(--ink-2); }
+.calc-note { margin-top: 12px; }
+.calc-refs { max-height: 340px; overflow-y: auto; }
+.calc-ref-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.calc-ref-table td { padding: 5px 6px; border-bottom: 1px solid var(--hairline); }
+.calc-ref-name { color: var(--ink); }
+.calc-ref-range { font-variant-numeric: tabular-nums; text-align: right; white-space: nowrap; }
+.calc-ref-unit { font-size: 11px; padding-left: 4px !important; }
+
 /* ---------- podcasts ---------- */
 .pod-head { display: flex; align-items: center; gap: 8px; }
 .pod-add { margin-left: auto; }

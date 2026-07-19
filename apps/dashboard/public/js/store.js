@@ -24,7 +24,7 @@ function defaultPages() {
       w("air", "m"), w("space", "m"), w("alerts", "m"), w("flights", "m"),
     ] },
     { id: uid(), name: "Health", layout: [
-      w("medbot", "l"), w("pubmed", "m"), w("trials", "m"), w("drug", "m"),
+      w("medbot", "l"), w("pubmed", "m"), w("trials", "m"), w("drug", "m"), w("calc", "m"),
     ] },
   ];
 }

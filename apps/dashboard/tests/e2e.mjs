@@ -123,7 +123,7 @@ const WIDGET_PAGES = {
   Feeds: ["news", "reading", "socials", "gaming", "podcasts"],
   Sports: ["scores"],
   Intel: ["worldclock", "quakes", "fx", "convert", "air", "space", "alerts", "flights"],
-  Health: ["medbot", "pubmed", "trials", "drug"],
+  Health: ["medbot", "pubmed", "trials", "drug", "calc"],
 };
 const pageOf = (type) => Object.keys(WIDGET_PAGES).find((p) => WIDGET_PAGES[p].includes(type)) || "Main";
 const gotoPage = async (name) => {
@@ -142,6 +142,7 @@ for (const [pageName, types] of Object.entries(WIDGET_PAGES)) {
   }
 }
 await gotoPage("Main");
+await page.waitForFunction(() => document.querySelectorAll(".widget-glance .glance-cell").length >= 5, null, { timeout: 10000 });
 check("at-a-glance hero renders cells", (await page.locator(".widget-glance .glance-cell").count()) >= 5);
 check("glance weather cell populated", /\d+°/.test(await page.locator(".widget-glance").innerText()));
 check("clock shows time", /\d{1,2}:\d{2}/.test(await page.locator(".clock-time").innerText()));
@@ -684,6 +685,18 @@ await page.waitForFunction((n) =>
   document.querySelectorAll(".widget-medbot .med-msg").length > n, medMsgsBefore, { timeout: 10000 });
 check("drug → MedBot bridge asks a SA dosing question",
   (await page.locator(".widget-medbot .med-msg.med-user").first().innerText()).toLowerCase().includes("south african"));
+// clinical calculators
+await gotoWidget("calc");
+await page.locator(".widget-calc .calc-inputs input").first().fill("60");
+await page.locator(".widget-calc .calc-field select").first().selectOption("male");
+await page.locator(".widget-calc .calc-inputs input").nth(1).fill("90");
+await page.waitForFunction(() =>
+  /\d/.test(document.querySelector(".widget-calc .calc-val")?.textContent || ""), null, { timeout: 5000 });
+check("clinical calc computes eGFR", /\d/.test(await page.locator(".widget-calc .calc-val").innerText()));
+check("clinical calc shows interpretation", (await page.locator(".widget-calc .calc-interp").innerText()).toLowerCase().includes("ckd"));
+await page.locator(".widget-calc .calc-picker").selectOption("reference");
+await page.waitForSelector(".widget-calc .calc-ref-table tr", { timeout: 5000 });
+check("clinical calc lists SA reference ranges", (await page.locator(".widget-calc .calc-ref-table tr").count()) >= 10);
 await gotoWidget("medbot");
 check("medbot shows the SA decision-support intro", /South African/i.test(await page.locator(".widget-medbot").innerText()));
 await page.locator(".widget-medbot .med-input").fill("First-line HIV-TB co-infection management?");

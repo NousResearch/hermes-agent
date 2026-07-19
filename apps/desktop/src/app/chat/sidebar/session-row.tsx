@@ -15,6 +15,7 @@ import { handoffOriginSource, sessionSourceLabel } from '@/lib/session-source'
 import { coarseElapsed } from '@/lib/time'
 import { cn } from '@/lib/utils'
 import { $backgroundRunningSessionIds } from '@/store/composer-status'
+import { $projectColorIndex, projectColorForCwd } from '@/store/projects'
 import { $unreadFinishedSessionIds } from '@/store/session'
 import { $attentionSessionIds, openSessionTile } from '@/store/session-states'
 import { canOpenSessionWindow, openSessionInNewWindow } from '@/store/windows'
@@ -91,6 +92,10 @@ export function SidebarSessionRow({
   const isUnread = useStore($unreadFinishedSessionIds).includes(session.id)
   // True when a terminal(background=true) process is alive in this session.
   const hasBackground = useStore($backgroundRunningSessionIds).includes(session.id)
+  // Owning project's color (user-set in the project menu) — tints the IDLE dot
+  // only, so an at-a-glance "blue = work" read never competes with status.
+  const colorIndex = useStore($projectColorIndex)
+  const projectColor = projectColorForCwd(colorIndex, session.cwd)
 
   // Resolve the dot's display state once — the four signals are mutually
   // exclusive by priority, so threading them as booleans through wrappers just
@@ -240,11 +245,12 @@ export function SidebarSessionRow({
                 branchStem={branchStem}
                 className="transition-opacity group-hover/handle:opacity-0 group-focus-within/handle:opacity-0"
                 dotState={dotState}
+                projectColor={projectColor}
               />
             </SidebarRowGrab>
           ) : (
             <SidebarRowLead className={needsInput ? 'overflow-visible' : 'overflow-hidden'}>
-              <SessionRowLeadDot branchStem={branchStem} dotState={dotState} />
+              <SessionRowLeadDot branchStem={branchStem} dotState={dotState} projectColor={projectColor} />
             </SidebarRowLead>
           )}
           {handoffSource && handoffLabel ? (
@@ -274,10 +280,12 @@ type SessionDotState = 'background' | 'idle' | 'needs-input' | 'unread' | 'worki
 function SessionRowLeadDot({
   branchStem,
   dotState = 'idle',
+  projectColor,
   className
 }: {
   branchStem?: string
   dotState?: SessionDotState
+  projectColor?: null | string
   className?: string
 }) {
   return (
@@ -287,7 +295,7 @@ function SessionRowLeadDot({
           {branchStem}
         </span>
       ) : null}
-      <SidebarRowDot dotState={dotState} />
+      <SidebarRowDot dotState={dotState} projectColor={projectColor} />
     </span>
   )
 }
@@ -348,16 +356,29 @@ const DOT_VARIANTS: Record<SessionDotState, DotVariant> = {
   }
 }
 
-function SidebarRowDot({ dotState, className }: { dotState: SessionDotState; className?: string }) {
+function SidebarRowDot({
+  dotState,
+  projectColor,
+  className
+}: {
+  dotState: SessionDotState
+  projectColor?: null | string
+  className?: string
+}) {
   const { t } = useI18n()
   const r = t.sidebar.row
   const variant = DOT_VARIANTS[dotState]
+  // Project tint applies to the idle dot ONLY: status colors are semantic
+  // (amber = your turn, accent = running, green = unread) and always win.
+  // Inline style, not a class — project colors are arbitrary user values.
+  const tint = dotState === 'idle' && projectColor ? { backgroundColor: projectColor, opacity: 1 } : undefined
 
   return (
     <span
       aria-label={variant.ariaLabel?.(r)}
       className={cn(variant.className, className)}
       role={variant.role}
+      style={tint}
       title={variant.title?.(r)}
     />
   )

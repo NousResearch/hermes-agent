@@ -976,6 +976,81 @@ class TestExternalSkillMutations:
         result = json.loads(raw)
         assert result["success"] is True
 
+    def test_background_review_refuses_manually_authored_skill(self, tmp_path):
+        """The curator must not archive/edit skills the user placed manually
+        (created_by=None). Only agent-created skills are eligible for
+        autonomous curation."""
+        from tools.skill_provenance import (
+            BACKGROUND_REVIEW,
+            reset_current_write_origin,
+            set_current_write_origin,
+        )
+
+        with _skill_dir(tmp_path):
+            _create_skill("manual-skill", VALID_SKILL_CONTENT)
+            token = set_current_write_origin(BACKGROUND_REVIEW)
+            try:
+                from tools.skill_manager_tool import mark_background_review_skill_read
+
+                mark_background_review_skill_read(tmp_path / "manual-skill" / "SKILL.md")
+                with patch(
+                    "tools.skill_usage.load_usage",
+                    return_value={"manual-skill": {"created_by": None, "use_count": 50}},
+                ), patch(
+                    "tools.skill_usage.get_record",
+                    side_effect=lambda n: {"created_by": None, "use_count": 50} if n == "manual-skill" else {},
+                ):
+                    raw = skill_manage(
+                        action="delete",
+                        name="manual-skill",
+                    )
+            finally:
+                reset_current_write_origin(token)
+
+        result = json.loads(raw)
+        assert result["success"] is False
+        assert "manually authored" in result["error"].lower()
+
+    def test_background_review_allows_agent_created_skill(self, tmp_path):
+        """Agent-created skills (created_by='agent') are NOT blocked by the
+        manual-skill guard — they remain eligible for autonomous curation."""
+        from tools.skill_provenance import (
+            BACKGROUND_REVIEW,
+            reset_current_write_origin,
+            set_current_write_origin,
+        )
+
+        with _skill_dir(tmp_path):
+            _create_skill("agent-skill", VALID_SKILL_CONTENT)
+            token = set_current_write_origin(BACKGROUND_REVIEW)
+            try:
+                from tools.skill_manager_tool import mark_background_review_skill_read
+
+                mark_background_review_skill_read(tmp_path / "agent-skill" / "SKILL.md")
+                with patch(
+                    "tools.skill_usage.load_usage",
+                    return_value={"agent-skill": {"created_by": "agent", "use_count": 5}},
+                ), patch(
+                    "tools.skill_usage.get_record",
+                    side_effect=lambda n: {"created_by": "agent", "use_count": 5} if n == "agent-skill" else {},
+                ), patch(
+                    "tools.skill_usage.is_curation_eligible", return_value=True,
+                ), patch(
+                    "tools.skill_usage.archive_skill", return_value=(True, "archived"),
+                ):
+                    raw = skill_manage(
+                        action="delete",
+                        name="agent-skill",
+                        absorbed_into="umbrella",
+                    )
+            finally:
+                reset_current_write_origin(token)
+
+        result = json.loads(raw)
+        # Should not be blocked by the manual-skill guard (may be blocked by
+        # the consolidation-delete guard if absorbed_into is empty, but the
+        # manual-skill guard must not fire).
+        assert "manually authored" not in result.get("error", "").lower()
 
 
 # ---------------------------------------------------------------------------

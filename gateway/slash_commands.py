@@ -31,6 +31,7 @@ from typing import Any, Optional, Union
 
 from agent.account_usage import fetch_account_usage, render_account_usage_lines
 from agent.i18n import t
+from agent.turn_context import extract_api_content_sidecar
 from gateway.config import HomeChannel, Platform, PlatformConfig
 from gateway.platforms.base import EphemeralReply, MessageEvent, MessageType
 from gateway.session import (
@@ -1454,6 +1455,7 @@ class GatewaySlashCommandsMixin:
         Supports:
           /model                              — interactive picker (Telegram/Discord) or text list
           /model <name>                       — switch model (persists by default)
+          /model <name> --once                — switch for the next turn only
           /model <name> --session             — switch for this session only
           /model <name> --global              — switch and persist (explicit)
           /model <name> --provider <provider> — switch provider + model
@@ -1462,7 +1464,7 @@ class GatewaySlashCommandsMixin:
         from gateway.run import _hermes_home, _load_gateway_config
         import yaml
         from hermes_cli.model_switch import (
-            switch_model as _switch_model, parse_model_flags,
+            switch_model as _switch_model, parse_model_flags_detailed,
             resolve_persist_behavior,
             list_authenticated_providers,
             list_picker_providers,
@@ -1477,15 +1479,23 @@ class GatewaySlashCommandsMixin:
                 self, "_resolve_profile_home_for_source"
             )(source)
 
-        # Parse --provider, --global, --session, and --refresh flags
-        (
-            model_input,
-            explicit_provider,
+        # Parse --provider, --global, --session, --once, and --refresh flags
+        parsed_flags = parse_model_flags_detailed(raw_args)
+        model_input = parsed_flags.model_input
+        explicit_provider = parsed_flags.explicit_provider
+        is_global_flag = parsed_flags.is_global
+        force_refresh = parsed_flags.force_refresh
+        is_session = parsed_flags.is_session
+        one_turn = parsed_flags.is_once
+        if is_global_flag and one_turn:
+            return "❌ /model --once cannot be combined with --global"
+        if one_turn and not model_input and not explicit_provider:
+            return "❌ /model --once requires a model or provider."
+        persist_global = resolve_persist_behavior(
             is_global_flag,
-            force_refresh,
             is_session,
-        ) = parse_model_flags(raw_args)
-        persist_global = resolve_persist_behavior(is_global_flag, is_session)
+            is_once=one_turn,
+        )
 
         # --refresh: bust the disk cache so the picker shows live data.
         if force_refresh:
@@ -1528,6 +1538,9 @@ class GatewaySlashCommandsMixin:
         source = await asyncio.to_thread(self._normalize_source_for_session_key, source)
         session_key = self._session_key_for_source(source)
         override = self._session_model_overrides.get(session_key, {})
+        restore_snapshot = (
+            self._snapshot_session_model_override(session_key) if one_turn else None
+        )
         if override:
             current_model = override.get("model", current_model)
             current_provider = override.get("provider", current_provider)
@@ -1948,6 +1961,7 @@ class GatewaySlashCommandsMixin:
             self._pending_model_notes[session_key] = (
                 f"[Note: model was just switched from {current_model} to {result.new_model} "
                 f"via {result.provider_label or result.target_provider}. "
+                f"{'This override applies to the next turn only. ' if one_turn else ''}"
                 f"Adjust your self-identification accordingly.]"
             )
 
@@ -1959,20 +1973,37 @@ class GatewaySlashCommandsMixin:
                 "base_url": result.base_url,
                 "api_mode": result.api_mode,
             }
+            if one_turn:
+                if not hasattr(self, "_pending_one_turn_model_restores"):
+                    self._pending_one_turn_model_restores = {}
+                self._pending_one_turn_model_restores[session_key] = (
+                    restore_snapshot or {"had_override": False, "override": None}
+                )
+            elif hasattr(self, "_pending_one_turn_model_restores"):
+                self._pending_one_turn_model_restores.pop(session_key, None)
 
             # Write-through the non-secret parts (model/provider/base_url) to
             # the session store so the override survives a gateway restart.
             # api_key/api_mode are never persisted — they are re-resolved via
             # runtime provider resolution on rehydration.
-            try:
-                await self.async_session_store.set_model_override(
-                    session_key,
-                    self._session_model_overrides[session_key],
-                )
-            except Exception:
-                logger.debug(
-                    "Failed to persist session model override", exc_info=True
-                )
+            #
+            # /model --once is intentionally EXCLUDED from the write-through:
+            # a one-turn override must never survive a restart. The persisted
+            # value stays at the pre-once state (the prior session override,
+            # or nothing), which is exactly what the finally-restore reverts
+            # the in-memory dict to. (#29923 review defect: the original
+            # implementation wrote through, so a crash before the restore
+            # rehydrated the once-model permanently.)
+            if not one_turn:
+                try:
+                    await self.async_session_store.set_model_override(
+                        session_key,
+                        self._session_model_overrides[session_key],
+                    )
+                except Exception:
+                    logger.debug(
+                        "Failed to persist session model override", exc_info=True
+                    )
 
             # Evict cached agent so the next turn creates a fresh agent from the
             # override rather than relying on cache signature mismatch detection.
@@ -2070,6 +2101,8 @@ class GatewaySlashCommandsMixin:
 
             if persist_global:
                 lines.append(t("gateway.model.saved_global"))
+            elif one_turn:
+                lines.append("    (next turn only — restores after one response)")
             else:
                 lines.append(t("gateway.model.session_only_hint"))
 
@@ -4072,6 +4105,10 @@ class GatewaySlashCommandsMixin:
                     reasoning_details=msg.get("reasoning_details"),
                     codex_reasoning_items=msg.get("codex_reasoning_items"),
                     codex_message_items=msg.get("codex_message_items"),
+                    # Keep the api_content sidecar so the branch's first turn
+                    # replays the parent's exact wire bytes (warm provider
+                    # prompt cache) instead of a full cold prefill.
+                    api_content=extract_api_content_sidecar(msg),
                 )
             except Exception:
                 pass  # Best-effort copy
@@ -4095,15 +4132,15 @@ class GatewaySlashCommandsMixin:
         key = "gateway.branch.branched_one" if msg_count == 1 else "gateway.branch.branched_many"
         return t(key, title=branch_title, count=msg_count, parent=parent_session_id, new=new_session_id)
 
-    async def _handle_credits_command(self, event: MessageEvent) -> str:
-        """Handle /credits -- show Nous credit balance and the top-up handoff.
+    async def _handle_topup_command(self, event: MessageEvent) -> str:
+        """Handle /topup -- show the Nous balance and hand off to the portal.
 
-        Renders the balance block + identity line + a tappable top-up URL that
-        opens the portal billing page with the modal open. The terminal does NOT
-        confirm, poll, or track payment (billing phase 2a) — checkout happens in
-        the browser and the next /credits shows the new balance. The tappable URL
-        is the affordance: it works on every platform (button-capable or plain
-        text like SMS/email). Fetched off the event loop; fail-open.
+        Renders the balance block + identity line + a tappable portal URL that
+        opens the billing page. Terminal billing is managed on the portal: the
+        terminal does NOT charge, confirm, or track payment here — everything
+        happens in the browser and the next /topup shows the new balance. The
+        tappable URL is the affordance and works on every platform (button-capable
+        or plain text like SMS/email). Fetched off the event loop; fail-open.
         """
         from agent.account_usage import build_credits_view
 
@@ -4115,7 +4152,7 @@ class GatewaySlashCommandsMixin:
         if view is None or not view.logged_in:
             return t("gateway.credits.not_logged_in")
 
-        lines: list[str] = ["💳 **Nous credits**"]
+        lines: list[str] = ["💳 **Nous balance**"]
         for line in view.balance_lines:
             if line.lstrip().startswith("📈"):
                 continue  # drop the helper's header; we print our own
@@ -4125,8 +4162,8 @@ class GatewaySlashCommandsMixin:
             lines.append(view.identity_line)
         if view.topup_url:
             lines.append("")
-            lines.append(f"Top up: {view.topup_url}")
-            lines.append("Complete your top-up in the browser — credits will appear in /credits shortly.")
+            lines.append(f"Manage billing on the portal: {view.topup_url}")
+            lines.append("Top up and manage billing in the browser — your balance updates here after.")
         return "\n".join(lines)
 
     def _context_breakdown_lines(self, agent, source) -> list[str]:

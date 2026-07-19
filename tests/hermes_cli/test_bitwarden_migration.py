@@ -128,6 +128,38 @@ PATH=/usr/local/bin
         assert actions["OPENAI_API_KEY"] == "keep"
         assert actions["PATH"] == "keep"
 
+    def test_shell_only_bootstrap_token_verifies_target_profile(
+        self,
+        make_profile,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        profile_home = make_profile(
+            "coding",
+            "OPENAI_API_KEY=plaintext-placeholder\n",
+            """secrets:
+  bitwarden:
+    enabled: true
+    access_token_env: BWS_ACCESS_TOKEN
+    project_id: coding-project
+""",
+        )
+        monkeypatch.setenv("BWS_ACCESS_TOKEN", "0.shell-token")
+
+        def fake_fetch(**kwargs):
+            assert kwargs["access_token"] == "0.shell-token"
+            assert kwargs["project_id"] == "coding-project"
+            assert kwargs["home_path"] == profile_home
+            return ({"OPENAI_API_KEY": "resolved-value"}, [])
+
+        plan = bwm.prune_plan_for_profile(
+            "coding",
+            profile_home,
+            fetcher=fake_fetch,
+        )
+
+        assert plan.verification_error is None
+        assert plan.removable_keys() == ["OPENAI_API_KEY"]
+
 
 class TestPruneApply:
     @pytest.mark.skipif(sys.platform.startswith("win"), reason="POSIX mode bits not enforced on Windows")

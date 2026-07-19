@@ -294,10 +294,14 @@ def prune_plan_for_profile(
     if not settings.enabled:
         verification_error = "Bitwarden is disabled in config.yaml"
     else:
-        token = values.get(settings.access_token_env, "").strip()
+        token = (
+            values.get(settings.access_token_env, "").strip()
+            or os.environ.get(settings.access_token_env, "").strip()
+        )
         if not token:
             verification_error = (
-                f"{settings.access_token_env} is not set in {env_path.name}"
+                f"{settings.access_token_env} is not set in {env_path.name} "
+                "or the process environment"
             )
         elif not settings.project_id:
             verification_error = "Bitwarden project_id is not configured"

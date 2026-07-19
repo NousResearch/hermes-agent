@@ -1156,7 +1156,7 @@ class TestSilenceDetection:
 
         recorder.cancel()
 
-    def test_micro_pause_tolerance_during_speech(self, mock_sd):
+    def test_micro_pause_tolerance_during_speech(self, mock_sd, fake_clock):
         """Brief dips below threshold during speech should NOT reset speech tracking."""
         np = pytest.importorskip("numpy")
         import threading
@@ -1183,14 +1183,14 @@ class TestSilenceDetection:
 
         # Speech chunk 1
         callback(loud_frame, 1600, None, None)
-        time.sleep(0.05)
+        fake_clock.advance(0.05)
         # Brief micro-pause (dip < max_dip_tolerance)
         callback(quiet_frame, 1600, None, None)
-        time.sleep(0.05)
+        fake_clock.advance(0.05)
         # Speech resumes -- speech_start should NOT have been reset
         callback(loud_frame, 1600, None, None)
         assert recorder._speech_start > 0, "Speech start should be preserved across brief dips"
-        time.sleep(0.06)
+        fake_clock.advance(0.06)
         # Another speech chunk to exceed min_speech_duration
         callback(loud_frame, 1600, None, None)
         assert recorder._has_spoken is True, "Speech should be confirmed after tolerating micro-pause"

@@ -347,6 +347,7 @@ def _task_summary_dict(kb, conn, task) -> dict[str, Any]:
         "workspace_kind": task.workspace_kind,
         "workspace_path": task.workspace_path,
         "project_id": task.project_id,
+        "project_repo_root": task.project_repo_root,
         "created_by": task.created_by,
         "created_at": task.created_at,
         "started_at": task.started_at,

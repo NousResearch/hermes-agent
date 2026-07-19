@@ -4,11 +4,14 @@ from the triage column. LLM-free by design.
 
 from __future__ import annotations
 
+import os
+import subprocess
 from pathlib import Path
 
 import pytest
 
 from hermes_cli import kanban_db as kb
+from hermes_cli import projects_db as pdb
 
 
 @pytest.fixture
@@ -30,6 +33,31 @@ def _create_triage(conn, title="rough idea", body=None, assignee=None, tenant=No
         tenant=tenant,
         triage=True,
     )
+
+
+def _init_repo(repo: Path) -> Path:
+    subprocess.run(
+        ["git", "init", "-b", "main", str(repo)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(repo), "config", "user.email", "kanban@example.invalid"],
+        check=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(repo), "config", "user.name", "Kanban Test"],
+        check=True,
+    )
+    (repo / "README.md").write_text("fixture\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo), "add", "README.md"], check=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "commit", "-m", "fixture"],
+        check=True,
+        capture_output=True,
+    )
+    return repo
 
 
 def test_decompose_creates_children_and_promotes_root(kanban_home):
@@ -228,3 +256,66 @@ def test_decompose_per_child_workspace_override(kanban_home):
         inh = kb.get_task(conn, child_ids[1])
     assert over.workspace_path == "/other/repo"
     assert inh.workspace_path == proj
+
+
+def test_decompose_project_children_get_distinct_canonical_worktrees(
+    kanban_home,
+    tmp_path,
+    monkeypatch,
+):
+    repo = _init_repo(tmp_path / "repo")
+    with pdb.connect_closing() as project_conn:
+        project_id = pdb.create_project(
+            project_conn,
+            name="Decompose Project",
+            folders=[str(repo)],
+        )
+    with kb.connect() as conn:
+        root_id = kb.create_task(
+            conn,
+            title="project root",
+            assignee="orchestrator",
+            project_id=project_id,
+            triage=True,
+        )
+        root_before = kb.get_task(conn, root_id)
+        child_ids = kb.decompose_triage_task(
+            conn,
+            root_id,
+            root_assignee="orchestrator",
+            children=[
+                {"title": "part A", "assignee": "worker-a"},
+                {"title": "part B", "assignee": "worker-b", "parents": [0]},
+            ],
+            author="decomposer",
+        )
+    assert child_ids is not None
+    with kb.connect() as conn:
+        root_after = kb.get_task(conn, root_id)
+        children = [kb.get_task(conn, child_id) for child_id in child_ids]
+    assert root_before is not None and root_after is not None
+    assert root_after.workspace_path == root_before.workspace_path
+    assert root_after.workspace_path is not None
+    assert not Path(root_after.workspace_path).exists()
+    materialized_children: list[kb.Task] = []
+    for child in children:
+        assert child is not None
+        materialized_children.append(child)
+        assert child.project_id == project_id
+        assert child.project_repo_root == str(repo)
+        assert child.workspace_kind == "worktree"
+        assert child.workspace_path == str(repo / ".worktrees" / child.id)
+        assert child.workspace_path != root_after.workspace_path
+        assert child.branch_name is not None
+        assert child.branch_name.startswith(f"decompose-project/{child.id}")
+    assert len({child.workspace_path for child in materialized_children}) == 2
+
+    monkeypatch.setattr("hermes_cli.profiles.profile_exists", lambda _name: True)
+    with kb.connect() as conn:
+        dispatched = kb.dispatch_once(
+            conn,
+            spawn_fn=lambda _task, _workspace: os.getpid(),
+        )
+    assert {item[0] for item in dispatched.spawned} == {child_ids[0]}
+    assert (repo / ".worktrees" / child_ids[0]).is_dir()
+    assert not Path(root_after.workspace_path).exists()

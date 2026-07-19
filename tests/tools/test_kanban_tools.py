@@ -10,9 +10,36 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
+
+
+def _init_git_repo(repo):
+    repo.mkdir(parents=True, exist_ok=True)
+    subprocess.run(
+        ["git", "init", "-b", "main", str(repo)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(repo), "config", "user.email", "kanban@example.invalid"],
+        check=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(repo), "config", "user.name", "Kanban Test"],
+        check=True,
+    )
+    (repo / "README.md").write_text("fixture\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo), "add", "README.md"], check=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "commit", "-m", "fixture"],
+        check=True,
+        capture_output=True,
+    )
+    return repo
 
 
 # ---------------------------------------------------------------------------
@@ -1205,8 +1232,7 @@ def test_create_default_child_inherits_project_without_reusing_worktree(
     from hermes_cli import kanban_db as kb
     from hermes_cli import projects_db as pdb
 
-    repo = tmp_path / "repo"
-    repo.mkdir()
+    repo = _init_git_repo(tmp_path / "repo")
     with pdb.connect_closing() as project_conn:
         project_id = pdb.create_project(
             project_conn, name="Isolated Project", folders=[str(repo)],
@@ -1263,8 +1289,7 @@ def test_create_cross_profile_project_children_keep_isolated_worktree_routing(
     profile_b = tmp_path / "profiles" / "worker"
     profile_a.mkdir(parents=True)
     profile_b.mkdir(parents=True)
-    repo = tmp_path / "repo"
-    repo.mkdir()
+    repo = _init_git_repo(tmp_path / "repo")
     shared_db = tmp_path / "shared-kanban.db"
 
     monkeypatch.setattr(_Path, "home", lambda: tmp_path)
@@ -1284,9 +1309,10 @@ def test_create_cross_profile_project_children_keep_isolated_worktree_routing(
             assignee="worker",
             project_id=project_id,
         )
-        kb.claim_task(conn, parent_id)
         parent = kb.get_task(conn, parent_id)
         assert parent is not None
+        assert kb.resolve_workspace(parent) == repo / ".worktrees" / parent_id
+        kb.claim_task(conn, parent_id)
 
     # Dispatcher switches to profile B but pins the shared board DB. Profile B
     # intentionally has no copy of profile A's first-class Project row.
@@ -1309,6 +1335,8 @@ def test_create_cross_profile_project_children_keep_isolated_worktree_routing(
     child_ids = [result["task_id"] for result in children]
     with kb.connect() as conn:
         child_tasks = [kb.get_task(conn, task_id) for task_id in child_ids]
+    assert all(task is not None for task in child_tasks)
+    child_tasks = [task for task in child_tasks if task is not None]
     for task in child_tasks:
         assert task is not None
         assert task.project_id == project_id
@@ -1319,6 +1347,24 @@ def test_create_cross_profile_project_children_keep_isolated_worktree_routing(
         assert task.branch_name.startswith(f"cross-profile-project/{task.id}")
     assert len({task.workspace_path for task in child_tasks}) == 2
     assert len({task.branch_name for task in child_tasks}) == 2
+
+    # Complete A so both B siblings become ready, then exercise the real
+    # dispatcher/materialisation path. Their canonical routes must remain
+    # distinct even when spawned in one pass.
+    monkeypatch.setattr("hermes_cli.profiles.profile_exists", lambda _name: True)
+    with kb.connect() as conn:
+        assert kb.complete_task(conn, parent_id, summary="fan-out ready")
+        dispatched = kb.dispatch_once(
+            conn,
+            spawn_fn=lambda _task, _workspace: os.getpid(),
+        )
+        assert {item[0] for item in dispatched.spawned} == set(child_ids)
+        child_tasks_maybe = [kb.get_task(conn, task_id) for task_id in child_ids]
+    assert all(task is not None for task in child_tasks_maybe)
+    child_tasks = [task for task in child_tasks_maybe if task is not None]
+    for task in child_tasks:
+        assert task is not None
+        assert (repo / ".worktrees" / task.id).is_dir()
 
     # Nested fan-out must route from the persisted child context too, without
     # requiring the worker profile to learn or duplicate the Project record.
@@ -1343,6 +1389,17 @@ def test_create_cross_profile_project_children_keep_isolated_worktree_routing(
     assert grandchild.branch_name.startswith(
         f"cross-profile-project/{grandchild.id}"
     )
+
+    # Complete the first B worker so C promotes, then materialise C through the
+    # dispatcher too. This pins the full A→B→C route rather than just DB rows.
+    with kb.connect() as conn:
+        assert kb.complete_task(conn, child_ids[0], summary="nested fan-out ready")
+        dispatched = kb.dispatch_once(
+            conn,
+            spawn_fn=lambda _task, _workspace: os.getpid(),
+        )
+        assert {item[0] for item in dispatched.spawned} == {grandchild.id}
+    assert (repo / ".worktrees" / grandchild.id).is_dir()
 
 
 def test_create_no_worker_task_stays_scratch(monkeypatch, worker_env):

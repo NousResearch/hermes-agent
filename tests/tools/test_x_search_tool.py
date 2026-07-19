@@ -97,6 +97,38 @@ def test_x_search_rejects_conflicting_handle_filters(monkeypatch):
     assert result["error"] == "allowed_x_handles and excluded_x_handles cannot be used together"
 
 
+def test_x_search_accepts_up_to_20_handles(monkeypatch):
+    """xAI allows up to 20 handles per filter; the tool must not reject 20."""
+    from tools.x_search_tool import x_search_tool, MAX_HANDLES
+
+    assert MAX_HANDLES == 20
+
+    captured = {}
+
+    def _fake_post(url, headers=None, json=None, timeout=None):
+        captured["json"] = json
+        return _FakeResponse({"output_text": "ok", "citations": []})
+
+    monkeypatch.setenv("XAI_API_KEY", "xai-test-key")
+    monkeypatch.setattr("requests.post", _fake_post)
+
+    handles = [f"handle{i}" for i in range(20)]
+    result = json.loads(x_search_tool(query="what's trending", allowed_x_handles=handles))
+    assert result["success"] is True
+    assert captured["json"]["tools"][0]["allowed_x_handles"] == handles
+
+
+def test_x_search_rejects_more_than_20_handles(monkeypatch):
+    from tools.x_search_tool import x_search_tool
+
+    monkeypatch.setenv("XAI_API_KEY", "xai-test-key")
+
+    result = json.loads(
+        x_search_tool(query="hi", allowed_x_handles=[f"h{i}" for i in range(21)])
+    )
+    assert result["error"] == "allowed_x_handles supports at most 20 handles"
+
+
 def test_x_search_extracts_inline_url_citations(monkeypatch):
     from tools.x_search_tool import x_search_tool
 

@@ -16,6 +16,49 @@ from hermes_cli import doctor as doctor_mod
 from hermes_cli.doctor import _has_provider_env_config
 
 
+class TestSensitiveFilePermissionAudit:
+    def test_secure_existing_file_is_ok(self, tmp_path):
+        secret = tmp_path / "auth.json"
+        secret.write_text("{}", encoding="utf-8")
+        secret.chmod(0o600)
+
+        result = doctor._audit_sensitive_file_permission(secret, "auth store")
+
+        assert result.status == "ok"
+        assert result.mode == "0600"
+        assert "auth store" in result.message
+
+    def test_group_or_other_readable_file_warns(self, tmp_path):
+        secret = tmp_path / ".env"
+        secret.write_text("OPENAI_API_KEY=sk-test\n", encoding="utf-8")
+        secret.chmod(0o644)
+
+        result = doctor._audit_sensitive_file_permission(secret, "env secrets")
+
+        assert result.status == "warn"
+        assert result.mode == "0644"
+        assert "chmod 600" in result.fix
+        assert str(secret) in result.fix
+
+    def test_missing_file_is_skipped(self, tmp_path):
+        result = doctor._audit_sensitive_file_permission(tmp_path / "missing.env", "missing")
+
+        assert result.status == "missing"
+        assert result.mode is None
+        assert result.fix == ""
+
+    def test_windows_skips_posix_mode_assessment(self, monkeypatch, tmp_path):
+        secret = tmp_path / ".env"
+        secret.write_text("OPENAI_API_KEY=sk-test\n", encoding="utf-8")
+        secret.chmod(0o644)
+        monkeypatch.setattr(sys, "platform", "win32")
+
+        result = doctor._audit_sensitive_file_permission(secret, "env secrets")
+
+        assert result.status == "skip"
+        assert result.fix == ""
+
+
 class TestDoctorPlatformHints:
     def test_termux_package_hint(self, monkeypatch):
         monkeypatch.setenv("TERMUX_VERSION", "0.118.3")

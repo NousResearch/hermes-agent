@@ -8,6 +8,7 @@ import os
 import sys
 import subprocess
 import shutil
+from dataclasses import dataclass
 from pathlib import Path
 
 from hermes_cli.config import get_project_root, get_hermes_home, get_env_path
@@ -103,6 +104,101 @@ def _termux_install_all_fallback_notes() -> list[str]:
 def _has_provider_env_config(content: str) -> bool:
     """Return True when ~/.hermes/.env contains provider auth/base URL settings."""
     return any(key in content for key in _PROVIDER_ENV_HINTS)
+
+
+@dataclass(frozen=True)
+class SensitiveFilePermissionResult:
+    """Doctor result for a credential-bearing local file permission check."""
+
+    status: str
+    path: Path
+    label: str
+    message: str
+    mode: str | None = None
+    fix: str = ""
+
+
+def _audit_sensitive_file_permission(path: Path, label: str) -> SensitiveFilePermissionResult:
+    """Classify whether a sensitive file is owner-only readable on POSIX.
+
+    Missing files are optional and therefore skipped by callers. Windows uses a
+    different ACL model, so POSIX mode bits are intentionally not assessed there.
+    The check never reads file contents; it only inspects metadata.
+    """
+    path = Path(path)
+    if not path.exists():
+        return SensitiveFilePermissionResult(
+            status="missing",
+            path=path,
+            label=label,
+            message=f"{label} not present",
+        )
+
+    if sys.platform.startswith("win"):
+        return SensitiveFilePermissionResult(
+            status="skip",
+            path=path,
+            label=label,
+            message=f"{label} permission check skipped on Windows",
+        )
+
+    try:
+        mode_int = path.stat().st_mode & 0o777
+    except OSError as exc:
+        return SensitiveFilePermissionResult(
+            status="warn",
+            path=path,
+            label=label,
+            message=f"Could not inspect {label} permissions: {exc}",
+            fix=f"Inspect permissions manually: {path}",
+        )
+
+    mode = f"{mode_int:04o}"
+    if mode_int & 0o077:
+        return SensitiveFilePermissionResult(
+            status="warn",
+            path=path,
+            label=label,
+            message=f"{label} is readable or writable by group/other users",
+            mode=mode,
+            fix=f"Restrict {label} to the current user: chmod 600 {path}",
+        )
+
+    return SensitiveFilePermissionResult(
+        status="ok",
+        path=path,
+        label=label,
+        message=f"{label} is owner-only",
+        mode=mode,
+    )
+
+
+def _check_sensitive_file_permissions(issues: list[str]) -> None:
+    """Report permissions for credential-bearing files without reading them."""
+    _section("Sensitive File Permissions")
+    checks = [
+        (HERMES_HOME / ".env", f"{_DHH}/.env"),
+        (HERMES_HOME / "auth.json", f"{_DHH}/auth.json"),
+        (Path.home() / ".config" / "gh" / "hosts.yml", "GitHub CLI hosts.yml"),
+    ]
+    any_present = False
+    for path, label in checks:
+        result = _audit_sensitive_file_permission(path, label)
+        if result.status == "missing":
+            continue
+        any_present = True
+        detail = f"({result.mode})" if result.mode else ""
+        if result.status == "ok":
+            check_ok(result.message, detail)
+        elif result.status == "skip":
+            check_info(result.message)
+        else:
+            check_warn(result.message, detail)
+            if result.fix:
+                issues.append(result.fix)
+
+    if not any_present:
+        check_info("No known local credential files found to inspect")
 
 
 def _honcho_is_configured_for_doctor() -> bool:
@@ -1076,6 +1172,8 @@ def run_doctor(args):
                     issues.append(ci.message)
         except Exception:
             pass
+
+    _check_sensitive_file_permissions(issues)
 
     _section("xAI Model Retirement (May 15, 2026)")
 

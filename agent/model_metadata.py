@@ -47,7 +47,7 @@ def _resolve_requests_verify() -> bool | str:
 # are preserved so the full model name reaches cache lookups and server queries.
 _PROVIDER_PREFIXES: frozenset[str] = frozenset({
     "openrouter", "nous", "openai-codex", "copilot", "copilot-acp",
-    "gemini", "ollama-cloud", "zai", "kimi-coding", "kimi-coding-cn", "stepfun", "minimax", "minimax-oauth", "minimax-cn", "anthropic", "deepseek",
+    "gemini", "ollama-cloud", "zai", "kimi-coding", "kimi-coding-cn", "stepfun", "minimax", "minimax-oauth", "minimax-cn", "anthropic", "deepseek", "deepinfra",
     "opencode-zen", "opencode-go", "kilocode", "alibaba", "novita",
     "qwen-oauth",
     "xiaomi",
@@ -58,7 +58,7 @@ _PROVIDER_PREFIXES: frozenset[str] = frozenset({
     # Common aliases
     "google", "google-gemini", "google-ai-studio",
     "glm", "z-ai", "z.ai", "zhipu", "github", "github-copilot",
-    "github-models", "kimi", "moonshot", "kimi-cn", "moonshot-cn", "claude", "deep-seek",
+    "github-models", "kimi", "moonshot", "kimi-cn", "moonshot-cn", "claude", "deep-seek", "deep-infra",
     "ollama",
     "stepfun", "opencode", "zen", "go", "kilo", "dashscope", "aliyun", "qwen",
     "mimo", "xiaomi-mimo",
@@ -318,6 +318,16 @@ DEFAULT_CONTEXT_LENGTHS = {
     "grok": 131072,             # catch-all (grok-beta, unknown grok-*)
     # Kimi
     "kimi": 262144,
+    # Upstage Solar — api.upstage.ai/v1/models does not return context_length,
+    # so these fallbacks keep token budgeting / compression from probing down
+    # to the 128k default. Ids are matched longest-first, so dated variants
+    # (e.g. solar-pro3-250127) resolve via their family prefix.
+    # Sources: Solar Pro 3 = 128K, Solar Pro 2 = 64K, Solar Mini = 32K,
+    # Solar Open 2 = 256K.
+    "solar-open2": 262144,  # 256K
+    "solar-pro3": 131072,
+    "solar-pro2": 65536,
+    "solar-mini": 32768,
     # Tencent — Hy3 Preview (Hunyuan) with 256K context window.
     # OpenRouter live metadata reports 262144 (256 × 1024); align the
     # static fallback so cache and offline both agree (issue #22268).
@@ -527,6 +537,29 @@ def _lmstudio_server_root(base_url: str) -> str:
 
 def _is_known_provider_base_url(base_url: str) -> bool:
     return _infer_provider_from_url(base_url) is not None
+
+
+def _endpoint_scoped_context_length(model: str, base_url: str) -> Optional[int]:
+    """Return metadata confirmed only for one provider endpoint."""
+    normalized = _normalize_base_url(base_url)
+    try:
+        parsed = urlparse(normalized)
+        port = parsed.port
+    except ValueError:
+        return None
+    if (
+        parsed.scheme.lower() == "https"
+        and (parsed.hostname or "").lower() == "api.kimi.com"
+        and port in (None, 443)
+        and parsed.username is None
+        and parsed.password is None
+        and parsed.path.rstrip("/") in {"/coding", "/coding/v1"}
+        and not parsed.query
+        and not parsed.fragment
+        and model.strip().lower() == "k3"
+    ):
+        return 1_048_576
+    return None
 
 
 def _skip_persistent_context_cache(base_url: str, provider: str) -> bool:
@@ -806,6 +839,24 @@ def _extract_pricing(payload: Dict[str, Any]) -> Dict[str, Any]:
         if novita_output is not None:
             pricing["completion"] = str(float(novita_output) / 10_000 / 1_000_000)
         return pricing
+
+    # DeepInfra ships pricing under ``metadata.pricing`` with $/MTok values:
+    # ``input_tokens``, ``output_tokens``, ``cache_read_tokens``. Convert to
+    # per-token strings so the generic cost machinery (usage_pricing.py)
+    # consumes them through the same path as OpenRouter / OpenAI.
+    metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else None
+    deepinfra_pricing = metadata.get("pricing") if metadata else None
+    if isinstance(deepinfra_pricing, dict) and any(
+        k in deepinfra_pricing for k in ("input_tokens", "output_tokens", "cache_read_tokens")
+    ):
+        result: Dict[str, Any] = {}
+        if deepinfra_pricing.get("input_tokens") is not None:
+            result["prompt"] = str(float(deepinfra_pricing["input_tokens"]) / 1_000_000)
+        if deepinfra_pricing.get("output_tokens") is not None:
+            result["completion"] = str(float(deepinfra_pricing["output_tokens"]) / 1_000_000)
+        if deepinfra_pricing.get("cache_read_tokens") is not None:
+            result["cache_read"] = str(float(deepinfra_pricing["cache_read_tokens"]) / 1_000_000)
+        return result
 
     alias_map = {
         "prompt": ("prompt", "input", "input_cost_per_token", "prompt_token_cost"),
@@ -2028,6 +2079,7 @@ def get_model_context_length(
 
     Resolution order:
     0. Explicit config override (model.context_length or custom_providers per-model)
+    0c. Endpoint-scoped metadata for models validated on one multiplexed endpoint
     1. Persistent cache (previously discovered via probing).  Nous URLs
        bypass the cache here so step 5b can always reconcile against
        the authoritative portal /v1/models response.
@@ -2097,10 +2149,28 @@ def get_model_context_length(
         except Exception:
             pass  # fall through to probing
 
+    # Malformed user-provided URLs (for example an unmatched IPv6 bracket)
+    # make urllib.parse raise. Context resolution should treat those as an
+    # unknown endpoint rather than crashing before the inference layer can
+    # report the configuration error itself.
+    if base_url:
+        try:
+            parsed_base_url = urlparse(_normalize_base_url(base_url))
+            _ = parsed_base_url.port
+        except ValueError:
+            base_url = ""
+
     # Normalise provider-prefixed model names (e.g. "local:model-name" →
     # "model-name") so cache lookups and server queries use the bare ID that
     # local servers actually know about.  Ollama "model:tag" colons are preserved.
     model = _strip_provider_prefix(model)
+
+    # Endpoint-scoped provider metadata. Keep this ahead of the persistent
+    # cache so a value learned for a multiplexed provider's other endpoint
+    # cannot override the endpoint where the model was actually validated.
+    endpoint_context = _endpoint_scoped_context_length(model, base_url)
+    if endpoint_context is not None:
+        return endpoint_context
 
     # 1. Check persistent cache (model+provider)
     # LM Studio is excluded — its loaded context length is transient (the

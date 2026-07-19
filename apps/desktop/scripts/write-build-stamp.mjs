@@ -1,5 +1,3 @@
-"use strict"
-
 /**
  * Writes apps/desktop/build/install-stamp.json with the git ref the desktop
  * .exe should pin to at first-launch bootstrap time.  This file ships inside

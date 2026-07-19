@@ -942,3 +942,33 @@ class TestProbeApiModelsUserAgent:
         assert ua and ua.startswith("hermes-cli/")
         # No Authorization was set, but UA must still be present.
         assert req.get_header("Authorization") is None
+
+    def test_probe_sends_client_context_to_gemini(self):
+        from unittest.mock import patch
+        from hermes_cli.models import _HERMES_VERSION
+
+        body = b'{"data":[]}'
+        with patch(
+            "hermes_cli.models._urlopen_model_catalog_request",
+            return_value=self._make_mock_response(body),
+        ) as mock_urlopen:
+            probe_api_models(
+                "gemini-key",
+                "https://generativelanguage.googleapis.com/v1beta/openai",
+            )
+
+        req = mock_urlopen.call_args[0][0]
+        assert req.get_header("X-goog-api-client") == f"hermes-agent/{_HERMES_VERSION}"
+
+    def test_probe_omits_gemini_client_context_for_other_providers(self):
+        from unittest.mock import patch
+
+        body = b'{"data":[]}'
+        with patch(
+            "hermes_cli.models._urlopen_model_catalog_request",
+            return_value=self._make_mock_response(body),
+        ) as mock_urlopen:
+            probe_api_models("provider-key", "https://api.example.com/v1")
+
+        req = mock_urlopen.call_args[0][0]
+        assert req.get_header("X-goog-api-client") is None

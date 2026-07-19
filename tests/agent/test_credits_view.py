@@ -131,7 +131,7 @@ def test_view_fetch_failure_is_logged_out(monkeypatch):
     assert view.logged_in is False
 
 
-# ── gateway _handle_credits_command ─────────────────────────────────────────
+# ── gateway _handle_topup_command (the messaging billing surface) ────────────
 
 
 class _FakeEvent:
@@ -139,7 +139,7 @@ class _FakeEvent:
 
 
 def _make_gateway_stub():
-    """Minimal object exposing the mixin's _handle_credits_command."""
+    """Minimal object exposing the mixin's _handle_topup_command."""
     from gateway.slash_commands import GatewaySlashCommandsMixin
 
     class _Stub(GatewaySlashCommandsMixin):
@@ -149,7 +149,7 @@ def _make_gateway_stub():
     return _Stub()
 
 
-def test_gateway_credits_renders_block_and_url(monkeypatch):
+def test_gateway_topup_renders_block_and_url(monkeypatch):
     view = CreditsView(
         logged_in=True,
         balance_lines=("📈 Nous credits", "Total usable: $52.50"),
@@ -160,101 +160,55 @@ def test_gateway_credits_renders_block_and_url(monkeypatch):
     monkeypatch.setattr(account_usage, "build_credits_view", lambda *a, **kw: view)
 
     stub = _make_gateway_stub()
-    out = asyncio.run(stub._handle_credits_command(_FakeEvent()))
+    out = asyncio.run(stub._handle_topup_command(_FakeEvent()))
 
     assert "💳" in out
     assert "Total usable: $52.50" in out
     assert "Topping up as alice@example.test / org Acme" in out
     assert "https://portal.example.test/orgs/acme/billing?topup=open" in out
-    assert "credits will appear in /credits shortly" in out
+    assert "Manage billing on the portal" in out
     # The helper's own 📈 header line is dropped (we render our own 💳 header).
     assert "📈 Nous credits" not in out
 
 
-def test_gateway_credits_not_logged_in(monkeypatch):
+def test_gateway_topup_not_logged_in(monkeypatch):
     monkeypatch.setattr(
         account_usage, "build_credits_view", lambda *a, **kw: CreditsView(logged_in=False)
     )
     stub = _make_gateway_stub()
-    out = asyncio.run(stub._handle_credits_command(_FakeEvent()))
+    out = asyncio.run(stub._handle_topup_command(_FakeEvent()))
     assert "Not logged into Nous Portal" in out
 
 
-def test_gateway_credits_fetch_exception_is_not_logged_in(monkeypatch):
+def test_gateway_topup_fetch_exception_is_not_logged_in(monkeypatch):
     def _boom(*a, **kw):
         raise RuntimeError("boom")
 
     monkeypatch.setattr(account_usage, "build_credits_view", _boom)
     stub = _make_gateway_stub()
-    out = asyncio.run(stub._handle_credits_command(_FakeEvent()))
+    out = asyncio.run(stub._handle_topup_command(_FakeEvent()))
     assert "Not logged into Nous Portal" in out
 
 
 # ── command registry ────────────────────────────────────────────────────────
 
 
-def test_credits_command_registered():
+def test_credits_command_fully_removed():
+    """`/credits` and the old `/billing` are gone entirely — not commands, not
+    aliases. Billing lives only on /topup, with NO aliases, on every platform."""
     from hermes_cli.commands import resolve_command, COMMAND_REGISTRY
 
-    cmd = resolve_command("credits")
-    assert cmd is not None and cmd.name == "credits"
-    # Available on every surface (not cli_only / gateway_only).
-    entry = next(c for c in COMMAND_REGISTRY if c.name == "credits")
+    # Both old names resolve to nothing.
+    assert resolve_command("credits") is None
+    assert resolve_command("billing") is None
+    # No standalone command for either remains in the registry.
+    assert not any(c.name in ("credits", "billing") for c in COMMAND_REGISTRY)
+    # And no command carries either as an alias.
+    for c in COMMAND_REGISTRY:
+        assert "credits" not in (c.aliases or ())
+        assert "billing" not in (c.aliases or ())
+    # /topup is the billing surface, on every surface, and carries no aliases.
+    entry = next(c for c in COMMAND_REGISTRY if c.name == "topup")
     assert entry.cli_only is False
     assert entry.gateway_only is False
-
-
-# ── CLI _show_credits non-interactive (TUI slash-worker) path ───────────────
-
-
-def test_cli_show_credits_non_interactive_renders_text_not_modal(monkeypatch, capsys):
-    """In the TUI slash-worker (no self._app), /credits must render the text
-    variant — never invoke the prompt_toolkit modal, which would read the
-    worker's JSON-RPC stdin and crash the command (only the depleted banner
-    would survive). Regression for that exact failure.
-    """
-    import agent.account_usage as account_usage
-    from cli import HermesCLI
-
-    monkeypatch.setattr(
-        account_usage,
-        "build_credits_view",
-        lambda *a, **k: CreditsView(
-            logged_in=True,
-            balance_lines=("📈 Nous credits", "Total usable: $0.00"),
-            identity_line="Topping up as a@b.c / org Acme",
-            topup_url="https://prev.test/orgs/acme/billing?topup=open",
-            depleted=True,
-        ),
-    )
-
-    cli = HermesCLI.__new__(HermesCLI)
-    cli._app = None  # non-interactive, like the slash worker
-
-    # Must NOT call the modal in this context.
-    def _boom_modal(*a, **k):
-        raise AssertionError("modal must not run without a live app")
-
-    monkeypatch.setattr(HermesCLI, "_prompt_text_input_modal", _boom_modal, raising=False)
-
-    cli._show_credits()
-
-    out = capsys.readouterr().out
-    assert "💳 Nous credits" in out
-    assert "Total usable: $0.00" in out
-    assert "Topping up as a@b.c / org Acme" in out
-    assert "https://prev.test/orgs/acme/billing?topup=open" in out
-    assert "credits will appear in /credits shortly" in out
-
-
-def test_cli_show_credits_logged_out(monkeypatch, capsys):
-    import agent.account_usage as account_usage
-    from cli import HermesCLI
-
-    monkeypatch.setattr(
-        account_usage, "build_credits_view", lambda *a, **k: CreditsView(logged_in=False)
-    )
-    cli = HermesCLI.__new__(HermesCLI)
-    cli._app = None
-    cli._show_credits()
-    assert "Not logged into Nous Portal" in capsys.readouterr().out
+    assert not entry.aliases

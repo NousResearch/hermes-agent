@@ -35,20 +35,27 @@ jobs:
   detect:
     name: Detect affected areas
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     outputs:
       python: ${{ steps.classify.outputs.python }}
       frontend: ${{ steps.classify.outputs.frontend }}
       site: ${{ steps.classify.outputs.site }}
       scan: ${{ steps.classify.outputs.scan }}
       deps: ${{ steps.classify.outputs.deps }}
+      npm_lock: ${{ steps.classify.outputs.npm_lock }}
       docker_meta: ${{ steps.classify.outputs.docker_meta }}
       mcp_catalog: ${{ steps.classify.outputs.mcp_catalog }}
+      ci_review: ${{ steps.classify.outputs.ci_review }}
       event_name: ${{ github.event_name }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       - name: Detect affected areas
         id: classify
         uses: ./.github/actions/detect-changes
+        with:
+          # Forks get no repo secrets (AUTOFIX_BOT_PAT is empty); fall back to
+          # the built-in read-only token so classification still works there.
+          github-token: ${{ secrets.AUTOFIX_BOT_PAT || github.token }}
 
   # ─────────────────────────────────────────────────────────────────────
   # Lane-gated sub-workflows. Each runs in parallel after detect finishes.
@@ -61,49 +68,65 @@ jobs:
     uses: ./.github/workflows/tests.yml
     with:
       slice_count: 8
+    secrets: inherit
 
   lint:
     name: Python lints
     needs: detect
-    if: needs.detect.outputs.python == 'true'
+    if: needs.detect.outputs.python == 'true' || needs.detect.outputs.ci_review == 'true'
     uses: ./.github/workflows/lint.yml
     with:
       event_name: ${{ needs.detect.outputs.event_name }}
+      ci_review: ${{ needs.detect.outputs.ci_review == 'true' }}
+    secrets: inherit
 
-  typecheck:
-    name: TypeScript
+  js-tests:
+    name: JS & TS checks
     needs: detect
     if: needs.detect.outputs.frontend == 'true'
-    uses: ./.github/workflows/typecheck.yml
+    uses: ./.github/workflows/js-tests.yml
+    secrets: inherit
 
   docs-site:
     name: Docs Site
     needs: detect
     if: needs.detect.outputs.site == 'true'
     uses: ./.github/workflows/docs-site-checks.yml
+    secrets: inherit
 
   history-check:
     name: Deny unrelated histories
     needs: detect
     if: needs.detect.outputs.event_name == 'pull_request'
     uses: ./.github/workflows/history-check.yml
+    secrets: inherit
 
   contributor-check:
     name: Check contributors
     needs: detect
     if: needs.detect.outputs.python == 'true'
     uses: ./.github/workflows/contributor-check.yml
+    secrets: inherit
 
   uv-lockfile:
     name: Check uv.lock
     needs: detect
     uses: ./.github/workflows/uv-lockfile-check.yml
+    secrets: inherit
+
+  lockfile-diff:
+    name: package-lock.json diff
+    needs: detect
+    if: needs.detect.outputs.event_name == 'pull_request' && needs.detect.outputs.npm_lock == 'true'
+    uses: ./.github/workflows/lockfile-diff.yml
+    secrets: inherit
 
   docker-lint:
     name: Lint Docker scripts
     needs: detect
     if: needs.detect.outputs.docker_meta == 'true'
     uses: ./.github/workflows/docker-lint.yml
+    secrets: inherit
 
   docker:
     name: Build&Test Docker image
@@ -122,10 +145,12 @@ jobs:
       scan: ${{ needs.detect.outputs.scan == 'true' }}
       deps: ${{ needs.detect.outputs.deps == 'true' }}
       mcp_catalog: ${{ needs.detect.outputs.mcp_catalog == 'true' }}
+    secrets: inherit
 
   osv-scanner:
     name: OSV scan
     uses: ./.github/workflows/osv-scanner.yml
+    secrets: inherit
 
   # ─────────────────────────────────────────────────────────────────────
   # Gate: runs after everything. ``if: always()`` ensures it reports a
@@ -139,11 +164,12 @@ jobs:
     needs:
       - tests
       - lint
-      - typecheck
+      - js-tests
       - docs-site
       - history-check
       - contributor-check
       - uv-lockfile
+      - lockfile-diff
       - docker-lint
       - supply-chain
       - osv-scanner
@@ -151,17 +177,22 @@ jobs:
       # - docker
     if: always()
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - name: Evaluate job results
         env:
-          RESULTS: ${{ toJSON(needs.*.result) }}
+          NEEDS: ${{ toJSON(needs) }}
         run: |
-          echo "$RESULTS" | python3 -c "
+          echo "$NEEDS" | python3 -c "
           import json, sys
-          results = json.load(sys.stdin)
-          failed = [r for r in results if r == 'failure']
+          needs = json.load(sys.stdin)
+          failed = [name for name, info in needs.items() if info['result'] == 'failure']
+          for name, info in sorted(needs.items()):
+              result = info['result']
+              icon = '✅' if result in ('success', 'skipped') else '❌'
+              print(f'{icon} {name}: {result}')
           if failed:
-              print(f'::error::{len(failed)} job(s) failed')
+              print(f'::error::{len(failed)} job(s) failed: {\", \".join(failed)}')
               sys.exit(1)
           print('All checks passed (or were skipped)')
           "
@@ -177,6 +208,7 @@ jobs:
     needs: [all-checks-pass, docker]
     if: always()
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -194,7 +226,10 @@ jobs:
 
       - name: Collect timings and generate report
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Forks get no repo secrets (AUTOFIX_BOT_PAT is empty); fall back to
+          # the built-in read-only token so the timings API read still works
+          # there instead of hard-failing this advisory job on every fork PR.
+          GITHUB_TOKEN: ${{ secrets.AUTOFIX_BOT_PAT || github.token }}
         run: |
           python3 scripts/ci/timings_report.py \
             --baseline ci-timings-baseline.json \
@@ -203,6 +238,8 @@ jobs:
             --summary-out ci-timings-summary.md
 
       - name: Upload HTML report
+        # Advisory report — artifact-service blips must not fail the job.
+        continue-on-error: true
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         id: ci-timings-artifact
         with:

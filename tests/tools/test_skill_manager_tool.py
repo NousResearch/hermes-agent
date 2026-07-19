@@ -399,6 +399,81 @@ class TestRenameSkill:
         assert old_skill_md.exists()
         assert "name: old-skill" in old_skill_md.read_text()
 
+    def test_rename_reports_inconsistent_state_when_frontmatter_rollback_fails(
+        self,
+        tmp_path,
+    ):
+        import tools.skill_manager_tool as manager
+
+        with _skill_dir(tmp_path):
+            _create_skill("old-skill", _skill_content("old-skill"))
+            original = (tmp_path / "old-skill" / "SKILL.md").read_text()
+            real_write = manager._atomic_write_text
+
+            def fail_original_restore(path, content):
+                if path == tmp_path / "new-skill" / "SKILL.md" and content == original:
+                    raise OSError("frontmatter restore failed")
+                return real_write(path, content)
+
+            with (
+                patch(
+                    "cron.jobs.rewrite_skill_refs",
+                    side_effect=OSError("jobs.json write failed"),
+                ),
+                patch(
+                    "tools.skill_manager_tool._atomic_write_text",
+                    side_effect=fail_original_restore,
+                ),
+            ):
+                result = _rename_skill("old-skill", "new-skill")
+
+        assert result["success"] is False
+        assert result["rollback_failed"] is True
+        assert result["inconsistent_state"]["old_path_exists"] is True
+        assert result["inconsistent_state"]["new_path_exists"] is False
+        assert any("frontmatter restore failed" in item for item in result["rollback_errors"])
+        assert "_change" not in result
+        assert 'name: "new-skill"' in (
+            tmp_path / "old-skill" / "SKILL.md"
+        ).read_text()
+
+    def test_rename_reports_inconsistent_state_when_directory_rollback_fails(
+        self,
+        tmp_path,
+    ):
+        import tools.skill_manager_tool as manager
+
+        with _skill_dir(tmp_path):
+            _create_skill("old-skill", _skill_content("old-skill"))
+            real_move = manager._move_skill_dir
+
+            def fail_reverse_move(src, dest):
+                if src == tmp_path / "new-skill" and dest == tmp_path / "old-skill":
+                    raise OSError("directory restore failed")
+                return real_move(src, dest)
+
+            with (
+                patch(
+                    "cron.jobs.rewrite_skill_refs",
+                    side_effect=OSError("jobs.json write failed"),
+                ),
+                patch(
+                    "tools.skill_manager_tool._move_skill_dir",
+                    side_effect=fail_reverse_move,
+                ),
+            ):
+                result = _rename_skill("old-skill", "new-skill")
+
+        assert result["success"] is False
+        assert result["rollback_failed"] is True
+        assert result["inconsistent_state"]["old_path_exists"] is False
+        assert result["inconsistent_state"]["new_path_exists"] is True
+        assert any("directory restore failed" in item for item in result["rollback_errors"])
+        assert "_change" not in result
+        assert "name: old-skill" in (
+            tmp_path / "new-skill" / "SKILL.md"
+        ).read_text()
+
     def test_rename_rejects_existing_target_and_preserves_source(self, tmp_path):
         with _skill_dir(tmp_path):
             _create_skill("old-skill", _skill_content("old-skill"))

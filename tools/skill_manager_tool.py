@@ -1298,14 +1298,63 @@ def _rename_skill(name: str, new_name: str) -> Dict[str, Any]:
             old_frontmatter_name,
         )
     except Exception as exc:
+        rollback_errors: list[str] = []
         if moved:
             try:
                 _atomic_write_text(target_dir / "SKILL.md", original_content)
+            except Exception as rollback_exc:
+                rollback_errors.append(f"frontmatter restore failed: {rollback_exc}")
+                logger.error(
+                    "Failed to restore SKILL.md while rolling back %s -> %s",
+                    name,
+                    new_name,
+                    exc_info=True,
+                )
+
+            try:
                 if not skill_dir.exists():
                     _move_skill_dir(target_dir, skill_dir)
-            except Exception:
-                logger.error("Failed to roll back skill rename %s -> %s", name, new_name, exc_info=True)
-        return {"success": False, "error": f"Failed to rename skill '{name}' to '{new_name}': {exc}"}
+            except Exception as rollback_exc:
+                rollback_errors.append(f"directory restore failed: {rollback_exc}")
+                logger.error(
+                    "Failed to restore skill directory while rolling back %s -> %s",
+                    name,
+                    new_name,
+                    exc_info=True,
+                )
+
+            try:
+                restored = (
+                    skill_dir.exists()
+                    and not target_dir.exists()
+                    and (skill_dir / "SKILL.md").read_text(encoding="utf-8")
+                    == original_content
+                )
+            except Exception as rollback_exc:
+                restored = False
+                rollback_errors.append(f"rollback verification failed: {rollback_exc}")
+            if not restored and not rollback_errors:
+                rollback_errors.append("rollback verification found inconsistent paths or content")
+
+        result: Dict[str, Any] = {
+            "success": False,
+            "error": f"Failed to rename skill '{name}' to '{new_name}': {exc}",
+        }
+        if rollback_errors:
+            result.update(
+                {
+                    "rollback_failed": True,
+                    "inconsistent_state": {
+                        "old_path": str(skill_dir),
+                        "old_path_exists": skill_dir.exists(),
+                        "new_path": str(target_dir),
+                        "new_path_exists": target_dir.exists(),
+                    },
+                    "rollback_errors": rollback_errors,
+                }
+            )
+            result["error"] += "; rollback incomplete: " + "; ".join(rollback_errors)
+        return result
 
     return {
         "success": True,

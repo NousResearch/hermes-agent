@@ -38,9 +38,7 @@ export interface ComposerAttachmentScope {
   update(attachment: ComposerAttachment): boolean
 }
 
-export function createComposerAttachmentScope(
-  $attachments = atom<ComposerAttachment[]>([])
-): ComposerAttachmentScope {
+export function createComposerAttachmentScope($attachments = atom<ComposerAttachment[]>([])): ComposerAttachmentScope {
   return {
     $attachments,
     add(attachment) {

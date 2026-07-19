@@ -522,7 +522,10 @@ export const en: Translations = {
       failedLoad: 'Settings failed to load',
       autosaveFailed: 'Autosave failed',
       imported: 'Config imported',
-      invalidJson: 'Invalid config JSON'
+      invalidJson: 'Invalid config JSON',
+      delegationInherit: 'Inherit from main agent',
+      delegationCustomModelId: 'Custom model ID…',
+      delegationCurrentlyInheriting: 'Currently inheriting: {model}'
     },
     credentials: {
       pasteKey: 'Paste key',

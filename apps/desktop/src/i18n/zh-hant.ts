@@ -608,7 +608,10 @@ export const zhHant = defineLocale({
       failedLoad: '設定載入失敗',
       autosaveFailed: '自動儲存失敗',
       imported: '設定已匯入',
-      invalidJson: '設定 JSON 無效'
+      invalidJson: '設定 JSON 無效',
+      delegationInherit: 'Inherit from main agent',
+      delegationCustomModelId: 'Custom model ID…',
+      delegationCurrentlyInheriting: 'Currently inheriting: {model}'
     },
     credentials: {
       pasteKey: '貼上金鑰',

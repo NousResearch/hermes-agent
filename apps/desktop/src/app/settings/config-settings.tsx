@@ -19,6 +19,7 @@ import { useOnProfileSwitch } from '../hooks/use-on-profile-switch'
 import { PanelEmpty } from '../overlays/panel'
 
 import { CONTROL_TEXT, EMPTY_SELECT_VALUE, FIELD_DESCRIPTIONS, FIELD_LABELS } from './constants'
+import { DelegationModelProviderField } from './delegation-model-provider-field'
 import { FallbackModelsField } from './fallback-models-field'
 import { fieldCopyForSchemaKey } from './field-copy'
 import {
@@ -113,6 +114,12 @@ function ConfigField({
   // dedicated structured editor instead.
   if (schemaKey === 'fallback_providers') {
     return row(<FallbackModelsField onChange={onChange} value={value} />, true)
+  }
+
+  // `delegation.model` and `delegation.provider` are rendered together as a
+  // guided picker by the parent loop in ConfigSettings — skip both here.
+  if (schemaKey === 'delegation.model' || schemaKey === 'delegation.provider') {
+    return null
   }
 
   if (schema.type === 'boolean') {
@@ -226,6 +233,61 @@ function ConfigField({
       />
     ),
     isLong
+  )
+}
+
+/**
+ * Inline renderer for the delegation.model / delegation.provider picker that
+ * replaces the two bare free-text inputs with a paired provider+model picker.
+ * Lives here (not inside ConfigField) because it needs access to both config
+ * keys atomically.
+ */
+function DelegationPickerRow({
+  config,
+  field,
+  onUpdate,
+  t
+}: {
+  config: HermesConfigRecord
+  field: ConfigFieldSchema
+  onUpdate: (next: HermesConfigRecord) => void
+  t: ReturnType<typeof useI18n>['t']
+}) {
+  const label =
+    fieldCopyForSchemaKey(t.settings.fieldLabels, 'delegation.model') ??
+    fieldCopyForSchemaKey(FIELD_LABELS, 'delegation.model') ??
+    prettyName('delegation.model')
+
+  const rawDescription = (
+    fieldCopyForSchemaKey(t.settings.fieldDescriptions, 'delegation.model') ??
+    fieldCopyForSchemaKey(FIELD_DESCRIPTIONS, 'delegation.model') ??
+    field.description ??
+    ''
+  ).trim()
+
+  const delegationModel = String(getNested(config, 'delegation.model') ?? '')
+  const delegationProvider = String(getNested(config, 'delegation.provider') ?? '')
+
+  return (
+    <ListRow
+      action={
+        <DelegationModelProviderField
+          model={delegationModel}
+          onChange={({ model: nextModel, provider: nextProvider }) => {
+            const next = setNested(
+              setNested(config, 'delegation.model', nextModel),
+              'delegation.provider',
+              nextProvider
+            )
+            onUpdate(next)
+          }}
+          provider={delegationProvider}
+        />
+      }
+      description={rawDescription || undefined}
+      title={label}
+      wide
+    />
   )
 }
 
@@ -483,6 +545,14 @@ export function ConfigSettings({
               />
               {key === 'memory.provider' && isExternalMemoryProvider(getNested(config, key)) ? (
                 <ProviderConfigPanel key={String(getNested(config, key))} provider={String(getNested(config, key))} />
+              ) : null}
+              {key === 'delegation.model' ? (
+                <DelegationPickerRow
+                  config={config}
+                  field={field}
+                  onUpdate={updateConfig}
+                  t={t}
+                />
               ) : null}
             </div>
           ))}

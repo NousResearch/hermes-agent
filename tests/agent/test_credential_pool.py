@@ -2970,6 +2970,78 @@ def test_xai_oauth_nonterminal_refresh_does_not_quarantine(tmp_path, monkeypatch
     assert tokens.get("refresh_token") == "old-refresh-token"
 
 
+def test_xai_oauth_concurrent_pool_instances_refresh_single_use_token_once(
+    tmp_path, monkeypatch
+):
+    import threading
+    import time
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.delenv("XAI_API_KEY", raising=False)
+    monkeypatch.delenv("XAI_OAUTH_ACCESS_TOKEN", raising=False)
+
+    _write_auth_store(tmp_path, {
+        "version": 1,
+        "providers": {},
+        "credential_pool": {
+            "xai-oauth": [{
+                "id": "manual-xai",
+                "label": "manual-xai",
+                "auth_type": "oauth",
+                "priority": 0,
+                "source": "manual:xai_pkce",
+                "access_token": "old-access-token",
+                "refresh_token": "one-time-refresh-token",
+                "base_url": "https://api.x.ai/v1",
+            }],
+        },
+    })
+
+    from agent.credential_pool import load_pool
+    import hermes_cli.auth as auth_mod
+
+    pools = [load_pool("xai-oauth"), load_pool("xai-oauth")]
+    start = threading.Barrier(2)
+    refresh_calls: list[tuple[str, str]] = []
+
+    def _refresh(access_token, refresh_token, **_kwargs):
+        refresh_calls.append((access_token, refresh_token))
+        time.sleep(0.1)
+        return {
+            "access_token": "fresh-access-token",
+            "refresh_token": "fresh-refresh-token",
+            "last_refresh": "2026-07-12T00:00:00+00:00",
+        }
+
+    monkeypatch.setattr(auth_mod, "refresh_xai_oauth_pure", _refresh)
+    results = []
+    errors = []
+
+    def _worker(pool):
+        try:
+            start.wait()
+            results.append(pool.try_refresh_matching("old-access-token"))
+        except Exception as exc:
+            errors.append(exc)
+
+    threads = [threading.Thread(target=_worker, args=(pool,)) for pool in pools]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert not errors
+    assert refresh_calls == [("old-access-token", "one-time-refresh-token")]
+    assert sorted(entry.access_token for entry in results) == [
+        "fresh-access-token",
+        "fresh-access-token",
+    ]
+    persisted = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    stored = persisted["credential_pool"]["xai-oauth"][0]
+    assert stored["access_token"] == "fresh-access-token"
+    assert stored["refresh_token"] == "fresh-refresh-token"
+
+
 # ---------------------------------------------------------------------------
 # Codex OAuth terminal error quarantine
 # ---------------------------------------------------------------------------

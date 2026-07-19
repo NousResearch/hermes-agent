@@ -779,6 +779,13 @@ class TestSessionJsonSnapshotOptIn:
         # No session_*.json must appear under logs_dir.
         assert list(tmp_path.glob("session_*.json")) == []
 
+    def test_save_session_log_noops_when_persistence_is_disabled(self, agent, tmp_path):
+        agent._session_json_enabled = True
+        agent._persist_disabled = True
+        agent.logs_dir = tmp_path
+        agent._save_session_log([{"role": "user", "content": "private room turn"}])
+        assert list(tmp_path.glob("session_*.json")) == []
+
     def test_save_session_log_writes_when_enabled(self, agent, tmp_path):
         # Opt-in path: with the flag on and a session_id, the writer must
         # produce ``session_{sid}.json`` under logs_dir.
@@ -797,6 +804,31 @@ class TestSessionJsonSnapshotOptIn:
         # request_dump_*.json there (debug breadcrumb path), independent of
         # the session JSON opt-in.
         assert hasattr(agent, "logs_dir")
+
+    def test_shutdown_skips_all_session_end_hooks(self, agent):
+        agent._memory_read_only = True
+        agent._memory_manager = MagicMock()
+        agent.context_compressor = MagicMock()
+
+        agent.shutdown_memory_provider(
+            [{"role": "user", "content": "private room turn"}]
+        )
+
+        agent._memory_manager.on_session_end.assert_not_called()
+        agent._memory_manager.shutdown_all.assert_not_called()
+        agent.context_compressor.on_session_end.assert_not_called()
+
+    def test_commit_skips_all_session_end_hooks(self, agent):
+        agent._memory_read_only = True
+        agent._memory_manager = MagicMock()
+        agent.context_compressor = MagicMock()
+
+        agent.commit_memory_session(
+            [{"role": "user", "content": "private room turn"}]
+        )
+
+        agent._memory_manager.on_session_end.assert_not_called()
+        agent.context_compressor.on_session_end.assert_not_called()
 
     def test_traversal_session_id_cannot_escape_logs_dir(self, agent, tmp_path):
         # Security regression (#5958): a traversal-shaped session ID (which can

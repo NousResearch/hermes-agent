@@ -102,10 +102,23 @@ async def test_ephemeral_turn_reads_identity_and_memory_without_writing_stores(m
     memory.write_text("- Memory marker: EXISTING_MEMORY_PROOF\n", encoding="utf-8")
     user.write_text("- User marker: EXISTING_USER_PROOF\n", encoding="utf-8")
     (home / "config.yaml").write_text(
-        "memory:\n  memory_enabled: true\n  user_profile_enabled: true\n",
+        "memory:\n"
+        "  memory_enabled: true\n"
+        "  user_profile_enabled: true\n"
+        "  provider: lifecycle-tripwire\n"
+        "sessions:\n"
+        "  write_json_snapshots: true\n",
         encoding="utf-8",
     )
     before = {path: path.read_bytes() for path in (soul, memory, user)}
+
+    external_provider_loads = []
+
+    def load_external_provider(name):
+        external_provider_loads.append(name)
+        return None
+
+    monkeypatch.setattr("plugins.memory.load_memory_provider", load_external_provider)
 
     _ProviderHandler.captured = []
     provider = ThreadingHTTPServer(("127.0.0.1", 0), _ProviderHandler)
@@ -133,6 +146,7 @@ async def test_ephemeral_turn_reads_identity_and_memory_without_writing_stores(m
         staticmethod(lambda: None),
     )
     monkeypatch.setattr("hermes_cli.tools_config._get_platform_tools", lambda *_: set())
+    monkeypatch.setattr("hermes_cli.profiles.get_active_profile_name", lambda: "room-profile")
 
     adapter = APIServerAdapter(PlatformConfig(enabled=True))
     created_agents = []
@@ -165,9 +179,13 @@ async def test_ephemeral_turn_reads_identity_and_memory_without_writing_stores(m
             assert payload["hermes"] == {
                 "ephemeral": True,
                 "persistence": "disabled",
-                "memory": "read-only",
+                "memory": {
+                    "local": "read-only",
+                    "external_provider": "disabled",
+                },
                 "tools": "disabled",
-                "profile": "hermes-agent",
+                "profile": "room-profile",
+                "requested_model": "hermes-agent",
                 "provider": "custom",
                 "model": "mock-runtime-model",
             }
@@ -194,3 +212,4 @@ async def test_ephemeral_turn_reads_identity_and_memory_without_writing_stores(m
     assert {path: path.read_bytes() for path in before} == before
     assert _database_rows(state_db) == database_before
     assert not list(home.glob("sessions/*.json"))
+    assert external_provider_loads == []

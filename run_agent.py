@@ -2657,6 +2657,8 @@ class AIAgent:
         fewer messages") is preserved so resume + branch don't clobber a
         fuller existing snapshot.
         """
+        if getattr(self, "_persist_disabled", False):
+            return
         if not getattr(self, "_session_json_enabled", False):
             return
         messages = messages or self._session_messages
@@ -3408,12 +3410,13 @@ class AIAgent:
         NOT called per-turn — only at CLI exit, /reset, gateway
         session expiry, etc.
         """
+        if getattr(self, "_memory_read_only", False):
+            return
         if self._memory_manager:
-            if not getattr(self, "_memory_read_only", False):
-                try:
-                    self._memory_manager.on_session_end(messages or [])
-                except Exception as e:
-                    logger.warning("Memory provider on_session_end failed during shutdown: %s", e, exc_info=True)
+            try:
+                self._memory_manager.on_session_end(messages or [])
+            except Exception as e:
+                logger.warning("Memory provider on_session_end failed during shutdown: %s", e, exc_info=True)
             try:
                 self._memory_manager.shutdown_all()
             except Exception:
@@ -3433,6 +3436,8 @@ class AIAgent:
         Called when session_id rotates (e.g. /new, context compression);
         providers keep their state and continue running under the old
         session_id — they just flush pending extraction now."""
+        if getattr(self, "_memory_read_only", False):
+            return
         if self._memory_manager:
             try:
                 self._memory_manager.on_session_end(messages or [])

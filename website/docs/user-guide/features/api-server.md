@@ -112,43 +112,55 @@ Uploaded files (`file` / `input_file` / `file_id`) and non-image `data:` URLs re
 - **Chat Completions**: Hermes emits `event: hermes.tool.progress` for tool-start visibility without polluting persisted assistant text.
 - **Responses**: Hermes emits spec-native `function_call` and `function_call_output` output items during the SSE stream, so clients can render structured tool UI in real time.
 
-#### Ephemeral read-only-memory turns
+#### Ephemeral local-memory turns
 
 Clients that own the canonical conversation transcript can request an isolated
 agent turn by adding `X-Hermes-Ephemeral: true` to a Chat Completions request.
-Hermes still loads the active profile's identity and existing memory for
-context, but does not expose model-callable tools for the ephemeral request. For
-that request, Hermes:
+Hermes still loads the active profile's identity and built-in local memory files
+for context, but does not initialize or contact external memory providers and
+does not expose model-callable tools for the ephemeral request. For that request,
+Hermes:
 
-- does not create or update a session transcript;
+- does not create or update a SessionDB transcript or optional JSON session snapshot;
+- loads built-in local identity and memory files read-only;
+- does not load, initialize, prefetch from, sync to, or end a session with an external memory provider;
 - does not expose memory-provider or built-in memory mutation tools;
 - does not expose file, shell, messaging, scheduling, skill, plugin, or other model-callable tools;
 - does not run automatic memory/skill curator nudges;
-- does not sync the turn or session-end observations to external memory;
 - does not write provider-error request dumps; and
 - does not place the result in the idempotency cache.
 
 The mode fails closed. The header value must be exactly `true`, and the request
 must not include `X-Hermes-Session-Id`, `X-Hermes-Session-Key`, or
-`Idempotency-Key`. A non-streaming response includes an `X-Hermes-Ephemeral:
-true` header and a machine-readable `hermes` object:
+`Idempotency-Key`. Ephemeral requests must also set `"stream": false` (or omit
+`stream`): Hermes rejects streaming ephemeral requests because an SSE response
+cannot fail closed before returning a complete, verified provenance envelope.
+An accepted response includes an `X-Hermes-Ephemeral: true` header and a
+machine-readable `hermes` object:
 
 ```json
 {
   "hermes": {
     "ephemeral": true,
     "persistence": "disabled",
-    "memory": "read-only",
+    "memory": {
+      "local": "read-only",
+      "external_provider": "disabled"
+    },
     "tools": "disabled",
-    "profile": "hermes-agent",
+    "profile": "room-profile",
+    "requested_model": "client-route-alias",
     "provider": "configured-provider",
     "model": "configured-runtime-model"
   }
 }
 ```
 
-`profile` is the stable Hermes agent identity advertised by the API server;
-`provider` and `model` record the actual inference route used for that turn.
+`profile` is the stable Hermes profile identity that served the request;
+`requested_model` is the client-supplied model or route alias; and `provider`
+and `model` record the actual inference route used for that turn. If Hermes
+cannot establish all three runtime provenance fields, the ephemeral request
+fails closed instead of returning guessed or incomplete provenance.
 This mode controls Hermes persistence, not an upstream model provider's own
 logging or retention. Clients handling sensitive context must review that
 separate boundary.

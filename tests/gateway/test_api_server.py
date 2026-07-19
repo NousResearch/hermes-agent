@@ -1670,7 +1670,16 @@ class TestChatCompletionsEndpoint:
     @pytest.mark.asyncio
     async def test_ephemeral_completion_is_explicit_and_rejects_durable_session_headers(self, adapter):
         app = _create_app(adapter)
-        mock_result = {"final_response": "present", "messages": [], "api_calls": 1}
+        mock_result = {
+            "final_response": "present",
+            "messages": [],
+            "api_calls": 1,
+            "_hermes_runtime": {
+                "profile": "room-profile",
+                "provider": "effective-provider",
+                "model": "effective-model",
+            },
+        }
         async with TestClient(TestServer(app)) as cli:
             with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
                 mock_run.return_value = (
@@ -1689,10 +1698,19 @@ class TestChatCompletionsEndpoint:
             assert resp.status == 200
             assert resp.headers["X-Hermes-Ephemeral"] == "true"
             data = await resp.json()
-            assert data["hermes"]["ephemeral"] is True
-            assert data["hermes"]["persistence"] == "disabled"
-            assert data["hermes"]["memory"] == "read-only"
-            assert data["hermes"]["tools"] == "disabled"
+            assert data["hermes"] == {
+                "ephemeral": True,
+                "profile": "room-profile",
+                "requested_model": "hermes-agent",
+                "provider": "effective-provider",
+                "model": "effective-model",
+                "persistence": "disabled",
+                "memory": {
+                    "local": "read-only",
+                    "external_provider": "disabled",
+                },
+                "tools": "disabled",
+            }
             assert mock_run.call_args.kwargs["ephemeral"] is True
 
             for forbidden in ("X-Hermes-Session-Id", "X-Hermes-Session-Key"):
@@ -1715,6 +1733,44 @@ class TestChatCompletionsEndpoint:
                 },
             )
             assert cached.status == 400
+
+            streamed = await cli.post(
+                "/v1/chat/completions",
+                headers={"X-Hermes-Ephemeral": "true"},
+                json={
+                    "model": "hermes-agent",
+                    "messages": [{"role": "user", "content": "Hello"}],
+                    "stream": True,
+                },
+            )
+            assert streamed.status == 400
+            streamed_data = await streamed.json()
+            assert streamed_data["error"]["code"] == "ephemeral_streaming_unsupported"
+            assert mock_run.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_ephemeral_completion_fails_closed_without_runtime_provenance(self, adapter):
+        app = _create_app(adapter)
+        mock_result = {"final_response": "present", "messages": [], "api_calls": 1}
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (
+                    mock_result,
+                    {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+                )
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    headers={"X-Hermes-Ephemeral": "true"},
+                    json={
+                        "model": "client-selected-route",
+                        "messages": [{"role": "user", "content": "Hello"}],
+                    },
+                )
+                assert resp.status == 500
+                data = await resp.json()
+
+        assert data["error"]["code"] == "ephemeral_provenance_unavailable"
+        assert "hermes" not in data
 
     @pytest.mark.asyncio
     async def test_ephemeral_header_rejects_ambiguous_values(self, adapter):
@@ -3333,7 +3389,11 @@ class TestChatCompletionsAgentIncomplete:
             "error": "Response truncated due to output length limit",
             "messages": [],
             "api_calls": 1,
-            "_hermes_runtime": {"provider": "runtime-provider", "model": "runtime-model"},
+            "_hermes_runtime": {
+                "profile": "default",
+                "provider": "runtime-provider",
+                "model": "runtime-model",
+            },
         }
         app = _create_app(adapter)
         async with TestClient(TestServer(app)) as cli:
@@ -3353,7 +3413,10 @@ class TestChatCompletionsAgentIncomplete:
             assert data["hermes"]["error_code"] == "output_truncated"
             assert data["hermes"]["ephemeral"] is True
             assert data["hermes"]["persistence"] == "disabled"
-            assert data["hermes"]["memory"] == "read-only"
+            assert data["hermes"]["memory"] == {
+                "local": "read-only",
+                "external_provider": "disabled",
+            }
             assert data["hermes"]["tools"] == "disabled"
             assert resp.headers.get("X-Hermes-Completed") == "false"
             assert resp.headers.get("X-Hermes-Partial") == "true"

@@ -1306,7 +1306,10 @@ def init_agent(
     try:
         from hermes_cli.config import load_config as _load_sess_cfg
         _sess_cfg = (_load_sess_cfg().get("sessions") or {})
-        agent._session_json_enabled = bool(_sess_cfg.get("write_json_snapshots", False))
+        agent._session_json_enabled = (
+            bool(_sess_cfg.get("write_json_snapshots", False))
+            and not bool(persist_disabled)
+        )
     except Exception:
         pass
     # logs_dir is retained unconditionally for request_dump_*.json (debug
@@ -1453,7 +1456,7 @@ def init_agent(
     # Memory provider plugin (external — one at a time, alongside built-in)
     # Reads memory.provider from config to select which plugin to activate.
     agent._memory_manager = None
-    if not skip_memory:
+    if not skip_memory and not agent._memory_read_only:
         try:
             _mem_provider_name = mem_config.get("provider", "") if mem_config else ""
 

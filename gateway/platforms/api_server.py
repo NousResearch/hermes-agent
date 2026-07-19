@@ -2606,6 +2606,15 @@ class APIServerAdapter(BasePlatformAdapter):
             )
 
         stream = _coerce_request_bool(body.get("stream"), default=False)
+        if ephemeral and stream:
+            return web.json_response(
+                _openai_error(
+                    "Ephemeral requests require a non-streaming response so "
+                    "Hermes can verify and return complete runtime provenance.",
+                    code="ephemeral_streaming_unsupported",
+                ),
+                status=400,
+            )
 
         # Extract system message (becomes ephemeral system prompt layered ON TOP of core)
         system_prompt = None
@@ -2921,13 +2930,33 @@ class APIServerAdapter(BasePlatformAdapter):
         }
         if ephemeral:
             runtime = result.get("_hermes_runtime", {})
+            required_runtime = ("profile", "provider", "model")
+            missing_runtime = [name for name in required_runtime if not runtime.get(name)]
+            if missing_runtime:
+                logger.error(
+                    "Ephemeral request missing runtime provenance: %s",
+                    ", ".join(missing_runtime),
+                )
+                return web.json_response(
+                    _openai_error(
+                        "Unable to establish ephemeral runtime provenance.",
+                        err_type="server_error",
+                        code="ephemeral_provenance_unavailable",
+                    ),
+                    status=500,
+                    headers=response_headers,
+                )
             response_data["hermes"] = {
                 "ephemeral": True,
-                "profile": model_name,
-                "provider": runtime.get("provider"),
-                "model": runtime.get("model"),
+                "profile": runtime["profile"],
+                "requested_model": model_name,
+                "provider": runtime["provider"],
+                "model": runtime["model"],
                 "persistence": "disabled",
-                "memory": "read-only",
+                "memory": {
+                    "local": "read-only",
+                    "external_provider": "disabled",
+                },
                 "tools": "disabled",
             }
         if is_partial or is_failed or not completed:
@@ -4618,6 +4647,12 @@ class APIServerAdapter(BasePlatformAdapter):
             from gateway.session_context import clear_session_vars
 
             with self._profile_scope(request_profile):
+                try:
+                    from hermes_cli.profiles import get_active_profile_name
+
+                    resolved_profile = str(get_active_profile_name() or "").strip() or None
+                except Exception:
+                    resolved_profile = None
                 tokens = self._bind_api_server_session(
                     chat_id=session_id or "",
                     session_key=gateway_session_key or session_id or "",
@@ -4656,6 +4691,7 @@ class APIServerAdapter(BasePlatformAdapter):
                         result["session_id"] = _eff_sid
                     if ephemeral:
                         result["_hermes_runtime"] = {
+                            "profile": resolved_profile,
                             "provider": getattr(agent, "provider", None),
                             "model": getattr(agent, "model", None),
                         }

@@ -41,7 +41,7 @@ class BedrockTransport(ProviderTransport):
         Calls convert_messages and convert_tools internally.
 
         params:
-            max_tokens: int — output token limit (default 4096)
+            max_tokens: int — output token limit (default 16384)
             temperature: float | None
             guardrail_config: dict | None — Bedrock guardrails
             region: str — AWS region (default 'us-east-1')
@@ -55,7 +55,7 @@ class BedrockTransport(ProviderTransport):
             model=model,
             messages=messages,
             tools=tools,
-            max_tokens=params.get("max_tokens", 4096),
+            max_tokens=params.get("max_tokens", 16384),
             temperature=params.get("temperature"),
             guardrail_config=guardrail,
         )

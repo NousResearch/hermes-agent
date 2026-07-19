@@ -989,7 +989,7 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
             model=agent.model,
             messages=api_messages,
             tools=tools_for_api,
-            max_tokens=agent.max_tokens or 4096,
+            max_tokens=agent.max_tokens or 16384,
             region=region,
             guardrail_config=guardrail,
         )
@@ -2048,6 +2048,22 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
                                preserve_dots=agent._anthropic_preserve_dots())
                 summary_response = agent._anthropic_messages_create(_ant_kw)
                 _summary_result = _tsum.normalize_response(summary_response, strip_tool_prefix=agent._is_anthropic_oauth)
+                final_response = (_summary_result.content or "").strip()
+            elif agent.api_mode == "bedrock_converse":
+                # Route through native Converse API — no OpenAI client needed.
+                from agent.bedrock_adapter import call_converse
+                _br_region = getattr(agent, "_bedrock_region", None) or "us-east-1"
+                _br_guardrail = getattr(agent, "_bedrock_guardrail_config", None)
+                summary_response = call_converse(
+                    region=_br_region,
+                    model=agent.model,
+                    messages=api_messages,
+                    tools=None,
+                    max_tokens=agent.max_tokens or 16384,
+                    guardrail_config=_br_guardrail,
+                )
+                _bt_sum = agent._get_transport()
+                _summary_result = _bt_sum.normalize_response(summary_response)
                 final_response = (_summary_result.content or "").strip()
             else:
                 summary_response = agent._ensure_primary_openai_client(reason="iteration_limit_summary").chat.completions.create(**summary_kwargs)

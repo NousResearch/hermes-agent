@@ -240,10 +240,18 @@ def _resolve_git_url(identifier: str) -> tuple[str, Optional[str]]:
         return git_url, (subdir or None)
 
     raise ValueError(
-        f"Invalid plugin identifier: '{identifier}'. "
-        "Use a Git URL or 'owner/repo' shorthand (optionally with a subdirectory: "
-        "'owner/repo/path/to/plugin')."
+        "Invalid plugin identifier. Use a Git URL or 'owner/repo' shorthand "
+        "(optionally with a subdirectory: 'owner/repo/path/to/plugin')."
     )
+
+
+def _resolve_validated_plugin_source(identifier: str) -> tuple[str, Optional[str]]:
+    """Resolve an identifier and reject unsafe source metadata uniformly."""
+    try:
+        git_url, subdir = _resolve_git_url(identifier)
+        return validate_source_url(git_url), subdir
+    except ValueError as exc:
+        raise PluginOperationError(str(exc)) from exc
 
 
 def _resolve_subdir_within(clone_root: Path, subdir: str) -> Path:
@@ -311,18 +319,43 @@ def _copy_example_files(plugin_dir: Path, console) -> None:
     Skips files that already exist to avoid overwriting user config on reinstall.
     """
     for example_file in plugin_dir.glob("*.example"):
-        real_name = example_file.stem  # e.g. "config.yaml" from "config.yaml.example"
+        real_name = example_file.stem
         real_path = plugin_dir / real_name
-        if not real_path.exists():
+        try:
+            real_path.lstat()
+            continue
+        except FileNotFoundError:
+            pass
+        except OSError:
+            console.print("[yellow]Warning:[/yellow] Skipped an unsafe example destination.")
+            continue
+        try:
+            content = _read_bounded_regular_file(example_file, 1024 * 1024)
+            assert content is not None
+            descriptor = os.open(
+                real_path,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0),
+                0o600,
+            )
             try:
-                shutil.copy2(example_file, real_path)
-                console.print(
-                    f"[dim]  Created {real_name} from {example_file.name}[/dim]"
-                )
-            except OSError as e:
-                console.print(
-                    f"[yellow]Warning:[/yellow] Failed to copy {example_file.name}: {e}"
-                )
+                try:
+                    destination = os.fdopen(descriptor, "wb")
+                except Exception:
+                    os.close(descriptor)
+                    raise
+                with destination:
+                    destination.write(content)
+            except Exception:
+                try:
+                    real_path.unlink()
+                except OSError:
+                    pass
+                raise
+            console.print(f"[dim]  Created {real_name} from {example_file.name}[/dim]")
+        except (OSError, PluginOperationError):
+            console.print(
+                "[yellow]Warning:[/yellow] Skipped an unsafe or unreadable example file."
+            )
 
 
 def _missing_requires_env_names(manifest: dict) -> list[str]:
@@ -427,13 +460,12 @@ def _display_after_install(plugin_dir: Path, identifier: str) -> None:
     console = Console()
     after_install = plugin_dir / "after-install.md"
 
-    if after_install.exists():
-        content = after_install.read_text(encoding="utf-8")
-        md = Markdown(content)
-        console.print()
-        console.print(Panel(md, border_style="green", expand=False))
-        console.print()
-    else:
+    try:
+        raw = _read_bounded_regular_file(after_install, 256 * 1024, missing_ok=True)
+    except PluginOperationError:
+        console.print("[yellow]Warning:[/yellow] Skipped unsafe after-install instructions.")
+        return
+    if raw is None:
         console.print()
         console.print(
             Panel(
@@ -445,6 +477,16 @@ def _display_after_install(plugin_dir: Path, identifier: str) -> None:
             )
         )
         console.print()
+        return
+    try:
+        content = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        console.print("[yellow]Warning:[/yellow] Skipped invalid after-install instructions.")
+        return
+    md = Markdown(content)
+    console.print()
+    console.print(Panel(md, border_style="green", expand=False))
+    console.print()
 
 
 def _display_removed(name: str, plugins_dir: Path) -> None:
@@ -476,6 +518,67 @@ def _require_installed_plugin(name: str, plugins_dir: Path, console) -> Path:
 
 
 MAX_INSPECT_MANIFEST_BYTES = 256 * 1024
+
+
+def _read_bounded_regular_file(
+    path: Path, max_bytes: int, *, missing_ok: bool = False
+) -> bytes | None:
+    """Read a bounded regular file without following its final path component."""
+    try:
+        before = path.lstat()
+    except FileNotFoundError as exc:
+        if missing_ok:
+            return None
+        raise PluginOperationError("Required file is missing.") from exc
+    except OSError as exc:
+        raise PluginOperationError("File could not be read safely.") from exc
+    if stat.S_ISLNK(before.st_mode) or not stat.S_ISREG(before.st_mode):
+        raise PluginOperationError("File must be a regular file.")
+
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NONBLOCK", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(path, flags)
+        try:
+            opened = os.fstat(descriptor)
+            if not stat.S_ISREG(opened.st_mode):
+                raise PluginOperationError("File must be a regular file.")
+            if (before.st_dev, before.st_ino) != (opened.st_dev, opened.st_ino):
+                raise PluginOperationError("File changed while being read.")
+            chunks: list[bytes] = []
+            remaining = max_bytes + 1
+            while remaining:
+                chunk = os.read(descriptor, min(65536, remaining))
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                remaining -= len(chunk)
+        finally:
+            os.close(descriptor)
+    except PluginOperationError:
+        raise
+    except OSError as exc:
+        raise PluginOperationError("File could not be read safely.") from exc
+    raw = b"".join(chunks)
+    if len(raw) > max_bytes:
+        raise PluginOperationError("File is too large.")
+    return raw
+
+
+def _parse_manifest_file(path: Path) -> dict[str, Any]:
+    """Safely read and parse one explicit manifest candidate."""
+    raw = _read_bounded_regular_file(path, MAX_INSPECT_MANIFEST_BYTES)
+    assert raw is not None
+    try:
+        text = raw.decode("utf-8")
+        import yaml
+
+        manifest = yaml.safe_load(text)
+    except Exception as exc:
+        raise PluginOperationError("Plugin manifest is malformed.") from exc
+    if not isinstance(manifest, dict) or not manifest:
+        raise PluginOperationError("Plugin manifest is malformed.")
+    return manifest
 
 
 def _inspection_git_env() -> dict[str, str]:
@@ -526,58 +629,25 @@ def _run_inspect_git(
 
 
 def _read_inspection_manifest(plugin_dir: Path) -> dict[str, Any]:
-    """Read an untrusted manifest through a bounded, non-following descriptor."""
-    manifest_path = plugin_dir / "plugin.yaml"
+    """Strictly read plugin.yaml for remote inspection."""
     try:
-        before = manifest_path.lstat()
-    except OSError as exc:
-        raise PluginOperationError("Plugin manifest plugin.yaml is missing.") from exc
-    if stat.S_ISLNK(before.st_mode):
-        raise PluginOperationError("Plugin manifest plugin.yaml must not be a symlink.")
-    if not stat.S_ISREG(before.st_mode):
-        raise PluginOperationError("Plugin manifest plugin.yaml must be a regular file.")
+        return _parse_manifest_file(plugin_dir / "plugin.yaml")
+    except PluginOperationError as exc:
+        raise PluginOperationError(f"Plugin manifest plugin.yaml is invalid: {exc}") from exc
 
-    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NONBLOCK", 0)
-    flags |= getattr(os, "O_NOFOLLOW", 0)
-    try:
-        descriptor = os.open(manifest_path, flags)
+
+def _read_install_manifest(plugin_dir: Path) -> dict[str, Any]:
+    """Read plugin.yaml, legacy plugin.yml, or accept a manifestless plugin."""
+    for filename in ("plugin.yaml", "plugin.yml"):
+        candidate = plugin_dir / filename
         try:
-            opened = os.fstat(descriptor)
-            if not stat.S_ISREG(opened.st_mode):
-                raise PluginOperationError("Plugin manifest plugin.yaml must be a regular file.")
-            if (before.st_dev, before.st_ino) != (opened.st_dev, opened.st_ino):
-                raise PluginOperationError("Plugin manifest plugin.yaml changed during inspection.")
-            chunks: list[bytes] = []
-            remaining = MAX_INSPECT_MANIFEST_BYTES + 1
-            while remaining:
-                chunk = os.read(descriptor, min(65536, remaining))
-                if not chunk:
-                    break
-                chunks.append(chunk)
-                remaining -= len(chunk)
-        finally:
-            os.close(descriptor)
-    except PluginOperationError:
-        raise
-    except OSError as exc:
-        raise PluginOperationError("Plugin manifest plugin.yaml could not be read safely.") from exc
-
-    raw = b"".join(chunks)
-    if len(raw) > MAX_INSPECT_MANIFEST_BYTES:
-        raise PluginOperationError("Plugin manifest plugin.yaml is too large.")
-    try:
-        text = raw.decode("utf-8")
-    except UnicodeDecodeError as exc:
-        raise PluginOperationError("Plugin manifest plugin.yaml is not valid UTF-8.") from exc
-    try:
-        import yaml
-
-        manifest = yaml.safe_load(text)
-    except Exception as exc:
-        raise PluginOperationError("Plugin manifest plugin.yaml is malformed.") from exc
-    if not isinstance(manifest, dict) or not manifest:
-        raise PluginOperationError("Plugin manifest plugin.yaml is malformed.")
-    return manifest
+            candidate.lstat()
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            raise PluginOperationError("Plugin manifest could not be inspected safely.") from exc
+        return _parse_manifest_file(candidate)
+    return {}
 
 
 def inspect_plugin_source(
@@ -595,11 +665,7 @@ def inspect_plugin_source(
             requested_ref = validate_full_commit_sha(requested_ref)
         except ValueError as exc:
             raise PluginOperationError(str(exc)) from exc
-    try:
-        git_url, subdir = _resolve_git_url(identifier)
-        source_url = validate_source_url(git_url)
-    except ValueError as exc:
-        raise PluginOperationError(str(exc)) from exc
+    source_url, subdir = _resolve_validated_plugin_source(identifier)
 
     git_exe = _resolve_git_executable()
     if not git_exe:
@@ -786,11 +852,7 @@ def _install_plugin_core(
             requested_ref = validate_full_commit_sha(requested_ref)
         except ValueError as exc:
             raise PluginOperationError(str(exc)) from exc
-    try:
-        git_url, subdir = _resolve_git_url(identifier)
-        source_url = validate_source_url(git_url)
-    except ValueError as exc:
-        raise PluginOperationError(str(exc)) from exc
+    source_url, subdir = _resolve_validated_plugin_source(identifier)
 
     plugins_dir = _plugins_dir()
     git_exe = _resolve_git_executable()
@@ -817,7 +879,7 @@ def _install_plugin_core(
             raise PluginOperationError("Checked out commit does not exactly match the requested ref.")
 
         source_dir = _resolve_subdir_within(clone_root, subdir) if subdir else clone_root
-        manifest = _read_inspection_manifest(source_dir)
+        manifest = _read_install_manifest(source_dir)
         fallback_name = subdir.rstrip("/").rsplit("/", 1)[-1] if subdir else _repo_name_from_url(source_url)
         plugin_name = manifest.get("name")
         if plugin_name is None or plugin_name == "":
@@ -861,7 +923,7 @@ def _install_plugin_core(
             shutil.copytree(source_dir, staged, symlinks=True)
             from rich.console import Console
             _copy_example_files(staged, Console())
-            installed_manifest = _read_inspection_manifest(staged)
+            installed_manifest = _read_install_manifest(staged)
             installed_name = installed_manifest.get("name") or target.name
             capabilities = build_capability_report(staged, installed_manifest)
             provenance = PluginProvenance(
@@ -913,8 +975,8 @@ def cmd_install(
     console = Console()
 
     try:
-        git_url, _subdir = _resolve_git_url(identifier)
-    except ValueError as e:
+        git_url, _subdir = _resolve_validated_plugin_source(identifier)
+    except PluginOperationError as e:
         console.print(f"[red]Error:[/red] {e}")
         sys.exit(1)
 

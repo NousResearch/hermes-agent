@@ -646,9 +646,9 @@ class TestCopyExampleFiles:
         example_file = tmp_path / "config.yaml.example"
         example_file.write_text("key: value")
 
-        # Mock shutil.copy2 to raise an error
+        # Mock the safe reader to raise an error
         with patch(
-            "hermes_cli.plugins_cmd.shutil.copy2",
+            "hermes_cli.plugins_cmd._read_bounded_regular_file",
             side_effect=OSError("Permission denied"),
         ):
             # Should not raise, just warn
@@ -656,6 +656,29 @@ class TestCopyExampleFiles:
 
         # Should have printed a warning
         assert any("Warning" in str(c) for c in console.print.call_args_list)
+
+    def test_closes_descriptor_if_fdopen_fails(self, tmp_path):
+        console = MagicMock()
+        (tmp_path / "config.yaml.example").write_text("key: value")
+
+        with patch("hermes_cli.plugins_cmd._read_bounded_regular_file", return_value=b"key: value"), \
+             patch("hermes_cli.plugins_cmd.os.open", return_value=123), \
+             patch("hermes_cli.plugins_cmd.os.fdopen", side_effect=OSError("no stream")), \
+             patch("hermes_cli.plugins_cmd.os.close") as close:
+            _copy_example_files(tmp_path, console)
+
+        close.assert_called_once_with(123)
+        assert not (tmp_path / "config.yaml").exists()
+
+
+def test_display_after_install_uses_default_panel_when_instructions_missing(tmp_path, capsys):
+    from hermes_cli.plugins_cmd import _display_after_install
+
+    _display_after_install(tmp_path, "owner/plugin")
+
+    output = capsys.readouterr().out
+    assert "Plugin installed:" in output
+    assert "owner/plugin" in output
 
 
 class TestPromptPluginEnvVars:

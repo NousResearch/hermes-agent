@@ -281,6 +281,65 @@ def test_unsafe_source_rejected_before_git(identifier):
     resolve_git.assert_not_called()
 
 
+@pytest.mark.parametrize("identifier, secret", [
+    ("https://user:CLI_SECRET@example.com/repo.git", "CLI_SECRET"),
+    ("https://example.com/repo.git?token=QUERY_SECRET", "QUERY_SECRET"),
+    ("invalid-identifier-RAW_SECRET", "RAW_SECRET"),
+])
+def test_cli_rejects_unsafe_source_without_display_or_git(identifier, secret, capsys):
+    with patch.object(pc, "_resolve_git_executable") as resolve_git:
+        with pytest.raises(SystemExit) as raised:
+            pc.cmd_install(identifier, enable=False)
+    assert raised.value.code == 1
+    output = capsys.readouterr()
+    assert secret not in output.out + output.err
+    resolve_git.assert_not_called()
+
+
+@pytest.mark.parametrize("manifest_name", ["plugin.yml", None])
+def test_install_supports_legacy_or_manifestless_plugin(tmp_path, monkeypatch, manifest_name):
+    repo = tmp_path / ("legacy-yml" if manifest_name else "init-only")
+    repo.mkdir()
+    if manifest_name:
+        (repo / manifest_name).write_text("name: legacy-plugin\nprovides_tools: [legacy]\n")
+    (repo / "__init__.py").write_text("def register(ctx): pass\n")
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+    subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "one"], cwd=repo, check=True)
+
+    result = _install(tmp_path, monkeypatch, repo)
+
+    assert result.name == ("legacy-plugin" if manifest_name else "init-only")
+    expected = {"name": "legacy-plugin", "provides_tools": ["legacy"]} if manifest_name else {}
+    assert result.manifest == expected
+    assert read_provenance_lock(result.target) == result.provenance
+    assert result.capabilities.tools == (("legacy",) if manifest_name else ())
+
+
+def test_unsafe_optional_files_are_skipped_without_host_read(tmp_path, monkeypatch, capsys):
+    secret = "HOST_FILE_SECRET_7d21"
+    outside = tmp_path / "outside-secret"
+    outside.write_text(secret)
+    repo = tmp_path / "unsafe-files"
+    repo.mkdir()
+    (repo / "plugin.yaml").write_text("name: unsafe-files\n")
+    (repo / "config.yaml.example").symlink_to(outside)
+    (repo / "relative.example").symlink_to("../outside-secret")
+    (repo / "after-install.md").symlink_to(outside)
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+    subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "one"], cwd=repo, check=True)
+
+    result = _install(tmp_path, monkeypatch, repo)
+    pc._display_after_install(result.target, "safe-identifier")
+
+    output = capsys.readouterr()
+    assert secret not in output.out + output.err
+    assert not (result.target / "config.yaml").exists()
+    assert not (result.target / "relative").exists()
+    assert "Warning" in output.out
+
+
 def test_dashboard_returns_json_provenance_capabilities_and_enables_after_success(tmp_path, monkeypatch):
     repo = tmp_path / "repo"
     sha = _repo(repo)

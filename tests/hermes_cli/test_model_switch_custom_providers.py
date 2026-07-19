@@ -1557,3 +1557,77 @@ def test_save_discovered_models_preserves_list_of_dicts_form(monkeypatch):
     assert save_calls == [], (
         "List-of-dicts models must not be replaced with a flat list"
     )
+
+
+def test_shared_url_different_display_names_are_separate_rows(monkeypatch):
+    """Multiple custom_providers entries sharing base_url + api_key + api_mode
+    but with *different* display-name prefixes (e.g. a proxy fronting
+    cerebras, groq and perplexity at one URL) must each get their own picker
+    row, not collapse into one."""
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})
+    # Stub live discovery so the test is deterministic regardless of network.
+    monkeypatch.setattr(
+        "hermes_cli.models.fetch_api_models",
+        lambda api_key, base_url, **kwargs: [],
+    )
+
+    providers = list_authenticated_providers(
+        current_provider="openrouter",
+        current_base_url="https://openrouter.ai/api/v1",
+        user_providers={},
+        custom_providers=[
+            {"name": "Cerebras", "base_url": "https://proxy.example.com/v1",
+             "api_key": "proxy-key", "model": "llama-4-scout"},
+            {"name": "Groq", "base_url": "https://proxy.example.com/v1",
+             "api_key": "proxy-key", "model": "llama-4-scout"},
+            {"name": "Perplexity", "base_url": "https://proxy.example.com/v1",
+             "api_key": "proxy-key", "model": "sonar-pro"},
+        ],
+        max_models=50,
+    )
+
+    custom = [p for p in providers if p.get("is_user_defined")]
+    names = sorted(p["name"] for p in custom)
+    assert names == ["Cerebras", "Groq", "Perplexity"], (
+        f"expected three separate rows, got {names}"
+    )
+    # Each row carries only its own model (no cross-contamination).
+    by_name = {p["name"]: p["models"] for p in custom}
+    assert by_name["Cerebras"] == ["llama-4-scout"]
+    assert by_name["Groq"] == ["llama-4-scout"]
+    assert by_name["Perplexity"] == ["sonar-pro"]
+
+
+def test_shared_url_per_model_suffix_still_collapses(monkeypatch):
+    """Per-model suffix entries sharing the same display-name prefix (e.g.
+    "Ollama — A", "Ollama — B") must still collapse into one row even with
+    the display-prefix grouping dimension."""
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})
+    # Stub live discovery so a locally-running Ollama cannot override the
+    # static configured models and make the assertion flaky.
+    monkeypatch.setattr(
+        "hermes_cli.models.fetch_api_models",
+        lambda api_key, base_url, **kwargs: [],
+    )
+
+    providers = list_authenticated_providers(
+        current_provider="openrouter",
+        current_base_url="https://openrouter.ai/api/v1",
+        user_providers={},
+        custom_providers=[
+            {"name": "Ollama \u2014 GLM 5.1", "base_url": "http://localhost:11434/v1",
+             "api_key": "ollama", "model": "glm-5.1"},
+            {"name": "Ollama \u2014 Qwen3-coder", "base_url": "http://localhost:11434/v1",
+             "api_key": "ollama", "model": "qwen3-coder"},
+        ],
+        max_models=50,
+    )
+
+    custom = [p for p in providers if p.get("is_user_defined")]
+    assert len(custom) == 1, (
+        f"expected one collapsed row, got {[p['name'] for p in custom]}"
+    )
+    assert custom[0]["name"] == "Ollama"
+    assert set(custom[0]["models"]) == {"glm-5.1", "qwen3-coder"}

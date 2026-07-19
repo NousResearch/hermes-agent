@@ -2188,6 +2188,15 @@ class MCPServerTask:
             before returning so the next park cycle starts from a fresh
             signal. Shutdown takes precedence.
         """
+        # Guard against closed event loop during shutdown — trying to
+        # ensure_future on a closed loop raises RuntimeError.
+        try:
+            loop = asyncio.get_running_loop()
+            if loop.is_closed():
+                return "shutdown"
+        except RuntimeError:
+            return "shutdown"
+
         shutdown_task = asyncio.ensure_future(self._shutdown_event.wait())
         reconnect_task = asyncio.ensure_future(self._reconnect_event.wait())
         try:
@@ -3145,6 +3154,15 @@ class MCPServerTask:
 
     async def _wait_for_lazy_reconnect(self) -> None:
         """Wait while an intentionally recycled stdio server is dormant."""
+        # Guard against closed event loop during shutdown — creating
+        # tasks on a closed loop raises RuntimeError.
+        try:
+            loop = asyncio.get_running_loop()
+            if loop.is_closed():
+                return
+        except RuntimeError:
+            return
+
         shutdown_task = asyncio.create_task(self._shutdown_event.wait())
         reconnect_task = asyncio.create_task(self._reconnect_event.wait())
         try:

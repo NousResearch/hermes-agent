@@ -62,6 +62,25 @@ def test_neutts_warm_cache_is_opt_in(tmp_path, monkeypatch):
     assert used == {"warm": False, "subprocess": True}
 
 
+def test_neutts_null_config_uses_subprocess_default(tmp_path, monkeypatch):
+    used = {"warm": False, "subprocess": False}
+
+    def fake_warm(text, output_path, tts_config):
+        used["warm"] = True
+        return output_path
+
+    def fake_subprocess(text, output_path, tts_config):
+        used["subprocess"] = True
+        return output_path
+
+    monkeypatch.setattr(tts_tool, "_generate_neutts_warm", fake_warm)
+    monkeypatch.setattr(tts_tool, "_generate_neutts_subprocess", fake_subprocess)
+
+    tts_tool._generate_neutts("hello", str(tmp_path / "out.wav"), {"neutts": None})
+
+    assert used == {"warm": False, "subprocess": True}
+
+
 def test_neutts_warm_cache_config_defaults_to_off():
     from hermes_cli.config import DEFAULT_CONFIG
 

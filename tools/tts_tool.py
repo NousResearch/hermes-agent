@@ -2034,7 +2034,7 @@ def _neutts_output_format(neutts_config: Dict[str, Any], default: str = "mp3") -
 
 
 def _neutts_resolved_config(tts_config: Dict[str, Any]) -> Dict[str, str]:
-    neutts_config = tts_config.get("neutts", {}) if isinstance(tts_config, dict) else {}
+    neutts_config = (tts_config.get("neutts") or {}) if isinstance(tts_config, dict) else {}
     return {
         "ref_audio": str(Path(neutts_config.get("ref_audio", "") or _default_neutts_ref_audio()).expanduser()),
         "ref_text": str(Path(neutts_config.get("ref_text", "") or _default_neutts_ref_text()).expanduser()),
@@ -2168,7 +2168,7 @@ def _clear_neutts_cache(reason: str = "manual") -> None:
 
 def _generate_neutts_warm(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
     """Generate speech with a cached in-process NeuTTS model/reference."""
-    neutts_config = tts_config.get("neutts", {}) if isinstance(tts_config, dict) else {}
+    neutts_config = (tts_config.get("neutts") or {}) if isinstance(tts_config, dict) else {}
     resolved = _neutts_resolved_config(tts_config)
     ref_audio = Path(resolved["ref_audio"])
     ref_text_path = Path(resolved["ref_text"])
@@ -2252,7 +2252,7 @@ def _generate_neutts_subprocess(text: str, output_path: str, tts_config: Dict[st
 
 def _generate_neutts(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
     """Generate speech using NeuTTS, with explicit opt-in warm caching."""
-    neutts_config = tts_config.get("neutts", {}) if isinstance(tts_config, dict) else {}
+    neutts_config = (tts_config.get("neutts") or {}) if isinstance(tts_config, dict) else {}
     if _neutts_warm_cache_enabled(neutts_config):
         return _generate_neutts_warm(text, output_path, tts_config)
     with _neutts_cache_lock:

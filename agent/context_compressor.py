@@ -2615,12 +2615,18 @@ This compaction should PRIORITISE preserving all information related to the focu
         compacted turns so the summary can be grounded before it becomes live
         context.
         """
+        # Reuse the runtime's real-user predicate so the deterministic
+        # snapshot can never anchor on user-role scaffolding (todo
+        # snapshots, truncation notices, background-process reports) —
+        # the exact class of turn this grounding exists to bypass.
+        from agent.conversation_compression import _is_real_user_message
+
         for msg in reversed(messages):
             if msg.get("role") != "user":
                 continue
-            content = msg.get("content")
-            if cls._is_context_summary_content(content):
+            if not _is_real_user_message(msg):
                 continue
+            content = msg.get("content")
             text = redact_sensitive_text(_content_text_for_contains(content).strip())
             if not text:
                 continue
@@ -2645,10 +2651,19 @@ This compaction should PRIORITISE preserving all information related to the focu
             return summary
 
         body = cls._strip_summary_prefix(summary)
-        replacement = f"{HISTORICAL_TASK_HEADING}\n{snapshot}"
+        # Keep the section terminated with a blank line: re.sub consumes the
+        # section's trailing newlines, and without restoring them the next
+        # "## " heading is glued onto the snapshot line — corrupting the
+        # markdown and making the heading invisible to this same regex on the
+        # next iterative compaction (which would then delete every following
+        # section via the \Z branch).
+        replacement = f"{HISTORICAL_TASK_HEADING}\n{snapshot}\n\n"
         if _HISTORICAL_TASK_SECTION_RE.search(body):
-            return _HISTORICAL_TASK_SECTION_RE.sub(replacement, body, count=1)
-        return f"{replacement}\n\n{body}".strip()
+            grounded = _HISTORICAL_TASK_SECTION_RE.sub(
+                lambda _m: replacement, body, count=1
+            )
+            return grounded.strip()
+        return f"{replacement}{body}".strip()
 
     @classmethod
     def _find_latest_context_summary(

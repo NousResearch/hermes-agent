@@ -58,6 +58,7 @@ LEGACY_AUTHOR_MAP = {
     "antydizajn@gmail.com": "antydizajn",  # PR #36043 salvage (auxiliary: route custom:<name> through named-provider arm + Palantir Bearer auth)
     "252620095+briandevans@users.noreply.github.com": "briandevans",  # PR #64951 salvage (lmstudio: clamp max/ultra reasoning effort)
     "kar.iskakov@gmail.com": "karfly",  # PR #64012 salvage (gateway: surface extended reasoning efforts)
+    "enzo.eliott.adami@gmail.com": "enzo-adami",  # PR #66637 salvage (compression: preserve human intent and durable handoffs)
     "kimyeon30@naver.com": "rlaehddus302",  # PR #61985 salvage (gateway: secondary-adapter auth callback profile)
     "burke@autreymail.com": "bautrey",  # PR #66479 salvage (gateway reliability hardening: Bedrock liveness, supervised watchers, launchd respawn throttle)
     "agungsubastian1963@gmail.com": "aguung",  # PR #64461 salvage (gateway: multiplex secret_scope for authz/Slack/webhooks)

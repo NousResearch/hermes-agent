@@ -264,6 +264,77 @@ def test_synthetic_user_scaffolding_does_not_replace_human_anchor(tmp_path: Path
     )
 
 
+def _no_consecutive_user_roles(messages: list) -> bool:
+    roles = [m.get("role") for m in messages if isinstance(m, dict)]
+    return all(
+        not (roles[i] == roles[i + 1] == "user") for i in range(len(roles) - 1)
+    )
+
+
+def test_restored_anchor_never_creates_consecutive_user_roles() -> None:
+    """Anchor restoration must preserve strict role alternation (#55677).
+
+    The original insertion helper could land the human anchor directly next
+    to user-role scaffolding (index-0 insert before a leading synthetic user
+    turn, or a bare scaffolding-only transcript), producing user/user
+    adjacency that strict chat templates reject.
+    """
+    from agent.conversation_compression import _insert_real_user_anchor
+
+    anchor = {"role": "user", "content": "REAL HUMAN ASK"}
+
+    # Leading synthetic user turn before the assistant summary.
+    compressed = [
+        {
+            "role": "user",
+            "content": "[System: Your previous response was truncated ...]",
+            "_empty_recovery_synthetic": True,
+        },
+        {"role": "assistant", "content": "summary"},
+        {
+            "role": "user",
+            "content": "[Your active task list was preserved across context compression]",
+            "_todo_snapshot_synthetic": True,
+        },
+    ]
+    _insert_real_user_anchor(compressed, dict(anchor))
+    assert _no_consecutive_user_roles(compressed)
+    assert any(m.get("content", "").startswith("REAL HUMAN ASK") for m in compressed)
+
+    # Scaffolding-only transcript: the anchor is merged, not inserted
+    # adjacent, and the merged turn leads with the human ask.
+    compressed = [
+        {
+            "role": "user",
+            "content": "[Your active task list was preserved across context compression]",
+            "_todo_snapshot_synthetic": True,
+        },
+    ]
+    _insert_real_user_anchor(compressed, dict(anchor))
+    assert _no_consecutive_user_roles(compressed)
+    assert len(compressed) == 1
+    assert compressed[0]["content"].startswith("REAL HUMAN ASK")
+    assert not compressed[0].get("_todo_snapshot_synthetic")
+
+
+def test_user_role_compaction_summary_is_not_a_human_anchor() -> None:
+    """A summary pinned to role="user" must not satisfy the anchor check.
+
+    The compressor flips the summary message to role="user" when the tail
+    opens with an assistant turn; treating that summary as human intent
+    would skip anchor restoration entirely.
+    """
+    from agent.context_compressor import SUMMARY_PREFIX
+    from agent.conversation_compression import _is_real_user_message
+
+    summary_as_user = {
+        "role": "user",
+        "content": f"{SUMMARY_PREFIX}\n## Historical Task Snapshot\nUser asked: x",
+    }
+    assert not _is_real_user_message(summary_as_user)
+    assert _is_real_user_message({"role": "user", "content": "please continue"})
+
+
 def test_compression_persists_child_handoff_immediately(tmp_path: Path) -> None:
     db = SessionDB(db_path=tmp_path / "state.db")
     parent_sid = "HEADLESS_PREFLIGHT_PARENT"

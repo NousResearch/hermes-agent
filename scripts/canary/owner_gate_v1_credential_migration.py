@@ -627,43 +627,129 @@ def collect_observation(
     )
 
 
-def _collector_source(release_revision: str) -> tuple[bytes, str]:
+def _collector_source(
+    release_revision: str,
+    *,
+    trusted_runtime: Any,
+) -> tuple[bytes, str]:
     if _REVISION.fullmatch(release_revision or "") is None:
         _error("owner_gate_v1_credential_source_invalid")
     from scripts.canary import full_canary_owner_launcher as launcher
 
-    class CollectorProvenance(launcher.LocalLauncherProvenance):
-        _RELATIVE_MODULE = (
-            "scripts/canary/owner_gate_v1_credential_migration.py"
-        )
-
-    path = Path(__file__).resolve()
-    expected = CollectorProvenance(module_path=path)(release_revision)
+    if type(trusted_runtime) is not launcher.TrustedGcloudExecutable:
+        _error("owner_gate_v1_credential_source_invalid")
+    relative = Path("scripts/canary/owner_gate_v1_credential_migration.py")
     try:
+        source_root, _site_root = (
+            launcher.require_trusted_owner_support_activation(
+                trusted_runtime,
+                release_sha=release_revision,
+            )
+        )
+        manifest_before = trusted_runtime.sealed_owner_support_manifest(
+            expected_release_sha=release_revision,
+        )
+        path = Path(__file__)
+        expected_path = Path(source_root) / relative
+        if (
+            not path.is_absolute()
+            or path != expected_path
+            or Path(os.path.realpath(path, strict=True)) != path
+        ):
+            _error("owner_gate_v1_credential_source_invalid")
         before = path.lstat()
-        raw = path.read_bytes()
+        flags = os.O_RDONLY
+        if hasattr(os, "O_CLOEXEC"):
+            flags |= os.O_CLOEXEC
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        descriptor = os.open(path, flags)
+        try:
+            opened_before = os.fstat(descriptor)
+            chunks: list[bytes] = []
+            total = 0
+            while True:
+                chunk = os.read(
+                    descriptor,
+                    min(64 * 1024, MAX_REMOTE_SOURCE_BYTES + 1 - total),
+                )
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                total += len(chunk)
+                if total > MAX_REMOTE_SOURCE_BYTES:
+                    _error("owner_gate_v1_credential_source_invalid")
+            opened_after = os.fstat(descriptor)
+        finally:
+            os.close(descriptor)
+        raw = b"".join(chunks)
         after = path.lstat()
-    except OSError as exc:
+        manifest_after = trusted_runtime.sealed_owner_support_manifest(
+            expected_release_sha=release_revision,
+        )
+        launcher.require_trusted_owner_support_activation(
+            trusted_runtime,
+            release_sha=release_revision,
+        )
+    except (OSError, launcher.OwnerLauncherError) as exc:
         _error("owner_gate_v1_credential_source_invalid", exc)
+    expected = _sha256(raw)
+    metadata = (
+        before.st_mode,
+        before.st_uid,
+        before.st_gid,
+        before.st_dev,
+        before.st_ino,
+        before.st_nlink,
+        before.st_mtime_ns,
+        before.st_ctime_ns,
+        before.st_size,
+    )
     if (
         stat.S_ISLNK(before.st_mode)
         or not stat.S_ISREG(before.st_mode)
+        or stat.S_IMODE(before.st_mode) != 0o400
+        or before.st_uid != os.getuid()  # windows-footgun: ok
+        or before.st_nlink != 1
         or not 0 < len(raw) <= MAX_REMOTE_SOURCE_BYTES
-        or _sha256(raw) != expected
-        or (
-            before.st_dev,
-            before.st_ino,
-            before.st_size,
-            before.st_mtime_ns,
-            before.st_ctime_ns,
-        )
+        or len(raw) != before.st_size
+        or metadata
         != (
+            opened_before.st_mode,
+            opened_before.st_uid,
+            opened_before.st_gid,
+            opened_before.st_dev,
+            opened_before.st_ino,
+            opened_before.st_nlink,
+            opened_before.st_mtime_ns,
+            opened_before.st_ctime_ns,
+            opened_before.st_size,
+        )
+        or metadata
+        != (
+            opened_after.st_mode,
+            opened_after.st_uid,
+            opened_after.st_gid,
+            opened_after.st_dev,
+            opened_after.st_ino,
+            opened_after.st_nlink,
+            opened_after.st_mtime_ns,
+            opened_after.st_ctime_ns,
+            opened_after.st_size,
+        )
+        or metadata
+        != (
+            after.st_mode,
+            after.st_uid,
+            after.st_gid,
             after.st_dev,
             after.st_ino,
-            after.st_size,
+            after.st_nlink,
             after.st_mtime_ns,
             after.st_ctime_ns,
+            after.st_size,
         )
+        or manifest_after != manifest_before
     ):
         _error("owner_gate_v1_credential_source_invalid")
     return raw, expected
@@ -673,6 +759,7 @@ class V1CredentialMigrationTransport:
     """Pinned owner IAP transport for the sole fixed read-only collector."""
 
     def __init__(self, transport: Any | None = None, *, revision: str | None = None) -> None:
+        trusted_runtime: Any | None = None
         if transport is None:
             from scripts.canary import full_canary_owner_launcher as launcher
             from scripts.canary import production_cutover_owner_launcher as cutover
@@ -680,6 +767,7 @@ class V1CredentialMigrationTransport:
             if not isinstance(revision, str) or _REVISION.fullmatch(revision) is None:
                 _error("owner_gate_v1_credential_transport_invalid")
             trusted = launcher.require_trusted_owner_runtime(revision)
+            trusted_runtime = trusted
             configuration = launcher.PinnedGcloudConfiguration()
             identity = launcher.GcloudOwnerAccessToken(
                 gcloud_executable=trusted,
@@ -701,13 +789,17 @@ class V1CredentialMigrationTransport:
         if any(not hasattr(transport, name) for name in required):
             _error("owner_gate_v1_credential_transport_invalid")
         self._transport = transport
+        self._trusted_runtime = trusted_runtime
 
     def observe(
         self,
         *,
         release_revision: str,
     ) -> tuple[Mapping[str, Any], Mapping[str, Any]]:
-        source, source_sha256 = _collector_source(release_revision)
+        source, source_sha256 = _collector_source(
+            release_revision,
+            trusted_runtime=self._trusted_runtime,
+        )
         inner = self._transport
         account = inner._owner_identity.account_for_read_only_preflight()
         inner._owner_identity.require_stable()

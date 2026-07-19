@@ -3013,7 +3013,24 @@ class APIServerAdapter(BasePlatformAdapter):
 
                 When *final* is True the entire buffer is flushed (any
                 trailing MEDIA: prefix is treated as plain text).
+
+                Never raises — failures during upload are logged and the
+                buffer text is always emitted so the stream is not broken.
                 """
+                nonlocal _stream_buf, last_activity
+                if not _stream_buf:
+                    return
+
+                try:
+                    await _media_flush(final)
+                except Exception:
+                    logger.exception(
+                        "Streaming buffer flush failed, emitting raw text"
+                    )
+                    # Flush buffer as-is on failure — don't break the stream.
+                    await _media_flush(True)
+
+            async def _media_flush(final: bool) -> None:
                 nonlocal _stream_buf, last_activity
                 if not _stream_buf:
                     return

@@ -9255,7 +9255,9 @@ def _venv_core_imports_healthy() -> tuple[bool, str]:
 
 
 def _detect_venv_python_processes(
-    *, exclude_pids: set[int] | None = None
+    *,
+    exclude_pids: set[int] | None = None,
+    allowlist: list[str] | None = None,
 ) -> list[tuple[int, str, str]]:
     """Find live processes running from the project venv's interpreter.
 
@@ -9272,6 +9274,14 @@ def _detect_venv_python_processes(
     tuples; empty off-Windows / without psutil / when nothing matches. The
     calling process and its ancestors are always excluded (a CLI ``hermes
     update`` itself runs from the venv python). Never raises.
+
+    ``allowlist`` is an opt-in deployment-owner attestation (#66933): a
+    list of case-insensitive substrings matched against both the holder's
+    process name AND its full command line. Any holder matching an
+    allowlist entry is dropped from the returned matches — the operator
+    has explicitly said "I know this process is safe to leave running
+    while the venv mutates." Plain strings only (no glob, no regex); the
+    list is intended to be short and operator-curated, not pattern-rich.
     """
     if not _is_windows():
         return []
@@ -9336,6 +9346,17 @@ def _detect_venv_python_processes(
         if not is_holder:
             continue
         name = info.get("name") or Path(exe).name
+        # Operator-curated allowlist (updates.venv_holder_allowlist):
+        # a holder matching any allowlist substring against its name OR
+        # cmdline is dropped, on the operator's attestation that it is
+        # safe to keep running while the venv mutates. See #66933.
+        if allowlist:
+            name_low = str(name).lower()
+            if any(
+                (isinstance(s, str) and (s in name_low or s in cmdline_low))
+                for s in allowlist
+            ):
+                continue
         matches.append((int(pid), str(name), cmdline_raw[:120]))
     return matches
 
@@ -9368,6 +9389,86 @@ def _format_venv_python_holders_message(matches: list[tuple[int, str, str]]) -> 
     lines.append("    hermes update")
     lines.append("  (or use `hermes update --force-venv` to proceed anyway at your own risk)")
     return "\n".join(lines)
+
+
+def _run_pre_update_hook(args) -> bool:
+    """Run the operator-configured ``updates.pre_update_command`` hook.
+
+    Opt-in config (#66933): in supervised deployments an external daemon
+    (NSSM service, systemd unit, supervisor-script) may run from this
+    install's venv interpreter, holding ``.pyd`` files mapped while
+    ``hermes update`` tries to mutate the venv. The refuse-and-exit
+    behavior of the venv-holder guard then deadlocks against the
+    supervisor's respawn loop. The hook gives the operator a place to
+    release those resources BEFORE the guard re-checks.
+
+    Returns ``True`` to continue the update, ``False`` to abort.
+    Aborts (returns False) on:
+
+    * hook's exit code != 0
+    * hook times out (configurable; default 60s, 0 disables)
+    * hook fails to start
+
+    No configuration → noop → returns True. Never raises.
+    """
+    try:
+        from hermes_cli.config import load_config
+        cfg = (load_config() or {}).get("updates", {})
+    except Exception as exc:
+        logger.debug("Could not read updates.pre_update_command: %s", exc)
+        return True
+    if not isinstance(cfg, dict):
+        return True
+    cmd = cfg.get("pre_update_command")
+    if not cmd:
+        return True
+    try:
+        timeout_f = float(cfg.get("pre_update_command_timeout", 60))
+    except (TypeError, ValueError):
+        timeout_f = 60.0
+    if timeout_f < 0:
+        timeout_f = 0
+    rendered = cmd if isinstance(cmd, str) else list(cmd)
+    label = rendered if isinstance(rendered, str) else " ".join(rendered)
+    print(f"⚙ Running pre-update hook ({timeout_f:g}s timeout): {label}")
+    try:
+        if isinstance(cmd, str):
+            result = subprocess.run(
+                cmd,
+                shell=True,
+                capture_output=True,
+                text=True,
+                timeout=timeout_f or None,
+            )
+        else:
+            result = subprocess.run(
+                [str(x) for x in cmd],
+                capture_output=True,
+                text=True,
+                timeout=timeout_f or None,
+            )
+    except subprocess.TimeoutExpired:
+        print(f"✗ Pre-update hook timed out after {timeout_f:g}s; aborting update.")
+        return False
+    except Exception as exc:
+        print(f"✗ Pre-update hook failed to start: {exc!r}; aborting update.")
+        return False
+    if result.stdout:
+        sys.stdout.write(result.stdout)
+        if not result.stdout.endswith("\n"):
+            sys.stdout.write("\n")
+        sys.stdout.flush()
+    if result.stderr:
+        sys.stderr.write(result.stderr)
+        if not result.stderr.endswith("\n"):
+            sys.stderr.write("\n")
+        sys.stderr.flush()
+    if result.returncode != 0:
+        print(
+            f"✗ Pre-update hook exited with code {result.returncode}; aborting update."
+        )
+        return False
+    return True
 
 
 def _pause_windows_gateways_for_update() -> dict | None:
@@ -9852,8 +9953,31 @@ def _cmd_update_impl(args, gateway_mode: bool):
     # and app.asar — a non-desktop venv python holding a .pyd would sail
     # through and corrupt the sync (the exact failure this guard exists for).
     # --force-venv is the explicit escape hatch.
+    #
+    # --force-venv is a global bypass; #66933 adds two narrower opt-ins
+    # that the deployment owner can use to break the supervised-holder
+    # deadlock without disabling the guard entirely:
+    #   * updates.pre_update_command  — release external locks first.
+    #   * updates.venv_holder_allowlist — attest these holders are safe.
+    if not _run_pre_update_hook(args):
+        _resume_windows_gateways_after_update(_windows_gateway_resume)
+        sys.exit(2)
+    _holder_allowlist: list[str] = []
+    try:
+        from hermes_cli.config import load_config
+        _raw_allowlist = (
+            (load_config() or {}).get("updates", {}).get("venv_holder_allowlist", [])
+            or []
+        )
+    except Exception as exc:
+        logger.debug("Could not read updates.venv_holder_allowlist: %s", exc)
+        _raw_allowlist = []
+    if isinstance(_raw_allowlist, list):
+        _holder_allowlist = [
+            str(s).lower() for s in _raw_allowlist if isinstance(s, (str, int))
+        ]
     if _is_windows() and not getattr(args, "force_venv", False):
-        _venv_holders = _detect_venv_python_processes()
+        _venv_holders = _detect_venv_python_processes(allowlist=_holder_allowlist)
         if _venv_holders:
             print(_format_venv_python_holders_message(_venv_holders))
             _resume_windows_gateways_after_update(_windows_gateway_resume)

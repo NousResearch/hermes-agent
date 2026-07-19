@@ -3241,6 +3241,30 @@ DEFAULT_CONFIG = {
         # upstream installer is not appropriate for the machine, for example
         # on non-admin accounts where `/Applications` is not writable.
         "refresh_cua_driver": True,
+        # Optional shell command (string) or argv (list) executed by
+        # ``hermes update`` BEFORE the venv-holder guard runs. Use it to
+        # release resources held by an external service that runs from
+        # this install's venv interpreter (e.g. an NSSM- or systemd-
+        # supervised Python daemon) so the guard can re-check after the
+        # release. Exit code 0 -> update continues; non-zero -> the
+        # update is aborted with a clear message, NOT a raw traceback.
+        # Strings are passed to the user's shell (cmd.exe on Windows,
+        # /bin/sh elsewhere). Lists are exec'd directly without a shell.
+        # See #66933 (supervised venv holders deadlock the updater).
+        "pre_update_command": None,
+        # Seconds to wait for ``pre_update_command`` to complete before
+        # treating it as a failure. Floored to 0; set to 0 to disable
+        # the timeout (NOT recommended for unattended deploys).
+        "pre_update_command_timeout": 60,
+        # Names or cmdline substrings (case-insensitive) the deployment
+        # owner attests are SAFE to keep running while ``hermes update``
+        # mutates the venv. Each entry is matched as a substring against
+        # both the detected holder's process name AND its full command
+        # line; any hit drops the holder from the refusal list. Plain
+        # strings only — no glob, no regex (operators attest to exact
+        # names they trust). Default empty: the guard's strict refuse
+        # behavior is preserved.
+        "venv_holder_allowlist": [],
     },
 
     # Language Server Protocol — semantic diagnostics from real

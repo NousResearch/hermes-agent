@@ -1317,6 +1317,9 @@ def _run_official_feishu_ws_client(ws_client: Any, adapter: Any) -> None:
             logger.debug("[Feishu] Failed to apply websocket runtime overrides", exc_info=True)
 
     def _connect_with_overrides(*args: Any, **kwargs: Any) -> Any:
+        kwargs["proxy"] = None  # websockets>=15 discovers system proxy from env; Windows
+        # SOCKS entries (socks://) cause InvalidProxy.  Force it off here so the
+        # fix works regardless of the lark-oapi version.  (#67244)
         if adapter._ws_ping_interval is not None and "ping_interval" not in kwargs:
             kwargs["ping_interval"] = adapter._ws_ping_interval
         if adapter._ws_ping_timeout is not None and "ping_timeout" not in kwargs:

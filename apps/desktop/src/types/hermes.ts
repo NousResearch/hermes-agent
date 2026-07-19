@@ -386,11 +386,23 @@ export interface SessionMessagesResponse {
 }
 
 export interface SessionResumeResponse {
+  inflight?: null | {
+    assistant?: string
+    streaming?: boolean
+    user?: string
+  }
+  queued?: null | {
+    user?: string
+  }
   info?: SessionRuntimeInfo
   message_count: number
   messages: SessionMessage[]
   resumed: string
+  running?: boolean
   session_id: string
+  session_key?: string
+  started_at?: number
+  status?: string
 }
 
 export interface SessionRuntimeInfo {
@@ -857,6 +869,8 @@ export interface AuxiliaryModelsResponse {
 export interface MoaModelSlot {
   provider: string
   model: string
+  /** Optional per-slot reasoning effort — round-tripped, not edited here. */
+  reasoning_effort?: string
 }
 
 export interface MoaConfigResponse {
@@ -871,6 +885,10 @@ export interface MoaConfigResponse {
       max_tokens: number
       reference_models: MoaModelSlot[]
       reference_temperature: number
+      /** Optional advisor output cap — round-tripped, not edited here. */
+      reference_max_tokens?: number | null
+      /** Fan-out cadence (per_iteration | user_turn) — round-tripped. */
+      fanout?: string
     }
   >
   aggregator: MoaModelSlot

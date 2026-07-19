@@ -245,6 +245,33 @@ class TestCleanShutdownMarker:
         assert agent._end_session_on_close is False
         agent.close.assert_called_once()
 
+    def test_session_expiry_cleanup_preserves_lazy_reset_boundary(self, tmp_path, monkeypatch):
+        """Session expiry cleanup must not turn an expired chat into an agent_close row.
+
+        The expiry watcher only tears down cached resources. The next inbound
+        message owns the reset boundary, creating a fresh session with the
+        normal auto-reset notice. If cleanup lets ``agent.close()`` end the
+        SQLite row as ``agent_close``, stale-route recovery treats it as
+        recoverable and resurrects the expired session instead.
+        """
+        monkeypatch.setattr("gateway.run._hermes_home", tmp_path)
+        from gateway.run import GatewayRunner
+
+        runner = object.__new__(GatewayRunner)
+        agent = MagicMock()
+        agent._end_session_on_close = True
+
+        async def _run():
+            await GatewayRunner._cleanup_agent_resources_off_loop(
+                runner, agent, context="session expiry"
+            )
+
+        import asyncio
+        asyncio.get_event_loop().run_until_complete(_run())
+
+        assert agent._end_session_on_close is False
+        agent.close.assert_called_once()
+
 
 # ---------------------------------------------------------------------------
 # resume_pending freshness gate (#46934)
@@ -285,7 +312,12 @@ class TestResumePendingFreshnessGate:
 
     def test_stale_resume_pending_falls_through_to_reset(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_AUTO_CONTINUE_FRESHNESS", "3600")
-        store = _make_store(tmp_path)
+        # The freshness gate only applies when the user has opted into
+        # automatic resets — session_reset.mode: none disables it (#61052).
+        from gateway.config import SessionResetPolicy
+        store = _make_store(
+            tmp_path, policy=SessionResetPolicy(mode="idle", idle_minutes=999999)
+        )
         source = _make_source()
         entry = self._mark_resume_pending(store, source)
 
@@ -301,6 +333,25 @@ class TestResumePendingFreshnessGate:
         # Zombie detected → brand-new session, not the stale transcript.
         assert fresh.session_id != entry.session_id
         assert not fresh.resume_pending
+
+    def test_reset_mode_none_disables_freshness_gate(self, tmp_path, monkeypatch):
+        """session_reset.mode: none opts out of ALL automatic resets —
+        including the resume_pending freshness gate (#61052)."""
+        monkeypatch.setenv("HERMES_AUTO_CONTINUE_FRESHNESS", "3600")
+        from gateway.config import SessionResetPolicy
+        store = _make_store(tmp_path, policy=SessionResetPolicy(mode="none"))
+        source = _make_source()
+        entry = self._mark_resume_pending(store, source)
+
+        with store._lock:
+            entry.last_resume_marked_at = datetime.now() - timedelta(seconds=7200)
+            entry.updated_at = datetime.now()
+            store._save()
+
+        refreshed = store.get_or_create_session(source)
+        # Explicit opt-out honored: same session back, transcript preserved.
+        assert refreshed.session_id == entry.session_id
+        assert refreshed.resume_pending
 
     def test_freshness_gate_disabled_returns_stale_session(self, tmp_path, monkeypatch):
         # Opt-out: window <= 0 restores the pre-fix "always fresh" behaviour.

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import shutil
@@ -25,13 +26,18 @@ from hermes_cli.plugins_cmd import (
 )
 
 
-def _make_inspect_repo(repo: Path, *, subdir: str | None = None) -> tuple[str, Path]:
+def _make_inspect_repo(
+    repo: Path, *, subdir: str | None = None, manifest: str | None = None
+) -> tuple[str, Path]:
     root = repo / subdir if subdir else repo
     root.mkdir(parents=True)
     (root / "plugin.yaml").write_text(
-        "name: inspect-me\nversion: 1.2.3\ndescription: Safe metadata\n"
-        "hooks: [pre_tool_call]\nprovides_tools: [z_tool, a_tool]\n"
-        "requires_env: [API_KEY, {name: TOKEN}]\n"
+        manifest
+        or (
+            "name: inspect-me\nversion: 1.2.3\ndescription: Safe metadata\n"
+            "hooks: [pre_tool_call]\nprovides_tools: [z_tool, a_tool]\n"
+            "requires_env: [API_KEY, {name: TOKEN}]\n"
+        )
     )
     (root / "after-install.md").write_text("do not render me")
     (root / "dashboard").mkdir()
@@ -992,6 +998,40 @@ class TestInspectPlugin:
         assert not (hermes_home / "plugins").exists()
         assert not (hermes_home / ".hermes-plugin-lock.json").exists()
 
+    @pytest.mark.parametrize(
+        ("manifest", "field"),
+        [
+            ("name: 2026-01-01\n", "name"),
+            ("name: valid\nversion: 2026-01-01\n", "version"),
+            ("name: valid\ndescription: {nested: value}\n", "description"),
+            ("name: valid\ndescription: [one, two]\n", "description"),
+        ],
+    )
+    def test_rejects_non_string_metadata_from_yaml(self, tmp_path, manifest, field):
+        from hermes_cli import plugins_cmd as pc
+
+        repo = tmp_path / "repo"
+        _make_inspect_repo(repo, manifest=manifest)
+
+        with pytest.raises(PluginOperationError, match=rf"\b{field}\b.*string"):
+            pc.inspect_plugin_source(f"file://{repo}")
+
+    @pytest.mark.parametrize("name_line", ["", "name:\n", "name: ''\n"])
+    def test_missing_null_or_empty_name_uses_repository_fallback(self, tmp_path, name_line):
+        from hermes_cli import plugins_cmd as pc
+
+        repo = tmp_path / "fallback-name"
+        _make_inspect_repo(repo, manifest=f"{name_line}version:\ndescription:\n")
+
+        result = pc.inspect_plugin_source(f"file://{repo}")
+
+        assert result["plugin"] == {
+            "name": "fallback-name",
+            "version": None,
+            "description": None,
+        }
+        json.dumps(result)
+
     def test_exact_ref_checkout_is_detached_and_verified(self, tmp_path):
         from hermes_cli import plugins_cmd as pc
 
@@ -1086,8 +1126,32 @@ class TestInspectPlugin:
         build_plugins_parser(subs, cmd_plugins=pc.plugins_command)
         args = parser.parse_args(["plugins", "inspect", f"file://{repo}", "--json"])
         args.func(args)
-        payload = __import__("json").loads(capsys.readouterr().out)
+        captured = capsys.readouterr()
+        assert captured.err == ""
+        assert len(captured.out.splitlines()) == 1
+        payload = json.loads(captured.out)
         assert payload["resolved_commit"] == commit
+
+    def test_cmd_json_serialization_failure_is_one_machine_only_document(self, capsys):
+        from hermes_cli import plugins_cmd as pc
+
+        class SecretValue:
+            def __repr__(self):
+                return "DO_NOT_LEAK_THIS_SECRET"
+
+        with patch.object(pc, "inspect_plugin_source", return_value={"bad": SecretValue()}):
+            with pytest.raises(SystemExit) as exc_info:
+                pc.cmd_inspect("owner/repo", json_output=True)
+
+        assert exc_info.value.code == 1
+        captured = capsys.readouterr()
+        assert captured.err == ""
+        assert len(captured.out.splitlines()) == 1
+        assert json.loads(captured.out) == {
+            "error": "Inspection result could not be serialized as JSON."
+        }
+        assert "DO_NOT_LEAK_THIS_SECRET" not in captured.out
+        assert "Traceback" not in captured.out
 
     def test_human_output_disclaims_security_audit(self, tmp_path, capsys):
         from hermes_cli import plugins_cmd as pc

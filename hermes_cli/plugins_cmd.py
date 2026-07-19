@@ -530,15 +530,26 @@ def inspect_plugin_source(
             if subdir
             else _repo_name_from_url(source_url)
         )
+        name = manifest.get("name")
+        if name is None or name == "":
+            name = fallback_name
+        elif not isinstance(name, str):
+            raise PluginOperationError("Plugin manifest field 'name' must be a string.")
+        version = manifest.get("version")
+        if version is not None and not isinstance(version, str):
+            raise PluginOperationError("Plugin manifest field 'version' must be a string.")
+        description = manifest.get("description")
+        if description is not None and not isinstance(description, str):
+            raise PluginOperationError("Plugin manifest field 'description' must be a string.")
         return {
             "source_url": source_url,
             "subdir": subdir,
             "requested_ref": requested_ref,
             "resolved_commit": resolved_commit,
             "plugin": {
-                "name": manifest.get("name") or fallback_name,
-                "version": manifest.get("version"),
-                "description": manifest.get("description"),
+                "name": name,
+                "version": version,
+                "description": description,
             },
             "capabilities": capability,
         }
@@ -560,7 +571,17 @@ def cmd_inspect(
         raise SystemExit(1) from exc
 
     if json_output:
-        print(json.dumps(result, sort_keys=True))
+        try:
+            serialized = json.dumps(result, sort_keys=True)
+        except (TypeError, ValueError):
+            print(
+                json.dumps(
+                    {"error": "Inspection result could not be serialized as JSON."},
+                    sort_keys=True,
+                )
+            )
+            raise SystemExit(1) from None
+        print(serialized)
     else:
         from rich.console import Console
 

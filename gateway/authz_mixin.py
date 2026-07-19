@@ -346,6 +346,16 @@ class GatewayAuthorizationMixin:
                 Platform.TELEGRAM: "TELEGRAM_GROUP_ALLOWED_CHATS",
                 Platform.QQBOT: "QQ_GROUP_ALLOWED_USERS",
             }.get(source.platform, "")
+            if not chat_allowlist_env:
+                try:
+                    from gateway.platform_registry import platform_registry
+
+                    entry = platform_registry.get(
+                        getattr(source.platform, "value", str(source.platform))
+                    )
+                    chat_allowlist_env = getattr(entry, "group_allowed_chats_env", "")
+                except (ImportError, AttributeError):
+                    chat_allowlist_env = ""
             if chat_allowlist_env:
                 raw_chat_allowlist = os.getenv(chat_allowlist_env, "").strip()
                 if raw_chat_allowlist:

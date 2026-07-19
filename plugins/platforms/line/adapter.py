@@ -92,7 +92,9 @@ from gateway.platforms.base import (
     MessageEvent,
     MessageType,
     SendResult,
+    cache_audio_from_bytes,
     cache_image_from_bytes,
+    cache_video_from_bytes,
 )
 from gateway.config import Platform
 
@@ -1062,14 +1064,18 @@ class LineAdapter(BasePlatformAdapter):
         except Exception as exc:
             logger.warning("LINE: failed to fetch %s content for %s: %s", msg_type, message_id, exc)
             return None
-        ext = {
-            "image": ".jpg",
-            "audio": ".m4a",
-            "video": ".mp4",
-            "file": ".bin",
-        }.get(msg_type, ".bin")
+        ext = {"image": ".jpg", "audio": ".m4a", "video": ".mp4", "file": ".bin"}.get(msg_type, ".bin")
         try:
-            return cache_image_from_bytes(data, ext=ext)
+            # LINE audio is a voice note: preserve MessageType.VOICE so the
+            # existing gateway STT path recognizes it. Do not use AUDIO here.
+            if msg_type == "audio":
+                return cache_audio_from_bytes(data, ext=ext)
+            if msg_type == "image":
+                return cache_image_from_bytes(data, ext=ext)
+            if msg_type == "video":
+                return cache_video_from_bytes(data, ext=ext)
+            from gateway.platforms.base import cache_document_from_bytes
+            return cache_document_from_bytes(data, f"line_{message_id}{ext}")
         except Exception as exc:
             logger.warning("LINE: failed to cache %s payload: %s", msg_type, exc)
             return None
@@ -1635,6 +1641,7 @@ def register(ctx) -> None:
         cron_deliver_env_var="LINE_HOME_CHANNEL",
         standalone_sender_fn=_standalone_send,
         allowed_users_env="LINE_ALLOWED_USERS",
+        group_allowed_chats_env="LINE_ALLOWED_GROUPS",
         allow_all_env="LINE_ALLOW_ALL_USERS",
         # LINE per-bubble cap is 5000; smart-chunker uses 4500.
         max_message_length=LINE_SAFE_BUBBLE_CHARS,

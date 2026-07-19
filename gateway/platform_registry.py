@@ -86,6 +86,9 @@ class PlatformEntry:
     # ── Auth env var names (for _is_user_authorized integration) ──
     # E.g. "IRC_ALLOWED_USERS" — checked for comma-separated user IDs.
     allowed_users_env: str = ""
+    # Optional chat-scoped group allowlist env var. Generic authz consumes
+    # this instead of hardcoding plugin platform names.
+    group_allowed_chats_env: str = ""
     # E.g. "IRC_ALLOW_ALL_USERS" — if truthy, all users authorized.
     allow_all_env: str = ""
 

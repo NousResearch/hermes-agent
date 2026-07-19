@@ -4570,13 +4570,28 @@ def run_conversation(
             agent._incomplete_scratchpad_retries = 0
 
             if agent.api_mode == "codex_responses" and finish_reason == "incomplete":
-                agent._codex_incomplete_retries += 1
-
                 interim_msg = agent._build_assistant_message(assistant_message, finish_reason)
                 interim_has_content = bool((interim_msg.get("content") or "").strip())
                 interim_has_reasoning = bool(interim_msg.get("reasoning", "").strip()) if isinstance(interim_msg.get("reasoning"), str) else False
                 interim_has_codex_reasoning = bool(interim_msg.get("codex_reasoning_items"))
                 interim_has_codex_message_items = bool(interim_msg.get("codex_message_items"))
+                interim_reasoning_only = (
+                    interim_has_codex_reasoning
+                    and not interim_has_content
+                    and not interim_has_codex_message_items
+                )
+                if interim_reasoning_only:
+                    agent._codex_reasoning_only_streak += 1
+                else:
+                    agent._codex_reasoning_only_streak = 0
+                if interim_has_content or interim_has_codex_message_items:
+                    # Visible/replayable message progress starts a fresh local
+                    # continuation budget.  The turn-wide iteration budget
+                    # remains the hard bound, so repeated partial progress
+                    # cannot create an unbounded loop.
+                    agent._codex_incomplete_retries = 0
+                else:
+                    agent._codex_incomplete_retries += 1
 
                 if (
                     interim_has_content
@@ -4646,7 +4661,19 @@ def run_conversation(
                         or interim_has_codex_reasoning
                         or interim_has_codex_message_items
                     )
-                    if not interim_replayable:
+                    # Replaying encrypted reasoning is worthwhile once, but a
+                    # second consecutive reasoning-only completion means that
+                    # replay has stalled: the provider consumed another turn
+                    # without producing visible content or a tool call. Nudge
+                    # that replay explicitly before spending the final retry.
+                    should_nudge = (
+                        not interim_replayable
+                        or (
+                            agent._codex_reasoning_only_streak >= 2
+                            and interim_reasoning_only
+                        )
+                    )
+                    if should_nudge:
                         _last_msg = messages[-1] if messages else None
                         _already_nudged = (
                             isinstance(_last_msg, dict)
@@ -4668,6 +4695,7 @@ def run_conversation(
                             messages.append({
                                 "role": "user",
                                 "content": _CODEX_INCOMPLETE_NUDGE,
+                                "_codex_incomplete_nudge": True,
                             })
                     if not agent.quiet_mode:
                         agent._vprint(f"{agent.log_prefix}↻ Codex response incomplete; continuing turn ({agent._codex_incomplete_retries}/3)")
@@ -4684,7 +4712,38 @@ def run_conversation(
                     agent._session_messages = messages
                     continue
 
+                if (
+                    agent._codex_reasoning_only_streak >= 3
+                    and agent._try_activate_fallback(
+                        reason=FailoverReason.incomplete_response
+                    )
+                ):
+                    active_system_prompt = _sync_failover_system_message(
+                        agent, api_messages, active_system_prompt
+                    )
+                    logger.warning(
+                        "Codex continuation budget exhausted; activated fallback "
+                        "provider=%s model=%s session=%s",
+                        agent.provider,
+                        agent.model,
+                        agent.session_id,
+                    )
+                    agent._codex_incomplete_retries = 0
+                    agent._codex_reasoning_only_streak = 0
+                    if (
+                        (
+                            api_call_count >= agent.max_iterations
+                            or agent.iteration_budget.remaining <= 0
+                        )
+                        and not agent._codex_incomplete_fallback_grace_used
+                    ):
+                        agent._budget_grace_call = True
+                        agent._codex_incomplete_fallback_grace_used = True
+                    agent._session_messages = messages
+                    continue
+
                 agent._codex_incomplete_retries = 0
+                agent._codex_reasoning_only_streak = 0
                 agent._persist_session(messages, conversation_history)
                 return {
                     "final_response": "Codex response remained incomplete after 3 continuation attempts",
@@ -4696,6 +4755,7 @@ def run_conversation(
                 }
             elif hasattr(agent, "_codex_incomplete_retries"):
                 agent._codex_incomplete_retries = 0
+                agent._codex_reasoning_only_streak = 0
             
             # Check for tool calls
             if assistant_message.tool_calls:

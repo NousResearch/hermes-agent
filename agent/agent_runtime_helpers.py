@@ -1133,7 +1133,7 @@ def drop_thinking_only_and_merge_users(
     *,
     drop_codex_reasoning_items: bool = True,
 ) -> List[Dict[str, Any]]:
-    """Drop thinking-only assistant turns; merge any adjacent user messages left behind.
+    """Drop thinking-only turns and Codex-only nudges; merge adjacent users.
 
     Runs on the per-call ``api_messages`` copy only. The stored
     conversation history (``agent.messages``) is never mutated, so the
@@ -1152,12 +1152,22 @@ def drop_thinking_only_and_merge_users(
     if not messages:
         return messages
 
-    # Pass 1: drop thinking-only assistant turns.
+    # Pass 1: drop thinking-only assistant turns.  When leaving Codex
+    # Responses, also drop the synthetic continuation nudge: after opaque
+    # reasoning is removed it can otherwise land directly after a tool result
+    # (tool → user), which strict Chat Completions providers reject.  The
+    # fallback already has the original tool result and can answer from it.
     kept = [
         m for m in messages
-        if not _ra().AIAgent._is_thinking_only_assistant(
-            m,
-            drop_codex_reasoning_items=drop_codex_reasoning_items,
+        if not (
+            _ra().AIAgent._is_thinking_only_assistant(
+                m,
+                drop_codex_reasoning_items=drop_codex_reasoning_items,
+            )
+            or (
+                drop_codex_reasoning_items
+                and m.get("_codex_incomplete_nudge") is True
+            )
         )
     ]
     dropped = len(messages) - len(kept)

@@ -3505,6 +3505,315 @@ def test_run_conversation_codex_nudges_after_unreplayable_reasoning_only_interim
     )
 
 
+def test_run_conversation_codex_nudges_after_repeated_replayable_reasoning_only_interims(monkeypatch):
+    """A second encrypted reasoning-only response needs an explicit nudge.
+
+    Replaying encrypted reasoning is useful once, but if the provider returns
+    another reasoning-only completion the bare replay has stalled.  The next
+    request must ask for a final answer instead of repeating provider state
+    until the continuation budget is exhausted.
+    """
+    agent = _build_agent(monkeypatch)
+    requests = []
+    responses = [
+        _codex_reasoning_only_response(
+            encrypted_content="enc_first",
+            summary_text="Inspecting the tool output...",
+        ),
+        _codex_reasoning_only_response(
+            encrypted_content="enc_second",
+            summary_text="Still inspecting the tool output...",
+        ),
+        _codex_message_response("Recovered final answer."),
+    ]
+
+    def _fake_api_call(api_kwargs):
+        requests.append(api_kwargs)
+        return responses.pop(0)
+
+    monkeypatch.setattr(agent, "_interruptible_api_call", _fake_api_call)
+
+    result = agent.run_conversation("summarize the tool output")
+
+    assert result["completed"] is True
+    assert result["final_response"] == "Recovered final answer."
+    assert len(requests) == 3
+
+    first_retry_nudges = [
+        item for item in requests[1]["input"]
+        if isinstance(item, dict)
+        and item.get("role") == "user"
+        and "only internal reasoning" in str(item.get("content"))
+    ]
+    second_retry_nudges = [
+        item for item in requests[2]["input"]
+        if isinstance(item, dict)
+        and item.get("role") == "user"
+        and "only internal reasoning" in str(item.get("content"))
+    ]
+    assert first_retry_nudges == []
+    assert len(second_retry_nudges) == 1
+
+
+def test_run_conversation_codex_fails_over_after_reasoning_only_budget(monkeypatch):
+    """Three reasoning-only responses should try the configured fallback."""
+    from agent.error_classifier import FailoverReason
+
+    agent = _build_agent(monkeypatch)
+    responses = [
+        _codex_reasoning_only_response(encrypted_content="enc_first"),
+        _codex_reasoning_only_response(encrypted_content="enc_second"),
+        _codex_reasoning_only_response(encrypted_content="enc_third"),
+        _codex_message_response("Fallback recovered the turn."),
+    ]
+    monkeypatch.setattr(
+        agent,
+        "_interruptible_api_call",
+        lambda api_kwargs: responses.pop(0),
+    )
+
+    failover_reasons = []
+
+    def _fake_activate_fallback(reason=None):
+        failover_reasons.append(reason)
+        return True
+
+    monkeypatch.setattr(agent, "_try_activate_fallback", _fake_activate_fallback)
+
+    result = agent.run_conversation("finish the answer")
+
+    assert result["completed"] is True
+    assert result["final_response"] == "Fallback recovered the turn."
+    assert failover_reasons == [FailoverReason.incomplete_response]
+
+
+def test_run_conversation_codex_reasoning_stall_fallback_grace_is_single_use(monkeypatch):
+    """A stalled fallback cannot renew the iteration grace indefinitely."""
+    from agent.error_classifier import FailoverReason
+
+    agent = _build_agent(monkeypatch)
+    setattr(agent, "max_iterations", 3)
+    requests = []
+    responses = [
+        _codex_reasoning_only_response(encrypted_content="enc_first"),
+        _codex_reasoning_only_response(encrypted_content="enc_second"),
+        _codex_reasoning_only_response(encrypted_content="enc_third"),
+        _codex_reasoning_only_response(encrypted_content="enc_fallback"),
+    ]
+
+    def _fake_api_call(api_kwargs):
+        requests.append(api_kwargs)
+        return responses.pop(0)
+
+    monkeypatch.setattr(agent, "_interruptible_api_call", _fake_api_call)
+    failover_reasons = []
+
+    def _fake_activate_fallback(reason=None):
+        failover_reasons.append(reason)
+        return True
+
+    monkeypatch.setattr(agent, "_try_activate_fallback", _fake_activate_fallback)
+
+    result = agent.run_conversation("finish the answer")
+
+    assert result["completed"] is False
+    assert len(requests) == 4
+    assert failover_reasons == [FailoverReason.incomplete_response]
+    assert getattr(agent, "_budget_grace_call") is False
+    assert getattr(agent, "_codex_incomplete_fallback_grace_used") is True
+
+
+def test_run_conversation_codex_visible_partial_then_reasoning_stall_still_fails_over(monkeypatch):
+    """Visible progress resets the stall budget without disabling recovery."""
+    from agent.error_classifier import FailoverReason
+
+    agent = _build_agent(monkeypatch)
+    setattr(agent, "max_iterations", 4)
+    requests = []
+    responses = [
+        _codex_incomplete_message_response("Visible partial answer."),
+        _codex_reasoning_only_response(encrypted_content="enc_first"),
+        _codex_reasoning_only_response(encrypted_content="enc_second"),
+        _codex_reasoning_only_response(encrypted_content="enc_third"),
+        _codex_message_response("Fallback recovered after visible progress."),
+    ]
+
+    def _fake_api_call(api_kwargs):
+        requests.append(api_kwargs)
+        return responses.pop(0)
+
+    monkeypatch.setattr(agent, "_interruptible_api_call", _fake_api_call)
+    failover_reasons = []
+
+    def _fake_activate_fallback(reason=None):
+        failover_reasons.append(reason)
+        return True
+
+    monkeypatch.setattr(agent, "_try_activate_fallback", _fake_activate_fallback)
+
+    result = agent.run_conversation("finish the answer")
+
+    assert result["completed"] is True
+    assert result["final_response"] == "Fallback recovered after visible progress."
+    assert len(requests) == 5
+    assert failover_reasons == [FailoverReason.incomplete_response]
+    assert not any(
+        "only internal reasoning" in str(item.get("content"))
+        for request in requests[:3]
+        for item in request["input"]
+        if isinstance(item, dict)
+    )
+    assert any(
+        "only internal reasoning" in str(item.get("content"))
+        for item in requests[3]["input"]
+        if isinstance(item, dict)
+    )
+
+
+def test_run_conversation_codex_reasoning_only_failover_sanitizes_replay(monkeypatch):
+    """Post-tool reasoning stall gets one safe, sanitized fallback call."""
+    import json
+
+    agent = _build_agent(monkeypatch)
+    setattr(agent, "max_iterations", 4)
+    fallback = {
+        "provider": "zai",
+        "model": "glm-5.2",
+        "base_url": "https://api.z.ai/api/paas/v4",
+    }
+    setattr(agent, "_fallback_chain", [fallback])
+    setattr(agent, "_fallback_model", fallback)
+    setattr(agent, "_fallback_index", 0)
+    setattr(agent, "_fallback_activated", False)
+    setattr(agent, "_credential_pool", None)
+
+    requests = []
+    responses = [
+        _codex_tool_call_response(),
+        _codex_reasoning_only_response(encrypted_content="enc_first"),
+        _codex_reasoning_only_response(encrypted_content="enc_second"),
+        _codex_reasoning_only_response(encrypted_content="enc_third"),
+        SimpleNamespace(
+            choices=[SimpleNamespace(
+                message=SimpleNamespace(
+                    content="GLM recovered the turn.",
+                    tool_calls=None,
+                ),
+                finish_reason="stop",
+            )],
+            model="glm-5.2",
+            usage=None,
+        ),
+    ]
+
+    def _fake_api_call(api_kwargs):
+        requests.append((getattr(agent, "provider", ""), api_kwargs))
+        return responses.pop(0)
+
+    def _fake_streaming_api_call(api_kwargs, *, on_first_delta=None):
+        requests.append((getattr(agent, "provider", ""), api_kwargs))
+        return responses.pop(0)
+
+    def _fake_execute_tool_calls(
+        assistant_message,
+        messages,
+        effective_task_id,
+        api_call_count=0,
+    ):
+        for call in assistant_message.tool_calls:
+            messages.append({
+                "role": "tool",
+                "tool_call_id": call.id,
+                "content": "tool evidence for fallback",
+            })
+
+    fallback_client = SimpleNamespace(
+        api_key=None,
+        base_url="https://api.z.ai/api/paas/v4",
+        _custom_headers=None,
+        default_headers=None,
+    )
+
+    monkeypatch.setattr(agent, "_interruptible_api_call", _fake_api_call)
+    monkeypatch.setattr(
+        agent,
+        "_interruptible_streaming_api_call",
+        _fake_streaming_api_call,
+    )
+    monkeypatch.setattr(agent, "_execute_tool_calls", _fake_execute_tool_calls)
+    monkeypatch.setattr(
+        "agent.auxiliary_client.resolve_provider_client",
+        lambda *args, **kwargs: (fallback_client, "glm-5.2"),
+    )
+    monkeypatch.setattr(
+        "hermes_cli.model_normalize.normalize_model_for_provider",
+        lambda model, provider: model,
+    )
+    monkeypatch.setattr(
+        "agent.credential_pool.load_pool",
+        lambda provider: None,
+    )
+    monkeypatch.setattr(
+        "agent.model_metadata.get_model_context_length",
+        lambda *args, **kwargs: 200_000,
+    )
+    monkeypatch.setattr(
+        "agent.chat_completion_helpers.get_provider_request_timeout",
+        lambda provider, model: None,
+    )
+
+    result = agent.run_conversation("finish the answer")
+
+    assert result["completed"] is True
+    assert result["final_response"] == "GLM recovered the turn."
+    assert [provider for provider, _ in requests] == [
+        "openai-codex",
+        "openai-codex",
+        "openai-codex",
+        "openai-codex",
+        "zai",
+    ]
+
+    fallback_messages = requests[-1][1]["messages"]
+    assert "Provider: zai" in fallback_messages[0]["content"]
+    assert "Model: glm-5.2" in fallback_messages[0]["content"]
+    assert "Provider: openai-codex" not in fallback_messages[0]["content"]
+
+    roles = [message.get("role") for message in fallback_messages]
+    assert all(
+        not (previous == "tool" and current == "user")
+        for previous, current in zip(roles, roles[1:])
+    )
+    assert any(
+        message.get("role") == "tool"
+        and message.get("content") == "tool evidence for fallback"
+        for message in fallback_messages
+    )
+
+    def _all_keys(value):
+        if isinstance(value, dict):
+            for key, child in value.items():
+                yield key
+                yield from _all_keys(child)
+        elif isinstance(value, list):
+            for child in value:
+                yield from _all_keys(child)
+
+    forbidden = {
+        "codex_reasoning_items",
+        "codex_message_items",
+        "encrypted_content",
+        "response_item_id",
+        "phase",
+        "reasoning_details",
+        "reasoning_content",
+    }
+    assert forbidden.isdisjoint(set(_all_keys(fallback_messages)))
+    assert "enc_first" not in json.dumps(fallback_messages)
+    assert "enc_second" not in json.dumps(fallback_messages)
+    assert "enc_third" not in json.dumps(fallback_messages)
+
+
 def test_run_conversation_codex_no_nudge_for_replayable_interim(monkeypatch):
     """An interim that carries visible content replays fine — the nudge
     must not fire and pollute the conversation."""

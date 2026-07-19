@@ -18,6 +18,7 @@ never the child's intermediate tool calls or reasoning.
 """
 
 import enum
+import contextvars
 import json
 import logging
 
@@ -2008,7 +2009,11 @@ def _run_single_child(
                 stream_callback=_relay_child_text,
             )
 
-        _child_future = _timeout_executor.submit(_run_with_thread_capture)
+        _child_context = contextvars.copy_context()
+        _child_future = _timeout_executor.submit(
+            _child_context.run,
+            _run_with_thread_capture,
+        )
         try:
             result = _child_future.result(timeout=child_timeout)
         except Exception as _timeout_exc:
@@ -2399,6 +2404,18 @@ def _run_single_child(
         except Exception:
             logger.debug("Failed to close child agent after delegation")
 
+        # The child owns its Relay scope lifetime. Close it here, on the worker
+        # that ran the child, before the parent emits its terminal report.
+        try:
+            from hermes_cli.observability import relay_runtime
+
+            runtime = relay_runtime.get_runtime(create=False)
+            child_session_id = str(getattr(child, "session_id", "") or "")
+            if runtime is not None and child_session_id:
+                runtime.close_session({"session_id": child_session_id})
+        except Exception:
+            logger.debug("Failed to close child Relay session after delegation")
+
 
 def _recover_tasks_from_json_string(
     tasks: Any,
@@ -2626,7 +2643,9 @@ def delegate_task(
             with DaemonThreadPoolExecutor(max_workers=max_children) as executor:
                 futures = {}
                 for i, t, child in children:
+                    child_context = contextvars.copy_context()
                     future = executor.submit(
+                        child_context.run,
                         _run_single_child,
                         task_index=i,
                         goal=t["goal"],

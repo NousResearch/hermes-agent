@@ -202,24 +202,62 @@ def _validate_store(database_path: Path) -> list[dict[str, Any]]:
         }
         for name, dimensions, value, packaged_value in rows
     ]
-    expected = [
-        {
-            "name": "hermes.model_call.count",
-            "dimensions": {
-                "call_role": "primary",
-                "locality": "local",
-                "model_family": "gpt",
-                "outcome": "success",
-                "provider_family": "custom",
-            },
-            "value": 1,
-            "packaged_value": 1,
-        }
-    ]
-    if counters != expected:
+    by_name = {counter["name"]: counter for counter in counters}
+    if set(by_name) != {
+        "hermes.model_call.count",
+        "hermes.task_run.finished",
+        "hermes.task_run.started",
+    }:
         raise AssertionError(
             f"Unexpected SQLite counters:\n{json.dumps(counters, indent=2)}"
         )
+    expected_model = {
+        "name": "hermes.model_call.count",
+        "dimensions": {
+            "call_role": "primary",
+            "locality": "local",
+            "model_family": "gpt",
+            "outcome": "success",
+            "provider_family": "custom",
+        },
+        "value": 1,
+        "packaged_value": 1,
+    }
+    if by_name["hermes.model_call.count"] != expected_model:
+        raise AssertionError(
+            f"Unexpected model counter: {by_name['hermes.model_call.count']}"
+        )
+    expected_start = {
+        "name": "hermes.task_run.started",
+        "dimensions": {
+            "entrypoint": "interactive",
+            "execution_surface": "cli",
+        },
+        "value": 1,
+        "packaged_value": 1,
+    }
+    if by_name["hermes.task_run.started"] != expected_start:
+        raise AssertionError(
+            f"Unexpected task start: {by_name['hermes.task_run.started']}"
+        )
+    terminal = by_name["hermes.task_run.finished"]
+    expected_terminal_dimensions = {
+        "duration_bucket": terminal["dimensions"].get("duration_bucket"),
+        "end_reason": "completed",
+        "entrypoint": "interactive",
+        "execution_surface": "cli",
+        "model_call_count_bucket": "1",
+        "outcome": "success",
+        "retry_count_bucket": "0",
+        "termination": "none",
+        "tool_call_count_bucket": "0",
+    }
+    if (
+        terminal["dimensions"] != expected_terminal_dimensions
+        or terminal["value"] != 1
+        or terminal["packaged_value"] != 1
+    ):
+        raise AssertionError(f"Unexpected task terminal counter: {terminal}")
     return counters
 
 
@@ -244,22 +282,38 @@ def _validate_package(outbox: Path, schema_path: Path) -> tuple[Path, dict[str, 
             raise AssertionError(
                 f"Exported package leaked prohibited value: {prohibited!r}"
             )
-    expected_metric = {
-        "name": "hermes.model_call.count",
-        "type": "counter",
-        "dimensions": {
-            "call_role": "primary",
-            "locality": "local",
-            "model_family": "gpt",
-            "outcome": "success",
-            "provider_family": "custom",
-        },
-        "value": 1,
-    }
-    if package.get("metrics") != [expected_metric]:
+    metrics = {metric["name"]: metric for metric in package.get("metrics", [])}
+    if set(metrics) != {
+        "hermes.model_call.count",
+        "hermes.task_run.finished",
+        "hermes.task_run.started",
+    }:
         raise AssertionError(
             f"Unexpected package metrics:\n{json.dumps(package.get('metrics'), indent=2)}"
         )
+    if metrics["hermes.model_call.count"]["dimensions"] != {
+        "call_role": "primary",
+        "locality": "local",
+        "model_family": "gpt",
+        "outcome": "success",
+        "provider_family": "custom",
+    }:
+        raise AssertionError(
+            f"Unexpected model metric: {metrics['hermes.model_call.count']}"
+        )
+    terminal = metrics["hermes.task_run.finished"]
+    if terminal["dimensions"] != {
+        "duration_bucket": terminal["dimensions"].get("duration_bucket"),
+        "end_reason": "completed",
+        "entrypoint": "interactive",
+        "execution_surface": "cli",
+        "model_call_count_bucket": "1",
+        "outcome": "success",
+        "retry_count_bucket": "0",
+        "termination": "none",
+        "tool_call_count_bucket": "0",
+    }:
+        raise AssertionError(f"Unexpected task terminal metric: {terminal}")
     return package_path, package
 
 

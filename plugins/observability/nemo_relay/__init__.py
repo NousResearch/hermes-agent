@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 
 _INIT_FAILED = object()
 _LOCK = threading.RLock()
-_RUNTIME: "_Runtime | object | None" = None
+_RUNTIMES: dict[str, "_Runtime | object"] = {}
 _RELAY_LLM_SURFACE_BY_API_MODE = {
     "anthropic_messages": "anthropic.messages",
     "chat_completions": "openai.chat_completions",
@@ -81,7 +81,7 @@ class _Runtime:
         self.sessions: dict[str, _SessionState] = {}
         self.subagent_contexts: dict[str, _SubagentContext] = {}
         self.atof_exporter: Any = None
-        self._atof_subscriber_name = "hermes.nemo_relay.atof"
+        self._atof_subscriber_name = f"hermes.nemo_relay.atof.{self.host.runtime_id}"
         self._plugin_activation: Any = None
         self._shutdown_registered = False
         self._plugin_config_initialized = self._configure_plugins_toml()
@@ -257,7 +257,9 @@ class _Runtime:
                 model_name=str(kwargs.get("model") or self.settings.atif_model_name),
                 extra={"source": "hermes-agent", "plugin": "observability/nemo_relay"},
             )
-            state.atif_subscriber_name = f"hermes.nemo_relay.atif.{session_id}"
+            state.atif_subscriber_name = (
+                f"hermes.nemo_relay.atif.{self.host.runtime_id}.{session_id}"
+            )
             state.atif_exporter.register(state.atif_subscriber_name)
 
         rich_metadata = _metadata(kwargs)
@@ -289,6 +291,22 @@ class _Runtime:
         if state.relay_session is None:
             raise RuntimeError("Hermes core Relay session is unavailable")
         return self.host.run_in_session(
+            state.relay_session,
+            callback,
+            *args,
+            **kwargs,
+        )
+
+    async def run_in_session_async(
+        self,
+        state: _SessionState,
+        callback: Callable[..., Any],
+        *args: Any,
+        **kwargs: Any,
+    ) -> Any:
+        if state.relay_session is None:
+            raise RuntimeError("Hermes core Relay session is unavailable")
+        return await self.host.run_in_session_async(
             state.relay_session,
             callback,
             *args,
@@ -406,6 +424,7 @@ class _Runtime:
         self.host.unregister_subagent(kwargs)
         child_session_id = _child_session_id(kwargs)
         if child_session_id:
+            self.close_session({"session_id": child_session_id})
             self.subagent_contexts.pop(child_session_id, None)
         self.mark("hermes.subagent.stop", kwargs)
 
@@ -482,7 +501,7 @@ class _Runtime:
 
         def _make_managed(impl: Callable[[Any], Any]) -> Any:
             async def _managed_execute() -> Any:
-                result = self.run_in_session(
+                return await self.run_in_session_async(
                     state,
                     self.nemo_relay.llm.execute,
                     _relay_llm_surface(kwargs),
@@ -500,9 +519,6 @@ class _Runtime:
                     metadata=_metadata(kwargs),
                     model_name=str(kwargs.get("model") or ""),
                 )
-                if inspect.isawaitable(result):
-                    return await result
-                return result
 
             return _managed_execute()
 
@@ -519,11 +535,16 @@ class _Runtime:
             return args
 
         def _normalize(next_args: Any) -> Any:
-            return next_args if isinstance(next_args, dict) else args
+            normalized = next_args if isinstance(next_args, dict) else args
+            if not _json_semantically_equal(normalized, args):
+                raise RuntimeError(
+                    "NeMo Relay changed tool arguments after Hermes authorization"
+                )
+            return args
 
         def _make_managed(impl: Callable[[Any], Any]) -> Any:
             async def _managed_execute() -> Any:
-                result = self.run_in_session(
+                return await self.run_in_session_async(
                     state,
                     self.nemo_relay.tools.execute,
                     tool_name,
@@ -540,9 +561,6 @@ class _Runtime:
                     ),
                     metadata=_metadata(kwargs),
                 )
-                if inspect.isawaitable(result):
-                    return await result
-                return result
 
             return _managed_execute()
 
@@ -784,26 +802,28 @@ def on_tool_execution_middleware(**kwargs: Any) -> Any:
 
 
 def _get_runtime() -> Optional[_Runtime]:
-    global _RUNTIME
+    profile_key = relay_runtime.current_profile_key()
     with _LOCK:
-        if _RUNTIME is _INIT_FAILED:
+        runtime = _RUNTIMES.get(profile_key)
+        if runtime is _INIT_FAILED:
             return None
-        if isinstance(_RUNTIME, _Runtime):
-            return _RUNTIME
+        if isinstance(runtime, _Runtime):
+            return runtime
         try:
             host = relay_runtime.get_runtime()
             if host is None:
                 raise RuntimeError("Hermes core Relay runtime is unavailable")
-            _RUNTIME = _Runtime(
+            runtime = _Runtime(
                 nemo_relay=host.relay,
                 settings=_load_settings(),
                 host=host,
             )
         except Exception as exc:
             logger.debug("NeMo Relay plugin disabled: init failed: %s", exc, exc_info=True)
-            _RUNTIME = _INIT_FAILED
+            _RUNTIMES[profile_key] = _INIT_FAILED
             return None
-        return _RUNTIME
+        _RUNTIMES[profile_key] = runtime
+        return runtime
 
 
 def _load_settings() -> _Settings:
@@ -1278,8 +1298,9 @@ def _resolve_awaitable(value: Any) -> Any:
 
 
 def reset_for_tests() -> None:
-    global _RUNTIME
     with _LOCK:
-        if isinstance(_RUNTIME, _Runtime):
-            _RUNTIME.shutdown()
-        _RUNTIME = None
+        runtimes = list(_RUNTIMES.values())
+        _RUNTIMES.clear()
+    for runtime in runtimes:
+        if isinstance(runtime, _Runtime):
+            runtime.shutdown()

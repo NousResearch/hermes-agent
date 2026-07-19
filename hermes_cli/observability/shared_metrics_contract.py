@@ -6,9 +6,12 @@ import re
 from functools import lru_cache
 from typing import Any
 
+from .relay_runtime import RUNTIME_INSTANCE_KEY
+
 SCHEMA_KEY = "hermes.metrics.schema_version"
 SCHEMA_VERSION = "hermes.metrics.event.v1"
 MODEL_CALL_SCOPE = "hermes.model_call"
+TASK_SCOPE = "hermes.task_run"
 SUBSCRIBER_NAME = "hermes.nemo_relay.shared_metrics"
 PRIMARY_MODEL_CALL_ROLE = "primary"
 
@@ -33,6 +36,59 @@ PROVIDER_FAMILIES: frozenset[str] = frozenset({
 })
 MODEL_LOCALITIES: frozenset[str] = frozenset({"local", "remote", "unknown"})
 MODEL_OUTCOMES: frozenset[str] = frozenset({"cancelled", "failed", "success"})
+TASK_OUTCOMES: frozenset[str] = frozenset({
+    "cancelled",
+    "failed",
+    "success",
+    "timed_out",
+    "unknown",
+})
+TASK_END_REASONS: frozenset[str] = frozenset({
+    "approval_denied",
+    "completed",
+    "failed",
+    "guardrail_blocked",
+    "iteration_limit",
+    "system_aborted",
+    "timed_out",
+    "unknown",
+    "user_cancelled",
+})
+TASK_TERMINATIONS: frozenset[str] = frozenset({
+    "none",
+    "system_aborted",
+    "timed_out",
+    "unknown",
+    "user_cancelled",
+})
+TASK_ENTRYPOINTS: frozenset[str] = frozenset({
+    "api",
+    "background",
+    "batch",
+    "delegated",
+    "gateway_message",
+    "interactive",
+    "other",
+    "python",
+    "scheduled_task",
+    "unknown",
+})
+DURATION_BUCKETS: frozenset[str] = frozenset({
+    "1s_to_5s",
+    "2m_to_10m",
+    "30s_to_2m",
+    "5s_to_30s",
+    "gte_10m",
+    "lt_1s",
+})
+COUNT_BUCKETS: frozenset[str] = frozenset({
+    "0",
+    "1",
+    "2",
+    "3_to_5",
+    "6_to_10",
+    "gte_11",
+})
 
 # Shared metrics use an explicit family allowlist rather than raw model IDs or
 # dynamically sourced catalog values. The latter would make the exported schema
@@ -94,7 +150,7 @@ def model_call_dimensions(event: Any) -> dict[str, str] | None:
     metadata = getattr(event, "metadata", None)
     if not isinstance(metadata, dict) or metadata.get(SCHEMA_KEY) != SCHEMA_VERSION:
         return None
-    relay_metadata = set(metadata) - {SCHEMA_KEY}
+    relay_metadata = set(metadata) - {SCHEMA_KEY, RUNTIME_INSTANCE_KEY}
     if relay_metadata - {"otel.status_code"} or metadata.get(
         "otel.status_code", "OK"
     ) not in {"OK", "ERROR"}:
@@ -141,6 +197,75 @@ def model_call_dimensions(event: Any) -> dict[str, str] | None:
     }
 
 
+def task_counter(event: Any) -> tuple[str, dict[str, str]] | None:
+    """Return one validated task counter from a task scope event."""
+    metadata = getattr(event, "metadata", None)
+    if not isinstance(metadata, dict) or metadata.get(SCHEMA_KEY) != SCHEMA_VERSION:
+        return None
+    relay_metadata = set(metadata) - {SCHEMA_KEY, RUNTIME_INSTANCE_KEY}
+    if relay_metadata - {"otel.status_code"} or metadata.get(
+        "otel.status_code", "OK"
+    ) not in {"OK", "ERROR"}:
+        return None
+    if (
+        str(getattr(event, "kind", "") or "") != "scope"
+        or str(getattr(event, "category", "") or "") != "function"
+        or str(getattr(event, "name", "") or "") != TASK_SCOPE
+    ):
+        return None
+    if getattr(event, "category_profile", None) is not None:
+        return None
+
+    scope_category = str(getattr(event, "scope_category", "") or "")
+    data = getattr(event, "data", None)
+    if scope_category == "start":
+        expected_fields = {"entrypoint", "execution_surface"}
+        if not isinstance(data, dict) or set(data) != expected_fields:
+            return None
+        if (
+            data.get("entrypoint") not in TASK_ENTRYPOINTS
+            or data.get("execution_surface") not in EXECUTION_SURFACES
+        ):
+            return None
+        return "hermes.task_run.started", {
+            "entrypoint": data["entrypoint"],
+            "execution_surface": data["execution_surface"],
+        }
+
+    expected_fields = {
+        "duration_bucket",
+        "end_reason",
+        "entrypoint",
+        "execution_surface",
+        "model_call_count_bucket",
+        "outcome",
+        "retry_count_bucket",
+        "termination",
+        "tool_call_count_bucket",
+    }
+    if (
+        scope_category != "end"
+        or not isinstance(data, dict)
+        or set(data) != expected_fields
+    ):
+        return None
+    if (
+        data.get("duration_bucket") not in DURATION_BUCKETS
+        or data.get("end_reason") not in TASK_END_REASONS
+        or data.get("entrypoint") not in TASK_ENTRYPOINTS
+        or data.get("execution_surface") not in EXECUTION_SURFACES
+        or data.get("model_call_count_bucket") not in COUNT_BUCKETS
+        or data.get("outcome") not in TASK_OUTCOMES
+        or data.get("retry_count_bucket") not in COUNT_BUCKETS
+        or data.get("termination") not in TASK_TERMINATIONS
+        or data.get("tool_call_count_bucket") not in COUNT_BUCKETS
+    ):
+        return None
+    return "hermes.task_run.finished", {
+        field: data[field] for field in sorted(expected_fields)
+    }
+
+
 def execution_surface(kwargs: dict[str, Any]) -> str:
     """Normalize the safe session surface carried by the parent Relay scope."""
     value = (
@@ -164,6 +289,109 @@ def execution_surface(kwargs: dict[str, Any]) -> str:
     if value in {"discord", "email", "slack", "telegram", "teams", "whatsapp"}:
         return "gateway"
     return "unknown" if value == "unknown" else "other"
+
+
+def task_start_fields(kwargs: dict[str, Any]) -> dict[str, str]:
+    """Build the bounded fields recorded on a task scope start event."""
+    surface = execution_surface(kwargs)
+    return {
+        "entrypoint": task_entrypoint(kwargs, surface),
+        "execution_surface": surface,
+    }
+
+
+def task_entrypoint(kwargs: dict[str, Any], surface: str | None = None) -> str:
+    """Normalize the task dispatch owner without exporting source strings."""
+    declared = str(kwargs.get("entrypoint") or "").strip().lower()
+    if declared in TASK_ENTRYPOINTS:
+        return declared
+    resolved_surface = surface or execution_surface(kwargs)
+    if kwargs.get("parent_task_id") or kwargs.get("parent_session_id"):
+        return "delegated"
+    return {
+        "api": "api",
+        "batch": "batch",
+        "cli": "interactive",
+        "desktop": "interactive",
+        "gateway": "gateway_message",
+        "python": "python",
+        "scheduled_task": "scheduled_task",
+        "tui": "interactive",
+        "unknown": "unknown",
+    }.get(resolved_surface, "other")
+
+
+def task_terminal_fields(
+    kwargs: dict[str, Any],
+    *,
+    duration_ms: int,
+    model_call_count: int,
+    tool_call_count: int,
+    retry_count: int,
+) -> dict[str, str]:
+    """Build the bounded terminal payload for one task scope."""
+    start_fields = task_start_fields(kwargs)
+    outcome, end_reason, termination = task_terminal_state(kwargs)
+    return {
+        **start_fields,
+        "duration_bucket": duration_bucket(duration_ms),
+        "end_reason": end_reason,
+        "model_call_count_bucket": count_bucket(model_call_count),
+        "outcome": outcome,
+        "retry_count_bucket": count_bucket(retry_count),
+        "termination": termination,
+        "tool_call_count_bucket": count_bucket(tool_call_count),
+    }
+
+
+def task_terminal_state(kwargs: dict[str, Any]) -> tuple[str, str, str]:
+    """Map Hermes terminal state to bounded task outcome dimensions."""
+    reason = str(kwargs.get("turn_exit_reason") or "").strip().lower()
+    if kwargs.get("interrupted") or "interrupt" in reason or "cancel" in reason:
+        return "cancelled", "user_cancelled", "user_cancelled"
+    if "timeout" in reason or "timed_out" in reason:
+        return "timed_out", "timed_out", "timed_out"
+    if "max_iterations" in reason or "budget_exhausted" in reason:
+        return "failed", "iteration_limit", "system_aborted"
+    if "approval" in reason and ("denied" in reason or "rejected" in reason):
+        return "failed", "approval_denied", "none"
+    if "guardrail" in reason:
+        return "failed", "guardrail_blocked", "system_aborted"
+    if reason == "system_aborted":
+        return "failed", "system_aborted", "system_aborted"
+    if kwargs.get("completed") is True:
+        return "success", "completed", "none"
+    if kwargs.get("failed") is True or (reason and reason != "unknown"):
+        return "failed", "failed", "none"
+    return "unknown", "unknown", "unknown"
+
+
+def duration_bucket(duration_ms: int) -> str:
+    """Bucket a non-negative task duration into a fixed low-cardinality range."""
+    value = max(0, int(duration_ms))
+    if value < 1_000:
+        return "lt_1s"
+    if value < 5_000:
+        return "1s_to_5s"
+    if value < 30_000:
+        return "5s_to_30s"
+    if value < 120_000:
+        return "30s_to_2m"
+    if value < 600_000:
+        return "2m_to_10m"
+    return "gte_10m"
+
+
+def count_bucket(count: int) -> str:
+    """Bucket a non-negative per-task count into a fixed range."""
+    value = max(0, int(count))
+    if value <= 2:
+        return str(value)
+    if value <= 5:
+        return "3_to_5"
+    if value <= 10:
+        return "6_to_10"
+    return "gte_11"
 
 
 def provider_family(kwargs: dict[str, Any]) -> str:

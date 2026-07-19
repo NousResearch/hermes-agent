@@ -1,20 +1,26 @@
-"""Process-wide NeMo Relay runtime owned by Hermes core."""
+"""Profile-scoped NeMo Relay runtimes owned by Hermes core."""
 
 from __future__ import annotations
 
 import atexit
+import asyncio
 import contextvars
 import importlib
+import inspect
 import logging
 import threading
+import uuid
 from dataclasses import dataclass, field
 from typing import Any, Callable
+
+from hermes_constants import get_hermes_home
 
 logger = logging.getLogger(__name__)
 
 SESSION_SCOPE = "hermes.session"
 RUNTIME_SCHEMA_KEY = "hermes.relay.schema_version"
 RUNTIME_SCHEMA_VERSION = "hermes.relay.runtime.v1"
+RUNTIME_INSTANCE_KEY = "hermes.relay.runtime_instance"
 
 SESSION_START_HOOKS = frozenset({"on_session_start"})
 SESSION_CLOSE_HOOKS = frozenset({"on_session_finalize", "on_session_reset"})
@@ -28,7 +34,7 @@ HANDLED_HOOKS = (
 )
 
 _RUNTIME_FAILED = object()
-_RUNTIME: RelayRuntime | object | None = None
+_RUNTIMES: dict[str, RelayRuntime | object] = {}
 _RUNTIME_LOCK = threading.RLock()
 
 
@@ -47,8 +53,10 @@ class RelaySession:
 class RelayRuntime:
     """Own Relay session scopes independently of any exporter or plugin."""
 
-    def __init__(self, relay: Any = None) -> None:
+    def __init__(self, relay: Any = None, *, profile_key: str | None = None) -> None:
         self.relay = relay or _load_nemo_relay()
+        self.profile_key = profile_key or current_profile_key()
+        self.runtime_id = uuid.uuid4().hex
         self._sessions_lock = threading.RLock()
         self._sessions: dict[str, RelaySession] = {}
         self._subagent_parents: dict[str, str] = {}
@@ -83,6 +91,7 @@ class RelayRuntime:
                 scope_metadata = {
                     **(metadata or {}),
                     RUNTIME_SCHEMA_KEY: RUNTIME_SCHEMA_VERSION,
+                    RUNTIME_INSTANCE_KEY: self.runtime_id,
                 }
                 if session.parent_session_id:
                     parent = self.ensure_session({
@@ -123,10 +132,11 @@ class RelayRuntime:
             self._subagent_parents[child_session_id] = parent_session_id
 
     def unregister_subagent(self, event: dict[str, Any]) -> None:
-        """Forget a delegated-session relationship after its terminal hook."""
+        """Close a delegated session and forget its parent relationship."""
         child_session_id = str(event.get("child_session_id") or "")
         if not child_session_id:
             return
+        self.close_session({"session_id": child_session_id})
         with self._sessions_lock:
             self._subagent_parents.pop(child_session_id, None)
 
@@ -167,6 +177,32 @@ class RelayRuntime:
             # re-enter the same logical session without re-entering Context.
             return session.context.copy().run(invoke)
 
+    async def run_in_session_async(
+        self,
+        session: RelaySession,
+        callback: Callable[..., Any],
+        *args: Any,
+        allow_closing: bool = False,
+        **kwargs: Any,
+    ) -> Any:
+        """Create and await an operation inside the session's saved context."""
+        with session.lock:
+            if session.closing and not allow_closing:
+                raise RuntimeError("Hermes Relay session is closing")
+            if session.context is None or session.handle is None:
+                raise RuntimeError("Hermes Relay session context is unavailable")
+            context = session.context.copy()
+
+        async def invoke() -> Any:
+            self.relay.get_scope_stack()
+            result = callback(*args, **kwargs)
+            if inspect.isawaitable(result):
+                return await result
+            return result
+
+        task = context.run(asyncio.create_task, invoke())
+        return await task
+
     def emit_mark(
         self,
         name: str,
@@ -189,6 +225,32 @@ class RelayRuntime:
         )
         return True
 
+    def apply_tool_request_intercepts(
+        self,
+        *,
+        session_id: str,
+        tool_name: str,
+        args: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Apply Relay request rewriting before Hermes authorizes a tool call."""
+        request_intercepts = getattr(
+            getattr(self.relay, "tools", None),
+            "request_intercepts",
+            None,
+        )
+        if not callable(request_intercepts):
+            return args
+        session = self.ensure_session({"session_id": session_id})
+        if session is None:
+            return args
+        result = self.run_in_session(
+            session,
+            request_intercepts,
+            tool_name,
+            args,
+        )
+        return result if isinstance(result, dict) else args
+
     def close_session(self, event: dict[str, Any]) -> None:
         """Close one session scope and remove it from the core registry."""
         session_id = _session_id(event)
@@ -208,7 +270,10 @@ class RelayRuntime:
                         self.relay.scope.pop,
                         session.handle,
                         output={},
-                        metadata={RUNTIME_SCHEMA_KEY: RUNTIME_SCHEMA_VERSION},
+                        metadata={
+                            RUNTIME_SCHEMA_KEY: RUNTIME_SCHEMA_VERSION,
+                            RUNTIME_INSTANCE_KEY: self.runtime_id,
+                        },
                         allow_closing=True,
                     )
                 except Exception as exc:
@@ -301,6 +366,25 @@ def emit_mark(
         return False
 
 
+def apply_tool_request_intercepts(
+    *,
+    session_id: str,
+    tool_name: str,
+    args: dict[str, Any],
+) -> dict[str, Any]:
+    """Return Relay-rewritten arguments at Hermes's authorization boundary."""
+    if not session_id:
+        return args
+    runtime = get_runtime()
+    if runtime is None:
+        return args
+    return runtime.apply_tool_request_intercepts(
+        session_id=session_id,
+        tool_name=tool_name,
+        args=args,
+    )
+
+
 def ensure_session(*, session_id: str, **context: Any) -> RelaySession | None:
     """Create or return the shared Relay session used by Hermes core."""
     runtime = get_runtime()
@@ -331,27 +415,56 @@ def run_in_session(
     return runtime.run_in_session(session, callback, *args, **kwargs)
 
 
+async def run_in_session_async(
+    session_id: str,
+    callback: Callable[..., Any],
+    *args: Any,
+    **kwargs: Any,
+) -> Any:
+    """Await a Relay operation inside a shared Hermes session context."""
+    runtime = get_runtime()
+    if runtime is None:
+        raise RuntimeError("Hermes Relay runtime is unavailable")
+    session = runtime.get_session(session_id)
+    if session is None:
+        session = runtime.ensure_session({"session_id": session_id})
+    if session is None:
+        raise RuntimeError("Hermes Relay session is unavailable")
+    return await runtime.run_in_session_async(session, callback, *args, **kwargs)
+
+
 def get_session_handle(session_id: str) -> Any:
     """Return the shared Relay handle for direct core instrumentation."""
     runtime = get_runtime(create=False)
     return None if runtime is None else runtime.get_session_handle(session_id)
 
 
-def get_runtime(*, create: bool = True) -> RelayRuntime | None:
-    """Return the process-wide Hermes Relay host."""
-    global _RUNTIME
+def get_runtime(
+    *,
+    create: bool = True,
+    profile_key: str | None = None,
+) -> RelayRuntime | None:
+    """Return the Relay host for the active Hermes profile."""
+    key = profile_key or current_profile_key()
     with _RUNTIME_LOCK:
-        if isinstance(_RUNTIME, RelayRuntime):
-            return _RUNTIME
-        if _RUNTIME is _RUNTIME_FAILED or not create:
+        runtime = _RUNTIMES.get(key)
+        if isinstance(runtime, RelayRuntime):
+            return runtime
+        if runtime is _RUNTIME_FAILED or not create:
             return None
         try:
-            _RUNTIME = RelayRuntime()
+            runtime = RelayRuntime(profile_key=key)
         except Exception:
             logger.warning("Hermes Relay runtime initialization failed", exc_info=True)
-            _RUNTIME = _RUNTIME_FAILED
+            _RUNTIMES[key] = _RUNTIME_FAILED
             return None
-        return _RUNTIME
+        _RUNTIMES[key] = runtime
+        return runtime
+
+
+def current_profile_key() -> str:
+    """Return the canonical profile identity used for runtime isolation."""
+    return str(get_hermes_home().expanduser().resolve())
 
 
 def _load_nemo_relay() -> Any:
@@ -364,9 +477,10 @@ def _session_id(event: dict[str, Any]) -> str:
 
 
 def _reset_for_tests() -> None:
-    """Reset process-global core Relay state for isolated tests."""
-    global _RUNTIME
+    """Reset all profile-scoped Relay hosts for isolated tests."""
     with _RUNTIME_LOCK:
-        if isinstance(_RUNTIME, RelayRuntime):
-            _RUNTIME.shutdown()
-        _RUNTIME = None
+        runtimes = list(_RUNTIMES.values())
+        _RUNTIMES.clear()
+    for runtime in runtimes:
+        if isinstance(runtime, RelayRuntime):
+            runtime.shutdown()

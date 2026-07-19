@@ -7,6 +7,7 @@ import multiprocessing as mp
 import os
 import sqlite3
 import stat
+import threading
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
@@ -17,17 +18,30 @@ from typing import Any
 import pytest
 from hermes_cli.observability.shared_metrics import SharedMetricsStore
 from hermes_cli.observability.shared_metrics_contract import (
+    COUNT_BUCKETS,
+    DURATION_BUCKETS,
+    EXECUTION_SURFACES,
     MODEL_FAMILIES,
     MODEL_LOCALITIES,
     MODEL_OUTCOMES,
     PRIMARY_MODEL_CALL_ROLE,
     PROVIDER_FAMILIES,
+    TASK_END_REASONS,
+    TASK_ENTRYPOINTS,
+    TASK_OUTCOMES,
+    TASK_TERMINATIONS,
+    count_bucket,
+    duration_bucket,
     execution_surface,
     model_call_outcome,
     model_call_dimensions,
     model_family,
     model_locality,
     provider_family,
+    task_counter,
+    task_start_fields,
+    task_terminal_fields,
+    task_terminal_state,
 )
 
 
@@ -53,6 +67,11 @@ def _schema_validator():
 def _package_dimension_schema() -> dict[str, object]:
     schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
     return schema["$defs"]["model_call_counter"]["properties"]["dimensions"]
+
+
+def _task_dimension_schema(kind: str) -> dict[str, object]:
+    schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
+    return schema["$defs"][kind]["properties"]["dimensions"]
 
 
 def _dimensions() -> dict[str, str]:
@@ -129,6 +148,21 @@ def test_package_schema_matches_the_model_call_contract():
     assert set(properties["model_family"]["enum"]) == MODEL_FAMILIES
     assert set(properties["outcome"]["enum"]) == MODEL_OUTCOMES
     assert set(properties["provider_family"]["enum"]) == PROVIDER_FAMILIES
+
+
+def test_package_schema_matches_the_task_contract():
+    schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
+    start = _task_dimension_schema("task_started_counter")["properties"]
+    terminal = _task_dimension_schema("task_finished_counter")["properties"]
+
+    assert set(schema["$defs"]["execution_surface"]["enum"]) == EXECUTION_SURFACES
+    assert set(schema["$defs"]["task_entrypoint"]["enum"]) == TASK_ENTRYPOINTS
+    assert set(schema["$defs"]["duration_bucket"]["enum"]) == DURATION_BUCKETS
+    assert set(schema["$defs"]["count_bucket"]["enum"]) == COUNT_BUCKETS
+    assert start["entrypoint"] == {"$ref": "#/$defs/task_entrypoint"}
+    assert set(terminal["end_reason"]["enum"]) == TASK_END_REASONS
+    assert set(terminal["outcome"]["enum"]) == TASK_OUTCOMES
+    assert set(terminal["termination"]["enum"]) == TASK_TERMINATIONS
 
 
 @pytest.mark.parametrize(
@@ -231,6 +265,105 @@ def test_execution_surface_uses_the_hermes_platform_registry(platform, expected)
     assert execution_surface({"platform": platform}) == expected
 
 
+@pytest.mark.parametrize(
+    ("platform", "expected"),
+    [
+        ("cli", "interactive"),
+        ("tui", "interactive"),
+        ("whatsapp_cloud", "gateway_message"),
+        ("cron", "scheduled_task"),
+        ("api_server", "api"),
+        ("private-surface", "other"),
+    ],
+)
+def test_task_start_fields_use_bounded_surface_and_entrypoint(platform, expected):
+    fields = task_start_fields({"platform": platform})
+
+    assert fields["entrypoint"] == expected
+    assert fields["execution_surface"] in EXECUTION_SURFACES
+
+
+def test_task_start_fields_identify_delegated_work_without_exporting_parent_id():
+    fields = task_start_fields({
+        "platform": "cli",
+        "parent_session_id": "private-parent-session",
+    })
+
+    assert fields == {
+        "entrypoint": "delegated",
+        "execution_surface": "cli",
+    }
+    assert "private-parent-session" not in json.dumps(fields)
+
+
+@pytest.mark.parametrize(
+    ("duration_ms", "expected"),
+    [
+        (0, "lt_1s"),
+        (999, "lt_1s"),
+        (1_000, "1s_to_5s"),
+        (5_000, "5s_to_30s"),
+        (30_000, "30s_to_2m"),
+        (120_000, "2m_to_10m"),
+        (600_000, "gte_10m"),
+    ],
+)
+def test_duration_bucket_boundaries(duration_ms, expected):
+    assert duration_bucket(duration_ms) == expected
+
+
+@pytest.mark.parametrize(
+    ("count", "expected"),
+    [
+        (0, "0"),
+        (1, "1"),
+        (2, "2"),
+        (3, "3_to_5"),
+        (6, "6_to_10"),
+        (11, "gte_11"),
+    ],
+)
+def test_count_bucket_boundaries(count, expected):
+    assert count_bucket(count) == expected
+
+
+@pytest.mark.parametrize(
+    ("event", "expected"),
+    [
+        (
+            {"completed": True, "turn_exit_reason": "text_response(stop)"},
+            ("success", "completed", "none"),
+        ),
+        (
+            {"failed": True, "turn_exit_reason": "all_retries_exhausted_no_response"},
+            ("failed", "failed", "none"),
+        ),
+        (
+            {"interrupted": True, "turn_exit_reason": "interrupted_by_user"},
+            ("cancelled", "user_cancelled", "user_cancelled"),
+        ),
+        (
+            {"turn_exit_reason": "budget_exhausted"},
+            ("failed", "iteration_limit", "system_aborted"),
+        ),
+        (
+            {"turn_exit_reason": "guardrail_halt"},
+            ("failed", "guardrail_blocked", "system_aborted"),
+        ),
+        (
+            {"failed": True, "turn_exit_reason": "provider_timeout"},
+            ("timed_out", "timed_out", "timed_out"),
+        ),
+        (
+            {"failed": True, "turn_exit_reason": "approval_denied"},
+            ("failed", "approval_denied", "none"),
+        ),
+    ],
+)
+def test_task_terminal_state_is_bounded(event, expected):
+    assert task_terminal_state(event) == expected
+
+
 def test_model_outcome_fails_closed_to_a_bounded_value():
     assert model_call_outcome({"outcome": "private"}) == "failed"
 
@@ -279,6 +412,52 @@ def test_subscriber_contract_rejects_unknown_fields_and_dimension_values():
     assert model_call_dimensions(event) is None
 
 
+def test_task_subscriber_contract_accepts_only_bounded_scope_events():
+    start = SimpleNamespace(
+        kind="scope",
+        category="function",
+        category_profile=None,
+        name="hermes.task_run",
+        scope_category="start",
+        metadata={"hermes.metrics.schema_version": "hermes.metrics.event.v1"},
+        data={"entrypoint": "interactive", "execution_surface": "cli"},
+    )
+    assert task_counter(start) == (
+        "hermes.task_run.started",
+        {"entrypoint": "interactive", "execution_surface": "cli"},
+    )
+
+    terminal_fields = task_terminal_fields(
+        {
+            "platform": "cli",
+            "completed": True,
+            "turn_exit_reason": "text_response(stop)",
+        },
+        duration_ms=6_000,
+        model_call_count=2,
+        tool_call_count=3,
+        retry_count=1,
+    )
+    end = SimpleNamespace(**{
+        **start.__dict__,
+        "scope_category": "end",
+        "data": terminal_fields,
+    })
+    assert task_counter(end) == (
+        "hermes.task_run.finished",
+        terminal_fields,
+    )
+
+    end.data["task_id"] = "must-not-pass"
+    assert task_counter(end) is None
+    end.data.pop("task_id")
+    end.data["outcome"] = "private"
+    assert task_counter(end) is None
+    end.data["outcome"] = "success"
+    end.metadata["prompt"] = "must-not-pass"
+    assert task_counter(end) is None
+
+
 def test_store_rejects_an_unsupported_schema_version(tmp_path):
     database_path = tmp_path / "metrics.sqlite3"
     with sqlite3.connect(database_path) as connection:
@@ -314,6 +493,36 @@ def test_pending_metrics_keep_the_version_recorded_at_event_time(tmp_path):
         "version-b",
     }
     assert all(package["metrics"][0]["value"] == 1 for package in packages)
+
+
+def test_store_exports_task_started_and_terminal_counters(tmp_path):
+    store = SharedMetricsStore(tmp_path / "metrics.sqlite3", tmp_path / "outbox")
+    store.record_counter(
+        "hermes.task_run.started",
+        {"entrypoint": "interactive", "execution_surface": "cli"},
+        "test-version",
+    )
+    terminal = task_terminal_fields(
+        {
+            "platform": "cli",
+            "completed": True,
+            "turn_exit_reason": "text_response(stop)",
+        },
+        duration_ms=2_000,
+        model_call_count=1,
+        tool_call_count=2,
+        retry_count=0,
+    )
+    store.record_counter("hermes.task_run.finished", terminal, "test-version")
+
+    [package_path] = store.create_and_export_package()
+    package = json.loads(package_path.read_text(encoding="utf-8"))
+    _schema_validator().validate(package)
+
+    assert {metric["name"] for metric in package["metrics"]} == {
+        "hermes.task_run.finished",
+        "hermes.task_run.started",
+    }
 
 
 def test_package_schema_rejects_unknown_fields(tmp_path):
@@ -409,6 +618,35 @@ def test_package_export_does_not_chase_concurrent_updates(tmp_path, monkeypatch)
     second_paths = store.create_and_export_package()
     assert len(second_paths) == 1
     assert store.counter_snapshot()[0]["packaged_value"] == 2
+
+
+def test_concurrent_package_builders_commit_one_delta(tmp_path):
+    database_path = tmp_path / "metrics.sqlite3"
+    outbox_directory = tmp_path / "outbox"
+    store = SharedMetricsStore(database_path, outbox_directory)
+    store.record_model_call(_dimensions(), "test-version")
+    ready = threading.Barrier(2)
+
+    def export() -> list[Path]:
+        worker_store = SharedMetricsStore(database_path, outbox_directory)
+        ready.wait(timeout=5)
+        return worker_store.create_and_export_package()
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [executor.submit(export) for _ in range(2)]
+        for future in futures:
+            future.result()
+
+    with sqlite3.connect(database_path) as connection:
+        [outbox_count] = connection.execute(
+            "SELECT COUNT(*) FROM package_outbox"
+        ).fetchone()
+    [package_path] = list(outbox_directory.glob("*.json"))
+    package = json.loads(package_path.read_text(encoding="utf-8"))
+
+    assert outbox_count == 1
+    assert package["metrics"][0]["value"] == 1
+    assert store.counter_snapshot()[0]["packaged_value"] == 1
 
 
 def test_concurrent_model_call_updates_are_transactional(tmp_path):

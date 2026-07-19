@@ -54,7 +54,17 @@
       "type": "array",
       "minItems": 1,
       "items": {
-        "$ref": "#/$defs/model_call_counter"
+        "oneOf": [
+          {
+            "$ref": "#/$defs/model_call_counter"
+          },
+          {
+            "$ref": "#/$defs/task_started_counter"
+          },
+          {
+            "$ref": "#/$defs/task_finished_counter"
+          }
+        ]
       }
     }
   },
@@ -148,6 +158,180 @@
           "minimum": 1
         }
       }
+    },
+    "task_started_counter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "type",
+        "dimensions",
+        "value"
+      ],
+      "properties": {
+        "name": {
+          "const": "hermes.task_run.started"
+        },
+        "type": {
+          "const": "counter"
+        },
+        "dimensions": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "entrypoint",
+            "execution_surface"
+          ],
+          "properties": {
+            "entrypoint": {
+              "$ref": "#/$defs/task_entrypoint"
+            },
+            "execution_surface": {
+              "$ref": "#/$defs/execution_surface"
+            }
+          }
+        },
+        "value": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "task_finished_counter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "type",
+        "dimensions",
+        "value"
+      ],
+      "properties": {
+        "name": {
+          "const": "hermes.task_run.finished"
+        },
+        "type": {
+          "const": "counter"
+        },
+        "dimensions": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "duration_bucket",
+            "end_reason",
+            "entrypoint",
+            "execution_surface",
+            "model_call_count_bucket",
+            "outcome",
+            "retry_count_bucket",
+            "termination",
+            "tool_call_count_bucket"
+          ],
+          "properties": {
+            "duration_bucket": {
+              "$ref": "#/$defs/duration_bucket"
+            },
+            "end_reason": {
+              "enum": [
+                "approval_denied",
+                "completed",
+                "failed",
+                "guardrail_blocked",
+                "iteration_limit",
+                "system_aborted",
+                "timed_out",
+                "unknown",
+                "user_cancelled"
+              ]
+            },
+            "entrypoint": {
+              "$ref": "#/$defs/task_entrypoint"
+            },
+            "execution_surface": {
+              "$ref": "#/$defs/execution_surface"
+            },
+            "model_call_count_bucket": {
+              "$ref": "#/$defs/count_bucket"
+            },
+            "outcome": {
+              "enum": [
+                "cancelled",
+                "failed",
+                "success",
+                "timed_out",
+                "unknown"
+              ]
+            },
+            "retry_count_bucket": {
+              "$ref": "#/$defs/count_bucket"
+            },
+            "termination": {
+              "enum": [
+                "none",
+                "system_aborted",
+                "timed_out",
+                "unknown",
+                "user_cancelled"
+              ]
+            },
+            "tool_call_count_bucket": {
+              "$ref": "#/$defs/count_bucket"
+            }
+          }
+        },
+        "value": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "execution_surface": {
+      "enum": [
+        "api",
+        "batch",
+        "cli",
+        "desktop",
+        "gateway",
+        "other",
+        "python",
+        "scheduled_task",
+        "tui",
+        "unknown"
+      ]
+    },
+    "task_entrypoint": {
+      "enum": [
+        "api",
+        "background",
+        "batch",
+        "delegated",
+        "gateway_message",
+        "interactive",
+        "other",
+        "python",
+        "scheduled_task",
+        "unknown"
+      ]
+    },
+    "duration_bucket": {
+      "enum": [
+        "1s_to_5s",
+        "2m_to_10m",
+        "30s_to_2m",
+        "5s_to_30s",
+        "gte_10m",
+        "lt_1s"
+      ]
+    },
+    "count_bucket": {
+      "enum": [
+        "0",
+        "1",
+        "2",
+        "3_to_5",
+        "6_to_10",
+        "gte_11"
+      ]
     }
   }
 }

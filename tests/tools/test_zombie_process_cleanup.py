@@ -317,9 +317,15 @@ class TestGatewayCleanupWiring:
 class TestDelegationCleanup:
     """Verify subagent delegation cleans up child agents."""
 
-    def test_run_single_child_calls_close(self):
+    def test_run_single_child_calls_close(self, monkeypatch, tmp_path):
         """_run_single_child finally block should call close() on child."""
         from unittest.mock import MagicMock
+        from hermes_constants import (
+            get_hermes_home,
+            reset_hermes_home_override,
+            set_hermes_home_override,
+        )
+        from hermes_cli.observability import relay_runtime
         from tools.delegate_tool import _run_single_child
 
         parent = MagicMock()
@@ -327,18 +333,34 @@ class TestDelegationCleanup:
         parent._active_children_lock = threading.Lock()
 
         child = MagicMock()
+        child.session_id = "child-session"
         child._delegate_saved_tool_names = ["tool1"]
-        child.run_conversation.side_effect = RuntimeError("test abort")
+        observed = {}
+
+        def run_conversation(**_kwargs):
+            observed["hermes_home"] = get_hermes_home()
+            raise RuntimeError("test abort")
+
+        child.run_conversation.side_effect = run_conversation
+        relay_host = MagicMock()
+        monkeypatch.setattr(relay_runtime, "get_runtime", lambda **kwargs: relay_host)
 
         parent._active_children.append(child)
 
-        result = _run_single_child(
-            task_index=0,
-            goal="test goal",
-            child=child,
-            parent_agent=parent,
-        )
+        profile_home = tmp_path / "profile-a"
+        token = set_hermes_home_override(profile_home)
+        try:
+            result = _run_single_child(
+                task_index=0,
+                goal="test goal",
+                child=child,
+                parent_agent=parent,
+            )
+        finally:
+            reset_hermes_home_override(token)
 
         child.close.assert_called_once()
+        assert observed["hermes_home"] == profile_home
+        relay_host.close_session.assert_called_once_with({"session_id": "child-session"})
         assert child not in parent._active_children
         assert result["status"] == "error"

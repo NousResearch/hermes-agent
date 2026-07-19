@@ -674,3 +674,107 @@ class TestMessageTypeMapping:
     def test_unknown_type_falls_back_to_text(self):
         MessageType = _line.MessageType
         assert _line._LINE_MESSAGE_TYPES.get("flex", MessageType.TEXT) == MessageType.TEXT
+
+
+# ---------------------------------------------------------------------------
+# 10. Inbound media download routing
+# ---------------------------------------------------------------------------
+
+class TestDownloadMediaRouting:
+    """``_download_media`` must dispatch each LINE content type to its typed
+    cache helper. Regression guard for the old code that pushed audio, video,
+    and file payloads through ``cache_image_from_bytes``, which rejected them
+    as non-image data and silently dropped the media."""
+
+    @pytest.fixture
+    def adapter(self, monkeypatch):
+        monkeypatch.delenv("LINE_CHANNEL_ACCESS_TOKEN", raising=False)
+        monkeypatch.delenv("LINE_CHANNEL_SECRET", raising=False)
+        from gateway.config import PlatformConfig
+        cfg = PlatformConfig(enabled=True, extra={
+            "channel_access_token": "tok",
+            "channel_secret": "sec",
+        })
+        ad = LineAdapter(cfg)
+        ad._client = MagicMock()
+        ad._client.fetch_content = AsyncMock(return_value=b"payload-bytes")
+        ad._client.loading = AsyncMock()
+        return ad
+
+    @pytest.fixture
+    def cache_mocks(self, monkeypatch):
+        """Mock the typed cache helpers in the adapter's namespace; no disk IO."""
+        mocks = {
+            "image": MagicMock(return_value="/cache/images/img_abc.jpg"),
+            "audio": MagicMock(return_value="/cache/audio/audio_abc.m4a"),
+            "video": MagicMock(return_value="/cache/videos/video_abc.mp4"),
+            "document": MagicMock(return_value="/cache/documents/doc_abc_x.bin"),
+        }
+        monkeypatch.setattr(_line, "cache_image_from_bytes", mocks["image"])
+        monkeypatch.setattr(_line, "cache_audio_from_bytes", mocks["audio"])
+        monkeypatch.setattr(_line, "cache_video_from_bytes", mocks["video"])
+        monkeypatch.setattr(_line, "cache_document_from_bytes", mocks["document"])
+        return mocks
+
+    def _assert_only(self, cache_mocks, kind):
+        for other in set(cache_mocks) - {kind}:
+            cache_mocks[other].assert_not_called()
+
+    def test_image_routes_to_image_cache(self, adapter, cache_mocks):
+        path = asyncio.run(adapter._download_media("mid-1", "image"))
+        assert path == "/cache/images/img_abc.jpg"
+        cache_mocks["image"].assert_called_once_with(b"payload-bytes", ext=".jpg")
+        self._assert_only(cache_mocks, "image")
+
+    def test_audio_routes_to_audio_cache(self, adapter, cache_mocks):
+        path = asyncio.run(adapter._download_media("mid-2", "audio"))
+        assert path == "/cache/audio/audio_abc.m4a"
+        cache_mocks["audio"].assert_called_once_with(b"payload-bytes", ext=".m4a")
+        self._assert_only(cache_mocks, "audio")
+
+    def test_video_routes_to_video_cache(self, adapter, cache_mocks):
+        path = asyncio.run(adapter._download_media("mid-3", "video"))
+        assert path == "/cache/videos/video_abc.mp4"
+        cache_mocks["video"].assert_called_once_with(b"payload-bytes", ext=".mp4")
+        self._assert_only(cache_mocks, "video")
+
+    def test_file_routes_to_document_cache_with_filename(self, adapter, cache_mocks):
+        path = asyncio.run(
+            adapter._download_media("mid-4", "file", file_name="report.pdf")
+        )
+        assert path == "/cache/documents/doc_abc_x.bin"
+        cache_mocks["document"].assert_called_once_with(b"payload-bytes", "report.pdf")
+        self._assert_only(cache_mocks, "document")
+
+    def test_file_without_name_uses_fallback_filename(self, adapter, cache_mocks):
+        asyncio.run(adapter._download_media("mid-5", "file"))
+        cache_mocks["document"].assert_called_once_with(
+            b"payload-bytes", "line_file.bin"
+        )
+
+    def test_cache_failure_returns_none(self, adapter, cache_mocks):
+        cache_mocks["audio"].side_effect = ValueError("audio exceeds size limit")
+        assert asyncio.run(adapter._download_media("mid-6", "audio")) is None
+
+    def test_fetch_failure_returns_none_without_caching(self, adapter, cache_mocks):
+        adapter._client.fetch_content = AsyncMock(side_effect=RuntimeError("boom"))
+        assert asyncio.run(adapter._download_media("mid-7", "image")) is None
+        for mock in cache_mocks.values():
+            mock.assert_not_called()
+
+    def test_message_event_threads_file_name_to_document_cache(
+        self, adapter, cache_mocks
+    ):
+        adapter.handle_message = AsyncMock()
+        event = {
+            "message": {"type": "file", "id": "mid-8", "fileName": "minutes.docx"},
+            "source": {"type": "user", "userId": "U1"},
+            "replyToken": "rt-1",
+        }
+        asyncio.run(adapter._handle_message_event(event))
+        cache_mocks["document"].assert_called_once_with(
+            b"payload-bytes", "minutes.docx"
+        )
+        event_obj = adapter.handle_message.call_args.args[0]
+        assert event_obj.media_urls == ["/cache/documents/doc_abc_x.bin"]
+        assert event_obj.media_types == ["file"]

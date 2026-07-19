@@ -92,7 +92,10 @@ from gateway.platforms.base import (
     MessageEvent,
     MessageType,
     SendResult,
+    cache_audio_from_bytes,
+    cache_document_from_bytes,
     cache_image_from_bytes,
+    cache_video_from_bytes,
 )
 from gateway.config import Platform
 
@@ -956,7 +959,9 @@ class LineAdapter(BasePlatformAdapter):
         if msg_type == "text":
             text = msg.get("text", "") or ""
         elif msg_type in {"image", "audio", "video", "file"}:
-            local_path = await self._download_media(message_id, msg_type)
+            local_path = await self._download_media(
+                message_id, msg_type, file_name=msg.get("fileName", "") or ""
+            )
             if local_path:
                 media_urls.append(local_path)
                 media_types.append(msg_type)
@@ -1054,7 +1059,9 @@ class LineAdapter(BasePlatformAdapter):
             except Exception:
                 pass
 
-    async def _download_media(self, message_id: str, msg_type: str) -> Optional[str]:
+    async def _download_media(
+        self, message_id: str, msg_type: str, file_name: str = ""
+    ) -> Optional[str]:
         if not self._client or not message_id:
             return None
         try:
@@ -1062,14 +1069,18 @@ class LineAdapter(BasePlatformAdapter):
         except Exception as exc:
             logger.warning("LINE: failed to fetch %s content for %s: %s", msg_type, message_id, exc)
             return None
-        ext = {
-            "image": ".jpg",
-            "audio": ".m4a",
-            "video": ".mp4",
-            "file": ".bin",
-        }.get(msg_type, ".bin")
+        # LINE's content API serves a fixed format per message type (JPEG
+        # images, AAC audio, MP4 video), so route each payload through its
+        # established typed cache helper — that keeps size limits, image
+        # validation, and cache-directory segregation centralized in base.
         try:
-            return cache_image_from_bytes(data, ext=ext)
+            if msg_type == "image":
+                return cache_image_from_bytes(data, ext=".jpg")
+            if msg_type == "audio":
+                return cache_audio_from_bytes(data, ext=".m4a")
+            if msg_type == "video":
+                return cache_video_from_bytes(data, ext=".mp4")
+            return cache_document_from_bytes(data, file_name or "line_file.bin")
         except Exception as exc:
             logger.warning("LINE: failed to cache %s payload: %s", msg_type, exc)
             return None

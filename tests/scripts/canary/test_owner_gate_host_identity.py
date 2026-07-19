@@ -250,6 +250,13 @@ def _responses(**overrides: Any) -> Mapping[str, Any]:
             "family": "debian-12",
             "architecture": "X86_64",
             "licenses": list(host.EXPECTED_DEBIAN_LICENSES),
+            "deprecated": {
+                "replacement": (
+                    "https://www.googleapis.com/compute/v1/projects/"
+                    "debian-cloud/global/images/debian-12-bookworm-v20260714"
+                ),
+                "state": "DEPRECATED",
+            },
         },
         "network": {
             "kind": "compute#network",

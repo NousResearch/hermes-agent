@@ -697,6 +697,19 @@ def _direct_compute_identity(
     image_id = _numeric(
         image.get("id"), code="owner_gate_host_identity_image_invalid"
     )
+    image_deprecated = image.get("deprecated")
+    if image_deprecated is not None:
+        deprecated = _mapping(
+            image_deprecated,
+            code="owner_gate_host_identity_image_invalid",
+        )
+        if (
+            set(deprecated) != {"replacement", "state"}
+            or deprecated.get("state") != "DEPRECATED"
+            or _BOOT_IMAGE.fullmatch(str(deprecated.get("replacement", "")))
+            is None
+        ):
+            _error("owner_gate_host_identity_image_invalid")
     if (
         image.get("kind") != "compute#image"
         or image.get("selfLink") != chain.boot_image_self_link
@@ -705,7 +718,6 @@ def _direct_compute_identity(
         or image.get("family") != "debian-12"
         or image.get("architecture") != "X86_64"
         or tuple(image.get("licenses", [])) != EXPECTED_DEBIAN_LICENSES
-        or image.get("deprecated") is not None
     ):
         _error("owner_gate_host_identity_image_invalid")
 

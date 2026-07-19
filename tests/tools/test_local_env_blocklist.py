@@ -488,14 +488,22 @@ class TestSanePathIncludesHomebrew:
 
     def test_make_run_env_appends_homebrew_on_minimal_path(self):
         """When PATH is minimal, _make_run_env appends missing sane entries."""
+        import os as _os
         from tools.environments.local import _SANE_PATH, _make_run_env
         minimal_env = {"PATH": "/some/custom/bin"}
         with patch.dict(os.environ, minimal_env, clear=True):
             result = _make_run_env({})
-        path_entries = result["PATH"].split(":")
-        assert path_entries[0] == "/some/custom/bin"
-        for entry in _SANE_PATH.split(":"):
-            assert entry in path_entries
+        # Use the host's path separator so the test works on both POSIX
+        # and Windows. _SANE_PATH is POSIX-only — off-Windows we expect
+        # it to be injected; on Windows the test is effectively a no-op
+        # for the sane-entry checks (the function ignores _SANE_PATH
+        # off-POSIX, see _append_missing_sane_path_entries).
+        sep = _os.pathsep
+        path_entries = result["PATH"].split(sep)
+        assert "/some/custom/bin" in path_entries
+        if sep == ":":
+            for entry in _SANE_PATH.split(":"):
+                assert entry in path_entries
 
     def test_make_run_env_fills_missing_homebrew_when_usr_bin_present(self):
         """macOS launchd PATH can include /usr/bin while missing Homebrew."""
@@ -648,6 +656,176 @@ class TestHermesBinDirOnPath:
         entries = result["PATH"].split(os.pathsep)
         assert entries[0] == "/opt/hermes/bin"
         assert "/usr/bin" in entries
+
+
+class TestPythonBinDirOnPath:
+    """The active Python's bin dir anchors the Hermes venv on PATH.
+
+    Replaces the VIRTUAL_ENV-marker prelude that the original #66642 fix
+    relied on. The prelude failed because (a) ``_prepend_shell_init`` is
+    only called when ``init_files`` is non-empty, and (b) ``_make_run_env``
+    intentionally strips VIRTUAL_ENV/CONDA_PREFIX before ``Popen`` to
+    prevent cross-project clobber (#23473, dbbf102b8). The shell condition
+    was therefore always false on the terminal path.
+
+    The new contract uses ``sys.executable``'s parent dir as the trusted
+    anchor — the running interpreter is by definition inside the Hermes
+    venv, so its bin is exactly the dir that needs to stay on PATH.
+    """
+
+    def _reset_cache(self):
+        from tools.environments import local as local_mod
+        local_mod._PYTHON_BIN_DIR_CACHE = local_mod._SENTINEL
+
+    def test_resolves_via_sys_executable(self, monkeypatch, tmp_path):
+        from tools.environments import local as local_mod
+        self._reset_cache()
+        venv_bin = tmp_path / "venv" / "bin"
+        venv_bin.mkdir(parents=True)
+        (venv_bin / "python").write_text("#!/bin/sh\n")
+        monkeypatch.setattr(local_mod.sys, "executable", str(venv_bin / "python"))
+        assert local_mod._resolve_python_bin_dir() == str(venv_bin)
+
+    def test_returns_none_when_executable_unset(self, monkeypatch):
+        from tools.environments import local as local_mod
+        self._reset_cache()
+        monkeypatch.setattr(local_mod.sys, "executable", "")
+        assert local_mod._resolve_python_bin_dir() is None
+
+    def test_returns_none_when_parent_not_a_dir(self, monkeypatch):
+        from tools.environments import local as local_mod
+        self._reset_cache()
+        # Use a path whose parent does not exist on disk.
+        monkeypatch.setattr(
+            local_mod.sys, "executable", "/nonexistent/parent/python"
+        )
+        assert local_mod._resolve_python_bin_dir() is None
+
+    def test_prepend_adds_missing_dir_at_front(self, monkeypatch):
+        from tools.environments import local as local_mod
+        self._reset_cache()
+        local_mod._PYTHON_BIN_DIR_CACHE = "/opt/hermes/venv/bin"
+        # The helper is platform-agnostic — it uses os.pathsep, which on
+        # Windows is ``;`` and on POSIX is ``:``. Simulate the host's
+        # separator so the test runs cross-platform.
+        sep = os.pathsep
+        original_path = sep.join(["/usr/bin", "/bin"])
+        out = local_mod._prepend_python_bin_dir(original_path)
+        entries = out.split(sep)
+        assert entries[0] == "/opt/hermes/venv/bin"
+        assert "/usr/bin" in entries
+
+    def test_prepend_is_idempotent(self, monkeypatch):
+        from tools.environments import local as local_mod
+        self._reset_cache()
+        local_mod._PYTHON_BIN_DIR_CACHE = "/opt/hermes/venv/bin"
+        sep = os.pathsep
+        original_path = sep.join(["/usr/bin", "/bin"])
+        once = local_mod._prepend_python_bin_dir(original_path)
+        twice = local_mod._prepend_python_bin_dir(once)
+        assert twice == once
+        assert once.split(sep).count("/opt/hermes/venv/bin") == 1
+
+    def test_prepend_noop_when_unresolved(self, monkeypatch):
+        from tools.environments import local as local_mod
+        self._reset_cache()
+        local_mod._PYTHON_BIN_DIR_CACHE = None
+        sep = os.pathsep
+        original_path = sep.join(["/usr/bin", "/bin"])
+        assert local_mod._prepend_python_bin_dir(original_path) == original_path
+
+    def test_make_run_env_injects_python_bin_dir(self, monkeypatch):
+        """The active Python's bin is anchored on the terminal subshell PATH.
+
+        Reproduces the original #66642 repro on bare containers: PATH
+        collapses to ``/usr/local/bin:/usr/bin:/bin`` after a login shell
+        with empty profile files, dropping the Hermes venv. The fix must
+        re-anchor ``python`` to the venv interpreter regardless of the
+        caller's PATH or whether VIRTUAL_ENV is set.
+
+        Verifies the cross-platform contract: the venv bin dir must be
+        present in the resulting PATH and must outrank every entry the
+        caller originally supplied. The exact position depends on the
+        host's ``os.pathsep`` and the surrounding helpers — see
+        ``test_prepend_adds_missing_dir_at_front`` for the ordering unit.
+        """
+        from tools.environments import local as local_mod
+        from tools.environments.local import _make_run_env
+        self._reset_cache()
+        local_mod._PYTHON_BIN_DIR_CACHE = "/opt/hermes/venv/bin"
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", False)
+        sep = os.pathsep
+        with patch.dict(
+            os.environ,
+            {"PATH": sep.join(["/usr/local/bin", "/usr/bin", "/bin"])},
+            clear=True,
+        ):
+            result = _make_run_env({})
+        # The venv bin must appear before any of the caller's PATH
+        # entries — that is the whole point of the prepend. Find its
+        # position and assert it outranks the caller's bin dirs.
+        entries = result["PATH"].split(sep)
+        venv_idx = entries.index("/opt/hermes/venv/bin")
+        assert venv_idx <= entries.index("/usr/local/bin")
+        assert "/usr/local/bin" in entries
+        assert "/usr/bin" in entries
+
+    def test_make_run_env_does_not_require_virtual_env_marker(self, monkeypatch):
+        """The fix must work even when VIRTUAL_ENV is stripped from the env.
+
+        ``_make_run_env`` removes VIRTUAL_ENV/CONDA_PREFIX to prevent
+        cross-project clobber (#23473). The original #66642 prelude was
+        therefore dead code on the terminal path; this test fails any
+        fix that re-introduces that dependency.
+        """
+        from tools.environments import local as local_mod
+        from tools.environments.local import _make_run_env
+        self._reset_cache()
+        local_mod._PYTHON_BIN_DIR_CACHE = "/opt/hermes/venv/bin"
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", False)
+        sep = os.pathsep
+        # No VIRTUAL_ENV in os.environ — the fix must still inject the
+        # venv bin because it derives from sys.executable, not from env.
+        with patch.dict(
+            os.environ,
+            {"PATH": sep.join(["/usr/local/bin", "/usr/bin", "/bin"])},
+            clear=True,
+        ):
+            result = _make_run_env({})
+        entries = result["PATH"].split(sep)
+        assert "/opt/hermes/venv/bin" in entries
+
+    def test_make_run_env_works_with_empty_init_files(self, monkeypatch):
+        """The fix must NOT depend on init_files being non-empty.
+
+        The original #66642 prelude lived inside ``_prepend_shell_init``,
+        which is only called when ``init_files`` is non-empty
+        (``tools/environments/local.py:1360-1363``). On bare containers
+        with no shell rc files, the prelude never ran — the bug it was
+        supposed to fix was unreachable through its own code path.
+
+        The new contract lives in ``_make_run_env`` and is unconditional.
+        """
+        from tools.environments import local as local_mod
+        from tools.environments.local import _make_run_env
+        self._reset_cache()
+        local_mod._PYTHON_BIN_DIR_CACHE = "/opt/hermes/venv/bin"
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", False)
+        sep = os.pathsep
+        # Force the empty-init-files path explicitly.
+        monkeypatch.setattr(local_mod, "_resolve_shell_init_files", lambda: [])
+        with patch.dict(
+            os.environ,
+            {"PATH": sep.join(["/usr/local/bin", "/usr/bin", "/bin"])},
+            clear=True,
+        ):
+            result = _make_run_env({})
+        entries = result["PATH"].split(sep)
+        # Even with init_files=[] (the original bug's trigger), the
+        # venv bin is on PATH — the fix lives in _make_run_env, not in
+        # _prepend_shell_init.
+        venv_idx = entries.index("/opt/hermes/venv/bin")
+        assert venv_idx <= entries.index("/usr/local/bin")
 
 
 class TestHermesInternalDynamicSecrets:

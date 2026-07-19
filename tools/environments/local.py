@@ -1036,6 +1036,69 @@ def _prepend_hermes_bin_dir(existing_path: str) -> str:
     return sep.join([bin_dir, *entries])
 
 
+# Cached bin dir of the running interpreter (``sys.executable``'s parent).
+# Lets the login-shell snapshot keep the Hermes venv on PATH even when the
+# user's profile is empty and the active-venv markers are scrubbed.
+# Distinct from ``_HERMES_BIN_DIR`` (which locates the ``hermes`` console
+# script, possibly via a PATH shim rather than the venv).
+_PYTHON_BIN_DIR_CACHE: "str | None | object" = _SENTINEL
+
+
+def _resolve_python_bin_dir() -> str | None:
+    """Return the directory holding ``sys.executable`` — the active venv's bin.
+
+    This is the directory where the running Python interpreter's ``pip``,
+    ``python``, and any console-scripts the venv installed live. On a uv /
+    virtualenv layout it is ``<venv>/bin`` (POSIX) or ``<venv>/Scripts``
+    (Windows). On a system install it is e.g. ``/usr/bin`` — in which case
+    the path is already on PATH and prepending it is harmless.
+
+    Used as a trusted, Python-derived anchor for PATH when the login-shell
+    snapshot would otherwise lose the active venv. Cannot rely on
+    ``$VIRTUAL_ENV`` because ``_make_run_env`` strips it before ``Popen`` to
+    prevent cross-project clobber (commit ``dbbf102b8``,
+    ``tests/tools/test_local_env_blocklist.py:277-303``).
+    """
+    global _PYTHON_BIN_DIR_CACHE
+    if _PYTHON_BIN_DIR_CACHE is not _SENTINEL:
+        return _PYTHON_BIN_DIR_CACHE  # type: ignore[return-value]
+
+    candidate: str | None = None
+    exe = sys.executable
+    if exe:
+        parent = os.path.dirname(os.path.abspath(exe))
+        # ``sys.executable`` is the venv's python on every supported layout.
+        # The parent dir always exists; verify it is non-empty so a bogus
+        # config (empty executable path) does not poison the cache.
+        if parent and os.path.isdir(parent):
+            candidate = parent
+
+    _PYTHON_BIN_DIR_CACHE = candidate
+    return candidate
+
+
+def _prepend_python_bin_dir(existing_path: str) -> str:
+    """Prepend the active Python bin dir to ``existing_path`` if it's missing.
+
+    Counterpart to ``_prepend_hermes_bin_dir`` for the interpreter's bin:
+    ensures the Hermes venv stays reachable on PATH even when the login
+    shell's profile sourcing (or lack thereof) would reset PATH to bash's
+    compiled default (``/usr/local/bin:/usr/bin:/bin``), silently dropping
+    ``python`` and every console-script in the active venv (#66642).
+
+    Cross-platform (uses ``os.pathsep``). First-occurrence wins; no-op when
+    the dir can't be resolved.
+    """
+    bin_dir = _resolve_python_bin_dir()
+    if not bin_dir:
+        return existing_path
+    sep = os.pathsep
+    entries = [e for e in existing_path.split(sep) if e] if existing_path else []
+    if bin_dir in entries:
+        return existing_path
+    return sep.join([bin_dir, *entries])
+
+
 def _append_missing_sane_path_entries(existing_path: str) -> str:
     """Return a normalised POSIX PATH with missing sane entries appended.
 
@@ -1147,6 +1210,15 @@ def _make_run_env(env: dict) -> dict:
     path_key = _path_env_key(run_env)
     if path_key is not None:
         new_path = _append_missing_sane_path_entries(run_env.get(path_key, ""))
+        # Anchor the Hermes venv on PATH before any of the platform-specific
+        # fallbacks.  Without this, a bare-container login shell whose
+        # ``/etc/profile`` is empty resets PATH to bash's compiled default
+        # (``/usr/local/bin:/usr/bin:/bin``) and silently drops the active
+        # venv — ``python`` then resolves to the system interpreter, not the
+        # Hermes one (#66642).  We derive the bin dir from ``sys.executable``
+        # rather than the ``$VIRTUAL_ENV`` env var because that marker is
+        # scrubbed further down to prevent cross-project clobber.
+        new_path = _prepend_python_bin_dir(new_path)
         # On Windows, ensure Git Bash's coreutils dirs (…\usr\bin etc.) are on
         # PATH.  A non-login ``bash -c`` fallback (used when ``bash -l`` is
         # broken) never sources /etc/profile, so without this cat/mktemp/mv and
@@ -1256,23 +1328,6 @@ def _prepend_shell_init(cmd_string: str, files: list[str]) -> str:
         # path.  Escape single quotes defensively anyway.
         safe = path.replace("'", "'\\''")
         prelude_parts.append(f"[ -r '{safe}' ] && . '{safe}' 2>/dev/null || true")
-    # Re-assert the active interpreter's venv bin onto PATH after profile
-    # files run.  A bash -l login shell sources /etc/profile and friends,
-    # which on bare containers with empty profiles falls back to bash's
-    # compiled default PATH (``/usr/local/bin:/usr/bin:/bin``) and silently
-    # drops ``$VIRTUAL_ENV/bin``.  Re-export so the captured ``export -p``
-    # snapshot (init_session) keeps the venv on PATH and every subsequent
-    # foreground command resolves ``python`` to the venv interpreter
-    # instead of the system one.  Issue #66642.
-    prelude_parts.append(
-        'if [ -n "$VIRTUAL_ENV" ] && [ -d "$VIRTUAL_ENV/bin" ]; then\n'
-        '  case ":$PATH:" in\n'
-        '    *":$VIRTUAL_ENV/bin:"*) ;;\n'
-        '    *) PATH="$VIRTUAL_ENV/bin:$PATH" ;;\n'
-        '  esac\n'
-        '  export PATH\n'
-        'fi'
-    )
     prelude = "\n".join(prelude_parts) + "\n"
     return prelude + cmd_string
 

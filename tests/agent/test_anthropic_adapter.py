@@ -1615,6 +1615,32 @@ class TestBuildAnthropicKwargs:
             assert _supports_xhigh_effort(m) is False, m
             assert _forbids_sampling_params(m) is False, m
 
+    def test_aliased_model_name_defaults_to_adaptive_thinking(self):
+        """Regression for #66244: an aliased model name routed through a custom
+        Anthropic-Messages-compatible proxy (e.g. ``model: auto`` resolving to
+        a Claude model group server-side) must default to the modern adaptive
+        contract.  Before the fix, the legacy manual-thinking format
+        (``thinking.type="enabled"`` + ``budget_tokens``) was sent
+        unconditionally, which every Claude 4.6+ model group rejects with
+        HTTP 400 — silently breaking ``delegate_task`` subagents whose first
+        API call hit a non-retryable 400.
+        """
+        from agent.anthropic_adapter import _supports_adaptive_thinking
+
+        for m in (
+            "auto",
+            "default",
+            "proxy-claude",
+            "auto-std-00a0c0-10",  # the actual model-group ID from #66244's logs
+        ):
+            assert _supports_adaptive_thinking(m) is True, m
+
+        # Empty / None keep the legacy contract — callers that intentionally
+        # pass "" should not be silently treated as adaptive Claude aliases.
+        assert _supports_adaptive_thinking("") is False
+        assert _supports_adaptive_thinking(None) is False
+
+
     def test_fast_mode_omitted_for_unsupported_model(self):
         """fast_mode=True on Opus 4.7 must NOT inject speed=fast (API 400s)."""
         kwargs = build_anthropic_kwargs(

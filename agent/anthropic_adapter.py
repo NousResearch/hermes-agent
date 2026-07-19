@@ -105,6 +105,20 @@ _LEGACY_MANUAL_THINKING_CLAUDE_SUBSTRINGS = (
     "claude-haiku-4-5", "claude-haiku-4.5",
 )
 
+# Non-Claude models that speak the Anthropic Messages protocol (minimax, qwen3,
+# kimi, glm, …).  These do NOT support adaptive thinking and must stay on the
+# legacy manual path (thinking.type="enabled" + budget_tokens).  Case-insensitive
+# substring — keep entries in lowercase.  See test_non_claude_anthropic_models_
+# use_manual_path.
+_NON_CLAUDE_ANTHROPIC_SUBSTRINGS = (
+    "minimax",
+    "qwen3",
+    "moonshot",
+    "kimi",
+    "k1.", "k2.",
+    "glm",
+)
+
 # Older Claude families that DON'T accept the "xhigh" effort level (4.6 only
 # supports low/medium/high/max). xhigh arrived with Opus 4.7. Adaptive models
 # not in this list (4.7, 4.8, fable, future) accept xhigh.
@@ -247,9 +261,32 @@ def _supports_adaptive_thinking(model: str) -> bool:
     only returns False for the explicit legacy list of older Claude families
     that require manual budget-based thinking. Non-Claude Anthropic-Messages
     models (minimax, qwen3, …) return False so they keep the manual path.
+
+    Aliased model names (``"auto"``, ``"default"``, …) routed through a
+    custom Anthropic-Messages-compatible proxy that interprets them as a
+    Claude model group also default to adaptive.  The legacy manual-thinking
+    format (``thinking.type="enabled"`` + ``budget_tokens``) is rejected with
+    HTTP 400 by every Claude 4.6+ model group, while the adaptive format is
+    accepted by every Claude 4.6+ model and ignored by 4.5-and-older — so
+    defaulting unknown aliases to adaptive is fail-open for the modern
+    contract and only fails closed for the (much rarer) legacy-only proxy
+    route.  See #66244.
     """
     if not _is_claude_model(model):
-        return False
+        # Non-Claude Anthropic-Messages models (minimax / qwen3 / kimi / glm)
+        # stay on the manual-thinking path.  Any other non-Claude name (e.g.
+        # an alias like "auto" routed to a Claude model group by a proxy) is
+        # treated as an adaptive Claude alias — see the docstring.
+        m = (model or "").lower()
+        if any(v in m for v in _NON_CLAUDE_ANTHROPIC_SUBSTRINGS):
+            return False
+        # Unknown alias on a custom Anthropic-Messages proxy — default to
+        # the modern (4.6+) adaptive contract.  An empty model is NOT
+        # treated as an alias (callers that intentionally pass "" should go
+        # through the manual path).
+        if not m:
+            return False
+        return True
     m = model.lower()
     return not any(v in m for v in _LEGACY_MANUAL_THINKING_CLAUDE_SUBSTRINGS)
 

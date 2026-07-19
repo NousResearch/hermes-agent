@@ -2260,6 +2260,48 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
             )
 
 
+def execute_builtin_memory_tool(
+    agent,
+    function_args: dict,
+    *,
+    effective_task_id: str,
+    tool_call_id: Optional[str] = None,
+) -> str:
+    """Execute built-in memory with the agent's runtime profile policy."""
+    target = function_args.get("target", "memory")
+    if target == "user" and not getattr(agent, "_user_profile_enabled", False):
+        from tools.registry import tool_error
+
+        return tool_error(
+            "User profile memory is disabled. Set "
+            "memory.user_profile_enabled: true to allow target='user'.",
+            success=False,
+        )
+
+    from tools.memory_tool import memory_tool
+
+    result = memory_tool(
+        action=function_args.get("action"),
+        target=target,
+        content=function_args.get("content"),
+        old_text=function_args.get("old_text"),
+        operations=function_args.get("operations"),
+        store=agent._memory_store,
+    )
+    # Mirror successful built-in memory writes to external providers. All
+    # gating/op-expansion lives behind the manager interface.
+    if getattr(agent, "_memory_manager", None):
+        agent._memory_manager.notify_memory_tool_write(
+            result,
+            function_args,
+            build_metadata=lambda: agent._build_memory_write_metadata(
+                task_id=effective_task_id,
+                tool_call_id=tool_call_id,
+            ),
+        )
+    return result
+
+
 def invoke_tool(agent, function_name: str, function_args: dict, effective_task_id: str,
                  tool_call_id: Optional[str] = None, messages: list = None,
                  pre_tool_block_checked: bool = False,
@@ -2388,30 +2430,15 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
             )
     elif function_name == "memory":
         def _execute(next_args: dict) -> Any:
-            target = next_args.get("target", "memory")
-            operations = next_args.get("operations")
-            from tools.memory_tool import memory_tool as _memory_tool
-            result = _memory_tool(
-                action=next_args.get("action"),
-                target=target,
-                content=next_args.get("content"),
-                old_text=next_args.get("old_text"),
-                operations=operations,
-                store=agent._memory_store,
-            )
-            # Mirror successful built-in memory writes to external providers.
-            # All gating/op-expansion lives behind the manager interface
-            # (MemoryManager.notify_memory_tool_write).
-            if agent._memory_manager:
-                agent._memory_manager.notify_memory_tool_write(
-                    result,
+            return _finish_agent_tool(
+                execute_builtin_memory_tool(
+                    agent,
                     next_args,
-                    build_metadata=lambda: agent._build_memory_write_metadata(
-                        task_id=effective_task_id,
-                        tool_call_id=tool_call_id,
-                    ),
-                )
-            return _finish_agent_tool(result, next_args)
+                    effective_task_id=effective_task_id,
+                    tool_call_id=tool_call_id,
+                ),
+                next_args,
+            )
     elif agent._memory_manager and agent._memory_manager.has_tool(function_name):
         def _execute(next_args: dict) -> Any:
             return _finish_agent_tool(agent._memory_manager.handle_tool_call(function_name, next_args), next_args)

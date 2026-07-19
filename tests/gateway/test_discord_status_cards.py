@@ -208,7 +208,7 @@ async def test_edit_failure_sends_exactly_one_fresh_plaintext_final_and_recaches
     assert adapter.send.await_args.kwargs == {
         "chat_id": "555",
         "content": "Final result",
-        "metadata": {"thread_id": "777"},
+        "metadata": {"thread_id": "777", "status_terminal": True},
     }
     assert adapter._status_message_ids[("555", "777", "run-1")] == "7002"
 
@@ -252,7 +252,10 @@ async def test_partial_terminal_overflow_falls_back_once_before_latching(adapter
     fallback = adapter.send.await_args_list[1].kwargs
     assert fallback["chat_id"] == "555"
     assert fallback["content"] == "Complete final result " * 300
-    assert fallback["metadata"] == {"thread_id": "777"}
+    assert fallback["metadata"] == {
+        "thread_id": "777",
+        "status_terminal": True,
+    }
     key = ("555", "777", "run-1")
     assert adapter._status_message_ids[key] == "8001"
     assert adapter._status_message_terminal[key] is True
@@ -646,6 +649,130 @@ async def test_failed_image_only_final_keeps_real_card_and_receipt_nonterminal(
 
 
 @pytest.mark.asyncio
+async def test_double_native_image_failure_text_fallback_keeps_card_nonterminal(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("DISCORD_MISSED_MESSAGE_BACKFILL", "true")
+    monkeypatch.setattr(
+        "plugins.platforms.discord.adapter._build_operator_card_embed",
+        lambda card: {"kind": card.card_type},
+    )
+    monkeypatch.setattr(
+        "plugins.platforms.discord.adapter.is_safe_url",
+        lambda _url: True,
+    )
+
+    class _ImageResponse:
+        status = 200
+        headers = {"content-type": "image/png"}
+
+        async def read(self):
+            return b"\x89PNG" + b"\x00" * 20
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+    class _ImageSession:
+        def get(self, *_args, **_kwargs):
+            return _ImageResponse()
+
+        async def close(self):
+            return None
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+    monkeypatch.setattr("aiohttp.ClientSession", lambda **_kwargs: _ImageSession())
+
+    instance = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+    incoming = SimpleNamespace(
+        id=42,
+        channel=SimpleNamespace(id=777, parent_id=555),
+        author=SimpleNamespace(id=99),
+        created_at=None,
+        to_reference=lambda **_kwargs: object(),
+    )
+    instance._record_discord_message_seen(incoming, status="processing")
+    retained = SimpleNamespace(id=7001, edit=AsyncMock())
+    fallback_text = SimpleNamespace(id=7002)
+
+    async def send_message(**kwargs):
+        if kwargs.get("embed") is not None:
+            return retained
+        if "files" in kwargs or "file" in kwargs:
+            raise RuntimeError("native attachment unavailable")
+        return fallback_text
+
+    thread = SimpleNamespace(
+        id=777,
+        send=AsyncMock(side_effect=send_message),
+        fetch_message=AsyncMock(return_value=incoming),
+    )
+    instance._client = SimpleNamespace(
+        get_channel=lambda channel_id: thread if channel_id in {555, 777} else None,
+        fetch_channel=AsyncMock(),
+    )
+    await instance.send(
+        "555",
+        "Working",
+        metadata={
+            "thread_id": "777",
+            "status_key": "task_run:message:42",
+            "reply_to_message_id": "42",
+        },
+    )
+
+    async def handler(event):
+        event._status_key = "task_run:message:42"
+        return "![report](https://example.com/report.png)"
+
+    async def hold_typing(_chat_id, interval=2.0, metadata=None):
+        await asyncio.Event().wait()
+
+    instance.set_message_handler(handler)
+    instance._keep_typing = hold_typing
+    event = MessageEvent(
+        text="Send the report",
+        source=SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="555",
+            chat_type="thread",
+            thread_id="777",
+        ),
+        message_id="42",
+    )
+
+    await instance._process_message_background(
+        event,
+        build_session_key(event.source),
+    )
+
+    receipt = instance._with_discord_recovery_db(
+        lambda conn: conn.execute(
+            "SELECT status, replied FROM discord_messages WHERE message_id='42'"
+        ).fetchone()
+    )
+    sent_text = [
+        call.kwargs.get("content")
+        for call in thread.send.await_args_list
+        if "file" not in call.kwargs and "files" not in call.kwargs
+    ]
+    assert len(sent_text) == 2
+    assert sent_text[0].endswith("\nWorking")
+    assert sent_text[1] == "report\nhttps://example.com/report.png"
+    assert receipt == ("failed", 0)
+    retained.edit.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_oversized_cached_terminal_edit_records_durable_completion(
     tmp_path, monkeypatch
 ):
@@ -727,6 +854,75 @@ async def test_oversized_cached_terminal_edit_records_durable_completion(
             "final": True,
         }
     ]
+
+
+@pytest.mark.asyncio
+async def test_cached_terminal_edit_plaintext_recovery_records_durable_completion(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("DISCORD_MISSED_MESSAGE_BACKFILL", "true")
+    instance = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+    incoming = SimpleNamespace(
+        id=42,
+        channel=SimpleNamespace(id=777, parent_id=555),
+        author=SimpleNamespace(id=99),
+        created_at=None,
+        to_reference=lambda **_kwargs: object(),
+    )
+    instance._record_discord_message_seen(incoming, status="processing")
+    sent_ids = iter((7001, 7002))
+    thread = SimpleNamespace(
+        id=777,
+        send=AsyncMock(
+            side_effect=lambda **_kwargs: SimpleNamespace(id=next(sent_ids))
+        ),
+        fetch_message=AsyncMock(return_value=incoming),
+    )
+    instance._client = SimpleNamespace(
+        get_channel=lambda channel_id: thread if channel_id == 777 else None,
+        fetch_channel=AsyncMock(),
+    )
+
+    await instance.send(
+        "555",
+        "Working",
+        metadata={
+            "thread_id": "777",
+            "status_key": "task_run:message:42",
+            "reply_to_message_id": "42",
+        },
+    )
+    instance.edit_message = AsyncMock(
+        return_value=SendResult(success=False, error="stale message")
+    )
+
+    result = await instance.send(
+        "555",
+        "Complete final result",
+        metadata={
+            "thread_id": "777",
+            "status_key": "task_run:message:42",
+            "status_terminal": True,
+            "reply_to_message_id": "42",
+        },
+    )
+
+    receipt = instance._with_discord_recovery_db(
+        lambda conn: conn.execute(
+            "SELECT status, replied, response_message_id "
+            "FROM discord_messages WHERE message_id='42'"
+        ).fetchone()
+    )
+    assert result == SendResult(
+        success=True,
+        message_id="7002",
+        raw_response={"message_ids": ["7002"]},
+    )
+    assert receipt == ("responded", 1, "7002")
+    instance.edit_message.assert_awaited_once()
+    assert thread.send.await_count == 2
 
 
 @pytest.mark.asyncio

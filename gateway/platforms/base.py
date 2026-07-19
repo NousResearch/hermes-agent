@@ -1926,20 +1926,20 @@ class SendResult:
     # ``None`` (unset / not classified).  Producers should set this via
     # :func:`classify_send_error`.
     error_kind: Optional[str] = None
-    # Native batch attachment transports set this to the number of
-    # attachments they can confirm reached the platform.  Keeping the field
+    # Native attachment transports set this to the number of attachments they
+    # can confirm reached the platform.  Keeping the field
     # after all pre-existing fields preserves positional construction, while
     # the default keeps older/custom adapters source-compatible.
     delivered_attachment_count: int = 0
 
 
 def confirmed_attachment_delivery_count(result: Any) -> int:
-    """Return the number of attachments a batch result confirms as delivered.
+    """Return the number of attachments a result confirms as delivered.
 
     ``send_multiple_images`` historically returned ``None``.  Keep that call
     shape harmless for third-party adapters, but never promote an ambiguous
-    legacy return into terminal status.  Migrated batch transports expose an
-    explicit positive count on ``SendResult``.
+    legacy return into terminal status.  Migrated attachment transports expose
+    an explicit positive count on ``SendResult``.
     """
     if not getattr(result, "success", False):
         return 0
@@ -3402,8 +3402,12 @@ class BasePlatformAdapter(ABC):
                         caption=alt_text if alt_text else None,
                         metadata=metadata,
                     )
-                if img_result.success:
-                    delivered_attachment_count += 1
+                confirmed_count = min(
+                    1,
+                    confirmed_attachment_delivery_count(img_result),
+                )
+                if confirmed_count:
+                    delivered_attachment_count += confirmed_count
                     last_message_id = img_result.message_id or last_message_id
                 else:
                     logger.error("[%s] Failed to send image: %s", self.name, img_result.error)
@@ -5413,10 +5417,14 @@ class BasePlatformAdapter(ABC):
                                 metadata=_final_thread_metadata,
                             )
 
-                        if not media_result.success:
+                        confirmed_count = min(
+                            1,
+                            confirmed_attachment_delivery_count(media_result),
+                        )
+                        if not confirmed_count:
                             logger.warning("[%s] Failed to send media (%s): %s", self.name, ext, media_result.error)
                         else:
-                            _attachment_deliveries += 1
+                            _attachment_deliveries += confirmed_count
                     except Exception as media_err:
                         logger.warning("[%s] Error sending media: %s", self.name, media_err)
 
@@ -5438,8 +5446,10 @@ class BasePlatformAdapter(ABC):
                                 file_path=file_path,
                                 metadata=_final_thread_metadata,
                             )
-                        if getattr(file_result, "success", False):
-                            _attachment_deliveries += 1
+                        _attachment_deliveries += min(
+                            1,
+                            confirmed_attachment_delivery_count(file_result),
+                        )
                     except Exception as file_err:
                         logger.error("[%s] Error sending local file %s: %s", self.name, file_path, file_err)
 

@@ -420,7 +420,11 @@ async def test_attachment_only_final_explicitly_terminalizes_status_card():
     adapter.extract_media = lambda _response: ([('/tmp/report.pdf', False)], "")
     adapter.filter_media_delivery_paths = lambda media: media
     adapter.send_document = AsyncMock(
-        return_value=SendResult(success=True, message_id="attachment-1")
+        return_value=SendResult(
+            success=True,
+            message_id="attachment-1",
+            delivered_attachment_count=1,
+        )
     )
 
     async def handler(event):
@@ -471,6 +475,67 @@ async def test_attachment_only_final_explicitly_terminalizes_status_card():
             },
         }
     ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("media_path", "is_voice", "warning"),
+    [
+        pytest.param(
+            "/tmp/report.pdf",
+            False,
+            "⚠️ Couldn't deliver the file attachment.",
+            id="document",
+        ),
+        pytest.param(
+            "/tmp/clip.mp4",
+            False,
+            "⚠️ Couldn't deliver the video attachment.",
+            id="video",
+        ),
+        pytest.param(
+            "/tmp/voice.ogg",
+            True,
+            "⚠️ Couldn't deliver the audio attachment.",
+            id="voice",
+        ),
+    ],
+)
+async def test_warning_fallback_does_not_claim_attachment_delivery(
+    media_path,
+    is_voice,
+    warning,
+):
+    adapter = _FinalDeliveryAdapter()
+    adapter.extract_media = lambda _response: ([(media_path, is_voice)], "")
+    adapter.filter_media_delivery_paths = lambda media: media
+
+    async def handler(event):
+        event._status_key = "task_run:message:42"
+        return f"MEDIA:{media_path}"
+
+    async def hold_typing(_chat_id, interval=2.0, metadata=None):
+        await asyncio.Event().wait()
+
+    adapter.set_message_handler(handler)
+    adapter._keep_typing = hold_typing
+    event = MessageEvent(
+        text="Send the report",
+        source=SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="555",
+            chat_type="thread",
+            thread_id="777",
+        ),
+        message_id="42",
+    )
+
+    await adapter._process_message_background(
+        event,
+        build_session_key(event.source),
+    )
+
+    assert [item["content"] for item in adapter.sent] == [warning]
 
 
 @pytest.mark.asyncio

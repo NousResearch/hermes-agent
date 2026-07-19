@@ -133,6 +133,7 @@ from gateway.platforms.base import (
     MessageType,
     ProcessingOutcome,
     SendResult,
+    confirmed_attachment_delivery_count,
     cache_image_from_url,
     cache_image_from_bytes,
     cache_audio_from_url,
@@ -3066,7 +3067,13 @@ class DiscordAdapter(BasePlatformAdapter):
             if metadata and metadata.get("thread_id"):
                 thread_id = metadata["thread_id"]
             nonconversational = _metadata_marks_nonconversational(metadata)
-            final_delivery = bool(metadata and metadata.get("notify"))
+            final_delivery = bool(
+                metadata
+                and (
+                    metadata.get("notify")
+                    or metadata.get("status_terminal")
+                )
+            )
 
             if thread_id:
                 # Fetch the thread directly — threads are addressed by their own ID.
@@ -3190,7 +3197,13 @@ class DiscordAdapter(BasePlatformAdapter):
                 reply_to=reply_to,
                 result=result,
                 content=content,
-                final=bool(metadata and metadata.get("notify")),
+                final=bool(
+                    metadata
+                    and (
+                        metadata.get("notify")
+                        or metadata.get("status_terminal")
+                    )
+                ),
             )
             return result
 
@@ -3218,7 +3231,7 @@ class DiscordAdapter(BasePlatformAdapter):
     def _plain_status_metadata(
         metadata: Optional[Dict[str, Any]],
     ) -> Optional[Dict[str, Any]]:
-        """Keep routing markers while stripping rich/status-only controls."""
+        """Keep routing/terminal markers while stripping rich controls."""
         if not metadata:
             return None
         plain = {
@@ -3227,7 +3240,6 @@ class DiscordAdapter(BasePlatformAdapter):
             if key
             not in {
                 "operator_card",
-                "status_terminal",
                 "status_key",
                 "reply_to_message_id",
             }
@@ -3752,6 +3764,9 @@ class DiscordAdapter(BasePlatformAdapter):
             success=True,
             message_id=message_id,
             raw_response={"thread_id": thread_id},
+            delivered_attachment_count=(
+                len(files) if files else 1 if file is not None else 0
+            ),
         )
 
     async def edit_message(
@@ -4071,7 +4086,11 @@ class DiscordAdapter(BasePlatformAdapter):
                     file=file,
                 )
             msg = await channel.send(content=caption if caption else None, file=file)
-        return SendResult(success=True, message_id=str(msg.id))
+        return SendResult(
+            success=True,
+            message_id=str(msg.id),
+            delivered_attachment_count=1,
+        )
 
     async def send_multiple_images(
         self,
@@ -4193,12 +4212,15 @@ class DiscordAdapter(BasePlatformAdapter):
                         content=(content or "").strip(),
                         files=files,
                     )
-                    if not forum_result.success:
+                    confirmed_count = confirmed_attachment_delivery_count(
+                        forum_result
+                    )
+                    if not confirmed_count:
                         delivery_errors.append(
                             forum_result.error or "Forum image batch failed"
                         )
                         continue
-                    delivered_attachment_count += len(files)
+                    delivered_attachment_count += confirmed_count
                     last_message_id = forum_result.message_id
                 else:
                     message = await channel.send(content=content, files=files)
@@ -4335,12 +4357,20 @@ class DiscordAdapter(BasePlatformAdapter):
                     discord.http.Route("POST", "/channels/{channel_id}/messages", channel_id=channel.id),
                     form=form,
                 )
-                return SendResult(success=True, message_id=str(msg_data["id"]))
+                return SendResult(
+                    success=True,
+                    message_id=str(msg_data["id"]),
+                    delivered_attachment_count=1,
+                )
             except Exception as voice_err:
                 logger.debug("Voice message flag failed, falling back to file: %s", voice_err)
                 file = discord.File(io.BytesIO(file_data), filename=filename)
                 msg = await channel.send(file=file)
-                return SendResult(success=True, message_id=str(msg.id))
+                return SendResult(
+                    success=True,
+                    message_id=str(msg.id),
+                    delivered_attachment_count=1,
+                )
         except Exception as e:  # pragma: no cover - defensive logging
             logger.error("[%s] Failed to send audio, falling back to base adapter: %s", self.name, e, exc_info=True)
             return await super().send_voice(chat_id, audio_path, caption, reply_to, metadata=metadata)
@@ -5350,7 +5380,11 @@ class DiscordAdapter(BasePlatformAdapter):
                         content=caption if caption else None,
                         file=file,
                     )
-                    return SendResult(success=True, message_id=str(msg.id))
+                    return SendResult(
+                        success=True,
+                        message_id=str(msg.id),
+                        delivered_attachment_count=1,
+                    )
 
         except ImportError:
             logger.warning(
@@ -5419,7 +5453,11 @@ class DiscordAdapter(BasePlatformAdapter):
                         content=caption if caption else None,
                         file=file,
                     )
-                    return SendResult(success=True, message_id=str(msg.id))
+                    return SendResult(
+                        success=True,
+                        message_id=str(msg.id),
+                        delivered_attachment_count=1,
+                    )
 
         except ImportError:
             logger.warning(

@@ -14659,8 +14659,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             file_path=media_path,
                             metadata=_thread_meta,
                         )
-                    if media_result is None or getattr(media_result, "success", False):
-                        _attachment_deliveries += 1
+                    _attachment_deliveries += min(
+                        1,
+                        confirmed_attachment_delivery_count(media_result),
+                    )
                 except Exception as e:
                     logger.warning("[%s] Post-stream media delivery failed: %s", adapter.name, e)
 
@@ -14679,8 +14681,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             file_path=file_path,
                             metadata=_thread_meta,
                         )
-                    if file_result is None or getattr(file_result, "success", False):
-                        _attachment_deliveries += 1
+                    _attachment_deliveries += min(
+                        1,
+                        confirmed_attachment_delivery_count(file_result),
+                    )
                 except Exception as e:
                     logger.warning("[%s] Post-stream file delivery failed: %s", adapter.name, e)
 

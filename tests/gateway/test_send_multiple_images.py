@@ -19,7 +19,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from gateway.config import PlatformConfig
-from gateway.platforms.base import BasePlatformAdapter
+from gateway.platforms.base import BasePlatformAdapter, SendResult
 
 
 def _run(coro):
@@ -48,26 +48,34 @@ class _StubAdapter(BasePlatformAdapter):
         return None
 
     async def send(self, chat_id, content, reply_to=None, **kwargs):
-        from gateway.platforms.base import SendResult
         return SendResult(success=True)
 
     async def get_chat_info(self, chat_id):
         return {}
 
     async def send_image(self, chat_id, image_url, caption=None, **kwargs):
-        from gateway.platforms.base import SendResult
         self.sent_images.append((chat_id, image_url, caption))
-        return SendResult(success=True, message_id=str(len(self.sent_images)))
+        return SendResult(
+            success=True,
+            message_id=str(len(self.sent_images)),
+            delivered_attachment_count=1,
+        )
 
     async def send_animation(self, chat_id, animation_url, caption=None, **kwargs):
-        from gateway.platforms.base import SendResult
         self.sent_animations.append((chat_id, animation_url, caption))
-        return SendResult(success=True, message_id=str(len(self.sent_animations)))
+        return SendResult(
+            success=True,
+            message_id=str(len(self.sent_animations)),
+            delivered_attachment_count=1,
+        )
 
     async def send_image_file(self, chat_id, image_path, caption=None, **kwargs):
-        from gateway.platforms.base import SendResult
         self.sent_files.append((chat_id, image_path, caption))
-        return SendResult(success=True, message_id=str(len(self.sent_files)))
+        return SendResult(
+            success=True,
+            message_id=str(len(self.sent_files)),
+            delivered_attachment_count=1,
+        )
 
 
 class TestBaseDefaultLoop:
@@ -353,6 +361,7 @@ class TestDiscordMultiImage:
                 success=True,
                 message_id="fallback-1",
                 error=None,
+                delivered_attachment_count=1,
             )
         )
 
@@ -391,6 +400,35 @@ class TestDiscordMultiImage:
             )
         )
 
+        assert result.success is False
+        assert result.delivered_attachment_count == 0
+
+    def test_failed_batch_and_text_only_per_image_fallback_report_zero_deliveries(
+        self, adapter, tmp_path
+    ):
+        image = tmp_path / "report.png"
+        image.write_bytes(b"\x89PNG" + b"\x00" * 20)
+        mock_channel = MagicMock()
+        mock_channel.send = AsyncMock(side_effect=RuntimeError("native unavailable"))
+        adapter._client.get_channel = MagicMock(return_value=mock_channel)
+        adapter._is_forum_parent = MagicMock(return_value=False)
+        adapter.send = AsyncMock(
+            return_value=SendResult(success=True, message_id="warning-text")
+        )
+
+        result = _run(
+            adapter.send_multiple_images(
+                "67890",
+                [(f"file://{image}", "")],
+            )
+        )
+
+        adapter.send.assert_awaited_once_with(
+            chat_id="67890",
+            content="⚠️ Couldn't deliver the image attachment.",
+            reply_to=None,
+            metadata=None,
+        )
         assert result.success is False
         assert result.delivered_attachment_count == 0
 

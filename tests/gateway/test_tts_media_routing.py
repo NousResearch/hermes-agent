@@ -19,8 +19,9 @@ from gateway.session import SessionSource, build_session_key
 
 
 class _MediaRoutingAdapter(BasePlatformAdapter):
-    def __init__(self):
-        super().__init__(PlatformConfig(enabled=True, token="test"), Platform.TELEGRAM)
+    def __init__(self, platform=Platform.TELEGRAM):
+        super().__init__(PlatformConfig(enabled=True, token="test"), platform)
+        self.sent_messages = []
 
     async def connect(self, *, is_reconnect: bool = False):
         return True
@@ -29,6 +30,9 @@ class _MediaRoutingAdapter(BasePlatformAdapter):
         pass
 
     async def send(self, chat_id, content=None, **kwargs):
+        self.sent_messages.append(
+            {"chat_id": chat_id, "content": content, **kwargs}
+        )
         return SendResult(success=True, message_id="text")
 
     async def get_chat_info(self, chat_id):
@@ -132,6 +136,57 @@ def _fake_runner(thread_meta, *, reply_anchor=None):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("file_name", "is_voice", "warning"),
+    [
+        pytest.param(
+            "report.pdf",
+            False,
+            "⚠️ Couldn't deliver the file attachment.",
+            id="document",
+        ),
+        pytest.param(
+            "clip.mp4",
+            False,
+            "⚠️ Couldn't deliver the video attachment.",
+            id="video",
+        ),
+        pytest.param(
+            "voice.ogg",
+            True,
+            "⚠️ Couldn't deliver the audio attachment.",
+            id="voice",
+        ),
+    ],
+)
+async def test_streamed_warning_fallback_does_not_claim_attachment_delivery(
+    tmp_path,
+    monkeypatch,
+    file_name,
+    is_voice,
+    warning,
+):
+    event = _event(thread_id="topic-1", platform=Platform.DISCORD)
+    event._status_key = "task_run:message:msg-1"
+    media_file = _allowed_media_path(tmp_path, monkeypatch, file_name)
+    adapter = _MediaRoutingAdapter(platform=Platform.DISCORD)
+    media_tag = (
+        f"[[audio_as_voice]]\nMEDIA:{media_file}"
+        if is_voice
+        else f"MEDIA:{media_file}"
+    )
+
+    await GatewayRunner._deliver_media_from_response(
+        _fake_runner({"thread_id": "topic-1"}, reply_anchor="msg-1"),
+        media_tag,
+        event,
+        adapter,
+    )
+
+    assert [item["content"] for item in adapter.sent_messages] == [warning]
+
+
+@pytest.mark.asyncio
 async def test_streamed_media_only_final_terminalizes_keyed_status_card(
     tmp_path, monkeypatch
 ):
@@ -145,7 +200,11 @@ async def test_streamed_media_only_final_terminalizes_keyed_status_card(
         extract_local_files=BasePlatformAdapter.extract_local_files,
         send_voice=AsyncMock(),
         send_document=AsyncMock(
-            return_value=SendResult(success=True, message_id="document")
+            return_value=SendResult(
+                success=True,
+                message_id="document",
+                delivered_attachment_count=1,
+            )
         ),
         send_multiple_images=AsyncMock(),
         send_video=AsyncMock(),

@@ -18,6 +18,7 @@ import shutil
 import subprocess
 import sys
 import time
+import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -49,6 +50,7 @@ STATUS_CHECK_FAILED = "check_failed"
 STATUS_BACKUP_FAILED = "backup_failed"
 STATUS_UPDATE_FAILED = "update_failed"
 STATUS_HEALTH_FAILED = "health_failed"
+STATUS_RECOVERY_REQUIRED = "recovery_required"
 
 EXIT_CHECK_FAILED = 10
 EXIT_BACKUP_FAILED = 11
@@ -63,6 +65,9 @@ DEFAULT_STATUS: dict[str, Any] = {
     "schedulerType": None,
     "schedulerPath": None,
     "schedulerIdentity": None,
+    "runGeneration": None,
+    "preUpdateGateway": None,
+    "terminalReceipt": None,
     "lastRunAt": None,
     "lastPlanAt": None,
     "status": STATUS_NOT_CONFIGURED,
@@ -81,6 +86,34 @@ class AutoUpdateError(RuntimeError):
         super().__init__(message)
         self.status = status
         self.exit_code = exit_code
+
+
+class SchedulerRecoveryError(RuntimeError):
+    """A scheduler mutation could not be restored exactly."""
+
+    def __init__(self, message: str, receipt: dict[str, Any]) -> None:
+        super().__init__(message)
+        self.receipt = receipt
+
+
+def _persist_recovery_required(message: str, receipt: dict[str, Any]) -> None:
+    """Best-effort durable marker for a scheduler needing manual recovery."""
+    try:
+        detail = f"{message}: {json.dumps(receipt, sort_keys=True, default=str)}"
+        status = read_status()
+        write_status(
+            {
+                **status,
+                "status": STATUS_RECOVERY_REQUIRED,
+                "error": detail,
+                "lastRunAt": status.get("lastRunAt") or _utc_now(),
+            }
+        )
+    except Exception as exc:
+        print(
+            f"✗ Could not persist scheduler recovery state: {exc}",
+            file=sys.stderr,
+        )
 
 
 def _utc_now() -> str:
@@ -225,13 +258,74 @@ def _live_process_metadata(pid: int) -> dict[str, Any] | None:
 
         if not _pid_exists(pid):
             return None
-        return {
+        metadata = {
             "pid": pid,
             "start_time": get_process_start_time(pid),
             "command": _read_process_cmdline(pid),
         }
+        for name in ("exe", "cwd"):
+            try:
+                metadata[name] = str(Path(f"/proc/{pid}/{name}").resolve())
+            except (OSError, RuntimeError):
+                pass
+        return metadata
     except Exception:
         return None
+
+
+def _reported_runtime_fields(runtime: dict[str, Any] | None) -> dict[str, str | None]:
+    """Extract version/revision fields reported by the gateway process."""
+    if not isinstance(runtime, dict):
+        return {"runtime_version": None, "runtime_revision": None}
+    version = next(
+        (
+            runtime.get(key)
+            for key in ("runtime_version", "runtimeVersion", "version")
+            if isinstance(runtime.get(key), str) and runtime.get(key).strip()
+        ),
+        None,
+    )
+    revision = next(
+        (
+            runtime.get(key)
+            for key in ("runtime_revision", "runtimeRevision", "revision")
+            if isinstance(runtime.get(key), str) and runtime.get(key).strip()
+        ),
+        None,
+    )
+    return {
+        "runtime_version": str(version).strip() if version else None,
+        "runtime_revision": str(revision).strip() if revision else None,
+    }
+
+
+def _version_matches(actual: str | None, expected: str | None) -> bool:
+    if not actual or not expected:
+        return False
+    actual = str(actual).strip()
+    expected = str(expected).strip()
+    return bool(actual and expected and (actual == expected or actual.startswith(expected) or expected.startswith(actual)))
+
+
+def _installation_matches(identity: dict[str, Any] | None) -> bool:
+    """Require the replacement to identify the same interpreter/install."""
+    if not isinstance(identity, dict):
+        return False
+    reported = identity.get("installation_identity")
+    if reported is not None:
+        if str(reported) == _installation_identity():
+            return True
+        try:
+            return Path(str(reported)).resolve() == Path(sys.executable).resolve()
+        except (OSError, RuntimeError):
+            return False
+    executable = identity.get("executable") or identity.get("exe")
+    if not executable:
+        return False
+    try:
+        return Path(str(executable)).resolve() == Path(sys.executable).resolve()
+    except (OSError, RuntimeError):
+        return False
 
 
 def _live_gateway_identity(
@@ -275,6 +369,17 @@ def _live_gateway_identity(
             "pid": live_pid,
             "start_time": live_start if live_start is not None else recorded_start,
             "command": command,
+            **_reported_runtime_fields(runtime),
+            "installation_identity": runtime.get("installation_identity")
+            or runtime.get("installationIdentity")
+            or live.get("installation_identity")
+            or live.get("exe"),
+            "profile_home": runtime.get("profile_home")
+            or runtime.get("profileHome")
+            or runtime.get("hermes_home")
+            or runtime.get("hermesHome")
+            or str(get_hermes_home()),
+            "executable": live.get("executable") or live.get("exe"),
         }
     except Exception:
         return None
@@ -297,13 +402,27 @@ def _stopped_runtime_is_live_validated(runtime: dict[str, Any] | None) -> bool:
     return _live_process_metadata(identity[0]) is None
 
 
-def _capture_gateway_runtime() -> dict[str, Any] | None:
-    """Capture only an OS-validated pre-update gateway intent."""
-    from gateway.status import read_runtime_status
+def _capture_gateway_runtime(expected_version: str | None = None) -> dict[str, Any] | None:
+    """Capture a durable, OS-validated pre-update gateway proof."""
+    try:
+        from gateway import status as gateway_status
 
-    runtime = read_runtime_status()
-    if not isinstance(runtime, dict):
+        runtime = gateway_status.read_runtime_status()
+    except Exception:
         return None
+    if not isinstance(runtime, dict):
+        try:
+            if gateway_status.get_running_pid() is not None:
+                return None
+        except Exception:
+            return None
+        return {
+            "gateway_state": "stopped",
+            "pid": None,
+            "start_time": None,
+            "_live_validated": True,
+            "pre_update_proof": "no-live-gateway",
+        }
     if runtime.get("gateway_state") == "stopped":
         if _stopped_runtime_is_live_validated(runtime):
             captured = dict(runtime)
@@ -315,10 +434,59 @@ def _capture_gateway_runtime() -> dict[str, Any] | None:
     identity = _live_gateway_identity(runtime)
     if identity is None:
         return None
+    reported = identity.get("runtime_version") or identity.get("runtime_revision")
+    if not reported:
+        return None
+    if expected_version and not _version_matches(reported, expected_version):
+        return None
+    if not _installation_matches(identity):
+        return None
     captured = dict(runtime)
     captured.update(identity)
+    captured.setdefault("profile_home", str(get_hermes_home()))
     captured["_live_validated"] = True
     return captured
+
+
+def _durable_gateway_proof(runtime: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not isinstance(runtime, dict):
+        return None
+    return {
+        "gatewayState": runtime.get("gateway_state"),
+        "pid": runtime.get("pid"),
+        "startTime": runtime.get("start_time"),
+        "runtimeVersion": runtime.get("runtime_version"),
+        "runtimeRevision": runtime.get("runtime_revision"),
+        "installationIdentity": runtime.get("installation_identity"),
+        "profileHome": runtime.get("profile_home") or str(get_hermes_home()),
+        "liveValidated": runtime.get("_live_validated") is True,
+    }
+
+
+def _pre_update_gateway_proof_error(runtime: dict[str, Any] | None) -> str | None:
+    if not isinstance(runtime, dict) or runtime.get("_live_validated") is not True:
+        return (
+            "could not establish a live gateway proof with PID, process start time, "
+            "and process-reported version before update; pre-update process proof "
+            "is unavailable, refusing to update"
+        )
+    if not _gateway_was_running(runtime):
+        return None
+    if not runtime.get("pid") or runtime.get("start_time") is None:
+        return "pre-update gateway proof is missing PID or process start time"
+    if not (runtime.get("runtime_version") or runtime.get("runtime_revision")):
+        return "pre-update gateway proof is missing a process-reported version or revision"
+    if not runtime.get("installation_identity") and not runtime.get("executable"):
+        return "pre-update gateway proof is missing the installation identity"
+    profile_home = runtime.get("profile_home") or runtime.get("profileHome")
+    if not profile_home:
+        return "pre-update gateway proof is missing the profile identity"
+    try:
+        if Path(str(profile_home)).resolve() != get_hermes_home().resolve():
+            return "pre-update gateway proof belongs to a different profile"
+    except (OSError, RuntimeError):
+        return "pre-update gateway proof has an unreadable profile identity"
+    return None
 
 
 def _pre_update_gateway_intent_error() -> str | None:
@@ -359,6 +527,7 @@ def _gateway_was_running(runtime: dict[str, Any] | None) -> bool:
 
 def _verify_health(
     previous_runtime: dict[str, Any] | None = None,
+    expected_version: str | None = None,
 ) -> tuple[bool, str]:
     """Return a bounded, live post-update health verdict."""
     try:
@@ -406,11 +575,46 @@ def _verify_health(
                             new_identity["pid"],
                             new_identity.get("start_time"),
                         )
-                    if (old_pid, old_start) != (new_pid, new_start):
-                        return True, f"gateway state: running (new process {new_pid})"
-                    last_detail = (
-                        "gateway restart is still using the pre-update process identity"
+                    old_install = previous_runtime.get("installation_identity")
+                    new_install = new_identity.get("installation_identity")
+                    old_profile = previous_runtime.get("profile_home") or str(
+                        get_hermes_home()
                     )
+                    new_profile = new_identity.get("profile_home")
+                    try:
+                        profile_matches = (
+                            Path(str(old_profile)).resolve()
+                            == Path(str(new_profile)).resolve()
+                            == get_hermes_home().resolve()
+                        )
+                    except (OSError, RuntimeError, TypeError):
+                        profile_matches = False
+                    if expected_version and (
+                        not old_install
+                        or not new_install
+                        or old_install != new_install
+                        or not _installation_matches(new_identity)
+                    ):
+                        last_detail = "gateway restart reported a different installation"
+                    elif expected_version and not new_profile:
+                        last_detail = "gateway restart did not report the expected profile"
+                    elif expected_version and not _version_matches(
+                        new_identity.get("runtime_version")
+                        or new_identity.get("runtime_revision"),
+                        expected_version,
+                    ):
+                        last_detail = (
+                            "gateway restart did not report the expected updated version "
+                            f"{expected_version}"
+                        )
+                    elif expected_version and not profile_matches:
+                        last_detail = "gateway restart reported a different profile"
+                    elif (old_pid, old_start) != (new_pid, new_start):
+                        return True, f"gateway state: running (new process {new_pid})"
+                    else:
+                        last_detail = (
+                            "gateway restart is still using the pre-update process identity"
+                        )
                 else:
                     last_detail = "could not verify the live gateway process identity after restart"
             elif was_running:
@@ -464,8 +668,21 @@ def _status_payload(
     current_version: str | None = None,
     backup_path: str | None = None,
     error: str | None = None,
+    run_generation: str | None = None,
+    pre_update_gateway: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     existing = read_status()
+    generation = run_generation or existing.get("runGeneration")
+    receipt = existing.get("terminalReceipt")
+    if status == STATUS_RUNNING:
+        receipt = None
+    elif generation:
+        receipt = {
+            "generation": generation,
+            "status": status,
+            "completedAt": _utc_now(),
+            "error": error,
+        }
     return {
         "mode": existing.get("mode") or "manual",
         "enabled": existing.get("enabled", False) is True,
@@ -474,6 +691,12 @@ def _status_payload(
         "schedulerType": existing.get("schedulerType"),
         "schedulerPath": existing.get("schedulerPath"),
         "schedulerIdentity": existing.get("schedulerIdentity"),
+        "runGeneration": generation,
+        "preUpdateGateway": (
+            pre_update_gateway
+            if pre_update_gateway is not None
+            else existing.get("preUpdateGateway")
+        ),
         "lastRunAt": last_run_at,
         "lastPlanAt": existing.get("lastPlanAt"),
         "status": status,
@@ -483,6 +706,7 @@ def _status_payload(
         "currentVersion": current_version,
         "backupPath": backup_path,
         "error": error,
+        "terminalReceipt": receipt,
         "logPath": str(get_log_path()),
     }
 
@@ -617,15 +841,29 @@ def _systemd_basename() -> str:
 class _SchedulerHandle:
     scheduler_type: str
     path: Path
-    _rollback_fn: Callable[[], None]
+    _rollback_fn: Callable[[], dict[str, Any]]
     removed: bool = False
     _rolled_back: bool = False
 
-    def rollback(self) -> None:
+    def rollback(self) -> dict[str, Any]:
         if self._rolled_back:
-            return
+            return {"ok": True, "scheduler": self.scheduler_type, "alreadyRolledBack": True}
         self._rolled_back = True
-        self._rollback_fn()
+        try:
+            receipt = self._rollback_fn()
+        except Exception as exc:
+            return {
+                "ok": False,
+                "scheduler": self.scheduler_type,
+                "errors": [f"rollback raised unexpectedly: {exc}"],
+            }
+        if not isinstance(receipt, dict):
+            return {
+                "ok": False,
+                "scheduler": self.scheduler_type,
+                "errors": ["rollback returned an invalid receipt"],
+            }
+        return receipt
 
 
 def _scheduled_command() -> list[str]:
@@ -724,18 +962,75 @@ def _snapshot_file(path: Path) -> tuple[bytes, int] | None:
     return path.read_bytes(), stat.st_mode
 
 
-def _restore_file(path: Path, snapshot: tuple[bytes, int] | None) -> None:
-    if snapshot is None:
-        try:
-            path.unlink(missing_ok=True)
-        except IsADirectoryError:
-            raise RuntimeError(f"scheduler artifact is a directory: {path}") from None
-        return
-    path.parent.mkdir(parents=True, exist_ok=True)
+def _read_artifact_state(path: Path) -> dict[str, Any]:
+    try:
+        stat_result = path.lstat()
+    except FileNotFoundError:
+        return {"exists": False, "kind": "absent", "mode": None, "bytes": None}
+    except Exception as exc:
+        return {"exists": None, "kind": "error", "mode": None, "bytes": None, "error": str(exc)}
+
+    mode = stat_result.st_mode & 0o7777
     if path.is_symlink():
-        path.unlink()
-    path.write_bytes(snapshot[0])
-    os.chmod(path, snapshot[1] & 0o7777)
+        try:
+            target = os.readlink(path)
+        except Exception as exc:
+            target = f"<unreadable: {exc}>"
+        return {"exists": True, "kind": "symlink", "mode": mode, "target": target}
+    if not path.is_file():
+        return {"exists": True, "kind": "other", "mode": mode}
+    try:
+        return {
+            "exists": True,
+            "kind": "file",
+            "mode": mode,
+            "bytes": path.read_bytes(),
+        }
+    except Exception as exc:
+        return {"exists": True, "kind": "file", "mode": mode, "bytes": None, "error": str(exc)}
+
+
+def _restore_file(path: Path, snapshot: tuple[bytes, int] | None) -> dict[str, Any]:
+    """Restore one scheduler artifact and verify the exact result, never raising."""
+    expected = {
+        "exists": snapshot is not None,
+        "kind": "file" if snapshot is not None else "absent",
+        "mode": (snapshot[1] & 0o7777) if snapshot is not None else None,
+        "bytes": snapshot[0] if snapshot is not None else None,
+    }
+    errors: list[str] = []
+    try:
+        if snapshot is None:
+            path.unlink(missing_ok=True)
+        else:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            current = _read_artifact_state(path)
+            if current.get("exists") and current.get("kind") == "other":
+                errors.append(f"scheduler artifact is not removable regular file: {path}")
+            else:
+                if current.get("exists"):
+                    path.unlink()
+                path.write_bytes(snapshot[0])
+                os.chmod(path, snapshot[1] & 0o7777)
+    except Exception as exc:
+        errors.append(f"restore failed for {path}: {exc}")
+
+    actual = _read_artifact_state(path)
+    matches = (
+        actual.get("exists") == expected["exists"]
+        and actual.get("kind") == expected["kind"]
+        and actual.get("mode") == expected["mode"]
+        and (expected["bytes"] is None or actual.get("bytes") == expected["bytes"])
+    )
+    if not matches:
+        errors.append(f"exact artifact verification failed for {path}")
+    return {
+        "path": str(path),
+        "ok": not errors,
+        "expected": expected,
+        "actual": actual,
+        "errors": errors,
+    }
 
 
 def _launchd_state(target: str) -> dict[str, bool | None]:
@@ -769,7 +1064,7 @@ def _restore_launchd(
     plist_path: Path,
     prior_file: tuple[bytes, int] | None,
     prior_state: dict[str, bool | None],
-) -> None:
+) -> dict[str, Any]:
     errors: list[str] = []
 
     def run(args: list[str], operation: str, *, allow_missing: bool = False) -> None:
@@ -788,9 +1083,15 @@ def _restore_launchd(
         allow_missing=True,
     )
     try:
-        _restore_file(plist_path, prior_file)
+        file_receipt = _restore_file(plist_path, prior_file)
     except Exception as exc:
-        errors.append(f"could not restore {plist_path}: {exc}")
+        file_receipt = {
+            "path": str(plist_path),
+            "ok": False,
+            "errors": [f"restore helper raised unexpectedly: {exc}"],
+        }
+    if not file_receipt.get("ok"):
+        errors.extend(str(error) for error in file_receipt.get("errors", []))
 
     if prior_state.get("loaded") and prior_file is not None:
         run(
@@ -812,8 +1113,27 @@ def _restore_launchd(
             ["kickstart", "-k", f"{target}/{_launchd_label()}"],
             "launchctl rollback kickstart",
         )
-    if errors:
-        raise RuntimeError("; ".join(errors))
+    try:
+        actual_state: dict[str, Any] = _launchd_state(target)
+    except Exception as exc:
+        actual_state = {"error": str(exc)}
+        errors.append(f"could not verify launchd state: {exc}")
+    for key in ("loaded", "enabled", "running"):
+        if actual_state.get(key) != prior_state.get(key):
+            errors.append(
+                f"launchd {key} mismatch: expected {prior_state.get(key)!r}, "
+                f"got {actual_state.get(key)!r}"
+            )
+    receipt = {
+        "ok": not errors,
+        "scheduler": "launchd",
+        "files": [file_receipt],
+        "manager": {"expected": dict(prior_state), "actual": actual_state},
+        "errors": errors,
+    }
+    if not receipt["ok"]:
+        _persist_recovery_required("launchd restoration failed", receipt)
+    return receipt
 
 
 def _enable_launchd(
@@ -860,15 +1180,17 @@ def _enable_launchd(
             "launchctl enable",
         )
     except Exception as exc:
-        try:
-            _restore_launchd(
+        receipt = _restore_launchd(
                 target=target,
                 plist_path=plist_path,
                 prior_file=prior_file,
                 prior_state=prior_state,
             )
-        except Exception as rollback_exc:
-            raise RuntimeError(f"{exc}; scheduler rollback failed: {rollback_exc}") from exc
+        if not receipt.get("ok"):
+            raise SchedulerRecoveryError(
+                f"{exc}; scheduler rollback failed: {receipt.get('errors')}",
+                receipt,
+            ) from exc
         raise
     return _SchedulerHandle(
         "launchd",
@@ -901,16 +1223,16 @@ def _disable_launchd() -> _SchedulerHandle:
         if existed:
             plist_path.unlink()
     except Exception as exc:
-        try:
-            _restore_launchd(
+        receipt = _restore_launchd(
                 target=target,
                 plist_path=plist_path,
                 prior_file=prior_file,
                 prior_state=prior_state,
             )
-        except Exception as rollback_exc:
-            raise RuntimeError(
-                f"{exc}; scheduler rollback failed: {rollback_exc}"
+        if not receipt.get("ok"):
+            raise SchedulerRecoveryError(
+                f"{exc}; scheduler rollback failed: {receipt.get('errors')}",
+                receipt,
             ) from exc
         raise
     return _SchedulerHandle(
@@ -1013,8 +1335,11 @@ def _restore_systemd(
     prior_service: tuple[bytes, int] | None,
     prior_timer: tuple[bytes, int] | None,
     prior_state: dict[str, Any],
-) -> None:
+) -> dict[str, Any]:
     errors: list[str] = []
+    timer_state = prior_state.get("timer_state", prior_state)
+    service_state = prior_state.get("service_state", timer_state)
+    file_receipts: list[dict[str, Any]] = []
 
     def run(args: list[str], operation: str, *, allow_missing: bool = False) -> None:
         try:
@@ -1034,14 +1359,21 @@ def _restore_systemd(
         (timer_path, prior_timer),
     ):
         try:
-            _restore_file(path, snapshot)
+            receipt = _restore_file(path, snapshot)
         except Exception as exc:
-            errors.append(f"could not restore {path}: {exc}")
+            receipt = {
+                "path": str(path),
+                "ok": False,
+                "errors": [f"restore helper raised unexpectedly: {exc}"],
+            }
+        file_receipts.append(receipt)
+        if not receipt.get("ok"):
+            errors.extend(str(error) for error in receipt.get("errors", []))
     run(["daemon-reload"], "systemctl --user rollback daemon-reload")
 
-    unit_file_state = prior_state.get("unit_file_state")
+    unit_file_state = timer_state.get("unit_file_state")
     if unit_file_state is None:
-        unit_file_state = "enabled" if prior_state.get("enabled") is True else None
+        unit_file_state = "enabled" if timer_state.get("enabled") is True else None
     if unit_file_state == "enabled":
         run(["enable", timer_name], "systemctl --user rollback enable")
     elif unit_file_state == "enabled-runtime":
@@ -1074,10 +1406,38 @@ def _restore_systemd(
             "systemctl --user rollback disable",
             allow_missing=True,
         )
-    if prior_state.get("active_state") == "active" or prior_state.get("running"):
+    if timer_state.get("active_state") == "active" or timer_state.get("running"):
         run(["start", timer_name], "systemctl --user rollback start")
-    if errors:
-        raise RuntimeError("; ".join(errors))
+    manager_actual: dict[str, Any] = {}
+    for label, unit_name, expected in (
+        ("service", service_path.name, service_state),
+        ("timer", timer_name, timer_state),
+    ):
+        try:
+            actual = _systemd_state(unit_name)
+        except Exception as exc:
+            actual = {"error": str(exc)}
+            errors.append(f"could not verify systemd {label} state: {exc}")
+        manager_actual[label] = actual
+        for key in ("load_state", "unit_file_state", "active_state"):
+            if actual.get(key) != expected.get(key):
+                errors.append(
+                    f"systemd {label} {key} mismatch: expected {expected.get(key)!r}, "
+                    f"got {actual.get(key)!r}"
+                )
+    receipt = {
+        "ok": not errors,
+        "scheduler": "systemd-user",
+        "files": file_receipts,
+        "manager": {
+            "expected": {"service": dict(service_state), "timer": dict(timer_state)},
+            "actual": manager_actual,
+        },
+        "errors": errors,
+    }
+    if not receipt["ok"]:
+        _persist_recovery_required("systemd restoration failed", receipt)
+    return receipt
 
 
 def _enable_systemd(
@@ -1091,10 +1451,20 @@ def _enable_systemd(
     get_log_path().parent.mkdir(parents=True, exist_ok=True)
     prior_service = _snapshot_file(service_path)
     prior_timer = _snapshot_file(timer_path)
-    prior_state = _systemd_state(timer_path.name)
-    if prior_service is None and prior_timer is None and prior_state.get("loaded"):
+    timer_state = _systemd_state(timer_path.name)
+    service_state = _systemd_state(service_path.name)
+    prior_state = {
+        **timer_state,
+        "timer_state": timer_state,
+        "service_state": service_state,
+    }
+    if (
+        (prior_timer is None and timer_state.get("loaded"))
+        or (prior_service is None and service_state.get("loaded"))
+    ):
         raise RuntimeError(
-            "systemd timer is loaded without scheduler files; refusing to unload it"
+            "systemd service or timer is loaded without its scheduler file; "
+            "refusing to unload it"
         )
 
     command = " ".join(shlex.quote(part) for part in _scheduled_command())
@@ -1149,9 +1519,9 @@ def _enable_systemd(
         )
         result = _systemctl_user(["enable", "--now", timer_path.name])
         _require_command_success(result, "systemctl --user enable --now")
+        _verify_systemd_enabled(service_path, timer_path)
     except Exception as exc:
-        try:
-            _restore_systemd(
+        receipt = _restore_systemd(
                 service_path=service_path,
                 timer_path=timer_path,
                 timer_name=timer_path.name,
@@ -1159,8 +1529,11 @@ def _enable_systemd(
                 prior_timer=prior_timer,
                 prior_state=prior_state,
             )
-        except Exception as rollback_exc:
-            raise RuntimeError(f"{exc}; scheduler rollback failed: {rollback_exc}") from exc
+        if not receipt.get("ok"):
+            raise SchedulerRecoveryError(
+                f"{exc}; scheduler rollback failed: {receipt.get('errors')}",
+                receipt,
+            ) from exc
         raise
     return _SchedulerHandle(
         "systemd-user",
@@ -1176,17 +1549,50 @@ def _enable_systemd(
     )
 
 
-def _verify_systemd_disabled(timer_name: str) -> None:
-    state = _systemd_state(timer_name)
-    if (
-        state.get("load_state") != "not-found"
-        or state.get("active_state") != "inactive"
-    ):
+def _verify_systemd_enabled(service_path: Path, timer_path: Path) -> None:
+    service_state = _systemd_state(service_path.name)
+    timer_state = _systemd_state(timer_path.name)
+    for label, state in (("service", service_state), ("timer", timer_state)):
+        if state.get("load_state") != "loaded":
+            raise RuntimeError(
+                f"systemd {label} did not load: expected LoadState=loaded, "
+                f"got {state.get('load_state')!r}"
+            )
+        if state.get("unit_file_state") in {None, "not-found"}:
+            raise RuntimeError(
+                f"systemd {label} has no recoverable unit-file state: "
+                f"got {state.get('unit_file_state')!r}"
+            )
+    if timer_state.get("active_state") != "active":
         raise RuntimeError(
-            "systemd timer was not fully removed: expected LoadState=not-found "
-            f"and ActiveState=inactive, got LoadState={state.get('load_state')!r} "
-            f"and ActiveState={state.get('active_state')!r}"
+            "systemd timer did not start: expected ActiveState=active, got "
+            f"{timer_state.get('active_state')!r}"
         )
+    for path in (service_path, timer_path):
+        artifact = _read_artifact_state(path)
+        if artifact.get("kind") != "file":
+            raise RuntimeError(f"systemd scheduler artifact is not an exact file: {path}")
+
+
+def _verify_systemd_disabled(
+    service_path: Path, timer_path: Path
+) -> None:
+    for label, path in (("service", service_path), ("timer", timer_path)):
+        state = _systemd_state(path.name)
+        if (
+            state.get("load_state") != "not-found"
+            or state.get("unit_file_state") != "not-found"
+            or state.get("active_state") != "inactive"
+        ):
+            raise RuntimeError(
+                f"systemd {label} was not fully removed: expected "
+                "LoadState=not-found, UnitFileState=not-found, ActiveState=inactive, "
+                f"got LoadState={state.get('load_state')!r}, "
+                f"UnitFileState={state.get('unit_file_state')!r}, "
+                f"ActiveState={state.get('active_state')!r}"
+            )
+        if _read_artifact_state(path).get("exists") is not False:
+            raise RuntimeError(f"systemd scheduler artifact was not removed: {path}")
 
 
 def _disable_systemd() -> _SchedulerHandle:
@@ -1197,12 +1603,26 @@ def _disable_systemd() -> _SchedulerHandle:
     if not shutil.which("systemctl"):
         if existed:
             raise RuntimeError("systemctl is unavailable; scheduler files were kept")
-        return _SchedulerHandle("systemd-user", timer_path, lambda: None)
+        return _SchedulerHandle(
+            "systemd-user",
+            timer_path,
+            lambda: {"ok": True, "scheduler": "systemd-user", "files": []},
+        )
 
-    prior_state = _systemd_state(timer_path.name)
-    if not existed and prior_state.get("loaded"):
+    timer_state = _systemd_state(timer_path.name)
+    service_state = _systemd_state(service_path.name)
+    prior_state = {
+        **timer_state,
+        "timer_state": timer_state,
+        "service_state": service_state,
+    }
+    if (
+        (prior_timer is None and timer_state.get("loaded"))
+        or (prior_service is None and service_state.get("loaded"))
+    ):
         raise RuntimeError(
-            "systemd timer is loaded without scheduler files; refusing to unload it"
+            "systemd service or timer is loaded without its scheduler file; "
+            "refusing to unload it"
         )
     try:
         _require_command_success(
@@ -1216,10 +1636,9 @@ def _disable_systemd() -> _SchedulerHandle:
             _systemctl_user(["daemon-reload"]),
             "systemctl --user daemon-reload",
         )
-        _verify_systemd_disabled(timer_path.name)
+        _verify_systemd_disabled(service_path, timer_path)
     except Exception as exc:
-        try:
-            _restore_systemd(
+        receipt = _restore_systemd(
                 service_path=service_path,
                 timer_path=timer_path,
                 timer_name=timer_path.name,
@@ -1227,9 +1646,10 @@ def _disable_systemd() -> _SchedulerHandle:
                 prior_timer=prior_timer,
                 prior_state=prior_state,
             )
-        except Exception as rollback_exc:
-            raise RuntimeError(
-                f"{exc}; scheduler rollback failed: {rollback_exc}"
+        if not receipt.get("ok"):
+            raise SchedulerRecoveryError(
+                f"{exc}; scheduler rollback failed: {receipt.get('errors')}",
+                receipt,
             ) from exc
         raise
     return _SchedulerHandle(
@@ -1313,12 +1733,11 @@ def cmd_auto_enable(args) -> None:
                 logPath=str(get_log_path()),
             )
         except Exception as status_exc:
-            try:
-                scheduler_handle.rollback()
-            except Exception as rollback_exc:
+            receipt = scheduler_handle.rollback()
+            if not receipt.get("ok"):
                 raise RuntimeError(
                     f"could not persist scheduler status: {status_exc}; "
-                    f"scheduler rollback failed: {rollback_exc}"
+                    f"scheduler rollback failed: {receipt.get('errors')}"
                 ) from status_exc
             raise
     except ValueError as exc:
@@ -1358,12 +1777,11 @@ def cmd_auto_disable(_args) -> None:
                 raise RuntimeError(
                     f"could not persist disabled scheduler status: {status_exc}"
                 ) from status_exc
-            try:
-                scheduler_handle.rollback()
-            except Exception as rollback_exc:
+            receipt = scheduler_handle.rollback()
+            if not receipt.get("ok"):
                 raise RuntimeError(
                     f"could not persist disabled scheduler status: {status_exc}; "
-                    f"scheduler rollback failed: {rollback_exc}"
+                    f"scheduler rollback failed: {receipt.get('errors')}"
                 ) from status_exc
             raise RuntimeError(
                 f"could not persist disabled scheduler status: {status_exc}"
@@ -1590,26 +2008,36 @@ def cmd_auto_run_scheduled(_args) -> None:
     return cmd_auto_run_now(SimpleNamespace(branch=None, force=False))
 
 
+def _read_valid_terminal_receipt() -> dict[str, Any] | None:
+    status = read_status()
+    generation = status.get("runGeneration")
+    receipt = status.get("terminalReceipt")
+    if not isinstance(generation, str) or not generation:
+        return None
+    if not isinstance(receipt, dict) or receipt.get("generation") != generation:
+        return None
+    if receipt.get("status") != status.get("status"):
+        return None
+    if status.get("status") in {None, STATUS_RUNNING}:
+        return None
+    return receipt
+
+
 def _record_lock_failure(message: str) -> NoReturn:
-    started_at = _utc_now()
-    current_version = _current_version()
-    write_status(
-        _status_payload(
-            status=STATUS_UPDATE_FAILED,
-            last_run_at=started_at,
-            previous_version=current_version,
-            current_version=current_version,
-            error=message,
+    """Report lock contention without mutating leader-owned shared state."""
+    receipt = None
+    try:
+        receipt = _read_valid_terminal_receipt()
+    except Exception as exc:
+        print(f"⚠ Auto-update is busy; terminal receipt unreadable: {exc}", file=sys.stderr)
+    if receipt is not None:
+        print(
+            "⚠ Auto-update is busy; the leader already recorded "
+            f"{receipt.get('status')} for generation {receipt.get('generation')}",
+            file=sys.stderr,
         )
-    )
-    append_log(
-        "end",
-        result=STATUS_UPDATE_FAILED,
-        previous_version=current_version,
-        current_version=current_version,
-        error=message,
-    )
-    print(f"✗ Auto-update run failed ({STATUS_UPDATE_FAILED}): {message}", file=sys.stderr)
+    else:
+        print(f"⚠ Auto-update is busy; no leader terminal receipt yet: {message}", file=sys.stderr)
     raise SystemExit(EXIT_UPDATE_FAILED)
 
 
@@ -1649,6 +2077,8 @@ def _record_unexpected_run_failure(exc: Exception) -> NoReturn:
                 current_version=current_version,
                 backup_path=status.get("backupPath"),
                 error=error,
+                run_generation=status.get("runGeneration"),
+                pre_update_gateway=status.get("preUpdateGateway"),
             )
         )
     except Exception as persist_exc:
@@ -1687,7 +2117,8 @@ def _cmd_auto_run_now_locked_impl(args) -> None:
 
     branch = _resolve_update_branch(args)
     previous_version = _current_version()
-    previous_runtime = _capture_gateway_runtime()
+    run_generation = uuid.uuid4().hex
+    previous_runtime = _capture_gateway_runtime(previous_version)
     latest_version: str | None = None
     current_version: str | None = previous_version
     backup_path: str | None = None
@@ -1699,6 +2130,8 @@ def _cmd_auto_run_now_locked_impl(args) -> None:
             last_run_at=started_at,
             previous_version=previous_version,
             current_version=current_version,
+            run_generation=run_generation,
+            pre_update_gateway=_durable_gateway_proof(previous_runtime),
         )
     )
     append_log(
@@ -1730,6 +2163,8 @@ def _cmd_auto_run_now_locked_impl(args) -> None:
                 previous_version=previous_version,
                 latest_version=latest_version,
                 current_version=current_version,
+                run_generation=run_generation,
+                pre_update_gateway=_durable_gateway_proof(previous_runtime),
             )
             write_status(payload)
             append_log(
@@ -1743,6 +2178,7 @@ def _cmd_auto_run_now_locked_impl(args) -> None:
             return
 
         expected_sha = check.get("latest_sha")
+        expected_runtime_version = str(expected_sha or latest_version or "").strip() or None
         if check.get("install_method") == "git" and not expected_sha:
             raise AutoUpdateError(
                 STATUS_UPDATE_FAILED,
@@ -1755,6 +2191,20 @@ def _cmd_auto_run_now_locked_impl(args) -> None:
             raise AutoUpdateError(
                 STATUS_HEALTH_FAILED,
                 intent_error,
+                EXIT_HEALTH_FAILED,
+            )
+
+        proof_error = _pre_update_gateway_proof_error(previous_runtime)
+        if proof_error:
+            raise AutoUpdateError(
+                STATUS_HEALTH_FAILED,
+                proof_error,
+                EXIT_HEALTH_FAILED,
+            )
+        if _gateway_was_running(previous_runtime) and not expected_runtime_version:
+            raise AutoUpdateError(
+                STATUS_HEALTH_FAILED,
+                "could not establish the expected updated runtime version; refusing to update",
                 EXIT_HEALTH_FAILED,
             )
 
@@ -1790,7 +2240,7 @@ def _cmd_auto_run_now_locked_impl(args) -> None:
                 EXIT_UPDATE_FAILED,
             )
 
-        ok, detail = _verify_health(previous_runtime)
+        ok, detail = _verify_health(previous_runtime, expected_runtime_version)
         if not ok:
             raise AutoUpdateError(
                 STATUS_HEALTH_FAILED,
@@ -1805,6 +2255,8 @@ def _cmd_auto_run_now_locked_impl(args) -> None:
             latest_version=latest_version,
             current_version=current_version,
             backup_path=backup_path,
+            run_generation=run_generation,
+            pre_update_gateway=_durable_gateway_proof(previous_runtime),
         )
         write_status(payload)
         append_log(
@@ -1826,6 +2278,8 @@ def _cmd_auto_run_now_locked_impl(args) -> None:
             current_version=current_version,
             backup_path=backup_path,
             error=str(exc),
+            run_generation=run_generation,
+            pre_update_gateway=_durable_gateway_proof(previous_runtime),
         )
         write_status(payload)
         append_log(

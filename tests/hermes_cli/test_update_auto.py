@@ -513,9 +513,24 @@ def test_enable_systemd_requires_daemon_reload_success(tmp_path, monkeypatch, ca
             timer_path.name,
             "--property=LoadState,UnitFileState,ActiveState",
         ],
+        [
+            "show",
+            _service_path.name,
+            "--property=LoadState,UnitFileState,ActiveState",
+        ],
         ["daemon-reload"],
         ["disable", "--now", timer_path.name],
         ["daemon-reload"],
+        [
+            "show",
+            _service_path.name,
+            "--property=LoadState,UnitFileState,ActiveState",
+        ],
+        [
+            "show",
+            timer_path.name,
+            "--property=LoadState,UnitFileState,ActiveState",
+        ],
     ]
     assert update_auto.read_status()["enabled"] is False
     error = capsys.readouterr().err
@@ -551,10 +566,25 @@ def test_enable_systemd_requires_enable_now_success(tmp_path, monkeypatch, capsy
             timer_path.name,
             "--property=LoadState,UnitFileState,ActiveState",
         ],
+        [
+            "show",
+            _service_path.name,
+            "--property=LoadState,UnitFileState,ActiveState",
+        ],
         ["daemon-reload"],
         ["enable", "--now", timer_path.name],
         ["disable", "--now", timer_path.name],
         ["daemon-reload"],
+        [
+            "show",
+            _service_path.name,
+            "--property=LoadState,UnitFileState,ActiveState",
+        ],
+        [
+            "show",
+            timer_path.name,
+            "--property=LoadState,UnitFileState,ActiveState",
+        ],
     ]
     assert update_auto.read_status()["enabled"] is False
     error = capsys.readouterr().err
@@ -711,6 +741,24 @@ def _set_linux_scheduler_env(tmp_path, monkeypatch):
 
     def fake_run(cmd, **kwargs):
         calls.append(cmd)
+        if len(cmd) >= 4 and cmd[0:3] == ["systemctl", "--user", "show"]:
+            service_path, timer_path = update_auto._systemd_paths()
+            unit_path = service_path if cmd[3] == service_path.name else timer_path
+            if unit_path.exists():
+                active = "active" if unit_path == timer_path else "inactive"
+                unit_file = "enabled" if unit_path == timer_path else "static"
+                output = (
+                    "LoadState=loaded\n"
+                    f"UnitFileState={unit_file}\n"
+                    f"ActiveState={active}\n"
+                )
+            else:
+                output = (
+                    "LoadState=not-found\n"
+                    "UnitFileState=not-found\n"
+                    "ActiveState=inactive\n"
+                )
+            return subprocess.CompletedProcess(cmd, 0, stdout=output, stderr="")
         return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
     monkeypatch.setattr(update_auto.subprocess, "run", fake_run)
@@ -1024,6 +1072,210 @@ def test_run_now_rejects_a_surviving_pre_update_gateway_process(tmp_path, monkey
     assert "pre-update process" in data["error"]
 
 
+def test_run_now_aborts_before_backup_when_running_gateway_has_no_reported_version(
+    tmp_path, monkeypatch
+):
+    hermes_home = tmp_path / "home"
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    from gateway import status as gateway_status
+    from hermes_cli import backup
+    from hermes_cli import main as hm
+
+    runtime = {
+        "gateway_state": "running",
+        "pid": 101,
+        "start_time": 1,
+        "argv": ["hermes", "gateway", "run"],
+    }
+    monkeypatch.setattr(gateway_status, "read_runtime_status", lambda: runtime)
+    monkeypatch.setattr(
+        gateway_status,
+        "get_runtime_status_running_pid",
+        lambda *_args, **_kwargs: 101,
+    )
+    monkeypatch.setattr(
+        gateway_status,
+        "looks_like_gateway_runtime_command_line",
+        lambda _command: True,
+    )
+    monkeypatch.setattr(
+        update_auto,
+        "_live_process_metadata",
+        lambda _pid: {
+            "pid": 101,
+            "start_time": 1,
+            "command": "hermes gateway run",
+            "exe": update_auto.sys.executable,
+        },
+    )
+    monkeypatch.setattr(update_auto, "_current_version", lambda: "old")
+    monkeypatch.setattr(
+        hm,
+        "_get_update_check_result",
+        lambda **_kwargs: {"update_available": True, "latest_version": "new"},
+    )
+    backup_calls = []
+    monkeypatch.setattr(
+        backup,
+        "create_pre_update_backup",
+        lambda: backup_calls.append(True) or hermes_home / "backups" / "pre-update.zip",
+    )
+    monkeypatch.setattr(hm, "cmd_update", lambda _args: pytest.fail("update must not run"))
+
+    with pytest.raises(SystemExit) as exc:
+        update_auto.cmd_auto_run_now(_args())
+
+    assert exc.value.code == update_auto.EXIT_HEALTH_FAILED
+    assert backup_calls == []
+    assert "version" in _read_status(hermes_home)["error"]
+
+
+def test_verify_health_rejects_a_new_process_from_another_installation(monkeypatch):
+    from gateway import status as gateway_status
+
+    before = {
+        "gateway_state": "running",
+        "pid": 101,
+        "start_time": 1,
+        "runtime_version": "old",
+        "installation_identity": "install-a",
+        "_live_validated": True,
+    }
+    after = {
+        "gateway_state": "running",
+        "pid": 202,
+        "start_time": 2,
+        "runtime_version": "new",
+        "installation_identity": "install-b",
+        "argv": ["hermes", "gateway", "run"],
+    }
+    monkeypatch.setattr(gateway_status, "read_runtime_status", lambda: after)
+    monkeypatch.setattr(
+        update_auto,
+        "_live_gateway_identity",
+        lambda runtime, **_kwargs: {
+            "pid": runtime["pid"],
+            "start_time": runtime["start_time"],
+            "command": "hermes gateway run",
+            "runtime_version": runtime["runtime_version"],
+            "installation_identity": runtime["installation_identity"],
+        },
+    )
+    monkeypatch.setattr(update_auto, "_HEALTH_STARTUP_GRACE_SECONDS", 0.0)
+
+    ok, detail = update_auto._verify_health(before, expected_version="new")
+
+    assert ok is False
+    assert "install" in detail.lower()
+
+
+def test_busy_follower_does_not_overwrite_successful_leader_receipt(
+    tmp_path, monkeypatch, capsys
+):
+    hermes_home = tmp_path / "home"
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    leader_receipt = {
+        "generation": "leader-generation",
+        "status": update_auto.STATUS_SUCCESS,
+        "completedAt": "2026-07-20T00:00:00+00:00",
+    }
+    update_auto.write_status(
+        {
+            "status": update_auto.STATUS_SUCCESS,
+            "runGeneration": "leader-generation",
+            "terminalReceipt": leader_receipt,
+        }
+    )
+
+    from hermes_cli.update_lock import UpdateLockBusyError
+
+    monkeypatch.setattr(
+        update_auto,
+        "acquire_update_lock",
+        lambda _root: (_ for _ in ()).throw(UpdateLockBusyError("busy")),
+    )
+    monkeypatch.setattr(update_auto, "_current_version", lambda: pytest.fail("follower must not write status"))
+
+    with pytest.raises(SystemExit) as exc:
+        update_auto.cmd_auto_run_now(_args())
+
+    assert exc.value.code == update_auto.EXIT_UPDATE_FAILED
+    status = _read_status(hermes_home)
+    assert status["status"] == update_auto.STATUS_SUCCESS
+    assert status["terminalReceipt"] == leader_receipt
+    assert "busy" in capsys.readouterr().err
+
+
+def test_restore_systemd_returns_failure_receipt_when_a_rollback_substep_raises(
+    tmp_path, monkeypatch
+):
+    hermes_home = tmp_path / "home"
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    service_path = tmp_path / "hermes.service"
+    timer_path = tmp_path / "hermes.timer"
+    monkeypatch.setattr(
+        update_auto,
+        "_systemctl_user",
+        lambda _args: (_ for _ in ()).throw(OSError("systemctl unavailable")),
+    )
+    monkeypatch.setattr(
+        update_auto,
+        "_restore_file",
+        lambda *_args: (_ for _ in ()).throw(OSError("restore write failed")),
+    )
+
+    receipt = update_auto._restore_systemd(
+        service_path=service_path,
+        timer_path=timer_path,
+        timer_name=timer_path.name,
+        prior_service=None,
+        prior_timer=None,
+        prior_state={
+            "load_state": "not-found",
+            "unit_file_state": "not-found",
+            "active_state": "inactive",
+        },
+    )
+
+    assert receipt["ok"] is False
+    assert receipt["errors"]
+    assert any("restore write failed" in error for error in receipt["errors"])
+    assert _read_status(hermes_home)["status"] == update_auto.STATUS_RECOVERY_REQUIRED
+
+
+def test_enable_systemd_refuses_loaded_timer_when_only_service_file_exists(
+    tmp_path, monkeypatch
+):
+    _hermes_home, calls = _set_linux_scheduler_env(tmp_path, monkeypatch)
+    service_path, timer_path = update_auto._systemd_paths()
+    service_path.parent.mkdir(parents=True, exist_ok=True)
+    service_path.write_text("service before\n", encoding="utf-8")
+
+    def systemctl(args):
+        calls.append(args)
+        if args[0] == "show" and args[1] == timer_path.name:
+            return subprocess.CompletedProcess(
+                ["systemctl", "--user"] + args,
+                0,
+                stdout="LoadState=loaded\nUnitFileState=enabled\nActiveState=active\n",
+                stderr="",
+            )
+        return subprocess.CompletedProcess(
+            ["systemctl", "--user"] + args, 0, stdout="", stderr=""
+        )
+
+    monkeypatch.setattr(update_auto, "_systemctl_user", systemctl)
+
+    with pytest.raises(RuntimeError, match="loaded"):
+        update_auto._enable_systemd(3, 0, "03:00", [])
+
+    assert service_path.read_text(encoding="utf-8") == "service before\n"
+    assert not timer_path.exists()
+    assert not any(call[0] == "disable" for call in calls)
+    assert not any(call[0] == "daemon-reload" for call in calls)
+
+
 def _parse_update_args(argv):
     parser = argparse.ArgumentParser()
     subparsers = parser.add_subparsers(dest="command")
@@ -1253,6 +1505,8 @@ def test_run_now_success_reuses_existing_update_flow_and_logs(tmp_path, monkeypa
     assert data["currentVersion"] == "newsha"
     assert data["backupPath"].endswith("pre-update.zip")
     assert data["error"] is None
+    assert data["runGeneration"]
+    assert data["terminalReceipt"]["generation"] == data["runGeneration"]
     log_text = (hermes_home / "logs" / "update.log").read_text(encoding="utf-8")
     assert "event=start" in log_text
     assert "event=end result=success" in log_text
@@ -1365,9 +1619,7 @@ def test_run_now_reports_lock_busy_without_checking_or_updating(tmp_path, monkey
         update_auto.cmd_auto_run_now(_args())
 
     assert exc.value.code == update_auto.EXIT_UPDATE_FAILED
-    data = _read_status(hermes_home)
-    assert data["status"] == update_auto.STATUS_UPDATE_FAILED
-    assert "busy" in data["error"]
+    assert not (hermes_home / "state" / "update-status.json").exists()
     assert "already running" in capsys.readouterr().err
 
 
@@ -2032,6 +2284,8 @@ def test_disable_systemd_orders_delete_before_reload_and_verifies_not_found_inac
     show_results = iter(
         [
             "LoadState=loaded\nUnitFileState=enabled\nActiveState=active\n",
+            "LoadState=loaded\nUnitFileState=enabled\nActiveState=active\n",
+            "LoadState=not-found\nUnitFileState=not-found\nActiveState=inactive\n",
             "LoadState=not-found\nUnitFileState=not-found\nActiveState=inactive\n",
         ]
     )

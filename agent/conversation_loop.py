@@ -3047,19 +3047,19 @@ def run_conversation(
                     if _stripped:
                         agent._vprint(
                             f"{agent.log_prefix}⚠️  llama.cpp rejected tool schema grammar — "
-                            f"stripped {_stripped} pattern/format keyword(s), retrying...",
+                            f"stripped {_stripped} grammar-hostile keyword(s), retrying...",
                             force=True,
                         )
                         logger.warning(
                             "%sllama.cpp grammar recovery: stripped %d "
-                            "pattern/format keyword(s) from tool schemas",
+                            "grammar-hostile keyword(s) from tool schemas",
                             agent.log_prefix, _stripped,
                         )
                         continue
                     # No keywords found to strip — fall through to normal
                     # retry path rather than loop forever on the same error.
                     logger.warning(
-                        "%sllama.cpp grammar error but no pattern/format "
+                        "%sllama.cpp grammar error but no grammar-hostile "
                         "keywords to strip — falling through to normal retry",
                         agent.log_prefix,
                     )

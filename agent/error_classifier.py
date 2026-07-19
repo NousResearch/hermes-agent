@@ -710,14 +710,23 @@ def classify_api_error(
 
     # llama.cpp's ``json-schema-to-grammar`` converter (used by its OAI
     # server to build GBNF tool-call parsers) rejects regex escape classes
-    # like ``\d``/``\w``/``\s`` and most ``format`` values. MCP servers
-    # routinely emit ``"pattern": "\\d{4}-\\d{2}-\\d{2}"`` for date/phone/
-    # email params. llama.cpp surfaces this as HTTP 400 with one of a few
-    # recognizable phrases; on match we strip ``pattern``/``format`` from
-    # ``self.tools`` in the retry loop and retry once. Cloud providers are
-    # unaffected — they accept these keywords and we never hit this branch.
+    # like ``\d``/``\w``/``\s``, most ``format`` values, AND large bounded
+    # repetition such as ``"maxLength": 2000`` on array-item strings (it
+    # expands the char rule 2000× into a grammar that fails to parse). MCP
+    # servers routinely emit these (``"pattern": "\\d{4}-\\d{2}-\\d{2}"`` for
+    # date params; ``maxLength``/``maxItems`` bounds on batch-id arrays).
+    # llama.cpp surfaces this as HTTP 400 with one of a few recognizable
+    # phrases; on match we strip the hostile keywords from ``self.tools`` in
+    # the retry loop and retry once. Cloud providers are unaffected — they
+    # accept these keywords and we never hit this branch.
+    #
+    # ``status_code`` may be ``None`` on the *streaming* path: LM Studio's
+    # error arrives as a bare ``APIError`` (status_code unset) rather than a
+    # ``BadRequestError``, but the "400 ... failed to parse grammar" text is
+    # still in the message. The phrases below are llama.cpp-specific, so we
+    # match them whether the status code is 400 or absent.
     if (
-        status_code == 400
+        status_code in (400, None)
         and (
             "error parsing grammar" in error_msg
             or "json-schema-to-grammar" in error_msg

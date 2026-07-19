@@ -477,9 +477,11 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
             context_parts.append(context_files_prompt)
 
         # Hermes rules: always-on rules from project .hermes/rules/ + profile rules/
+        # Resolve the active profile via get_active_profile_dir() inside
+        # _load_hermes_rules -- AIAgent has no `profile_dir` attribute
+        # (cf. PR #66441 review).
         from agent.prompt_builder import _load_hermes_rules
         rules_prompt = _load_hermes_rules(
-            profile_dir=agent.profile_dir,
             cwd_path=Path(resolve_context_cwd() or os.getcwd()),
             context_length=_ctx_len,
         )

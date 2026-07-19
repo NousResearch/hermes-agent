@@ -1926,7 +1926,6 @@ def _load_claude_md(cwd_path: Path, context_length: Optional[int] = None) -> str
 
 
 def _load_hermes_rules(
-    profile_dir: Path,
     cwd_path: Path,
     context_length: Optional[int] = None,
 ) -> str:
@@ -1935,6 +1934,13 @@ def _load_hermes_rules(
     Rules are loaded via ``load_active_rules``, which discovers
     ``.hermes/rules/`` from *cwd_path* up to the git root and merges
     them with the profile's ``rules/`` directory.
+
+    The active profile directory is resolved through the canonical
+    ``agent.rules_configure_tool.get_active_profile_dir()`` helper
+    (which honors ``HERMES_PROFILE`` and ``HERMES_HOME``). Callers
+    must NOT pass ``agent.profile_dir`` -- ``AIAgent`` does not have
+    such an attribute, and the previous call site crashed before
+    rules could load (#66441 review).
     """
     try:
         from agent.rules_configure_tool import get_active_profile_dir
@@ -1946,11 +1952,7 @@ def _load_hermes_rules(
     except ImportError:
         return ""
 
-    try:
-        rules_dir = get_active_profile_dir()
-    except Exception:
-        rules_dir = profile_dir
-
+    rules_dir = get_active_profile_dir()
     rules = _load(rules_dir, cwd_path)
     if not rules:
         return ""

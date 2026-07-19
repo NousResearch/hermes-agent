@@ -106,6 +106,14 @@ def discover_project_rules_dirs(cwd: Optional[Path] = None) -> list[Path]:
 
     The nearest directory is returned first. Directories are only
     considered if they actually exist.
+
+    Security boundary: when *cwd* is not inside a git repository, only
+    ``cwd`` itself is scanned. Walking parents without a git boundary
+    would let a ``.hermes/rules/`` planted in an ancestor directory
+    (``/tmp``, ``$HOME``, etc.) inject content into the system prompt
+    for any process running there -- the cross-user context-injection
+    path closed in commit ``306b6615``. Mirror ``_find_hermes_md``
+    (origin/main, ``agent/prompt_builder.py``) for that boundary.
     """
     if cwd is None:
         cwd = Path.cwd()
@@ -115,6 +123,11 @@ def discover_project_rules_dirs(cwd: Optional[Path] = None) -> list[Path]:
         cwd = Path.cwd()
 
     stop_at = _find_git_root(cwd)
+    # No git root -> only check cwd itself. Otherwise a planted
+    # ``~/.hermes/rules/`` (or ``/tmp/.hermes/rules/``) would be picked
+    # up for any cwd below it.
+    search_parents = bool(stop_at)
+
     dirs: list[Path] = []
     current = cwd
 
@@ -122,17 +135,18 @@ def discover_project_rules_dirs(cwd: Optional[Path] = None) -> list[Path]:
         candidate = current / ".hermes" / "rules"
         if candidate.is_dir():
             dirs.append(candidate)
+        if not search_parents:
+            break
         if stop_at and current == stop_at:
             break
         parent = current.parent
         if parent == current:
             break
         current = parent
-        if stop_at:
-            try:
-                current.relative_to(stop_at)
-            except ValueError:
-                break
+        try:
+            current.relative_to(stop_at)  # type: ignore[arg-type]
+        except (ValueError, TypeError):
+            break
 
     return dirs
 
@@ -239,17 +253,52 @@ def format_rules_for_prompt(
     rules: Iterable[Rule],
     header: str = "## Project Rules",
 ) -> str:
-    """Render rules into a single system-prompt section."""
+    """Render rules into a single system-prompt section.
+
+    Each rule body is scanned for prompt-injection patterns via the
+    shared ``tools.threat_patterns`` library (the same ``context``
+    scope used by ``agent.prompt_builder._scan_context_content``).
+    Matching bodies are replaced with the standard ``[BLOCKED: ...]``
+    placeholder so a malicious rule checked into a repo cannot land
+    in the system prompt verbatim. Scoping is per-rule so a single bad
+    rule does not poison the rest of the section.
+    """
     rules = list(rules)
     if not rules:
         return ""
+    try:
+        from tools.threat_patterns import scan_for_threats as _scan_for_threats
+    except ImportError:
+        _scan_for_threats = None  # type: ignore[assignment]
+
     lines = [header, ""]
     for rule in rules:
-        lines.append(f"### {rule.rel_id}")
+        label = rule.rel_id
+        try:
+            rel_label = str(rule.path.name)
+        except Exception:
+            rel_label = label
+        body = rule.body
+        if _scan_for_threats is not None:
+            try:
+                findings = _scan_for_threats(body, scope="context")
+            except Exception:
+                findings = []
+            if findings:
+                logger.warning(
+                    "Rule %s blocked during prompt render: %s",
+                    rel_label,
+                    ", ".join(findings),
+                )
+                body = (
+                    f"[BLOCKED: {rel_label} contained potential prompt "
+                    f"injection ({', '.join(findings)}). Content not loaded.]"
+                )
+        lines.append(f"### {label}")
         if rule.description:
             lines.append(f"_{rule.description}_")
         lines.append("")
-        lines.append(rule.body)
+        lines.append(body)
         lines.append("")
     return "\n".join(lines).rstrip()
 

@@ -3,7 +3,18 @@
 The agent uses this tool to create, read, update, delete, and list
 rules in the profile's ``rules/`` directory or in project-level
 ``.hermes/rules/`` directories.
+
+Contract note: ``tools.registry._normalize_handler_result`` accepts
+strings (and multimodal envelopes) only -- every other return shape is
+coerced into a ``tool_result_contract`` error before reaching the
+agent loop. The CLI (``hermes rules ...``) calls
+``agent.rules_configure_tool.run`` directly and consumes the dict;
+this *handler* stringifies that dict for the registry. Do not change
+``run()`` to return a string -- the CLI depends on the structured
+shape (#66441 review).
 """
+
+import json
 
 from tools.registry import registry
 from agent.rules_configure_tool import run as _run
@@ -62,7 +73,7 @@ SCHEMA = {
 
 
 def _handler(args, **_kwargs):
-    return _run(
+    result = _run(
         action=args.get("action", ""),
         name=args.get("name"),
         body=args.get("body"),
@@ -72,6 +83,11 @@ def _handler(args, **_kwargs):
         overwrite=bool(args.get("overwrite", False)),
         scope=args.get("scope"),
     )
+    # Registry contract: tool handlers must return a string. ``run()``
+    # returns a structured dict that the CLI consumes directly; here we
+    # serialize it so the agent loop can read it. ``ensure_ascii=False``
+    # so non-ASCII rule bodies survive round-trip.
+    return json.dumps(result, ensure_ascii=False)
 
 
 registry.register(

@@ -194,22 +194,27 @@ class TestRunJobScript:
 
         captured = {}
 
-        def fake_run(argv, **kwargs):
+        def fake_popen(argv, **kwargs):
             captured["argv"] = argv
             captured["kwargs"] = kwargs
-            return SimpleNamespace(returncode=0, stdout="ok\n", stderr="")
+            kwargs["stdout"].write(b"ok\n")
+            return SimpleNamespace(
+                wait=lambda timeout=None: 0,
+                kill=lambda: None,
+            )
 
         monkeypatch.setattr(sched_mod.sys, "platform", "win32")
         monkeypatch.setattr(sched_mod.sys, "executable", str(venv_python))
-        monkeypatch.setattr(sched_mod, "windows_hide_flags", lambda: 0x08000000)
-        monkeypatch.setattr(sched_mod.subprocess, "run", fake_run)
+        monkeypatch.setattr(sched_mod, "windows_detach_flags", lambda: 0x09000208)
+        monkeypatch.setattr(sched_mod.subprocess, "Popen", fake_popen)
 
         success, output = _run_job_script("probe.py")
 
         assert success is True
         assert output == "ok"
         assert captured["argv"] == [str(base_python), str(script.resolve())]
-        assert captured["kwargs"]["creationflags"] == 0x08000000
+        assert captured["kwargs"]["creationflags"] == 0x09000208
+        assert captured["kwargs"]["stdin"] == sched_mod.subprocess.DEVNULL
         env = captured["kwargs"]["env"]
         assert env["VIRTUAL_ENV"] == str(venv)
         assert str(site_packages) in env["PYTHONPATH"]
@@ -231,23 +236,26 @@ class TestRunJobScript:
 
         captured = {}
 
-        def fake_run(argv, **kwargs):
+        def fake_popen(argv, **kwargs):
             captured["argv"] = argv
             captured["kwargs"] = kwargs
-            return SimpleNamespace(returncode=0, stdout="ok\n", stderr="")
+            # Undecodable byte: the runner must decode utf-8 with
+            # errors="replace" (parity with the old encoding/errors kwargs).
+            kwargs["stdout"].write("ok \u00e9\n".encode("utf-8") + b"\xff")
+            return SimpleNamespace(
+                wait=lambda timeout=None: 0,
+                kill=lambda: None,
+            )
 
         monkeypatch.setattr(sched_mod.sys, "platform", "win32")
         monkeypatch.setattr(sched_mod.sys, "executable", str(pythonw))
-        monkeypatch.setattr(sched_mod, "windows_hide_flags", lambda: 0x08000000)
-        monkeypatch.setattr(sched_mod.subprocess, "run", fake_run)
+        monkeypatch.setattr(sched_mod.subprocess, "Popen", fake_popen)
 
         success, output = _run_job_script("probe.py")
 
         assert success is True
-        assert output == "ok"
+        assert output == "ok \u00e9\n\ufffd".strip()
         assert captured["argv"] == [str(python), str(script.resolve())]
-        assert captured["kwargs"]["encoding"] == "utf-8"
-        assert captured["kwargs"]["errors"] == "replace"
 
     def test_non_windows_script_preserves_default_text_decoding(self, cron_env, monkeypatch):
         from cron import scheduler as sched_mod
@@ -684,3 +692,315 @@ class TestRunJobEnvVarCleanup:
         assert os.environ.get("HERMES_SESSION_PLATFORM") is None
         assert os.environ.get("HERMES_SESSION_CHAT_ID") is None
         assert os.environ.get("HERMES_SESSION_CHAT_NAME") is None
+
+
+class TestWindowsDetachedRunner:
+    """Behavioral tests for ``_run_script_windows_detached`` (PR #43252).
+
+    These launch REAL subprocesses. On POSIX the detach-flag helpers return
+    0 by design ("no-ops on non-Windows"), so the launch mechanics --
+    file-backed capture, constructor-only retry, timeout, at-most-once --
+    are exercised identically on every platform; on native Windows the real
+    creationflags are applied. Native job-object lifecycle behaviour is
+    covered separately by tests/cron/test_windows_detach_native.py.
+    """
+
+    @staticmethod
+    def _runner():
+        from cron.scheduler import _run_script_windows_detached
+        return _run_script_windows_detached
+
+    def test_captures_stdout_stderr_and_returncode(self, tmp_path):
+        script = tmp_path / "s.py"
+        script.write_text(
+            "import sys\n"
+            "print('to stdout')\n"
+            "print('to stderr', file=sys.stderr)\n"
+            "sys.exit(3)\n"
+        )
+        rc, out, err = self._runner()(
+            [sys.executable, str(script)],
+            timeout=30, cwd=str(tmp_path), env=os.environ.copy(),
+        )
+        assert rc == 3
+        assert out.strip() == "to stdout"
+        assert err.strip() == "to stderr"
+
+    def test_unicode_output_utf8(self, tmp_path):
+        script = tmp_path / "s.py"
+        script.write_text(
+            "import sys\n"
+            "sys.stdout.buffer.write('héllo 世界\\n'.encode('utf-8'))\n",
+            encoding="utf-8",
+        )
+        rc, out, _ = self._runner()(
+            [sys.executable, str(script)],
+            timeout=30, cwd=str(tmp_path), env=os.environ.copy(),
+        )
+        assert rc == 0
+        assert out.strip() == "héllo 世界"
+
+    def test_output_larger_than_pipe_buffer(self, tmp_path):
+        # 2 MiB >> any anonymous-pipe buffer. A pipe-backed capture without
+        # a live reader would deadlock or truncate; the file sink must not.
+        script = tmp_path / "s.py"
+        script.write_text(
+            "import sys\n"
+            "sys.stdout.write('x' * (2 * 1024 * 1024))\n"
+        )
+        rc, out, _ = self._runner()(
+            [sys.executable, str(script)],
+            timeout=60, cwd=str(tmp_path), env=os.environ.copy(),
+        )
+        assert rc == 0
+        assert len(out) == 2 * 1024 * 1024
+
+    def test_empty_output(self, tmp_path):
+        script = tmp_path / "s.py"
+        script.write_text("pass\n")
+        rc, out, err = self._runner()(
+            [sys.executable, str(script)],
+            timeout=30, cwd=str(tmp_path), env=os.environ.copy(),
+        )
+        assert (rc, out, err) == (0, "", "")
+
+    def test_timeout_kills_child_and_never_retries(self, tmp_path, monkeypatch):
+        import subprocess as sp
+        from cron import scheduler as sched_mod
+
+        spawn_count = {"n": 0}
+        real_popen = sp.Popen
+
+        def counting_popen(*args, **kwargs):
+            spawn_count["n"] += 1
+            return real_popen(*args, **kwargs)
+
+        monkeypatch.setattr(sched_mod.subprocess, "Popen", counting_popen)
+
+        script = tmp_path / "slow.py"
+        script.write_text("import time; time.sleep(60)\n")
+        with pytest.raises(sp.TimeoutExpired):
+            self._runner()(
+                [sys.executable, str(script)],
+                timeout=1, cwd=str(tmp_path), env=os.environ.copy(),
+            )
+        assert spawn_count["n"] == 1
+
+    def test_breakaway_denied_retries_constructor_exactly_once(
+        self, tmp_path, monkeypatch
+    ):
+        """WinError 5 from the constructor -> one retry without breakaway,
+        with every non-flag argument identical."""
+        from cron import scheduler as sched_mod
+
+        calls = []
+
+        class _BreakawayDenied(OSError):
+            winerror = 5  # ERROR_ACCESS_DENIED, as raised by CreateProcessW
+
+        monkeypatch.setattr(sched_mod, "windows_detach_flags", lambda: 0x09000208)
+        monkeypatch.setattr(
+            sched_mod, "windows_detach_flags_without_breakaway", lambda: 0x08000208
+        )
+        monkeypatch.setattr(sched_mod, "_parent_in_job", lambda: True)
+
+        def fake_popen(argv, **kwargs):
+            calls.append((argv, kwargs))
+            if len(calls) == 1:
+                raise _BreakawayDenied(5, "Access is denied")
+            kwargs["stdout"].write(b"second attempt ran\n")
+            from types import SimpleNamespace
+            return SimpleNamespace(wait=lambda timeout=None: 0, kill=lambda: None)
+
+        monkeypatch.setattr(sched_mod.subprocess, "Popen", fake_popen)
+
+        rc, out, _ = self._runner()(
+            ["exe", "arg"], timeout=5, cwd=str(tmp_path), env={"A": "1"},
+        )
+        assert rc == 0
+        assert out.strip() == "second attempt ran"
+        assert len(calls) == 2
+        assert calls[0][1]["creationflags"] == 0x09000208
+        assert calls[1][1]["creationflags"] == 0x08000208
+        # Everything except creationflags must be identical across attempts.
+        for key in ("stdin", "stdout", "stderr", "cwd", "env"):
+            assert calls[0][1][key] is calls[1][1][key] or (
+                calls[0][1][key] == calls[1][1][key]
+            )
+        assert calls[0][0] == calls[1][0] == ["exe", "arg"]
+
+    def test_non_breakaway_oserror_never_retries(self, tmp_path, monkeypatch):
+        from cron import scheduler as sched_mod
+
+        calls = []
+
+        def fake_popen(argv, **kwargs):
+            calls.append(argv)
+            raise FileNotFoundError(2, "No such file")
+
+        monkeypatch.setattr(sched_mod.subprocess, "Popen", fake_popen)
+        with pytest.raises(FileNotFoundError):
+            self._runner()(
+                ["missing-exe"], timeout=5, cwd=str(tmp_path), env={},
+            )
+        assert len(calls) == 1
+
+    def test_post_spawn_oserror_never_spawns_second_child(
+        self, tmp_path, monkeypatch
+    ):
+        """The Codex D1 scenario: the child performs a real side effect,
+        then the post-spawn wait phase raises OSError. The rejected package
+        launched a second child here; the reworked runner must not."""
+        import subprocess as sp
+        from cron import scheduler as sched_mod
+
+        side_effect = tmp_path / "side_effect_count.txt"
+        script = tmp_path / "s.py"
+        script.write_text(
+            "from pathlib import Path\n"
+            f"p = Path({str(side_effect)!r})\n"
+            "n = int(p.read_text()) if p.exists() else 0\n"
+            "p.write_text(str(n + 1))\n"
+            "print('completed run', n + 1)\n"
+        )
+
+        spawn_count = {"n": 0}
+        real_popen = sp.Popen
+
+        class _FaultyWaitPopen:
+            def __init__(self, *args, **kwargs):
+                spawn_count["n"] += 1
+                self._proc = real_popen(*args, **kwargs)
+
+            def wait(self, timeout=None):
+                self._proc.wait(timeout=timeout)  # let the child finish...
+                raise OSError(22, "Invalid argument")  # ...then inject fault
+
+            def kill(self):
+                self._proc.kill()
+
+        monkeypatch.setattr(sched_mod.subprocess, "Popen", _FaultyWaitPopen)
+
+        with pytest.raises(OSError):
+            self._runner()(
+                [sys.executable, str(script)],
+                timeout=30, cwd=str(tmp_path), env=os.environ.copy(),
+            )
+        assert spawn_count["n"] == 1
+        assert side_effect.read_text() == "1"
+
+
+    def test_access_denied_outside_job_never_retries(self, tmp_path, monkeypatch):
+        """WinError 5 when the parent is in no job object cannot be
+        breakaway denial (e.g. AV block, unexecutable file) — the runner
+        must propagate rather than retry with weaker flags."""
+        from cron import scheduler as sched_mod
+
+        calls = []
+
+        class _AccessDenied(OSError):
+            winerror = 5
+
+        monkeypatch.setattr(sched_mod, "_parent_in_job", lambda: False)
+
+        def fake_popen(argv, **kwargs):
+            calls.append(argv)
+            raise _AccessDenied(5, "Access is denied")
+
+        monkeypatch.setattr(sched_mod.subprocess, "Popen", fake_popen)
+        with pytest.raises(OSError):
+            self._runner()(
+                ["blocked-exe"], timeout=5, cwd=str(tmp_path), env={},
+            )
+        assert len(calls) == 1
+
+    def test_dual_large_streams_no_deadlock(self, tmp_path):
+        """1 MiB on BOTH streams simultaneously; a single-threaded pipe
+        reader would deadlock, the file sinks must not."""
+        script = tmp_path / "s.py"
+        script.write_text(
+            "import sys\n"
+            "for _ in range(64):\n"
+            "    sys.stdout.write('o' * 16384)\n"
+            "    sys.stderr.write('e' * 16384)\n"
+        )
+        rc, out, err = self._runner()(
+            [sys.executable, str(script)],
+            timeout=60, cwd=str(tmp_path), env=os.environ.copy(),
+        )
+        assert rc == 0
+        assert len(out) == 64 * 16384 and set(out) == {"o"}
+        assert len(err) == 64 * 16384 and set(err) == {"e"}
+
+    def test_grandchild_holding_stdout_does_not_block_return(self, tmp_path):
+        """A script that daemonizes a worker (which inherits the output
+        handle) must return when the DIRECT child exits. Current main's
+        pipe capture blocks until pipe EOF here — a latent false-timeout
+        (and, on Windows, a post-kill communicate() hang)."""
+        import time as _time
+
+        script = tmp_path / "s.py"
+        script.write_text(
+            "import subprocess, sys\n"
+            "subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])\n"
+            "print('done')\n"
+        )
+        t0 = _time.monotonic()
+        rc, out, _ = self._runner()(
+            [sys.executable, str(script)],
+            timeout=30, cwd=str(tmp_path), env=os.environ.copy(),
+        )
+        assert rc == 0
+        assert out.strip() == "done"
+        assert _time.monotonic() - t0 < 10, "returned only after grandchild exit"
+
+    def test_nul_bytes_and_invalid_utf8_do_not_crash(self, tmp_path):
+        script = tmp_path / "s.py"
+        script.write_text(
+            "import sys\n"
+            "sys.stdout.buffer.write(b'a\\x00b\\xff\\xfec\\n')\n"
+        )
+        rc, out, _ = self._runner()(
+            [sys.executable, str(script)],
+            timeout=30, cwd=str(tmp_path), env=os.environ.copy(),
+        )
+        assert rc == 0
+        assert "a\x00b" in out and "c" in out  # replaced, not raised
+
+    def test_run_job_script_routes_win32_to_detached_runner(
+        self, cron_env, monkeypatch
+    ):
+        """On win32, _run_job_script must use the detached runner and pass
+        it the sanitized environment."""
+        from cron import scheduler as sched_mod
+        from cron.scheduler import _run_job_script
+        from tools.environments.local import _HERMES_PROVIDER_ENV_BLOCKLIST
+
+        blocked_var = sorted(_HERMES_PROVIDER_ENV_BLOCKLIST)[0]
+        monkeypatch.setenv(blocked_var, "must_not_leak")
+
+        script = cron_env / "scripts" / "probe.py"
+        script.write_text('print("ok")\n')
+
+        captured = {}
+
+        def fake_detached(argv, *, timeout, cwd, env):
+            captured["argv"] = argv
+            captured["env"] = env
+            return 0, "ok\n", ""
+
+        monkeypatch.setattr(sched_mod.sys, "platform", "win32")
+        monkeypatch.setattr(
+            sched_mod, "_run_script_windows_detached", fake_detached
+        )
+        # Keep interpreter resolution out of scope for this routing test.
+        monkeypatch.setattr(
+            sched_mod,
+            "_windows_cron_python_invocation",
+            lambda exe: (exe, {}),
+        )
+
+        success, output = _run_job_script("probe.py")
+        assert success is True
+        assert output == "ok"
+        assert blocked_var not in captured["env"]

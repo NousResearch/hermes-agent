@@ -1699,6 +1699,60 @@ For separate natural mid-turn assistant updates without progressive token editin
 The master `streaming.enabled` switch is `false` by default — nothing streams until you flip it. Once enabled, streaming is decided **per platform**: Telegram ships with `display.platforms.telegram.streaming: true` (streams) and Discord with `display.platforms.discord.streaming: false` (does not). So after enabling streaming, Telegram streams out of the box and Discord stays on whole-message replies until you change its toggle. You can adjust these per-platform switches from the dashboard's **Channels** toggles or directly in `~/.hermes/config.yaml`.
 :::
 
+## Per-chat Inbound Context
+
+Attach deterministic operator-managed context to messages from a specific chat:
+
+```yaml
+gateway:
+  channel_context_map:
+    "telegram:-1002285219667": "This chat is bound to the release workspace."
+    "discord:123456789012345678": "Use the customer-support runbook for this channel."
+```
+
+Keys always use the exact `<platform>:<chat_id>` form. The platform prefix is
+required even when chat IDs appear globally unique; Hermes does not fall back to
+unqualified IDs because the same raw ID can exist on multiple platforms. Native
+colons inside a chat ID are preserved, for example
+`matrix:!room-id:example.org`.
+
+For maps maintained by another process, point the setting at a JSON file:
+
+```yaml
+gateway:
+  channel_context_map: chat-context.json
+```
+
+Relative paths resolve from the active profile's `HERMES_HOME`; `~` and
+`${ENV_VAR}` references are supported. The JSON root must be an object with the
+same string-to-string entries as the inline form:
+
+```json
+{
+  "telegram:-1002285219667": "This chat is bound to the release workspace.",
+  "discord:123456789012345678": "Use the customer-support runbook for this channel."
+}
+```
+
+Hermes checks file metadata on each inbound message and re-parses only when the
+file changes, so updates do not require a gateway restart. External writers
+should write a sibling temporary file and atomically replace the configured
+file (for example with `os.replace`) so the gateway never observes partial
+JSON. If the file is missing, malformed, changing during the read, or outside
+the limits below, no configured context is injected for that message; stale
+cached bindings are not reused.
+
+- Maximum JSON file size: 1 MiB
+- Maximum entries: 4096
+- Maximum UTF-8 key size: 512 bytes
+- Maximum UTF-8 context size per entry: 2 KiB
+
+Configured text is marked as `[Configured chat context]` in the inbound model
+message. If an adapter also supplied history/backfill context, adapter context
+comes first and configured context follows it. Treat this map like the rest of
+`config.yaml`: its contents are local operator-controlled instructions sent to
+the model, not untrusted chat metadata.
+
 ## Group Chat Session Isolation
 
 Limit how many chat sessions can actively be open across CLI, TUI/dashboard,

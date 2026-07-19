@@ -2964,6 +2964,12 @@ DEFAULT_CONFIG = {
     # Gateway settings — control how messaging platforms (Telegram, Discord,
     # Slack, etc.) deliver agent-produced files as native attachments.
     "gateway": {
+        # Deterministic context attached to inbound messages from specific
+        # chats. Accepts either an inline {"platform:chat_id": "context"}
+        # mapping or a JSON file path. Relative paths are resolved from the
+        # active profile's HERMES_HOME; file changes are picked up at runtime.
+        "channel_context_map": "",
+
         # Seconds the gateway waits for a single messaging platform to finish
         # connecting during startup (and on reconnect). Discord in particular
         # can blow past the old fixed 30s when an account has many slash

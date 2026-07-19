@@ -2320,6 +2320,7 @@ def warm_agent_browser_npx_cache(timeout: float = 60.0) -> bool:
             text=True,
             timeout=timeout,
             check=False,
+            creationflags=windows_hide_flags(),
         )
         return result.returncode == 0
     except Exception:

@@ -1989,6 +1989,9 @@ def _own_policy_open_startup_violation(config) -> Optional[str]:
 # between the guard check and actual agent creation.
 _AGENT_PENDING_SENTINEL = object()
 
+# Sentinel for "caller did not pass metadata" vs "caller passed None".
+_UNSET = object()
+
 
 def _resolve_runtime_agent_kwargs() -> dict:
     """Resolve provider credentials for gateway-created AIAgent instances.
@@ -5813,28 +5816,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _interrupt_text = event.text
                 _media_urls = getattr(event, "media_urls", None) or []
                 if self._pending_event_audio_paths(event):
-                    try:
-                        _interrupt_text, _transcripts = await self._transcribe_pending_audio_event_once(
-                            event,
-                            event.text or "",
-                        )
-                        _echo_meta = self._thread_metadata_for_source(
-                            event.source,
-                            self._reply_anchor_for_event(event),
-                        )
-                        await self._echo_pending_stt_transcripts_once(
-                            event,
-                            adapter,
-                            event.source,
-                            _transcripts,
-                            metadata=_echo_meta,
-                            log_context="Voice-busy-interrupt",
-                        )
-                    except Exception as _trans_exc:
-                        logger.warning(
-                            "Voice-busy-interrupt transcription failed: %s",
-                            _trans_exc,
-                        )
+                    _interrupt_text, _ = await self._transcribe_and_echo_pending_voice(
+                        event,
+                        adapter,
+                        event.source,
+                        event.text or "",
+                        log_context="Voice-busy-interrupt",
+                    )
                 elif not _interrupt_text and _media_urls:
                     _interrupt_text = _build_media_placeholder(event)
                 running_agent.interrupt(_interrupt_text)
@@ -10491,29 +10479,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             _interrupt_text = event.text
             _media_urls = getattr(event, "media_urls", None) or []
             if self._pending_event_audio_paths(event):
-                try:
-                    _interrupt_text, _transcripts = await self._transcribe_pending_audio_event_once(
-                        event,
-                        event.text or "",
-                    )
-                    _echo_adapter = self._adapter_for_source(source)
-                    _echo_meta = self._thread_metadata_for_source(
-                        source,
-                        self._reply_anchor_for_event(event),
-                    )
-                    await self._echo_pending_stt_transcripts_once(
-                        event,
-                        _echo_adapter,
-                        source,
-                        _transcripts,
-                        metadata=_echo_meta,
-                        log_context="Voice-priority-interrupt",
-                    )
-                except Exception as _trans_exc:
-                    logger.warning(
-                        "Voice-priority-interrupt transcription failed: %s",
-                        _trans_exc,
-                    )
+                _interrupt_text, _ = await self._transcribe_and_echo_pending_voice(
+                    event,
+                    self._adapter_for_source(source),
+                    source,
+                    event.text or "",
+                    log_context="Voice-priority-interrupt",
+                )
             elif not _interrupt_text and _media_urls:
                 _interrupt_text = _build_media_placeholder(event)
             running_agent.interrupt(_interrupt_text)
@@ -16453,6 +16425,51 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             except Exception as echo_exc:
                 logger.debug("%s echo failed (non-fatal): %s", log_context, echo_exc)
 
+    async def _transcribe_and_echo_pending_voice(
+        self,
+        event,
+        adapter,
+        source,
+        text: str,
+        *,
+        log_context: str,
+        metadata=_UNSET,
+    ) -> tuple[str, List[str]]:
+        """Transcribe a pending voice event and echo transcripts once.
+
+        Unified helper for all interrupt/monitor/backup/drain paths that need
+        to transcribe a pending voice event and echo the transcript to chat.
+        Returns ``(enriched_text, transcripts)`` so the caller can feed the
+        enriched text into ``agent.interrupt()`` or the pending-drain flow.
+
+        If the event has no STT-eligible media, returns ``(text, [])`` unchanged.
+        The caller is responsible for the ``_build_media_placeholder`` fallback
+        when ``text`` is empty and the event has non-audio media.
+        """
+        if not self._pending_event_audio_paths(event):
+            return text, []
+        try:
+            enriched_text, transcripts = await self._transcribe_pending_audio_event_once(
+                event,
+                text,
+            )
+            echo_meta = self._thread_metadata_for_source(
+                source,
+                self._reply_anchor_for_event(event),
+            ) if metadata is _UNSET else metadata
+            await self._echo_pending_stt_transcripts_once(
+                event,
+                adapter,
+                source,
+                transcripts,
+                metadata=echo_meta,
+                log_context=log_context,
+            )
+            return enriched_text or text, transcripts
+        except Exception as trans_exc:
+            logger.warning("%s transcription failed: %s", log_context, trans_exc)
+            return text, []
+
     def _build_process_event_source(self, evt: dict):
         """Resolve the canonical source for a synthetic background-process event.
 
@@ -20729,25 +20746,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                 # optional 🎙️ echo back to the user.
                                 _media_urls = getattr(_peek_event, "media_urls", None) or []
                                 if self._pending_event_audio_paths(_peek_event):
-                                    try:
-                                        _enriched, _transcripts = await self._transcribe_pending_audio_event_once(
-                                            _peek_event,
-                                            pending_text,
-                                        )
-                                        pending_text = _enriched
-                                        _echo_meta = {"thread_id": source.thread_id} if source.thread_id else None
-                                        await self._echo_pending_stt_transcripts_once(
-                                            _peek_event,
-                                            _adapter,
-                                            source,
-                                            _transcripts,
-                                            metadata=_echo_meta,
-                                            log_context="Voice-interrupt",
-                                        )
-                                    except Exception as _trans_exc:
-                                        logger.warning(
-                                            "Voice-interrupt transcription failed: %s", _trans_exc,
-                                        )
+                                    pending_text, _ = await self._transcribe_and_echo_pending_voice(
+                                        _peek_event,
+                                        _adapter,
+                                        source,
+                                        pending_text,
+                                        log_context="Voice-interrupt",
+                                        metadata={"thread_id": source.thread_id} if source.thread_id else None,
+                                    )
                                 elif not pending_text and _media_urls:
                                     pending_text = _build_media_placeholder(_peek_event)
                             logger.debug("Interrupt detected from adapter, signaling agent...")
@@ -20935,25 +20941,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             if _bp_event is not None:
                                 _bp_media_urls = getattr(_bp_event, "media_urls", None) or []
                                 if self._pending_event_audio_paths(_bp_event):
-                                    try:
-                                        _bp_text, _bp_transcripts = await self._transcribe_pending_audio_event_once(
-                                            _bp_event,
-                                            _bp_text or "",
-                                        )
-                                        _bp_echo_meta = {"thread_id": source.thread_id} if source.thread_id else None
-                                        await self._echo_pending_stt_transcripts_once(
-                                            _bp_event,
-                                            _backup_adapter,
-                                            source,
-                                            _bp_transcripts,
-                                            metadata=_bp_echo_meta,
-                                            log_context="Voice-backup-interrupt",
-                                        )
-                                    except Exception as _bp_trans_exc:
-                                        logger.warning(
-                                            "Voice-backup-interrupt transcription failed: %s",
-                                            _bp_trans_exc,
-                                        )
+                                    _bp_text, _ = await self._transcribe_and_echo_pending_voice(
+                                        _bp_event,
+                                        _backup_adapter,
+                                        source,
+                                        _bp_text or "",
+                                        log_context="Voice-backup-interrupt",
+                                        metadata={"thread_id": source.thread_id} if source.thread_id else None,
+                                    )
                                 elif not _bp_text and _bp_media_urls:
                                     _bp_text = _build_media_placeholder(_bp_event)
                             logger.info(
@@ -21019,25 +21014,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             if _bp_event is not None:
                                 _bp_media_urls = getattr(_bp_event, "media_urls", None) or []
                                 if self._pending_event_audio_paths(_bp_event):
-                                    try:
-                                        _bp_text, _bp_transcripts = await self._transcribe_pending_audio_event_once(
-                                            _bp_event,
-                                            _bp_text or "",
-                                        )
-                                        _bp_echo_meta = {"thread_id": source.thread_id} if source.thread_id else None
-                                        await self._echo_pending_stt_transcripts_once(
-                                            _bp_event,
-                                            _backup_adapter,
-                                            source,
-                                            _bp_transcripts,
-                                            metadata=_bp_echo_meta,
-                                            log_context="Voice-backup-interrupt",
-                                        )
-                                    except Exception as _bp_trans_exc:
-                                        logger.warning(
-                                            "Voice-backup-interrupt transcription failed: %s",
-                                            _bp_trans_exc,
-                                        )
+                                    _bp_text, _ = await self._transcribe_and_echo_pending_voice(
+                                        _bp_event,
+                                        _backup_adapter,
+                                        source,
+                                        _bp_text or "",
+                                        log_context="Voice-backup-interrupt",
+                                        metadata={"thread_id": source.thread_id} if source.thread_id else None,
+                                    )
                                 elif not _bp_text and _bp_media_urls:
                                     _bp_text = _build_media_placeholder(_bp_event)
                             logger.info(
@@ -21185,26 +21169,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _pending_text = pending_event.text or ""
                     _media_urls = getattr(pending_event, "media_urls", None) or []
                     if self._pending_event_audio_paths(pending_event):
-                        try:
-                            _enriched, _transcripts = await self._transcribe_pending_audio_event_once(
-                                pending_event,
-                                _pending_text,
-                            )
-                            pending = _enriched or None
-                            _echo_meta = {"thread_id": source.thread_id} if source.thread_id else None
-                            await self._echo_pending_stt_transcripts_once(
-                                pending_event,
-                                adapter,
-                                source,
-                                _transcripts,
-                                metadata=_echo_meta,
-                                log_context="Voice-drain",
-                            )
-                        except Exception as _trans_exc:
-                            logger.warning(
-                                "Voice-drain transcription failed: %s", _trans_exc,
-                            )
-                            pending = _pending_text or _build_media_placeholder(pending_event)
+                        pending, _ = await self._transcribe_and_echo_pending_voice(
+                            pending_event,
+                            adapter,
+                            source,
+                            _pending_text,
+                            log_context="Voice-drain",
+                            metadata={"thread_id": source.thread_id} if source.thread_id else None,
+                        )
+                        if not pending:
+                            pending = _build_media_placeholder(pending_event)
                     else:
                         pending = _pending_text or _build_media_placeholder(pending_event)
                     if pending:

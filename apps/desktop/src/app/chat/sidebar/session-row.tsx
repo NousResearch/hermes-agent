@@ -15,13 +15,12 @@ import { handoffOriginSource, sessionSourceLabel } from '@/lib/session-source'
 import { coarseElapsed } from '@/lib/time'
 import { cn } from '@/lib/utils'
 import { $backgroundRunningSessionIds } from '@/store/composer-status'
-import { $projects } from '@/store/projects'
 import { $unreadFinishedSessionIds } from '@/store/session'
+import { $sessionColorById } from '@/store/session-color'
 import { $attentionSessionIds, openSessionTile } from '@/store/session-states'
 import { canOpenSessionWindow, openSessionInNewWindow } from '@/store/windows'
 
 import { SidebarRowBody, SidebarRowGrab, SidebarRowLabel, SidebarRowLead, SidebarRowShell } from './chrome'
-import { sessionProjectColor } from './projects/workspace-groups'
 import { SessionActionsMenu, SessionContextMenu } from './session-actions-menu'
 import { useProfilePrewarm } from './use-profile-prewarm'
 
@@ -93,9 +92,9 @@ export function SidebarSessionRow({
   const isUnread = useStore($unreadFinishedSessionIds).includes(session.id)
   // True when a terminal(background=true) process is alive in this session.
   const hasBackground = useStore($backgroundRunningSessionIds).includes(session.id)
-  // The color inherited from the session's project (idle dot tint). Follows the
-  // same membership the sidebar groups by; null unless the project is colored.
-  const projectColor = sessionProjectColor(session, useStore($projects))
+  // The session's resolved color (idle dot tint), read from the ONE shared map
+  // the pane tabs also read — an O(1) lookup, never re-derived per render.
+  const projectColor = useStore($sessionColorById)[session.id] ?? null
 
   // Resolve the dot's display state once — the four signals are mutually
   // exclusive by priority, so threading them as booleans through wrappers just

@@ -276,7 +276,9 @@ class ProductionCutoverTransport(canary_transport.IapStoppedReleaseTransport):
     """Pinned IAP transport for the fixed production cutover entry points."""
 
     _ACTIONS = frozenset({
+        "stage-host-artifacts",
         "collect-initial",
+        "collect-host-plan",
         "collect-authority",
         "prepare-bridge",
         "activate-bridge",
@@ -621,6 +623,18 @@ class ProductionCutoverTransport(canary_transport.IapStoppedReleaseTransport):
                 "--revision",
                 revision,
             )
+        if action in {"stage-host-artifacts", "collect-host-plan"}:
+            return (
+                *prefix,
+                interpreter,
+                "-B",
+                "-I",
+                "-m",
+                "scripts.canary.production_cutover_host_plan",
+                "stage" if action == "stage-host-artifacts" else "collect",
+                "--revision",
+                revision,
+            )
         if action == "collect-authority":
             return (
                 *prefix,
@@ -688,6 +702,7 @@ class ProductionCutoverTransport(canary_transport.IapStoppedReleaseTransport):
         *,
         publication: Mapping[str, Any] | None = None,
         authority_request: Mapping[str, Any] | None = None,
+        initial_receipt: Mapping[str, Any] | None = None,
         bridge_bootstrap_input: Mapping[str, Any] | None = None,
     ) -> Mapping[str, Any]:
         account = self._owner_identity.account_for_read_only_preflight()
@@ -695,6 +710,7 @@ class ProductionCutoverTransport(canary_transport.IapStoppedReleaseTransport):
         command = self._remote_command(revision, action)
         input_actions = {
             "stage-publication",
+            "collect-host-plan",
             "collect-authority",
             "prepare-bridge",
             "activate-bridge",
@@ -702,6 +718,8 @@ class ProductionCutoverTransport(canary_transport.IapStoppedReleaseTransport):
         if action in input_actions:
             if action == "stage-publication":
                 input_value = publication
+            elif action == "collect-host-plan":
+                input_value = initial_receipt
             elif action == "collect-authority":
                 input_value = authority_request
             else:
@@ -714,6 +732,7 @@ class ProductionCutoverTransport(canary_transport.IapStoppedReleaseTransport):
                     for item in (
                         publication,
                         authority_request,
+                        initial_receipt,
                         bridge_bootstrap_input,
                     )
                 )
@@ -733,6 +752,7 @@ class ProductionCutoverTransport(canary_transport.IapStoppedReleaseTransport):
             if (
                 publication is not None
                 or authority_request is not None
+                or initial_receipt is not None
                 or bridge_bootstrap_input is not None
             ):
                 raise OwnerCutoverError("owner_cutover_publication_unexpected")
@@ -2094,7 +2114,6 @@ def execute_production_cutover_workflow(
     owner_identity: Any,
     owner_subject_sha256: str,
     private_key: Ed25519PrivateKey,
-    host_authority_plan: Mapping[str, Any],
     isolated_canary_goal_prerequisite: Mapping[str, Any],
     truth_mode: str,
     accepted_event_receipts: list[Mapping[str, Any]] | None = None,
@@ -2109,12 +2128,12 @@ def execute_production_cutover_workflow(
     """Execute the fixed production cutover state machine.
 
     Before the owner signs the FreezePlan, the workflow collects the two
-    read-only authorities and completes the fixed database-recovery gate.  The
-    gate's only mutations are a retained on-demand backup and a release-bound
-    scratch instance that is deleted after a durable read-only probe.  Staging
-    the signed freeze publication is still the first production-host mutation.
-    Any failure after that point and before a cutover plan is confirmed staged
-    invokes the exact ``abort-freeze`` recovery action.
+    inert fixed host artifacts are staged before the read-only authorities and
+    database-recovery gate.  No caller-authored host plan is accepted.  The
+    recovery gate's only mutations are a retained on-demand backup and a
+    release-bound scratch instance that is deleted after a durable read-only
+    probe.  Any failure after freeze publication and before a cutover plan is
+    confirmed staged invokes the exact ``abort-freeze`` recovery action.
     """
 
     if not callable(clock):
@@ -2126,8 +2145,6 @@ def execute_production_cutover_workflow(
     if (
         package.REVISION.fullmatch(release_revision or "") is None
         or _SHA256.fullmatch(owner_subject_sha256 or "") is None
-        or not isinstance(host_authority_plan, Mapping)
-        or set(host_authority_plan) != _HOST_AUTHORITY_PLAN_FIELDS
         or not callable(transport_factory)
         or not callable(database_recovery_gate_runner)
     ):
@@ -2150,17 +2167,39 @@ def execute_production_cutover_workflow(
             "evidence_sha256": _sha(_canonical(value)),
         })
 
+    staged_host = transport.invoke(release_revision, "stage-host-artifacts")
+    if (
+        not isinstance(staged_host, Mapping)
+        or staged_host.get("schema")
+        != "muncho-production-cutover-fixed-host-staging.v1"
+        or staged_host.get("release_revision") != release_revision
+        or staged_host.get("staged_file_count")
+        != len(package.HOST_ARTIFACT_TARGETS)
+        or staged_host.get("secret_material_recorded") is not False
+        or staged_host.get("secret_digest_recorded") is not False
+        or _SHA256.fullmatch(str(staged_host.get("receipt_sha256"))) is None
+    ):
+        raise OwnerCutoverError("owner_cutover_host_staging_invalid")
+    record("fixed_host_artifacts_staged", staged_host)
     initial = validate_initial_collector_receipt(
         transport.invoke(release_revision, "collect-initial"),
         release_revision=release_revision,
         now_unix=gate_now(),
     )
     record("initial_read_only_collected", initial)
+    host_authority_plan = transport.invoke(
+        release_revision,
+        "collect-host-plan",
+        initial_receipt=initial,
+    )
     if (
-        host_authority_plan["cron_continuity_plan"]
+        not isinstance(host_authority_plan, Mapping)
+        or set(host_authority_plan) != _HOST_AUTHORITY_PLAN_FIELDS
+        or host_authority_plan["cron_continuity_plan"]
         != initial["cron_continuity_plan"]
     ):
-        raise OwnerCutoverError("owner_cutover_workflow_cron_plan_drifted")
+        raise OwnerCutoverError("owner_cutover_fixed_host_plan_invalid")
+    record("fixed_host_plan_collected", host_authority_plan)
     authority_request = host_authority.build_host_authority_request(
         initial_collector_receipt=initial,
         release_manifest_sha256=str(
@@ -3114,7 +3153,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     os_login_migrate.add_argument("--output", type=Path, required=True)
     prepare = subparsers.add_parser("prepare-cutover")
     prepare.add_argument("--revision", required=True)
-    prepare.add_argument("--host-authority-plan", type=Path, required=True)
     prepare.add_argument(
         "--isolated-canary-goal-prerequisite", type=Path, required=True
     )
@@ -3139,8 +3177,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         if arguments.command == "prepare-cutover":
             if (
-                not arguments.host_authority_plan.is_absolute()
-                or not arguments.isolated_canary_goal_prerequisite.is_absolute()
+                not arguments.isolated_canary_goal_prerequisite.is_absolute()
                 or not arguments.owner_private_key.is_absolute()
             ):
                 raise OwnerCutoverError(
@@ -3199,9 +3236,6 @@ def main(argv: Sequence[str] | None = None) -> int:
                 owner_identity=identity,
                 owner_subject_sha256=owner_subject,
                 private_key=key,
-                host_authority_plan=_read_public_json(
-                    arguments.host_authority_plan
-                ),
                 isolated_canary_goal_prerequisite=_read_public_json(
                     arguments.isolated_canary_goal_prerequisite
                 ),

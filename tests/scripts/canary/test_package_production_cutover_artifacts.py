@@ -169,9 +169,21 @@ def _unit_inputs() -> dict:
             "user": "ai-platform-brain", "group": "ai-platform-brain",
             "uid": RELEASE_OWNER_UID, "gid": RELEASE_OWNER_GID,
         },
+        "writer": {
+            "user": "muncho-canonical-writer",
+            "group": "muncho-canonical-writer", "uid": 2000, "gid": 2000,
+        },
+        "projector": {
+            "user": "muncho-projector", "group": "muncho-projector",
+            "uid": 2004, "gid": 2004,
+        },
         "routeback": {
             "user": "muncho-discord-egress", "group": "muncho-discord-egress",
             "uid": 2002, "gid": 2002,
+        },
+        "connector": {
+            "user": "muncho-discord-connector",
+            "group": "muncho-discord-connector", "uid": 2001, "gid": 2001,
         },
         "mac_ops": {
             "user": "muncho-mac-ops-edge", "group": "muncho-mac-ops-edge",
@@ -185,17 +197,28 @@ def _unit_inputs() -> dict:
             "user": "muncho-worker", "group": "muncho-worker",
             "uid": 2007, "gid": 2007,
         },
-        "worker_client_group": "muncho-worker-clients",
-        "worker_client_gid": 2008,
+        "writer_client_group": {"group": "muncho-writer-client", "gid": 2005},
+        "worker_client_group": {"group": "muncho-worker-clients", "gid": 2008},
         "operational_edge_identities": operational_identities,
         "operational_edge_socket_groups": operational_socket_groups,
         "writer_capability_public_key_id": "c" * 64,
+        "discord_edge_receipt_public_key_id": "a" * 64,
         "operational_edge_key_foundation_sha256": (
             _operational_key_foundation()["receipt_sha256"]
         ),
         "operational_edge_receipt_public_key_ids": (
             _operational_receipt_key_ids()
         ),
+        "discord_reconciliation_intent": {
+            "schema": package.DISCORD_RECONCILIATION_INTENT_SCHEMA,
+            "purpose": package.DISCORD_RECONCILIATION_INTENT_PURPOSE,
+            "release_revision": REVISION,
+            "legacy_public_policy_sha256": "1" * 64,
+            "target_public_policy_sha256": "2" * 64,
+            "reviewed_reconciliation": True,
+            "secret_material_recorded": False,
+            "secret_digest_recorded": False,
+        },
         "release_owner_uid": RELEASE_OWNER_UID,
         "release_owner_gid": RELEASE_OWNER_GID,
         "bwrap_sha256": "6" * 64,

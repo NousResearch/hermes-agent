@@ -724,18 +724,21 @@ import stat
 import sys
 from pathlib import Path
 
-UNIT_SCHEMA = "muncho-production-cutover-unit-inputs.v2"
-PLAN_SCHEMA = "muncho-production-cutover-unit-input-plan.v2"
-PAYLOAD_SCHEMA = "muncho-production-cutover-unit-input-payload.v2"
-APPROVAL_SCHEMA = "muncho-production-cutover-unit-input-approval.v2"
+UNIT_SCHEMA = "muncho-production-cutover-unit-inputs.v3"
+PLAN_SCHEMA = "muncho-production-cutover-unit-input-plan.v3"
+PAYLOAD_SCHEMA = "muncho-production-cutover-unit-input-payload.v3"
+APPROVAL_SCHEMA = "muncho-production-cutover-unit-input-approval.v3"
+RECONCILIATION_SCHEMA = "muncho-production-discord-reconciliation-intent.v1"
+RECONCILIATION_PURPOSE = "production_discord_policy_reconciliation"
 REVISION = re.compile(r"^[0-9a-f]{40}$")
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
 UNIT_FIELDS = {
     "schema", "release_revision", "authority_plan_sha256",
-    "authority_approval_sha256", "database_ip", "target", "gateway", "routeback",
-    "mac_ops", "browser", "worker", "worker_client_group",
-    "worker_client_gid", "operational_edge_identities",
+    "authority_approval_sha256", "database_ip", "target", "gateway", "writer",
+    "projector", "routeback", "connector", "mac_ops", "browser", "worker",
+    "writer_client_group", "worker_client_group", "operational_edge_identities",
     "operational_edge_socket_groups", "writer_capability_public_key_id",
+    "discord_edge_receipt_public_key_id", "discord_reconciliation_intent",
     "operational_edge_key_foundation_sha256",
     "operational_edge_receipt_public_key_ids", "release_owner_uid",
     "release_owner_gid", "bwrap_sha256", "shell_sha256",
@@ -763,10 +766,12 @@ RUNTIME_ATTESTATION_FIELDS = {
     "secret_digest_recorded", "attestation_sha256",
 }
 PAYLOAD_FIELDS = {
-    "schema", "database_ip", "target", "gateway", "routeback", "mac_ops",
-    "browser", "worker", "worker_client_group", "worker_client_gid",
+    "schema", "database_ip", "target", "gateway", "writer", "projector",
+    "routeback", "connector", "mac_ops", "browser", "worker",
+    "writer_client_group", "worker_client_group",
     "operational_edge_identities", "operational_edge_socket_groups",
-    "writer_capability_public_key_id",
+    "writer_capability_public_key_id", "discord_edge_receipt_public_key_id",
+    "discord_reconciliation_intent",
     "operational_edge_key_foundation_sha256",
     "operational_edge_receipt_public_key_ids",
     "release_owner_uid", "release_owner_gid", "bwrap_sha256", "shell_sha256",
@@ -781,6 +786,11 @@ TARGET_FIELDS = {
 OPERATIONAL_EDGE_DOMAINS = {
     "adventico_email", "bitrix", "canonical", "github", "infrastructure",
     "skyvision_db", "skyvision_email", "skyvision_gitlab", "skyvision_panel",
+}
+RECONCILIATION_FIELDS = {
+    "schema", "purpose", "release_revision", "legacy_public_policy_sha256",
+    "target_public_policy_sha256", "reviewed_reconciliation",
+    "secret_material_recorded", "secret_digest_recorded",
 }
 
 unit_path = Path(sys.argv[1])
@@ -916,7 +926,10 @@ self_digest(runtime_attestation, "attestation_sha256")
 if set(unit) != UNIT_FIELDS or unit.get("schema") != UNIT_SCHEMA:
     raise GateError("cutover_unit_inputs_fields_invalid")
 identities = []
-for name in ("gateway", "routeback", "mac_ops", "browser", "worker"):
+for name in (
+    "gateway", "writer", "projector", "routeback", "connector",
+    "mac_ops", "browser", "worker",
+):
     item = unit.get(name)
     if (
         not isinstance(item, dict)
@@ -930,6 +943,36 @@ for name in ("gateway", "routeback", "mac_ops", "browser", "worker"):
     ):
         raise GateError("cutover_unit_inputs_identity_invalid")
     identities.append(item)
+expected_names = {
+    "gateway": "ai-platform-brain",
+    "writer": "muncho-canonical-writer",
+    "projector": "muncho-projector",
+    "routeback": "muncho-discord-egress",
+    "connector": "muncho-discord-connector",
+    "mac_ops": "muncho-mac-ops-edge",
+    "browser": "muncho-capability-browser",
+    "worker": "muncho-worker",
+}
+if any(
+    unit[role]["user"] != expected or unit[role]["group"] != expected
+    for role, expected in expected_names.items()
+):
+    raise GateError("cutover_unit_inputs_identity_invalid")
+client_groups = []
+for field, expected in (
+    ("writer_client_group", "muncho-writer-client"),
+    ("worker_client_group", "muncho-worker-clients"),
+):
+    item = unit.get(field)
+    if (
+        not isinstance(item, dict)
+        or set(item) != {"group", "gid"}
+        or item.get("group") != expected
+        or type(item.get("gid")) is not int
+        or item["gid"] <= 0
+    ):
+        raise GateError("cutover_unit_inputs_identity_invalid")
+    client_groups.append(item)
 operational_identities = unit.get("operational_edge_identities")
 operational_socket_groups = unit.get("operational_edge_socket_groups")
 if (
@@ -965,6 +1008,7 @@ for domain in sorted(OPERATIONAL_EDGE_DOMAINS):
     socket_gids.add(socket["gid"])
 target = unit.get("target")
 receipt_key_ids = unit.get("operational_edge_receipt_public_key_ids")
+reconciliation = unit.get("discord_reconciliation_intent")
 try:
     target_address = ipaddress.ip_address(str(target.get("sql_host")))
 except (AttributeError, ValueError) as exc:
@@ -995,10 +1039,8 @@ if (
     or unit["secret_digest_recorded"] is not False
     or SHA256.fullmatch(str(unit["bwrap_sha256"])) is None
     or SHA256.fullmatch(str(unit["shell_sha256"])) is None
-    or type(unit["worker_client_gid"]) is not int
-    or unit["worker_client_gid"] <= 0
-    or unit["worker_client_group"] != "muncho-worker-clients"
     or SHA256.fullmatch(str(unit["writer_capability_public_key_id"])) is None
+    or SHA256.fullmatch(str(unit["discord_edge_receipt_public_key_id"])) is None
     or SHA256.fullmatch(
         str(unit["operational_edge_key_foundation_sha256"])
     ) is None
@@ -1011,6 +1053,24 @@ if (
     or len(set(receipt_key_ids.values())) != len(receipt_key_ids)
     or unit["writer_capability_public_key_id"]
     in set(receipt_key_ids.values())
+    or unit["discord_edge_receipt_public_key_id"]
+    in set(receipt_key_ids.values()) | {unit["writer_capability_public_key_id"]}
+    or not isinstance(reconciliation, dict)
+    or set(reconciliation) != RECONCILIATION_FIELDS
+    or reconciliation.get("schema") != RECONCILIATION_SCHEMA
+    or reconciliation.get("purpose") != RECONCILIATION_PURPOSE
+    or reconciliation.get("release_revision") != expected_revision
+    or SHA256.fullmatch(
+        str(reconciliation.get("legacy_public_policy_sha256"))
+    ) is None
+    or SHA256.fullmatch(
+        str(reconciliation.get("target_public_policy_sha256"))
+    ) is None
+    or reconciliation.get("legacy_public_policy_sha256")
+    == reconciliation.get("target_public_policy_sha256")
+    or reconciliation.get("reviewed_reconciliation") is not True
+    or reconciliation.get("secret_material_recorded") is not False
+    or reconciliation.get("secret_digest_recorded") is not False
     or type(unit["release_owner_uid"]) is not int
     or type(unit["release_owner_gid"]) is not int
     or unit["release_owner_uid"] != unit["gateway"]["uid"]
@@ -1018,10 +1078,10 @@ if (
     or len({item["uid"] for item in identities}) != len(identities)
     or len(
         {item["gid"] for item in identities}
-        | {unit["worker_client_gid"]}
+        | {item["gid"] for item in client_groups}
         | socket_gids
     )
-    != len(identities) + 1 + len(OPERATIONAL_EDGE_DOMAINS)
+    != len(identities) + len(client_groups) + len(OPERATIONAL_EDGE_DOMAINS)
 ):
     raise GateError("cutover_unit_inputs_policy_invalid")
 if (
@@ -1061,6 +1121,9 @@ if (
     or plan["unit_inputs"].get("schema") != PAYLOAD_SCHEMA
     or plan["unit_inputs"].get("secret_material_recorded") is not False
     or plan["unit_inputs"].get("secret_digest_recorded") is not False
+    or plan["unit_inputs"].get("discord_reconciliation_intent", {}).get(
+        "release_revision"
+    ) != expected_revision
 ):
     raise GateError("cutover_unit_input_plan_invalid")
 if set(approval) != APPROVAL_FIELDS or (

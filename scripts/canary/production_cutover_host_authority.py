@@ -3,7 +3,7 @@
 
 The collector accepts one canonical public request on stdin.  It never accepts
 an executable, path override, credential, or private key.  It verifies the
-immutable release package, reads back all nineteen fixed staged host files,
+immutable release package, reads back every fixed staged host file,
 compares their exact target pre-state, and validates the already-authored
 mechanical topology/transition/cron plan.  It performs no install, chmod,
 chown, systemd, database, or secret operation.

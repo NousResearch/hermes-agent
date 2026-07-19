@@ -104,7 +104,7 @@ SENTINELS = {
     "__MUNCHO_PRODUCTION_CRON_CONTINUITY_PLAN_SCHEMA__",
     "__MUNCHO_SEALED_RUNTIME_ARTIFACT_REQUEST__",
 }
-UNIT_INPUT_SCHEMA = "muncho-production-cutover-unit-inputs.v2"
+UNIT_INPUT_SCHEMA = "muncho-production-cutover-unit-inputs.v3"
 SEALED_RUNTIME_ARTIFACT_REQUEST_SCHEMA = (
     "muncho-production-cutover-sealed-runtime-artifacts.v1"
 )
@@ -115,10 +115,16 @@ STAGED_UNIT_INPUT_APPROVAL_PATH = (
 )
 FIXED_UNIT_INPUTS_PATH = CUTOVER_STAGED_ROOT / "production-unit-inputs.json"
 FIXED_UNIT_INPUTS_MODE = 0o444
-UNIT_INPUT_STAGING_SCHEMA = "muncho-production-cutover-unit-input-staging.v2"
-UNIT_INPUT_PAYLOAD_SCHEMA = "muncho-production-cutover-unit-input-payload.v2"
-UNIT_INPUT_PLAN_SCHEMA = "muncho-production-cutover-unit-input-plan.v2"
-UNIT_INPUT_APPROVAL_SCHEMA = "muncho-production-cutover-unit-input-approval.v2"
+UNIT_INPUT_STAGING_SCHEMA = "muncho-production-cutover-unit-input-staging.v3"
+UNIT_INPUT_PAYLOAD_SCHEMA = "muncho-production-cutover-unit-input-payload.v3"
+UNIT_INPUT_PLAN_SCHEMA = "muncho-production-cutover-unit-input-plan.v3"
+UNIT_INPUT_APPROVAL_SCHEMA = "muncho-production-cutover-unit-input-approval.v3"
+DISCORD_RECONCILIATION_INTENT_SCHEMA = (
+    "muncho-production-discord-reconciliation-intent.v1"
+)
+DISCORD_RECONCILIATION_INTENT_PURPOSE = (
+    "production_discord_policy_reconciliation"
+)
 ARTIFACTS: Mapping[str, tuple[str, ...]] = {
     "production-observe": (
         "observe_initial",
@@ -146,12 +152,12 @@ PLAN_BINDINGS = {
 }
 
 # Every host file consumed by the sealed host-activation artifact must be
-# represented in the release package.  Twenty-seven files have bytes rendered
-# and embedded at package time.  The remaining eleven are rendered from
-# owner-controlled production inputs (or are root-only verifier artifacts), so
-# their final byte digest is bound later by the read-only host-authority receipt
-# and the signed FreezePlan.  Keeping the complete set here prevents a release
-# from silently adding an unreviewed, uncollected host input.
+# represented in the release package.  The fixed producer partitions the set
+# into release-sealed payloads, one reviewed release source, owner-runtime
+# renderings, and root-only verifier artifacts.  Every final byte digest is
+# bound by the read-only host-authority receipt and the signed FreezePlan.
+# Keeping the complete set here prevents a release from silently adding an
+# unreviewed, uncollected host input.
 HOST_ARTIFACT_TARGETS: Mapping[str, tuple[str, str]] = {
     "gateway_unit": (
         "/etc/systemd/system/hermes-cloud-gateway.service",
@@ -332,17 +338,22 @@ _UNIT_INPUT_PAYLOAD_FIELDS = frozenset(
         "database_ip",
         "target",
         "gateway",
+        "writer",
+        "projector",
         "routeback",
+        "connector",
         "mac_ops",
         "browser",
         "worker",
+        "writer_client_group",
         "worker_client_group",
-        "worker_client_gid",
         "operational_edge_identities",
         "operational_edge_socket_groups",
         "writer_capability_public_key_id",
+        "discord_edge_receipt_public_key_id",
         "operational_edge_key_foundation_sha256",
         "operational_edge_receipt_public_key_ids",
+        "discord_reconciliation_intent",
         "release_owner_uid",
         "release_owner_gid",
         "bwrap_sha256",
@@ -351,6 +362,65 @@ _UNIT_INPUT_PAYLOAD_FIELDS = frozenset(
         "secret_digest_recorded",
     }
 )
+
+
+_CLIENT_GROUP_FIELDS = frozenset({"group", "gid"})
+_DISCORD_RECONCILIATION_INTENT_FIELDS = frozenset(
+    {
+        "schema",
+        "purpose",
+        "release_revision",
+        "legacy_public_policy_sha256",
+        "target_public_policy_sha256",
+        "reviewed_reconciliation",
+        "secret_material_recorded",
+        "secret_digest_recorded",
+    }
+)
+
+
+def _client_group_input(value: Any, expected: str) -> dict[str, Any]:
+    raw = _exact_mapping(
+        value,
+        _CLIENT_GROUP_FIELDS,
+        "cutover_packaging_unit_inputs_invalid",
+    )
+    if (
+        raw["group"] != expected
+        or type(raw["gid"]) is not int
+        or raw["gid"] <= 0
+    ):
+        raise PackagingError("cutover_packaging_unit_inputs_invalid")
+    return raw
+
+
+def _discord_reconciliation_intent(value: Any) -> dict[str, Any]:
+    raw = _exact_mapping(
+        value,
+        _DISCORD_RECONCILIATION_INTENT_FIELDS,
+        "cutover_packaging_unit_inputs_invalid",
+    )
+    if (
+        raw["schema"] != DISCORD_RECONCILIATION_INTENT_SCHEMA
+        or raw["purpose"] != DISCORD_RECONCILIATION_INTENT_PURPOSE
+        or not isinstance(raw["release_revision"], str)
+        or REVISION.fullmatch(raw["release_revision"]) is None
+        or re.fullmatch(
+            r"[0-9a-f]{64}", str(raw["legacy_public_policy_sha256"])
+        )
+        is None
+        or re.fullmatch(
+            r"[0-9a-f]{64}", str(raw["target_public_policy_sha256"])
+        )
+        is None
+        or raw["legacy_public_policy_sha256"]
+        == raw["target_public_policy_sha256"]
+        or raw["reviewed_reconciliation"] is not True
+        or raw["secret_material_recorded"] is not False
+        or raw["secret_digest_recorded"] is not False
+    ):
+        raise PackagingError("cutover_packaging_unit_inputs_invalid")
+    return raw
 
 
 _TARGET_INPUT_FIELDS = frozenset({
@@ -406,12 +476,24 @@ def _unit_input_payload(value: Any) -> dict[str, Any]:
         name: _identity_input(raw[name], name)
         for name in (
             "gateway",
+            "writer",
+            "projector",
             "routeback",
+            "connector",
             "mac_ops",
             "browser",
             "worker",
         )
     }
+    writer_client_group = _client_group_input(
+        raw["writer_client_group"], "muncho-writer-client"
+    )
+    worker_client_group = _client_group_input(
+        raw["worker_client_group"], ISOLATED_WORKER_CLIENT_GROUP
+    )
+    reconciliation_intent = _discord_reconciliation_intent(
+        raw["discord_reconciliation_intent"]
+    )
     operational_identities, operational_socket_groups = (
         _operational_edge_identity_inputs(
             raw["operational_edge_identities"],
@@ -420,18 +502,32 @@ def _unit_input_payload(value: Any) -> dict[str, Any]:
     )
     target = _target_input(raw["target"], database_ip=str(raw["database_ip"]))
     receipt_key_ids = raw["operational_edge_receipt_public_key_ids"]
+    expected_identity_names = {
+        "gateway": "ai-platform-brain",
+        "writer": "muncho-canonical-writer",
+        "projector": "muncho-projector",
+        "routeback": "muncho-discord-egress",
+        "connector": "muncho-discord-connector",
+        "mac_ops": "muncho-mac-ops-edge",
+        "browser": "muncho-capability-browser",
+        "worker": ISOLATED_WORKER_USER,
+    }
     if (
         raw["schema"] != UNIT_INPUT_PAYLOAD_SCHEMA
         or not isinstance(raw["database_ip"], str)
         or not raw["database_ip"]
-        or raw["worker"]["user"] != ISOLATED_WORKER_USER
-        or raw["worker"]["group"] != ISOLATED_WORKER_GROUP
-        or raw["worker_client_group"] != ISOLATED_WORKER_CLIENT_GROUP
-        or type(raw["worker_client_gid"]) is not int
-        or raw["worker_client_gid"] <= 0
+        or any(
+            raw[role]["user"] != name or raw[role]["group"] != name
+            for role, name in expected_identity_names.items()
+        )
         or re.fullmatch(
             r"[0-9a-f]{64}",
             str(raw["writer_capability_public_key_id"]),
+        )
+        is None
+        or re.fullmatch(
+            r"[0-9a-f]{64}",
+            str(raw["discord_edge_receipt_public_key_id"]),
         )
         is None
         or re.fullmatch(
@@ -448,6 +544,11 @@ def _unit_input_payload(value: Any) -> dict[str, Any]:
         or len(set(receipt_key_ids.values())) != len(receipt_key_ids)
         or raw["writer_capability_public_key_id"]
         in set(receipt_key_ids.values())
+        or raw["discord_edge_receipt_public_key_id"]
+        in (
+            set(receipt_key_ids.values())
+            | {raw["writer_capability_public_key_id"]}
+        )
         or type(raw["release_owner_uid"]) is not int
         or type(raw["release_owner_gid"]) is not int
         or raw["release_owner_uid"] != identities["gateway"]["uid"]
@@ -468,9 +569,9 @@ def _unit_input_payload(value: Any) -> dict[str, Any]:
             {item["gid"] for item in identities.values()}
             | {item["gid"] for item in operational_identities.values()}
             | {item["gid"] for item in operational_socket_groups.values()}
-            | {raw["worker_client_gid"]}
+            | {writer_client_group["gid"], worker_client_group["gid"]}
         )
-        != len(identities) + len(operational_identities) * 2 + 1
+        != len(identities) + len(operational_identities) * 2 + 2
     ):
         raise PackagingError("cutover_packaging_unit_inputs_invalid")
     return {
@@ -481,6 +582,9 @@ def _unit_input_payload(value: Any) -> dict[str, Any]:
         "operational_edge_receipt_public_key_ids": dict(
             sorted(receipt_key_ids.items())
         ),
+        "writer_client_group": writer_client_group,
+        "worker_client_group": worker_client_group,
+        "discord_reconciliation_intent": reconciliation_intent,
         **identities,
     }
 
@@ -538,6 +642,10 @@ def _unit_inputs(
             "schema": UNIT_INPUT_PAYLOAD_SCHEMA,
         }
     )
+    if payload["discord_reconciliation_intent"]["release_revision"] != raw[
+        "release_revision"
+    ]:
+        raise PackagingError("cutover_packaging_unit_inputs_invalid")
     return {
         "schema": UNIT_INPUT_SCHEMA,
         "release_revision": raw["release_revision"],
@@ -805,6 +913,8 @@ def validate_unit_input_plan(value: Any) -> Mapping[str, Any]:
         or raw["created_at_unix"] <= 0
         or raw["secret_material_recorded"] is not False
         or raw["secret_digest_recorded"] is not False
+        or payload["discord_reconciliation_intent"]["release_revision"]
+        != raw["release_revision"]
     ):
         raise PackagingError("cutover_unit_input_plan_invalid")
     return {
@@ -1390,8 +1500,8 @@ def _sealed_runtime_artifact_request(
             gateway_uid=gateway["uid"],
             gateway_primary_gid=gateway["gid"],
             socket_root_uid=0,
-            socket_client_group=inputs["worker_client_group"],
-            socket_client_gid=inputs["worker_client_gid"],
+            socket_client_group=inputs["worker_client_group"]["group"],
+            socket_client_gid=inputs["worker_client_group"]["gid"],
             worker_user=worker["user"],
             worker_group=worker["group"],
             worker_uid=worker["uid"],
@@ -1505,7 +1615,7 @@ def _sealed_runtime_artifact_request(
         "config_sha256": isolated_worker.config_sha256,
         "socket_path": str(ISOLATED_WORKER_SOCKET),
         "socket_uid": 0,
-        "socket_gid": inputs["worker_client_gid"],
+        "socket_gid": inputs["worker_client_group"]["gid"],
         "server_uid": worker["uid"],
         "server_gid": worker["gid"],
         "gateway_uid": gateway["uid"],
@@ -1565,6 +1675,55 @@ def _sealed_runtime_artifact_request(
     }
     request = {**descriptor, "payloads": payloads}
     return request, descriptor
+
+
+def render_release_sealed_host_payloads(
+    *,
+    release_root: Path,
+    revision: str,
+    unit_inputs: Mapping[str, Any],
+) -> tuple[Mapping[str, bytes], Mapping[str, Any], Mapping[str, Any]]:
+    """Re-render the release-sealed host bytes without mutating the release.
+
+    The returned payload map is accepted only when the immutable package
+    manifest, runtime dependency manifest, operational assets, and signed unit
+    inputs all reproduce the descriptor that was sealed at package time.
+    """
+
+    manifest = verify_release_artifacts(
+        release_root,
+        revision,
+        unit_inputs=unit_inputs,
+    )
+    release = release_root.resolve(strict=True)
+    _runtime_raw, runtime_dependency = _runtime_dependency_manifest(
+        release, revision
+    )
+    normalized = _unit_inputs(unit_inputs, revision=revision)
+    operational_assets = _operational_asset_receipt(
+        release=release,
+        release_address=release,
+        revision=revision,
+        expected_uid=normalized["release_owner_uid"],
+        expected_gid=normalized["release_owner_gid"],
+        package_if_missing=False,
+    )
+    request, descriptor = _sealed_runtime_artifact_request(
+        revision=revision,
+        runtime_dependency=runtime_dependency,
+        unit_inputs=normalized,
+        operational_asset_verification=operational_assets,
+    )
+    if descriptor != manifest["sealed_runtime_artifact_request"]:
+        raise PackagingError("cutover_packaging_manifest_invalid")
+    payloads = request.get("payloads")
+    if (
+        not isinstance(payloads, Mapping)
+        or set(payloads) != set(descriptor["files"])
+        or any(not isinstance(payload, bytes) for payload in payloads.values())
+    ):
+        raise PackagingError("cutover_packaging_manifest_invalid")
+    return dict(payloads), descriptor, manifest
 
 
 def _host_artifact_contract(

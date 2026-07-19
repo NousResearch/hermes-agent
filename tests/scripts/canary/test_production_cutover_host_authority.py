@@ -864,6 +864,10 @@ class _WorkflowTransport:
     ) -> None:
         self.initial = initial
         self.host = host
+        self.host_plan = {
+            name: copy.deepcopy(host[name])
+            for name in owner._HOST_AUTHORITY_PLAN_FIELDS
+        }
         self.services = services
         self.fail_capture = fail_capture
         self.clock = clock
@@ -883,14 +887,32 @@ class _WorkflowTransport:
         *,
         publication=None,
         authority_request=None,
+        initial_receipt=None,
     ) -> dict:
         self.calls.append(action)
+        if action == "stage-host-artifacts":
+            assert publication is None and authority_request is None
+            assert initial_receipt is None
+            return {
+                "schema": "muncho-production-cutover-fixed-host-staging.v1",
+                "release_revision": REVISION,
+                "staged_file_count": len(package.HOST_ARTIFACT_TARGETS),
+                "secret_material_recorded": False,
+                "secret_digest_recorded": False,
+                "receipt_sha256": "f" * 64,
+            }
         if action == "collect-initial":
             assert publication is None and authority_request is None
+            assert initial_receipt is None
             return self.initial
+        if action == "collect-host-plan":
+            assert publication is None and authority_request is None
+            assert initial_receipt == self.initial
+            return copy.deepcopy(self.host_plan)
         if action == "collect-authority":
             assert authority_request["request_sha256"]
             assert publication is None
+            assert initial_receipt is None
             return self.host
         if action == "stage-publication":
             if publication.get("schema") == owner.cutover_passkey.CUTOVER_CLAIM_FRAME_SCHEMA:
@@ -1289,7 +1311,6 @@ def test_prepare_then_resume_consumes_once_before_first_mutation(
         owner_identity=object(),
         owner_subject_sha256="a" * 64,
         private_key=Ed25519PrivateKey.generate(),
-        host_authority_plan=plan,
         isolated_canary_goal_prerequisite=(
             _isolated_canary_goal_prerequisite()
         ),
@@ -1303,7 +1324,12 @@ def test_prepare_then_resume_consumes_once_before_first_mutation(
 
     assert workspace["state"] == "awaiting_bridge_bootstrap"
     assert workspace["advertised_approval_url"] is None
-    assert prepare_transport.calls == ["collect-initial", "collect-authority"]
+    assert prepare_transport.calls == [
+        "stage-host-artifacts",
+        "collect-initial",
+        "collect-host-plan",
+        "collect-authority",
+    ]
     assert boundary.consume_calls == 0
 
     resume_transport = _WorkflowTransport(initial, host, services)
@@ -1415,7 +1441,6 @@ def test_resume_rejects_tampered_approval_url_before_consumption(
         owner_identity=object(),
         owner_subject_sha256="a" * 64,
         private_key=Ed25519PrivateKey.generate(),
-        host_authority_plan=plan,
         isolated_canary_goal_prerequisite=(
             _isolated_canary_goal_prerequisite()
         ),
@@ -1495,7 +1520,6 @@ def test_stale_v2_request_blocks_before_bridge_remote_call() -> None:
         owner_identity=object(),
         owner_subject_sha256="a" * 64,
         private_key=Ed25519PrivateKey.generate(),
-        host_authority_plan=plan,
         isolated_canary_goal_prerequisite=(
             _isolated_canary_goal_prerequisite()
         ),
@@ -1569,7 +1593,6 @@ def test_prepare_rejects_non_sha256_cutover_request_id(
             owner_identity=object(),
             owner_subject_sha256="a" * 64,
             private_key=Ed25519PrivateKey.generate(),
-            host_authority_plan=plan,
             isolated_canary_goal_prerequisite=(
                 _isolated_canary_goal_prerequisite()
             ),
@@ -1625,7 +1648,7 @@ def test_bridge_request_rejects_non_exact_legacy_request_id(
         owner._validate_bridge_request(request, document=document)
 
 
-def test_workflow_order_is_fixed_and_first_mutation_has_signed_freeze(
+def test_workflow_order_is_fixed_and_plan_is_produced_on_host(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
@@ -1653,7 +1676,6 @@ def test_workflow_order_is_fixed_and_first_mutation_has_signed_freeze(
         owner_identity=object(),
         owner_subject_sha256="a" * 64,
         private_key=key,
-        host_authority_plan=plan,
         isolated_canary_goal_prerequisite=(
             _isolated_canary_goal_prerequisite()
         ),
@@ -1665,7 +1687,9 @@ def test_workflow_order_is_fixed_and_first_mutation_has_signed_freeze(
     )
 
     assert transport.calls == [
+        "stage-host-artifacts",
         "collect-initial",
+        "collect-host-plan",
         "collect-authority",
         "stage-publication",
         "capture-final-tail",
@@ -1679,7 +1703,9 @@ def test_workflow_order_is_fixed_and_first_mutation_has_signed_freeze(
     ]
     assert receipt["schema"] == owner.WORKFLOW_RECEIPT_SCHEMA
     assert [item["stage"] for item in receipt["gates"]] == [
+        "fixed_host_artifacts_staged",
         "initial_read_only_collected",
+        "fixed_host_plan_collected",
         "host_authority_read_only_collected",
         "full_authority_composed",
         "database_recovery_validated",
@@ -1782,7 +1808,6 @@ def test_workflow_samples_fresh_time_at_each_long_running_gate(
         owner_identity=object(),
         owner_subject_sha256="a" * 64,
         private_key=key,
-        host_authority_plan=plan,
         isolated_canary_goal_prerequisite=(
             _isolated_canary_goal_prerequisite()
         ),
@@ -1823,7 +1848,6 @@ def test_workflow_blocks_before_freeze_authoring_when_recovery_gate_fails(
             owner_identity=object(),
             owner_subject_sha256="a" * 64,
             private_key=Ed25519PrivateKey.generate(),
-            host_authority_plan=plan,
             isolated_canary_goal_prerequisite=(
                 _isolated_canary_goal_prerequisite()
             ),
@@ -1833,7 +1857,12 @@ def test_workflow_blocks_before_freeze_authoring_when_recovery_gate_fails(
             now_unix=NOW,
         )
 
-    assert transport.calls == ["collect-initial", "collect-authority"]
+    assert transport.calls == [
+        "stage-host-artifacts",
+        "collect-initial",
+        "collect-host-plan",
+        "collect-authority",
+    ]
 
 
 def test_workflow_stages_exact_packaged_cron_before_cutover_plan(
@@ -1911,7 +1940,6 @@ def test_workflow_stages_exact_packaged_cron_before_cutover_plan(
         owner_identity=object(),
         owner_subject_sha256="a" * 64,
         private_key=key,
-        host_authority_plan=plan,
         isolated_canary_goal_prerequisite=(
             _isolated_canary_goal_prerequisite()
         ),
@@ -1923,8 +1951,9 @@ def test_workflow_stages_exact_packaged_cron_before_cutover_plan(
     )
 
     assert receipt["schema"] == owner.WORKFLOW_RECEIPT_SCHEMA
+    freeze_stage = transport.calls.index("stage-publication")
     assert transport.calls.index("stage-cron-continuity") < (
-        transport.calls.index("stage-publication", 4)
+        transport.calls.index("stage-publication", freeze_stage + 1)
     )
     assert "cron_continuity_stage_accepted" in {
         item["stage"] for item in receipt["gates"]
@@ -2123,7 +2152,6 @@ def test_failure_after_signed_freeze_invokes_abort_before_any_apply(
             owner_identity=object(),
             owner_subject_sha256="a" * 64,
             private_key=key,
-            host_authority_plan=plan,
             isolated_canary_goal_prerequisite=(
                 _isolated_canary_goal_prerequisite()
             ),
@@ -2135,7 +2163,9 @@ def test_failure_after_signed_freeze_invokes_abort_before_any_apply(
         )
 
     assert transport.calls == [
+        "stage-host-artifacts",
         "collect-initial",
+        "collect-host-plan",
         "collect-authority",
         "stage-publication",
         "capture-final-tail",
@@ -2172,6 +2202,7 @@ def test_cutover_and_abort_base_failures_are_both_preserved(
             *,
             publication=None,
             authority_request=None,
+            initial_receipt=None,
         ) -> dict:
             if action == "capture-final-tail":
                 self.calls.append(action)
@@ -2184,6 +2215,7 @@ def test_cutover_and_abort_base_failures_are_both_preserved(
                 action,
                 publication=publication,
                 authority_request=authority_request,
+                initial_receipt=initial_receipt,
             )
 
     transport = DualFailureTransport(initial, host, services)
@@ -2202,7 +2234,6 @@ def test_cutover_and_abort_base_failures_are_both_preserved(
             owner_identity=object(),
             owner_subject_sha256="a" * 64,
             private_key=key,
-            host_authority_plan=plan,
             isolated_canary_goal_prerequisite=(
                 _isolated_canary_goal_prerequisite()
             ),
@@ -2258,7 +2289,6 @@ def test_cron_stage_mismatch_aborts_freeze_before_cutover_plan(
             owner_identity=object(),
             owner_subject_sha256="a" * 64,
             private_key=key,
-            host_authority_plan=plan,
             isolated_canary_goal_prerequisite=(
                 _isolated_canary_goal_prerequisite()
             ),

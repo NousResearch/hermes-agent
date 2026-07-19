@@ -434,6 +434,9 @@ def load_strict_production_config(raw: bytes) -> dict[str, Any]:
 
 def overlay_production_gateway_config(
     observed: Mapping[str, Any],
+    *,
+    topology: Mapping[str, Any] | None = None,
+    mac_ops_edge_config: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Return the bounded model-sovereignty overlay.
 
@@ -620,16 +623,25 @@ def overlay_production_gateway_config(
     # capability, worker quota, and explicit pause/clear boundary remains.
     goals["max_turns"] = 0
 
-    topology = validate_production_capability_topology(
+    topology_value = (
         _mapping(target, "production_capabilities")
+        if topology is None
+        else topology
     )
-    target["terminal"] = _terminal_config(topology)
-    target["browser"] = _browser_config(topology)
-    mac_ops = _mapping(target, "mac_ops_edge")
+    validated_topology = validate_production_capability_topology(topology_value)
+    target["production_capabilities"] = copy.deepcopy(validated_topology)
+    target["terminal"] = _terminal_config(validated_topology)
+    target["browser"] = _browser_config(validated_topology)
+    mac_ops = (
+        _mapping(target, "mac_ops_edge")
+        if mac_ops_edge_config is None
+        else copy.deepcopy(dict(mac_ops_edge_config))
+    )
     try:
         MacOpsEdgeClientConfig.from_mapping(mac_ops)
     except (TypeError, ValueError) as exc:
         raise ProductionContractError("production_mac_ops_edge_invalid") from exc
+    target["mac_ops_edge"] = mac_ops
 
     platforms = copy.deepcopy(_PLATFORMS)
     target["platforms"] = platforms
@@ -878,13 +890,17 @@ def render_production_gateway_config(
     source_bytes: bytes,
     *,
     expected_source_sha256: str,
+    topology: Mapping[str, Any] | None = None,
+    mac_ops_edge_config: Mapping[str, Any] | None = None,
 ) -> bytes:
     if _SHA256.fullmatch(expected_source_sha256 or "") is None:
         raise ProductionContractError("production_source_config_sha256_invalid")
     if _sha256(source_bytes) != expected_source_sha256:
         raise ProductionContractError("production_source_config_sha256_mismatch")
     target = overlay_production_gateway_config(
-        load_strict_production_config(source_bytes)
+        load_strict_production_config(source_bytes),
+        topology=topology,
+        mac_ops_edge_config=mac_ops_edge_config,
     )
     try:
         rendered = yaml.safe_dump(
@@ -1946,10 +1962,14 @@ def produce_production_gateway_contract(
     revision: str,
     gateway_user: str,
     gateway_group: str,
+    topology: Mapping[str, Any] | None = None,
+    mac_ops_edge_config: Mapping[str, Any] | None = None,
 ) -> ProductionGatewayContract:
     config = render_production_gateway_config(
         source_config_bytes,
         expected_source_sha256=expected_source_sha256,
+        topology=topology,
+        mac_ops_edge_config=mac_ops_edge_config,
     )
     config_sha256 = _sha256(config)
     unit = render_production_gateway_unit(

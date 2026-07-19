@@ -200,27 +200,27 @@ publishes only to the fixed mode-`0444` owner path
 `~/.hermes/owner-gate-production-cutover/isolated-canary-prerequisites/<release-sha>.json`.
 There is no output-path argument.
 
-### Host-authority authoring blocker
+### Fixed host-authority plan production
 
-There is deliberately no generic owner CLI that accepts the seven semantic
-host-authority fields as JSON. The existing remote host-authority action can
-validate a request, but it cannot derive or safely stage the live production
-facts needed to create one. Launch remains blocked until a fixed root-side,
-read-only collector/stager exists that:
+The owner launcher does not accept the seven semantic host-authority fields as
+JSON. Signed v3 unit inputs bind the exact identities, distinct public key IDs,
+and the reviewed legacy-to-target Discord policy reconciliation. The fixed
+root-side producer then:
 
-- renders and materializes every release-contracted file at the fixed staged
-  host paths, then reads all of them back with owner/group/mode/digest evidence;
-- derives the gateway, writer, and connector target service identities;
-- captures user/group pre-state, Discord and operational-edge key-foundation
-  receipts, token source/target/retirement paths, passkey paths, Discord policy
-  continuity, and lease-directory pre-state; and
-- derives the host transition and capability topology from those fixed facts,
-  accepting from the owner only explicit per-cron continuity dispositions.
+- re-verifies the immutable release and renders or copies every contracted host
+  artifact to its fixed create-only staging path;
+- records only public verifier/key identities and never secret content or a
+  secret digest;
+- derives live user/group, target-file, token/passkey metadata, lease-directory,
+  service-target, topology, and transition facts; and
+- copies the initial collector's already owner-approved cron continuity plan
+  byte-for-byte into the exact seven-field host-authority plan.
 
-Until that collector exists, caller-authored `host_transition`, target identity,
-or `capability_topology` JSON is not authority and must not be fed to
-`execute-cutover` or `prepare-cutover`. This is the remaining B5 launch blocker,
-not a reason to widen the owner launcher.
+`stage-host-artifacts` is inert and cleanly resumable only for exact bytes.
+`collect-host-plan` is read-only. The downstream host-authority collector still
+re-reads every staged file, rejects target or boot drift, and binds the result
+to the signed FreezePlan. Caller-authored `host_transition`, target identity,
+or `capability_topology` remains outside the authority boundary.
 
 ### Rollback authority boundary
 

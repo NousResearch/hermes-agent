@@ -51,7 +51,7 @@ def _operational_receipt_key_ids() -> dict[str, str]:
 def _unit_input_authority(revision: str) -> tuple[dict, dict, dict]:
     domains = sorted(_operational_receipt_key_ids())
     payload = {
-        "schema": "muncho-production-cutover-unit-input-payload.v2",
+        "schema": "muncho-production-cutover-unit-input-payload.v3",
         "database_ip": "10.20.30.40",
         "target": {
             "project": "adventico-ai-platform",
@@ -64,13 +64,31 @@ def _unit_input_authority(revision: str) -> tuple[dict, dict, dict]:
             "port": 5432,
             "writer_login": "muncho_production_writer_login",
         },
-        "gateway": _identity("gateway", "gateway", 1000, 1000),
-        "routeback": _identity("routeback", "routeback", 2002, 2002),
-        "mac_ops": _identity("mac_ops", "mac_ops", 2003, 2003),
-        "browser": _identity("browser", "browser", 2006, 2006),
-        "worker": _identity("worker", "worker", 2007, 2007),
-        "worker_client_group": "muncho-worker-clients",
-        "worker_client_gid": 2008,
+        "gateway": _identity(
+            "ai-platform-brain", "ai-platform-brain", 1000, 1000
+        ),
+        "writer": _identity(
+            "muncho-canonical-writer", "muncho-canonical-writer", 2000, 2000
+        ),
+        "projector": _identity("muncho-projector", "muncho-projector", 2004, 2004),
+        "routeback": _identity(
+            "muncho-discord-egress", "muncho-discord-egress", 2002, 2002
+        ),
+        "connector": _identity(
+            "muncho-discord-connector", "muncho-discord-connector", 2001, 2001
+        ),
+        "mac_ops": _identity(
+            "muncho-mac-ops-edge", "muncho-mac-ops-edge", 2003, 2003
+        ),
+        "browser": _identity(
+            "muncho-capability-browser",
+            "muncho-capability-browser",
+            2006,
+            2006,
+        ),
+        "worker": _identity("muncho-worker", "muncho-worker", 2007, 2007),
+        "writer_client_group": {"group": "muncho-writer-client", "gid": 2005},
+        "worker_client_group": {"group": "muncho-worker-clients", "gid": 2008},
         "operational_edge_identities": {
             domain: _identity(
                 f"muncho-edge-{domain}",
@@ -88,10 +106,21 @@ def _unit_input_authority(revision: str) -> tuple[dict, dict, dict]:
             for index, domain in enumerate(domains)
         },
         "writer_capability_public_key_id": "c" * 64,
+        "discord_edge_receipt_public_key_id": "a" * 64,
         "operational_edge_key_foundation_sha256": "d" * 64,
         "operational_edge_receipt_public_key_ids": (
             _operational_receipt_key_ids()
         ),
+        "discord_reconciliation_intent": {
+            "schema": "muncho-production-discord-reconciliation-intent.v1",
+            "purpose": "production_discord_policy_reconciliation",
+            "release_revision": revision,
+            "legacy_public_policy_sha256": "1" * 64,
+            "target_public_policy_sha256": "2" * 64,
+            "reviewed_reconciliation": True,
+            "secret_material_recorded": False,
+            "secret_digest_recorded": False,
+        },
         "release_owner_uid": 1000,
         "release_owner_gid": 1000,
         "bwrap_sha256": "6" * 64,
@@ -102,7 +131,7 @@ def _unit_input_authority(revision: str) -> tuple[dict, dict, dict]:
     public = "8" * 64
     plan = _hashed(
         {
-            "schema": "muncho-production-cutover-unit-input-plan.v2",
+            "schema": "muncho-production-cutover-unit-input-plan.v3",
             "release_revision": revision,
             "unit_inputs": payload,
             "owner_subject_sha256": "9" * 64,
@@ -117,7 +146,7 @@ def _unit_input_authority(revision: str) -> tuple[dict, dict, dict]:
     )
     approval = _hashed(
         {
-            "schema": "muncho-production-cutover-unit-input-approval.v2",
+            "schema": "muncho-production-cutover-unit-input-approval.v3",
             "purpose": "production_cutover_unit_inputs",
             "plan_sha256": plan["plan_sha256"],
             "release_revision": revision,
@@ -133,7 +162,7 @@ def _unit_input_authority(revision: str) -> tuple[dict, dict, dict]:
         "approval_sha256",
     )
     unit_inputs = {
-        "schema": "muncho-production-cutover-unit-inputs.v2",
+        "schema": "muncho-production-cutover-unit-inputs.v3",
         "release_revision": revision,
         "authority_plan_sha256": plan["plan_sha256"],
         "authority_approval_sha256": approval["approval_sha256"],

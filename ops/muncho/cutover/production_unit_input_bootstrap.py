@@ -29,11 +29,17 @@ APPROVAL_PATH = STAGED_ROOT / "unit-input-approval.json"
 UNIT_INPUTS_PATH = STAGED_ROOT / "production-unit-inputs.json"
 OPENSSL = Path("/usr/bin/openssl")
 
-PLAN_SCHEMA = "muncho-production-cutover-unit-input-plan.v2"
-PAYLOAD_SCHEMA = "muncho-production-cutover-unit-input-payload.v2"
-APPROVAL_SCHEMA = "muncho-production-cutover-unit-input-approval.v2"
-UNIT_INPUT_SCHEMA = "muncho-production-cutover-unit-inputs.v2"
-RECEIPT_SCHEMA = "muncho-production-cutover-unit-input-staging.v2"
+PLAN_SCHEMA = "muncho-production-cutover-unit-input-plan.v3"
+PAYLOAD_SCHEMA = "muncho-production-cutover-unit-input-payload.v3"
+APPROVAL_SCHEMA = "muncho-production-cutover-unit-input-approval.v3"
+UNIT_INPUT_SCHEMA = "muncho-production-cutover-unit-inputs.v3"
+RECEIPT_SCHEMA = "muncho-production-cutover-unit-input-staging.v3"
+DISCORD_RECONCILIATION_INTENT_SCHEMA = (
+    "muncho-production-discord-reconciliation-intent.v1"
+)
+DISCORD_RECONCILIATION_INTENT_PURPOSE = (
+    "production_discord_policy_reconciliation"
+)
 REVISION = re.compile(r"^[0-9a-f]{40}$")
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
 IDENTITY = re.compile(r"^[a-z_][a-z0-9_-]{0,63}$")
@@ -52,9 +58,11 @@ RUNTIME_ATTESTATION_FIELDS = frozenset({
 })
 PAYLOAD_FIELDS = frozenset({
     "schema", "database_ip", "target", "gateway", "routeback", "mac_ops", "browser",
-    "worker", "worker_client_group", "worker_client_gid",
+    "writer", "projector", "connector", "worker", "writer_client_group",
+    "worker_client_group",
     "operational_edge_identities", "operational_edge_socket_groups",
-    "writer_capability_public_key_id", "operational_edge_key_foundation_sha256",
+    "writer_capability_public_key_id", "discord_edge_receipt_public_key_id",
+    "operational_edge_key_foundation_sha256", "discord_reconciliation_intent",
     "operational_edge_receipt_public_key_ids", "release_owner_uid",
     "release_owner_gid", "bwrap_sha256",
     "shell_sha256", "secret_material_recorded", "secret_digest_recorded",
@@ -66,6 +74,12 @@ APPROVAL_FIELDS = frozenset({
     "signature_ed25519_hex", "approval_sha256",
 })
 IDENTITY_FIELDS = frozenset({"user", "group", "uid", "gid"})
+CLIENT_GROUP_FIELDS = frozenset({"group", "gid"})
+DISCORD_RECONCILIATION_INTENT_FIELDS = frozenset({
+    "schema", "purpose", "release_revision", "legacy_public_policy_sha256",
+    "target_public_policy_sha256", "reviewed_reconciliation",
+    "secret_material_recorded", "secret_digest_recorded",
+})
 TARGET_FIELDS = frozenset({
     "project", "zone", "vm", "database", "sql_instance", "sql_host",
     "tls_server_name", "port", "writer_login",
@@ -208,7 +222,10 @@ def _payload(value: Any) -> Mapping[str, Any]:
     if not isinstance(value, Mapping) or set(value) != PAYLOAD_FIELDS:
         raise BootstrapError("unit_input_bootstrap_payload_invalid")
     identities = []
-    for name in ("gateway", "routeback", "mac_ops", "browser", "worker"):
+    for name in (
+        "gateway", "writer", "projector", "routeback", "connector",
+        "mac_ops", "browser", "worker",
+    ):
         item = value[name]
         if (
             not isinstance(item, Mapping)
@@ -222,6 +239,36 @@ def _payload(value: Any) -> Mapping[str, Any]:
         ):
             raise BootstrapError("unit_input_bootstrap_identity_invalid")
         identities.append(item)
+    expected_identity_names = {
+        "gateway": "ai-platform-brain",
+        "writer": "muncho-canonical-writer",
+        "projector": "muncho-projector",
+        "routeback": "muncho-discord-egress",
+        "connector": "muncho-discord-connector",
+        "mac_ops": "muncho-mac-ops-edge",
+        "browser": "muncho-capability-browser",
+        "worker": "muncho-worker",
+    }
+    if any(
+        value[role]["user"] != name or value[role]["group"] != name
+        for role, name in expected_identity_names.items()
+    ):
+        raise BootstrapError("unit_input_bootstrap_identity_invalid")
+    client_groups = []
+    for field, expected_name in (
+        ("writer_client_group", "muncho-writer-client"),
+        ("worker_client_group", "muncho-worker-clients"),
+    ):
+        group = value[field]
+        if (
+            not isinstance(group, Mapping)
+            or set(group) != CLIENT_GROUP_FIELDS
+            or group.get("group") != expected_name
+            or type(group.get("gid")) is not int
+            or group["gid"] <= 0
+        ):
+            raise BootstrapError("unit_input_bootstrap_identity_invalid")
+        client_groups.append(group)
     operational_identities = value.get("operational_edge_identities")
     operational_socket_groups = value.get("operational_edge_socket_groups")
     if (
@@ -257,6 +304,7 @@ def _payload(value: Any) -> Mapping[str, Any]:
         socket_gids.add(socket["gid"])
     target = value["target"]
     receipt_key_ids = value["operational_edge_receipt_public_key_ids"]
+    reconciliation = value["discord_reconciliation_intent"]
     try:
         address = ipaddress.ip_address(str(target.get("sql_host")))
     except (AttributeError, ValueError) as exc:
@@ -285,11 +333,12 @@ def _payload(value: Any) -> Mapping[str, Any]:
         or not value["database_ip"]
         or value["worker"]["user"] != "muncho-worker"
         or value["worker"]["group"] != "muncho-worker"
-        or value["worker_client_group"] != "muncho-worker-clients"
-        or type(value["worker_client_gid"]) is not int
-        or value["worker_client_gid"] <= 0
         or SHA256.fullmatch(
             str(value["writer_capability_public_key_id"])
+        )
+        is None
+        or SHA256.fullmatch(
+            str(value["discord_edge_receipt_public_key_id"])
         )
         is None
         or SHA256.fullmatch(
@@ -305,6 +354,32 @@ def _payload(value: Any) -> Mapping[str, Any]:
         or len(set(receipt_key_ids.values())) != len(receipt_key_ids)
         or value["writer_capability_public_key_id"]
         in set(receipt_key_ids.values())
+        or value["discord_edge_receipt_public_key_id"]
+        in (
+            set(receipt_key_ids.values())
+            | {value["writer_capability_public_key_id"]}
+        )
+        or not isinstance(reconciliation, Mapping)
+        or set(reconciliation) != DISCORD_RECONCILIATION_INTENT_FIELDS
+        or reconciliation.get("schema")
+        != DISCORD_RECONCILIATION_INTENT_SCHEMA
+        or reconciliation.get("purpose")
+        != DISCORD_RECONCILIATION_INTENT_PURPOSE
+        or REVISION.fullmatch(str(reconciliation.get("release_revision")))
+        is None
+        or SHA256.fullmatch(
+            str(reconciliation.get("legacy_public_policy_sha256"))
+        )
+        is None
+        or SHA256.fullmatch(
+            str(reconciliation.get("target_public_policy_sha256"))
+        )
+        is None
+        or reconciliation["legacy_public_policy_sha256"]
+        == reconciliation["target_public_policy_sha256"]
+        or reconciliation.get("reviewed_reconciliation") is not True
+        or reconciliation.get("secret_material_recorded") is not False
+        or reconciliation.get("secret_digest_recorded") is not False
         or type(value["release_owner_uid"]) is not int
         or type(value["release_owner_gid"]) is not int
         or value["release_owner_uid"] != value["gateway"]["uid"]
@@ -317,10 +392,10 @@ def _payload(value: Any) -> Mapping[str, Any]:
         or len({item["uid"] for item in identities}) != len(identities)
         or len(
             {item["gid"] for item in identities}
-            | {value["worker_client_gid"]}
+            | {item["gid"] for item in client_groups}
             | socket_gids
         )
-        != len(identities) + 1 + len(OPERATIONAL_EDGE_DOMAINS)
+        != len(identities) + len(client_groups) + len(OPERATIONAL_EDGE_DOMAINS)
     ):
         raise BootstrapError("unit_input_bootstrap_payload_invalid")
     return value
@@ -479,6 +554,8 @@ def bootstrap(
         or plan["created_at_unix"] <= 0
         or plan["secret_material_recorded"] is not False
         or plan["secret_digest_recorded"] is not False
+        or payload["discord_reconciliation_intent"]["release_revision"]
+        != plan["release_revision"]
         or runtime_attestation["schema"]
         != "muncho-production-owner-runtime-attestation.v1"
         or runtime_attestation["revision"] != plan["release_revision"]

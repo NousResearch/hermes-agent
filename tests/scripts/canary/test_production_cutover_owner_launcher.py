@@ -987,11 +987,23 @@ def test_unit_input_authority_is_signed_locally_and_staged_before_release(
             "uid": 1000,
             "gid": 1000,
         },
+        "writer": {
+            "user": "muncho-canonical-writer",
+            "group": "muncho-canonical-writer", "uid": 2000, "gid": 2000,
+        },
+        "projector": {
+            "user": "muncho-projector", "group": "muncho-projector",
+            "uid": 2004, "gid": 2004,
+        },
         "routeback": {
             "user": "muncho-discord-egress",
             "group": "muncho-discord-egress",
             "uid": 2002,
             "gid": 2002,
+        },
+        "connector": {
+            "user": "muncho-discord-connector",
+            "group": "muncho-discord-connector", "uid": 2001, "gid": 2001,
         },
         "mac_ops": {
             "user": "muncho-mac-ops-edge",
@@ -1011,15 +1023,26 @@ def test_unit_input_authority_is_signed_locally_and_staged_before_release(
             "uid": 2007,
             "gid": 2007,
         },
-        "worker_client_group": "muncho-worker-clients",
-        "worker_client_gid": 2008,
+        "writer_client_group": {"group": "muncho-writer-client", "gid": 2005},
+        "worker_client_group": {"group": "muncho-worker-clients", "gid": 2008},
         "operational_edge_identities": operational_identities,
         "operational_edge_socket_groups": operational_socket_groups,
         "writer_capability_public_key_id": "c" * 64,
+        "discord_edge_receipt_public_key_id": "a" * 64,
         "operational_edge_key_foundation_sha256": "d" * 64,
         "operational_edge_receipt_public_key_ids": (
             _operational_receipt_key_ids()
         ),
+        "discord_reconciliation_intent": {
+            "schema": package.DISCORD_RECONCILIATION_INTENT_SCHEMA,
+            "purpose": package.DISCORD_RECONCILIATION_INTENT_PURPOSE,
+            "release_revision": REVISION,
+            "legacy_public_policy_sha256": "1" * 64,
+            "target_public_policy_sha256": "2" * 64,
+            "reviewed_reconciliation": True,
+            "secret_material_recorded": False,
+            "secret_digest_recorded": False,
+        },
         "release_owner_uid": 1000,
         "release_owner_gid": 1000,
         "bwrap_sha256": "6" * 64,
@@ -1081,11 +1104,23 @@ def test_owner_cli_authors_unit_input_publication_without_exporting_key(
             "uid": 1000,
             "gid": 1000,
         },
+        "writer": {
+            "user": "muncho-canonical-writer",
+            "group": "muncho-canonical-writer", "uid": 2000, "gid": 2000,
+        },
+        "projector": {
+            "user": "muncho-projector", "group": "muncho-projector",
+            "uid": 2004, "gid": 2004,
+        },
         "routeback": {
             "user": "muncho-discord-egress",
             "group": "muncho-discord-egress",
             "uid": 2002,
             "gid": 2002,
+        },
+        "connector": {
+            "user": "muncho-discord-connector",
+            "group": "muncho-discord-connector", "uid": 2001, "gid": 2001,
         },
         "mac_ops": {
             "user": "muncho-mac-ops-edge",
@@ -1105,15 +1140,26 @@ def test_owner_cli_authors_unit_input_publication_without_exporting_key(
             "uid": 2007,
             "gid": 2007,
         },
-        "worker_client_group": "muncho-worker-clients",
-        "worker_client_gid": 2008,
+        "writer_client_group": {"group": "muncho-writer-client", "gid": 2005},
+        "worker_client_group": {"group": "muncho-worker-clients", "gid": 2008},
         "operational_edge_identities": operational_identities,
         "operational_edge_socket_groups": operational_socket_groups,
         "writer_capability_public_key_id": "c" * 64,
+        "discord_edge_receipt_public_key_id": "a" * 64,
         "operational_edge_key_foundation_sha256": "d" * 64,
         "operational_edge_receipt_public_key_ids": (
             _operational_receipt_key_ids()
         ),
+        "discord_reconciliation_intent": {
+            "schema": package.DISCORD_RECONCILIATION_INTENT_SCHEMA,
+            "purpose": package.DISCORD_RECONCILIATION_INTENT_PURPOSE,
+            "release_revision": REVISION,
+            "legacy_public_policy_sha256": "1" * 64,
+            "target_public_policy_sha256": "2" * 64,
+            "reviewed_reconciliation": True,
+            "secret_material_recorded": False,
+            "secret_digest_recorded": False,
+        },
         "release_owner_uid": 1000,
         "release_owner_gid": 1000,
         "bwrap_sha256": "6" * 64,
@@ -1151,17 +1197,6 @@ def test_sealed_cli_exposes_only_prepare_and_resume_cutover_workflow(
 ) -> None:
     private = Ed25519PrivateKey.generate()
     key_path = _private_key_file(tmp_path, private)
-    host_plan = {
-        "release_manifest_sha256": "1" * 64,
-        "gateway_target_identity": {},
-        "writer_target_identity": {},
-        "connector_target_identity": {},
-        "host_transition": {},
-        "capability_topology": {},
-        "cron_continuity_plan": {},
-    }
-    host_plan_path = (tmp_path / "host-authority-plan.json").resolve()
-    host_plan_path.write_bytes(_canonical(host_plan))
     canary_prerequisite = _isolated_canary_goal_prerequisite()
     canary_prerequisite_path = (
         tmp_path / "isolated-canary-goal-prerequisite.json"
@@ -1207,8 +1242,6 @@ def test_sealed_cli_exposes_only_prepare_and_resume_cutover_workflow(
     common = [
         "--revision",
         REVISION,
-        "--host-authority-plan",
-        str(host_plan_path),
         "--isolated-canary-goal-prerequisite",
         str(canary_prerequisite_path),
         "--owner-private-key",
@@ -1223,7 +1256,7 @@ def test_sealed_cli_exposes_only_prepare_and_resume_cutover_workflow(
     assert len(calls) == 1
     assert calls[0]["release_revision"] == REVISION
     assert calls[0]["owner_subject_sha256"] == "a" * 64
-    assert calls[0]["host_authority_plan"] == host_plan
+    assert "host_authority_plan" not in calls[0]
     assert calls[0]["isolated_canary_goal_prerequisite"] == canary_prerequisite
     assert calls[0]["prepare_only"] is True
     assert callable(calls[0]["transport_factory"])

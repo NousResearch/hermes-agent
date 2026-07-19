@@ -2986,14 +2986,18 @@ class MCPServerTask:
         """Re-register tools after a post-ready reconnect if needed.
 
         Initial registration is performed by ``_discover_and_register_server``
-        after ``start()`` completes. During a later reconnect, however,
-        ``_ready`` remains set; if outage handling previously deregistered
-        stale tools (parking calls ``_deregister_tools``), a successful
-        revival must publish the freshly discovered tools again — otherwise
-        the transport comes back alive with zero registered tools.
+        after ``start()`` completes. During a later reconnect, outage handling
+        may clear ``_ready`` before discovery and may deregister stale tools.
+        A managed server can still be identified by its entry in ``_servers``;
+        publish its freshly discovered tools before transport readiness is
+        restored so a successful revival cannot come back with zero tools.
         """
-        if not self._ready.is_set() or self._registered_tool_names:
+        if self._registered_tool_names:
             return
+        if not self._ready.is_set():
+            with _lock:
+                if _servers.get(self.name) is not self:
+                    return
         self._registered_tool_names = _register_server_tools(
             self.name, self, self._config
         )

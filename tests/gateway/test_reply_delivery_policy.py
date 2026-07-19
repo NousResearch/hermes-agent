@@ -93,6 +93,34 @@ def test_multiplex_source_observes_secondary_profile_adapter():
     assert default_adapter.observed == []
 
 
+def test_policy_callback_failure_falls_back_to_legacy_delivery(caplog):
+    """A raising policy callback must not disrupt the final reply: the legacy
+    voice-mode gate is used instead and the error is logged."""
+
+    class _RaisingPolicyAdapter(_PolicyAdapter):
+        def reply_delivery_policy(self, event, response, *, voice_mode, already_sent):
+            raise RuntimeError("policy exploded")
+
+    adapter = _RaisingPolicyAdapter(None)
+    runner = _runner(adapter)
+    event = _event(MessageType.TEXT)
+
+    with caplog.at_level("WARNING", logger="gateway.run"):
+        # Legacy gate with voice_mode off: no voice reply, no exception.
+        assert runner._should_send_voice_reply(event, "hi", [], already_sent=False) is False
+        # Text delivery is never suppressed when the policy callback fails.
+        assert (
+            runner._should_suppress_text_after_voice_reply(event, "hi", True, already_sent=False)
+            is False
+        )
+
+    assert any("reply_delivery_policy failed" in r.getMessage() for r in caplog.records)
+
+    # Legacy gate still honors an explicit /voice all opt-in.
+    runner._voice_mode = {runner._voice_key(Platform.TELEGRAM, "chat-1"): "all"}
+    assert runner._should_send_voice_reply(event, "hi", [], already_sent=False) is True
+
+
 def test_runner_observes_inbound_message_before_dispatch():
     adapter = _PolicyAdapter(ReplyDeliveryPolicy())
     runner = _runner(adapter)

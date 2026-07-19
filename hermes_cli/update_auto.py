@@ -27,6 +27,7 @@ from typing import Any, Callable, NoReturn
 
 from hermes_constants import get_hermes_home
 from hermes_cli.update_lock import (
+    UpdateLock,
     UpdateLockBusyError,
     UpdateLockError,
     acquire_update_lock,
@@ -37,6 +38,7 @@ STATUS_FILENAME = "update-status.json"
 LOG_FILENAME = "update.log"
 LAUNCHD_LABEL = "com.hermes.agent.auto-update"
 SYSTEMD_BASENAME = "hermes-auto-update"
+_UNSET = object()
 
 _HEALTH_STARTUP_GRACE_SECONDS = 10.0
 _HEALTH_POLL_INTERVAL_SECONDS = 0.25
@@ -94,6 +96,10 @@ class SchedulerRecoveryError(RuntimeError):
     def __init__(self, message: str, receipt: dict[str, Any]) -> None:
         super().__init__(message)
         self.receipt = receipt
+
+
+class StaleStatusWriteError(RuntimeError):
+    """The caller no longer owns the persisted auto-update generation."""
 
 
 def _persist_recovery_required(message: str, receipt: dict[str, Any]) -> None:
@@ -156,30 +162,66 @@ def read_status() -> dict[str, Any]:
     return merged
 
 
-def write_status(status: dict[str, Any]) -> Path:
+def _status_cas_lock() -> UpdateLock:
+    """Return the profile-local lock protecting status read/compare/write."""
+    return UpdateLock(get_status_path().with_name(f".{STATUS_FILENAME}.lock"))
+
+
+def write_status(
+    status: dict[str, Any], *, expected_run_generation: str | None | object = _UNSET
+) -> Path:
+    """Persist status only if the caller still owns the current generation.
+
+    The shared update lock serializes update work, but it cannot protect a late
+    receipt from an already-running old process. This profile-local CAS lock
+    makes the persisted-generation comparison and atomic replace one operation.
+    ``expected_run_generation`` is explicit for a new run claiming ownership;
+    terminal writers pass their own generation and fail closed after a newer run
+    has claimed the file.
+    """
     path = get_status_path()
-    payload = dict(DEFAULT_STATUS)
-    payload.update(status)
-    payload["mode"] = payload.get("mode") or "manual"
-    # Persisted scheduler state is an input to the fail-closed dispatcher. Do
-    # not turn malformed truthy values such as ``"false"`` into an enabled
-    # schedule while recording a diagnostic.
-    payload["enabled"] = payload.get("enabled", False) is True
-    if not isinstance(payload.get("planSchedule"), list):
-        payload["planSchedule"] = []
-    if not payload.get("logPath"):
-        payload["logPath"] = str(get_log_path())
+    with _status_cas_lock():
+        existing = read_status()
+        current_generation = existing.get("runGeneration")
+        caller_generation = status.get("runGeneration", current_generation)
+        if expected_run_generation is _UNSET:
+            expected = (
+                current_generation
+                if current_generation is None
+                else caller_generation
+            )
+        else:
+            expected = expected_run_generation
+        if expected != current_generation:
+            raise StaleStatusWriteError(
+                "auto-update status generation changed: "
+                f"expected {expected!r}, current {current_generation!r}"
+            )
 
-    from utils import atomic_json_write
+        payload = dict(DEFAULT_STATUS)
+        payload.update(status)
+        if "runGeneration" not in status:
+            payload["runGeneration"] = current_generation
+        payload["mode"] = payload.get("mode") or "manual"
+        # Persisted scheduler state is an input to the fail-closed dispatcher.
+        # Do not turn malformed truthy values such as ``"false"`` into an
+        # enabled schedule while recording a diagnostic.
+        payload["enabled"] = payload.get("enabled", False) is True
+        if not isinstance(payload.get("planSchedule"), list):
+            payload["planSchedule"] = []
+        if not payload.get("logPath"):
+            payload["logPath"] = str(get_log_path())
 
-    atomic_json_write(path, payload, indent=2, sort_keys=True)
+        from utils import atomic_json_write
+
+        atomic_json_write(path, payload, indent=2, sort_keys=True)
     return path
 
 
 def update_status_fields(**fields: Any) -> Path:
     status = read_status()
     status.update(fields)
-    return write_status(status)
+    return write_status(status, expected_run_generation=status.get("runGeneration"))
 
 
 def append_log(
@@ -368,6 +410,7 @@ def _live_gateway_identity(
         return {
             "pid": live_pid,
             "start_time": live_start if live_start is not None else recorded_start,
+            "generation": runtime.get("generation"),
             "command": command,
             **_reported_runtime_fields(runtime),
             "installation_identity": runtime.get("installation_identity")
@@ -455,6 +498,7 @@ def _durable_gateway_proof(runtime: dict[str, Any] | None) -> dict[str, Any] | N
         "gatewayState": runtime.get("gateway_state"),
         "pid": runtime.get("pid"),
         "startTime": runtime.get("start_time"),
+        "generation": runtime.get("generation"),
         "runtimeVersion": runtime.get("runtime_version"),
         "runtimeRevision": runtime.get("runtime_revision"),
         "installationIdentity": runtime.get("installation_identity"),
@@ -717,8 +761,7 @@ def _display(value: Any, default: str = "-") -> str:
     return str(value)
 
 
-def cmd_auto_status(_args) -> None:
-    status = read_status()
+def _print_auto_status(status: dict[str, Any], current_version: str | None) -> None:
     enabled = bool(status.get("enabled"))
     print("Hermes auto-update status")
     print("  Phase:            2 (scheduled wrapper around run-now)")
@@ -736,10 +779,32 @@ def cmd_auto_status(_args) -> None:
     print(f"  Previous version: {_display(status.get('previousVersion'))}")
     print(f"  Latest known:     {_display(status.get('latestVersion'))}")
     print(f"  Planned version:  {_display(status.get('plannedVersion'))}")
-    print(f"  Current version:  {_display(status.get('currentVersion') or _current_version())}")
+    print(f"  Current version:  {_display(current_version)}")
     print(f"  Backup path:      {_display(status.get('backupPath'))}")
     print(f"  Last error:       {_display(status.get('error'))}")
     print(f"  Detailed log:     {_display(status.get('logPath') or get_log_path())}")
+
+
+def cmd_auto_status(_args) -> None:
+    from hermes_cli.main import PROJECT_ROOT
+
+    try:
+        update_lock = acquire_update_lock(PROJECT_ROOT)
+    except (UpdateLockBusyError, UpdateLockError) as exc:
+        # Status is read-only. A transiently busy updater must not probe git
+        # outside the lock or write a speculative result; use the last durable
+        # version snapshot instead.
+        status = read_status()
+        print(f"⚠ Auto-update is busy; showing the last persisted status ({exc}).", file=sys.stderr)
+        _print_auto_status(status, status.get("currentVersion"))
+        return
+
+    try:
+        status = read_status()
+        current_version = status.get("currentVersion") or _current_version()
+        _print_auto_status(status, current_version)
+    finally:
+        update_lock.release()
 
 
 def _run_existing_update(
@@ -867,7 +932,15 @@ class _SchedulerHandle:
 
 
 def _scheduled_command() -> list[str]:
-    return _hermes_command_prefix() + ["update", "auto", "run-scheduled"]
+    profile_home = get_hermes_home().resolve()
+    profile_name = profile_home.name if profile_home.parent.name == "profiles" else "default"
+    return _hermes_command_prefix() + [
+        "--profile",
+        profile_name,
+        "update",
+        "auto",
+        "run-scheduled",
+    ]
 
 
 def _launchd_plist_path() -> Path:
@@ -1349,6 +1422,12 @@ def _restore_systemd(
         except Exception as exc:
             errors.append(str(exc))
 
+    # Clear both units before putting the files back. ``enable --now`` can
+    # start the oneshot service while a later verification fails; stopping only
+    # the timer leaves that service running across rollback.
+    service_name = service_path.name
+    run(["stop", service_name], "systemctl --user rollback stop service", allow_missing=True)
+    run(["disable", service_name], "systemctl --user rollback disable service", allow_missing=True)
     run(
         ["disable", "--now", timer_name],
         "systemctl --user rollback disable --now",
@@ -1371,43 +1450,51 @@ def _restore_systemd(
             errors.extend(str(error) for error in receipt.get("errors", []))
     run(["daemon-reload"], "systemctl --user rollback daemon-reload")
 
-    unit_file_state = timer_state.get("unit_file_state")
-    if unit_file_state is None:
-        unit_file_state = "enabled" if timer_state.get("enabled") is True else None
-    if unit_file_state == "enabled":
-        run(["enable", timer_name], "systemctl --user rollback enable")
-    elif unit_file_state == "enabled-runtime":
-        run(
-            ["enable", "--runtime", timer_name],
-            "systemctl --user rollback enable --runtime",
-        )
-    elif unit_file_state == "linked":
-        run(
-            ["link", str(timer_path)],
-            "systemctl --user rollback link",
-        )
-    elif unit_file_state == "linked-runtime":
-        run(
-            ["link", "--runtime", str(timer_path)],
-            "systemctl --user rollback link --runtime",
-        )
-    elif unit_file_state == "masked":
-        run(["mask", timer_name], "systemctl --user rollback mask")
-    elif unit_file_state == "masked-runtime":
-        run(
-            ["mask", "--runtime", timer_name],
-            "systemctl --user rollback mask --runtime",
-        )
-    elif unit_file_state == "disabled" or (
-        unit_file_state is None and prior_state.get("enabled") is False
+    def restore_unit_file_state(
+        unit_name: str,
+        unit_path: Path,
+        state: dict[str, Any],
+        label: str,
+    ) -> None:
+        unit_file_state = state.get("unit_file_state")
+        if unit_file_state is None:
+            unit_file_state = "enabled" if state.get("enabled") is True else None
+        if unit_file_state == "enabled":
+            run(["enable", unit_name], f"systemctl --user rollback enable {label}")
+        elif unit_file_state == "enabled-runtime":
+            run(
+                ["enable", "--runtime", unit_name],
+                f"systemctl --user rollback enable --runtime {label}",
+            )
+        elif unit_file_state == "linked":
+            run(["link", str(unit_path)], f"systemctl --user rollback link {label}")
+        elif unit_file_state == "linked-runtime":
+            run(
+                ["link", "--runtime", str(unit_path)],
+                f"systemctl --user rollback link --runtime {label}",
+            )
+        elif unit_file_state == "masked":
+            run(["mask", unit_name], f"systemctl --user rollback mask {label}")
+        elif unit_file_state == "masked-runtime":
+            run(
+                ["mask", "--runtime", unit_name],
+                f"systemctl --user rollback mask --runtime {label}",
+            )
+        elif unit_file_state in {"disabled", "indirect", "static", "generated", "transient", "alias"}:
+            # The pre-restore disable already gives these states their
+            # non-enabled manager state. Static/generated/transient states are
+            # determined by the restored unit file and need no enable command.
+            return
+
+    restore_unit_file_state(service_name, service_path, service_state, "service")
+    restore_unit_file_state(timer_name, timer_path, timer_state, "timer")
+
+    for unit_name, state, label in (
+        (service_name, service_state, "service"),
+        (timer_name, timer_state, "timer"),
     ):
-        run(
-            ["disable", timer_name],
-            "systemctl --user rollback disable",
-            allow_missing=True,
-        )
-    if timer_state.get("active_state") == "active" or timer_state.get("running"):
-        run(["start", timer_name], "systemctl --user rollback start")
+        if state.get("active_state") == "active" or state.get("running"):
+            run(["start", unit_name], f"systemctl --user rollback start {label}")
     manager_actual: dict[str, Any] = {}
     for label, unit_name, expected in (
         ("service", service_path.name, service_state),
@@ -1920,74 +2007,108 @@ def _record_scheduler_state_failure(message: str) -> None:
     print(f"✗ Auto-update scheduler stopped: {error}", file=sys.stderr)
 
 
-def cmd_auto_plan(args) -> None:
-    from hermes_cli.main import _get_update_check_result, _resolve_update_branch
+def _auto_plan_ownership_error(status: dict[str, Any]) -> str | None:
+    if status.get("status") == STATUS_RUNNING:
+        return "another auto-update run already owns the status generation"
+    if any(
+        status.get(key) is not None
+        for key in ("schedulerType", "schedulerPath", "schedulerIdentity")
+    ):
+        return _validate_scheduler_status(status)
+    return None
 
-    branch = _resolve_update_branch(args)
-    planned_at = _utc_now()
-    status = read_status()
-    update_time = status.get("schedule") or "not configured"
+
+def cmd_auto_plan(args) -> None:
+    from hermes_cli.main import (
+        PROJECT_ROOT,
+        _get_update_check_result,
+        _resolve_update_branch,
+    )
 
     try:
-        check = _get_update_check_result(
-            branch=branch,
-            branch_explicit=bool(getattr(args, "branch", None)),
+        update_lock = acquire_update_lock(PROJECT_ROOT)
+    except UpdateLockBusyError as exc:
+        _record_lock_failure(
+            f"another Hermes update is already running; auto-update is busy ({exc})"
         )
-    except Exception as exc:
-        update_status_fields(
-            status=STATUS_CHECK_FAILED,
-            lastPlanAt=planned_at,
-            error=f"update check failed: {exc}",
-            logPath=str(get_log_path()),
-        )
-        append_log("plan", result=STATUS_CHECK_FAILED, error=str(exc))
-        print(f"✗ Auto-update plan check failed: {exc}", file=sys.stderr)
-        raise SystemExit(EXIT_CHECK_FAILED) from exc
+    except UpdateLockError as exc:
+        _record_lock_failure(f"could not acquire the auto-update lock: {exc}")
 
-    current_version = check.get("current_version") or _current_version()
-    latest_version = check.get("latest_version") or None
-    if not check.get("update_available"):
+    try:
+        # Read and validate ownership only after the lock is held. This keeps a
+        # scheduled plan from probing git or publishing status for a different
+        # active profile or a run that has already claimed the file.
+        status = read_status()
+        ownership_error = _auto_plan_ownership_error(status)
+        if ownership_error:
+            raise RuntimeError(f"auto-update plan ownership check failed: {ownership_error}")
+
+        branch = _resolve_update_branch(args)
+        planned_at = _utc_now()
+        update_time = status.get("schedule") or "not configured"
+
+        try:
+            check = _get_update_check_result(
+                branch=branch,
+                branch_explicit=bool(getattr(args, "branch", None)),
+            )
+        except Exception as exc:
+            update_status_fields(
+                status=STATUS_CHECK_FAILED,
+                lastPlanAt=planned_at,
+                error=f"update check failed: {exc}",
+                logPath=str(get_log_path()),
+            )
+            append_log("plan", result=STATUS_CHECK_FAILED, error=str(exc))
+            print(f"✗ Auto-update plan check failed: {exc}", file=sys.stderr)
+            raise SystemExit(EXIT_CHECK_FAILED) from exc
+
+        current_version = check.get("current_version") or _current_version()
+        latest_version = check.get("latest_version") or None
+        if not check.get("update_available"):
+            update_status_fields(
+                status=STATUS_UP_TO_DATE,
+                lastPlanAt=planned_at,
+                previousVersion=current_version,
+                latestVersion=latest_version,
+                plannedVersion=None,
+                currentVersion=current_version,
+                error=None,
+                logPath=str(get_log_path()),
+            )
+            append_log(
+                "plan",
+                result=STATUS_UP_TO_DATE,
+                previous_version=current_version,
+                latest_version=latest_version,
+                current_version=current_version,
+            )
+            print("✓ No Hermes update planned; already up to date.")
+            return
+
         update_status_fields(
-            status=STATUS_UP_TO_DATE,
+            status=STATUS_PLANNED,
             lastPlanAt=planned_at,
             previousVersion=current_version,
             latestVersion=latest_version,
-            plannedVersion=None,
+            plannedVersion=latest_version,
             currentVersion=current_version,
             error=None,
             logPath=str(get_log_path()),
         )
         append_log(
             "plan",
-            result=STATUS_UP_TO_DATE,
+            result=STATUS_PLANNED,
             previous_version=current_version,
             latest_version=latest_version,
             current_version=current_version,
         )
-        print("✓ No Hermes update planned; already up to date.")
-        return
-
-    update_status_fields(
-        status=STATUS_PLANNED,
-        lastPlanAt=planned_at,
-        previousVersion=current_version,
-        latestVersion=latest_version,
-        plannedVersion=latest_version,
-        currentVersion=current_version,
-        error=None,
-        logPath=str(get_log_path()),
-    )
-    append_log(
-        "plan",
-        result=STATUS_PLANNED,
-        previous_version=current_version,
-        latest_version=latest_version,
-        current_version=current_version,
-    )
-    print("☀ Hermes update available")
-    if current_version and latest_version:
-        print(f"{current_version} → {latest_version}")
-    print(f"Scheduled auto-update: {update_time}")
+        print("☀ Hermes update available")
+        if current_version and latest_version:
+            print(f"{current_version} → {latest_version}")
+        print(f"Scheduled auto-update: {update_time}")
+    finally:
+        update_lock.release()
 
 
 def cmd_auto_run_scheduled(_args) -> None:
@@ -2059,7 +2180,9 @@ def cmd_auto_run_now(args) -> None:
         update_lock.release()
 
 
-def _record_unexpected_run_failure(exc: Exception) -> NoReturn:
+def _record_unexpected_run_failure(
+    exc: Exception, *, run_generation: str | None = None
+) -> NoReturn:
     """Terminalize an unexpected run failure without swallowing the cause."""
     status = read_status()
     started_at = status.get("lastRunAt") or _utc_now()
@@ -2077,9 +2200,15 @@ def _record_unexpected_run_failure(exc: Exception) -> NoReturn:
                 current_version=current_version,
                 backup_path=status.get("backupPath"),
                 error=error,
-                run_generation=status.get("runGeneration"),
+                run_generation=run_generation,
                 pre_update_gateway=status.get("preUpdateGateway"),
-            )
+            ),
+            expected_run_generation=run_generation,
+        )
+    except StaleStatusWriteError:
+        print(
+            "⚠ Auto-update run lost status ownership; stale failure receipt was rejected.",
+            file=sys.stderr,
         )
     except Exception as persist_exc:
         print(
@@ -2103,27 +2232,40 @@ def _record_unexpected_run_failure(exc: Exception) -> NoReturn:
 
 
 def _cmd_auto_run_now_locked(args) -> None:
+    run_context: dict[str, str] = {}
     try:
-        return _cmd_auto_run_now_locked_impl(args)
+        return _cmd_auto_run_now_locked_impl(args, run_context=run_context)
     except (KeyboardInterrupt, SystemExit):
         raise
+    except StaleStatusWriteError:
+        print(
+            "⚠ Auto-update run lost status ownership; stale terminal receipt was rejected.",
+            file=sys.stderr,
+        )
     except Exception as exc:
-        _record_unexpected_run_failure(exc)
+        _record_unexpected_run_failure(
+            exc, run_generation=run_context.get("run_generation")
+        )
 
 
-def _cmd_auto_run_now_locked_impl(args) -> None:
+def _cmd_auto_run_now_locked_impl(
+    args, *, run_context: dict[str, str] | None = None
+) -> None:
     from hermes_cli.backup import create_pre_update_backup
     from hermes_cli.main import _get_update_check_result, _resolve_update_branch
 
     branch = _resolve_update_branch(args)
     previous_version = _current_version()
     run_generation = uuid.uuid4().hex
+    if run_context is not None:
+        run_context["run_generation"] = run_generation
     previous_runtime = _capture_gateway_runtime(previous_version)
     latest_version: str | None = None
     current_version: str | None = previous_version
     backup_path: str | None = None
     started_at = _utc_now()
 
+    previous_status = read_status()
     write_status(
         _status_payload(
             status=STATUS_RUNNING,
@@ -2132,7 +2274,8 @@ def _cmd_auto_run_now_locked_impl(args) -> None:
             current_version=current_version,
             run_generation=run_generation,
             pre_update_gateway=_durable_gateway_proof(previous_runtime),
-        )
+        ),
+        expected_run_generation=previous_status.get("runGeneration"),
     )
     append_log(
         "start",
@@ -2166,7 +2309,7 @@ def _cmd_auto_run_now_locked_impl(args) -> None:
                 run_generation=run_generation,
                 pre_update_gateway=_durable_gateway_proof(previous_runtime),
             )
-            write_status(payload)
+            write_status(payload, expected_run_generation=run_generation)
             append_log(
                 "end",
                 result=STATUS_UP_TO_DATE,
@@ -2258,7 +2401,7 @@ def _cmd_auto_run_now_locked_impl(args) -> None:
             run_generation=run_generation,
             pre_update_gateway=_durable_gateway_proof(previous_runtime),
         )
-        write_status(payload)
+        write_status(payload, expected_run_generation=run_generation)
         append_log(
             "end",
             result=STATUS_SUCCESS,
@@ -2281,7 +2424,7 @@ def _cmd_auto_run_now_locked_impl(args) -> None:
             run_generation=run_generation,
             pre_update_gateway=_durable_gateway_proof(previous_runtime),
         )
-        write_status(payload)
+        write_status(payload, expected_run_generation=run_generation)
         append_log(
             "end",
             result=exc.status,

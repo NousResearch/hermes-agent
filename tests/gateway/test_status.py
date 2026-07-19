@@ -437,6 +437,70 @@ class TestGatewayRuntimeStatus:
         assert payload["pid"] == os.getpid(), "PID should be overwritten, not preserved via setdefault"
         assert payload["start_time"] != 1000.0, "start_time should be overwritten on restart"
 
+    def test_pid_and_runtime_records_publish_generation_and_runtime_identity(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(status, "_GATEWAY_RUNTIME_GENERATION", "gateway-generation")
+
+        status.write_pid_file()
+        status.write_runtime_status(gateway_state="running")
+
+        pid_payload = json.loads((tmp_path / "gateway.pid").read_text())
+        runtime_payload = status.read_runtime_status()
+        assert pid_payload["generation"] == "gateway-generation"
+        assert runtime_payload["generation"] == "gateway-generation"
+        assert runtime_payload["runtime_version"]
+        assert runtime_payload["runtime_revision"]
+
+    def test_old_runtime_writer_cannot_overwrite_new_generation(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(status, "_GATEWAY_RUNTIME_GENERATION", "new-generation")
+        status.write_runtime_status(gateway_state="running")
+
+        monkeypatch.setattr(status, "_GATEWAY_RUNTIME_GENERATION", "old-generation")
+        status.write_runtime_status(gateway_state="startup_failed", exit_reason="stale")
+
+        payload = status.read_runtime_status()
+        assert payload["generation"] == "new-generation"
+        assert payload["gateway_state"] == "running"
+        assert payload.get("exit_reason") != "stale"
+
+    def test_old_pid_cleanup_cannot_remove_new_generation(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(status, "_GATEWAY_RUNTIME_GENERATION", "new-generation")
+        status.write_pid_file()
+
+        monkeypatch.setattr(status, "_GATEWAY_RUNTIME_GENERATION", "old-generation")
+        status.remove_pid_file()
+
+        assert (tmp_path / "gateway.pid").exists()
+
+    def test_real_runtime_writer_supplies_auto_update_proof(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(status, "_GATEWAY_RUNTIME_GENERATION", "proof-generation")
+        monkeypatch.setattr(status.sys, "argv", ["hermes", "gateway", "run"])
+        monkeypatch.setattr(status, "_get_process_start_time", lambda _pid: 123)
+        monkeypatch.setattr(status, "_read_process_cmdline", lambda _pid: "hermes gateway run")
+
+        status.write_runtime_status(gateway_state="running")
+
+        from hermes_cli import update_auto
+
+        monkeypatch.setattr(update_auto, "_live_process_metadata", lambda pid: {
+            "pid": pid,
+            "start_time": 123,
+            "command": "hermes gateway run",
+            "exe": sys.executable,
+        })
+        identity = update_auto._capture_gateway_runtime()
+        assert identity is not None
+        assert identity["generation"] == "proof-generation"
+        assert identity["runtime_version"]
+        assert identity["runtime_revision"]
+
     def test_write_runtime_status_overwrites_stale_argv_on_restart(self, tmp_path, monkeypatch):
         """Regression: gateway_state.json must not keep the previous launch argv."""
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))

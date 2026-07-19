@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import plistlib
 import subprocess
+import sys
 import time as time_module
 from pathlib import Path
 from datetime import datetime
@@ -60,6 +62,33 @@ def test_write_status_uses_stable_schema_and_profile_home(tmp_path, monkeypatch)
     assert data["backupPath"] == "/tmp/backup.zip"
     assert data["error"] is None
     assert data["logPath"] == str(hermes_home / "logs" / "update.log")
+
+
+def test_stale_generation_receipt_cannot_replace_new_running_status(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+
+    update_auto.write_status(
+        {"status": update_auto.STATUS_RUNNING, "runGeneration": "new-generation"},
+        expected_run_generation=None,
+    )
+
+    with pytest.raises(update_auto.StaleStatusWriteError):
+        update_auto.write_status(
+            {
+                "status": update_auto.STATUS_SUCCESS,
+                "runGeneration": "old-generation",
+                "terminalReceipt": {
+                    "generation": "old-generation",
+                    "status": update_auto.STATUS_SUCCESS,
+                },
+            },
+            expected_run_generation="old-generation",
+        )
+
+    status = update_auto.read_status()
+    assert status["runGeneration"] == "new-generation"
+    assert status["status"] == update_auto.STATUS_RUNNING
+    assert status["terminalReceipt"] is None
 
 
 def test_current_version_uses_fresh_distribution_metadata_for_non_git_install(
@@ -310,7 +339,9 @@ def test_enable_creates_expected_launchd_plist_on_macos(tmp_path, monkeypatch, c
     with plist_path.open("rb") as handle:
         plist = plistlib.load(handle)
     assert plist["Label"] == update_auto._launchd_label()
-    assert plist["ProgramArguments"] == ["hermes", "update", "auto", "run-scheduled"]
+    assert plist["ProgramArguments"] == [
+        "hermes", "--profile", "default", "update", "auto", "run-scheduled"
+    ]
     assert plist["StartCalendarInterval"] == {"Hour": 3, "Minute": 0}
     assert plist["EnvironmentVariables"] == {"HERMES_HOME": str(hermes_home)}
     assert plist["StandardOutPath"] == str(hermes_home / "logs" / "update-auto.out.log")
@@ -327,6 +358,74 @@ def test_enable_creates_expected_launchd_plist_on_macos(tmp_path, monkeypatch, c
     out = capsys.readouterr().out
     assert "Hermes auto-update scheduled" in out
     assert "03:00" in out
+
+
+def test_scheduled_command_pins_default_profile_selector(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "default-home"))
+    monkeypatch.setattr(update_auto, "_hermes_command_prefix", lambda: ["hermes"])
+
+    assert update_auto._scheduled_command() == [
+        "hermes",
+        "--profile",
+        "default",
+        "update",
+        "auto",
+        "run-scheduled",
+    ]
+
+
+def test_default_scheduler_stays_default_after_active_profile_switch(
+    tmp_path, monkeypatch
+):
+    hermes_root = tmp_path / ".hermes"
+    named_profile = hermes_root / "profiles" / "work"
+    named_profile.mkdir(parents=True)
+    hermes_root.mkdir(exist_ok=True)
+    (hermes_root / "active_profile").write_text("default", encoding="utf-8")
+
+    monkeypatch.setattr(update_auto.Path, "home", staticmethod(lambda: tmp_path))
+    monkeypatch.setenv("HERMES_HOME", str(hermes_root))
+    monkeypatch.setattr(update_auto.sys, "platform", "darwin")
+    monkeypatch.setattr(update_auto, "_hermes_command_prefix", lambda: ["hermes"])
+    monkeypatch.setattr(
+        update_auto,
+        "_run_launchctl",
+        lambda args: subprocess.CompletedProcess(
+            ["launchctl"] + args,
+            1 if args[0] == "print" else 0,
+            stdout="",
+            stderr="Could not find service" if args[0] == "print" else "",
+        ),
+    )
+
+    update_auto.cmd_auto_enable(_args(time="03:00"))
+    plist_path = update_auto._launchd_plist_path()
+    with plist_path.open("rb") as handle:
+        scheduled_argv = plistlib.load(handle)["ProgramArguments"]
+    assert scheduled_argv[:3] == ["hermes", "--profile", "default"]
+    default_identity = update_auto.read_status()["schedulerIdentity"]
+
+    # The user switches the sticky active profile after the scheduler was
+    # enabled. Execute the persisted command's profile-selection prefix in the
+    # same way a fresh Hermes process does; it must still resolve the default.
+    (hermes_root / "active_profile").write_text("work", encoding="utf-8")
+    monkeypatch.delenv("HERMES_HOME")
+    monkeypatch.setattr(sys, "argv", scheduled_argv)
+    from hermes_cli import main
+
+    main._apply_profile_override()
+
+    assert os.environ["HERMES_HOME"] == str(hermes_root)
+    assert update_auto.get_status_path().is_relative_to(hermes_root)
+    assert update_auto._scheduler_identity() == default_identity
+
+    dispatched_homes = []
+    monkeypatch.setattr(
+        update_auto, "cmd_auto_run_now", lambda _args: dispatched_homes.append(update_auto.get_hermes_home())
+    )
+    update_auto.cmd_auto_run_scheduled(_args())
+    assert dispatched_homes == [hermes_root]
+    assert not (named_profile / "state" / update_auto.STATUS_FILENAME).exists()
 
 
 def test_enable_launchd_requires_bootstrap_success_and_reports_both_streams(
@@ -519,6 +618,8 @@ def test_enable_systemd_requires_daemon_reload_success(tmp_path, monkeypatch, ca
             "--property=LoadState,UnitFileState,ActiveState",
         ],
         ["daemon-reload"],
+        ["stop", _service_path.name],
+        ["disable", _service_path.name],
         ["disable", "--now", timer_path.name],
         ["daemon-reload"],
         [
@@ -573,6 +674,8 @@ def test_enable_systemd_requires_enable_now_success(tmp_path, monkeypatch, capsy
         ],
         ["daemon-reload"],
         ["enable", "--now", timer_path.name],
+        ["stop", _service_path.name],
+        ["disable", _service_path.name],
         ["disable", "--now", timer_path.name],
         ["daemon-reload"],
         [
@@ -600,7 +703,9 @@ def test_enable_with_plan_time_creates_single_launchd_scheduler_with_two_trigger
     plist_path = update_auto._launchd_plist_path()
     with plist_path.open("rb") as handle:
         plist = plistlib.load(handle)
-    assert plist["ProgramArguments"] == ["hermes", "update", "auto", "run-scheduled"]
+    assert plist["ProgramArguments"] == [
+        "hermes", "--profile", "default", "update", "auto", "run-scheduled"
+    ]
     assert plist["StartCalendarInterval"] == [
         {"Hour": 21, "Minute": 0},
         {"Hour": 4, "Minute": 0},
@@ -774,7 +879,7 @@ def test_enable_creates_expected_systemd_user_timer_on_linux(tmp_path, monkeypat
     service_path, timer_path = update_auto._systemd_paths()
     service_text = service_path.read_text(encoding="utf-8")
     timer_text = timer_path.read_text(encoding="utf-8")
-    assert "ExecStart=hermes update auto run-scheduled" in service_text
+    assert "ExecStart=hermes --profile default update auto run-scheduled" in service_text
     assert f"Environment=HERMES_HOME={hermes_home}" in service_text
     assert f"StandardOutput=append:{hermes_home / 'logs' / 'update-auto.out.log'}" in service_text
     assert "OnCalendar=*-*-* 03:00:00" in timer_text
@@ -1421,6 +1526,144 @@ def test_plan_prints_concise_notice_and_records_status(tmp_path, monkeypatch, ca
     assert status["status"] == update_auto.STATUS_PLANNED
     assert status["lastPlanAt"] is not None
     assert status["plannedVersion"] == "newsha"
+
+
+def test_auto_plan_holds_shared_lock_before_check_and_status_work(
+    tmp_path, monkeypatch
+):
+    hermes_home = tmp_path / "home"
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    from hermes_cli import main as hm
+
+    events = []
+
+    class FakeLock:
+        held = True
+
+        def release(self):
+            events.append("release")
+            self.held = False
+
+    def acquire(_root):
+        events.append("acquire")
+        return FakeLock()
+
+    monkeypatch.setattr(update_auto, "acquire_update_lock", acquire)
+    monkeypatch.setattr(
+        hm,
+        "_get_update_check_result",
+        lambda **_kw: events.append("check")
+        or {
+            "update_available": True,
+            "current_version": "oldsha",
+            "latest_version": "newsha",
+        },
+    )
+    original_update_status_fields = update_auto.update_status_fields
+
+    def record_status(**fields):
+        events.append("status")
+        return original_update_status_fields(**fields)
+
+    monkeypatch.setattr(update_auto, "update_status_fields", record_status)
+
+    update_auto.cmd_auto_plan(_args())
+
+    assert events.index("acquire") < events.index("check") < events.index("status")
+    assert events[-1] == "release"
+
+
+def test_auto_plan_busy_does_not_check_or_overwrite_status(tmp_path, monkeypatch):
+    hermes_home = tmp_path / "home"
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    leader_receipt = {
+        "generation": "leader-generation",
+        "status": update_auto.STATUS_SUCCESS,
+    }
+    update_auto.write_status(
+        {
+            "status": update_auto.STATUS_SUCCESS,
+            "runGeneration": "leader-generation",
+            "terminalReceipt": leader_receipt,
+        }
+    )
+    from hermes_cli import main as hm
+    from hermes_cli.update_lock import UpdateLockBusyError
+
+    monkeypatch.setattr(
+        update_auto,
+        "acquire_update_lock",
+        lambda _root: (_ for _ in ()).throw(UpdateLockBusyError("busy")),
+    )
+    monkeypatch.setattr(
+        hm,
+        "_get_update_check_result",
+        lambda **_kw: pytest.fail("busy plan must not check for updates"),
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        update_auto.cmd_auto_plan(_args())
+
+    assert exc.value.code == update_auto.EXIT_UPDATE_FAILED
+    assert _read_status(hermes_home)["terminalReceipt"] == leader_receipt
+
+
+def test_auto_status_holds_shared_lock_before_version_probe(tmp_path, monkeypatch, capsys):
+    hermes_home = tmp_path / "home"
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    from hermes_cli import main as hm
+
+    events = []
+
+    class FakeLock:
+        held = True
+
+        def release(self):
+            events.append("release")
+            self.held = False
+
+    monkeypatch.setattr(
+        update_auto,
+        "acquire_update_lock",
+        lambda _root: events.append("acquire") or FakeLock(),
+    )
+    monkeypatch.setattr(
+        update_auto,
+        "_current_version",
+        lambda: events.append("version") or "abc123",
+    )
+    monkeypatch.setattr(hm, "PROJECT_ROOT", tmp_path / "checkout")
+
+    update_auto.cmd_auto_status(SimpleNamespace())
+
+    assert events == ["acquire", "version", "release"]
+    assert "Current version:  abc123" in capsys.readouterr().out
+
+
+def test_auto_status_busy_uses_snapshot_without_subprocess_or_overwrite(
+    tmp_path, monkeypatch, capsys
+):
+    hermes_home = tmp_path / "home"
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    update_auto.write_status({"status": update_auto.STATUS_SUCCESS, "currentVersion": "snapshot"})
+    from hermes_cli.update_lock import UpdateLockBusyError
+
+    monkeypatch.setattr(
+        update_auto,
+        "acquire_update_lock",
+        lambda _root: (_ for _ in ()).throw(UpdateLockBusyError("busy")),
+    )
+    monkeypatch.setattr(
+        update_auto,
+        "_current_version",
+        lambda: pytest.fail("busy status must not run a version subprocess"),
+    )
+
+    update_auto.cmd_auto_status(SimpleNamespace())
+
+    out = capsys.readouterr().out
+    assert "Current version:  snapshot" in out
+    assert _read_status(hermes_home)["currentVersion"] == "snapshot"
 
 
 def test_run_now_preserves_scheduler_configuration(tmp_path, monkeypatch):
@@ -2596,3 +2839,84 @@ def test_systemd_rollback_restores_raw_unit_file_state(
     assert expected_call in calls
     assert ["start", timer_path.name] in calls
     assert timer_path.read_bytes() == b"prior timer\n"
+
+
+def test_systemd_rollback_restores_service_and_timer_manager_state_in_order(
+    tmp_path, monkeypatch
+):
+    service_path = tmp_path / "hermes.service"
+    timer_path = tmp_path / "hermes.timer"
+    service_path.write_bytes(b"prior service\n")
+    timer_path.write_bytes(b"prior timer\n")
+    calls = []
+    states = {
+        service_path.name: {
+            "load": "loaded",
+            "unit": "enabled",
+            "active": "active",
+        },
+        timer_path.name: {
+            "load": "loaded",
+            "unit": "enabled",
+            "active": "active",
+        },
+    }
+
+    def systemctl(args):
+        calls.append(args)
+        if args[0] == "show":
+            state = states[args[1]]
+            return subprocess.CompletedProcess(
+                ["systemctl", "--user"] + args,
+                0,
+                stdout=(
+                    f"LoadState={state['load']}\n"
+                    f"UnitFileState={state['unit']}\n"
+                    f"ActiveState={state['active']}\n"
+                ),
+                stderr="",
+            )
+        unit = args[-1]
+        if args[0] == "stop":
+            states[unit]["active"] = "inactive"
+        elif args[0] == "disable":
+            states[unit]["unit"] = "disabled"
+            states[unit]["active"] = "inactive"
+        elif args[0] == "enable":
+            states[unit]["unit"] = "enabled"
+        elif args[0] == "start":
+            states[unit]["active"] = "active"
+        return subprocess.CompletedProcess(
+            ["systemctl", "--user"] + args, 0, stdout="", stderr=""
+        )
+
+    monkeypatch.setattr(update_auto, "_systemctl_user", systemctl)
+    receipt = update_auto._restore_systemd(
+        service_path=service_path,
+        timer_path=timer_path,
+        timer_name=timer_path.name,
+        prior_service=(b"prior service\n", 0o100644),
+        prior_timer=(b"prior timer\n", 0o100644),
+        prior_state={
+            "service_state": {
+                "load_state": "loaded",
+                "unit_file_state": "enabled",
+                "active_state": "active",
+            },
+            "timer_state": {
+                "load_state": "loaded",
+                "unit_file_state": "enabled",
+                "active_state": "active",
+            },
+        },
+    )
+
+    assert receipt["ok"] is True
+    service_stop = calls.index(["stop", service_path.name])
+    service_disable = calls.index(["disable", service_path.name])
+    service_enable = calls.index(["enable", service_path.name])
+    service_start = calls.index(["start", service_path.name])
+    assert service_stop < service_disable < service_enable < service_start
+    assert ["start", timer_path.name] in calls
+    assert receipt["manager"]["actual"]["service"]["active_state"] == "active"
+    assert receipt["manager"]["actual"]["timer"]["active_state"] == "active"

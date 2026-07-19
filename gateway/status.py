@@ -21,6 +21,7 @@ import subprocess
 import sys
 import threading
 import time
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from hermes_constants import get_hermes_home, _get_platform_default_hermes_home
@@ -34,6 +35,7 @@ else:
 
 _GATEWAY_KIND = "hermes-gateway"
 _RUNTIME_STATUS_FILE = "gateway_state.json"
+_RUNTIME_STATUS_LOCK_FILE = "gateway_state.json.lock"
 _LOCKS_DIRNAME = "gateway-locks"
 _IS_WINDOWS = sys.platform == "win32"
 _UNSET = object()
@@ -46,6 +48,9 @@ _WINDOWS_LOCK_OFFSET = 1024 * 1024
 _GATEWAY_RUNNING_PID_CACHE_TTL_SECONDS = 1.0
 _gateway_running_pid_cache_lock = threading.Lock()
 _gateway_running_pid_cache: dict[tuple[str, bool, bool], tuple[float, tuple[Any, ...], Optional[int]]] = {}
+_GATEWAY_RUNTIME_GENERATION = uuid.uuid4().hex
+_RUNTIME_VERSION: str | None = None
+_RUNTIME_REVISION: str | None = None
 
 logger = logging.getLogger(__name__)
 
@@ -240,6 +245,35 @@ def normalize_updated_at(value: Any) -> Optional[str]:
         except (OverflowError, OSError, ValueError):
             return None
     return None
+
+
+def _runtime_identity() -> tuple[str | None, str | None]:
+    """Return the version and source revision of this running gateway."""
+    global _RUNTIME_VERSION, _RUNTIME_REVISION
+    if _RUNTIME_VERSION is None:
+        try:
+            from hermes_cli import __version__
+
+            _RUNTIME_VERSION = str(__version__).strip() or None
+        except Exception:
+            _RUNTIME_VERSION = None
+    if _RUNTIME_REVISION is None:
+        revision = os.environ.get("HERMES_RUNTIME_REVISION", "").strip()
+        if revision:
+            _RUNTIME_REVISION = revision
+        else:
+            try:
+                result = subprocess.run(
+                    ["git", "rev-parse", "--short", "HEAD"],
+                    cwd=Path(__file__).resolve().parents[1],
+                    capture_output=True,
+                    text=True,
+                    check=True,
+                )
+                _RUNTIME_REVISION = result.stdout.strip() or None
+            except Exception:
+                _RUNTIME_REVISION = None
+    return _RUNTIME_VERSION, _RUNTIME_REVISION
 
 
 def terminate_pid(pid: int, *, force: bool = False) -> None:
@@ -562,16 +596,20 @@ def _record_matches_live_gateway_pid(
 
 
 def _build_pid_record() -> dict:
+    runtime_version, runtime_revision = _runtime_identity()
     return {
         "pid": os.getpid(),
         "kind": _GATEWAY_KIND,
         "argv": list(sys.argv),
         "start_time": _get_process_start_time(os.getpid()),
         # Scoped credential locks are machine-global rather than
-        # HERMES_HOME-local.  Persist the owning gateway's process home so an
+        # HERMES_HOME-local. Persist the owning gateway's process home so an
         # explicit cross-profile --replace can place its planned-takeover
         # marker where the target process will actually read it.
         "hermes_home": str(_canonical_hermes_home(_get_process_hermes_home())),
+        "generation": _GATEWAY_RUNTIME_GENERATION,
+        "runtime_version": runtime_version,
+        "runtime_revision": runtime_revision,
     }
 
 
@@ -860,6 +898,31 @@ def _release_file_lock(handle) -> None:
         pass
 
 
+def _acquire_runtime_status_write_lock():
+    """Acquire the CAS lock for a runtime-status read/compare/write cycle."""
+    path = _get_runtime_status_path().with_name(_RUNTIME_STATUS_LOCK_FILE)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        handle = open(path, "a+", encoding="utf-8")
+    except OSError:
+        return None
+    if not _try_acquire_file_lock(handle):
+        try:
+            handle.close()
+        except OSError:
+            pass
+        return None
+    return handle
+
+
+def _release_runtime_status_write_lock(handle) -> None:
+    _release_file_lock(handle)
+    try:
+        handle.close()
+    except OSError:
+        pass
+
+
 def acquire_gateway_runtime_lock() -> bool:
     """Claim the cross-process runtime lock for the gateway.
 
@@ -972,6 +1035,46 @@ def write_pid_file() -> None:
         raise
 
 
+def _runtime_status_write_is_owned(
+    payload: dict[str, Any], current_record: dict[str, Any]
+) -> bool:
+    """Reject a late writer after another gateway generation took ownership."""
+    persisted_generation = payload.get("generation")
+    caller_generation = current_record.get("generation")
+    if not persisted_generation or persisted_generation == caller_generation:
+        return True
+
+    # A new process may legitimately take over a stale record after the old
+    # process has exited. A live record from another process, however, belongs
+    # to the newer handoff and must not be overwritten by the old process.
+    try:
+        persisted_pid = int(payload.get("pid"))
+    except (TypeError, ValueError):
+        return True
+    if persisted_pid == current_record.get("pid"):
+        # A genuinely recycled PID is a new owner when its OS start-time
+        # fingerprint differs. The same PID/start-time pair is the old process
+        # and must be rejected even if it changed its in-memory generation.
+        recorded_start = payload.get("start_time")
+        caller_start = current_record.get("start_time")
+        return (
+            recorded_start is not None
+            and caller_start is not None
+            and recorded_start != caller_start
+        )
+    if not _pid_exists(persisted_pid):
+        return True
+    recorded_start = payload.get("start_time")
+    current_start = _get_process_start_time(persisted_pid)
+    if recorded_start is not None and current_start is not None and recorded_start != current_start:
+        return True
+    # Only the replacement process itself may use its held runtime lock to
+    # claim a live predecessor's record. ``is_gateway_runtime_lock_active()``
+    # would also return True for the old process after the replacement acquired
+    # the lock, which is precisely the stale-writer window this guard closes.
+    return _gateway_lock_handle is not None
+
+
 def write_runtime_status(
     *,
     gateway_state: Any = _UNSET,
@@ -983,44 +1086,60 @@ def write_runtime_status(
     error_code: Any = _UNSET,
     error_message: Any = _UNSET,
     served_profiles: Any = _UNSET,
-) -> None:
+    generation: Any = _UNSET,
+) -> bool:
     """Persist gateway runtime health information for diagnostics/status."""
-    path = _get_runtime_status_path()
-    payload = _read_json_file(path) or _build_runtime_status_record()
-    current_record = _build_pid_record()
-    payload.setdefault("platforms", {})
-    payload["kind"] = current_record["kind"]
-    payload["pid"] = current_record["pid"]
-    payload["argv"] = current_record["argv"]
-    payload["start_time"] = current_record["start_time"]
-    payload["updated_at"] = _utc_now_iso()
+    lock_handle = _acquire_runtime_status_write_lock()
+    if lock_handle is None:
+        logger.warning("Could not acquire runtime status CAS lock; skipping write")
+        return False
+    try:
+        path = _get_runtime_status_path()
+        payload = _read_json_file(path) or _build_runtime_status_record()
+        current_record = _build_pid_record()
+        if generation is not _UNSET:
+            current_record["generation"] = str(generation)
+        if not _runtime_status_write_is_owned(payload, current_record):
+            return False
+        payload.setdefault("platforms", {})
+        payload["kind"] = current_record["kind"]
+        payload["pid"] = current_record["pid"]
+        payload["argv"] = current_record["argv"]
+        payload["start_time"] = current_record["start_time"]
+        payload["generation"] = current_record["generation"]
+        payload["runtime_version"] = current_record["runtime_version"]
+        payload["runtime_revision"] = current_record["runtime_revision"]
+        payload["updated_at"] = _utc_now_iso()
 
-    if gateway_state is not _UNSET:
-        payload["gateway_state"] = gateway_state
-    if exit_reason is not _UNSET:
-        payload["exit_reason"] = exit_reason
-    if restart_requested is not _UNSET:
-        payload["restart_requested"] = bool(restart_requested)
-    if active_agents is not _UNSET:
-        payload["active_agents"] = parse_active_agents(active_agents)
-    if served_profiles is not _UNSET:
-        # Profiles this gateway multiplexes (multi-profile mode). Absent/empty
-        # for a single-profile gateway. Lets `hermes status` show per-profile
-        # coverage without a second probe.
-        payload["served_profiles"] = list(served_profiles or [])
+        if gateway_state is not _UNSET:
+            payload["gateway_state"] = gateway_state
+        if exit_reason is not _UNSET:
+            payload["exit_reason"] = exit_reason
+        if restart_requested is not _UNSET:
+            payload["restart_requested"] = bool(restart_requested)
+        if active_agents is not _UNSET:
+            payload["active_agents"] = parse_active_agents(active_agents)
+        if served_profiles is not _UNSET:
+            # Profiles this gateway multiplexes (multi-profile mode). Absent/empty
+            # for a single-profile gateway. Lets `hermes status` show per-profile
+            # coverage without a second probe.
+            payload["served_profiles"] = list(served_profiles or [])
 
-    if platform is not _UNSET:
-        platform_payload = payload["platforms"].get(platform, {})
-        if platform_state is not _UNSET:
-            platform_payload["state"] = platform_state
-        if error_code is not _UNSET:
-            platform_payload["error_code"] = error_code
-        if error_message is not _UNSET:
-            platform_payload["error_message"] = error_message
-        platform_payload["updated_at"] = _utc_now_iso()
-        payload["platforms"][platform] = platform_payload
+        if platform is not _UNSET:
+            platform_payload = payload["platforms"].get(platform, {})
+            if platform_state is not _UNSET:
+                platform_payload["state"] = platform_state
+            if error_code is not _UNSET:
+                platform_payload["error_code"] = error_code
+            if error_message is not _UNSET:
+                platform_payload["error_message"] = error_message
+            platform_payload["updated_at"] = _utc_now_iso()
+            payload["platforms"][platform] = platform_payload
 
-    _write_json_file(path, payload)
+        _write_json_file(path, payload)
+        return True
+    finally:
+        _release_runtime_status_write_lock(lock_handle)
 
 
 def read_runtime_status(path: Optional[Path] = None) -> Optional[dict[str, Any]]:
@@ -1200,6 +1319,14 @@ def remove_pid_file() -> None:
                 file_pid = None
             if file_pid is not None and file_pid != os.getpid():
                 # PID file belongs to a different process — leave it alone.
+                return
+            file_generation = record.get("generation")
+            if (
+                file_generation is not None
+                and file_generation != _GATEWAY_RUNTIME_GENERATION
+            ):
+                # A recycled PID or a late atexit handler must not remove the
+                # replacement gateway's record.
                 return
         path.unlink(missing_ok=True)
         _clear_running_pid_cache()

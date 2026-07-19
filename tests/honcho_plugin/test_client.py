@@ -652,6 +652,65 @@ class TestObservationModeMigration:
         assert cfg.ai_observe_others is True
 
 
+class TestInjectionConfig:
+    """Per-layer prompt-injection gating resolved from the "inject" object."""
+
+    _ALL_FLAGS = (
+        "inject_session_summary",
+        "inject_user_representation",
+        "inject_user_card",
+        "inject_ai_representation",
+        "inject_ai_card",
+    )
+
+    @staticmethod
+    def _load(tmp_path, payload):
+        cfg_file = tmp_path / "config.json"
+        cfg_file.write_text(json.dumps(payload))
+        return HonchoClientConfig.from_global_config(config_path=cfg_file)
+
+    def test_defaults_all_true_when_absent(self, tmp_path):
+        cfg = self._load(tmp_path, {
+            "apiKey": "k",
+            "hosts": {"hermes": {"enabled": True}},
+        })
+        for flag in self._ALL_FLAGS:
+            assert getattr(cfg, flag) is True
+
+    def test_host_partial_override_preserves_explicit_false(self, tmp_path):
+        cfg = self._load(tmp_path, {
+            "apiKey": "k",
+            "hosts": {"hermes": {
+                "enabled": True,
+                "inject": {"aiRepresentation": False},
+            }},
+        })
+        assert cfg.inject_ai_representation is False
+        for flag in self._ALL_FLAGS:
+            if flag != "inject_ai_representation":
+                assert getattr(cfg, flag) is True
+
+    def test_root_inject_applies_when_host_has_no_inject_key(self, tmp_path):
+        cfg = self._load(tmp_path, {
+            "apiKey": "k",
+            "inject": {"aiRepresentation": False},
+            "hosts": {"hermes": {"enabled": True}},
+        })
+        assert cfg.inject_ai_representation is False
+        for flag in self._ALL_FLAGS:
+            if flag != "inject_ai_representation":
+                assert getattr(cfg, flag) is True
+
+    def test_empty_host_inject_wins_over_root(self, tmp_path):
+        cfg = self._load(tmp_path, {
+            "apiKey": "k",
+            "inject": {"aiRepresentation": False},
+            "hosts": {"hermes": {"enabled": True, "inject": {}}},
+        })
+        for flag in self._ALL_FLAGS:
+            assert getattr(cfg, flag) is True
+
+
 class TestGetHonchoClient:
     def teardown_method(self):
         reset_honcho_client()

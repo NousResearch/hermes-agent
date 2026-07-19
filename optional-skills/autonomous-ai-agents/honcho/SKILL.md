@@ -55,7 +55,7 @@ hermes honcho status    # shows resolved config, connection test, peer info
 
 ### Base Context Injection
 
-When Honcho injects context into the system prompt (in `hybrid` or `context` recall modes), it assembles the base context block in this order:
+In `hybrid` or `context` recall modes, Honcho injects live context into the user message at API-call time to preserve prompt caching. Only a static mode header belongs in the system prompt. The base context block is assembled in this order:
 
 1. **Session summary** -- a short digest of the current session so far (placed first so the model has immediate conversational continuity)
 2. **User representation** -- Honcho's accumulated model of the user (preferences, facts, patterns)
@@ -70,7 +70,7 @@ Honcho automatically selects between two prompt strategies:
 | Condition | Strategy | What happens |
 |-----------|----------|--------------|
 | No prior session or empty representation | **Cold start** | Lightweight intro prompt; skips summary injection; encourages the model to learn about the user |
-| Existing representation and/or session history | **Warm start** | Full base context injection (summary → representation → card); richer system prompt |
+| Existing representation and/or session history | **Warm start** | Full base context injection (summary → representation → card) in the API-call-time user-message context |
 
 You do not need to configure this -- it is automatic based on session state.
 
@@ -372,8 +372,15 @@ Config file: `$HERMES_HOME/honcho.json` (profile-local) or `~/.honcho/config.jso
 | `injectionFrequency` | `every-turn` | `every-turn` or `first-turn` |
 | `contextCadence` | `1` | Min turns between context API calls |
 | `dialecticCadence` | `2` | Min turns between dialectic LLM calls (recommended 1–5) |
+| `inject.sessionSummary` | `true` | Auto-inject the session summary layer |
+| `inject.userRepresentation` | `true` | Auto-inject the generated user representation |
+| `inject.userCard` | `true` | Auto-inject the curated user peer card |
+| `inject.aiRepresentation` | `true` | Auto-inject the generated AI self-representation |
+| `inject.aiCard` | `true` | Auto-inject the curated AI identity card |
 
 The `contextTokens` budget is enforced at injection time. If the session summary + representation + card exceed the budget, Honcho trims the summary first, then the representation, preserving the card. This prevents context blowup in long sessions.
+
+The `inject` object gates which prefetched layers are auto-injected into the prompt; the underlying data stays available through the Honcho tools and CLI. It resolves by whole-object presence (host block wins over root when present; missing sub-keys default to `true`), so suppressing a single noisy layer — e.g. `"inject": {"aiRepresentation": false}` — keeps every other layer injected. `hermes honcho setup` offers an `all` / `cards-only` preset, and `hermes honcho status` shows the resolved per-layer state.
 
 ### Memory-context sanitization
 
@@ -382,7 +389,7 @@ Honcho sanitizes the `memory-context` block before injection to prevent prompt i
 - Strips XML/HTML tags from user-authored conclusions
 - Normalizes whitespace and control characters
 - Truncates individual conclusions that exceed `messageMaxChars`
-- Escapes delimiter sequences that could break the system prompt structure
+- Escapes delimiter sequences that could break the memory-context block structure
 
 This fix addresses edge cases where raw user conclusions containing markup or special characters could corrupt the injected context block.
 

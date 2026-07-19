@@ -1340,6 +1340,32 @@ class TestBaseContextSummary:
             provider._prefetch_thread.join(timeout=1)
 
 
+class TestInjectionGating:
+    FULL_CTX = {
+        "summary": "Session summary text.",
+        "representation": "the user prefers concise technical summaries.",
+        "card": "IDENTITY: Name: Example User",
+        "ai_representation": "the assistant incorrectly inherited the user's food allergy",
+        "ai_card": "IDENTITY: Kind: Software agent",
+    }
+
+    @staticmethod
+    def _provider_with(**inject_flags):
+        from plugins.memory.honcho.client import HonchoClientConfig
+
+        provider = HonchoMemoryProvider()
+        provider._config = HonchoClientConfig(api_key="k", enabled=True, **inject_flags)
+        return provider
+
+    def test_ai_representation_can_be_suppressed_while_card_stays(self):
+        provider = self._provider_with(inject_ai_representation=False)
+        formatted = provider._format_first_turn_context(self.FULL_CTX)
+        assert "AI Self-Representation" not in formatted
+        assert "the assistant incorrectly inherited the user's food allergy" not in formatted
+        assert "AI Identity Card" in formatted
+        assert "IDENTITY: Kind: Software agent" in formatted
+
+
 class TestDialecticDepth:
     """Tests for the dialecticDepth multi-pass system."""
 

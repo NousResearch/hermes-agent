@@ -253,6 +253,47 @@ def _tool_call_extra_signature(tool_call: Dict[str, Any]) -> Optional[str]:
     return None
 
 
+def tool_call_has_gemini_thought_signature(tool_call: Any) -> bool:
+    """Return True when a tool call carries a non-empty Gemini thought
+    signature that this adapter would replay as ``thoughtSignature``.
+
+    Kept next to ``_tool_call_extra_signature`` so callers screening
+    transcripts for native-Gemini compatibility (e.g. fallback selection)
+    share the exact extraction contract the request translator uses.
+    """
+    if not isinstance(tool_call, dict):
+        return False
+    return _tool_call_extra_signature(tool_call) is not None
+
+
+def transcript_has_unsigned_gemini_tool_calls(messages: Any) -> bool:
+    """Return True when replaying ``messages`` on the native Gemini API would
+    emit a ``functionCall`` part without a ``thoughtSignature`` — the request
+    shape Gemini rejects with a deterministic HTTP 400.
+
+    Mirrors ``_build_gemini_contents`` exactly: ``system`` and ``tool`` /
+    ``function`` roles never emit functionCall parts, non-dict messages and
+    tool calls are dropped by translation, and any other role's ``tool_calls``
+    are replayed. Kept in this module so the screen and the translator cannot
+    drift apart.
+    """
+    for msg in messages or []:
+        if not isinstance(msg, dict):
+            continue
+        role = str(msg.get("role") or "user").lower()
+        if role in ("system", "tool", "function"):
+            continue
+        tool_calls = msg.get("tool_calls")
+        if not isinstance(tool_calls, list):
+            continue
+        for tool_call in tool_calls:
+            if not isinstance(tool_call, dict):
+                continue
+            if not tool_call_has_gemini_thought_signature(tool_call):
+                return True
+    return False
+
+
 def _translate_tool_call_to_gemini(tool_call: Dict[str, Any]) -> Dict[str, Any]:
     fn = tool_call.get("function") or {}
     args_raw = fn.get("arguments", "")
@@ -309,7 +350,10 @@ def _build_gemini_contents(messages: List[Dict[str, Any]]) -> tuple[List[Dict[st
     for msg in messages:
         if not isinstance(msg, dict):
             continue
-        role = str(msg.get("role") or "user")
+        # OpenAI-compatible roles are lowercase by convention, but normalize
+        # here so this translator and the fallback replay screen apply the
+        # same semantics to malformed/mixed-case transcript history.
+        role = str(msg.get("role") or "user").lower()
 
         if role == "system":
             system_text_parts.append(_coerce_content_to_text(msg.get("content")))

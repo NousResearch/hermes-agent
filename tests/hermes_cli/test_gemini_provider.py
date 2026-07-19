@@ -354,3 +354,44 @@ class TestGeminiModelsDev:
         assert "gemma-3-27b-it" not in result
         assert "gemini-1.5-pro" not in result
         assert "gemini-2.0-flash" not in result
+
+
+# ── Fallback-path resolution transport (#62332) ──
+
+class TestGeminiExplicitArgResolutionTransport:
+    """Pin the transport contract the fallback guard relies on, through the
+    explicit-args path try_activate_fallback uses (fallback entries pass
+    base_url/api_key as explicit_* overrides): native GeminiNativeClient only
+    when the resolved base URL speaks Gemini's native REST API."""
+
+    def test_native_base_url_resolves_to_native_client(self):
+        from agent.auxiliary_client import resolve_provider_client
+        from agent.gemini_native_adapter import GeminiNativeClient
+
+        client, model = resolve_provider_client(
+            "gemini",
+            model="gemini-3.1-flash-lite",
+            explicit_api_key="test-key",
+            explicit_base_url="https://generativelanguage.googleapis.com/v1beta",
+        )
+        try:
+            assert isinstance(client, GeminiNativeClient)
+            assert model == "gemini-3.1-flash-lite"
+        finally:
+            client.close()
+
+    def test_openai_compat_base_url_resolves_to_plain_client(self):
+        from agent.auxiliary_client import resolve_provider_client
+        from agent.gemini_native_adapter import GeminiNativeClient
+
+        client, model = resolve_provider_client(
+            "gemini",
+            model="gemini-3.1-flash-lite",
+            explicit_api_key="test-key",
+            explicit_base_url="https://generativelanguage.googleapis.com/v1beta/openai",
+        )
+        try:
+            assert client is not None
+            assert not isinstance(client, GeminiNativeClient)
+        finally:
+            client.close()

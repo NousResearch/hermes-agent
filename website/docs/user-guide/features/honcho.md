@@ -54,7 +54,7 @@ Get an API key at [honcho.dev](https://honcho.dev).
 
 ### Two-Layer Context Injection
 
-Every turn (in `hybrid` or `context` mode), Honcho assembles two layers of context injected into the system prompt:
+Every turn (in `hybrid` or `context` mode), Honcho assembles two layers of live context injected into the user message at API-call time to preserve prompt caching. Only a static mode header goes in the system prompt:
 
 1. **Base context** — session summary, user representation, user peer card, AI self-representation, and AI identity card. Refreshed on `contextCadence`. This is the "who is this user" layer.
 2. **Dialectic supplement** — LLM-synthesized reasoning about the user's current state and needs. Refreshed on `dialecticCadence`. This is the "what matters right now" layer.
@@ -116,12 +116,13 @@ When pointing Hermes at a self-hosted Honcho server, `hermes honcho setup` (and 
 |-----|---------|-------------|
 | `contextTokens` | `null` (uncapped) | Token budget for auto-injected context per turn. Set to an integer (e.g. 1200) to cap. Truncates at word boundaries |
 | `contextCadence` | `1` | Minimum turns between `context()` API calls (base layer refresh) |
+| `inject` | `{}` (all layers on) | Per-layer auto-injection gates: `sessionSummary`, `userRepresentation`, `userCard`, `aiRepresentation`, `aiCard` — each `true` by default. Resolves by whole-object presence (host block wins over root); data stays available via tools/CLI when a layer is off |
 | `dialecticCadence` | `2` | Minimum turns between `peer.chat()` LLM calls (dialectic layer). Recommended 1–5. In `tools` mode, irrelevant — model calls explicitly |
 | `dialecticDepth` | `1` | Number of `.chat()` passes per dialectic invocation. Clamped to 1–3 |
 | `dialecticDepthLevels` | `null` | Optional array of reasoning levels per pass, e.g. `["minimal", "low", "medium"]`. Overrides proportional defaults |
 | `dialecticReasoningLevel` | `'low'` | Base reasoning level: `minimal`, `low`, `medium`, `high`, `max` |
 | `dialecticDynamic` | `true` | When `true`, model can override reasoning level per-call via tool param |
-| `dialecticMaxChars` | `600` | Max chars of dialectic result injected into system prompt |
+| `dialecticMaxChars` | `600` | Max chars of dialectic result injected into the API-call-time user-message context |
 | `recallMode` | `'hybrid'` | `hybrid` (auto-inject + tools), `context` (inject only), `tools` (tools only) |
 | `writeFrequency` | `'async'` | When to flush messages: `async` (background thread), `turn` (sync), `session` (batch on end), or integer N |
 | `saveMessages` | `true` | Whether to persist messages to Honcho API |
@@ -140,7 +141,7 @@ When pointing Hermes at a self-hosted Honcho server, `hermes honcho setup` (and 
 - `global` — single session across all directories.
 
 **Recall mode** controls how memory flows into conversations:
-- `hybrid` — context auto-injected into system prompt AND tools available (model decides when to query).
+- `hybrid` — context auto-injected into the API-call-time user message and tools available (model decides when to query).
 - `context` — auto-injection only, tools hidden.
 - `tools` — tools only, no auto-injection. Agent must explicitly call `honcho_reasoning`, `honcho_search`, etc.
 

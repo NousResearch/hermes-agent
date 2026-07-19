@@ -678,6 +678,7 @@ def translate_stream_event(event: Dict[str, Any], model: str, tool_call_indices:
     cand = candidates[0] if isinstance(candidates[0], dict) else {}
     parts = ((cand.get("content") or {}).get("parts") or []) if isinstance(cand, dict) else []
     chunks: List[_GeminiStreamChunk] = []
+    _seen_name_sigs: Dict[Tuple[str, str], int] = {}
 
     for part_index, part in enumerate(parts):
         if not isinstance(part, dict):
@@ -695,9 +696,18 @@ def translate_stream_event(event: Dict[str, Any], model: str, tool_call_indices:
             except (TypeError, ValueError):
                 args_str = "{}"
             thought_signature = part.get("thoughtSignature") if isinstance(part.get("thoughtSignature"), str) else ""
+            # Use the occurrence count of this (name, thought_signature) pair
+            # within this SSE event to disambiguate parallel calls to the same
+            # tool.  Gemini can fan out two read_file calls in one event, each
+            # with part_index=0 and the same name — keying on part_index alone
+            # merged them into a single slot, concatenating their arguments into
+            # un-parseable JSON (fixes #57939).
+            _name_sig = (name, thought_signature)
+            _occurrence = _seen_name_sigs.get(_name_sig, 0)
+            _seen_name_sigs[_name_sig] = _occurrence + 1
             call_key = json.dumps(
                 {
-                    "part_index": part_index,
+                    "occurrence": _occurrence,
                     "name": name,
                     "thought_signature": thought_signature,
                 },

@@ -2818,13 +2818,32 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                     # raw index (different id) and redirect to a fresh slot.
                     if raw_idx not in _active_slot_by_idx:
                         _active_slot_by_idx[raw_idx] = raw_idx
+
+                    is_new_call = False
                     if (
                         delta_id
                         and raw_idx in _last_id_at_idx
                         and delta_id != _last_id_at_idx[raw_idx]
                     ):
+                        is_new_call = True
+                    elif (
+                        not delta_id
+                        and model_name and "gemini" in model_name.lower()
+                        and tc_delta.function and tc_delta.function.name
+                        and raw_idx in _active_slot_by_idx
+                        and _active_slot_by_idx[raw_idx] in tool_calls_acc
+                        and tool_calls_acc[_active_slot_by_idx[raw_idx]]["function"]["arguments"]
+                    ):
+                        # Gemini compat fix: parallel calls arrive with the same index and no id.
+                        # Since Gemini sends the tool name only in the first chunk of a call,
+                        # seeing a name when the current slot already has arguments means a
+                        # new parallel call has started. (Fixes #62937)
+                        is_new_call = True
+
+                    if is_new_call:
                         new_slot = max(tool_calls_acc, default=-1) + 1
                         _active_slot_by_idx[raw_idx] = new_slot
+
                     if delta_id:
                         _last_id_at_idx[raw_idx] = delta_id
                     idx = _active_slot_by_idx[raw_idx]

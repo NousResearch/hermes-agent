@@ -141,6 +141,52 @@ def _shape_message(m: Dict[str, Any], anchor_id: Optional[int] = None) -> Dict[s
     return {k: v for k, v in entry.items() if v is not None or k in ("content",)}
 
 
+def _rerank_anchor(
+    raw_view: Dict[str, Any],
+    fts_anchor_id: int,
+    min_content_len: int = 20,
+) -> int:
+    """Promote the nearest substantive message to anchor if FTS5 hit is empty.
+
+    Pure derivation — no new DB calls. Uses the same view's window +
+    bookends as the candidate pool, so we never look up data we haven't
+    already fetched.
+
+    A message is "substantive" if:
+      - role is user or assistant (NOT tool)
+      - stripped content length >= min_content_len
+
+    Stable: if the FTS5 anchor is already substantive, returns it unchanged.
+    Fallback: if no substantive message exists in the candidate pool,
+    returns the FTS5 anchor id (best we can do).
+    """
+    candidates = (
+        list(raw_view.get("window") or [])
+        + list(raw_view.get("bookend_start") or [])
+        + list(raw_view.get("bookend_end") or [])
+    )
+    if not candidates:
+        return fts_anchor_id
+
+    def is_substantive(m: Dict[str, Any]) -> bool:
+        return (
+            m.get("role") in ("user", "assistant")
+            and len((m.get("content") or "").strip()) >= min_content_len
+        )
+
+    # If FTS5 anchor is already substantive, leave it
+    anchor_msg = next((m for m in candidates if m.get("id") == fts_anchor_id), None)
+    if anchor_msg and is_substantive(anchor_msg):
+        return fts_anchor_id
+
+    # Otherwise find the nearest substantive message by id-distance
+    substantive = [m for m in candidates if is_substantive(m)]
+    if not substantive:
+        return fts_anchor_id
+    nearest = min(substantive, key=lambda m: abs(m.get("id", 0) - fts_anchor_id))
+    return nearest["id"]
+
+
 def _build_citation(
     messages: List[Dict[str, Any]],
     anchor_id: Optional[int],
@@ -634,11 +680,16 @@ def _discover(
             logging.warning("get_anchored_view failed for %s/%s: %s", hit_sid, msg_id, e, exc_info=True)
             continue
 
+        # Rerank: if FTS5 anchor landed on an empty/tool-only message,
+        # promote the nearest substantive user/assistant message to anchor.
+        effective_anchor_id = _rerank_anchor(view, msg_id)
+
         try:
             session_meta = db.get_session(lineage_root) or {}
         except Exception:
             session_meta = {}
 
+        shaped_window = [_shape_message(m, anchor_id=effective_anchor_id) for m in (view.get("window") or [])]
         entry = {
             "session_id": hit_sid,
             "when": _format_timestamp(
@@ -649,14 +700,11 @@ def _discover(
             "title": session_meta.get("title") or None,
             "matched_role": match_info.get("role"),
             "match_message_id": msg_id,
+            "effective_anchor_id": effective_anchor_id,
             "snippet": match_info.get("snippet") or "",
-            "citation": _build_citation(
-                [_shape_message(m, anchor_id=msg_id) for m in (view.get("window") or [])],
-                msg_id,
-                hit_sid,
-            ),
+            "citation": _build_citation(shaped_window, effective_anchor_id, hit_sid),
             "bookend_start": [_shape_message(m) for m in (view.get("bookend_start") or [])],
-            "messages": [_shape_message(m, anchor_id=msg_id) for m in (view.get("window") or [])],
+            "messages": shaped_window,
             "bookend_end": [_shape_message(m) for m in (view.get("bookend_end") or [])],
             "messages_before": view.get("messages_before", 0),
             "messages_after": view.get("messages_after", 0),

@@ -43,6 +43,26 @@ def _install(tmp_path: Path, monkeypatch, repo: Path, **kwargs):
     return pc._install_plugin_core(f"file://{repo}", force=False, **kwargs)
 
 
+def test_set_plugin_activation_saves_both_lists_once(monkeypatch):
+    config = {
+        "plugins": {
+            "enabled": ["existing"],
+            "disabled": ["pinned-plugin", "blocked"],
+        }
+    }
+    saved: list[dict] = []
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: config)
+    monkeypatch.setattr(
+        "hermes_cli.config.save_config", lambda value: saved.append(value)
+    )
+
+    pc._set_plugin_activation("pinned-plugin", enabled=True)
+
+    assert len(saved) == 1
+    assert saved[0]["plugins"]["enabled"] == ["existing", "pinned-plugin"]
+    assert saved[0]["plugins"]["disabled"] == ["blocked"]
+
+
 def test_invalid_ref_fails_before_any_git_or_state_change(tmp_path, monkeypatch):
     plugins = tmp_path / "plugins"
     plugins.mkdir()
@@ -346,22 +366,88 @@ def test_dashboard_returns_json_provenance_capabilities_and_enables_after_succes
     plugins = tmp_path / "plugins"
     plugins.mkdir()
     monkeypatch.setattr(pc, "_plugins_dir", lambda: plugins)
-    enabled: set[str] = set()
-    monkeypatch.setattr(pc, "_get_enabled_set", lambda: set(enabled))
-    monkeypatch.setattr(pc, "_get_disabled_set", set)
-    monkeypatch.setattr(pc, "_save_enabled_set", lambda value: enabled.update(value))
-    monkeypatch.setattr(pc, "_save_disabled_set", lambda value: None)
-    result = pc.dashboard_install_plugin(f"file://{repo}", force=False, enable=True, requested_ref=sha)
+    activations: list[tuple[str, bool]] = []
+    monkeypatch.setattr(
+        pc,
+        "_set_plugin_activation",
+        lambda name, *, enabled: activations.append((name, enabled)),
+    )
+    result = pc.dashboard_install_plugin(
+        f"file://{repo}", force=False, enable=True, requested_ref=sha
+    )
     json.dumps(result)
     assert result["ok"] is True
     assert result["provenance"]["resolved_commit"] == sha
     assert result["capabilities"]["warnings"] == ["CAPABILITY_REPORT_IS_NOT_SECURITY_AUDIT"]
-    assert "pinned-plugin" in enabled
+    assert activations == [("pinned-plugin", True)]
 
-    enabled.clear()
-    failed = pc.dashboard_install_plugin(f"file://{repo}", force=False, enable=True, requested_ref="bad")
+    activations.clear()
+    failed = pc.dashboard_install_plugin(
+        f"file://{repo}", force=False, enable=True, requested_ref="bad"
+    )
     assert failed["ok"] is False
-    assert enabled == set()
+    assert activations == []
+
+
+def test_dashboard_activation_failure_is_explicit_partial_success(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    home.mkdir()
+    plugins = home / "plugins"
+    plugins.mkdir()
+    config_path = home / "config.yaml"
+    original = b"plugins:\n  enabled: [existing]\n  disabled: [pinned-plugin]\n# unchanged\n"
+    config_path.write_bytes(original)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(pc, "_plugins_dir", lambda: plugins)
+    save_calls = 0
+
+    def fail_save(_value):
+        nonlocal save_calls
+        save_calls += 1
+        raise RuntimeError("RAW_SAVE_SECRET")
+
+    monkeypatch.setattr("hermes_cli.config.save_config", fail_save)
+    repo = tmp_path / "repo"
+    sha = _repo(repo)
+
+    result = pc.dashboard_install_plugin(
+        f"file://{repo}", force=False, enable=True, requested_ref=sha
+    )
+
+    json.dumps(result)
+    target = plugins / "pinned-plugin"
+    assert result["ok"] is False
+    assert result["installed"] is True
+    assert result["enabled"] is False
+    assert result["error"] == "Plugin installed, but activation could not be saved."
+    assert result["provenance"]["resolved_commit"] == sha
+    assert target.is_dir()
+    assert (target / LOCK_FILENAME).is_file()
+    assert save_calls == 1
+    assert config_path.read_bytes() == original
+
+
+def test_cli_activation_failure_exits_cleanly_after_install(tmp_path, monkeypatch, capsys):
+    repo = tmp_path / "repo"
+    _repo(repo)
+    plugins = tmp_path / "plugins"
+    plugins.mkdir()
+    monkeypatch.setattr(pc, "_plugins_dir", lambda: plugins)
+    monkeypatch.setattr(
+        pc,
+        "_set_plugin_activation",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("RAW_SAVE_SECRET")),
+    )
+
+    with pytest.raises(SystemExit) as raised:
+        pc.cmd_install(f"file://{repo}", enable=True)
+
+    output = capsys.readouterr().out
+    assert raised.value.code == 1
+    assert "Plugin installed, but activation could not be saved." in output
+    assert "enabled" not in output.lower()
+    assert "RAW_SAVE_SECRET" not in output
+    assert (plugins / "pinned-plugin" / LOCK_FILENAME).is_file()
 
 
 def test_cli_install_parser_dispatches_requested_ref():

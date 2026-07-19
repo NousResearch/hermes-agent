@@ -1030,12 +1030,13 @@ def cmd_install(
             should_enable = False
 
     if should_enable:
-        enabled = _get_enabled_set()
-        disabled = _get_disabled_set()
-        enabled.add(installed_name)
-        disabled.discard(installed_name)
-        _save_enabled_set(enabled)
-        _save_disabled_set(disabled)
+        try:
+            _set_plugin_activation(installed_name, enabled=True)
+        except Exception:
+            console.print(
+                "[red]Error:[/red] Plugin installed, but activation could not be saved."
+            )
+            sys.exit(1)
         console.print(
             f"[green]✓[/green] Plugin [bold]{installed_name}[/bold] enabled.",
         )
@@ -1184,6 +1185,31 @@ def _save_enabled_set(enabled: set) -> None:
     if "plugins" not in config:
         config["plugins"] = {}
     config["plugins"]["enabled"] = sorted(enabled)
+    save_config(config)
+
+
+def _set_plugin_activation(name: str, *, enabled: bool) -> None:
+    """Atomically update both plugin activation lists with one config save."""
+    from hermes_cli.config import load_config, save_config
+
+    config = load_config()
+    plugins_cfg = config.get("plugins")
+    if not isinstance(plugins_cfg, dict):
+        plugins_cfg = {}
+        config["plugins"] = plugins_cfg
+
+    enabled_values = plugins_cfg.get("enabled", [])
+    disabled_values = plugins_cfg.get("disabled", [])
+    enabled_set = set(enabled_values) if isinstance(enabled_values, list) else set()
+    disabled_set = set(disabled_values) if isinstance(disabled_values, list) else set()
+    if enabled:
+        enabled_set.add(name)
+        disabled_set.discard(name)
+    else:
+        enabled_set.discard(name)
+        disabled_set.add(name)
+    plugins_cfg["enabled"] = sorted(enabled_set)
+    plugins_cfg["disabled"] = sorted(disabled_set)
     save_config(config)
 
 
@@ -2207,31 +2233,37 @@ def dashboard_install_plugin(
     installed_manifest = install_result.manifest
     installed_name = install_result.name
     missing_env = _missing_requires_env_names(installed_manifest)
-    if enable:
-        en = _get_enabled_set()
-        dis = _get_disabled_set()
-        en.add(installed_name)
-        dis.discard(installed_name)
-        _save_enabled_set(en)
-        _save_disabled_set(dis)
-
     hint: str | None = None
     ap = target / "after-install.md"
     if ap.exists():
         hint = str(ap)
-
-    return {
-        "ok": True,
+    details = {
+        "installed": True,
         "plugin_name": installed_name,
         "warnings": warnings,
         "missing_env": missing_env,
         "after_install_path": hint,
-        "enabled": enable,
         "provenance": asdict(install_result.provenance),
         "capabilities": {
             key: list(value) if isinstance(value, tuple) else value
             for key, value in asdict(install_result.capabilities).items()
         },
+    }
+    if enable:
+        try:
+            _set_plugin_activation(installed_name, enabled=True)
+        except Exception:
+            return {
+                "ok": False,
+                **details,
+                "enabled": False,
+                "error": "Plugin installed, but activation could not be saved.",
+            }
+
+    return {
+        "ok": True,
+        **details,
+        "enabled": enable,
     }
 
 

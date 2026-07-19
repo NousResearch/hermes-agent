@@ -60,6 +60,15 @@ def test_ungrouped_providers_pass_through_in_order():
     assert [r["slug"] for r in rows] == ["nous", "openrouter", "deepseek"]
 
 
+def test_openai_providers_remain_separate_top_level_rows():
+    """OpenAI Codex and OpenAI API must stay as separate first-step choices."""
+    rows = group_providers(["openai-codex", "openai-api"])
+    assert all(r["kind"] == "single" for r in rows)
+    assert [r["slug"] for r in rows] == ["openai-codex", "openai-api"]
+    assert provider_group_for_slug("openai-codex") == ""
+    assert provider_group_for_slug("openai-api") == ""
+
+
 def test_multi_member_group_folds_to_one_row():
     rows = group_providers(["minimax", "minimax-oauth", "minimax-cn"])
     assert len(rows) == 1

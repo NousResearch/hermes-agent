@@ -15,6 +15,7 @@ from hermes_cli.config import (
     get_compatible_custom_providers,
     _explicit_config_paths,
     _normalize_max_turns_config,
+    get_env_value_prefer_dotenv,
     load_config,
     load_env,
     migrate_config,
@@ -105,6 +106,36 @@ class TestEnsureHermesHome:
             with pytest.raises(FileNotFoundError, match="Named profile home does not exist"):
                 ensure_hermes_home()
         assert not profile_home.exists()
+
+
+class TestGetEnvValuePreferDotenv:
+    def test_scoped_miss_falls_back_to_environ_without_multiplexing(self, tmp_path, monkeypatch):
+        """Cron installs a profile scope, but BWS-injected keys live in os.environ."""
+        from agent import secret_scope as ss
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("XIAOMI_API_KEY", "sk-from-bws-env")
+        ss.set_multiplex_active(False)
+        token = ss.set_secret_scope({})
+        try:
+            assert get_env_value_prefer_dotenv("XIAOMI_API_KEY") == "sk-from-bws-env"
+        finally:
+            ss.reset_secret_scope(token)
+            ss.set_multiplex_active(False)
+
+    def test_scoped_miss_does_not_fall_back_to_environ_during_multiplexing(self, tmp_path, monkeypatch):
+        """A multiplexed profile scope remains authoritative for profile secrets."""
+        from agent import secret_scope as ss
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-other-profile")
+        ss.set_multiplex_active(True)
+        token = ss.set_secret_scope({})
+        try:
+            assert get_env_value_prefer_dotenv("OPENAI_API_KEY") is None
+        finally:
+            ss.reset_secret_scope(token)
+            ss.set_multiplex_active(False)
 
 
 class TestLoadConfigDefaults:

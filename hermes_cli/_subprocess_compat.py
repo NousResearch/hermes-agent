@@ -36,6 +36,7 @@ from typing import Sequence
 __all__ = [
     "IS_WINDOWS",
     "resolve_node_command",
+    "suppress_platform_ver_console",
     "windows_detach_flags",
     "windows_detach_flags_without_breakaway",
     "windows_hide_flags",
@@ -224,6 +225,43 @@ def windows_hide_flags() -> int:
     if not IS_WINDOWS:
         return 0
     return _CREATE_NO_WINDOW
+
+
+def suppress_platform_ver_console() -> None:
+    """Stub out ``platform._syscmd_ver`` on Windows so it can never flash a
+    console window.  No-op on non-Windows.
+
+    CPython's ``platform.win32_ver()`` — reached by ``platform.uname()``,
+    ``platform.version()``, and ``platform.platform()`` — unconditionally
+    shells out ``cmd /c ver`` via ``subprocess.check_output(..., shell=True)``
+    with no ``CREATE_NO_WINDOW``.  From a windowless parent (the pythonw
+    gateway and every kanban worker it spawns) that allocates a fresh
+    *visible* console: one flashing ``cmd`` window per process, triggered by
+    any dependency that merely touches ``platform.uname()`` at import time.
+
+    With ``_syscmd_ver`` stubbed to return its inputs, ``win32_ver()`` hits
+    the documented ``ValueError`` fallback and reads the version from
+    ``sys.getwindowsversion().platform_version`` — same information, queried
+    in-process, no subprocess, no window.  Verified equivalent on
+    CPython 3.11 (``platform()`` → ``Windows-10-10.0.xxxxx-SP0`` either way).
+
+    Call early, before heavyweight imports — the flash typically happens
+    during a dependency's import, not from Hermes' own code.
+    """
+    if not IS_WINDOWS:
+        return
+    try:
+        import platform
+
+        if hasattr(platform, "_syscmd_ver"):
+            def _quiet_syscmd_ver(system="", release="", version="",
+                                  supported_platforms=("win32", "win16", "dos")):
+                return system, release, version
+
+            platform._syscmd_ver = _quiet_syscmd_ver
+    except Exception:
+        # Purely cosmetic hardening — never let it break startup.
+        pass
 
 
 def windows_detach_popen_kwargs() -> dict:

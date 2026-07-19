@@ -17,7 +17,6 @@ from hermes_cli.project_finalization_contract import (
     get_project_finalization,
     list_project_members,
     record_checker_verdict,
-    record_terminal_outcome,
     reopen_project_finalization,
 )
 from hermes_cli.project_finalizer import evaluate_project
@@ -175,12 +174,14 @@ def test_admission_exact_replay_and_conflict_are_distinct(board):
 
 def test_admitted_project_reopen_fails_closed_without_explicit_readmission(board):
     root, _, _ = _admitted(board)
-    record_terminal_outcome(
-        board,
-        board_id="board-a",
-        root_task_id=root,
-        generation=1,
-        outcome="BLOCKED",
+    # Reopen must also reject a historical admitted terminal row.  Construct
+    # that legacy state directly; current raw terminalization is intentionally
+    # fenced and is covered by the gateway lifecycle regression.
+    board.execute("DROP TRIGGER pfinal_v2_fence_terminal_update")
+    board.execute(
+        "UPDATE project_finalizations SET terminal_outcome='BLOCKED', state='blocked' "
+        "WHERE board_id='board-a' AND root_task_id=? AND generation=1",
+        (root,),
     )
     with pytest.raises(ValueError, match="explicit re-admission"):
         reopen_project_finalization(board, board_id="board-a", root_task_id=root)

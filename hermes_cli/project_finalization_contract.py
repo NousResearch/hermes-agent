@@ -9,6 +9,7 @@ All operations use the normal kanban connection path (WAL + FULL + FK).
 
 from __future__ import annotations
 
+import json
 import re
 import sqlite3
 import time
@@ -341,11 +342,58 @@ CREATE INDEX IF NOT EXISTS idx_pcleanup_root ON project_cleanup_journal(board_id
 # changes that participate in the candidate digest.
 _TERMINAL_FENCE_TRIGGER_SQL: tuple[str, ...] = (
     """
-    CREATE TRIGGER IF NOT EXISTS pfinal_v2_fence_authority_update
+    CREATE TRIGGER IF NOT EXISTS pfinal_v3_fence_authority_update
     BEFORE UPDATE ON project_finalizations
     WHEN OLD.terminal_outcome IS NULL
       AND OLD.terminal_candidate_snapshot_version IS NOT NULL
       AND NEW.terminal_outcome IS NULL
+      -- Recovery may thaw only the obsolete terminal fence, while holding the
+      -- current project lock.  The registrar performs the complete rotation
+      -- in one write transaction; a later failure rolls this thaw back.
+      AND NOT (
+        OLD.terminal_intent IS NOT NULL
+        AND NEW.terminal_intent IS NULL
+        AND NEW.terminal_candidate_snapshot_version IS NULL
+        AND OLD.board_id IS NEW.board_id
+        AND OLD.root_task_id IS NEW.root_task_id
+        AND OLD.generation IS NEW.generation
+        AND OLD.final_checker_task_id IS NEW.final_checker_task_id
+        AND OLD.checker_verdict IS NEW.checker_verdict
+        AND OLD.admission_key IS NEW.admission_key
+        AND OLD.checker_profile IS NEW.checker_profile
+        AND OLD.notification_route_identity IS NEW.notification_route_identity
+        AND OLD.checker_candidate_snapshot_version IS NEW.checker_candidate_snapshot_version
+        AND OLD.checker_candidate_id IS NEW.checker_candidate_id
+        AND OLD.repair_generation IS NEW.repair_generation
+        AND OLD.repair_budget IS NEW.repair_budget
+        AND OLD.notification_policy IS NEW.notification_policy
+        AND OLD.retention_days IS NEW.retention_days
+        AND OLD.blocker_json IS NEW.blocker_json
+        AND OLD.lock_owner IS NOT NULL
+        AND OLD.lock_owner IS NEW.lock_owner
+        AND OLD.lock_expires_at IS NEW.lock_expires_at
+        AND NOT EXISTS (
+          SELECT 1 FROM project_delivery_attempts AS d
+           WHERE d.board_id=OLD.board_id
+             AND d.root_task_id=OLD.root_task_id
+             AND d.generation=OLD.generation
+             AND d.accepted=1
+        )
+        AND EXISTS (
+          SELECT 1 FROM project_delivery_attempts AS d
+           WHERE d.board_id=OLD.board_id
+             AND d.root_task_id=OLD.root_task_id
+             AND d.generation=OLD.generation
+             AND d.delivery_state IN ('rejected','retry_scheduled','permanent_failure')
+        )
+        AND NOT EXISTS (
+          SELECT 1 FROM project_delivery_attempts AS d
+           WHERE d.board_id=OLD.board_id
+             AND d.root_task_id=OLD.root_task_id
+             AND d.generation=OLD.generation
+             AND d.delivery_state IN ('pending','attempting','ambiguous')
+        )
+      )
       AND (
         OLD.board_id IS NOT NEW.board_id
         OR OLD.root_task_id IS NOT NEW.root_task_id
@@ -366,6 +414,53 @@ _TERMINAL_FENCE_TRIGGER_SQL: tuple[str, ...] = (
         OR OLD.blocker_json IS NOT NEW.blocker_json
       )
     BEGIN SELECT RAISE(ABORT, 'project terminal authority is frozen'); END
+    """,
+    """
+    CREATE TRIGGER IF NOT EXISTS pfinal_v2_fence_terminal_update
+    BEFORE UPDATE ON project_finalizations
+    WHEN OLD.terminal_outcome IS NULL
+      AND (OLD.admission_key IS NOT NULL
+           OR OLD.terminal_candidate_snapshot_version IS NOT NULL)
+      AND NEW.terminal_outcome IS NOT NULL
+      AND (
+        NEW.terminal_outcome IS NOT OLD.terminal_intent
+        OR OLD.board_id IS NOT NEW.board_id
+        OR OLD.root_task_id IS NOT NEW.root_task_id
+        OR OLD.generation IS NOT NEW.generation
+        OR OLD.final_checker_task_id IS NOT NEW.final_checker_task_id
+        OR OLD.checker_verdict IS NOT NEW.checker_verdict
+        OR OLD.admission_key IS NOT NEW.admission_key
+        OR OLD.checker_profile IS NOT NEW.checker_profile
+        OR OLD.notification_route_identity IS NOT NEW.notification_route_identity
+        OR OLD.checker_candidate_snapshot_version IS NOT NEW.checker_candidate_snapshot_version
+        OR OLD.checker_candidate_id IS NOT NEW.checker_candidate_id
+        OR OLD.terminal_intent IS NOT NEW.terminal_intent
+        OR OLD.terminal_candidate_snapshot_version IS NOT NEW.terminal_candidate_snapshot_version
+        OR OLD.artifact_candidate_snapshot_version IS NOT NEW.artifact_candidate_snapshot_version
+        OR OLD.repair_generation IS NOT NEW.repair_generation
+        OR OLD.repair_budget IS NOT NEW.repair_budget
+        OR OLD.notification_policy IS NOT NEW.notification_policy
+        OR OLD.retention_days IS NOT NEW.retention_days
+        OR OLD.final_report_path IS NOT NEW.final_report_path
+        OR OLD.final_report_sha256 IS NOT NEW.final_report_sha256
+        OR OLD.manifest_path IS NOT NEW.manifest_path
+        OR OLD.manifest_sha256 IS NOT NEW.manifest_sha256
+        OR OLD.usage_summary_json IS NOT NEW.usage_summary_json
+        OR OLD.artifact_candidate_snapshot_version IS NOT OLD.terminal_candidate_snapshot_version
+        OR OLD.final_report_path IS NULL
+        OR OLD.final_report_sha256 IS NULL
+        OR OLD.manifest_path IS NULL
+        OR OLD.manifest_sha256 IS NULL
+        OR NOT EXISTS (
+          SELECT 1 FROM project_delivery_attempts AS d
+           WHERE d.board_id=OLD.board_id
+             AND d.root_task_id=OLD.root_task_id
+             AND d.generation=OLD.generation
+             AND d.accepted=1
+             AND d.delivery_state='accepted'
+        )
+      )
+    BEGIN SELECT RAISE(ABORT, 'project terminal transition violates frozen authority'); END
     """,
     """
     CREATE TRIGGER IF NOT EXISTS pfinal_v2_fence_tasks_insert
@@ -465,11 +560,13 @@ _TERMINAL_FENCE_TRIGGER_SQL: tuple[str, ...] = (
     BEGIN SELECT RAISE(ABORT, 'project terminal candidate is frozen'); END
     """,
     """
-    CREATE TRIGGER IF NOT EXISTS pfinal_v2_fence_events_insert
+    CREATE TRIGGER IF NOT EXISTS pfinal_v3_fence_events_insert
     BEFORE INSERT ON task_events
-    WHEN substr(NEW.kind,1,8) <> 'project_'
+    WHEN (NEW.kind IN ('project_checker_registered','project_checker_verdict_recorded')
+      OR (substr(NEW.kind,1,8) <> 'project_'
       AND substr(NEW.kind,1,7) <> 'notify_'
       AND NEW.kind NOT IN ('assigned','claimed','claim_extended','heartbeat','reclaim_deferred','reclaimed','respawn_guarded','spawned','stale','tip_scratch_workspace')
+      ))
       AND EXISTS (
         SELECT 1 FROM project_finalization_members AS m
         JOIN project_finalizations AS f
@@ -482,14 +579,18 @@ _TERMINAL_FENCE_TRIGGER_SQL: tuple[str, ...] = (
     BEGIN SELECT RAISE(ABORT, 'project terminal candidate is frozen'); END
     """,
     """
-    CREATE TRIGGER IF NOT EXISTS pfinal_v2_fence_events_update
+    CREATE TRIGGER IF NOT EXISTS pfinal_v3_fence_events_update
     BEFORE UPDATE ON task_events
     WHEN (
-        (substr(OLD.kind,1,8) <> 'project_' AND substr(OLD.kind,1,7) <> 'notify_'
+        (OLD.kind IN ('project_checker_registered','project_checker_verdict_recorded')
+         OR (substr(OLD.kind,1,8) <> 'project_' AND substr(OLD.kind,1,7) <> 'notify_'
          AND OLD.kind NOT IN ('assigned','claimed','claim_extended','heartbeat','reclaim_deferred','reclaimed','respawn_guarded','spawned','stale','tip_scratch_workspace'))
+        )
         OR
-        (substr(NEW.kind,1,8) <> 'project_' AND substr(NEW.kind,1,7) <> 'notify_'
+        (NEW.kind IN ('project_checker_registered','project_checker_verdict_recorded')
+         OR (substr(NEW.kind,1,8) <> 'project_' AND substr(NEW.kind,1,7) <> 'notify_'
          AND NEW.kind NOT IN ('assigned','claimed','claim_extended','heartbeat','reclaim_deferred','reclaimed','respawn_guarded','spawned','stale','tip_scratch_workspace'))
+        )
     ) AND EXISTS (
         SELECT 1 FROM project_finalization_members AS m
         JOIN project_finalizations AS f
@@ -502,11 +603,13 @@ _TERMINAL_FENCE_TRIGGER_SQL: tuple[str, ...] = (
     BEGIN SELECT RAISE(ABORT, 'project terminal candidate is frozen'); END
     """,
     """
-    CREATE TRIGGER IF NOT EXISTS pfinal_v2_fence_events_delete
+    CREATE TRIGGER IF NOT EXISTS pfinal_v3_fence_events_delete
     BEFORE DELETE ON task_events
-    WHEN substr(OLD.kind,1,8) <> 'project_'
+    WHEN (OLD.kind IN ('project_checker_registered','project_checker_verdict_recorded')
+      OR (substr(OLD.kind,1,8) <> 'project_'
       AND substr(OLD.kind,1,7) <> 'notify_'
       AND OLD.kind NOT IN ('assigned','claimed','claim_extended','heartbeat','reclaim_deferred','reclaimed','respawn_guarded','spawned','stale','tip_scratch_workspace')
+      ))
       AND EXISTS (
         SELECT 1 FROM project_finalization_members AS m
         JOIN project_finalizations AS f
@@ -887,6 +990,11 @@ def _ensure_terminal_fence_triggers(conn: sqlite3.Connection) -> None:
         # normal Kanban connection path calls us again after its core tables
         # exist, at which point the database fence is installed.
         return
+    # e5 used this name for an authority trigger that did not have the narrow
+    # stale-fence recovery exception.  Remove it transactionally before
+    # installing v3 so an upgraded database cannot retain two contradictory
+    # guards (the old one would reject the sanctioned thaw first).
+    conn.execute("DROP TRIGGER IF EXISTS pfinal_v2_fence_authority_update")
     for statement in _TERMINAL_FENCE_TRIGGER_SQL:
         conn.execute(statement)
 
@@ -1500,6 +1608,142 @@ def record_checker_verdict(
         return _row_to_project_finalization(new_row)
 
 
+def _validate_admitted_checker_authority(
+    conn: sqlite3.Connection,
+    row: sqlite3.Row,
+) -> None:
+    """Reject an admitted terminal transition with split checker authority.
+
+    The aggregate is not enough: registration and verdict events are the
+    durable audit trail that binds the checker, its run and its candidate.  A
+    legacy, non-admitted project did not use this protocol and is deliberately
+    outside this validation boundary.
+    """
+    if row["admission_key"] is None:
+        return
+    checker_task_id = row["final_checker_task_id"]
+    profile = row["checker_profile"]
+    candidate_snapshot = row["checker_candidate_snapshot_version"]
+    candidate_id = row["checker_candidate_id"]
+    if not all((checker_task_id, profile, candidate_snapshot, candidate_id)):
+        raise ValueError("admitted checker authority is incomplete")
+
+    members = conn.execute(
+        """
+        SELECT task_id, required FROM project_finalization_members
+         WHERE board_id=? AND root_task_id=? AND generation=?
+           AND membership_kind='checker'
+        """,
+        (row["board_id"], row["root_task_id"], row["generation"]),
+    ).fetchall()
+    if (
+        len(members) != 1
+        or members[0]["task_id"] != checker_task_id
+        or int(members[0]["required"]) != 1
+    ):
+        raise ValueError("admitted checker membership does not match aggregate authority")
+
+    registration_events = conn.execute(
+        """
+        SELECT payload FROM task_events
+         WHERE task_id=? AND kind='project_checker_registered'
+         ORDER BY id
+        """,
+        (checker_task_id,),
+    ).fetchall()
+    if len(registration_events) != 1:
+        raise ValueError("checker registration authority is incomplete")
+    try:
+        registration = json.loads(registration_events[0]["payload"])
+    except (TypeError, json.JSONDecodeError) as exc:
+        raise ValueError("checker registration authority is malformed") from exc
+    if not isinstance(registration, dict) or (
+        registration.get("checker_profile") != profile
+        or registration.get("candidate_snapshot_version") != candidate_snapshot
+        or registration.get("candidate_id") != candidate_id
+    ):
+        raise ValueError("checker registration authority does not match aggregate")
+
+    # The registration event must also bind to the durable checker task.  The
+    # event is replayable text; its logical identity is authoritative only
+    # when it equals the task's idempotency key and the deterministic project
+    # / candidate identity used to create that task.
+    task = conn.execute(
+        "SELECT id, assignee, idempotency_key, project_id FROM tasks WHERE id=?",
+        (checker_task_id,),
+    ).fetchone()
+    if task is None or task["assignee"] != profile:
+        raise ValueError("checker task authority does not match aggregate")
+    if not isinstance(task["project_id"], str) or not task["project_id"]:
+        raise ValueError("checker task identity is malformed")
+    checker_identity = registration.get("checker_identity")
+    if not isinstance(checker_identity, str) or checker_identity != task["idempotency_key"]:
+        raise ValueError("checker registration identity does not match checker task")
+    try:
+        from hermes_cli.project_repair_router import ProjectIdentity
+        from hermes_cli.project_runtime_registration import checker_registration_identity
+
+        expected_identity = checker_registration_identity(
+            ProjectIdentity(
+                task["project_id"],
+                str(row["board_id"]),
+                str(row["root_task_id"]),
+                int(row["generation"]),
+            ),
+            candidate_snapshot_version=str(candidate_snapshot),
+            candidate_id=str(candidate_id),
+        )
+    except (TypeError, ValueError) as exc:
+        raise ValueError("checker task identity is malformed") from exc
+    if checker_identity != expected_identity:
+        raise ValueError("checker registration identity is not deterministic")
+
+    verdict = row["checker_verdict"]
+    verdict_events = conn.execute(
+        """
+        SELECT run_id, payload FROM task_events
+         WHERE task_id=? AND kind='project_checker_verdict_recorded'
+         ORDER BY id
+        """,
+        (checker_task_id,),
+    ).fetchall()
+    if verdict is None:
+        if verdict_events:
+            raise ValueError("checker verdict event exists without aggregate verdict")
+        return
+    if len(verdict_events) != 1:
+        raise ValueError("checker verdict authority is incomplete")
+    event = verdict_events[0]
+    try:
+        verdict_payload = json.loads(event["payload"])
+    except (TypeError, json.JSONDecodeError) as exc:
+        raise ValueError("checker verdict authority is malformed") from exc
+    if not isinstance(verdict_payload, dict) or (
+        verdict_payload.get("board_id") != row["board_id"]
+        or verdict_payload.get("root_task_id") != row["root_task_id"]
+        or verdict_payload.get("generation") != row["generation"]
+        or verdict_payload.get("checker_task_id") != checker_task_id
+        or verdict_payload.get("checker_profile") != profile
+        or verdict_payload.get("candidate_snapshot_version") != candidate_snapshot
+        or verdict_payload.get("candidate_id") != candidate_id
+        or verdict_payload.get("verdict") != verdict
+    ):
+        raise ValueError("checker verdict authority does not match aggregate")
+    run_id = event["run_id"]
+    run = conn.execute(
+        "SELECT task_id, profile, ended_at FROM task_runs WHERE id=?",
+        (run_id,),
+    ).fetchone()
+    if (
+        run_id is None
+        or run is None
+        or run["task_id"] != checker_task_id
+        or run["profile"] != profile
+        or run["ended_at"] is None
+    ):
+        raise ValueError("checker verdict run does not match aggregate authority")
+
+
 def freeze_terminal_candidate(
     conn: sqlite3.Connection,
     *,
@@ -1536,6 +1780,8 @@ def freeze_terminal_candidate(
             or int(row["lock_expires_at"] or 0) < evaluation_time
         ):
             raise ValueError("current finalization lock is required")
+
+        _validate_admitted_checker_authority(conn, row)
 
         from hermes_cli.project_finalizer import evaluate_project
 
@@ -1795,6 +2041,7 @@ def record_terminal_outcome(
                 or int(row["lock_expires_at"] or 0) < now_ts
             ):
                 raise ValueError("current finalization lock is required")
+            _validate_admitted_checker_authority(conn, row)
 
         conn.execute(
             """

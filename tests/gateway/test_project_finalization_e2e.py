@@ -14,6 +14,7 @@ from hermes_cli import kanban_db as kb
 from hermes_cli import project_runtime_registration as runtime
 from hermes_cli.project_delivery_ledger import list_delivery_attempts
 from hermes_cli.project_finalization_contract import (
+    _validate_admitted_checker_authority,
     get_project_finalization,
     list_project_members,
     register_project_member,
@@ -175,6 +176,36 @@ def test_admitted_project_passes_checker_delivers_once_and_replays_safely(
         with pytest.raises(sqlite3.IntegrityError, match="terminal candidate is frozen"):
             kb.archive_task(conn, checker_id)
         delivery_race_fences.append("checker")
+        for authority_kind in (
+            "project_checker_registered",
+            "project_checker_verdict_recorded",
+        ):
+            with pytest.raises(sqlite3.IntegrityError, match="terminal candidate is frozen"):
+                conn.execute(
+                    "UPDATE task_events SET payload='{}' WHERE task_id=? AND kind=?",
+                    (checker_id, authority_kind),
+                )
+            with pytest.raises(sqlite3.IntegrityError, match="terminal candidate is frozen"):
+                conn.execute(
+                    "DELETE FROM task_events WHERE task_id=? AND kind=?",
+                    (checker_id, authority_kind),
+                )
+        # Other project bookkeeping remains intentionally mutable: only the
+        # two checker authority event kinds are part of the terminal fence.
+        conn.execute(
+            "UPDATE task_events SET payload='{}' WHERE task_id=? AND kind='project_admitted'",
+            (root,),
+        )
+        # A prior rejected/retry-scheduled ledger entry must not authorize a
+        # stale-fence thaw while the current attempt is pending/attempting.
+        # This callback runs for both the first and the retried delivery.
+        with pytest.raises(sqlite3.IntegrityError, match="terminal authority is frozen"):
+            conn.execute(
+                "UPDATE project_finalizations SET terminal_intent=NULL, "
+                "terminal_candidate_snapshot_version=NULL "
+                "WHERE board_id=? AND root_task_id=? AND generation=1",
+                (BOARD, root),
+            )
         delivery_calls.append((platform, chat_id, thread_id, message))
         if len(delivery_calls) == 1:
             return {"rejected": True, "error": "provider refused first attempt"}
@@ -201,6 +232,14 @@ def test_admitted_project_passes_checker_delivers_once_and_replays_safely(
     assert checker_id.startswith("t_")
     assert kb.get_task(conn, checker_id).assignee == CHECKER_PROFILE
     assert aggregate.checker_profile == CHECKER_PROFILE
+    # An admitted row cannot bypass freeze/artifact/delivery sequencing with
+    # raw SQL, even before a terminal candidate has been frozen.
+    with pytest.raises(sqlite3.IntegrityError, match="terminal transition"):
+        conn.execute(
+            "UPDATE project_finalizations SET terminal_outcome='COMPLETE', state='complete' "
+            "WHERE board_id=? AND root_task_id=? AND generation=1",
+            (BOARD, root),
+        )
 
     # A watcher replay while the checker is pending must preserve authority.
     pending_replay = asyncio.run(service.tick(board_id=BOARD))
@@ -253,6 +292,68 @@ def test_admitted_project_passes_checker_delivers_once_and_replays_safely(
             if event.kind == "project_checker_verdict_recorded"
         ]
     ) == 1
+
+    # Publication/CAS refuse split checker authority even before the terminal
+    # fence is acquired.  Each probe rolls back its malformed evidence so the
+    # valid lifecycle below remains a real end-to-end flow.
+    def assert_authority_probe_rejected(mutator) -> None:
+        with pytest.raises(ValueError, match="checker (.*authority|.*identity)"):
+            with kb.write_txn(conn):
+                mutator()
+                row = conn.execute(
+                    "SELECT * FROM project_finalizations WHERE board_id=? AND root_task_id=? AND generation=1",
+                    (BOARD, root),
+                ).fetchone()
+                assert row is not None
+                _validate_admitted_checker_authority(conn, row)
+
+    assert_authority_probe_rejected(
+        lambda: conn.execute(
+            "DELETE FROM task_events WHERE task_id=? AND kind='project_checker_registered'",
+            (checker_id,),
+        )
+    )
+    assert_authority_probe_rejected(
+        lambda: conn.execute(
+            "UPDATE task_events SET payload='not-json' WHERE task_id=? AND kind='project_checker_verdict_recorded'",
+            (checker_id,),
+        )
+    )
+
+    def forge_registration_identity() -> None:
+        payload = json.loads(
+            conn.execute(
+                "SELECT payload FROM task_events WHERE task_id=? AND kind='project_checker_registered'",
+                (checker_id,),
+            ).fetchone()["payload"]
+        )
+        payload["checker_identity"] = "checker:sha256:" + "0" * 64
+        conn.execute(
+            "UPDATE task_events SET payload=? WHERE task_id=? AND kind='project_checker_registered'",
+            (json.dumps(payload, sort_keys=True), checker_id),
+        )
+
+    assert_authority_probe_rejected(forge_registration_identity)
+    assert_authority_probe_rejected(
+        lambda: conn.execute(
+            "UPDATE tasks SET assignee='forged-checker' WHERE id=?",
+            (checker_id,),
+        )
+    )
+    assert_authority_probe_rejected(
+        lambda: conn.execute(
+            "UPDATE tasks SET idempotency_key='checker:sha256:forged' WHERE id=?",
+            (checker_id,),
+        )
+    )
+    assert_authority_probe_rejected(
+        lambda: conn.execute(
+            "INSERT INTO task_events (task_id, run_id, kind, payload, created_at) "
+            "SELECT task_id, run_id, kind, payload, created_at FROM task_events "
+            "WHERE task_id=? AND kind='project_checker_verdict_recorded'",
+            (checker_id,),
+        )
+    )
 
     # A current process rejects supported mutations once PASS freezes the
     # candidate. These calls must not change authority before finalization.
@@ -339,15 +440,12 @@ def test_admitted_project_passes_checker_delivers_once_and_replays_safely(
         )
     }
 
-    # Reproduce a pre-fence/older-writer row after rejected delivery. Recovery
-    # must preserve the old files, rotate authority, and allow a new immutable
-    # candidate generation to use the existing retry ledger.
-    conn.execute("DROP TRIGGER pfinal_v2_fence_authority_update")
-    conn.execute(
-        "UPDATE project_finalizations SET terminal_intent=NULL, "
-        "terminal_candidate_snapshot_version=NULL WHERE root_task_id=?",
-        (root,),
-    )
+    # Reproduce a pre-v3 weak-fence writer after rejected delivery.  Keep the
+    # stale terminal identity intact: on the next tick schema ensure installs
+    # the upgraded authority trigger before registration must perform its
+    # narrow, locked recovery thaw.
+    conn.execute("DROP TRIGGER pfinal_v3_fence_authority_update")
+    conn.execute("DROP TRIGGER pfinal_v2_fence_tasks_update")
     conn.execute(
         "UPDATE tasks SET body='candidate changed after rejected delivery' WHERE id=?",
         (implementation,),

@@ -151,6 +151,46 @@ def test_cleanup_disabled_terminal_project_has_read_only_retention_preview(board
     assert board.total_changes == before
 
 
+@pytest.mark.parametrize(
+    ("outcome", "checker_verdict"),
+    (("COMPLETE", "PASS"), ("BLOCKED", "FAIL_TERMINAL"), ("FAILED", None)),
+)
+def test_every_terminal_outcome_waits_for_provider_acceptance(
+    board, outcome, checker_verdict
+):
+    root, _, _ = _setup(
+        board,
+        complete_checker=checker_verdict is not None,
+        verdict=checker_verdict,
+        subscription=False,
+    )
+    if outcome == "FAILED":
+        board.execute(
+            "UPDATE tasks SET status='blocked', consecutive_failures=1, "
+            "last_failure_error='worker crashed' WHERE id=?",
+            (root,),
+        )
+        board.execute(
+            "INSERT INTO task_runs "
+            "(task_id, status, started_at, ended_at, outcome, error) "
+            "VALUES (?, 'gave_up', 1, 2, 'gave_up', 'worker crashed')",
+            (root,),
+        )
+
+    service, receipts = _service()
+    result = _run(service)
+
+    project = get_project_finalization(
+        board, board_id="default", root_task_id=root, generation=1
+    )
+    assert result.failures == ()
+    assert result.delivered == result.terminalized == 0
+    assert project.terminal_outcome is None
+    assert project.terminal_intent == outcome
+    assert project.final_report_path and project.manifest_path
+    assert receipts == []
+
+
 def test_terminal_provider_payload_uses_durable_contract_and_excludes_private_data(board):
     private_task_text = "PRIVATE project prompt must not leave Hermes"
     root, _, _ = _setup(
@@ -476,6 +516,22 @@ def test_terminal_snapshot_fences_all_candidate_writers_during_async_delivery(
             ),
         ),
         (
+            "raw-terminal-wrong-outcome",
+            lambda: board.execute(
+                "UPDATE project_finalizations SET terminal_outcome=?, state='complete' "
+                "WHERE root_task_id=?",
+                (next(item for item in ("COMPLETE", "BLOCKED", "FAILED") if item != outcome), root),
+            ),
+        ),
+        (
+            "raw-terminal-authority-mutation",
+            lambda: board.execute(
+                "UPDATE project_finalizations SET terminal_outcome=?, state='complete', "
+                "checker_profile='forged' WHERE root_task_id=?",
+                (outcome, root),
+            ),
+        ),
+        (
             "checker-verdict",
             lambda: record_checker_verdict(
                 board,
@@ -535,7 +591,7 @@ def test_terminal_snapshot_fences_all_candidate_writers_during_async_delivery(
         for label, mutate in mutators:
             with pytest.raises(
                 (ValueError, sqlite3.IntegrityError),
-                match="project .*is frozen",
+                match="project (.*is frozen|terminal transition)",
             ):
                 mutate()
             fence_hits.append(label)

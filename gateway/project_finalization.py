@@ -272,21 +272,9 @@ class ProjectFinalizationService:
             raise ValueError("project finalization disappeared after artifact publication")
         destination = self._destination(conn, durable)
         if destination.status != DESTINATION_FOUND:
-            # No route is safe to infer. Persist a terminal technical outcome only
-            # for non-success states; success remains nonterminal until delivery.
-            if outcome != "COMPLETE":
-                record_terminal_outcome(
-                    conn,
-                    board_id=current.board_id,
-                    root_task_id=current.root_task_id,
-                    generation=current.generation,
-                    outcome=outcome,
-                    blocker_json=json.dumps({"reason": destination.reason}, sort_keys=True),
-                    candidate_snapshot_version=evaluation.candidate_snapshot_version,
-                    lock_owner=self._owner,
-                    now=now,
-                )
-                return result.plus(terminalized=1)
+            # No route is safe to infer, and no outcome may become terminal
+            # before provider acceptance. Keep the frozen candidate and
+            # immutable artifacts replayable until its durable route returns.
             return result.plus(skipped=1)
         message_kind = f"project_{outcome.lower()}"
         terminal_message = self._terminal_message(durable, outcome, published)

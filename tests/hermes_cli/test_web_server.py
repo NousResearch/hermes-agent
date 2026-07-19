@@ -5449,6 +5449,70 @@ class TestNewEndpoints:
         )
         assert resp.status_code == 400
 
+    def test_select_managed_nous_provider_reports_needs_nous_auth(self, monkeypatch):
+        """Selecting a managed Nous row while logged out flags needs_nous_auth.
+
+        Regression: the GUI PUT wrote browser.cloud_provider + use_gateway
+        but skipped the Portal entitlement handshake the CLI runs inline
+        (ensure_nous_portal_access) — so the row never activated and nothing
+        told the user to sign in. The endpoint now reports the entitlement
+        gap so the client can drive the existing Nous OAuth flow.
+        """
+        from hermes_cli.nous_account import NousPortalAccountInfo
+
+        monkeypatch.setattr(
+            "hermes_cli.nous_subscription.get_nous_portal_account_info",
+            lambda *a, **k: NousPortalAccountInfo(
+                logged_in=False, source="none", fresh=False, paid_service_access=None
+            ),
+        )
+
+        resp = self.client.put(
+            "/api/tools/toolsets/browser/provider",
+            json={"provider": "Nous Subscription (Browser Use cloud)"},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["ok"] is True
+        assert data["needs_nous_auth"] is True
+        assert data["feature"] == "browser"
+        # The selection is still persisted — activation is what's gated.
+        from hermes_cli.config import load_config
+        cfg = load_config()
+        assert cfg["browser"]["cloud_provider"] == "browser-use"
+
+    def test_select_managed_nous_provider_entitled_no_auth_flag(self, monkeypatch):
+        """A signed-in, entitled subscriber gets no needs_nous_auth field."""
+        from hermes_cli.nous_account import NousPortalAccountInfo
+
+        monkeypatch.setattr(
+            "hermes_cli.nous_subscription.get_nous_portal_account_info",
+            lambda *a, **k: NousPortalAccountInfo(
+                logged_in=True, source="jwt", fresh=True, paid_service_access=True
+            ),
+        )
+
+        resp = self.client.put(
+            "/api/tools/toolsets/browser/provider",
+            json={"provider": "Nous Subscription (Browser Use cloud)"},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["ok"] is True
+        assert "needs_nous_auth" not in data
+
+    def test_select_unmanaged_provider_has_no_nous_auth_field(self):
+        """Non-managed rows never carry the entitlement fields."""
+        resp = self.client.put(
+            "/api/tools/toolsets/web/provider",
+            json={"provider": "Firecrawl Self-Hosted"},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["ok"] is True
+        assert "needs_nous_auth" not in data
+        assert "feature" not in data
+
     def test_select_toolset_provider_unknown_toolset_returns_400(self):
         resp = self.client.put(
             "/api/tools/toolsets/not_a_real_toolset/provider",

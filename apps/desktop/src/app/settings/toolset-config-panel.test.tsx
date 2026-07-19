@@ -12,6 +12,8 @@ const deleteEnvVar = vi.fn()
 const revealEnvVar = vi.fn()
 const runToolsetPostSetup = vi.fn()
 const getActionStatus = vi.fn()
+const startOAuthLogin = vi.fn()
+const pollOAuthSession = vi.fn()
 
 vi.mock('@/hermes', () => ({
   getToolsetConfig: (name: string) => getToolsetConfig(name),
@@ -22,7 +24,9 @@ vi.mock('@/hermes', () => ({
   deleteEnvVar: (key: string) => deleteEnvVar(key),
   revealEnvVar: (key: string) => revealEnvVar(key),
   runToolsetPostSetup: (name: string, key: string) => runToolsetPostSetup(name, key),
-  getActionStatus: (name: string, lines?: number) => getActionStatus(name, lines)
+  getActionStatus: (name: string, lines?: number) => getActionStatus(name, lines),
+  startOAuthLogin: (providerId: string) => startOAuthLogin(providerId),
+  pollOAuthSession: (providerId: string, sessionId: string) => pollOAuthSession(providerId, sessionId)
 }))
 
 vi.mock('@/store/notifications', () => ({
@@ -504,6 +508,236 @@ describe('ToolsetConfigPanel', () => {
       fireEvent.click(screen.getByRole('button', { name: 'Save' }))
 
       await waitFor(() => expect(screen.getByText('Ready')).toBeTruthy())
+    })
+  })
+
+  describe('post-setup installed state', () => {
+    it('renders Installed + Re-run setup instead of the primary CTA when the server says ready', async () => {
+      // Regression (Windows 11 Capabilities journey): "Run setup" rendered
+      // unconditionally, so an already-installed backend still showed the
+      // primary install CTA and clicking it re-ran the whole npm/Chromium
+      // install. status === 'ready' must flip to a resting Installed state.
+      getToolsetConfig.mockResolvedValue(
+        config({
+          name: 'browser',
+          active_provider: 'Local Browser',
+          providers: [
+            {
+              name: 'Local Browser',
+              badge: 'free',
+              tag: 'Headless Chromium, no API key needed',
+              env_vars: [],
+              post_setup: 'agent_browser',
+              requires_nous_auth: false,
+              is_active: true,
+              status: 'ready'
+            }
+          ]
+        })
+      )
+
+      const { ToolsetConfigPanel } = await import('./toolset-config-panel')
+      render(<ToolsetConfigPanel onConfiguredChange={vi.fn()} toolset="browser" />)
+
+      await screen.findByText('Local Browser')
+      expect(screen.getByText('Installed')).toBeTruthy()
+      expect(screen.getByRole('button', { name: /Re-run setup/ })).toBeTruthy()
+      expect(screen.queryByRole('button', { name: /^Run setup$/ })).toBeNull()
+    })
+
+    it('still runs the hook from the Re-run setup affordance', async () => {
+      getToolsetConfig.mockResolvedValue(
+        config({
+          name: 'browser',
+          active_provider: 'Local Browser',
+          providers: [
+            {
+              name: 'Local Browser',
+              badge: 'free',
+              tag: 'Headless Chromium, no API key needed',
+              env_vars: [],
+              post_setup: 'agent_browser',
+              requires_nous_auth: false,
+              is_active: true,
+              status: 'ready'
+            }
+          ]
+        })
+      )
+      runToolsetPostSetup.mockResolvedValue({ ok: true, pid: 4321, name: 'tools-post-setup', key: 'agent_browser' })
+      getActionStatus.mockResolvedValue({
+        exit_code: 0,
+        lines: ['agent-browser already installed, nothing to do'],
+        name: 'tools-post-setup',
+        pid: 4321,
+        running: false
+      })
+
+      const { ToolsetConfigPanel } = await import('./toolset-config-panel')
+      render(<ToolsetConfigPanel onConfiguredChange={vi.fn()} toolset="browser" />)
+
+      fireEvent.click(await screen.findByRole('button', { name: /Re-run setup/ }))
+
+      await waitFor(() => expect(runToolsetPostSetup).toHaveBeenCalledWith('browser', 'agent_browser'))
+    })
+
+    it('keeps the primary Run setup CTA when the server says needs_setup', async () => {
+      getToolsetConfig.mockResolvedValue(
+        config({
+          name: 'browser',
+          active_provider: 'Local Browser',
+          providers: [
+            {
+              name: 'Local Browser',
+              badge: 'free',
+              tag: 'Headless Chromium, no API key needed',
+              env_vars: [],
+              post_setup: 'agent_browser',
+              requires_nous_auth: false,
+              is_active: true,
+              status: 'needs_setup'
+            }
+          ]
+        })
+      )
+
+      const { ToolsetConfigPanel } = await import('./toolset-config-panel')
+      render(<ToolsetConfigPanel onConfiguredChange={vi.fn()} toolset="browser" />)
+
+      await screen.findByText('Local Browser')
+      expect(screen.getByRole('button', { name: /Run setup/ })).toBeTruthy()
+      expect(screen.queryByText('Installed')).toBeNull()
+    })
+  })
+
+  describe('managed Nous provider activation', () => {
+    const nousBrowserConfig = () =>
+      config({
+        name: 'browser',
+        active_provider: null,
+        providers: [
+          {
+            name: 'Nous Subscription (Browser Use cloud)',
+            badge: 'subscription',
+            tag: 'Managed Browser Use billed to your subscription',
+            env_vars: [],
+            post_setup: 'agent_browser',
+            requires_nous_auth: true,
+            is_active: false,
+            status: 'needs_auth'
+          }
+        ]
+      })
+
+    it('surfaces a sign-in notice when the PUT reports needs_nous_auth', async () => {
+      // Regression (Windows 11 Capabilities journey): the GUI wrote
+      // browser.cloud_provider but skipped the Portal entitlement handshake,
+      // so the managed row silently never activated. The endpoint now
+      // reports needs_nous_auth and the panel must surface a sign-in action
+      // instead of the misleading "provider selected" success toast.
+      const { notify } = await import('@/store/notifications')
+
+      getToolsetConfig.mockResolvedValue(nousBrowserConfig())
+      selectToolsetProvider.mockResolvedValue({
+        ok: true,
+        name: 'browser',
+        provider: 'Nous Subscription (Browser Use cloud)',
+        needs_nous_auth: true,
+        feature: 'browser'
+      })
+
+      const { ToolsetConfigPanel } = await import('./toolset-config-panel')
+      render(<ToolsetConfigPanel onConfiguredChange={vi.fn()} toolset="browser" />)
+
+      fireEvent.click(await screen.findByRole('button', { name: /Nous Subscription/ }))
+
+      await waitFor(() =>
+        expect(selectToolsetProvider).toHaveBeenCalledWith('browser', 'Nous Subscription (Browser Use cloud)')
+      )
+      await waitFor(() =>
+        expect(notify).toHaveBeenCalledWith(
+          expect.objectContaining({
+            kind: 'warning',
+            action: expect.objectContaining({ label: expect.any(String) })
+          })
+        )
+      )
+      // No success toast — the row is not active yet.
+      expect(notify).not.toHaveBeenCalledWith(expect.objectContaining({ kind: 'success' }))
+    })
+
+    it('drives the existing Nous OAuth device-code flow from the sign-in action and refetches', async () => {
+      const { notify } = await import('@/store/notifications')
+
+      getToolsetConfig.mockResolvedValue(nousBrowserConfig())
+      selectToolsetProvider.mockResolvedValue({
+        ok: true,
+        name: 'browser',
+        provider: 'Nous Subscription (Browser Use cloud)',
+        needs_nous_auth: true,
+        feature: 'browser'
+      })
+      startOAuthLogin.mockResolvedValue({
+        flow: 'device_code',
+        session_id: 'sess-1',
+        user_code: 'NOUS-1234',
+        verification_url: 'https://portal.nousresearch.com/device?user_code=NOUS-1234',
+        poll_interval: 5,
+        expires_in: 600
+      })
+      pollOAuthSession.mockResolvedValue({ session_id: 'sess-1', status: 'approved' })
+      const openSpy = vi.spyOn(window, 'open').mockReturnValue(null)
+
+      try {
+        const { ToolsetConfigPanel } = await import('./toolset-config-panel')
+        render(<ToolsetConfigPanel onConfiguredChange={vi.fn()} toolset="browser" />)
+
+        fireEvent.click(await screen.findByRole('button', { name: /Nous Subscription/ }))
+
+        // Grab the sign-in action off the warning notification and invoke it —
+        // this is the affordance the toast renders as a button.
+        await waitFor(() => expect(notify).toHaveBeenCalledWith(expect.objectContaining({ kind: 'warning' })))
+
+        const warning = vi
+          .mocked(notify)
+          .mock.calls.map(call => call[0])
+          .find(input => input.kind === 'warning')
+
+        expect(warning?.action).toBeTruthy()
+        getToolsetConfig.mockClear()
+        warning!.action!.onClick()
+
+        await waitFor(() => expect(startOAuthLogin).toHaveBeenCalledWith('nous'))
+        expect(openSpy).toHaveBeenCalledWith(
+          'https://portal.nousresearch.com/device?user_code=NOUS-1234',
+          '_blank',
+          'noopener,noreferrer'
+        )
+        // Approved poll → the panel refetches the config so status flips.
+        await waitFor(() => expect(pollOAuthSession).toHaveBeenCalledWith('nous', 'sess-1'), { timeout: 8000 })
+        await waitFor(() => expect(getToolsetConfig).toHaveBeenCalled(), { timeout: 8000 })
+      } finally {
+        openSpy.mockRestore()
+      }
+    }, 20000)
+
+    it('shows the plain success toast when the managed row is already entitled', async () => {
+      const { notify } = await import('@/store/notifications')
+
+      getToolsetConfig.mockResolvedValue(nousBrowserConfig())
+      selectToolsetProvider.mockResolvedValue({
+        ok: true,
+        name: 'browser',
+        provider: 'Nous Subscription (Browser Use cloud)'
+      })
+
+      const { ToolsetConfigPanel } = await import('./toolset-config-panel')
+      render(<ToolsetConfigPanel onConfiguredChange={vi.fn()} toolset="browser" />)
+
+      fireEvent.click(await screen.findByRole('button', { name: /Nous Subscription/ }))
+
+      await waitFor(() => expect(notify).toHaveBeenCalledWith(expect.objectContaining({ kind: 'success' })))
+      expect(startOAuthLogin).not.toHaveBeenCalled()
     })
   })
 })

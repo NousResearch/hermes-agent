@@ -2038,3 +2038,107 @@ def test_provider_readiness_unknown_post_setup_falls_back_to_is_active():
     provider = {"name": "Mystery", "env_vars": [], "post_setup": "mystery_hook"}
     assert provider_readiness_status(provider, {}, is_active=True) == "ready"
     assert provider_readiness_status(provider, {}, is_active=False) == "needs_setup"
+
+
+# ── Windows console-flash guard for post-setup subprocess spawns ──────────────
+#
+# The desktop GUI runs post-setup hooks through a detached, console-less
+# `hermes tools post-setup <key>` child. On Windows each console child (npm,
+# npx, pip, powershell) spawned without CREATE_NO_WINDOW materializes a brand
+# new console window — the "terminal flash" reported on the Capabilities
+# browser-setup journey. `_post_setup_no_window_flags` is the single wrapper
+# every hook spawn passes as `creationflags`.
+
+
+def test_post_setup_no_window_flags_zero_on_posix(monkeypatch):
+    from hermes_cli import _subprocess_compat
+    from hermes_cli.tools_config import _post_setup_no_window_flags
+
+    monkeypatch.setattr(_subprocess_compat, "IS_WINDOWS", False)
+    assert _post_setup_no_window_flags() == 0
+    assert _post_setup_no_window_flags(streams_to_console=True) == 0
+
+
+def test_post_setup_no_window_flags_hides_window_on_windows(monkeypatch):
+    from hermes_cli import _subprocess_compat
+    from hermes_cli.tools_config import _post_setup_no_window_flags
+
+    monkeypatch.setattr(_subprocess_compat, "IS_WINDOWS", True)
+    # CREATE_NO_WINDOW only — DETACHED_PROCESS would sever stdio and break
+    # capture_output in the hooks.
+    assert _post_setup_no_window_flags() == 0x08000000
+
+
+def test_post_setup_no_window_flags_streaming_keeps_interactive_console(monkeypatch):
+    """A hook that streams live output to a real console must stay visible."""
+    import sys as _sys
+
+    from hermes_cli import _subprocess_compat
+    from hermes_cli.tools_config import _post_setup_no_window_flags
+
+    monkeypatch.setattr(_subprocess_compat, "IS_WINDOWS", True)
+
+    class _Tty:
+        def isatty(self):
+            return True
+
+    class _Pipe:
+        def isatty(self):
+            return False
+
+    monkeypatch.setattr(_sys, "stdout", _Tty())
+    assert _post_setup_no_window_flags(streams_to_console=True) == 0
+
+    # GUI-spawn case: stdout is a log pipe, no console to stream to — hide.
+    monkeypatch.setattr(_sys, "stdout", _Pipe())
+    assert _post_setup_no_window_flags(streams_to_console=True) == 0x08000000
+
+
+# ── Post-setup readiness predicates for the browser rows ─────────────────────
+#
+# The GUI's "Run setup" idempotence rides on provider_readiness_status
+# reporting ready/needs_setup honestly. agent_browser (local browser) must
+# track the FULL local install (CLI + Chromium), the cloud-provider hook
+# ("browserbase") only the CLI, and camofox its npm package.
+
+
+def test_provider_readiness_agent_browser_tracks_local_install(monkeypatch):
+    provider = {"name": "Local Browser", "env_vars": [], "post_setup": "agent_browser"}
+
+    monkeypatch.setattr(
+        "hermes_cli.nous_subscription._local_browser_runnable", lambda: False
+    )
+    assert provider_readiness_status(provider, {}) == "needs_setup"
+
+    monkeypatch.setattr(
+        "hermes_cli.nous_subscription._local_browser_runnable", lambda: True
+    )
+    assert provider_readiness_status(provider, {}) == "ready"
+
+
+def test_provider_readiness_cloud_browser_hook_tracks_cli_only(monkeypatch):
+    # Cloud rows (post_setup: "browserbase") host their own Chromium — the
+    # agent-browser CLI being present is the whole install contract.
+    provider = {"name": "Browserbase", "env_vars": [], "post_setup": "browserbase"}
+
+    monkeypatch.setattr(
+        "hermes_cli.nous_subscription._has_agent_browser", lambda: False
+    )
+    assert provider_readiness_status(provider, {}) == "needs_setup"
+
+    monkeypatch.setattr(
+        "hermes_cli.nous_subscription._has_agent_browser", lambda: True
+    )
+    assert provider_readiness_status(provider, {}) == "ready"
+
+
+def test_provider_readiness_camofox_tracks_node_modules(monkeypatch, tmp_path):
+    from hermes_cli import tools_config
+
+    provider = {"name": "Camofox", "env_vars": [], "post_setup": "camofox"}
+
+    monkeypatch.setattr(tools_config, "PROJECT_ROOT", tmp_path)
+    assert provider_readiness_status(provider, {}) == "needs_setup"
+
+    (tmp_path / "node_modules" / "@askjo" / "camofox-browser").mkdir(parents=True)
+    assert provider_readiness_status(provider, {}) == "ready"

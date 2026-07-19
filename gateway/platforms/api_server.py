@@ -125,6 +125,8 @@ MAX_REQUEST_BYTES = 10_000_000  # 10 MB — accommodates long agent conversation
 CHAT_COMPLETIONS_SSE_KEEPALIVE_SECONDS = 30.0
 MAX_NORMALIZED_TEXT_LENGTH = 65_536  # 64 KB cap for normalized content parts
 MAX_CONTENT_LIST_SIZE = 1_000  # Max items when content is an array
+CHAT_COMPLETIONS_HISTORY_SOURCE_HEADER = "X-Hermes-History-Source"
+CHAT_COMPLETIONS_HISTORY_SOURCE_VALUES = frozenset({"stored", "request"})
 
 
 def _coerce_port(value: Any, default: int = DEFAULT_PORT) -> int:
@@ -2001,6 +2003,8 @@ class APIServerAdapter(BasePlatformAdapter):
                 "realtime_voice": False,
                 "session_continuity_header": "X-Hermes-Session-Id",
                 "session_key_header": "X-Hermes-Session-Key",
+                "chat_completions_history_source_header": CHAT_COMPLETIONS_HISTORY_SOURCE_HEADER,
+                "chat_completions_history_source_values": sorted(CHAT_COMPLETIONS_HISTORY_SOURCE_VALUES),
                 "cors": bool(self._cors_origins),
             },
             "endpoints": {
@@ -2616,13 +2620,24 @@ class APIServerAdapter(BasePlatformAdapter):
             return key_err
 
         # Allow caller to continue an existing session by passing X-Hermes-Session-Id.
-        # When provided, history is loaded from state.db instead of from the request body.
+        # When provided, history is loaded from state.db instead of from the request body
+        # unless X-Hermes-History-Source: request makes the request body authoritative.
         #
         # Security: session continuation exposes conversation history, so it is
         # only allowed when the API key is configured and the request is
         # authenticated.  Without this gate, any unauthenticated client could
         # read arbitrary session history by guessing/enumerating session IDs.
         provided_session_id = request.headers.get("X-Hermes-Session-Id", "").strip()
+        history_source = request.headers.get(CHAT_COMPLETIONS_HISTORY_SOURCE_HEADER, "").strip().lower()
+        if history_source and history_source not in CHAT_COMPLETIONS_HISTORY_SOURCE_VALUES:
+            return web.json_response(
+                _openai_error(
+                    f"{CHAT_COMPLETIONS_HISTORY_SOURCE_HEADER} must be one of: request, stored",
+                    code="invalid_history_source",
+                    param=CHAT_COMPLETIONS_HISTORY_SOURCE_HEADER,
+                ),
+                status=400,
+            )
         if provided_session_id:
             if not self._api_key:
                 logger.warning(
@@ -2654,13 +2669,20 @@ class APIServerAdapter(BasePlatformAdapter):
                     status=400,
                 )
             session_id = provided_session_id
-            try:
-                db = self._ensure_session_db()
-                if db is not None:
-                    history = db.get_messages_as_conversation(session_id)
-            except Exception as e:
-                logger.warning("Failed to load session history for %s: %s", session_id, e)
-                history = []
+            if history_source == "request":
+                logger.info(
+                    "Session %s: using request-body chat history (%s=request)",
+                    session_id,
+                    CHAT_COMPLETIONS_HISTORY_SOURCE_HEADER,
+                )
+            else:
+                try:
+                    db = self._ensure_session_db()
+                    if db is not None:
+                        history = db.get_messages_as_conversation(session_id)
+                except Exception as e:
+                    logger.warning("Failed to load session history for %s: %s", session_id, e)
+                    history = []
         else:
             # Derive a stable session ID from the conversation fingerprint so
             # that consecutive messages from the same Open WebUI (or similar)

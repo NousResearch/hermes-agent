@@ -504,19 +504,28 @@ def check_compression_model_feasibility(agent: Any) -> None:
                     new_threshold / main_ctx
                 )
             safe_pct = int((aux_context / main_ctx) * 100) if main_ctx else 50
-            # The "lower the threshold" suggestion must survive the
-            # compressor's raise-only small-context floor (#67422): for main
-            # windows under 512K, _effective_threshold_percent() raises any
-            # configured value below 75% back up, so recommending e.g. 0.40
-            # would be silently ignored and this warning would reappear every
-            # session. Only offer the option when the floored value still
-            # fits the auxiliary model's context.
+            # The "lower the threshold" suggestion must survive the built-in
+            # trigger recomputation (#67422): _effective_threshold_percent()
+            # raises sub-75% values back up for main windows under 512K, and
+            # _compute_threshold_tokens() further applies the output-token
+            # reservation, the 64K floor, and the degenerate-window guard.
+            # Recommending a value those would override is silently ignored
+            # and this warning would reappear every session — so mirror the
+            # compressor's own math and only offer the option when the
+            # recomputed trigger actually fits the auxiliary model's context.
+            # External engines own compaction policy (#44439); the built-in
+            # floor doesn't apply to them, so keep the plain suggestion.
             from agent.context_compressor import ContextCompressor as _CC
 
+            recomputed_threshold = None
+            if main_ctx and isinstance(agent.context_compressor, _CC):
+                recomputed_threshold = _CC._compute_threshold_tokens(
+                    main_ctx,
+                    _CC._effective_threshold_percent(main_ctx, safe_pct / 100),
+                    getattr(agent.context_compressor, "max_tokens", None),
+                )
             threshold_suggestion_viable = (
-                not main_ctx
-                or _CC._effective_threshold_percent(main_ctx, safe_pct / 100) * main_ctx
-                <= aux_context
+                recomputed_threshold is None or recomputed_threshold <= aux_context
             )
             # Build human-readable "model (provider)" labels for both
             # the main model and the compression model so users can
@@ -571,9 +580,11 @@ def check_compression_model_feasibility(agent: Any) -> None:
                     f"         compression:\n"
                     f"           model: <model-with-{old_threshold:,}+-context>\n"
                     f"  (Lowering compression.threshold cannot help here — "
-                    f"{_main_label}'s {main_ctx:,}-token window is under "
-                    f"512K, where Hermes floors the compression trigger at "
-                    f"75% and raises any lower configured value back up.)"
+                    f"with {_main_label}'s {main_ctx:,}-token window, "
+                    f"Hermes's small-context floor and output reservation "
+                    f"would recompute the trigger to "
+                    f"{recomputed_threshold:,} tokens, still above the "
+                    f"compression model's {aux_context:,}.)"
                 )
             agent._compression_warning = msg
             agent._emit_status(msg)

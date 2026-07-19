@@ -396,6 +396,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             from gateway.platforms.whatsapp_common import resolve_whatsapp_bridge_dir
             WhatsAppAdapter._DEFAULT_BRIDGE_DIR = resolve_whatsapp_bridge_dir()
         self._bridge_process: Optional[subprocess.Popen] = None
+        self._reply_to_mode: str = getattr(config, 'reply_to_mode', 'first') or 'first'
         self._bridge_port: int = config.extra.get("bridge_port", 3000)
         self._bridge_script: Optional[str] = config.extra.get(
             "bridge_script",
@@ -867,9 +868,13 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                     "chatId": chat_id,
                     "message": chunk,
                 }
-                if reply_to and idx == 0:
-                    # Only reply-to on the first text chunk, even if the bridge
-                    # response omits a parseable message id.
+                if reply_to and (
+                    self._reply_to_mode == "all"
+                    or (idx == 0 and self._reply_to_mode != "off")
+                ):
+                    # "first" (default): reply-to on the first text chunk only,
+                    # even if the bridge response omits a parseable message id.
+                    # "all": reply-to on every chunk. "off": never.
                     payload["replyTo"] = reply_to
 
                 async with self._http_session.post(

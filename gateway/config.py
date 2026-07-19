@@ -1691,6 +1691,13 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             config.platforms[Platform.DISCORD] = PlatformConfig()
         config.platforms[Platform.DISCORD].reply_to_mode = discord_reply_mode
     
+    # Reply threading mode for WhatsApp (off/first/all)
+    whatsapp_reply_mode = getenv("WHATSAPP_REPLY_TO_MODE", "").lower()
+    if whatsapp_reply_mode in {"off", "first", "all"}:
+        if Platform.WHATSAPP not in config.platforms:
+            config.platforms[Platform.WHATSAPP] = PlatformConfig()
+        config.platforms[Platform.WHATSAPP].reply_to_mode = whatsapp_reply_mode
+    
     # WhatsApp (typically uses different auth mechanism)
     whatsapp_enabled = is_truthy_value(getenv("WHATSAPP_ENABLED", ""))
     whatsapp_disabled_explicitly = getenv("WHATSAPP_ENABLED", "").lower() in {"false", "0", "no"}

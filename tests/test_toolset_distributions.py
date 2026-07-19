@@ -32,6 +32,29 @@ class TestGetDistribution:
             assert get_distribution(name) is not None, f"{name} missing"
 
 
+class TestGetDistributionAnnotation:
+    def test_return_annotation_uses_typing_any_not_builtin(self):
+        """The return annotation must be typing.Any, not the builtin any().
+
+        Regression for the ``Optional[Dict[str, any]]`` typo: the builtin
+        ``any`` is a function, not a type, so the annotation was semantically
+        wrong (and static checkers reject it). This asserts the value nested
+        in the annotation is ``typing.Any``.
+        """
+        import typing
+
+        ann = get_distribution.__annotations__["return"]
+        # return is Optional[Dict[str, X]] == Union[Dict[str, X], None]
+        union_args = typing.get_args(ann)
+        dict_type = next(a for a in union_args if a is not type(None))
+        key_t, val_t = typing.get_args(dict_type)
+        assert val_t is typing.Any, (
+            f"expected typing.Any, got {val_t!r} "
+            "(the builtin any() is not a valid type annotation)"
+        )
+        assert val_t is not any
+
+
 class TestListDistributions:
     def test_returns_copy(self):
         d1 = list_distributions()

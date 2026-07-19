@@ -9,6 +9,7 @@ Covers:
 """
 
 import asyncio
+import json
 import threading
 import time
 from unittest.mock import MagicMock, patch
@@ -297,6 +298,45 @@ class TestRunStatus:
 
 
 class TestRunEvents:
+    @pytest.mark.asyncio
+    async def test_events_streams_reasoning_deltas_before_completion(self, adapter):
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            def create_agent(**kwargs):
+                mock_agent = MagicMock()
+
+                def run_conversation(**_run_kwargs):
+                    kwargs["reasoning_delta_callback"]("先分析需求")
+                    kwargs["reasoning_delta_callback"]("，再调用工具")
+                    return {"final_response": "完成"}
+
+                mock_agent.run_conversation.side_effect = run_conversation
+                mock_agent.session_prompt_tokens = 10
+                mock_agent.session_completion_tokens = 5
+                mock_agent.session_total_tokens = 15
+                return mock_agent
+
+            with patch.object(adapter, "_create_agent", side_effect=create_agent):
+                resp = await cli.post("/v1/runs", json={"input": "hello"})
+                run_id = (await resp.json())["run_id"]
+                events_resp = await cli.get(f"/v1/runs/{run_id}/events")
+                body = await events_resp.text()
+
+        events = [
+            json.loads(line.removeprefix("data: "))
+            for line in body.splitlines()
+            if line.startswith("data: ")
+        ]
+        assert [event["event"] for event in events] == [
+            "reasoning.delta",
+            "reasoning.delta",
+            "run.completed",
+        ]
+        assert [event["delta"] for event in events[:2]] == [
+            "先分析需求",
+            "，再调用工具",
+        ]
+
     @pytest.mark.asyncio
     async def test_events_stream_returns_completed(self, adapter):
         """Events stream should receive run.completed when agent finishes."""

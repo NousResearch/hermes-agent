@@ -9689,6 +9689,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         Checks the platform_registry first (plugin adapters), then falls
         through to the built-in if/elif chain for core platforms.
         """
+        # Re-read ~/.hermes/.env so a proxy_manager / secret rotation that
+        # silently swaps the .env file takes effect on the next (re)connect
+        # without a full gateway restart. We go through the existing safe seam
+        # (_reload_runtime_env_preserving_config_authority) rather than calling
+        # load_hermes_dotenv() directly: under multiplexing that seam is a
+        # NO-OP for credential reload, so it cannot leak the default profile's
+        # secrets into a secondary profile's adapter or subprocess. The reload
+        # only fires when an adapter is (re)built — i.e. startup and reconnect
+        # paths — never in the per-turn hot path, so prompt caching is untouched.
+        try:
+            _reload_runtime_env_preserving_config_authority()
+        except Exception:
+            logger.debug(
+                "env refresh before adapter creation failed", exc_info=True
+            )
+
         if hasattr(config, "extra") and isinstance(config.extra, dict):
             config.extra.setdefault(
                 "group_sessions_per_user",

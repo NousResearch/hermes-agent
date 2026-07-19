@@ -209,11 +209,11 @@ def json_parse_reward(completions: Sequence[Any], **kwargs: Any) -> list[float]:
     rewards = []
     for text in _texts(completions):
         try:
-            json.loads(text)
+            parsed = json.loads(text)
         except json.JSONDecodeError:
             rewards.append(0.0)
         else:
-            rewards.append(1.0)
+            rewards.append(1.0 if isinstance(parsed, (dict, list)) else 0.0)
     return rewards
 
 

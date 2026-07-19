@@ -1111,8 +1111,14 @@ def cmd_status(args) -> None:
         print("\n  Connection... ", end="", flush=True)
         try:
             client = get_honcho_client(hcfg)
-            _show_peer_cards(hcfg, client)
-            print("OK")
+            # OK must reflect real peer-data reachability. _show_peer_cards
+            # swallows connection/auth errors (e.g. "Invalid JWT") so the rest
+            # of status still renders; propagate its reachability verdict here
+            # so status cannot print OK while peer data is unavailable.
+            if _show_peer_cards(hcfg, client):
+                print("OK")
+            else:
+                print("DEGRADED (peer data unavailable)")
         except Exception as e:
             print(f"FAILED ({e})\n")
     else:
@@ -1120,7 +1126,7 @@ def cmd_status(args) -> None:
         print(f"\n  Not connected ({reason})\n")
 
 
-def _show_peer_cards(hcfg, client) -> None:
+def _show_peer_cards(hcfg, client) -> bool:
     """Fetch and display peer cards for the active profile.
 
     Uses get_or_create to ensure the session exists with peers configured.
@@ -1155,8 +1161,10 @@ def _show_peer_cards(hcfg, client) -> None:
             print("\n  No peer data yet (accumulates after first conversation)")
 
         print()
+        return True
     except Exception as e:
         print(f"\n  Peer data unavailable: {e}\n")
+        return False
 
 
 def _cmd_status_all() -> None:

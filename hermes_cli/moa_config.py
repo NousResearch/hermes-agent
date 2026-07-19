@@ -87,6 +87,11 @@ def _clean_reasoning_effort(value: Any) -> str | None:
     return parsed.get("effort")
 
 
+def _coerce_positive_int(value: Any, default: int) -> int:
+    parsed = _coerce_int(value, default)
+    return parsed if parsed > 0 else default
+
+
 def _clean_slot(slot: Any) -> dict[str, Any] | None:
     if not isinstance(slot, dict):
         return None
@@ -175,6 +180,15 @@ def validate_moa_payload(raw: Any) -> list[str]:
         agg_issue = _slot_problem(preset.get("aggregator"))
         if agg_issue:
             problems.append(f"preset '{label}' aggregator: {agg_issue}")
+        for field in ("reference_recent_turns", "reference_context_budget"):
+            if field not in preset:
+                continue
+            try:
+                valid = int(preset[field]) > 0
+            except (TypeError, ValueError):
+                valid = False
+            if not valid:
+                problems.append(f"preset '{label}' {field}: must be a positive integer")
 
     return problems
 
@@ -191,6 +205,12 @@ def _default_preset() -> dict[str, Any]:
         "reference_max_tokens": None,
         "fanout": "per_iteration",
         "enabled": True,
+        # Opt-in recency-weighted "brief" advisory view (default OFF preserves
+        # the full-transcript behaviour). See agent/moa_loop._brief_reference_messages.
+        "reference_brief": False,
+        "reference_recent_turns": 4,
+        "reference_context_budget": 24000,
+        "reference_constraints": "",
     }
 
 
@@ -234,6 +254,13 @@ def _normalize_preset(raw: Any) -> dict[str, Any]:
         # aggregator gets their upfront plan-level advice, then acts alone
         # for the rest of the tool loop.
         "fanout": _coerce_fanout(raw.get("fanout")),
+        # Opt-in brief advisory view (default OFF). recent_turns / context_budget
+        # shape the recency window + total input clamp; constraints is an optional
+        # durable line pinned into the task frame.
+        "reference_brief": bool(raw.get("reference_brief", False)),
+        "reference_recent_turns": _coerce_positive_int(raw.get("reference_recent_turns"), 4),
+        "reference_context_budget": _coerce_positive_int(raw.get("reference_context_budget"), 24000),
+        "reference_constraints": str(raw.get("reference_constraints") or ""),
     }
 
 

@@ -911,6 +911,10 @@ class TestWebServerEndpoints:
                     "aggregator": {"provider": "openrouter", "model": "anthropic/claude-opus-4.8"},
                     "fanout": "user_turn",
                     "reference_max_tokens": 600,
+                    "reference_brief": True,
+                    "reference_recent_turns": 6,
+                    "reference_context_budget": 32000,
+                    "reference_constraints": "Preserve the public API.",
                 }
             }
         }
@@ -921,11 +925,19 @@ class TestWebServerEndpoints:
         saved = load_config()["moa"]["presets"]["default"]
         assert saved["fanout"] == "user_turn"
         assert saved["reference_max_tokens"] == 600
+        assert saved["reference_brief"] is True
+        assert saved["reference_recent_turns"] == 6
+        assert saved["reference_context_budget"] == 32000
+        assert saved["reference_constraints"] == "Preserve the public API."
 
         # And the GET view carries them back to the client.
         fetched = self.client.get("/api/model/moa").json()
         assert fetched["presets"]["default"]["fanout"] == "user_turn"
         assert fetched["presets"]["default"]["reference_max_tokens"] == 600
+        assert fetched["presets"]["default"]["reference_brief"] is True
+        assert fetched["presets"]["default"]["reference_recent_turns"] == 6
+        assert fetched["presets"]["default"]["reference_context_budget"] == 32000
+        assert fetched["presets"]["default"]["reference_constraints"] == "Preserve the public API."
 
     # ── GET /api/media (remote image display) ───────────────────────────
 

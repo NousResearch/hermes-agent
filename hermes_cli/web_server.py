@@ -1020,6 +1020,10 @@ class MoaPresetPayload(BaseModel):
     # that round-trip the GET payload don't silently erase hand-set values.
     reference_max_tokens: Optional[int] = None
     fanout: Optional[str] = None
+    reference_brief: bool = False
+    reference_recent_turns: int = 4
+    reference_context_budget: int = 24000
+    reference_constraints: str = ""
     enabled: bool = True
 
 
@@ -1036,6 +1040,10 @@ class MoaConfigPayload(BaseModel):
     max_tokens: int = 4096
     reference_max_tokens: Optional[int] = None
     fanout: Optional[str] = None
+    reference_brief: bool = False
+    reference_recent_turns: int = 4
+    reference_context_budget: int = 24000
+    reference_constraints: str = ""
     enabled: bool = True
     profile: Optional[str] = None
 
@@ -5759,6 +5767,10 @@ def set_moa_models(body: MoaConfigPayload, profile: Optional[str] = None):
                 "max_tokens": preset.max_tokens,
                 "reference_max_tokens": preset.reference_max_tokens,
                 "fanout": preset.fanout,
+                "reference_brief": preset.reference_brief,
+                "reference_recent_turns": preset.reference_recent_turns,
+                "reference_context_budget": preset.reference_context_budget,
+                "reference_constraints": preset.reference_constraints,
                 "enabled": preset.enabled,
             }
 
@@ -5780,6 +5792,10 @@ def set_moa_models(body: MoaConfigPayload, profile: Optional[str] = None):
                         max_tokens=body.max_tokens,
                         reference_max_tokens=body.reference_max_tokens,
                         fanout=body.fanout,
+                        reference_brief=body.reference_brief,
+                        reference_recent_turns=body.reference_recent_turns,
+                        reference_context_budget=body.reference_context_budget,
+                        reference_constraints=body.reference_constraints,
                         enabled=body.enabled,
                     )
                 )

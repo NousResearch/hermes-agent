@@ -461,3 +461,13 @@ def test_validate_moa_payload_rejects_non_dict():
     assert validate_moa_payload(None)
     assert validate_moa_payload([1, 2])
     assert validate_moa_payload({"presets": {"p": "not-a-dict"}})
+
+
+def test_validate_moa_payload_rejects_non_positive_brief_bounds():
+    from hermes_cli.moa_config import validate_moa_payload
+
+    preset = _valid_preset_payload()
+    preset.update(reference_recent_turns=0, reference_context_budget=-1)
+    problems = validate_moa_payload({"presets": {"default": preset}})
+    assert any("reference_recent_turns" in problem for problem in problems)
+    assert any("reference_context_budget" in problem for problem in problems)

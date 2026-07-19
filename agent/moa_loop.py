@@ -450,12 +450,17 @@ def _truncate_tool_result(text: str, budget: int = _REFERENCE_TOOL_RESULT_BUDGET
     return f"{text[:half]}\n[... {omitted} chars omitted ...]\n{text[-half:]}"
 
 
-def _render_tool_calls(tool_calls: Any) -> str:
+def _render_tool_calls(tool_calls: Any, arg_budget: int | None = None) -> str:
     """Render an assistant turn's tool_calls as readable text lines.
 
     The advisory view cannot carry real ``tool_calls`` payloads (strict
     providers reject tool_calls the reference never produced), so the agent's
     actions are flattened to text the reference can read and reason about.
+
+    ``arg_budget`` caps the rendered argument string. It defaults to ``None``
+    (no cap — the shipping full-transcript behaviour). The brief builder passes
+    a budget so a huge call arg (e.g. ``edit_file(new_content=<whole file>)``)
+    does not replay verbatim into the reference's context.
     """
     lines: list[str] = []
     for tc in tool_calls or []:
@@ -473,6 +478,8 @@ def _render_tool_calls(tool_calls: Any) -> str:
                 args_text = str(args)
         else:
             args_text = ""
+        if arg_budget is not None and len(args_text) > arg_budget:
+            args_text = args_text[:arg_budget] + f" …(+{len(args_text) - arg_budget} chars)"
         lines.append(f"[called tool: {name}({args_text})]" if args_text else f"[called tool: {name}]")
     return "\n".join(lines)
 
@@ -613,6 +620,275 @@ def _reference_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
                     return [{"role": "user", "content": fallback_text}]
     return rendered
 
+
+# ── Optional "brief" advisory view (opt-in via preset.reference_brief) ───────
+# The default _reference_messages() replays the WHOLE conversation to every
+# reference, truncating only each individual tool result (4000 chars). On a deep
+# agentic turn that grows unbounded with tool-loop depth — tens of thousands of
+# tokens replayed to every reference on every state change, competing with the
+# aggregator's own KV budget on a shared box. The brief view keeps recent state
+# at full fidelity, compresses older steps, prepends a durable task frame so
+# windowed-out early decisions aren't lost, and clamps the whole view to a total
+# budget. Measured: bounded input regardless of depth, ~90% smaller on long
+# turns, ~identical on short turns. Applied UNIFORMLY to every reference (no
+# per-slot lens — a per-model lens showed no diversity benefit in piloting and
+# is intentionally out of scope here).
+_BRIEF_COLD_TEXT_BUDGET = 300      # older assistant narration
+_BRIEF_HOT_ARG_BUDGET = 800        # recent tool-call args (a preview, not the whole blob)
+_BRIEF_COLD_ARG_BUDGET = 80        # older tool-call args
+_BRIEF_COLD_RESULT_BUDGET = 320    # older tool results (salient-line digest)
+
+# High-signal markers worth keeping from an OLD tool result even after the step
+# scrolls out of the recent window. A blind head+tail gist of a cold result
+# throws away the one line that mattered (the failing assertion 20 steps back);
+# on diagnostic transcripts that signal is *distributed* across many early steps,
+# so dropping it measurably hurt aggregated answer quality (the recon regression).
+# Keeping only these lines shrinks each cold result to a few lines, which — under
+# a fixed total budget — lets MANY more cold steps survive instead of being
+# elided wholesale. Case-insensitive substring/prefix scan (cheap, no regex
+# backtracking on huge logs).
+_BRIEF_SALIENT_SUBSTR = (
+    "fail", "error", "traceback", "exception", "assert", "mismatch",
+    "expected", "actual", "!=", "not equal", " differ", "unexpected",
+    "warning", "warn:", "deprecat", "denied", "refused", "timeout",
+    "cannot", "could not", "no such", "missing", "invalid", "conflict",
+    "panic", "fatal", "abort", "nonzero", "non-zero", "exit code",
+)
+_BRIEF_SALIENT_PREFIX = ("+", "-", "@@", "E ", ">", "!")  # diff / pytest error gutters
+
+
+def _compress_cold_result(text: str, budget: int = _BRIEF_COLD_RESULT_BUDGET) -> str:
+    """Content-aware digest of an OLD tool result.
+
+    Keeps the header line (path / command echo, usually line 0) plus the salient
+    lines (failures, tracebacks, diffs, mismatches, warnings). Falls back to a
+    plain head clip when nothing salient is found (e.g. a benign file dump), so a
+    non-diagnostic result still shrinks. Always bounded by ``budget``.
+    """
+    if not text or len(text) <= budget:
+        return text
+    lines = text.splitlines()
+    head = lines[0].strip() if lines else ""
+
+    def _salient(ln: str) -> bool:
+        s = ln.strip()
+        if not s:
+            return False
+        low = s.lower()
+        if any(sub in low for sub in _BRIEF_SALIENT_SUBSTR):
+            return True
+        # diff/error gutters, but ignore diff file headers (+++/---)
+        return s.startswith(_BRIEF_SALIENT_PREFIX) and not s.startswith(("+++", "---"))
+
+    picked: list[str] = []
+    if head:
+        picked.append(head)
+    used = len(head)
+    hits = 0
+    for ln in lines[1:]:
+        if not _salient(ln):
+            continue
+        s = ln.strip()
+        if used + len(s) + 1 > budget:
+            break
+        picked.append(s)
+        used += len(s) + 1
+        hits += 1
+    if hits == 0:
+        # nothing diagnostic — a plain head clip is the honest gist
+        return _truncate_tool_result(text, budget)
+    remaining = len(lines) - 1 - hits
+    tail = f"\n[… {remaining} more line(s) …]" if remaining > 0 else ""
+    return "\n".join(picked) + tail
+
+
+def _brief_frame(
+    messages: list[dict[str, Any]], tools: Any, constraints: str | None
+) -> str | None:
+    """Compact, stable task frame prepended to the brief view.
+
+    ``GOAL`` is the first substantive user turn (which scrolls out of the recent
+    window on long turns); ``CAPABILITIES`` is the acting agent's tool names
+    (the reference otherwise never learns what tools exist — the system prompt
+    is dropped). Both are DERIVED from live inputs, never hand-authored, so the
+    frame cannot drift from reality. Cheap (~150 tok) and invariant across
+    tool-loop iterations, so it also prefix-caches.
+    """
+    goal = ""
+    for msg in messages:
+        if msg.get("role") == "user" and flatten_message_text(msg.get("content")).strip():
+            goal = flatten_message_text(msg.get("content")).strip()
+            break
+    caps: list[str] = []
+    for t in tools or []:
+        if not isinstance(t, dict):
+            continue
+        fn = t.get("function") if isinstance(t.get("function"), dict) else t
+        name = (fn or {}).get("name")
+        if name:
+            caps.append(str(name))
+    lines: list[str] = []
+    if goal:
+        lines.append(f"GOAL: {goal[:400]}")
+    if caps:
+        lines.append(f"AVAILABLE CAPABILITIES: {', '.join(caps)}")
+    if constraints:
+        lines.append(f"CONSTRAINTS: {constraints.strip()}")
+    if not lines:
+        return None
+    return "[Task frame — durable facts that outlive the recent-step window]\n" + "\n".join(lines)
+
+
+def _brief_reference_messages(
+    messages: list[dict[str, Any]],
+    *,
+    recent_turns: int = 4,
+    total_budget: int = 24000,
+    tools: Any = None,
+    constraints: str | None = None,
+) -> list[dict[str, Any]]:
+    """Recency-weighted, budget-clamped advisory view. See module note above.
+
+    The last ``recent_turns`` assistant turns (and everything after them) are
+    kept HOT (full text; tool results at the normal per-result budget; call args
+    lightly capped). Older turns are COLD (clipped text/args/results). A derived
+    task frame is prepended, and the whole view is clamped to ``total_budget``
+    chars by dropping the oldest COLD turns first (frame + hot window are never
+    dropped), leaving an elision marker. Ends on a user turn like the default.
+    """
+    advisory_instruction = (
+        "[The conversation above is the current state of the task. Give your "
+        "most intelligent judgement: what is going on, what should happen next, "
+        "what risks or mistakes you see, and how the acting agent should "
+        "proceed.]"
+    )
+
+    # 1. Normalise into ordered events (drop system).
+    events: list[dict[str, Any]] = []
+    last_user_content: str | None = None
+    for msg in messages:
+        role = msg.get("role")
+        content = msg.get("content")
+        text = flatten_message_text(content)
+        if role == "system":
+            continue
+        if role == "user":
+            if not text.strip() and isinstance(content, list) and content:
+                text = "[user sent non-text content (e.g. an image attachment)]"
+            if not text.strip():
+                continue
+            if text.strip():
+                last_user_content = text
+            events.append({"kind": "user", "text": text})
+        elif role == "assistant":
+            events.append({"kind": "assistant", "text": text, "calls": msg.get("tool_calls")})
+        elif role == "tool":
+            events.append({"kind": "tool", "text": text})
+
+    if not events:
+        if last_user_content is not None:
+            return [{"role": "user", "content": last_user_content}]
+        return []
+
+    # 2. Recency cutoff: keep the last ``recent_turns`` assistant turns hot.
+    asst_idx = [i for i, e in enumerate(events) if e["kind"] == "assistant"]
+    hot_from = asst_idx[-recent_turns] if len(asst_idx) > max(0, recent_turns) else 0
+
+    # 3. Render each event at its recency fidelity.
+    def render(e: dict[str, Any], hot: bool) -> dict[str, Any] | None:
+        kind = e["kind"]
+        if kind == "user":
+            return {"role": "user", "content": e["text"]}
+        if kind == "assistant":
+            parts: list[str] = []
+            t = e["text"].strip()
+            if t:
+                parts.append(t if hot else _truncate_tool_result(t, _BRIEF_COLD_TEXT_BUDGET))
+            calls_text = _render_tool_calls(
+                e.get("calls"), arg_budget=(_BRIEF_HOT_ARG_BUDGET if hot else _BRIEF_COLD_ARG_BUDGET)
+            )
+            if calls_text:
+                parts.append(calls_text)
+            return {"role": "assistant", "content": "\n".join(parts)} if parts else None
+        # tool result: hot → head+tail at full budget; cold → salient-line digest
+        # so distributed diagnostic signal (failures/tracebacks) survives even as
+        # the step scrolls out of the recent window.
+        if hot:
+            return {"role": "tool_result", "content": _truncate_tool_result(e["text"], _REFERENCE_TOOL_RESULT_BUDGET)}
+        return {"role": "tool_result", "content": _compress_cold_result(e["text"], _BRIEF_COLD_RESULT_BUDGET)}
+
+    def _has_signal(content: str) -> bool:
+        low = content.lower()
+        return any(sub in low for sub in _BRIEF_SALIENT_SUBSTR)
+
+    rendered_events: list[dict[str, Any]] = []
+    for i, e in enumerate(events):
+        # Render every event with one byte-stable compact representation from
+        # its first appearance. Aging across the recent-window boundary may
+        # change drop priority, but must not rewrite an already-cacheable
+        # advisor prefix.
+        r = render(e, hot=False)
+        if r is not None:
+            cold = i < hot_from
+            rendered_events.append({**r, "_cold": cold, "_salient": cold and _has_signal(r["content"])})
+
+    # 4. Clamp to total budget. Drop order: oldest LOW-signal cold turns first,
+    #    and only if still over, oldest salient cold turns. This keeps distributed
+    #    diagnostic breadcrumbs (failures/tracebacks 20 steps back) sticky rather
+    #    than eliding them by age — the recon-regression fix. Hot window + frame
+    #    are never dropped.
+    frame = _brief_frame(messages, tools, constraints)
+    overhead = (len(frame) if frame else 0) + len(advisory_instruction)
+
+    def _over() -> bool:
+        return sum(len(x["content"]) for x in rendered_events) + overhead > total_budget
+
+    dropped = 0
+    for salient_pass in (False, True):
+        while _over():
+            idx = next(
+                (j for j, x in enumerate(rendered_events)
+                 if x.get("_cold") and (salient_pass or not x.get("_salient"))),
+                None,
+            )
+            if idx is None:
+                break
+            rendered_events.pop(idx)
+            dropped += 1
+        if not _over():
+            break
+
+    # 5. Flatten (fold tool results into the preceding assistant turn).
+    flat: list[dict[str, Any]] = []
+    if frame:
+        flat.append({"role": "user", "content": frame})
+    if dropped:
+        flat.append({"role": "assistant", "content": f"[… {dropped} earlier step(s) elided to fit budget …]"})
+    for x in rendered_events:
+        if x["role"] == "tool_result":
+            block = f"[tool result: {x['content']}]"
+            if flat and flat[-1]["role"] == "assistant":
+                flat[-1]["content"] += "\n" + block
+            else:
+                flat.append({"role": "assistant", "content": block})
+        else:
+            flat.append({"role": x["role"], "content": x["content"]})
+
+    # 6. Coalesce consecutive same-role turns. The leading frame (user) can abut
+    # the conversation's first user turn; some strict providers (Anthropic) want
+    # alternating roles, so merge rather than emit two user messages in a row.
+    coalesced: list[dict[str, Any]] = []
+    for m in flat:
+        if coalesced and coalesced[-1]["role"] == m["role"]:
+            coalesced[-1]["content"] = coalesced[-1]["content"] + "\n\n" + m["content"]
+        else:
+            coalesced.append(dict(m))
+    flat = coalesced
+
+    # 7. End on a user turn (Anthropic no-prefill rule), same as the default.
+    if flat and flat[-1]["role"] == "assistant":
+        flat.append({"role": "user", "content": advisory_instruction})
+    return flat
 
 
 def _extract_text(response: Any) -> str:
@@ -950,7 +1226,20 @@ class MoAChatCompletions:
         from agent.usage_pricing import CanonicalUsage
 
         reference_outputs: list[tuple[str, str, Any]] = []
-        ref_messages = _reference_messages(messages)
+        # Opt-in recency-weighted "brief" advisory view. Default OFF, so a preset
+        # that does not set reference_brief keeps the exact full-transcript
+        # behaviour. When on, references get a budgeted, task-framed view that
+        # stays bounded regardless of tool-loop depth (see _brief_reference_messages).
+        if preset.get("reference_brief"):
+            ref_messages = _brief_reference_messages(
+                messages,
+                recent_turns=int(preset.get("reference_recent_turns", 4) or 4),
+                total_budget=int(preset.get("reference_context_budget", 24000) or 24000),
+                tools=api_kwargs.get("tools"),
+                constraints=(preset.get("reference_constraints") or None),
+            )
+        else:
+            ref_messages = _reference_messages(messages)
 
         # Fan-out cadence. "per_iteration" (default): advisors re-run whenever
         # the advisory view changes — i.e. every tool iteration, since the

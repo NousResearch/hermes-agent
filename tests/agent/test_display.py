@@ -4,6 +4,7 @@ import json
 import pytest
 from unittest.mock import MagicMock
 
+import agent.display as display_module
 from agent.display import (
     build_tool_preview,
     capture_local_edit_snapshot,
@@ -22,6 +23,17 @@ def reset_tool_preview_max_len():
     set_tool_preview_max_len(0)
     yield
     set_tool_preview_max_len(0)
+
+
+def test_cute_tool_message_falls_back_when_renderer_raises(monkeypatch):
+    def _boom(*_args, **_kwargs):
+        raise RuntimeError("cosmetic failure")
+
+    monkeypatch.setattr(display_module, "_get_cute_tool_message", _boom)
+
+    assert get_cute_tool_message("web_extract", {"urls": []}, 0.25) == (
+        "┊ ⚡ web_extra completed  0.2s"
+    )
 
 
 class TestBuildToolPreview:
@@ -401,3 +413,141 @@ class TestEditDiffPreview:
         assert any("a/file2.py" in line for line in rendered)
         assert not any("a/file7.py" in line for line in rendered)
         assert "additional file" in rendered[-1]
+
+
+class TestBuildToolLabel:
+    """Friendly human-phrased tool labels for built-in tools."""
+
+    @pytest.fixture(autouse=True)
+    def _enable_friendly(self):
+        from agent.display import set_friendly_tool_labels
+        set_friendly_tool_labels(True)
+        yield
+        set_friendly_tool_labels(True)
+
+    def test_web_search_uses_for_connector(self):
+        from agent.display import build_tool_label
+        label = build_tool_label("web_search", {"query": "weather in NYC"})
+        assert label == 'Searching the web for weather in NYC'
+
+    def test_web_extract_reads_url(self):
+        from agent.display import build_tool_label
+        label = build_tool_label("web_extract", {"urls": ["https://example.com/page"]})
+        assert label is not None
+        assert label.startswith("Reading ")
+        assert "example.com/page" in label
+
+    def test_browser_navigate_browses_url(self):
+        from agent.display import build_tool_label
+        label = build_tool_label("browser_navigate", {"url": "https://news.site"})
+        assert label == "Browsing https://news.site"
+
+    def test_read_file_uses_basename(self):
+        from agent.display import build_tool_label
+        label = build_tool_label("read_file", {"path": "/home/u/project/main.py"})
+        assert label is not None
+        assert label.startswith("Reading ")
+        assert "main.py" in label
+
+    def test_search_files_uses_for_connector(self):
+        from agent.display import build_tool_label
+        label = build_tool_label("search_files", {"pattern": "TODO"})
+        assert label == "Searching files for TODO"
+
+    def test_verb_only_for_no_preview_tools(self):
+        from agent.display import build_tool_label
+        # session_search is verb-only — no redundant query echo
+        label = build_tool_label("session_search", {"query": "auth refactor"})
+        assert label == "Searching past sessions"
+
+    def test_verb_only_when_no_preview_available(self):
+        from agent.display import build_tool_label
+        # image_generate with empty args still yields the verb (no preview)
+        label = build_tool_label("image_generate", {})
+        assert label == "Generating image"
+
+    def test_unknown_tool_falls_back_to_preview(self):
+        from agent.display import build_tool_label, build_tool_preview
+        args = {"some_arg": "value"}
+        # A custom/plugin/MCP tool with no verb entry → raw preview behavior
+        label = build_tool_label("custom_mcp_tool", args)
+        assert label == build_tool_preview("custom_mcp_tool", args)
+
+    def test_disabled_falls_back_to_preview(self):
+        from agent.display import (
+            build_tool_label,
+            build_tool_preview,
+            set_friendly_tool_labels,
+        )
+        set_friendly_tool_labels(False)
+        args = {"query": "weather in NYC"}
+        label = build_tool_label("web_search", args)
+        # With the feature off, must match the raw preview exactly
+        assert label == build_tool_preview("web_search", args)
+        assert "Searching the web" not in (label or "")
+
+    def test_every_known_verb_renders_without_error(self):
+        from agent.display import build_tool_label, _TOOL_VERBS
+        # Each built-in verb must produce a non-empty label given minimal args.
+        for tool_name in _TOOL_VERBS:
+            label = build_tool_label(tool_name, {"query": "x", "path": "x", "url": "x"})
+            assert label, f"{tool_name} produced empty label"
+
+
+class TestBuildStatusPhrase:
+    """build_status_phrase — live working-state text for Slack's status line."""
+
+    def test_builtin_tool_with_preview(self):
+        from agent.display import build_status_phrase
+        phrase = build_status_phrase("terminal", {"command": "pytest tests/"})
+        assert phrase == "is running pytest tests/…"
+
+    def test_search_tool_uses_for_connector(self):
+        from agent.display import build_status_phrase
+        phrase = build_status_phrase("web_search", {"query": "slack api limits"})
+        assert phrase == "is searching the web for slack api limits…"
+
+    def test_verb_only_when_args_none(self):
+        # live_status: "verb" mode passes args=None to suppress previews.
+        from agent.display import build_status_phrase
+        assert build_status_phrase("terminal", None) == "is running…"
+        assert build_status_phrase("read_file", None) == "is reading…"
+
+    def test_unknown_tool_generic_phrase(self):
+        from agent.display import build_status_phrase
+        phrase = build_status_phrase("my_mcp_tool", {"x": 1})
+        assert phrase == "is using my_mcp_tool…"
+
+    def test_thinking_pseudo_tool_returns_none(self):
+        from agent.display import build_status_phrase
+        assert build_status_phrase("_thinking", None) is None
+        assert build_status_phrase("", None) is None
+
+    def test_caps_length_for_slack_status_line(self):
+        from agent.display import build_status_phrase
+        phrase = build_status_phrase(
+            "terminal", {"command": "x" * 300}, max_len=49
+        )
+        assert phrase is not None and len(phrase) <= 49
+        assert phrase.endswith("…")
+
+    def test_multiline_command_keeps_first_line(self):
+        from agent.display import build_status_phrase
+        phrase = build_status_phrase(
+            "terminal", {"command": "make build\nmake test"}
+        )
+        assert phrase is not None
+        assert "\n" not in phrase
+
+    def test_respects_friendly_labels_toggle(self):
+        from agent.display import build_status_phrase, set_friendly_tool_labels
+        set_friendly_tool_labels(False)
+        try:
+            assert build_status_phrase("terminal", {"command": "ls"}) is None
+        finally:
+            set_friendly_tool_labels(True)
+
+    def test_no_preview_tools_stay_verb_only(self):
+        from agent.display import build_status_phrase
+        phrase = build_status_phrase("skills_list", {"category": "devops"})
+        assert phrase == "is listing skills…"

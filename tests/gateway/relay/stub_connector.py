@@ -30,8 +30,15 @@ class StubConnector:
         self._passthrough: Optional[Any] = None
         self.connected = False
         self.sent: List[Dict[str, Any]] = []
+        # Per-frame egress platform recorded alongside each sent action (Phase 1.5).
+        self.sent_platforms: List[Optional[str]] = []
         self.interrupts: List[Dict[str, Any]] = []
         self.follow_ups: List[Dict[str, Any]] = []
+        self.follow_up_platforms: List[Optional[str]] = []
+        # The fronted (platform, bot_id) identity set (Phase 1.5). Mirrors the real
+        # transport's _identities so RelayAdapter._platform_is_fronted resolves; a
+        # single-identity default keeps existing tests' behaviour unchanged.
+        self._identities: List[tuple] = [(descriptor.platform, "")]
         self.chat_info: Dict[str, Dict[str, Any]] = {}
         # Canned result for the next send_outbound (override per-test).
         self.next_send_result: Dict[str, Any] = {"success": True, "message_id": "m1"}
@@ -64,8 +71,13 @@ class StubConnector:
         (Phase 5 §5.1)."""
         self._passthrough = handler
 
-    async def send_outbound(self, action: Dict[str, Any]) -> Dict[str, Any]:
+    async def send_outbound(
+        self, action: Dict[str, Any], *, platform: Optional[str] = None
+    ) -> Dict[str, Any]:
+        # Record the per-frame egress platform (Phase 1.5) alongside the action so
+        # tests can assert which platform a reply was tagged for.
         self.sent.append(action)
+        self.sent_platforms.append(platform)
         if action.get("op") == "send":
             return dict(self.next_send_result)
         return {"success": True}
@@ -76,8 +88,11 @@ class StubConnector:
     async def send_interrupt(self, session_key: str, reason: Optional[str] = None) -> None:
         self.interrupts.append({"session_key": session_key, "reason": reason})
 
-    async def send_follow_up(self, action: Dict[str, Any]) -> Dict[str, Any]:
+    async def send_follow_up(
+        self, action: Dict[str, Any], *, platform: Optional[str] = None
+    ) -> Dict[str, Any]:
         self.follow_ups.append(action)
+        self.follow_up_platforms.append(platform)
         return dict(self.next_follow_up_result)
 
     # ── test driver ──────────────────────────────────────────────────────

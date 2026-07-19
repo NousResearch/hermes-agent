@@ -34,7 +34,7 @@ import json
 import logging
 import uuid
 from dataclasses import dataclass
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from gateway.platforms.base import MessageEvent, MessageType
 from gateway.session import SessionSource
@@ -91,6 +91,44 @@ def _ws_dial_url(url: str) -> str:
     return raw
 
 
+def _render_relay_context(context: Any) -> Optional[str]:
+    """Render the connector's read-only surrounding-context array into the string
+    ``MessageEvent.channel_context`` field.
+
+    The connector attaches ``context`` as a list of normalized message objects
+    (oldest→newest, same channel) for an addressed turn on a context-capable
+    platform (design relay-channel-context). We flatten each to a
+    ``<author>: <text>`` line so it rides the SAME read-only injection path that
+    history-backfill already uses (run.py prepends ``channel_context`` ahead of
+    the trigger message). This is REFERENCE context only — it never triggers the
+    agent; the trigger decision was already made connector-side on the addressed
+    event alone.
+
+    Returns None when there is no usable context (absent/empty list, or a
+    connector that doesn't send the field), so ``channel_context`` stays unset
+    and behaviour is byte-identical to today. Never raises — a malformed context
+    payload must not break inbound delivery of the (already-admitted) turn.
+    """
+    if not context or not isinstance(context, list):
+        return None
+    lines: List[str] = []
+    for item in context:
+        if not isinstance(item, dict):
+            continue
+        text = item.get("text")
+        if not text:
+            continue
+        src = item.get("source") or {}
+        author = ""
+        if isinstance(src, dict):
+            author = src.get("user_name") or src.get("user_id") or ""
+        lines.append(f"{author}: {text}" if author else str(text))
+    if not lines:
+        return None
+    body = "\n".join(lines)
+    return f"[Recent channel messages]\n{body}"
+
+
 def _event_from_wire(raw: Dict[str, Any]) -> MessageEvent:
     """Rebuild a MessageEvent from the connector's normalized inbound payload.
 
@@ -117,9 +155,18 @@ def _event_from_wire(raw: Dict[str, Any]) -> MessageEvent:
         chat_topic=src.get("chat_topic"),
         user_id_alt=src.get("user_id_alt"),
         chat_id_alt=src.get("chat_id_alt"),
-        guild_id=src.get("guild_id"),
+        scope_id=src.get("scope_id"),
         parent_chat_id=src.get("parent_chat_id"),
         message_id=src.get("message_id"),
+        # The HERMES profile this event is routed to (multiplex mode). The
+        # connector stamps it on the wire source when NAS resolves the target
+        # profile for a Team-Gateway message; absent for a single-profile
+        # gateway, where it stays None and session keys keep the legacy
+        # ``agent:main`` namespace (SessionStore._resolve_profile_for_key).
+        # Consumed by build_session_key's profile namespacing + the per-turn
+        # config/credential scope — the same field the /p/<profile>/ HTTP
+        # prefix and per-credential polling adapters already set.
+        profile=src.get("profile"),
         # Authentic upstream-trust signal: this event arrived over the
         # per-instance-authenticated relay WS, so the connector already resolved
         # it to this instance's owner-bound author. ``platform`` is the
@@ -141,6 +188,15 @@ def _event_from_wire(raw: Dict[str, Any]) -> MessageEvent:
         message_id=raw.get("message_id"),
         reply_to_message_id=raw.get("reply_to_message_id"),
         media_urls=raw.get("media_urls") or [],
+        # Surrounding channel/group CONTEXT the connector attached for this
+        # addressed turn (design relay-channel-context): a read-only, oldest→
+        # newest list of nearby non-addressed messages (Model A pull / Model B
+        # buffer). Rendered into the existing ``channel_context`` field — the
+        # same read-only injection path history-backfill already uses
+        # (run.py prepends it ahead of the trigger message). Absent / empty on a
+        # connector that doesn't send it, a dm, or a no-context platform, so
+        # this is purely additive and byte-identical to today when unset.
+        channel_context=_render_relay_context(raw.get("context")),
     )
 
 
@@ -201,6 +257,7 @@ class WebSocketRelayTransport:
         platform: str,
         bot_id: str,
         *,
+        identities: Optional[list[tuple[str, str]]] = None,
         connect_timeout_s: float = _HANDSHAKE_TIMEOUT_S,
         outbound_timeout_s: float = _OUTBOUND_TIMEOUT_S,
         gateway_id: Optional[str] = None,
@@ -217,6 +274,13 @@ class WebSocketRelayTransport:
         self._url = _ws_dial_url(url)
         self._platform = platform
         self._bot_id = bot_id
+        # Phase 1.5 (Shape A): the full SET of (platform, bot_id) this gateway
+        # fronts on this one WS. The handshake sends one `hello` per identity so
+        # the connector accumulates them into its advertised set (gateway-gateway
+        # D-Q1.5b.1); the first identity (platform/bot_id above) is the default an
+        # untagged outbound falls back to. Defaults to the single (platform, bot_id)
+        # so existing single-platform callers are unchanged.
+        self._identities = list(identities) if identities else [(platform, bot_id)]
         self._connect_timeout_s = connect_timeout_s
         self._outbound_timeout_s = outbound_timeout_s
         # Connection auth (Phase 2): when a per-gateway secret is configured the
@@ -303,8 +367,13 @@ class WebSocketRelayTransport:
         else:
             self._ws = await websockets.connect(self._url)  # type: ignore[union-attr]
         self._reader = asyncio.create_task(self._read_loop(), name="relay-ws-reader")
-        # Send hello; the descriptor arrives via the reader and resolves handshake().
-        await self._send({"type": "hello", "platform": self._platform, "botId": self._bot_id})
+        # Send one hello PER fronted identity (Phase 1.5 Shape A). The connector
+        # accumulates them into its advertised set (the first sets the session
+        # default; each adds to the egress-allowed set). A single-platform gateway
+        # sends exactly one hello — byte-identical to before. The descriptor for
+        # the FIRST identity resolves handshake(); later descriptors are absorbed.
+        for platform, bot_id in self._identities:
+            await self._send({"type": "hello", "platform": platform, "botId": bot_id})
 
     def _upgrade_headers(self) -> Dict[str, str]:
         """Auth headers for the WS upgrade, or {} when no secret is configured.
@@ -372,14 +441,35 @@ class WebSocketRelayTransport:
         self._inbound = handler
 
     # ── outbound ─────────────────────────────────────────────────────────
-    async def send_outbound(self, action: Dict[str, Any]) -> Dict[str, Any]:
-        return await self._request_response(action)
+    async def send_outbound(
+        self, action: Dict[str, Any], *, platform: Optional[str] = None
+    ) -> Dict[str, Any]:
+        return await self._request_response(action, platform=platform)
 
-    async def send_follow_up(self, action: Dict[str, Any]) -> Dict[str, Any]:
+    async def send_follow_up(
+        self, action: Dict[str, Any], *, platform: Optional[str] = None
+    ) -> Dict[str, Any]:
         # follow_up rides the same outbound frame; the connector dispatches by
         # action.op. Kept as a distinct method to satisfy the transport Protocol
         # and to make the A2 call site explicit.
-        return await self._request_response(action)
+        return await self._request_response(action, platform=platform)
+
+    def _bot_id_for(self, platform: Optional[str]) -> Optional[str]:
+        """The bot_id this transport advertised at hello for ``platform`` (Phase 1.5).
+
+        The connector validates a per-frame egress target against the SET of
+        ``platform:botId`` pairs it accumulated from the N hellos, so a per-frame
+        ``platform`` must ride with its MATCHING ``botId`` (the session default
+        botId belongs to the first identity and would mis-key for a second
+        platform). Resolved from the identity set this transport was built with.
+        None when the platform isn't one we front (the connector then rejects it
+        with a structured failure — never a wrong-credential send)."""
+        if not platform:
+            return None
+        for p, b in self._identities:
+            if p == platform:
+                return b
+        return None
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         result = await self._request_response(
@@ -475,7 +565,11 @@ class WebSocketRelayTransport:
             logger.debug("relay: inbound_ack send failed for %s", buffer_id)
 
     async def _request_response(
-        self, action: Dict[str, Any], frame_type: str = "outbound"
+        self,
+        action: Dict[str, Any],
+        frame_type: str = "outbound",
+        *,
+        platform: Optional[str] = None,
     ) -> Dict[str, Any]:
         if self._ws is None:
             return {"success": False, "error": "relay transport not connected"}
@@ -483,8 +577,20 @@ class WebSocketRelayTransport:
         loop = asyncio.get_running_loop()
         fut: asyncio.Future[Dict[str, Any]] = loop.create_future()
         self._pending[request_id] = fut
+        frame: Dict[str, Any] = {"type": frame_type, "requestId": request_id, "action": action}
+        # Phase 1.5: tag the per-frame egress platform on the OutboundFrame
+        # envelope (gateway-gateway D-Q1.5b.1), with its MATCHING advertised botId
+        # so the connector's `${platform}:${botId}` advertised-set check passes.
+        # Only set when a concrete platform was resolved for this chat so a
+        # single-platform gateway emits the exact frame shape as before (the
+        # connector falls back to the session's default platform when absent).
+        if platform:
+            frame["platform"] = platform
+            bot_id = self._bot_id_for(platform)
+            if bot_id:
+                frame["botId"] = bot_id
         try:
-            await self._send({"type": frame_type, "requestId": request_id, "action": action})
+            await self._send(frame)
             return await asyncio.wait_for(fut, timeout=self._outbound_timeout_s)
         except asyncio.TimeoutError:
             return {"success": False, "error": "relay outbound timed out"}

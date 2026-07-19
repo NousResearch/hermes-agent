@@ -5,6 +5,7 @@ import { TreeSkeleton } from '@/components/chat/skeletons'
 import { ErrorBoundary } from '@/components/error-boundary'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
+import { Tip } from '@/components/ui/tooltip'
 import { useDelayedTrue } from '@/hooks/use-delayed-true'
 import { useI18n } from '@/i18n'
 import { normalizeOrLocalPreviewTarget } from '@/lib/local-preview'
@@ -16,7 +17,6 @@ import { $currentCwd } from '@/store/session'
 
 import { SidebarPanelLabel } from '../shell/sidebar-label'
 
-import { RemoteFolderPicker } from './files/remote-picker'
 import { ProjectTree } from './files/tree'
 import { useProjectTree } from './files/use-project-tree'
 
@@ -82,8 +82,6 @@ export function RightSidebarPane({ onActivateFile, onActivateFolder }: RightSide
           : 'border-l shadow-[inset_0.0625rem_0_0_color-mix(in_srgb,white_18%,transparent)]'
       )}
     >
-      <RemoteFolderPicker />
-
       <FilesystemTab
         canCollapse={canCollapse}
         collapseNonce={collapseNonce}
@@ -154,28 +152,30 @@ function FilesystemTab({
         <div className="flex min-w-0 flex-1">
           <SidebarPanelLabel>{cwdName}</SidebarPanelLabel>
         </div>
-        <Button
-          aria-label={r.refreshTree}
-          className={HEADER_ACTION_LABEL_REVEAL}
-          disabled={loading}
-          onClick={onRefresh}
-          size="icon-xs"
-          title={r.refreshTree}
-          variant="ghost"
-        >
-          <Codicon name="refresh" size="0.8125rem" spinning={loading} />
-        </Button>
-        <Button
-          aria-label={r.collapseAll}
-          className={cn(HEADER_ACTION_CLASS, !canCollapse && 'pointer-events-none opacity-0')}
-          disabled={!canCollapse}
-          onClick={onCollapseAll}
-          size="icon-xs"
-          title={r.collapseAll}
-          variant="ghost"
-        >
-          <Codicon name="collapse-all" size="0.8125rem" />
-        </Button>
+        <Tip label={r.refreshTree}>
+          <Button
+            aria-label={r.refreshTree}
+            className={HEADER_ACTION_LABEL_REVEAL}
+            disabled={loading}
+            onClick={onRefresh}
+            size="icon-xs"
+            variant="ghost"
+          >
+            <Codicon name="refresh" size="0.8125rem" spinning={loading} />
+          </Button>
+        </Tip>
+        <Tip label={r.collapseAll}>
+          <Button
+            aria-label={r.collapseAll}
+            className={cn(HEADER_ACTION_CLASS, !canCollapse && 'pointer-events-none opacity-0')}
+            disabled={!canCollapse}
+            onClick={onCollapseAll}
+            size="icon-xs"
+            variant="ghost"
+          >
+            <Codicon name="collapse-all" size="0.8125rem" />
+          </Button>
+        </Tip>
       </RightSidebarSectionHeader>
       <FileTreeBody
         collapseNonce={collapseNonce}

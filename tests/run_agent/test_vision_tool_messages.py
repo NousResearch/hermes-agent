@@ -79,6 +79,10 @@ class TestProviderSupportsVisionToolMessages:
         agent = _make_agent("openrouter", "gpt-4o")
         assert agent._provider_supports_vision_tool_messages() is True
 
+    def test_openrouter_inherits_xiaomi_model_opt_out(self):
+        agent = _make_agent("openrouter", "xiaomi/mimo-v2.5")
+        assert agent._provider_supports_vision_tool_messages() is False
+
     def test_anthropic_defaults_true(self):
         agent = _make_agent("anthropic", "claude-sonnet-4")
         assert agent._provider_supports_vision_tool_messages() is True
@@ -124,6 +128,17 @@ class TestToolResultContentProactiveDowngrade:
 
         assert isinstance(content, list)
         assert any(p.get("type") == "image_url" for p in content if isinstance(p, dict))
+
+    def test_openrouter_xiaomi_route_downgrades_to_text_summary(self):
+        """A router profile must not mask the selected model's opt-out."""
+        agent = _make_agent("openrouter", "xiaomi/mimo-v2.5")
+        result = _multimodal_result(text="screenshot captured")
+
+        with patch.object(agent, "_model_supports_vision", return_value=True):
+            content = agent._tool_result_content_for_active_model("vision_analyze", result)
+
+        assert isinstance(content, str)
+        assert "screenshot captured" in content
 
     def test_non_vision_model_gets_text_summary(self):
         """Non-vision model: text summary regardless of provider."""

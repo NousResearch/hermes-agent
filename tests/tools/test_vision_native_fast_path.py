@@ -38,6 +38,9 @@ class TestSupportsMediaInToolResults:
     def test_openrouter_yes(self):
         assert _supports_media_in_tool_results("openrouter", "anthropic/claude-opus-4.6") is True
 
+    def test_openrouter_xiaomi_route_no(self):
+        assert _supports_media_in_tool_results("openrouter", "xiaomi/mimo-v2.5") is False
+
     def test_nous_yes(self):
         assert _supports_media_in_tool_results("nous", "anthropic/claude-sonnet-4.6") is True
 
@@ -229,6 +232,31 @@ class TestHandleVisionAnalyzeFastPath:
 
         assert not (isinstance(result, dict) and result.get("_multimodal") is True), \
             "Fast path fired for non-vision model; should have fallen through to aux LLM"
+
+    def test_routed_xiaomi_model_falls_through_to_aux(self, tmp_path):
+        """A router must not mask a model vendor's tool-message opt-out."""
+        img = tmp_path / "x.png"
+        img.write_bytes(_TINY_PNG)
+
+        async def _aux_sentinel(*args, **kwargs):
+            return '{"sentinel": "aux-path"}'
+
+        from agent.auxiliary_client import set_runtime_main, clear_runtime_main
+        set_runtime_main("openrouter", "xiaomi/mimo-v2.5")
+        try:
+            with patch(
+                "agent.image_routing.decide_image_input_mode", return_value="native",
+            ), patch(
+                "tools.vision_tools.vision_analyze_tool", side_effect=_aux_sentinel,
+            ) as mock_aux:
+                coro = _handle_vision_analyze({"image_url": str(img), "question": "?"})
+                result = asyncio.get_event_loop().run_until_complete(coro)
+        finally:
+            clear_runtime_main()
+
+        assert isinstance(result, str)
+        assert json.loads(result) == {"sentinel": "aux-path"}
+        mock_aux.assert_called_once()
 
     def test_fast_path_disabled_for_unsupported_provider(self, tmp_path, monkeypatch):
         """Even with vision-capable model, unknown provider → fall through."""

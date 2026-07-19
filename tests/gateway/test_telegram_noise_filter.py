@@ -201,6 +201,40 @@ def test_telegram_final_response_sanitizes_error_with_provider_context():
     assert "openrouter.ai" not in sanitized
 
 
+def test_telegram_provider_error_with_giant_context_line_is_still_sanitized():
+    """The context-line fields come from unbounded user config — a fixed
+    total cap could be defeated by a long endpoint URL, leaking the raw
+    provider error to chat surfaces. The guard measures only the original
+    envelope, so the context line's size must be irrelevant."""
+    raw = (
+        f"API call failed after 3 retries: HTTP 400: {'x' * 300}\n"
+        f"(provider: custom, model: {'m' * 100}, "
+        f"endpoint: https://{'a' * 400}.example.com/v1)"
+    )
+    assert len(raw) > 520  # would have sailed past any fixed cap
+
+    sanitized = _sanitize_gateway_final_response(Platform.TELEGRAM, raw)
+
+    assert "provider failed after retries" in sanitized.lower()
+    assert "HTTP 400" not in sanitized
+    assert "example.com" not in sanitized
+
+
+def test_telegram_long_prose_ending_with_context_shape_is_not_rewritten():
+    """Stripping the context line must not turn long assistant prose into a
+    'short' provider error: prose lacks the leading error marker, so it is
+    delivered as-is regardless of a trailing parenthetical."""
+    raw = (
+        "Here is a long explanation of HTTP status semantics. " * 20
+        + "\n(provider: docs, model: none, endpoint: none)"
+    )
+
+    sanitized = _sanitize_gateway_final_response(Platform.TELEGRAM, raw)
+
+    assert "provider failed after retries" not in sanitized.lower()
+    assert "long explanation" in sanitized
+
+
 def test_telegram_final_response_redacts_auth_secrets():
     """Authentication errors should be useful without leaking key material."""
     raw = (

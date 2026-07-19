@@ -1147,7 +1147,7 @@ def _cmd_boards_rm(args: argparse.Namespace) -> int:
     force_delete = getattr(args, "delete", False) or getattr(args, "boards_action", "") == "delete"
     try:
         res = kb.remove_board(args.slug, archive=not force_delete)
-    except ValueError as exc:
+    except (ValueError, kb.ExternalTaskConflict) as exc:
         print(f"kanban boards rm: {exc}", file=sys.stderr)
         return 1
     if res["action"] == "archived":

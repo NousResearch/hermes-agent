@@ -101,6 +101,8 @@ _log = logging.getLogger(__name__)
 
 VALID_STATUSES = {"triage", "todo", "scheduled", "ready", "running", "blocked", "review", "done", "archived"}
 VALID_INITIAL_STATUSES = {"running", "blocked"}
+WORKER_KIND_EXTERNAL_MAS = "external-mas"
+EXTERNAL_SPEC_ATTACHMENT_NAME = "mas-task-spec.v1.json"
 
 # Typed block reasons. Distinguishes the two fundamentally different things a
 # worker (or human) means by "blocked", so each can be routed differently
@@ -122,7 +124,10 @@ VALID_INITIAL_STATUSES = {"running", "blocked"}
 # ``BLOCK_RECURRENCE_LIMIT``) escalates them to ``triage`` if a cron keeps
 # unblocking them only to have the worker re-block for the same reason.
 # ``None`` = legacy/un-typed block (treated as a generic human blocker).
-VALID_BLOCK_KINDS = {"dependency", "needs_input", "capability", "transient"}
+VALID_BLOCK_KINDS = {
+    "dependency", "needs_input", "capability", "transient",
+    "review-required", "environment-error",
+}
 
 # After a task has been blocked, unblocked, and re-blocked this many times for
 # the same (truly-blocked) reason, the unblock-loop breaker stops trusting the
@@ -136,6 +141,31 @@ VALID_WORKSPACE_KINDS = {"scratch", "worktree", "dir"}
 KNOWN_TOOLSET_NAMES = frozenset(name.casefold() for name in get_toolset_names())
 _IS_WINDOWS = sys.platform == "win32"
 KANBAN_ATTACHMENT_MAX_BYTES = 25 * 1024 * 1024
+
+
+class ExternalTaskConflict(RuntimeError):
+    """A native mutation conflicts with external-worker ownership."""
+
+    def __init__(
+        self,
+        code: str,
+        task_id: str,
+        operation: str,
+        *,
+        run_id: Optional[int] = None,
+    ) -> None:
+        self.code = code
+        self.task_id = task_id
+        self.operation = operation
+        self.run_id = run_id
+        detail = f"{operation} refused for external task {task_id}: {code}"
+        if run_id is not None:
+            detail += f" (run_id={run_id})"
+        super().__init__(detail)
+
+
+class StaleBoardConnection(RuntimeError):
+    """A connection outlived archive/replacement of its board database."""
 
 
 def _fire_kanban_lifecycle_hook(event: str, task_id: str, **fields: Any) -> None:
@@ -590,6 +620,37 @@ def attachments_root(board: Optional[str] = None) -> Path:
     return board_dir(slug) / "attachments"
 
 
+def _connection_db_path(conn: sqlite3.Connection) -> Optional[Path]:
+    """Return the resolved path backing ``conn``'s main database.
+
+    ``None`` is returned for in-memory/unnamed databases.  Callers that need
+    board-scoped filesystem state must derive it from the connected database,
+    not from the mutable current-board pointer.
+    """
+    rows = conn.execute("PRAGMA database_list").fetchall()
+    for row in rows:
+        name = row[1]
+        if name != "main":
+            continue
+        raw = row[2]
+        return Path(raw).resolve() if raw else None
+    return None
+
+
+def attachments_root_for_connection(conn: sqlite3.Connection) -> Path:
+    """Return the attachment root for the board backing ``conn``."""
+    override = os.environ.get("HERMES_KANBAN_ATTACHMENTS_ROOT", "").strip()
+    if override:
+        return Path(override).expanduser()
+    db_path = _connection_db_path(conn)
+    if db_path is None:
+        raise RuntimeError("filesystem attachments require a file-backed kanban DB")
+    default_db = (kanban_home() / "kanban.db").resolve()
+    if db_path == default_db:
+        return kanban_home() / "kanban" / "attachments"
+    return db_path.parent / "attachments"
+
+
 def task_attachments_dir(task_id: str, board: Optional[str] = None) -> Path:
     """Return the per-task attachment directory ``<root>/<task_id>/``."""
     return attachments_root(board=board) / task_id
@@ -802,32 +863,52 @@ def remove_board(slug: str, *, archive: bool = True) -> dict:
     if normed == DEFAULT_BOARD:
         raise ValueError("the 'default' board cannot be removed")
     d = board_dir(normed)
-    if not d.exists():
-        raise ValueError(f"board {normed!r} does not exist")
+    db_path = d / "kanban.db"
+    with _board_lifecycle_lock(db_path):
+        if not d.exists():
+            raise ValueError(f"board {normed!r} does not exist")
 
-    # If the user removed the currently-active board, revert to default.
-    if get_current_board() == normed:
-        clear_current_board()
+        if db_path.exists():
+            conn = connect(db_path=db_path)
+            try:
+                active = conn.execute(
+                    "SELECT id, task_id FROM task_runs "
+                    "WHERE worker_kind = ? AND ended_at IS NULL "
+                    "ORDER BY id LIMIT 1",
+                    (WORKER_KIND_EXTERNAL_MAS,),
+                ).fetchone()
+            finally:
+                conn.close()
+            if active is not None:
+                raise ExternalTaskConflict(
+                    "external_run_active",
+                    active["task_id"],
+                    "remove_board",
+                    run_id=int(active["id"]),
+                )
 
-    # A concurrent connect(board=normed) after the rename/delete recreates
-    # an empty sqlite file via mkdir(exist_ok=True); the cache entry must be
-    # dropped first so the schema init pass re-runs on that fresh file.
-    _INITIALIZED_PATHS.discard(str((d / "kanban.db").resolve()))
+        # If the user removed the currently-active board, revert to default.
+        if get_current_board() == normed:
+            clear_current_board()
 
-    if archive:
-        archive_root = boards_root() / "_archived"
-        archive_root.mkdir(parents=True, exist_ok=True)
-        ts = int(time.time())
-        target = archive_root / f"{normed}-{ts}"
-        # Avoid collision on rapid double-archives.
-        suffix = 1
-        while target.exists():
-            target = archive_root / f"{normed}-{ts}-{suffix}"
-            suffix += 1
-        d.rename(target)
-        return {"slug": normed, "action": "archived", "new_path": str(target)}
-    else:
-        import shutil
+        # A concurrent connect(board=normed) after the rename/delete recreates
+        # an empty sqlite file via mkdir(exist_ok=True); the cache entry must be
+        # dropped first so the schema init pass re-runs on that fresh file.
+        _INITIALIZED_PATHS.discard(str(db_path.resolve()))
+
+        if archive:
+            archive_root = boards_root() / "_archived"
+            archive_root.mkdir(parents=True, exist_ok=True)
+            ts = int(time.time())
+            target = archive_root / f"{normed}-{ts}"
+            # Avoid collision on rapid double-archives.
+            suffix = 1
+            while target.exists():
+                target = archive_root / f"{normed}-{ts}-{suffix}"
+                suffix += 1
+            d.rename(target)
+            return {"slug": normed, "action": "archived", "new_path": str(target)}
+
         shutil.rmtree(d)
         return {"slug": normed, "action": "deleted", "new_path": ""}
 
@@ -915,6 +996,10 @@ class Task:
     # Unblock-loop counter. See the column comment in SCHEMA_SQL and
     # ``BLOCK_RECURRENCE_LIMIT``. Reset only on successful completion.
     block_recurrences: int = 0
+    external_spec_attachment_id: Optional[int] = None
+    external_spec_hash: Optional[str] = None
+    external_spec_schema: Optional[str] = None
+    external_spec_locked_at: Optional[int] = None
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Task":
@@ -999,6 +1084,26 @@ class Task:
                 if "block_recurrences" in keys and row["block_recurrences"] is not None
                 else 0
             ),
+            external_spec_attachment_id=(
+                int(row["external_spec_attachment_id"])
+                if "external_spec_attachment_id" in keys
+                and row["external_spec_attachment_id"] is not None
+                else None
+            ),
+            external_spec_hash=(
+                row["external_spec_hash"]
+                if "external_spec_hash" in keys else None
+            ),
+            external_spec_schema=(
+                row["external_spec_schema"]
+                if "external_spec_schema" in keys else None
+            ),
+            external_spec_locked_at=(
+                int(row["external_spec_locked_at"])
+                if "external_spec_locked_at" in keys
+                and row["external_spec_locked_at"] is not None
+                else None
+            ),
         )
 
 
@@ -1077,6 +1182,7 @@ class Attachment:
     size: int
     uploaded_by: Optional[str]
     created_at: int
+    spec_hash: Optional[str] = None
 
 
 @dataclass
@@ -1176,7 +1282,12 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- ``blocked`` so a cron can't spin it forever. Reset to 0 only on a
     -- successful completion — NOT on unblock (resetting on unblock is exactly
     -- the amnesia that let the loop run unbounded).
-    block_recurrences    INTEGER NOT NULL DEFAULT 0
+    block_recurrences    INTEGER NOT NULL DEFAULT 0,
+    -- Immutable identity accepted by kanban_external_worker.submit().
+    external_spec_attachment_id INTEGER,
+    external_spec_hash     TEXT,
+    external_spec_schema   TEXT,
+    external_spec_locked_at INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS task_links (
@@ -1228,7 +1339,24 @@ CREATE TABLE IF NOT EXISTS task_runs (
     --          gave_up | reclaimed | (null while still running)
     summary             TEXT,
     metadata            TEXT,
-    error               TEXT
+    error               TEXT,
+    -- External-worker lease, process, spec, and terminal-result identity.
+    worker_kind                TEXT,
+    external_host              TEXT,
+    external_pid               INTEGER,
+    external_pgid              INTEGER,
+    external_start_token       TEXT,
+    external_spec_attachment_id INTEGER,
+    external_spec_hash         TEXT,
+    external_spec_schema       TEXT,
+    external_attempt           INTEGER NOT NULL DEFAULT 1,
+    external_substate          TEXT,
+    external_lease_state       TEXT,
+    external_recovery_count    INTEGER NOT NULL DEFAULT 0,
+    external_terminal_disposition TEXT,
+    external_block_kind        TEXT,
+    external_result_hash       TEXT,
+    external_result_json       TEXT
 );
 
 -- Files attached to a task (PDFs, images, source documents). The blob
@@ -1245,8 +1373,31 @@ CREATE TABLE IF NOT EXISTS task_attachments (
     content_type TEXT,
     size         INTEGER NOT NULL DEFAULT 0,
     uploaded_by  TEXT,
-    created_at   INTEGER NOT NULL
+    created_at   INTEGER NOT NULL,
+    spec_hash    TEXT
 );
+
+CREATE TABLE IF NOT EXISTS task_external_artifacts (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id       INTEGER NOT NULL,
+    task_id      TEXT NOT NULL,
+    name         TEXT NOT NULL,
+    stored_path  TEXT NOT NULL,
+    content_type TEXT,
+    size         INTEGER NOT NULL DEFAULT 0,
+    sha256       TEXT NOT NULL,
+    created_at   INTEGER NOT NULL,
+    UNIQUE (run_id, name)
+);
+
+-- Stable database generation used to invalidate connections that outlive a
+-- named board archive/delete and would otherwise keep writing the moved inode.
+CREATE TABLE IF NOT EXISTS kanban_board_identity (
+    singleton  INTEGER PRIMARY KEY CHECK (singleton = 1),
+    generation TEXT NOT NULL
+);
+INSERT OR IGNORE INTO kanban_board_identity (singleton, generation)
+VALUES (1, lower(hex(randomblob(16))));
 
 -- Subscription from a gateway source (platform + chat + thread) to a
 -- task. The gateway's kanban-notifier watcher tails task_events and
@@ -1274,6 +1425,7 @@ CREATE INDEX IF NOT EXISTS idx_runs_task             ON task_runs(task_id, start
 CREATE INDEX IF NOT EXISTS idx_runs_status           ON task_runs(status);
 CREATE INDEX IF NOT EXISTS idx_attachments_task      ON task_attachments(task_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_notify_task           ON kanban_notify_subs(task_id);
+CREATE INDEX IF NOT EXISTS idx_external_artifacts_run ON task_external_artifacts(run_id, name);
 """
 
 
@@ -1283,6 +1435,7 @@ CREATE INDEX IF NOT EXISTS idx_notify_task           ON kanban_notify_subs(task_
 
 _INITIALIZED_PATHS: set[str] = set()
 _INIT_LOCK = threading.RLock()
+_BOARD_LIFECYCLE_THREAD_LOCK = threading.RLock()
 _SQLITE_HEADER = b"SQLite format 3\x00"
 DEFAULT_BUSY_TIMEOUT_MS = 120_000
 
@@ -1293,6 +1446,130 @@ DEFAULT_BUSY_TIMEOUT_MS = 120_000
 # lock (the in-process _INIT_LOCK + idempotent init remain the backstop).
 _INIT_LOCK_TIMEOUT_SECONDS = 10.0
 _INIT_LOCK_POLL_SECONDS = 0.05
+
+
+@contextlib.contextmanager
+def _board_lifecycle_lock(db_path: Optional[Path]):
+    """Serialize external claims with archive/delete of the same board.
+
+    The lock lives outside named board directories so it remains stable while
+    a board directory is renamed or removed.  Unlike the schema-init lock this
+    lock fails closed on timeout: proceeding would permit a live external run
+    to become detached from the visible board.
+    """
+    if db_path is None:
+        yield
+        return
+    resolved = db_path.resolve()
+    digest = hashlib.sha256(str(resolved).encode("utf-8")).hexdigest()
+    lock_path = kanban_home() / "kanban" / ".board-locks" / f"{digest}.lock"
+    with _BOARD_LIFECYCLE_THREAD_LOCK:
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        handle = lock_path.open("a+b")
+        acquired = False
+        try:
+            if _IS_WINDOWS and handle.seek(0, os.SEEK_END) == 0:
+                handle.write(b"\0")
+                handle.flush()
+            deadline = time.monotonic() + _INIT_LOCK_TIMEOUT_SECONDS
+            if _IS_WINDOWS:
+                import msvcrt
+
+                locking = getattr(msvcrt, "locking")
+                nb_lock = getattr(msvcrt, "LK_NBLCK")
+                while True:
+                    try:
+                        handle.seek(0)
+                        locking(handle.fileno(), nb_lock, 1)
+                        acquired = True
+                        break
+                    except OSError:
+                        if time.monotonic() >= deadline:
+                            break
+                        time.sleep(_INIT_LOCK_POLL_SECONDS)
+            else:
+                import fcntl
+
+                while True:
+                    try:
+                        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                        acquired = True
+                        break
+                    except (BlockingIOError, OSError):
+                        if time.monotonic() >= deadline:
+                            break
+                        time.sleep(_INIT_LOCK_POLL_SECONDS)
+            if not acquired:
+                raise RuntimeError(
+                    f"kanban board lifecycle lock timed out for {resolved}"
+                )
+            yield
+        finally:
+            try:
+                if acquired:
+                    if _IS_WINDOWS:
+                        import msvcrt
+
+                        handle.seek(0)
+                        getattr(msvcrt, "locking")(
+                            handle.fileno(), getattr(msvcrt, "LK_UNLCK"), 1
+                        )
+                    else:
+                        import fcntl
+
+                        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            finally:
+                handle.close()
+
+
+def _assert_connection_matches_live_board(conn: sqlite3.Connection) -> None:
+    """Fail closed when ``conn`` no longer backs the live DB at its path."""
+    db_path = _connection_db_path(conn)
+    if db_path is None:
+        return
+    try:
+        connection_row = conn.execute(
+            "SELECT generation FROM kanban_board_identity WHERE singleton = 1"
+        ).fetchone()
+    except sqlite3.DatabaseError as exc:
+        raise StaleBoardConnection(
+            "kanban connection has no board generation"
+        ) from exc
+    if connection_row is None or not db_path.is_file():
+        raise StaleBoardConnection(
+            f"kanban connection points to a removed board: {db_path}"
+        )
+
+    probe = None
+    try:
+        probe = sqlite3.connect(
+            f"{db_path.as_uri()}?mode=ro",
+            uri=True,
+            timeout=_resolve_busy_timeout_ms() / 1000.0,
+        )
+        disk_row = probe.execute(
+            "SELECT generation FROM kanban_board_identity WHERE singleton = 1"
+        ).fetchone()
+    except (OSError, sqlite3.DatabaseError) as exc:
+        raise StaleBoardConnection(
+            f"kanban board is no longer live at {db_path}"
+        ) from exc
+    finally:
+        if probe is not None:
+            probe.close()
+    if disk_row is None or disk_row[0] != connection_row[0]:
+        raise StaleBoardConnection(
+            f"kanban connection generation is stale for {db_path}"
+        )
+
+
+@contextlib.contextmanager
+def _board_lifecycle_write_txn(conn: sqlite3.Connection):
+    """Write transaction that cannot target an archived/replaced board."""
+    with _board_lifecycle_lock(_connection_db_path(conn)):
+        _assert_connection_matches_live_board(conn)
+        with write_txn(conn):
+            yield
 
 
 def _resolve_busy_timeout_ms() -> int:
@@ -2028,6 +2305,72 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
                 conn, "kanban_notify_subs", "notifier_profile", "notifier_profile TEXT"
             )
 
+    # External-worker columns are additive so existing boards retain their
+    # native behavior until an external spec is explicitly submitted.
+    task_external_columns = {
+        "external_spec_attachment_id": "external_spec_attachment_id INTEGER",
+        "external_spec_hash": "external_spec_hash TEXT",
+        "external_spec_schema": "external_spec_schema TEXT",
+        "external_spec_locked_at": "external_spec_locked_at INTEGER",
+    }
+    cols = {row["name"] for row in conn.execute("PRAGMA table_info(tasks)")}
+    for name, definition in task_external_columns.items():
+        if name not in cols:
+            _add_column_if_missing(conn, "tasks", name, definition)
+
+    run_external_columns = {
+        "worker_kind": "worker_kind TEXT",
+        "external_host": "external_host TEXT",
+        "external_pid": "external_pid INTEGER",
+        "external_pgid": "external_pgid INTEGER",
+        "external_start_token": "external_start_token TEXT",
+        "external_spec_attachment_id": "external_spec_attachment_id INTEGER",
+        "external_spec_hash": "external_spec_hash TEXT",
+        "external_spec_schema": "external_spec_schema TEXT",
+        "external_attempt": "external_attempt INTEGER NOT NULL DEFAULT 1",
+        "external_substate": "external_substate TEXT",
+        "external_lease_state": "external_lease_state TEXT",
+        "external_recovery_count": (
+            "external_recovery_count INTEGER NOT NULL DEFAULT 0"
+        ),
+        "external_terminal_disposition": "external_terminal_disposition TEXT",
+        "external_block_kind": "external_block_kind TEXT",
+        "external_result_hash": "external_result_hash TEXT",
+        "external_result_json": "external_result_json TEXT",
+    }
+    run_table_exists = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='task_runs'"
+    ).fetchone() is not None
+    if run_table_exists:
+        run_cols = {
+            row["name"] for row in conn.execute("PRAGMA table_info(task_runs)")
+        }
+        for name, definition in run_external_columns.items():
+            if name not in run_cols:
+                _add_column_if_missing(conn, "task_runs", name, definition)
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_runs_worker_kind "
+            "ON task_runs(worker_kind, task_id)"
+        )
+
+    attachment_table_exists = conn.execute(
+        "SELECT 1 FROM sqlite_master "
+        "WHERE type='table' AND name='task_attachments'"
+    ).fetchone() is not None
+    if attachment_table_exists:
+        attachment_cols = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(task_attachments)")
+        }
+        if "spec_hash" not in attachment_cols:
+            _add_column_if_missing(
+                conn, "task_attachments", "spec_hash", "spec_hash TEXT"
+            )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_tasks_external_spec "
+        "ON tasks(external_spec_hash)"
+    )
+
     # One-shot backfill: any task that is 'running' before runs existed
     # had its claim_lock / claim_expires / worker_pid on the task row.
     # Synthesize a matching task_runs row so subsequent end-run / heartbeat
@@ -2140,10 +2483,20 @@ _REBUILD_SPECS = {
         " worker_pid INTEGER, max_runtime_seconds INTEGER,"
         " last_heartbeat_at INTEGER, started_at INTEGER NOT NULL,"
         " ended_at INTEGER, outcome TEXT, summary TEXT, metadata TEXT,"
-        " error TEXT)",
+        " error TEXT, worker_kind TEXT, external_host TEXT,"
+        " external_pid INTEGER, external_pgid INTEGER,"
+        " external_start_token TEXT, external_spec_attachment_id INTEGER,"
+        " external_spec_hash TEXT, external_spec_schema TEXT,"
+        " external_attempt INTEGER NOT NULL DEFAULT 1,"
+        " external_substate TEXT, external_lease_state TEXT,"
+        " external_recovery_count INTEGER NOT NULL DEFAULT 0,"
+        " external_terminal_disposition TEXT, external_block_kind TEXT,"
+        " external_result_hash TEXT, external_result_json TEXT)",
         (
             "CREATE INDEX idx_runs_task ON task_runs(task_id, started_at)",
             "CREATE INDEX idx_runs_status ON task_runs(status)",
+            "CREATE INDEX idx_runs_worker_kind "
+            "ON task_runs(worker_kind, task_id)",
         ),
     ),
     "kanban_notify_subs": (
@@ -2782,6 +3135,7 @@ def assign_task(conn: sqlite3.Connection, task_id: str, profile: Optional[str]) 
     """
     profile = _canonical_assignee(profile)
     with write_txn(conn):
+        _assert_no_open_external_run(conn, task_id, "assign_task")
         row = conn.execute(
             "SELECT status, claim_lock, assignee FROM tasks WHERE id = ?", (task_id,)
         ).fetchone()
@@ -2818,6 +3172,7 @@ def link_tasks(conn: sqlite3.Connection, parent_id: str, child_id: str) -> None:
         missing = _find_missing_parents(conn, [parent_id, child_id])
         if missing:
             raise ValueError(f"unknown task(s): {', '.join(missing)}")
+        _assert_no_open_external_run(conn, child_id, "link_tasks")
         if _would_cycle(conn, parent_id, child_id):
             raise ValueError(
                 f"linking {parent_id} -> {child_id} would create a cycle"
@@ -2866,6 +3221,7 @@ def _would_cycle(conn: sqlite3.Connection, parent_id: str, child_id: str) -> boo
 
 def unlink_tasks(conn: sqlite3.Connection, parent_id: str, child_id: str) -> bool:
     with write_txn(conn):
+        _assert_no_open_external_run(conn, child_id, "unlink_tasks")
         cur = conn.execute(
             "DELETE FROM task_links WHERE parent_id = ? AND child_id = ?",
             (parent_id, child_id),
@@ -3100,6 +3456,13 @@ def add_attachment(
             "SELECT 1 FROM tasks WHERE id = ?", (task_id,)
         ).fetchone():
             raise ValueError(f"unknown task {task_id}")
+        if (
+            filename.strip() == EXTERNAL_SPEC_ATTACHMENT_NAME
+            and task_is_external(conn, task_id)
+        ):
+            raise ExternalTaskConflict(
+                "external_spec_locked", task_id, "add_attachment"
+            )
         cur = conn.execute(
             "INSERT INTO task_attachments "
             "(task_id, filename, stored_path, content_type, size, uploaded_by, created_at) "
@@ -3138,6 +3501,7 @@ def list_attachments(conn: sqlite3.Connection, task_id: str) -> list[Attachment]
             size=r["size"] or 0,
             uploaded_by=r["uploaded_by"],
             created_at=r["created_at"],
+            spec_hash=(r["spec_hash"] if "spec_hash" in r.keys() else None),
         )
         for r in rows
     ]
@@ -3158,6 +3522,7 @@ def get_attachment(conn: sqlite3.Connection, attachment_id: int) -> Optional[Att
         size=r["size"] or 0,
         uploaded_by=r["uploaded_by"],
         created_at=r["created_at"],
+        spec_hash=(r["spec_hash"] if "spec_hash" in r.keys() else None),
     )
 
 
@@ -3172,6 +3537,10 @@ def delete_attachment(conn: sqlite3.Connection, attachment_id: int) -> Optional[
         att = get_attachment(conn, attachment_id)
         if att is None:
             return None
+        if att.spec_hash is not None:
+            raise ExternalTaskConflict(
+                "external_spec_locked", att.task_id, "delete_attachment"
+            )
         conn.execute("DELETE FROM task_attachments WHERE id = ?", (attachment_id,))
         _append_event(
             conn, att.task_id, "attachment_removed", {"filename": att.filename}
@@ -3252,6 +3621,7 @@ def _end_run(
     existed (e.g. a CLI user calling ``hermes kanban complete`` on a
     task that was never claimed).
     """
+    _assert_no_open_external_run(conn, task_id, "_end_run")
     now = int(time.time())
     row = conn.execute(
         "SELECT current_run_id FROM tasks WHERE id = ?", (task_id,),
@@ -3371,10 +3741,10 @@ def _has_sticky_block(conn: sqlite3.Connection, task_id: str) -> bool:
       finish, transient infra error clears).
 
     The cheapest signal that distinguishes the two is the most recent
-    ``"blocked"`` / ``"unblocked"`` event for the task.  If the most
-    recent one is ``"blocked"`` (or there is a ``"blocked"`` event and
-    no ``"unblocked"`` event has fired since), the task is sticky and
-    ``recompute_ready`` must *not* auto-promote it.
+    ``"blocked"`` / external-finalize / ``"unblocked"`` event for the task.
+    If the most recent one is a block (or no ``"unblocked"`` event has fired
+    since), the task is sticky and ``recompute_ready`` must *not* auto-promote
+    it.
 
     Returns ``False`` when there is no such event at all (e.g. the task
     was set to ``status='blocked'`` by the circuit breaker or by direct
@@ -3383,11 +3753,66 @@ def _has_sticky_block(conn: sqlite3.Connection, task_id: str) -> bool:
     """
     row = conn.execute(
         "SELECT kind FROM task_events "
-        "WHERE task_id = ? AND kind IN ('blocked', 'unblocked') "
+        "WHERE task_id = ? "
+        "AND kind IN ('blocked', 'external_finalized_block', 'unblocked') "
         "ORDER BY id DESC LIMIT 1",
         (task_id,),
     ).fetchone()
-    return bool(row) and row["kind"] == "blocked"
+    return bool(row) and row["kind"] in {"blocked", "external_finalized_block"}
+
+
+def _recompute_ready_in_txn(
+    conn: sqlite3.Connection, failure_limit: int = None,
+) -> int:
+    """Transaction-internal implementation of :func:`recompute_ready`."""
+    if failure_limit is None:
+        failure_limit = DEFAULT_FAILURE_LIMIT
+    promoted = 0
+    todo_rows = conn.execute(
+        "SELECT id, status, consecutive_failures, max_retries "
+        "FROM tasks WHERE status IN ('todo', 'blocked') "
+        "AND NOT EXISTS ("
+        "    SELECT 1 FROM task_runs r WHERE r.task_id = tasks.id "
+        "    AND r.worker_kind = ? AND r.ended_at IS NULL"
+        ")",
+        (WORKER_KIND_EXTERNAL_MAS,),
+    ).fetchall()
+    for row in todo_rows:
+        task_id = row["id"]
+        cur_status = row["status"]
+        if cur_status == "blocked" and _has_sticky_block(conn, task_id):
+            continue
+        parents = conn.execute(
+            "SELECT t.status FROM tasks t "
+            "JOIN task_links l ON l.parent_id = t.id "
+            "WHERE l.child_id = ?",
+            (task_id,),
+        ).fetchall()
+        if all(p["status"] in ("done", "archived") for p in parents):
+            if cur_status == "blocked":
+                failures = int(row["consecutive_failures"] or 0)
+                task_limit = row["max_retries"]
+                effective_limit = (
+                    int(task_limit) if task_limit is not None
+                    else int(failure_limit)
+                )
+                if failures >= effective_limit:
+                    continue
+                cur = conn.execute(
+                    "UPDATE tasks SET status = 'ready' "
+                    "WHERE id = ? AND status = 'blocked'",
+                    (task_id,),
+                )
+            else:
+                cur = conn.execute(
+                    "UPDATE tasks SET status = 'ready' "
+                    "WHERE id = ? AND status = 'todo'",
+                    (task_id,),
+                )
+            if cur.rowcount == 1:
+                _append_event(conn, task_id, "promoted", None)
+                promoted += 1
+    return promoted
 
 
 def recompute_ready(
@@ -3421,60 +3846,55 @@ def recompute_ready(
          ``kanban.failure_limit`` config value through ``dispatch_once``)
       3. ``DEFAULT_FAILURE_LIMIT``
     """
-    if failure_limit is None:
-        failure_limit = DEFAULT_FAILURE_LIMIT
-    promoted = 0
     with write_txn(conn):
-        todo_rows = conn.execute(
-            "SELECT id, status, consecutive_failures, max_retries "
-            "FROM tasks WHERE status IN ('todo', 'blocked')"
-        ).fetchall()
-        for row in todo_rows:
-            task_id = row["id"]
-            cur_status = row["status"]
-            if cur_status == "blocked" and _has_sticky_block(conn, task_id):
-                # Worker / operator asked for human review — do not
-                # silently auto-recover.  ``unblock_task`` is the only
-                # legitimate exit (it emits ``"unblocked"`` which flips
-                # this predicate back).
-                continue
-            parents = conn.execute(
-                "SELECT t.status FROM tasks t "
-                "JOIN task_links l ON l.parent_id = t.id "
-                "WHERE l.child_id = ?",
-                (task_id,),
-            ).fetchall()
-            if all(p["status"] in ("done", "archived") for p in parents):
-                if cur_status == "blocked":
-                    # Don't auto-recover tasks that have hit the
-                    # circuit-breaker failure limit.  Without this
-                    # guard, a task that repeatedly exhausts its
-                    # iteration budget would cycle forever:
-                    # block → auto-recover → respawn → budget
-                    # exhausted → block → …  The counter must also
-                    # be preserved so the breaker can accumulate
-                    # across recovery cycles.
-                    failures = int(row["consecutive_failures"] or 0)
-                    task_limit = row["max_retries"]
-                    effective_limit = (
-                        int(task_limit) if task_limit is not None
-                        else int(failure_limit)
-                    )
-                    if failures >= effective_limit:
-                        continue
-                    conn.execute(
-                        "UPDATE tasks SET status = 'ready' "
-                        "WHERE id = ? AND status = 'blocked'",
-                        (task_id,),
-                    )
-                else:
-                    conn.execute(
-                        "UPDATE tasks SET status = 'ready' WHERE id = ? AND status = 'todo'",
-                        (task_id,),
-                    )
-                _append_event(conn, task_id, "promoted", None)
-                promoted += 1
-    return promoted
+        return _recompute_ready_in_txn(conn, failure_limit)
+
+
+# ---------------------------------------------------------------------------
+# External-worker ownership guards
+# ---------------------------------------------------------------------------
+
+def _open_external_run_id(
+    conn: sqlite3.Connection, task_id: str
+) -> Optional[int]:
+    """Return an open external run without trusting mutable task state."""
+    row = conn.execute(
+        "SELECT id FROM task_runs "
+        "WHERE task_id = ? AND worker_kind = ? AND ended_at IS NULL "
+        "ORDER BY id DESC LIMIT 1",
+        (task_id, WORKER_KIND_EXTERNAL_MAS),
+    ).fetchone()
+    return int(row["id"]) if row is not None else None
+
+
+def _assert_no_open_external_run(
+    conn: sqlite3.Connection, task_id: str, operation: str
+) -> None:
+    run_id = _open_external_run_id(conn, task_id)
+    if run_id is not None:
+        raise ExternalTaskConflict(
+            "external_run_active", task_id, operation, run_id=run_id
+        )
+
+
+def task_is_external(conn: sqlite3.Connection, task_id: str) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM tasks "
+        "WHERE id = ? AND external_spec_hash IS NOT NULL",
+        (task_id,),
+    ).fetchone()
+    return row is not None
+
+
+def _assert_native_claimable(conn: sqlite3.Connection, task_id: str) -> None:
+    if not task_is_external(conn, task_id):
+        return
+    run_id = _open_external_run_id(conn, task_id)
+    if run_id is not None:
+        raise ExternalTaskConflict(
+            "external_run_active", task_id, "claim_task", run_id=run_id
+        )
+    raise ExternalTaskConflict("external_spec_locked", task_id, "claim_task")
 
 
 # ---------------------------------------------------------------------------
@@ -3497,6 +3917,7 @@ def claim_task(
     lock = claimer or _claimer_id()
     expires = now + _resolve_claim_ttl_seconds(ttl_seconds)
     with write_txn(conn):
+        _assert_native_claimable(conn, task_id)
         # Structural invariant: never transition ready -> running while any
         # parent is not yet 'done'. This is the single enforcement point
         # regardless of which writer (create_task, link_tasks, unblock_task,
@@ -3626,6 +4047,7 @@ def claim_review_task(
     lock = claimer or _claimer_id()
     expires = now + _resolve_claim_ttl_seconds(ttl_seconds)
     with write_txn(conn):
+        _assert_native_claimable(conn, task_id)
         cur = conn.execute(
             """
             UPDATE tasks
@@ -3693,6 +4115,7 @@ def heartbeat_claim(
     expires = int(time.time()) + _resolve_claim_ttl_seconds(ttl_seconds)
     lock = claimer or _claimer_id()
     with write_txn(conn):
+        _assert_no_open_external_run(conn, task_id, "heartbeat_claim")
         cur = conn.execute(
             "UPDATE tasks SET claim_expires = ? "
             "WHERE id = ? AND status = 'running' AND claim_lock = ?",
@@ -3746,8 +4169,12 @@ def release_stale_claims(
         "SELECT id, claim_lock, worker_pid, claim_expires, last_heartbeat_at "
         "FROM tasks "
         "WHERE status = 'running' AND claim_expires IS NOT NULL "
-        "  AND claim_expires < ?",
-        (now,),
+        "  AND claim_expires < ? "
+        "  AND NOT EXISTS ("
+        "      SELECT 1 FROM task_runs r WHERE r.task_id = tasks.id "
+        "      AND r.worker_kind = ? AND r.ended_at IS NULL"
+        "  )",
+        (now, WORKER_KIND_EXTERNAL_MAS),
     ).fetchall()
     for row in stale:
         lock = row["claim_lock"] or ""
@@ -3769,6 +4196,8 @@ def release_stale_claims(
         ):
             new_expires = now + _resolve_claim_ttl_seconds()
             with write_txn(conn):
+                if _open_external_run_id(conn, row["id"]) is not None:
+                    continue
                 cur = conn.execute(
                     "UPDATE tasks SET claim_expires = ? "
                     "WHERE id = ? AND status = 'running' "
@@ -3815,6 +4244,8 @@ def release_stale_claims(
             )
             continue
         with write_txn(conn):
+            if _open_external_run_id(conn, row["id"]) is not None:
+                continue
             cur = conn.execute(
                 "UPDATE tasks SET status = 'ready', claim_lock = NULL, "
                 "claim_expires = NULL, worker_pid = NULL "
@@ -3873,10 +4304,12 @@ def reclaim_task(
     Returns True if a reclaim happened, False if the task isn't in a
     reclaimable state (not running, or doesn't exist).
     """
-    row = conn.execute(
-        "SELECT status, claim_lock, worker_pid FROM tasks WHERE id = ?",
-        (task_id,),
-    ).fetchone()
+    with write_txn(conn):
+        _assert_no_open_external_run(conn, task_id, "reclaim_task")
+        row = conn.execute(
+            "SELECT status, claim_lock, worker_pid FROM tasks WHERE id = ?",
+            (task_id,),
+        ).fetchone()
     if not row:
         return False
     if row["status"] != "running" and row["claim_lock"] is None:
@@ -3887,6 +4320,7 @@ def reclaim_task(
         row["worker_pid"], prev_lock, signal_fn=signal_fn,
     )
     with write_txn(conn):
+        _assert_no_open_external_run(conn, task_id, "reclaim_task")
         cur = conn.execute(
             "UPDATE tasks SET status = 'ready', claim_lock = NULL, "
             "claim_expires = NULL, worker_pid = NULL "
@@ -3943,12 +4377,16 @@ def reassign_task(
     Returns True if the reassign landed. ``profile`` may be ``None`` to
     unassign entirely.
     """
+    with write_txn(conn):
+        _assert_no_open_external_run(conn, task_id, "reassign_task")
     if reclaim_first:
         # Safe to call even if nothing to reclaim.
         reclaim_task(conn, task_id, reason=reason or "reassign")
     # assign_task handles its own txn + the still-running guard.
     try:
         return assign_task(conn, task_id, profile)
+    except ExternalTaskConflict:
+        raise
     except RuntimeError:
         # Task is still running and reclaim_first was False; caller
         # needs to decide whether to retry with reclaim.
@@ -4162,6 +4600,7 @@ def complete_task(
         conn, task_id, metadata, summary=summary, result=result,
     )
     with write_txn(conn):
+        _assert_no_open_external_run(conn, task_id, "complete_task")
         if expected_run_id is None:
             cur = conn.execute(
                 """
@@ -4817,6 +5256,18 @@ def edit_completed_task_result(
     """Backfill the user-visible result for an already completed task."""
     handoff_summary = summary if summary is not None else result
     with write_txn(conn):
+        external_result = conn.execute(
+            "SELECT id FROM task_runs WHERE task_id = ? AND worker_kind = ? "
+            "AND external_result_hash IS NOT NULL ORDER BY id DESC LIMIT 1",
+            (task_id, WORKER_KIND_EXTERNAL_MAS),
+        ).fetchone()
+        if external_result is not None:
+            raise ExternalTaskConflict(
+                "external_result_immutable",
+                task_id,
+                "edit_completed_task_result",
+                run_id=int(external_result["id"]),
+            )
         row = conn.execute(
             "SELECT status FROM tasks WHERE id = ?", (task_id,),
         ).fetchone()
@@ -4915,6 +5366,7 @@ def block_task(
     routed_to = "blocked"
     recurrences = 0
     with write_txn(conn):
+        _assert_no_open_external_run(conn, task_id, "block_task")
         cur_row = conn.execute(
             "SELECT status, block_kind, block_recurrences FROM tasks WHERE id = ?",
             (task_id,),
@@ -5108,6 +5560,7 @@ def promote_task(
     ``(False, reason)`` if refused. ``dry_run=True`` validates the
     promotion would succeed without mutating state.
     """
+    _assert_no_open_external_run(conn, task_id, "promote_task")
     row = conn.execute(
         "SELECT status FROM tasks WHERE id = ?", (task_id,)
     ).fetchone()
@@ -5142,6 +5595,7 @@ def promote_task(
         return True, None
 
     with write_txn(conn):
+        _assert_no_open_external_run(conn, task_id, "promote_task")
         upd = conn.execute(
             "UPDATE tasks SET status = 'ready' "
             "WHERE id = ? AND status IN ('todo', 'blocked')",
@@ -5171,6 +5625,7 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
     """
     now = int(time.time())
     with write_txn(conn):
+        _assert_no_open_external_run(conn, task_id, "unblock_task")
         stale = conn.execute(
             "SELECT current_run_id FROM tasks WHERE id = ? AND status IN ('blocked', 'scheduled')",
             (task_id,),
@@ -5254,6 +5709,7 @@ def specify_triage_task(
         raise ValueError("title cannot be blank")
     assignee = _canonical_assignee(assignee)
     with write_txn(conn):
+        _assert_no_open_external_run(conn, task_id, "specify_triage_task")
         existing = conn.execute(
             "SELECT title, body, assignee FROM tasks WHERE id = ? AND status = 'triage'",
             (task_id,),
@@ -5408,6 +5864,7 @@ def decompose_triage_task(
     now = int(time.time())
     child_ids: list[str] = []
     with write_txn(conn):
+        _assert_no_open_external_run(conn, task_id, "decompose_triage_task")
         root_row = conn.execute(
             "SELECT id, status, tenant, workspace_kind, workspace_path "
             "FROM tasks WHERE id = ?",
@@ -5541,6 +5998,7 @@ def decompose_triage_task(
 
 def archive_task(conn: sqlite3.Connection, task_id: str) -> bool:
     with write_txn(conn):
+        _assert_no_open_external_run(conn, task_id, "archive_task")
         cur = conn.execute(
             "UPDATE tasks SET status = 'archived', "
             "    claim_lock = NULL, claim_expires = NULL, worker_pid = NULL "
@@ -5573,6 +6031,7 @@ def delete_archived_task(conn: sqlite3.Connection, task_id: str) -> bool:
     second deliberate action.
     """
     with write_txn(conn):
+        _assert_no_open_external_run(conn, task_id, "delete_archived_task")
         row = conn.execute(
             "SELECT status FROM tasks WHERE id = ?",
             (task_id,),
@@ -5585,6 +6044,9 @@ def delete_archived_task(conn: sqlite3.Connection, task_id: str) -> bool:
         )
         conn.execute("DELETE FROM task_comments WHERE task_id = ?", (task_id,))
         conn.execute("DELETE FROM task_events WHERE task_id = ?", (task_id,))
+        conn.execute(
+            "DELETE FROM task_external_artifacts WHERE task_id = ?", (task_id,)
+        )
         conn.execute("DELETE FROM task_runs WHERE task_id = ?", (task_id,))
         conn.execute("DELETE FROM kanban_notify_subs WHERE task_id = ?", (task_id,))
         cur = conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
@@ -5602,12 +6064,16 @@ def delete_task(conn: sqlite3.Connection, task_id: str) -> bool:
     if the task was not found.
     """
     with write_txn(conn):
+        _assert_no_open_external_run(conn, task_id, "delete_task")
         cur = conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
         if cur.rowcount != 1:
             return False
         conn.execute("DELETE FROM task_links WHERE parent_id = ? OR child_id = ?", (task_id, task_id))
         conn.execute("DELETE FROM task_comments WHERE task_id = ?", (task_id,))
         conn.execute("DELETE FROM task_events WHERE task_id = ?", (task_id,))
+        conn.execute(
+            "DELETE FROM task_external_artifacts WHERE task_id = ?", (task_id,)
+        )
         conn.execute("DELETE FROM task_runs WHERE task_id = ?", (task_id,))
         conn.execute("DELETE FROM kanban_notify_subs WHERE task_id = ?", (task_id,))
     recompute_ready(conn)
@@ -5934,6 +6400,7 @@ def schedule_task(
     to ``ready`` (or ``todo`` if parents are still incomplete).
     """
     with write_txn(conn):
+        _assert_no_open_external_run(conn, task_id, "schedule_task")
         params: list[Any] = [task_id]
         sql = """
             UPDATE tasks
@@ -6385,6 +6852,7 @@ def heartbeat_worker(
     """
     now = int(time.time())
     with write_txn(conn):
+        _assert_no_open_external_run(conn, task_id, "heartbeat_worker")
         if expected_run_id is None:
             cur = conn.execute(
                 "UPDATE tasks SET last_heartbeat_at = ? "
@@ -6447,7 +6915,12 @@ def enforce_max_runtime(
         "LEFT JOIN task_runs r ON r.id = t.current_run_id "
         "WHERE t.status = 'running' AND t.max_runtime_seconds IS NOT NULL "
         "  AND COALESCE(r.started_at, t.started_at) IS NOT NULL "
-        "  AND t.worker_pid IS NOT NULL"
+        "  AND t.worker_pid IS NOT NULL "
+        "  AND NOT EXISTS ("
+        "      SELECT 1 FROM task_runs xr WHERE xr.task_id = t.id "
+        "      AND xr.worker_kind = ? AND xr.ended_at IS NULL"
+        "  )",
+        (WORKER_KIND_EXTERNAL_MAS,),
     ).fetchall()
     for row in rows:
         lock = row["claim_lock"] or ""
@@ -6489,6 +6962,8 @@ def enforce_max_runtime(
                     pass
 
         with write_txn(conn):
+            if _open_external_run_id(conn, tid) is not None:
+                continue
             cur = conn.execute(
                 "UPDATE tasks SET status = 'ready', claim_lock = NULL, "
                 "claim_expires = NULL, worker_pid = NULL, "
@@ -6579,7 +7054,12 @@ def detect_stale_running(
         "       COALESCE(r.started_at, t.started_at) AS active_started_at "
         "FROM tasks t "
         "LEFT JOIN task_runs r ON r.id = t.current_run_id "
-        "WHERE t.status = 'running'"
+        "WHERE t.status = 'running' "
+        "  AND NOT EXISTS ("
+        "      SELECT 1 FROM task_runs xr WHERE xr.task_id = t.id "
+        "      AND xr.worker_kind = ? AND xr.ended_at IS NULL"
+        "  )",
+        (WORKER_KIND_EXTERNAL_MAS,),
     ).fetchall()
 
     for row in rows:
@@ -6615,6 +7095,8 @@ def detect_stale_running(
             continue
 
         with write_txn(conn):
+            if _open_external_run_id(conn, tid) is not None:
+                continue
             cur = conn.execute(
                 "UPDATE tasks SET status = 'ready', claim_lock = NULL, "
                 "claim_expires = NULL, worker_pid = NULL, "
@@ -6790,7 +7272,12 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
     with write_txn(conn):
         rows = conn.execute(
             "SELECT id, worker_pid, claim_lock, started_at FROM tasks "
-            "WHERE status = 'running' AND worker_pid IS NOT NULL"
+            "WHERE status = 'running' AND worker_pid IS NOT NULL "
+            "AND NOT EXISTS ("
+            "    SELECT 1 FROM task_runs r WHERE r.task_id = tasks.id "
+            "    AND r.worker_kind = ? AND r.ended_at IS NULL"
+            ")",
+            (WORKER_KIND_EXTERNAL_MAS,),
         ).fetchall()
         host_prefix = f"{_claimer_id().split(':', 1)[0]}:"
         for row in rows:
@@ -7396,7 +7883,7 @@ def has_spawnable_ready(conn: sqlite3.Connection) -> bool:
     rows = conn.execute(
         "SELECT DISTINCT assignee FROM tasks "
         "WHERE status = 'ready' AND assignee IS NOT NULL "
-        "    AND claim_lock IS NULL"
+        "    AND claim_lock IS NULL AND external_spec_hash IS NULL"
     ).fetchall()
     if not rows:
         return False
@@ -7591,6 +8078,7 @@ def _dispatch_once_locked(
     ready_rows = conn.execute(
         "SELECT id, assignee FROM tasks "
         "WHERE status = 'ready' AND claim_lock IS NULL "
+        "AND external_spec_hash IS NULL "
         "ORDER BY priority DESC, created_at ASC"
     ).fetchall()
     # Honour kanban.max_in_progress: if the board already has enough running

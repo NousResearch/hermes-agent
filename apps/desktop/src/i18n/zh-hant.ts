@@ -217,6 +217,7 @@ export const zhHant = defineLocale({
       mcp: 'MCP',
       archivedChats: '已封存聊天',
       about: '關於',
+      billing: '帳單',
       notifications: '通知'
     },
     notifications: {

@@ -888,86 +888,86 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
             return (
               <div className="scroll-mt-6 rounded-lg" id={`aux-task-${meta.key}`} key={meta.key}>
                 <ListRow
-                action={
-                  !isEditing && (
-                    <div className="flex shrink-0 items-center gap-1.5">
-                      <Button
-                        disabled={!mainModel || applying}
-                        onClick={() => void setAuxiliaryToMain(meta.key)}
-                        size="sm"
-                        variant="text"
-                      >
-                        {m.setToMain}
-                      </Button>
-                      <Button
-                        disabled={!providers.length || applying}
-                        onClick={() => beginAuxiliaryEdit(meta.key)}
-                        size="sm"
-                        variant="textStrong"
-                      >
-                        {m.change}
-                      </Button>
-                    </div>
-                  )
-                }
-                below={
-                  isEditing && (
-                    <div className="mt-2 flex flex-wrap items-center gap-2 pt-1">
-                      <Select
-                        onValueChange={value => setAuxDraft(prev => ({ ...prev, provider: value, model: '' }))}
-                        value={auxDraft.provider}
-                      >
-                        <SelectTrigger className={cn('min-w-32', CONTROL_TEXT)}>
-                          <SelectValue placeholder={m.provider} />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {providerOptions.map(provider => (
-                            <SelectItem key={provider.slug || 'none'} value={provider.slug || 'none'}>
-                              {provider.name}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                      <Select
-                        onValueChange={value => setAuxDraft(prev => ({ ...prev, model: value }))}
-                        value={auxDraft.model}
-                      >
-                        <SelectTrigger className={cn('min-w-48', CONTROL_TEXT)}>
-                          <SelectValue placeholder={m.model} />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {withActive(auxDraftProviderModels, auxDraft.model).map(model => (
-                            <SelectItem key={model} value={model}>
-                              {model}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                      <Button
-                        disabled={!auxDraft.provider || !auxDraft.model || applying}
-                        onClick={() => void applyAuxiliaryDraft(meta.key)}
-                        size="sm"
-                      >
-                        {applying ? m.applying : t.common.apply}
-                      </Button>
-                      <Button onClick={() => setEditingAuxTask(null)} size="sm" variant="ghost">
-                        {t.common.cancel}
-                      </Button>
-                    </div>
-                  )
-                }
-                description={
-                  <span className="font-mono text-[0.68rem]">
-                    {isAuto ? m.autoUseMain : `${current.provider} · ${current.model || m.providerDefault}`}
-                  </span>
-                }
-                title={
-                  <span className="flex items-baseline gap-2">
-                    {copy.label}
-                    <Pill>{copy.hint}</Pill>
-                  </span>
-                }
-              />
+                  action={
+                    !isEditing && (
+                      <div className="flex shrink-0 items-center gap-1.5">
+                        <Button
+                          disabled={!mainModel || applying}
+                          onClick={() => void setAuxiliaryToMain(meta.key)}
+                          size="sm"
+                          variant="text"
+                        >
+                          {m.setToMain}
+                        </Button>
+                        <Button
+                          disabled={!providers.length || applying}
+                          onClick={() => beginAuxiliaryEdit(meta.key)}
+                          size="sm"
+                          variant="textStrong"
+                        >
+                          {m.change}
+                        </Button>
+                      </div>
+                    )
+                  }
+                  below={
+                    isEditing && (
+                      <div className="mt-2 flex flex-wrap items-center gap-2 pt-1">
+                        <Select
+                          onValueChange={value => setAuxDraft(prev => ({ ...prev, provider: value, model: '' }))}
+                          value={auxDraft.provider}
+                        >
+                          <SelectTrigger className={cn('min-w-32', CONTROL_TEXT)}>
+                            <SelectValue placeholder={m.provider} />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {providerOptions.map(provider => (
+                              <SelectItem key={provider.slug || 'none'} value={provider.slug || 'none'}>
+                                {provider.name}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                        <Select
+                          onValueChange={value => setAuxDraft(prev => ({ ...prev, model: value }))}
+                          value={auxDraft.model}
+                        >
+                          <SelectTrigger className={cn('min-w-48', CONTROL_TEXT)}>
+                            <SelectValue placeholder={m.model} />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {withActive(auxDraftProviderModels, auxDraft.model).map(model => (
+                              <SelectItem key={model} value={model}>
+                                {model}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                        <Button
+                          disabled={!auxDraft.provider || !auxDraft.model || applying}
+                          onClick={() => void applyAuxiliaryDraft(meta.key)}
+                          size="sm"
+                        >
+                          {applying ? m.applying : t.common.apply}
+                        </Button>
+                        <Button onClick={() => setEditingAuxTask(null)} size="sm" variant="ghost">
+                          {t.common.cancel}
+                        </Button>
+                      </div>
+                    )
+                  }
+                  description={
+                    <span className="font-mono text-[0.68rem]">
+                      {isAuto ? m.autoUseMain : `${current.provider} · ${current.model || m.providerDefault}`}
+                    </span>
+                  }
+                  title={
+                    <span className="flex items-baseline gap-2">
+                      {copy.label}
+                      <Pill>{copy.hint}</Pill>
+                    </span>
+                  }
+                />
               </div>
             )
           })}

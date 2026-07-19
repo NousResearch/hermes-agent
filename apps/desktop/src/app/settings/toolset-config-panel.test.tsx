@@ -34,7 +34,9 @@ vi.mock('@/hermes', () => ({
   getToolsetModels: (name: string, provider?: string) => getToolsetModels(name, provider),
   selectToolsetModel: (name: string, model: string, provider?: string) => selectToolsetModel(name, model, provider),
   selectToolsetProvider: (name: string, provider: string, capability?: string) =>
-    capability === undefined ? selectToolsetProvider(name, provider) : selectToolsetProvider(name, provider, capability),
+    capability === undefined
+      ? selectToolsetProvider(name, provider)
+      : selectToolsetProvider(name, provider, capability),
   setEnvVar: (key: string, value: string) => setEnvVar(key, value),
   deleteEnvVar: (key: string) => deleteEnvVar(key),
   revealEnvVar: (key: string) => revealEnvVar(key),
@@ -377,7 +379,6 @@ describe('ToolsetConfigPanel', () => {
       timeout: 4000
     })
   })
-
 
   it('swaps the install hint for the installed one-liner when the provider is ready', async () => {
     // Server says the post_setup install is already satisfied (status ready) —
@@ -825,9 +826,7 @@ describe('ToolsetConfigPanel', () => {
       fireEvent.pointerDown(trigger, { button: 0, ctrlKey: false, pointerType: 'mouse' })
       fireEvent.click(await screen.findByRole('menuitem', { name: 'Manage in API Keys' }))
 
-      await waitFor(() =>
-        expect(navigateSpy).toHaveBeenCalledWith('/settings?tab=keys&key=ELEVENLABS_API_KEY')
-      )
+      await waitFor(() => expect(navigateSpy).toHaveBeenCalledWith('/settings?tab=keys&key=ELEVENLABS_API_KEY'))
     })
 
     it('hides "Manage in API Keys" while the key is unset', async () => {

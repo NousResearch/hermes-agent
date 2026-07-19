@@ -342,6 +342,13 @@ class SlackTaskStream:
     # burst has substance. A pending fragment below this at finalize time
     # is carried into the next burst rather than emitted as its own card.
     REASONING_MIN_CHARS = 40
+    # Max chars of an OPEN 💭 card replayed onto a fresh stream at
+    # rollover. The full burst already lives on the closed card above
+    # ("⤵ continued below"); replaying it wholesale re-posted the whole
+    # thought and read as duplication (user-reported 2026-07-20). Only
+    # the tail carries continuation context. The full local copy in
+    # _reasoning_details is unaffected.
+    ROLLOVER_REASONING_TAIL = 500
     # Per-tool result preview length on finished cards. 0 (default) =
     # no output previews — per Minh 2026-07-06: output previews get
     # skimmed past; reasoning is the signal. Set
@@ -544,6 +551,14 @@ class SlackTaskStream:
         header = " · ".join(cats)
         if self.header_label:
             header = f"{self.header_label} — {header}"
+        # Continuation marker: after a rollover this stream's card is a
+        # fresh message continuing an earlier one, so the header must
+        # self-identify as such — an unmarked replayed header reads as a
+        # duplicate card (user-reported 2026-07-20). The header_label
+        # (identity + number, e.g. "SUBAGENT #2 · 01:37") is preserved,
+        # so out-of-order continuation messages stay attributable.
+        if self._rollovers:
+            header = f"⤵ {header}"
         if header != self._last_header:
             self._last_header = header
             await self.set_plan_title(header)
@@ -936,7 +951,16 @@ class SlackTaskStream:
         # accumulated burst.
         replay: List[dict] = []
         if self._last_header:
-            replay.append({"type": "plan_update", "title": self._last_header[:250]})
+            # Stamp the replayed header as a continuation (see
+            # _refresh_turn_header) — the pre-rollover _last_header has no
+            # marker, and headers are only re-sent when a new tool category
+            # appears, so without stamping here the continuation card
+            # usually keeps an unmarked header and reads as a duplicate.
+            _title = self._last_header
+            if not _title.startswith("⤵"):
+                _title = f"⤵ {_title}"
+            self._last_header = _title
+            replay.append({"type": "plan_update", "title": _title[:250]})
         for c in self._in_progress.values():
             chunk = dict(c)
             if (
@@ -944,7 +968,19 @@ class SlackTaskStream:
                 and chunk.get("id") == self._reasoning_open_id
                 and self._reasoning_details
             ):
-                chunk["details"] = self._reasoning_details
+                # Replay only the TAIL of the open 💭 card, not the full
+                # accumulated burst — the full text already lives on the
+                # closed card above, and re-posting it wholesale is what
+                # rendered as "thinking blocks repeat" (user-reported
+                # 2026-07-20). The local full copy is kept (future
+                # rollovers re-tail from it); only the replayed chunk is
+                # trimmed. Cut on a word boundary, mark with a leading …
+                tail = self._reasoning_details
+                if len(tail) > self.ROLLOVER_REASONING_TAIL:
+                    tail = tail[-self.ROLLOVER_REASONING_TAIL:]
+                    sp = tail.find(" ")
+                    tail = "… " + tail[sp + 1 if 0 <= sp < 40 else 0:]
+                chunk["details"] = tail
                 self._reasoning_unsent = ""
             replay.append(chunk)
         for chunk in replay:

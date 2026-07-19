@@ -18087,6 +18087,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # plus a per-child monotonic tool index for its card entries.
         _slack_subagent_streams: Dict[str, Any] = {}
         _slack_subagent_tool_idx: Dict[str, int] = {}
+        # Children that emitted subagent.complete. Turn-end cleanup stops
+        # ONLY these (idempotent safety — their complete handler already
+        # stops the stream). Background children outliving the turn keep
+        # their streams open and stop themselves on completion
+        # (delegate_tool emits subagent.complete even on timeout/exception,
+        # so "never completes" ≈ process death only). Stopping live
+        # children's streams at turn end killed them mid-flight: the
+        # child's next event hit a dead stream → reactive rollover →
+        # orphan continuation card below the final reply, with no
+        # "⤵ continued below" footer attachable to the already-stopped
+        # old card (observed live 2026-07-20 01:38, 3 children).
+        _slack_subagent_completed: set = set()
         # FIFO gate serializing stream OPENS (main first, then children in
         # open order) — thread position is startStream completion order,
         # so unserialized opens race and children can render above main.
@@ -18303,6 +18315,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 coro = _gated(lambda s=sub, i=idx, t=str(tool_name), p=preview:
                               s.task_started(i, t, p))
             elif event_type == "subagent.complete":
+                # Mark done so turn-end cleanup knows this child's stream is
+                # safe to (re-)stop; live children are left alone there.
+                _slack_subagent_completed.add(key)
                 # Settle every entry, put the child's result summary on the
                 # final entry (the relay carries summary/duration/status —
                 # user-visible output was the missing piece), then close.
@@ -20981,10 +20996,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         except Exception:
                             pass
                     await _slack_task_stream.stop()
-                    # Close any per-subagent streams still open (child
-                    # crashed / never emitted subagent.complete) so their
-                    # cards don't freeze in Slack's error state.
-                    for _sub in _slack_subagent_streams.values():
+                    # Close per-subagent streams — but ONLY for children
+                    # that emitted subagent.complete (their own handler
+                    # already stopped the stream; this is an idempotent
+                    # safety net for scheduling races). Background children
+                    # still running past turn end keep their streams open —
+                    # stopping those here killed them mid-flight and forced
+                    # footer-less orphan continuation cards below the final
+                    # reply (observed 2026-07-20 01:38). They stop
+                    # themselves via their complete handler; a child that
+                    # dies without ever completing leaves one frozen card,
+                    # which is the honest rendering of that failure.
+                    for _key, _sub in _slack_subagent_streams.items():
+                        if _key not in _slack_subagent_completed:
+                            continue
                         try:
                             await _sub.stop()
                         except Exception:

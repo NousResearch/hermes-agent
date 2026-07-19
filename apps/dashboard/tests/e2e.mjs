@@ -1029,6 +1029,21 @@ check("rollback marks the proposal rolled back", true);
 await page.keyboard.press("Escape");
 await page.waitForSelector(".sum-pop", { state: "detached" });
 
+// ---- legacy single-page state backfills the default pages -----------------------
+// Reproduces an early "Main"-only state (pre multi-page defaults): on reload the
+// missing default pages must be added so navigation isn't stuck on one tab.
+await page.evaluate(() => {
+  localStorage.setItem("hermesHub.v1", JSON.stringify({
+    version: 1, theme: "dark", pages: [{ id: "legacy-main", name: "Main", layout: [] }],
+    activePage: "legacy-main",
+  }));
+});
+await page.reload({ waitUntil: "networkidle" });
+await page.waitForSelector(".pagetab", { timeout: 10000 });
+const tabNames = await page.$$eval(".pagetab", (els) => els.map((e) => e.textContent.trim()));
+check(`legacy Main-only state backfills all pages (${tabNames.length})`,
+  ["Markets", "Feeds", "Sports", "Intel", "Health"].every((n) => tabNames.some((t) => t.includes(n))));
+
 // ---- console health -----------------------------------------------------------------
 const realErrors = errors.filter((e) => !e.includes("favicon"));
 check(`no console/page errors (${realErrors.length})`, realErrors.length === 0);

@@ -38,6 +38,8 @@ function defaultState() {
     editMode: false,
     pages,
     activePage: pages[0].id,
+    pagesSeed: 2, // fresh states already have every default page
+
     launcher: {
       links: [
         { id: uid(), name: "Gmail", url: "https://mail.google.com" },
@@ -134,11 +136,24 @@ function migrate(parsed) {
   }
 }
 
+/** One-time backfill: add any default pages an older state never had. Guarded
+ * by pagesSeed so pages a user deliberately deletes later are NOT re-added.
+ * Fixes early single-"Main" states that predate the multi-page defaults. */
+function backfillDefaultPages(state) {
+  if (state.pagesSeed >= 2) return;
+  const have = new Set((state.pages || []).map((p) => (p.name || "").toLowerCase()));
+  for (const dp of defaultPages()) {
+    if (!have.has(dp.name.toLowerCase())) state.pages.push(dp);
+  }
+  state.pagesSeed = 2;
+}
+
 /** Ensure pages is a non-empty array and activePage points at a real page. */
 function normalizePages(state) {
   if (!Array.isArray(state.pages) || !state.pages.length) {
     state.pages = defaultPages();
   }
+  backfillDefaultPages(state);
   for (const p of state.pages) {
     if (!p.id) p.id = uid();
     if (!Array.isArray(p.layout)) p.layout = [];

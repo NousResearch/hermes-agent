@@ -3253,15 +3253,35 @@ class HubHandler(BaseHTTPRequestHandler):
         )
 
     def _send_bytes(self, status: int, body: bytes, mime: str) -> None:
-        self.send_response(status)
-        self.send_header("Content-Type", mime)
-        self.send_header("Content-Length", str(len(body)))
-        self.send_header("Cache-Control", "no-store")
-        self.end_headers()
-        self.wfile.write(body)
+        try:
+            self.send_response(status)
+            self.send_header("Content-Type", mime)
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(body)
+        except (ConnectionError, BrokenPipeError):
+            # Browser closed the connection mid-response (navigated away,
+            # refreshed, cancelled a prefetch). Nothing to send to — ignore.
+            self.close_connection = True
 
     def log_message(self, fmt: str, *args) -> None:
         pass  # keep the terminal quiet; errors surface as JSON
+
+
+class QuietThreadingHTTPServer(ThreadingHTTPServer):
+    """Like ThreadingHTTPServer, but a client that hangs up mid-request does
+    not spew a socket traceback to the console — those aborts are routine and
+    harmless (a refresh or a cancelled prefetch), not a server fault."""
+
+    daemon_threads = True
+
+    def handle_error(self, request, client_address) -> None:
+        import sys
+        exc = sys.exc_info()[1]
+        if isinstance(exc, (ConnectionError, BrokenPipeError, TimeoutError)):
+            return
+        super().handle_error(request, client_address)
 
 
 def make_server(
@@ -3282,7 +3302,7 @@ def make_server(
     if run_automations:
         api.automations.start()
     handler = type("BoundHandler", (HubHandler,), {"api": api, "token": token})
-    server = ThreadingHTTPServer((host, port), handler)
+    server = QuietThreadingHTTPServer((host, port), handler)
     server.api = api  # so callers (and tests) can reach the engine
     return server
 

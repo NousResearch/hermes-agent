@@ -7,6 +7,9 @@ graft locales
 # built from the sdist (e.g. Homebrew, downstream packagers). package-data
 # below covers the wheel; this covers the sdist. See #34034 / #28149.
 recursive-include plugins plugin.yaml plugin.yml
+# The built-in shared-metrics package validates exported JSON against this
+# closed schema. Include it when downstream packagers build from the sdist.
+recursive-include hermes_cli/observability/schemas *.json
 # Gateway assets include images plus YAML catalogs such as status_phrases.yaml.
 recursive-include gateway/assets *
 global-exclude __pycache__

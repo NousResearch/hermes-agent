@@ -2047,10 +2047,32 @@ def discover_plugins(force: bool = False) -> None:
 
 
 def invoke_hook(hook_name: str, **kwargs: Any) -> List[Any]:
-    """Invoke a lifecycle hook on all loaded plugins.
+    """Invoke a lifecycle hook on built-in observers and loaded plugins.
 
     Returns a list of non-``None`` return values from plugin callbacks.
     """
+    if hook_name == "on_session_start":
+        try:
+            from hermes_cli.observability import prepare_lifecycle
+
+            prepare_lifecycle(hook_name, **kwargs)
+        except Exception:
+            logger.warning("Built-in observability preparation failed", exc_info=True)
+        results = get_plugin_manager().invoke_hook(hook_name, **kwargs)
+        try:
+            from hermes_cli.observability import observe_lifecycle
+
+            observe_lifecycle(hook_name, **kwargs)
+        except Exception:
+            logger.warning("Built-in observability hook failed", exc_info=True)
+        return results
+
+    try:
+        from hermes_cli.observability import observe_lifecycle
+
+        observe_lifecycle(hook_name, **kwargs)
+    except Exception:
+        logger.warning("Built-in observability hook failed", exc_info=True)
     return get_plugin_manager().invoke_hook(hook_name, **kwargs)
 
 
@@ -2072,7 +2094,14 @@ def has_middleware(kind: str) -> bool:
 
 
 def has_hook(hook_name: str) -> bool:
-    """Return True when a hook has registered callbacks."""
+    """Return True when a built-in observer or plugin handles a hook."""
+    try:
+        from hermes_cli.observability import handles_hook
+
+        if handles_hook(hook_name):
+            return True
+    except Exception:
+        logger.warning("Unable to inspect built-in shared-metrics hooks", exc_info=True)
     return get_plugin_manager().has_hook(hook_name)
 
 

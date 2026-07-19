@@ -3,7 +3,7 @@ import { atom } from 'nanostores'
 import { triggerHaptic } from '@/lib/haptics'
 
 /** Release blob: chip previews created for OS image drops (see #63682). */
-function revokeAttachmentPreviewUrl(url?: string | null) {
+export function revokeAttachmentPreviewUrl(url?: string | null) {
   if (url?.startsWith('blob:')) {
     try {
       URL.revokeObjectURL(url)
@@ -11,6 +11,43 @@ function revokeAttachmentPreviewUrl(url?: string | null) {
       // Best-effort — a revoked/invalid URL must not break chip removal.
     }
   }
+}
+
+/** Revoke blob: previews for attachments whose consumer was discarded. */
+export function revokeAttachmentPreviewUrls(attachments: readonly ComposerAttachment[]) {
+  for (const attachment of attachments) {
+    revokeAttachmentPreviewUrl(attachment.previewUrl)
+  }
+}
+
+/**
+ * Revoke blob: previews from `previous` that are not retained by `next`.
+ * Used when a queued/optimistic snapshot is replaced or dropped.
+ */
+export function revokeDiscardedAttachmentPreviews(
+  previous: readonly ComposerAttachment[],
+  next: readonly ComposerAttachment[] = []
+) {
+  const retained = new Set(
+    next.map(attachment => attachment.previewUrl).filter((url): url is string => !!url?.startsWith('blob:'))
+  )
+
+  for (const attachment of previous) {
+    const url = attachment.previewUrl
+
+    if (url?.startsWith('blob:') && !retained.has(url)) {
+      revokeAttachmentPreviewUrl(url)
+    }
+  }
+}
+
+export interface ClearAttachmentsOptions {
+  /**
+   * When true, leave blob: preview URLs alive for a submitted/queued snapshot
+   * that still references them. Caller must revoke when that consumer is
+   * discarded or replaced (see #63682 / PR review on #66546).
+   */
+  retainPreviewUrls?: boolean
 }
 
 export interface ComposerAttachment {
@@ -43,7 +80,7 @@ export const $composerTerminalSelections = atom<Record<string, string>>({})
 export interface ComposerAttachmentScope {
   $attachments: ReturnType<typeof atom<ComposerAttachment[]>>
   add(attachment: ComposerAttachment): void
-  clear(): void
+  clear(options?: ClearAttachmentsOptions): void
   remove(id: string): ComposerAttachment | null
   setUploadState(id: string, uploadState?: ComposerAttachment['uploadState']): void
   update(attachment: ComposerAttachment): boolean
@@ -61,9 +98,9 @@ export function createComposerAttachmentScope($attachments = atom<ComposerAttach
         triggerHaptic('selection')
       }
     },
-    clear() {
-      for (const attachment of $attachments.get()) {
-        revokeAttachmentPreviewUrl(attachment.previewUrl)
+    clear(options) {
+      if (!options?.retainPreviewUrls) {
+        revokeAttachmentPreviewUrls($attachments.get())
       }
 
       $attachments.set([])

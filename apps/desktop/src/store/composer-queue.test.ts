@@ -1,6 +1,11 @@
-import { beforeEach, describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import type { ComposerAttachment } from './composer'
+import {
+  $composerAttachments,
+  addComposerAttachment,
+  type ComposerAttachment,
+  mainComposerScope
+} from './composer'
 import {
   $parkedQueueSessions,
   $queuedPromptsBySession,
@@ -31,10 +36,80 @@ function attachment(id: string, kind: ComposerAttachment['kind'] = 'file'): Comp
   }
 }
 
+function stubRevokeObjectURL() {
+  const revokeObjectURL = vi.fn()
+  vi.stubGlobal('URL', { ...URL, revokeObjectURL })
+
+  return revokeObjectURL
+}
+
 describe('composer queue store', () => {
   beforeEach(() => {
     window.localStorage.removeItem(QUEUE_STORAGE_KEY)
     $queuedPromptsBySession.set({})
+    $composerAttachments.set([])
+    vi.unstubAllGlobals()
+    vi.restoreAllMocks()
+  })
+
+  it('queued-prompt handoff keeps blob previews across composer clear, then revokes when the entry is discarded', () => {
+    // Mirrors use-composer-queue: enqueue → clear({ retainPreviewUrls }).
+    const revokeObjectURL = stubRevokeObjectURL()
+    const blobUrl = 'blob:hermes-queued-1'
+    const image = {
+      id: 'image:drop',
+      kind: 'image' as const,
+      label: 'Lattice.png',
+      previewUrl: blobUrl
+    }
+    addComposerAttachment(image)
+
+    const queued = enqueueQueuedPrompt(SESSION_KEY, {
+      text: 'look at this',
+      attachments: $composerAttachments.get()
+    })
+    mainComposerScope.clear({ retainPreviewUrls: true })
+
+    expect(queued).not.toBeNull()
+    expect($composerAttachments.get()).toEqual([])
+    expect(revokeObjectURL).not.toHaveBeenCalled()
+    expect(getQueuedPrompts(SESSION_KEY)[0]?.attachments[0]?.previewUrl).toBe(blobUrl)
+
+    expect(removeQueuedPrompt(SESSION_KEY, queued!.id)).toBe(true)
+    expect(revokeObjectURL).toHaveBeenCalledWith(blobUrl)
+  })
+
+  it('drain handoff retains blob previews when the queued entry is removed after submit owns them', () => {
+    const revokeObjectURL = stubRevokeObjectURL()
+    const blobUrl = 'blob:hermes-drain-1'
+    const queued = enqueueQueuedPrompt(SESSION_KEY, {
+      text: 'drain me',
+      attachments: [{ id: 'image:drop', kind: 'image', label: 'shot.png', previewUrl: blobUrl }]
+    })
+
+    expect(queued).not.toBeNull()
+    expect(removeQueuedPrompt(SESSION_KEY, queued!.id, { retainPreviewUrls: true })).toBe(true)
+    expect(revokeObjectURL).not.toHaveBeenCalled()
+  })
+
+  it('revokes replaced blob previews when a queued entry attachment snapshot changes', () => {
+    const revokeObjectURL = stubRevokeObjectURL()
+    const oldUrl = 'blob:hermes-old'
+    const newUrl = 'blob:hermes-new'
+    const queued = enqueueQueuedPrompt(SESSION_KEY, {
+      text: 'edit me',
+      attachments: [{ id: 'image:old', kind: 'image', label: 'old.png', previewUrl: oldUrl }]
+    })
+
+    expect(queued).not.toBeNull()
+    expect(
+      updateQueuedPrompt(SESSION_KEY, queued!.id, {
+        text: 'edit me',
+        attachments: [{ id: 'image:new', kind: 'image', label: 'new.png', previewUrl: newUrl }]
+      })
+    ).toBe(true)
+    expect(revokeObjectURL).toHaveBeenCalledWith(oldUrl)
+    expect(revokeObjectURL).not.toHaveBeenCalledWith(newUrl)
   })
 
   it('queues prompts in FIFO order', () => {

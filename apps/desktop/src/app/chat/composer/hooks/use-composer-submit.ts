@@ -173,7 +173,9 @@ export function useComposerSubmit({
       triggerHaptic('submit')
       resetBrowseState(sessionId)
       clearDraft()
-      scope.attachments.clear()
+      // Keep blob: previews alive for the optimistic bubble; revoke when that
+      // consumer is discarded/replaced (not here — clear would race the clone).
+      scope.attachments.clear({ retainPreviewUrls: true })
       dispatchSubmit(text, submittedAttachments)
     }
 

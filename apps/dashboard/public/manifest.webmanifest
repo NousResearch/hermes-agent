@@ -1,16 +1,31 @@
 {
+  "id": "/",
   "name": "HERMES//HUB",
   "short_name": "Hermes Hub",
-  "description": "All-in-one personal dashboard: apps, news, world state, weather, lists, notes, calendar, markets and a built-in agent.",
+  "description": "All-in-one personal dashboard: apps, news, world state, weather, lists, notes, calendar, markets, sports, health and a built-in agent.",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",
+  "display_override": ["standalone", "minimal-ui"],
   "orientation": "any",
+  "lang": "en",
+  "dir": "ltr",
+  "categories": ["productivity", "news", "finance", "utilities"],
   "background_color": "#060909",
   "theme_color": "#060909",
   "icons": [
     { "src": "/icons/icon-192.png", "sizes": "192x192", "type": "image/png" },
     { "src": "/icons/icon-512.png", "sizes": "512x512", "type": "image/png" },
     { "src": "/icons/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ],
+  "shortcuts": [
+    { "name": "Markets", "short_name": "Markets", "url": "/?page=Markets",
+      "icons": [{ "src": "/icons/icon-192.png", "sizes": "192x192" }] },
+    { "name": "Feeds", "short_name": "Feeds", "url": "/?page=Feeds",
+      "icons": [{ "src": "/icons/icon-192.png", "sizes": "192x192" }] },
+    { "name": "Intel", "short_name": "Intel", "url": "/?page=Intel",
+      "icons": [{ "src": "/icons/icon-192.png", "sizes": "192x192" }] },
+    { "name": "Health", "short_name": "Health", "url": "/?page=Health",
+      "icons": [{ "src": "/icons/icon-192.png", "sizes": "192x192" }] }
   ]
 }

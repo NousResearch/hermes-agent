@@ -1044,6 +1044,17 @@ const tabNames = await page.$$eval(".pagetab", (els) => els.map((e) => e.textCon
 check(`legacy Main-only state backfills all pages (${tabNames.length})`,
   ["Markets", "Feeds", "Sports", "Intel", "Health"].every((n) => tabNames.some((t) => t.includes(n))));
 
+// ---- deep-link: ?page= selects a page (powers PWA shortcuts) --------------------
+await page.goto(`${BASE}/?page=Intel`, { waitUntil: "networkidle" });
+await page.waitForSelector(".pagetab-on", { timeout: 10000 });
+check("deep-link ?page=Intel activates the Intel page",
+  (await page.locator(".pagetab-on").first().innerText()).trim() === "Intel");
+// switching pages keeps the URL in sync (bookmarkable)
+await page.locator(".pagetab", { hasText: "Feeds" }).first().click();
+await page.waitForFunction(() => new URLSearchParams(location.search).get("page") === "Feeds",
+  null, { timeout: 5000 });
+check("switching pages updates ?page= in the URL", true);
+
 // ---- mobile: page tabs become a pinned bottom nav -------------------------------
 await page.setViewportSize({ width: 390, height: 844 });
 await page.reload({ waitUntil: "networkidle" });

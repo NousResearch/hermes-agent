@@ -296,8 +296,29 @@ window.addEventListener("resize", () => {
 function switchPage(id) {
   if (store.state.activePage === id) return;
   store.update((s) => { s.activePage = id; }, "activePage");
+  syncPageUrl(id);
   renderPageTabs();
   renderGrid();
+}
+
+// Keep ?page=<name> in the URL so pages are bookmarkable/shareable and PWA
+// shortcuts (see manifest) deep-link straight to a page.
+function syncPageUrl(id) {
+  const page = store.state.pages.find((p) => p.id === id);
+  if (!page) return;
+  const url = new URL(location.href);
+  url.searchParams.set("page", page.name);
+  history.replaceState(null, "", url);
+}
+
+// On load, honour ?page=<name> (case-insensitive) if it names a real page.
+function applyDeepLink() {
+  const want = new URLSearchParams(location.search).get("page");
+  if (!want) return;
+  const page = store.state.pages.find((p) => p.name.toLowerCase() === want.toLowerCase());
+  if (page && page.id !== store.state.activePage) {
+    store.update((s) => { s.activePage = page.id; }, "activePage");
+  }
 }
 
 function renderPageTabs() {
@@ -797,6 +818,7 @@ function bindShortcuts() {
 }
 
 function boot() {
+  applyDeepLink();   // ?page= wins over persisted/synced activePage on load
   applyTheme();
   applyAccent();
   renderTopbar();

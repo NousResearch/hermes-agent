@@ -2492,6 +2492,20 @@ def _legacy_grant_consumer_fence(
                 os.close(descriptor)
 
 
+@contextmanager
+def _legacy_grant_staging_cleanup(temporary: Path) -> Iterator[None]:
+    """Remove only this consumer's staging file while its fence is held."""
+
+    try:
+        yield
+    finally:
+        if os.path.lexists(temporary):
+            try:
+                os.unlink(temporary)
+            except OSError:
+                pass
+
+
 def _read_claimed_legacy_grant(
     path: Path,
     *,
@@ -2624,11 +2638,14 @@ def _atomic_consume_legacy_grant(
     descriptor: int | None = None
     parent_descriptor: int | None = None
     try:
-        with _legacy_grant_consumer_fence(
-            snapshot,
-            grants_root=grants_root,
-            expected_uid=expected_uid,
-            expected_gid=expected_gid,
+        with (
+            _legacy_grant_consumer_fence(
+                snapshot,
+                grants_root=grants_root,
+                expected_uid=expected_uid,
+                expected_gid=expected_gid,
+            ),
+            _legacy_grant_staging_cleanup(temporary),
         ):
             already_claimed = snapshot.path == claim
             if os.path.lexists(claim) and not already_claimed:
@@ -2752,11 +2769,6 @@ def _atomic_consume_legacy_grant(
             os.close(descriptor)
         if parent_descriptor is not None:
             os.close(parent_descriptor)
-        if os.path.lexists(temporary):
-            try:
-                os.unlink(temporary)
-            except OSError:
-                pass
 
 
 def _legacy_request_for_action(

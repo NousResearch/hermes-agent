@@ -4345,7 +4345,7 @@ class TestSessionDbOffEventLoop:
         captured = {}
 
         class FakeDB:
-            def __init__(self):
+            def __init__(self, db_path=None):
                 captured["init_thread"] = threading.current_thread()
 
             def list_sessions_rich(self, **kwargs):

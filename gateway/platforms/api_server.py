@@ -1592,7 +1592,29 @@ class APIServerAdapter(BasePlatformAdapter):
     # Session DB helper
     # ------------------------------------------------------------------
 
-    async def _ensure_session_db(self):
+    def _open_and_cache_session_db(self, home) -> Optional[Any]:
+        """Sync core: return the cached SessionDB for ``home``, opening it once.
+
+        Shared by the sync (``_ensure_session_db``) and async
+        (``_ensure_session_db_async``) entry points so both honor the same
+        per-profile cache. Deliberately does NOT write into ``self._session_db``
+        — that stays reserved for an explicit test/manual override, so the first
+        profile served can't pin every later request to its DB.
+        """
+        from hermes_state import SessionDB
+
+        key = str(home)
+        cache = getattr(self, "_session_dbs", None)
+        if cache is None:
+            cache = {}
+            self._session_dbs = cache
+        db = cache.get(key)
+        if db is None:
+            db = SessionDB(db_path=home / "state.db")
+            cache[key] = db
+        return db
+
+    def _ensure_session_db(self):
         """Lazily initialise and return the SessionDB for the active profile home.
 
         Sessions are persisted to ``state.db`` so that ``hermes sessions list``
@@ -1600,40 +1622,48 @@ class APIServerAdapter(BasePlatformAdapter):
 
         Under multiplex ``/p/<profile>/`` requests the profile runtime scope
         redirects ``get_hermes_home()``, so each profile gets its own DB —
-        never the default profile's file. The first request per home pays the
-        SQLite open + schema-init cost; a single-flight lock prevents duplicate
-        concurrent construction, and the open itself runs off the event loop.
+        never the default profile's file. Synchronous: used by ``_create_agent``
+        (itself sync, and run in both loop and worker contexts). Request
+        handlers use ``_ensure_session_db_async`` to keep the SQLite open off
+        the event loop.
         """
-        # Explicit override (tests / manual wiring) wins. Production never sets
-        # this externally, so the per-home cache below is the live path — and
-        # we deliberately do NOT write back into ``self._session_db`` there, or
-        # the first profile served would pin every later request to its DB.
+        # Explicit override (tests / manual wiring) wins.
         if self._session_db is not None:
             return self._session_db
         try:
             from hermes_constants import get_hermes_home
-            from hermes_state import SessionDB
+
+            return self._open_and_cache_session_db(get_hermes_home())
+        except Exception as e:
+            logger.debug("SessionDB unavailable for API server: %s", e)
+            return None
+
+    async def _ensure_session_db_async(self):
+        """Async variant for request handlers: offload the SQLite open/schema
+        init off the single aiohttp event-loop thread.
+
+        The active profile home is captured on the loop thread (its runtime
+        scope is not visible inside ``asyncio.to_thread``); only the blocking
+        construction runs in the worker. A single-flight lock prevents duplicate
+        concurrent construction for the same home.
+        """
+        if self._session_db is not None:
+            return self._session_db
+        try:
+            from hermes_constants import get_hermes_home
 
             home = get_hermes_home()
             key = str(home)
             cache = getattr(self, "_session_dbs", None)
-            if cache is None:
-                cache = {}
-                self._session_dbs = cache
-            db = cache.get(key)
-            if db is not None:
-                return db
+            if cache is not None and cache.get(key) is not None:
+                return cache[key]
             if self._session_db_lock is None:
                 self._session_db_lock = asyncio.Lock()
             async with self._session_db_lock:
-                # Double-check after acquiring the lock.
-                db = cache.get(key)
-                if db is None:
-                    # Offload the blocking SQLite open + schema-init off the
-                    # single aiohttp event-loop thread.
-                    db = await asyncio.to_thread(SessionDB, db_path=home / "state.db")
-                    cache[key] = db
-                return db
+                cache = getattr(self, "_session_dbs", None)
+                if cache is not None and cache.get(key) is not None:
+                    return cache[key]
+                return await asyncio.to_thread(self._open_and_cache_session_db, home)
         except Exception as e:
             logger.debug("SessionDB unavailable for API server: %s", e)
             return None
@@ -1839,7 +1869,7 @@ class APIServerAdapter(BasePlatformAdapter):
             tool_progress_callback=tool_progress_callback,
             tool_start_callback=tool_start_callback,
             tool_complete_callback=tool_complete_callback,
-            session_db=self._session_db,
+            session_db=self._ensure_session_db(),
             fallback_model=fallback_model,
             reasoning_config=reasoning_config,
             gateway_session_key=gateway_session_key,
@@ -2178,7 +2208,7 @@ class APIServerAdapter(BasePlatformAdapter):
         return body, None
 
     async def _get_existing_session_or_404(self, session_id: str) -> tuple[Optional[Dict[str, Any]], Optional["web.Response"]]:
-        db = await self._ensure_session_db()
+        db = await self._ensure_session_db_async()
         if db is None:
             return None, web.json_response(_openai_error("Session database unavailable", code="session_db_unavailable"), status=503)
         # Offload the blocking SQLite read off the event loop (CWE/perf: the
@@ -2191,7 +2221,7 @@ class APIServerAdapter(BasePlatformAdapter):
         return session, None
 
     async def _conversation_history_for_session(self, session_id: str) -> List[Dict[str, Any]]:
-        db = await self._ensure_session_db()
+        db = await self._ensure_session_db_async()
         if db is None:
             return []
         try:
@@ -2206,7 +2236,7 @@ class APIServerAdapter(BasePlatformAdapter):
         if auth_err:
             return auth_err
 
-        db = await self._ensure_session_db()
+        db = await self._ensure_session_db_async()
         if db is None:
             return web.json_response(_openai_error("Session database unavailable", code="session_db_unavailable"), status=503)
 
@@ -2245,7 +2275,7 @@ class APIServerAdapter(BasePlatformAdapter):
         if err:
             return err
 
-        db = await self._ensure_session_db()
+        db = await self._ensure_session_db_async()
         if db is None:
             return web.json_response(_openai_error("Session database unavailable", code="session_db_unavailable"), status=503)
 
@@ -2347,7 +2377,7 @@ class APIServerAdapter(BasePlatformAdapter):
         if unknown:
             return web.json_response(_openai_error(f"Unsupported session fields: {', '.join(unknown)}", code="unsupported_session_field"), status=400)
 
-        db = await self._ensure_session_db()
+        db = await self._ensure_session_db_async()
         if "title" in body:
             try:
                 await asyncio.to_thread(db.set_session_title, session_id, "" if body["title"] is None else str(body["title"]))
@@ -2367,7 +2397,7 @@ class APIServerAdapter(BasePlatformAdapter):
         session, err = await self._get_existing_session_or_404(session_id)
         if err:
             return err
-        db = await self._ensure_session_db()
+        db = await self._ensure_session_db_async()
         deleted = await asyncio.to_thread(db.delete_session, session_id)
         return web.json_response({"object": "hermes.session.deleted", "id": session_id, "deleted": bool(deleted)})
 
@@ -2380,7 +2410,7 @@ class APIServerAdapter(BasePlatformAdapter):
         _, err = await self._get_existing_session_or_404(session_id)
         if err:
             return err
-        db = await self._ensure_session_db()
+        db = await self._ensure_session_db_async()
         resolved_id = await asyncio.to_thread(db.resolve_resume_session_id, session_id)
         messages = await asyncio.to_thread(db.get_messages, resolved_id)
         return web.json_response({
@@ -2401,7 +2431,7 @@ class APIServerAdapter(BasePlatformAdapter):
         body, err = await self._read_json_body(request)
         if err:
             return err
-        db = await self._ensure_session_db()
+        db = await self._ensure_session_db_async()
         fork_id = str(body.get("id") or body.get("session_id") or f"api_{int(time.time())}_{uuid.uuid4().hex[:8]}").strip()
         if not fork_id or re.search(r'[\r\n\x00]', fork_id):
             return web.json_response(_openai_error("Invalid session ID", code="invalid_session_id"), status=400)
@@ -2724,7 +2754,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 )
             session_id = provided_session_id
             try:
-                db = await self._ensure_session_db()
+                db = await self._ensure_session_db_async()
                 if db is not None:
                     history = await asyncio.to_thread(db.get_messages_as_conversation, session_id)
             except Exception as e:

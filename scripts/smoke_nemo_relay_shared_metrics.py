@@ -152,7 +152,7 @@ def _arguments() -> argparse.Namespace:
         "--relay-python",
         type=Path,
         default=None,
-        help="NeMo Relay checkout's python directory",
+        help="Optional NeMo Relay checkout's python directory",
     )
     parser.add_argument(
         "--output-dir",
@@ -174,13 +174,9 @@ def _write_config(home: Path, port: int) -> None:
   api_key: no-key-required
 security:
   tirith_enabled: false
-plugins:
-  enabled:
-    - observability/nemo_relay
-  entries:
-    observability/nemo_relay:
-      shared_metrics:
-        enabled: true
+telemetry:
+  shared_metrics:
+    enabled: true
 """,
         encoding="utf-8",
     )
@@ -270,15 +266,13 @@ def _validate_package(outbox: Path, schema_path: Path) -> tuple[Path, dict[str, 
 def main() -> int:
     args = _arguments()
     hermes_repo = args.hermes_repo.resolve()
-    relay_python = (
-        args.relay_python.resolve()
-        if args.relay_python
-        else (hermes_repo.parent / "nemo-relay" / "python").resolve()
-    )
+    relay_python = args.relay_python.resolve() if args.relay_python else None
     hermes = hermes_repo / ".venv" / "bin" / "hermes"
     if not hermes.is_file():
         raise SystemExit(f"Hermes executable not found: {hermes}")
-    if not any((relay_python / "nemo_relay").glob("_native.*")):
+    if relay_python is not None and not any(
+        (relay_python / "nemo_relay").glob("_native.*")
+    ):
         raise SystemExit(
             "Built NeMo Relay Python binding not found under "
             f"{relay_python}; run the Relay Python build first"
@@ -305,10 +299,11 @@ def main() -> int:
         _write_config(home, server.server_port)
         env = os.environ.copy()
         env["HERMES_HOME"] = str(home)
-        env["PYTHONPATH"] = os.pathsep.join([
-            str(relay_python),
-            env.get("PYTHONPATH", ""),
-        ]).rstrip(os.pathsep)
+        if relay_python is not None:
+            env["PYTHONPATH"] = os.pathsep.join([
+                str(relay_python),
+                env.get("PYTHONPATH", ""),
+            ]).rstrip(os.pathsep)
         result = subprocess.run(
             [
                 str(hermes),
@@ -359,9 +354,8 @@ def main() -> int:
     package_path, package = _validate_package(
         telemetry / "outbox",
         hermes_repo
-        / "plugins"
+        / "hermes_cli"
         / "observability"
-        / "nemo_relay"
         / "schemas"
         / "hermes.shared_metrics.v1.schema.json",
     )

@@ -8,12 +8,11 @@ from typing import Any
 
 SCHEMA_KEY = "hermes.metrics.schema_version"
 SCHEMA_VERSION = "hermes.metrics.event.v1"
-SESSION_SCOPE = "hermes.session"
 MODEL_CALL_SCOPE = "hermes.model_call"
 SUBSCRIBER_NAME = "hermes.nemo_relay.shared_metrics"
 PRIMARY_MODEL_CALL_ROLE = "primary"
 
-EXECUTION_SURFACES = frozenset({
+EXECUTION_SURFACES: frozenset[str] = frozenset({
     "api",
     "batch",
     "cli",
@@ -25,14 +24,20 @@ EXECUTION_SURFACES = frozenset({
     "other",
     "unknown",
 })
-PROVIDER_FAMILIES = frozenset({"aggregator", "custom", "direct", "local", "unknown"})
-MODEL_LOCALITIES = frozenset({"local", "remote", "unknown"})
-MODEL_OUTCOMES = frozenset({"cancelled", "failed", "success"})
+PROVIDER_FAMILIES: frozenset[str] = frozenset({
+    "aggregator",
+    "custom",
+    "direct",
+    "local",
+    "unknown",
+})
+MODEL_LOCALITIES: frozenset[str] = frozenset({"local", "remote", "unknown"})
+MODEL_OUTCOMES: frozenset[str] = frozenset({"cancelled", "failed", "success"})
 
 # Shared metrics use an explicit family allowlist rather than raw model IDs or
 # dynamically sourced catalog values. The latter would make the exported schema
 # drift independently of this contract.
-MODEL_FAMILIES = frozenset({
+MODEL_FAMILIES: frozenset[str] = frozenset({
     "claude",
     "deepseek",
     "gemini",
@@ -60,7 +65,11 @@ _MODEL_FAMILY_PATTERN = re.compile(
     r"(?:^|[/_.:-])("
     + "|".join(
         re.escape(family)
-        for family in sorted(MODEL_FAMILIES - {"unknown"}, key=len, reverse=True)
+        for family in sorted(
+            MODEL_FAMILIES - {"unknown"},
+            key=lambda value: len(value),
+            reverse=True,
+        )
     )
     + r")(?=$|[/_.:-]|\d)"
 )
@@ -109,6 +118,7 @@ def model_call_dimensions(event: Any) -> dict[str, str] | None:
     expected_fields = {
         "call_role",
         "locality",
+        "model_family",
         "outcome",
         "provider_family",
     }
@@ -117,6 +127,7 @@ def model_call_dimensions(event: Any) -> dict[str, str] | None:
     if (
         data.get("call_role") != PRIMARY_MODEL_CALL_ROLE
         or data.get("locality") not in MODEL_LOCALITIES
+        or data.get("model_family") not in MODEL_FAMILIES
         or data.get("outcome") not in MODEL_OUTCOMES
         or data.get("provider_family") not in PROVIDER_FAMILIES
     ):
@@ -124,7 +135,7 @@ def model_call_dimensions(event: Any) -> dict[str, str] | None:
     return {
         "call_role": PRIMARY_MODEL_CALL_ROLE,
         "locality": data["locality"],
-        "model_family": event_model_family,
+        "model_family": data["model_family"],
         "outcome": data["outcome"],
         "provider_family": data["provider_family"],
     }
@@ -240,7 +251,7 @@ def model_family(kwargs: dict[str, Any]) -> str:
     declared_family = str(kwargs.get("model_family") or "").strip().lower()
     if declared_family in MODEL_FAMILIES - {"unknown"}:
         return declared_family
-    model = str(kwargs.get("model") or "").lower()
+    model = str(kwargs.get("response_model") or kwargs.get("model") or "").lower()
     match = _MODEL_FAMILY_PATTERN.search(model)
     return match.group(1) if match is not None else "unknown"
 

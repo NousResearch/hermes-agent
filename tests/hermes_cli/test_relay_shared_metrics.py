@@ -15,8 +15,8 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
-from plugins.observability.nemo_relay.shared_metrics import SharedMetricsStore
-from plugins.observability.nemo_relay.shared_metrics_contract import (
+from hermes_cli.observability.shared_metrics import SharedMetricsStore
+from hermes_cli.observability.shared_metrics_contract import (
     MODEL_FAMILIES,
     MODEL_LOCALITIES,
     MODEL_OUTCOMES,
@@ -33,9 +33,8 @@ from plugins.observability.nemo_relay.shared_metrics_contract import (
 
 SCHEMA_PATH = (
     Path(__file__).resolve().parents[2]
-    / "plugins"
+    / "hermes_cli"
     / "observability"
-    / "nemo_relay"
     / "schemas"
     / "hermes.shared_metrics.v1.schema.json"
 )
@@ -211,6 +210,12 @@ def test_model_family_accepts_only_allowlisted_declared_metadata():
     assert model_family({"model": "private", "model_family": "private"}) == "unknown"
 
 
+def test_model_family_prefers_the_provider_reported_terminal_model():
+    assert (
+        model_family({"model": "gpt-5", "response_model": "claude-sonnet"}) == "claude"
+    )
+
+
 @pytest.mark.parametrize(
     ("platform", "expected"),
     [
@@ -245,6 +250,7 @@ def test_subscriber_contract_rejects_unknown_fields_and_dimension_values():
         data={
             "call_role": "primary",
             "locality": "remote",
+            "model_family": "gpt",
             "outcome": "success",
             "provider_family": "direct",
         },

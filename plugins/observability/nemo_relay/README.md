@@ -73,89 +73,24 @@ checkout that contains this plugin. A globally installed older CLI will not see
 new bundled plugins from your working tree.
 
 ```bash
-uv sync --extra nemo-relay
+uv sync
 uv run hermes plugins enable observability/nemo_relay
 uv run hermes chat --query 'Reply exactly ok' --provider custom --model qwen3.6:35b
 ```
 
 To ship the updated CLI into another environment, build and install a fresh
-wheel from this checkout, then install the official NeMo Relay runtime extra:
+wheel from this checkout. On platforms for which Relay publishes a native
+wheel, Hermes installs its supported NeMo Relay runtime as a normal dependency:
 
 ```bash
 uv build --wheel
 python -m pip install --force-reinstall dist/hermes_agent-*.whl
-python -m pip install "nemo-relay>=0.5.0,<0.6.0"
 hermes plugins enable observability/nemo_relay
 ```
 
-The plugin fails open when `nemo-relay` is not installed. Install a supported
-NeMo Relay 0.5.x distribution:
-
-```bash
-pip install "nemo-relay>=0.5.0,<0.6.0"
-```
-
-## Shared Metrics Proof Mode
-
-The Phase 1 telemetry proof adds a separately gated metrics-only mode. Enable
-the bundled plugin and the mode in the same `config.yaml`:
-
-```yaml
-plugins:
-  enabled:
-    - observability/nemo_relay
-  entries:
-    observability/nemo_relay:
-      shared_metrics:
-        enabled: true
-```
-
-The proof reads this setting when the plugin runtime initializes. Restart a
-long-running Hermes agent or gateway after changing it. Live revocation and
-local-state reset controls are follow-on requirements before production
-rollout.
-
-This first vertical slice maps Hermes's existing API-request hooks to one Relay
-LLM lifecycle per logical model call and aggregates terminal primary calls into
-`hermes.model_call.count`. Retries sharing an API request ID remain one logical
-call. The counter uses bounded provider family, model family, locality, and
-outcome dimensions; raw model IDs and request or response content are never
-included in the metrics event.
-
-The subscriber stores cumulative counters and a random opaque install ID in
-`$HERMES_HOME/telemetry/shared_metrics/metrics.sqlite3`. After Relay's flush
-barrier, Hermes commits un-packaged deltas to an immutable outbox record and
-atomically writes a `hermes.shared_metrics.v1` JSON package under
-`$HERMES_HOME/telemetry/shared_metrics/outbox/`. Repeating export without new
-model calls reuses pending package IDs and does not package a count twice. The
-proof mode does not perform network I/O. Task, tool, approval, and skill metrics
-remain follow-on slices. The closed package contract ships with the plugin at
-`schemas/hermes.shared_metrics.v1.schema.json`.
-
-When shared metrics are enabled without a separate rich-observability
-configuration, the plugin does not emit its existing content-bearing turn,
-model, tool, approval, or subagent events. ATOF, ATIF, adaptive components, and
-dynamic plugins remain separate explicit configuration choices.
-
-### End-to-End Smoke Test
-
-The repository includes a deterministic smoke runner that exercises the real
-Hermes CLI and native NeMo Relay binding without external model credentials. It
-starts a loopback OpenAI-compatible model server, creates an isolated
-`HERMES_HOME`, runs one `hermes chat` turn, and validates the resulting SQLite
-counter and schema-conformant JSON package:
-
-```bash
-./.venv/bin/python scripts/smoke_nemo_relay_shared_metrics.py \
-  --relay-python ../nemo-relay/python
-```
-
-The NeMo Relay Python binding must already be built. By default, the runner
-expects the Hermes checkout as its working directory and looks for a sibling
-`nemo-relay` checkout. Use `--hermes-repo`, `--relay-python`, or `--output-dir`
-to override those locations. The generated profile, captured CLI output,
-SQLite database, and immutable package are retained in the artifact directory
-printed after a successful run.
+The plugin remains opt-in even though the runtime dependency is installed by
+default. Enabling this plugin controls rich observability and adaptive
+behavior; it does not control Hermes shared client metrics.
 
 ## Export Configuration
 
@@ -315,13 +250,10 @@ For the full generic Hermes middleware contract, see
 
 ## Canonical Local Examples
 
-The observe-only examples in this section use a supported NeMo Relay 0.5.x
-distribution and a local Ollama model served through the
-OpenAI-compatible API.
+The observe-only examples in this section use the NeMo Relay runtime installed
+with Hermes and a local Ollama model served through the OpenAI-compatible API.
 
 ```bash
-pip install "nemo-relay>=0.5.0,<0.6.0"
-
 export HERMES_HOME=/tmp/hermes-nemo-relay-docs/hermes-home
 mkdir -p "$HERMES_HOME"
 

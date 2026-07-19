@@ -3,12 +3,20 @@
 from pathlib import Path
 import tomllib
 
+from packaging.requirements import Requirement
+
 
 def _load_optional_dependencies():
     pyproject_path = Path(__file__).resolve().parents[1] / "pyproject.toml"
     with pyproject_path.open("rb") as handle:
         project = tomllib.load(handle)["project"]
     return project["optional-dependencies"]
+
+
+def _load_project():
+    pyproject_path = Path(__file__).resolve().parents[1] / "pyproject.toml"
+    with pyproject_path.open("rb") as handle:
+        return tomllib.load(handle)["project"]
 
 
 def _load_package_data():
@@ -222,14 +230,40 @@ def test_feishu_extra_includes_qrcode_for_qr_login():
     assert any(dep.startswith("qrcode") for dep in feishu_extra)
 
 
-def test_nemo_relay_extra_uses_supported_official_distribution_range():
-    optional_dependencies = _load_optional_dependencies()
+def test_nemo_relay_is_a_pinned_core_dependency():
+    metadata = _load_project()
 
-    assert optional_dependencies["nemo-relay"] == ["nemo-relay>=0.5,<1.0"]
-    assert not any(
-        spec == "hermes-agent[nemo-relay]"
-        for spec in optional_dependencies["all"]
+    relay_dependencies = [
+        dependency
+        for dependency in metadata["dependencies"]
+        if dependency.startswith("nemo-relay==")
+    ]
+    assert len(relay_dependencies) == 1
+    requirement = Requirement(relay_dependencies[0])
+    assert str(requirement.specifier) == "==0.5.0"
+    assert requirement.marker is not None
+    assert requirement.marker.evaluate(
+        {"sys_platform": "darwin", "platform_machine": "arm64"}
     )
+    assert requirement.marker.evaluate(
+        {"sys_platform": "linux", "platform_machine": "x86_64"}
+    )
+    assert requirement.marker.evaluate(
+        {"sys_platform": "linux", "platform_machine": "aarch64"}
+    )
+    assert requirement.marker.evaluate(
+        {"sys_platform": "win32", "platform_machine": "AMD64"}
+    )
+    assert requirement.marker.evaluate(
+        {"sys_platform": "win32", "platform_machine": "ARM64"}
+    )
+    assert not requirement.marker.evaluate(
+        {"sys_platform": "android", "platform_machine": "aarch64"}
+    )
+    assert not requirement.marker.evaluate(
+        {"sys_platform": "darwin", "platform_machine": "x86_64"}
+    )
+    assert "nemo-relay" not in metadata["optional-dependencies"]
 
 
 def test_dashboard_plugin_manifests_and_assets_are_packaged():
@@ -242,6 +276,12 @@ def test_dashboard_plugin_manifests_and_assets_are_packaged():
     assert "*/dashboard/manifest.json" in plugin_data
     assert "*/dashboard/dist/*" in plugin_data
     assert "*/dashboard/dist/**/*" in plugin_data
+
+
+def test_shared_metrics_schema_is_packaged():
+    package_data = _load_package_data()
+
+    assert "observability/schemas/*.json" in package_data["hermes_cli"]
 
 
 def test_nested_bundled_plugin_metadata_is_packaged():

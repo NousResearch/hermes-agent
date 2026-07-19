@@ -458,11 +458,24 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
 # (last-writer-wins, matching ``register_provider()`` semantics in
 # ``providers/_REGISTRY``). A plugin that does not set ``base_url`` leaves
 # the hardcoded value untouched (#48450).
+# Providers with bespoke token refresh or aggregator resolution must never be
+# overridden by a user plugin's ``base_url`` — their endpoints are resolved by
+# dedicated branches (copilot/kimi/zai) or handled outside the registry
+# (openrouter/custom). Allowing a plugin to rewrite their ``inference_base_url``
+# would be ignored (or worse, break) the dedicated path. This exclusion must be
+# honoured *before* applying any plugin override (see review note on #48481).
+_SKIP_PLUGIN_OVERRIDE = frozenset(
+    {"copilot", "kimi-coding", "kimi-coding-cn", "zai", "openrouter", "custom"}
+)
+
 try:
     from providers import list_providers as _list_providers_for_registry
     for _pp in _list_providers_for_registry():
         if _pp.name in PROVIDER_REGISTRY:
-            if _pp.base_url:
+            # Existing entry: only ordinary api-key providers may be overridden
+            # by a user plugin's base_url (last-writer-wins). Skip the providers
+            # with bespoke resolution so a plugin can't rewrite their endpoint.
+            if _pp.name not in _SKIP_PLUGIN_OVERRIDE and _pp.base_url:
                 PROVIDER_REGISTRY[_pp.name].inference_base_url = _pp.base_url
             continue
         if _pp.auth_type != "api_key" or not _pp.env_vars:
@@ -472,7 +485,7 @@ try:
         # openrouter/custom are aggregator/user-supplied and handled outside
         # the registry — adding them here breaks runtime_provider resolution
         # that relies on `openrouter not in PROVIDER_REGISTRY`).
-        if _pp.name in {"copilot", "kimi-coding", "kimi-coding-cn", "zai", "openrouter", "custom"}:
+        if _pp.name in _SKIP_PLUGIN_OVERRIDE:
             continue
         _api_key_vars = tuple(v for v in _pp.env_vars if not v.endswith("_BASE_URL") and not v.endswith("_URL"))
         _base_url_var = next((v for v in _pp.env_vars if v.endswith("_BASE_URL") or v.endswith("_URL")), None)

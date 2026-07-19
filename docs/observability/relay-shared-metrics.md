@@ -26,15 +26,15 @@ marks do not require Hermes plugin registration. Shared-metrics marks must
 still contain only fields approved by the versioned allowlist; the hard
 dependency does not change the collection or privacy policy.
 
-## Current Slice
+## Current Slices
 
-The first vertical slice records one logical model-call counter:
+The current vertical slices record logical model calls and top-level task runs:
 
 ```text
-Hermes API hooks
-  -> Relay session and LLM lifecycle
+Hermes turn, API, and tool hooks
+  -> Relay session, task, and LLM lifecycle
   -> Hermes shared-metrics subscriber
-  -> SQLite counter
+  -> SQLite counters
   -> immutable JSON delta package
 ```
 
@@ -43,6 +43,18 @@ event contains only bounded model family, provider family, locality, call role,
 and outcome values. Prompts, responses, exact model IDs, endpoints, errors,
 session IDs, task IDs, and request IDs are not included in the metrics event or
 package.
+
+Each task run is a Relay `Function` scope named `hermes.task_run`, parented to
+the owning Hermes session. The start counter contains only bounded execution
+surface and entrypoint values. The terminal counter contains bounded outcome,
+end reason, termination status, duration, logical model-call count, terminal
+tool-call count, and provider-retry count buckets. Retries are additional
+provider attempts for the same Hermes API request ID; they do not inflate the
+logical model-call count. Tool calls are deduplicated by their Hermes tool-call
+ID after a terminal tool result is observed. The outer `AIAgent` execution
+boundary closes the task for normal returns, early returns, exceptions, and
+cancellations. Active task ownership follows the task ID if Hermes rotates its
+conversation session during context compression.
 
 Local state is written under:
 
@@ -67,6 +79,6 @@ The script uses the installed `nemo-relay` dependency by default. Pass
 `--relay-python ../nemo-relay/python` only when testing a locally built Relay
 binding.
 
-The smoke verifies the model request reached the local server, one counter was
-stored, one package was exported, and prompt, response, and exact-model
-canaries are absent from the package.
+The smoke verifies the model request reached the local server, model and task
+counters were stored, one package was exported, and prompt, response, and
+exact-model canaries are absent from the package.

@@ -18,6 +18,13 @@ from utils import atomic_json_write
 
 _PACKAGE_SCHEMA_VERSION = "hermes.shared_metrics.v1"
 _MODEL_CALL_METRIC = "hermes.model_call.count"
+_TASK_STARTED_METRIC = "hermes.task_run.started"
+_TASK_FINISHED_METRIC = "hermes.task_run.finished"
+_COUNTER_METRICS = frozenset({
+    _MODEL_CALL_METRIC,
+    _TASK_FINISHED_METRIC,
+    _TASK_STARTED_METRIC,
+})
 _STORE_SCHEMA_VERSION = "1"
 _BUSY_TIMEOUT_MS = 250
 
@@ -31,7 +38,7 @@ def _isoformat(value: datetime) -> str:
 
 
 class SharedMetricsStore:
-    """Persist model-call counters and export immutable delta packages."""
+    """Persist allowlisted counters and export immutable delta packages."""
 
     def __init__(
         self,
@@ -51,6 +58,17 @@ class SharedMetricsStore:
         hermes_version: str,
     ) -> None:
         """Increment the terminal model-call counter for the current UTC day."""
+        self.record_counter(_MODEL_CALL_METRIC, dimensions, hermes_version)
+
+    def record_counter(
+        self,
+        metric_name: str,
+        dimensions: dict[str, str],
+        hermes_version: str,
+    ) -> None:
+        """Increment one allowlisted counter for the current UTC day."""
+        if metric_name not in _COUNTER_METRICS:
+            raise ValueError(f"Unsupported shared metric: {metric_name}")
         dimensions_json = json.dumps(
             dimensions,
             sort_keys=True,
@@ -78,7 +96,7 @@ class SharedMetricsStore:
                 """,
                 (
                     period_start,
-                    _MODEL_CALL_METRIC,
+                    metric_name,
                     hermes_version or "unknown",
                     dimensions_json,
                 ),

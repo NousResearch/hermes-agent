@@ -2545,3 +2545,45 @@ def test_dashboard_parent_notice_and_child_results_use_detail_links():
     assert "t.link_counts" not in detail
     assert "Child Results" in detail
     assert "props.data.child_results" in detail
+
+
+# ---------------------------------------------------------------------------
+# PATCH /tasks/:id — blocking a task that is still in 'todo' (PR #62342)
+# ---------------------------------------------------------------------------
+
+
+def test_patch_blocks_dependency_gated_todo_task(client):
+    """The dashboard must be able to block a task while it is still 'todo'.
+
+    Before #62342, block_task()'s SQL guard matched only running/ready, so this
+    PATCH silently failed for a dependency-gated child: the user could not
+    pre-block work before its parents finished, and the task would be promoted
+    to 'ready' and claimed by a worker instead.
+    """
+    parent = client.post(
+        "/api/plugins/kanban/tasks", json={"title": "parent"},
+    ).json()["task"]
+    child = client.post(
+        "/api/plugins/kanban/tasks", json={"title": "child", "parents": [parent["id"]]},
+    ).json()["task"]
+    assert child["status"] == "todo", "child should be gated by its parent"
+
+    r = client.patch(
+        f"/api/plugins/kanban/tasks/{child['id']}",
+        json={"status": "blocked", "block_reason": "waiting on external input"},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["task"]["status"] == "blocked"
+
+    # The block is sticky: completing the parent must not promote the child.
+    r = client.patch(
+        f"/api/plugins/kanban/tasks/{parent['id']}",
+        json={"status": "done"},
+    )
+    assert r.status_code == 200, r.text
+
+    board = client.get("/api/plugins/kanban/board").json()
+    blocked = next(c for c in board["columns"] if c["name"] == "blocked")
+    assert [t["id"] for t in blocked["tasks"]] == [child["id"]]
+    ready = next(c for c in board["columns"] if c["name"] == "ready")
+    assert child["id"] not in [t["id"] for t in ready["tasks"]]

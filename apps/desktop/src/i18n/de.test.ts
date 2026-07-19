@@ -25,6 +25,42 @@ describe('de locale content', () => {
     expect(de.settings.importConfig).not.toBe(en.settings.importConfig)
   })
 
+  it('preserves distinct Starmap import semantics in German', () => {
+    // importMap, importBtn, importEmpty, importSuccess, importedBadge must all differ
+    expect(de.starmap.importMap).not.toBe(de.starmap.copied)
+    expect(de.starmap.importBtn).not.toBe(de.starmap.copied)
+    expect(de.starmap.importEmpty).not.toBe(de.starmap.copied)
+    expect(de.starmap.importSuccess(1)).not.toBe(de.starmap.copied)
+    expect(de.starmap.importSuccess(2)).not.toBe(de.starmap.copied)
+    expect(de.starmap.importedBadge).not.toBe(de.starmap.copied)
+
+    // success message interpolates the node count
+    expect(de.starmap.importSuccess(1)).toContain('1')
+    expect(de.starmap.importSuccess(3)).toContain('3')
+
+    // all five import strings must be pairwise distinct
+    const values = [
+      de.starmap.importMap,
+      de.starmap.importBtn,
+      de.starmap.importEmpty,
+      de.starmap.importSuccess(1),
+      de.starmap.importedBadge
+    ]
+    expect(new Set(values).size).toBe(values.length)
+  })
+
+  it('uses count-free singular for resumeWhenBackgroundDone(1)', () => {
+    expect(de.assistant.thread.resumeWhenBackgroundDone(1)).toBe(
+      'Wird fortgesetzt, wenn die Hintergrundaufgabe abgeschlossen ist'
+    )
+  })
+
+  it('interpolates count in plural resumeWhenBackgroundDone', () => {
+    expect(de.assistant.thread.resumeWhenBackgroundDone(2)).toBe(
+      'Wird fortgesetzt, wenn 2 Hintergrundaufgaben abgeschlossen sind'
+    )
+  })
+
   it('contains no corrupted placeholders or untranslated English leaves', () => {
     // Walks every string leaf in the German catalog and rejects corruption
     // markers that would surface verbatim to the user (e.g. "***", TODO,

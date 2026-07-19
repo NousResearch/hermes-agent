@@ -19,6 +19,8 @@ describe('desktop i18n languages', () => {
     expect(normalizeLocale('de-DE')).toBe('de')
     expect(normalizeLocale('deutsch')).toBe('de')
     expect(normalizeLocale('german')).toBe('de')
+    expect(normalizeLocale('de-AT')).toBe('de')
+    expect(normalizeLocale('de_CH')).toBe('de')
   })
 
   it('falls back to English for empty or unsupported values', () => {

@@ -963,11 +963,11 @@ export const de = defineLocale({
     sharePlaceholder: 'Karten-Code einfügen…',
     copy: 'Karten-Code kopieren',
     copied: 'Kopiert!',
-    importMap: 'Kopiert!',
-    importBtn: 'Kopiert!',
-    importEmpty: 'Kopiert!',
-    importSuccess: nodes => `Kopiert!`,
-    importedBadge: 'Kopiert!',
+    importMap: 'Karte importieren',
+    importBtn: 'Laden',
+    importEmpty: 'Füge einen Karten-Code ein, um ihn zu laden.',
+    importSuccess: nodes => `Karte mit ${nodes} ${nodes === 1 ? 'Knoten' : 'Knoten'} geladen.`,
+    importedBadge: 'importierte Karte',
     resetToMine: 'Zurück zu meiner Karte'
   },
   agents: {
@@ -2358,7 +2358,7 @@ export const de = defineLocale({
       loadingResponse: 'Hermes lädt eine Antwort',
       resumeWhenBackgroundDone: count =>
         count === 1
-          ? 'Wird fortgesetzt, wenn ${count} Hintergrundaufgaben abgeschlossen sind'
+          ? 'Wird fortgesetzt, wenn die Hintergrundaufgabe abgeschlossen ist'
           : `Wird fortgesetzt, wenn ${count} Hintergrundaufgaben abgeschlossen sind`,
       thinking: 'Denkt nach',
       today: time => `Heute, ${time}`,

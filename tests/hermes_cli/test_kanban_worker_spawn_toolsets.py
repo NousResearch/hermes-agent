@@ -171,6 +171,7 @@ def test_default_spawn_uses_exact_task_allowlist_plus_lifecycle(monkeypatch, tmp
     assert args.command == "chat"
     assert args.toolsets == "file,web,kanban_worker"
     assert args.ignore_rules is True
+    assert args.quiet is True
 
 
 
@@ -253,6 +254,7 @@ def test_default_spawn_model_override_survives_real_cli_parse(monkeypatch, tmp_p
     assert args.command == "chat"
     assert args.model == "gpt-5.6-sol"
     assert args.query == "work kanban task t_spawn_tools"
+    assert args.quiet is True
 
 
 def test_resolve_worker_cli_toolsets_uses_profile_home_not_parent_config(monkeypatch, tmp_path):

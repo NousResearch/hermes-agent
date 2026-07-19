@@ -9988,13 +9988,26 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             print(f"  Error generating insights: {e}")
 
     def _check_config_mcp_changes(self) -> None:
-        """Detect mcp_servers changes in config.yaml and auto-reload MCP connections.
+        """Detect mcp_servers changes in config.yaml and react.
 
         Called from process_loop every CONFIG_WATCH_INTERVAL seconds.
         Compares config.yaml mtime + mcp_servers section against the last
-        known state.  When a change is detected, triggers _reload_mcp() and
-        informs the user so they know the tool list has been refreshed.
+        known state.  When a change is detected:
+
+        * By default (``mcp.auto_reload_on_config_change: true``) it
+          auto-triggers ``_reload_mcp()`` and informs the user — legacy
+          behaviour from #1474.
+        * When opted out (``mcp.auto_reload_on_config_change: false``) it
+          does NOT reload.  Instead it notifies the user that the config
+          changed and that they can apply it with ``/reload-mcp`` — while
+          warning that ``/reload-mcp`` rebuilds the tool surface and
+          **invalidates the provider prompt cache** (the next message
+          re-sends the full input prefix, expensive on long-context /
+          high-reasoning models).  This stops silent cache-breaking reloads
+          when config.yaml is rewritten frequently by external tooling or
+          other Hermes instances.
         """
+
         import yaml as _yaml
 
         CONFIG_WATCH_INTERVAL = 5.0  # seconds between config.yaml stat() calls
@@ -10029,7 +10042,34 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         if new_mcp == self._config_mcp_servers:
             return  # mcp_servers unchanged (some other section was edited)
 
+        # Detected a change in the mcp_servers section.  By default we
+        # auto-reload (legacy behaviour), but if the user has opted out we
+        # notify instead of reloading — because every reload rebuilds the
+        # agent tool surface and INVALIDATES the provider prompt cache (the
+        # next message re-sends the full input prefix, which is expensive on
+        # long-context / high-reasoning models).
+        try:
+            from hermes_cli.config import load_config as _load_cfg
+            _cfg = _load_cfg()
+            _mcp = _cfg.get("mcp") if isinstance(_cfg, dict) else None
+            _auto = _mcp.get("auto_reload_on_config_change", True) if isinstance(_mcp, dict) else True
+        except Exception:
+            _auto = True
+
         self._config_mcp_servers = new_mcp
+
+        if not _auto:
+            # Notify the user that the config changed but do NOT auto-reload.
+            # They can apply the new settings on their own terms with
+            # /reload-mcp — which we explicitly warn may invalidate the cache.
+            print()
+            print("🔄 MCP server config changed — reload skipped (auto-reload disabled).")
+            print("   New settings are NOT applied yet. To apply them now, run:")
+            print("     /reload-mcp")
+            print("   ⚠️  Note: /reload-mcp rebuilds the tool set and invalidates the")
+            print("   provider prompt cache (next message re-sends full input tokens).")
+            return
+
         # Notify user and reload.  Run in a separate thread with a hard
         # timeout so a hung MCP server cannot block the process_loop
         # indefinitely (which would freeze the entire TUI).

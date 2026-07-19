@@ -728,8 +728,17 @@ def _verify_health(
             elif state == "stopped":
                 if previous_runtime.get("_live_validated"):
                     if _stopped_runtime_is_live_validated(runtime):
-                        return True, "gateway state: stopped (already stopped before update)"
-                    last_detail = "gateway reported stopped but a live recorded process remains"
+                        if expected_version and not _version_matches(
+                            _current_version(), expected_version
+                        ):
+                            last_detail = (
+                                "gateway is stopped, but the installed version does not "
+                                f"match the expected update {expected_version}"
+                            )
+                        else:
+                            return True, "gateway state: stopped (already stopped before update)"
+                    else:
+                        last_detail = "gateway reported stopped but a live recorded process remains"
                 else:
                     return True, "gateway state: stopped (already stopped before update)"
             else:
@@ -738,7 +747,15 @@ def _verify_health(
             if was_explicitly_stopped:
                 try:
                     if gateway_status.get_running_pid() is None:
-                        return True, "gateway state: stopped (no live gateway status)"
+                        if expected_version and not _version_matches(
+                            _current_version(), expected_version
+                        ):
+                            return False, (
+                                "gateway is stopped, but the installed version does not "
+                                f"match the expected update {expected_version}"
+                            )
+                        else:
+                            return True, "gateway state: stopped (no live gateway status)"
                 except Exception:
                     pass
             last_detail = "gateway runtime status disappeared after update"
@@ -911,9 +928,14 @@ def _gateway_restart_available(previous_runtime: dict[str, Any] | None) -> bool:
         return False
 
 
-def _restart_gateway_after_update(previous_runtime: dict[str, Any]) -> None:
+def _restart_gateway_after_update(
+    previous_runtime: dict[str, Any],
+    *,
+    previous_runtimes: list[dict[str, Any]] | None = None,
+) -> None:
     """Restart the gateway through the shared gateway management command."""
-    if not _gateway_was_running(previous_runtime):
+    all_previous = [previous_runtime, *(previous_runtimes or [])]
+    if not any(_gateway_was_running(runtime) for runtime in all_previous):
         return
     from hermes_cli.main import cmd_gateway
 
@@ -921,7 +943,7 @@ def _restart_gateway_after_update(previous_runtime: dict[str, Any]) -> None:
         cmd_gateway(
             SimpleNamespace(
                 gateway_command="restart",
-                all=False,
+                all=True,
                 system=False,
             )
         )
@@ -941,12 +963,84 @@ def _restart_gateway_after_update(previous_runtime: dict[str, Any]) -> None:
         ) from exc
 
 
+def _capture_other_profile_runtimes(
+    expected_version: str | None = None,
+    *,
+    expected_revision: str | None = None,
+) -> list[dict[str, Any]] | None:
+    """Capture OS-validated runtime proofs for every other live profile."""
+    from hermes_cli.gateway import _running_profile_gateway_processes
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    active_home = get_hermes_home().resolve()
+    captured: list[dict[str, Any]] = []
+    for process in _running_profile_gateway_processes():
+        try:
+            profile_home = process.path.resolve()
+        except (OSError, RuntimeError):
+            return None
+        if profile_home == active_home:
+            continue
+        token = set_hermes_home_override(profile_home)
+        try:
+            runtime = _capture_gateway_runtime(
+                expected_version,
+                expected_revision=expected_revision,
+            )
+        finally:
+            reset_hermes_home_override(token)
+        if runtime is None:
+            return None
+        try:
+            if int(runtime.get("pid")) != int(process.pid):
+                return None
+        except (AttributeError, TypeError, ValueError):
+            return None
+        captured.append(runtime)
+    return captured
+
+
+def _verify_all_gateway_health(
+    previous_runtime: dict[str, Any],
+    previous_runtimes: list[dict[str, Any]],
+    expected_version: str | None,
+    *,
+    expected_revision: str | None = None,
+) -> tuple[bool, str]:
+    """Verify every pre-update live profile after a shared install update."""
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    runtimes = [previous_runtime, *previous_runtimes]
+    for runtime in runtimes:
+        profile_home = runtime.get("profile_home") or runtime.get("profileHome")
+        token = None
+        if profile_home:
+            token = set_hermes_home_override(profile_home)
+        try:
+            if expected_revision is None:
+                ok, detail = _verify_health(runtime, expected_version)
+            else:
+                ok, detail = _verify_health(
+                    runtime,
+                    expected_version,
+                    expected_revision=expected_revision,
+                )
+        finally:
+            if token is not None:
+                reset_hermes_home_override(token)
+        if not ok:
+            return False, f"profile {profile_home or 'unknown'}: {detail}"
+    return True, "all expected gateway profiles are healthy"
+
+
 def _run_existing_update(
     args,
     branch: str | None,
     *,
     expected_sha: str | None = None,
+    expected_version: str | None = None,
     previous_runtime: dict[str, Any] | None = None,
+    previous_runtimes: list[dict[str, Any]] | None = None,
 ) -> None:
     from hermes_cli.main import cmd_update
 
@@ -975,6 +1069,7 @@ def _run_existing_update(
         yes=True,
         branch=branch,
         force=getattr(args, "force", False),
+        _expected_version=expected_version,
         _update_lock_held=True,
     )
     try:
@@ -991,8 +1086,14 @@ def _run_existing_update(
         ok, detail = _verify_expected_sha(expected_sha)
         if not ok:
             raise AutoUpdateError(STATUS_UPDATE_FAILED, detail, EXIT_UPDATE_FAILED)
-    if install_method == "pip" and _gateway_was_running(previous_runtime):
-        _restart_gateway_after_update(previous_runtime)
+    if install_method == "pip" and any(
+        _gateway_was_running(runtime)
+        for runtime in [previous_runtime, *(previous_runtimes or [])]
+        if runtime is not None
+    ):
+        _restart_gateway_after_update(
+            previous_runtime or {}, previous_runtimes=previous_runtimes
+        )
 
 
 def _parse_time(value: str) -> tuple[int, int, str]:
@@ -2519,6 +2620,7 @@ def _cmd_auto_run_now_locked_impl(
     if run_context is not None:
         run_context["run_generation"] = run_generation
     previous_runtime = _capture_gateway_runtime(previous_version)
+    previous_runtimes: list[dict[str, Any]] = []
     latest_version: str | None = None
     current_version: str | None = previous_version
     backup_path: str | None = None
@@ -2579,6 +2681,19 @@ def _cmd_auto_run_now_locked_impl(
             print("✓ Already up to date.")
             return
 
+        if check.get("install_method") == "pip":
+            exact_version = str(latest_version or "").strip()
+            try:
+                Version(exact_version)
+            except InvalidVersion as exc:
+                raise AutoUpdateError(
+                    STATUS_UPDATE_FAILED,
+                    "update check did not provide a valid exact PyPI version; "
+                    "refusing to install moving latest",
+                    EXIT_UPDATE_FAILED,
+                ) from exc
+            latest_version = exact_version
+
         expected_sha = check.get("latest_sha")
         if check.get("install_method") == "git" and not expected_sha:
             raise AutoUpdateError(
@@ -2592,6 +2707,17 @@ def _cmd_auto_run_now_locked_impl(
         else:
             expected_runtime_revision = None
             expected_runtime_version = str(latest_version or "").strip() or None
+
+        if check.get("install_method") == "pip":
+            captured_profiles = _capture_other_profile_runtimes(previous_version)
+            if captured_profiles is None:
+                raise AutoUpdateError(
+                    STATUS_HEALTH_FAILED,
+                    "could not establish live gateway proofs for every running profile; "
+                    "refusing to mutate the shared installation",
+                    EXIT_HEALTH_FAILED,
+                )
+            previous_runtimes = captured_profiles
 
         intent_error = _pre_update_gateway_intent_error()
         if intent_error:
@@ -2617,10 +2743,18 @@ def _cmd_auto_run_now_locked_impl(
                 EXIT_HEALTH_FAILED,
             )
 
+        restart_runtime = next(
+            (
+                runtime
+                for runtime in [previous_runtime, *previous_runtimes]
+                if _gateway_was_running(runtime)
+            ),
+            None,
+        )
         if (
-            _auto_update_install_method() == "pip"
-            and _gateway_was_running(previous_runtime)
-            and not _gateway_restart_available(previous_runtime)
+            check.get("install_method") == "pip"
+            and restart_runtime is not None
+            and not _gateway_restart_available(restart_runtime)
         ):
             raise AutoUpdateError(
                 STATUS_HEALTH_FAILED,
@@ -2641,7 +2775,13 @@ def _cmd_auto_run_now_locked_impl(
             args,
             getattr(args, "branch", None),
             expected_sha=str(expected_sha) if expected_sha else None,
+            expected_version=(
+                expected_runtime_version
+                if check.get("install_method") == "pip"
+                else None
+            ),
             previous_runtime=previous_runtime,
+            previous_runtimes=previous_runtimes,
         )
 
         # ``cmd_update`` intentionally returns normally for some no-op paths,
@@ -2660,15 +2800,22 @@ def _cmd_auto_run_now_locked_impl(
                 "update command returned normally without applying the checked update",
                 EXIT_UPDATE_FAILED,
             )
-
-        if expected_runtime_revision:
-            ok, detail = _verify_health(
-                previous_runtime,
-                expected_runtime_version,
-                expected_revision=expected_runtime_revision,
+        if check.get("install_method") == "pip" and not _version_matches(
+            current_version, latest_version
+        ):
+            raise AutoUpdateError(
+                STATUS_UPDATE_FAILED,
+                "installed version does not match the exact PyPI version checked "
+                f"before update (expected {latest_version!r}, got {current_version!r})",
+                EXIT_UPDATE_FAILED,
             )
-        else:
-            ok, detail = _verify_health(previous_runtime, expected_runtime_version)
+
+        ok, detail = _verify_all_gateway_health(
+            previous_runtime,
+            previous_runtimes,
+            expected_runtime_version,
+            expected_revision=expected_runtime_revision,
+        )
         if not ok:
             raise AutoUpdateError(
                 STATUS_HEALTH_FAILED,

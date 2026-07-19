@@ -166,6 +166,48 @@ def test_pip_auto_update_accepts_a_fresh_new_distribution_version(tmp_path, monk
     assert _read_status(hermes_home)["status"] == update_auto.STATUS_SUCCESS
 
 
+def test_pip_auto_update_refuses_without_an_exact_preflight_version(
+    tmp_path, monkeypatch
+):
+    hermes_home = tmp_path / "home"
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    from hermes_cli import backup
+    from hermes_cli import main as hm
+
+    update_calls = []
+    backup_calls = []
+    monkeypatch.setattr(
+        hm,
+        "_get_update_check_result",
+        lambda **_kw: {
+            "update_available": True,
+            "install_method": "pip",
+            "latest_version": None,
+        },
+    )
+    monkeypatch.setattr(hm, "PROJECT_ROOT", tmp_path / "pip-install")
+    monkeypatch.setattr(hm, "cmd_update", lambda _args: update_calls.append(True))
+    monkeypatch.setattr(
+        backup,
+        "create_pre_update_backup",
+        lambda: backup_calls.append(True) or hermes_home / "backup.zip",
+    )
+    monkeypatch.setattr(update_auto, "_current_version", lambda: "1.0.0")
+    monkeypatch.setattr(
+        "hermes_cli.config.detect_install_method", lambda _root: "pip"
+    )
+    monkeypatch.setattr("hermes_cli.config.is_managed", lambda: False)
+
+    with pytest.raises(SystemExit) as exc:
+        update_auto.cmd_auto_run_now(_args())
+
+    assert exc.value.code == update_auto.EXIT_UPDATE_FAILED
+    assert not update_calls
+    assert not backup_calls
+    assert "exact PyPI version" in _read_status(hermes_home)["error"]
+
+
 def test_pip_auto_update_restarts_running_gateway_and_verifies_new_pid_version(
     tmp_path, monkeypatch
 ):
@@ -250,7 +292,7 @@ def test_pip_auto_update_restarts_running_gateway_and_verifies_new_pid_version(
 
     assert len(restart_calls) == 1
     assert restart_calls[0].gateway_command == "restart"
-    assert restart_calls[0].all is False
+    assert restart_calls[0].all is True
     assert live_runtime["value"]["pid"] == 202
     assert live_runtime["value"]["runtime_version"] == "2.0.0"
     assert _read_status(hermes_home)["status"] == update_auto.STATUS_SUCCESS
@@ -712,6 +754,116 @@ def test_pip_auto_update_rejects_an_unchanged_fresh_distribution_version(
     assert exc.value.code == update_auto.EXIT_UPDATE_FAILED
     assert metadata_calls == ["hermes-agent", "hermes-agent", "hermes-agent"]
     assert "without applying" in _read_status(hermes_home)["error"]
+
+
+def test_stopped_pip_auto_update_rejects_a_version_different_from_preflight(
+    tmp_path, monkeypatch
+):
+    hermes_home = tmp_path / "home"
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    from gateway import status as gateway_status
+    from hermes_cli import backup
+    from hermes_cli import main as hm
+
+    monkeypatch.setattr(
+        gateway_status, "read_runtime_status", lambda: {"gateway_state": "stopped"}
+    )
+    monkeypatch.setattr(gateway_status, "get_running_pid", lambda: None)
+    monkeypatch.setattr(
+        hm,
+        "_get_update_check_result",
+        lambda **_kw: {
+            "update_available": True,
+            "install_method": "pip",
+            "latest_version": "2.0.0",
+        },
+    )
+    monkeypatch.setattr(
+        backup,
+        "create_pre_update_backup",
+        lambda: hermes_home / "backups" / "pre-update.zip",
+    )
+    monkeypatch.setattr(hm, "cmd_update", lambda _args: None)
+    versions = iter(["1.0.0", "2.0.1", "2.0.1"])
+    monkeypatch.setattr(update_auto, "_current_version", lambda: next(versions))
+    monkeypatch.setattr(
+        update_auto,
+        "_verify_health",
+        lambda *_args, **_kwargs: pytest.fail("version mismatch must fail before health success"),
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        update_auto.cmd_auto_run_now(_args())
+
+    assert exc.value.code == update_auto.EXIT_UPDATE_FAILED
+    assert "2.0.0" in _read_status(hermes_home)["error"]
+
+
+def test_verify_health_accepts_a_stopped_gateway_only_at_the_expected_version(
+    monkeypatch,
+):
+    from gateway import status as gateway_status
+
+    monkeypatch.setattr(
+        gateway_status, "read_runtime_status", lambda: {"gateway_state": "stopped"}
+    )
+    monkeypatch.setattr(gateway_status, "get_running_pid", lambda: None)
+    monkeypatch.setattr(update_auto, "_current_version", lambda: "2.0.0")
+
+    ok, detail = update_auto._verify_health(
+        {"gateway_state": "stopped", "_live_validated": True},
+        expected_version="2.0.0",
+    )
+
+    assert ok is True
+    assert "already stopped" in detail
+
+
+def test_verify_health_rejects_absent_stopped_status_at_the_wrong_version(
+    monkeypatch,
+):
+    from gateway import status as gateway_status
+
+    monkeypatch.setattr(gateway_status, "read_runtime_status", lambda: None)
+    monkeypatch.setattr(gateway_status, "get_running_pid", lambda: None)
+    monkeypatch.setattr(update_auto, "_current_version", lambda: "2.0.1")
+    monkeypatch.setattr(update_auto, "_HEALTH_STARTUP_GRACE_SECONDS", 0.0)
+
+    ok, detail = update_auto._verify_health(
+        {"gateway_state": "stopped", "_live_validated": True},
+        expected_version="2.0.0",
+    )
+
+    assert ok is False
+    assert "2.0.0" in detail
+
+
+def test_verify_all_gateway_health_checks_each_expected_profile(
+    monkeypatch,
+):
+    active = {"gateway_state": "running", "profile_home": "/profiles/default"}
+    worker = {"gateway_state": "running", "profile_home": "/profiles/worker"}
+    calls = []
+
+    monkeypatch.setattr(
+        update_auto,
+        "_verify_health",
+        lambda runtime, expected, **_kwargs: calls.append(
+            (runtime["profile_home"], expected)
+        ) or (True, "ok"),
+    )
+
+    ok, detail = update_auto._verify_all_gateway_health(
+        active, [worker], "2.0.0"
+    )
+
+    assert ok is True
+    assert "all expected" in detail
+    assert calls == [
+        ("/profiles/default", "2.0.0"),
+        ("/profiles/worker", "2.0.0"),
+    ]
 
 
 def test_pip_auto_update_records_pip_failure(tmp_path, monkeypatch):

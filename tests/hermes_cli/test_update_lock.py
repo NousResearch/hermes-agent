@@ -57,3 +57,54 @@ def test_non_git_install_gets_a_stable_per_install_lock_path(tmp_path):
     assert path_a != path_b
     assert path_a.name.startswith("update-")
     assert path_a.suffix == ".lock"
+
+
+def test_non_git_install_lock_is_independent_of_user_state_and_profile_paths(
+    tmp_path, monkeypatch
+):
+    install_root = tmp_path / "venv" / "site-packages"
+    other_install_root = tmp_path / "other-venv" / "site-packages"
+    install_root.mkdir(parents=True)
+    other_install_root.mkdir(parents=True)
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "profiles" / "default"))
+    monkeypatch.setenv("HOME", str(tmp_path / "home-a"))
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "xdg-a"))
+    first = get_update_lock_path(install_root)
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "profiles" / "worker"))
+    monkeypatch.setenv("HOME", str(tmp_path / "home-b"))
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "xdg-b"))
+    second = get_update_lock_path(install_root)
+
+    assert first == second
+    assert first != get_update_lock_path(other_install_root)
+    assert str(first) not in {str(tmp_path / "xdg-a"), str(tmp_path / "xdg-b")}
+
+
+def test_non_git_install_lock_canonicalizes_install_root_symlinks(tmp_path):
+    install_root = tmp_path / "venv" / "site-packages"
+    install_root.mkdir(parents=True)
+    alias = tmp_path / "current-site-packages"
+    alias.symlink_to(install_root, target_is_directory=True)
+
+    assert get_update_lock_path(alias) == get_update_lock_path(install_root)
+
+
+def test_non_git_install_uses_private_deterministic_fallback_when_root_is_read_only(
+    tmp_path, monkeypatch
+):
+    install_root = tmp_path / "system-site-packages"
+    install_root.mkdir()
+    fallback_root = tmp_path / "tmp"
+    fallback_root.mkdir()
+    monkeypatch.setattr("hermes_cli.update_lock.os.access", lambda _path, _mode: False)
+    monkeypatch.setattr("hermes_cli.update_lock.tempfile.gettempdir", lambda: str(fallback_root))
+
+    path = get_update_lock_path(install_root)
+    lock = UpdateLock(path).acquire()
+    try:
+        assert path.parent == fallback_root / "hermes-update-locks"
+        assert path.parent.stat().st_mode & 0o777 == 0o700
+    finally:
+        lock.release()

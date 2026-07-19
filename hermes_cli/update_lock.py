@@ -5,6 +5,7 @@ from __future__ import annotations
 import errno
 import hashlib
 import os
+import tempfile
 from pathlib import Path
 
 
@@ -17,7 +18,10 @@ class UpdateLockBusyError(UpdateLockError):
 
 
 class UpdateLockUnavailableError(UpdateLockError):
-    """The checkout could not provide a usable common git directory."""
+    """The installation could not provide a usable lock location."""
+
+
+_FALLBACK_LOCK_DIRNAME = "hermes-update-locks"
 
 
 def _common_git_dir(project_root: Path) -> Path:
@@ -65,12 +69,45 @@ def get_update_lock_path(project_root: Path) -> Path:
     if (project_root / ".git").exists():
         return _common_git_dir(project_root) / "hermes-update.lock"
 
-    install_identity = str(project_root.resolve())
+    install_root = project_root.resolve()
+    install_identity = str(install_root)
     digest = hashlib.sha256(install_identity.encode("utf-8")).hexdigest()[:24]
-    state_home = Path(
-        os.environ.get("XDG_STATE_HOME", str(Path.home() / ".local" / "state"))
-    )
-    return state_home / "hermes" / f"update-{digest}.lock"
+    filename = f"update-{digest}.lock"
+
+    # A venv/site-packages tree is normally writable by its owner. Keeping the
+    # lock beside that installation makes the scope explicit and avoids every
+    # user/profile state directory becoming a competing lock namespace.
+    try:
+        if install_root.is_dir() and os.access(install_root, os.W_OK):
+            return install_root / filename
+    except OSError:
+        pass
+
+    # System-wide pip installs are commonly read-only. The fallback is still
+    # deterministic and keyed by the canonical installation root, but lives
+    # in a private temp directory rather than HOME/XDG state. The directory is
+    # created and ownership-checked by UpdateLock.acquire before opening the
+    # lock file.
+    return Path(tempfile.gettempdir()) / _FALLBACK_LOCK_DIRNAME / filename
+
+
+def _prepare_lock_parent(path: Path) -> None:
+    """Create a lock parent, hardening the shared fallback directory."""
+    is_fallback = path.parent.name == _FALLBACK_LOCK_DIRNAME
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700 if is_fallback else 0o755)
+    if not is_fallback or os.name == "nt":
+        return
+    try:
+        if path.parent.is_symlink() or not path.parent.is_dir():
+            raise OSError(f"lock parent is not a directory: {path.parent}")
+        os.chmod(path.parent, 0o700)
+        stat_result = path.parent.stat()
+        if hasattr(os, "geteuid") and stat_result.st_uid != os.geteuid():
+            raise OSError(f"lock parent is not owned by the current user: {path.parent}")
+    except OSError as exc:
+        raise UpdateLockUnavailableError(
+            f"could not secure update lock directory {path.parent}: {exc}"
+        ) from exc
 
 
 class UpdateLock:
@@ -84,8 +121,11 @@ class UpdateLock:
         if self._fd is not None:
             return self
         try:
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-            fd = os.open(self.path, os.O_RDWR | os.O_CREAT, 0o600)
+            _prepare_lock_parent(self.path)
+            flags = os.O_RDWR | os.O_CREAT
+            if os.name != "nt" and hasattr(os, "O_NOFOLLOW"):
+                flags |= os.O_NOFOLLOW
+            fd = os.open(self.path, flags, 0o600)
         except OSError as exc:
             raise UpdateLockUnavailableError(f"could not open {self.path}: {exc}") from exc
 

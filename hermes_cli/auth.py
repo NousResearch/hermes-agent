@@ -6673,15 +6673,16 @@ def _update_config_for_provider(
     provider_id: str,
     inference_base_url: str,
     default_model: Optional[str] = None,
+    *,
+    replace_default_model: bool = False,
 ) -> Path:
     """Update config.yaml and auth.json to reflect the active provider.
 
-    When *default_model* is provided the function also writes it as the
-    ``model.default`` value.  This prevents a race condition where the
-    gateway (which re-reads config per-message) picks up the new provider
-    before the caller has finished model selection, resulting in a
-    mismatched model/provider (e.g. ``anthropic/claude-opus-4.6`` sent to
-    MiniMax's API).
+    When *default_model* is provided the function can also write it as the
+    ``model.default`` value in the same config transaction. By default an
+    existing direct-provider model is preserved for compatibility; an
+    explicit model-selection flow must pass *replace_default_model* so the
+    selected model, provider, and endpoint become visible together.
     """
     # Set active_provider in auth.json so auto-resolution picks this provider
     with _auth_store_lock():
@@ -6723,7 +6724,7 @@ def _update_config_for_provider(
     # "anthropic/claude-opus-4.6" will fail on direct-API providers.
     if default_model:
         cur_default = model_cfg.get("default", "")
-        if not cur_default or "/" in cur_default:
+        if replace_default_model or not cur_default or "/" in cur_default:
             model_cfg["default"] = default_model
 
     config["model"] = model_cfg

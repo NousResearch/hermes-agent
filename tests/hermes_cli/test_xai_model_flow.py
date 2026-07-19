@@ -128,6 +128,69 @@ def test_xai_model_flow_selection_switches_config_and_active_provider(
     assert auth_store["active_provider"] == "xai-oauth"
 
 
+def test_xai_model_flow_selection_uses_one_coherent_config_write(
+    tmp_path, monkeypatch
+):
+    from hermes_cli import auth as auth_mod
+    from hermes_cli import main as main_mod
+    from utils import atomic_yaml_write as real_atomic_yaml_write
+
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True)
+    (hermes_home / "auth.json").write_text(
+        json.dumps({"version": 1, "active_provider": "openrouter", "providers": {}})
+    )
+    config_path = hermes_home / "config.yaml"
+    config_path.write_text(
+        "model:\n"
+        "  provider: openrouter\n"
+        "  base_url: https://openrouter.ai/api/v1\n"
+        "  default: existing-direct-model\n"
+    )
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setattr(
+        auth_mod, "get_xai_oauth_auth_status", lambda: {"logged_in": True}
+    )
+    monkeypatch.setattr(
+        "hermes_cli.model_setup_flows._prompt_auth_credentials_choice",
+        lambda *args, **kwargs: "use",
+    )
+    monkeypatch.setattr(
+        auth_mod,
+        "resolve_xai_oauth_runtime_credentials",
+        lambda *args, **kwargs: {"base_url": "https://api.x.ai/v1/"},
+    )
+    monkeypatch.setattr(
+        auth_mod,
+        "_prompt_model_selection",
+        lambda *args, **kwargs: "grok-4.5",
+    )
+    monkeypatch.setattr(
+        auth_mod,
+        "_save_model_choice",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("xAI selection must not perform a separate model write")
+        ),
+    )
+
+    writes = []
+
+    def _recording_write(path, data, **kwargs):
+        writes.append(yaml.safe_load(yaml.safe_dump(data)))
+        return real_atomic_yaml_write(path, data, **kwargs)
+
+    monkeypatch.setattr(auth_mod, "atomic_yaml_write", _recording_write)
+
+    main_mod._model_flow_xai_oauth({}, current_model="existing-direct-model")
+
+    assert len(writes) == 1
+    written_model = writes[0]["model"]
+    assert written_model["provider"] == "xai-oauth"
+    assert written_model["base_url"] == "https://api.x.ai/v1"
+    assert written_model["default"] == "grok-4.5"
+    assert yaml.safe_load(config_path.read_text())["model"] == written_model
+
+
 def test_xai_model_flow_cancel_skips_reauth(monkeypatch):
     from hermes_cli import main as main_mod
 

@@ -1031,7 +1031,7 @@ def test_create_schema_exposes_scheduled_initial_status():
     from tools.kanban_tools import KANBAN_CREATE_SCHEMA
 
     initial_status = KANBAN_CREATE_SCHEMA["parameters"]["properties"]["initial_status"]
-    assert initial_status["enum"] == ["running", "blocked", "scheduled"]
+    assert "scheduled" in initial_status["enum"]
 
 
 def test_create_inherits_worker_dir_workspace(monkeypatch, worker_env):

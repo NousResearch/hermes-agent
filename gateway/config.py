@@ -130,6 +130,49 @@ def _coerce_optional_positive_int(value: Any, key: str) -> Optional[int]:
     return parsed
 
 
+_SYSTEMD_WATCHDOG_MAX_SECONDS = 2_147_483_647
+
+
+def coerce_systemd_watchdog_seconds(
+    value: Any, key: str = "gateway.systemd_watchdog_seconds"
+) -> int:
+    """Return a bounded positive watchdog interval or zero when disabled.
+
+    Runtime and service generation share this normalization so a value can
+    never enable ``Type=notify`` while disabling application heartbeats.
+    """
+    if value is None:
+        return 0
+    if isinstance(value, bool):
+        logger.warning("Ignoring invalid %s (expected a positive integer)", key)
+        return 0
+    if isinstance(value, int):
+        parsed = value
+    elif isinstance(value, str):
+        raw = value.strip()
+        if not raw or not raw.isascii() or not raw.isdecimal():
+            logger.warning("Ignoring invalid %s (expected a positive integer)", key)
+            return 0
+        try:
+            parsed = int(raw, 10)
+        except (TypeError, ValueError, OverflowError):
+            logger.warning("Ignoring invalid %s (expected a positive integer)", key)
+            return 0
+    else:
+        logger.warning("Ignoring invalid %s (expected a positive integer)", key)
+        return 0
+    if parsed == 0:
+        return 0
+    if not 0 < parsed <= _SYSTEMD_WATCHDOG_MAX_SECONDS:
+        logger.warning(
+            "Ignoring invalid %s (expected an integer from 1 to %d)",
+            key,
+            _SYSTEMD_WATCHDOG_MAX_SECONDS,
+        )
+        return 0
+    return parsed
+
+
 def _coerce_dict(value: Any) -> Dict[str, Any]:
     """Return *value* when it is a mapping, otherwise an empty dict."""
     return value if isinstance(value, dict) else {}
@@ -313,6 +356,50 @@ class Platform(Enum):
 _BUILTIN_PLATFORM_VALUES = frozenset(m.value for m in Platform.__members__.values())
 
 
+# Platforms that bind a host TCP port (HTTP/webhook listeners). In a profile
+# multiplexer the default profile owns the single shared listener and serves
+# every profile through the /p/<profile>/ URL prefix, so a SECONDARY profile
+# enabling one of these is always a misconfiguration: it would try to bind a
+# port already held by the default's listener. Single source of truth for
+# both the gateway's fail-fast startup validation (gateway/run.py) and the
+# dashboard's pre-write mutation validation (hermes_cli/web_server.py) so
+# the two policies cannot drift. Stored as platform .value strings.
+PORT_BINDING_PLATFORM_VALUES = frozenset({
+    "webhook",
+    "api_server",
+    "msgraph_webhook",
+    "feishu",
+    "wecom_callback",
+    "bluebubbles",
+    "sms",
+    "whatsapp_cloud",
+    "line",
+})
+
+# Platforms whose port-binding status depends on connection mode. Feishu in
+# websocket mode (its default) uses an outbound long connection — no listener.
+# Only webhook/callback mode binds a port. Maps platform value → the mode
+# value that actually binds (#52563).
+PORT_BINDING_CONDITIONAL_MODES: dict[str, str] = {
+    "feishu": "webhook",
+}
+
+
+def platform_binds_port(platform_value: str, extra: Optional[dict] = None) -> bool:
+    """Return True when *platform_value* actually binds a port for *extra* config.
+
+    Mode-conditional platforms (Feishu) only bind in their listener mode;
+    everything else in ``PORT_BINDING_PLATFORM_VALUES`` always binds.
+    """
+    if platform_value not in PORT_BINDING_PLATFORM_VALUES:
+        return False
+    expected_mode = PORT_BINDING_CONDITIONAL_MODES.get(platform_value)
+    if expected_mode is not None:
+        actual = str((extra or {}).get("connection_mode", "websocket")).strip().lower()
+        return actual == expected_mode
+    return True
+
+
 @dataclass
 class HomeChannel:
     """
@@ -440,6 +527,22 @@ class ChannelOverride:
         )
 
 
+# Canonical map of platforms whose primary credential is ``PlatformConfig.token``
+# and the env var it loads from. Used for empty-token warnings at config
+# validation and by the multiplex primary-startup credential gate in
+# ``gateway.run`` (#64674). Platforms absent from this map authenticate some
+# other way (session files, port-bound webhooks, api_key-only) and must never
+# be skipped for a missing token.
+PLATFORM_TOKEN_ENV_NAMES: dict["Platform", str] = {
+    Platform.TELEGRAM: "TELEGRAM_BOT_TOKEN",
+    Platform.DISCORD: "DISCORD_BOT_TOKEN",
+    Platform.SLACK: "SLACK_BOT_TOKEN",
+    Platform.MATTERMOST: "MATTERMOST_TOKEN",
+    Platform.MATRIX: "MATRIX_ACCESS_TOKEN",
+    Platform.WEIXIN: "WEIXIN_TOKEN",
+}
+
+
 @dataclass
 class PlatformConfig:
     """Configuration for a single messaging platform."""
@@ -470,6 +573,15 @@ class PlatformConfig:
     # gateway/platforms/base.py.
     typing_indicator: bool = True
 
+    # Custom text for the working-state line on platforms whose typing
+    # indicator renders text rather than a native bubble: Slack's
+    # assistant.threads.setStatus line (shown next to the bot name; needs the
+    # assistant:write scope to render) and Google Chat's visible marker
+    # message. None keeps each platform's built-in default ("is thinking..." /
+    # "Hermes is thinking…"). Platforms with textless indicators (Discord,
+    # Telegram, Matrix, …) ignore it.
+    typing_status_text: Optional[str] = None
+
     # Per-channel model/provider/system_prompt overrides (channel_id -> ChannelOverride)
     channel_overrides: Dict[str, ChannelOverride] = field(default_factory=dict)
 
@@ -484,6 +596,8 @@ class PlatformConfig:
             "gateway_restart_notification": self.gateway_restart_notification,
             "typing_indicator": self.typing_indicator,
         }
+        if self.typing_status_text is not None:
+            result["typing_status_text"] = self.typing_status_text
         if self.token:
             result["token"] = self.token
         if self.api_key:
@@ -519,6 +633,12 @@ class PlatformConfig:
         if _typing is None:
             _typing = extra.get("typing_indicator")
 
+        # typing_status_text takes the same two routes (top-level or bridged
+        # into extra); string passthrough, no coercion.
+        _typing_text = data.get("typing_status_text")
+        if _typing_text is None:
+            _typing_text = extra.get("typing_status_text")
+
         channel_overrides: Dict[str, ChannelOverride] = {}
         raw_overrides = data.get("channel_overrides") or {}
         if isinstance(raw_overrides, dict):
@@ -534,6 +654,7 @@ class PlatformConfig:
             reply_to_mode=data.get("reply_to_mode", "first"),
             gateway_restart_notification=_coerce_bool(_grn, True),
             typing_indicator=_coerce_bool(_typing, True),
+            typing_status_text=_typing_text,
             channel_overrides=channel_overrides,
             extra=extra,
         )
@@ -708,6 +829,10 @@ class GatewayConfig:
     # gateway behaves exactly as before — single HERMES_HOME, no profile stamping.
     multiplex_profiles: bool = False
 
+    # Opt-in systemd event-loop watchdog. Zero preserves Type=simple and
+    # disables sd_notify at runtime.
+    systemd_watchdog_seconds: int = 0
+
     # Unauthorized DM policy
     unauthorized_dm_behavior: str = "pair"  # "pair" or "ignore"
 
@@ -726,15 +851,27 @@ class GatewayConfig:
     # dict with: name, platform, profile, and optional guild_id/chat_id/thread_id.
     profile_routes: list = field(default_factory=list)
 
+    def __post_init__(self) -> None:
+        self.systemd_watchdog_seconds = coerce_systemd_watchdog_seconds(
+            self.systemd_watchdog_seconds
+        )
+
     def get_connected_platforms(self) -> List[Platform]:
-        """Return list of platforms that are enabled and configured."""
+        """Return list of platforms that are enabled and configured.
+
+        Sorted by platform value so the rendered "Connected Platforms" list
+        (and the home-channel blocks derived from it) is byte-stable across
+        gateway restarts and mid-process platform registration — dict
+        insertion order is not a stable contract and a reorder busts the
+        prompt cache without any semantic change.
+        """
         connected = []
         for platform, config in self.platforms.items():
             if not config.enabled:
                 continue
             if self._is_platform_connected(platform, config):
                 connected.append(platform)
-        return connected
+        return sorted(connected, key=lambda p: str(p.value))
 
     def _is_platform_connected(self, platform: Platform, config: PlatformConfig) -> bool:
         """Check whether a single platform is sufficiently configured."""
@@ -829,6 +966,7 @@ class GatewayConfig:
             "thread_sessions_per_user": self.thread_sessions_per_user,
             "max_concurrent_sessions": self.max_concurrent_sessions,
             "multiplex_profiles": self.multiplex_profiles,
+            "systemd_watchdog_seconds": self.systemd_watchdog_seconds,
             "unauthorized_dm_behavior": self.unauthorized_dm_behavior,
             "streaming": self.streaming.to_dict(),
             "session_store_max_age_days": self.session_store_max_age_days,
@@ -891,6 +1029,15 @@ class GatewayConfig:
         thread_sessions_per_user = data.get("thread_sessions_per_user")
         multiplex_profiles = data.get("multiplex_profiles")
         nested_gateway = data.get("gateway") if isinstance(data.get("gateway"), dict) else {}
+        if "systemd_watchdog_seconds" in data:
+            systemd_watchdog_raw = data.get("systemd_watchdog_seconds")
+            systemd_watchdog_key = "systemd_watchdog_seconds"
+        else:
+            systemd_watchdog_raw = nested_gateway.get("systemd_watchdog_seconds")
+            systemd_watchdog_key = "gateway.systemd_watchdog_seconds"
+        systemd_watchdog_seconds = coerce_systemd_watchdog_seconds(
+            systemd_watchdog_raw, systemd_watchdog_key
+        )
         if multiplex_profiles is None and isinstance(nested_gateway, dict):
             # Also honor gateway.multiplex_profiles written by
             # ``hermes config set gateway.multiplex_profiles true``.
@@ -950,6 +1097,7 @@ class GatewayConfig:
             group_sessions_per_user=_coerce_bool(group_sessions_per_user, True),
             thread_sessions_per_user=_coerce_bool(thread_sessions_per_user, False),
             multiplex_profiles=_coerce_bool(multiplex_profiles, False),
+            systemd_watchdog_seconds=systemd_watchdog_seconds,
             max_concurrent_sessions=max_concurrent_sessions,
             unauthorized_dm_behavior=unauthorized_dm_behavior,
             streaming=StreamingConfig.from_dict(data.get("streaming", {})),
@@ -1085,6 +1233,10 @@ def load_gateway_config() -> GatewayConfig:
                     gw_data["multiplex_profiles"] = gateway_section["multiplex_profiles"]
                 if "max_concurrent_sessions" in gateway_section:
                     gw_data["max_concurrent_sessions"] = gateway_section["max_concurrent_sessions"]
+                if "systemd_watchdog_seconds" in gateway_section:
+                    gw_data["systemd_watchdog_seconds"] = gateway_section[
+                        "systemd_watchdog_seconds"
+                    ]
 
             if "max_concurrent_sessions" in yaml_cfg:
                 gw_data["max_concurrent_sessions"] = yaml_cfg["max_concurrent_sessions"]
@@ -1265,6 +1417,8 @@ def load_gateway_config() -> GatewayConfig:
                     bridged["gateway_restart_notification"] = platform_cfg["gateway_restart_notification"]
                 if "typing_indicator" in platform_cfg:
                     bridged["typing_indicator"] = platform_cfg["typing_indicator"]
+                if "typing_status_text" in platform_cfg:
+                    bridged["typing_status_text"] = platform_cfg["typing_status_text"]
                 has_channel_overrides = "channel_overrides" in platform_cfg
                 if has_channel_overrides:
                     raw_overrides = platform_cfg.get("channel_overrides")
@@ -1424,14 +1578,7 @@ def _validate_gateway_config(config: "GatewayConfig") -> None:
 
     # Warn about empty bot tokens — platforms that loaded an empty string
     # won't connect and the cause can be confusing without a log line.
-    _token_env_names = {
-        Platform.TELEGRAM: "TELEGRAM_BOT_TOKEN",
-        Platform.DISCORD: "DISCORD_BOT_TOKEN",
-        Platform.SLACK: "SLACK_BOT_TOKEN",
-        Platform.MATTERMOST: "MATTERMOST_TOKEN",
-        Platform.MATRIX: "MATRIX_ACCESS_TOKEN",
-        Platform.WEIXIN: "WEIXIN_TOKEN",
-    }
+    _token_env_names = PLATFORM_TOKEN_ENV_NAMES
     for platform, pconfig in config.platforms.items():
         if not pconfig.enabled:
             continue

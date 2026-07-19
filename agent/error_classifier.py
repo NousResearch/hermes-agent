@@ -123,6 +123,25 @@ _BILLING_PATTERNS = [
     "not available on the free tier",
 ]
 
+# xAI's explicit Grok credit-exhaustion code. Keep the HTTP 403 special case
+# provider-scoped: other providers' generic billing codes historically remain
+# auth failures when they arrive as 403.
+_XAI_SPENDING_LIMIT_ERROR_CODE = "personal-team-blocked:spending-limit"
+
+# Structured provider codes that mean the account cannot serve paid traffic
+# until credits/subscription capacity is restored. xAI returns its explicit
+# Grok spending-limit signal as HTTP 403 rather than 402.
+_BILLING_ERROR_CODES = frozenset({
+    "insufficient_quota",
+    "billing_not_active",
+    "payment_required",
+    "insufficient_credits",
+    "no_usable_credits",
+    "balance_depleted",
+    "model_not_supported_on_free_tier",
+    _XAI_SPENDING_LIMIT_ERROR_CODE,
+})
+
 # Patterns that indicate rate limiting (transient, will resolve)
 _RATE_LIMIT_PATTERNS = [
     "rate limit",
@@ -250,6 +269,11 @@ _CONTEXT_OVERFLOW_PATTERNS = [
     "context window",
     "prompt is too long",
     "prompt exceeds max length",
+    # NOTE: bare "max_tokens" is load-bearing — the output-cap-retry path keys
+    # off it (e.g. "max_tokens: 65536 > context_window: 200000 ..."). Do NOT
+    # remove it. Provider empty-response advisories also contain "very low
+    # max_tokens", but those are intercepted by _EMPTY_PROVIDER_RESPONSE_PATTERNS
+    # BEFORE this list is consulted, so they never mis-route into compression.
     "max_tokens",
     "maximum number of tokens",
     # vLLM / local inference server patterns
@@ -267,6 +291,8 @@ _CONTEXT_OVERFLOW_PATTERNS = [
     # Chinese error messages (some providers return these)
     "超过最大长度",
     "上下文长度",
+    # Z.AI / Zhipu GLM pattern (English form; error code 1210)
+    "tokens in request more than max tokens allowed",
     # AWS Bedrock Converse API error patterns
     "input is too long",
     "max input token",
@@ -405,6 +431,19 @@ _THINKING_SIG_PATTERNS = [
 # the exception type is generic (e.g. RuntimeError from a local shim that
 # wraps a subprocess timeout).  Checked before the type-based transport
 # heuristics so custom-provider "timed out" errors don't fall through to
+# Provider empty-response advisories (OpenRouter / nano-gpt / similar).
+# Checked before context-overflow matching because the advisory text often
+# mentions "max_tokens" as a possible cause, which historically sat in
+# _CONTEXT_OVERFLOW_PATTERNS and sent healthy sessions into a compression
+# death spiral ending in "Cannot compress further".
+_EMPTY_PROVIDER_RESPONSE_PATTERNS = [
+    "returned an empty response",
+    "empty response despite retries",
+    "provider returned an empty response",
+    "model returning empty responses",
+    "empty response stream",
+]
+
 # the unknown bucket and get misreported as empty responses.
 _TIMEOUT_MESSAGE_PATTERNS = [
     "timed out",
@@ -754,6 +793,14 @@ def classify_api_error(
         if classified is not None:
             return classified
 
+    # Local MoA config drift is deterministic: a persisted session can retain
+    # a preset name that was later renamed/deleted. Retrying the same lookup
+    # cannot recover and makes a clear config error look like an API outage.
+    from agent.errors import MoAPresetNotFoundError
+
+    if isinstance(error, MoAPresetNotFoundError):
+        return _result(FailoverReason.model_not_found, retryable=False)
+
     # ── 3. Error code classification ────────────────────────────────
 
     if error_code:
@@ -906,7 +953,11 @@ def _classify_by_status(
         # OpenRouter 403 "key limit exceeded" is actually billing. Other
         # providers also use 403 for account-plan or credit exhaustion.
         if (
-            "key limit exceeded" in error_msg
+            (
+                provider == "xai-oauth"
+                and error_code.lower() == _XAI_SPENDING_LIMIT_ERROR_CODE
+            )
+            or "key limit exceeded" in error_msg
             or "spending limit" in error_msg
             or any(p in error_msg for p in _BILLING_PATTERNS)
         ):
@@ -1044,6 +1095,14 @@ def _classify_by_status(
         # remaining explicit context-overflow signal routes into the
         # compression-and-retry path (mirroring _classify_400) instead of
         # blind server_error retries that exhaust and drop the turn.
+        # Empty-response advisories that mention "max_tokens" must not enter
+        # that compression path.
+        if any(p in error_msg for p in _EMPTY_PROVIDER_RESPONSE_PATTERNS):
+            return result_fn(
+                FailoverReason.server_error,
+                retryable=True,
+                should_compress=False,
+            )
         if any(p in error_msg for p in _CONTEXT_OVERFLOW_PATTERNS):
             return result_fn(
                 FailoverReason.context_overflow,
@@ -1057,6 +1116,12 @@ def _classify_by_status(
         # Cloudflare/Tailscale hop relabeling the status). Route explicit
         # overflow bodies into compression; otherwise treat as transient
         # overload and retry.
+        if any(p in error_msg for p in _EMPTY_PROVIDER_RESPONSE_PATTERNS):
+            return result_fn(
+                FailoverReason.server_error,
+                retryable=True,
+                should_compress=False,
+            )
         if any(p in error_msg for p in _CONTEXT_OVERFLOW_PATTERNS):
             return result_fn(
                 FailoverReason.context_overflow,
@@ -1182,8 +1247,8 @@ def _classify_400(
     # returns:
     #   "Unsupported parameter: 'max_tokens' is not supported with this model.
     #    Use 'max_completion_tokens' instead."
-    # That string contains the literal substring "max_tokens", which is one of
-    # the _CONTEXT_OVERFLOW_PATTERNS — so without this guard the 400 is
+    # That string contains the literal substring "max_tokens", which historically
+    # sat in _CONTEXT_OVERFLOW_PATTERNS — so without this guard the 400 is
     # misclassified as context_overflow, routed into the compression loop,
     # re-sent with the same bad parameter, and ends in "Cannot compress
     # further".  These errors are deterministic (every retry gets the identical
@@ -1203,6 +1268,17 @@ def _classify_400(
             FailoverReason.format_error,
             retryable=False,
             should_fallback=True,
+        )
+
+    # Empty-provider-response advisories must not enter compression. They
+    # often mention "max_tokens" as a possible cause and used to match the
+    # bare overflow pattern, then thrash compress until "Cannot compress
+    # further" on an otherwise healthy session (custom endpoints / nano-gpt).
+    if any(p in error_msg for p in _EMPTY_PROVIDER_RESPONSE_PATTERNS):
+        return result_fn(
+            FailoverReason.server_error,
+            retryable=True,
+            should_compress=False,
         )
 
     # Context overflow from 400
@@ -1292,15 +1368,7 @@ def _classify_by_error_code(
             should_rotate_credential=True,
         )
 
-    if code_lower in {
-        "insufficient_quota",
-        "billing_not_active",
-        "payment_required",
-        "insufficient_credits",
-        "no_usable_credits",
-        "balance_depleted",
-        "model_not_supported_on_free_tier",
-    }:
+    if code_lower in _BILLING_ERROR_CODES:
         return result_fn(
             FailoverReason.billing,
             retryable=False,
@@ -1414,6 +1482,15 @@ def _classify_by_message(
             retryable=True,
             should_rotate_credential=True,
             should_fallback=True,
+        )
+
+    # Empty-provider-response advisories (often mention "max_tokens") must
+    # retry without compression — see the matching 400-path guard above.
+    if any(p in error_msg for p in _EMPTY_PROVIDER_RESPONSE_PATTERNS):
+        return result_fn(
+            FailoverReason.server_error,
+            retryable=True,
+            should_compress=False,
         )
 
     # Context overflow patterns

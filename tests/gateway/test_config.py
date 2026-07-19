@@ -4,6 +4,8 @@ import logging
 import os
 from unittest.mock import patch
 
+import pytest
+
 from agent.secret_scope import reset_secret_scope, set_secret_scope
 from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 from gateway.config import (
@@ -92,6 +94,28 @@ class TestPlatformConfigRoundtrip:
         # extra; from_dict must honor it there too (mirrors _grn fallback).
         restored = PlatformConfig.from_dict({"extra": {"typing_indicator": False}})
         assert restored.typing_indicator is False
+
+    def test_typing_status_text_defaults_none(self):
+        assert PlatformConfig().typing_status_text is None
+        assert PlatformConfig.from_dict({}).typing_status_text is None
+
+    def test_typing_status_text_roundtrip(self):
+        pc = PlatformConfig(enabled=True, typing_status_text="is pouncing… 🐾")
+        restored = PlatformConfig.from_dict(pc.to_dict())
+        assert restored.typing_status_text == "is pouncing… 🐾"
+
+    def test_typing_status_text_resolved_from_extra(self):
+        # Same bridge route as typing_indicator: the shared-key loop copies a
+        # nested platforms.<plat> value into extra.
+        restored = PlatformConfig.from_dict(
+            {"extra": {"typing_status_text": "chasing yarn…"}}
+        )
+        assert restored.typing_status_text == "chasing yarn…"
+
+    def test_typing_status_text_omitted_from_to_dict_when_unset(self):
+        # None must not serialize — keeps existing config files byte-stable.
+        assert "typing_status_text" not in PlatformConfig().to_dict()
+
     def test_channel_overrides_roundtrip(self):
         pc = PlatformConfig(
             enabled=True,
@@ -304,6 +328,7 @@ class TestGatewayConfigRoundtrip:
             quick_commands={"limits": {"type": "exec", "command": "echo ok"}},
             group_sessions_per_user=False,
             thread_sessions_per_user=True,
+            systemd_watchdog_seconds=120,
         )
         d = config.to_dict()
         restored = GatewayConfig.from_dict(d)
@@ -314,6 +339,33 @@ class TestGatewayConfigRoundtrip:
         assert restored.quick_commands == {"limits": {"type": "exec", "command": "echo ok"}}
         assert restored.group_sessions_per_user is False
         assert restored.thread_sessions_per_user is True
+        assert restored.systemd_watchdog_seconds == 120
+
+    def test_systemd_watchdog_from_dict_disables_invalid_values(self):
+        invalid_values = [
+            None,
+            0,
+            -1,
+            True,
+            1.5,
+            float("nan"),
+            float("inf"),
+            "120.0",
+            "1e3",
+            "bad",
+            2_147_483_648,
+        ]
+
+        for raw in invalid_values:
+            config = GatewayConfig.from_dict({"systemd_watchdog_seconds": raw})
+            assert config.systemd_watchdog_seconds == 0
+
+    def test_systemd_watchdog_from_dict_accepts_nested_positive_integer(self):
+        config = GatewayConfig.from_dict(
+            {"gateway": {"systemd_watchdog_seconds": "45"}}
+        )
+
+        assert config.systemd_watchdog_seconds == 45
 
     def test_max_concurrent_sessions_from_dict_normalizes_disabled_values(self):
         assert GatewayConfig.from_dict({}).max_concurrent_sessions is None
@@ -452,6 +504,45 @@ class TestLoadGatewayConfig:
 
         assert config.quick_commands == {"limits": {"type": "exec", "command": "echo ok"}}
 
+    def test_typing_status_text_from_toplevel_platform_block(self, tmp_path, monkeypatch):
+        """A top-level ``slack:`` block reaches PlatformConfig via the
+        shared-key bridge (bridged into extra, then the from_dict extra
+        fallback) — the route a bare ``hermes config set``-style YAML uses."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            'slack:\n  typing_status_text: "is pouncing… 🐾"\n',
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert (
+            config.platforms[Platform.SLACK].typing_status_text
+            == "is pouncing… 🐾"
+        )
+
+    def test_typing_status_text_from_nested_platforms_block(self, tmp_path, monkeypatch):
+        """``platforms.slack.typing_status_text`` reaches PlatformConfig via
+        _merge_platform_map + the from_dict top-level read."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "platforms:\n"
+            "  slack:\n"
+            "    enabled: true\n"
+            '    typing_status_text: "chasing yarn…"\n',
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert (
+            config.platforms[Platform.SLACK].typing_status_text == "chasing yarn…"
+        )
+
     def test_multiplex_profiles_from_nested_gateway_section(self, tmp_path, monkeypatch):
         """``gateway.multiplex_profiles: true`` (the nested form written by
         ``hermes config set gateway.multiplex_profiles true``) must enable
@@ -477,6 +568,32 @@ class TestLoadGatewayConfig:
         config = load_gateway_config()
 
         assert config.multiplex_profiles is True
+
+    def test_discord_websocket_health_settings_seed_platform_extra(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "discord:\n"
+            "  websocket_liveness_interval_seconds: 17\n"
+            "  websocket_liveness_failure_threshold: 4\n"
+            "  websocket_heartbeat_ack_max_age_seconds: 75\n"
+            "  websocket_max_latency_seconds: 30\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        for key in (
+            "HERMES_DISCORD_LIVENESS_INTERVAL_SECONDS",
+            "HERMES_DISCORD_LIVENESS_FAILURE_THRESHOLD",
+        ):
+            monkeypatch.delenv(key, raising=False)
+
+        config = load_gateway_config()
+
+        extra = config.platforms[Platform.DISCORD].extra
+        assert extra["websocket_liveness_interval_seconds"] == 17
+        assert extra["websocket_liveness_failure_threshold"] == 4
+        assert extra["websocket_heartbeat_ack_max_age_seconds"] == 75
+        assert extra["websocket_max_latency_seconds"] == 30
 
     def test_relay_platform_enabled_from_env_url(self, tmp_path, monkeypatch):
         """GATEWAY_RELAY_URL must enable Platform.RELAY in config.platforms so

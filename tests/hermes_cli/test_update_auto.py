@@ -139,6 +139,8 @@ def test_pip_auto_update_accepts_a_fresh_new_distribution_version(tmp_path, monk
         lambda: hermes_home / "backups" / "pre-update.zip",
     )
     monkeypatch.setattr(hm, "cmd_update", lambda _args: None)
+    restart_calls = []
+    monkeypatch.setattr(hm, "cmd_gateway", lambda args: restart_calls.append(args))
     monkeypatch.setattr(update_auto, "_verify_health", lambda *_args: (True, "ok"))
     monkeypatch.setattr(
         hm,
@@ -160,7 +162,155 @@ def test_pip_auto_update_accepts_a_fresh_new_distribution_version(tmp_path, monk
     update_auto.cmd_auto_run_now(_args())
 
     assert metadata_calls == ["hermes-agent", "hermes-agent"]
+    assert restart_calls == []
     assert _read_status(hermes_home)["status"] == update_auto.STATUS_SUCCESS
+
+
+def test_pip_auto_update_restarts_running_gateway_and_verifies_new_pid_version(
+    tmp_path, monkeypatch
+):
+    hermes_home = tmp_path / "home"
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    from gateway import status as gateway_status
+    from hermes_cli import backup
+    from hermes_cli import main as hm
+
+    old_runtime = {
+        "gateway_state": "running",
+        "pid": 101,
+        "start_time": 1,
+        "runtime_version": "1.0.0",
+        "installation_identity": "pip-install",
+        "profile_home": str(hermes_home),
+        "argv": ["hermes", "gateway", "run"],
+        "_live_validated": True,
+    }
+    new_runtime = {
+        **old_runtime,
+        "pid": 202,
+        "start_time": 2,
+        "runtime_version": "2.0.0",
+    }
+    live_runtime = {"value": old_runtime}
+    restart_calls = []
+
+    monkeypatch.setattr(
+        hm,
+        "_get_update_check_result",
+        lambda **_kw: {
+            "update_available": True,
+            "install_method": "pip",
+            "latest_version": "2.0.0",
+        },
+    )
+    monkeypatch.setattr(
+        backup,
+        "create_pre_update_backup",
+        lambda: hermes_home / "backups" / "pre-update.zip",
+    )
+    monkeypatch.setattr(hm, "PROJECT_ROOT", tmp_path / "pip-install")
+    monkeypatch.setattr(hm, "cmd_update", lambda _args: None)
+    monkeypatch.setattr(
+        hm,
+        "cmd_gateway",
+        lambda args: restart_calls.append(args) or live_runtime.update(value=new_runtime),
+    )
+    monkeypatch.setattr(update_auto, "_capture_gateway_runtime", lambda *_args, **_kw: old_runtime)
+    monkeypatch.setattr(update_auto, "_installation_identity", lambda: "pip-install")
+    monkeypatch.setattr(
+        update_auto,
+        "_gateway_restart_available",
+        lambda _runtime: True,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        gateway_status, "read_runtime_status", lambda: live_runtime["value"]
+    )
+    monkeypatch.setattr(
+        update_auto,
+        "_live_gateway_identity",
+        lambda runtime, **_kwargs: {
+            "pid": runtime["pid"],
+            "start_time": runtime["start_time"],
+            "command": "hermes gateway run",
+            "runtime_version": runtime["runtime_version"],
+            "installation_identity": runtime["installation_identity"],
+            "profile_home": runtime["profile_home"],
+        },
+    )
+    versions = iter(["1.0.0", "2.0.0", "2.0.0"])
+    monkeypatch.setattr(update_auto, "_current_version", lambda: next(versions))
+    monkeypatch.setattr(
+        "hermes_cli.config.detect_install_method", lambda _root: "pip"
+    )
+    monkeypatch.setattr("hermes_cli.config.is_managed", lambda: False)
+
+    update_auto.cmd_auto_run_now(_args())
+
+    assert len(restart_calls) == 1
+    assert restart_calls[0].gateway_command == "restart"
+    assert restart_calls[0].all is False
+    assert live_runtime["value"]["pid"] == 202
+    assert live_runtime["value"]["runtime_version"] == "2.0.0"
+    assert _read_status(hermes_home)["status"] == update_auto.STATUS_SUCCESS
+
+
+def test_running_pip_update_refuses_before_mutating_when_gateway_restart_is_unavailable(
+    tmp_path, monkeypatch
+):
+    hermes_home = tmp_path / "home"
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    from gateway import status as gateway_status
+    from hermes_cli import backup
+    from hermes_cli import main as hm
+
+    old_runtime = {
+        "gateway_state": "running",
+        "pid": 101,
+        "start_time": 1,
+        "runtime_version": "1.0.0",
+        "installation_identity": "pip-install",
+        "profile_home": str(hermes_home),
+    }
+    update_calls = []
+    backup_calls = []
+
+    monkeypatch.setattr(
+        hm,
+        "_get_update_check_result",
+        lambda **_kw: {
+            "update_available": True,
+            "install_method": "pip",
+            "latest_version": "2.0.0",
+        },
+    )
+    monkeypatch.setattr(hm, "PROJECT_ROOT", tmp_path / "pip-install")
+    monkeypatch.setattr(
+        hm, "cmd_update", lambda _args: update_calls.append(True)
+    )
+    monkeypatch.setattr(
+        backup,
+        "create_pre_update_backup",
+        lambda: backup_calls.append(True) or hermes_home / "backup.zip",
+    )
+    monkeypatch.setenv("_HERMES_GATEWAY", "1")
+    monkeypatch.setattr(update_auto, "_capture_gateway_runtime", lambda *_args, **_kw: old_runtime)
+    monkeypatch.setattr(gateway_status, "read_runtime_status", lambda: old_runtime)
+    monkeypatch.setattr(update_auto, "_current_version", lambda: "1.0.0")
+    monkeypatch.setattr(
+        "hermes_cli.config.detect_install_method", lambda _root: "pip"
+    )
+    monkeypatch.setattr("hermes_cli.config.is_managed", lambda: False)
+
+    with pytest.raises(SystemExit) as exc:
+        update_auto.cmd_auto_run_now(_args())
+
+    assert exc.value.code == update_auto.EXIT_HEALTH_FAILED
+    assert update_calls == []
+    assert backup_calls == []
+    assert _read_status(hermes_home)["status"] == update_auto.STATUS_HEALTH_FAILED
 
 
 def test_live_process_metadata_does_not_use_proc_pid_paths_on_darwin(monkeypatch):
@@ -783,6 +933,38 @@ def test_scheduled_command_source_launcher_argv_can_start(tmp_path, monkeypatch)
 
     assert result.returncode == 0
     assert scheduled_argv[:2] == [sys.executable, str(script_path.resolve())]
+    assert "started:--profile default update auto run-scheduled" in result.stdout
+
+
+@pytest.mark.live_system_guard_bypass  # starts only a throwaway source launcher
+def test_scheduled_command_executable_relative_launcher_survives_scheduler_cwd(
+    tmp_path, monkeypatch
+):
+    launcher_cwd = tmp_path / "launcher cwd"
+    launcher_cwd.mkdir()
+    run_cwd = tmp_path / "different cwd"
+    run_cwd.mkdir()
+    launcher = launcher_cwd / "hermes"
+    launcher.write_text(
+        "#!/bin/sh\nprintf 'started:%s\\n' \"$*\"\n",
+        encoding="utf-8",
+    )
+    launcher.chmod(0o755)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "default-home"))
+    monkeypatch.chdir(launcher_cwd)
+    monkeypatch.setattr(update_auto.sys, "argv", ["./hermes"])
+
+    scheduled_argv = update_auto._scheduled_command()
+    result = subprocess.run(
+        scheduled_argv,
+        cwd=run_cwd,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0
+    assert scheduled_argv[0] == str(launcher.resolve())
     assert "started:--profile default update auto run-scheduled" in result.stdout
 
 
@@ -1441,6 +1623,55 @@ def test_enable_creates_expected_systemd_user_timer_on_linux(tmp_path, monkeypat
     assert status["schedule"] == "03:00"
     assert status["schedulerType"] == "systemd-user"
     assert status["schedulerPath"] == str(timer_path)
+
+
+@pytest.mark.parametrize(
+    ("install_method", "managed"),
+    [("homebrew", False), ("nixos", False), ("git", True)],
+)
+def test_enable_rejects_managed_install_before_mutating_artifacts_or_status(
+    tmp_path, monkeypatch, install_method, managed
+):
+    hermes_home, calls = _set_linux_scheduler_env(tmp_path, monkeypatch)
+    service_path, timer_path = update_auto._systemd_paths()
+    service_path.parent.mkdir(parents=True)
+    service_path.write_bytes(b"prior service\n")
+    timer_path.write_bytes(b"prior timer\n")
+    update_auto.write_status(
+        {
+            "enabled": False,
+            "mode": "manual",
+            "schedule": None,
+            "schedulerType": None,
+            "schedulerPath": None,
+            "schedulerIdentity": None,
+        }
+    )
+    status_path = hermes_home / "state" / "update-status.json"
+    before_status = status_path.read_bytes()
+    before_service = service_path.read_bytes()
+    before_timer = timer_path.read_bytes()
+
+    monkeypatch.setattr(
+        "hermes_cli.config.detect_install_method", lambda _root: install_method
+    )
+    monkeypatch.setattr("hermes_cli.config.is_managed", lambda: managed)
+    lock_calls = []
+    monkeypatch.setattr(
+        update_auto,
+        "_acquire_scheduler_update_lock",
+        lambda: lock_calls.append(True),
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        update_auto.cmd_auto_enable(_args(time="03:00"))
+
+    assert exc.value.code == 1
+    assert lock_calls == []
+    assert calls == []
+    assert status_path.read_bytes() == before_status
+    assert service_path.read_bytes() == before_service
+    assert timer_path.read_bytes() == before_timer
 
 
 def _decode_systemd_words(value):

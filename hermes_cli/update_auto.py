@@ -873,21 +873,99 @@ def cmd_auto_status(_args) -> None:
         update_lock.release()
 
 
+_AUTO_UPDATE_BLOCKED_INSTALL_METHODS = frozenset({"docker", "homebrew", "nix", "nixos"})
+
+
+def _auto_update_install_method() -> str:
+    from hermes_cli.config import detect_install_method
+    from hermes_cli.main import PROJECT_ROOT
+
+    return str(detect_install_method(PROJECT_ROOT)).strip().lower()
+
+
+def _auto_update_install_block_reason() -> str | None:
+    from hermes_cli.config import is_managed
+
+    method = _auto_update_install_method()
+    if is_managed():
+        return f"managed installation ({method or 'unknown install method'})"
+    if method in _AUTO_UPDATE_BLOCKED_INSTALL_METHODS:
+        return f"unsupported install method ({method})"
+    return None
+
+
+def _gateway_restart_available(previous_runtime: dict[str, Any] | None) -> bool:
+    """Check the common gateway restart entry point before a pip mutation."""
+    if not _gateway_was_running(previous_runtime):
+        return True
+    if os.environ.get("_HERMES_GATEWAY") == "1":
+        return False
+    if _gateway_process_identity(previous_runtime) is None:
+        return False
+    try:
+        from hermes_cli.main import cmd_gateway
+        from hermes_cli.gateway import gateway_command
+
+        return callable(cmd_gateway) and callable(gateway_command)
+    except Exception:
+        return False
+
+
+def _restart_gateway_after_update(previous_runtime: dict[str, Any]) -> None:
+    """Restart the gateway through the shared gateway management command."""
+    if not _gateway_was_running(previous_runtime):
+        return
+    from hermes_cli.main import cmd_gateway
+
+    try:
+        cmd_gateway(
+            SimpleNamespace(
+                gateway_command="restart",
+                all=False,
+                system=False,
+            )
+        )
+    except SystemExit as exc:
+        code = exc.code if isinstance(exc.code, int) else 1
+        if code != 0:
+            raise AutoUpdateError(
+                STATUS_HEALTH_FAILED,
+                f"gateway restart failed with exit code {code}",
+                EXIT_HEALTH_FAILED,
+            ) from exc
+    except Exception as exc:
+        raise AutoUpdateError(
+            STATUS_HEALTH_FAILED,
+            f"gateway restart failed: {exc}",
+            EXIT_HEALTH_FAILED,
+        ) from exc
+
+
 def _run_existing_update(
     args,
     branch: str | None,
     *,
     expected_sha: str | None = None,
+    previous_runtime: dict[str, Any] | None = None,
 ) -> None:
-    from hermes_cli.config import is_managed
     from hermes_cli.main import cmd_update
 
-    if is_managed():
+    install_block_reason = _auto_update_install_block_reason()
+    if install_block_reason:
         raise AutoUpdateError(
             STATUS_UPDATE_FAILED,
-            "automatic update is unavailable for managed installations",
+            f"automatic update is unavailable for {install_block_reason}",
             EXIT_UPDATE_FAILED,
         )
+
+    install_method = _auto_update_install_method()
+    if install_method == "pip" and _gateway_was_running(previous_runtime):
+        if not _gateway_restart_available(previous_runtime):
+            raise AutoUpdateError(
+                STATUS_HEALTH_FAILED,
+                "could not prepare a gateway restart before the pip update; refusing to mutate the installation",
+                EXIT_HEALTH_FAILED,
+            )
 
     update_args = SimpleNamespace(
         gateway=False,
@@ -913,6 +991,8 @@ def _run_existing_update(
         ok, detail = _verify_expected_sha(expected_sha)
         if not ok:
             raise AutoUpdateError(STATUS_UPDATE_FAILED, detail, EXIT_UPDATE_FAILED)
+    if install_method == "pip" and _gateway_was_running(previous_runtime):
+        _restart_gateway_after_update(previous_runtime)
 
 
 def _parse_time(value: str) -> tuple[int, int, str]:
@@ -928,17 +1008,21 @@ def _parse_time(value: str) -> tuple[int, int, str]:
 
 
 def _hermes_command_prefix() -> list[str]:
-    argv0 = Path(sys.argv[0])
+    raw_argv0 = str(sys.argv[0])
+    argv0 = Path(raw_argv0)
     if argv0.name and not argv0.name.startswith("python"):
         if argv0.suffix.lower() in {".py", ".pyw"}:
             return [sys.executable, str(argv0.resolve())]
-        resolved = (
-            str(argv0)
-            if argv0.is_file() or argv0.is_absolute()
-            else shutil.which(str(argv0))
+        has_path_component = any(
+            separator and separator in raw_argv0
+            for separator in (os.sep, os.altsep)
         )
+        if has_path_component or argv0.is_absolute() or argv0.is_file():
+            resolved = str(argv0.resolve())
+        else:
+            resolved = shutil.which(raw_argv0)
         if resolved:
-            resolved_path = Path(resolved)
+            resolved_path = Path(resolved).resolve()
             if resolved_path.suffix.lower() in {".py", ".pyw"} or not os.access(
                 resolved_path, os.X_OK
             ):
@@ -1919,6 +2003,11 @@ def _acquire_scheduler_update_lock() -> UpdateLock:
 def _cmd_auto_enable_locked(args) -> None:
     scheduler_handle: _SchedulerHandle | None = None
     try:
+        install_block_reason = _auto_update_install_block_reason()
+        if install_block_reason:
+            raise RuntimeError(
+                f"automatic update scheduling is unavailable for {install_block_reason}"
+            )
         hour, minute, schedule = _parse_time(getattr(args, "time", ""))
         plan_schedules: list[str] = []
         for value in getattr(args, "plan_time", []) or []:
@@ -1971,6 +2060,14 @@ def _cmd_auto_enable_locked(args) -> None:
 
 
 def cmd_auto_enable(args) -> None:
+    install_block_reason = _auto_update_install_block_reason()
+    if install_block_reason:
+        print(
+            "✗ Could not enable auto-update scheduler: "
+            f"automatic update scheduling is unavailable for {install_block_reason}",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
     update_lock = _acquire_scheduler_update_lock()
     try:
         return _cmd_auto_enable_locked(args)
@@ -2520,6 +2617,17 @@ def _cmd_auto_run_now_locked_impl(
                 EXIT_HEALTH_FAILED,
             )
 
+        if (
+            _auto_update_install_method() == "pip"
+            and _gateway_was_running(previous_runtime)
+            and not _gateway_restart_available(previous_runtime)
+        ):
+            raise AutoUpdateError(
+                STATUS_HEALTH_FAILED,
+                "could not prepare a gateway restart before the pip update; refusing to mutate the installation",
+                EXIT_HEALTH_FAILED,
+            )
+
         backup = create_pre_update_backup()
         if backup is None:
             raise AutoUpdateError(
@@ -2533,6 +2641,7 @@ def _cmd_auto_run_now_locked_impl(
             args,
             getattr(args, "branch", None),
             expected_sha=str(expected_sha) if expected_sha else None,
+            previous_runtime=previous_runtime,
         )
 
         # ``cmd_update`` intentionally returns normally for some no-op paths,

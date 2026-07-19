@@ -26048,6 +26048,11 @@
             "title": "Started At",
             "type": "number"
           },
+          "last_active": {
+            "default": 0,
+            "title": "Last Active",
+            "type": "number"
+          },
           "message_count": {
             "default": 0,
             "title": "Message Count",

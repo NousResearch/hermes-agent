@@ -2614,6 +2614,7 @@ export interface SessionListRow {
   title?: string
   preview?: string
   started_at?: number
+  last_active?: number
   message_count?: number
   source?: string
 }

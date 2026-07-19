@@ -30,6 +30,7 @@ import sys
 from datetime import datetime, timedelta, timezone
 from email.mime.text import MIMEText
 from pathlib import Path
+from typing import Optional
 
 # Ensure sibling modules (_hermes_home) are importable when run standalone.
 _SCRIPTS_DIR = str(Path(__file__).resolve().parent)
@@ -79,7 +80,7 @@ def _stored_token_scopes() -> list[str]:
     return list(SCOPES)
 
 
-def _gws_binary() -> str | None:
+def _gws_binary() -> Optional[str]:
     override = os.getenv("HERMES_GWS_BIN")
     if override:
         return override
@@ -92,7 +93,7 @@ def _gws_env() -> dict[str, str]:
     return env
 
 
-def _run_gws(parts: list[str], *, params: dict | None = None, body: dict | None = None):
+def _run_gws(parts: list[str], *, params: Optional[dict] = None, body: Optional[dict] = None):
     binary = _gws_binary()
     if not binary:
         raise RuntimeError("gws not installed")

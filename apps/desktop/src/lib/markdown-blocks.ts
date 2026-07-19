@@ -28,6 +28,29 @@ import { parseMarkdownIntoBlocks } from '@assistant-ui/react-streamdown'
  * full lex, i.e. exactly the previous behavior.
  */
 
+// NESTING-DEPTH GUARD: micromark's lexer can recurse infinitely on certain
+// pathological inputs (deeply nested lists, blockquotes, or mixed constructs).
+// We wrap the call with a simple depth counter and fall back to a safe
+// single-block return if depth exceeds MAX_PARSE_DEPTH. This prevents the
+// "Maximum call stack size exceeded" crash observed in production when
+// reasoning content triggers the lexer recursion.
+const MAX_PARSE_DEPTH = 100
+let parseDepth = 0
+
+function parseMarkdownIntoBlocksWithGuard(markdown: string): string[] {
+  parseDepth++
+  try {
+    if (parseDepth > MAX_PARSE_DEPTH) {
+      // Fallback: treat entire input as a single block to avoid stack overflow
+      console.warn('[markdown-blocks] parse depth exceeded, falling back to single block', { markdownLength: markdown.length })
+      return [markdown]
+    }
+    return parseMarkdownIntoBlocks(markdown)
+  } finally {
+    parseDepth--
+  }
+}
+
 const EXACT_CACHE_MAX = 64
 const EXACT_CACHE_MIN_LENGTH = 1024
 const exactCache = new Map<string, string[]>()
@@ -110,7 +133,7 @@ function lexIncrementally(text: string): null | string[] {
 
 export function parseMarkdownIntoBlocksCached(markdown: string): string[] {
   if (markdown.length < EXACT_CACHE_MIN_LENGTH) {
-    return parseMarkdownIntoBlocks(markdown)
+    return parseMarkdownIntoBlocksWithGuard(markdown)
   }
 
   const hit = exactCache.get(markdown)
@@ -123,7 +146,7 @@ export function parseMarkdownIntoBlocksCached(markdown: string): string[] {
     return hit
   }
 
-  const blocks = lexIncrementally(markdown) ?? parseMarkdownIntoBlocks(markdown)
+  const blocks = lexIncrementally(markdown) ?? parseMarkdownIntoBlocksWithGuard(markdown)
 
   rememberAppend(markdown, blocks)
   exactCache.set(markdown, blocks)

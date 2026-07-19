@@ -230,6 +230,12 @@ TOOLSETS = {
         "tools": ["project_list", "project_create", "project_switch"],
         "includes": []
     },
+
+    "context_usage": {
+        "description": "Monitor context window usage and request compression to manage session length",
+        "tools": ["context_status", "request_compression"],
+        "includes": []
+    },
     
     "clarify": {
         "description": "Ask the user clarifying questions (multiple-choice or open-ended)",

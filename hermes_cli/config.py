@@ -1463,6 +1463,13 @@ DEFAULT_CONFIG = {
                                       # 0 for long-running rolling-compaction sessions
                                       # where you want nothing pinned except the
                                       # system prompt + rolling summary + recent tail.
+        "allow_agent_trigger": False, # When True, exposes request_compression so
+                                      # the agent can voluntarily compact the live
+                                      # tool-loop context. Off by default because it
+                                      # is a lossy, model-triggered runtime action.
+        "agent_suggest_threshold": None,  # Optional minimum context-usage ratio
+                                      # below which request_compression is rejected
+                                      # unless the tool call passes force=true.
         "abort_on_summary_failure": False,  # When True, auto-compression that fails
                                       # to generate a summary (aux LLM errored / returned
                                       # non-JSON / timed out) aborts entirely instead of

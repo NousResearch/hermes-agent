@@ -76,6 +76,12 @@ from hermes_cli.config import (
     write_platform_config_field,
     _deep_merge,
 )
+from plugins.memory.config_schema import (
+    ProviderConfigSchema,
+    ProviderField,
+    STORAGE_HONCHO_HOST_BLOCK,
+    get_provider_config_schema,
+)
 from gateway.status import (
     derive_gateway_busy,
     derive_gateway_drainable,
@@ -84,11 +90,6 @@ from gateway.status import (
     get_runtime_status_running_pid,
     parse_active_agents,
     read_runtime_status,
-)
-from hermes_cli.memory_providers import (
-    MemoryProvider as DeclaredMemoryProvider,
-    ProviderField as DeclaredProviderField,
-    get_memory_provider as get_declared_memory_provider,
 )
 from utils import env_var_enabled
 
@@ -621,10 +622,13 @@ def _memory_provider_options() -> List[str]:
     """Discovered memory providers for the ``memory.provider`` select.
 
     Directory-scan only (no provider imports), so it's safe at module import
-    time. ``""`` (built-in) is always first; discovery failures degrade to the
-    bundled defaults rather than dropping the field.
+    time. ``""`` (built-in only) is always first; discovery failures degrade to
+    the bundled defaults rather than dropping the field. The literal
+    ``builtin`` alias is deliberately NOT offered — built-in memory is not a
+    provider plugin, and ``_normalize_memory_provider_name`` already maps any
+    legacy ``builtin``/``built-in``/``none`` value back to ``""`` (#49513).
     """
-    options = ["", "builtin"]
+    options = [""]
     try:
         from plugins.memory import list_memory_provider_names
 
@@ -664,7 +668,7 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
     "tts.provider": {
         "type": "select",
         "description": "Text-to-speech provider",
-        "options": ["edge", "elevenlabs", "openai", "neutts"],
+        "options": ["edge", "elevenlabs", "openai", "xai", "minimax", "mistral", "gemini", "neutts", "kittentts", "piper"],
     },
     "stt.provider": {
         "type": "select",
@@ -4266,6 +4270,139 @@ def get_profiles_sessions(
     }
 
 
+@app.get("/api/profiles/sessions/sidebar")
+def get_profiles_sessions_sidebar(
+    recents_profile: str = "all",
+    recents_limit: int = 20,
+    recents_exclude: str = None,
+    cron_limit: int = 50,
+    messaging_limit: int = 100,
+    messaging_exclude: str = None,
+):
+    """Batched sidebar session slices — one profile-DB open per refresh.
+
+    The desktop sidebar needs three source-scoped windows per refresh: recents
+    (local chats, scoped to the active profile), cron sessions (all profiles),
+    and messaging-platform sessions (all profiles). Served as three separate
+    ``/api/profiles/sessions`` calls they reopened every profile's ``state.db``
+    three times and re-counted each refresh. This opens each DB once and runs
+    the three filtered queries together, returning the three windows in one
+    payload. Read-only and process-light, same row projection and 300s active
+    heuristic as ``/api/profiles/sessions``.
+
+    The caller passes the source taxonomy (``recents_exclude`` /
+    ``messaging_exclude`` CSV, ``source=cron`` is implicit) so this stays
+    taxonomy-agnostic like the per-slice endpoint. All three slices use
+    ``min_messages=1`` / ``archived=exclude`` / recency order, matching the
+    desktop's per-slice calls.
+    """
+    from hermes_state import SessionDB
+    from hermes_cli import profiles as profiles_mod
+
+    # cron + messaging are cross-profile; recents is scoped to recents_profile.
+    # Scan every profile once regardless (each DB opened a single time).
+    try:
+        infos = profiles_mod.list_profiles()
+        targets: List[Tuple[str, Path]] = [(info.name, info.path) for info in infos]
+    except Exception:
+        _log.exception("GET /api/profiles/sessions/sidebar: list_profiles failed")
+        targets = []
+    if not targets:
+        targets.append(("default", profiles_mod.get_profile_dir("default")))
+
+    recents_scope = (recents_profile or "all").strip() or "all"
+    recents_exclude_list = [s for s in (recents_exclude or "").split(",") if s.strip()]
+    messaging_exclude_list = [s for s in (messaging_exclude or "").split(",") if s.strip()]
+
+    recents_cap = min(max(recents_limit, 1), 500)
+    cron_cap = min(max(cron_limit, 1), 500)
+    messaging_cap = min(max(messaging_limit, 1), 500)
+
+    recents_rows: List[Dict[str, Any]] = []
+    cron_rows: List[Dict[str, Any]] = []
+    messaging_rows: List[Dict[str, Any]] = []
+    recents_total = 0
+    recents_profile_totals: Dict[str, int] = {}
+    errors: List[Dict[str, str]] = []
+    now = time.time()
+
+    def _tag(rows: List[Dict[str, Any]], name: str) -> List[Dict[str, Any]]:
+        for s in rows:
+            s["profile"] = name
+            s["is_default_profile"] = name == "default"
+            s["is_active"] = (
+                s.get("ended_at") is None
+                and (now - s.get("last_active", s.get("started_at", 0))) < 300
+            )
+            s["archived"] = bool(s.get("archived"))
+        return rows
+
+    def _slice(db, *, source=None, exclude=None, cap):
+        return db.list_sessions_rich(
+            source=source,
+            exclude_sources=exclude or None,
+            limit=cap,
+            offset=0,
+            min_message_count=1,
+            include_archived=False,
+            archived_only=False,
+            order_by_last_active=True,
+            compact_rows=True,
+        )
+
+    for name, home in targets:
+        db_path = Path(home) / "state.db"
+        if not db_path.exists():
+            continue
+        try:
+            db = SessionDB(db_path=db_path, read_only=True)
+        except Exception as exc:
+            errors.append({"profile": name, "error": str(exc)})
+            continue
+        try:
+            if recents_scope == "all" or name == recents_scope:
+                recents_rows.extend(
+                    _tag(_slice(db, exclude=recents_exclude_list, cap=recents_cap), name)
+                )
+                rtotal = db.session_count(
+                    exclude_sources=recents_exclude_list or None,
+                    min_message_count=1,
+                    include_archived=False,
+                    archived_only=False,
+                    exclude_children=True,
+                )
+                recents_total += rtotal
+                recents_profile_totals[name] = rtotal
+            cron_rows.extend(_tag(_slice(db, source="cron", cap=cron_cap), name))
+            messaging_rows.extend(
+                _tag(_slice(db, exclude=messaging_exclude_list, cap=messaging_cap), name)
+            )
+        except Exception as exc:
+            errors.append({"profile": name, "error": str(exc)})
+        finally:
+            db.close()
+
+    def _window(rows: List[Dict[str, Any]], cap: int) -> List[Dict[str, Any]]:
+        rows.sort(key=lambda s: s.get("last_active") or s.get("started_at") or 0, reverse=True)
+        win = rows[:cap]
+        _strip_session_list_rows(win)
+        return win
+
+    return {
+        "recents": {
+            "sessions": _window(recents_rows, recents_cap),
+            "total": recents_total,
+            "profile_totals": recents_profile_totals,
+        },
+        "cron": {"sessions": _window(cron_rows, cron_cap)},
+        "messaging": {
+            "sessions": _window(messaging_rows, messaging_cap),
+            "total": len(messaging_rows),
+        },
+        "errors": errors,
+    }
+
+
 @app.get("/api/sessions/search")
 async def search_sessions(q: str = "", limit: int = 20, profile: Optional[str] = None):
     """Search sessions by ID plus full-text message content using FTS5.
@@ -4451,6 +4588,342 @@ def _normalize_config_for_web(config: Dict[str, Any]) -> Dict[str, Any]:
     else:
         config["model_context_length"] = 0
     return config
+
+
+# ── Memory provider config: one generic GET/PUT pair, dispatching on storage ──
+
+
+def _provider_field_entry(field: ProviderField) -> Dict[str, Any]:
+    """Static, storage-independent shape of one field for the UI payload."""
+
+    return {
+        "key": field.key,
+        "label": field.label,
+        "kind": field.kind,
+        "description": field.description,
+        "info": field.info,
+        "placeholder": field.placeholder,
+        "inline": field.inline,
+        "group": field.group,
+        "options": [
+            {"value": opt.value, "label": opt.label, "description": opt.description}
+            for opt in field.options
+        ],
+    }
+
+
+# Sentinel: remove this key so it falls back to the host or built-in default.
+_UNSET: Any = object()
+
+
+def _coerce_field_value(field: ProviderField, raw: str) -> Any:
+    """Coerce a submitted non-secret value to its native JSON type.
+
+    Values arrive as strings over the API; this converts them to the type the
+    Honcho resolver expects (bool/number/list/dict), so e.g. a boolean is stored
+    as a JSON ``false`` rather than the string ``"false"`` (which would read as
+    truthy). Returns ``_UNSET`` when the field should be removed. Raises
+    ``ValueError`` on malformed input.
+    """
+
+    value = (raw or "").strip()
+    kind = field.kind
+
+    if kind == "select":
+        if not value:
+            value = field.default
+        if value not in field.allowed_values():
+            raise ValueError(f"Invalid value for '{field.key}'")
+        return value
+
+    if kind == "bool":
+        from utils import is_truthy_value
+
+        return is_truthy_value(value)
+
+    if kind == "number":
+        if not value:
+            return _UNSET
+        try:
+            number = float(value)
+        except ValueError as exc:
+            raise ValueError(f"Invalid number for '{field.key}'") from exc
+        return int(number) if number.is_integer() else number
+
+    if kind == "json":
+        if not value:
+            return _UNSET
+        try:
+            parsed = json.loads(value)
+        except (ValueError, TypeError) as exc:
+            raise ValueError(f"Invalid JSON for '{field.key}'") from exc
+        if not isinstance(parsed, (dict, list)):
+            raise ValueError(f"'{field.key}' must be a JSON object or array")
+        return parsed
+
+    # text / secret — blank clears the key so it falls back to host/default.
+    return value if value else _UNSET
+
+
+def _serialize_field_value(field: ProviderField, value: Any) -> str:
+    """Render a stored native value as the string the generic UI edits.
+
+    ``None`` (key absent) yields the field's declared default. Bools become
+    ``"true"``/``"false"``, JSON objects/arrays are re-encoded, numbers are
+    stringified — so the renderer's per-kind controls always get the shape they
+    expect regardless of how the value sits on disk.
+    """
+
+    if value is None:
+        return field.default
+    if field.kind == "bool":
+        from utils import is_truthy_value
+
+        return "true" if is_truthy_value(value) else "false"
+    if field.kind == "json":
+        if isinstance(value, (dict, list)):
+            return json.dumps(value)
+        return str(value)
+    return str(value)
+
+
+# — flat-json backend (default; reusable for simple providers) —
+
+
+def _flat_json_path(provider: ProviderConfigSchema) -> Path:
+    return get_hermes_home() / provider.name / "config.json"
+
+
+def _read_flat_json(provider: ProviderConfigSchema) -> Dict[str, Any]:
+    path = _flat_json_path(provider)
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        _log.warning("Failed to read memory provider config from %s", path, exc_info=True)
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _read_field(field: ProviderField, sources: tuple, env: Dict[str, str]) -> Any:
+    """Return the stored native value from the first source holding it, or ``None``.
+
+    Presence (``key in source``) decides, not truthiness, so a stored ``False``
+    or ``0`` survives instead of being mistaken for "unset".
+    """
+
+    for source in sources:
+        for source_key in (field.key, *field.aliases):
+            if source_key in source and source[source_key] is not None:
+                return source[source_key]
+    for env_key in field.env_fallbacks:
+        value = env.get(env_key)
+        if value:
+            return value
+    return None
+
+
+def _declared_field_is_set(field: ProviderField, sources: tuple, env: Dict[str, str]) -> bool:
+    for env_key in (field.env_key, *field.env_fallbacks):
+        if env_key and env.get(env_key):
+            return True
+    return any(source.get(k) for source in sources for k in (field.key, *field.aliases))
+
+
+# — honcho host-block backend —
+
+
+def _honcho_resolvers():
+    """Lazily import the Honcho plugin's resolvers (optional plugin)."""
+
+    from plugins.memory.honcho.client import _host_block, resolve_active_host, resolve_config_path
+
+    return resolve_active_host, resolve_config_path, _host_block
+
+
+def _honcho_read_sources() -> tuple[Dict[str, Any], str, Dict[str, Any]]:
+    """Return (root config, active host key, host block) for the current profile."""
+
+    resolve_active_host, resolve_config_path, host_block_of = _honcho_resolvers()
+    host = resolve_active_host()
+    path = resolve_config_path()
+    raw: Dict[str, Any] = {}
+    if path.exists():
+        try:
+            loaded = json.loads(path.read_text(encoding="utf-8"))
+            raw = loaded if isinstance(loaded, dict) else {}
+        except Exception:
+            _log.warning("Failed to read Honcho config from %s", path, exc_info=True)
+    return raw, host, host_block_of(raw, host)
+
+
+def _declared_provider_payload(provider: ProviderConfigSchema) -> Dict[str, Any]:
+    fields: List[Dict[str, Any]] = []
+    env = load_env()
+    is_honcho = provider.storage == STORAGE_HONCHO_HOST_BLOCK
+
+    if is_honcho:
+        raw, host, host_block = _honcho_read_sources()
+
+        def sources_for(field: ProviderField) -> tuple:
+            return (host_block, raw) if field.scope == "host" else (raw,)
+    else:
+        host = ""
+        data = _read_flat_json(provider)
+
+        def sources_for(field: ProviderField) -> tuple:
+            return (data,)
+
+    for field in provider.fields:
+        entry = _provider_field_entry(field)
+        sources = sources_for(field)
+
+        if field.is_secret:
+            entry["value"] = ""  # secrets are write-only over the API
+            entry["is_set"] = _declared_field_is_set(field, sources, env)
+            fields.append(entry)
+            continue
+
+        native = _read_field(field, sources, env)
+        if is_honcho and not field.placeholder and field.key in {"workspace", "aiPeer"}:
+            # Blank fields surface the resolved host Honcho will actually use.
+            entry["placeholder"] = host
+
+        value = _serialize_field_value(field, native)
+        if field.kind == "select" and value not in field.allowed_values():
+            value = field.default
+        entry["value"] = value
+        # Presence, not truthiness — a stored False/0 is still "set".
+        entry["is_set"] = native is not None if is_honcho else bool(value)
+        fields.append(entry)
+
+    return {"name": provider.name, "label": provider.label, "docs_url": provider.docs_url, "fields": fields}
+
+
+def _apply_field_values(provider: ProviderConfigSchema, values: Dict[str, str], target_for) -> None:
+    """Apply submitted non-secret fields to their backend dict, in place.
+
+    Only keys present in ``values`` are touched, so a partial save never
+    clobbers fields owned by another surface. ``_UNSET`` clears the key (and
+    its aliases) so it falls back to the host/default mapping.
+    """
+
+    for field in provider.fields:
+        if field.is_secret or field.key not in values:
+            continue
+        target = target_for(field)
+        coerced = _coerce_field_value(field, values[field.key])
+        if coerced is _UNSET:
+            target.pop(field.key, None)
+            for alias in field.aliases:
+                target.pop(alias, None)
+        else:
+            target[field.key] = coerced
+
+
+def _write_provider_flat(provider: ProviderConfigSchema, values: Dict[str, str]) -> None:
+    from utils import atomic_json_write
+
+    existing = _read_flat_json(provider)
+
+    for field in provider.fields:
+        if field.is_secret:
+            submitted = (values.get(field.key) or "").strip()
+            if submitted and field.env_key:
+                save_env_value(field.env_key, submitted)
+
+    _apply_field_values(provider, values, lambda field: existing)
+
+    path = _flat_json_path(provider)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    atomic_json_write(path, existing, mode=0o600)
+
+
+def _write_provider_honcho(provider: ProviderConfigSchema, values: Dict[str, str]) -> None:
+    """Persist submitted fields to Honcho's real config for the active host.
+
+    Only keys present in ``values`` are touched, so a partial save (e.g. the
+    inline panel) never clobbers fields owned by the full-config editor. Blank
+    text clears a key so it falls back to the host/default mapping.
+    """
+
+    from plugins.memory.honcho.oauth import ACCESS_TOKEN_PREFIX, _config_refresh_lock
+    from utils import atomic_json_write
+
+    resolve_active_host, resolve_config_path, host_block_of = _honcho_resolvers()
+    host = resolve_active_host()
+    # Write the file reads resolve, or a save shadows it with a sparse copy.
+    path = resolve_config_path()
+
+    # OAuth rotation is single-use; an unlocked RMW here can revoke the grant.
+    with _config_refresh_lock(path):
+        cfg: Dict[str, Any] = {}
+        if path.exists():
+            try:
+                loaded = json.loads(path.read_text(encoding="utf-8"))
+                cfg = loaded if isinstance(loaded, dict) else {}
+            except Exception:
+                _log.warning("Failed to read Honcho config from %s", path, exc_info=True)
+
+        hosts = cfg.get("hosts")
+        cfg["hosts"] = hosts = hosts if isinstance(hosts, dict) else {}
+        # Update the block reads resolve (legacy dot-form included), never shadow it.
+        existing = host_block_of(cfg, host)
+        host_key = next((k for k, v in hosts.items() if v is existing), host) if existing else host
+        host_block = hosts.setdefault(host_key, existing)
+
+        for field in provider.fields:
+            if not field.is_secret:
+                continue
+            submitted = (values.get(field.key) or "").strip()
+            if not submitted:
+                continue
+            if field.env_key:
+                save_env_value(field.env_key, submitted)
+            # Persist where the client reads first; an OAuth token owns that slot.
+            stored = host_block.get(field.key)
+            if not (isinstance(stored, str) and stored.startswith(ACCESS_TOKEN_PREFIX)):
+                host_block[field.key] = submitted
+
+        _apply_field_values(provider, values, lambda field: host_block if field.scope == "host" else cfg)
+
+        path.parent.mkdir(parents=True, exist_ok=True)
+        atomic_json_write(path, cfg, mode=0o600)
+
+
+def _stringify_submitted_values(values: Dict[str, Any]) -> Dict[str, str]:
+    """The declared-schema path edits strings; the dashboard may send natives."""
+
+    out: Dict[str, str] = {}
+    for key, value in values.items():
+        if value is None:
+            out[key] = ""
+        elif isinstance(value, str):
+            out[key] = value
+        elif isinstance(value, bool):
+            out[key] = "true" if value else "false"
+        elif isinstance(value, (dict, list)):
+            out[key] = json.dumps(value)
+        else:
+            out[key] = str(value)
+    return out
+
+
+def _update_memory_provider_config(provider: ProviderConfigSchema, values: Dict[str, str]) -> None:
+    if provider.storage == STORAGE_HONCHO_HOST_BLOCK:
+        _write_provider_honcho(provider, values)
+    else:
+        _write_provider_flat(provider, values)
+
+    config = load_config()
+    memory_config = config.get("memory")
+    if not isinstance(memory_config, dict):
+        memory_config = {}
+        config["memory"] = memory_config
+    if memory_config.get("provider") != provider.name:
+        memory_config["provider"] = provider.name
+        save_config(config)
 
 
 def _memory_provider_label(name: str) -> str:
@@ -5217,136 +5690,28 @@ def _require_valid_memory_provider_name(name: str) -> None:
         raise HTTPException(status_code=404, detail=f"Unknown memory provider: {name}")
 
 
-# ---------------------------------------------------------------------------
-# Declared surface — curated desktop schema from hermes_cli.memory_providers.
-# The desktop panel requests ?surface=declared; the dashboard keeps the raw
-# plugin schema. Providers without a declaration render no desktop panel.
-# ---------------------------------------------------------------------------
-
-def _declared_provider_file_path(provider: DeclaredMemoryProvider) -> Path:
-    return get_hermes_home() / provider.name / "config.json"
-
-
-def _read_declared_provider_file(provider: DeclaredMemoryProvider) -> Dict[str, Any]:
-    return _read_json_file(_declared_provider_file_path(provider))
-
-
-def _declared_read_field_value(field: DeclaredProviderField, data: Dict[str, Any]) -> str:
-    for source_key in (field.key, *field.aliases):
-        value = data.get(source_key)
-        if value:
-            return str(value)
-
-    env_on_disk = load_env()
-    for env_key in field.env_fallbacks:
-        value = env_on_disk.get(env_key)
-        if value:
-            return str(value)
-
-    return field.default
-
-
-def _declared_field_is_set(field: DeclaredProviderField, data: Dict[str, Any]) -> bool:
-    env_on_disk = load_env()
-    for env_key in (field.env_key, *field.env_fallbacks):
-        if env_key and env_on_disk.get(env_key):
-            return True
-    return any(data.get(source_key) for source_key in (field.key, *field.aliases))
-
-
-def _declared_provider_payload(provider: DeclaredMemoryProvider) -> Dict[str, Any]:
-    data = _read_declared_provider_file(provider)
-    fields: List[Dict[str, Any]] = []
-
-    for field in provider.fields:
-        entry: Dict[str, Any] = {
-            "key": field.key,
-            "label": field.label,
-            "kind": field.kind,
-            "description": field.description,
-            "placeholder": field.placeholder,
-            "options": [
-                {"value": opt.value, "label": opt.label, "description": opt.description}
-                for opt in field.options
-            ],
-        }
-
-        if field.is_secret:
-            # Secrets are write-only over the API; only expose whether one is set.
-            entry["value"] = ""
-            entry["is_set"] = _declared_field_is_set(field, data)
-        else:
-            value = _declared_read_field_value(field, data)
-            if field.kind == "select" and value not in field.allowed_values():
-                value = field.default
-            entry["value"] = value
-            entry["is_set"] = bool(value)
-
-        fields.append(entry)
-
-    return {"name": provider.name, "label": provider.label, "fields": fields}
-
-
-def _coerce_declared_field_value(field: DeclaredProviderField, raw: str) -> str:
-    value = (raw or "").strip()
-    if field.kind == "select":
-        if not value:
-            value = field.default
-        if value not in field.allowed_values():
-            raise ValueError(f"Invalid value for '{field.key}'")
-        return value
-    return value or field.default
-
-
-def _update_declared_provider_config(provider: DeclaredMemoryProvider, values: Dict[str, Any]) -> None:
-    existing = _read_declared_provider_file(provider)
-    json_values: Dict[str, Any] = {}
-    secrets: Dict[str, str] = {}
-
-    for field in provider.fields:
-        if field.is_secret:
-            submitted = str(values.get(field.key) or "").strip()
-            if submitted and field.env_key:
-                secrets[field.env_key] = submitted
-            continue
-
-        raw = (
-            values[field.key]
-            if field.key in values
-            else str(existing.get(field.key, field.default))
-        )
-        json_values[field.key] = _coerce_declared_field_value(field, str(raw))
-
-    path = _declared_provider_file_path(provider)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    existing.update(json_values)
-    from utils import atomic_json_write
-
-    atomic_json_write(path, existing, mode=0o600)
-
-    for env_key, secret in secrets.items():
-        save_env_value(env_key, secret)
-
-
 @app.get("/api/memory/providers/{name}/config")
-async def get_memory_provider_config(name: str, surface: Optional[str] = None):
+async def get_memory_provider_config(name: str, surface: Optional[str] = None, profile: Optional[str] = None):
     _require_valid_memory_provider_name(name)
 
-    if surface == "declared":
-        declared = get_declared_memory_provider(name)
-        if declared is None:
-            # Undeclared providers (e.g. builtin, honcho) have no desktop
-            # config surface; the generic panel renders nothing.
-            return {"name": name, "label": name, "fields": []}
-        return _declared_provider_payload(declared)
+    def _run():
+        with _profile_scope(profile):
+            if surface == "declared":
+                declared = get_provider_config_schema(name)
+                if declared is None:
+                    # Undeclared providers (e.g. builtin) have no desktop
+                    # config surface; the generic panel renders nothing.
+                    return {"name": name, "label": name, "docs_url": "", "fields": []}
+                return _declared_provider_payload(declared)
 
-    provider = _load_memory_provider(name)
-    if provider is None:
-        # Undeclared providers (e.g. builtin) have no config surface. Return an
-        # empty schema so the generic panel simply renders nothing.
-        return {"name": name, "label": name, "fields": [], "setup": _memory_provider_setup_info(name)}
-    return _memory_provider_payload(name, provider)
+            provider = _load_memory_provider(name)
+            if provider is None:
+                # Undeclared providers (e.g. builtin) have no config surface. Return an
+                # empty schema so the generic panel simply renders nothing.
+                return {"name": name, "label": name, "fields": [], "setup": _memory_provider_setup_info(name)}
+            return _memory_provider_payload(name, provider)
 
+    return await asyncio.to_thread(_run)
 
 @app.post("/api/memory/providers/{name}/setup")
 async def setup_memory_provider(name: str, body: MemoryProviderSetupRequest):
@@ -5370,41 +5735,37 @@ async def setup_memory_provider(name: str, body: MemoryProviderSetupRequest):
 
 
 @app.put("/api/memory/providers/{name}/config")
-async def update_memory_provider_config(name: str, body: MemoryProviderConfigUpdate, surface: Optional[str] = None):
+async def update_memory_provider_config(
+    name: str, body: MemoryProviderConfigUpdate, surface: Optional[str] = None, profile: Optional[str] = None
+):
     _require_valid_memory_provider_name(name)
-
-    if surface == "declared":
-        declared = get_declared_memory_provider(name)
-        if declared is None:
-            raise HTTPException(status_code=404, detail=f"Unknown memory provider: {name}")
-        try:
-            _update_declared_provider_config(declared, body.values or {})
-            return {"ok": True}
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-        except Exception:
-            _log.exception("PUT /api/memory/providers/%s/config (declared) failed", name)
-            raise HTTPException(status_code=500, detail="Internal server error")
-
-    provider = _load_memory_provider(name)
-    if provider is None:
-        raise HTTPException(status_code=404, detail=f"Unknown memory provider: {name}")
-
     values = body.values or {}
 
+    def _run():
+        with _profile_scope(profile):
+            if surface == "declared":
+                declared = get_provider_config_schema(name)
+                if declared is None:
+                    raise HTTPException(status_code=404, detail=f"Unknown memory provider: {name}")
+                _update_memory_provider_config(declared, _stringify_submitted_values(values))
+                return {"ok": True}
+
+            provider = _load_memory_provider(name)
+            if provider is None:
+                raise HTTPException(status_code=404, detail=f"Unknown memory provider: {name}")
+            _write_memory_provider_config_values(name, provider, values)
+            _require_memory_provider_ready(name)
+            config = load_config()
+            memory_config = config.get("memory")
+            if not isinstance(memory_config, dict):
+                memory_config = {}
+                config["memory"] = memory_config
+            memory_config["provider"] = name
+            save_config(config)
+            return {"ok": True, "active": name}
+
     try:
-        _write_memory_provider_config_values(name, provider, values)
-        _require_memory_provider_ready(name)
-
-        config = load_config()
-        memory_config = config.get("memory")
-        if not isinstance(memory_config, dict):
-            memory_config = {}
-            config["memory"] = memory_config
-        memory_config["provider"] = name
-        save_config(config)
-
-        return {"ok": True, "active": name}
+        return await asyncio.to_thread(_run)
     except HTTPException:
         raise
     except ValueError as exc:
@@ -6354,8 +6715,15 @@ async def get_env_vars(profile: Optional[str] = None):
 async def set_env_var(body: EnvVarUpdate, profile: Optional[str] = None):
     try:
         with _profile_scope(body.profile or profile):
-            save_env_value(body.key, body.value)
-        return {"ok": True, "key": body.key}
+            # Unified credential lifecycle: writes .env AND reconciles any
+            # config.yaml mirror still holding the previous value of this var
+            # (model.api_key / auxiliary.*.api_key / custom_providers[*]),
+            # so a rotation can't leave a stale higher-precedence copy that
+            # keeps authenticating with the old key (#62269).
+            from hermes_cli.credential_lifecycle import save_provider_env_credential
+
+            result = save_provider_env_credential(body.key, body.value)
+        return result
     except ValueError as exc:
         # save_env_value raises ValueError for invalid names and for keys
         # on the denylist (LD_PRELOAD, PATH, PYTHONPATH, …). Surface the
@@ -6473,10 +6841,18 @@ async def validate_provider_credential(body: EnvVarUpdate, request: Request):
 async def remove_env_var(body: EnvVarDelete, profile: Optional[str] = None):
     try:
         with _profile_scope(body.profile or profile):
-            removed = remove_env_value(body.key)
-        if not removed:
+            # Unified credential lifecycle: clears the .env entry AND every
+            # mirror of the credential — env-seeded credential_pool entries in
+            # auth.json (stale ones kept providers alive in the model picker,
+            # #51071/#59761), the affected providers' model-cache rows, and
+            # value-matched config.yaml api_key mirrors. OAuth/device-code/
+            # manual pool entries for the same provider are preserved.
+            from hermes_cli.credential_lifecycle import remove_provider_env_credential
+
+            result = remove_provider_env_credential(body.key)
+        if not result.get("found"):
             raise HTTPException(status_code=404, detail=f"{body.key} not found in .env")
-        return {"ok": True, "key": body.key}
+        return result
     except HTTPException:
         raise
     except ValueError as exc:
@@ -12122,6 +12498,7 @@ async def add_credential_pool_entry(body: CredentialPoolAdd):
         load_pool,
         PooledCredential,
         AUTH_TYPE_API_KEY,
+        CUSTOM_POOL_PREFIX,
         SOURCE_MANUAL,
     )
 
@@ -12143,6 +12520,23 @@ async def add_credential_pool_entry(body: CredentialPoolAdd):
             access_token=api_key,
         )
         pool.add_entry(entry)
+        # Re-adding a credential is an explicit re-engagement signal: lift
+        # every suppression for this provider so a source deleted earlier
+        # (via DELETE below or `hermes auth remove`) can seed again.
+        # Mirrors the `hermes auth add` behaviour in auth_commands.py.
+        if not provider.startswith(CUSTOM_POOL_PREFIX):
+            try:
+                from hermes_cli.auth import (
+                    _load_auth_store,
+                    unsuppress_credential_source,
+                )
+                suppressed = _load_auth_store().get("suppressed_sources", {})
+                for src in list(suppressed.get(provider, []) or []):
+                    unsuppress_credential_source(provider, src)
+            except Exception:
+                _log.exception("unsuppress after pool add failed (non-fatal)")
+    except HTTPException:
+        raise
     except Exception as exc:
         _log.exception("POST /api/credentials/pool failed")
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -12151,8 +12545,20 @@ async def add_credential_pool_entry(body: CredentialPoolAdd):
 
 @app.delete("/api/credentials/pool/{provider}/{index}")
 async def remove_credential_pool_entry(provider: str, index: int):
-    """Remove a pool entry.  ``index`` is 1-based (matches the list response)."""
+    """Remove a pool entry.  ``index`` is 1-based (matches the list response).
+
+    Removal must be sticky (#55217): ``load_pool()`` re-seeds entries from
+    their backing source (.env var, OAuth singleton file, custom-provider
+    config) on every call, so deleting only the pool row silently reverts on
+    the next dashboard refresh.  We dispatch through the same RemovalStep
+    registry the CLI ``hermes auth remove`` uses: each source cleans up its
+    external state and suppresses ``(provider, source)`` so the seeders skip
+    it.  Manual entries have no registered step — nothing external to clean,
+    no suppression needed (they aren't re-seeded).
+    """
     from agent.credential_pool import load_pool
+    from agent.credential_sources import find_removal_step
+    from hermes_cli.auth import suppress_credential_source
 
     provider = (provider or "").strip().lower()
     try:
@@ -12163,7 +12569,36 @@ async def remove_credential_pool_entry(provider: str, index: int):
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     if removed is None:
         raise HTTPException(status_code=404, detail="No pool entry at that index")
-    return {"ok": True, "provider": provider, "count": len(pool.entries())}
+
+    cleaned: List[str] = []
+    hints: List[str] = []
+    step = find_removal_step(provider, removed.source or "")
+    if step is not None:
+        try:
+            result = step.remove_fn(provider, removed)
+            cleaned = list(result.cleaned)
+            hints = list(result.hints)
+            if result.suppress:
+                suppress_credential_source(provider, removed.source)
+        except Exception:
+            # Cleanup is best-effort, but suppression is the actual bug fix —
+            # without it the entry resurrects on the next load_pool().  Apply
+            # it even when source-specific cleanup blew up.
+            _log.exception(
+                "credential source cleanup failed for %s/%s; suppressing anyway",
+                provider, removed.source,
+            )
+            try:
+                suppress_credential_source(provider, removed.source)
+            except Exception:
+                _log.exception("suppress_credential_source failed")
+    return {
+        "ok": True,
+        "provider": provider,
+        "count": len(pool.entries()),
+        "cleaned": cleaned,
+        "hints": hints,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -14081,8 +14516,10 @@ async def get_toolset_config(name: str, profile: Optional[str] = None):
         _get_effective_configurable_toolsets,
         _is_provider_active,
         _visible_providers,
+        provider_readiness_status,
     )
     from hermes_cli.config import get_env_value
+    from hermes_cli.nous_subscription import get_nous_subscription_features
 
     valid = {ts_key for ts_key, _, _ in _get_effective_configurable_toolsets()}
     if name not in valid:
@@ -14094,6 +14531,10 @@ async def get_toolset_config(name: str, profile: Optional[str] = None):
         providers = []
         active_provider = None
         if cat:
+            # Fetch portal/entitlement state once for the whole matrix — the
+            # per-provider readiness computation below reuses it instead of
+            # re-probing per row.
+            features = get_nous_subscription_features(config, force_fresh=True)
             for prov in _visible_providers(cat, config, force_fresh=True):
                 env_vars = [
                     {
@@ -14120,6 +14561,13 @@ async def get_toolset_config(name: str, profile: Optional[str] = None):
                     "post_setup": prov.get("post_setup"),
                     "requires_nous_auth": bool(prov.get("requires_nous_auth")),
                     "is_active": is_active,
+                    # Honest server-side readiness. The GUI's old client-side
+                    # heuristic showed "Ready" for every zero-env-var row —
+                    # including logged-out Nous Subscription rows and never-run
+                    # post_setup installs (see provider_readiness_status).
+                    "status": provider_readiness_status(
+                        prov, config, features=features, is_active=is_active
+                    ),
                 })
     return {
         "name": name,
@@ -14448,6 +14896,236 @@ async def run_toolset_post_setup(
             status_code=500, detail=f"Failed to run post-setup: {exc}"
         )
     return {"ok": True, "pid": proc.pid, "name": "tools-post-setup", "key": body.key}
+
+
+# ---------------------------------------------------------------------------
+# Terminal execution backend picker — the GUI counterpart of terminal.backend
+# in config.yaml. Each row carries a fast, defensive health probe (Docker
+# daemon reachable, SSH host configured, Modal/Daytona credentials present) so
+# the Capabilities panel can render Ready / Needs setup guidance instead of a
+# bare enum (issues #57738 / #63783). Probes must never raise — a probe
+# failure renders as a status, not a 500.
+# ---------------------------------------------------------------------------
+
+# Table-driven backend metadata — kept in sync with the dispatch ladder in
+# tools/terminal_tool.py::_create_environment and the terminal.backend enum
+# surfaced in the desktop raw-config settings.
+_TERMINAL_BACKENDS: List[Dict[str, str]] = [
+    {
+        "name": "local",
+        "label": "Local",
+        "description": "Run commands directly on this machine. No isolation.",
+    },
+    {
+        "name": "docker",
+        "label": "Docker",
+        "description": "Run commands in an isolated Docker container with a persistent workspace.",
+    },
+    {
+        "name": "singularity",
+        "label": "Singularity / Apptainer",
+        "description": "Run commands in a Singularity/Apptainer container (HPC-friendly, rootless).",
+    },
+    {
+        "name": "modal",
+        "label": "Modal",
+        "description": "Run commands in a Modal cloud sandbox.",
+    },
+    {
+        "name": "daytona",
+        "label": "Daytona",
+        "description": "Run commands in a Daytona cloud sandbox.",
+    },
+    {
+        "name": "ssh",
+        "label": "SSH",
+        "description": "Run commands on a remote host over SSH.",
+    },
+]
+
+_TERMINAL_BACKEND_NAMES = {row["name"] for row in _TERMINAL_BACKENDS}
+
+
+def _terminal_cfg_value(terminal_cfg: dict, key: str, env_var: str) -> str:
+    """Read a terminal.* setting from config.yaml, falling back to its env var."""
+    value = terminal_cfg.get(key)
+    if value is not None and str(value).strip():
+        return str(value).strip()
+    try:
+        from hermes_cli.config import get_env_value
+
+        return (get_env_value(env_var) or "").strip()
+    except Exception:
+        return ""
+
+
+def _probe_docker_backend() -> tuple:
+    if not shutil.which("docker"):
+        return (
+            "needs_setup",
+            "Docker CLI not found — install Docker Desktop or docker-ce.",
+        )
+    try:
+        proc = subprocess.run(
+            ["docker", "info", "--format", "{{.ServerVersion}}"],
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+        if proc.returncode == 0:
+            return ("ready", "")
+        return (
+            "needs_setup",
+            "Docker daemon not reachable — start Docker and retry.",
+        )
+    except subprocess.TimeoutExpired:
+        return ("needs_setup", "Docker daemon not responding (timed out).")
+    except Exception as exc:
+        return ("unavailable", f"Docker probe failed: {exc}")
+
+
+def _probe_singularity_backend() -> tuple:
+    if shutil.which("singularity") or shutil.which("apptainer"):
+        return ("ready", "")
+    return (
+        "needs_setup",
+        "Neither singularity nor apptainer found on PATH.",
+    )
+
+
+def _probe_ssh_backend(terminal_cfg: dict) -> tuple:
+    host = _terminal_cfg_value(terminal_cfg, "ssh_host", "TERMINAL_SSH_HOST")
+    user = _terminal_cfg_value(terminal_cfg, "ssh_user", "TERMINAL_SSH_USER")
+    missing = []
+    if not host:
+        missing.append("terminal.ssh_host")
+    if not user:
+        missing.append("terminal.ssh_user")
+    if missing:
+        return (
+            "needs_setup",
+            f"Set {' and '.join(missing)} in config.yaml (or the matching TERMINAL_SSH_* env vars).",
+        )
+    return ("ready", f"{user}@{host}")
+
+
+def _probe_modal_backend() -> tuple:
+    try:
+        from tools.tool_backend_helpers import has_direct_modal_credentials
+
+        if has_direct_modal_credentials():
+            return ("ready", "")
+    except Exception:
+        pass
+    try:
+        from hermes_cli.config import get_env_value
+
+        if get_env_value("MODAL_TOKEN_ID") and get_env_value("MODAL_TOKEN_SECRET"):
+            return ("ready", "")
+    except Exception:
+        pass
+    return (
+        "needs_setup",
+        "Modal credentials not found — set MODAL_TOKEN_ID and MODAL_TOKEN_SECRET (or run `modal setup`).",
+    )
+
+
+def _probe_daytona_backend() -> tuple:
+    try:
+        from hermes_cli.config import get_env_value
+
+        if get_env_value("DAYTONA_API_KEY"):
+            return ("ready", "")
+    except Exception:
+        pass
+    return ("needs_setup", "Set DAYTONA_API_KEY to use the Daytona backend.")
+
+
+def _probe_terminal_backend(name: str, terminal_cfg: dict) -> tuple:
+    """Return ``(status, detail)`` for one backend. Never raises."""
+    try:
+        if name == "local":
+            return ("ready", "")
+        if name == "docker":
+            return _probe_docker_backend()
+        if name == "singularity":
+            return _probe_singularity_backend()
+        if name == "ssh":
+            return _probe_ssh_backend(terminal_cfg)
+        if name == "modal":
+            return _probe_modal_backend()
+        if name == "daytona":
+            return _probe_daytona_backend()
+        return ("unavailable", f"Unknown backend: {name}")
+    except Exception as exc:  # pragma: no cover — belt-and-braces guard
+        return ("unavailable", f"Probe failed: {exc}")
+
+
+@app.get("/api/tools/terminal/backends")
+async def get_terminal_backends(profile: Optional[str] = None):
+    """Terminal execution backend rows with health probes for the picker panel.
+
+    Returns ``{active, backends: [{name, label, description, active, status,
+    detail}]}`` where ``status`` is ``ready`` / ``needs_setup`` /
+    ``unavailable`` and ``detail`` carries setup guidance for non-ready rows.
+    Probes are fast (<~2s each) and defensive — a probe failure surfaces as a
+    status, never an error response.
+    """
+    with _profile_scope(profile):
+        config = load_config()
+        terminal_cfg = config.get("terminal")
+        if not isinstance(terminal_cfg, dict):
+            terminal_cfg = {}
+        active = str(terminal_cfg.get("backend") or "local").strip().lower()
+        if active not in _TERMINAL_BACKEND_NAMES:
+            active = "local"
+
+        backends = []
+        for row in _TERMINAL_BACKENDS:
+            status, detail = _probe_terminal_backend(row["name"], terminal_cfg)
+            backends.append({
+                "name": row["name"],
+                "label": row["label"],
+                "description": row["description"],
+                "active": row["name"] == active,
+                "status": status,
+                "detail": detail,
+            })
+    return {"active": active, "backends": backends}
+
+
+class TerminalBackendSelect(BaseModel):
+    backend: str
+    profile: Optional[str] = None
+
+
+@app.put("/api/tools/terminal/backend")
+async def select_terminal_backend(
+    body: TerminalBackendSelect, profile: Optional[str] = None
+):
+    """Persist ``terminal.backend`` in config.yaml.
+
+    Validates against the known backend set (the same enum the raw-config
+    settings row exposes). Selecting a backend that still needs setup is
+    allowed — the picker shows guidance instead of blocking, matching the CLI.
+    """
+    backend = (body.backend or "").strip().lower()
+    if backend not in _TERMINAL_BACKEND_NAMES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown terminal backend: {body.backend!r}. "
+            f"Use one of: {', '.join(sorted(_TERMINAL_BACKEND_NAMES))}",
+        )
+
+    with _profile_scope(body.profile or profile):
+        config = load_config()
+        terminal_cfg = config.setdefault("terminal", {})
+        if not isinstance(terminal_cfg, dict):
+            terminal_cfg = {}
+            config["terminal"] = terminal_cfg
+        terminal_cfg["backend"] = backend
+        save_config(config)
+    return {"ok": True, "backend": backend}
 
 
 # ---------------------------------------------------------------------------

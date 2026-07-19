@@ -1,5 +1,5 @@
 import type { QueryClient } from '@tanstack/react-query'
-import { type MutableRefObject, useCallback, useRef } from 'react'
+import { type MutableRefObject, useCallback, useEffect, useRef } from 'react'
 
 import { writeAgentTerminalChunk } from '@/app/right-sidebar/terminal/agent-terminal-stream'
 import { readActiveTerminal } from '@/app/right-sidebar/terminal/buffer'
@@ -26,6 +26,8 @@ import { followActiveSessionCwd } from '@/store/projects'
 import { clearAllPrompts, setApprovalRequest, setSecretRequest, setSudoRequest } from '@/store/prompts'
 import {
   $currentCwd,
+  $currentModel,
+  $currentProvider,
   sessionMatchesStoredId,
   setCurrentBranch,
   setCurrentCwd,
@@ -77,6 +79,7 @@ interface GatewayEventDeps {
   queryClient: QueryClient
   refreshHermesConfig: () => Promise<void>
   sessionInterrupted: (sessionId: string) => boolean
+  sessionStateByRuntimeIdRef: MutableRefObject<Map<string, ClientSessionState>>
   updateSessionState: (
     sessionId: string,
     updater: (state: ClientSessionState) => ClientSessionState,
@@ -105,11 +108,47 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
     queryClient,
     refreshHermesConfig,
     sessionInterrupted,
+    sessionStateByRuntimeIdRef,
     updateSessionState,
     upsertToolCall
   } = deps
 
   const unscopedStreamSessionIdRef = useRef<string | null>(null)
+
+  // session.info arrives in bursts (agent build ready + turn end + title /
+  // MCP / compress edges within the same second). Each used to fire its own
+  // refreshHermesConfig — two REST calls (config + defaults) per event, per
+  // turn, including for BACKGROUND sessions whose values the fetch can't even
+  // apply. Coalesce to one trailing fetch per burst; the caller gates on
+  // `apply` so background traffic doesn't schedule anything.
+  const configRefreshTimerRef = useRef<null | number>(null)
+
+  const scheduleConfigRefresh = useCallback(() => {
+    if (configRefreshTimerRef.current !== null) {
+      return
+    }
+
+    if (typeof window === 'undefined') {
+      void refreshHermesConfig()
+
+      return
+    }
+
+    configRefreshTimerRef.current = window.setTimeout(() => {
+      configRefreshTimerRef.current = null
+      void refreshHermesConfig()
+    }, 300)
+  }, [refreshHermesConfig])
+
+  useEffect(
+    () => () => {
+      if (configRefreshTimerRef.current !== null && typeof window !== 'undefined') {
+        window.clearTimeout(configRefreshTimerRef.current)
+        configRefreshTimerRef.current = null
+      }
+    },
+    []
+  )
 
   return useCallback(
     (event: RpcEvent) => {
@@ -151,6 +190,19 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         const modelChanged = typeof payload?.model === 'string'
         const providerChanged = typeof payload?.provider === 'string'
         const runningChanged = typeof payload?.running === 'boolean'
+        // The backend stamps model/provider (as strings) on EVERY session.info,
+        // so the presence flags above are true on every heartbeat/turn edge —
+        // fine for the cheap atom writes below (nanostores skips identical
+        // values), but they also drove queryClient.invalidateQueries, refetching
+        // the model-options provider catalog once or twice per turn for a model
+        // that never changed. Only a genuine VALUE change (vs the session's own
+        // cached runtime state, captured before the state patch below applies;
+        // composer atoms as the fallback for an uncached session) invalidates.
+        const knownState = sessionId ? sessionStateByRuntimeIdRef.current.get(sessionId) : undefined
+        const modelValueChanged = modelChanged && payload!.model !== (knownState?.model ?? $currentModel.get())
+
+        const providerValueChanged =
+          providerChanged && payload!.provider !== (knownState?.provider ?? $currentProvider.get())
 
         // Config is profile-scoped, but session.info also arrives for background
         // sessions. Only an active-session event from the currently active
@@ -292,11 +344,14 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
 
         if (apply) {
           reportInstallMethodWarning(payload?.install_warning)
+          // Config refetch is only meaningful for the foreground context —
+          // everything refreshHermesConfig applies is either active-session
+          // guarded or a composer/global pref. Background sessions' heartbeats
+          // used to trigger it too (two REST calls each, every turn).
+          scheduleConfigRefresh()
         }
 
-        void refreshHermesConfig()
-
-        if (modelChanged || providerChanged) {
+        if (modelValueChanged || providerValueChanged) {
           void queryClient.invalidateQueries({
             queryKey: explicitSid && sessionId ? ['model-options', sessionId] : ['model-options']
           })
@@ -755,8 +810,9 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
       lastCwdInfoSessionRef,
       nativeSubagentSessionsRef,
       queryClient,
-      refreshHermesConfig,
+      scheduleConfigRefresh,
       sessionInterrupted,
+      sessionStateByRuntimeIdRef,
       updateSessionState,
       upsertToolCall
     ]

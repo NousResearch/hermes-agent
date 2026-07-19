@@ -95,6 +95,7 @@ from .whatsapp_identity import (
     normalize_whatsapp_identifier,  # noqa: F401 - re-exported for gateway.session callers
 )
 from utils import atomic_replace
+from agent.turn_context import extract_api_content_sidecar
 
 # Session keys/ids flow into filesystem paths downstream (e.g.
 # ``sessions_dir / f"{session_id}.json"`` in hermes_state, request-dump
@@ -563,6 +564,16 @@ def build_session_context_prompt(
                 "Do not promise to perform these actions. If the user asks, explain "
                 "that you can only read messages sent directly to you and respond."
             )
+        # Static (never per-turn): live voice-channel state used to be
+        # appended here and changed bytes every turn the bot sat in a voice
+        # channel, busting the prompt cache.  It now arrives on the current
+        # user message as a `[Voice channel now: ...]` note, injected only
+        # when it actually changed.
+        lines.append("")
+        lines.append(
+            "Voice-channel state, when relevant, appears in the current "
+            "message as a `[Voice channel now: ...]` note."
+        )
     elif context.source.platform == Platform.BLUEBUBBLES:
         lines.append("")
         lines.append(
@@ -2582,6 +2593,11 @@ class SessionStore:
             platform_message_id=(message.get("platform_message_id") or message.get("message_id")),
             observed=bool(message.get("observed")),
             timestamp=message.get("timestamp"),
+            # api_content sidecar: the exact bytes sent to the API for
+            # this message (prompt-cache-stable replay). Must survive
+            # any gateway-side persistence path or the next turn's
+            # replay diverges at this row.
+            api_content=extract_api_content_sidecar(message),
         )
 
     # Maximum in-memory pending messages per session before dropping the

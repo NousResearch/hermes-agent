@@ -454,7 +454,12 @@ export const zhHant = defineLocale({
         },
         xai: {
           voiceId: 'xAI (Grok) 語音',
-          language: 'xAI 語言'
+          language: 'xAI 語言',
+          speed: '播放速度',
+          autoSpeechTags: '自動語音標籤',
+          optimizeStreamingLatency: '串流延遲最佳化',
+          sampleRate: '取樣率',
+          bitRate: '位元率'
         },
         minimax: {
           model: 'MiniMax TTS 模型',
@@ -594,6 +599,7 @@ export const zhHant = defineLocale({
     config: {
       none: '無',
       noneParen: '(無)',
+      builtinOnly: '僅內建',
       notSet: '未設定',
       commaSeparated: '逗號分隔的值',
       loading: '正在載入 Hermes 設定...',
@@ -826,6 +832,8 @@ export const zhHant = defineLocale({
       noProviderOptions: '此工具集沒有提供方選項；啟用後即可使用目前設定。',
       noProviders: '此工具集目前沒有可用提供方。',
       ready: '就緒',
+      needsSignIn: '需要登入',
+      needsSetup: '需要安裝',
       nousIncluded: '包含在 Nous 訂閱中；登入 Nous Portal 即可啟用。',
       noApiKeyRequired: '不需要 API 金鑰。',
       postSetupHint: step => `此後端需要一次性安裝 (${step})。將在此機器上執行，可能需要幾分鐘。`,
@@ -836,7 +844,20 @@ export const zhHant = defineLocale({
       postSetupCompleteMessage: step => `已安裝 ${step}。`,
       postSetupErrorTitle: '設定完成但有錯誤',
       postSetupErrorMessage: step => `請檢查 ${step} 日誌。`,
-      postSetupFailed: step => `執行 ${step} 設定失敗`
+      postSetupFailed: step => `執行 ${step} 設定失敗`,
+      terminalBackend: {
+        sectionTitle: '執行後端',
+        loading: '正在檢查執行後端…',
+        failedLoad: '無法載入終端後端',
+        ready: '就緒',
+        needsSetup: '需要設定',
+        unavailable: '不可用',
+        inUse: '使用中',
+        selectedTitle: '已選擇後端',
+        selectedMessage: backend => `終端命令現在透過 ${backend} 執行。將套用於新工作階段。`,
+        failedSelect: backend => `選擇 ${backend} 失敗`,
+        needsSetupHint: '現在即可選擇此後端——但在完成設定前命令將會失敗。'
+      }
     }
   },
 

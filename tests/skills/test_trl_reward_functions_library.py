@@ -66,6 +66,21 @@ def test_reward_factories_create_task_specific_rewards():
     ]
 
 
+def test_json_parse_reward_only_accepts_objects_and_arrays():
+    rewards = load_library()
+    completions = [
+        '{"answer": 42}',
+        '["answer", 42]',
+        '"42"',
+        "42",
+        "true",
+        "null",
+        '{"broken":',
+    ]
+
+    assert rewards.json_parse_reward(completions) == [1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+
+
 def test_combined_math_xml_reward_scores_correct_formatted_answer_higher():
     rewards = load_library()
     completions = [

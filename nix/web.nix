@@ -1,14 +1,9 @@
 # nix/web.nix — Hermes Web Dashboard (Vite/React) frontend build
 { pkgs, hermesNpmLib, ... }:
 let
-  # @hermes/shared ships as a file: workspace dep of web, so its source
-  # must be in the filtered src tree too.
-  npm = hermesNpmLib.mkNpmPassthru {
-    dirs = [
-      "web"
-      "apps/shared"
-    ];
-  };
+  # web pulls @hermes/shared (apps/shared) in via a file: dep; workspaceClosure
+  # derives its dir so the source scope can't drift.
+  npm = hermesNpmLib.mkNpmPassthru { dirs = hermesNpmLib.workspaceClosure "web"; };
 
   packageJson = builtins.fromJSON (builtins.readFile (npm.src + "/web/package.json"));
   version = packageJson.version;

@@ -110,6 +110,29 @@ class TestWriteFileStalenessGuard(unittest.TestCase):
         with open(self._tmpfile) as f:
             self.assertEqual(f.read(), "new content\n")
 
+    def test_redacted_full_read_does_not_allow_secret_corrupting_overwrite(self):
+        """A redacted read is not a round-trippable full-file baseline."""
+        secret = "ghp_" + "A" * 40
+        original = f"token={secret}\n"
+        with open(self._tmpfile, "w") as f:
+            f.write(original)
+
+        read = json.loads(read_file_tool(self._tmpfile, task_id="redacted"))
+        result = json.loads(write_file_tool(
+            self._tmpfile,
+            "token=«redacted:ghp_…»\n",
+            task_id="redacted",
+        ))
+
+        self.assertNotIn("error", read)
+        self.assertNotIn(secret, read["content"])
+        self.assertIn("«redacted:ghp_…»", read["content"])
+        self.assertIn("error", result)
+        self.assertTrue(result.get("stale_write_blocked"))
+        self.assertIn("has not been read", result["error"])
+        with open(self._tmpfile) as f:
+            self.assertEqual(f.read(), original)
+
     def test_write_file_refuses_when_file_modified_externally(self):
         """Read, external modify, then write_file: refuse before clobbering."""
         read = json.loads(read_file_tool(self._tmpfile, task_id="t1"))

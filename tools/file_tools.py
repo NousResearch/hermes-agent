@@ -1340,8 +1340,11 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
             content_len = len(trimmed)
 
         # ── Redact secrets (after guard check to skip oversized content) ──
+        redaction_altered_content = False
         if result.content:
+            content_before_redaction = result.content
             result.content = redact_sensitive_text(result.content, file_read=True)
+            redaction_altered_content = result.content != content_before_redaction
             result_dict["content"] = result.content
 
         # Large-file hint: if the file is big and the caller didn't ask
@@ -1388,7 +1391,11 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
                 pass  # Can't stat — skip tracking for this entry
 
             _partial = (offset > 1) or bool(result_dict.get("truncated"))
-            if not _partial:
+            # Full-file write_file overwrites are safe only after the agent saw
+            # complete, round-trippable contents.  File-read redaction returns a
+            # non-reusable sentinel for secrets, so a redacted read must not
+            # bless a later full overwrite that would persist that sentinel.
+            if not _partial and not redaction_altered_content:
                 task_data.setdefault("full_write_baselines", set()).add(resolved_str)
 
             # Bound the per-task containers so a long CLI session doesn't

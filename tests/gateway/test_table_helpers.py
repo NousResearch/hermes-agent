@@ -4,6 +4,7 @@ from gateway.platforms.helpers import (
     TABLE_SEPARATOR_RE,
     is_table_row,
     split_markdown_table_row,
+    split_markdown_table_segments,
     convert_table_to_bullets,
 )
 
@@ -30,6 +31,32 @@ class TestTablePrimitives:
 
     def test_split_row_no_outer_pipes(self):
         assert split_markdown_table_row("a | b | c") == ["a", "b", "c"]
+
+
+class TestSplitMarkdownTableSegments:
+    def test_splits_mixed_content_in_order(self):
+        text = "Intro\n\n| A | B |\n| --- | --- |\n| 1 | 2 |\n\nOutro"
+        segments = split_markdown_table_segments(text)
+
+        assert [segment["type"] for segment in segments] == ["text", "table", "text"]
+        assert segments[1]["headers"] == ["A", "B"]
+        assert segments[1]["rows"] == [["1", "2"]]
+
+    def test_leaves_standalone_pipe_text_as_text(self):
+        text = "status | value\nnot a table"
+
+        assert split_markdown_table_segments(text) == [{"type": "text", "content": text}]
+
+    def test_leaves_fenced_table_example_as_text(self):
+        text = "```markdown\n| A | B |\n| --- | --- |\n| 1 | 2 |\n```"
+
+        assert split_markdown_table_segments(text) == [{"type": "text", "content": text}]
+
+    def test_normalizes_short_and_long_rows(self):
+        text = "| A | B |\n| --- | --- |\n| 1 |\n| 2 | 3 | 4 |"
+        table = split_markdown_table_segments(text)[0]
+
+        assert table["rows"] == [["1", ""], ["2", "3"]]
 
 
 class TestConvertTableToBullets:

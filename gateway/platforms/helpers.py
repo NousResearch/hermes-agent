@@ -11,7 +11,7 @@ import logging
 import re
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING, Dict
+from typing import TYPE_CHECKING, Any, Dict
 
 from utils import atomic_json_write
 
@@ -322,6 +322,60 @@ def split_markdown_table_row(line: str) -> list[str]:
     if stripped.endswith("|"):
         stripped = stripped[:-1]
     return [cell.strip() for cell in stripped.split("|")]
+
+
+def split_markdown_table_segments(text: str) -> list[dict[str, Any]]:
+    """Split markdown into text/table segments without touching code fences.
+
+    A table starts only when a plausible header row is immediately followed
+    by a valid GFM separator row. Standalone pipe text and pipe-delimited
+    examples inside fenced code blocks remain ordinary text.
+    """
+    if "|" not in text or "-" not in text:
+        return [{"type": "text", "content": text}]
+
+    lines = text.split("\n")
+    segments: list[dict[str, Any]] = []
+    text_buffer: list[str] = []
+    in_fence = False
+    i = 0
+
+    def flush_text() -> None:
+        if text_buffer:
+            segments.append({"type": "text", "content": "\n".join(text_buffer)})
+            text_buffer.clear()
+
+    while i < len(lines):
+        line = lines[i]
+        if line.lstrip().startswith("```"):
+            in_fence = not in_fence
+            text_buffer.append(line)
+            i += 1
+            continue
+
+        if (
+            not in_fence
+            and is_table_row(line)
+            and i + 1 < len(lines)
+            and TABLE_SEPARATOR_RE.match(lines[i + 1])
+        ):
+            headers = split_markdown_table_row(line)
+            if len(headers) >= 2:
+                flush_text()
+                rows: list[list[str]] = []
+                i += 2
+                while i < len(lines) and is_table_row(lines[i]):
+                    cells = split_markdown_table_row(lines[i])
+                    rows.append((cells + [""] * len(headers))[: len(headers)])
+                    i += 1
+                segments.append({"type": "table", "headers": headers, "rows": rows})
+                continue
+
+        text_buffer.append(line)
+        i += 1
+
+    flush_text()
+    return segments
 
 
 def _render_table_block(table_block: list[str]) -> str:

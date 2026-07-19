@@ -15,6 +15,7 @@ Key design decisions:
 """
 
 import asyncio
+import hashlib
 import json
 import logging
 import random
@@ -34,6 +35,14 @@ logger = logging.getLogger(__name__)
 
 class DisplayProjectionTooLargeError(RuntimeError):
     """The durable transcript exceeds the bounded display projection budget."""
+
+
+class TranscriptDerivationValidationError(ValueError):
+    """A requested transcript boundary is not a safe, visible turn boundary."""
+
+
+class TranscriptDerivationConflictError(RuntimeError):
+    """A derivation idempotency key or child session conflicts with durable state."""
 
 
 def workspace_key(row: Dict[str, Any]) -> Optional[str]:
@@ -144,7 +153,7 @@ T = TypeVar("T")
 
 DEFAULT_DB_PATH = get_hermes_home() / "state.db"
 
-SCHEMA_VERSION = 22
+SCHEMA_VERSION = 23
 
 # Cap on user-controlled FTS5 query input before regex/sanitizer processing.
 # Search queries do not need to be arbitrarily large, and bounding them keeps
@@ -889,6 +898,19 @@ CREATE TABLE IF NOT EXISTS async_delegations (
     delivery_claimed_at REAL
 );
 
+CREATE TABLE IF NOT EXISTS transcript_derivations (
+    operation_id TEXT PRIMARY KEY,
+    request_hash TEXT NOT NULL,
+    source_requested_session_id TEXT NOT NULL,
+    source_resolved_session_id TEXT NOT NULL,
+    child_session_id TEXT NOT NULL UNIQUE,
+    target_message_id INTEGER NOT NULL,
+    kind TEXT NOT NULL,
+    boundary TEXT NOT NULL,
+    response_json TEXT NOT NULL,
+    created_at REAL NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_sessions_source ON sessions(source);
 CREATE INDEX IF NOT EXISTS idx_sessions_source_id ON sessions(source, id);
 CREATE INDEX IF NOT EXISTS idx_sessions_parent ON sessions(parent_session_id);
@@ -899,6 +921,8 @@ CREATE INDEX IF NOT EXISTS idx_session_model_usage_session ON session_model_usag
 CREATE INDEX IF NOT EXISTS idx_session_model_usage_model ON session_model_usage(model);
 CREATE INDEX IF NOT EXISTS idx_async_delegations_delivery
     ON async_delegations(delivery_state, completed_at);
+CREATE INDEX IF NOT EXISTS idx_transcript_derivations_source
+    ON transcript_derivations(source_requested_session_id, created_at);
 """
 
 # Indexes that reference columns added in later schema versions must be
@@ -1016,9 +1040,16 @@ class SessionDB:
     _IMPORT_MAX_SESSION_BYTES = 5 * 1024 * 1024
     _IMPORT_MAX_TOTAL_BYTES = 25 * 1024 * 1024
 
-    def __init__(self, db_path: Path = None, read_only: bool = False):
+    def __init__(
+        self,
+        db_path: Path = None,
+        read_only: bool = False,
+        *,
+        initialize_schema: bool = True,
+    ):
         self.db_path = db_path or DEFAULT_DB_PATH
         self.read_only = read_only
+        self._checkpoint_on_close = not read_only and initialize_schema
 
         self._lock = threading.Lock()
         self._write_count = 0
@@ -1044,6 +1075,23 @@ class SessionDB:
                     isolation_level=None,
                 )
                 self._conn.row_factory = sqlite3.Row
+                return
+
+            if not initialize_schema:
+                # Internal worker connection for an already-initialized state
+                # database. Opening mode=rw and enabling per-connection foreign
+                # keys perform no schema/update writes, so construction remains
+                # safe while another writer owns SQLite's WAL write lock. The
+                # normal jittering BEGIN IMMEDIATE path handles later contention.
+                self._conn = sqlite3.connect(
+                    f"file:{self.db_path}?mode=rw",
+                    uri=True,
+                    check_same_thread=False,
+                    timeout=1.0,
+                    isolation_level=None,
+                )
+                self._conn.row_factory = sqlite3.Row
+                self._conn.execute("PRAGMA foreign_keys=ON")
                 return
 
             self.db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1104,6 +1152,12 @@ class SessionDB:
             # cause that another thread's /resume is about to format.
             # Tests that need to reset the state can call
             # ``hermes_state._set_last_init_error(None)`` explicitly.
+            try:
+                if self._conn is not None:
+                    self._conn.close()
+            except Exception:
+                pass
+            self._conn = None
             _set_last_init_error(f"{type(exc).__name__}: {exc}")
             raise
 
@@ -1357,15 +1411,17 @@ class SessionDB:
     def close(self):
         """Close the database connection.
 
-        Attempts a TRUNCATE WAL checkpoint first so that exiting processes
-        help shrink the WAL file.
+        Normal writable owners attempt a TRUNCATE WAL checkpoint first so that
+        exiting processes help shrink the WAL file. Read-only and existing-
+        schema worker connections skip that checkpoint intentionally.
         """
         with self._lock:
             if self._conn:
-                try:
-                    self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-                except Exception as exc:
-                    logger.debug("WAL checkpoint (TRUNCATE) at close failed: %s", exc)
+                if self._checkpoint_on_close:
+                    try:
+                        self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                    except Exception as exc:
+                        logger.debug("WAL checkpoint (TRUNCATE) at close failed: %s", exc)
                 self._conn.close()
                 self._conn = None
 
@@ -1950,6 +2006,426 @@ class SessionDB:
         """Create a new session record. Returns the session_id."""
         self._insert_session_row(session_id, source, **kwargs)
         return session_id
+
+    @staticmethod
+    def _validate_derivation_token(value: str, label: str) -> str:
+        value = value.strip() if isinstance(value, str) else ""
+        if (
+            not value
+            or len(value) > 256
+            or re.search(r"[\x00-\x1f\x7f]", value)
+        ):
+            raise TranscriptDerivationValidationError(f"Invalid {label}")
+        return value
+
+    @staticmethod
+    def _default_derivation_title_in_transaction(
+        conn: sqlite3.Connection,
+        source_title: Optional[str],
+        kind: str,
+    ) -> str:
+        suffix = {
+            "branch": "branch",
+            "edit": "edited",
+            "retry": "retry",
+        }[kind]
+        base = (source_title or "Conversation").strip() or "Conversation"
+        reserved = len(suffix) + 3
+        base = base[: max(1, SessionDB.MAX_TITLE_LENGTH - reserved)].rstrip()
+        candidate = f"{base} · {suffix}"
+        counter = 2
+        while conn.execute(
+            "SELECT 1 FROM sessions WHERE title = ? LIMIT 1", (candidate,)
+        ).fetchone():
+            marker = f" #{counter}"
+            candidate = (
+                f"{base[: max(1, SessionDB.MAX_TITLE_LENGTH - reserved - len(marker))].rstrip()}"
+                f" · {suffix}{marker}"
+            )
+            counter += 1
+        return candidate
+
+    @staticmethod
+    def _copy_derivation_prefix_in_transaction(
+        conn: sqlite3.Connection,
+        child_session_id: str,
+        source_message_ids: List[int],
+    ) -> tuple[int, int]:
+        """Copy an exact visible prefix as fresh active rows in one transaction."""
+        if not source_message_ids:
+            return 0, 0
+        ids_json = json.dumps(source_message_ids)
+        source_rows = conn.execute(
+            "SELECT id, tool_calls FROM messages "
+            "WHERE id IN (SELECT CAST(value AS INTEGER) FROM json_each(?)) "
+            "ORDER BY id",
+            (ids_json,),
+        ).fetchall()
+        if [int(row["id"]) for row in source_rows] != source_message_ids:
+            raise TranscriptDerivationValidationError(
+                "Transcript changed while deriving the requested boundary"
+            )
+
+        cursor = conn.execute(
+            """
+            INSERT INTO messages (
+                session_id, role, content, tool_call_id, tool_calls, tool_name,
+                effect_disposition, timestamp, token_count, finish_reason,
+                reasoning, reasoning_content, reasoning_details,
+                codex_reasoning_items, codex_message_items,
+                platform_message_id, observed, active, compacted,
+                context_snapshot
+            )
+            SELECT
+                ?, role, content, tool_call_id, tool_calls, tool_name,
+                effect_disposition, timestamp, token_count, finish_reason,
+                reasoning, reasoning_content, reasoning_details,
+                codex_reasoning_items, codex_message_items,
+                platform_message_id, observed, 1, 0, 0
+            FROM messages
+            WHERE id IN (SELECT CAST(value AS INTEGER) FROM json_each(?))
+            ORDER BY id
+            """,
+            (child_session_id, ids_json),
+        )
+        inserted = int(cursor.rowcount if cursor.rowcount >= 0 else 0)
+        if inserted != len(source_message_ids):
+            inserted = int(
+                conn.execute(
+                    "SELECT COUNT(*) FROM messages WHERE session_id = ?",
+                    (child_session_id,),
+                ).fetchone()[0]
+            )
+        if inserted != len(source_message_ids):
+            raise RuntimeError("Transcript derivation copied an incomplete prefix")
+
+        tool_calls_total = 0
+        for row in source_rows:
+            raw = row["tool_calls"]
+            if not raw:
+                continue
+            try:
+                parsed = json.loads(raw)
+            except (TypeError, json.JSONDecodeError):
+                parsed = None
+            tool_calls_total += len(parsed) if isinstance(parsed, list) else 1
+        conn.execute(
+            "UPDATE sessions SET message_count = ?, tool_call_count = ? WHERE id = ?",
+            (inserted, tool_calls_total, child_session_id),
+        )
+        return inserted, tool_calls_total
+
+    def derive_session_at_boundary(
+        self,
+        source_session_id: str,
+        child_session_id: str,
+        operation_id: str,
+        kind: str,
+        target_message_id: int,
+        boundary: str,
+        title: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Atomically and idempotently fork a durable transcript boundary.
+
+        The source lineage is never changed. ``branch`` copies through a
+        terminal assistant row; ``edit`` and ``retry`` stop immediately before
+        the canonical user turn so the caller can submit one replacement turn.
+        """
+        source_session_id = self._validate_derivation_token(
+            source_session_id, "source session ID"
+        )
+        child_session_id = self._validate_derivation_token(
+            child_session_id, "child session ID"
+        )
+        operation_id = self._validate_derivation_token(
+            operation_id, "operation ID"
+        )
+        expected_boundaries = {
+            "branch": "after_turn",
+            "edit": "before_turn",
+            "retry": "before_turn",
+        }
+        if kind not in expected_boundaries or boundary != expected_boundaries[kind]:
+            raise TranscriptDerivationValidationError(
+                "Invalid transcript derivation kind or boundary"
+            )
+        if (
+            isinstance(target_message_id, bool)
+            or not isinstance(target_message_id, int)
+            or target_message_id < 1
+            or target_message_id > 9_223_372_036_854_775_807
+        ):
+            raise TranscriptDerivationValidationError("Invalid target message ID")
+        if title is not None:
+            if not isinstance(title, str):
+                raise TranscriptDerivationValidationError("Invalid derivation title")
+            try:
+                normalized_title = self.sanitize_title(title)
+            except ValueError as exc:
+                raise TranscriptDerivationValidationError(str(exc)) from exc
+            if not normalized_title:
+                raise TranscriptDerivationValidationError("Invalid derivation title")
+        else:
+            normalized_title = None
+
+        canonical_request = {
+            "source_session_id": source_session_id,
+            "child_session_id": child_session_id,
+            "kind": kind,
+            "target_message_id": target_message_id,
+            "boundary": boundary,
+            "title": normalized_title,
+        }
+        request_hash = hashlib.sha256(
+            json.dumps(
+                canonical_request,
+                ensure_ascii=False,
+                separators=(",", ":"),
+                sort_keys=True,
+            ).encode("utf-8")
+        ).hexdigest()
+
+        def _do(conn: sqlite3.Connection) -> Dict[str, Any]:
+            existing = conn.execute(
+                "SELECT request_hash, response_json FROM transcript_derivations "
+                "WHERE operation_id = ?",
+                (operation_id,),
+            ).fetchone()
+            if existing is not None:
+                if existing["request_hash"] != request_hash:
+                    raise TranscriptDerivationConflictError(
+                        "Derivation operation ID was already used for another request"
+                    )
+                replay = json.loads(existing["response_json"])
+                child = conn.execute(
+                    "SELECT model_config FROM sessions WHERE id = ?",
+                    (replay.get("child_session_id"),),
+                ).fetchone()
+                if child is None:
+                    raise TranscriptDerivationConflictError(
+                        "The previously derived child session was deleted"
+                    )
+                try:
+                    child_config = json.loads(child["model_config"] or "{}")
+                except (TypeError, json.JSONDecodeError):
+                    child_config = None
+                if (
+                    not isinstance(child_config, dict)
+                    or child_config.get("_derivation_operation_id") != operation_id
+                    or child_config.get("_derived_from")
+                    != f"msg:v1:{target_message_id}"
+                    or child_config.get("_derivation_kind") != kind
+                ):
+                    raise TranscriptDerivationConflictError(
+                        "The derivation child ID now belongs to another session"
+                    )
+                return replay
+
+            reserved = conn.execute(
+                "SELECT operation_id FROM transcript_derivations "
+                "WHERE child_session_id = ?",
+                (child_session_id,),
+            ).fetchone()
+            if reserved is not None:
+                raise TranscriptDerivationConflictError(
+                    "Derivation child session ID was already reserved by another operation"
+                )
+            if conn.execute(
+                "SELECT 1 FROM sessions WHERE id = ?", (child_session_id,)
+            ).fetchone():
+                raise TranscriptDerivationConflictError(
+                    f"Session already exists: {child_session_id}"
+                )
+
+            lineage = self._forward_compression_lineage_in_transaction(
+                conn, source_session_id
+            )
+            source_resolved_session_id = lineage[-1] if lineage else source_session_id
+            source = conn.execute(
+                "SELECT * FROM sessions WHERE id = ?",
+                (source_resolved_session_id,),
+            ).fetchone()
+            if source is None:
+                raise TranscriptDerivationValidationError(
+                    f"Session not found: {source_session_id}"
+                )
+
+            # BEGIN IMMEDIATE already prevents every competing writer. A
+            # read-only sibling connection can therefore reuse the canonical
+            # display projector (including legacy compression overlap repair)
+            # without deadlocking this SessionDB's non-reentrant lock.
+            snapshot = SessionDB(self.db_path, read_only=True)
+            try:
+                display = snapshot.get_messages_for_display(
+                    source_resolved_session_id,
+                    include_ancestors=True,
+                    max_rows=20_000,
+                )
+            finally:
+                snapshot.close()
+            if not display:
+                raise TranscriptDerivationValidationError(
+                    "The source transcript has no branchable messages"
+                )
+
+            target_index = next(
+                (
+                    index
+                    for index, message in enumerate(display)
+                    if message.get("id") == target_message_id
+                ),
+                None,
+            )
+            if target_index is None:
+                raise TranscriptDerivationValidationError(
+                    "Target message is not in the durable display lineage"
+                )
+            target = display[target_index]
+
+            retry_user = None
+            if kind == "edit":
+                if target.get("role") != "user":
+                    raise TranscriptDerivationValidationError(
+                        "Edit must target a visible user message"
+                    )
+                prefix = display[:target_index]
+            else:
+                if target.get("role") != "assistant" or target.get("tool_calls"):
+                    raise TranscriptDerivationValidationError(
+                        "Branch and retry must target a terminal assistant message"
+                    )
+                next_user_index = next(
+                    (
+                        index
+                        for index in range(target_index + 1, len(display))
+                        if display[index].get("role") == "user"
+                    ),
+                    len(display),
+                )
+                if target_index != next_user_index - 1:
+                    raise TranscriptDerivationValidationError(
+                        "Target assistant message is not terminal for its turn"
+                    )
+                if kind == "branch":
+                    prefix = display[: target_index + 1]
+                else:
+                    retry_user_index = next(
+                        (
+                            index
+                            for index in range(target_index - 1, -1, -1)
+                            if display[index].get("role") == "user"
+                        ),
+                        None,
+                    )
+                    if retry_user_index is None:
+                        raise TranscriptDerivationValidationError(
+                            "Retry target has no canonical user request"
+                        )
+                    retry_user = display[retry_user_index]
+                    if not isinstance(retry_user.get("content"), str):
+                        raise TranscriptDerivationValidationError(
+                            "Retry does not yet support non-text user requests"
+                        )
+                    prefix = display[:retry_user_index]
+
+            prefix_ids = [message.get("id") for message in prefix]
+            if not all(
+                isinstance(message_id, int) and message_id > 0
+                for message_id in prefix_ids
+            ):
+                raise TranscriptDerivationValidationError(
+                    "Transcript contains an unstable message identifier"
+                )
+
+            model_config = {}
+            if source["model_config"]:
+                try:
+                    decoded_model_config = json.loads(source["model_config"])
+                    if isinstance(decoded_model_config, dict):
+                        model_config = decoded_model_config
+                except (TypeError, json.JSONDecodeError):
+                    pass
+            model_config.update(
+                {
+                    "_branched_from": source_resolved_session_id,
+                    "_derived_from": f"msg:v1:{target_message_id}",
+                    "_derivation_kind": kind,
+                    "_derivation_operation_id": operation_id,
+                }
+            )
+            self._insert_session_row_in_transaction(
+                conn,
+                child_session_id,
+                "api_server",
+                model=source["model"],
+                model_config=model_config,
+                system_prompt=source["system_prompt"],
+                user_id=source["user_id"],
+                parent_session_id=source_resolved_session_id,
+                cwd=source["cwd"],
+                profile_name=source["profile_name"],
+            )
+            child_title = normalized_title or self._default_derivation_title_in_transaction(
+                conn, source["title"], kind
+            )
+            try:
+                self._set_session_title_in_transaction(
+                    conn, child_session_id, child_title
+                )
+            except ValueError as exc:
+                raise TranscriptDerivationValidationError(str(exc)) from exc
+            self._copy_derivation_prefix_in_transaction(
+                conn, child_session_id, prefix_ids
+            )
+
+            response: Dict[str, Any] = {
+                "operation_id": operation_id,
+                "kind": kind,
+                "boundary": boundary,
+                "target_message_id": f"msg:v1:{target_message_id}",
+                "source_requested_session_id": source_session_id,
+                "source_resolved_session_id": source_resolved_session_id,
+                "child_session_id": child_session_id,
+                "child_parent_session_id": source_resolved_session_id,
+            }
+            if retry_user is not None:
+                response.update(
+                    {
+                        "retry_user_message_id": f"msg:v1:{retry_user['id']}",
+                        "retry_user_content": retry_user["content"],
+                        "retry_user_attachments": [],
+                    }
+                )
+            response_json = json.dumps(
+                response,
+                ensure_ascii=False,
+                separators=(",", ":"),
+                sort_keys=True,
+            )
+            conn.execute(
+                """
+                INSERT INTO transcript_derivations (
+                    operation_id, request_hash, source_requested_session_id,
+                    source_resolved_session_id, child_session_id,
+                    target_message_id, kind, boundary, response_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    operation_id,
+                    request_hash,
+                    source_session_id,
+                    source_resolved_session_id,
+                    child_session_id,
+                    target_message_id,
+                    kind,
+                    boundary,
+                    response_json,
+                    time.time(),
+                ),
+            )
+            return response
+
+        return self._execute_write(_do)
 
     def record_gateway_session_peer(
         self,

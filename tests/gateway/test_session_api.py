@@ -70,6 +70,7 @@ async def test_capabilities_advertises_session_control_surface(adapter):
     assert features["session_chat"] is True
     assert features["session_chat_streaming"] is True
     assert features["session_fork"] is True
+    assert features["transcript_derivation_v1"] is True
     assert features["session_search"] is True
     assert features["admin_config_rw"] is False
     assert features["memory_write_api"] is False
@@ -83,6 +84,25 @@ async def test_capabilities_advertises_session_control_surface(adapter):
     assert data["endpoints"]["session_chat_stream"] == {
         "method": "POST",
         "path": "/api/sessions/{session_id}/chat/stream",
+    }
+    assert data["endpoints"]["transcript_derivation_v1"] == {
+        "method": "POST",
+        "path": "/api/sessions/{session_id}/fork",
+        "required_fields": [
+            "derivation_contract", "id", "operation_id", "kind",
+            "target_message_id", "boundary",
+        ],
+        "optional_fields": ["title"],
+        "request_discriminator": {
+            "field": "derivation_contract",
+            "value": "transcript_derivation_v1",
+        },
+        "target_message_id_format": "msg:v1:<sqlite-int>",
+        "kind_boundaries": {
+            "branch": "after_turn",
+            "edit": "before_turn",
+            "retry": "before_turn",
+        },
     }
 
 
@@ -604,6 +624,8 @@ async def test_session_crud_and_message_history(adapter, session_db):
         assert messages["object"] == "list"
         assert [m["role"] for m in messages["data"]] == ["user", "assistant"]
         assert messages["data"][0]["content"] == "hello from phone"
+        assert messages["data"][0]["derivation_id"] == f"msg:v1:{messages['data'][0]['id']}"
+        assert messages["data"][1]["derivation_id"] == f"msg:v1:{messages['data'][1]['id']}"
 
         patch_resp = await cli.patch(f"/api/sessions/{session_id}", json={"title": "Renamed"})
         assert patch_resp.status == 200
@@ -1218,6 +1240,357 @@ async def test_session_fork_uses_current_sessiondb_branch_primitives(adapter, se
     assert fork["title"] == "Alternative"
     assert [m["content"] for m in session_db.get_messages(fork["id"])] == ["first path", "answer"]
     assert session_db.get_session(source_id)["end_reason"] == "branched"
+
+
+@pytest.mark.asyncio
+async def test_legacy_session_fork_ignores_derivation_like_extension_fields(
+    adapter,
+    session_db,
+):
+    source_id = session_db.create_session("legacy-extension-source", "api_server")
+    session_db.append_message(source_id, "user", "legacy request")
+    session_db.append_message(source_id, "assistant", "legacy answer")
+
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        response = await cli.post(
+            f"/api/sessions/{source_id}/fork",
+            json={
+                "id": "legacy-extension-child",
+                "title": "Legacy extension",
+                "operation_id": "client-owned-operation",
+                "kind": "experiment",
+                "target_message_id": "client-owned-message",
+                "boundary": "client-owned-boundary",
+            },
+        )
+        payload = await response.json()
+
+    assert response.status == 201
+    assert payload["object"] == "hermes.session"
+    assert payload["session"]["id"] == "legacy-extension-child"
+    assert [
+        message["content"]
+        for message in session_db.get_messages("legacy-extension-child")
+    ] == ["legacy request", "legacy answer"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("kind", "boundary", "target_name", "expects_retry_request"),
+    [
+        ("branch", "after_turn", "first_assistant", False),
+        ("edit", "before_turn", "second_user", False),
+        ("retry", "before_turn", "second_assistant", True),
+    ],
+)
+async def test_session_derivation_v1_returns_action_specific_contract(
+    adapter,
+    session_db,
+    kind,
+    boundary,
+    target_name,
+    expects_retry_request,
+):
+    source_id = session_db.create_session("derive-source", "api_server", model="test-model")
+    session_db.set_session_title(source_id, "Original")
+    message_ids = {
+        "first_user": session_db.append_message(source_id, "user", "first request"),
+        "first_assistant": session_db.append_message(source_id, "assistant", "first answer"),
+        "second_user": session_db.append_message(source_id, "user", "second request"),
+        "second_assistant": session_db.append_message(source_id, "assistant", "second answer"),
+    }
+    child_id = f"derive-{kind}"
+    operation_id = f"operation-{kind}"
+    target_id = message_ids[target_name]
+    body = {
+        "derivation_contract": "transcript_derivation_v1",
+        "id": child_id,
+        "operation_id": operation_id,
+        "kind": kind,
+        "target_message_id": f"msg:v1:{target_id}",
+        "boundary": boundary,
+        "title": f"Derived {kind}",
+    }
+
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        response = await cli.post(f"/api/sessions/{source_id}/fork", json=body)
+        payload = await response.json()
+
+    assert response.status == 201
+    assert payload["object"] == "hermes.session.derivation"
+    assert payload["session"]["id"] == child_id
+    assert payload["session"]["parent_session_id"] == source_id
+    assert payload["session"]["title"] == f"Derived {kind}"
+    derivation = payload["derivation"]
+    assert derivation == {
+        "operation_id": operation_id,
+        "kind": kind,
+        "boundary": boundary,
+        "target_message_id": f"msg:v1:{target_id}",
+        "source_requested_session_id": source_id,
+        "source_resolved_session_id": source_id,
+        "child_session_id": child_id,
+        "child_parent_session_id": source_id,
+        **({
+            "retry_user_message_id": f"msg:v1:{message_ids['second_user']}",
+            "retry_user_content": "second request",
+            "retry_user_attachments": [],
+        } if expects_retry_request else {}),
+    }
+    assert [message["content"] for message in session_db.get_messages(child_id)] == [
+        "first request",
+        "first answer",
+    ]
+    assert session_db.get_session(child_id)["parent_session_id"] == source_id
+    assert session_db.get_session(child_id)["title"] == f"Derived {kind}"
+    assert session_db.get_session(source_id)["end_reason"] is None
+    assert [message["content"] for message in session_db.get_messages(source_id)] == [
+        "first request",
+        "first answer",
+        "second request",
+        "second answer",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_session_derivation_v1_replays_and_maps_operation_conflict(adapter, session_db):
+    source_id = session_db.create_session("derive-replay-source", "api_server")
+    session_db.append_message(source_id, "user", "request")
+    target_id = session_db.append_message(source_id, "assistant", "answer")
+    body = {
+        "derivation_contract": "transcript_derivation_v1",
+        "id": "derive-replay-child",
+        "operation_id": "derive-replay-operation",
+        "kind": "branch",
+        "target_message_id": f"msg:v1:{target_id}",
+        "boundary": "after_turn",
+    }
+
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        first = await cli.post(f"/api/sessions/{source_id}/fork", json=body)
+        first_payload = await first.json()
+        replay = await cli.post(f"/api/sessions/{source_id}/fork", json=body)
+        replay_payload = await replay.json()
+        conflict = await cli.post(
+            f"/api/sessions/{source_id}/fork",
+            json={**body, "title": "Conflicting replay"},
+        )
+        conflict_payload = await conflict.json()
+
+    assert first.status == 201
+    assert replay.status == 201
+    assert replay_payload == first_payload
+    assert [message["content"] for message in session_db.get_messages(body["id"])] == [
+        "request",
+        "answer",
+    ]
+    assert conflict.status == 409
+    assert conflict_payload["error"]["code"] == "transcript_derivation_conflict"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("changes", "remove", "expected_code"),
+    [
+        ({"extra": True}, None, "invalid_transcript_derivation_request"),
+        ({}, "boundary", "invalid_transcript_derivation_request"),
+        ({"derivation_contract": "transcript_derivation_v2"}, None, "invalid_transcript_derivation_contract"),
+        ({"id": ""}, None, "invalid_derivation_session_id"),
+        ({"id": "../derived"}, None, "invalid_derivation_session_id"),
+        ({"id": "x" * 257}, None, "invalid_derivation_session_id"),
+        ({"operation_id": ""}, None, "invalid_derivation_operation_id"),
+        ({"operation_id": "x" * 257}, None, "invalid_derivation_operation_id"),
+        ({"kind": "copy"}, None, "invalid_derivation_boundary"),
+        ({"boundary": "before_turn"}, None, "invalid_derivation_boundary"),
+        ({"target_message_id": 1}, None, "invalid_derivation_message_id"),
+        ({"target_message_id": "msg:v1:01"}, None, "invalid_derivation_message_id"),
+        ({"target_message_id": "msg:v1:9223372036854775808"}, None, "invalid_derivation_message_id"),
+        ({"target_message_id": f"msg:v1:{'9' * 100}"}, None, "invalid_derivation_message_id"),
+        ({"title": None}, None, "invalid_derivation_title"),
+        ({"title": "x" * (SessionDB.MAX_TITLE_LENGTH + 1)}, None, "invalid_derivation_title"),
+    ],
+)
+async def test_session_derivation_v1_strictly_validates_request_shape(
+    adapter,
+    session_db,
+    changes,
+    remove,
+    expected_code,
+):
+    source_id = session_db.create_session("derive-validation-source", "api_server")
+    session_db.append_message(source_id, "user", "request")
+    target_id = session_db.append_message(source_id, "assistant", "answer")
+    body = {
+        "derivation_contract": "transcript_derivation_v1",
+        "id": "derive-validation-child",
+        "operation_id": "derive-validation-operation",
+        "kind": "branch",
+        "target_message_id": f"msg:v1:{target_id}",
+        "boundary": "after_turn",
+    }
+    body.update(changes)
+    if remove:
+        body.pop(remove)
+
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        response = await cli.post(f"/api/sessions/{source_id}/fork", json=body)
+        payload = await response.json()
+
+    assert response.status == 400
+    assert payload["error"]["code"] == expected_code
+    assert session_db.get_session("derive-validation-child") is None
+
+
+@pytest.mark.asyncio
+async def test_session_derivation_v1_maps_boundary_validation_to_422(adapter, session_db):
+    source_id = session_db.create_session("derive-invalid-target-source", "api_server")
+    user_id = session_db.append_message(source_id, "user", "request")
+    session_db.append_message(source_id, "assistant", "answer")
+    body = {
+        "derivation_contract": "transcript_derivation_v1",
+        "id": "derive-invalid-target-child",
+        "operation_id": "derive-invalid-target-operation",
+        "kind": "branch",
+        "target_message_id": f"msg:v1:{user_id}",
+        "boundary": "after_turn",
+    }
+
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        response = await cli.post(f"/api/sessions/{source_id}/fork", json=body)
+        payload = await response.json()
+
+    assert response.status == 422
+    assert payload["error"]["code"] == "transcript_derivation_invalid"
+    assert session_db.get_session(body["id"]) is None
+
+
+@pytest.mark.asyncio
+async def test_session_derivation_v1_offloads_and_maps_projection_limit(
+    adapter,
+    session_db,
+    monkeypatch,
+):
+    from hermes_state import DisplayProjectionTooLargeError
+
+    source_id = session_db.create_session("derive-large-source", "api_server")
+    session_db.append_message(source_id, "user", "request")
+    target_id = session_db.append_message(source_id, "assistant", "answer")
+    body = {
+        "derivation_contract": "transcript_derivation_v1",
+        "id": "derive-large-child",
+        "operation_id": "derive-large-operation",
+        "kind": "branch",
+        "target_message_id": f"msg:v1:{target_id}",
+        "boundary": "after_turn",
+    }
+    offload_calls = 0
+
+    async def run_off_loop(operation):
+        nonlocal offload_calls
+        offload_calls += 1
+        return operation()
+
+    def exceed_projection(*args):
+        raise DisplayProjectionTooLargeError("too large")
+
+    monkeypatch.setattr(
+        adapter,
+        "_run_blocking_operation_cancellation_safe",
+        run_off_loop,
+    )
+    monkeypatch.setattr(SessionDB, "derive_session_at_boundary", exceed_projection)
+
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        response = await cli.post(f"/api/sessions/{source_id}/fork", json=body)
+        payload = await response.json()
+
+    assert offload_calls == 1
+    assert response.status == 422
+    assert payload["error"]["code"] == "transcript_derivation_too_large"
+    assert session_db.get_session(body["id"]) is None
+
+
+@pytest.mark.asyncio
+async def test_session_derivation_v1_fails_if_child_metadata_is_missing(
+    adapter,
+    session_db,
+    monkeypatch,
+):
+    source_id = session_db.create_session("derive-missing-child-source", "api_server")
+    session_db.append_message(source_id, "user", "request")
+    target_id = session_db.append_message(source_id, "assistant", "answer")
+    body = {
+        "derivation_contract": "transcript_derivation_v1",
+        "id": "derive-missing-child",
+        "operation_id": "derive-missing-child-operation",
+        "kind": "branch",
+        "target_message_id": f"msg:v1:{target_id}",
+        "boundary": "after_turn",
+    }
+    monkeypatch.setattr(
+        SessionDB,
+        "derive_session_at_boundary",
+        lambda self, *args: {
+            "operation_id": body["operation_id"],
+            "kind": body["kind"],
+            "boundary": body["boundary"],
+            "target_message_id": body["target_message_id"],
+            "source_requested_session_id": source_id,
+            "source_resolved_session_id": source_id,
+            "child_session_id": body["id"],
+            "child_parent_session_id": source_id,
+        },
+    )
+
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        response = await cli.post(f"/api/sessions/{source_id}/fork", json=body)
+        payload = await response.json()
+
+    assert response.status == 502
+    assert payload["error"]["code"] == "transcript_derivation_incomplete"
+
+
+@pytest.mark.asyncio
+async def test_session_derivation_v1_rejects_changed_child_snapshot(
+    adapter,
+    session_db,
+    monkeypatch,
+):
+    source_id = session_db.create_session("derive-swap-source", "api_server")
+    session_db.append_message(source_id, "user", "request")
+    target_id = session_db.append_message(source_id, "assistant", "answer")
+    body = {
+        "derivation_contract": "transcript_derivation_v1",
+        "id": "derive-swap-child",
+        "operation_id": "derive-swap-operation",
+        "kind": "branch",
+        "target_message_id": f"msg:v1:{target_id}",
+        "boundary": "after_turn",
+    }
+    original_get_session = SessionDB.get_session
+
+    def swapped_child_snapshot(self, session_id):
+        snapshot = original_get_session(self, session_id)
+        if session_id == body["id"] and snapshot is not None:
+            return {**snapshot, "model_config": "{}"}
+        return snapshot
+
+    monkeypatch.setattr(SessionDB, "get_session", swapped_child_snapshot)
+
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        response = await cli.post(f"/api/sessions/{source_id}/fork", json=body)
+        payload = await response.json()
+
+    assert response.status == 409
+    assert payload["error"]["code"] == "transcript_derivation_conflict"
 
 
 @pytest.mark.asyncio

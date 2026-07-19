@@ -1816,7 +1816,7 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
             if _HAS_FASTER_WHISPER or _try_lazy_install_stt():
                 local_cfg = stt_config.get("local") or {}
                 model_name = _normalize_local_model(
-                    model or local_cfg.get("model", DEFAULT_LOCAL_MODEL)
+                    local_cfg.get("model", DEFAULT_LOCAL_MODEL)
                 )
                 logger.warning(
                     "STT command provider '%s' failed (%s); falling back to local faster-whisper",

@@ -11678,7 +11678,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     if _echo_adapter:
                         for _tx in _successful_transcripts:
                             try:
-                                _echo_text = _tx if _tx.startswith("🎙️") else f'🎙️ "{_tx}"'
+                                _echo_text = self._format_stt_echo(_tx)
                                 await _echo_adapter.send(
                                     source.chat_id,
                                     _echo_text,
@@ -16599,6 +16599,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return prefix
         return user_text
 
+    @staticmethod
+    def _format_stt_echo(transcript: str) -> str:
+        """Format a transcript echo once, preserving enriched fallback notices."""
+        return transcript if transcript.startswith("🎙️") else f'🎙️ "{transcript}"'
+
     async def _enrich_message_with_transcription(
         self,
         user_text: str,
@@ -16761,7 +16766,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             try:
                 await adapter.send(
                     source.chat_id,
-                    f'🎙️ "{tx}"',
+                    self._format_stt_echo(tx),
                     metadata=metadata,
                 )
             except Exception as echo_exc:

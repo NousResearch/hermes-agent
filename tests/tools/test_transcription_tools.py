@@ -995,6 +995,33 @@ class TestTranscribeAudioDispatch:
         assert result["success"] is True
         mock_local.assert_called_once_with(sample_ogg, DEFAULT_LOCAL_MODEL)
 
+    def test_command_provider_model_override_does_not_leak_into_local_fallback(
+        self, sample_ogg
+    ):
+        config = {
+            "provider": "parakeet",
+            "providers": {
+                "parakeet": {
+                    "type": "command",
+                    "command": "parakeet-transcribe {input}",
+                    "fallback_provider": "local",
+                }
+            },
+            "local": {"model": "small"},
+        }
+        with patch("tools.transcription_tools._load_stt_config", return_value=config), \
+             patch("tools.transcription_tools._get_provider", return_value="parakeet"), \
+             patch("tools.transcription_tools._transcribe_command_stt",
+                   return_value={"success": False, "error": "missing binary"}), \
+             patch("tools.transcription_tools._HAS_FASTER_WHISPER", True), \
+             patch("tools.transcription_tools._transcribe_local",
+                   return_value={"success": True, "transcript": "fallback text", "provider": "local"}) as mock_local:
+            from tools.transcription_tools import transcribe_audio
+            result = transcribe_audio(sample_ogg, model="parakeet-mlx-large")
+
+        assert result["success"] is True
+        mock_local.assert_called_once_with(sample_ogg, "small")
+
     def test_command_provider_returns_original_failure_without_fallback(self, sample_ogg):
         config = {
             "provider": "parakeet",

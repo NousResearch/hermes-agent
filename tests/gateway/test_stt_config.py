@@ -217,3 +217,53 @@ async def test_enrich_message_with_transcription_surfaces_stt_fallback_warning()
         "⚠️ STT fallback: parakeet failed, so Hermes used "
         "local / faster-whisper."
     ]
+
+
+def test_format_stt_echo_does_not_double_wrap_fallback_notice():
+    from gateway.run import GatewayRunner
+
+    fallback_notice = (
+        '🎙️ "fallback transcript"\n\n'
+        "⚠️ STT fallback: parakeet failed, so Hermes used local / faster-whisper."
+    )
+
+    assert GatewayRunner._format_stt_echo("plain transcript") == '🎙️ "plain transcript"'
+    assert GatewayRunner._format_stt_echo(fallback_notice) == fallback_notice
+
+
+@pytest.mark.asyncio
+async def test_pending_echo_preserves_fallback_notice():
+    from gateway.run import GatewayRunner
+
+    runner = GatewayRunner.__new__(GatewayRunner)
+    runner._should_echo_stt_transcripts = lambda: True
+    fallback_notice = (
+        '🎙️ "queued fallback"\n\n'
+        "⚠️ STT fallback: parakeet failed, so Hermes used local / faster-whisper."
+    )
+    echo_send = AsyncMock()
+    echo_adapter = type("EchoAdapter", (), {"send": echo_send})()
+
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="123",
+        chat_type="dm",
+    )
+    event = MessageEvent(
+        text="",
+        message_type=MessageType.VOICE,
+        source=source,
+        media_urls=["/tmp/queued-voice.ogg"],
+        media_types=["audio/ogg"],
+    )
+
+    await runner._echo_pending_stt_transcripts_once(
+        event,
+        echo_adapter,
+        source,
+        [fallback_notice],
+        metadata=None,
+        log_context="Voice-interrupt",
+    )
+
+    echo_send.assert_awaited_once_with("123", fallback_notice, metadata=None)

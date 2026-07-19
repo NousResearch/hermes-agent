@@ -22,7 +22,10 @@
   wl-clipboard,
   xclip,
 
-  # Flake inputs — passed explicitly by packages.nix and overlays.nix
+  # Flake inputs — passed explicitly by packages.nix; overlay.nix sources the
+  # equivalents from inputs.nix (which reads the same flake.lock).
+  # npm-lockfile-fix is required, not optional: the install phase always builds
+  # the bundled TUI/web assets, and nix/lib.nix calls `lib.getExe` on it.
   uv2nix,
   pyproject-nix,
   pyproject-build-systems,

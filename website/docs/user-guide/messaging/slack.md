@@ -424,7 +424,7 @@ platforms:
       command_prefix: "myorg-"   # /model becomes /myorg-model, /hermes becomes /myorg-hermes
 ```
 
-The prefix is applied on both sides automatically: `hermes slack manifest` emits the prefixed command names, and the gateway strips the prefix on receive before dispatching. After setting it:
+The prefix is applied on both sides automatically: `hermes slack manifest` emits the prefixed command names, and the gateway strips the prefix on receive before dispatching. The in-thread `!` fallback (Slack blocks native slash commands inside threads) uses the prefixed names too — type `!myorg-model`, not `!model`. As a bonus, command names that normally collide with Slack built-ins (like `/status`) no longer collide once prefixed, so they gain native slots as `/myorg-status`. After setting it:
 
 1. Regenerate the manifest: `hermes slack manifest --slashes-only`.
 2. Paste the updated `features.slash_commands` array into your Slack app manifest and reinstall.

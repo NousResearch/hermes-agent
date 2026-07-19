@@ -1198,7 +1198,7 @@ class SlackAdapter(BasePlatformAdapter):
             # strips it again before dispatch. An empty prefix matches the bare
             # command names unchanged.
             _prefix = _re.escape(self._command_prefix)
-            _slash_names = [name for name, _d, _h in slack_native_slashes()]
+            _slash_names = [name for name, _d, _h in slack_native_slashes(self._command_prefix)]
             if _slash_names:
                 _slash_pattern = _re.compile(
                     r"^/"
@@ -3176,12 +3176,24 @@ class SlackAdapter(BasePlatformAdapter):
                 # Strip "@suffix" the same way get_command() does, so
                 # forms like ``!stop@hermes`` still resolve.
                 cmd_name = first_token.split("@", 1)[0].lower()
+                # Mirror the native-slash surface: with a namespace prefix
+                # configured (e.g. "myorg-"), thread commands carry the same
+                # prefix (``!myorg-stop``) and it is stripped before dispatch.
+                # Unprefixed bangs stay plain text so two namespaced apps
+                # sharing a channel do not both execute "!stop".
+                rest = original_text[1:]
+                if self._command_prefix:
+                    if cmd_name.startswith(self._command_prefix):
+                        cmd_name = cmd_name[len(self._command_prefix) :]
+                        rest = rest[len(self._command_prefix) :]
+                    else:
+                        cmd_name = ""
                 if (
                     cmd_name
                     and "/" not in cmd_name
                     and is_gateway_known_command(cmd_name)
                 ):
-                    original_text = "/" + original_text[1:]
+                    original_text = "/" + rest
             except Exception:  # pragma: no cover - defensive
                 pass
 

@@ -271,7 +271,7 @@ class TestSlackCommandPrefix:
         monkeypatch.setattr(
             cmds,
             "slack_native_slashes",
-            lambda: [("hermes", "d", ""), ("model", "d", "")],
+            lambda prefix="": [("hermes", "d", ""), ("model", "d", "")],
         )
         with caplog.at_level(logging.WARNING, logger="hermes_cli.commands"):
             slashes = cmds.slack_app_manifest()["features"]["slash_commands"]
@@ -300,7 +300,7 @@ class TestSlackCommandPrefix:
         monkeypatch.setattr(
             cmds,
             "slack_native_slashes",
-            lambda: [("hermes", "d", ""), (long_name, "d", ""), ("model", "d", "")],
+            lambda prefix="": [("hermes", "d", ""), (long_name, "d", ""), ("model", "d", "")],
         )
         with caplog.at_level(logging.WARNING, logger="hermes_cli.commands"):
             names = [s["command"] for s in cmds.slack_app_manifest()["features"]["slash_commands"]]
@@ -328,7 +328,7 @@ class TestSlackCommandPrefix:
         monkeypatch.setattr(
             cmds,
             "slack_native_slashes",
-            lambda: [("hermes", "d", ""), ("model", "d", "")],
+            lambda prefix="": [("hermes", "d", ""), ("model", "d", "")],
         )
         with caplog.at_level(logging.WARNING, logger="hermes_cli.commands"):
             names = [s["command"] for s in cmds.slack_app_manifest()["features"]["slash_commands"]]
@@ -340,6 +340,87 @@ class TestSlackCommandPrefix:
         assert f"{prefix}hermes" in message
         assert "<subcommand>" not in message
         assert "shorter command_prefix" in message
+
+    def test_all_invalid_prefix_warns_and_disables_namespacing(self, caplog):
+        from hermes_cli.commands import slack_command_prefix
+
+        with caplog.at_level(logging.WARNING, logger="hermes_cli.commands"):
+            prefix = slack_command_prefix({"command_prefix": "@@@"})
+
+        assert prefix == ""
+        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert len(warnings) == 1
+        assert "NOT namespaced" in warnings[0].getMessage()
+
+    @pytest.mark.asyncio
+    async def test_bang_prefixed_command_rewritten_in_thread(self):
+        """``!myorg-model`` mirrors the prefixed native-slash surface."""
+        adapter = self._make({"command_prefix": "myorg-"})
+
+        await adapter._handle_slack_message(
+            {
+                "text": "!myorg-model opus",
+                "user": "U_USER",
+                "channel": "D123",
+                "channel_type": "im",
+                "ts": "1234567890.000001",
+                "thread_ts": "1111111111.000001",
+            }
+        )
+
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert msg_event.text.startswith("/model opus")
+        assert msg_event.message_type == MessageType.COMMAND
+
+    @pytest.mark.asyncio
+    async def test_bang_unprefixed_stays_text_when_prefix_set(self):
+        """Two namespaced apps sharing a channel must not both run ``!model``."""
+        adapter = self._make({"command_prefix": "myorg-"})
+
+        await adapter._handle_slack_message(
+            {
+                "text": "!model opus",
+                "user": "U_USER",
+                "channel": "D123",
+                "channel_type": "im",
+                "ts": "1234567890.000001",
+            }
+        )
+
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert msg_event.text == "!model opus"
+        assert msg_event.message_type != MessageType.COMMAND
+
+    def test_manifest_prefix_unreserves_slack_builtin_names(self, monkeypatch):
+        from hermes_cli.commands import slack_app_manifest
+
+        monkeypatch.setattr("hermes_cli.config.read_raw_config", lambda: {})
+        bare = {s["command"] for s in slack_app_manifest()["features"]["slash_commands"]}
+        # Bare /status collides with the Slack built-in, so it is skipped.
+        assert "/status" not in bare
+
+        monkeypatch.setattr(
+            "hermes_cli.config.read_raw_config", lambda: _config_with_prefix("myorg-")
+        )
+        prefixed = {s["command"] for s in slack_app_manifest()["features"]["slash_commands"]}
+        # /myorg-status no longer collides, so it gets a native slot.
+        assert "/myorg-status" in prefixed
+
+    def test_manifest_alias_descriptions_use_prefixed_names(self, monkeypatch):
+        from hermes_cli.commands import slack_app_manifest
+
+        monkeypatch.setattr(
+            "hermes_cli.config.read_raw_config", lambda: _config_with_prefix("myorg-")
+        )
+        slashes = slack_app_manifest()["features"]["slash_commands"]
+
+        alias_descs = [
+            s["description"] for s in slashes if s["description"].startswith("Alias for /")
+        ]
+        assert alias_descs  # /btw and /bg are pinned aliases
+        # Descriptions must reference the names actually registered
+        # (/myorg-background), not the unregistered bare forms.
+        assert all(d.startswith("Alias for /myorg-") for d in alias_descs)
 
 
 # ---------------------------------------------------------------------------

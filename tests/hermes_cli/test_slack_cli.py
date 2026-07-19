@@ -166,7 +166,7 @@ class TestSlackManifestWarnings:
         monkeypatch.setattr(
             cmds,
             "slack_native_slashes",
-            lambda: [("hermes", "d", ""), (long_name, "d", "")],
+            lambda prefix="": [("hermes", "d", ""), (long_name, "d", "")],
         )
 
         rc = slack_manifest_command(argparse.Namespace(slashes_only=True))

@@ -595,6 +595,19 @@ fn should_use_global_hermes_kill(install_root: Option<&Path>) -> bool {
     install_root.is_none()
 }
 
+#[cfg(test)]
+fn is_same_install_holder(executable: &Path, install_root: &Path) -> bool {
+    let exe = executable.to_string_lossy().replace('/', "\\").to_ascii_lowercase();
+    let root = install_root
+        .to_string_lossy()
+        .replace('/', "\\")
+        .trim_end_matches('\\')
+        .to_ascii_lowercase();
+    let under_root = exe.starts_with(&format!("{root}\\"));
+    under_root
+        && (exe.starts_with(&format!("{root}\\venv\\")) || exe.ends_with("\\hermes.exe"))
+}
+
 /// Same as [`force_kill_other_hermes`], optionally scoped to a specific
 /// install root so we only kill that install's venv interpreters (avoids
 /// collateral damage if another Hermes tree is also present).
@@ -634,7 +647,10 @@ fn force_kill_other_hermes_for(install_root: Option<&Path>) {
                  $venv = Join-Path $root 'venv'; \
                  Get-CimInstance Win32_Process | Where-Object {{ \
                    $_.ProcessId -ne {my_pid} -and ( \
-                     ($_.ExecutablePath -and $_.ExecutablePath.StartsWith($venv, [StringComparison]::OrdinalIgnoreCase)) -or \
+                     ($_.ExecutablePath -and ( \
+                       $_.ExecutablePath.StartsWith($venv + '\\', [StringComparison]::OrdinalIgnoreCase) -or \
+                       ($_.ExecutablePath.StartsWith($root + '\\', [StringComparison]::OrdinalIgnoreCase) -and $_.Name -ieq 'Hermes.exe') \
+                     )) -or \
                      ($_.CommandLine -and $_.CommandLine -match [regex]::Escape($venv)) \
                    ) \
                  }} | ForEach-Object {{ \
@@ -1210,6 +1226,27 @@ mod tests {
 
         assert!(!marker.exists());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn scoped_holder_matching_includes_venv_and_packaged_desktop_only() {
+        let root = Path::new(r"C:\Users\max\AppData\Local\hermes");
+        assert!(is_same_install_holder(
+            Path::new(r"C:\Users\max\AppData\Local\hermes\venv\Scripts\python.exe"),
+            root
+        ));
+        assert!(is_same_install_holder(
+            Path::new(r"C:/Users/max/AppData/Local/hermes/apps/desktop/release/win-unpacked/Hermes.exe"),
+            root
+        ));
+        assert!(!is_same_install_holder(
+            Path::new(r"D:/other-hermes/apps/desktop/release/win-unpacked/Hermes.exe"),
+            root
+        ));
+        assert!(!is_same_install_holder(
+            Path::new(r"C:\Users\max\AppData\Local\hermes-old\venv\Scripts\python.exe"),
+            root
+        ));
     }
 
     #[test]

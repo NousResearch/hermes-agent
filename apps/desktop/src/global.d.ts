@@ -318,6 +318,7 @@ export type DesktopUpdateDirtyStrategy = 'abort' | 'stash' | 'force'
 
 export interface DesktopUpdateApplyOptions {
   dirtyStrategy?: DesktopUpdateDirtyStrategy
+  force?: boolean
 }
 
 export interface DesktopUpdateApplyResult {
@@ -325,6 +326,9 @@ export interface DesktopUpdateApplyResult {
   branch?: string
   error?: string
   message?: string
+  busy?: boolean
+  activeSessions?: number
+  holders?: number
   /** True when no staged updater exists (CLI install) and the user should run
    *  `hermes update` themselves. `command` is the exact line to run. */
   manual?: boolean
@@ -356,6 +360,7 @@ export interface DesktopUpdateApplyResult {
 export type DesktopUpdateStage =
   | 'idle'
   | 'prepare'
+  | 'busyConfirm'
   | 'fetch'
   | 'pull'
   | 'pydeps'

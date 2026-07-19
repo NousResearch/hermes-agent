@@ -274,6 +274,23 @@ describe('applyUpdates terminal state', () => {
     delete (globalThis as unknown as { window?: unknown }).window
   })
 
+  it('lands on confirmation instead of interrupting active agents', async () => {
+    applyMock.mockResolvedValue({
+      ok: false,
+      busy: true,
+      activeSessions: 2,
+      holders: 3,
+      message: '2 active sessions will be interrupted.'
+    })
+
+    const result = await applyUpdates()
+
+    expect(result.busy).toBe(true)
+    expect($updateApply.get().applying).toBe(false)
+    expect($updateApply.get().stage).toBe('busyConfirm')
+    expect($updateApply.get().message).toMatch(/interrupted/)
+  })
+
   it('holds the restart view when a relauncher hands off (no close, no toast)', async () => {
     applyMock.mockResolvedValue({ ok: true, handedOff: true })
 

@@ -60,6 +60,7 @@ export function isVenvHolderProcess(
   }
 
   const root = normalizeWinPath(installRoot)
+
   if (!root) {
     return false
   }
@@ -67,7 +68,11 @@ export function isVenvHolderProcess(
   const venvPrefix = root + '\\venv\\'
   const rootPrefix = root + '\\'
   const exeNorm = normalizeWinPath(exe || '')
-  const cmdlineLow = String(cmdline || '').toLowerCase().replace(/\//g, '\\')
+
+  const cmdlineLow = String(cmdline || '')
+    .toLowerCase()
+    .replace(/\//g, '\\')
+
   const cwdLow = normalizeWinPath(cwd || '') + '\\'
 
   if (exeNorm && (exeNorm === root + '\\venv' || exeNorm.startsWith(venvPrefix))) {
@@ -112,6 +117,7 @@ export function selectVenvHolders(
 
   for (const row of rows || []) {
     const pid = Number(row.pid)
+
     if (
       !isVenvHolderProcess(
         {
@@ -137,6 +143,7 @@ export function selectVenvHolders(
 
   // Stable, unique by pid.
   const seen = new Set<number>()
+
   return out.filter(h => {
     if (seen.has(h.pid)) {
       return false
@@ -201,6 +208,7 @@ export function listVenvHolders(
   }
 
   raw = String(raw || '').trim()
+
   if (!raw) {
     return []
   }

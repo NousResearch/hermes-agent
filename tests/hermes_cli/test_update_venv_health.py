@@ -119,6 +119,28 @@ def test_venv_health_probe_failure_reports_healthy(tmp_path):
     assert healthy is True
 
 
+def test_venv_requires_recreation_when_windows_base_interpreter_is_missing(tmp_path):
+    _fake_venv_python(tmp_path, windows=True)
+    missing_home = tmp_path / "removed-python311"
+    (tmp_path / "venv" / "pyvenv.cfg").write_text(f"home = {missing_home}\n", encoding="utf-8")
+    with patch.object(cli_main, "PROJECT_ROOT", tmp_path), patch.object(
+        cli_main, "_is_windows", return_value=True
+    ):
+        assert cli_main._venv_requires_recreation() is True
+
+
+def test_venv_does_not_recreate_when_windows_base_interpreter_exists(tmp_path):
+    _fake_venv_python(tmp_path, windows=True)
+    base_home = tmp_path / "Python311"
+    base_home.mkdir()
+    (base_home / "python.exe").write_bytes(b"")
+    (tmp_path / "venv" / "pyvenv.cfg").write_text(f"home = {base_home}\n", encoding="utf-8")
+    with patch.object(cli_main, "PROJECT_ROOT", tmp_path), patch.object(
+        cli_main, "_is_windows", return_value=True
+    ):
+        assert cli_main._venv_requires_recreation() is False
+
+
 # ---------------------------------------------------------------------------
 # _detect_venv_python_processes
 # ---------------------------------------------------------------------------

@@ -9282,6 +9282,32 @@ def _venv_core_imports_healthy() -> tuple[bool, str]:
     return True, ""
 
 
+def _venv_requires_recreation() -> bool:
+    """Return whether repair must replace the venv instead of syncing it."""
+    venv_dir = PROJECT_ROOT / "venv"
+    bin_dir = "Scripts" if _is_windows() else "bin"
+    python_name = "python.exe" if _is_windows() else "python"
+    if not (venv_dir / bin_dir / python_name).exists():
+        return True
+    if not _is_windows():
+        return False
+    try:
+        cfg_path = venv_dir / "pyvenv.cfg"
+        if not cfg_path.exists():
+            return False
+        for raw in cfg_path.read_text(encoding="utf-8", errors="replace").splitlines():
+            if "=" not in raw:
+                continue
+            key, value = raw.split("=", 1)
+            if key.strip().lower() != "home":
+                continue
+            home_path = Path(value.strip().strip('"'))
+            return not home_path.is_dir() or not (home_path / "python.exe").exists()
+    except Exception as exc:
+        logger.debug("pyvenv.cfg recreation probe failed: %s", exc)
+    return False
+
+
 def _detect_venv_python_processes(
     *, exclude_pids: set[int] | None = None
 ) -> list[tuple[int, str, str]]:
@@ -10134,19 +10160,13 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 from hermes_cli.managed_uv import ensure_uv
 
                 repair_uv = ensure_uv()
-                # A managed install whose venv is gone entirely (interrupted
-                # repair after the old venv was moved aside) needs the venv
-                # recreated before dependencies can be installed into it.
-                venv_python_missing = not (
-                    PROJECT_ROOT
-                    / "venv"
-                    / ("Scripts" if _is_windows() else "bin")
-                    / ("python.exe" if _is_windows() else "python")
-                ).exists()
-                if venv_python_missing and repair_uv:
+                # A missing shim or dead pyvenv.cfg base cannot be fixed by
+                # syncing packages into the existing venv; recreate it first.
+                recreate_venv = _venv_requires_recreation()
+                if recreate_venv and repair_uv:
                     print("→ Recreating virtual environment...")
                     subprocess.run(
-                        [repair_uv, "venv", "venv"],
+                        [repair_uv, "venv", "--clear", "venv"],
                         cwd=PROJECT_ROOT,
                         check=False,
                     )

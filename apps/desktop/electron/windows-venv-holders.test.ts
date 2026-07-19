@@ -1,10 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import {
-  isVenvHolderProcess,
-  normalizeWinPath,
-  selectVenvHolders
-} from './windows-venv-holders'
+import { isVenvHolderProcess, normalizeWinPath, selectVenvHolders } from './windows-venv-holders'
 
 const ROOT = 'C:\\Users\\TestUser\\AppData\\Local\\hermes\\hermes-agent'
 
@@ -36,10 +32,7 @@ describe('isVenvHolderProcess', () => {
         {
           pid: 7,
           exe: 'C:\\Users\\TestUser\\AppData\\Local\\Programs\\Python\\Python311\\python.exe',
-          cmdline:
-            'python.exe -m hermes_cli.main --profile sophie gateway run ' +
-            ROOT +
-            '\\venv\\Lib\\site-packages'
+          cmdline: 'python.exe -m hermes_cli.main --profile sophie gateway run ' + ROOT + '\\venv\\Lib\\site-packages'
         },
         ROOT
       )

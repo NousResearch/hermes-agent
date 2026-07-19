@@ -182,8 +182,43 @@ def build_keepalive_http_client(
         # Generous read=None for SSE streaming endpoints.
         timeout = httpx.Timeout(connect=15.0, read=None, write=15.0, pool=10.0)
 
-        transport_cls = httpx.AsyncHTTPTransport if async_mode else httpx.HTTPTransport
         client_cls = httpx.AsyncClient if async_mode else httpx.Client
+
+        # Some OpenAI-compat gateways (api.cline.bot) wrap non-streaming
+        # completions in {data, success}. Unwrap on JSON only so the OpenAI
+        # SDK sees top-level choices. Streaming SSE is untouched.
+        from agent.response_envelope_transport import (
+            build_envelope_unwrap_transport,
+            is_envelope_unwrap_host,
+        )
+
+        if is_envelope_unwrap_host(base_url):
+            if proxy is None:
+                mounts = {
+                    "http://": build_envelope_unwrap_transport(
+                        async_mode=async_mode, verify=verify
+                    ),
+                    "https://": build_envelope_unwrap_transport(
+                        async_mode=async_mode, verify=verify
+                    ),
+                }
+                return client_cls(
+                    limits=limits,
+                    timeout=timeout,
+                    mounts=mounts,
+                    verify=verify,
+                )
+            transport = build_envelope_unwrap_transport(
+                async_mode=async_mode, verify=verify, proxy=proxy
+            )
+            return client_cls(
+                limits=limits,
+                timeout=timeout,
+                transport=transport,
+                verify=verify,
+            )
+
+        transport_cls = httpx.AsyncHTTPTransport if async_mode else httpx.HTTPTransport
         mounts = {}
         if proxy is None:
             mounts = {

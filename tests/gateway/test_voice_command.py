@@ -1288,6 +1288,7 @@ class TestDiscordVoiceAutoJoin:
         adapter._voice_mixers = {}
         adapter._allowed_user_ids = set()
         adapter._disconnecting = False
+        adapter._missed_message_backfill_task = None
         return adapter
 
     @staticmethod

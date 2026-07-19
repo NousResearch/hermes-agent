@@ -14148,6 +14148,29 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             send_voice = False
         return ReplyDeliveryPolicy(send_voice_reply=send_voice)
 
+    def _suppress_text_streaming_for_voice(self, source) -> bool:
+        """Whether text streaming must be disabled for this turn's reply.
+
+        Adapters that deliver a smart voice reply replacing text (e.g. LINE
+        smart modality) must be consulted BEFORE any content is emitted:
+        streamed text is marked ``already_sent`` once the final content is
+        delivered, so a later ``suppress_text_if_voice_reply_sent`` policy
+        cannot retract it and the user would get voice plus duplicate text.
+        Failures fall back to streaming as usual.
+        """
+        try:
+            adapter = self._adapter_for_source(source)
+            if not adapter or not hasattr(adapter, "voice_reply_replaces_text"):
+                return False
+            return bool(adapter.voice_reply_replaces_text(source))
+        except Exception:
+            logger.debug(
+                "Adapter voice_reply_replaces_text check failed for %s",
+                getattr(getattr(source, "platform", None), "value", None),
+                exc_info=True,
+            )
+            return False
+
     def _should_send_voice_reply(
         self,
         event: MessageEvent,
@@ -17965,6 +17988,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if _plat_streaming is None
             else bool(_plat_streaming)
         )
+        # Smart voice-delivery turns replace text with voice; streamed text
+        # can't be retracted, so gate streaming before content is emitted.
+        if _streaming_enabled and self._suppress_text_streaming_for_voice(source):
+            logger.debug(
+                "Text streaming disabled for this turn: adapter voice reply replaces text."
+            )
+            _streaming_enabled = False
 
         _thread_metadata: Optional[Dict[str, Any]] = self._thread_metadata_for_source(source, event_message_id)
 
@@ -19419,6 +19449,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 if _plat_streaming is None
                 else bool(_plat_streaming)
             )
+            # Smart voice-delivery turns replace text with voice; streamed
+            # text is marked already_sent once delivered and can't be
+            # retracted, so gate streaming before content is emitted.
+            if _streaming_enabled and self._suppress_text_streaming_for_voice(source):
+                logger.debug(
+                    "Text streaming disabled for this turn: adapter voice reply replaces text."
+                )
+                _streaming_enabled = False
             _want_stream_deltas = _streaming_enabled
             _want_interim_messages = interim_assistant_messages_enabled
             _want_interim_consumer = _want_interim_messages

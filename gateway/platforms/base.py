@@ -2670,6 +2670,20 @@ class BasePlatformAdapter(ABC):
             send_voice = False
         return ReplyDeliveryPolicy(send_voice_reply=send_voice)
 
+    def voice_reply_replaces_text(self, source: "SessionSource") -> bool:
+        """Whether the upcoming reply for *source* will be voice replacing text.
+
+        Consulted by the gateway BEFORE any response content is emitted so it
+        can disable text streaming for the turn: streamed text is marked
+        ``already_sent`` once delivered, which would otherwise leave the user
+        with a voice reply plus a duplicate text message that
+        ``ReplyDeliveryPolicy.suppress_text_if_voice_reply_sent`` can no longer
+        retract. Adapters that decide delivery modality from inbound state
+        (e.g. via ``observe_inbound_message``) override this; the default is
+        ``False`` so existing adapters keep streaming unchanged.
+        """
+        return False
+
     async def send_draft(
         self,
         chat_id: str,

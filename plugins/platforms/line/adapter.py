@@ -755,9 +755,12 @@ class LineAdapter(BasePlatformAdapter):
         return self.smart_modality
 
     @staticmethod
-    def _modality_key(event: MessageEvent) -> Tuple[str, str]:
-        source = event.source
+    def _source_modality_key(source) -> Tuple[str, str]:
         return (str(source.chat_id or ""), str(source.user_id or source.chat_id or ""))
+
+    @classmethod
+    def _modality_key(cls, event: MessageEvent) -> Tuple[str, str]:
+        return cls._source_modality_key(event.source)
 
     @staticmethod
     def _input_reply_modality(event: MessageEvent) -> Optional[str]:
@@ -801,6 +804,21 @@ class LineAdapter(BasePlatformAdapter):
         if modality == "text":
             return ReplyDeliveryPolicy()
         return default_policy
+
+    def voice_reply_replaces_text(self, source) -> bool:
+        """Smart-modality turns whose reply becomes voice must not stream text.
+
+        ``observe_inbound_message`` runs before the agent turn starts, so the
+        last recorded modality for this (chat, participant) reflects the
+        CURRENT turn's input (voice turns record ``voice``; photo turns keep
+        the prior modality, matching ``reply_delivery_policy``'s inheritance).
+        Returning True lets the gateway disable text streaming before any
+        content is emitted — streamed text cannot be retracted when the final
+        policy suppresses the text reply in favor of voice.
+        """
+        if not self._smart_modality_enabled():
+            return False
+        return self._last_reply_modality.get(self._source_modality_key(source)) == "voice"
 
     # ------------------------------------------------------------------
     # Connection lifecycle

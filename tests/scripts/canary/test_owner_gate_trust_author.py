@@ -591,6 +591,34 @@ def test_real_foundation_chain_accepts_distinct_collector_paths_with_equal_keys(
     assert chain.interpreter_version == "3.11.2"
 
 
+def test_real_foundation_chain_accepts_logically_identical_policy_generation_drift(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _paths, chain = _real_chain_inputs(
+        tmp_path,
+        monkeypatch,
+        direct_overrides={
+            "external_gcp_admin_trust_root": {
+                "resource_policy_generations": [
+                    {
+                        "resource": f"projects/{foundation.PROJECT}",
+                        "etag": "later-project-policy-generation",
+                    },
+                    {
+                        "resource": (
+                            f"organizations/{pre_fixture.ORGANIZATION_ID}"
+                        ),
+                        "etag": "later-organization-policy-generation",
+                    },
+                ]
+            }
+        },
+    )
+
+    assert chain.foundation_source_revision == pre_fixture.REVISION
+
+
 def test_real_foundation_chain_accepts_historical_success_after_f_freshness_expires(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -816,7 +844,18 @@ def test_real_foundation_chain_rejects_unrelated_or_stale_direct_iam_collection(
         {"owner_gate_vm_numeric_id": "9999999999999999999"},
         {"owner_gate_service_account_unique_id": "999999999999999999999"},
         {"project_read_role_etag": "valid-looking-recreated-role-etag"},
+        {"ancestor_read_role_etag": "valid-looking-recreated-role-etag"},
         {"mutation_role_etag": "valid-looking-recreated-mutation-role-etag"},
+        {
+            "project_read_binding_member": (
+                "serviceAccount:unrelated@example.invalid"
+            )
+        },
+        {
+            "ancestor_binding_member": (
+                "serviceAccount:unrelated@example.invalid"
+            )
+        },
     ),
 )
 def test_real_foundation_chain_rejects_recreated_security_identity(

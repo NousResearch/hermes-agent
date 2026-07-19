@@ -186,7 +186,11 @@ function ConfigField({
         onChange={e => {
           try {
             onChange(JSON.parse(e.target.value))
-          } catch {
+          } catch (err) {
+            if (!(err instanceof Error)) {
+              throw err
+            }
+
             /* keep last valid */
           }
         }}
@@ -318,6 +322,10 @@ export function ConfigSettings({
             onConfigSaved?.()
           }
         } catch (err) {
+          if (!(err instanceof Error)) {
+            throw err
+          }
+
           if (saveVersionRef.current === v) {
             notifyError(err, c.autosaveFailed)
           }
@@ -395,6 +403,10 @@ export function ConfigSettings({
         updateConfig(JSON.parse(String(reader.result)))
         notify({ kind: 'success', title: c.imported, message: t.common.saving })
       } catch (err) {
+        if (!(err instanceof Error)) {
+          throw err
+        }
+
         notifyError(err, c.invalidJson)
       }
     }
@@ -469,7 +481,17 @@ export function ConfigSettings({
                     : enumOptionsFor(key, getNested(config, key), config)
                 }
                 onChange={value => updateConfig(setNested(config, key, value))}
-                optionLabels={key === 'tts.elevenlabs.voice_id' ? elevenLabsVoiceLabels : undefined}
+                optionLabels={
+                  key === 'tts.elevenlabs.voice_id'
+                    ? elevenLabsVoiceLabels
+                    : key === 'approvals.mode'
+                      ? {
+                          manual: t.shell.approvalMode.manual,
+                          smart: t.shell.approvalMode.smart,
+                          off: t.shell.approvalMode.off
+                        }
+                      : undefined
+                }
                 schema={field}
                 schemaKey={key}
                 value={getNested(config, key)}

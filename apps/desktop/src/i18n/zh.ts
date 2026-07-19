@@ -418,6 +418,16 @@ export const zh: Translations = {
       technicalDesc: '包含原始工具参数/结果及底层细节。',
       themeTitle: '主题',
       themeDesc: '仅桌面端调色板。所选模式叠加其上。',
+      themeSearchPlaceholder: '搜索已安装主题或 VS Code Marketplace…',
+      themeNoMatch: query => `未找到与“${query}”匹配的已安装主题。`,
+      builtinThemeDescriptions: {
+        cyberpunk: '黑底霓虹绿，矩阵终端风格',
+        ember: '温暖的绯红与青铜色，充满锻造氛围',
+        midnight: '冷色强调的深蓝紫色',
+        mono: '简洁灰阶，极简且专注',
+        nous: '带有 Nous 蓝色强调色的中性玻璃质感',
+        slate: '冷静的板岩蓝，专注开发'
+      },
       themeProfileNote: profile => `已为「${profile}」配置文件保存——每个配置文件保留各自的主题。`,
       installTitle: '从 VS Code 安装',
       installDesc: '粘贴 Marketplace 扩展 ID（例如 dracula-theme.theme-dracula），将其配色主题转换为桌面调色板。',
@@ -931,6 +941,20 @@ export const zh: Translations = {
         mcp: { label: 'MCP', hint: 'MCP 工具路由' },
         title_generation: { label: '标题生成', hint: '会话标题' },
         curator: { label: '维护器', hint: '技能使用审查' }
+      },
+      moa: {
+        title: '智能体混合',
+        description: '配置具名预设，它们会作为智能体混合提供方下的模型显示。聚合模型负责生成最终回复。',
+        preset: '预设',
+        setDefault: '设为默认',
+        delete: '删除',
+        newPreset: '新预设',
+        addPreset: '添加预设',
+        defaultLabel: '默认',
+        remove: '移除',
+        referenceTitle: index => `参考模型 ${index}`,
+        addReference: '添加参考模型',
+        aggregator: '聚合模型'
       }
     },
     providers: {
@@ -1472,6 +1496,7 @@ export const zh: Translations = {
       WHATSAPP_MODE: { label: '桥接模式' },
       WHATSAPP_ALLOWED_USERS: { label: '允许的 WhatsApp 用户', help: '推荐。逗号分隔的电话号码或 WhatsApp ID。' }
     },
+    platformDescription: {},
     platformIntro: {
       telegram:
         '在 Telegram 中，与 @BotFather 对话，运行 /newbot，复制它给你的令牌。然后从 @userinfobot 获取你的数字用户 ID。',
@@ -1857,6 +1882,7 @@ export const zh: Translations = {
 
   composer: {
     message: '消息',
+    introBody: '描述任务、错误或想法。Hermes 会检查代码仓库并给出可验证的结果。',
     wakingProfile: profile => `正在唤醒 ${profile}…`,
     placeholderStarting: '正在启动 Hermes…',
     placeholderReconnecting: '正在重新连接 Hermes…',

@@ -429,6 +429,16 @@ export const en: Translations = {
       technicalDesc: 'Include raw tool args/results and low-level details.',
       themeTitle: 'Theme',
       themeDesc: 'Desktop palettes only. The selected mode is applied on top.',
+      themeSearchPlaceholder: 'Search your themes or the VS Code Marketplace…',
+      themeNoMatch: query => `No installed themes match “${query}”.`,
+      builtinThemeDescriptions: {
+        nous: 'Glass neutrals with Nous blue accents',
+        midnight: 'Deep blue-violet with cool accents',
+        ember: 'Warm crimson and bronze — forge vibes',
+        mono: 'Clean grayscale — minimal and focused',
+        cyberpunk: 'Neon green on black — matrix terminal',
+        slate: 'Cool slate blue — focused developer theme'
+      },
       themeProfileNote: profile => `Saved for the ${profile} profile — each profile keeps its own theme.`,
       installTitle: 'Install from VS Code',
       installDesc:
@@ -742,6 +752,21 @@ export const en: Translations = {
         mcp: { label: 'MCP', hint: 'MCP tool routing' },
         title_generation: { label: 'Title gen', hint: 'Session titles' },
         curator: { label: 'Curator', hint: 'Skill-usage review' }
+      },
+      moa: {
+        title: 'Mixture of Agents',
+        description:
+          'Configure named presets that appear as models under the Mixture of Agents provider. The aggregator is the acting model.',
+        preset: 'Preset',
+        setDefault: 'Set default',
+        delete: 'Delete',
+        newPreset: 'new preset',
+        addPreset: 'Add preset',
+        defaultLabel: 'Default',
+        remove: 'Remove',
+        referenceTitle: index => `Reference ${index}`,
+        addReference: 'Add reference model',
+        aggregator: 'Aggregator'
       }
     },
     providers: {
@@ -1318,6 +1343,7 @@ export const en: Translations = {
         help: 'Recommended. Comma-separated phone numbers or WhatsApp IDs.'
       }
     },
+    platformDescription: {},
     platformIntro: {}
   },
 
@@ -1681,6 +1707,7 @@ export const en: Translations = {
 
   composer: {
     message: 'Message',
+    introBody: 'Describe the task, error, or idea. Hermes will inspect the repository and return a verifiable result.',
     wakingProfile: profile => `Waking up ${profile}…`,
     placeholderStarting: 'Starting Hermes...',
     placeholderReconnecting: 'Reconnecting to Hermes…',

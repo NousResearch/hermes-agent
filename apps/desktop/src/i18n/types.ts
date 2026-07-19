@@ -5,7 +5,7 @@
 // partial locales should use `defineLocale()` so missing desktop-only strings
 // fall back to English while new keys remain type-checked.
 
-export type Locale = 'en' | 'zh' | 'zh-hant' | 'ja'
+export type Locale = 'en' | 'zh' | 'zh-hant' | 'ja' | 'ko'
 
 export type ToolTitleKey =
   | 'browser_click'
@@ -344,6 +344,9 @@ export interface Translations {
       technicalDesc: string
       themeTitle: string
       themeDesc: string
+      themeSearchPlaceholder: string
+      themeNoMatch: (query: string) => string
+      builtinThemeDescriptions: Record<string, string>
       themeProfileNote: (profile: string) => string
       installTitle: string
       installDesc: string
@@ -636,6 +639,20 @@ export interface Translations {
       fallbackEmpty: string
       notInCatalog: string
       tasks: Record<string, AuxTaskCopy>
+      moa: {
+        title: string
+        description: string
+        preset: string
+        setDefault: string
+        delete: string
+        newPreset: string
+        addPreset: string
+        defaultLabel: string
+        remove: string
+        referenceTitle: (index: number) => string
+        addReference: string
+        aggregator: string
+      }
     }
     providers: {
       connectAccount: string
@@ -1089,6 +1106,7 @@ export interface Translations {
     failedSave: (name: string) => string
     failedClear: (key: string) => string
     fieldCopy: Record<string, { label?: string; help?: string; placeholder?: string }>
+    platformDescription: Record<string, string>
     platformIntro: Record<string, string>
   }
 
@@ -1404,6 +1422,7 @@ export interface Translations {
 
   composer: {
     message: string
+    introBody: string
     wakingProfile: (profile: string) => string
     placeholderStarting: string
     placeholderReconnecting: string

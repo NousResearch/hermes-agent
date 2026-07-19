@@ -123,6 +123,10 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
         const result = await getMessagingPlatforms()
         setPlatforms(result.platforms)
       } catch (err) {
+        if (!(err instanceof Error)) {
+          throw err
+        }
+
         if (!silent) {
           notifyError(err, m.loadFailed)
         }
@@ -212,6 +216,10 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
         action: restartGatewayAction
       })
     } catch (err) {
+      if (!(err instanceof Error)) {
+        throw err
+      }
+
       notifyError(err, m.failedUpdate(platform.name))
     } finally {
       setSaving(null)
@@ -238,6 +246,10 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
         action: restartGatewayAction
       })
     } catch (err) {
+      if (!(err instanceof Error)) {
+        throw err
+      }
+
       notifyError(err, m.failedSave(platform.name))
     } finally {
       setSaving(null)
@@ -259,6 +271,10 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
       await refreshPlatforms()
       notify({ kind: 'success', title: m.keyCleared(key), message: m.setupUpdated(platform.name) })
     } catch (err) {
+      if (!(err instanceof Error)) {
+        throw err
+      }
+
       notifyError(err, m.failedClear(key))
     } finally {
       setSaving(null)
@@ -390,8 +406,8 @@ function PlatformDetail({
             {!platform.configured && <SetupPill active={false}>{m.needsSetup}</SetupPill>}
             {!platform.gateway_running && <SetupPill active={false}>{m.gatewayStopped}</SetupPill>}
           </div>
-          <p className="mt-1 text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
-            {platform.description}
+          <p className="mt-1 break-keep text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
+            {m.platformDescription[platform.id] || platform.description}
           </p>
           <PlatformHint platform={platform} />
         </div>
@@ -401,7 +417,7 @@ function PlatformDetail({
 
       <section>
         <SectionTitle>{m.getCredentials}</SectionTitle>
-        <p className="mt-1 text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
+        <p className="mt-1 break-keep text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
           {introCopy(platform, m)}
         </p>
         {platform.docs_url && (
@@ -632,7 +648,7 @@ function MessagingField({
           )}
         </div>
       }
-      description={copy.help}
+      description={<span className="break-keep">{copy.help}</span>}
       title={
         <span className="flex flex-wrap items-center gap-2">
           <label htmlFor={fieldId}>{copy.label}</label>

@@ -1598,6 +1598,8 @@ export const ja = defineLocale({
 
   composer: {
     message: 'メッセージ',
+    introBody:
+      'タスク、エラー、またはアイデアを入力してください。Hermes がリポジトリを調べ、検証可能な結果を返します。',
     wakingProfile: profile => `${profile} を起動中…`,
     placeholderStarting: 'Hermes を起動中...',
     placeholderReconnecting: 'Hermes に再接続中…',

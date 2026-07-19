@@ -1548,6 +1548,7 @@ export const zhHant = defineLocale({
 
   composer: {
     message: '訊息',
+    introBody: '描述任務、錯誤或想法。Hermes 會檢查程式碼儲存庫並給出可驗證的結果。',
     wakingProfile: profile => `正在喚醒 ${profile}…`,
     placeholderStarting: '正在啟動 Hermes...',
     placeholderReconnecting: '正在重新連線至 Hermes…',

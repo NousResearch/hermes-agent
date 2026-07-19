@@ -589,3 +589,42 @@ class TestCodexToolProgressBridge:
         assert "on_event" in captured_init and captured_init["on_event"] is not None
         assert ("tool.started", "exec_command", "pytest") in events
 
+
+class TestAIAgentCloseCodexSession:
+    """Regression coverage for #66671: AIAgent.close() must close + null out
+    the lazily-spawned _codex_session so long-running `hermes serve`
+    deployments don't leak `codex app-server` subprocess trees.
+
+    See PR #66904 for the close-path fix and the salvage material from
+    closed duplicate #66865 for the test shape."""
+
+    def test_close_closes_and_nulls_codex_session(self):
+        agent = _make_codex_agent()
+        fake_session = MagicMock()
+        agent._codex_session = fake_session
+
+        agent.close()
+
+        fake_session.close.assert_called_once()
+        assert getattr(agent, "_codex_session", None) is None
+
+    def test_close_noop_when_codex_session_attribute_missing(self):
+        # Non-codex agents never have _codex_session bound — close() must
+        # not raise AttributeError on the getattr fallback.
+        agent = _make_codex_agent()
+        assert not hasattr(agent, "_codex_session")
+
+        agent.close()  # must not raise
+
+    def test_close_idempotent_when_repeated(self):
+        # First call closes + nulls; second call sees getattr None and skips.
+        agent = _make_codex_agent()
+        fake_session = MagicMock()
+        agent._codex_session = fake_session
+
+        agent.close()
+        agent.close()
+
+        fake_session.close.assert_called_once()
+        assert agent._codex_session is None
+

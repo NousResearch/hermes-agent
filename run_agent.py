@@ -3354,6 +3354,22 @@ class AIAgent:
         except Exception:
             pass
 
+        # 5b. Close the Codex app-server subprocess + its MCP children.
+        # AIAgent.close() previously orphaned the codex app-server: the only
+        # _codex_session.close() calls lived in crash/retire paths inside
+        # agent/codex_runtime.py, so every closed Codex-route session leaked
+        # one codex app-server process and its MCP children.  Guarded +
+        # idempotent so the first call closes + clears the reference and any
+        # later call is a no-op (mirrors the openai-client step above).
+        # Issue #66671.
+        try:
+            codex_session = getattr(self, "_codex_session", None)
+            if codex_session is not None:
+                codex_session.close()
+                self._codex_session = None
+        except Exception:
+            pass
+
         # 6. Free conversation history.  Mirrors _release_evicted_agent_soft's
         # soft-eviction clear — close() is the hard teardown for true session
         # boundaries (/new, /reset, session expiry), so the message list won't

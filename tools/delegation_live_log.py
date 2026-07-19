@@ -80,6 +80,35 @@ def _one_line(text: Any, limit: int) -> str:
     return s
 
 
+def _redact(text: str) -> str:
+    """Mask credentials before anything reaches the transcript file.
+
+    These logs live under ``cache/delegation``, which ``delegate_tool`` mounts
+    READ-ONLY into remote terminal backends — so every line written here is
+    readable from inside the sandbox. The events rendered here carry exactly
+    the data that tends to hold secrets: tool args (a bearer header on a
+    curl), tool results (a ``.env`` dump, a provider error echoing the key
+    back) and streamed assistant text. Every other sink for that data already
+    routes through this same redactor — search results via
+    ``redact_sensitive_text``, terminal output via ``redact_terminal_output``
+    — so a transcript that skipped it is the one place the operator's keys
+    land in plaintext.
+
+    ``force=True``: this is a safety boundary, so it must redact even when the
+    global toggle is off. Withholds the line rather than emitting raw text if
+    the redactor is somehow unavailable — losing a debug line costs less than
+    writing a live credential into a sandbox-readable file.
+    """
+    if not text:
+        return text
+    try:
+        from agent.redact import redact_sensitive_text
+
+        return redact_sensitive_text(text, force=True) or ""
+    except Exception:  # pragma: no cover - core module; never leak on failure
+        return "[line withheld: redaction unavailable]"
+
+
 class LiveTranscriptWriter:
     """Append-only human-readable event log for ONE subagent task.
 
@@ -103,7 +132,9 @@ class LiveTranscriptWriter:
             header = [
                 "=== Hermes subagent live transcript ===",
                 f"delegation: {delegation_id}   task: {task_index}",
-                f"goal: {_one_line(goal, _KICKOFF_MAX)}",
+                # Header bypasses event(), so redact here too — a goal string
+                # can carry a key the caller pasted into the task.
+                f"goal: {_redact(_one_line(goal, _KICKOFF_MAX))}",
                 f"started: {time.strftime('%Y-%m-%d %H:%M:%S')}",
                 "(append-only; streams while the subagent runs — tail -f me)",
                 "=" * 40,
@@ -122,7 +153,10 @@ class LiveTranscriptWriter:
         """Append one ``HH:MM:SS role ⟩ text`` line. Flushed per event."""
         if not self._ok or self.path is None:
             return
-        line = f"{time.strftime('%H:%M:%S')} {role:<9}| {text}\n"
+        # Single choke point: every typed helper funnels through here, so
+        # redacting once covers args, results, thinking and streamed text —
+        # and a helper added later can't bypass it.
+        line = f"{time.strftime('%H:%M:%S')} {role:<9}| {_redact(text)}\n"
         try:
             with self._lock:
                 # Append mode per write: no held handle, survives child crash,
@@ -326,7 +360,12 @@ def _write_manifest(delegation_id: str, task_list: List[Dict[str, Any]],
             "tasks": [
                 {
                     "index": i,
-                    "goal": str(t.get("goal", ""))[:500],
+                    # manifest.json sits in the same mounted
+                    # cache/delegation/live/<id>/ directory as the .log files,
+                    # so it needs the same treatment — redacting the header
+                    # while serialising the goal verbatim here would leave the
+                    # credential exposed one file over.
+                    "goal": _redact(str(t.get("goal", ""))[:500]),
                     "log": paths[i] if i < len(paths) else None,
                     "status": "running",
                 }

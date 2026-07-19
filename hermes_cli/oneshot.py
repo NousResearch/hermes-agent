@@ -173,6 +173,7 @@ def run_oneshot(
     provider: Optional[str] = None,
     toolsets: object = None,
     usage_file: Optional[str] = None,
+    no_session: bool = False,
 ) -> int:
     """Execute a single prompt and print only the final content block.
 
@@ -187,6 +188,9 @@ def run_oneshot(
             cost, token counts, model, api_calls) is written there after the
             run — even when the run fails — so pipelines can account for
             spend per invocation.
+        no_session: When True, run ephemerally — no sessions DB row, no JSON
+            snapshot, no end-of-session memory extraction (#66319). The
+            session_search/recall tool degrades gracefully to unavailable.
 
     Returns the exit code.  Caller should sys.exit() with the return.
     """
@@ -248,6 +252,7 @@ def run_oneshot(
                     provider=provider,
                     toolsets=explicit_toolsets,
                     use_config_toolsets=use_config_toolsets,
+                    no_session=no_session,
                 )
             except BaseException as exc:  # noqa: BLE001
                 # Capture anything that escapes the agent (including OSError
@@ -316,6 +321,7 @@ def _run_agent(
     provider: Optional[str] = None,
     toolsets: object = None,
     use_config_toolsets: bool = True,
+    no_session: bool = False,
 ) -> tuple[str, dict]:
     """Build an AIAgent exactly like a normal CLI chat turn would, then
     run a single conversation.  Returns ``(final_response, run_result)``."""
@@ -395,7 +401,10 @@ def _run_agent(
     if toolsets_list is None and use_config_toolsets:
         toolsets_list = sorted(_get_platform_tools(cfg, "cli"))
 
-    session_db = _create_session_db_for_oneshot()
+    # Ephemeral runs never open the canonical store — _persist_disabled would
+    # hard-stop writes anyway, but not opening it at all keeps recall from
+    # even advertising other sessions' history to a throwaway invocation.
+    session_db = None if no_session else _create_session_db_for_oneshot()
     # Read the effective fallback chain from profile config so oneshot workers
     # honour the same merge semantics as interactive CLI and gateway sessions.
     _fb = get_fallback_chain(cfg)
@@ -410,6 +419,7 @@ def _run_agent(
         quiet_mode=True,
         platform="cli",
         session_db=session_db,
+        persist_disabled=no_session,
         credential_pool=runtime.get("credential_pool"),
         fallback_model=_fb or None,
         # Interactive callbacks are intentionally NOT wired beyond this

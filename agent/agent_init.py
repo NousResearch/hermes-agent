@@ -346,6 +346,7 @@ def init_agent(
     checkpoint_max_total_size_mb: int = 500,
     checkpoint_max_file_size_mb: int = 10,
     pass_session_id: bool = False,
+    persist_disabled: bool = False,
 ):
     """
     Initialize the AI Agent.
@@ -1355,8 +1356,13 @@ def init_agent(
     # When True, this agent NEVER persists to the canonical session store
     # (state.db) or the JSON snapshot, regardless of session_id. Set on the
     # background skill/memory review fork so its harness turn can't leak into
-    # the user's real session and hijack the next live turn. Default False.
-    agent._persist_disabled = False
+    # the user's real session and hijack the next live turn, and by the CLI's
+    # --no-session one-shot mode (#66319). Default False.
+    agent._persist_disabled = persist_disabled
+    if persist_disabled:
+        # An ephemeral agent must not leave a JSON snapshot either, even when
+        # config enables write_json_snapshots (set earlier in this function).
+        agent._session_json_enabled = False
     agent._session_init_model_config = {
         "max_iterations": agent.max_iterations,
         "reasoning_config": reasoning_config,

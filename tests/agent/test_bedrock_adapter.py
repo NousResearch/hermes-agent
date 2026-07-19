@@ -1195,6 +1195,50 @@ class TestBedrockContextLength:
         # "anthropic.claude-3-5-sonnet" should match before "anthropic.claude-3"
         assert get_bedrock_context_length("anthropic.claude-3-5-sonnet-20240620-v1:0") == 200_000
 
+    def test_claude_fable_5_is_1m(self):
+        from agent.bedrock_adapter import get_bedrock_context_length
+        assert get_bedrock_context_length("anthropic.claude-fable-5") == 1_000_000
+
+    def test_claude_sonnet_5_is_1m(self):
+        from agent.bedrock_adapter import get_bedrock_context_length
+        assert get_bedrock_context_length("anthropic.claude-sonnet-5") == 1_000_000
+
+    def test_claude_opus_4_8_is_1m(self):
+        from agent.bedrock_adapter import get_bedrock_context_length
+        assert get_bedrock_context_length("anthropic.claude-opus-4-8") == 1_000_000
+
+    def test_claude_opus_4_7_is_1m(self):
+        from agent.bedrock_adapter import get_bedrock_context_length
+        assert get_bedrock_context_length("anthropic.claude-opus-4-7") == 1_000_000
+
+    def test_1m_models_regional_inference_profiles_resolve(self):
+        """Geo/global inference-profile IDs must hit the same 1M table entries.
+
+        IDs match the AWS Bedrock model cards, e.g.
+        https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-anthropic-claude-fable-5.html
+        """
+        from agent.bedrock_adapter import get_bedrock_context_length
+        for profile_id in (
+            "us.anthropic.claude-fable-5",
+            "global.anthropic.claude-fable-5",
+            "us.anthropic.claude-sonnet-5",
+            "eu.anthropic.claude-sonnet-5",
+            "au.anthropic.claude-sonnet-5",
+            "us.anthropic.claude-opus-4-8",
+            "jp.anthropic.claude-opus-4-8",
+            "global.anthropic.claude-opus-4-7",
+        ):
+            assert get_bedrock_context_length(profile_id) == 1_000_000, profile_id
+
+    def test_sonnet_5_does_not_shadow_sonnet_4_x(self):
+        """Longest-key matching must keep Sonnet 4.6-era IDs at 200K."""
+        from agent.bedrock_adapter import get_bedrock_context_length
+        assert get_bedrock_context_length("us.anthropic.claude-sonnet-4-6") == 200_000
+
+    def test_opus_4_8_does_not_shadow_opus_4_6(self):
+        from agent.bedrock_adapter import get_bedrock_context_length
+        assert get_bedrock_context_length("us.anthropic.claude-opus-4-6") == 200_000
+
 
 # ---------------------------------------------------------------------------
 # Tool-calling capability detection

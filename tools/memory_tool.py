@@ -17,7 +17,7 @@ Entry delimiter: § (section sign). Entries can be multiline.
 Character limits (not tokens) because char counts are model-independent.
 
 Design:
-- Single `memory` tool with action parameter: add, replace, remove
+- Single `memory` tool with action parameter: add, replace, remove, search
 - replace/remove use short unique substring matching (not full text or IDs)
 - Behavioral guidance lives in the tool schema description
 - Frozen snapshot pattern: system prompt is stable, tool responses show live state
@@ -26,6 +26,7 @@ Design:
 import json
 import logging
 import os
+import re
 import tempfile
 import time
 from contextlib import contextmanager
@@ -127,11 +128,23 @@ class MemoryStore:
     # turn to budget exhaustion and suppress the user's reply (issue #42405).
     _MAX_CONSOLIDATION_FAILURES_PER_TURN = 3
 
-    def __init__(self, memory_char_limit: int = 2200, user_char_limit: int = 1375):
+    def __init__(
+        self,
+        memory_char_limit: int = 2200,
+        user_char_limit: int = 1375,
+        injection_mode: str = "full",
+        memory_enabled: bool = True,
+        user_profile_enabled: bool = True,
+    ):
         self.memory_entries: List[str] = []
         self.user_entries: List[str] = []
         self.memory_char_limit = memory_char_limit
         self.user_char_limit = user_char_limit
+        self.injection_mode = (
+            injection_mode if injection_mode in {"full", "layered"} else "full"
+        )
+        self.memory_enabled = bool(memory_enabled)
+        self.user_profile_enabled = bool(user_profile_enabled)
         # Frozen snapshot for system prompt -- set once at load_from_disk()
         self._system_prompt_snapshot: Dict[str, str] = {"memory": "", "user": ""}
         # Per-turn counter of failed at-capacity consolidation attempts; reset
@@ -198,10 +211,67 @@ class MemoryStore:
         sanitized_memory = self._sanitize_entries_for_snapshot(self.memory_entries, "MEMORY.md")
         sanitized_user = self._sanitize_entries_for_snapshot(self.user_entries, "USER.md")
 
+        memory_snapshot = self._render_block("memory", sanitized_memory)
+        if self.injection_mode == "layered":
+            core_entries = []
+            for entry in sanitized_memory:
+                if entry.lower().startswith("[core]"):
+                    core_entries.append(entry[len("[core]"):].lstrip())
+            memory_snapshot = self._render_layered_memory_block(
+                core_entries=core_entries,
+                total_entries=len(sanitized_memory),
+            )
+
         # Capture frozen snapshot for system prompt injection
         self._system_prompt_snapshot = {
-            "memory": self._render_block("memory", sanitized_memory),
+            "memory": memory_snapshot,
             "user": self._render_block("user", sanitized_user),
+        }
+
+    def search(self, target: str, query: str, limit: int = 5) -> Dict[str, Any]:
+        """Return relevant live entries without expanding the system prompt.
+
+        Matching is deterministic and local: exact substring matches rank first,
+        followed by case-insensitive query-term overlap. Results are sanitized
+        before returning so externally edited promptware cannot bypass the
+        snapshot scanner through on-demand retrieval.
+        """
+        query = (query or "").strip()
+        if not query:
+            return {"success": False, "error": "Query is required for 'search' action."}
+
+        if disabled := self._target_disabled_error(target):
+            return disabled
+
+        # Refresh live entries under the same lock used by mutations. This does
+        # not touch the frozen system-prompt snapshot, but it makes facts written
+        # by another active session immediately searchable.
+        with self._file_lock(self._path_for(target)):
+            self._reload_target(target, skip_drift=True)
+            entries = list(self._entries_for(target))
+
+        query_lower = query.lower()
+        terms = set(re.findall(r"[\w.-]+", query_lower, flags=re.UNICODE))
+        ranked = []
+        for index, entry in enumerate(entries):
+            entry_lower = entry.lower()
+            entry_terms = set(re.findall(r"[\w.-]+", entry_lower, flags=re.UNICODE))
+            overlap = len(terms & entry_terms)
+            exact = query_lower in entry_lower
+            if exact or overlap:
+                ranked.append((1 if exact else 0, overlap, -index, entry))
+
+        ranked.sort(reverse=True)
+        raw_matches = [item[-1] for item in ranked[:max(1, min(limit, 20))]]
+        safe_matches = self._sanitize_entries_for_snapshot(
+            raw_matches, "MEMORY.md" if target == "memory" else "USER.md"
+        )
+        return {
+            "success": True,
+            "target": target,
+            "query": query,
+            "matches": safe_matches,
+            "match_count": len(safe_matches),
         }
 
     @staticmethod
@@ -215,13 +285,14 @@ class MemoryStore:
         the placeholder enters the snapshot, the original entry stays in
         live state for the user to inspect and delete.
 
-        Empty or already-block-marker entries pass through unchanged.
+        Empty entries pass through unchanged. Block-marker prefixes are still
+        scanned because memory files can be edited outside this process.
         """
         from tools.threat_patterns import scan_for_threats
 
         sanitized: List[str] = []
         for entry in entries:
-            if not entry or entry.startswith("[BLOCKED:"):
+            if not entry:
                 sanitized.append(entry)
                 continue
             findings = scan_for_threats(entry, scope="strict")
@@ -311,6 +382,18 @@ class MemoryStore:
         get_memory_dir().mkdir(parents=True, exist_ok=True)
         self._write_file(self._path_for(target), self._entries_for(target))
 
+    def target_enabled(self, target: str) -> bool:
+        """Return whether config permits access to the requested target."""
+        if target == "user":
+            return self.user_profile_enabled
+        return self.memory_enabled
+
+    def _target_disabled_error(self, target: str) -> Optional[Dict[str, Any]]:
+        if self.target_enabled(target):
+            return None
+        label = "user profile" if target == "user" else "memory"
+        return {"success": False, "error": f"The {label} store is disabled in config."}
+
     def _entries_for(self, target: str) -> List[str]:
         if target == "user":
             return self.user_entries
@@ -335,6 +418,8 @@ class MemoryStore:
 
     def add(self, target: str, content: str) -> Dict[str, Any]:
         """Append a new entry. Returns error if it would exceed the char limit."""
+        if disabled := self._target_disabled_error(target):
+            return disabled
         content = content.strip()
         if not content:
             return {"success": False, "error": "Content cannot be empty."}
@@ -387,6 +472,8 @@ class MemoryStore:
 
     def replace(self, target: str, old_text: str, new_content: str) -> Dict[str, Any]:
         """Find entry containing old_text substring, replace it with new_content."""
+        if disabled := self._target_disabled_error(target):
+            return disabled
         old_text = old_text.strip()
         new_content = new_content.strip()
         if not old_text:
@@ -456,6 +543,8 @@ class MemoryStore:
 
     def remove(self, target: str, old_text: str) -> Dict[str, Any]:
         """Remove the entry containing old_text substring."""
+        if disabled := self._target_disabled_error(target):
+            return disabled
         old_text = old_text.strip()
         if not old_text:
             return {"success": False, "error": "old_text cannot be empty."}
@@ -507,6 +596,8 @@ class MemoryStore:
         the net result would exceed the char limit, NOTHING is written and an
         error is returned describing the first failure plus the live state.
         """
+        if disabled := self._target_disabled_error(target):
+            return disabled
         if not operations:
             return {"success": False, "error": "operations list is empty."}
 
@@ -679,6 +770,26 @@ class MemoryStore:
         separator = "═" * 46
         return f"{separator}\n{header}\n{separator}\n{content}"
 
+    def _render_layered_memory_block(
+        self, core_entries: List[str], total_entries: int
+    ) -> str:
+        """Render only core entries plus stable on-demand retrieval guidance."""
+        contextual_count = max(0, total_entries - len(core_entries))
+        separator = "═" * 46
+        content = ENTRY_DELIMITER.join(core_entries)
+        header = (
+            "MEMORY (core notes; contextual notes available on demand) "
+            f"[{len(core_entries)} core, {contextual_count} contextual]"
+        )
+        guidance = (
+            "Contextual memory is not injected. When the current task may depend "
+            "on stored environment facts, project conventions, paths, preferences, "
+            "or prior corrections, retrieve it with "
+            "memory(action='search', target='memory', query='<keywords>')."
+        )
+        body = f"{content}\n\n{guidance}" if content else guidance
+        return f"{separator}\n{header}\n{separator}\n{body}"
+
     @staticmethod
     def _read_file(path: Path) -> List[str]:
         """Read a memory file and split into entries.
@@ -789,7 +900,7 @@ class MemoryStore:
 
 
 def load_on_disk_store() -> "MemoryStore":
-    """Build a fresh on-disk :class:`MemoryStore`, honoring configured char limits.
+    """Build a fresh on-disk :class:`MemoryStore`, honoring memory config.
 
     Use this from any context that has no live agent (the messaging gateway, the
     Desktop GUI, the bare CLI ``/memory`` handler) but still needs to read or
@@ -803,18 +914,27 @@ def load_on_disk_store() -> "MemoryStore":
     """
     memory_char_limit = 2200
     user_char_limit = 1375
+    injection_mode = "full"
+    memory_enabled = True
+    user_profile_enabled = True
     try:
         from hermes_cli.config import load_config
 
         mem_cfg = (load_config() or {}).get("memory", {}) or {}
         memory_char_limit = int(mem_cfg.get("memory_char_limit", memory_char_limit))
         user_char_limit = int(mem_cfg.get("user_char_limit", user_char_limit))
+        injection_mode = mem_cfg.get("injection_mode", injection_mode)
+        memory_enabled = bool(mem_cfg.get("memory_enabled", memory_enabled))
+        user_profile_enabled = bool(mem_cfg.get("user_profile_enabled", user_profile_enabled))
     except Exception:
         pass  # config optional — fall back to defaults rather than break /memory
 
     store = MemoryStore(
         memory_char_limit=memory_char_limit,
         user_char_limit=user_char_limit,
+        injection_mode=injection_mode,
+        memory_enabled=memory_enabled,
+        user_profile_enabled=user_profile_enabled,
     )
     store.load_from_disk()
     return store
@@ -963,6 +1083,7 @@ def memory_tool(
     old_text: str = None,
     operations: Optional[List[Dict[str, Any]]] = None,
     store: Optional[MemoryStore] = None,
+    query: str = None,
 ) -> str:
     """
     Single entry point for the memory tool. Dispatches to MemoryStore methods.
@@ -985,6 +1106,13 @@ def memory_tool(
 
     if target not in {"memory", "user"}:
         return tool_error(f"Invalid target '{target}'. Use 'memory' or 'user'.", success=False)
+    if not store.target_enabled(target):
+        label = "user profile" if target == "user" else "memory"
+        return tool_error(f"The {label} store is disabled in config.", success=False)
+
+    # Read-only retrieval bypasses the write approval gate and batch machinery.
+    if action == "search":
+        return json.dumps(store.search(target, query), ensure_ascii=False)
 
     # --- Batch path -------------------------------------------------------
     if operations:
@@ -1029,7 +1157,7 @@ def memory_tool(
         result = store.remove(target, old_text)
 
     else:
-        return tool_error(f"Unknown action '{action}'. Use: add, replace, remove", success=False)
+        return tool_error(f"Unknown action '{action}'. Use: add, replace, remove, search", success=False)
 
     return json.dumps(result, ensure_ascii=False)
 
@@ -1064,8 +1192,13 @@ def apply_memory_pending(payload: Dict[str, Any], store: "MemoryStore") -> Dict[
 MEMORY_SCHEMA = {
     "name": "memory",
     "description": (
-        "Save durable facts to persistent memory that survive across sessions. Memory is "
-        "injected into every future turn, so keep entries compact and high-signal.\n\n"
+        "Save and retrieve durable facts in persistent memory across sessions. Memory is "
+        "normally injected into every future turn; layered-memory configurations inject only "
+        "entries prefixed '[core]' and keep other entries available through 'search'. Keep "
+        "entries compact and high-signal.\n\n"
+        "RETRIEVE: use action='search' with query='<keywords>' when a task may depend on a "
+        "stored path, environment fact, project convention, preference, or prior correction. "
+        "Search is read-only and does not require write approval.\n\n"
         "HOW: make ALL your changes in ONE call via an 'operations' array (each item: "
         "{action, content?, old_text?}). The batch applies atomically and the char limit is "
         "checked only on the FINAL result — so a single call can remove/replace stale entries "
@@ -1090,7 +1223,7 @@ MEMORY_SCHEMA = {
         "properties": {
             "action": {
                 "type": "string",
-                "enum": ["add", "replace", "remove"],
+                "enum": ["add", "replace", "remove", "search"],
                 "description": "The action to perform (single-op shape). Omit when using 'operations'."
             },
             "target": {
@@ -1105,6 +1238,10 @@ MEMORY_SCHEMA = {
             "old_text": {
                 "type": "string",
                 "description": "REQUIRED for 'replace' and 'remove' (single-op shape): a short unique substring identifying the existing entry to modify. Omit only for 'add'."
+            },
+            "query": {
+                "type": "string",
+                "description": "Keywords to retrieve relevant entries. Required for 'search'."
             },
             "operations": {
                 "type": "array",
@@ -1141,6 +1278,7 @@ registry.register(
         target=args.get("target", "memory"),
         content=args.get("content"),
         old_text=args.get("old_text"),
+        query=args.get("query"),
         operations=args.get("operations"),
         store=kw.get("store")),
     check_fn=check_memory_requirements,

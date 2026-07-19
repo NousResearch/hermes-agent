@@ -148,11 +148,22 @@ def test_load_on_disk_store_honors_configured_char_limits(hermes_home, monkeypat
     # Config override path: helper picks up the configured limits.
     monkeypatch.setattr(
         "hermes_cli.config.load_config",
-        lambda: {"memory": {"memory_char_limit": 999, "user_char_limit": 444}},
+        lambda: {
+            "memory": {
+                "memory_char_limit": 999,
+                "user_char_limit": 444,
+                "injection_mode": "layered",
+                "memory_enabled": False,
+                "user_profile_enabled": True,
+            }
+        },
     )
     store = load_on_disk_store()
     assert store.memory_char_limit == 999
     assert store.user_char_limit == 444
+    assert store.injection_mode == "layered"
+    assert store.memory_enabled is False
+    assert store.user_profile_enabled is True
 
     # Failure path: config raises → defaults, never blows up.
     def _boom():
@@ -162,6 +173,30 @@ def test_load_on_disk_store_honors_configured_char_limits(hermes_home, monkeypat
     fallback = load_on_disk_store()
     assert fallback.memory_char_limit == 2200
     assert fallback.user_char_limit == 1375
+
+
+def test_on_disk_store_rejects_staged_write_after_target_disabled(hermes_home, monkeypatch):
+    from tools.memory_tool import apply_memory_pending, load_on_disk_store
+
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {
+            "memory": {
+                "memory_enabled": False,
+                "user_profile_enabled": True,
+            }
+        },
+    )
+    store = load_on_disk_store()
+
+    result = apply_memory_pending(
+        {"action": "add", "target": "memory", "content": "staged private fact"},
+        store,
+    )
+
+    assert result["success"] is False
+    assert "disabled" in result["error"]
+    assert not os.path.exists(os.path.join(hermes_home, "memories", "MEMORY.md"))
 
 
 # ---------------------------------------------------------------------------

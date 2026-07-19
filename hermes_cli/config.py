@@ -2294,6 +2294,10 @@ DEFAULT_CONFIG = {
         "write_approval": False,
         "memory_char_limit": 2200,   # ~800 tokens at 2.75 chars/token
         "user_char_limit": 1375,     # ~500 tokens at 2.75 chars/token
+        # "full" injects all built-in memory entries (historical default).
+        # "layered" injects only entries prefixed [core]; other entries remain
+        # available on demand through memory(action="search", query="...").
+        "injection_mode": "full",
         # External memory provider plugin (empty = built-in only).
         # Set to a provider name to activate: "openviking", "mem0",
         # "hindsight", "holographic", "retaindb", "byterover".

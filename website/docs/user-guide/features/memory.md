@@ -59,8 +59,13 @@ The agent uses the `memory` tool with these actions:
 - **add** — Add a new memory entry
 - **replace** — Replace an existing entry with updated content (uses substring matching via `old_text`)
 - **remove** — Remove an entry that's no longer relevant (uses substring matching via `old_text`)
+- **search** — Retrieve relevant entries by keyword without modifying memory
 
-There is no `read` action — memory content is automatically injected into the system prompt at session start. The agent sees its memories as part of its conversation context.
+The agent normally sees memory automatically through the frozen system-prompt snapshot. The read-only `search` action can retrieve matching entries by keyword without changing that snapshot. It is primarily useful with layered injection, but works in either mode:
+
+```python
+memory(action="search", target="memory", query="pytest project convention")
+```
 
 ### Substring Matching
 
@@ -216,7 +221,29 @@ memory:
   memory_char_limit: 2200   # ~800 tokens
   user_char_limit: 1375     # ~500 tokens
   write_approval: false     # false = write freely (default) | true = require approval
+  injection_mode: full      # full (default) | layered
 ```
+
+### Layered injection (opt-in)
+
+`injection_mode: layered` keeps the system prompt small without changing it
+mid-session. Prefix entries that must always be available with `[core]`:
+
+```text
+[core] User timezone is Asia/Singapore.
+§
+Project ~/code/api uses pytest with xdist.
+```
+
+Only the first entry is included in the frozen system-prompt snapshot. The
+second remains durable and can be loaded with `memory(action="search", ...)`
+when relevant. `USER.md` continues to be injected normally; layered mode only
+changes `MEMORY.md`. Untagged entries remain contextual, so tag essential
+identity, safety, and environment facts before enabling layered mode.
+
+This design intentionally uses on-demand retrieval rather than changing the
+injected memory block on every topic shift. The system prompt therefore stays
+byte-stable for the session and preserves provider prefix-cache hits.
 
 ## Controlling memory writes (`write_approval`)
 

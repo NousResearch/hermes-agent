@@ -1947,8 +1947,9 @@ def init_agent(
     agent.background_compression = None
     if agent.background_compression_config.enabled:
         _ra().logger.info(
-            "background compression enabled: shadow_only=%s prepare>=%.0f%% "
-            "apply>=%.0f%% min_delta=%d workers=%d",
+            "background compression enabled: shadow_only=%s prepare<=%.0f%% "
+            "apply<=%.0f%% (effective gates derived per model so "
+            "prepare < apply < sync trigger) min_delta=%d workers=%d",
             agent.background_compression_config.shadow_only,
             agent.background_compression_config.prepare_threshold * 100,
             agent.background_compression_config.apply_threshold * 100,

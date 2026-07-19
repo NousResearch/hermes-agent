@@ -650,6 +650,75 @@ def _agent_config(agent: Any) -> Optional[BackgroundCompressionConfig]:
     return None
 
 
+# ── effective gate derivation ──────────────────────────────────────────────
+#
+# ``prepare_threshold`` / ``apply_threshold`` are configured as fractions of
+# the context window, but the synchronous trigger is NOT a plain fraction:
+# ``ContextEngine.threshold_tokens`` folds in the configured ratio, the
+# small-context floor, the minimum-context degenerate-window rule and the
+# Codex autoraise. Against the shipped ``compression.threshold: 0.50`` the
+# absolute 0.65/0.82 defaults sit past the synchronous trigger, so the sync
+# path would always fire first and a prepared candidate could never apply.
+# The gates therefore derive from the engine's live trigger at decision
+# time: a configured value that already fires first is honored; one that
+# would not is clamped to a fraction of the synchronous trigger, keeping
+# ``prepare < apply < synchronous`` for every profile.
+_PREPARE_FRACTION_OF_SYNC = 0.80
+_APPLY_FRACTION_OF_SYNC = 0.96
+
+_gate_clamp_logged = False
+
+
+def resolve_effective_gate_tokens(
+    cfg: BackgroundCompressionConfig, engine: Any
+) -> Tuple[float, float, float]:
+    """Return ``(prepare_tokens, apply_tokens, sync_tokens)`` with ordering enforced.
+
+    ``sync_tokens`` is the engine's live ``threshold_tokens`` (0.0 when the
+    engine has no token model — plugin engines). A gate of 0.0 means "no
+    opinion": callers skip that comparison and the in-lock validation stays
+    the only arbiter, preserving the legacy behavior for such engines.
+    """
+    global _gate_clamp_logged
+    context_length = (
+        _numeric(getattr(engine, "context_length", 0)) if engine is not None else 0.0
+    )
+    sync_tokens = (
+        _numeric(getattr(engine, "threshold_tokens", 0)) if engine is not None else 0.0
+    )
+    prepare_tokens = cfg.prepare_threshold * context_length if context_length > 0 else 0.0
+    apply_tokens = cfg.apply_threshold * context_length if context_length > 0 else 0.0
+
+    clamped = False
+    if sync_tokens > 0:
+        max_apply = sync_tokens * _APPLY_FRACTION_OF_SYNC
+        max_prepare = sync_tokens * _PREPARE_FRACTION_OF_SYNC
+        if apply_tokens <= 0 or apply_tokens > max_apply:
+            clamped = clamped or apply_tokens > max_apply
+            apply_tokens = max_apply
+        if prepare_tokens <= 0 or prepare_tokens > max_prepare:
+            clamped = clamped or prepare_tokens > max_prepare
+            prepare_tokens = max_prepare
+    if apply_tokens > 0 and prepare_tokens >= apply_tokens:
+        # A user-forced inversion (prepare >= apply) still resolves to a
+        # strictly ordered pair instead of a gate that can never open.
+        prepare_tokens = apply_tokens * (_PREPARE_FRACTION_OF_SYNC / _APPLY_FRACTION_OF_SYNC)
+        clamped = True
+    if clamped and not _gate_clamp_logged:
+        _gate_clamp_logged = True
+        logger.info(
+            "background compression: configured thresholds (prepare=%.2f apply=%.2f) "
+            "would not fire before the synchronous trigger (%s tokens) — using "
+            "derived gates prepare=%s apply=%s so prepare < apply < sync holds.",
+            cfg.prepare_threshold,
+            cfg.apply_threshold,
+            f"{int(sync_tokens):,}",
+            f"{int(prepare_tokens):,}",
+            f"{int(apply_tokens):,}",
+        )
+    return prepare_tokens, apply_tokens, sync_tokens
+
+
 def maybe_prepare_background_compression(
     agent: Any,
     messages: List[Dict[str, Any]],
@@ -690,8 +759,8 @@ def maybe_prepare_background_compression(
     tokens = _numeric(current_tokens)
     if tokens <= 0:
         tokens = _numeric(getattr(engine, "last_prompt_tokens", 0))
-    context_length = _numeric(getattr(engine, "context_length", 0))
-    if context_length > 0 and tokens < cfg.prepare_threshold * context_length:
+    prepare_gate, _apply_gate, _sync_gate = resolve_effective_gate_tokens(cfg, engine)
+    if prepare_gate > 0 and tokens < prepare_gate:
         return False
 
     controller = getattr(agent, "background_compression", None)
@@ -750,19 +819,33 @@ def maybe_apply_prepared_candidate(
     if not isinstance(controller, BackgroundCompressionController):
         return None
 
-    # Apply gate: below ``apply_threshold`` the candidate stays warm — the
-    # apply limit sits deliberately under the synchronous threshold so the
-    # swap happens before the sync path would have paused the user. When the
-    # context length is unknown (plugin engines) the gate is skipped and the
-    # in-lock validation remains the only arbiter.
+    # Apply gate: below the effective apply limit the candidate stays warm.
+    # The limit derives from the engine's live synchronous trigger (see
+    # ``resolve_effective_gate_tokens``) so the swap always lands before the
+    # sync path would have paused the user. When the engine has no token
+    # model (plugin engines) the gate is skipped and the in-lock validation
+    # remains the only arbiter.
     engine = getattr(agent, "context_compressor", None)
     tokens = _numeric(current_tokens)
     if tokens <= 0 and engine is not None:
         tokens = _numeric(getattr(engine, "last_prompt_tokens", 0))
-    context_length = (
-        _numeric(getattr(engine, "context_length", 0)) if engine is not None else 0.0
-    )
-    if context_length > 0 and tokens < cfg.apply_threshold * context_length:
+    _prepare_gate, apply_gate, sync_gate = resolve_effective_gate_tokens(cfg, engine)
+    # Preemption backstop: when the synchronous path would fire on this very
+    # preflight (token trigger or non-token triggers like message-count
+    # hygiene), a ready valid candidate must win regardless of the apply
+    # gate — never leave a finished summary warm while the blocking path
+    # redoes the same work.
+    sync_would_fire = False
+    if engine is not None:
+        should = getattr(engine, "should_compress", None)
+        if callable(should):
+            try:
+                sync_would_fire = bool(should(int(tokens)))
+            except Exception:
+                sync_would_fire = sync_gate > 0 and tokens >= sync_gate
+        else:
+            sync_would_fire = sync_gate > 0 and tokens >= sync_gate
+    if apply_gate > 0 and tokens < apply_gate and not sync_would_fire:
         return None
 
     session_id = getattr(agent, "session_id", "") or ""
@@ -827,5 +910,6 @@ __all__ = [
     "maybe_apply_prepared_candidate",
     "maybe_prepare_background_compression",
     "merge_candidate_with_live_messages",
+    "resolve_effective_gate_tokens",
     "validate_candidate",
 ]

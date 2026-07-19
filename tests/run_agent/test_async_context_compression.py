@@ -44,6 +44,7 @@ from agent.async_context_compression import (
     maybe_apply_prepared_candidate,
     maybe_prepare_background_compression,
     merge_candidate_with_live_messages,
+    resolve_effective_gate_tokens,
     validate_candidate,
 )
 
@@ -617,6 +618,59 @@ class TestPreparationTriggers:
         assert agent.background_compression.wait_until_settled(timeout=5.0)
 
 
+class TestEffectiveGateDerivation:
+    """resolve_effective_gate_tokens(): prepare < apply < sync for every profile."""
+
+    def _engine(self, *, context_length, threshold_tokens):
+        eng = _fake_engine(context_length=context_length)
+        eng.threshold_tokens = threshold_tokens
+        return eng
+
+    def test_defaults_clamp_under_upstream_sync_threshold(self):
+        # Shipped defaults: sync 0.50 of a 400K window → 200K trigger. The
+        # absolute 0.65/0.82 gates (260K/328K) sit past it and must clamp.
+        prepare, apply, sync = resolve_effective_gate_tokens(
+            _enabled_config(),
+            self._engine(context_length=400_000, threshold_tokens=200_000),
+        )
+        assert sync == 200_000
+        assert prepare == pytest.approx(160_000)  # 80% of the sync trigger
+        assert apply == pytest.approx(192_000)    # 96% of the sync trigger
+        assert prepare < apply < sync
+
+    def test_small_context_floor_profile(self):
+        # 100K window under the raise-only 0.75 floor → 75K trigger.
+        prepare, apply, sync = resolve_effective_gate_tokens(
+            _enabled_config(),
+            self._engine(context_length=100_000, threshold_tokens=75_000),
+        )
+        assert prepare == pytest.approx(60_000)
+        assert apply == pytest.approx(72_000)
+        assert prepare < apply < sync
+
+    def test_high_sync_threshold_honors_configured_values(self):
+        # 0.85-style profile (Codex autoraise): 0.65 already fires first and
+        # is honored verbatim; 0.82 clamps marginally to 96% of the trigger.
+        prepare, apply, sync = resolve_effective_gate_tokens(
+            _enabled_config(),
+            self._engine(context_length=100_000, threshold_tokens=85_000),
+        )
+        assert prepare == pytest.approx(65_000)
+        assert apply == pytest.approx(81_600)
+        assert prepare < apply < sync
+
+    def test_inverted_user_config_is_reordered(self):
+        cfg = _enabled_config(prepare_threshold=0.9, apply_threshold=0.6)
+        prepare, apply, _sync = resolve_effective_gate_tokens(
+            cfg, self._engine(context_length=100_000, threshold_tokens=85_000)
+        )
+        assert prepare < apply
+
+    def test_unknown_engine_keeps_gates_silent(self):
+        prepare, apply, sync = resolve_effective_gate_tokens(_enabled_config(), None)
+        assert (prepare, apply, sync) == (0.0, 0.0, 0.0)
+
+
 class TestApplyGate:
     """maybe_apply_prepared_candidate() must respect apply_threshold."""
 
@@ -649,6 +703,43 @@ class TestApplyGate:
         assert result is None
         assert ctl.peek_candidate() is None
         assert ctl.stats.get("candidate_shadow_validated") == 1
+
+    def test_sync_preemption_when_sync_fires_below_apply_gate(self):
+        # ``should_compress`` can fire on non-token triggers (message-count
+        # hygiene) while usage still sits under the apply gate. A ready
+        # candidate must preempt that synchronous run, not stay warm.
+        msgs = _make_messages()
+        cfg = _enabled_config(shadow_only=True)
+        ctl = _prepare_ready_controller(msgs, config=cfg)
+        eng = _fake_engine(context_length=1_000_000)
+        eng.threshold_tokens = 900_000            # apply gate stays at 820K
+        eng.should_compress = lambda tokens: True  # hygiene-style trigger
+        agent = _fake_agent(cfg, eng, controller=ctl)
+
+        result = maybe_apply_prepared_candidate(
+            agent, msgs, "sys", current_tokens=600_000, current_turn=4
+        )
+        assert result is None  # shadow mode: observe, never apply
+        assert ctl.stats.get("candidate_shadow_validated") == 1
+
+    def test_below_gate_and_sync_quiet_still_keeps_candidate_warm(self):
+        # Same engine surface, sync NOT firing: the temporal refusal from
+        # test_apply_below_threshold_keeps_candidate_warm must survive the
+        # preemption backstop.
+        msgs = _make_messages()
+        cfg = _enabled_config(shadow_only=False)
+        ctl = _prepare_ready_controller(msgs, config=cfg)
+        eng = _fake_engine(context_length=1_000_000)
+        eng.threshold_tokens = 900_000
+        eng.should_compress = lambda tokens: tokens >= 900_000
+        agent = _fake_agent(cfg, eng, controller=ctl)
+
+        result = maybe_apply_prepared_candidate(
+            agent, msgs, "sys", current_tokens=600_000, current_turn=4
+        )
+        assert result is None
+        assert ctl.peek_candidate() is not None
+        assert ctl.state is CandidateState.READY
 
 
 class _FinalizeStubAgent:
@@ -978,6 +1069,184 @@ class TestAgentLifecycleIntegration:
                 assert agent._maybe_apply_prepared_compression(
                     _make_messages(), "sys", current_tokens=250_000
                 ) is None
+            finally:
+                agent.close()
+                db.close()
+
+
+# ── E2E preflight ordering with shipped defaults (PR #66619 review) ────────
+
+
+class TestPreflightDefaultsEndToEnd:
+    """The real ``build_turn_context`` preflight must apply a candidate
+    prepared under SHIPPED defaults instead of invoking the synchronous
+    ``_compress_context`` — the hermes-sweeper blocking finding on #66619.
+
+    Everything is real except the summariser LLM call: AIAgent, SessionDB,
+    ContextCompressor threshold math (0.50 config + floors), the background
+    controller, the preflight chain and the atomic apply."""
+
+    _SUMMARY = "[CONTEXT COMPACTION] e2e deterministic summary"
+
+    def _grow_until(self, messages, estimator, target_tokens, *, tag, repeat=30):
+        """Append user/assistant turns until the rough estimate crosses the
+        target. Returns how many USER rows were appended so the caller can
+        advance ``_user_turn_count`` exactly like live turns would."""
+        i = 0
+        users = 0
+        filler = ("conversa longa sobre o projeto, decisões e arquivos. " * repeat).strip()
+        while estimator(messages) < target_tokens:
+            role = "user" if i % 2 == 0 else "assistant"
+            if role == "user":
+                users += 1
+            messages.append({"role": role, "content": f"[{tag} {i}] {filler}"})
+            i += 1
+        return users
+
+    def test_default_candidate_applies_instead_of_sync_compression(self):
+        import agent.conversation_loop as loop_mod
+        import agent.turn_context as turn_ctx_mod
+        from agent.context_compressor import ContextCompressor
+        from hermes_state import SessionDB
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
+                from run_agent import AIAgent
+
+                db = SessionDB(db_path=Path(tmpdir) / "state.db")
+                sid = "e2e-preflight-defaults"
+                db.create_session(sid, "cli", model="test/model")
+                agent = AIAgent(
+                    api_key="test-key",
+                    base_url="https://openrouter.ai/api/v1",
+                    model="test/model",
+                    quiet_mode=True,
+                    session_db=db,
+                    session_id=sid,
+                    skip_context_files=True,
+                    skip_memory=True,
+                )
+            try:
+                agent._compression_feasibility_checked = True
+                engine = agent.context_compressor
+                # Real engine API + real threshold math on a bounded window;
+                # the shipped compression config (0.50 + raise-only floors)
+                # stays untouched.
+                engine.update_model("test/model", 120_000)
+                sync_trigger = engine.threshold_tokens
+                assert sync_trigger > 0
+
+                # Turn the feature on exactly as an operator would; every
+                # threshold keeps its shipped default (0.65 / 0.82).
+                agent.background_compression_config = (
+                    BackgroundCompressionConfig.from_dict(
+                        {"enabled": True, "shadow_only": False}
+                    )
+                )
+                cfg = agent.background_compression_config
+                prepare_gate, apply_gate, sync_tokens = (
+                    resolve_effective_gate_tokens(cfg, engine)
+                )
+                # The review's invariant, on the real engine with defaults:
+                assert prepare_gate < apply_gate < sync_tokens == sync_trigger
+
+                def _estimate(msgs):
+                    return turn_ctx_mod.estimate_request_tokens_rough(
+                        msgs,
+                        system_prompt="",
+                        tools=agent.tools or None,
+                    )
+
+                # Deterministic summariser: the only stubbed boundary.
+                with patch.object(
+                    ContextCompressor,
+                    "_generate_summary",
+                    return_value=self._SUMMARY,
+                ):
+                    # 1. History lands between the prepare and apply gates →
+                    #    the real between-turn hook starts preparation. The
+                    #    turn counter is hydrated first, exactly as the live
+                    #    loop keeps it across the accumulated turns.
+                    history = []
+                    self._grow_until(
+                        history, _estimate,
+                        int((prepare_gate + apply_gate) / 2), tag="base",
+                    )
+                    agent._user_turn_count = sum(
+                        1 for m in history if m.get("role") == "user"
+                    )
+                    prepare_tokens = _estimate(history)
+                    assert prepare_gate <= prepare_tokens < apply_gate
+                    started = agent._maybe_prepare_background_compression(
+                        history, current_tokens=prepare_tokens
+                    )
+                    assert started is True
+                    ctl = agent.background_compression
+                    assert ctl is not None and ctl.wait_until_settled(timeout=30.0)
+                    assert ctl.state is CandidateState.READY
+                    candidate = ctl.peek_candidate()
+                    assert candidate is not None
+
+                    # 2. Conversation keeps growing (append-only) past the
+                    #    synchronous trigger — agentic-sized turns, with the
+                    #    turn counter advancing like live turns would.
+                    grown_users = self._grow_until(
+                        history, _estimate, int(sync_trigger * 1.05),
+                        tag="growth", repeat=120,
+                    )
+                    agent._user_turn_count += grown_users
+                    tail_before = copy.deepcopy(history[-5:])
+                    agent._flush_messages_to_session_db(history, [])
+
+                    # 3. The REAL preflight, wired exactly like the loop.
+                    sync_spy = MagicMock(
+                        side_effect=lambda msgs, sysm, **kw: (msgs, sysm)
+                    )
+                    with patch.object(agent, "_compress_context", sync_spy):
+                        ctx = turn_ctx_mod.build_turn_context(
+                            agent,
+                            "e segue o baile",
+                            None,
+                            history,
+                            None,
+                            None,
+                            None,
+                            restore_or_build_system_prompt=(
+                                loop_mod._restore_or_build_system_prompt
+                            ),
+                            install_safe_stdio=loop_mod._install_safe_stdio,
+                            sanitize_surrogates=loop_mod._sanitize_surrogates,
+                            summarize_user_message_for_log=(
+                                loop_mod._summarize_user_message_for_log
+                            ),
+                            set_session_context=loop_mod.set_session_context,
+                            set_current_write_origin=(
+                                loop_mod.set_current_write_origin
+                            ),
+                            ra=loop_mod._ra,
+                        )
+
+                # The candidate applied; the synchronous path never ran.
+                assert sync_spy.call_count == 0
+                assert ctl.stats.get("candidate_applied") == 1
+                joined = "\n".join(
+                    str(m.get("content")) for m in ctx.messages
+                )
+                assert self._SUMMARY in joined
+                # Suffix survival across the swap: the merge must keep the
+                # exact live dict objects (identity), and their semantic
+                # content must be untouched (persistence markers aside).
+                merged_tail = ctx.messages[-6:-1]
+                assert all(
+                    a is b for a, b in zip(merged_tail, history[-5:])
+                )
+                assert [
+                    (m.get("role"), m.get("content")) for m in merged_tail
+                ] == [
+                    (m.get("role"), m.get("content")) for m in tail_before
+                ]
+                # And the applied context sits back under the sync trigger.
+                assert not engine.should_compress(_estimate(ctx.messages))
             finally:
                 agent.close()
                 db.close()

@@ -81,7 +81,10 @@ starts in `shadow_only` mode (see the
 [user guide](/user-guide/configuration#background-asynchronous-compression)
 for the config block and rollout/kill-switch procedure).
 
-**Preparation** (between turns, above `prepare_threshold`): the turn finalizer
+**Preparation** (between turns, above the effective prepare gate — see
+`resolve_effective_gate_tokens()`, which clamps the configured thresholds
+against the live synchronous trigger so `prepare < apply < sync` always
+holds): the turn finalizer
 calls `agent._maybe_prepare_background_compression()`. The controller freezes a
 deep-copied prefix of the conversation (boundary aligned so a tool-call group
 is never split), records its canonical digest, and submits the summarisation to
@@ -91,7 +94,8 @@ on a **dedicated clone** of the live compressor — the live engine, the live
 worker thread, and no SQLite compression lock is taken, so the gateway never
 sees the session as blocked during preparation.
 
-**Apply** (preflight of the next turn, above `apply_threshold`): `turn_context`
+**Apply** (preflight of the next turn, above the effective apply gate, or
+whenever the synchronous path would fire on that same preflight): `turn_context`
 calls `agent._maybe_apply_prepared_compression()` before the synchronous
 preflight chain. `apply_prepared_candidate()` acquires the same per-session
 SQLite lock as synchronous compression, revalidates the candidate **inside the

@@ -1504,10 +1504,22 @@ DEFAULT_CONFIG = {
             "shadow_only": True,      # Generate + validate candidates and record
                                       # telemetry, but NEVER apply. Rollout gate.
             "prepare_threshold": 0.65,  # Start preparing at this fraction of the
-                                      # context window.
+                                      # context window. Upper bound, not a
+                                      # promise: the effective gate is derived
+                                      # per model from the engine's live sync
+                                      # trigger (min(this, 80% of the trigger))
+                                      # so preparation always starts before
+                                      # synchronous compaction could fire.
             "apply_threshold": 0.82,  # Apply the candidate at this fraction —
-                                      # kept below the sync compaction threshold
-                                      # so the swap lands before the pause would.
+                                      # also an upper bound, clamped to 96% of
+                                      # the effective sync trigger so the swap
+                                      # lands before the pause would for EVERY
+                                      # profile (default 0.50, small-context
+                                      # floor 0.75, Codex autoraise 0.85):
+                                      # prepare < apply < sync always holds.
+                                      # A ready valid candidate additionally
+                                      # preempts a sync run outright on the
+                                      # same preflight.
             "min_delta_tokens": 20000,  # Don't re-prepare until the context grew
                                       # this many tokens past the last candidate.
             "min_frozen_messages": 12,  # Minimum aligned prefix length worth

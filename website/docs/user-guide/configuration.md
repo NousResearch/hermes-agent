@@ -774,8 +774,10 @@ compression:
   background:
     enabled: false                # Master switch — off by default
     shadow_only: true             # Generate + validate + measure, but never apply (rollout gate)
-    prepare_threshold: 0.65       # Start preparing at 65% of the context window
-    apply_threshold: 0.82         # Swap the candidate in at 82% (below the sync threshold)
+    prepare_threshold: 0.65       # Ceiling: start preparing at 65% of the window,
+                                  # clamped to 80% of the live sync trigger
+    apply_threshold: 0.82         # Ceiling: swap in at 82% of the window, clamped
+                                  # to 96% of the live sync trigger
     min_delta_tokens: 20000       # Don't re-prepare until the context grew this much
     min_frozen_messages: 12       # Minimum prefix length worth summarising
     max_candidate_age_turns: 12   # Discard candidates older than this many turns
@@ -784,6 +786,14 @@ compression:
     fallback_sync: true           # Missing/stale candidate → synchronous path as before
     apply_only_between_turns: true  # Never swap mid-turn or during a tool call
 ```
+
+The two thresholds are **ceilings, not promises**: the effective gates are
+derived per model from the compressor's live synchronous trigger (which folds
+in the configured `compression.threshold`, the small-context floor and the
+Codex autoraise), keeping `prepare < apply < synchronous` for every profile —
+with the stock `threshold: 0.50` the real gates land at 40%/48% of the window.
+A ready valid candidate also preempts a synchronous run outright if one would
+fire first (for example on the message-count hygiene trigger).
 
 Rollout is staged: enable with `shadow_only: true` first — candidates are generated and validated and telemetry is recorded, but the conversation is never touched. Only after shadow metrics look clean should `shadow_only` be set to `false`.
 

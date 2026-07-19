@@ -25,7 +25,7 @@ OWNER_GATE_SERVICE_ACCOUNT_EMAIL = (
 TARGET_SERVICE_ACCOUNT_EMAIL = (
     "muncho-canary-v2-runtime@adventico-ai-platform.iam.gserviceaccount.com"
 )
-MAX_BYTES = 256 * 1024
+MAX_BYTES = 8 * 1024 * 1024
 
 _REVISION = re.compile(r"^[0-9a-f]{40}$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")

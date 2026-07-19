@@ -359,6 +359,51 @@ def test_author_builds_only_schema_canonical_bytes_and_binds_chain() -> None:
     assert value["authority_sha256"] == foundation.sha256_json(unsigned)
 
 
+def test_large_residual_role_inventory_fits_bounded_canonical_authority(
+) -> None:
+    facts = copy.deepcopy(_live_facts())
+    facts["policies"][0]["bindings"].append({
+        "role": "roles/editor",
+        "members": ["user:editor@example.test"],
+    })
+    large_permissions = [
+        f"service.resource.permission{index:05d}"
+        for index in range(12_000)
+    ]
+    facts["roles"]["roles/owner"] = _role(
+        "roles/owner",
+        title="Owner",
+        description="Full project authority",
+        permissions=large_permissions,
+    )
+    facts["roles"]["roles/editor"] = _role(
+        "roles/editor",
+        title="Editor",
+        description="Project editor authority",
+        permissions=large_permissions,
+    )
+
+    raw = _build(facts)
+
+    assert 256 * 1024 < len(raw) <= authority_schema.MAX_BYTES
+    decoded = authority_schema.decode_canonical(raw, release_revision=REVISION)
+    definitions = decoded["external_gcp_admin_trust_root"][
+        "allowed_residual_role_definitions"
+    ]
+    assert {item["name"] for item in definitions} == {
+        "roles/editor",
+        "roles/owner",
+    }
+    with pytest.raises(
+        authority_schema.DirectIamIdentityAuthorityError,
+        match="^direct_iam_identity_authority_invalid$",
+    ):
+        authority_schema.decode_canonical(
+            b"x" * (authority_schema.MAX_BYTES + 1),
+            release_revision=REVISION,
+        )
+
+
 def test_canonical_authority_revalidates_real_signed_apply_chain(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

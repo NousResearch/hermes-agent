@@ -263,6 +263,18 @@ export interface SessionUsageResponse {
 }
 
 export interface SessionStatusResponse {
+  details?: {
+    agent_running: boolean
+    created: string
+    last_activity: string
+    model: string
+    path: string
+    project?: string
+    provider: string
+    session_id: string
+    title?: string
+    tokens: number
+  }
   output?: string
 }
 

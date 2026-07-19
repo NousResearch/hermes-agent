@@ -165,6 +165,40 @@ describe('createSlashHandler', () => {
     })
   })
 
+  it('renders structured /status details through the active locale catalog', async () => {
+    patchUiState({ locale: 'zh', sid: 'sid-abc' })
+    const rpc = vi.fn(() =>
+      Promise.resolve({
+        details: {
+          agent_running: true,
+          created: '2026-07-19 12:00',
+          last_activity: '2026-07-19 12:01',
+          model: 'test-model',
+          path: '/home/test/.hermes',
+          project: 'Hermes',
+          provider: 'test-provider',
+          session_id: 'session-key',
+          title: '测试会话',
+          tokens: 1234
+        },
+        output: 'legacy English output'
+      })
+    )
+    const ctx = buildCtx({ gateway: { ...buildGateway(), rpc } })
+
+    expect(createSlashHandler(ctx)('/status')).toBe(true)
+    await vi.waitFor(() => {
+      expect(ctx.transcript.page).toHaveBeenCalledWith(
+        expect.stringContaining('项目：Hermes'),
+        translate('zh', 'section.status')
+      )
+      expect(ctx.transcript.page).toHaveBeenCalledWith(
+        expect.stringContaining('Agent 运行中：是'),
+        translate('zh', 'section.status')
+      )
+    })
+  })
+
   it('keeps typed /model switches session-scoped by default', async () => {
     patchUiState({ sid: 'sid-abc' })
 

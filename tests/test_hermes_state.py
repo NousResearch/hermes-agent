@@ -6214,3 +6214,97 @@ class TestGetMessagesPagination:
         self._seed(db, n=5)
         rows = db.get_messages("s1", offset=3)
         assert [m["content"] for m in rows] == ["msg-3", "msg-4"]
+
+
+# =========================================================================
+# Lone-surrogate persistence
+# =========================================================================
+
+class TestLoneSurrogatePersistence:
+    """sqlite3 encodes bound str params as UTF-8 and raises UnicodeEncodeError
+    on lone surrogates (U+D800..U+DFFF). Tool results scraped from the web can
+    carry them, so a single such code point aborted the whole message write —
+    and because run_agent swallows the failure with a warning, the session then
+    silently stopped persisting for the rest of its life.
+    """
+
+    DIRTY = "scraped \ud835 price"
+
+    def test_append_message_survives_lone_surrogate_content(self, db):
+        db.create_session("s1", source="cli")
+        db.append_message("s1", "assistant", "hello world")
+        db.append_message("s1", "tool", self.DIRTY, tool_name="web_search")
+
+        rows = db.get_messages("s1")
+        assert len(rows) == 2
+        # Surrogate replaced with U+FFFD; the surrounding text is intact.
+        assert rows[1]["content"] == "scraped � price"
+
+    def test_append_message_survives_lone_surrogate_reasoning(self, db):
+        db.create_session("s1", source="cli")
+        db.append_message("s1", "assistant", "fine", reasoning=self.DIRTY)
+        assert len(db.get_messages("s1")) == 1
+
+    def test_replace_messages_keeps_persisting_after_dirty_row(self, db):
+        """The regression that mattered: one poisoned row froze the session.
+
+        replace_messages re-sends the full history each turn, so once a dirty
+        tool result entered it, every later save raised and nothing after it
+        was ever written.
+        """
+        db.create_session("s1", source="cli")
+        history = [
+            {"role": "user", "content": "turn 1"},
+            {"role": "assistant", "content": "answer 1"},
+            {"role": "tool", "content": self.DIRTY, "tool_name": "web_search"},
+            {"role": "assistant", "content": "answer 2"},
+        ]
+        db.replace_messages("s1", history)
+        assert len(db.get_messages("s1")) == 4
+
+        # Later turns still persist rather than freezing at the poisoned row.
+        history += [
+            {"role": "user", "content": "turn 3"},
+            {"role": "assistant", "content": "answer 3"},
+        ]
+        db.replace_messages("s1", history)
+        rows = db.get_messages("s1")
+        assert len(rows) == 6
+        assert rows[-1]["content"] == "answer 3"
+
+    def test_well_formed_unicode_is_unchanged(self, db):
+        """Accents, CJK and emoji must round-trip byte-identically."""
+        db.create_session("s1", source="cli")
+        benign = "Ünïcödé ok — 日本語 🎉 emoji fine"
+        db.append_message("s1", "assistant", benign)
+        assert db.get_messages("s1")[0]["content"] == benign
+
+    # -- sibling raw-str bind sites (follow-up widening of the same bug class)
+
+    def test_append_message_survives_lone_surrogate_api_content(self, db):
+        db.create_session("s1", source="cli")
+        db.append_message("s1", "user", "clean", api_content=self.DIRTY)
+        assert db.get_messages("s1")[0]["api_content"] == "scraped \ufffd price"
+
+    def test_append_message_survives_lone_surrogate_tool_name(self, db):
+        db.create_session("s1", source="cli")
+        db.append_message("s1", "tool", "ok", tool_name="web\ud835search")
+        assert len(db.get_messages("s1")) == 1
+
+    def test_replace_messages_survives_lone_surrogate_api_content(self, db):
+        db.create_session("s1", source="cli")
+        db.replace_messages(
+            "s1", [{"role": "user", "content": "u1", "api_content": self.DIRTY}]
+        )
+        assert db.get_messages("s1")[0]["api_content"] == "scraped \ufffd price"
+
+    def test_set_latest_user_api_content_survives_lone_surrogate(self, db):
+        db.create_session("s1", source="cli")
+        db.append_message("s1", "user", "turn text")
+        assert db.set_latest_user_api_content("s1", "turn text", self.DIRTY) == 1
+
+    def test_session_title_survives_lone_surrogate(self, db):
+        db.create_session("s1", source="cli")
+        assert db.set_session_title("s1", "title \ud835 bad") is True
+        assert db.get_session("s1")["title"] == "title \ufffd bad"
+

@@ -28,6 +28,40 @@ import { patchOverlayState } from '../../overlayStore.js'
 import { patchUiState } from '../../uiStore.js'
 import type { SlashCommand } from '../types.js'
 
+const formatSessionStatus = (response: SessionStatusResponse, locale: Parameters<typeof translate>[0]): string => {
+  const details = response.details
+
+  if (!details) {
+    return response.output || translate(locale, 'sys.noStatus')
+  }
+
+  const lines = [
+    translate(locale, 'sessionStatus.heading'),
+    '',
+    translate(locale, 'sessionStatus.sessionId', { value: details.session_id }),
+    translate(locale, 'sessionStatus.path', { value: details.path })
+  ]
+
+  if (details.project) {
+    lines.push(translate(locale, 'sessionStatus.project', { value: details.project }))
+  }
+  if (details.title) {
+    lines.push(translate(locale, 'sessionStatus.title', { value: details.title }))
+  }
+
+  lines.push(
+    translate(locale, 'sessionStatus.model', { model: details.model, provider: details.provider }),
+    translate(locale, 'sessionStatus.created', { value: details.created }),
+    translate(locale, 'sessionStatus.lastActivity', { value: details.last_activity }),
+    translate(locale, 'sessionStatus.tokens', { value: details.tokens.toLocaleString(locale) }),
+    translate(locale, 'sessionStatus.agentRunning', {
+      value: translate(locale, details.agent_running ? 'common.yes' : 'common.no')
+    })
+  )
+
+  return lines.join('\n')
+}
+
 const flagFromArg = (arg: string, current: boolean): boolean | null => {
   if (!arg) {
     return !current
@@ -241,10 +275,7 @@ export const coreCommands: SlashCommand[] = [
         .rpc<SessionStatusResponse>('session.status', { session_id: ctx.sid })
         .then(
           ctx.guarded<SessionStatusResponse>(r =>
-            ctx.transcript.page(
-              r.output || translate(ctx.ui.locale, 'sys.noStatus'),
-              translate(ctx.ui.locale, 'section.status')
-            )
+            ctx.transcript.page(formatSessionStatus(r, ctx.ui.locale), translate(ctx.ui.locale, 'section.status'))
           )
         )
         .catch(ctx.guardedErr)

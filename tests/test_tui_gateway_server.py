@@ -6086,6 +6086,16 @@ def test_session_status_reads_live_gateway_agent(monkeypatch):
     assert "Model: live-model (live-provider)" in out
     assert "Tokens: 1,234" in out
     assert "Agent Running: Yes" in out
+    details = resp["result"]["details"]
+    assert details["session_id"] == "session-key"
+    assert details["project"] == ""
+    assert details["title"] == "Live TUI"
+    assert details["model"] == "live-model"
+    assert details["provider"] == "live-provider"
+    assert details["tokens"] == 1234
+    assert details["agent_running"] is True
+    assert details["created"]
+    assert details["last_activity"]
 
 
 def test_skills_reload_runs_in_gateway_process(monkeypatch):

@@ -385,7 +385,7 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
     # session is created (not on continuation).  Plugins can use this
     # to initialise session-scoped state (e.g. warm a memory cache).
     try:
-        from hermes_cli.plugins import invoke_hook as _invoke_hook
+        from hermes_cli.lifecycle import invoke_hook as _invoke_hook
         _invoke_hook(
             "on_session_start",
             session_id=agent.session_id,
@@ -1320,7 +1320,7 @@ def run_conversation(
                     _llm_middleware_trace = []
 
                 try:
-                    from hermes_cli.plugins import (
+                    from hermes_cli.lifecycle import (
                         has_hook,
                         invoke_hook as _invoke_hook,
                     )
@@ -4486,7 +4486,7 @@ def run_conversation(
                     assistant_message.content = str(raw)
 
             try:
-                from hermes_cli.plugins import (
+                from hermes_cli.lifecycle import (
                     has_hook,
                     invoke_hook as _invoke_hook,
                 )
@@ -5582,7 +5582,8 @@ def run_conversation(
                 _attempt = getattr(agent, "_pre_verify_nudges", 0)
                 try:
                     from agent.verify_hooks import max_verify_nudges
-                    from hermes_cli.plugins import get_pre_verify_continue_message, has_hook
+                    from hermes_cli.lifecycle import has_hook
+                    from hermes_cli.plugins import get_pre_verify_continue_message
 
                     if _edited and has_hook("pre_verify") and _attempt < max_verify_nudges():
                         # Posture is fixed for the session — resolve once + cache.

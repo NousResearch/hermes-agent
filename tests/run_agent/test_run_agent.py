@@ -2439,8 +2439,8 @@ class TestExecuteToolCalls:
             hook_calls.append((hook_name, kwargs))
             return []
 
-        monkeypatch.setattr("hermes_cli.plugins.invoke_hook", _capture_hook)
-        monkeypatch.setattr("hermes_cli.plugins.has_hook", lambda name: True)
+        monkeypatch.setattr("hermes_cli.lifecycle.invoke_hook", _capture_hook)
+        monkeypatch.setattr("hermes_cli.lifecycle.has_hook", lambda name: True)
 
         with (
             patch("run_agent.handle_function_call", side_effect=KeyboardInterrupt),
@@ -3185,10 +3185,10 @@ class TestConcurrentToolExecution:
             lambda *args, **kwargs: None,
         )
         monkeypatch.setattr(
-            "hermes_cli.plugins.invoke_hook",
+            "hermes_cli.lifecycle.invoke_hook",
             lambda hook_name, **kwargs: hook_calls.append((hook_name, kwargs)) or [],
         )
-        monkeypatch.setattr("hermes_cli.plugins.has_hook", lambda name: True)
+        monkeypatch.setattr("hermes_cli.lifecycle.has_hook", lambda name: True)
 
         with patch("tools.todo_tool.todo_tool", return_value='{"ok":true}') as mock_todo:
             result = agent._invoke_tool("todo", {"todos": []}, "task-1", tool_call_id="todo-1")
@@ -3268,10 +3268,10 @@ class TestConcurrentToolExecution:
             lambda *args, **kwargs: "Blocked by policy",
         )
         monkeypatch.setattr(
-            "hermes_cli.plugins.invoke_hook",
+            "hermes_cli.lifecycle.invoke_hook",
             lambda hook_name, **kwargs: hook_calls.append((hook_name, kwargs)) or [],
         )
-        monkeypatch.setattr("hermes_cli.plugins.has_hook", lambda name: True)
+        monkeypatch.setattr("hermes_cli.lifecycle.has_hook", lambda name: True)
 
         with patch("run_agent.handle_function_call", side_effect=AssertionError("should not run")):
             agent._execute_tool_calls_sequential(mock_msg, messages, "task-1")
@@ -3295,10 +3295,10 @@ class TestConcurrentToolExecution:
             lambda *args, **kwargs: None,
         )
         monkeypatch.setattr(
-            "hermes_cli.plugins.invoke_hook",
+            "hermes_cli.lifecycle.invoke_hook",
             lambda hook_name, **kwargs: hook_calls.append((hook_name, kwargs)) or [],
         )
-        monkeypatch.setattr("hermes_cli.plugins.has_hook", lambda name: True)
+        monkeypatch.setattr("hermes_cli.lifecycle.has_hook", lambda name: True)
 
         with patch("tools.todo_tool.todo_tool", return_value='{"ok":true}') as mock_todo:
             agent._execute_tool_calls_sequential(mock_msg, messages, "task-1")
@@ -3342,10 +3342,10 @@ class TestConcurrentToolExecution:
             lambda *args, **kwargs: None,
         )
         monkeypatch.setattr(
-            "hermes_cli.plugins.invoke_hook",
+            "hermes_cli.lifecycle.invoke_hook",
             lambda hook_name, **kwargs: hook_calls.append((hook_name, kwargs)) or [],
         )
-        monkeypatch.setattr("hermes_cli.plugins.has_hook", lambda name: True)
+        monkeypatch.setattr("hermes_cli.lifecycle.has_hook", lambda name: True)
 
         with patch("tools.todo_tool.todo_tool", return_value='{"ok":true}') as mock_todo:
             agent._execute_tool_calls_sequential(mock_msg, messages, "task-1")
@@ -3380,10 +3380,10 @@ class TestConcurrentToolExecution:
             lambda *args, **kwargs: None,
         )
         monkeypatch.setattr(
-            "hermes_cli.plugins.invoke_hook",
+            "hermes_cli.lifecycle.invoke_hook",
             lambda hook_name, **kwargs: hook_calls.append((hook_name, kwargs)) or [],
         )
-        monkeypatch.setattr("hermes_cli.plugins.has_hook", lambda name: True)
+        monkeypatch.setattr("hermes_cli.lifecycle.has_hook", lambda name: True)
 
         with patch("tools.todo_tool.todo_tool", return_value='{"ok":true}'):
             agent._execute_tool_calls_concurrent(mock_msg, messages, "task-1")
@@ -3852,6 +3852,31 @@ class TestHandleMaxIterations:
         assert isinstance(result, str)
         assert len(result) > 0
         assert "summary" in result.lower()
+
+    def test_summary_retries_share_relay_identity(self, agent):
+        agent.client.chat.completions.create.side_effect = [
+            _mock_response(content=""),
+            _mock_response(content="Summary"),
+        ]
+        agent._cached_system_prompt = "You are helpful."
+        relay_calls = []
+
+        def execute_current(request, callback, **kwargs):
+            relay_calls.append(kwargs)
+            return callback(request)
+
+        with patch("agent.relay_llm.execute_current", side_effect=execute_current):
+            result = agent._handle_max_iterations(
+                [{"role": "user", "content": "do stuff"}],
+                60,
+            )
+
+        assert result == "Summary"
+        assert [call["metadata"]["retry_count"] for call in relay_calls] == [0, 1]
+        assert relay_calls[0]["metadata"]["api_request_id"] == (
+            relay_calls[1]["metadata"]["api_request_id"]
+        )
+        assert relay_calls[0]["metadata"]["call_role"] == "iteration_summary"
 
     def test_api_failure_returns_error(self, agent):
         agent.client.chat.completions.create.side_effect = Exception("API down")
@@ -4323,10 +4348,10 @@ class TestRunConversation:
         with (
             patch("run_agent.handle_function_call", return_value="search result"),
             patch(
-                "hermes_cli.plugins.has_hook",
+                "hermes_cli.lifecycle.has_hook",
                 side_effect=lambda name: name in {"pre_api_request", "post_api_request"},
             ),
-            patch("hermes_cli.plugins.invoke_hook", side_effect=_record_hook),
+            patch("hermes_cli.lifecycle.invoke_hook", side_effect=_record_hook),
             patch.object(agent, "_persist_session"),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
@@ -4365,8 +4390,8 @@ class TestRunConversation:
             hook_called = True
             return []
 
-        monkeypatch.setattr("hermes_cli.plugins.has_hook", lambda name: False)
-        monkeypatch.setattr("hermes_cli.plugins.invoke_hook", _invoke_hook)
+        monkeypatch.setattr("hermes_cli.lifecycle.has_hook", lambda name: False)
+        monkeypatch.setattr("hermes_cli.lifecycle.invoke_hook", _invoke_hook)
         monkeypatch.setattr(agent, "_api_request_payload_for_hook", _payload_for_hook)
 
         agent._invoke_api_request_error_hook(
@@ -4405,12 +4430,12 @@ class TestRunConversation:
             payload_counts["response"] += 1
             return {}
 
-        monkeypatch.setattr("hermes_cli.plugins.has_hook", _has_hook)
+        monkeypatch.setattr("hermes_cli.lifecycle.has_hook", _has_hook)
         monkeypatch.setattr(agent, "_api_request_payload_for_hook", _request_payload)
         monkeypatch.setattr(agent, "_api_response_payload_for_hook", _response_payload)
 
         with (
-            patch("hermes_cli.plugins.invoke_hook", return_value=[]),
+            patch("hermes_cli.lifecycle.invoke_hook", return_value=[]),
             patch.object(agent, "_persist_session"),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),

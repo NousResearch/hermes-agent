@@ -650,6 +650,17 @@ def prepare_session_start() -> None:
         _get_runtime(retry_failed=True)
 
 
+def _prepare_core_session(
+    host: relay_runtime.RelayRuntime,
+    context: dict[str, Any],
+) -> None:
+    """Prepare the profile subscriber before the coordinator opens a scope."""
+    del context
+    if host.profile_key == relay_runtime.current_profile_key():
+        if enabled():
+            _get_runtime(retry_failed=True, host=host)
+
+
 def start_task_run(
     *,
     session_id: str,
@@ -726,24 +737,37 @@ def finish_task_run(
     )
 
 
-def _get_runtime(*, retry_failed: bool = False) -> _Runtime | None:
+def _get_runtime(
+    *,
+    retry_failed: bool = False,
+    host: relay_runtime.RelayRuntime | None = None,
+) -> _Runtime | None:
     profile_key = relay_runtime.current_profile_key()
     with _RUNTIME_LOCK:
         runtime = _RUNTIMES.get(profile_key)
         if isinstance(runtime, _Runtime):
-            return runtime
+            if host is None or runtime.host is host:
+                return runtime
+            runtime.deactivate()
+            _RUNTIMES.pop(profile_key, None)
         if runtime is _RUNTIME_FAILED and not retry_failed:
             return None
         if runtime is _RUNTIME_FAILED:
             _RUNTIMES.pop(profile_key, None)
         try:
-            runtime = _Runtime()
+            runtime = _Runtime(host=host)
         except Exception:
             logger.warning("Hermes shared metrics initialization failed", exc_info=True)
             _RUNTIMES[profile_key] = _RUNTIME_FAILED
             return None
         _RUNTIMES[profile_key] = runtime
         return runtime
+
+
+relay_runtime.SESSION_COORDINATOR.register_session_initializer(
+    SUBSCRIBER_NAME,
+    _prepare_core_session,
+)
 
 
 def _reset_for_tests() -> None:

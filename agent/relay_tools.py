@@ -53,8 +53,9 @@ def execute(
             )
         )
     except BaseException as exc:
-        if callback_error is not None and _relay_wrapped_callback_error(
-            exc, callback_error
+        if (
+            callback_error is not None
+            and relay_runtime._is_relay_wrapped_callback_error(exc, callback_error)
         ):
             raise callback_error
         raise
@@ -105,20 +106,6 @@ def _json_equal(left: Any, right: Any) -> bool:
         ) == json.dumps(_jsonable(right), sort_keys=True, separators=(",", ":"))
     except (TypeError, ValueError):
         return left == right
-
-
-def _relay_wrapped_callback_error(
-    relay_error: BaseException, callback_error: BaseException
-) -> bool:
-    message = str(relay_error)
-    callback_type = type(callback_error)
-    type_names = {
-        callback_type.__name__,
-        f"{callback_type.__module__}.{callback_type.__qualname__}",
-    }
-    return "internal error" in message.lower() and any(
-        type_name in message for type_name in type_names
-    )
 
 
 def _run_awaitable(value: Any) -> Any:

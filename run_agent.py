@@ -2600,17 +2600,16 @@ class AIAgent:
         retryable: Optional[bool] = None,
         reason: Optional[str] = None,
     ) -> None:
-        # Lazy module import (not from-import) so tests that
-        # ``monkeypatch.setattr("hermes_cli.plugins.has_hook", ...)`` still
-        # take effect on this call site. After first call the import is a
+        # Lazy module import (not from-import) so tests can replace lifecycle
+        # dispatch at this call site. After first call the import is a
         # ``sys.modules`` dict lookup, so retries don't repay any real cost.
         try:
-            from hermes_cli import plugins as _plugins
+            from hermes_cli import lifecycle as _lifecycle
 
-            if not _plugins.has_hook("api_request_error"):
+            if not _lifecycle.has_hook("api_request_error"):
                 return
             ended_at = time.time()
-            _plugins.invoke_hook(
+            _lifecycle.invoke_hook(
                 "api_request_error",
                 task_id=task_id,
                 turn_id=turn_id,
@@ -6374,6 +6373,7 @@ class AIAgent:
             session_id=task_context["session_id"],
             platform=task_context["platform"],
             parent_session_id=relay_parent_session_id,
+            model=str(getattr(self, "model", None) or ""),
         )
         relay_turn = relay_runtime.SESSION_COORDINATOR.begin_turn(
             relay_lease,

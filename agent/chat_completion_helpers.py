@@ -1908,6 +1908,26 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
     """Request a summary when max iterations are reached. Returns the final response text."""
     print(f"⚠️  Reached maximum iterations ({agent.max_iterations}). Requesting summary...")
 
+    summary_api_request_id = f"iteration-summary:{uuid.uuid4()}"
+
+    def _managed_summary_call(request, callback, *, retry_count: int):
+        from agent import relay_llm
+
+        return relay_llm.execute_current(
+            request,
+            callback,
+            name=str(getattr(agent, "provider", "") or "provider"),
+            model_name=str(getattr(agent, "model", "") or ""),
+            metadata={
+                "api_mode": str(
+                    getattr(agent, "api_mode", "") or "chat_completions"
+                ),
+                "api_request_id": summary_api_request_id,
+                "call_role": "iteration_summary",
+                "retry_count": retry_count,
+            },
+        )
+
     summary_request = (
         "You've reached the maximum number of tool-calling iterations allowed. "
         "Please provide a final response summarizing what you've found and accomplished so far, "
@@ -2087,11 +2107,22 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
                                max_tokens=agent.max_tokens, reasoning_config=agent.reasoning_config,
                                is_oauth=agent._is_anthropic_oauth,
                                preserve_dots=agent._anthropic_preserve_dots())
-                summary_response = agent._anthropic_messages_create(_ant_kw)
+                summary_response = _managed_summary_call(
+                    _ant_kw,
+                    agent._anthropic_messages_create,
+                    retry_count=0,
+                )
                 _summary_result = _tsum.normalize_response(summary_response, strip_tool_prefix=agent._is_anthropic_oauth)
                 final_response = (_summary_result.content or "").strip()
             else:
-                summary_response = agent._ensure_primary_openai_client(reason="iteration_limit_summary").chat.completions.create(**summary_kwargs)
+                summary_client = agent._ensure_primary_openai_client(
+                    reason="iteration_limit_summary"
+                )
+                summary_response = _managed_summary_call(
+                    summary_kwargs,
+                    lambda request: summary_client.chat.completions.create(**request),
+                    retry_count=0,
+                )
                 _summary_result = agent._get_transport().normalize_response(summary_response)
                 final_response = (_summary_result.content or "").strip()
 
@@ -2117,7 +2148,11 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
                                 is_oauth=agent._is_anthropic_oauth,
                                 max_tokens=agent.max_tokens, reasoning_config=agent.reasoning_config,
                                 preserve_dots=agent._anthropic_preserve_dots())
-                retry_response = agent._anthropic_messages_create(_ant_kw2)
+                retry_response = _managed_summary_call(
+                    _ant_kw2,
+                    agent._anthropic_messages_create,
+                    retry_count=1,
+                )
                 _retry_result = _tretry.normalize_response(retry_response, strip_tool_prefix=agent._is_anthropic_oauth)
                 final_response = (_retry_result.content or "").strip()
             else:
@@ -2134,7 +2169,14 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
                 if summary_extra_body:
                     summary_kwargs["extra_body"] = summary_extra_body
 
-                summary_response = agent._ensure_primary_openai_client(reason="iteration_limit_summary_retry").chat.completions.create(**summary_kwargs)
+                summary_client = agent._ensure_primary_openai_client(
+                    reason="iteration_limit_summary_retry"
+                )
+                summary_response = _managed_summary_call(
+                    summary_kwargs,
+                    lambda request: summary_client.chat.completions.create(**request),
+                    retry_count=1,
+                )
                 _retry_result = agent._get_transport().normalize_response(summary_response)
                 final_response = (_retry_result.content or "").strip()
 

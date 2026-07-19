@@ -104,7 +104,7 @@ def _fire_approval_hook(hook_name: str, **kwargs) -> None:
     pre_approval_request, post_approval_response.
     """
     try:
-        from hermes_cli.plugins import invoke_hook
+        from hermes_cli.lifecycle import invoke_hook
     except Exception:
         # Plugin system not available in this execution context
         # (e.g. bare tool-only imports, minimal test environments).

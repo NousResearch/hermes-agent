@@ -152,7 +152,7 @@ def _fire_kanban_lifecycle_hook(event: str, task_id: str, **fields: Any) -> None
     it through.
     """
     try:
-        from hermes_cli.plugins import invoke_hook
+        from hermes_cli.lifecycle import invoke_hook
         from hermes_cli.profiles import get_active_profile_name
         try:
             profile_name = get_active_profile_name()

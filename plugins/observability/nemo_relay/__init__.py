@@ -22,11 +22,7 @@ logger = logging.getLogger(__name__)
 _INIT_FAILED = object()
 _LOCK = threading.RLock()
 _RUNTIMES: dict[str, "_Runtime | object"] = {}
-_RELAY_LLM_SURFACE_BY_API_MODE = {
-    "anthropic_messages": "anthropic.messages",
-    "chat_completions": "openai.chat_completions",
-    "codex_responses": "openai.responses",
-}
+_SESSION_INITIALIZER_NAME = "hermes.nemo_relay.rich_observability"
 
 
 @dataclass
@@ -38,8 +34,6 @@ class _SessionState:
     atif_subscriber_name: str = ""
     is_embedded_subagent: bool = False
     parent_session_id: str = ""
-    llm_spans: dict[str, Any] = field(default_factory=dict)
-    tool_spans: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -53,8 +47,6 @@ class _Settings:
     plugins_toml_path: str = ""
     plugins_config: dict[str, Any] | None = None
     dynamic_plugins: list[dict[str, Any]] = field(default_factory=list)
-    adaptive_enabled: bool = False
-    adaptive_mode: str = "observe_only"
     atof_enabled: bool = False
     atof_output_directory: str = ""
     atof_filename: str = "hermes-atof.jsonl"
@@ -78,6 +70,7 @@ class _Runtime:
         self.nemo_relay = nemo_relay
         self.settings = settings
         self.host = host
+        self._sessions_lock = threading.RLock()
         self.sessions: dict[str, _SessionState] = {}
         self.subagent_contexts: dict[str, _SubagentContext] = {}
         self.atof_exporter: Any = None
@@ -241,34 +234,47 @@ class _Runtime:
                 logger.debug("NeMo Relay ATOF deregister failed", exc_info=True)
         self.atof_exporter = None
 
-    def ensure_session(self, kwargs: dict[str, Any]) -> _SessionState:
-        self._maybe_reinitialize_plugins_toml()
+    def prepare_session(self, kwargs: dict[str, Any]) -> _SessionState:
+        """Register per-session subscribers without opening the core scope."""
         session_id = _session_id(kwargs)
-        state = self.sessions.get(session_id)
-        if state is not None:
+        with self._sessions_lock:
+            self._maybe_reinitialize_plugins_toml()
+            state = self.sessions.get(session_id)
+            if state is not None:
+                return state
+
+            state = _SessionState(session_id=session_id)
+            if self.settings.atif_enabled and not self._plugins_toml_owns_exporter("atif"):
+                state.atif_exporter = self.nemo_relay.AtifExporter(
+                    session_id,
+                    self.settings.atif_agent_name,
+                    self.settings.atif_agent_version,
+                    model_name=str(kwargs.get("model") or self.settings.atif_model_name),
+                    extra={
+                        "source": "hermes-agent",
+                        "plugin": "observability/nemo_relay",
+                    },
+                )
+                state.atif_subscriber_name = (
+                    f"hermes.nemo_relay.atif.{self.host.runtime_id}.{session_id}"
+                )
+                state.atif_exporter.register(state.atif_subscriber_name)
+            self.sessions[session_id] = state
             return state
 
-        state = _SessionState(session_id=session_id)
-        if self.settings.atif_enabled and not self._plugins_toml_owns_exporter("atif"):
-            state.atif_exporter = self.nemo_relay.AtifExporter(
-                session_id,
-                self.settings.atif_agent_name,
-                self.settings.atif_agent_version,
-                model_name=str(kwargs.get("model") or self.settings.atif_model_name),
-                extra={"source": "hermes-agent", "plugin": "observability/nemo_relay"},
-            )
-            state.atif_subscriber_name = (
-                f"hermes.nemo_relay.atif.{self.host.runtime_id}.{session_id}"
-            )
-            state.atif_exporter.register(state.atif_subscriber_name)
+    def ensure_session(self, kwargs: dict[str, Any]) -> _SessionState:
+        state = self.prepare_session(kwargs)
+        if state.relay_session is not None:
+            return state
 
         rich_metadata = _metadata(kwargs)
-        subagent_context = self.subagent_contexts.get(session_id)
+        with self._sessions_lock:
+            subagent_context = self.subagent_contexts.get(state.session_id)
         if subagent_context is not None:
             rich_metadata = {**rich_metadata, **subagent_context.metadata}
         relay_session = self.host.ensure_session(
             kwargs,
-            data={"session_id": session_id},
+            data={"session_id": state.session_id},
             metadata=rich_metadata,
         )
         if relay_session is None:
@@ -278,7 +284,6 @@ class _Runtime:
         if subagent_context is not None:
             state.is_embedded_subagent = True
             state.parent_session_id = subagent_context.parent_session_id
-        self.sessions[session_id] = state
         return state
 
     def run_in_session(
@@ -291,22 +296,6 @@ class _Runtime:
         if state.relay_session is None:
             raise RuntimeError("Hermes core Relay session is unavailable")
         return self.host.run_in_session(
-            state.relay_session,
-            callback,
-            *args,
-            **kwargs,
-        )
-
-    async def run_in_session_async(
-        self,
-        state: _SessionState,
-        callback: Callable[..., Any],
-        *args: Any,
-        **kwargs: Any,
-    ) -> Any:
-        if state.relay_session is None:
-            raise RuntimeError("Hermes core Relay session is unavailable")
-        return await self.host.run_in_session_async(
             state.relay_session,
             callback,
             *args,
@@ -332,8 +321,9 @@ class _Runtime:
         close_host: bool = True,
     ) -> None:
         session_id = _session_id(kwargs)
-        self.subagent_contexts.pop(session_id, None)
-        state = self.sessions.pop(session_id, None)
+        with self._sessions_lock:
+            self.subagent_contexts.pop(session_id, None)
+            state = self.sessions.pop(session_id, None)
         if state is None:
             return
         failures: list[str] = []
@@ -351,21 +341,22 @@ class _Runtime:
                 state.atif_exporter.deregister(state.atif_subscriber_name)
             except Exception as exc:
                 failures.append(f"ATIF deregister failed: {exc}")
-        if (
-            self._plugin_config_initialized
-            and self._plugin_activation is None
-            and not self.sessions
-        ):
-            try:
-                self._clear_plugins_toml()
-            except Exception as exc:
-                failures.append(f"plugin configuration clear failed: {exc}")
-        elif (
-            self.settings.plugins_config
-            and self._plugin_activation is None
-            and not self.sessions
-        ):
-            self._plugin_config_needs_reinit = True
+        with self._sessions_lock:
+            if (
+                self._plugin_config_initialized
+                and self._plugin_activation is None
+                and not self.sessions
+            ):
+                try:
+                    self._clear_plugins_toml()
+                except Exception as exc:
+                    failures.append(f"plugin configuration clear failed: {exc}")
+            elif (
+                self.settings.plugins_config
+                and self._plugin_activation is None
+                and not self.sessions
+            ):
+                self._plugin_config_needs_reinit = True
         if failures:
             logger.warning(
                 "NeMo Relay session %s teardown completed with errors: %s",
@@ -376,7 +367,9 @@ class _Runtime:
     def shutdown(self) -> None:
         """Close active sessions and the process-lifetime plugin activation."""
         failures: list[str] = []
-        for session_id in list(self.sessions):
+        with self._sessions_lock:
+            session_ids = list(self.sessions)
+        for session_id in session_ids:
             try:
                 self.close_session({"session_id": session_id, "reason": "runtime_shutdown"})
             except Exception as exc:
@@ -412,10 +405,11 @@ class _Runtime:
         metadata = _metadata(kwargs)
         child_session_id = _child_session_id(kwargs)
         if child_session_id:
-            self.subagent_contexts[child_session_id] = _SubagentContext(
-                parent_session_id=parent_state.session_id,
-                metadata=_subagent_child_metadata(kwargs, metadata),
-            )
+            with self._sessions_lock:
+                self.subagent_contexts[child_session_id] = _SubagentContext(
+                    parent_session_id=parent_state.session_id,
+                    metadata=_subagent_child_metadata(kwargs, metadata),
+                )
         self.run_in_session(
             parent_state,
             self.nemo_relay.scope.event,
@@ -432,151 +426,15 @@ class _Runtime:
                 {"session_id": child_session_id},
                 close_host=False,
             )
-            self.subagent_contexts.pop(child_session_id, None)
+            with self._sessions_lock:
+                self.subagent_contexts.pop(child_session_id, None)
         self.mark("hermes.subagent.stop", kwargs)
 
-    def managed_llm_enabled(self) -> bool:
-        return (
-            (self.settings.adaptive_enabled or self._plugin_activation is not None)
-            and callable(getattr(getattr(self.nemo_relay, "llm", None), "execute", None))
-            and callable(getattr(self.nemo_relay, "LLMRequest", None))
-        )
-
-    def managed_tool_enabled(self) -> bool:
-        return (
-            (self.settings.adaptive_enabled or self._plugin_activation is not None)
-            and callable(getattr(getattr(self.nemo_relay, "tools", None), "execute", None))
-        )
-
-    def _run_managed_with_downstream_preservation(
-        self,
-        next_call: Callable[[Any], Any],
-        normalize_payload: Callable[[Any], Any],
-        shape_response: Callable[[Any], Any],
-        make_managed_execute: Callable[[Callable[[Any], Any]], Any],
-        *,
-        preserve_raw_response: bool,
-    ) -> Any:
-        # NeMo Relay's native managed execution may wrap a failing callback as an
-        # internal runtime error, hiding the real downstream provider/tool
-        # exception. Capture the original here and re-raise it after managed
-        # execution so Hermes retry classification still sees it. The LLM and tool
-        # paths share this scaffolding; they differ only in payload normalization,
-        # response shaping, and the Relay call itself.
-        raw_response: dict[str, Any] = {"set": False, "value": None, "normalized": None}
-        callback_error: Exception | None = None
-        downstream_error: BaseException | None = None
-
-        def _impl(next_payload: Any) -> Any:
-            nonlocal callback_error, downstream_error
-            try:
-                raw = next_call(normalize_payload(next_payload))
-            except Exception as exc:
-                callback_error = exc
-                downstream_error = _original_downstream_error(exc)
-                raise
-            raw_response["set"] = True
-            raw_response["value"] = raw
-            raw_response["normalized"] = shape_response(raw)
-            return raw_response["normalized"]
-
-        try:
-            managed_result = _resolve_awaitable(make_managed_execute(_impl))
-        except Exception as exc:
-            if downstream_error is not None and _is_relay_wrapped_callback_error(exc, callback_error):
-                raise downstream_error
-            raise
-        if (
-            preserve_raw_response
-            and raw_response["set"]
-            and _json_semantically_equal(managed_result, raw_response["normalized"])
-        ):
-            return raw_response["value"]
-        return managed_result
-
-    def execute_llm(self, kwargs: dict[str, Any]) -> Any:
-        state = self.ensure_session(kwargs)
-        request_body = _jsonable(kwargs.get("request") or {})
-        request = self.nemo_relay.LLMRequest({}, request_body)
-        next_call = kwargs.get("next_call")
-        if not callable(next_call):
-            return request_body
-
-        def _normalize(next_request: Any) -> Any:
-            next_body = getattr(next_request, "content", next_request)
-            return next_body if isinstance(next_body, dict) else request_body
-
-        def _make_managed(impl: Callable[[Any], Any]) -> Any:
-            async def _managed_execute() -> Any:
-                return await self.run_in_session_async(
-                    state,
-                    self.nemo_relay.llm.execute,
-                    _relay_llm_surface(kwargs),
-                    request,
-                    impl,
-                    handle=state.handle,
-                    data=_jsonable(
-                        {
-                            "turn_id": kwargs.get("turn_id"),
-                            "api_request_id": kwargs.get("api_request_id"),
-                            "api_call_count": kwargs.get("api_call_count"),
-                            "mode": self.settings.adaptive_mode,
-                        }
-                    ),
-                    metadata=_metadata(kwargs),
-                    model_name=str(kwargs.get("model") or ""),
-                )
-
-            return _managed_execute()
-
-        return self._run_managed_with_downstream_preservation(
-            next_call, _normalize, _llm_response_payload, _make_managed, preserve_raw_response=True
-        )
-
-    def execute_tool(self, kwargs: dict[str, Any]) -> Any:
-        state = self.ensure_session(kwargs)
-        tool_name = str(kwargs.get("tool_name") or "tool")
-        args = _jsonable(kwargs.get("args") or {})
-        next_call = kwargs.get("next_call")
-        if not callable(next_call):
-            return args
-
-        def _normalize(next_args: Any) -> Any:
-            normalized = next_args if isinstance(next_args, dict) else args
-            if not _json_semantically_equal(normalized, args):
-                raise RuntimeError(
-                    "NeMo Relay changed tool arguments after Hermes authorization"
-                )
-            return args
-
-        def _make_managed(impl: Callable[[Any], Any]) -> Any:
-            async def _managed_execute() -> Any:
-                return await self.run_in_session_async(
-                    state,
-                    self.nemo_relay.tools.execute,
-                    tool_name,
-                    args,
-                    impl,
-                    handle=state.handle,
-                    data=_jsonable(
-                        {
-                            "turn_id": kwargs.get("turn_id"),
-                            "api_request_id": kwargs.get("api_request_id"),
-                            "tool_call_id": kwargs.get("tool_call_id"),
-                            "mode": self.settings.adaptive_mode,
-                        }
-                    ),
-                    metadata=_metadata(kwargs),
-                )
-
-            return _managed_execute()
-
-        return self._run_managed_with_downstream_preservation(
-            next_call, _normalize, _jsonable, _make_managed, preserve_raw_response=False
-        )
-
-
 def register(ctx) -> None:
+    relay_runtime.SESSION_COORDINATOR.register_session_initializer(
+        _SESSION_INITIALIZER_NAME,
+        _prepare_core_session,
+    )
     # Activate dynamic plugins before Hermes installs the managed execution
     # boundaries that invoke their interceptors.
     if _load_settings().dynamic_plugins:
@@ -587,11 +445,6 @@ def register(ctx) -> None:
     ctx.register_hook("on_session_reset", on_session_reset)
     ctx.register_hook("pre_llm_call", on_pre_llm_call)
     ctx.register_hook("post_llm_call", on_post_llm_call)
-    ctx.register_hook("pre_api_request", on_pre_api_request)
-    ctx.register_hook("post_api_request", on_post_api_request)
-    ctx.register_hook("api_request_error", on_api_request_error)
-    ctx.register_hook("pre_tool_call", on_pre_tool_call)
-    ctx.register_hook("post_tool_call", on_post_tool_call)
     ctx.register_hook("pre_approval_request", on_pre_approval_request)
     ctx.register_hook("post_approval_response", on_post_approval_response)
     ctx.register_hook("subagent_start", on_subagent_start)
@@ -613,13 +466,13 @@ def on_session_end(**kwargs: Any) -> None:
 def on_session_finalize(**kwargs: Any) -> None:
     runtime = _get_runtime()
     if runtime is not None:
-        _safe(lambda: runtime.close_session(kwargs))
+        _safe(lambda: runtime.close_session(kwargs, close_host=False))
 
 
 def on_session_reset(**kwargs: Any) -> None:
     runtime = _get_runtime()
     if runtime is not None:
-        _safe(lambda: runtime.close_session(kwargs))
+        _safe(lambda: runtime.close_session(kwargs, close_host=False))
 
 
 def on_pre_llm_call(**kwargs: Any) -> None:
@@ -632,132 +485,6 @@ def on_post_llm_call(**kwargs: Any) -> None:
     runtime = _get_runtime()
     if runtime is not None:
         _safe(lambda: runtime.mark("hermes.turn.end", kwargs))
-
-
-def on_pre_api_request(**kwargs: Any) -> None:
-    runtime = _get_runtime()
-    if runtime is None:
-        return
-    if runtime.managed_llm_enabled():
-        return
-
-    def _record() -> None:
-        state = runtime.ensure_session(kwargs)
-        request_payload = kwargs.get("request")
-        request_body = request_payload.get("body") if isinstance(request_payload, dict) else {}
-        request = runtime.nemo_relay.LLMRequest({}, _jsonable(request_body))
-        span = runtime.run_in_session(
-            state,
-            runtime.nemo_relay.llm.call,
-            str(kwargs.get("provider") or "llm"),
-            request,
-            handle=state.handle,
-            data=_jsonable({"turn_id": kwargs.get("turn_id"), "api_request_id": kwargs.get("api_request_id")}),
-            metadata=_metadata(kwargs),
-            model_name=str(kwargs.get("model") or ""),
-        )
-        state.llm_spans[_api_key(kwargs)] = span
-
-    _safe(_record)
-
-
-def on_post_api_request(**kwargs: Any) -> None:
-    runtime = _get_runtime()
-    if runtime is None:
-        return
-    if runtime.managed_llm_enabled():
-        return
-
-    def _record() -> None:
-        state = runtime.ensure_session(kwargs)
-        span = state.llm_spans.pop(_api_key(kwargs), None)
-        if span is None:
-            runtime.mark("hermes.api.response.unmatched", kwargs)
-            return
-        runtime.run_in_session(
-            state,
-            runtime.nemo_relay.llm.call_end,
-            span,
-            _jsonable(kwargs.get("response") or {}),
-            data=_jsonable({"usage": kwargs.get("usage"), "finish_reason": kwargs.get("finish_reason")}),
-            metadata=_metadata(kwargs),
-        )
-
-    _safe(_record)
-
-
-def on_api_request_error(**kwargs: Any) -> None:
-    runtime = _get_runtime()
-    if runtime is None:
-        return
-    if runtime.managed_llm_enabled():
-        return
-
-    def _record() -> None:
-        state = runtime.ensure_session(kwargs)
-        span = state.llm_spans.pop(_api_key(kwargs), None)
-        if span is None:
-            runtime.mark("hermes.api.error", kwargs)
-            return
-        runtime.run_in_session(
-            state,
-            runtime.nemo_relay.llm.call_end,
-            span,
-            {"error": _jsonable(kwargs.get("error") or {})},
-            data=_jsonable(kwargs),
-            metadata=_metadata(kwargs),
-        )
-
-    _safe(_record)
-
-
-def on_pre_tool_call(**kwargs: Any) -> None:
-    runtime = _get_runtime()
-    if runtime is None:
-        return
-    if runtime.managed_tool_enabled():
-        return
-
-    def _record() -> None:
-        state = runtime.ensure_session(kwargs)
-        span = runtime.run_in_session(
-            state,
-            runtime.nemo_relay.tools.call,
-            str(kwargs.get("tool_name") or "tool"),
-            _jsonable(kwargs.get("args") or {}),
-            handle=state.handle,
-            data=_jsonable({"turn_id": kwargs.get("turn_id"), "api_request_id": kwargs.get("api_request_id")}),
-            metadata=_metadata(kwargs),
-            tool_call_id=str(kwargs.get("tool_call_id") or ""),
-        )
-        state.tool_spans[_tool_key(kwargs)] = span
-
-    _safe(_record)
-
-
-def on_post_tool_call(**kwargs: Any) -> None:
-    runtime = _get_runtime()
-    if runtime is None:
-        return
-    if runtime.managed_tool_enabled():
-        return
-
-    def _record() -> None:
-        state = runtime.ensure_session(kwargs)
-        span = state.tool_spans.pop(_tool_key(kwargs), None)
-        if span is None:
-            runtime.mark("hermes.tool.response.unmatched", kwargs)
-            return
-        runtime.run_in_session(
-            state,
-            runtime.nemo_relay.tools.call_end,
-            span,
-            _jsonable(kwargs.get("result")),
-            data=_jsonable({"status": kwargs.get("status"), "duration_ms": kwargs.get("duration_ms")}),
-            metadata=_metadata(kwargs),
-        )
-
-    _safe(_record)
 
 
 def on_pre_approval_request(**kwargs: Any) -> None:
@@ -784,44 +511,42 @@ def on_subagent_stop(**kwargs: Any) -> None:
         _safe(lambda: runtime.mark_subagent_stop(kwargs))
 
 
-def on_llm_execution_middleware(**kwargs: Any) -> Any:
-    runtime = _get_runtime()
-    next_call = kwargs.get("next_call")
-    request = kwargs.get("request") or {}
-    if runtime is not None and runtime.managed_llm_enabled():
-        return runtime.execute_llm(kwargs)
-    if callable(next_call):
-        return next_call(request)
-    return request
+def _prepare_core_session(
+    host: relay_runtime.RelayRuntime,
+    context: dict[str, Any],
+) -> None:
+    """Register rich subscribers before core creates the conversation scope."""
+    runtime = _get_runtime(
+        profile_key=str(context.get("profile_key") or host.profile_key),
+        host=host,
+    )
+    if runtime is not None:
+        runtime.prepare_session(context)
 
 
-def on_tool_execution_middleware(**kwargs: Any) -> Any:
-    runtime = _get_runtime()
-    next_call = kwargs.get("next_call")
-    args = kwargs.get("args") or {}
-    if runtime is not None and runtime.managed_tool_enabled():
-        return runtime.execute_tool(kwargs)
-    if callable(next_call):
-        return next_call(args)
-    return args
-
-
-def _get_runtime() -> Optional[_Runtime]:
-    profile_key = relay_runtime.current_profile_key()
+def _get_runtime(
+    *,
+    profile_key: str | None = None,
+    host: relay_runtime.RelayRuntime | None = None,
+) -> Optional[_Runtime]:
+    profile_key = profile_key or relay_runtime.current_profile_key()
     with _LOCK:
         runtime = _RUNTIMES.get(profile_key)
         if runtime is _INIT_FAILED:
             return None
         if isinstance(runtime, _Runtime):
-            return runtime
+            if host is None or runtime.host is host:
+                return runtime
+            runtime.shutdown()
+            _RUNTIMES.pop(profile_key, None)
         try:
-            host = relay_runtime.get_runtime()
-            if host is None:
+            resolved_host = host or relay_runtime.get_runtime(profile_key=profile_key)
+            if resolved_host is None:
                 raise RuntimeError("Hermes core Relay runtime is unavailable")
             runtime = _Runtime(
-                nemo_relay=host.relay,
+                nemo_relay=resolved_host.relay,
                 settings=_load_settings(),
-                host=host,
+                host=resolved_host,
             )
         except Exception as exc:
             logger.debug("NeMo Relay plugin disabled: init failed: %s", exc, exc_info=True)
@@ -834,13 +559,10 @@ def _get_runtime() -> Optional[_Runtime]:
 def _load_settings() -> _Settings:
     plugins_toml_path = _env("HERMES_NEMO_RELAY_PLUGINS_TOML")
     plugins_config = _load_plugins_config(plugins_toml_path)
-    adaptive_config = _enabled_component_config(plugins_config, "adaptive")
     return _Settings(
         plugins_toml_path=plugins_toml_path,
         plugins_config=plugins_config,
         dynamic_plugins=_dynamic_plugin_specs(plugins_config, plugins_toml_path),
-        adaptive_enabled=adaptive_config is not None,
-        adaptive_mode=_adaptive_mode(adaptive_config),
         atof_enabled=_env_bool("HERMES_NEMO_RELAY_ATOF_ENABLED"),
         atof_output_directory=_env("HERMES_NEMO_RELAY_ATOF_OUTPUT_DIRECTORY"),
         atof_filename=_env("HERMES_NEMO_RELAY_ATOF_FILENAME") or "hermes-atof.jsonl",
@@ -1014,20 +736,6 @@ def _enabled_component_config(
     return None
 
 
-def _adaptive_mode(config: dict[str, Any] | None) -> str:
-    if not isinstance(config, dict):
-        return "observe_only"
-    tool_parallelism = config.get("tool_parallelism")
-    if isinstance(tool_parallelism, dict):
-        mode = tool_parallelism.get("mode")
-        if isinstance(mode, str) and mode.strip():
-            return mode.strip()
-    mode = config.get("mode")
-    if isinstance(mode, str) and mode.strip():
-        return mode.strip()
-    return "observe_only"
-
-
 def _observability_exporter_enabled(
     plugins_config: dict[str, Any] | None,
     exporter_name: str,
@@ -1089,25 +797,6 @@ def _subagent_child_metadata(
     return metadata
 
 
-def _api_key(kwargs: dict[str, Any]) -> str:
-    return str(kwargs.get("api_request_id") or f"{_session_id(kwargs)}:{kwargs.get('api_call_count') or 'api'}")
-
-
-def _tool_key(kwargs: dict[str, Any]) -> str:
-    return str(
-        kwargs.get("tool_call_id")
-        or f"{_session_id(kwargs)}:{kwargs.get('turn_id') or ''}:{kwargs.get('tool_name') or 'tool'}"
-    )
-
-
-def _relay_llm_surface(kwargs: dict[str, Any]) -> str:
-    api_mode = str(kwargs.get("api_mode") or "").strip().lower()
-    return _RELAY_LLM_SURFACE_BY_API_MODE.get(
-        api_mode,
-        str(kwargs.get("provider") or "llm"),
-    )
-
-
 def _metadata(kwargs: dict[str, Any]) -> dict[str, Any]:
     keys = (
         "telemetry_schema_version",
@@ -1167,105 +856,6 @@ def _jsonable(value: Any) -> Any:
         return str(value)
 
 
-def _json_semantically_equal(left: Any, right: Any) -> bool:
-    """Compare JSON-compatible values without conflating booleans and numbers."""
-    try:
-        left_json = json.dumps(
-            _jsonable(left), ensure_ascii=False, sort_keys=True, separators=(",", ":")
-        )
-        right_json = json.dumps(
-            _jsonable(right), ensure_ascii=False, sort_keys=True, separators=(",", ":")
-        )
-        return left_json == right_json
-    except (TypeError, ValueError):
-        return False
-
-
-def _value(obj: Any, key: str, default: Any = None) -> Any:
-    if isinstance(obj, dict):
-        return obj.get(key, default)
-    return getattr(obj, key, default)
-
-
-def _original_downstream_error(exc: Exception) -> BaseException:
-    # Hermes wraps downstream execution failures in a local/private exception
-    # class, so detect the wrapper by shape instead of importing it here.
-    original = getattr(exc, "original", None)
-    if exc.__class__.__name__ == "_DownstreamExecutionError" and isinstance(original, BaseException):
-        return original
-    return exc
-
-
-def _is_relay_wrapped_callback_error(exc: Exception, callback_error: Exception | None) -> bool:
-    # NeMo Relay re-wraps a failing callback as ``RuntimeError("internal error:
-    # <ClassName>: <message>")``. Match by prefix rather than exact equality so a
-    # trailing traceback/suffix in a future Relay version doesn't silently defeat
-    # the unwrap; the class-name + message prefix still discriminates the real
-    # downstream failure from unrelated Relay-internal errors. If Relay drops the
-    # leading ``internal error:`` shape entirely, this returns False and Hermes
-    # falls back to surfacing Relay's error (the pre-fix behavior) rather than
-    # masking it.
-    if callback_error is None or not isinstance(exc, RuntimeError):
-        return False
-    expected = f"internal error: {callback_error.__class__.__name__}: {callback_error}"
-    return str(exc).startswith(expected)
-
-
-def _llm_response_payload(response: Any) -> Any:
-    """Return the LLM response shape NeMo Relay's ATIF conversion expects."""
-    payload = _jsonable(response)
-    if isinstance(payload, dict) and "assistant_message" in payload:
-        return payload
-
-    choices = _value(response, "choices")
-    if choices is None and isinstance(payload, dict):
-        choices = payload.get("choices")
-    first_choice = choices[0] if isinstance(choices, list) and choices else None
-    message = _value(first_choice, "message")
-    finish_reason = _value(first_choice, "finish_reason")
-
-    assistant_message: dict[str, Any] = {"role": "assistant", "content": ""}
-    if message is not None:
-        assistant_message["role"] = _value(message, "role", "assistant") or "assistant"
-        content = _value(message, "content")
-        if content is not None:
-            assistant_message["content"] = _jsonable(content)
-        tool_calls = _tool_calls_payload(_value(message, "tool_calls"))
-        if tool_calls:
-            assistant_message["tool_calls"] = tool_calls
-        reasoning = _value(message, "reasoning_content")
-        if reasoning is not None:
-            assistant_message["reasoning_content"] = _jsonable(reasoning)
-    elif isinstance(payload, dict):
-        assistant_message["content"] = payload.get("content") or payload.get("output_text") or ""
-
-    return {
-        "model": _value(response, "model", payload.get("model") if isinstance(payload, dict) else None),
-        "assistant_message": assistant_message,
-        "finish_reason": finish_reason,
-        "usage": _jsonable(_value(response, "usage", payload.get("usage") if isinstance(payload, dict) else None)),
-    }
-
-
-def _tool_calls_payload(tool_calls: Any) -> list[dict[str, Any]]:
-    if not isinstance(tool_calls, list):
-        return []
-    normalized: list[dict[str, Any]] = []
-    for call in tool_calls:
-        function = _value(call, "function")
-        normalized.append(
-            {
-                "id": _value(call, "id"),
-                "type": _value(call, "type", "function") or "function",
-                "function": {
-                    "name": _value(function, "name"),
-                    "arguments": _value(function, "arguments"),
-                },
-            }
-        )
-    return normalized
-
-
 def _safe(fn) -> None:
     try:
         fn()
@@ -1303,6 +893,9 @@ def _resolve_awaitable(value: Any) -> Any:
 
 
 def reset_for_tests() -> None:
+    relay_runtime.SESSION_COORDINATOR.unregister_session_initializer(
+        _SESSION_INITIALIZER_NAME
+    )
     with _LOCK:
         runtimes = list(_RUNTIMES.values())
         _RUNTIMES.clear()

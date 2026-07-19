@@ -12,7 +12,7 @@ from typing import Any
 
 import pytest
 
-from hermes_cli import plugins
+from hermes_cli import lifecycle, plugins
 from hermes_cli.observability import relay_runtime, relay_shared_metrics
 from hermes_cli.plugins import PluginManager
 
@@ -168,15 +168,15 @@ def test_direct_runtime_records_without_enabling_a_plugin(direct_runtime, tmp_pa
         "base_url": "http://127.0.0.1:11434/v1",
     }
 
-    assert plugins.has_hook("pre_api_request")
-    plugins.invoke_hook("on_session_start", **base)
-    plugins.invoke_hook("pre_llm_call", **base)
-    plugins.invoke_hook(
+    assert lifecycle.has_hook("pre_api_request")
+    lifecycle.invoke_hook("on_session_start", **base)
+    lifecycle.invoke_hook("pre_llm_call", **base)
+    lifecycle.invoke_hook(
         "pre_api_request",
         **base,
         request={"body": {"messages": ["sensitive-prompt"]}},
     )
-    plugins.invoke_hook(
+    lifecycle.invoke_hook(
         "post_tool_call",
         **base,
         tool_call_id="sensitive-tool-call",
@@ -185,13 +185,13 @@ def test_direct_runtime_records_without_enabling_a_plugin(direct_runtime, tmp_pa
         result={"output": "sensitive-tool-result"},
         status="ok",
     )
-    plugins.invoke_hook(
+    lifecycle.invoke_hook(
         "api_request_error",
         **base,
         retryable=True,
         error={"message": "sensitive-error"},
     )
-    plugins.invoke_hook(
+    lifecycle.invoke_hook(
         "pre_api_request",
         **{
             **base,
@@ -201,7 +201,7 @@ def test_direct_runtime_records_without_enabling_a_plugin(direct_runtime, tmp_pa
         },
         request={"body": {"messages": ["sensitive-prompt"]}},
     )
-    plugins.invoke_hook(
+    lifecycle.invoke_hook(
         "post_api_request",
         **{
             **base,
@@ -211,7 +211,7 @@ def test_direct_runtime_records_without_enabling_a_plugin(direct_runtime, tmp_pa
         },
         response={"content": "sensitive-response"},
     )
-    plugins.invoke_hook(
+    lifecycle.invoke_hook(
         "on_session_end",
         **base,
         completed=True,
@@ -219,7 +219,7 @@ def test_direct_runtime_records_without_enabling_a_plugin(direct_runtime, tmp_pa
         interrupted=False,
         turn_exit_reason="text_response(stop)",
     )
-    plugins.invoke_hook("on_session_finalize", session_id=base["session_id"])
+    lifecycle.finalize_session(session_id=base["session_id"])
 
     starts = [event for event in direct_runtime.events if event[0] == "llm.call"]
     ends = [event for event in direct_runtime.events if event[0] == "llm.call_end"]
@@ -310,8 +310,8 @@ def test_direct_runtime_is_disabled_by_default(tmp_path, monkeypatch):
     monkeypatch.setattr(plugins, "_plugin_manager", PluginManager())
 
     assert not plugins.has_hook("pre_api_request")
-    plugins.invoke_hook("on_session_start", session_id="s1", platform="cli")
-    plugins.invoke_hook("on_session_finalize", session_id="s1")
+    lifecycle.invoke_hook("on_session_start", session_id="s1", platform="cli")
+    lifecycle.finalize_session(session_id="s1")
 
     assert fake.events == []
     assert not (tmp_path / "hermes-home" / "telemetry").exists()
@@ -345,7 +345,7 @@ def test_core_runtime_is_fail_open_without_a_published_binding(monkeypatch, capl
 
 
 def test_core_mark_uses_the_shared_session_handle_without_a_plugin(direct_runtime):
-    plugins.invoke_hook("on_session_start", session_id="s1", platform="cli")
+    lifecycle.invoke_hook("on_session_start", session_id="s1", platform="cli")
 
     handle = relay_runtime.get_session_handle("s1")
     assert handle is not None
@@ -473,6 +473,117 @@ def test_session_coordinator_separates_turn_release_from_hard_finalize(
     assert runtime.get_session("coordinated-session") is None
 
 
+def test_session_coordinator_prepares_subscribers_before_opening_scope(
+    direct_runtime,
+):
+    coordinator = relay_runtime.SESSION_COORDINATOR
+    initializer_name = "test.pre_scope_subscriber"
+
+    def prepare(host, context):
+        assert host.profile_key == relay_runtime.current_profile_key()
+        direct_runtime.events.append(("session.prepare", dict(context)))
+
+    coordinator.register_session_initializer(initializer_name, prepare)
+    try:
+        lease = coordinator.acquire_conversation(
+            profile_key=relay_runtime.current_profile_key(),
+            session_id="prepared-session",
+            platform="cli",
+            model="demo-model",
+        )
+    finally:
+        coordinator.unregister_session_initializer(initializer_name)
+
+    prepared = next(
+        index
+        for index, event in enumerate(direct_runtime.events)
+        if event[0] == "session.prepare"
+    )
+    opened = next(
+        index
+        for index, event in enumerate(direct_runtime.events)
+        if event[0] == "scope.push" and event[1] == relay_runtime.SESSION_SCOPE
+    )
+    assert prepared < opened
+    assert direct_runtime.events[prepared][1] == {
+        "profile_key": relay_runtime.current_profile_key(),
+        "session_id": "prepared-session",
+        "platform": "cli",
+        "parent_session_id": "",
+        "model": "demo-model",
+    }
+    coordinator.finalize_conversation(
+        profile_key=relay_runtime.current_profile_key(),
+        session_id=lease.session_id,
+    )
+
+
+def test_session_initializer_failure_does_not_block_conversation(
+    direct_runtime,
+    caplog,
+):
+    coordinator = relay_runtime.SESSION_COORDINATOR
+    initializer_name = "test.failing_subscriber"
+
+    def fail(_host, _context):
+        raise RuntimeError("subscriber setup failed")
+
+    coordinator.register_session_initializer(initializer_name, fail)
+    try:
+        with caplog.at_level("WARNING"):
+            lease = coordinator.acquire_conversation(
+                profile_key=relay_runtime.current_profile_key(),
+                session_id="initializer-failure",
+                platform="cli",
+            )
+    finally:
+        coordinator.unregister_session_initializer(initializer_name)
+
+    assert lease.session is not None
+    assert "Hermes Relay session initializer failed" in caplog.text
+    coordinator.finalize_conversation(
+        profile_key=relay_runtime.current_profile_key(),
+        session_id=lease.session_id,
+    )
+
+
+def test_profile_host_recreation_rebinds_shared_metrics_subscriber(
+    direct_runtime,
+):
+    coordinator = relay_runtime.SESSION_COORDINATOR
+    profile_key = relay_runtime.current_profile_key()
+    first_lease = coordinator.acquire_conversation(
+        profile_key=profile_key,
+        session_id="before-restart",
+        platform="cli",
+    )
+    first_metrics = relay_shared_metrics._get_runtime()
+    assert first_metrics is not None
+    first_host = first_lease.host
+
+    coordinator.finalize_conversation(
+        profile_key=profile_key,
+        session_id=first_lease.session_id,
+    )
+    coordinator.shutdown_profile(profile_key)
+
+    second_lease = coordinator.acquire_conversation(
+        profile_key=profile_key,
+        session_id="after-restart",
+        platform="cli",
+    )
+    second_metrics = relay_shared_metrics._get_runtime()
+
+    assert second_metrics is not None
+    assert second_lease.host is not first_host
+    assert second_metrics is not first_metrics
+    assert second_metrics.host is second_lease.host
+    coordinator.finalize_conversation(
+        profile_key=profile_key,
+        session_id=second_lease.session_id,
+    )
+
+
 def test_core_mark_lazily_starts_relay_without_metrics_or_a_plugin(
     tmp_path,
     monkeypatch,
@@ -490,7 +601,7 @@ def test_core_mark_lazily_starts_relay_without_metrics_or_a_plugin(
         session_id="s1",
         data={"provenance": "agent_created"},
     )
-    plugins.invoke_hook("on_session_finalize", session_id="s1")
+    lifecycle.finalize_session(session_id="s1")
 
     assert [event[0] for event in fake.events] == [
         "scope.push",
@@ -923,7 +1034,7 @@ def test_subagent_stop_hook_does_not_own_child_session_lifetime(direct_runtime):
     )
     assert child is not None
 
-    plugins.invoke_hook(
+    lifecycle.invoke_hook(
         "subagent_stop",
         parent_session_id="parent",
         child_session_id="child",
@@ -1121,9 +1232,9 @@ def test_terminal_model_error_is_counted_as_failed(direct_runtime):
         "model": "claude-sonnet",
     }
 
-    plugins.invoke_hook("pre_api_request", **base)
-    plugins.invoke_hook("api_request_error", **base, retryable=False)
-    plugins.invoke_hook("on_session_finalize", session_id="s1")
+    lifecycle.invoke_hook("pre_api_request", **base)
+    lifecycle.invoke_hook("api_request_error", **base, retryable=False)
+    lifecycle.finalize_session(session_id="s1")
 
     [end] = [event for event in direct_runtime.events if event[0] == "llm.call_end"]
     assert end[2]["outcome"] == "failed"
@@ -1139,15 +1250,15 @@ def test_task_terminal_counts_logical_calls_retries_and_unique_tools(direct_runt
         "model": "nvidia/nemotron-3-super-120b-a12b",
     }
 
-    plugins.invoke_hook("pre_llm_call", **base)
-    plugins.invoke_hook("pre_api_request", **base)
-    plugins.invoke_hook("api_request_error", **base, retryable=True)
-    plugins.invoke_hook("pre_api_request", **base)
-    plugins.invoke_hook("api_request_error", **base, retryable=True)
-    plugins.invoke_hook("pre_api_request", **base)
-    plugins.invoke_hook("api_request_error", **base, retryable=False)
+    lifecycle.invoke_hook("pre_llm_call", **base)
+    lifecycle.invoke_hook("pre_api_request", **base)
+    lifecycle.invoke_hook("api_request_error", **base, retryable=True)
+    lifecycle.invoke_hook("pre_api_request", **base)
+    lifecycle.invoke_hook("api_request_error", **base, retryable=True)
+    lifecycle.invoke_hook("pre_api_request", **base)
+    lifecycle.invoke_hook("api_request_error", **base, retryable=False)
     for tool_call_id in ("tool-1", "tool-1", "tool-2"):
-        plugins.invoke_hook(
+        lifecycle.invoke_hook(
             "post_tool_call",
             **base,
             tool_call_id=tool_call_id,
@@ -1155,7 +1266,7 @@ def test_task_terminal_counts_logical_calls_retries_and_unique_tools(direct_runt
             result={"output": "private"},
             status="ok",
         )
-    plugins.invoke_hook(
+    lifecycle.invoke_hook(
         "on_session_end",
         **base,
         completed=False,
@@ -1163,7 +1274,7 @@ def test_task_terminal_counts_logical_calls_retries_and_unique_tools(direct_runt
         interrupted=False,
         turn_exit_reason="all_retries_exhausted_no_response",
     )
-    plugins.invoke_hook("on_session_finalize", session_id="s1")
+    lifecycle.finalize_session(session_id="s1")
 
     model_starts = [event for event in direct_runtime.events if event[0] == "llm.call"]
     model_ends = [
@@ -1249,7 +1360,7 @@ def test_outer_agent_boundary_closes_early_returns_and_exceptions(
     with pytest.raises(TimeoutError, match="private timeout detail"):
         AIAgent.run_conversation(agent, "private prompt", task_id="timed-out")
 
-    plugins.invoke_hook("on_session_finalize", session_id="s1")
+    lifecycle.finalize_session(session_id="s1")
 
     task_ends = [
         event[2]["output"]
@@ -1315,14 +1426,14 @@ def test_outer_agent_boundary_preserves_a_returned_timeout_reason(
 
 
 def test_session_finalize_closes_a_pending_task_as_system_aborted(direct_runtime):
-    plugins.invoke_hook(
+    lifecycle.invoke_hook(
         "pre_llm_call",
         session_id="s1",
         task_id="t1",
         platform="cli",
     )
 
-    plugins.invoke_hook("on_session_finalize", session_id="s1")
+    lifecycle.finalize_session(session_id="s1")
 
     [task_end] = [
         event
@@ -1344,13 +1455,13 @@ def test_session_finalize_closes_a_pending_task_as_system_aborted(direct_runtime
 
 def test_sequential_tasks_in_one_session_aggregate_once_each(direct_runtime, tmp_path):
     for task_id in ("t1", "t2"):
-        plugins.invoke_hook(
+        lifecycle.invoke_hook(
             "pre_llm_call",
             session_id="s1",
             task_id=task_id,
             platform="cli",
         )
-        plugins.invoke_hook(
+        lifecycle.invoke_hook(
             "on_session_end",
             session_id="s1",
             task_id=task_id,
@@ -1360,7 +1471,7 @@ def test_sequential_tasks_in_one_session_aggregate_once_each(direct_runtime, tmp
             interrupted=False,
             turn_exit_reason="text_response(stop)",
         )
-    plugins.invoke_hook("on_session_finalize", session_id="s1")
+    lifecycle.finalize_session(session_id="s1")
 
     outbox = tmp_path / "hermes-home" / "telemetry" / "shared_metrics" / "outbox"
     [package_path] = list(outbox.glob("*.json"))
@@ -1371,13 +1482,13 @@ def test_sequential_tasks_in_one_session_aggregate_once_each(direct_runtime, tmp
 
 
 def test_task_ownership_survives_session_id_rotation(direct_runtime):
-    plugins.invoke_hook(
+    lifecycle.invoke_hook(
         "pre_llm_call",
         session_id="before-compression",
         task_id="t1",
         platform="cli",
     )
-    plugins.invoke_hook(
+    lifecycle.invoke_hook(
         "pre_api_request",
         session_id="after-compression",
         task_id="t1",
@@ -1386,7 +1497,7 @@ def test_task_ownership_survives_session_id_rotation(direct_runtime):
         provider="nvidia",
         model="nvidia/nemotron-3-super-120b-a12b",
     )
-    plugins.invoke_hook(
+    lifecycle.invoke_hook(
         "post_api_request",
         session_id="after-compression",
         task_id="t1",
@@ -1395,7 +1506,7 @@ def test_task_ownership_survives_session_id_rotation(direct_runtime):
         provider="nvidia",
         model="nvidia/nemotron-3-super-120b-a12b",
     )
-    plugins.invoke_hook(
+    lifecycle.invoke_hook(
         "on_session_end",
         session_id="after-compression",
         task_id="t1",
@@ -1405,7 +1516,7 @@ def test_task_ownership_survives_session_id_rotation(direct_runtime):
         interrupted=False,
         turn_exit_reason="text_response(stop)",
     )
-    plugins.invoke_hook("on_session_finalize", session_id="before-compression")
+    lifecycle.finalize_session(session_id="before-compression")
 
     task_starts = [
         event
@@ -1443,8 +1554,8 @@ def test_gateway_and_delegated_entrypoints_flow_through_relay(direct_runtime):
         },
     ]
     for task in tasks:
-        plugins.invoke_hook("pre_llm_call", **task)
-        plugins.invoke_hook(
+        lifecycle.invoke_hook("pre_llm_call", **task)
+        lifecycle.invoke_hook(
             "on_session_end",
             **task,
             completed=True,
@@ -1477,7 +1588,7 @@ def test_persistence_failure_does_not_escape_the_hook(
         raise OSError("store unavailable")
 
     monkeypatch.setattr(runtime.subscriber.store, "record_counter", fail_record)
-    plugins.invoke_hook(
+    lifecycle.invoke_hook(
         "pre_api_request",
         session_id="s1",
         task_id="t1",
@@ -1485,7 +1596,7 @@ def test_persistence_failure_does_not_escape_the_hook(
         provider="openai",
         model="gpt-5",
     )
-    plugins.invoke_hook(
+    lifecycle.invoke_hook(
         "post_api_request",
         session_id="s1",
         task_id="t1",

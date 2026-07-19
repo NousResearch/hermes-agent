@@ -10,8 +10,9 @@ def test_session_hooks_in_valid_hooks():
     assert "on_session_reset" in VALID_HOOKS
 
 
-@patch("hermes_cli.plugins.invoke_hook")
-def test_session_finalize_on_reset(mock_invoke_hook):
+@patch("hermes_cli.lifecycle.invoke_hook")
+@patch("hermes_cli.lifecycle.finalize_session")
+def test_session_finalize_on_reset(mock_finalize_session, mock_invoke_hook):
     """Verify on_session_finalize fires when /new or /reset is used."""
     cli = HermesCLI()
     cli.agent = MagicMock()
@@ -22,10 +23,10 @@ def test_session_finalize_on_reset(mock_invoke_hook):
 
     # Check if on_session_finalize was called for the old session
     assert any(
-        c.args == ("on_session_finalize",)
+        not c.args
         and c.kwargs["session_id"] == "test-session-id"
         and c.kwargs["platform"] == "cli"
-        for c in mock_invoke_hook.call_args_list
+        for c in mock_finalize_session.call_args_list
     )
     # Check if on_session_reset was called for the new session
     assert any(
@@ -36,8 +37,8 @@ def test_session_finalize_on_reset(mock_invoke_hook):
     )
 
 
-@patch("hermes_cli.plugins.invoke_hook")
-def test_session_finalize_on_cleanup(mock_invoke_hook):
+@patch("hermes_cli.lifecycle.finalize_session")
+def test_session_finalize_on_cleanup(mock_finalize_session):
     """Verify on_session_finalize fires during CLI exit cleanup."""
     import cli as cli_mod
 
@@ -49,15 +50,15 @@ def test_session_finalize_on_cleanup(mock_invoke_hook):
     cli_mod._run_cleanup()
 
     assert any(
-        c.args == ("on_session_finalize",)
+        not c.args
         and c.kwargs["session_id"] == "cleanup-session-id"
         and c.kwargs["platform"] == "cli"
         and c.kwargs["reason"] == "shutdown"
-        for c in mock_invoke_hook.call_args_list
+        for c in mock_finalize_session.call_args_list
     )
 
 
-@patch("hermes_cli.plugins.invoke_hook")
+@patch("hermes_cli.lifecycle.invoke_hook")
 def test_interrupted_session_end_helper_emits_observer_shape(mock_invoke_hook):
     """Verify quiet single-query interruption emits a correlated session end."""
     import cli as cli_mod

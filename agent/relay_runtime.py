@@ -24,10 +24,6 @@ RUNTIME_SCHEMA_KEY = "hermes.relay.schema_version"
 RUNTIME_SCHEMA_VERSION = "hermes.relay.runtime.v1"
 RUNTIME_INSTANCE_KEY = "hermes.relay.runtime_instance"
 
-SESSION_START_HOOKS = frozenset({"on_session_start"})
-SESSION_CLOSE_HOOKS = frozenset({"on_session_finalize", "on_session_reset"})
-HANDLED_HOOKS = SESSION_START_HOOKS | SESSION_CLOSE_HOOKS
-
 
 @dataclass
 class RelaySession:
@@ -453,6 +449,42 @@ class RelaySessionCoordinator:
 
     def __init__(self, registry: RelayHostRegistry = HOST_REGISTRY) -> None:
         self.registry = registry
+        self._initializer_lock = threading.RLock()
+        self._session_initializers: dict[
+            str,
+            Callable[[RelayRuntime, dict[str, Any]], None],
+        ] = {}
+
+    def register_session_initializer(
+        self,
+        name: str,
+        callback: Callable[[RelayRuntime, dict[str, Any]], None],
+    ) -> None:
+        """Register idempotent profile/session preparation before scope creation."""
+        with self._initializer_lock:
+            self._session_initializers[name] = callback
+
+    def unregister_session_initializer(self, name: str) -> None:
+        """Remove a previously registered session initializer."""
+        with self._initializer_lock:
+            self._session_initializers.pop(name, None)
+
+    def _prepare_session(
+        self,
+        host: RelayRuntime,
+        context: dict[str, Any],
+    ) -> None:
+        with self._initializer_lock:
+            initializers = list(self._session_initializers.items())
+        for name, callback in initializers:
+            try:
+                callback(host, context)
+            except Exception:
+                logger.warning(
+                    "Hermes Relay session initializer failed: %s",
+                    name,
+                    exc_info=True,
+                )
 
     def acquire_conversation(
         self,
@@ -461,6 +493,7 @@ class RelaySessionCoordinator:
         session_id: str,
         platform: str,
         parent_session_id: str = "",
+        model: str = "",
     ) -> ConversationLease:
         host = self.registry.for_profile(profile_key)
         if host is None:
@@ -468,6 +501,14 @@ class RelaySessionCoordinator:
         session = None
         if isinstance(host, RelayRuntime):
             try:
+                session_context = {
+                    "profile_key": profile_key,
+                    "session_id": session_id,
+                    "platform": platform,
+                    "parent_session_id": parent_session_id,
+                    "model": model,
+                }
+                self._prepare_session(host, session_context)
                 metadata = {"hermes.execution_surface": platform or "unknown"}
                 if parent_session_id and parent_session_id != session_id:
                     session = host.register_subagent(
@@ -609,30 +650,6 @@ def current_turn() -> RelayTurnContext | None:
     return _CURRENT_TURN.get()
 
 
-def handles_hook(hook_name: str) -> bool:
-    """Return whether the core Relay host consumes this lifecycle hook."""
-    return hook_name in HANDLED_HOOKS
-
-
-def observe_lifecycle(hook_name: str, **kwargs: Any) -> None:
-    """Apply session lifecycle events to the core Relay host."""
-    if not handles_hook(hook_name):
-        return
-    # Session hooks do not activate Relay by themselves. A direct core
-    # producer or an enabled built-in consumer creates the host lazily, after
-    # which these hooks keep its session lifetime correct.
-    runtime = get_runtime(create=False)
-    if runtime is None:
-        return
-    try:
-        if hook_name in SESSION_START_HOOKS:
-            runtime.ensure_session(kwargs)
-        elif hook_name in SESSION_CLOSE_HOOKS:
-            runtime.close_session(kwargs)
-    except Exception:
-        logger.warning("Hermes Relay lifecycle failed: %s", hook_name, exc_info=True)
-
-
 def emit_mark(
     name: str,
     *,
@@ -727,6 +744,28 @@ def get_session_handle(session_id: str) -> Any:
     """Return the shared Relay handle for direct core instrumentation."""
     runtime = get_runtime(create=False)
     return None if runtime is None else runtime.get_session_handle(session_id)
+
+
+def _is_relay_wrapped_callback_error(
+    relay_error: BaseException,
+    callback_error: BaseException,
+) -> bool:
+    """Match Relay's native callback wrapper without masking policy errors."""
+    if relay_error is callback_error:
+        return True
+    if not isinstance(relay_error, RuntimeError):
+        return False
+    callback_type = callback_error.__class__
+    type_names = {
+        callback_type.__name__,
+        callback_type.__qualname__,
+        f"{callback_type.__module__}.{callback_type.__qualname__}",
+    }
+    message = str(relay_error)
+    return any(
+        message.startswith(f"internal error: {type_name}: {callback_error}")
+        for type_name in type_names
+    )
 
 
 def get_runtime(

@@ -127,7 +127,7 @@ def test_stream_uses_rewritten_request_and_post_intercept_chunks(relay_turn):
     assert turn.logical_llm_calls == {}
 
 
-def test_stream_preserves_provider_error_and_turn_closes_logical_scope(relay_turn):
+def test_stream_preserves_provider_error_and_keeps_logical_scope_for_retry(relay_turn):
     _relay, turn = relay_turn
 
     class ProviderError(Exception):
@@ -160,6 +160,138 @@ def test_stream_preserves_provider_error_and_turn_closes_logical_scope(relay_tur
 
     assert caught.value is provider_error
     assert "request-2" in turn.logical_llm_calls
+
+
+def test_non_stream_preserves_raw_provider_response_identity(relay_turn):
+    _relay, _turn = relay_turn
+    raw_response = SimpleNamespace(model="test-model", content="raw")
+
+    result = relay_llm.execute(
+        {"model": "test-model", "messages": []},
+        lambda _request: raw_response,
+        session_id="session-1",
+        name="test-provider",
+        model_name="test-model",
+        metadata={"api_mode": "custom", "api_request_id": "request-raw"},
+    )
+
+    assert result is raw_response
+
+
+@pytest.mark.asyncio
+async def test_async_non_stream_preserves_raw_provider_response_identity(relay_turn):
+    _relay, _turn = relay_turn
+    raw_response = SimpleNamespace(model="test-model", content="raw")
+
+    async def provider(_request):
+        return raw_response
+
+    result = await relay_llm.execute_current_async(
+        {"model": "test-model", "messages": []},
+        provider,
+        name="test-provider",
+        model_name="test-model",
+        metadata={"api_mode": "custom", "api_request_id": "request-async"},
+    )
+
+    assert result is raw_response
+
+
+def test_current_attempt_bypasses_relay_without_an_active_turn(monkeypatch):
+    monkeypatch.setattr(relay_runtime, "current_turn", lambda: None)
+    request = {"model": "test-model", "messages": []}
+
+    result = relay_llm.execute_current(
+        request,
+        lambda value: value,
+        name="test-provider",
+        model_name="test-model",
+    )
+
+    assert result is request
+
+
+def test_non_stream_returns_post_execution_interceptor_result(relay_turn, monkeypatch):
+    relay, _turn = relay_turn
+
+    async def post_execute(_name, request, callback, **_kwargs):
+        response = callback(request)
+        return {**response, "post_interceptor": True}
+
+    monkeypatch.setattr(relay.llm, "execute", post_execute)
+
+    result = relay_llm.execute(
+        {"model": "test-model", "messages": []},
+        lambda _request: {"content": "raw"},
+        session_id="session-1",
+        name="test-provider",
+        model_name="test-model",
+        metadata={"api_mode": "custom", "api_request_id": "request-post"},
+    )
+
+    assert result == {"content": "raw", "post_interceptor": True}
+
+
+def test_non_stream_preserves_provider_error_from_relay_wrapper_suffix(
+    relay_turn, monkeypatch
+):
+    relay, turn = relay_turn
+
+    class ProviderError(Exception):
+        pass
+
+    provider_error = ProviderError("provider failed")
+
+    async def wrapping_execute(_name, request, callback, **_kwargs):
+        try:
+            return callback(request)
+        except Exception as exc:
+            raise RuntimeError(
+                f"internal error: {type(exc).__name__}: {exc} (retried 3x)"
+            ) from None
+
+    monkeypatch.setattr(relay.llm, "execute", wrapping_execute)
+
+    with pytest.raises(ProviderError) as caught:
+        relay_llm.execute(
+            {"model": "test-model", "messages": []},
+            lambda _request: (_ for _ in ()).throw(provider_error),
+            session_id="session-1",
+            name="test-provider",
+            model_name="test-model",
+            metadata={"api_mode": "custom", "api_request_id": "request-error"},
+        )
+
+    assert caught.value is provider_error
+    assert "request-error" in turn.logical_llm_calls
+
+
+def test_non_stream_does_not_mask_relay_error_after_callback_failure(
+    relay_turn, monkeypatch
+):
+    relay, _turn = relay_turn
+    provider_error = RuntimeError("provider failed")
+    relay_error = RuntimeError("internal error: RelayPolicyError: policy blocked")
+
+    async def translating_execute(_name, request, callback, **_kwargs):
+        try:
+            callback(request)
+        except Exception:
+            raise relay_error
+
+    monkeypatch.setattr(relay.llm, "execute", translating_execute)
+
+    with pytest.raises(RuntimeError) as caught:
+        relay_llm.execute(
+            {"model": "test-model", "messages": []},
+            lambda _request: (_ for _ in ()).throw(provider_error),
+            session_id="session-1",
+            name="test-provider",
+            model_name="test-model",
+            metadata={"api_mode": "custom", "api_request_id": "request-policy"},
+        )
+
+    assert caught.value is relay_error
 
 
 def test_chat_codec_preserves_provider_message_extensions_after_rewrite(relay_turn):
@@ -223,3 +355,40 @@ def test_chat_codec_preserves_provider_message_extensions_after_rewrite(relay_tu
     assert captured_requests[0]["messages"][0]["reasoning_content"] == (
         "provider scratchpad"
     )
+
+
+def test_request_rewrite_preserves_unmodified_provider_objects(relay_turn):
+    relay, _turn = relay_turn
+    timeout = object()
+    captured_requests = []
+
+    def rewrite_request(name, request, annotated):
+        del name
+        annotated.params = {**(annotated.params or {}), "temperature": 0.25}
+        return relay.LLMRequestInterceptOutcome(request, annotated)
+
+    relay.intercepts.register_llm_request(
+        "hermes-provider-object-request",
+        1,
+        False,
+        rewrite_request,
+    )
+    try:
+        relay_llm.execute(
+            {"model": "test-model", "messages": [], "timeout": timeout},
+            lambda request: captured_requests.append(request) or {"content": "ok"},
+            session_id="session-1",
+            name="test-provider",
+            model_name="test-model",
+            metadata={
+                "api_mode": "chat_completions",
+                "api_request_id": "request-provider-object",
+            },
+        )
+    finally:
+        relay.intercepts.deregister_llm_request(
+            "hermes-provider-object-request"
+        )
+
+    assert captured_requests[0]["timeout"] is timeout
+    assert captured_requests[0]["temperature"] == 0.25

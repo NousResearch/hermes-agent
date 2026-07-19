@@ -83,3 +83,58 @@ def test_provider_error_identity_is_preserved(relay_turn):
         )
 
     assert caught.value is tool_error
+
+
+def test_tool_error_is_preserved_from_relay_wrapper_suffix(relay_turn, monkeypatch):
+    relay = relay_turn
+
+    class ToolError(Exception):
+        pass
+
+    tool_error = ToolError("dispatch failed")
+
+    async def wrapping_execute(_name, args, callback, **_kwargs):
+        try:
+            return callback(args)
+        except Exception as exc:
+            raise RuntimeError(
+                f"internal error: {type(exc).__name__}: {exc} (worker trace)"
+            ) from None
+
+    monkeypatch.setattr(relay.tools, "execute", wrapping_execute)
+
+    with pytest.raises(ToolError) as caught:
+        relay_tools.execute(
+            "terminal",
+            {"command": "false"},
+            lambda _args: (_ for _ in ()).throw(tool_error),
+            session_id="session-1",
+        )
+
+    assert caught.value is tool_error
+
+
+def test_tool_adapter_does_not_mask_relay_error_after_callback_failure(
+    relay_turn, monkeypatch
+):
+    relay = relay_turn
+    tool_error = RuntimeError("dispatch failed")
+    relay_error = RuntimeError("internal error: RelayPolicyError: policy blocked")
+
+    async def translating_execute(_name, args, callback, **_kwargs):
+        try:
+            callback(args)
+        except Exception:
+            raise relay_error
+
+    monkeypatch.setattr(relay.tools, "execute", translating_execute)
+
+    with pytest.raises(RuntimeError) as caught:
+        relay_tools.execute(
+            "terminal",
+            {"command": "false"},
+            lambda _args: (_ for _ in ()).throw(tool_error),
+            session_id="session-1",
+        )
+
+    assert caught.value is relay_error

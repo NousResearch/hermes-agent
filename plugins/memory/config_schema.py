@@ -2,11 +2,11 @@
 
 Each memory provider plugin *declares* its configurable surface in a
 ``config_schema.py`` next to its ``__init__.py`` — the fields, their types,
-which values are secrets, and (for selects) the allowed options. A single
-generic renderer in the desktop UI and a single generic ``GET/PUT
-/api/memory/providers/{name}/config`` endpoint pair drive the whole
-experience, so adding a provider config surface is pure declaration with no
-bespoke UI components.
+which values are secrets, and (for selects) the allowed options. Most providers
+use the generic renderer and ``GET/PUT /api/memory/providers/{name}/config``
+endpoints. Providers with workflows that cannot be represented as fields may
+register a custom Desktop surface while still entering through the same shared
+panel and provider API.
 
 Schema files are loaded by path (like the provider plugins themselves), never
 via package import: plugin ``__init__.py`` files pull in the agent runtime,
@@ -100,6 +100,9 @@ class ProviderConfigSchema:
     storage: str = STORAGE_FLAT_JSON
     # Optional link to the provider's config docs, shown in the full-config modal.
     docs_url: str = ""
+    # Optional registered Desktop surface for setup flows that cannot be
+    # represented by declarative fields alone.
+    custom_surface: str = ""
     fields: tuple[ProviderField, ...] = dataclass_field(default_factory=tuple)
 
     def inline_fields(self) -> tuple[ProviderField, ...]:

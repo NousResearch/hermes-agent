@@ -53,6 +53,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from hermes_cli import __version__, __release_date__
+from agent.memory_provider import MemoryProviderConfigConflictError
 from hermes_cli.config import (
     cfg_get,
     DEFAULT_CONFIG,
@@ -1059,6 +1060,10 @@ class CustomEndpointUpdate(BaseModel):
     context_length: Optional[int] = None
     discover_models: bool = True
     make_default: bool = False
+
+
+class MemoryProviderActionRequest(BaseModel):
+    payload: Dict[str, Any] = {}
 
 
 class MessagingPlatformUpdate(BaseModel):
@@ -4967,7 +4972,13 @@ def _declared_provider_payload(provider: ProviderConfigSchema) -> Dict[str, Any]
         entry["is_set"] = native is not None if is_honcho else bool(value)
         fields.append(entry)
 
-    return {"name": provider.name, "label": provider.label, "docs_url": provider.docs_url, "fields": fields}
+    return {
+        "name": provider.name,
+        "label": provider.label,
+        "docs_url": provider.docs_url,
+        "custom_surface": provider.custom_surface or None,
+        "fields": fields,
+    }
 
 
 def _apply_field_values(provider: ProviderConfigSchema, values: Dict[str, str], target_for) -> None:
@@ -5864,6 +5875,16 @@ async def get_memory_provider_config(name: str, surface: Optional[str] = None, p
     _require_valid_memory_provider_name(name)
 
     def _run():
+        if surface == "custom":
+            with _config_profile_scope(profile):
+                provider = _load_memory_provider(name)
+                if provider is None:
+                    raise HTTPException(status_code=404, detail=f"Unknown memory provider: {name}")
+                try:
+                    return provider.get_desktop_config(hermes_home=str(get_hermes_home()))
+                except NotImplementedError as exc:
+                    raise HTTPException(status_code=404, detail=str(exc)) from exc
+
         with _profile_scope(profile):
             if surface == "declared":
                 declared = get_provider_config_schema(name)
@@ -5941,6 +5962,44 @@ async def update_memory_provider_config(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception:
         _log.exception("PUT /api/memory/providers/%s/config failed", name)
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@app.post("/api/memory/providers/{name}/actions/{action}")
+async def run_memory_provider_action(
+    name: str,
+    action: str,
+    body: MemoryProviderActionRequest,
+    profile: Optional[str] = None,
+):
+    _require_valid_memory_provider_name(name)
+    if not _MEMORY_PROVIDER_NAME_RE.fullmatch(action or ""):
+        raise HTTPException(status_code=404, detail=f"Unknown memory provider action: {action}")
+
+    def _run():
+        with _config_profile_scope(profile):
+            provider = _load_memory_provider(name)
+            if provider is None:
+                raise HTTPException(status_code=404, detail=f"Unknown memory provider: {name}")
+            try:
+                return provider.handle_desktop_config_action(
+                    action,
+                    body.payload or {},
+                    hermes_home=str(get_hermes_home()),
+                )
+            except MemoryProviderConfigConflictError as exc:
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
+            except NotImplementedError as exc:
+                raise HTTPException(status_code=404, detail=str(exc)) from exc
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    try:
+        return await asyncio.to_thread(_run)
+    except HTTPException:
+        raise
+    except Exception:
+        _log.exception("POST /api/memory/providers/%s/actions/%s failed", name, action)
         raise HTTPException(status_code=500, detail="Internal server error")
 
 

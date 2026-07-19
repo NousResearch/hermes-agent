@@ -690,6 +690,14 @@ class TestWebServerEndpoints:
             )
             assert resp.status_code in (404, 405), (bad, resp.status_code)
 
+    def test_memory_provider_action_rejects_invalid_action_name(self):
+        resp = self.client.post(
+            "/api/memory/providers/hindsight/actions/not.valid",
+            json={"payload": {}},
+        )
+
+        assert resp.status_code == 404
+
     def test_post_memory_provider_setup_persists_values_without_activation(self):
         from hermes_cli.config import load_config, load_env
 
@@ -1001,6 +1009,20 @@ class TestWebServerEndpoints:
         assert fields["aiPeer"]["placeholder"] == "hermes"
         assert fields["apiKey"]["kind"] == "secret"
         assert fields["apiKey"]["is_set"] is False
+
+    def test_get_openviking_declares_registered_custom_surface(self):
+        resp = self.client.get(
+            "/api/memory/providers/openviking/config?surface=declared"
+        )
+
+        assert resp.status_code == 200
+        assert resp.json() == {
+            "name": "openviking",
+            "label": "OpenViking",
+            "docs_url": "",
+            "custom_surface": "openviking",
+            "fields": [],
+        }
 
     def test_put_honcho_writes_host_block_root_and_secret(self, monkeypatch, tmp_path):
         monkeypatch.setenv("HOME", str(tmp_path))

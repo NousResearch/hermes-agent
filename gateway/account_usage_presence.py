@@ -32,7 +32,7 @@ from hermes_constants import get_hermes_home
 
 logger = logging.getLogger(__name__)
 
-_STATE_VERSION = 2
+_STATE_VERSION = 3
 _MAX_STATE_BYTES = 64 * 1024
 _MAX_STATE_ENTRIES = 32
 _STATE_PHASES = frozenset({"pending", "owned"})
@@ -81,12 +81,14 @@ class _JournalEntry:
     baseline: dict[str, Any]
     owned: dict[str, Any]
     phase: str
+    previous_owned: Optional[dict[str, Any]] = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "baseline": self.baseline,
             "owned": self.owned,
             "phase": self.phase,
+            "previous_owned": self.previous_owned,
         }
 
 
@@ -153,7 +155,8 @@ def _valid_state_mapping(value: Any) -> bool:
 def _parse_journal(raw: Any) -> dict[str, _JournalEntry]:
     if not isinstance(raw, dict) or set(raw) != {"version", "entries"}:
         raise ValueError("journal must contain exactly version and entries")
-    if raw["version"] != _STATE_VERSION:
+    version = raw["version"]
+    if version not in {2, _STATE_VERSION}:
         raise ValueError("unsupported journal version")
     entries = raw["entries"]
     if not isinstance(entries, dict) or len(entries) > _MAX_STATE_ENTRIES:
@@ -163,7 +166,10 @@ def _parse_journal(raw: Any) -> dict[str, _JournalEntry]:
     for key, value in entries.items():
         if not isinstance(key, str) or not key or len(key) > 256:
             raise ValueError("invalid journal state key")
-        if not isinstance(value, dict) or set(value) != {"baseline", "owned", "phase"}:
+        expected_fields = {"baseline", "owned", "phase"}
+        if version == _STATE_VERSION:
+            expected_fields.add("previous_owned")
+        if not isinstance(value, dict) or set(value) != expected_fields:
             raise ValueError("invalid journal entry schema")
         if not _valid_state_mapping(value["baseline"]):
             raise ValueError("invalid journal baseline")
@@ -172,10 +178,18 @@ def _parse_journal(raw: Any) -> dict[str, _JournalEntry]:
         phase = value["phase"]
         if phase not in _STATE_PHASES:
             raise ValueError("invalid journal phase")
+        previous_owned = value.get("previous_owned")
+        if previous_owned is not None and not _valid_state_mapping(previous_owned):
+            raise ValueError("invalid previous journal owned state")
+        if phase == "owned" and previous_owned is not None:
+            raise ValueError("owned journal entry cannot retain previous state")
         parsed[key] = _JournalEntry(
             baseline=dict(value["baseline"]),
             owned=dict(value["owned"]),
             phase=phase,
+            previous_owned=(
+                dict(previous_owned) if previous_owned is not None else None
+            ),
         )
     return parsed
 
@@ -610,6 +624,11 @@ class AccountUsagePresenceController:
                     baseline=dict(baseline),
                     owned=dict(owned),
                     phase="pending",
+                    previous_owned=(
+                        dict(prior_owned_entry.owned)
+                        if prior_owned_entry is not None
+                        else None
+                    ),
                 )
                 candidate = dict(self._journal)
                 candidate[state_key] = pending_entry
@@ -655,7 +674,11 @@ class AccountUsagePresenceController:
             if pending_entry is not None:
                 self._owned_in_process.add(state_key)
                 candidate = dict(self._journal)
-                candidate[state_key] = replace(pending_entry, phase="owned")
+                candidate[state_key] = replace(
+                    pending_entry,
+                    phase="owned",
+                    previous_owned=None,
+                )
                 if self._persist_journal(candidate):
                     self._journal = candidate
             self._last_applied[state_key] = (id(adapter), payload)
@@ -669,25 +692,41 @@ class AccountUsagePresenceController:
         restore = getattr(adapter, "restore_account_usage_presence", None)
         if not callable(restore):
             return AccountUsagePresenceRestoreResult.RETRY
-        try:
-            value = await self._await_adapter(
-                cast(Awaitable[Any], restore(entry.baseline, entry.owned))
-            )
-        except Exception:
-            logger.warning(
-                "Account-usage presence restore failed for %s",
-                platform,
-                exc_info=True,
-            )
-            return AccountUsagePresenceRestoreResult.RETRY
-        try:
-            return AccountUsagePresenceRestoreResult(value)
-        except (TypeError, ValueError):
-            logger.warning(
-                "Ignoring invalid account-usage restore result from %s",
-                platform,
-            )
-            return AccountUsagePresenceRestoreResult.RETRY
+        owned_candidates = [entry.owned]
+        if (
+            entry.phase == "pending"
+            and entry.previous_owned is not None
+            and entry.previous_owned != entry.owned
+        ):
+            # A crash or journal-write failure can leave a transition pending
+            # while the remote surface is either the new desired value or the
+            # previously owned value. Both are safe CAS expectations for
+            # restoring the captured baseline.
+            owned_candidates.append(entry.previous_owned)
+
+        for owned in owned_candidates:
+            try:
+                value = await self._await_adapter(
+                    cast(Awaitable[Any], restore(entry.baseline, owned))
+                )
+            except Exception:
+                logger.warning(
+                    "Account-usage presence restore failed for %s",
+                    platform,
+                    exc_info=True,
+                )
+                return AccountUsagePresenceRestoreResult.RETRY
+            try:
+                result = AccountUsagePresenceRestoreResult(value)
+            except (TypeError, ValueError):
+                logger.warning(
+                    "Ignoring invalid account-usage restore result from %s",
+                    platform,
+                )
+                return AccountUsagePresenceRestoreResult.RETRY
+            if result is not AccountUsagePresenceRestoreResult.EXTERNAL:
+                return result
+        return AccountUsagePresenceRestoreResult.EXTERNAL
 
     async def _restore_saved_baselines(self) -> None:
         self._load_state()

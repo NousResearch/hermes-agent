@@ -435,6 +435,100 @@ async def test_later_false_apply_keeps_prior_owned_journal_for_stop(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_later_false_apply_recovers_prior_owned_after_rollback_write_failure(
+    tmp_path,
+    monkeypatch,
+):
+    import gateway.account_usage_presence as presence_module
+
+    class StatefulAdapter(_ApplyResultAdapter):
+        def __init__(self, *args, remote_state, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.remote_state = dict(remote_state)
+
+        async def apply_account_usage_presence(self, payload, baseline):
+            changed = await super().apply_account_usage_presence(payload, baseline)
+            if changed:
+                self.remote_state = self.build_account_usage_presence_owned_state(
+                    payload,
+                    baseline,
+                )
+            return changed
+
+        async def restore_account_usage_presence(self, baseline, owned):
+            self.restored.append((baseline, owned))
+            if self.remote_state == owned:
+                self.remote_state = dict(baseline)
+                return AccountUsagePresenceRestoreResult.RESTORED
+            if self.remote_state == baseline:
+                return AccountUsagePresenceRestoreResult.ALREADY_BASELINE
+            return AccountUsagePresenceRestoreResult.EXTERNAL
+
+    state_path = tmp_path / "journal.json"
+    baseline = {"display_name": "Hermes"}
+    telegram = StatefulAdapter(
+        "telegram",
+        capabilities=AccountUsagePresenceCapabilities(display_name=True),
+        baseline=baseline,
+        apply_results=(True, False),
+        remote_state=baseline,
+    )
+    snapshots = iter((_snapshot(used_percent=25), _snapshot(used_percent=26)))
+    controller = AccountUsagePresenceController(
+        _config(platforms=["telegram"]),
+        lambda: {"telegram": telegram},
+        fetcher=lambda provider: next(snapshots),
+        state_path=state_path,
+    )
+
+    real_write = presence_module._write_state_atomically
+    write_count = 0
+
+    def fail_rollback_write(path, value):
+        nonlocal write_count
+        write_count += 1
+        if write_count == 4:
+            raise OSError("simulated rollback journal failure")
+        real_write(path, value)
+
+    monkeypatch.setattr(
+        presence_module,
+        "_write_state_atomically",
+        fail_rollback_write,
+    )
+    await controller.refresh_once()
+    await controller.refresh_once()
+
+    pending = json.loads(state_path.read_text(encoding="utf-8"))["entries"][
+        "telegram"
+    ]
+    assert pending["phase"] == "pending"
+    assert pending["owned"] == {"display_name": "owned-74"}
+    assert pending["previous_owned"] == {"display_name": "owned-75"}
+    assert telegram.remote_state == {"display_name": "owned-75"}
+
+    monkeypatch.setattr(
+        presence_module,
+        "_write_state_atomically",
+        real_write,
+    )
+    restarted = AccountUsagePresenceController(
+        _config(platforms=["telegram"]),
+        lambda: {"telegram": telegram},
+        fetcher=lambda provider: None,
+        state_path=state_path,
+    )
+    await restarted.stop()
+
+    assert telegram.restored == [
+        (baseline, {"display_name": "owned-74"}),
+        (baseline, {"display_name": "owned-75"}),
+    ]
+    assert telegram.remote_state == baseline
+    assert not state_path.exists() or json.loads(state_path.read_text())["entries"] == {}
+
+
+@pytest.mark.asyncio
 async def test_initial_false_apply_discards_never_owned_pending_journal(tmp_path):
     state_path = tmp_path / "journal.json"
     telegram = _ApplyResultAdapter(

@@ -1,6 +1,7 @@
 """Tests for hermes_cli.tools_config platform tool persistence."""
 
 import logging
+import subprocess
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -15,6 +16,7 @@ from hermes_cli.tools_config import (
     _reconfigure_provider,
     _get_platform_tools,
     _platform_toolset_summary,
+    _print_subprocess_failure_detail,
     _reconfigure_tool,
     _run_post_setup,
     _save_platform_tools,
@@ -1172,6 +1174,68 @@ def test_computer_use_post_setup_missing_override_does_not_accept_default_binary
     run.assert_not_called()
     assert "custom-cua" in seen
     assert "curl" in seen
+
+
+@pytest.mark.parametrize(
+    "stdout,stderr,expected",
+    [
+        ("npm stdout detail", "npm stderr detail", "npm stderr detail"),
+        ("npm stdout detail", "", "npm stdout detail"),
+        ("", "", "process exited with code 127"),
+    ],
+)
+def test_subprocess_failure_detail_reports_available_diagnostic(
+    monkeypatch, stdout, stderr, expected
+):
+    messages = []
+    monkeypatch.setattr(
+        "hermes_cli.tools_config._print_info",
+        messages.append,
+    )
+
+    _print_subprocess_failure_detail(
+        subprocess.CompletedProcess(
+            ["npm", "install"],
+            127,
+            stdout=stdout,
+            stderr=stderr,
+        )
+    )
+
+    assert any(expected in message for message in messages)
+
+
+def test_camofox_post_setup_npm_failure_reports_exit_code_when_output_empty(
+    monkeypatch, tmp_path
+):
+    import hermes_cli.tools_config as tools_config
+
+    infos = []
+    warnings = []
+
+    monkeypatch.setattr(tools_config, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(
+        tools_config.shutil,
+        "which",
+        lambda name: "/usr/bin/npm" if name == "npm" else None,
+    )
+    monkeypatch.setattr(tools_config, "_print_info", infos.append)
+    monkeypatch.setattr(tools_config, "_print_warning", warnings.append)
+    monkeypatch.setattr(
+        tools_config.subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(
+            args[0],
+            127,
+            stdout="",
+            stderr="",
+        ),
+    )
+
+    _run_post_setup("camofox")
+
+    assert any("npm install failed" in warning for warning in warnings)
+    assert any("process exited with code 127" in info for info in infos)
 
 
 class TestImagegenBackendRegistry:

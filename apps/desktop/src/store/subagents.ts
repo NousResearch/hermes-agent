@@ -189,6 +189,10 @@ export function clearSessionSubagents(sid: string) {
   $subagentsBySession.set(rest)
 }
 
+export function clearAllSessionSubagents() {
+  $subagentsBySession.set({})
+}
+
 export function pruneDelegateFallbackSubagents(sid: string) {
   const map = $subagentsBySession.get()
   const list = map[sid]

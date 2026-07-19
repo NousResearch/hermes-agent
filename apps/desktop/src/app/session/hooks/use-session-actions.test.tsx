@@ -24,6 +24,7 @@ import {
   setSelectedStoredSessionId,
   setSessions
 } from '@/store/session'
+import { clearAllSessionStates } from '@/store/session-states'
 
 import { sessionRoute } from '../../routes'
 import type { ClientSessionState } from '../../types'
@@ -383,7 +384,8 @@ function ResumeHarness({
   requestGateway,
   runtimeIdByStoredSessionIdRef,
   selectedStoredSessionId = null,
-  sessionStateByRuntimeIdRef
+  sessionStateByRuntimeIdRef,
+  updateSessionState
 }: {
   onStateUpdate?: (sessionId: string, state: ClientSessionState) => void
   onReady: (resume: (storedSessionId: string, replaceRoute?: boolean) => Promise<unknown>) => void
@@ -391,6 +393,12 @@ function ResumeHarness({
   runtimeIdByStoredSessionIdRef?: MutableRefObject<Map<string, string>>
   selectedStoredSessionId?: string | null
   sessionStateByRuntimeIdRef?: MutableRefObject<Map<string, ClientSessionState>>
+  updateSessionState?: (
+    sessionId: string,
+    updater: (state: ClientSessionState) => ClientSessionState,
+    storedSessionId?: string | null,
+    expectedGeneration?: number
+  ) => ClientSessionState
 }) {
   const ref = <T,>(value: T): MutableRefObject<T> => ({ current: value })
 
@@ -410,12 +418,14 @@ function ResumeHarness({
     selectedStoredSessionIdRef: ref<string | null>(selectedStoredSessionId),
     sessionStateByRuntimeIdRef: sessionStateByRuntimeIdRef ?? ref(new Map<string, ClientSessionState>()),
     syncSessionStateToView: vi.fn(),
-    updateSessionState: (sessionId, updater) => {
-      const next = updater({} as ClientSessionState)
-      onStateUpdate?.(sessionId, next)
+    updateSessionState:
+      updateSessionState ??
+      ((sessionId, updater) => {
+        const next = updater({} as ClientSessionState)
+        onStateUpdate?.(sessionId, next)
 
-      return next
-    }
+        return next
+      })
   })
 
   useEffect(() => {
@@ -440,6 +450,12 @@ describe('resumeSession failure recovery', () => {
     options: {
       runtimeIdByStoredSessionIdRef?: MutableRefObject<Map<string, string>>
       sessionStateByRuntimeIdRef?: MutableRefObject<Map<string, ClientSessionState>>
+      updateSessionState?: (
+        sessionId: string,
+        updater: (state: ClientSessionState) => ClientSessionState,
+        storedSessionId?: string | null,
+        expectedGeneration?: number
+      ) => ClientSessionState
     } = {}
   ): Promise<void> {
     let resume: ((storedSessionId: string, replaceRoute?: boolean) => Promise<unknown>) | null = null
@@ -678,6 +694,41 @@ describe('resumeSession failure recovery', () => {
     await runResume(requestGateway)
 
     expect($resumeFailedSessionId.get()).toBeNull()
+  })
+
+  it('ignores a resume that resolves after the gateway generation is reset', async () => {
+    let resolvePrefetch!: (value: { messages: never[] }) => void
+    let resolveResume!: (value: { info: Record<string, never>; messages: never[]; session_id: string }) => void
+
+    const prefetch = new Promise<{ messages: never[] }>(resolve => (resolvePrefetch = resolve))
+
+    const resumed = new Promise<{ info: Record<string, never>; messages: never[]; session_id: string }>(
+      resolve => (resolveResume = resolve)
+    )
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'session.resume') {
+        return resumed as never
+      }
+
+      return {} as never
+    })
+
+    const updateSessionState = vi.fn((_sessionId, updater: (state: ClientSessionState) => ClientSessionState) =>
+      updater(createClientSessionState('stored-1'))
+    )
+
+    vi.mocked(getSessionMessages).mockReturnValue(prefetch as never)
+    const pending = runResume(requestGateway, { updateSessionState })
+    await waitFor(() => expect(requestGateway).toHaveBeenCalledWith('session.resume', expect.any(Object)))
+
+    act(() => clearAllSessionStates())
+    resolvePrefetch({ messages: [] })
+    resolveResume({ info: {}, messages: [], session_id: 'runtime-stale' })
+    await pending
+
+    expect(updateSessionState).not.toHaveBeenCalled()
+    expect($messages.get()).toEqual([])
   })
 
   it('resumes via the gateway default (deferred build) — not lazy, no eager opt-out', async () => {

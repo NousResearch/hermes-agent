@@ -50,9 +50,19 @@ const sessionWatchdogTimers = new Map<string, ReturnType<typeof setTimeout>>()
 
 type WatchdogClearFn = (runtimeId: string) => void
 let watchdogClearFn: WatchdogClearFn | null = null
+let sessionStateCacheClearFn: (() => void) | null = null
+let sessionStateGeneration = 0
+
+export function getSessionStateGeneration(): number {
+  return sessionStateGeneration
+}
 
 export function setWatchdogClearFn(fn: WatchdogClearFn | null) {
   watchdogClearFn = fn
+}
+
+export function setSessionStateCacheClearFn(fn: (() => void) | null) {
+  sessionStateCacheClearFn = fn
 }
 
 function armWatchdog(runtimeId: string) {
@@ -189,12 +199,15 @@ export function dropSessionState(runtimeId: string) {
  *  wiped gateway's sessions must not fire stale clears or linger in the
  *  sidebar merge keep-set after the switch. */
 export function clearAllSessionStates() {
+  sessionStateGeneration += 1
+
   for (const timer of sessionWatchdogTimers.values()) {
     clearTimeout(timer)
   }
 
   sessionWatchdogTimers.clear()
   settledExpiry.clear()
+  sessionStateCacheClearFn?.()
   $sessionStates.set({})
 }
 

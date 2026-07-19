@@ -51,6 +51,7 @@ import {
 import {
   closeSessionTile,
   dropSessionState,
+  getSessionStateGeneration,
   openSessionTile,
   patchSessionTile,
   publishSessionState,
@@ -100,7 +101,8 @@ interface SessionActionsOptions {
   updateSessionState: (
     sessionId: string,
     updater: (state: ClientSessionState) => ClientSessionState,
-    storedSessionId?: string | null
+    storedSessionId?: string | null,
+    expectedGeneration?: number
   ) => ClientSessionState
 }
 
@@ -321,8 +323,13 @@ export function useSessionActions({
               : $currentCwd.get().trim() || resolveNewSessionCwd()
 
         const params = await desktopSessionCreateParams(cwd)
+        const stateGeneration = getSessionStateGeneration()
         const created = await requestGateway<SessionCreateResponse>('session.create', params)
         const stored = created.stored_session_id ?? null
+
+        if (stateGeneration !== getSessionStateGeneration()) {
+          return null
+        }
 
         if (
           activeSessionIdRef.current !== startingActiveSessionId ||
@@ -361,7 +368,7 @@ export function useSessionActions({
         const runtimeInfo = applyRuntimeInfo(created.info)
 
         if (runtimeInfo) {
-          updateSessionState(created.session_id, state => ({ ...state, ...runtimeInfo }), stored)
+          updateSessionState(created.session_id, state => ({ ...state, ...runtimeInfo }), stored, stateGeneration)
         }
 
         // User may have armed YOLO on the new-chat draft before the runtime
@@ -370,7 +377,7 @@ export function useSessionActions({
           await setSessionYolo(requestGateway, created.session_id, true).catch(() => undefined)
         }
 
-        return created.session_id
+        return stateGeneration === getSessionStateGeneration() ? created.session_id : null
       } finally {
         window.setTimeout(() => {
           creatingSessionRef.current = false
@@ -414,8 +421,13 @@ export function useSessionActions({
         // Fresh tile → the resolved new-session cwd (project/default), not the
         // primary composer's live cwd.
         const params = await desktopSessionCreateParams(resolveNewSessionCwd().trim())
+        const stateGeneration = getSessionStateGeneration()
         const created = await requestGateway<SessionCreateResponse>('session.create', params)
         const stored = created.stored_session_id
+
+        if (stateGeneration !== getSessionStateGeneration()) {
+          return
+        }
 
         if (!stored) {
           await requestGateway('session.close', { session_id: created.session_id }).catch(() => undefined)
@@ -430,7 +442,12 @@ export function useSessionActions({
         // runtime so the tile skips a redundant resume.
         upsertOptimisticSession(created, stored, null, null)
         const runtimeInfo = applyRuntimeInfo(created.info)
-        updateSessionState(created.session_id, state => (runtimeInfo ? { ...state, ...runtimeInfo } : state), stored)
+        updateSessionState(
+          created.session_id,
+          state => (runtimeInfo ? { ...state, ...runtimeInfo } : state),
+          stored,
+          stateGeneration
+        )
 
         openSessionTile(stored, dir)
         patchSessionTile(stored, { runtimeId: created.session_id })
@@ -463,9 +480,12 @@ export function useSessionActions({
       resumeRequestRef.current = requestId
       const resumedSameSelectedSession = selectedStoredSessionIdRef.current === storedSessionId
       const resumeStartMessages = resumedSameSelectedSession ? $messages.get() : []
+      let stateGeneration = getSessionStateGeneration()
 
       const isCurrentResume = () =>
-        resumeRequestRef.current === requestId && selectedStoredSessionIdRef.current === storedSessionId
+        resumeRequestRef.current === requestId &&
+        selectedStoredSessionIdRef.current === storedSessionId &&
+        stateGeneration === getSessionStateGeneration()
 
       // Paint the click before the profile-resolve / gateway-swap awaits below,
       // so there's zero dead air: highlight the row instantly (the sidebar reads
@@ -539,6 +559,14 @@ export function useSessionActions({
       }
 
       await ensureGatewayProfile(sessionProfile)
+
+      if (resumeRequestRef.current !== requestId || selectedStoredSessionIdRef.current !== storedSessionId) {
+        return
+      }
+
+      // This resume owns an intentional profile switch, so continue in the new
+      // generation. Any later reset invalidates the request through isCurrentResume.
+      stateGeneration = getSessionStateGeneration()
 
       // Re-check after the profile-resolve / gateway-swap awaits above: the
       // cache may have changed, and takeWarmCache re-validates belongs-to and
@@ -680,7 +708,8 @@ export function useSessionActions({
                   busy: running,
                   awaitingResponse: running
                 }),
-                storedSessionId
+                storedSessionId,
+                stateGeneration
               )
 
               busyRef.current = running
@@ -874,7 +903,8 @@ export function useSessionActions({
             busy: resumedRunning,
             awaitingResponse: resumedRunning
           }),
-          storedSessionId
+          storedSessionId,
+          stateGeneration
         )
       } catch (err) {
         if (!isCurrentResume()) {
@@ -980,6 +1010,8 @@ export function useSessionActions({
       creatingSessionRef.current = true
 
       try {
+        const stateGeneration = getSessionStateGeneration()
+
         // No title: the backend auto-names the branch from its parent's lineage.
         const branched = await requestGateway<SessionCreateResponse>('session.create', {
           cols: 96,
@@ -988,6 +1020,10 @@ export function useSessionActions({
           messages: branchMessages.map(({ content, role }) => ({ content, role })),
           ...(parentStoredId && { parent_session_id: parentStoredId })
         })
+
+        if (stateGeneration !== getSessionStateGeneration()) {
+          return false
+        }
 
         const routedSessionId = branched.stored_session_id ?? branched.session_id
         const preview = branchMessages.map(({ content }) => content).find(Boolean) ?? null
@@ -1021,7 +1057,8 @@ export function useSessionActions({
             busy: false,
             awaitingResponse: false
           }),
-          routedSessionId
+          routedSessionId,
+          stateGeneration
         )
         setSelectedStoredSessionId(routedSessionId)
         selectedStoredSessionIdRef.current = routedSessionId
@@ -1031,7 +1068,12 @@ export function useSessionActions({
         patchSessionWorkspace(routedSessionId, runtimeInfo?.cwd)
 
         if (runtimeInfo) {
-          updateSessionState(branched.session_id, state => ({ ...state, ...runtimeInfo }), routedSessionId)
+          updateSessionState(
+            branched.session_id,
+            state => ({ ...state, ...runtimeInfo }),
+            routedSessionId,
+            stateGeneration
+          )
         }
 
         return true

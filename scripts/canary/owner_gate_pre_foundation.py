@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import importlib
 import ipaddress
 import json
 import os
@@ -1378,7 +1379,9 @@ def _build_apply_receipt_body_from_execution(
 ) -> Mapping[str, Any]:
     """Build only from the exact provider execution result class."""
 
-    from scripts.canary import owner_gate_foundation_apply as foundation_apply
+    foundation_apply = importlib.import_module(
+        "scripts.canary.owner_gate_foundation_apply"
+    )
 
     if type(execution) is not foundation_apply._ProviderExecutionResult:
         _error("owner_gate_foundation_apply_execution_invalid")

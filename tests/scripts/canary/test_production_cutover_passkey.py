@@ -1,12 +1,19 @@
 from __future__ import annotations
 
 import copy
+import json
+import shutil
+import subprocess
+import sys
+import textwrap
+from pathlib import Path
 
 import pytest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from scripts.canary import passkey_v2_protocol as protocol
 from scripts.canary import passkey_v2_service as service
+from scripts.canary import owner_gate_package as owner_gate_package
 from scripts.canary import production_cutover_owner_launcher as owner
 from scripts.canary import production_cutover_passkey as passkey
 from tests.gateway.test_canonical_writer_production_cutover import (
@@ -117,6 +124,150 @@ def test_service_dispatch_is_closed_to_the_two_reviewed_action_schemas() -> None
         match="passkey_v2_action_schema_forbidden",
     ):
         service._validate_authority_action(forbidden)
+
+
+def test_real_publication_request_and_consume_under_isolated_source_closure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = Path(__file__).parents[3]
+
+    def local_blob(
+        source_root: Path,
+        release_revision: str,
+        relative: str,
+        *,
+        required: bool,
+    ):
+        assert source_root == root
+        assert release_revision == REVISION
+        selected = source_root / relative
+        if not selected.is_file():
+            if required:
+                raise owner_gate_package.OwnerGatePackageError(
+                    "owner_gate_package_git_object_missing"
+                )
+            return None
+        return selected.read_bytes(), "100644"
+
+    monkeypatch.setattr(owner_gate_package, "_git_blob", local_blob)
+    closure = owner_gate_package.resolve_runtime_source_closure(
+        root,
+        release_revision=REVISION,
+    )
+    sealed = tmp_path / "sealed-release"
+    for relative in closure:
+        destination = sealed / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(root / relative, destination)
+    assert not any(
+        relative.startswith(owner_gate_package.FORBIDDEN_RUNTIME_PREFIXES)
+        for relative in closure
+    )
+
+    publication_path = tmp_path / "freeze-publication.json"
+    publication_path.write_text(
+        json.dumps(_freeze_publication(), sort_keys=True, separators=(",", ":")),
+        encoding="utf-8",
+    )
+    code = textwrap.dedent(f"""
+        import json
+        import sys
+        sys.path.insert(0, {str(sealed)!r})
+        from scripts.canary import passkey_v2_protocol as protocol
+        from scripts.canary import passkey_v2_storage_growth as storage
+        from scripts.canary import production_cutover_passkey as passkey
+
+        with open({str(publication_path)!r}, encoding="utf-8") as handle:
+            publication = json.load(handle)
+
+        class Transport:
+            def invoke_owner_gate(self, raw):
+                frame = protocol.decode_canonical_json(raw)
+                document = frame["document"]
+                selected = document["freeze_publication"]
+                action = passkey.build_cutover_action_envelope(
+                    freeze_publication=selected,
+                    authority_release_sha={REVISION!r},
+                    authority_manifest_sha256="1" * 64,
+                    authority_host_receipt_sha256="2" * 64,
+                    issued_at_unix={NOW},
+                )
+                passkey.validate_cutover_action_envelope(
+                    action,
+                    freeze_publication=selected,
+                )
+                if frame["operation"] == "request_production_cutover":
+                    result = {{
+                        "request_id": action["request_id"],
+                        "action_envelope_sha256": action["envelope_sha256"],
+                        "challenge_record_sha256": "3" * 64,
+                        "expires_at_unix": action["expires_at_unix"],
+                        "release_sha": {REVISION!r},
+                        "plan_sha256": selected["documents"]["plan"]["plan_sha256"],
+                        "freeze_publication_sha256": selected["publication_sha256"],
+                        "action_payload_sha256": action["action_payload_sha256"],
+                        "transaction_id": action["transaction_id"],
+                        "approval_url": f"{{protocol.PRODUCTION_ORIGIN}}/approve/{{action['request_id']}}",
+                        "passkey_only": True,
+                        "single_use": True,
+                        "control_plane_mutation_performed": True,
+                        "source_data_mutation_performed": False,
+                        "production_host_mutation_performed": False,
+                    }}
+                else:
+                    assert document["request_id"] == action["request_id"]
+                    result = {{
+                        "request_id": document["request_id"],
+                        "consume_attempt_id": document["consume_attempt_id"],
+                        "disposition": "authorized_once",
+                        "passkey_proof": {{"portable_contract_validated": True}},
+                        "release_sha": {REVISION!r},
+                        "plan_sha256": selected["documents"]["plan"]["plan_sha256"],
+                        "single_use": True,
+                        "control_plane_mutation_performed": True,
+                        "source_data_mutation_performed": False,
+                        "production_host_mutation_performed": False,
+                    }}
+                unsigned = {{
+                    "schema": storage.REMOTE_RESPONSE_SCHEMA,
+                    "operation": frame["operation"],
+                    "release_sha": {REVISION!r},
+                    "ok": True,
+                    "document": result,
+                }}
+                return protocol.canonical_json_bytes({{
+                    **unsigned,
+                    "response_sha256": protocol.sha256_json(unsigned),
+                }})
+
+        boundary = passkey.ProductionCutoverPasskeyBoundary(
+            {REVISION!r}, Transport()
+        )
+        requested = boundary.request(publication)
+        consumed = boundary.consume(
+            freeze_publication=publication,
+            request_id=requested["request_id"],
+            consume_attempt_id="4" * 64,
+        )
+        assert consumed["passkey_proof"]["portable_contract_validated"] is True
+        forbidden = ("agent", "gateway", "hermes_cli", "plugins")
+        assert not any(
+            name == prefix or name.startswith(prefix + ".")
+            for name in sys.modules
+            for prefix in forbidden
+        )
+    """)
+    completed = subprocess.run(
+        (sys.executable, "-I", "-B", "-c", code),
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+        timeout=20,
+        env={"PATH": "/usr/bin:/bin", "LC_ALL": "C"},
+    )
+    assert completed.returncode == 0, completed.stderr.decode("utf-8")
 
 
 @pytest.mark.parametrize("request_id", ("A" * 64, "a" * 63, "_" * 64))

@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import base64
 import hashlib
+import importlib
 import json
 import os
 import pwd
@@ -823,9 +824,15 @@ def _validate_foundation_chain_files(
     # Lazy imports break the intentional authoring cycle: ancestry collection
     # loads the release-author paths, while this author validates ancestry only
     # after its own immutable authority paths have been initialized.
-    from scripts.canary import owner_gate_foundation_apply as foundation_apply
-    from scripts.canary import owner_gate_pre_foundation as pre_foundation
-    from scripts.canary import owner_gate_project_ancestry as project_ancestry
+    foundation_apply = importlib.import_module(
+        "scripts.canary.owner_gate_foundation_apply"
+    )
+    pre_foundation = importlib.import_module(
+        "scripts.canary.owner_gate_pre_foundation"
+    )
+    project_ancestry = importlib.import_module(
+        "scripts.canary.owner_gate_project_ancestry"
+    )
 
     try:
         if (

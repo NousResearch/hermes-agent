@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import base64
 import hashlib
+import importlib
 import ipaddress
 import json
 import os
@@ -168,7 +169,6 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import (
     Ed25519PublicKey,
 )
 
-from scripts.canary import full_canary_owner_launcher as launcher
 from scripts.canary import owner_gate_foundation as foundation
 from scripts.canary import owner_gate_foundation_journal as foundation_journal
 from scripts.canary import owner_gate_network_evidence_author as network_author
@@ -177,6 +177,19 @@ from scripts.canary import owner_gate_pre_foundation as pre_foundation
 from scripts.canary import owner_gate_project_ancestry as project_ancestry
 from scripts.canary import owner_gate_trust as release_trust
 from scripts.canary import owner_gate_trust_author as trust_author
+
+
+class _OwnerLauncherProducerSurface:
+    def __getattr__(self, name: str) -> Any:
+        return getattr(
+            importlib.import_module(
+                "scripts.canary.full_canary_owner_launcher"
+            ),
+            name,
+        )
+
+
+launcher = _OwnerLauncherProducerSurface()
 
 
 FAILURE_RECEIPT_SCHEMA = "muncho-owner-gate-foundation-apply-failure.v1"

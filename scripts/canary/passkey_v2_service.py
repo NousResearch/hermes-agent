@@ -4361,6 +4361,15 @@ def handle_intake_frame(
         created = authority_client.call(
             "create_request", {"action_envelope": action}
         )
+        if (
+            not isinstance(created, Mapping)
+            or created.get("request_id") != action["request_id"]
+            or _SHA256.fullmatch(str(created.get("request_id", ""))) is None
+            or created.get("expires_at_unix") != action["expires_at_unix"]
+        ):
+            raise PasskeyV2ServiceError(
+                "passkey_v2_cutover_request_invalid"
+            )
         result = {
             **created,
             "release_sha": release_revision,
@@ -4378,7 +4387,9 @@ def handle_intake_frame(
             ),
             "passkey_only": True,
             "single_use": True,
-            "production_mutation_performed": False,
+            "control_plane_mutation_performed": True,
+            "source_data_mutation_performed": False,
+            "production_host_mutation_performed": False,
         }
     elif operation == "consume_production_cutover":
         if set(document) != {
@@ -4470,7 +4481,9 @@ def handle_intake_frame(
             "release_sha": release_revision,
             "plan_sha256": plan_sha,
             "single_use": True,
-            "production_mutation_performed": False,
+            "control_plane_mutation_performed": True,
+            "source_data_mutation_performed": False,
+            "production_host_mutation_performed": False,
         }
     elif operation in {"request_initial", "request_resume"}:
         expected_fields = (

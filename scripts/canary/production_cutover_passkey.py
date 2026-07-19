@@ -23,6 +23,7 @@ from scripts.canary import owner_gate_preflight as preflight
 from scripts.canary import owner_gate_trust as release_trust
 from scripts.canary import passkey_v2_protocol as protocol
 from scripts.canary import passkey_v2_storage_growth as storage
+from scripts.canary import production_cutover_portable_contract as portable
 
 
 CUTOVER_ACTION_SCHEMA = "muncho-passkey-v2-production-cutover-action.v1"
@@ -137,15 +138,6 @@ class DedicatedOwnerGateTransport(Protocol):
     def invoke_owner_gate(self, canonical_frame: bytes) -> bytes: ...
 
 
-def _cutover_contract() -> Any:
-    # Keep the dedicated owner-gate runtime importable under its deliberately
-    # minimal dependency set.  The heavy production cutover implementation is
-    # loaded only for the cutover-only request/consume operation.
-    from gateway import canonical_writer_production_cutover
-
-    return canonical_writer_production_cutover
-
-
 def _canonical(value: Any) -> bytes:
     return protocol.canonical_json_bytes(value)
 
@@ -204,12 +196,10 @@ def _validate_publication(
             "production_cutover_passkey_publication_invalid"
         )
     try:
-        cutover = _cutover_contract()
-        plan = cutover.FreezePlan.from_mapping(documents["plan"])
-        approval = cutover.CutoverApproval.from_mapping(
-            documents["approval"], plan=plan, now_unix=now_unix
-        ).value
-    except (KeyError, PermissionError, TypeError, ValueError) as exc:
+        _portable_publication, plan, approval = (
+            portable.validate_freeze_publication(value, now_unix=now_unix)
+        )
+    except (KeyError, TypeError, portable.PortableCutoverContractError):
         raise ProductionCutoverPasskeyError(
             "production_cutover_passkey_publication_invalid"
         ) from None
@@ -335,14 +325,13 @@ def validate_cutover_action_envelope(
             "production_cutover_passkey_action_invalid"
         )
     try:
-        cutover = _cutover_contract()
-        plan = cutover.FreezePlan.from_mapping(payload["freeze_plan"])
-        approval = cutover.CutoverApproval.from_mapping(
+        plan = portable.validate_freeze_plan(payload["freeze_plan"])
+        approval = portable.validate_freeze_approval(
             payload["freeze_approval"],
             plan=plan,
             now_unix=action["issued_at_unix"],
-        ).value
-    except (KeyError, PermissionError, TypeError, ValueError):
+        )
+    except (KeyError, TypeError, portable.PortableCutoverContractError):
         raise ProductionCutoverPasskeyError(
             "production_cutover_passkey_action_invalid"
         ) from None
@@ -389,6 +378,7 @@ def validate_cutover_action_envelope(
         or action["requester_discord_user_id"] != OWNER_DISCORD_USER_ID
         or action["required_approver_discord_user_id"]
         != OWNER_DISCORD_USER_ID
+        or _SHA256.fullmatch(str(action.get("request_id", ""))) is None
     ):
         raise ProductionCutoverPasskeyError(
             "production_cutover_passkey_action_invalid"

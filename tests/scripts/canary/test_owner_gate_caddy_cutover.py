@@ -290,6 +290,7 @@ def _bridge_document(authority: caddy._Authority) -> Mapping[str, Any]:
             "freeze_publication_sha256"
         ],
         "v2_request_id": BRIDGE_REQUEST_ID,
+        "v2_expires_at_unix": NOW + 300,
         "v2_transaction_id": "a" * 64,
         "v2_approval_url_sha256": caddy._sha256(
             f"https://{caddy.PUBLIC_HOST}/approve/{BRIDGE_REQUEST_ID}".encode()
@@ -331,6 +332,7 @@ def _seed_bridge(
         "freeze_approval_sha256": foundation.freeze_approval_sha256,
         "freeze_publication_sha256": foundation.freeze_publication_sha256,
         "v2_request_id": foundation.v2_request_id,
+        "v2_expires_at_unix": foundation.v2_expires_at_unix,
         "v2_transaction_id": foundation.v2_transaction_id,
         "v2_approval_url_sha256": foundation.v2_approval_url_sha256,
         "v2_action_payload_sha256": foundation.v2_action_payload_sha256,
@@ -350,7 +352,9 @@ def _seed_bridge(
             configs.approval_bridge
         ),
         "default_local_v1_route_preserved": True,
-        "production_mutation_performed": False,
+        "control_plane_mutation_performed": True,
+        "source_data_mutation_performed": False,
+        "production_host_mutation_performed": True,
         "caller_selected_input_accepted": False,
         "secret_material_recorded": False,
         "secret_digest_recorded": False,
@@ -376,6 +380,7 @@ def _seed_bridge(
         "freeze_approval_sha256": foundation.freeze_approval_sha256,
         "freeze_publication_sha256": foundation.freeze_publication_sha256,
         "v2_request_id": foundation.v2_request_id,
+        "v2_expires_at_unix": foundation.v2_expires_at_unix,
         "v2_transaction_id": foundation.v2_transaction_id,
         "v2_approval_url_sha256": foundation.v2_approval_url_sha256,
         "v2_action_payload_sha256": foundation.v2_action_payload_sha256,
@@ -404,6 +409,9 @@ def _seed_bridge(
         "caddy_reloaded": True,
         "caddy_readback_verified": True,
         "rollback_mode": "pre_migration_exact_bytes",
+        "control_plane_mutation_performed": True,
+        "source_data_mutation_performed": False,
+        "production_host_mutation_performed": True,
         "caller_selected_input_accepted": False,
         "secret_material_recorded": False,
         "secret_digest_recorded": False,
@@ -1590,6 +1598,38 @@ def test_bridge_input_requires_exact_lowercase_sha256_request_id() -> None:
             caddy.validate_bridge_bootstrap_input(changed)
 
 
+def test_prepare_bridge_rejects_stale_v2_before_request_boundary_call(
+    tmp_path: Path,
+) -> None:
+    authority = _authority()
+    document = _bridge_document(authority)
+    requests, _grants = _bootstrap_roots(tmp_path)
+    boundary = Boundary()
+    store = _store(tmp_path)
+    request_boundary = RequestBoundary(requests)
+
+    with pytest.raises(
+        caddy.OwnerGateCaddyCutoverError,
+        match="v2_approval_window_stale",
+    ):
+        caddy.prepare_bridge_bootstrap(
+            document,
+            boundary=boundary,
+            store=store,
+            request_boundary=request_boundary,
+            now_unix=NOW,
+            requests_root=requests,
+            expected_uid=os.getuid(),
+            expected_gid=os.getgid(),
+            freshness_clock=lambda: float(NOW + 270),
+        )
+
+    assert request_boundary.calls == 0
+    assert boundary.raw == ORIGINAL
+    assert boundary.replace_calls == []
+    assert store.load(authority.freeze.sha256) == []
+
+
 def test_prepare_bridge_adopts_request_after_lost_helper_response(
     tmp_path: Path,
 ) -> None:
@@ -1959,6 +1999,111 @@ def test_activate_bridge_stops_v1_before_atomic_consume_and_replays(
     assert events.index("legacy_grant_consumed") < events.index(
         "bridge_activated"
     )
+
+
+def test_activate_bridge_rechecks_freshness_before_caddy_write(
+    tmp_path: Path,
+) -> None:
+    authority = _authority()
+    document = _bridge_document(authority)
+    requests, grants = _bootstrap_roots(tmp_path)
+    boundary = Boundary()
+    store = _store(tmp_path)
+    caddy.prepare_bridge_bootstrap(
+        document,
+        boundary=boundary,
+        store=store,
+        request_boundary=RequestBoundary(requests),
+        now_unix=NOW,
+        requests_root=requests,
+        expected_uid=os.getuid(),
+        expected_gid=os.getgid(),
+    )
+    request = json.loads(
+        (requests / f"{LEGACY_REQUEST_ID}.json").read_text()
+    )
+    _write_private_json(
+        grants / f"{LEGACY_REQUEST_ID}.json", _legacy_grant(request)
+    )
+    service = ServiceBoundary()
+    freshness = iter((float(NOW), float(NOW + 270)))
+
+    with pytest.raises(
+        caddy.OwnerGateCaddyCutoverError,
+        match="bridge_activation_rolled_back",
+    ):
+        caddy.activate_bridge_bootstrap(
+            document,
+            boundary=boundary,
+            store=store,
+            service=service,
+            now_unix=NOW,
+            requests_root=requests,
+            grants_root=grants,
+            expected_uid=os.getuid(),
+            expected_gid=os.getgid(),
+            legacy_lock=lambda: nullcontext(),
+            freshness_clock=lambda: next(freshness),
+        )
+
+    assert boundary.raw == ORIGINAL
+    assert boundary.replace_calls == []
+    assert boundary.reload_modes == []
+    assert service.active is True
+
+
+def test_activate_bridge_rechecks_freshness_before_caddy_reload(
+    tmp_path: Path,
+) -> None:
+    authority = _authority()
+    document = _bridge_document(authority)
+    requests, grants = _bootstrap_roots(tmp_path)
+    boundary = Boundary()
+    store = _store(tmp_path)
+    caddy.prepare_bridge_bootstrap(
+        document,
+        boundary=boundary,
+        store=store,
+        request_boundary=RequestBoundary(requests),
+        now_unix=NOW,
+        requests_root=requests,
+        expected_uid=os.getuid(),
+        expected_gid=os.getgid(),
+    )
+    request = json.loads(
+        (requests / f"{LEGACY_REQUEST_ID}.json").read_text()
+    )
+    _write_private_json(
+        grants / f"{LEGACY_REQUEST_ID}.json", _legacy_grant(request)
+    )
+    service = ServiceBoundary()
+    freshness = iter(
+        (float(NOW), float(NOW), float(NOW + 270))
+    )
+
+    with pytest.raises(
+        caddy.OwnerGateCaddyCutoverError,
+        match="bridge_activation_rolled_back",
+    ):
+        caddy.activate_bridge_bootstrap(
+            document,
+            boundary=boundary,
+            store=store,
+            service=service,
+            now_unix=NOW,
+            requests_root=requests,
+            grants_root=grants,
+            expected_uid=os.getuid(),
+            expected_gid=os.getgid(),
+            legacy_lock=lambda: nullcontext(),
+            freshness_clock=lambda: next(freshness),
+        )
+
+    configs = boundary._configs()
+    assert boundary.raw == ORIGINAL
+    assert boundary.replace_calls == [configs.approval_bridge, ORIGINAL]
+    assert boundary.reload_modes == ["legacy"]
+    assert service.active is True
 
 
 def test_activate_bridge_recovers_a_crash_with_v1_already_stopped(

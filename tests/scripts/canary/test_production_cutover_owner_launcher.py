@@ -1145,7 +1145,7 @@ def test_owner_cli_authors_unit_input_publication_without_exporting_key(
     assert key_path.exists()
 
 
-def test_sealed_cli_is_the_only_full_cutover_workflow_entrypoint(
+def test_sealed_cli_exposes_only_prepare_and_resume_cutover_workflow(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
@@ -1204,8 +1204,7 @@ def test_sealed_cli_is_the_only_full_cutover_workflow_entrypoint(
 
     monkeypatch.setattr(owner, "execute_production_cutover_workflow", execute)
 
-    assert owner.main([
-        "execute-cutover",
+    common = [
         "--revision",
         REVISION,
         "--host-authority-plan",
@@ -1218,16 +1217,22 @@ def test_sealed_cli_is_the_only_full_cutover_workflow_entrypoint(
         "start_new_truth_epoch",
         "--output",
         str(output),
-    ]) == 0
+    ]
+    assert owner.main(["prepare-cutover", *common]) == 0
 
     assert len(calls) == 1
     assert calls[0]["release_revision"] == REVISION
     assert calls[0]["owner_subject_sha256"] == "a" * 64
     assert calls[0]["host_authority_plan"] == host_plan
     assert calls[0]["isolated_canary_goal_prerequisite"] == canary_prerequisite
+    assert calls[0]["prepare_only"] is True
     assert callable(calls[0]["transport_factory"])
     assert output.exists()
     assert b"PRIVATE KEY" not in output.read_bytes()
+
+    for forbidden in ("execute-cutover", "author-freeze", "author-cutover"):
+        with pytest.raises(SystemExit):
+            owner.main([forbidden, *common])
 
 
 def test_cloud_transport_commands_are_fixed_to_target_release() -> None:

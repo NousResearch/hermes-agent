@@ -69,6 +69,7 @@ ROOT_RUNTIME_FILES = (
     "scripts/canary/passkey_v2_service.py",
     "scripts/canary/passkey_v2_storage_growth.py",
     "scripts/canary/production_cutover_passkey.py",
+    "scripts/canary/production_cutover_portable_contract.py",
     "scripts/canary/storage_growth_contract.py",
     "scripts/canary/owner_gate_firewall_readiness.py",
     "scripts/canary/owner_gate_cloud_observation_signer.py",
@@ -80,6 +81,13 @@ ROOT_RUNTIME_FILES = (
 FORBIDDEN_RUNTIME_FILES = frozenset({
     "scripts/canary/passkey_v2_store.py",
 })
+MAX_RUNTIME_SOURCE_FILES = 64
+FORBIDDEN_RUNTIME_PREFIXES = (
+    "agent/",
+    "gateway/",
+    "hermes_cli/",
+    "plugins/",
+)
 REQUIRED_ASSET_FILES = (
     "ops/muncho/owner-gate/bin/muncho-owner-gate-activate-storage",
     "ops/muncho/owner-gate/bin/muncho-owner-gate-bootstrap",
@@ -1017,7 +1025,10 @@ def resolve_runtime_source_closure(
         relative = pending.pop()
         if relative in resolved:
             continue
-        if relative in FORBIDDEN_RUNTIME_FILES:
+        if (
+            relative in FORBIDDEN_RUNTIME_FILES
+            or relative.startswith(FORBIDDEN_RUNTIME_PREFIXES)
+        ):
             raise OwnerGatePackageError("owner_gate_package_forbidden_runtime_module")
         try:
             selected = git_blob(relative, required=True)
@@ -1029,6 +1040,10 @@ def resolve_runtime_source_closure(
                 "owner_gate_package_runtime_source_invalid"
             ) from None
         resolved.add(relative)
+        if len(resolved) > MAX_RUNTIME_SOURCE_FILES:
+            raise OwnerGatePackageError(
+                "owner_gate_package_runtime_source_budget_exceeded"
+            )
         parent = Path(relative).parent
         while parent != Path("."):
             initializer = str(parent / "__init__.py")
@@ -1065,7 +1080,10 @@ def resolve_runtime_source_closure(
             for candidate in candidates:
                 if git_blob(candidate, required=False) is not None and candidate not in resolved:
                     pending.append(candidate)
-    if resolved & FORBIDDEN_RUNTIME_FILES:
+    if resolved & FORBIDDEN_RUNTIME_FILES or any(
+        relative.startswith(FORBIDDEN_RUNTIME_PREFIXES)
+        for relative in resolved
+    ):
         raise OwnerGatePackageError("owner_gate_package_forbidden_runtime_module")
     return tuple(sorted(resolved))
 

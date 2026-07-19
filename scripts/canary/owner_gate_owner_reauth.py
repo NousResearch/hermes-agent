@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import importlib
 import json
 import os
 import re
@@ -29,9 +30,29 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import (
     Ed25519PublicKey,
 )
 
-from scripts.canary import full_canary_owner_launcher as launcher
 from scripts.canary import owner_gate_foundation as foundation
 from scripts.canary import owner_gate_trust as release_trust
+
+
+class _OwnerLauncherProducerSurface:
+    """Load the workstation-only producer only when producer APIs run.
+
+    The sealed owner-gate release imports this module solely to validate an
+    already-signed reauthentication receipt.  Pulling the workstation launcher
+    into that validation import would transitively package the full Hermes
+    agent/gateway graph.  Producer functions still resolve the exact reviewed
+    launcher when called on the owner workstation; target-side validation never
+    does.
+    """
+
+    def __getattr__(self, name: str) -> Any:
+        module = importlib.import_module(
+            "scripts.canary.full_canary_owner_launcher"
+        )
+        return getattr(module, name)
+
+
+launcher = _OwnerLauncherProducerSurface()
 
 
 RECEIPT_SCHEMA = "muncho-owner-gate-owner-reauthentication-receipt.v1"
@@ -41,6 +62,7 @@ OWNER_ACCOUNT = "lomliev@adventico.com"
 PROJECT = foundation.PROJECT
 ZONE = foundation.ZONE
 GCLOUD_CONFIGURATION = "adventico-ai-platform-admin"
+GCLOUD_SDK_VERSION = "569.0.0"
 MAX_RECEIPT_TTL_SECONDS = 900
 MAX_INTERACTIVE_DURATION_SECONDS = 900
 INTERACTIVE_TIMEOUT_SECONDS = 930.0
@@ -53,7 +75,7 @@ _NUMERIC_ID = re.compile(r"^[1-9][0-9]{5,30}$")
 _B64URL = re.compile(r"^[A-Za-z0-9_-]{86}$")
 _SDK_ROOT = re.compile(
     rf"^/[^\x00\r\n]{{1,1023}}/google-cloud-sdk-"
-    rf"{re.escape(launcher._GCLOUD_SDK_VERSION)}$"
+    rf"{re.escape(GCLOUD_SDK_VERSION)}$"
 )
 _BODY_FIELDS = frozenset({
     "schema",

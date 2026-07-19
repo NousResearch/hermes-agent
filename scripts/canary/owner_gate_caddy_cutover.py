@@ -54,12 +54,12 @@ from scripts.canary import owner_gate_production_ingress_observation as ingress
 
 PREPARE_RECEIPT_SCHEMA = "muncho-owner-gate-caddy-cutover-prepare.v1"
 BRIDGE_INPUT_SCHEMA = (
-    "muncho-production-cutover-bridge-bootstrap-input.v1"
+    "muncho-production-cutover-bridge-bootstrap-input.v2"
 )
 BRIDGE_REQUEST_SCHEMA = (
-    "muncho-owner-gate-caddy-approval-bridge-request.v1"
+    "muncho-owner-gate-caddy-approval-bridge-request.v2"
 )
-BRIDGE_RECEIPT_SCHEMA = "muncho-owner-gate-caddy-approval-bridge.v1"
+BRIDGE_RECEIPT_SCHEMA = "muncho-owner-gate-caddy-approval-bridge.v2"
 TERMINAL_RECEIPT_SCHEMA = "muncho-owner-gate-caddy-cutover-terminal.v1"
 MAINTENANCE_OBSERVATION_SCHEMA = (
     "muncho-owner-gate-caddy-cutover-maintenance-observation.v1"
@@ -93,6 +93,7 @@ BRIDGE_POST_MATCHER = "muncho_cutover_passkey_post"
 BRIDGE_REQUEST_ID_TEMPLATE = "MUNCHO_V2_APPROVAL_REQUEST_ID"
 _LEGACY_REQUEST_ID = re.compile(r"^[A-Za-z0-9_-]{32}$")
 _V2_REQUEST_ID = re.compile(r"^[0-9a-f]{64}$")
+MINIMUM_V2_APPROVAL_MARGIN_SECONDS = 30
 CADDY_JOURNAL_ROOT = cutover.EVIDENCE_ROOT / "caddy-cutover"
 CADDY_LOCK = Path("/run/muncho-owner-gate-caddy-cutover.lock")
 LEGACY_STEP_UP_ROOT = Path("/opt/adventico-ai-platform/hermes-home/state")
@@ -264,6 +265,7 @@ _BRIDGE_RECEIPT_FIELDS = frozenset(
         "freeze_approval_sha256",
         "freeze_publication_sha256",
         "v2_request_id",
+        "v2_expires_at_unix",
         "v2_transaction_id",
         "v2_approval_url_sha256",
         "v2_action_payload_sha256",
@@ -290,6 +292,9 @@ _BRIDGE_RECEIPT_FIELDS = frozenset(
         "caddy_reloaded",
         "caddy_readback_verified",
         "rollback_mode",
+        "control_plane_mutation_performed",
+        "source_data_mutation_performed",
+        "production_host_mutation_performed",
         "caller_selected_input_accepted",
         "secret_material_recorded",
         "secret_digest_recorded",
@@ -305,6 +310,7 @@ _BRIDGE_REQUEST_FIELDS = frozenset(
         "freeze_approval_sha256",
         "freeze_publication_sha256",
         "v2_request_id",
+        "v2_expires_at_unix",
         "v2_transaction_id",
         "v2_approval_url_sha256",
         "v2_action_payload_sha256",
@@ -318,7 +324,9 @@ _BRIDGE_REQUEST_FIELDS = frozenset(
         "approval_bridge_template_sha256",
         "approval_bridge_caddy_sha256",
         "default_local_v1_route_preserved",
-        "production_mutation_performed",
+        "control_plane_mutation_performed",
+        "source_data_mutation_performed",
+        "production_host_mutation_performed",
         "caller_selected_input_accepted",
         "secret_material_recorded",
         "secret_digest_recorded",
@@ -334,6 +342,7 @@ _BRIDGE_INPUT_FIELDS = frozenset(
         "freeze_approval_sha256",
         "freeze_publication_sha256",
         "v2_request_id",
+        "v2_expires_at_unix",
         "v2_transaction_id",
         "v2_approval_url_sha256",
         "v2_action_payload_sha256",
@@ -546,6 +555,7 @@ def _bridge_action(
         "freeze_approval_sha256": foundation.freeze_approval_sha256,
         "freeze_publication_sha256": foundation.freeze_publication_sha256,
         "v2_request_id": foundation.v2_request_id,
+        "v2_expires_at_unix": foundation.v2_expires_at_unix,
         "v2_transaction_id": foundation.v2_transaction_id,
         "v2_approval_url_sha256": foundation.v2_approval_url_sha256,
         "v2_action_payload_sha256": foundation.v2_action_payload_sha256,
@@ -600,6 +610,7 @@ class _BridgeFoundation:
     freeze_approval_sha256: str
     freeze_publication_sha256: str
     v2_request_id: str
+    v2_expires_at_unix: int
     v2_transaction_id: str
     v2_approval_url_sha256: str
     v2_action_payload_sha256: str
@@ -683,6 +694,8 @@ def validate_bridge_bootstrap_input(value: Any) -> _BridgeFoundation:
         )
         or not isinstance(request_id, str)
         or _V2_REQUEST_ID.fullmatch(request_id) is None
+        or type(raw.get("v2_expires_at_unix")) is not int
+        or raw["v2_expires_at_unix"] <= 0
         or raw["v2_approval_url_sha256"]
         != _sha256(expected_url.encode("ascii", errors="strict"))
         or raw["document_sha256"] != _sha256(_canonical(unsigned))
@@ -696,11 +709,28 @@ def validate_bridge_bootstrap_input(value: Any) -> _BridgeFoundation:
         freeze_approval_sha256=raw["freeze_approval_sha256"],
         freeze_publication_sha256=raw["freeze_publication_sha256"],
         v2_request_id=request_id,
+        v2_expires_at_unix=raw["v2_expires_at_unix"],
         v2_transaction_id=raw["v2_transaction_id"],
         v2_approval_url_sha256=raw["v2_approval_url_sha256"],
         v2_action_payload_sha256=raw["v2_action_payload_sha256"],
         document_sha256=raw["document_sha256"],
     )
+
+
+def _require_v2_fresh(
+    foundation: _BridgeFoundation,
+    *,
+    now_unix: int,
+) -> None:
+    if (
+        type(now_unix) is not int
+        or now_unix <= 0
+        or now_unix + MINIMUM_V2_APPROVAL_MARGIN_SECONDS
+        >= foundation.v2_expires_at_unix
+    ):
+        raise OwnerGateCaddyCutoverError(
+            "owner_gate_caddy_v2_approval_window_stale"
+        )
 
 
 @dataclass(frozen=True)
@@ -3433,6 +3463,7 @@ def validate_bridge_request_receipt(
         or raw["freeze_publication_sha256"]
         != foundation.freeze_publication_sha256
         or raw["v2_request_id"] != foundation.v2_request_id
+        or raw["v2_expires_at_unix"] != foundation.v2_expires_at_unix
         or raw["v2_transaction_id"] != foundation.v2_transaction_id
         or raw["v2_approval_url_sha256"]
         != foundation.v2_approval_url_sha256
@@ -3456,12 +3487,16 @@ def validate_bridge_request_receipt(
             )
         )
         or raw["default_local_v1_route_preserved"] is not True
-        or raw["production_mutation_performed"] is not False
+        or raw["control_plane_mutation_performed"] is not True
+        or raw["source_data_mutation_performed"] is not False
+        or raw["production_host_mutation_performed"] is not True
         or raw["caller_selected_input_accepted"] is not False
         or raw["secret_material_recorded"] is not False
         or raw["secret_digest_recorded"] is not False
         or type(raw["requested_at_unix"]) is not int
         or raw["requested_at_unix"] <= 0
+        or raw["requested_at_unix"] + MINIMUM_V2_APPROVAL_MARGIN_SECONDS
+        >= raw["v2_expires_at_unix"]
     ):
         raise OwnerGateCaddyCutoverError(
             "owner_gate_caddy_bridge_request_receipt_invalid"
@@ -3488,6 +3523,7 @@ def validate_bridge_receipt(
         or raw["freeze_publication_sha256"]
         != foundation.freeze_publication_sha256
         or raw["v2_request_id"] != foundation.v2_request_id
+        or raw["v2_expires_at_unix"] != foundation.v2_expires_at_unix
         or raw["v2_transaction_id"] != foundation.v2_transaction_id
         or raw["v2_approval_url_sha256"]
         != foundation.v2_approval_url_sha256
@@ -3528,11 +3564,17 @@ def validate_bridge_receipt(
         or raw["caddy_reloaded"] is not True
         or raw["caddy_readback_verified"] is not True
         or raw["rollback_mode"] != "pre_migration_exact_bytes"
+        or raw["control_plane_mutation_performed"] is not True
+        or raw["source_data_mutation_performed"] is not False
+        or raw["production_host_mutation_performed"] is not True
         or raw["caller_selected_input_accepted"] is not False
         or raw["secret_material_recorded"] is not False
         or raw["secret_digest_recorded"] is not False
         or type(raw["activated_at_unix"]) is not int
         or raw["activated_at_unix"] <= 0
+        or not requested["requested_at_unix"] <= raw["activated_at_unix"]
+        or raw["activated_at_unix"] + MINIMUM_V2_APPROVAL_MARGIN_SECONDS
+        >= raw["v2_expires_at_unix"]
     ):
         raise OwnerGateCaddyCutoverError(
             "owner_gate_caddy_bridge_receipt_invalid"
@@ -4361,6 +4403,7 @@ def _bridge_request_unsigned(
         "freeze_approval_sha256": foundation.freeze_approval_sha256,
         "freeze_publication_sha256": foundation.freeze_publication_sha256,
         "v2_request_id": foundation.v2_request_id,
+        "v2_expires_at_unix": foundation.v2_expires_at_unix,
         "v2_transaction_id": foundation.v2_transaction_id,
         "v2_approval_url_sha256": foundation.v2_approval_url_sha256,
         "v2_action_payload_sha256": foundation.v2_action_payload_sha256,
@@ -4374,7 +4417,9 @@ def _bridge_request_unsigned(
         "approval_bridge_template_sha256": bridge_template_sha256,
         "approval_bridge_caddy_sha256": _sha256(configs.approval_bridge),
         "default_local_v1_route_preserved": True,
-        "production_mutation_performed": False,
+        "control_plane_mutation_performed": True,
+        "source_data_mutation_performed": False,
+        "production_host_mutation_performed": True,
         "caller_selected_input_accepted": False,
         "secret_material_recorded": False,
         "secret_digest_recorded": False,
@@ -4392,10 +4437,15 @@ def prepare_bridge_bootstrap(
     requests_root: Path = LEGACY_STEP_UP_REQUESTS,
     expected_uid: int = LEGACY_STEP_UP_UID,
     expected_gid: int = LEGACY_STEP_UP_GID,
+    freshness_clock: Callable[[], float] | None = None,
 ) -> Mapping[str, Any]:
     """Create the old-v1 authorization request without changing Caddy."""
 
     foundation = validate_bridge_bootstrap_input(document)
+    _require_v2_fresh(
+        foundation,
+        now_unix=int(freshness_clock()) if freshness_clock else now_unix,
+    )
     entries = store.load(foundation.freeze_plan_sha256)
     prior = _last(entries, "bridge_authorization_requested")
     if prior is not None:
@@ -4620,10 +4670,13 @@ def activate_bridge_bootstrap(
     expected_uid: int = LEGACY_STEP_UP_UID,
     expected_gid: int = LEGACY_STEP_UP_GID,
     legacy_lock: Callable[[], AbstractContextManager[Any]] | None = None,
+    freshness_clock: Callable[[], float] | None = None,
 ) -> Mapping[str, Any]:
     """Consume one old-v1 grant and install the exact reversible bridge."""
 
     foundation = validate_bridge_bootstrap_input(document)
+    fresh_now = freshness_clock or (lambda: float(now_unix))
+    _require_v2_fresh(foundation, now_unix=int(fresh_now()))
     entries = store.load(foundation.freeze_plan_sha256)
     requested_entry = _last(entries, "bridge_authorization_requested")
     if requested_entry is None:
@@ -4851,6 +4904,7 @@ def activate_bridge_bootstrap(
         boundary.validate_payload(
             configs.approval_bridge, mode="approval_bridge"
         )
+        _require_v2_fresh(foundation, now_unix=int(fresh_now()))
         _replace_transaction_owned(
             boundary,
             configs.approval_bridge,
@@ -4859,6 +4913,7 @@ def activate_bridge_bootstrap(
                 configs.approval_bridge,
             ),
         )
+        _require_v2_fresh(foundation, now_unix=int(fresh_now()))
         boundary.reload()
         projection = boundary.observe(mode="approval_bridge")
         if projection.get("bridge_request_id") != foundation.v2_request_id:
@@ -4875,6 +4930,7 @@ def activate_bridge_bootstrap(
             "freeze_approval_sha256": foundation.freeze_approval_sha256,
             "freeze_publication_sha256": foundation.freeze_publication_sha256,
             "v2_request_id": foundation.v2_request_id,
+            "v2_expires_at_unix": foundation.v2_expires_at_unix,
             "v2_transaction_id": foundation.v2_transaction_id,
             "v2_approval_url_sha256": foundation.v2_approval_url_sha256,
             "v2_action_payload_sha256": foundation.v2_action_payload_sha256,
@@ -4913,6 +4969,9 @@ def activate_bridge_bootstrap(
             "caddy_reloaded": True,
             "caddy_readback_verified": True,
             "rollback_mode": "pre_migration_exact_bytes",
+            "control_plane_mutation_performed": True,
+            "source_data_mutation_performed": False,
+            "production_host_mutation_performed": True,
             "caller_selected_input_accepted": False,
             "secret_material_recorded": False,
             "secret_digest_recorded": False,
@@ -4991,6 +5050,7 @@ def _foundation_from_bridge_request(
         "freeze_approval_sha256": value.get("freeze_approval_sha256"),
         "freeze_publication_sha256": value.get("freeze_publication_sha256"),
         "v2_request_id": value.get("v2_request_id"),
+        "v2_expires_at_unix": value.get("v2_expires_at_unix"),
         "v2_transaction_id": value.get("v2_transaction_id"),
         "v2_approval_url_sha256": value.get("v2_approval_url_sha256"),
         "v2_action_payload_sha256": value.get("v2_action_payload_sha256"),
@@ -6532,6 +6592,9 @@ def execute_fixed_staged(
                 "owner_gate_caddy_bridge_input_required"
             )
         foundation = validate_bridge_bootstrap_input(bridge_document)
+        bridge_clock = (
+            time.time if now_unix is None else lambda: float(current)
+        )
         if require_release_runtime:
             _require_bridge_release_runtime(foundation)
         with lock():
@@ -6544,6 +6607,7 @@ def execute_fixed_staged(
                     store=store,
                     request_boundary=request_boundary_factory(),
                     now_unix=current,
+                    freshness_clock=bridge_clock,
                 )
             return activate_bridge_bootstrap(
                 bridge_document,
@@ -6551,6 +6615,7 @@ def execute_fixed_staged(
                 store=store,
                 service=service_boundary_factory(),
                 now_unix=current,
+                freshness_clock=bridge_clock,
             )
     if bridge_document is not None:
         raise OwnerGateCaddyCutoverError(

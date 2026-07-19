@@ -254,28 +254,45 @@ function Invoke-PythonProbeProcess {
 
     # Avoid PowerShell's native stderr plumbing entirely. On hosts affected by
     # #60129, `2>&1` can raise a StandardErrorEncoding error before Python even
-    # starts. Start-Process with file redirects captures both streams without
-    # involving that path (the same strategy being developed in #60143).
-    $tempOut = [System.IO.Path]::GetTempFileName()
-    $tempErr = [System.IO.Path]::GetTempFileName()
-    $tempScript = [System.IO.Path]::Combine(
-        [System.IO.Path]::GetTempPath(),
-        "hermes-import-probe-$([System.Guid]::NewGuid().ToString('N')).py"
-    )
+    # starts. Do not use Start-Process: it copies inherited variables into a
+    # case-insensitive dictionary and crashes on Git Bash environments that
+    # contain both TMP and tmp. ProcessStartInfo inherits the raw environment
+    # block as long as its EnvironmentVariables property remains untouched.
+    $tempScript = $null
+    $process = $null
     try {
+        $tempScript = [System.IO.Path]::Combine(
+            [System.IO.Path]::GetTempPath(),
+            "hermes-import-probe-$([System.Guid]::NewGuid().ToString('N')).py"
+        )
+        $utf8 = New-Object System.Text.UTF8Encoding $false
         [System.IO.File]::WriteAllText(
             $tempScript,
             $Code,
-            (New-Object System.Text.UTF8Encoding $false)
+            $utf8
         )
         $escapedScript = $tempScript.Replace('"', '\"')
-        $arguments = "-I -X utf8 `"$escapedScript`""
-        $process = Start-Process -FilePath $PythonExe -ArgumentList $arguments `
-            -WorkingDirectory (Get-Location).Path -NoNewWindow -Wait -PassThru `
-            -RedirectStandardOutput $tempOut -RedirectStandardError $tempErr
+        $startInfo = New-Object System.Diagnostics.ProcessStartInfo
+        $startInfo.FileName = $PythonExe
+        $startInfo.Arguments = "-I -X utf8 `"$escapedScript`""
+        $startInfo.WorkingDirectory = (Get-Location).Path
+        $startInfo.UseShellExecute = $false
+        $startInfo.CreateNoWindow = $true
+        $startInfo.RedirectStandardOutput = $true
+        $startInfo.RedirectStandardError = $true
+        $startInfo.StandardOutputEncoding = $utf8
+        $startInfo.StandardErrorEncoding = $utf8
 
-        $stdout = [System.IO.File]::ReadAllText($tempOut).TrimEnd()
-        $stderr = [System.IO.File]::ReadAllText($tempErr).TrimEnd()
+        $process = New-Object System.Diagnostics.Process
+        $process.StartInfo = $startInfo
+        if (-not $process.Start()) {
+            throw "Failed to start Python import probe."
+        }
+        $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+        $stderrTask = $process.StandardError.ReadToEndAsync()
+        $process.WaitForExit()
+        $stdout = $stdoutTask.GetAwaiter().GetResult().TrimEnd()
+        $stderr = $stderrTask.GetAwaiter().GetResult().TrimEnd()
         $parts = @()
         if ($stdout) { $parts += $stdout }
         if ($stderr) { $parts += $stderr }
@@ -284,7 +301,10 @@ function Invoke-PythonProbeProcess {
             Output = $parts -join [Environment]::NewLine
         }
     } finally {
-        Remove-Item $tempOut, $tempErr, $tempScript -Force -ErrorAction SilentlyContinue
+        if ($process) { $process.Dispose() }
+        if ($tempScript) {
+            Remove-Item -LiteralPath $tempScript -Force -ErrorAction SilentlyContinue
+        }
     }
 }
 

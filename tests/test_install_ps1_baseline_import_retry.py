@@ -80,13 +80,13 @@ def _prepare_minimal_install(
         ],
         check=True,
         capture_output=True,
-        text=True,
+        encoding="utf-8",
     )
     subprocess.run(
         [str(managed_uv), "lock", "--project", str(install_dir)],
         check=True,
         capture_output=True,
-        text=True,
+        encoding="utf-8",
     )
 
     managed_python = install_dir / "venv" / "Scripts" / "python.exe"
@@ -95,12 +95,14 @@ def _prepare_minimal_install(
             [
                 str(managed_python),
                 "-I",
+                "-X",
+                "utf8",
                 "-c",
                 "import site; print(next(p for p in site.getsitepackages() if p.lower().endswith('site-packages')))",
             ],
             check=True,
             capture_output=True,
-            text=True,
+            encoding="utf-8",
         ).stdout.strip()
     )
 
@@ -148,8 +150,10 @@ def _run_dependency_stage(
     failures: int,
     emit_stderr: bool = False,
     standins_in_managed_site_packages: bool = True,
+    git_bash_case_collision: bool = False,
+    workspace_name: str = "installer workspace",
 ) -> tuple[subprocess.CompletedProcess[str], Path, Path]:
-    workspace = tmp_path / "installer workspace"
+    workspace = tmp_path / workspace_name
     workspace.mkdir()
     hermes_home, install_dir, powershell = _prepare_minimal_install(
         workspace,
@@ -168,22 +172,41 @@ def _run_dependency_stage(
     if not standins_in_managed_site_packages:
         env["PYTHONPATH"] = str(install_dir)
 
+    powershell_args = [
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        str(INSTALL_PS1),
+        "-Stage",
+        "dependencies",
+        "-NonInteractive",
+        "-HermesHome",
+        str(hermes_home),
+        "-InstallDir",
+        str(install_dir),
+    ]
+    command = [str(powershell), *powershell_args]
+    if git_bash_case_collision:
+        bash = shutil.which("bash.exe")
+        if not bash:
+            pytest.skip("Git Bash is required for case-colliding environment coverage")
+        collision_temp = workspace / "collision temp"
+        collision_temp.mkdir()
+        launcher = workspace / "launch-dependencies.sh"
+        launcher.write_text(
+            "#!/usr/bin/bash\n"
+            'export TMP="$HERMES_TEST_COLLISION_TEMP"\n'
+            'export tmp="$HERMES_TEST_COLLISION_TEMP"\n'
+            'exec powershell.exe "$@"\n',
+            encoding="utf-8",
+        )
+        env["HERMES_TEST_COLLISION_TEMP"] = str(collision_temp)
+        env["MSYS2_ARG_CONV_EXCL"] = "*"
+        command = [bash, str(launcher), *powershell_args]
+
     result = subprocess.run(
-        [
-            str(powershell),
-            "-NoProfile",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-File",
-            str(INSTALL_PS1),
-            "-Stage",
-            "dependencies",
-            "-NonInteractive",
-            "-HermesHome",
-            str(hermes_home),
-            "-InstallDir",
-            str(install_dir),
-        ],
+        command,
         cwd=tmp_path,
         env=env,
         capture_output=True,
@@ -239,6 +262,23 @@ def test_dependency_stage_retries_transient_baseline_import_failure(
     assert "Baseline imports verified in venv" in output
 
 
+def test_dependency_stage_handles_git_bash_case_colliding_environment(
+    tmp_path: Path,
+) -> None:
+    result, state, _ = _run_dependency_stage(
+        tmp_path,
+        failures=0,
+        git_bash_case_collision=True,
+    )
+    output = result.stdout + result.stderr
+    frame = _stage_frame(result)
+
+    assert result.returncode == 0, output
+    assert frame["ok"] is True
+    assert state.read_text(encoding="utf-8") == "1"
+    assert "Baseline imports verified in venv" in output
+
+
 def test_dependency_stage_ignores_checkout_and_inherited_pythonpath(
     tmp_path: Path,
 ) -> None:
@@ -261,7 +301,11 @@ def test_dependency_stage_ignores_checkout_and_inherited_pythonpath(
 
 
 def test_dependency_stage_reports_persistent_import_failure(tmp_path: Path) -> None:
-    result, state, managed_python = _run_dependency_stage(tmp_path, failures=99)
+    result, state, managed_python = _run_dependency_stage(
+        tmp_path,
+        failures=99,
+        workspace_name=f"installer caf{chr(233)} workspace",
+    )
     output = result.stdout + result.stderr
     frame = _stage_frame(result)
     reason = frame["reason"]

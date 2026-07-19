@@ -197,12 +197,16 @@ class TestWebSocketHostOriginGuard:
 
         assert exc.value.code == 4403
 
-    @pytest.mark.parametrize("endpoint", [
-        "/api/pty",
-        "/api/ws",
-        "/api/pub?channel=security-test",
-        "/api/events?channel=security-test",
-    ])
+    @pytest.mark.parametrize(
+        "endpoint",
+        [
+            "/api/console",
+            "/api/pty",
+            "/api/ws",
+            "/api/pub?channel=security-test",
+            "/api/events?channel=security-test",
+        ],
+    )
     def test_rejected_gated_websocket_origin_does_not_consume_ticket(
         self, monkeypatch, endpoint
     ):

@@ -1782,6 +1782,22 @@ def resolve_runtime_provider(
                         "falling through to next provider.")
 
     if provider == "openai-codex":
+        # Codex app-server authenticates inside the user's existing Codex
+        # Desktop/CLI session. Do not require a duplicate Hermes OAuth token.
+        if _maybe_apply_codex_app_server_runtime(
+            provider=provider,
+            api_mode="codex_responses",
+            model_cfg=model_cfg,
+        ) == "codex_app_server":
+            base_url = str(model_cfg.get("base_url") or "").strip()
+            return {
+                "provider": "openai-codex",
+                "api_mode": "codex_app_server",
+                "base_url": base_url.rstrip("/") or DEFAULT_CODEX_BASE_URL,
+                "api_key": "",
+                "source": "codex-app-server",
+                "requested_provider": requested_provider,
+            }
         try:
             creds = resolve_codex_runtime_credentials()
             return {

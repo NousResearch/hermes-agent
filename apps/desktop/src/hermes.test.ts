@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import {
+  createCronJob,
   getCronJobs,
   getGlobalModelInfo,
   getGlobalModelOptions,
@@ -11,7 +12,9 @@ import {
   getStatus,
   listAllProfileSessions,
   listSessions,
-  listSidebarSessions
+  listSidebarSessions,
+  setApiRequestProfile,
+  updateCronJob
 } from './hermes'
 import { refreshActiveProfile } from './store/profile'
 
@@ -34,6 +37,7 @@ describe('Hermes REST session helpers', () => {
   })
 
   afterEach(() => {
+    setApiRequestProfile(null)
     vi.restoreAllMocks()
     Reflect.deleteProperty(window, 'hermesDesktop')
   })
@@ -191,6 +195,39 @@ describe('Hermes REST session helpers', () => {
     expect(api).toHaveBeenCalledWith(
       expect.objectContaining({
         path: '/api/model/options?refresh=1&include_unconfigured=1'
+      })
+    )
+  })
+
+  it('routes cron list/create/update through the active non-default profile', async () => {
+    setApiRequestProfile('coder')
+    api.mockResolvedValue([])
+
+    await getCronJobs()
+    expect(api).toHaveBeenCalledWith(
+      expect.objectContaining({
+        path: '/api/cron/jobs',
+        profile: 'coder'
+      })
+    )
+
+    api.mockResolvedValue({ id: 'job-1', enabled: true })
+    await createCronJob({ prompt: 'go', schedule: '0 9 * * *', model: 'hermes-4', provider: 'nous' })
+    expect(api).toHaveBeenCalledWith(
+      expect.objectContaining({
+        path: '/api/cron/jobs',
+        method: 'POST',
+        profile: 'coder',
+        body: expect.objectContaining({ model: 'hermes-4', provider: 'nous' })
+      })
+    )
+
+    await updateCronJob('job-1', { model: null, provider: null, schedule: '0 10 * * *' })
+    expect(api).toHaveBeenCalledWith(
+      expect.objectContaining({
+        path: '/api/cron/jobs/job-1',
+        method: 'PUT',
+        profile: 'coder'
       })
     )
   })

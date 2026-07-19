@@ -5502,6 +5502,20 @@ _EXTRA_KNOWN_ROOT_KEYS = {
     "custom_providers",  # legacy list form; modern equivalent is providers: {}
     "fallback_model",    # optional single dict or chain list; omitted when disabled
     "mcp_servers",       # MCP server definitions written by setup/tools flows
+    # Roots read from the raw user YAML (or written by our own flows) that are
+    # intentionally absent from DEFAULT_CONFIG:
+    "image_gen",         # image-generation provider config (agent/image_gen_registry.py)
+    "video_gen",         # video-generation provider config (agent/video_gen_registry.py)
+    "plugins",           # plugin enable/disable lists (hermes_cli/plugins_cmd.py)
+    "smart_model_routing",   # written by the setup wizard (hermes_cli/setup.py)
+    "platform_toolsets",     # written by the setup wizard (hermes_cli/setup.py)
+    "session_reset",         # top-level form read by gateway/config.py + setup
+    "multiplex_profiles",    # top-level form accepted alongside gateway.multiplex_profiles
+    "profile_routes",        # top-level form accepted alongside gateway.profile_routes
+    "platforms",             # top-level per-platform map merged by gateway/config.py
+    "require_mention",       # top-level convenience form honored by the gateway (#3979)
+    "unauthorized_dm_behavior",  # top-level form read by gateway/config.py
+    "signal",            # Signal settings bridged to env vars by gateway/config.py
 }
 _KNOWN_ROOT_KEYS = frozenset(DEFAULT_CONFIG.keys()) | _EXTRA_KNOWN_ROOT_KEYS
 

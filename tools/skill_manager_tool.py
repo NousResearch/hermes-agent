@@ -838,6 +838,20 @@ def _create_skill(name: str, content: str, category: str = None) -> Dict[str, An
             "error": f"A skill named '{name}' already exists at {existing['path']}."
         }
 
+    # Discard any leftover usage record BEFORE the new directory is visible.
+    # Records are keyed by name and carry the curator's inactivity clock; a
+    # stale leftover would make an automatic-transition pass (including one
+    # already mid-walk with a snapshot row) archive the seconds-old skill
+    # into skills/.archive/ while create still reports the live path (#65992).
+    # Clearing the clock before mkdir closes the write-then-forget race with
+    # archive_skill's locked revalidation. Collision check above guarantees
+    # no live skill owns this record. Best-effort: telemetry never breaks create.
+    try:
+        from tools.skill_usage import forget
+        forget(name)
+    except Exception:
+        logger.debug("usage-record reset failed for %s", name, exc_info=True)
+
     # Create the skill directory
     skill_dir = _resolve_skill_dir(name, category)
     skill_dir.mkdir(parents=True, exist_ok=True)
@@ -851,21 +865,6 @@ def _create_skill(name: str, content: str, category: str = None) -> Dict[str, An
     if scan_error:
         shutil.rmtree(skill_dir, ignore_errors=True)
         return {"success": False, "error": scan_error}
-
-    # A successful create starts a new life for this name: discard any usage
-    # record left behind by a previous skill that was removed without going
-    # through skill_manage(delete) (manual rm, crashed delete, external sync).
-    # Records are keyed by name and carry the curator's inactivity clock, so a
-    # stale leftover would make the next automatic-transition pass read an
-    # expired anchor and relocate the seconds-old skill to skills/.archive/
-    # while the create response still points at the requested path (#65992).
-    # The collision check above guarantees no live skill owns this record.
-    # Best-effort: telemetry failures never break the tool.
-    try:
-        from tools.skill_usage import forget
-        forget(name)
-    except Exception:
-        logger.debug("usage-record reset failed for %s", name, exc_info=True)
 
     # Extract description from frontmatter for verbose notifications
     _desc = ""

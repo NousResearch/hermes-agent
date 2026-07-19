@@ -1,6 +1,8 @@
 """Regression tests for curator skill activity timestamps."""
 
 import importlib
+import json
+import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -85,7 +87,6 @@ def test_fresh_create_reusing_dead_skill_name_is_not_archived(curator_modules, m
     })
 
     from tools.skill_manager_tool import skill_manage
-    import json
 
     raw = skill_manage(
         action="create",
@@ -108,4 +109,113 @@ def test_fresh_create_reusing_dead_skill_name_is_not_archived(curator_modules, m
     )
     assert not (skills_dir / ".archive" / "fresh-skill").exists(), (
         "freshly created skill was archived by the automatic-transition pass"
+    )
+
+
+def test_in_flight_curator_snapshot_create_does_not_archive(curator_modules, monkeypatch):
+    """#65992 race: curator already holds a stale snapshot row, then create
+    resets the usage record, then archive_skill runs.
+
+    Without archive-time revalidation under the usage lock, archive_skill
+    resolves the newly written directory and moves it to .archive/. Barriers
+    force snapshot → create/forget → archive ordering.
+    """
+    home, skill_usage, curator = curator_modules
+    skills_dir = home / "skills"
+
+    now = datetime.now(timezone.utc)
+    stale = (now - timedelta(days=200)).isoformat()
+    skill_name = "race-skill"
+    skill_usage.save_usage({
+        skill_name: {
+            "created_by": "agent",
+            "use_count": 3,
+            "last_used_at": stale,
+            "created_at": stale,
+            "state": "active",
+        }
+    })
+
+    # Pre-create the on-disk skill so agent_created_report can snapshot it,
+    # then remove it before the create thread reuses the name (mirrors a
+    # dead skill whose .usage.json row survived).
+    skill_dir = skills_dir / "devops" / skill_name
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    (skill_dir / "SKILL.md").write_text(
+        f"---\nname: {skill_name}\ndescription: dead\n---\n\n# {skill_name}\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(curator, "get_stale_after_days", lambda: 30)
+    monkeypatch.setattr(curator, "get_archive_after_days", lambda: 90)
+
+    snapshot_ready = threading.Barrier(2, timeout=15)
+    create_done = threading.Barrier(2, timeout=15)
+    real_report = skill_usage.agent_created_report
+
+    def stalled_report():
+        rows = real_report()
+        assert any(r["name"] == skill_name for r in rows), rows
+        # Snapshot captured with the stale clock. Let create discard it and
+        # land a fresh skill before the pass proceeds to archive_skill.
+        snapshot_ready.wait()
+        create_done.wait()
+        return rows
+
+    monkeypatch.setattr(skill_usage, "agent_created_report", stalled_report)
+
+    from tools.skill_manager_tool import skill_manage
+
+    counts_holder: list = []
+    errors: list = []
+
+    def run_curator():
+        try:
+            counts_holder.append(curator.apply_automatic_transitions(now=now))
+        except Exception as exc:  # pragma: no cover - surfaced via errors
+            errors.append(exc)
+
+    def run_create():
+        try:
+            snapshot_ready.wait()
+            # Dead skill gone; create reuses the name (forget runs before write).
+            import shutil
+            shutil.rmtree(skill_dir, ignore_errors=True)
+            raw = skill_manage(
+                action="create",
+                name=skill_name,
+                category="devops",
+                content=(
+                    f"---\nname: {skill_name}\ndescription: fresh\n---\n\n"
+                    f"# {skill_name}\n"
+                ),
+            )
+            result = json.loads(raw)
+            assert result["success"] is True, result
+            assert (skills_dir / "devops" / skill_name / "SKILL.md").exists()
+            create_done.wait()
+        except Exception as exc:  # pragma: no cover - surfaced via errors
+            errors.append(exc)
+            # Unstick the curator thread if create failed mid-barrier.
+            for barrier in (snapshot_ready, create_done):
+                try:
+                    barrier.abort()
+                except Exception:
+                    pass
+
+    t_curator = threading.Thread(target=run_curator, name="curator-pass")
+    t_create = threading.Thread(target=run_create, name="skill-create")
+    t_curator.start()
+    t_create.start()
+    t_curator.join(timeout=30)
+    t_create.join(timeout=30)
+
+    assert not errors, errors
+    assert counts_holder, "curator thread did not finish"
+    assert counts_holder[0]["archived"] == 0, counts_holder[0]
+    assert (skills_dir / "devops" / skill_name / "SKILL.md").exists(), (
+        "in-flight curator pass archived a skill created after its snapshot"
+    )
+    assert not (skills_dir / ".archive" / skill_name).exists(), (
+        "fresh skill landed in .archive under snapshot/create/archive interleaving"
     )

@@ -699,13 +699,70 @@ def forget(skill_name: str) -> None:
 # Archive / restore
 # ---------------------------------------------------------------------------
 
-def archive_skill(skill_name: str) -> Tuple[bool, str]:
+def _record_still_warrants_archive(
+    skill_name: str,
+    record: Any,
+    *,
+    archive_cutoff: datetime,
+    stale_cutoff: Optional[datetime] = None,
+    now: Optional[datetime] = None,
+) -> bool:
+    """Whether a *live* usage record still justifies automatic archival.
+
+    Used to revalidate a curator snapshot decision under ``_usage_file_lock``
+    immediately before the destructive rename. A ``skill_manage(create)`` that
+    reused this name may have ``forget()``-cleared the stale clock (or replaced
+    it with a fresh one) while the pass was mid-walk (#65992).
+
+    Agent-authored skills must still carry a curator-managed marker; bundled
+    built-ins (when ``curator.prune_builtins`` is on) only need a persisted
+    inactivity record — they never set ``created_by=agent``.
+    """
+    if not isinstance(record, dict):
+        return False
+    if is_bundled(skill_name):
+        if not _prune_builtins_enabled():
+            return False
+    elif not _is_curator_managed_record(record):
+        return False
+    if record.get("pinned"):
+        return False
+    if record.get("state") == STATE_ARCHIVED:
+        return False
+
+    if now is None:
+        now = datetime.now(timezone.utc)
+    last_activity = _parse_iso_timestamp(latest_activity_at(record))
+    anchor = last_activity or _parse_iso_timestamp(record.get("created_at")) or now
+    if anchor.tzinfo is None:
+        anchor = anchor.replace(tzinfo=timezone.utc)
+
+    # Mirror apply_automatic_transitions: never-used skills get a grace floor
+    # at stale_after_days before archival is allowed.
+    never_used = int(record.get("use_count", 0) or 0) == 0
+    if stale_cutoff is not None and never_used and anchor > stale_cutoff:
+        return False
+    return anchor <= archive_cutoff
+
+
+def archive_skill(
+    skill_name: str,
+    *,
+    require_inactive_before: Optional[datetime] = None,
+    stale_before: Optional[datetime] = None,
+    now: Optional[datetime] = None,
+) -> Tuple[bool, str]:
     """Move a curator-eligible skill directory to ~/.hermes/skills/.archive/.
 
     Returns (ok, message). Never archives hub-installed skills. Bundled
     built-ins are only archivable when ``curator.prune_builtins`` is enabled;
     when one is archived, its name is added to the suppression list so the
     update-time re-seeder leaves it archived instead of restoring it.
+
+    When *require_inactive_before* is set (automatic curator transitions), the
+    live usage record is revalidated under ``_usage_file_lock`` immediately
+    before the rename. Manual / consolidation callers omit it so an explicit
+    archive still proceeds even if the inactivity clock was reset.
     """
     local_skill_dir = _find_skill_dir(skill_name)
     if local_skill_dir is None and _find_external_skill_dir(skill_name) is not None:
@@ -742,15 +799,34 @@ def archive_skill(skill_name: str) -> Tuple[bool, str]:
     if dest.exists():
         dest = archive_root / f"{skill_dir.name}-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}"
 
-    try:
-        skill_dir.rename(dest)
-    except OSError as e:
-        # Cross-device — fall back to shutil.move
-        import shutil
+    # Hold the usage lock across revalidation + rename so a concurrent
+    # skill_manage(create) forget()/mark cannot slip a fresh life in between
+    # the check and the destructive move (#65992).
+    with _usage_file_lock():
+        if require_inactive_before is not None:
+            data = load_usage()
+            rec = data.get(skill_name)
+            if not _record_still_warrants_archive(
+                skill_name,
+                rec,
+                archive_cutoff=require_inactive_before,
+                stale_cutoff=stale_before,
+                now=now,
+            ):
+                return False, (
+                    f"skill '{skill_name}' usage record no longer warrants "
+                    "automatic archival"
+                )
+
         try:
-            shutil.move(str(skill_dir), str(dest))
-        except Exception as e2:
-            return False, f"failed to archive: {e2}"
+            skill_dir.rename(dest)
+        except OSError as e:
+            # Cross-device — fall back to shutil.move
+            import shutil
+            try:
+                shutil.move(str(skill_dir), str(dest))
+            except Exception as e2:
+                return False, f"failed to archive: {e2}"
 
     # Pruning a built-in only sticks if the re-seeder is told to leave it alone.
     if is_bundled(skill_name):

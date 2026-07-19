@@ -4410,10 +4410,10 @@ class AIAgent:
                 exc,
             )
 
-    def _run_codex_stream(self, api_kwargs: dict, client: Any = None, on_first_delta: callable = None):
+    def _run_codex_stream(self, api_kwargs: dict, client: Any = None, on_first_delta: callable = None, attempt=None):
         """Forwarder — see ``agent.codex_runtime.run_codex_stream``."""
         from agent.codex_runtime import run_codex_stream
-        return run_codex_stream(self, api_kwargs, client, on_first_delta)
+        return run_codex_stream(self, api_kwargs, client, on_first_delta, attempt=attempt)
 
     def _run_codex_create_stream_fallback(self, api_kwargs: dict, client: Any = None):
         """Forwarder — see ``agent.codex_runtime.run_codex_create_stream_fallback``."""
@@ -4795,7 +4795,7 @@ class AIAgent:
             return False
         return pool.has_available()
 
-    def _anthropic_messages_create(self, api_kwargs: dict, *, client: Any = None):
+    def _anthropic_messages_create(self, api_kwargs: dict, *, client: Any = None, attempt=None):
         # When a request-local client is supplied it was already credential-
         # refreshed in ``_create_request_anthropic_client``; only the shared
         # fallback path refreshes here.
@@ -4805,11 +4805,29 @@ class AIAgent:
         # api_mode-flip race (the Anthropic SDK raises a non-retryable
         # TypeError on them). See #31673.
         from agent.anthropic_adapter import create_anthropic_message
+        from agent.chat_completion_helpers import (
+            PROVIDER_PHASE_TERMINAL_RECEIVED,
+            _detached_provider_attempt,
+        )
+
+        # The attempt token arrives explicitly from the attempt's main entry
+        # (dispatch / interruptible_api_call). Auxiliary callers outside any
+        # conversation attempt (e.g. memory/iteration-limit summaries) get a
+        # DETACHED token — never the main loop's current/previous token,
+        # which may already be terminal. A delayed conversation worker must
+        # NEVER re-read agent._provider_attempt, so it always passes an
+        # explicit token and never reaches this branch.
+        if attempt is None:
+            attempt = _detached_provider_attempt()
+
         return create_anthropic_message(
             client or self._anthropic_client,
             api_kwargs,
             log_prefix=getattr(self, "log_prefix", ""),
             prefer_stream=not bool(getattr(self, "_disable_streaming", False)),
+            on_response_received=lambda: attempt.mark(
+                PROVIDER_PHASE_TERMINAL_RECEIVED
+            ),
         )
 
     def _rebuild_anthropic_client(self) -> None:

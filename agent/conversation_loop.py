@@ -1217,8 +1217,21 @@ def run_conversation(
         api_kwargs = None  # Guard against UnboundLocalError in except handler
         api_request_id = f"{turn_id}:api:{api_call_count}"
         agent._current_api_request_id = api_request_id
+        _local_post_response_failure = False
+        _loop_attempt = None  # set at the top of each provider attempt below
 
         while retry_count < max_retries:
+            # Provider response lifecycle (positional, never type-based):
+            # each attempt gets its OWN token; transports/terminal callbacks
+            # mark only the token they captured, so a stale late worker from
+            # an older attempt can never flip the current attempt's phase.
+            # The loop keeps a LOCAL reference: exception handlers and the
+            # _perform_api_call backstop read this variable, never
+            # agent._provider_attempt, so a delayed worker from an older
+            # attempt cannot become this attempt's writer-identity source.
+            from agent.chat_completion_helpers import _new_provider_attempt
+
+            _loop_attempt = _new_provider_attempt(agent)
             # ── Nous Portal rate limit guard ──────────────────────
             # If another session already recorded that Nous is rate-
             # limited, skip the API call entirely.  Each attempt
@@ -1434,6 +1447,10 @@ def run_conversation(
                         _use_streaming = False
 
                 def _perform_api_call(next_api_kwargs):
+                    from agent.chat_completion_helpers import (
+                        PROVIDER_PHASE_TERMINAL_RECEIVED,
+                    )
+
                     if agent.api_mode == "codex_responses":
                         next_api_kwargs = agent._get_transport().preflight_kwargs(
                             next_api_kwargs,
@@ -1441,10 +1458,20 @@ def run_conversation(
                             is_github_responses=agent._is_copilot_url(),
                         )
                     if _use_streaming:
-                        return agent._interruptible_streaming_api_call(
+                        provider_response = agent._interruptible_streaming_api_call(
                             next_api_kwargs, on_first_delta=_stop_spinner
                         )
-                    return agent._interruptible_api_call(next_api_kwargs)
+                    else:
+                        provider_response = agent._interruptible_api_call(next_api_kwargs)
+                    # Backstop boundary: the provider call wrapper returned a
+                    # completed response by any means (real transport or a
+                    # test seam). Transports mark the earlier raw boundary on
+                    # the attempt token themselves; this covers everything
+                    # past this point for THE CURRENT attempt. Read the
+                    # loop-LOCAL token, never agent._provider_attempt.
+                    if _loop_attempt is not None:
+                        _loop_attempt.mark(PROVIDER_PHASE_TERMINAL_RECEIVED)
+                    return provider_response
 
                 from hermes_cli.middleware import run_llm_execution_middleware
 
@@ -2445,6 +2472,41 @@ def run_conversation(
                 break
 
             except Exception as api_error:
+                # Read the loop-LOCAL attempt token first (this attempt's own
+                # identity), never agent._provider_attempt — a delayed worker
+                # from an older attempt may still exist, and the agent-level
+                # reference is only a current-state/diagnostic view.
+                if _loop_attempt is not None and _loop_attempt.terminal_received:
+                    # Lifecycle fact dominates: a terminal provider response
+                    # was already received for this attempt. Whatever failed
+                    # afterwards is Hermes-local and must NOT be reclassified
+                    # into provider retry/fallback/continuation — and must not
+                    # issue another model request, regardless of the
+                    # exception's type.
+                    _local_error_msg = (
+                        "Local post-response processing error after API call "
+                        f"#{api_call_count}: {type(api_error).__name__}: {api_error}"
+                    )
+                    try:
+                        print(f"❌ {_local_error_msg}")
+                    except (OSError, ValueError):
+                        logger.error(_local_error_msg)
+                    logger.exception(
+                        "Local post-response processing failed after API call #%d; "
+                        "provider will not be requested again",
+                        api_call_count,
+                    )
+                    final_response = (
+                        "I apologize, but I encountered an error while processing "
+                        f"the model response: {_local_error_msg}"
+                    )
+                    failed = True
+                    _turn_exit_reason = "local_post_response_error"
+                    messages.append({"role": "assistant", "content": final_response})
+                    agent._persist_session(messages, conversation_history)
+                    _local_post_response_failure = True
+                    break
+
                 # Stop spinner silently — retry status is buffered and
                 # only flushed when every retry+fallback is exhausted.
                 if thinking_spinner:
@@ -4426,6 +4488,12 @@ def run_conversation(
             agent._ephemeral_max_output_tokens = min(_boost, _boost_cap)
             continue
 
+        # Guard: a post-terminal local failure already produced its final
+        # state above — exit the turn loop without touching response
+        # processing or the all-retries-exhausted guard.
+        if _local_post_response_failure:
+            break
+
         # Guard: if all retries exhausted without a successful response
         # (e.g. repeated context-length errors that exhausted retry_count),
         # the `response` variable is still None. Break out cleanly.
@@ -5681,7 +5749,22 @@ def run_conversation(
             _hit_local = bool(tb_module_names & _LOCAL_PROCESSING_MODULES)
             _hit_api = bool(tb_module_names & _API_CALL_MODULES)
 
-            _is_local_processing_error = _hit_local and not _hit_api
+            # Lifecycle dominates: once a terminal provider response was
+            # received, ANY exception here is local post-response processing
+            # (this outer try only runs after a completed provider call).
+            # Read the loop-LOCAL attempt token first — it is this attempt's
+            # own identity, immune to delayed workers from older attempts.
+            # agent._provider_attempt remains only a diagnostic fallback for
+            # paths that never entered the retry loop above.
+            # The traceback classifier remains as defense-in-depth for
+            # pre-terminal local errors only.
+            if _loop_attempt is not None:
+                _lifecycle_terminal = _loop_attempt.terminal_received
+            else:
+                from agent.chat_completion_helpers import _provider_terminal_received
+
+                _lifecycle_terminal = _provider_terminal_received(agent)
+            _is_local_processing_error = _lifecycle_terminal or (_hit_local and not _hit_api)
 
             if _is_local_processing_error:
                 error_msg = (
@@ -5744,8 +5827,15 @@ def run_conversation(
                 or api_call_count >= agent.max_iterations - 1
             ):
                 if _is_local_processing_error:
-                    _turn_exit_reason = f"local_processing_error({error_msg[:80]})"
+                    if _lifecycle_terminal:
+                        _turn_exit_reason = "local_post_response_error"
+                    else:
+                        _turn_exit_reason = f"local_processing_error({error_msg[:80]})"
                     final_response = f"I apologize, but I encountered an error while processing the model response: {error_msg}"
+                    # A deterministic local failure means the turn did not
+                    # complete — keep failed/completed consistent with the
+                    # exit reason for the finalizer and the transcript.
+                    failed = True
                 else:
                     _turn_exit_reason = f"error_near_max_iterations({error_msg[:80]})"
                     final_response = f"I apologize, but I encountered repeated errors: {error_msg}"

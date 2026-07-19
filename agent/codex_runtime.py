@@ -931,6 +931,7 @@ def _consume_codex_event_stream(
     on_first_delta=None,
     on_event=None,
     interrupt_check=None,
+    on_terminal=None,
 ) -> SimpleNamespace:
     """Consume a Codex Responses SSE event stream and return a final response.
 
@@ -1103,6 +1104,10 @@ def _consume_codex_event_stream(
 
         if event_type in _TERMINAL_EVENT_TYPES:
             saw_terminal = True
+            if on_terminal is not None:
+                # Lifecycle boundary: terminal provider response observed.
+                # Fires before any terminal field is read locally.
+                on_terminal()
             resp_obj = _event_field(event, "response")
             if resp_obj is not None:
                 terminal_usage = getattr(resp_obj, "usage", None)
@@ -1176,7 +1181,7 @@ def _consume_codex_event_stream(
     return final
 
 
-def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta=None):
+def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta=None, attempt=None):
     """Execute one streaming Responses API request and return the final response.
 
     Uses ``responses.create(stream=True)`` (low-level raw event iteration)
@@ -1185,6 +1190,23 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
     payload shape — we never let the SDK reconstruct a typed object from
     the terminal event's ``output`` field.
     """
+    from agent.chat_completion_helpers import (
+        PROVIDER_PHASE_TERMINAL_RECEIVED,
+        _detached_provider_attempt,
+    )
+
+    # The attempt token arrives explicitly from the attempt's main entry
+    # (dispatch). Auxiliary callers outside any conversation attempt (e.g.
+    # iteration-limit summaries) get a DETACHED token — never the main loop's
+    # current/previous token, which may already be terminal and would
+    # misclassify this auxiliary stream's pre-terminal transport errors and
+    # suppress its internal reconnect. A delayed conversation worker must
+    # NEVER re-read agent._provider_attempt either, so it always passes an
+    # explicit token and never reaches this branch.
+    if attempt is None:
+        attempt = _detached_provider_attempt()
+    _attempt = attempt
+
     import httpx as _httpx
 
     active_client = client or agent._ensure_primary_openai_client(reason="codex_stream_direct")
@@ -1270,8 +1292,13 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                     on_first_delta=on_first_delta,
                     on_event=_on_event,
                     interrupt_check=_interrupt_or_superseded,
+                    on_terminal=lambda: _attempt.mark(
+                        PROVIDER_PHASE_TERMINAL_RECEIVED
+                    ),
                 )
             except (_httpx.RemoteProtocolError, _httpx.ReadTimeout, _httpx.ConnectError, ConnectionError) as exc:
+                if _attempt.terminal_received:
+                    raise
                 if attempt < max_stream_retries:
                     logger.debug(
                         "Codex Responses stream transport failed mid-iteration "

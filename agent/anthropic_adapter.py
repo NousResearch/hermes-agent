@@ -2760,6 +2760,7 @@ def create_anthropic_message(
     *,
     log_prefix: str = "",
     prefer_stream: bool = True,
+    on_response_received=None,
 ) -> Any:
     """Create an Anthropic message, aggregating via stream when available.
 
@@ -2769,6 +2770,12 @@ def create_anthropic_message(
     crash on ``.content``.  Prefer ``messages.stream().get_final_message()`` to
     match the main turn path, falling back to ``create()`` only for providers
     that explicitly do not support streaming, such as restricted Bedrock roles.
+
+    ``on_response_received`` (optional zero-arg callback) fires once at the
+    provider-completion boundary — when ``message_stop`` is observed, when a
+    shim stream produces a validated final message, or when ``create()``
+    returns — and never fires before the boundary, so callers can distinguish
+    "provider completed" from "still in flight" without exception-type checks.
     """
     sanitize_anthropic_kwargs(api_kwargs, log_prefix=log_prefix)
 
@@ -2777,10 +2784,28 @@ def create_anthropic_message(
     if prefer_stream and callable(stream_fn):
         stream_kwargs = dict(api_kwargs)
         stream_kwargs.pop("stream", None)
+        terminal_received = False
         try:
             with stream_fn(**stream_kwargs) as stream:
-                return stream.get_final_message()
+                saw_message_stop = False
+                if hasattr(stream, "__iter__"):
+                    for event in stream:
+                        if getattr(event, "type", None) == "message_stop":
+                            saw_message_stop = True
+                            terminal_received = True
+                            if on_response_received is not None:
+                                on_response_received()
+                final_message = stream.get_final_message()
+                # A shim without an explicit message_stop has now produced a
+                # validated final response — the equivalent terminal boundary.
+                if not saw_message_stop:
+                    terminal_received = True
+                    if on_response_received is not None:
+                        on_response_received()
+                return final_message
         except Exception as exc:
+            if terminal_received:
+                raise
             if not _is_stream_unavailable_error(exc):
                 raise
             logger.debug(
@@ -2792,4 +2817,7 @@ def create_anthropic_message(
 
     create_kwargs = dict(api_kwargs)
     create_kwargs.pop("stream", None)
-    return messages_api.create(**create_kwargs)
+    response = messages_api.create(**create_kwargs)
+    if on_response_received is not None:
+        on_response_received()
+    return response

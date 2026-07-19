@@ -366,7 +366,90 @@ def _bedrock_reasoning_stale_floor(model_id: object) -> "float | None":
     return None
 
 
-def _dispatch_nonstreaming_api_request(agent, api_kwargs: dict, *, make_client):
+# ── Provider response lifecycle boundary ────────────────────────────────────
+# Explicit request-phase tracking (positional, never exception-type based).
+# The retry classification in conversation_loop must distinguish "the provider
+# has not completed" (network errors, timeouts — retry/fallback allowed) from
+# "a terminal response was received" (any later exception is Hermes-local and
+# must never re-request the completed, billable response).
+#
+# Attempt scoping: every provider attempt owns a token
+# (``ProviderAttemptLifecycle``). Transports, terminal callbacks, workers and
+# error classifiers capture the token at attempt start and operate ONLY on
+# their own token — never on shared agent state. The outer exception handlers
+# read only the loop's CURRENT attempt token, so a stale late worker from an
+# older attempt cannot mark the current attempt as terminal. Exception types,
+# error strings and traceback module names are never used as the source of
+# this fact.
+PROVIDER_PHASE_NOT_STARTED = "not_started"
+PROVIDER_PHASE_IN_FLIGHT = "in_flight"
+PROVIDER_PHASE_TERMINAL_RECEIVED = "terminal_received"
+
+
+class ProviderAttemptLifecycle:
+    """Per-attempt provider lifecycle token.
+
+    One instance per provider attempt. Callers that capture it operate on the
+    token itself; there is no writer-side way to touch another attempt's
+    phase through it.
+    """
+
+    __slots__ = ("phase",)
+
+    def __init__(self) -> None:
+        self.phase: str = PROVIDER_PHASE_IN_FLIGHT
+
+    def mark(self, phase: str) -> None:
+        self.phase = phase
+
+    @property
+    def terminal_received(self) -> bool:
+        return self.phase == PROVIDER_PHASE_TERMINAL_RECEIVED
+
+
+def _new_provider_attempt(agent) -> ProviderAttemptLifecycle:
+    """Start a new provider attempt and make it the loop's current one."""
+    attempt = ProviderAttemptLifecycle()
+    agent._provider_attempt = attempt
+    return attempt
+
+
+def _capture_provider_attempt(agent) -> ProviderAttemptLifecycle:
+    """Capture the attempt a transport/worker belongs to, at call time.
+
+    Falls back to a detached token for auxiliary calls outside any
+    conversation attempt, so those paths stay safe without ever writing
+    shared state.
+    """
+    attempt = getattr(agent, "_provider_attempt", None)
+    if attempt is None:
+        attempt = ProviderAttemptLifecycle()
+    return attempt
+
+
+def _detached_provider_attempt() -> ProviderAttemptLifecycle:
+    """Fresh standalone token for AUXILIARY entry points (e.g. iteration-limit
+    summary calls) that were invoked without an explicit attempt.
+
+    Unlike ``_capture_provider_attempt`` this never adopts
+    ``agent._provider_attempt``: an auxiliary request must not inherit the
+    main loop's previous (possibly already terminal) token, or its own
+    pre-terminal transport errors would be misclassified as post-terminal
+    local failures and its internal reconnects wrongly suppressed.
+    """
+    return ProviderAttemptLifecycle()
+
+
+def _provider_terminal_received(agent) -> bool:
+    """True iff the OUTER LOOP'S CURRENT attempt reached its terminal.
+
+    A stale late worker marking its own (older) token can never flip this.
+    """
+    attempt = getattr(agent, "_provider_attempt", None)
+    return bool(attempt and attempt.terminal_received)
+
+
+def _dispatch_nonstreaming_api_request(agent, api_kwargs: dict, *, make_client, attempt):
     """Run one non-streaming LLM request for the active api_mode and return it.
 
     Shared by the interrupt-worker path (``interruptible_api_call``) and the
@@ -381,14 +464,25 @@ def _dispatch_nonstreaming_api_request(agent, api_kwargs: dict, *, make_client):
     bedrock / MoA branches manage their own clients and never call it. All
     interrupt, abort, cancellation, and close semantics stay in the callers —
     this helper only issues the request.
+
+    ``attempt`` is the caller's provider-attempt lifecycle token, captured ONCE
+    at the attempt's main entry. This function must never re-read
+    ``agent._provider_attempt``: a worker that was delayed past a stale-kill
+    would otherwise capture a NEWER attempt's token and mark it terminal.
     """
+    _attempt = attempt
     if agent.api_mode == "codex_responses":
         request_client = make_client("codex_stream_request")
-        return agent._run_codex_stream(
+        response = agent._run_codex_stream(
             api_kwargs,
             client=request_client,
             on_first_delta=getattr(agent, "_codex_on_first_delta", None),
+            attempt=_attempt,
         )
+        # run_codex_stream also marks its own terminal-event boundary; this
+        # covers any post-helper local work as well.
+        _attempt.mark(PROVIDER_PHASE_TERMINAL_RECEIVED)
+        return response
     if agent.api_mode == "anthropic_messages":
         # #67142: use a request-local Anthropic client so the stale/interrupt
         # watchdog aborts sockets from the stranger thread while the worker
@@ -396,7 +490,9 @@ def _dispatch_nonstreaming_api_request(agent, api_kwargs: dict, *, make_client):
         request_client = make_client(
             "anthropic_messages_request", kind="anthropic_messages"
         )
-        return agent._anthropic_messages_create(api_kwargs, client=request_client)
+        response = agent._anthropic_messages_create(api_kwargs, client=request_client, attempt=_attempt)
+        _attempt.mark(PROVIDER_PHASE_TERMINAL_RECEIVED)
+        return response
     if agent.api_mode == "bedrock_converse":
         # Bedrock uses boto3 directly — no OpenAI client needed.
         # normalize_converse_response produces an OpenAI-compatible
@@ -419,14 +515,21 @@ def _dispatch_nonstreaming_api_request(agent, api_kwargs: dict, *, make_client):
             if is_stale_connection_error(_bedrock_exc):
                 invalidate_runtime_client(region)
             raise
+        # The provider has completed a billable inference. Any exception from
+        # normalization below is Hermes-local and must not trigger another call.
+        _attempt.mark(PROVIDER_PHASE_TERMINAL_RECEIVED)
         return normalize_converse_response(raw_response)
     if agent.provider == "moa":
         # MoA is a virtual chat-completions provider backed by the
         # in-process MoAClient facade. Do not rebuild a request-local
         # OpenAI client from the virtual runtime metadata.
-        return agent.client.chat.completions.create(**api_kwargs)
+        response = agent.client.chat.completions.create(**api_kwargs)
+        _attempt.mark(PROVIDER_PHASE_TERMINAL_RECEIVED)
+        return response
     request_client = make_client("chat_completion_request")
-    return request_client.chat.completions.create(**api_kwargs)
+    response = request_client.chat.completions.create(**api_kwargs)
+    _attempt.mark(PROVIDER_PHASE_TERMINAL_RECEIVED)
+    return response
 
 
 def should_use_direct_api_call(agent) -> bool:
@@ -455,6 +558,7 @@ def direct_api_call(agent, api_kwargs: dict):
     a genuinely hung provider — the same bound interactive calls already rely on.
     """
     _check_stale_giveup(agent)
+    _attempt = _capture_provider_attempt(agent)
     agent._touch_activity("waiting for non-streaming API response")
     request_client_holder = {"client": None}
     request_client_lock = threading.Lock()
@@ -479,7 +583,7 @@ def direct_api_call(agent, api_kwargs: dict):
 
     try:
         response = _dispatch_nonstreaming_api_request(
-            agent, api_kwargs, make_client=_make_client
+            agent, api_kwargs, make_client=_make_client, attempt=_attempt
         )
     except Exception:
         if getattr(agent, "_interrupt_requested", False):
@@ -527,6 +631,7 @@ def interruptible_api_call(agent, api_kwargs: dict):
     # subagent / no-stream-consumer sessions take THIS path, and a wedged
     # unattended session here has the same infinite stale-retry class.
     _check_stale_giveup(agent)
+    _attempt = _capture_provider_attempt(agent)
 
     request_client_holder = {"client": None, "owner_tid": None}
     # Transport kind of the registered request client ("openai" or
@@ -598,7 +703,11 @@ def interruptible_api_call(agent, api_kwargs: dict):
             # stranger-thread abort machinery above; the shared dispatch helper
             # builds it via this callback (openai- or anthropic-kind) so the
             # interrupt / stale-call detectors can force-close the worker's
-            # connection without touching the shared client (#67142).
+            # connection without touching the shared client (#67142). The
+            # attempt token was captured ONCE at this call's entry (main
+            # thread, before the worker could ever be delayed) and is passed
+            # down explicitly — nothing below this point re-reads
+            # agent._provider_attempt.
             result["response"] = _dispatch_nonstreaming_api_request(
                 agent,
                 api_kwargs,
@@ -610,6 +719,7 @@ def interruptible_api_call(agent, api_kwargs: dict):
                     ),
                     kind=kind,
                 ),
+                attempt=_attempt,
             )
         except Exception as e:
             # If the request was cancelled by the main thread's interrupt
@@ -2257,6 +2367,12 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
     if should_use_direct_api_call(agent):
         return agent._interruptible_api_call(api_kwargs)
 
+    # Lifecycle boundary (positional): each streaming branch marks the
+    # CAPTURED attempt token terminal at its provider-completion signal
+    # (finish_reason / message_stop / consumed terminal event). Pre-terminal
+    # failures keep the baseline retry classification untouched.
+    _attempt = _capture_provider_attempt(agent)
+
     if agent.api_mode == "codex_responses":
         # Codex streams internally via _run_codex_stream. The main dispatch
         # in _interruptible_api_call already calls it; we just need to
@@ -2914,6 +3030,9 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
 
             if chunk.choices[0].finish_reason:
                 finish_reason = chunk.choices[0].finish_reason
+                # Terminal frame arrived — everything after this assignment
+                # is local aggregation/state work and must not reconnect.
+                _attempt.mark(PROVIDER_PHASE_TERMINAL_RECEIVED)
 
             # Usage in the final chunk
             if hasattr(chunk, "usage") and chunk.usage:
@@ -3151,6 +3270,11 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
 
                 event_type = getattr(event, "type", None)
 
+                if event_type == "message_stop":
+                    # Terminal event arrived; any later SDK aggregation or
+                    # callback failure is Hermes-local and must not reconnect.
+                    _attempt.mark(PROVIDER_PHASE_TERMINAL_RECEIVED)
+
                 if event_type == "content_block_start":
                     block = getattr(event, "content_block", None)
                     if block and getattr(block, "type", None) == "tool_use":
@@ -3216,6 +3340,9 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                     "Provider returned an empty stream with no stop_reason "
                     "(possible upstream error or malformed event stream)."
                 )
+            # Completion validated (for shim streams without an explicit
+            # message_stop this is the equivalent terminal boundary).
+            _attempt.mark(PROVIDER_PHASE_TERMINAL_RECEIVED)
             return _final_message
 
     def _call():
@@ -3265,6 +3392,13 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                             "cancellation — exiting without retry.",
                             type(e).__name__,
                         )
+                        return
+                    if _attempt.terminal_received:
+                        # A terminal provider response was already observed
+                        # ON THIS ATTEMPT'S OWN TOKEN. Do not feed a later
+                        # local exception into the stream reconnect
+                        # classifier, regardless of exception type.
+                        result["error"] = e
                         return
                     _is_timeout = isinstance(
                         e, (_httpx.ReadTimeout, _httpx.ConnectTimeout, _httpx.PoolTimeout)
@@ -3732,6 +3866,14 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
     if agent._interrupt_requested:
         raise InterruptedError("Agent interrupted during streaming API call (post-worker)")
     if result["error"] is not None:
+        # Lifecycle boundary: once a terminal provider response was received,
+        # a later error is Hermes-local. It must NOT be converted into a
+        # partial-stream stub (which stamps finish_reason="length" and fires
+        # the continuation machinery, re-requesting a completed, billable
+        # response). Raise it so the outer loop reports a unified local
+        # post-response failure through the finalizer instead.
+        if _attempt.terminal_received:
+            raise result["error"]
         if deltas_were_sent["yes"]:
             # Streaming failed AFTER some tokens were already delivered to
             # the platform.  Re-raising would let the outer retry loop make

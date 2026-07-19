@@ -1621,6 +1621,7 @@ stt:
   enabled: true                # Auto-transcribe inbound voice messages (default: true)
   echo_transcripts: true       # Post raw transcripts back to the chat as 🎙️ "..." (default: true)
   provider: "local"            # "local" | "groq" | "openai" | "mistral"
+  hotwords: []                # words/phrases to bias STT recognition toward (e.g. ["Hermes", "Nous"])
   local:
     model: "base"              # tiny, base, small, medium, large-v3
   openai:

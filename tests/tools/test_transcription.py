@@ -418,6 +418,45 @@ class TestHotwordsLocalProvider:
             # Only "Hermes" and "Nous" survive filtering
             assert kwargs["hotwords"] == "Hermes, OpenCode"
 
+    def test_hotwords_propagate_from_real_config(self, tmp_path, monkeypatch):
+        """DEFAULT_CONFIG → YAML deep-merge propagates hotwords through real load_config() to a mocked provider."""
+        import yaml
+        audio_file = tmp_path / "test.ogg"
+        audio_file.write_bytes(b"fake audio")
+
+        mock_model = MagicMock()
+        mock_info = MagicMock(language="en", duration=1.0)
+        mock_segment = MagicMock()
+        mock_segment.text = "hello"
+        mock_model.transcribe.return_value = (iter([mock_segment]), mock_info)
+
+        monkeypatch.setattr("hermes_cli.config._LOAD_CONFIG_CACHE", {})
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        config_yaml = tmp_path / "config.yaml"
+        config_yaml.write_text(yaml.dump({
+            "stt": {
+                "provider": "local",
+                "hotwords": ["Hermes", "Nous"],
+                "local": {"model": "base", "language": ""},
+            }
+        }))
+
+        with patch("tools.transcription_tools._HAS_FASTER_WHISPER", True), \
+             patch("tools.transcription_tools._local_model", None), \
+             patch("tools.transcription_tools._local_model_name", None), \
+             patch.dict("sys.modules", {"faster_whisper": _fake_faster_whisper_module(mock_model)}):
+            # NOTE: _load_stt_config is NOT patched — it reads the real config path
+            import sys
+            from tools.transcription_tools import transcribe_audio
+            result = transcribe_audio(str(audio_file))
+            assert result["success"] is True
+            mock_model.transcribe.assert_called_once()
+            kwargs = mock_model.transcribe.call_args.kwargs
+            assert "hotwords" in kwargs
+            assert "Hermes" in kwargs["hotwords"]
+            assert "Nous" in kwargs["hotwords"]
+
 
 # ---------------------------------------------------------------------------
 # Hotwords for OpenAI and Groq cloud providers

@@ -2224,7 +2224,7 @@ DEFAULT_CONFIG = {
     "stt": {
         "enabled": True,
         # When true, gateway voice messages are transcribed for the agent and
-        # the raw transcript is also echoed back to the user as a 🎙🏾 message.
+        # the raw transcript is also echoed back to the user as a 🎙️ message.
         # Set false to keep STT for the agent while suppressing that user-facing echo.
         "echo_transcripts": True,
         "provider": "local",  # "local" (free, faster-whisper) | "groq" | "openai" (Whisper API) | "mistral" (Voxtral Transcribe) | "elevenlabs" (Scribe) | "deepinfra"

@@ -184,7 +184,7 @@ export interface KanbanProfile {
 }
 
 /** Column presentation — codicon + tone only. Labels + help live in i18n
- *  (`t.kanban.col`); see `columnLabel`/`columnHelp` in ui.tsx. Order follows
+ *  (plugin bundles); see `columnLabel`/`columnHelp` in i18n.ts. Order follows
  *  the backend's BOARD_COLUMNS; anything the backend adds renders via the
  *  fallback. */
 export const COLUMN_META: Record<string, { codicon: string; tone: string }> = {

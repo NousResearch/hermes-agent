@@ -11,25 +11,17 @@ import {
   profileColor,
   profileColorSoft,
   relativeTime,
-  useI18n,
   useQuery
 } from '@hermes/plugin-sdk'
 import { type ReactNode, useEffect, useLayoutEffect, useRef, useState } from 'react'
 
 import { fetchOrchestration, ORCHESTRATION_KEY } from './api'
+import { columnLabel, useKanban } from './i18n'
 import { columnMeta, type KanbanTask } from './types'
 
-/** The kanban i18n slice — one hook every plugin component reads `t.kanban` from. */
-export function useKanban() {
-  return useI18n().t.kanban
-}
-
-export type KanbanText = ReturnType<typeof useKanban>
-
-// Column labels + help live in i18n (visuals stay in COLUMN_META); unknown
-// backend statuses fall back to the raw id / no help.
-export const columnLabel = (k: KanbanText, name: string) => k.col[name as keyof KanbanText['col']]?.label ?? name
-export const columnHelp = (k: KanbanText, name: string) => k.col[name as keyof KanbanText['col']]?.help ?? ''
+// Plugin-scoped i18n lives in ./i18n; re-exported so components import strings
+// and chrome from one place (./ui).
+export { columnHelp, columnLabel, type KanbanText, lockedReason, useKanban } from './i18n'
 
 /** Orchestration knobs (cached app-wide; the settings panel invalidates). */
 export function useOrchestration() {
@@ -46,13 +38,10 @@ export function useDefaultAssignee(): string {
 // them, so lanes/menus must not offer them as targets. `running`/`review` are
 // claimed by the dispatcher; `scheduled` needs a wake-up time only an agent or
 // the CLI can attach (a bare status drag is refused with a 409). The reason
-// copy lives in i18n (`t.kanban.locked`).
+// copy lives in the plugin i18n bundle (`locked.*`); see `lockedReason`.
 export const LOCKED_COLUMNS = ['review', 'running', 'scheduled'] as const
 
 export const isLockedTarget = (name: string): boolean => (LOCKED_COLUMNS as readonly string[]).includes(name)
-
-/** Reason a locked column can't be dropped into (for the info toast). */
-export const lockedReason = (k: KanbanText, name: string) => k.locked[name as keyof KanbanText['locked']] ?? ''
 
 export const shortId = (id?: null | string) => (id ?? '').replace(/^t_/, '').slice(0, 6)
 

@@ -18,9 +18,11 @@ hermes_bootstrap.harden_import_path()
 
 import argparse
 import contextlib
+import fcntl
 import io
 import json
 import os
+import socket
 import sys
 import threading
 import time
@@ -140,7 +142,66 @@ def main():
     with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
         cli = HermesCLI(model=args.model or None, compact=True, resume=args.session_key, verbose=False)
 
-    for raw in sys.stdin:
+    # Spurious stdin-EOF recovery (same O_NONBLOCK shared file-description
+    # issue as the gateway entry point — any child inheriting fd 0 can flip
+    # the flag and launder EAGAIN into an apparent EOF).
+    _sw_recovery_times: list[float] = []
+    _SW_MAX_RECOVERIES_PER_MINUTE = 10
+
+    def _sw_diagnose_stdin() -> str:
+        parts: list[str] = []
+        try:
+            flags = fcntl.fcntl(0, fcntl.F_GETFL)
+            parts.append(f"O_NONBLOCK={'1' if flags & os.O_NONBLOCK else '0'}")
+        except Exception as e:
+            parts.append(f"F_GETFL error: {e}")
+        try:
+            s = socket.fromfd(0, socket.AF_UNIX, socket.SOCK_STREAM)
+            try:
+                tv = s.getsockopt(socket.SOL_SOCKET, socket.SO_RCVTIMEO)
+                parts.append(f"SO_RCVTIMEO={tv}")
+            finally:
+                s.detach()
+        except Exception:
+            pass
+        return ", ".join(parts) if parts else "unknown"
+
+    while True:
+        raw = sys.stdin.readline()
+        if not raw:
+            try:
+                flags = fcntl.fcntl(0, fcntl.F_GETFL)
+                is_nonblock = bool(flags & os.O_NONBLOCK)
+            except Exception:
+                is_nonblock = False
+
+            if not is_nonblock:
+                # Genuine peer-close
+                break
+
+            # Spurious EOF — recover
+            now = time.time()
+            _sw_recovery_times.append(now)
+            _sw_recovery_times[:] = [t for t in _sw_recovery_times if t > now - 60]
+            if len(_sw_recovery_times) > _SW_MAX_RECOVERIES_PER_MINUTE:
+                print(
+                    f"[slash-worker] stdin spurious-EOF recovery rate exceeded "
+                    f"({len(_sw_recovery_times)}/min)",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                break
+
+            diag = _sw_diagnose_stdin()
+            print(
+                f"[slash-worker] stdin spurious EOF (subprocess O_NONBLOCK flip), "
+                f"recovering: {diag}",
+                file=sys.stderr,
+                flush=True,
+            )
+            os.set_blocking(0, True)
+            continue
+
         line = raw.strip()
         if not line:
             continue

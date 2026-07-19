@@ -1797,6 +1797,21 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
                 # not only after a later credential-rotation rebuild.
                 agent._replace_primary_openai_client(reason="fallback_timeout_apply")
 
+        # ``resolve_provider_client`` runs before the fallback pool is loaded
+        # above, so its client can still carry a provider environment key.  If
+        # a pool is available, activate its current credential now so the
+        # first fallback request uses the same credential source as retries.
+        _fallback_pool = getattr(agent, "_credential_pool", None)
+        _fallback_entry = _fallback_pool.current() if _fallback_pool is not None else None
+        if _fallback_entry is not None:
+            try:
+                agent._swap_credential(_fallback_entry)
+            except Exception as exc:
+                logger.warning(
+                    "Fallback to %s/%s: could not activate pooled credential: %s",
+                    fb_provider, fb_model, exc,
+                )
+
         # Re-evaluate prompt caching for the new provider/model
         agent._use_prompt_caching, agent._use_native_cache_layout = (
             agent._anthropic_prompt_cache_policy(

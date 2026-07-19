@@ -177,6 +177,16 @@ def auth_add_command(args) -> None:
 
     pool = load_pool(provider)
 
+    # --base-url is only valid for API-key credentials. OAuth flows derive
+    # their base_url from the OAuth provider's discovery response, so a
+    # user-supplied override would be silently ignored. Reject it early.
+    custom_base_url = (getattr(args, "base_url", None) or "").strip()
+    if custom_base_url and requested_type != AUTH_TYPE_API_KEY:
+        raise SystemExit(
+            "--base-url is only supported for API-key credentials. "
+            f"OAuth providers derive their endpoint automatically."
+        )
+
     # Clear ALL suppressions for this provider — re-adding a credential is
     # a strong signal the user wants auth re-enabled.  This covers env:*
     # (shell-exported vars), gh_cli (copilot), claude_code, qwen-cli,

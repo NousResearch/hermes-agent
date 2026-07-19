@@ -239,6 +239,22 @@ class TestBaseUrlStorageIntegration:
     def test_no_base_url_flag_uses_registry_default(self):
         """Without --base-url, the handler must fall back to _provider_base_url()."""
         from hermes_cli.auth_commands import auth_add_command
+    def test_base_url_rejected_for_oauth_type(self):
+        """--base-url must be rejected when auth_type is oauth."""
+        from hermes_cli.auth_commands import auth_add_command
+
+        args = SimpleNamespace(
+            provider="anthropic",
+            auth_action="add",
+            auth_type="oauth",
+            api_key=None,
+            base_url="https://evil.example.com",
+            label=None,
+        )
+
+        with pytest.raises(SystemExit, match="API-key"):
+            auth_add_command(args)
+
 
         captured_entries = []
 

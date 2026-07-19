@@ -9,6 +9,22 @@ import pytest
 from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
 
 
+def test_stream_send_metadata_carries_original_reply_anchor():
+    consumer = GatewayStreamConsumer(
+        adapter=MagicMock(),
+        chat_id="123",
+        initial_reply_to_id="456",
+    )
+
+    assert consumer._metadata_for_send(final=False) == {
+        "reply_to_message_id": "456",
+    }
+    assert consumer._metadata_for_send(final=True) == {
+        "reply_to_message_id": "456",
+        "notify": True,
+    }
+
+
 # ── _clean_for_display unit tests ────────────────────────────────────────
 
 

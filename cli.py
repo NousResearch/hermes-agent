@@ -13693,6 +13693,18 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     daemon=True,
                 ).start()
             else:
+                # If continuous is already armed, pressing the hotkey
+                # expresses stop intent — disarm continuous so the loop
+                # won't auto-restart after the current STT/agent turn.
+                # This makes the hotkey a proper toggle even when not
+                # recording (the "dead zone" during STT or agent turns).
+                # Fixes #67545: Ctrl+B ignored during STT/agent.
+                if cli_ref._voice_continuous:
+                    with cli_ref._voice_lock:
+                        cli_ref._voice_continuous = False
+                    event.app.invalidate()
+                    return
+
                 # Guard: don't START recording during agent run or interactive prompts
                 if cli_ref._agent_running:
                     return

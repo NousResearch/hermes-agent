@@ -6894,6 +6894,104 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if drained:
             logger.info("Drained %d inbound message(s) queued during startup restore", drained)
 
+    async def _redeliver_pending_obligations(self) -> int:
+        """Redeliver final responses recorded in the delivery ledger by a
+        previous (now dead) gateway process.
+
+        Runs at startup BEFORE ``_schedule_resume_pending_sessions``. A
+        session with a recoverable obligation already produced its answer —
+        the turn completed and only delivery is owed — so this method sends
+        the stored text and clears ``resume_pending`` for that session,
+        preventing the resume path from re-running (and re-paying for) a
+        turn whose output we hold.
+
+        Crash-ambiguity contract (see gateway/delivery_ledger.py):
+        rows that were mid-send or previously rejected carry a visible
+        recovered-reply marker so a possible duplicate is labeled, never
+        silent. Returns the number of redeliveries attempted.
+        """
+        try:
+            from gateway.delivery_ledger import (
+                RECOVERED_MARKER,
+                ledger_enabled,
+                mark_delivered,
+                mark_failed,
+                sweep_recoverable,
+            )
+
+            if not ledger_enabled():
+                return 0
+            claimed = await asyncio.to_thread(sweep_recoverable)
+        except Exception:
+            logger.debug("delivery ledger sweep failed", exc_info=True)
+            return 0
+        if not claimed:
+            return 0
+
+        redelivered = 0
+        for row in claimed:
+            try:
+                platform = Platform(row["platform"])
+            except Exception:
+                logger.debug(
+                    "obligation %s: unknown platform %r",
+                    row["obligation_id"], row.get("platform"),
+                )
+                continue
+            adapter = self.adapters.get(platform)
+            if adapter is None:
+                # Platform not connected this boot — leave the row claimed;
+                # attempts cap + stale cutoff bound the retries on later boots.
+                continue
+            content = row["content"]
+            if row.get("needs_marker"):
+                content = RECOVERED_MARKER + content
+            metadata = (
+                {"thread_id": row["thread_id"]} if row.get("thread_id") else None
+            )
+            try:
+                result = await adapter.send(
+                    chat_id=row["chat_id"],
+                    content=content,
+                    metadata=metadata,
+                )
+            except Exception as send_err:
+                logger.warning(
+                    "obligation %s: redelivery send raised: %s",
+                    row["obligation_id"], send_err,
+                )
+                result = None
+            try:
+                if result is not None and getattr(result, "success", False):
+                    mark_delivered(row["obligation_id"])
+                    redelivered += 1
+                    logger.info(
+                        "Redelivered recovered final response to %s:%s "
+                        "(obligation %s, attempt %d)",
+                        row["platform"], row["chat_id"],
+                        row["obligation_id"], row["attempts"],
+                    )
+                else:
+                    mark_failed(
+                        row["obligation_id"],
+                        str(getattr(result, "error", "") or "send failed"),
+                    )
+            except Exception:
+                logger.debug("delivery ledger update failed", exc_info=True)
+
+            # The answer reached (or was owed to) this session — don't ALSO
+            # re-run the turn via the resume path.
+            session_key = row.get("session_key") or ""
+            if session_key:
+                try:
+                    await self.async_session_store.clear_resume_pending(session_key)
+                except Exception:
+                    logger.debug(
+                        "clear_resume_pending failed for %s", session_key,
+                        exc_info=True,
+                    )
+        return redelivered
+
     def _schedule_resume_pending_sessions(self, platform=None) -> int:
         """Auto-continue fresh restart-interrupted sessions after startup.
 
@@ -7728,6 +7826,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # previous gateway restart/shutdown.  The resume_pending flag is cleared
         # by the normal successful-turn path, so a failed auto-resume remains
         # visible for manual recovery on the next user message.
+        #
+        # Delivery-obligation redelivery runs FIRST: a session whose final
+        # response was generated but never confirmed-delivered has its answer
+        # in the ledger — redelivering it (and clearing resume_pending for
+        # that session) is strictly cheaper and more correct than re-running
+        # the whole turn.
+        await self._redeliver_pending_obligations()
         self._schedule_resume_pending_sessions()
         await self._finish_startup_restore()
 

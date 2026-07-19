@@ -213,6 +213,27 @@ platform network disconnect as an event-loop failure.
 
 Sessions persist across messages until they reset. The agent remembers your conversation context.
 
+### Delivery Reliability
+
+Final agent responses are recorded in a durable **delivery ledger**
+(`state.db`) around each platform send. If the gateway crashes or restarts
+between producing a response and the platform confirming receipt, the next
+boot redelivers the stored response instead of losing it — or re-running the
+whole turn.
+
+Semantics are honest at-least-once:
+
+- A response whose send **never started** is redelivered as-is.
+- A response that was **mid-send** when the gateway died (the platform may or
+  may not have received it) is redelivered with a visible
+  "♻️ Recovered reply — … may be a duplicate" prefix. Ambiguity is labeled,
+  never silently resent.
+- Redelivery is bounded: 3 attempts, 24-hour freshness, then the row is
+  abandoned. Delivered rows are pruned after 7 days.
+
+Disable with `gateway.delivery_ledger: false` in `config.yaml` (restores the
+old behavior: in-flight responses are lost on crash).
+
 ### Reset Policies
 
 **By default sessions never auto-reset** — context lives until you `/reset`

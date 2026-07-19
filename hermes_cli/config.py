@@ -2964,6 +2964,15 @@ DEFAULT_CONFIG = {
     # Gateway settings — control how messaging platforms (Telegram, Discord,
     # Slack, etc.) deliver agent-produced files as native attachments.
     "gateway": {
+        # Durable delivery-obligation ledger: final agent responses are
+        # recorded in state.db around the platform send, and a gateway that
+        # died between finalize and platform ACK redelivers the stored
+        # response on the next boot (ambiguous cases carry a visible
+        # "recovered reply — may be a duplicate" marker; honest
+        # at-least-once). Disable to lose in-flight final responses on
+        # crash/restart, as before.
+        "delivery_ledger": True,
+
         # Seconds the gateway waits for a single messaging platform to finish
         # connecting during startup (and on reconnect). Discord in particular
         # can blow past the old fixed 30s when an account has many slash

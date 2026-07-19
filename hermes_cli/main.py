@@ -143,6 +143,7 @@ def _run_and_exit_oneshot(
     provider: object = None,
     toolsets: object = None,
     usage_file: object = None,
+    worktree: bool = False,
 ) -> None:
     try:
         from hermes_cli.oneshot import run_oneshot
@@ -153,6 +154,7 @@ def _run_and_exit_oneshot(
             provider=provider,
             toolsets=toolsets,
             usage_file=usage_file,
+            worktree=worktree,
         )
     except KeyboardInterrupt:
         rc = 130
@@ -13452,6 +13454,7 @@ def _try_termux_fast_cli_launch() -> bool:
             provider=getattr(args, "provider", None),
             toolsets=getattr(args, "toolsets", None),
             usage_file=getattr(args, "usage_file", None),
+            worktree=getattr(args, "worktree", False),
         )
 
     if (args.resume or args.continue_last) and args.command is None:
@@ -15610,6 +15613,7 @@ def main():
             provider=getattr(args, "provider", None),
             toolsets=getattr(args, "toolsets", None),
             usage_file=getattr(args, "usage_file", None),
+            worktree=getattr(args, "worktree", False),
         )
 
     # Handle top-level --resume / --continue as shortcut to chat

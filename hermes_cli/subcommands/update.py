@@ -6,6 +6,7 @@ Handler injected to avoid importing ``main``.
 
 from __future__ import annotations
 
+import argparse
 from typing import Callable
 
 
@@ -58,14 +59,22 @@ def build_update_parser(subparsers, *, cmd_update: Callable) -> None:
             "Update against this branch instead of the default (main). "
             "If the local checkout is on a different branch, hermes will "
             "switch to the requested branch first (auto-stashing any "
-            "uncommitted changes)."
+            "uncommitted changes). If --branch is also given to an auto "
+            "subcommand, the child value wins."
         ),
     )
     update_parser.add_argument(
         "--force",
         action="store_true",
         default=False,
-        help="Windows: proceed with the update even when another hermes.exe is detected. The concurrent process will likely cause WinError 32 warnings and may leave a reboot-deferred .exe replacement. Does NOT bypass the venv-process guard (see --force-venv).",
+        help=(
+            "Windows: proceed with the update even when another hermes.exe is "
+            "detected. The concurrent process will likely cause WinError 32 "
+            "warnings and may leave a reboot-deferred .exe replacement. Does "
+            "NOT bypass the venv-process guard (see --force-venv). For auto "
+            "run-now, an explicit child option wins when both positions are "
+            "supplied."
+        ),
     )
     update_parser.add_argument(
         "--force-venv",
@@ -166,9 +175,12 @@ def build_update_parser(subparsers, *, cmd_update: Callable) -> None:
     )
     update_auto_plan.add_argument(
         "--branch",
-        default=None,
+        default=argparse.SUPPRESS,
         metavar="NAME",
-        help="Check this branch instead of the default (main).",
+        help=(
+            "Check this branch instead of the default (main). If --branch is "
+            "also given before `auto`, this value wins."
+        ),
     )
     update_auto_plan.set_defaults(
         func=lambda args: __import__(
@@ -203,15 +215,22 @@ def build_update_parser(subparsers, *, cmd_update: Callable) -> None:
     )
     update_auto_run_now.add_argument(
         "--branch",
-        default=None,
+        default=argparse.SUPPRESS,
         metavar="NAME",
-        help="Update against this branch instead of the default (main).",
+        help=(
+            "Update against this branch instead of the default (main). If "
+            "--branch is also given before `auto`, this value wins."
+        ),
     )
     update_auto_run_now.add_argument(
         "--force",
         action="store_true",
-        default=False,
-        help="Pass through the existing Windows concurrent-process override.",
+        default=argparse.SUPPRESS,
+        help=(
+            "Pass through the existing Windows concurrent-process override. "
+            "Options before `auto` are preserved; an explicit child option "
+            "wins when both positions are supplied."
+        ),
     )
     update_auto_run_now.set_defaults(
         func=lambda args: __import__(

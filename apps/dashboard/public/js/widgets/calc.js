@@ -290,6 +290,379 @@ const CALCULATORS = [
         note: (ml != null ? `≈ ${ml} mL. ` : "") + "Always check the maximum dose and formulation." };
     },
   },
+  {
+    id: "wellspe", name: "Wells score (PE)", blurb: "Pre-test probability of pulmonary embolism.",
+    inputs: [
+      { key: "dvt", label: "Clinical signs of DVT (3)", type: "check" },
+      { key: "pe1", label: "PE is the most likely diagnosis (3)", type: "check" },
+      { key: "hr", label: "Heart rate > 100 (1.5)", type: "check" },
+      { key: "immob", label: "Immobilisation ≥3d / surgery <4wk (1.5)", type: "check" },
+      { key: "prev", label: "Previous DVT / PE (1.5)", type: "check" },
+      { key: "haem", label: "Haemoptysis (1)", type: "check" },
+      { key: "malig", label: "Malignancy (1)", type: "check" },
+    ],
+    compute(v) {
+      const s = (v.dvt ? 3 : 0) + (v.pe1 ? 3 : 0) + (v.hr ? 1.5 : 0) + (v.immob ? 1.5 : 0)
+        + (v.prev ? 1.5 : 0) + (v.haem ? 1 : 0) + (v.malig ? 1 : 0);
+      const cat = s > 4 ? "PE likely" : "PE unlikely";
+      const tone = s > 4 ? "bad" : "good";
+      return { value: round(s, 1), unit: "points", tone,
+        note: `${cat} (>4 = likely). If unlikely, a negative D-dimer can exclude PE.` };
+    },
+  },
+  {
+    id: "hasbled", name: "HAS-BLED (bleeding risk)", blurb: "Bleeding risk on anticoagulation for AF.",
+    inputs: [
+      { key: "htn", label: "Uncontrolled hypertension (SBP >160)", type: "check" },
+      { key: "renal", label: "Abnormal renal function", type: "check" },
+      { key: "liver", label: "Abnormal liver function", type: "check" },
+      { key: "stroke", label: "Prior stroke", type: "check" },
+      { key: "bleed", label: "Prior major bleeding / predisposition", type: "check" },
+      { key: "inr", label: "Labile INR", type: "check" },
+      { key: "elderly", label: "Age > 65", type: "check" },
+      { key: "drugs", label: "Drugs predisposing to bleeding", type: "check" },
+      { key: "alcohol", label: "Alcohol ≥ 8 units/week", type: "check" },
+    ],
+    compute(v) {
+      const s = ["htn", "renal", "liver", "stroke", "bleed", "inr", "elderly", "drugs", "alcohol"]
+        .reduce((a, k) => a + (v[k] ? 1 : 0), 0);
+      const tone = s >= 3 ? "bad" : s === 2 ? "warn" : "good";
+      return { value: s, unit: "points", tone,
+        note: s >= 3 ? "High bleeding risk — address modifiable factors; not a reason alone to withhold anticoagulation."
+          : "Lower bleeding risk. Weigh against stroke risk (CHA₂DS₂-VASc)." };
+    },
+  },
+  {
+    id: "rcri", name: "RCRI (cardiac risk, non-cardiac surgery)", blurb: "Revised Cardiac Risk Index (Lee).",
+    inputs: [
+      { key: "surg", label: "High-risk surgery (intraperitoneal/thoracic/suprainguinal vascular)", type: "check" },
+      { key: "ihd", label: "Ischaemic heart disease", type: "check" },
+      { key: "chf", label: "Congestive heart failure", type: "check" },
+      { key: "cva", label: "Cerebrovascular disease", type: "check" },
+      { key: "dm", label: "Insulin-treated diabetes", type: "check" },
+      { key: "cr", label: "Creatinine > 177 µmol/L", type: "check" },
+    ],
+    compute(v) {
+      const s = ["surg", "ihd", "chf", "cva", "dm", "cr"].reduce((a, k) => a + (v[k] ? 1 : 0), 0);
+      const risk = [0.4, 0.9, 6.6, 11][Math.min(s, 3)];
+      const tone = s >= 2 ? "bad" : s === 1 ? "warn" : "good";
+      return { value: s, unit: "points", tone, note: `≈ ${risk}% major cardiac event at 30 days.` };
+    },
+  },
+  {
+    id: "sirs", name: "SIRS criteria", blurb: "Systemic inflammatory response.",
+    inputs: [
+      { key: "temp", label: "Temp > 38 or < 36 °C", type: "check" },
+      { key: "hr", label: "Heart rate > 90", type: "check" },
+      { key: "rr", label: "RR > 20 or pCO₂ < 4.3 kPa", type: "check" },
+      { key: "wcc", label: "WCC > 12 or < 4 ×10⁹/L", type: "check" },
+    ],
+    compute(v) {
+      const s = ["temp", "hr", "rr", "wcc"].reduce((a, k) => a + (v[k] ? 1 : 0), 0);
+      const tone = s >= 2 ? "warn" : "good";
+      return { value: s, unit: "/4", tone,
+        note: s >= 2 ? "SIRS present. With suspected infection, assess for sepsis (qSOFA/SOFA)." : "SIRS not met." };
+    },
+  },
+  {
+    id: "centor", name: "Centor / McIsaac (strep pharyngitis)", blurb: "Likelihood of group-A strep.",
+    inputs: [
+      { key: "exudate", label: "Tonsillar exudate/swelling", type: "check" },
+      { key: "nodes", label: "Tender anterior cervical nodes", type: "check" },
+      { key: "fever", label: "History of fever > 38 °C", type: "check" },
+      { key: "cough", label: "Absence of cough", type: "check" },
+      { key: "age", label: "Age", type: "select", options: [
+        { value: 1, label: "3–14 (+1)" }, { value: 0, label: "15–44 (0)" }, { value: -1, label: "≥45 (−1)" }] },
+    ],
+    compute(v) {
+      const age = num(v.age);
+      if (age == null) return null;
+      const s = (v.exudate ? 1 : 0) + (v.nodes ? 1 : 0) + (v.fever ? 1 : 0) + (v.cough ? 1 : 0) + age;
+      const tone = s >= 4 ? "warn" : s >= 2 ? "info" : "good";
+      const rec = s <= 0 ? "strep unlikely — no testing/antibiotics"
+        : s <= 2 ? "low risk — testing optional" : "consider rapid test / empiric therapy per local guidance";
+      return { value: s, unit: "points", tone, note: rec };
+    },
+  },
+  {
+    id: "childpugh", name: "Child-Pugh (cirrhosis)", blurb: "Severity/prognosis in chronic liver disease.",
+    inputs: [
+      { key: "bili", label: "Bilirubin", type: "select", options: [
+        { value: 1, label: "< 34 µmol/L" }, { value: 2, label: "34–50" }, { value: 3, label: "> 50" }] },
+      { key: "alb", label: "Albumin", type: "select", options: [
+        { value: 1, label: "> 35 g/L" }, { value: 2, label: "28–35" }, { value: 3, label: "< 28" }] },
+      { key: "inr", label: "INR", type: "select", options: [
+        { value: 1, label: "< 1.7" }, { value: 2, label: "1.7–2.3" }, { value: 3, label: "> 2.3" }] },
+      { key: "asc", label: "Ascites", type: "select", options: [
+        { value: 1, label: "None" }, { value: 2, label: "Mild (controlled)" }, { value: 3, label: "Moderate–severe" }] },
+      { key: "enc", label: "Encephalopathy", type: "select", options: [
+        { value: 1, label: "None" }, { value: 2, label: "Grade 1–2" }, { value: 3, label: "Grade 3–4" }] },
+    ],
+    compute(v) {
+      const parts = ["bili", "alb", "inr", "asc", "enc"].map((k) => num(v[k]));
+      if (parts.some((p) => p == null)) return null;
+      const s = parts.reduce((a, b) => a + b, 0);
+      const cls = s <= 6 ? "A" : s <= 9 ? "B" : "C";
+      const tone = cls === "A" ? "good" : cls === "B" ? "warn" : "bad";
+      return { value: s, unit: `pts · class ${cls}`, tone,
+        note: `Class ${cls} (A 5–6, B 7–9, C 10–15). Higher class → worse peri-operative and 1-yr survival.` };
+    },
+  },
+  {
+    id: "meldna", name: "MELD-Na", blurb: "Chronic liver disease severity / transplant priority.",
+    inputs: [
+      { key: "bili", label: "Bilirubin", unit: "µmol/L", type: "number" },
+      { key: "inr", label: "INR", type: "number" },
+      { key: "cr", label: "Creatinine", unit: "µmol/L", type: "number" },
+      { key: "na", label: "Sodium", unit: "mmol/L", type: "number" },
+      { key: "hd", label: "Dialysis ≥2× in last week", type: "check" },
+    ],
+    compute(v) {
+      const bili = num(v.bili), inr = num(v.inr), cr = num(v.cr), na = num(v.na);
+      if (bili == null || inr == null || cr == null || na == null) return null;
+      const biliMg = Math.max(bili / 17.1, 1);
+      let crMg = Math.max(cr / 88.4, 1);
+      if (v.hd || crMg > 4) crMg = 4;
+      const inrC = Math.max(inr, 1);
+      let meld = Math.round(10 * (0.957 * Math.log(crMg) + 0.378 * Math.log(biliMg) + 1.120 * Math.log(inrC) + 0.643));
+      meld = Math.max(6, Math.min(meld, 40));
+      let score = meld;
+      if (meld > 11) {
+        const naC = Math.max(125, Math.min(na, 137));
+        score = Math.round(meld + 1.32 * (137 - naC) - (0.033 * meld * (137 - naC)));
+        score = Math.max(6, Math.min(score, 40));
+      }
+      const tone = score >= 30 ? "bad" : score >= 20 ? "warn" : "good";
+      return { value: score, unit: "points", tone, note: `Higher = greater 90-day mortality (MELD ${meld}).` };
+    },
+  },
+  {
+    id: "qtc", name: "Corrected QT (Bazett)", blurb: "QTc = QT / √RR.",
+    inputs: [
+      { key: "qt", label: "QT interval", unit: "ms", type: "number" },
+      { key: "hr", label: "Heart rate", unit: "bpm", type: "number" },
+    ],
+    compute(v) {
+      const qt = num(v.qt), hr = num(v.hr);
+      if (qt == null || hr == null || hr <= 0) return null;
+      const rr = 60 / hr;
+      const qtc = Math.round(qt / Math.sqrt(rr));
+      const tone = qtc >= 500 ? "bad" : qtc >= 460 ? "warn" : "good";
+      return { value: qtc, unit: "ms", tone,
+        note: "Prolonged > 450 (M) / > 470 (F); > 500 → high torsades risk. Review QT-prolonging drugs & K⁺/Mg²⁺." };
+    },
+  },
+  {
+    id: "shock", name: "Shock index", blurb: "HR ÷ SBP.",
+    inputs: [
+      { key: "hr", label: "Heart rate", unit: "bpm", type: "number" },
+      { key: "sbp", label: "Systolic BP", unit: "mmHg", type: "number" },
+    ],
+    compute(v) {
+      const hr = num(v.hr), sbp = num(v.sbp);
+      if (hr == null || sbp == null || sbp <= 0) return null;
+      const si = round(hr / sbp, 2);
+      const tone = si >= 1.0 ? "bad" : si >= 0.7 ? "warn" : "good";
+      return { value: si, unit: "", tone, note: "Normal 0.5–0.7; > 0.9 suggests haemodynamic compromise." };
+    },
+  },
+  {
+    id: "bsa", name: "Body surface area (Mosteller)", blurb: "√(ht·wt / 3600).",
+    inputs: [
+      { key: "ht", label: "Height", unit: "cm", type: "number" },
+      { key: "wt", label: "Weight", unit: "kg", type: "number" },
+    ],
+    compute(v) {
+      const ht = num(v.ht), wt = num(v.wt);
+      if (ht == null || wt == null) return null;
+      return { value: round(Math.sqrt((ht * wt) / 3600), 2), unit: "m²", tone: "info",
+        note: "Used for chemotherapy and some drug dosing." };
+    },
+  },
+  {
+    id: "ldl", name: "LDL (Friedewald)", blurb: "TC − HDL − TG/2.2 (SI).",
+    inputs: [
+      { key: "tc", label: "Total cholesterol", unit: "mmol/L", type: "number" },
+      { key: "hdl", label: "HDL", unit: "mmol/L", type: "number" },
+      { key: "tg", label: "Triglycerides", unit: "mmol/L", type: "number" },
+    ],
+    compute(v) {
+      const tc = num(v.tc), hdl = num(v.hdl), tg = num(v.tg);
+      if (tc == null || hdl == null || tg == null) return null;
+      if (tg >= 4.5) return { value: "—", unit: "", tone: "warn", note: "Invalid when TG ≥ 4.5 mmol/L — request a direct LDL." };
+      return { value: round(tc - hdl - tg / 2.2, 2), unit: "mmol/L", tone: "info",
+        note: "High-risk LDL target < 1.8 mmol/L." };
+    },
+  },
+  {
+    id: "apri", name: "APRI (liver fibrosis)", blurb: "AST-to-platelet ratio index.",
+    inputs: [
+      { key: "ast", label: "AST", unit: "U/L", type: "number" },
+      { key: "uln", label: "AST upper limit (default 40)", unit: "U/L", type: "number" },
+      { key: "plt", label: "Platelets", unit: "×10⁹/L", type: "number" },
+    ],
+    compute(v) {
+      const ast = num(v.ast), plt = num(v.plt);
+      if (ast == null || plt == null || plt <= 0) return null;
+      const uln = num(v.uln) || 40;
+      const apri = round(((ast / uln) / plt) * 100, 2);
+      const tone = apri > 1 ? "warn" : "good";
+      return { value: apri, unit: "", tone, note: "> 0.5 possible, > 1.0 significant fibrosis, > 2 cirrhosis (derived in viral hepatitis)." };
+    },
+  },
+  {
+    id: "fib4", name: "FIB-4 (liver fibrosis)", blurb: "(age·AST)/(platelets·√ALT).",
+    inputs: [
+      { key: "age", label: "Age", unit: "years", type: "number" },
+      { key: "ast", label: "AST", unit: "U/L", type: "number" },
+      { key: "alt", label: "ALT", unit: "U/L", type: "number" },
+      { key: "plt", label: "Platelets", unit: "×10⁹/L", type: "number" },
+    ],
+    compute(v) {
+      const age = num(v.age), ast = num(v.ast), alt = num(v.alt), plt = num(v.plt);
+      if (age == null || ast == null || alt == null || plt == null || plt <= 0 || alt <= 0) return null;
+      const fib = round((age * ast) / (plt * Math.sqrt(alt)), 2);
+      const tone = fib > 2.67 ? "warn" : "good";
+      return { value: fib, unit: "", tone, note: "< 1.3 low, > 2.67 advanced fibrosis likely." };
+    },
+  },
+  {
+    id: "osmgap", name: "Osmolar gap", blurb: "Measured − calculated osmolality.",
+    inputs: [
+      { key: "na", label: "Sodium", unit: "mmol/L", type: "number" },
+      { key: "glu", label: "Glucose", unit: "mmol/L", type: "number" },
+      { key: "urea", label: "Urea", unit: "mmol/L", type: "number" },
+      { key: "meas", label: "Measured osmolality", unit: "mOsm/kg", type: "number" },
+    ],
+    compute(v) {
+      const na = num(v.na), glu = num(v.glu), urea = num(v.urea), meas = num(v.meas);
+      if (na == null || glu == null || urea == null || meas == null) return null;
+      const calc = 2 * na + glu + urea;
+      const gap = round(meas - calc, 1);
+      const tone = gap > 10 ? "warn" : "good";
+      return { value: gap, unit: "mOsm/kg", tone, note: "> 10 → unmeasured osmoles (e.g. toxic alcohols, mannitol)." };
+    },
+  },
+  {
+    id: "winters", name: "Winters' formula", blurb: "Expected pCO₂ in metabolic acidosis.",
+    inputs: [{ key: "hco3", label: "Bicarbonate", unit: "mmol/L", type: "number" }],
+    compute(v) {
+      const hco3 = num(v.hco3);
+      if (hco3 == null) return null;
+      const mmHg = 1.5 * hco3 + 8;
+      const kpa = round(mmHg / 7.5, 1);
+      return { value: kpa, unit: "kPa", tone: "info",
+        note: `Expected pCO₂ ≈ ${kpa} kPa (${round(mmHg, 0)} mmHg) ± 0.3. Lower measured → added respiratory alkalosis; higher → added respiratory acidosis.` };
+    },
+  },
+  {
+    id: "nadeficit", name: "Sodium deficit", blurb: "For hyponatraemia correction planning.",
+    inputs: [
+      { key: "sex", label: "Sex", type: "select", options: ["male", "female"] },
+      { key: "wt", label: "Weight", unit: "kg", type: "number" },
+      { key: "cur", label: "Current sodium", unit: "mmol/L", type: "number" },
+      { key: "tgt", label: "Target sodium", unit: "mmol/L", type: "number" },
+    ],
+    compute(v) {
+      const wt = num(v.wt), cur = num(v.cur), tgt = num(v.tgt);
+      if (wt == null || cur == null || tgt == null || !v.sex) return null;
+      const tbw = wt * (v.sex === "female" ? 0.5 : 0.6);
+      const deficit = round(tbw * (tgt - cur), 0);
+      return { value: deficit, unit: "mmol", tone: "warn",
+        note: "Correct SLOWLY (≤ 8–10 mmol/L per 24h) to avoid osmotic demyelination." };
+    },
+  },
+  {
+    id: "parkland", name: "Parkland formula (burns)", blurb: "First-24h crystalloid.",
+    inputs: [
+      { key: "wt", label: "Weight", unit: "kg", type: "number" },
+      { key: "tbsa", label: "% TBSA burned", unit: "%", type: "number" },
+    ],
+    compute(v) {
+      const wt = num(v.wt), tbsa = num(v.tbsa);
+      if (wt == null || tbsa == null) return null;
+      const total = 4 * wt * tbsa;
+      const first8 = round(total / 2, 0);
+      return { value: round(total, 0), unit: "mL / 24h", tone: "info",
+        note: `≈ ${first8} mL in the first 8h (from time of burn), remainder over 16h. Titrate to urine output.` };
+    },
+  },
+  {
+    id: "fena", name: "Fractional excretion of Na (FENa)", blurb: "Differentiates prerenal AKI vs ATN.",
+    inputs: [
+      { key: "una", label: "Urine sodium", unit: "mmol/L", type: "number" },
+      { key: "pna", label: "Plasma sodium", unit: "mmol/L", type: "number" },
+      { key: "ucr", label: "Urine creatinine", unit: "µmol/L", type: "number" },
+      { key: "pcr", label: "Plasma creatinine", unit: "µmol/L", type: "number" },
+    ],
+    compute(v) {
+      const una = num(v.una), pna = num(v.pna), ucr = num(v.ucr), pcr = num(v.pcr);
+      if (una == null || pna == null || ucr == null || pcr == null || pna === 0 || ucr === 0) return null;
+      const fena = round(((una * pcr) / (pna * ucr)) * 100, 2);
+      const tone = fena < 1 ? "warn" : "info";
+      return { value: fena, unit: "%", tone,
+        note: "< 1% prerenal; > 2% ATN. Unreliable on diuretics — consider FEUrea." };
+    },
+  },
+  {
+    id: "aagrad", name: "A–a gradient", blurb: "Alveolar–arterial O₂ gradient (kPa, sea level).",
+    inputs: [
+      { key: "fio2", label: "FiO₂ (fraction, e.g. 0.21)", type: "number" },
+      { key: "paco2", label: "PaCO₂", unit: "kPa", type: "number" },
+      { key: "pao2", label: "PaO₂", unit: "kPa", type: "number" },
+      { key: "age", label: "Age (optional)", unit: "years", type: "number" },
+    ],
+    compute(v) {
+      const fio2 = num(v.fio2), paco2 = num(v.paco2), pao2 = num(v.pao2);
+      if (fio2 == null || paco2 == null || pao2 == null) return null;
+      const pAO2 = fio2 * 95 - paco2 / 0.8;   // Patm−PH2O ≈ 95 kPa at sea level
+      const aa = round(pAO2 - pao2, 1);
+      const age = num(v.age);
+      const expected = age != null ? round((age / 4 + 4) / 7.5, 1) : null;
+      const tone = expected != null ? (aa > expected ? "warn" : "good") : "info";
+      return { value: aa, unit: "kPa", tone,
+        note: expected != null ? `Expected ≈ ${expected} kPa for age. Raised → V/Q mismatch, shunt or diffusion defect.`
+          : "Compare to age-expected (≈ (age/4 + 4)/7.5 kPa)." };
+    },
+  },
+  {
+    id: "gad7", name: "GAD-7 (anxiety)", blurb: "Over the last 2 weeks (0–3 each).",
+    inputs: ["Feeling nervous/anxious/on edge", "Not being able to stop/control worrying",
+      "Worrying too much about different things", "Trouble relaxing",
+      "Being so restless it's hard to sit still", "Becoming easily annoyed/irritable",
+      "Feeling afraid as if something awful might happen"].map((label, i) => ({
+      key: `g${i}`, label, type: "select", options: [
+        { value: 0, label: "0 — not at all" }, { value: 1, label: "1 — several days" },
+        { value: 2, label: "2 — more than half the days" }, { value: 3, label: "3 — nearly every day" }] })),
+    compute(v) {
+      const parts = [0, 1, 2, 3, 4, 5, 6].map((i) => num(v[`g${i}`]));
+      if (parts.some((p) => p == null)) return null;
+      const s = parts.reduce((a, b) => a + b, 0);
+      const sev = s >= 15 ? "severe" : s >= 10 ? "moderate" : s >= 5 ? "mild" : "minimal";
+      const tone = s >= 10 ? "warn" : "good";
+      return { value: s, unit: "/21", tone, note: `${sev} anxiety symptoms (≥10 clinically significant).` };
+    },
+  },
+  {
+    id: "phq9", name: "PHQ-9 (depression)", blurb: "Over the last 2 weeks (0–3 each).",
+    inputs: ["Little interest or pleasure", "Feeling down/depressed/hopeless",
+      "Sleep problems", "Tired / little energy", "Poor appetite or overeating",
+      "Feeling bad about yourself", "Trouble concentrating",
+      "Moving/speaking slowly or being restless", "Thoughts of self-harm"].map((label, i) => ({
+      key: `p${i}`, label, type: "select", options: [
+        { value: 0, label: "0 — not at all" }, { value: 1, label: "1 — several days" },
+        { value: 2, label: "2 — more than half the days" }, { value: 3, label: "3 — nearly every day" }] })),
+    compute(v) {
+      const parts = [0, 1, 2, 3, 4, 5, 6, 7, 8].map((i) => num(v[`p${i}`]));
+      if (parts.some((p) => p == null)) return null;
+      const s = parts.reduce((a, b) => a + b, 0);
+      const sev = s >= 20 ? "severe" : s >= 15 ? "moderately severe" : s >= 10 ? "moderate" : s >= 5 ? "mild" : "minimal";
+      const tone = s >= 10 ? "warn" : "good";
+      const q9 = num(v.p8);
+      return { value: s, unit: "/27", tone,
+        note: `${sev} (≥10 warrants action).${q9 ? " Item 9 positive — assess suicide risk." : ""}` };
+    },
+  },
 ];
 
 // SA/NHLS-style adult reference ranges (SI units). Verify against your lab.

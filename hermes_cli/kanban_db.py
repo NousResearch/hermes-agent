@@ -136,6 +136,17 @@ VALID_WORKSPACE_KINDS = {"scratch", "worktree", "dir"}
 KNOWN_TOOLSET_NAMES = frozenset(name.casefold() for name in get_toolset_names())
 _IS_WINDOWS = sys.platform == "win32"
 KANBAN_ATTACHMENT_MAX_BYTES = 25 * 1024 * 1024
+KANBAN_EVENT_HANDOFF_MAX_CHARS = 3500
+
+
+def _event_handoff_excerpt(text: Optional[str]) -> str:
+    """Keep actionable event handoffs while bounding the SQLite payload."""
+    value = str(text or "").strip()
+    if len(value) <= KANBAN_EVENT_HANDOFF_MAX_CHARS:
+        return value
+    suffix = "\n…[truncated — full handoff on the card]"
+    keep = KANBAN_EVENT_HANDOFF_MAX_CHARS - len(suffix)
+    return value[:keep].rstrip() + suffix
 
 
 def _fire_kanban_lifecycle_hook(event: str, task_id: str, **fields: Any) -> None:
@@ -4228,12 +4239,12 @@ def complete_task(
                 summary=summary if summary is not None else result,
                 metadata=metadata,
             )
-        # Carry the handoff summary in the event payload so gateway
+        # Carry the actionable handoff in the event payload so gateway
         # notifiers and dashboard WS consumers can render it without a
-        # second SQL round-trip. First line only, 400 char cap — the
-        # full summary stays on the run row.
+        # second SQL round-trip. Keep normal multi-line summaries intact;
+        # oversized payloads retain an explicit pointer to the full run row.
         ev_summary = (summary if summary is not None else result) or ""
-        ev_summary = ev_summary.strip().splitlines()[0][:400] if ev_summary else ""
+        ev_summary = _event_handoff_excerpt(ev_summary)
         completed_payload: dict = {
             "result_len": len(result) if result else 0,
             "summary": ev_summary or None,
@@ -4854,10 +4865,7 @@ def edit_completed_task_result(
                     "UPDATE task_runs SET metadata = ? WHERE id = ?",
                     (json.dumps(metadata, ensure_ascii=False), run_id),
                 )
-        ev_summary = (
-            handoff_summary.strip().splitlines()[0][:400]
-            if handoff_summary else ""
-        )
+        ev_summary = _event_handoff_excerpt(handoff_summary)
         _append_event(
             conn, task_id, "edited",
             {

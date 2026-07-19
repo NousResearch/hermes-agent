@@ -194,8 +194,8 @@ def _(home, kb):
 def _(home, kb):
     """Summaries with newlines, tabs, and shell metachars.
 
-    The notifier truncates to first line — verify that's right, not
-    that the kernel loses data."""
+    The event payload preserves the actionable handoff for notifier and
+    dashboard consumers without another SQL round-trip."""
     kb.init_db()
     conn = kb.connect()
     try:
@@ -205,12 +205,9 @@ def _(home, kb):
         kb.complete_task(conn, tid, summary=multi)
         run = kb.latest_run(conn, tid)
         assert run.summary == multi, "full summary should survive in kernel"
-        # Event payload takes first line (for notifier brevity)
         events = [e for e in kb.list_events(conn, tid) if e.kind == "completed"]
-        assert events[0].payload["summary"] == "line 1", (
-            f"event payload should be first line, got {events[0].payload['summary']!r}"
-        )
-        print("  multiline summary preserved on run; first line in event")
+        assert events[0].payload["summary"] == multi
+        print("  multiline summary preserved on run and event")
     finally:
         conn.close()
 

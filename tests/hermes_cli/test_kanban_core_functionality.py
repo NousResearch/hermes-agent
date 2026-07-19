@@ -2081,8 +2081,43 @@ def test_completed_event_payload_carries_summary(kanban_home):
         events = kb.list_events(conn, tid)
         comp = [e for e in events if e.kind == "completed"]
         assert len(comp) == 1
-        # First-line-only, within the 400-char cap, preserved verbatim.
-        assert comp[0].payload["summary"] == "handoff line 1"
+        assert comp[0].payload is not None
+        assert comp[0].payload["summary"] == "handoff line 1\nextra"
+    finally:
+        conn.close()
+
+
+def test_completed_event_payload_marks_oversized_summary(kanban_home):
+    """Event consumers get a bounded payload with an explicit truncation marker."""
+    summary = "handoff\n" + ("x" * 5000)
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="x", assignee="worker")
+        kb.claim_task(conn, tid)
+        kb.complete_task(conn, tid, summary=summary)
+        event = [e for e in kb.list_events(conn, tid) if e.kind == "completed"][0]
+        assert event.payload is not None
+        payload_summary = event.payload["summary"]
+        assert len(payload_summary) <= kb.KANBAN_EVENT_HANDOFF_MAX_CHARS
+        assert "truncated" in payload_summary
+        assert "full handoff on the card" in payload_summary
+    finally:
+        conn.close()
+
+
+def test_edit_completed_event_preserves_multiline_summary(kanban_home):
+    """The edit/backfill sibling path follows the same handoff contract."""
+    summary = "updated decision\nverification and rollback"
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="x", assignee="worker")
+        kb.complete_task(conn, tid)
+        assert kb.edit_completed_task_result(
+            conn, tid, result=summary, summary=summary
+        )
+        event = [e for e in kb.list_events(conn, tid) if e.kind == "edited"][-1]
+        assert event.payload is not None
+        assert event.payload["summary"] == summary
     finally:
         conn.close()
 

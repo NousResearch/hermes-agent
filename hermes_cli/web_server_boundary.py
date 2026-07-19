@@ -189,6 +189,23 @@ def ws_client_reason(ws, state) -> Optional[str]:
     return f"peer_not_loopback peer={client_host} bound={bound_host or '?'}"
 
 
+def _ws_public_origin_matches(origin: urllib.parse.ParseResult, public_url: str) -> bool:
+    """Return True only for an exact configured public scheme/host/port."""
+    public = urllib.parse.urlparse(public_url)
+    if public.scheme not in {"http", "https"} or not public.hostname:
+        return False
+    if origin.scheme != public.scheme or origin.hostname != public.hostname:
+        return False
+
+    def _port(parsed: urllib.parse.ParseResult) -> Optional[int]:
+        try:
+            return parsed.port or (443 if parsed.scheme == "https" else 80)
+        except ValueError:
+            return None
+
+    return _port(origin) == _port(public)
+
+
 def ws_host_origin_reason(ws, state) -> Optional[str]:
     """``host_mismatch …`` / ``origin_mismatch …`` under listener *state*, or None when allowed.
 
@@ -196,6 +213,10 @@ def ws_host_origin_reason(ws, state) -> Optional[str]:
     Host check is repeated here; an Origin header, when present, must target the
     bound host.  Non-web origins (packaged Electron: file://, null, app://) are
     trusted — the credential check is the real auth boundary there.
+
+    A loopback reverse proxy (cloudflared) may preserve the browser's public
+    Origin while forwarding Host to the local dashboard. Accept that Origin
+    only when it exactly matches the configured public URL.
     """
     bound_host = getattr(state, "bound_host", None)
     if not bound_host:
@@ -210,9 +231,16 @@ def ws_host_origin_reason(ws, state) -> Optional[str]:
     try:
         parsed = urllib.parse.urlparse(origin)
     except ValueError:  # malformed authority, e.g. "http://[::1" — fail closed
-        parsed = None
-    if parsed is not None and parsed.scheme not in {"http", "https"}:
-        return None
-    if parsed is None or not parsed.netloc or not _is_accepted_host(parsed.netloc, bound_host, trusted_public_hosts):
         return f"origin_mismatch origin={origin} bound={bound_host}"
-    return None
+    if parsed.scheme not in {"http", "https"}:
+        return None
+    if not parsed.netloc:
+        return f"origin_mismatch origin={origin} bound={bound_host}"
+    if _is_accepted_host(parsed.netloc, bound_host, trusted_public_hosts):
+        return None
+
+    from hermes_cli.dashboard_auth.prefix import resolve_public_url
+    public_url = resolve_public_url()
+    if public_url and _ws_public_origin_matches(parsed, public_url):
+        return None
+    return f"origin_mismatch origin={origin} bound={bound_host}"

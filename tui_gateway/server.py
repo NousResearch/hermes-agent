@@ -3699,6 +3699,35 @@ def _session_usage_snapshot(session: dict | None) -> dict:
     return dict(mirror_usage) if isinstance(mirror_usage, dict) else {}
 
 
+def _project_info_for_cwd(cwd: str) -> dict | None:
+    """Return the first-class Project owning ``cwd`` for UI status surfaces.
+
+    Backed by the per-profile projects.db (the same store the desktop's project
+    tree caches), so the TUI status label, the desktop status bar, and ``/status``
+    all name the session's workspace identically. Only explicit, named projects
+    resolve here — an auto-discovered repo root has no projects.db row, so it
+    falls back to the cwd leaf on every surface.
+    """
+    if not str(cwd or "").strip():
+        return None
+    try:
+        from hermes_cli import projects_db as pdb
+
+        with pdb.connect_closing() as conn:
+            project = pdb.project_for_path(conn, cwd)
+        if project is None:
+            return None
+        return {
+            "id": project.id,
+            "slug": project.slug,
+            "name": project.name,
+            "primary_path": project.primary_path,
+        }
+    except Exception:
+        logger.debug("failed to resolve project for cwd", exc_info=True)
+        return None
+
+
 def _session_info(agent, session: dict | None = None) -> dict:
     if session is None:
         for candidate in _sessions.values():
@@ -3754,6 +3783,7 @@ def _session_info(agent, session: dict | None = None) -> dict:
         "skills": dict(mirror.get("skills") or {}) if isinstance(mirror.get("skills"), dict) else {},
         "cwd": cwd,
         "branch": _git_branch_for_cwd(cwd),
+        "project": _project_info_for_cwd(cwd),
         "personality": str(personality or ""),
         "running": bool((session or {}).get("running")),
         "title": _session_live_title(session or {}, session_key) if session_key else "",
@@ -4357,7 +4387,12 @@ def _apply_project_workspace(task_id: str, path: str, _name: str = "") -> None:
         info = (
             _session_info(agent, session)
             if agent is not None
-            else {"cwd": resolved, "branch": _git_branch_for_cwd(resolved), "lazy": True}
+            else {
+                "cwd": resolved,
+                "branch": _git_branch_for_cwd(resolved),
+                "project": _project_info_for_cwd(resolved),
+                "lazy": True,
+            }
         )
         _emit("session.info", sid, info)
     except Exception:
@@ -5812,6 +5847,7 @@ def _(rid, params: dict) -> dict:
                 "skills": {},
                 "cwd": _sessions[sid]["cwd"],
                 "branch": _git_branch_for_cwd(_sessions[sid]["cwd"]),
+                "project": _project_info_for_cwd(_sessions[sid]["cwd"]),
                 "lazy": True,
                 "desktop_contract": DESKTOP_BACKEND_CONTRACT,
                 "profile_name": _current_profile_name(),
@@ -5958,6 +5994,7 @@ def _lazy_resume_info(cwd: str, *, model: str = "", provider: str = "") -> dict:
     info = {
         "cwd": cwd,
         "branch": _git_branch_for_cwd(cwd),
+        "project": _project_info_for_cwd(cwd),
         "model": model or _resolve_model(),
         "tools": {},
         "skills": {},
@@ -6237,12 +6274,12 @@ def _(rid, params: dict) -> dict:
         _enable_gateway_prompts()
         try:
             db.reopen_session(target)
-            # repair_alternation on the model-fed copy only: this resume feeds
-            # LIVE REPLAY (raw_history → sanitize_replay_history → the resumed
-            # session's working conversation). display_history stays verbatim —
+            # One lineage SELECT feeds both projections (#67142-adjacent perf,
+            # from the desktop audit): the model-fed copy is alternation-repaired
+            # (raw_history → sanitize_replay_history → the resumed session's
+            # working conversation) and the display copy stays verbatim —
             # inspection/export must show what is actually stored.
-            raw_history = db.get_messages_as_conversation(target, repair_alternation=True)
-            display_history = db.get_messages_as_conversation(target, include_ancestors=True)
+            raw_history, display_history = db.get_resume_conversations(target)
         except Exception as e:
             if lease is not None:
                 lease.release()
@@ -6315,12 +6352,10 @@ def _(rid, params: dict) -> dict:
     )
     try:
         db.reopen_session(target)
-        # repair_alternation on the model-fed copy only (see the interactive
-        # resume above): this loads LIVE REPLAY history; display stays verbatim.
-        raw_history = db.get_messages_as_conversation(target, repair_alternation=True)
-        display_history = db.get_messages_as_conversation(
-            target, include_ancestors=True
-        )
+        # One lineage SELECT feeds both projections (see the interactive resume
+        # above): the model-fed copy is alternation-repaired for LIVE REPLAY, the
+        # display copy stays verbatim.
+        raw_history, display_history = db.get_resume_conversations(target)
         # The display transcript keeps every row so the user still sees their
         # full history.  The model-fed history is sanitized: a session whose
         # last turn died mid-tool-loop persists a dangling assistant(tool_calls)
@@ -6454,6 +6489,7 @@ def _(rid, params: dict) -> dict:
     info = _session_info(agent, session) if agent is not None else {
         "cwd": cwd,
         "branch": _git_branch_for_cwd(cwd),
+        "project": _project_info_for_cwd(cwd),
         "lazy": True,
     }
     _emit("session.info", params.get("session_id", ""), info)
@@ -6553,8 +6589,10 @@ def _fallback_session_info(session: dict) -> dict:
     agent = session.get("agent")
     if agent is not None:
         return _session_info(agent)
+    cwd = _default_session_cwd()
     return {
-        "cwd": _default_session_cwd(),
+        "cwd": cwd,
+        "project": _project_info_for_cwd(cwd),
         "lazy": True,
         "model": _resolve_model(),
         "skills": {},
@@ -8620,12 +8658,15 @@ def _(rid, params: dict) -> dict:
     usage = _session_usage_snapshot(session)
     provider = getattr(agent, "provider", None) or mirror.get("provider") or "unknown"
     model = getattr(agent, "model", None) or mirror.get("model") or "(unknown)"
+    project = _project_info_for_cwd(_display_session_cwd(session))
     lines = [
         "Hermes TUI Status",
         "",
         f"Session ID: {key}",
         f"Path: {display_hermes_home()}",
     ]
+    if project:
+        lines.append(f"Project: {project['name']}")
     title = (meta.get("title") or "").strip()
     if title:
         lines.append(f"Title: {title}")

@@ -1091,6 +1091,7 @@ def _handle_create(args: dict, **kw) -> str:
     workspace_kind = args.get("workspace_kind")
     workspace_path = args.get("workspace_path")
     project_id = args.get("project") or args.get("project_id")
+    project_source_task_id = None
     _inherit_project = workspace_kind is None and workspace_path is None
     if workspace_kind is None:
         workspace_kind = "scratch"
@@ -1131,6 +1132,7 @@ def _handle_create(args: dict, **kw) -> str:
                     _self_task = kb.get_task(conn, _self_tid)
                     if _self_task is not None and _self_task.project_id:
                         project_id = _self_task.project_id
+                        project_source_task_id = _self_task.id
             new_tid = kb.create_task(
                 conn,
                 title=str(title).strip(),
@@ -1142,6 +1144,7 @@ def _handle_create(args: dict, **kw) -> str:
                 workspace_kind=str(workspace_kind),
                 workspace_path=workspace_path,
                 project_id=project_id,
+                project_source_task_id=project_source_task_id,
                 triage=triage,
                 idempotency_key=idempotency_key,
                 max_runtime_seconds=(

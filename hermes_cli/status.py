@@ -14,6 +14,7 @@ PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 from hermes_cli.auth import AuthError, resolve_provider
 from hermes_cli.colors import Colors, color
 from hermes_cli.config import get_env_path, get_env_value, get_hermes_home, load_config
+from gateway.sandbox_config import is_valid_gateway_backend, parse_gateway_sandbox_lifetime
 from hermes_cli.models import provider_label
 from hermes_cli.nous_account import (
     format_nous_portal_entitlement_message,
@@ -427,6 +428,48 @@ def show_status(args):
     elif terminal_env == "daytona":
         daytona_image = os.getenv("TERMINAL_DAYTONA_IMAGE", "nikolaik/python-nodejs:python3.11-nodejs20")
         print(f"  Daytona Image: {daytona_image}")
+
+    gateway_cfg = config.get("gateway", {}) if isinstance(config.get("gateway"), dict) else {}
+    gateway_backend = gateway_cfg.get("terminal_backend")
+    if gateway_backend is not None:
+        effective_gateway_backend = (
+            gateway_backend if is_valid_gateway_backend(gateway_backend) else terminal_env
+        )
+        if is_valid_gateway_backend(gateway_backend):
+            print(f"  Gateway sandbox: {effective_gateway_backend}")
+        else:
+            print(
+                f"  Gateway sandbox: {effective_gateway_backend} "
+                "(invalid gateway override ignored)"
+            )
+
+    gateway_image = gateway_cfg.get("sandbox_image")
+    if gateway_image is not None:
+        if isinstance(gateway_image, str) and gateway_image.strip():
+            print(f"  Sandbox image:  {gateway_image.strip()}")
+        else:
+            terminal_image = terminal_cfg.get("docker_image")
+            if not isinstance(terminal_image, str) or not terminal_image.strip():
+                terminal_image = os.getenv("TERMINAL_DOCKER_IMAGE", "python:3.11-slim")
+            print(
+                f"  Sandbox image:  {terminal_image} "
+                "(invalid gateway override ignored)"
+            )
+
+    gateway_lifetime = gateway_cfg.get("sandbox_lifetime")
+    if gateway_lifetime is not None:
+        resolved_lifetime = parse_gateway_sandbox_lifetime(gateway_lifetime)
+        if resolved_lifetime is None:
+            if "lifetime_seconds" in terminal_cfg and terminal_cfg["lifetime_seconds"] is not None:
+                terminal_lifetime = terminal_cfg["lifetime_seconds"]
+            else:
+                terminal_lifetime = os.getenv("TERMINAL_LIFETIME_SECONDS", 300)
+            print(
+                f"  Sandbox lifetime: {terminal_lifetime}s "
+                "(invalid gateway override ignored)"
+            )
+        else:
+            print(f"  Sandbox lifetime: {resolved_lifetime}s")
 
     sudo_password = os.getenv("SUDO_PASSWORD", "")
     print(f"  Sudo:         {check_mark(bool(sudo_password))} {'enabled' if sudo_password else 'disabled'}")

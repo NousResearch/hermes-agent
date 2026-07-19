@@ -117,7 +117,7 @@ function toggledSet<T>(set: ReadonlySet<T>, item: T, present: boolean): Set<T> |
   return next
 }
 
-export function setTreePaneHidden(paneId: string, hidden: boolean) {
+export function setTreePaneHidden(paneId: string, hidden: boolean, options?: { reveal?: boolean }) {
   const next = toggledSet($hiddenTreePanes.get(), paneId, hidden)
 
   if (!next) {
@@ -126,8 +126,10 @@ export function setTreePaneHidden(paneId: string, hidden: boolean) {
 
   $hiddenTreePanes.set(next)
 
-  // Unhiding is an intent to SEE the pane — front it in its group.
-  if (!hidden) {
+  // Unhiding usually means show the pane (front + open its side). Workspace
+  // gated surfaces like files can pass reveal:false so adopting a session cwd
+  // makes the tree available without force opening the files panel.
+  if (!hidden && options?.reveal !== false) {
     revealTreePane(paneId)
   }
 }

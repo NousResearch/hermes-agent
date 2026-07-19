@@ -434,10 +434,16 @@ function bindPaneVisibility(
   paneId: string,
   $open: { get(): boolean; listen(fn: (open: boolean) => void): void },
   close?: () => void,
-  open?: () => void
+  open?: () => void,
+  options?: { revealOnShow?: boolean }
 ) {
-  setTreePaneHidden(paneId, !$open.get())
-  $open.listen(isOpen => setTreePaneHidden(paneId, !isOpen))
+  // revealOnShow defaults true (preview/review should front when toggled on).
+  // Files passes false: a session cwd must not yank the right rail open.
+  const revealOnShow = options?.revealOnShow !== false
+  const sync = (isOpen: boolean) => setTreePaneHidden(paneId, !isOpen, { reveal: isOpen && revealOnShow })
+
+  sync($open.get())
+  $open.listen(sync)
 
   // The tab menu's Close routes through the owning store (never dismissal),
   // so the pane's toggle buttons stay truthful.
@@ -511,13 +517,34 @@ bindTreeSideVisibility('left', $sidebarOpen, setSidebarOpen)
 bindTreeSideVisibility('right', $fileBrowserOpen, setFileBrowserOpen)
 
 // Workspace-scoped surfaces: the file tree and git diff only mean something
-// inside a project. A detached chat (no cwd) hides them — their zones
-// collapse and the chat absorbs the width; picking a project brings them
-// back. The terminal is NOT workspace-gated: unlike the old shell (where it
-// rode the rail's row and vanished with it), its zone stands on its own.
+// inside a project. A detached chat (no cwd) hides them. Their zones collapse
+// and the chat absorbs the width. Picking a project (or a session that reports
+// a cwd) unhides them.
+//
+// Two latches keep "cwd arrived" from force-opening the files rail:
+// 1. revealOnShow:false. Unhiding files does not call revealTreePane / open
+//    the right side.
+// 2. When the workspace detaches (cwd cleared), force $fileBrowserOpen false.
+//    Otherwise a previously-open right rail (often persisted in localStorage)
+//    stays open in the pane store while files is hidden for no-cwd. The zone
+//    looks closed (subtreeGone), then reappears the moment session.info adopts
+//    a process cwd. Closing the side on detach means passive cwd adoption only
+//    fills tree content. The user must open the panel themselves to see it.
+//
+// The terminal is NOT workspace-gated: unlike the old shell (where it rode
+// the rail's row and vanished with it), its zone stands on its own.
 const $hasWorkspace = computed($currentCwd, cwd => Boolean(cwd.trim()))
 
-bindPaneVisibility('files', $hasWorkspace)
+const syncFileBrowserClosedWhenDetached = (hasWorkspace: boolean) => {
+  if (!hasWorkspace) {
+    setFileBrowserOpen(false)
+  }
+}
+
+syncFileBrowserClosedWhenDetached($hasWorkspace.get())
+$hasWorkspace.listen(syncFileBrowserClosedWhenDetached)
+
+bindPaneVisibility('files', $hasWorkspace, undefined, undefined, { revealOnShow: false })
 // ⌘G — the review sidebar appears/disappears (and comes to the front).
 bindPaneVisibility(
   'review',

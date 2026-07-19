@@ -1,7 +1,12 @@
 """Tests for hermes -z --usage-file (per-run JSON usage report)."""
 
+import io
 import json
+import sys
 
+import pytest
+
+import hermes_cli.oneshot as oneshot
 from hermes_cli.oneshot import _write_usage_file
 
 
@@ -67,3 +72,81 @@ class TestWriteUsageFile:
         path = tmp_path / "usage.json"
         _write_usage_file(str(path), _result(failed=True))
         assert json.loads(path.read_text())["failed"] is True
+
+
+@pytest.mark.parametrize(
+    ("run_failure", "expected"),
+    [
+        (None, 0),
+        (RuntimeError("private run detail"), 1),
+        (KeyboardInterrupt(), KeyboardInterrupt),
+        (SystemExit(23), SystemExit),
+    ],
+)
+def test_oneshot_usage_is_written_for_normal_success_error_and_interruption(
+    monkeypatch,
+    tmp_path,
+    run_failure,
+    expected,
+):
+    usage_path = tmp_path / "usage.json"
+    stdout = io.StringIO()
+    stderr = io.StringIO()
+    monkeypatch.setattr(sys, "stdout", stdout)
+    monkeypatch.setattr(sys, "stderr", stderr)
+    result = _result()
+
+    def run(*_args, delivery, **_kwargs):
+        if run_failure is None:
+            delivery.deliver("final")
+            return "final", result
+        raise run_failure
+
+    monkeypatch.setattr(oneshot, "_run_agent", run)
+    monkeypatch.setattr(oneshot._OneshotResources, "close", lambda *_a, **_kw: None)
+    if isinstance(expected, type) and issubclass(expected, BaseException):
+        with pytest.raises(expected) as raised:
+            oneshot.run_oneshot("private prompt", usage_file=str(usage_path))
+        assert raised.value is run_failure
+    else:
+        assert oneshot.run_oneshot("private prompt", usage_file=str(usage_path)) == expected
+
+    report = json.loads(usage_path.read_text())
+    if run_failure is None:
+        assert report["failed"] is False
+        assert report["estimated_cost_usd"] == result["estimated_cost_usd"]
+        assert report["total_tokens"] == result["total_tokens"]
+    else:
+        assert report["failed"] is True
+
+
+def test_cleanup_failure_does_not_overwrite_primary_usage_result(monkeypatch, tmp_path):
+    usage_path = tmp_path / "usage.json"
+    result = _result(estimated_cost_usd=9.75, total_tokens=9876)
+
+    class CleanupFailureResources:
+        def __init__(self):
+            self.cleanup_failed = False
+
+        def mark_final_delivered(self):
+            return None
+
+        def close(self, primary_failure=None):
+            self.cleanup_failed = True
+
+    monkeypatch.setattr(oneshot, "_OneshotResources", CleanupFailureResources)
+    monkeypatch.setattr(
+        oneshot,
+        "_run_agent",
+        lambda *_args, delivery, **_kwargs: (
+            delivery.deliver("final") and "final",
+            result,
+        ),
+    )
+
+    assert oneshot.run_oneshot("private prompt", usage_file=str(usage_path)) == 1
+    report = json.loads(usage_path.read_text())
+    assert report["failed"] is True
+    assert report["estimated_cost_usd"] == 9.75
+    assert report["total_tokens"] == 9876
+    assert report["session_id"] == result["session_id"]

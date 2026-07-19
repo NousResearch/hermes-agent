@@ -1,4 +1,5 @@
 from argparse import Namespace
+import io
 import os
 from pathlib import Path
 import sys
@@ -832,8 +833,9 @@ def test_oneshot_wires_session_db_for_recall(monkeypatch):
             self.stream_delta_callback = object()
             self.tool_gen_callback = object()
 
-        def run_conversation(self, prompt, **_kwargs):
+        def run_conversation(self, prompt, **kwargs):
             captured["prompt"] = prompt
+            captured.update(kwargs)
             return {"final_response": "ok", "failed": False, "partial": False}
 
     class FakeSessionDB:
@@ -878,12 +880,24 @@ def test_oneshot_wires_session_db_for_recall(monkeypatch):
         mod("hermes_cli.tools_config", _get_platform_tools=lambda *_args, **_kwargs: {"session_search"}),
     )
 
-    text, result = _run_agent("recall this")
+    from hermes_cli.oneshot import _FinalDelivery, _OneshotResources
+
+    resources = _OneshotResources()
+    text, result = _run_agent(
+        "recall this",
+        model=None,
+        provider=None,
+        toolsets=None,
+        use_config_toolsets=True,
+        delivery=_FinalDelivery(io.StringIO(), lambda: None),
+        resources=resources,
+    )
     assert text == "ok"
     assert not result.get("failed")
     assert captured["session_db"] is sentinel_db
     assert captured["enabled_toolsets"] == ["session_search"]
     assert captured["prompt"] == "recall this"
+    assert captured["task_id"] == resources.task_id
 
 
 def test_launch_tui_exports_model_provider_and_toolsets(monkeypatch, main_mod):

@@ -5695,18 +5695,28 @@ def cmd_gui(args: argparse.Namespace):
     # Handle --install-desktop-only flag - runs the installer in desktop-only mode
     if getattr(args, "install_desktop_only", False):
         print("→ Installing desktop-only (skipping Python/agent setup)...")
-        install_script = PROJECT_ROOT / "scripts" / "install.sh"
-        if not install_script.exists():
-            print(f"Install script not found at: {install_script}")
-            sys.exit(1)
-        
-        # Run install.sh with --desktop-only flag
-        result = subprocess.run(
-            ["bash", str(install_script), "--desktop-only"],
-            cwd=PROJECT_ROOT,
-            env=dict(os.environ, HERMES_DESKTOP_BOOT_FAKE="0"),
-            check=False
-        )
+        if sys.platform == "win32":
+            install_script = PROJECT_ROOT / "scripts" / "install.ps1"
+            if not install_script.exists():
+                print(f"Install script not found at: {install_script}")
+                sys.exit(1)
+            result = subprocess.run(
+                ["pwsh", "-File", str(install_script), "-DesktopOnly"],
+                cwd=PROJECT_ROOT,
+                env=dict(os.environ, HERMES_DESKTOP_BOOT_FAKE="0"),
+                check=False
+            )
+        else:
+            install_script = PROJECT_ROOT / "scripts" / "install.sh"
+            if not install_script.exists():
+                print(f"Install script not found at: {install_script}")
+                sys.exit(1)
+            result = subprocess.run(
+                ["bash", str(install_script), "--desktop-only"],
+                cwd=PROJECT_ROOT,
+                env=dict(os.environ, HERMES_DESKTOP_BOOT_FAKE="0"),
+                check=False
+            )
         sys.exit(result.returncode)
 
     from hermes_constants import with_hermes_node_path

@@ -328,24 +328,33 @@ emit_manifest() {
         desktop_stage='{"name":"desktop","title":"Build desktop app","category":"runtime","needs_user_input":false},'
     fi
     
-    # In desktop-only mode, skip Python/agent stages
-    local venv_stage='{"name":"venv","title":"Create Python virtual environment","category":"runtime","needs_user_input":false},'
-    local python_deps_stage='{"name":"python-deps","title":"Install Python dependencies","category":"runtime","needs_user_input":false},'
-    local path_stage='{"name":"path","title":"Install hermes command","category":"runtime","needs_user_input":false},'
-    local config_stage='{"name":"config","title":"Prepare config and skills","category":"configuration","needs_user_input":false},'
-    local setup_stage='{"name":"setup","title":"Configure API keys and settings","category":"configuration","needs_user_input":true},'
-    local gateway_stage='{"name":"gateway","title":"Configure gateway service","category":"configuration","needs_user_input":true},'
+    # Build stages array properly - only include stages that should be present
+    local stages=''
     
-    if [ "$DESKTOP_ONLY" = true ]; then
-        venv_stage=""
-        python_deps_stage=""
-        path_stage=""
-        config_stage=""
-        setup_stage=""
-        gateway_stage=""
+    # Always: prerequisites, repository
+    stages='[{"name":"prerequisites","title":"System prerequisites","category":"runtime","needs_user_input":false},{"name":"repository","title":"Download Hermes Agent","category":"runtime","needs_user_input":false}'
+    
+    if [ "$DESKTOP_ONLY" != true ]; then
+        # Full install: venv, python-deps, node-deps, path, config, setup, gateway
+        stages+=',{"name":"venv","title":"Create Python virtual environment","category":"runtime","needs_user_input":false}'
+        stages+=',{"name":"python-deps","title":"Install Python dependencies","category":"runtime","needs_user_input":false}'
+        stages+=',{"name":"node-deps","title":"Install browser-tool dependencies","category":"runtime","needs_user_input":false}'
+        stages+=',{"name":"path","title":"Install hermes command","category":"runtime","needs_user_input":false}'
+        stages+=',{"name":"config","title":"Prepare config and skills","category":"configuration","needs_user_input":false}'
+        stages+=',{"name":"setup","title":"Configure API keys and settings","category":"configuration","needs_user_input":true}'
+        stages+=',{"name":"gateway","title":"Configure gateway service","category":"configuration","needs_user_input":true}'
+    else
+        # Desktop-only: node-deps only (after repo)
+        stages+=',{"name":"node-deps","title":"Install browser-tool dependencies","category":"runtime","needs_user_input":false}'
     fi
     
-    printf '%s' '{"protocol_version":1,"stages":[{"name":"prerequisites","title":"System prerequisites","category":"runtime","needs_user_input":false},{"name":"repository","title":"Download Hermes Agent","category":"runtime","needs_user_input":false},'"$venv_stage$python_deps_stage"'{"name":"node-deps","title":"Install browser-tool dependencies","category":"runtime","needs_user_input":false},'"$path_stage$config_stage$setup_stage$gateway_stage"'"$desktop_stage"'{"name":"complete","title":"Finish install","category":"runtime","needs_user_input":false}]}'
+    if [ "$INCLUDE_DESKTOP" = true ]; then
+        stages+=',{"name":"desktop","title":"Build desktop app","category":"runtime","needs_user_input":false}'
+    fi
+    
+    stages+=',{"name":"complete","title":"Finish install","category":"runtime","needs_user_input":false}]'
+    
+    printf '%s' "{\"protocol_version\":1,\"stages\":$stages}"
     printf '\n'
 }
 

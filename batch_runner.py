@@ -792,6 +792,55 @@ class BatchRunner:
                 filtered_dataset.append((idx, entry))
         
         return filtered_dataset, skipped_indices
+
+    def _combine_batch_files(self) -> Tuple[int, int, int]:
+        """
+        Combine batch_*.jsonl files into trajectories.jsonl.
+
+        Returns:
+            Tuple of (total_entries, filtered_entries, batch_files_found)
+        """
+        combined_file = self.output_dir / "trajectories.jsonl"
+        print(f"\n📦 Combining ALL batch files into {combined_file.name}...")
+
+        total_entries = 0
+        filtered_entries = 0
+        batch_files_found = 0
+
+        # Find ALL batch files in the output directory (handles resume merging old + new)
+        all_batch_files = sorted(self.output_dir.glob("batch_*.jsonl"))
+
+        with open(combined_file, 'w', encoding='utf-8') as outfile:
+            for batch_file in all_batch_files:
+                batch_files_found += 1
+                batch_num = batch_file.stem.split("_")[1]  # Extract batch number for logging
+
+                with open(batch_file, 'r', encoding='utf-8') as infile:
+                    for line in infile:
+                        total_entries += 1
+                        try:
+                            data = json.loads(line)
+                            tool_stats = data.get('tool_stats', {})
+
+                            # Check for invalid tool names (model hallucinations)
+                            invalid_tools = [k for k in tool_stats if k not in ALL_POSSIBLE_TOOLS]
+
+                            if invalid_tools:
+                                filtered_entries += 1
+                                invalid_preview = invalid_tools[0][:50] + "..." if len(invalid_tools[0]) > 50 else invalid_tools[0]
+                                print(f"   ⚠️  Filtering corrupted entry (batch {batch_num}): invalid tool '{invalid_preview}'")
+                                continue
+
+                            outfile.write(line)
+                        except json.JSONDecodeError:
+                            filtered_entries += 1
+                            print(f"   ⚠️  Filtering invalid JSON entry (batch {batch_num})")
+
+        if filtered_entries > 0:
+            print(f"⚠️  Filtered {filtered_entries} corrupted entries out of {total_entries} total")
+        print(f"✅ Combined {batch_files_found} batch files into trajectories.jsonl ({total_entries - filtered_entries} entries)")
+
+        return total_entries, filtered_entries, batch_files_found
     
     def run(self, resume: bool = False):
         """
@@ -996,49 +1045,7 @@ class BatchRunner:
         # Combine ALL batch files in directory into a single trajectories.jsonl file
         # This includes both old batches (from previous runs) and new batches (from resume)
         # Also filter out corrupted entries (where model generated invalid tool names)
-        combined_file = self.output_dir / "trajectories.jsonl"
-        print(f"\n📦 Combining ALL batch files into {combined_file.name}...")
-        
-        # Valid tools auto-derived from model_tools.py — no manual updates needed
-        VALID_TOOLS = ALL_POSSIBLE_TOOLS
-        
-        total_entries = 0
-        filtered_entries = 0
-        batch_files_found = 0
-        
-        # Find ALL batch files in the output directory (handles resume merging old + new)
-        all_batch_files = sorted(self.output_dir.glob("batch_*.jsonl"))
-        
-        with open(combined_file, 'w', encoding='utf-8') as outfile:
-            for batch_file in all_batch_files:
-                batch_files_found += 1
-                parts = batch_file.stem.split("_")
-                batch_num = parts[1] if len(parts) > 1 else "?"  # Extract batch number for logging
-                
-                with open(batch_file, 'r', encoding='utf-8') as infile:
-                    for line in infile:
-                        total_entries += 1
-                        try:
-                            data = json.loads(line)
-                            tool_stats = data.get('tool_stats', {})
-                            
-                            # Check for invalid tool names (model hallucinations)
-                            invalid_tools = [k for k in tool_stats if k not in VALID_TOOLS]
-                            
-                            if invalid_tools:
-                                filtered_entries += 1
-                                invalid_preview = invalid_tools[0][:50] + "..." if len(invalid_tools[0]) > 50 else invalid_tools[0]
-                                print(f"   ⚠️  Filtering corrupted entry (batch {batch_num}): invalid tool '{invalid_preview}'")
-                                continue
-                            
-                            outfile.write(line)
-                        except json.JSONDecodeError:
-                            filtered_entries += 1
-                            print(f"   ⚠️  Filtering invalid JSON entry (batch {batch_num})")
-        
-        if filtered_entries > 0:
-            print(f"⚠️  Filtered {filtered_entries} corrupted entries out of {total_entries} total")
-        print(f"✅ Combined {batch_files_found} batch files into trajectories.jsonl ({total_entries - filtered_entries} entries)")
+        total_entries, filtered_entries, batch_files_found = self._combine_batch_files()
         
         # Save final statistics
         final_stats = {
@@ -1289,4 +1296,3 @@ def main(
 
 if __name__ == "__main__":
     fire.Fire(main)
-

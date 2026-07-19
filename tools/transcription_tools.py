@@ -1290,9 +1290,10 @@ def _transcribe_groq(file_path: str, model_name: str) -> Dict[str, Any]:
         model_name = DEFAULT_GROQ_STT_MODEL
 
     # Language: config.yaml (stt.groq.language > stt.local.language) > auto-detect.
+    stt_config = _load_stt_config()
     language = (
-        _load_stt_config().get("groq", {}).get("language")
-        or _load_stt_config().get("local", {}).get("language")
+        (stt_config.get("groq") or {}).get("language")
+        or (stt_config.get("local") or {}).get("language")
     )
 
     try:

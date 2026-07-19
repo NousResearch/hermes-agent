@@ -1578,3 +1578,96 @@ class TestShellSafety:
         monkeypatch.delenv(LOCAL_STT_COMMAND_ENV, raising=False)
         use_shell = bool(os.getenv(LOCAL_STT_COMMAND_ENV, "").strip())
         assert use_shell is False
+
+
+# ============================================================================
+# Groq STT config — null-subsection guard
+# ============================================================================
+class TestGroqSttLanguageConfig:
+    """_transcribe_groq language lookup must survive stt.groq: null in config.
+
+    ``_load_stt_config().get("groq", {}).get("language")`` crashes when
+    ``stt.groq`` is explicitly ``null`` because ``.get("groq", {})`` returns
+    the null value (the default only applies when the key is *missing*).
+    All provider-subsection reads must use ``.get(key) or {}`` instead.
+    """
+
+    GROQ_API_KEY = "sk-test-groq-key-placeholder"
+
+    def _make_groq_config(self, groq_value, local_value=None):
+        """Build a fake _load_stt_config return dict."""
+        cfg = {}
+        if groq_value is not None:
+            cfg["groq"] = groq_value
+        if local_value is not None:
+            cfg["local"] = local_value
+        return cfg
+
+    def test_groq_override_present(self, monkeypatch):
+        """stt.groq.language is set -> used."""
+        cfg = self._make_groq_config({"language": "fr"})
+        monkeypatch.setattr("tools.transcription_tools._load_stt_config", lambda: cfg)
+        monkeypatch.setattr("tools.transcription_tools.get_env_value", lambda k: self.GROQ_API_KEY if k == "GROQ_API_KEY" else None)
+        monkeypatch.setattr("tools.transcription_tools._HAS_OPENAI", True)
+
+        from tools.transcription_tools import _transcribe_groq
+        with patch("tools.transcription_tools.OpenAI") as mock_openai:
+            mock_client = mock_openai.return_value
+            mock_client.audio.transcriptions.create.return_value = "bonjour"
+            result = _transcribe_groq("/tmp/test.wav", "whisper-1")
+
+        assert result.get("success") is True
+        # The language should be passed as 'fr'
+        create_kwargs = mock_openai.return_value.audio.transcriptions.create.call_args[1]
+        assert create_kwargs.get("language") == "fr"
+
+    def test_local_fallback(self, monkeypatch):
+        """stt.groq is empty but stt.local.language is set -> fallback used."""
+        cfg = self._make_groq_config({}, {"language": "de"})
+        monkeypatch.setattr("tools.transcription_tools._load_stt_config", lambda: cfg)
+        monkeypatch.setattr("tools.transcription_tools.get_env_value", lambda k: self.GROQ_API_KEY if k == "GROQ_API_KEY" else None)
+        monkeypatch.setattr("tools.transcription_tools._HAS_OPENAI", True)
+
+        from tools.transcription_tools import _transcribe_groq
+        with patch("tools.transcription_tools.OpenAI") as mock_openai:
+            mock_client = mock_openai.return_value
+            mock_client.audio.transcriptions.create.return_value = "guten tag"
+            result = _transcribe_groq("/tmp/test.wav", "whisper-1")
+
+        assert result.get("success") is True
+        create_kwargs = mock_openai.return_value.audio.transcriptions.create.call_args[1]
+        assert create_kwargs.get("language") == "de"
+
+    def test_no_language_configured(self, monkeypatch):
+        """Neither groq nor local has language -> None (auto-detect)."""
+        cfg = self._make_groq_config({}, {})
+        monkeypatch.setattr("tools.transcription_tools._load_stt_config", lambda: cfg)
+        monkeypatch.setattr("tools.transcription_tools.get_env_value", lambda k: self.GROQ_API_KEY if k == "GROQ_API_KEY" else None)
+        monkeypatch.setattr("tools.transcription_tools._HAS_OPENAI", True)
+
+        from tools.transcription_tools import _transcribe_groq
+        with patch("tools.transcription_tools.OpenAI") as mock_openai:
+            mock_client = mock_openai.return_value
+            mock_client.audio.transcriptions.create.return_value = "hello"
+            result = _transcribe_groq("/tmp/test.wav", "whisper-1")
+
+        assert result.get("success") is True
+        create_kwargs = mock_openai.return_value.audio.transcriptions.create.call_args[1]
+        assert create_kwargs.get("language") is None
+
+    def test_stt_groq_null(self, monkeypatch):
+        """stt.groq is explicitly null (YAML null) — must not crash."""
+        cfg = self._make_groq_config(None, {})
+        monkeypatch.setattr("tools.transcription_tools._load_stt_config", lambda: cfg)
+        monkeypatch.setattr("tools.transcription_tools.get_env_value", lambda k: self.GROQ_API_KEY if k == "GROQ_API_KEY" else None)
+        monkeypatch.setattr("tools.transcription_tools._HAS_OPENAI", True)
+
+        from tools.transcription_tools import _transcribe_groq
+        with patch("tools.transcription_tools.OpenAI") as mock_openai:
+            mock_client = mock_openai.return_value
+            mock_client.audio.transcriptions.create.return_value = "hello from null-guard"
+            result = _transcribe_groq("/tmp/test.wav", "whisper-1")
+
+        assert result.get("success") is True
+        create_kwargs = mock_openai.return_value.audio.transcriptions.create.call_args[1]
+        assert create_kwargs.get("language") is None  # null subsection -> no override

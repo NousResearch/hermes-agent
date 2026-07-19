@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import sqlite3
+import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -14,6 +15,15 @@ logger = logging.getLogger(__name__)
 
 EXECUTION_STATES = {"generated", "persisted", "delivered", "failed", "retried"}
 DATA_PROVENANCE = {"live", "cached", "synthetic", "pending", "unavailable"}
+FAILURE_CLASSIFICATIONS = {
+    "configuration",
+    "authentication",
+    "network",
+    "telegram_api",
+    "storage",
+    "validation",
+    "unknown",
+}
 
 
 def _now() -> str:
@@ -24,6 +34,10 @@ def _sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+def _env_or(default: str) -> str:
+    return os.environ.get(default, default)
+
+
 @dataclass(frozen=True)
 class BriefRecord:
     id: str = field(default_factory=lambda: "BR-" + uuid.uuid4().hex[:12])
@@ -32,6 +46,76 @@ class BriefRecord:
     environment: str = field(default_factory=lambda: os.environ.get("HERMES_ENV", "unknown"))
     version: str = field(default_factory=lambda: os.environ.get("HERMES_VERSION", "0.18.2"))
     git_sha: str = field(default_factory=lambda: os.environ.get("HERMES_GIT_SHA", "unknown"))
+    railway_deployment_id: str = field(default_factory=lambda: os.environ.get("RAILWAY_DEPLOYMENT_ID", "unknown"))
+    railway_service_name: str = field(default_factory=lambda: os.environ.get("RAILWAY_SERVICE_NAME", "unknown"))
+
+
+@dataclass(frozen=True)
+class ExecutionMetrics:
+    started_at: str = field(default_factory=_now)
+    ended_at: Optional[str] = None
+    duration_ms: Optional[int] = None
+    memory_usage_mb: Optional[float] = None
+    retry_count: int = 0
+    exit_code: Optional[int] = None
+    failure_classification: Optional[str] = None
+    error_message: Optional[str] = None
+
+    def finish(self, exit_code: int = 0) -> None:
+        object.__setattr__(self, "ended_at", _now())
+        object.__setattr__(self, "exit_code", exit_code)
+        start = datetime.fromisoformat(self.started_at)
+        end = datetime.fromisoformat(self.ended_at)
+        object.__setattr__(self, "duration_ms", int((end - start).total_seconds() * 1000))
+        try:
+            import resource
+            object.__setattr__(self, "memory_usage_mb", resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024)
+        except Exception:
+            pass
+
+
+class OperationalMetrics:
+    def __init__(self) -> None:
+        self.successful_executions: int = 0
+        self.failed_executions: int = 0
+        self.total_duration_ms: int = 0
+        self.total_delivery_latency_ms: int = 0
+        self.consecutive_failures: int = 0
+        self.last_successful_execution: Optional[str] = None
+        self.last_successful_delivery: Optional[str] = None
+
+    def record_success(self, duration_ms: int, delivery_latency_ms: Optional[int] = None) -> None:
+        self.successful_executions += 1
+        self.total_duration_ms += duration_ms
+        if delivery_latency_ms is not None:
+            self.total_delivery_latency_ms += delivery_latency_ms
+        self.consecutive_failures = 0
+        self.last_successful_execution = _now()
+
+    def record_failure(self) -> None:
+        self.failed_executions += 1
+        self.consecutive_failures += 1
+
+    def record_delivery(self) -> None:
+        self.last_successful_delivery = _now()
+
+    def snapshot(self) -> Dict[str, Any]:
+        return {
+            "successful_executions": self.successful_executions,
+            "failed_executions": self.failed_executions,
+            "average_runtime_ms": (self.total_duration_ms / self.successful_executions) if self.successful_executions else 0,
+            "average_delivery_latency_ms": (self.total_delivery_latency_ms / self.successful_executions) if self.successful_executions else 0,
+            "consecutive_failures": self.consecutive_failures,
+            "last_successful_execution": self.last_successful_execution,
+            "last_successful_delivery": self.last_successful_delivery,
+        }
+
+
+_metrics = OperationalMetrics()
+
+
+def get_metrics() -> OperationalMetrics:
+    return _metrics
 
 
 def make_executive_brief(
@@ -55,13 +139,15 @@ def make_executive_brief(
     now = _now()
     record = execution or BriefRecord(scheduled_date=datetime.now(timezone.utc).date().isoformat())
 
-    return {
+    brief = {
         "id": record.id,
         "execution_id": record.execution_id,
         "scheduled_date": record.scheduled_date,
         "environment": record.environment,
         "version": record.version,
         "git_sha": record.git_sha,
+        "railway_deployment_id": record.railway_deployment_id,
+        "railway_service_name": record.railway_service_name,
         "generated_at": now,
         "generated_timestamp": now,
         "currency": "USD",
@@ -115,7 +201,7 @@ def make_executive_brief(
             "unavailable": "Integration not yet connected",
         },
         "data_source_status": {
-            section: _source_status(calendar, blackgold, pipeline, approvals, banking, portfolio, market, workforce, infra, failed_jobs, financial, weather, scripture, priorities)[section]
+            section: _source_status(section)
             for section in [
                 "calendar",
                 "blackgold_priority_items",
@@ -133,11 +219,19 @@ def make_executive_brief(
                 "top_executive_priorities",
             ]
         },
+        "metrics": {
+            "execution_id": record.execution_id,
+            "environment": record.environment,
+            "git_sha": record.git_sha,
+            "railway_service_name": record.railway_service_name,
+            "railway_deployment_id": record.railway_deployment_id,
+        },
     }
+    return brief
 
 
-def _source_status(*sections):
-    return {section: "available" for section in sections}
+def _source_status(section: str) -> str:
+    return "available"
 
 
 def _section(value: Optional[Dict[str, Any]], updated_at: str) -> Dict[str, Any]:
@@ -165,7 +259,32 @@ def redact_secrets(pack: Dict[str, Any]) -> Dict[str, Any]:
             redacted[key] = "***REDACTED***"
     if "delivery" in redacted and isinstance(redacted["delivery"], dict):
         redacted["delivery"] = {k: v for k, v in redacted["delivery"].items() if k != "error"}
+    if "execution_log" in redacted and isinstance(redacted["execution_log"], list):
+        redacted["execution_log"] = [
+            {k: (_sanitize_value(v) if isinstance(v, str) else v) for k, v in entry.items()}
+            for entry in redacted["execution_log"]
+        ]
     return redacted
+
+
+def _sanitize_value(value: str) -> str:
+    patterns = [
+        r"telegram_bot_token",
+        r"openrouter_api_key",
+        r"google_client_secret",
+        r"onepassword_token",
+        r"Authorization",
+        r"Bearer [A-Za-z0-9\-_\.]+",
+        r"api[_-]?key",
+        r"secret",
+    ]
+    text = value
+    for pat in patterns:
+        text = re.sub(pat, "***REDACTED***", text, flags=re.IGNORECASE)
+    return text
+
+
+import re
 
 
 def validate_brief_schema(brief: Dict[str, Any]) -> Dict[str, Any]:
@@ -196,12 +315,31 @@ def mark_delivered(brief: Dict[str, Any], message_id: Any, timestamp: Optional[s
 
 
 def mark_failed(brief: Dict[str, Any], error: str, classification: str, retry: bool = False) -> Dict[str, Any]:
+    if classification not in FAILURE_CLASSIFICATIONS:
+        classification = "unknown"
     delivery = brief.setdefault("delivery", {})
     delivery["status"] = "failed"
     delivery["error_classification"] = classification
     if retry:
         delivery["retry_count"] = delivery.get("retry_count", 0) + 1
-    return append_execution_log(brief, "failed", f"Delivery failed: {error}")
+    return append_execution_log(brief, "failed", f"Delivery failed: {_sanitize_value(error)}")
+
+
+def classify_failure(error: Exception) -> str:
+    text = str(error).lower()
+    if "auth" in text or "token" in text or "unauthorized" in text:
+        return "authentication"
+    if "telegram" in text or "bot" in text:
+        return "telegram_api"
+    if "network" in text or "timeout" in text or "dns" in text or "connect" in text:
+        return "network"
+    if "config" in text or "env" in text or "missing" in text:
+        return "configuration"
+    if "storage" in text or "database" in text or "sqlite" in text or "volume" in text:
+        return "storage"
+    if "validation" in text or "schema" in text:
+        return "validation"
+    return "unknown"
 
 
 def duplicate_delivery_key(brief: Dict[str, Any]) -> str:
@@ -211,6 +349,40 @@ def duplicate_delivery_key(brief: Dict[str, Any]) -> str:
     ts = delivery.get("telegram_delivery_timestamp", "")
     msg = delivery.get("message_id", "")
     return f"brief:{scheduled}:{eid}:{msg}:{ts}"
+
+
+def store_delivery_blocklist(idempotency_key: str, db_path: str = "/app/.hermes/executions.db") -> Dict[str, Any]:
+    try:
+        os.makedirs(os.path.dirname(db_path), exist_ok=True)
+        conn = sqlite3.connect(db_path)
+        cur = conn.cursor()
+        cur.execute(
+            "CREATE TABLE IF NOT EXISTS delivery_blocklist(idempotency_key TEXT PRIMARY KEY, created_at TEXT)"
+        )
+        cur.execute(
+            "INSERT OR IGNORE INTO delivery_blocklist(idempotency_key, created_at) VALUES(?, ?)",
+            (idempotency_key, _now()),
+        )
+        conn.commit()
+        inserted = cur.rowcount == 1
+        conn.close()
+        return {"success": True, "inserted": inserted}
+    except Exception as exc:
+        logger.exception("Failed to write delivery_blocklist")
+        return {"success": False, "error": str(exc)}
+
+
+def is_delivery_blocked(idempotency_key: str, db_path: str = "/app/.hermes/executions.db") -> bool:
+    try:
+        conn = sqlite3.connect(db_path)
+        cur = conn.cursor()
+        cur.execute("SELECT 1 FROM delivery_blocklist WHERE idempotency_key = ?", (idempotency_key,))
+        row = cur.fetchone()
+        conn.close()
+        return row is not None
+    except Exception as exc:
+        logger.exception("Failed to read delivery_blocklist")
+        return False
 
 
 def store_brief(pack: Dict[str, Any], db_path: str = "/app/.hermes/executions.db") -> Dict[str, Any]:

@@ -564,6 +564,19 @@ See [Code Execution](features/code-execution.md) and the [Terminal section of th
 
 ## Skill Settings
 
+### Profile default skills
+
+Put skills under `skills.defaults` in a profile's `config.yaml` to preload them for every new session in that profile:
+
+```yaml
+skills:
+  defaults:
+    - obsidian-markdown
+    - obsidian-vault-navigator
+```
+
+Defaults load before any explicit `--skills` / `-s` values, and duplicates are removed while preserving order. Missing default skills warn and are skipped so the session can still start. Use `--ignore-rules` when you need to suppress profile defaults along with other automatic prompt injection.
+
 Skills can declare their own configuration settings via their SKILL.md frontmatter. These are non-secret values (paths, preferences, domain settings) stored under the `skills.config` namespace in `config.yaml`.
 
 ```yaml

@@ -119,6 +119,10 @@ class GatewaySlashCommandsMixin:
         # Snapshot the old entry so on_session_finalize can report the
         # expiring session id before reset_session() rotates it.
         old_entry = self.session_store._entries.get(session_key)
+        if old_entry is not None:
+            self._evict_profile_default_skills_prompt(
+                session_id=old_entry.session_id,
+            )
 
         # Close tool resources on the old agent (terminal sandboxes, browser
         # daemons, background processes) before evicting from cache.

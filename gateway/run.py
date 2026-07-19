@@ -3177,6 +3177,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         import threading as _threading
         self._agent_cache: "OrderedDict[str, tuple]" = OrderedDict()
         self._agent_cache_lock = _threading.Lock()
+        self._profile_default_skills_prompt_cache: Dict[tuple, str] = {}
+        self._profile_default_skills_cache_sessions: Dict[str, set[str]] = {}
 
         # Per-session model overrides from /model command.
         # Key: session_key, Value: dict with model/provider/api_key/base_url/api_mode
@@ -8172,6 +8174,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         # be garbage-collected.  Otherwise the cache grows
                         # unbounded across the gateway's lifetime.
                         self._evict_cached_agent(key)
+                        self._evict_profile_default_skills_prompt(
+                            session_id=entry.session_id,
+                        )
                         # Permanently finalizing this session — drop its
                         # per-session control state so the dicts don't grow
                         # unbounded across the gateway's lifetime. (Idle
@@ -11836,6 +11841,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # compaction summaries. Mirrors /reset and the compression-exhausted
             # path (#9893). Covers daily/idle/suspended auto-reset.
             self._evict_cached_agent(session_key)
+            self._evict_profile_default_skills_prompt(
+                session_key=session_key,
+                keep_session_id=session_entry.session_id,
+            )
             session_entry.was_auto_reset = False
         
         # Emit session:start for new or auto-reset sessions
@@ -12926,8 +12935,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     "Auto-resetting session %s after compression exhaustion.",
                     session_entry.session_id,
                 )
+                old_session_id = session_entry.session_id
                 new_entry = await self.async_session_store.reset_session(session_key)
                 self._evict_cached_agent(session_key)
+                self._evict_profile_default_skills_prompt(
+                    session_id=old_session_id,
+                )
                 self._session_model_overrides.pop(session_key, None)
                 self._pending_one_turn_model_restores.pop(session_key, None)
                 self._set_session_reasoning_override(session_key, None)
@@ -17429,6 +17442,84 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             cached[0], cached[1], _live, _snapshot_sid,
                         )
 
+    def _get_profile_default_skills_prompt(
+        self,
+        *,
+        session_key: str,
+        session_id: Optional[str],
+        default_skills: List[str],
+    ) -> str:
+        """Render profile defaults once per durable conversation."""
+        from agent.skill_commands import build_preloaded_skills_prompt
+
+        cache = getattr(self, "_profile_default_skills_prompt_cache", None)
+        if not isinstance(cache, dict):
+            cache = {}
+            self._profile_default_skills_prompt_cache = cache
+
+        prompt_cache_key = None
+        if session_id:
+            prompt_cache_key = (
+                session_id,
+                tuple(default_skills),
+                os.environ.get("HERMES_HOME", ""),
+            )
+            cached = cache.get(prompt_cache_key)
+            if cached is not None:
+                return cached
+
+        prompt, _loaded_skills, missing_skills = build_preloaded_skills_prompt(
+            default_skills,
+            task_id=session_id or session_key,
+        )
+        if missing_skills:
+            logger.warning(
+                "[Gateway] Profile default skill(s) not found and skipped: %s",
+                ", ".join(missing_skills),
+            )
+
+        if prompt_cache_key is not None:
+            cache[prompt_cache_key] = prompt
+            session_index = getattr(
+                self, "_profile_default_skills_cache_sessions", None
+            )
+            if not isinstance(session_index, dict):
+                session_index = {}
+                self._profile_default_skills_cache_sessions = session_index
+            session_index.setdefault(session_key, set()).add(session_id)
+        return prompt
+
+    def _evict_profile_default_skills_prompt(
+        self,
+        *,
+        session_id: Optional[str] = None,
+        session_key: Optional[str] = None,
+        keep_session_id: Optional[str] = None,
+    ) -> None:
+        """Drop rendered default skills when their conversation ends."""
+        cache = getattr(self, "_profile_default_skills_prompt_cache", None)
+        session_index = getattr(self, "_profile_default_skills_cache_sessions", None)
+        if not isinstance(cache, dict):
+            return
+
+        evicted_session_ids: set[str] = set()
+        if session_id:
+            evicted_session_ids.add(session_id)
+        if session_key and isinstance(session_index, dict):
+            evicted_session_ids.update(session_index.get(session_key, set()))
+        if keep_session_id:
+            evicted_session_ids.discard(keep_session_id)
+
+        for cache_key in list(cache):
+            if cache_key and cache_key[0] in evicted_session_ids:
+                cache.pop(cache_key, None)
+
+        if isinstance(session_index, dict):
+            for indexed_key, indexed_ids in list(session_index.items()):
+                indexed_ids.difference_update(evicted_session_ids)
+                if not indexed_ids:
+                    session_index.pop(indexed_key, None)
+
     def _evict_cached_agent(self, session_key: str) -> None:
         """Remove a cached agent for a session (called on /new, /model, etc).
 
@@ -19310,6 +19401,28 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             )
             if cfg_channel_prompt:
                 combined_ephemeral = (combined_ephemeral + "\n\n" + cfg_channel_prompt).strip()
+            if not is_truthy_value(os.environ.get("HERMES_IGNORE_RULES")):
+                try:
+                    from agent.skill_commands import (
+                        config_default_skill_identifiers,
+                    )
+
+                    default_skills = config_default_skill_identifiers(user_config)
+                    if default_skills:
+                        default_skills_prompt = self._get_profile_default_skills_prompt(
+                            session_key=session_key,
+                            session_id=session_id,
+                            default_skills=default_skills,
+                        )
+                        if default_skills_prompt:
+                            combined_ephemeral = (
+                                combined_ephemeral + "\n\n" + default_skills_prompt
+                            ).strip()
+                except Exception as exc:
+                    logger.warning(
+                        "[Gateway] Failed to load profile default skill(s): %s",
+                        exc,
+                    )
 
             max_iterations = _current_max_iterations()
 

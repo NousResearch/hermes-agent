@@ -44,6 +44,7 @@ from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_cli.config import load_config, _expand_env_vars
 from hermes_cli.fallback_config import get_fallback_chain
 from hermes_time import now as _hermes_now
+from utils import is_truthy_value
 
 logger = logging.getLogger(__name__)
 
@@ -2454,7 +2455,27 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
     elif isinstance(skills, str):
         skills = [skills]
 
-    skill_names = [str(name).strip() for name in skills if str(name).strip()]
+    from agent.skill_commands import (
+        config_default_skill_identifiers,
+        merge_preloaded_skill_identifiers,
+        normalize_skill_identifiers,
+    )
+
+    explicit_skill_names = normalize_skill_identifiers(skills)
+    default_skill_names: list[str] = []
+    if not is_truthy_value(os.environ.get("HERMES_IGNORE_RULES")):
+        try:
+            default_skill_names = config_default_skill_identifiers(load_config() or {})
+        except Exception as exc:
+            logger.warning(
+                "Cron job '%s': failed to load profile default skills: %s",
+                job.get("name", job.get("id")),
+                exc,
+            )
+    skill_names = merge_preloaded_skill_identifiers(
+        default_skill_names,
+        explicit_skill_names,
+    )
     if not skill_names:
         return _scan_assembled_cron_prompt(
             prompt,
@@ -2471,6 +2492,7 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
 
     parts = []
     skipped: list[str] = []
+    default_skill_set = set(default_skill_names) - set(explicit_skill_names)
     for skill_name in skill_names:
         # Cron jobs historically accepted only skill names here, but the CLI/gateway
         # slash-command path lets bundles shadow skills with the same slug. Mirror
@@ -2527,8 +2549,13 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
         )
 
     if skipped:
+        source = "profile or job"
+        if all(name in default_skill_set for name in skipped):
+            source = "profile default"
+        elif all(name not in default_skill_set for name in skipped):
+            source = "job"
         notice = (
-            f"[IMPORTANT: The following skill(s) were listed for this job but could not be found "
+            f"[IMPORTANT: The following {source} skill(s) could not be found "
             f"and were skipped: {', '.join(skipped)}. "
             f"Start your response with a brief notice so the user is aware, e.g.: "
             f"'⚠️ Skill(s) not found and skipped: {', '.join(skipped)}']"

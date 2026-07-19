@@ -2982,6 +2982,37 @@ class TestBuildJobPromptMissingSkill:
     def _missing_skill_view(self, name: str) -> str:
         return json.dumps({"success": False, "error": f"Skill '{name}' not found."})
 
+    def test_profile_default_skills_precede_job_skills(self):
+        """Profile defaults load before per-job skills, with duplicates removed."""
+
+        def _skill_view(name: str) -> str:
+            return json.dumps({"success": True, "content": f"Content for {name}."})
+
+        with patch(
+            "cron.scheduler.load_config",
+            return_value={"skills": {"defaults": ["profile-skill", "job-skill"]}},
+        ), patch("tools.skills_tool.skill_view", side_effect=_skill_view):
+            result = _build_job_prompt(
+                {"skills": ["job-skill", "extra-skill"], "prompt": "go"}
+            )
+
+        profile_pos = result.index("Content for profile-skill.")
+        job_pos = result.index("Content for job-skill.")
+        extra_pos = result.index("Content for extra-skill.")
+        assert profile_pos < job_pos < extra_pos
+
+    def test_missing_profile_default_skill_does_not_raise(self):
+        """A bad profile default warns inside the prompt but still runs the job."""
+        with patch(
+            "cron.scheduler.load_config",
+            return_value={"skills": {"defaults": ["ghost-skill"]}},
+        ), patch("tools.skills_tool.skill_view", side_effect=self._missing_skill_view):
+            result = _build_job_prompt({"prompt": "do something"})
+
+        assert "profile default skill" in result
+        assert "ghost-skill" in result
+        assert "do something" in result
+
     def test_missing_skill_does_not_raise(self):
         """Job should run even when a referenced skill is not installed."""
         with patch("tools.skills_tool.skill_view", side_effect=self._missing_skill_view):

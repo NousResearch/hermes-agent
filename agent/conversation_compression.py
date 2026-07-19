@@ -392,7 +392,11 @@ def replay_compression_warning(agent: Any) -> None:
             pass
 
 
-def conversation_history_after_compression(agent: Any, messages: list) -> Optional[list]:
+def conversation_history_after_compression(
+    agent: Any,
+    messages: list,
+    previous_history: Optional[list] = None,
+) -> Optional[list]:
     """Return the correct flush baseline after a compression boundary.
 
     Legacy compression rotates to a fresh child session. That child has not
@@ -409,7 +413,19 @@ def conversation_history_after_compression(agent: Any, messages: list) -> Option
 
     A shallow copy is intentional: it captures the current compacted dict
     identities as history while allowing later same-turn appends to remain new.
+
+    An aborted or no-op attempt after an earlier in-place compaction must retain
+    the pre-attempt baseline.  Treating all current messages as persisted would
+    drop any later, unflushed turns on restart; clearing the baseline would
+    append the already-persisted compacted rows a second time.
     """
+    if bool(getattr(agent, "_last_compression_attempt_recorded", False)):
+        attempt_in_place = getattr(agent, "_last_compression_attempt_in_place", None)
+        if attempt_in_place is True:
+            return list(messages)
+        if attempt_in_place is False:
+            return None
+        return previous_history
     if bool(getattr(agent, "_last_compaction_in_place", False)):
         return list(messages)
     return None
@@ -593,6 +609,13 @@ def compress_context(
         prompt — the session is NOT rotated.  Callers should detect the
         no-op via ``len(returned) == len(input)`` and stop the retry loop.
     """
+    # ``conversation_history_after_compression()`` needs the latest attempt's
+    # outcome, while ``_last_compaction_in_place`` remains the run-level signal
+    # read by gateway callers. ``None`` means this attempt aborted or made no
+    # boundary, so the previous flush baseline remains authoritative.
+    agent._last_compression_attempt_recorded = True
+    agent._last_compression_attempt_in_place = None
+
     # Codex app-server sessions: the codex agent owns the real thread context;
     # Hermes' summarizer would only rewrite a local mirror without shrinking
     # the actual thread (#36801). Route compaction to the app server's own
@@ -1194,6 +1217,7 @@ def compress_context(
         # via a rotation-independent flag. The gateway uses this — NOT an
         # id-change diff — to re-baseline transcript handling (history_offset=0 +
         # rewrite on the same id) when compaction happened in place. See #38763.
+        agent._last_compression_attempt_in_place = compacted_in_place
         agent._last_compaction_in_place = compacted_in_place
 
         # Keep the post-compression rough estimate for diagnostics, but do not

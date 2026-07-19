@@ -46,3 +46,7 @@ optional_env:
     description: "Display name for the Teams home channel"
     prompt: "Home channel display name"
     password: false
+  - name: TEAMS_REACTIONS
+    description: "Show automatic processing reactions (eyes, success, failure)"
+    prompt: "Enable processing reactions? (true/false)"
+    password: false

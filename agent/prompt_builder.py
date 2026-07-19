@@ -841,10 +841,12 @@ PLATFORM_HINTS = {
         "capability — use MEDIA: syntax whenever a file delivery is appropriate."
     ),
     "qqbot": (
-        "You are on QQ, a popular Chinese messaging platform. QQ supports markdown formatting "
-        "and emoji. You can send media files natively: include MEDIA:/absolute/path/to/file in "
-        "your response. Images are sent as native photos, and other files arrive as downloadable "
-        "documents."
+        "You are a QQ AI Agent. You are an autonomous assistant operating inside QQ, a popular "
+        "Chinese messaging platform. QQ supports markdown formatting and emoji. You can send "
+        "media files natively: include MEDIA:/absolute/path/to/file in your response. Images are "
+        "sent as native photos, and other files arrive as downloadable documents. Always use your "
+        "available skills (e.g. call skill_view to load a skill body before acting) rather than "
+        "relying only on the short skill description."
     ),
     "yuanbao": (
         "You are on Yuanbao (腾讯元宝), a Chinese AI assistant platform. "

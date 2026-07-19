@@ -145,3 +145,20 @@ class TestTelegramRichMessagesHint:
             stable = _stable_prompt(agent)
         assert "Standard Markdown is automatically converted" in stable
         assert "lean into it" not in stable
+
+
+class TestQqbotHint:
+    """#66959 — the QQ platform hint must frame the model as an AI Agent so
+    weaker routed models load skill bodies via skill_view() instead of relying
+    on the short skill description alone."""
+
+    def test_qqbot_hint_inserted_into_system_prompt(self):
+        agent = _make_agent(platform="qqbot")
+        stable = _stable_prompt(agent)
+        assert "You are a QQ AI Agent" in stable
+
+    def test_qqbot_hint_absent_for_other_platforms(self):
+        agent = _make_agent(platform="cli")
+        stable = _stable_prompt(agent)
+        assert "You are a QQ AI Agent" not in stable
+

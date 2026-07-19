@@ -125,30 +125,28 @@ def _append_agent_browser_arg(browser_env: dict, flag: str) -> None:
     browser_env["AGENT_BROWSER_ARGS"] = ",".join(parts)
 
 
-def _user_wants_headed_browser(browser_env: dict) -> bool:
-    """True when the operator explicitly opted into a visible browser window."""
-    return is_truthy_value(browser_env.get("AGENT_BROWSER_HEADED"))
-
-
 def _apply_local_browser_visibility_guards(
     browser_env: dict,
     *,
     local_chromium: bool,
 ) -> list[str]:
-    """Keep local Chromium invisible unless the user opted into headed mode.
+    """Keep local Chromium invisible unless Hermes headed mode is enabled.
 
     Local mode is documented as headless Chromium via agent-browser. On
     Windows Desktop, a blank top-level window can still appear when:
 
-    1. ``~/.agent-browser/config.json`` (or ``AGENT_BROWSER_HEADED``) enables
-       headed mode without Hermes knowing about it, or
+    1. ``~/.agent-browser/config.json`` enables headed mode without Hermes
+       knowing about it, or
     2. Chrome's ``--headless=new`` paints a ghost HWND on some Windows hosts.
 
     Force ``--headed false`` for local sessions and, on Windows, park any
     leftover window off-screen via ``AGENT_BROWSER_ARGS``. Cloud/CDP backends
-    are left alone. Explicit ``AGENT_BROWSER_HEADED=1`` still wins (#64867).
+    are left alone. ``_is_headed_mode()`` (config ``browser.headed`` or
+    ``AGENT_BROWSER_HEADED``) is the authoritative opt-out so we never inject
+    a contradictory ``--headed false`` alongside main's ``--headed`` (#64867).
     """
-    if not local_chromium or _user_wants_headed_browser(browser_env):
+    # Resolved at call time so this helper can sit above ``_is_headed_mode``.
+    if not local_chromium or _is_headed_mode():
         return []
 
     # Pin both the CLI flag and the env so project/user agent-browser.json

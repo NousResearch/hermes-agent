@@ -283,6 +283,65 @@ describe('ToolsetConfigPanel', () => {
     })
   })
 
+  it('swaps the install hint for the installed one-liner when the provider is ready', async () => {
+    // Server says the post_setup install is already satisfied (status ready) —
+    // the "needs a one-time install" copy would contradict the Ready pill.
+    getToolsetConfig.mockResolvedValue(
+      config({
+        name: 'browser',
+        active_provider: 'Camofox',
+        providers: [
+          {
+            name: 'Camofox',
+            badge: 'local',
+            tag: 'Stealth local browser',
+            env_vars: [],
+            post_setup: 'camofox',
+            requires_nous_auth: false,
+            is_active: true,
+            status: 'ready'
+          }
+        ]
+      })
+    )
+
+    const { ToolsetConfigPanel } = await import('./toolset-config-panel')
+    render(<ToolsetConfigPanel onConfiguredChange={vi.fn()} toolset="browser" />)
+
+    // Installed confirmation replaces the contradictory install prompt…
+    expect(await screen.findByText(/Installed\. Re-run setup only if something is broken\./)).toBeTruthy()
+    expect(screen.queryByText(/needs a one-time install/)).toBeNull()
+    // …but the Run setup button stays available for repair re-runs.
+    expect(screen.getByRole('button', { name: /Run setup/ })).toBeTruthy()
+  })
+
+  it('keeps the install hint when the provider still needs setup', async () => {
+    getToolsetConfig.mockResolvedValue(
+      config({
+        name: 'browser',
+        active_provider: null,
+        providers: [
+          {
+            name: 'Camofox',
+            badge: 'local',
+            tag: 'Stealth local browser',
+            env_vars: [],
+            post_setup: 'camofox',
+            requires_nous_auth: false,
+            is_active: false,
+            status: 'needs_setup'
+          }
+        ]
+      })
+    )
+
+    const { ToolsetConfigPanel } = await import('./toolset-config-panel')
+    render(<ToolsetConfigPanel onConfiguredChange={vi.fn()} toolset="browser" />)
+
+    expect(await screen.findByText(/needs a one-time install/)).toBeTruthy()
+    expect(screen.queryByText(/Installed\. Re-run setup only if something is broken\./)).toBeNull()
+  })
+
   it('does not poll when the spawn endpoint reports ok:false', async () => {
     getToolsetConfig.mockResolvedValue(
       config({

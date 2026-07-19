@@ -1015,6 +1015,7 @@ export const zh: Translations = {
       nousIncluded: '包含在 Nous 订阅中；登录 Nous Portal 即可激活。',
       noApiKeyRequired: '不需要 API 密钥。',
       postSetupHint: step => `此后端需要一次性安装 (${step})。将在此机器上执行，可能需要几分钟。`,
+      postSetupInstalledHint: '已安装。仅在出现问题时才需要重新运行安装。',
       postSetupRun: '运行设置',
       postSetupRunning: '安装中…',
       postSetupStarting: '启动中…',

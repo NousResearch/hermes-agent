@@ -837,6 +837,7 @@ export const zhHant = defineLocale({
       nousIncluded: '包含在 Nous 訂閱中；登入 Nous Portal 即可啟用。',
       noApiKeyRequired: '不需要 API 金鑰。',
       postSetupHint: step => `此後端需要一次性安裝 (${step})。將在此機器上執行，可能需要幾分鐘。`,
+      postSetupInstalledHint: '已安裝。僅在出現問題時才需要重新執行安裝。',
       postSetupRun: '執行設定',
       postSetupRunning: '安裝中…',
       postSetupStarting: '啟動中…',

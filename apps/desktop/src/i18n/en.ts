@@ -826,6 +826,7 @@ export const en: Translations = {
       noApiKeyRequired: 'No API key required.',
       postSetupHint: step =>
         `This backend needs a one-time install (${step}). Runs on this machine — may take a few minutes.`,
+      postSetupInstalledHint: 'Installed. Re-run setup only if something is broken.',
       postSetupRun: 'Run setup',
       postSetupRunning: 'Installing…',
       postSetupStarting: 'Starting…',

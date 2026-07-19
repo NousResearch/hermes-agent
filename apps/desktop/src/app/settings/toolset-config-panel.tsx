@@ -204,6 +204,10 @@ interface PostSetupRunnerProps {
   toolset: string
   /** The provider's post_setup hook key (e.g. "camofox", "ddgs"). */
   postSetupKey: string
+  /** True when the server already reports this provider `ready` — the install
+   *  side-effect is verifiably satisfied, so the "needs a one-time install"
+   *  copy would contradict the Ready pill next to it. */
+  providerReady?: boolean
   /** Refresh the parent config after the install finishes (a backend may now
    *  report itself configured). */
   onComplete?: () => void
@@ -215,7 +219,7 @@ interface PostSetupRunnerProps {
  * log inline — the GUI equivalent of the install step `hermes tools` runs
  * after you pick a backend that needs extra dependencies.
  */
-function PostSetupRunner({ toolset, postSetupKey, onComplete }: PostSetupRunnerProps) {
+function PostSetupRunner({ toolset, postSetupKey, providerReady = false, onComplete }: PostSetupRunnerProps) {
   const { t } = useI18n()
   const copy = t.settings.toolsets
   const [running, setRunning] = useState(false)
@@ -297,7 +301,9 @@ function PostSetupRunner({ toolset, postSetupKey, onComplete }: PostSetupRunnerP
     <div className="grid gap-2 rounded-lg bg-background/55 p-2.5">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="min-w-0">
-          <p className="text-[0.72rem] text-muted-foreground">{copy.postSetupHint(postSetupKey)}</p>
+          <p className="text-[0.72rem] text-muted-foreground">
+            {providerReady ? copy.postSetupInstalledHint : copy.postSetupHint(postSetupKey)}
+          </p>
         </div>
         <Button disabled={running} onClick={() => void run()} size="sm">
           {running ? <Loader2 className="size-3.5 animate-spin" /> : <Terminal className="size-3.5" />}
@@ -612,6 +618,7 @@ export function ToolsetConfigPanel({ toolset, onConfiguredChange }: ToolsetConfi
                   <PostSetupRunner
                     onComplete={() => void refresh()}
                     postSetupKey={provider.post_setup}
+                    providerReady={status === 'ready'}
                     toolset={toolset}
                   />
                 )}

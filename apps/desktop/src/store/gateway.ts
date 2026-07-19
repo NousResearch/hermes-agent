@@ -71,7 +71,10 @@ export function activeGateway(): HermesGateway | null {
     return primaryGateway
   }
 
-  return secondaries.get(activeKey)?.gateway ?? primaryGateway
+  // When the active profile is not the primary, only return its own gateway.
+  // Silently falling back to primaryGateway would route messages meant for a
+  // remote/secondary profile to the local primary backend instead (#67097).
+  return secondaries.get(activeKey)?.gateway ?? null
 }
 
 // Mirror a backend's connection state into the global composer state, but only
@@ -208,6 +211,12 @@ export async function ensureGatewayForProfile(profile: string): Promise<void> {
   const key = normKey(profile)
 
   if (key === primaryProfile) {
+    // Close all secondary WebSocket connections before activating the primary.
+    // Leaving secondaries open with wantOpen=true while the active key flips to
+    // primary creates stale connections that can receive messages if the active
+    // key state gets confused, routing them to the wrong profile (#67097).
+    closeSecondaryGateways()
+
     setActive(key)
 
     return

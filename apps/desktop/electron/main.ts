@@ -6593,6 +6593,9 @@ async function spawnPoolBackend(profile, entry) {
         // scheduler tick loop (the gateway isn't running under the app).
         HERMES_DESKTOP: '1',
         HERMES_WEB_DIST: webDist,
+        // Pin the session profile so that subprocess tools and env queries
+        // correctly resolve the profile the backend is running under (#67097).
+        HERMES_SESSION_PROFILE: profile,
         ...(readyFile ? { HERMES_DESKTOP_READY_FILE: readyFile } : {})
       },
       shell: backend.shell,
@@ -6831,7 +6834,7 @@ async function startHermes() {
           // resolves to the SAME location our resolveHermesHome() picked. Without
           // this pin, Python falls back to ~/.hermes on every platform — fine on
           // mac/linux (where our default matches), but on Windows our default is
-          // %LOCALAPPDATA%\hermes, which differs from C:\Users\<u>\.hermes.
+          // %LOCALAPPDATA%\\hermes, which differs from C:\\Users\\<u>\\.hermes.
           // Mismatch would split config / sessions / .env / logs across two
           // directories. install.ps1 sets HERMES_HOME via setx; the desktop
           // can't reliably do that, so we set it inline for every spawn.
@@ -6843,6 +6846,9 @@ async function startHermes() {
           // scheduler tick loop (the gateway isn't running under the app).
           HERMES_DESKTOP: '1',
           HERMES_WEB_DIST: webDist,
+          // Pin the session profile so that subprocess tools and env queries
+          // correctly resolve the profile the backend is running under (#67097).
+          HERMES_SESSION_PROFILE: activeProfile || 'default',
           ...(readyFile ? { HERMES_DESKTOP_READY_FILE: readyFile } : {})
         },
         shell: backend.shell,
@@ -9156,6 +9162,14 @@ app.on('open-url', (event, url) => {
 })
 
 app.whenReady().then(() => {
+  // Initialize active-profile.json on first boot so there's a persisted
+  // record of the active profile state. Without this, the file is only created
+  // when the user explicitly switches profiles via the UI, leaving no record
+  // of the profile state on a fresh install (#67097).
+  if (readActiveDesktopProfile() === null) {
+    writeActiveDesktopProfile(null)
+  }
+
   const systemCa = installWindowsSystemCaTrust(tls)
 
   if (systemCa.applied) {

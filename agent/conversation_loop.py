@@ -2670,6 +2670,12 @@ def run_conversation(
                     classified.retryable, classified.should_compress,
                     classified.should_rotate_credential, classified.should_fallback,
                 )
+                # In-stream errors carry no status attribute; the classifier
+                # may have recovered one from message text. Backfill so the
+                # error hook, 413 check, and non-retryable rendering below
+                # report the real status instead of "HTTP None".
+                if status_code is None:
+                    status_code = classified.status_code
                 agent._invoke_api_request_error_hook(
                     task_id=effective_task_id,
                     turn_id=turn_id,
@@ -3105,7 +3111,10 @@ def run_conversation(
                 # Check for 413 payload-too-large BEFORE generic 4xx handler.
                 # A 413 is a payload-size error — the correct response is to
                 # compress history and retry, not abort immediately.
-                status_code = getattr(api_error, "status_code", None)
+                # Preserve a status recovered by the classifier (in-stream
+                # errors have no status attribute) — don't clobber with None.
+                if getattr(api_error, "status_code", None) is not None:
+                    status_code = api_error.status_code
 
                 # ── Respect disabled auto-compaction on overflow ──────
                 # Ported from anomalyco/opencode#30749.  When the user has

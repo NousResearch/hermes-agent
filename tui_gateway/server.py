@@ -6237,12 +6237,12 @@ def _(rid, params: dict) -> dict:
         _enable_gateway_prompts()
         try:
             db.reopen_session(target)
-            # repair_alternation on the model-fed copy only: this resume feeds
-            # LIVE REPLAY (raw_history → sanitize_replay_history → the resumed
-            # session's working conversation). display_history stays verbatim —
+            # One lineage SELECT feeds both projections (#67142-adjacent perf,
+            # from the desktop audit): the model-fed copy is alternation-repaired
+            # (raw_history → sanitize_replay_history → the resumed session's
+            # working conversation) and the display copy stays verbatim —
             # inspection/export must show what is actually stored.
-            raw_history = db.get_messages_as_conversation(target, repair_alternation=True)
-            display_history = db.get_messages_as_conversation(target, include_ancestors=True)
+            raw_history, display_history = db.get_resume_conversations(target)
         except Exception as e:
             if lease is not None:
                 lease.release()
@@ -6315,12 +6315,10 @@ def _(rid, params: dict) -> dict:
     )
     try:
         db.reopen_session(target)
-        # repair_alternation on the model-fed copy only (see the interactive
-        # resume above): this loads LIVE REPLAY history; display stays verbatim.
-        raw_history = db.get_messages_as_conversation(target, repair_alternation=True)
-        display_history = db.get_messages_as_conversation(
-            target, include_ancestors=True
-        )
+        # One lineage SELECT feeds both projections (see the interactive resume
+        # above): the model-fed copy is alternation-repaired for LIVE REPLAY, the
+        # display copy stays verbatim.
+        raw_history, display_history = db.get_resume_conversations(target)
         # The display transcript keeps every row so the user still sees their
         # full history.  The model-fed history is sanitized: a session whose
         # last turn died mid-tool-loop persists a dangling assistant(tool_calls)

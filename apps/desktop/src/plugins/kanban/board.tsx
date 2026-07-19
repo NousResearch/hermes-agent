@@ -12,6 +12,7 @@ import {
   Button,
   cn,
   Codicon,
+  compactNumber,
   ContextMenu,
   ContextMenuContent,
   ContextMenuItem,
@@ -68,6 +69,7 @@ import {
   bulkTasks,
   createTask,
   deleteTask,
+  estimateNew,
   fetchBoard,
   fetchBoards,
   fetchProfiles,
@@ -77,7 +79,7 @@ import {
 import { BoardSwitcher } from './board-switcher'
 import { TaskDrawer } from './drawer'
 import { OrchestrationPanel } from './orchestration'
-import { columnMeta, type KanbanBoard, type KanbanTask } from './types'
+import { columnMeta, COMPLEXITY_LABEL, type KanbanBoard, type KanbanTask, type TaskEstimate } from './types'
 import {
   ago,
   ARC_TITLES,
@@ -539,9 +541,10 @@ function NewTaskDialog({
   // unassigned — parking a card is the explicit choice, not the default.
   const resolvedDefault = useOrchestration()?.resolved_default_assignee || 'default'
 
-  // Board-level workspace default: a task inherits the current board's project
-  // workspace (scratch when unscoped, worktree in a git repo, else dir) unless
-  // overridden below. Set the board's project in the switcher's "Board settings…".
+  // Board-level workspace default: a task inherits the current board's
+  // configured project dir (scratch when unset, worktree in a git repo, else
+  // dir) unless the operator overrides it below. Set the board default in the
+  // board switcher's "Board settings…".
   const selectedSlug = useValue($boardSlug)
   const { data: boards } = useQuery({ queryKey: BOARDS_KEY, queryFn: fetchBoards, staleTime: 30_000 })
   const currentBoard = boards?.boards.find(b => b.slug === (selectedSlug || boards.current))
@@ -555,13 +558,28 @@ function NewTaskDialog({
   const [priority, setPriority] = useState('0')
   const [skills, setSkills] = useState('')
   const [workspaceKind, setWorkspaceKind] = useState<string>(boardDefaultKind)
-  // Empty = inherit the board's project dir (backend resolves it); a path here
-  // overrides just this task. Only meaningful for dir/worktree.
+  // Empty = inherit the board's default project dir (backend resolves it);
+  // a path here overrides just this task. Only meaningful for dir/worktree.
   const [workspacePath, setWorkspacePath] = useState('')
   const [parent, setParent] = useState('')
   const [goalMode, setGoalMode] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<null | string>(null)
+  const [estimate, setEstimate] = useState<null | TaskEstimate>(null)
+
+  // Rough effort estimate from the typed title/body (before the task exists),
+  // via the auto-routed auxiliary model. Makes a model call — explicit action.
+  const estMut = useMutation({
+    mutationFn: () => estimateNew(title.trim(), bodyText.trim()),
+    onError: err => host.notify({ kind: 'error', message: errText(err) }),
+    onSuccess: r => {
+      if (r.ok) {
+        setEstimate(r)
+      } else {
+        host.notify({ kind: 'warning', message: r.reason || 'Could not estimate' })
+      }
+    }
+  })
 
   // Reset per open — the dialog is externally controlled (open = target set),
   // so onOpenChange(true) never fires; key the reset off `target` (and the
@@ -579,6 +597,7 @@ function NewTaskDialog({
       setGoalMode(false)
       setError(null)
       setBusy(false)
+      setEstimate(null)
     }
   }, [target, boardDefaultKind])
 
@@ -610,7 +629,7 @@ function NewTaskDialog({
         title: trimmed,
         triage: isTriage,
         workspace_kind: workspaceKind,
-        // Empty → backend inherits the board's project dir.
+        // Empty → backend inherits the board's default project dir.
         workspace_path: workspaceKind !== 'scratch' && workspacePath.trim() ? workspacePath.trim() : undefined
       })
 
@@ -743,6 +762,41 @@ function NewTaskDialog({
           {error && <span className="text-[0.75rem] text-destructive">{error}</span>}
         </div>
         <DialogFooter>
+          <div className="mr-auto flex items-center gap-1 text-[0.75rem] text-(--ui-text-tertiary)">
+            {estimate?.ok ? (
+              <>
+                <Tip label={estimate.rationale || 'Rough estimate'}>
+                  <span className="font-medium tabular-nums text-(--ui-text-secondary)">
+                    ~{compactNumber(estimate.est_tokens)} tok
+                    {estimate.complexity ? ` · ${COMPLEXITY_LABEL[estimate.complexity] ?? estimate.complexity}` : ''}
+                  </span>
+                </Tip>
+                <Tip label="Re-estimate">
+                  <Button
+                    aria-label="Re-estimate"
+                    disabled={!title.trim() || estMut.isPending}
+                    onClick={() => estMut.mutate()}
+                    size="icon-xs"
+                    variant="ghost"
+                  >
+                    <Codicon name="refresh" size="0.7rem" spinning={estMut.isPending} />
+                  </Button>
+                </Tip>
+              </>
+            ) : (
+              <Tip label="Rough token + complexity estimate from the auxiliary model — makes a model call.">
+                <Button
+                  disabled={!title.trim() || estMut.isPending}
+                  onClick={() => estMut.mutate()}
+                  size="xs"
+                  variant="ghost"
+                >
+                  <Codicon name={estMut.isPending ? 'loading' : 'dashboard'} size="0.75rem" spinning={estMut.isPending} />
+                  {estMut.isPending ? 'Estimating…' : 'Estimate'}
+                </Button>
+              </Tip>
+            )}
+          </div>
           <Button onClick={onClose} variant="text">
             Cancel
           </Button>

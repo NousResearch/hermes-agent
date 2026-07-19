@@ -5406,6 +5406,9 @@ _KNOWN_ROOT_KEYS = {
     "agent", "terminal", "display", "compression", "delegation",
     "auxiliary", "moa", "custom_providers", "context", "memory", "gateway",
     "sessions", "streaming", "updates", "mcp_servers",
+    # Keys read/written by Hermes flows but absent from DEFAULT_CONFIG:
+    "group_sessions_per_user",      # top-level form read by gateway/config.py:1206
+    "known_plugin_toolsets",        # written by `hermes tools` (tools_config.py:2012-2013)
 }
 
 # Valid fields inside a custom_providers list entry

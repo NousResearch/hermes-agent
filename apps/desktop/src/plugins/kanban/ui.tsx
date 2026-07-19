@@ -11,12 +11,25 @@ import {
   profileColor,
   profileColorSoft,
   relativeTime,
+  useI18n,
   useQuery
 } from '@hermes/plugin-sdk'
 import { type ReactNode, useEffect, useLayoutEffect, useRef, useState } from 'react'
 
 import { fetchOrchestration, ORCHESTRATION_KEY } from './api'
 import { columnMeta, type KanbanTask } from './types'
+
+/** The kanban i18n slice — one hook every plugin component reads `t.kanban` from. */
+export function useKanban() {
+  return useI18n().t.kanban
+}
+
+export type KanbanText = ReturnType<typeof useKanban>
+
+// Column labels + help live in i18n (visuals stay in COLUMN_META); unknown
+// backend statuses fall back to the raw id / no help.
+export const columnLabel = (k: KanbanText, name: string) => k.col[name as keyof KanbanText['col']]?.label ?? name
+export const columnHelp = (k: KanbanText, name: string) => k.col[name as keyof KanbanText['col']]?.help ?? ''
 
 /** Orchestration knobs (cached app-wide; the settings panel invalidates). */
 export function useOrchestration() {
@@ -32,14 +45,14 @@ export function useDefaultAssignee(): string {
 // System-owned drop targets — you can drag a card OUT of these, never INTO
 // them, so lanes/menus must not offer them as targets. `running`/`review` are
 // claimed by the dispatcher; `scheduled` needs a wake-up time only an agent or
-// the CLI can attach (a bare status drag is refused with a 409).
-export const LOCKED_COLUMNS: Record<string, string> = {
-  review: 'Review is entered by the dispatcher when a review agent takes the card.',
-  running: 'Running is set by the dispatcher when a worker claims the card.',
-  scheduled: 'Scheduled needs a wake-up time — agents set it; it can’t be dragged into.'
-}
+// the CLI can attach (a bare status drag is refused with a 409). The reason
+// copy lives in i18n (`t.kanban.locked`).
+export const LOCKED_COLUMNS = ['review', 'running', 'scheduled'] as const
 
-export const isLockedTarget = (name: string): boolean => name in LOCKED_COLUMNS
+export const isLockedTarget = (name: string): boolean => (LOCKED_COLUMNS as readonly string[]).includes(name)
+
+/** Reason a locked column can't be dropped into (for the info toast). */
+export const lockedReason = (k: KanbanText, name: string) => k.locked[name as keyof KanbanText['locked']] ?? ''
 
 export const shortId = (id?: null | string) => (id ?? '').replace(/^t_/, '').slice(0, 6)
 
@@ -127,13 +140,9 @@ export function arcState(task: KanbanTask, fallbackAssignee: string): ArcState |
   return queued ? 'queued' : null
 }
 
-export const ARC_TITLES = {
-  running: 'An agent is working on this now.',
-  stale: 'Claimed, but no worker heartbeat for 2+ minutes — the dispatcher will reclaim it.'
-} as const
-
 /** Ticking "working · 34s" line for running cards (elapsed since claim). */
 export function RunClock({ task }: { task: KanbanTask }) {
+  const k = useKanban()
   const elapsed = useTicking(task.started_at)
 
   if (!elapsed) {
@@ -142,7 +151,7 @@ export function RunClock({ task }: { task: KanbanTask }) {
 
   return (
     <span className="shrink-0 font-medium" style={{ color: columnMeta('running').tone }}>
-      working · {elapsed}
+      {k.working} · {elapsed}
     </span>
   )
 }
@@ -189,6 +198,7 @@ export function StatusMenu({
   onMove: (status: string) => void
   status: string
 }) {
+  const k = useKanban()
   const meta = columnMeta(status)
 
   return (
@@ -200,7 +210,7 @@ export function StatusMenu({
           type="button"
         >
           <span className="size-1.5 rounded-full" style={{ backgroundColor: meta.tone }} />
-          {meta.label}
+          {columnLabel(k, status)}
           <Codicon name="chevron-down" size="0.7rem" />
         </button>
       </DropdownMenuTrigger>
@@ -210,7 +220,7 @@ export function StatusMenu({
           .map(name => (
             <DropdownMenuItem key={name} onSelect={() => onMove(name)}>
               <span className="size-2 rounded-full" style={{ backgroundColor: columnMeta(name).tone }} />
-              {columnMeta(name).label}
+              {columnLabel(k, name)}
               {name === status && <Codicon className="ml-auto" name="check" size="0.8rem" />}
             </DropdownMenuItem>
           ))}

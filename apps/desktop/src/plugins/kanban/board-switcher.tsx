@@ -34,7 +34,7 @@ import { useEffect, useState } from 'react'
 
 import { $boardSlug, BOARDS_KEY, createBoard, fetchBoards, fetchProjects, PROJECTS_KEY, updateBoard } from './api'
 import type { BoardMeta } from './types'
-import { errText, FIELD_LABEL } from './ui'
+import { errText, FIELD_LABEL, useKanban } from './ui'
 
 const NO_PROJECT = '__none__'
 
@@ -42,18 +42,19 @@ const NO_PROJECT = '__none__'
  *  board's default workspace root; new tasks inherit it as a worktree with a
  *  deterministic branch. "No project" falls back to scratch sandboxes. */
 function ProjectPicker({ onChange, value }: { onChange: (id: string) => void; value: string }) {
+  const k = useKanban()
   const { data } = useQuery({ queryKey: PROJECTS_KEY, queryFn: fetchProjects, staleTime: 30_000 })
   const projects = data?.projects ?? []
 
   return (
     <label className="flex flex-col gap-1">
-      <span className={FIELD_LABEL}>Project</span>
+      <span className={FIELD_LABEL}>{k.project}</span>
       <Select onValueChange={id => onChange(id === NO_PROJECT ? '' : id)} value={value || NO_PROJECT}>
         <SelectTrigger>
           <SelectValue />
         </SelectTrigger>
         <SelectContent>
-          <SelectItem value={NO_PROJECT}>No project (scratch sandboxes)</SelectItem>
+          <SelectItem value={NO_PROJECT}>{k.noProject}</SelectItem>
           {projects.map(project => (
             <SelectItem key={project.id} value={project.id}>
               {project.name}
@@ -62,14 +63,15 @@ function ProjectPicker({ onChange, value }: { onChange: (id: string) => void; va
         </SelectContent>
       </Select>
       <span className="text-[0.6875rem] leading-relaxed text-(--ui-text-quaternary)">
-        New tasks run in the project’s repo (a worktree per task); each task can still override its workspace at
-        creation. Manage projects with <span className="font-mono">hermes project</span>.
+        {k.projectHintPre}
+        <span className="font-mono">{k.projectHintCmd}</span>.
       </span>
     </label>
   )
 }
 
 function NewBoardDialog({ onClose, open }: { onClose: () => void; open: boolean }) {
+  const k = useKanban()
   const qc = useQueryClient()
   const [name, setName] = useState('')
   const [project, setProject] = useState('')
@@ -101,28 +103,28 @@ function NewBoardDialog({ onClose, open }: { onClose: () => void; open: boolean 
     <Dialog onOpenChange={o => !o && onClose()} open={open}>
       <DialogContent className="max-w-md">
         <DialogHeader>
-          <DialogTitle>New board</DialogTitle>
+          <DialogTitle>{k.newBoard}</DialogTitle>
         </DialogHeader>
         <div className="flex flex-col gap-3">
           <label className="flex flex-col gap-1">
-            <span className={FIELD_LABEL}>Name</span>
+            <span className={FIELD_LABEL}>{k.name}</span>
             <Input
               autoFocus
               onChange={event => setName(event.target.value)}
               onKeyDown={event => event.key === 'Enter' && slug && !project && create.mutate()}
-              placeholder="Board name"
+              placeholder={k.boardNamePlaceholder}
               value={name}
             />
-            {slug && <span className="text-[0.6875rem] text-(--ui-text-quaternary)">slug: {slug}</span>}
+            {slug && <span className="text-[0.6875rem] text-(--ui-text-quaternary)">{k.slug(slug)}</span>}
           </label>
           <ProjectPicker onChange={setProject} value={project} />
         </div>
         <DialogFooter>
           <Button onClick={onClose} variant="text">
-            Cancel
+            {k.cancel}
           </Button>
           <Button disabled={!slug || create.isPending} onClick={() => create.mutate()}>
-            Create board
+            {k.createBoard}
           </Button>
         </DialogFooter>
       </DialogContent>
@@ -131,6 +133,7 @@ function NewBoardDialog({ onClose, open }: { onClose: () => void; open: boolean 
 }
 
 function BoardSettingsDialog({ board, onClose }: { board: BoardMeta | null; onClose: () => void }) {
+  const k = useKanban()
   const qc = useQueryClient()
   const [name, setName] = useState('')
   const [project, setProject] = useState('')
@@ -157,22 +160,22 @@ function BoardSettingsDialog({ board, onClose }: { board: BoardMeta | null; onCl
     <Dialog onOpenChange={o => !o && onClose()} open={Boolean(board)}>
       <DialogContent className="max-w-md">
         <DialogHeader>
-          <DialogTitle>Board settings{board ? ` — ${board.name || board.slug}` : ''}</DialogTitle>
+          <DialogTitle>{board ? k.boardSettingsFor(board.name || board.slug) : k.boardSettings}</DialogTitle>
         </DialogHeader>
         <div className="flex flex-col gap-3">
           <label className="flex flex-col gap-1">
-            <span className={FIELD_LABEL}>Name</span>
-            <Input onChange={event => setName(event.target.value)} placeholder="Board name" value={name} />
-            {board && <span className="text-[0.6875rem] text-(--ui-text-quaternary)">slug: {board.slug}</span>}
+            <span className={FIELD_LABEL}>{k.name}</span>
+            <Input onChange={event => setName(event.target.value)} placeholder={k.boardNamePlaceholder} value={name} />
+            {board && <span className="text-[0.6875rem] text-(--ui-text-quaternary)">{k.slug(board.slug)}</span>}
           </label>
           <ProjectPicker onChange={setProject} value={project} />
         </div>
         <DialogFooter>
           <Button onClick={onClose} variant="text">
-            Cancel
+            {k.cancel}
           </Button>
           <Button disabled={save.isPending} onClick={() => save.mutate()}>
-            Save
+            {k.save}
           </Button>
         </DialogFooter>
       </DialogContent>
@@ -181,6 +184,7 @@ function BoardSettingsDialog({ board, onClose }: { board: BoardMeta | null; onCl
 }
 
 export function BoardSwitcher() {
+  const k = useKanban()
   const slug = useValue($boardSlug)
   const { data: boards } = useQuery({ queryFn: fetchBoards, queryKey: BOARDS_KEY, staleTime: 30_000 })
   const [adding, setAdding] = useState(false)
@@ -192,7 +196,7 @@ export function BoardSwitcher() {
 
   const currentSlug = slug || boards.current
   const current = boards.boards.find(meta => meta.slug === currentSlug)
-  const label = current?.name || current?.slug || 'Board'
+  const label = current?.name || current?.slug || k.board
 
   return (
     <>
@@ -223,12 +227,12 @@ export function BoardSwitcher() {
           {current && (
             <DropdownMenuItem onSelect={() => setSettingsFor(current)}>
               <Codicon name="settings-gear" size="0.8rem" />
-              Board settings…
+              {k.boardSettings}
             </DropdownMenuItem>
           )}
           <DropdownMenuItem onSelect={() => setAdding(true)}>
             <Codicon name="add" size="0.8rem" />
-            New board…
+            {k.newBoardDots}
           </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>

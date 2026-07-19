@@ -2304,4 +2304,176 @@ export interface Translations {
       toggle: string
     }
   }
+
+  kanban: {
+    nav: string
+    openBoard: string
+    countTip: (running: number, ready: number) => string
+    col: Record<
+      'archived' | 'blocked' | 'done' | 'ready' | 'review' | 'running' | 'scheduled' | 'todo' | 'triage',
+      { label: string; help: string }
+    >
+    locked: { review: string; running: string; scheduled: string }
+    arcRunning: string
+    arcStale: string
+    title: string
+    orchestrationSettings: string
+    newTask: string
+    filterCards: string
+    noMatch: string
+    noTasks: string
+    open: string
+    select: string
+    deselect: string
+    moveTo: (label: string) => string
+    delete: string
+    reviewChecking: string
+    attachedTip: (name: string) => string
+    orchestratorTip: (name: string) => string
+    autoAssignTip: (name: string) => string
+    wontRun: string
+    wontRunTip: string
+    noHeartbeat: string
+    expand: (label: string) => string
+    collapse: (label: string) => string
+    newTaskIn: (label: string) => string
+    empty: string
+    unassigned: string
+    filters: string
+    allProfiles: string
+    allTenants: string
+    showArchived: string
+    groupRunning: string
+    nSelected: (n: number) => string
+    moveToShort: string
+    assign: string
+    unassignAction: string
+    archive: string
+    clearSelection: string
+    refused: string
+    bulkFailed: (failed: number, total: number, err: string) => string
+    titlePlaceholderTriage: string
+    titlePlaceholder: string
+    descPlaceholder: string
+    priority: string
+    workspace: string
+    boardDefaultSuffix: string
+    workspaceOverride: string
+    workspaceInherit: string
+    workspaceInheritDir: (dir: string) => string
+    workspaceInheritGeneric: string
+    assignee: string
+    defaultOption: (name: string) => string
+    parkedOption: string
+    skills: string
+    skillsPlaceholder: string
+    parent: string
+    noParent: string
+    goalMode: string
+    creating: string
+    createTask: string
+    cancel: string
+    save: string
+    estimate: string
+    estimateEffort: string
+    estimating: string
+    reEstimate: string
+    makesModelCall: string
+    estimateTip: string
+    estimateTipLong: string
+    roughEstimate: string
+    tokUnit: string
+    couldNotEstimate: string
+    complexity: Record<'L' | 'M' | 'S', string>
+    introBody: string
+    introGotIt: string
+    // drawer — activity prose
+    evtCreated: (where: string, assignee: string) => string
+    evtMovedTo: (col: string) => string
+    evtParentReopened: (parent: string) => string
+    evtAssignedTo: (assignee: string) => string
+    evtUnassigned: string
+    evtCommentBy: (author: string) => string
+    evtClaimedReview: string
+    evtClaimedWorker: string
+    evtWorkerStarted: string
+    evtCompleted: string
+    evtBlocked: string
+    evtUnblocked: (col: string) => string
+    evtReclaimed: string
+    evtSpecified: string
+    evtPromoted: string
+    evtScheduled: string
+    evtArchived: string
+    evtReprioritized: (priority: string) => string
+    someone: string
+    // drawer — meta + sections
+    metaPriority: string
+    metaTenant: string
+    metaCreatedBy: string
+    metaCreated: string
+    metaWorkerPid: string
+    readyUnassignedTitle: string
+    readyUnassignedBody: string
+    diagnosticsN: (n: number) => string
+    commandCopied: string
+    description: string
+    editDescription: string
+    cancelEdit: string
+    noDescription: string
+    result: string
+    latestSummary: string
+    dependencies: string
+    blockedBy: string
+    blocks: string
+    comments: (n: number) => string
+    commentsHelpRunning: string
+    commentsHelp: string
+    send: string
+    comment: string
+    messageWorker: string
+    addComment: string
+    deliveredLive: string
+    requeueWithNote: string
+    notePosted: string
+    activity: (n: number) => string
+    runs: (n: number) => string
+    workerLog: string
+    workerLogTail: string
+    attachments: (n: number) => string
+    noAttachments: string
+    uploadAttachment: string
+    taskActions: string
+    copyTaskId: string
+    copyTitle: string
+    copiedId: (id: string) => string
+    copiedTitle: string
+    archiveTask: string
+    deleteTask: string
+    close: string
+    working: string
+    // board switcher
+    board: string
+    newBoard: string
+    newBoardDots: string
+    boardSettings: string
+    boardSettingsFor: (name: string) => string
+    name: string
+    boardNamePlaceholder: string
+    slug: (slug: string) => string
+    project: string
+    noProject: string
+    projectHintPre: string
+    projectHintCmd: string
+    createBoard: string
+    // orchestration
+    orchestratorProfile: string
+    defaultAssignee: string
+    defaultParen: string
+    autoDecompose: string
+    profileDescriptions: string
+    profileDescriptionsHint: string
+    profileGoodAt: string
+    auto: string
+  }
 }

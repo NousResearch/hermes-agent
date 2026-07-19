@@ -153,10 +153,6 @@ export interface TaskEstimate {
   rationale?: null | string
   model?: null | string
 }
-
-/** Human-readable complexity band (the backend returns the compact letter). */
-export const COMPLEXITY_LABEL: Record<string, string> = { L: 'Large', M: 'Medium', S: 'Small' }
-
 export interface BoardsResponse {
   boards: BoardMeta[]
   current: string
@@ -187,59 +183,24 @@ export interface KanbanProfile {
   description_auto: boolean
 }
 
-/** Column presentation: label + codicon + tone + one-line help. Order follows
- *  the backend's BOARD_COLUMNS; help text mirrors the dashboard so the workflow
- *  is self-explanatory (the board is a dispatcher queue, not a manual board).
- *  Anything the backend adds still renders via the fallback. */
-export const COLUMN_META: Record<string, { label: string; codicon: string; tone: string; help: string }> = {
-  triage: {
-    label: 'Triage',
-    codicon: 'inbox',
-    tone: 'var(--ui-text-tertiary)',
-    help: 'Raw ideas — a specifier fleshes out the spec.'
-  },
-  todo: {
-    label: 'Todo',
-    codicon: 'circle-outline',
-    tone: 'var(--ui-text-secondary)',
-    help: 'Waiting on dependencies, or unassigned.'
-  },
-  scheduled: { label: 'Scheduled', codicon: 'watch', tone: '#a78bfa', help: 'Waiting for a scheduled time to arrive.' },
-  ready: {
-    label: 'Ready',
-    codicon: 'play-circle',
-    tone: '#60a5fa',
-    help: 'Dependencies satisfied — assign a profile and the dispatcher runs it.'
-  },
-  running: {
-    label: 'Running',
-    codicon: 'sync',
-    tone: '#34d399',
-    help: 'Claimed by a worker — an agent is on it. Set by the dispatcher.'
-  },
-  blocked: { label: 'Blocked', codicon: 'error', tone: '#f87171', help: 'The worker asked for human input.' },
-  review: {
-    label: 'Review',
-    codicon: 'eye',
-    tone: '#fbbf24',
-    help: 'A review agent is checking the work. Set by the dispatcher.'
-  },
-  done: {
-    label: 'Done',
-    codicon: 'pass',
-    tone: 'var(--ui-text-tertiary)',
-    help: 'Completed; dependent children become ready.'
-  },
-  archived: {
-    label: 'Archived',
-    codicon: 'archive',
-    tone: 'var(--ui-text-quaternary)',
-    help: 'Hidden from the default board view.'
-  }
+/** Column presentation — codicon + tone only. Labels + help live in i18n
+ *  (`t.kanban.col`); see `columnLabel`/`columnHelp` in ui.tsx. Order follows
+ *  the backend's BOARD_COLUMNS; anything the backend adds renders via the
+ *  fallback. */
+export const COLUMN_META: Record<string, { codicon: string; tone: string }> = {
+  triage: { codicon: 'inbox', tone: 'var(--ui-text-tertiary)' },
+  todo: { codicon: 'circle-outline', tone: 'var(--ui-text-secondary)' },
+  scheduled: { codicon: 'watch', tone: '#a78bfa' },
+  ready: { codicon: 'play-circle', tone: '#60a5fa' },
+  running: { codicon: 'sync', tone: '#34d399' },
+  blocked: { codicon: 'error', tone: '#f87171' },
+  review: { codicon: 'eye', tone: '#fbbf24' },
+  done: { codicon: 'pass', tone: 'var(--ui-text-tertiary)' },
+  archived: { codicon: 'archive', tone: 'var(--ui-text-quaternary)' }
 }
 
 export const columnMeta = (name: string) =>
-  COLUMN_META[name] ?? { label: name, codicon: 'circle-outline', tone: 'var(--ui-text-secondary)', help: '' }
+  COLUMN_META[name] ?? { codicon: 'circle-outline', tone: 'var(--ui-text-secondary)' }
 
 export const SEVERITY_TONE: Record<Diagnostic['severity'], string> = {
   critical: 'var(--destructive, #f87171)',

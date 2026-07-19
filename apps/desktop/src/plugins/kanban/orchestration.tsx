@@ -31,7 +31,7 @@ import {
   saveProfileDescription
 } from './api'
 import type { KanbanProfile } from './types'
-import { errText, FIELD_LABEL } from './ui'
+import { errText, FIELD_LABEL, useKanban } from './ui'
 
 const DEFAULT_SENTINEL = '__default__'
 
@@ -46,6 +46,8 @@ function ProfilePicker({
   profiles: KanbanProfile[]
   value: string
 }) {
+  const k = useKanban()
+
   return (
     <label className="flex min-w-0 flex-col gap-1">
       <span className={FIELD_LABEL}>{label}</span>
@@ -54,7 +56,7 @@ function ProfilePicker({
           <SelectValue />
         </SelectTrigger>
         <SelectContent>
-          <SelectItem value={DEFAULT_SENTINEL}>(default)</SelectItem>
+          <SelectItem value={DEFAULT_SENTINEL}>{k.defaultParen}</SelectItem>
           {profiles.map(profile => (
             <SelectItem key={profile.name} value={profile.name}>
               {profile.name}
@@ -67,6 +69,7 @@ function ProfilePicker({
 }
 
 function ProfileDescriptionRow({ profile }: { profile: KanbanProfile }) {
+  const k = useKanban()
   const qc = useQueryClient()
   const [draft, setDraft] = useState(profile.description)
   const invalidate = () => void qc.invalidateQueries({ queryKey: PROFILES_KEY })
@@ -94,12 +97,12 @@ function ProfileDescriptionRow({ profile }: { profile: KanbanProfile }) {
     <div className="flex items-center gap-2">
       <span className="w-24 shrink-0 truncate text-[0.75rem] font-medium text-(--ui-text-secondary)">
         {profile.name}
-        {profile.is_default && <span className="ml-1 text-[0.625rem] text-(--ui-text-quaternary)">(default)</span>}
+        {profile.is_default && <span className="ml-1 text-[0.625rem] text-(--ui-text-quaternary)">{k.defaultParen}</span>}
       </span>
       <Input
         className="h-7 flex-1 text-[0.71rem]"
         onChange={event => setDraft(event.target.value)}
-        placeholder="What is this profile good at?"
+        placeholder={k.profileGoodAt}
         value={draft}
       />
       <Button
@@ -108,12 +111,12 @@ function ProfileDescriptionRow({ profile }: { profile: KanbanProfile }) {
         size="xs"
         variant="outline"
       >
-        Save
+        {k.save}
       </Button>
       {/* Overlay the spinner so the button keeps its "Auto" width — the aux
           model can take a few seconds and a text swap would jump the row. */}
       <Button className="relative" disabled={auto.isPending} onClick={() => auto.mutate()} size="xs" variant="ghost">
-        <span className={auto.isPending ? 'invisible' : ''}>Auto</span>
+        <span className={auto.isPending ? 'invisible' : ''}>{k.auto}</span>
         {auto.isPending && (
           <span className="absolute inset-0 grid place-items-center">
             <Codicon className="animate-spin [animation-duration:1.2s]" name="loading" size="0.75rem" />
@@ -125,6 +128,7 @@ function ProfileDescriptionRow({ profile }: { profile: KanbanProfile }) {
 }
 
 export function OrchestrationPanel() {
+  const k = useKanban()
   const qc = useQueryClient()
   const { data: settings } = useQuery({ queryKey: ORCHESTRATION_KEY, queryFn: fetchOrchestration })
   const { data: roster } = useQuery({ queryKey: PROFILES_KEY, queryFn: fetchProfiles, staleTime: 60_000 })
@@ -143,33 +147,31 @@ export function OrchestrationPanel() {
     <div className="flex flex-col gap-4 border-t border-(--ui-stroke-tertiary) px-4 py-3">
       <div className="flex flex-wrap items-end gap-4">
         <ProfilePicker
-          label="Orchestrator profile"
+          label={k.orchestratorProfile}
           onSave={name => save.mutate({ orchestrator_profile: name })}
           profiles={roster.profiles}
           value={settings.orchestrator_profile}
         />
         <ProfilePicker
-          label="Default assignee"
+          label={k.defaultAssignee}
           onSave={name => save.mutate({ default_assignee: name })}
           profiles={roster.profiles}
           value={settings.default_assignee}
         />
         <label className="flex cursor-pointer items-center gap-2 pb-1.5 text-[0.75rem] text-(--ui-text-secondary)">
           <Switch
-            aria-label="Auto-decompose triage tasks"
+            aria-label={k.autoDecompose}
             checked={settings.auto_decompose}
             onCheckedChange={checked => save.mutate({ auto_decompose: checked })}
             size="xs"
           />
-          Auto-decompose triage tasks
+          {k.autoDecompose}
         </label>
       </div>
 
       <div className="flex flex-col gap-1.5">
-        <span className={FIELD_LABEL}>Profile descriptions</span>
-        <p className="text-[0.6875rem] text-(--ui-text-quaternary)">
-          Descriptions guide the decomposer's routing. Auto-generate with the auxiliary model, or write your own.
-        </p>
+        <span className={FIELD_LABEL}>{k.profileDescriptions}</span>
+        <p className="text-[0.6875rem] text-(--ui-text-quaternary)">{k.profileDescriptionsHint}</p>
         {roster.profiles.map(profile => (
           <ProfileDescriptionRow key={`${profile.name}:${profile.description}`} profile={profile} />
         ))}

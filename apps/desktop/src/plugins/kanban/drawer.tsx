@@ -46,8 +46,6 @@ import {
   uploadAttachment
 } from './api'
 import {
-  columnMeta,
-  COMPLEXITY_LABEL,
   type Diagnostic,
   type DiagnosticAction,
   type KanbanAttachment,
@@ -60,15 +58,18 @@ import {
   ago,
   Avatar,
   Callout,
+  columnLabel,
   duration,
   errText,
   isLockedTarget,
-  LOCKED_COLUMNS,
+  type KanbanText,
+  lockedReason,
   ScrollFade,
   Section,
   shortId,
   StatusMenu,
-  useDefaultAssignee
+  useDefaultAssignee,
+  useKanban
 } from './ui'
 
 /**
@@ -78,7 +79,7 @@ import {
  * prose with the payload folded in; unknown kinds fall back to kind + compact
  * key=value detail so new backend events still say something.
  */
-function eventText(event: KanbanEvent): { detail?: string; label: string } {
+function eventText(event: KanbanEvent, k: KanbanText): { detail?: string; label: string } {
   let p: Record<string, unknown> = {}
 
   if (typeof event.payload === 'string' && event.payload) {
@@ -100,69 +101,62 @@ function eventText(event: KanbanEvent): { detail?: string; label: string } {
   const col = (key: string) => {
     const value = str(key)
 
-    return value ? columnMeta(value).label : null
+    return value ? columnLabel(k, value) : null
   }
 
   switch (event.kind) {
-    case 'created': {
-      const where = col('status')
-      const assignee = str('assignee')
-
-      return {
-        label: `created${where ? ` in ${where}` : ''}${assignee ? ` · assigned to ${assignee}` : ''}`
-      }
-    }
-
+    case 'created':
+      return { label: k.evtCreated(col('status') ?? '', str('assignee') ?? '') }
     case 'status': {
       const reason = str('reason')
 
       return {
-        label: `moved to ${col('status') ?? '?'}`,
-        detail: reason === 'parent_reopened' ? `parent ${str('parent') ?? ''} reopened` : (reason ?? undefined)
+        label: k.evtMovedTo(col('status') ?? '?'),
+        detail: reason === 'parent_reopened' ? k.evtParentReopened(str('parent') ?? '') : (reason ?? undefined)
       }
     }
 
     case 'assigned': {
       const assignee = str('assignee')
 
-      return { label: assignee ? `assigned to ${assignee}` : 'unassigned' }
+      return { label: assignee ? k.evtAssignedTo(assignee) : k.evtUnassigned }
     }
 
     case 'commented':
-      return { label: `comment by ${str('author') ?? 'someone'}` }
+      return { label: k.evtCommentBy(str('author') ?? k.someone) }
 
     case 'claimed':
-      return { label: str('source_status') === 'review' ? 'claimed by a review agent' : 'claimed by a worker' }
+      return { label: str('source_status') === 'review' ? k.evtClaimedReview : k.evtClaimedWorker }
 
     case 'spawned':
-      return { label: 'worker started', detail: p.pid != null ? `pid ${p.pid}` : undefined }
+      return { label: k.evtWorkerStarted, detail: p.pid != null ? `pid ${p.pid}` : undefined }
 
     case 'completed':
-      return { label: 'completed' }
+      return { label: k.evtCompleted }
 
     case 'blocked':
-      return { label: 'blocked — needs human input', detail: str('reason') ?? undefined }
+      return { label: k.evtBlocked, detail: str('reason') ?? undefined }
 
     case 'unblocked':
-      return { label: `unblocked${col('status') ? ` → ${col('status')}` : ' → Ready'}` }
+      return { label: k.evtUnblocked(col('status') ?? '') }
 
     case 'reclaimed':
-      return { label: 'reclaimed — returned to the queue', detail: str('reason') ?? undefined }
+      return { label: k.evtReclaimed, detail: str('reason') ?? undefined }
 
     case 'specified':
-      return { label: 'spec written by the triage agent' }
+      return { label: k.evtSpecified }
 
     case 'promoted':
-      return { label: 'dependencies done — promoted to Ready' }
+      return { label: k.evtPromoted }
 
     case 'scheduled':
-      return { label: 'scheduled for later', detail: str('reason') ?? undefined }
+      return { label: k.evtScheduled, detail: str('reason') ?? undefined }
 
     case 'archived':
-      return { label: 'archived' }
+      return { label: k.evtArchived }
 
     case 'reprioritized':
-      return { label: `priority set to ${p.priority ?? '?'}` }
+      return { label: k.evtReprioritized(String(p.priority ?? '?')) }
     default: {
       const detail = Object.entries(p)
         .filter(([, value]) => value != null && typeof value !== 'object')
@@ -187,12 +181,14 @@ function MetaRow({ children, label }: { children: ReactNode; label: string }) {
  *  backend's structured recovery actions as buttons. `reassign` is skipped —
  *  the Assignee control in the meta table IS that action, inline. */
 function Diagnostics({ items, onReclaim }: { items: Diagnostic[]; onReclaim: () => void }) {
+  const k = useKanban()
+
   const act = (action: DiagnosticAction) => {
     if (action.kind === 'reclaim') {
       onReclaim()
     } else if (action.kind === 'cli_hint') {
       void navigator.clipboard.writeText(String(action.payload?.command ?? action.label))
-      host.notify({ kind: 'info', message: 'Command copied' })
+      host.notify({ kind: 'info', message: k.commandCopied })
     }
   }
 
@@ -243,6 +239,7 @@ function AssigneeMenu({
   current: null | string | undefined
   onReassign: (p: string) => void
 }) {
+  const k = useKanban()
   const { data: roster } = useQuery({ queryKey: PROFILES_KEY, queryFn: fetchProfiles, staleTime: 60_000 })
 
   return (
@@ -258,7 +255,7 @@ function AssigneeMenu({
               <span className="truncate">{current}</span>
             </>
           ) : (
-            <span className="text-(--ui-text-quaternary)">unassigned</span>
+            <span className="text-(--ui-text-quaternary)">{k.unassigned}</span>
           )}
           <Codicon className="shrink-0 text-(--ui-text-quaternary)" name="chevron-down" size="0.65rem" />
         </button>
@@ -296,6 +293,7 @@ function CommentComposer({
   pending: boolean
   running?: boolean
 }) {
+  const k = useKanban()
   const [body, setBody] = useState('')
 
   const submit = () => {
@@ -328,7 +326,7 @@ function CommentComposer({
               submit()
             }
           }}
-          placeholder={running ? 'Message the running worker…' : 'Add a comment…'}
+          placeholder={running ? k.messageWorker : k.addComment}
           rows={1}
           size="sm"
           value={body}
@@ -340,17 +338,15 @@ function CommentComposer({
           size="xs"
           variant="secondary"
         >
-          {running ? 'Send' : 'Comment'}
+          {running ? k.send : k.comment}
         </Button>
       </div>
       {running && onRequeue && (
         <div className="flex items-center justify-between gap-2">
-          <span className="text-[0.625rem] leading-tight text-(--ui-text-quaternary)">
-            Delivered to the running worker within a few seconds.
-          </span>
+          <span className="text-[0.625rem] leading-tight text-(--ui-text-quaternary)">{k.deliveredLive}</span>
           <Button className="shrink-0" disabled={!body.trim() || pending} onClick={requeue} size="xs" variant="outline">
             <Codicon name="debug-restart" size="0.7rem" />
-            Requeue with note
+            {k.requeueWithNote}
           </Button>
         </div>
       )}
@@ -359,6 +355,7 @@ function CommentComposer({
 }
 
 function DescriptionSection({ body, onSave }: { body: null | string | undefined; onSave: (body: string) => void }) {
+  const k = useKanban()
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState('')
 
@@ -366,7 +363,7 @@ function DescriptionSection({ body, onSave }: { body: null | string | undefined;
     <Section
       action={
         <Button
-          aria-label={editing ? 'Cancel edit' : 'Edit description'}
+          aria-label={editing ? k.cancelEdit : k.editDescription}
           onClick={() => {
             setDraft(body ?? '')
             setEditing(!editing)
@@ -377,7 +374,7 @@ function DescriptionSection({ body, onSave }: { body: null | string | undefined;
           <Codicon name={editing ? 'close' : 'edit'} size="0.75rem" />
         </Button>
       }
-      label="Description"
+      label={k.description}
     >
       {editing ? (
         <div className="flex flex-col gap-1.5">
@@ -395,13 +392,13 @@ function DescriptionSection({ body, onSave }: { body: null | string | undefined;
             size="xs"
             variant="secondary"
           >
-            Save
+            {k.save}
           </Button>
         </div>
       ) : body ? (
         <p className="whitespace-pre-wrap text-[0.8125rem] text-(--ui-text-secondary)">{body}</p>
       ) : (
-        <p className="text-[0.8125rem] text-(--ui-text-quaternary)">No description yet.</p>
+        <p className="text-[0.8125rem] text-(--ui-text-quaternary)">{k.noDescription}</p>
       )}
     </Section>
   )
@@ -420,6 +417,7 @@ function AttachmentsSection({
   onUpload: (file: File) => void
   pending: boolean
 }) {
+  const k = useKanban()
   const fileRef = useRef<HTMLInputElement>(null)
 
   return (
@@ -441,7 +439,7 @@ function AttachmentsSection({
             type="file"
           />
           <Button
-            aria-label="Upload attachment"
+            aria-label={k.uploadAttachment}
             disabled={pending}
             onClick={() => fileRef.current?.click()}
             size="icon-xs"
@@ -451,7 +449,7 @@ function AttachmentsSection({
           </Button>
         </>
       }
-      label={`Attachments · ${attachments.length}`}
+      label={k.attachments(attachments.length)}
     >
       {attachments.length > 0 ? (
         <ul className="flex flex-col gap-1">
@@ -463,7 +461,7 @@ function AttachmentsSection({
           ))}
         </ul>
       ) : (
-        <p className="text-[0.75rem] text-(--ui-text-quaternary)">No attachments yet.</p>
+        <p className="text-[0.75rem] text-(--ui-text-quaternary)">{k.noAttachments}</p>
       )}
     </Section>
   )
@@ -475,6 +473,7 @@ function AttachmentsSection({
 // control keeps a stable footprint (spinner swaps in place) so there's no
 // layout jump when it runs.
 function EstimateSection({ id }: { id: string }) {
+  const k = useKanban()
   const [result, setResult] = useState<null | TaskEstimate>(null)
 
   const est = useMutation({
@@ -484,7 +483,7 @@ function EstimateSection({ id }: { id: string }) {
       if (r.ok) {
         setResult(r)
       } else {
-        host.notify({ kind: 'warning', message: r.reason || 'Could not estimate' })
+        host.notify({ kind: 'warning', message: r.reason || k.couldNotEstimate })
       }
     }
   })
@@ -493,21 +492,19 @@ function EstimateSection({ id }: { id: string }) {
   useEffect(() => setResult(null), [id])
 
   return (
-    <Section label="Estimate">
+    <Section label={k.estimate}>
       {result?.ok ? (
         <div className="flex flex-col gap-1">
           <div className="flex items-center gap-2 text-[0.8125rem]">
             <span className="font-medium tabular-nums text-(--ui-text-secondary)">
-              ~{compactNumber(result.est_tokens)} tok
+              ~{compactNumber(result.est_tokens)} {k.tokUnit}
             </span>
             {result.complexity && (
-              <span className="text-(--ui-text-tertiary)">
-                · {COMPLEXITY_LABEL[result.complexity] ?? result.complexity}
-              </span>
+              <span className="text-(--ui-text-tertiary)">· {k.complexity[result.complexity] ?? result.complexity}</span>
             )}
-            <Tip label="Re-estimate">
+            <Tip label={k.reEstimate}>
               <Button
-                aria-label="Re-estimate"
+                aria-label={k.reEstimate}
                 className="ml-auto"
                 disabled={est.isPending}
                 onClick={() => est.mutate()}
@@ -526,10 +523,10 @@ function EstimateSection({ id }: { id: string }) {
         <div className="flex items-center gap-2">
           <Button disabled={est.isPending} onClick={() => est.mutate()} size="xs" variant="outline">
             <Codicon name={est.isPending ? 'loading' : 'dashboard'} size="0.75rem" spinning={est.isPending} />
-            {est.isPending ? 'Estimating…' : 'Estimate effort'}
+            {est.isPending ? k.estimating : k.estimateEffort}
           </Button>
-          <Tip label="Runs a quick auxiliary-model call to estimate tokens + complexity. A rough guide, not a bill.">
-            <span className="text-[0.625rem] text-(--ui-text-quaternary)">makes a model call</span>
+          <Tip label={k.estimateTipLong}>
+            <span className="text-[0.625rem] text-(--ui-text-quaternary)">{k.makesModelCall}</span>
           </Tip>
         </div>
       )}
@@ -548,6 +545,7 @@ export function TaskDrawer({
   onClose: () => void
   onOpen: (id: string) => void
 }) {
+  const k = useKanban()
   const qc = useQueryClient()
   const slug = useValue($boardSlug)
 
@@ -636,7 +634,7 @@ export function TaskDrawer({
     },
     onError: err => host.notify({ kind: 'error', message: errText(err) }),
     onSuccess: () => {
-      host.notify({ kind: 'info', message: 'Note posted — worker requeued' })
+      host.notify({ kind: 'info', message: k.notePosted })
       invalidate()
     }
   })
@@ -664,7 +662,7 @@ export function TaskDrawer({
     }
 
     if (isLockedTarget(status)) {
-      host.notify({ kind: 'info', message: LOCKED_COLUMNS[status] })
+      host.notify({ kind: 'info', message: lockedReason(k, status) })
 
       return
     }
@@ -691,7 +689,7 @@ export function TaskDrawer({
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
                   <button
-                    aria-label="Task actions"
+                    aria-label={k.taskActions}
                     className="grid size-6 place-items-center rounded text-(--ui-text-tertiary) transition-colors hover:bg-(--chrome-action-hover) hover:text-foreground"
                     type="button"
                   >
@@ -702,35 +700,35 @@ export function TaskDrawer({
                   <DropdownMenuItem
                     onSelect={() => {
                       void navigator.clipboard.writeText(task.id)
-                      host.notify({ kind: 'info', message: `Copied ${task.id}` })
+                      host.notify({ kind: 'info', message: k.copiedId(task.id) })
                     }}
                   >
                     <Codicon name="copy" size="0.85rem" />
-                    Copy task id
+                    {k.copyTaskId}
                   </DropdownMenuItem>
                   <DropdownMenuItem
                     onSelect={() => {
                       void navigator.clipboard.writeText(task.title || task.id)
-                      host.notify({ kind: 'info', message: 'Copied title' })
+                      host.notify({ kind: 'info', message: k.copiedTitle })
                     }}
                   >
                     <Codicon name="copy" size="0.85rem" />
-                    Copy title
+                    {k.copyTitle}
                   </DropdownMenuItem>
                   <DropdownMenuSeparator />
                   <DropdownMenuItem onSelect={mutate(() => patchTask(task.id, { status: 'archived' }), onClose)}>
                     <Codicon name="archive" size="0.85rem" />
-                    Archive task
+                    {k.archiveTask}
                   </DropdownMenuItem>
                   <DropdownMenuItem className="text-destructive" onSelect={mutate(() => deleteTask(task.id), onClose)}>
                     <Codicon name="trash" size="0.85rem" />
-                    Delete task
+                    {k.deleteTask}
                   </DropdownMenuItem>
                 </DropdownMenuContent>
               </DropdownMenu>
             )}
             <button
-              aria-label="Close"
+              aria-label={k.close}
               className="grid size-6 place-items-center rounded text-(--ui-text-tertiary) transition-colors hover:bg-(--chrome-action-hover) hover:text-foreground"
               onClick={onClose}
               type="button"
@@ -756,36 +754,33 @@ export function TaskDrawer({
         ) : (
           <div className="flex flex-col gap-4 text-sm">
             <div className="grid grid-cols-[6rem_minmax(0,1fr)] gap-x-3 gap-y-1 text-[0.71rem]">
-              <MetaRow label="Assignee">
+              <MetaRow label={k.assignee}>
                 <AssigneeMenu
                   current={task.assignee}
                   onReassign={profile => void mutate(() => reassignTask(task.id, profile))()}
                 />
               </MetaRow>
-              {typeof task.priority === 'number' && <MetaRow label="Priority">{task.priority}</MetaRow>}
-              {task.tenant && <MetaRow label="Tenant">{task.tenant}</MetaRow>}
+              {typeof task.priority === 'number' && <MetaRow label={k.metaPriority}>{task.priority}</MetaRow>}
+              {task.tenant && <MetaRow label={k.metaTenant}>{task.tenant}</MetaRow>}
               {task.workspace_path && (
-                <MetaRow label="Workspace">
+                <MetaRow label={k.workspace}>
                   {task.workspace_kind ? `${task.workspace_kind}: ` : ''}
                   {task.workspace_path}
                 </MetaRow>
               )}
-              {task.created_by && <MetaRow label="Created by">{task.created_by}</MetaRow>}
-              {ago(task.created_at) && <MetaRow label="Created">{ago(task.created_at)}</MetaRow>}
-              {running && task.worker_pid ? <MetaRow label="Worker pid">{task.worker_pid}</MetaRow> : null}
+              {task.created_by && <MetaRow label={k.metaCreatedBy}>{task.created_by}</MetaRow>}
+              {ago(task.created_at) && <MetaRow label={k.metaCreated}>{ago(task.created_at)}</MetaRow>}
+              {running && task.worker_pid ? <MetaRow label={k.metaWorkerPid}>{task.worker_pid}</MetaRow> : null}
             </div>
 
             {task.status === 'ready' && !task.assignee && !defaultAssignee && (
-              <Callout title="Ready, but unassigned — this card will never run." tone={SEVERITY_TONE.warning}>
-                <p className="text-[0.71rem] leading-relaxed text-(--ui-text-secondary)">
-                  The dispatcher only claims Ready cards that have an assignee. Pick a profile in the Assignee field
-                  above (or set a default assignee in the orchestration settings) and it runs within a minute.
-                </p>
+              <Callout title={k.readyUnassignedTitle} tone={SEVERITY_TONE.warning}>
+                <p className="text-[0.71rem] leading-relaxed text-(--ui-text-secondary)">{k.readyUnassignedBody}</p>
               </Callout>
             )}
 
             {task.diagnostics && task.diagnostics.length > 0 && (
-              <Section label={`Diagnostics · ${task.diagnostics.length}`}>
+              <Section label={k.diagnosticsN(task.diagnostics.length)}>
                 <Diagnostics items={task.diagnostics} onReclaim={() => void mutate(() => reclaimTask(task.id))()} />
               </Section>
             )}
@@ -795,24 +790,24 @@ export function TaskDrawer({
             <EstimateSection id={task.id} />
 
             {task.result && (
-              <Section label="Result">
+              <Section label={k.result}>
                 <p className="whitespace-pre-wrap text-[0.8125rem] text-(--ui-text-secondary)">{task.result}</p>
               </Section>
             )}
 
             {task.latest_summary && !isAdminSummary(task.latest_summary) && (
-              <Section label="Latest summary">
+              <Section label={k.latestSummary}>
                 <p className="whitespace-pre-wrap text-[0.8125rem] text-(--ui-text-secondary)">{task.latest_summary}</p>
               </Section>
             )}
 
             {(detail.links.parents.length > 0 || detail.links.children.length > 0) && (
-              <Section label="Dependencies">
+              <Section label={k.dependencies}>
                 {(['parents', 'children'] as const).map(side =>
                   detail.links[side].length > 0 ? (
                     <div className="flex flex-wrap items-center gap-1.5" key={side}>
                       <span className="text-[0.6875rem] text-(--ui-text-quaternary)">
-                        {side === 'parents' ? 'Blocked by' : 'Blocks'}
+                        {side === 'parents' ? k.blockedBy : k.blocks}
                       </span>
                       {detail.links[side].map(linked => (
                         <button
@@ -832,19 +827,13 @@ export function TaskDrawer({
 
             <Section
               action={
-                <Tip
-                  label={
-                    running
-                      ? 'This task is running. Your note is folded into the worker’s current turn within a few seconds — no block/unblock dance. “Requeue with note” instead restarts the task from scratch with your note in context.'
-                      : 'Comments are added to the task thread. When a worker picks the task up it reads them as part of its context.'
-                  }
-                >
+                <Tip label={running ? k.commentsHelpRunning : k.commentsHelp}>
                   <span className="grid size-5 place-items-center rounded text-(--ui-text-quaternary) hover:text-(--ui-text-secondary)">
                     <Codicon name="question" size="0.8rem" />
                   </span>
                 </Tip>
               }
-              label={`Comments · ${detail.comments.length}`}
+              label={k.comments(detail.comments.length)}
             >
               {detail.comments.length > 0 && (
                 <ul className="flex flex-col gap-2">
@@ -868,11 +857,11 @@ export function TaskDrawer({
             </Section>
 
             {detail.events.length > 0 && (
-              <Section label={`Activity · ${detail.events.length}`}>
+              <Section label={k.activity(detail.events.length)}>
                 <ScrollFade deps={detail.events.length} max="7rem">
                   <ul className="flex flex-col gap-1">
                     {detail.events.map(event => {
-                      const { detail: extra, label } = eventText(event)
+                      const { detail: extra, label } = eventText(event, k)
 
                       return (
                         <li className="flex items-baseline gap-2 text-[0.6875rem]" key={event.id}>
@@ -895,7 +884,7 @@ export function TaskDrawer({
             )}
 
             {detail.runs.length > 0 && (
-              <Section label={`Runs · ${detail.runs.length}`}>
+              <Section label={k.runs(detail.runs.length)}>
                 <ScrollFade max="11rem">
                   <ul className="flex flex-col gap-1.5">
                     {detail.runs.map(run => {
@@ -936,7 +925,7 @@ export function TaskDrawer({
             )}
 
             {log?.exists && log.content && (
-              <Section label={`Worker log${log.truncated ? ' · tail' : ''}`}>
+              <Section label={log.truncated ? k.workerLogTail : k.workerLog}>
                 <ScrollFade deps={log.content.length} max="12rem">
                   <LogView className="border-0 px-0">{log.content}</LogView>
                 </ScrollFade>

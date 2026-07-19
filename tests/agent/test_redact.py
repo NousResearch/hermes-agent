@@ -51,6 +51,10 @@ class TestKnownPrefixes:
         result = redact_sensitive_text("AIzaSyB-abc123def456ghi789jklmno012345")
         assert "abc123def456" not in result
 
+    def test_gemini_aq_api_key(self):
+        result = redact_sensitive_text("AQ.B1234567890123456789012345678901234567890123")
+        assert "B1234567890" not in result
+
     def test_perplexity_key(self):
         result = redact_sensitive_text("pplx-abcdef123456789012345")
         assert "abcdef12345" not in result

@@ -110,6 +110,7 @@ _PREFIX_PATTERNS = [
     r"fw-[A-Za-z0-9]{30,}",             # Fireworks AI API key
     r"fw_[A-Za-z0-9]{30,}",             # Fireworks AI API key
     r"fpk_[A-Za-z0-9]{30,}",            # Fireworks AI project key
+    r"AQ\.[A-Za-z0-9_-]{40,}",          # Google Gemini authorization keys
 ]
 
 # ENV assignment patterns: KEY=value where KEY contains a secret-like name.

@@ -468,27 +468,133 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
             // backend loop (#55578 symptom d) rejects the submit even though
             // the stored session is fine — resume + retry instead of erroring
             // out and losing the session binding.
-            const resumed = await requestGateway<{ session_id: string }>('session.resume', {
-              session_id: recoverStoredSessionId,
-              source: 'desktop'
-            })
+            let resumeErr: unknown = null
+            let resumed: { session_id?: string } | null = null
 
-            if (sessionContextDrifted()) {
-              return abortForSessionSwitch(sessionId)
+            try {
+              resumed = await requestGateway<{ session_id: string }>('session.resume', {
+                session_id: recoverStoredSessionId,
+                source: 'desktop'
+              })
+            } catch (resumeCatch) {
+              resumeErr = resumeCatch
             }
 
-            const recoveredId = resumed?.session_id
+            if (resumeErr !== null) {
+              // session.resume itself failed. Distinguish between a
+              // never-persisted draft (both live and stored rows 404 — the
+              // double-404 signature) and a genuine error on a real stored
+              // session.
+              //
+              // never-persisted draft: session.create ran but the session row
+              // was never persisted (abandoned drafts are not stored until the
+              // first successful prompt.submit). The live runtime is gone (WS
+              // drop / gateway restart / orphan reaper) AND the stored row
+              // doesn't exist yet. For this case, mint a fresh session and
+              // land the message there — re-homing the optimistic message.
+              //
+              // BUT: never do this for background queue drains (must not
+              // redirect the user's view) or for timed-out submits (the
+              // original send may have actually landed — re-sending elsewhere
+              // risks a double-send; the timeout recovery path only makes
+              // sense when resume succeeds, proving the backend is reachable
+              // and the stored session is intact).
+              const isResumeNotFound = isSessionNotFoundError(resumeErr)
+              const isFirstSubmitNotFound = isSessionNotFoundError(firstErr)
+              const isDouble404 = isResumeNotFound && isFirstSubmitNotFound && !options?.fromQueue
 
-            if (recoveredId) {
-              if (targetIsCurrentView()) {
-                activeSessionIdRef.current = recoveredId
+              if (isDouble404) {
+                // Never-persisted draft: drop the optimistic message from the
+                // dead session, mint a fresh one, and land there.
+                dropOptimistic(sessionId)
+
+                try {
+                  sessionId = await createBackendSessionForSend(visibleText)
+                } catch (createErr) {
+                  dropOptimistic(null)
+                  releaseBusy()
+
+                  if (targetIsCurrentView()) {
+                    notifyError(createErr, copy.sessionUnavailable)
+                  }
+
+                  return false
+                }
+
+                if (!sessionId) {
+                  if (sessionContextDrifted()) {
+                    return abortForSessionSwitch(null)
+                  }
+
+                  dropOptimistic(null)
+                  releaseBusy()
+
+                  if (targetIsCurrentView()) {
+                    notify({ kind: 'error', title: copy.sessionUnavailable, message: copy.createSessionFailed })
+                  }
+
+                  return false
+                }
+
+                if (activeSessionIdRef.current !== sessionId) {
+                  return abortForSessionSwitch(sessionId)
+                }
+
+                // Re-pin the baseline to the newly created chat, same as the
+                // standard new-chat path below.
+                startingStoredSessionId = selectedStoredSessionIdRef.current
+                startingRouteToken = getRouteToken()
+                seedOptimistic(sessionId)
+
+                // Re-sync attachments with the fresh session, then submit.
+                const rehomedAttachments = await syncAttachmentsForSubmit(sessionId, attachments, {
+                  updateComposerAttachments: usingComposerAttachments
+                })
+
+                if (sessionContextDrifted()) {
+                  return abortForSessionSwitch(sessionId)
+                }
+
+                attachmentRefs = rehomedAttachments.map(optimisticAttachmentRef).filter((r): r is string => Boolean(r))
+                rewriteOptimistic(sessionId)
+                const rehomedText = buildContextText(rehomedAttachments)
+
+                await withSessionBusyRetry(() =>
+                  requestGateway(
+                    'prompt.submit',
+                    { session_id: sessionId, text: rehomedText },
+                    PROMPT_SUBMIT_REQUEST_TIMEOUT_MS
+                  )
+                )
+
+                // Submit landed — let the outer success path handle cleanup.
+              } else {
+                // Non-never-persisted-draft: must not split a real stored
+                // chat in two (#55578 symptom b). Surface the first error
+                // (submit) — unless the resume was a non-404 failure, in
+                // which case the resume error is the more specific signal.
+                submitErr = isResumeNotFound ? firstErr : resumeErr
+              }
+            }
+
+            if (resumed !== null) {
+              if (sessionContextDrifted()) {
+                return abortForSessionSwitch(sessionId)
               }
 
-              await withSessionBusyRetry(() =>
-                requestGateway('prompt.submit', { session_id: recoveredId, text }, PROMPT_SUBMIT_REQUEST_TIMEOUT_MS)
-              )
-            } else {
-              submitErr = firstErr
+              const recoveredId = resumed?.session_id
+
+              if (recoveredId) {
+                if (targetIsCurrentView()) {
+                  activeSessionIdRef.current = recoveredId
+                }
+
+                await withSessionBusyRetry(() =>
+                  requestGateway('prompt.submit', { session_id: recoveredId, text }, PROMPT_SUBMIT_REQUEST_TIMEOUT_MS)
+                )
+              } else {
+                submitErr = firstErr
+              }
             }
           } else {
             submitErr = firstErr

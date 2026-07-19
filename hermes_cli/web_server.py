@@ -6715,8 +6715,15 @@ async def get_env_vars(profile: Optional[str] = None):
 async def set_env_var(body: EnvVarUpdate, profile: Optional[str] = None):
     try:
         with _profile_scope(body.profile or profile):
-            save_env_value(body.key, body.value)
-        return {"ok": True, "key": body.key}
+            # Unified credential lifecycle: writes .env AND reconciles any
+            # config.yaml mirror still holding the previous value of this var
+            # (model.api_key / auxiliary.*.api_key / custom_providers[*]),
+            # so a rotation can't leave a stale higher-precedence copy that
+            # keeps authenticating with the old key (#62269).
+            from hermes_cli.credential_lifecycle import save_provider_env_credential
+
+            result = save_provider_env_credential(body.key, body.value)
+        return result
     except ValueError as exc:
         # save_env_value raises ValueError for invalid names and for keys
         # on the denylist (LD_PRELOAD, PATH, PYTHONPATH, …). Surface the
@@ -6834,10 +6841,18 @@ async def validate_provider_credential(body: EnvVarUpdate, request: Request):
 async def remove_env_var(body: EnvVarDelete, profile: Optional[str] = None):
     try:
         with _profile_scope(body.profile or profile):
-            removed = remove_env_value(body.key)
-        if not removed:
+            # Unified credential lifecycle: clears the .env entry AND every
+            # mirror of the credential — env-seeded credential_pool entries in
+            # auth.json (stale ones kept providers alive in the model picker,
+            # #51071/#59761), the affected providers' model-cache rows, and
+            # value-matched config.yaml api_key mirrors. OAuth/device-code/
+            # manual pool entries for the same provider are preserved.
+            from hermes_cli.credential_lifecycle import remove_provider_env_credential
+
+            result = remove_provider_env_credential(body.key)
+        if not result.get("found"):
             raise HTTPException(status_code=404, detail=f"{body.key} not found in .env")
-        return {"ok": True, "key": body.key}
+        return result
     except HTTPException:
         raise
     except ValueError as exc:

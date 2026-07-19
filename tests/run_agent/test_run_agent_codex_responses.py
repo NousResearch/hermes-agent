@@ -1175,6 +1175,70 @@ def test_codex_raw_stream_usage_updates_agent_and_session_accounting(monkeypatch
     assert usage["billing_mode"] == "subscription_included"
 
 
+def test_codex_raw_stream_without_usage_still_persists_api_call(monkeypatch, tmp_path):
+    """Live Codex can complete a raw Responses stream without exact usage telemetry."""
+    from agent.codex_runtime import _consume_codex_event_stream
+    from hermes_state import SessionDB
+
+    response = _consume_codex_event_stream(
+        _FakeCreateStream([
+            SimpleNamespace(
+                type="response.output_item.done",
+                item=SimpleNamespace(
+                    type="message",
+                    role="assistant",
+                    status="completed",
+                    content=[SimpleNamespace(type="output_text", text="OK")],
+                ),
+            ),
+            SimpleNamespace(
+                type="response.completed",
+                response=SimpleNamespace(
+                    id="resp_without_usage",
+                    status="completed",
+                    usage=None,
+                ),
+            ),
+        ]),
+        model="gpt-5.6-sol",
+    )
+
+    agent = _build_agent(monkeypatch)
+    agent.model = "gpt-5.6-sol"
+    agent.provider = "openai-codex"
+    agent.api_mode = "codex_responses"
+    agent.session_id = "codex-without-usage"
+    db = SessionDB(tmp_path / "state.db")
+    db.create_session(agent.session_id, "cli", model=agent.model)
+    agent._session_db = db
+    agent._session_db_created = True
+    monkeypatch.setattr(agent, "_interruptible_api_call", lambda api_kwargs: response)
+
+    result = agent.run_conversation("Say OK")
+
+    assert result["completed"] is True
+    assert result["api_calls"] == 1
+    assert agent.session_api_calls == 1
+
+    session = db._conn.execute(
+        "SELECT * FROM sessions WHERE id = ?", (agent.session_id,)
+    ).fetchone()
+    assert session["api_call_count"] == 1
+    assert session["billing_provider"] == "openai-codex"
+    assert session["billing_mode"] == "subscription_included"
+    assert session["input_tokens"] == 0
+    assert session["output_tokens"] == 0
+
+    usage = db._conn.execute(
+        "SELECT * FROM session_model_usage WHERE session_id = ?",
+        (agent.session_id,),
+    ).fetchone()
+    assert usage is not None
+    assert usage["api_call_count"] == 1
+    assert usage["model"] == "gpt-5.6-sol"
+    assert usage["billing_provider"] == "openai-codex"
+
+
 def test_copilot_final_preflight_sanitizes_both_middleware_layers(monkeypatch):
     """The dispatch chokepoint must sanitize after every mutable layer."""
     agent = _build_copilot_agent(monkeypatch)

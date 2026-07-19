@@ -2400,6 +2400,39 @@ def run_conversation(
                             f"{cached:,}/{prompt:,} tokens "
                             f"({hit_pct:.0f}% hit, {written:,} written)"
                         )
+                else:
+                    # A completed provider call still counts even when the raw
+                    # Responses stream omits exact token telemetry.  The live
+                    # ChatGPT Codex backend currently emits response.completed
+                    # with response.usage=null; do not invent token estimates,
+                    # but preserve the exact call count and billing route.
+                    agent.session_api_calls += 1
+                    logger.info(
+                        "API call #%d: model=%s provider=%s usage=unavailable latency=%.1fs",
+                        agent.session_api_calls,
+                        agent.model,
+                        agent.provider or "unknown",
+                        api_duration,
+                    )
+                    if agent._session_db and agent.session_id:
+                        try:
+                            if not agent._session_db_created:
+                                agent._ensure_db_session()
+                            agent._session_db.update_token_counts(
+                                agent.session_id,
+                                billing_provider=agent.provider,
+                                billing_base_url=agent.base_url,
+                                billing_mode="subscription_included"
+                                if agent.provider == "openai-codex" else None,
+                                model=agent.model,
+                                api_call_count=1,
+                            )
+                        except Exception as e:
+                            logger.debug(
+                                "API-call persistence without usage failed (session=%s): %s",
+                                agent.session_id,
+                                e,
+                            )
                 
                 _retry.has_retried_429 = False  # Reset on success
                 # Note: don't clear the retry buffer here — an "API call

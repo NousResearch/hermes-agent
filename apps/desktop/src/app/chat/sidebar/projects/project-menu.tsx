@@ -25,7 +25,7 @@ import {
   openProjectRename,
   revealPath,
   setActiveProject,
-  updateProject
+  setProjectAppearance
 } from '@/store/projects'
 
 import type { SidebarProjectTree } from './workspace-groups'
@@ -111,6 +111,26 @@ export function ProjectMenu({
     }
   }
 
+  // Appearance writes route through the adopt-aware helper: an auto project is
+  // materialized on its first change (its id then changes), so close the picker
+  // when that happens to avoid a second write double-creating from a stale node.
+  const applyAppearance = (patch: { color?: null | string; icon?: null | string }) => {
+    void setProjectAppearance(project, patch).then(adopted => {
+      if (adopted) {
+        setAppearanceOpen(false)
+      }
+    })
+  }
+
+  // Set color / pick an icon — shown for explicit projects and for auto ones
+  // (where selecting adopts the repo as a real project so the look sticks).
+  const appearanceItem = (
+    <DropdownMenuItem onSelect={() => setAppearanceOpen(true)}>
+      <Codicon name="symbol-color" size="0.875rem" />
+      <span>{p.menuAppearance}</span>
+    </DropdownMenuItem>
+  )
+
   const trigger = (
     <Tip label={p.menu}>
       <DropdownMenuTrigger asChild>
@@ -147,16 +167,23 @@ export function ProjectMenu({
           onCloseAutoFocus={event => event.preventDefault()}
           sideOffset={6}
         >
-          {!project.isAuto && (
+          {project.isAuto ? (
+            // Inherited (auto) repos can still be themed — the change adopts the
+            // repo as a real project. Rename / add-folder / set-active stay out
+            // until then (they need the materialized record).
+            project.path ? (
+              <>
+                {appearanceItem}
+                <DropdownMenuSeparator />
+              </>
+            ) : null
+          ) : (
             <>
               <DropdownMenuItem onSelect={() => openProjectRename(target)}>
                 <Codicon name="edit" size="0.875rem" />
                 <span>{p.menuRename}</span>
               </DropdownMenuItem>
-              <DropdownMenuItem onSelect={() => setAppearanceOpen(true)}>
-                <Codicon name="symbol-color" size="0.875rem" />
-                <span>{p.menuAppearance}</span>
-              </DropdownMenuItem>
+              {appearanceItem}
               <DropdownMenuItem onSelect={() => openProjectAddFolder(target)}>
                 <Codicon name="new-folder" size="0.875rem" />
                 <span>{p.menuAddFolder}</span>
@@ -200,7 +227,7 @@ export function ProjectMenu({
         <ColorSwatches
           clearIcon="circle-slash"
           clearLabel={p.noColor}
-          onChange={color => void updateProject(project.id, { color })}
+          onChange={color => applyAppearance({ color })}
           swatches={PROFILE_SWATCHES}
           value={project.color ?? null}
         />
@@ -215,7 +242,7 @@ export function ProjectMenu({
                   'grid aspect-square place-items-center rounded-md text-(--ui-text-tertiary) transition hover:bg-(--ui-control-hover-background)',
                   project.icon === name && 'bg-(--ui-control-active-background) text-foreground'
                 )}
-                onClick={() => void updateProject(project.id, { icon: project.icon === name ? null : name })}
+                onClick={() => applyAppearance({ icon: project.icon === name ? null : name })}
                 style={project.icon === name && project.color ? { color: project.color } : undefined}
                 type="button"
               >

@@ -205,3 +205,69 @@ class TestConfigIssueDataclass:
         a = ConfigIssue("error", "msg", "hint")
         b = ConfigIssue("error", "msg", "hint")
         assert a == b
+
+
+class TestModelSubKeyValidation:
+    """When custom_providers is configured and model section exists as a dict,
+    warn about missing essential sub-keys (provider, default)."""
+
+    def test_missing_provider_subkey(self):
+        """model dict without 'provider' should warn about auto-detection fallback."""
+        issues = validate_config_structure({
+            "custom_providers": [
+                {"name": "test", "base_url": "https://example.com/v1"},
+            ],
+            "model": {"default": "test-model"},
+        })
+        assert any("missing 'provider'" in i.message for i in issues)
+
+    def test_missing_default_subkey(self):
+        """model dict without 'default' or 'model' should warn."""
+        issues = validate_config_structure({
+            "custom_providers": [
+                {"name": "test", "base_url": "https://example.com/v1"},
+            ],
+            "model": {"provider": "custom"},
+        })
+        assert any("missing 'default'" in i.message for i in issues)
+
+    def test_model_key_accepted_as_default(self):
+        """model dict with 'model' sub-key (instead of 'default') should not warn."""
+        issues = validate_config_structure({
+            "custom_providers": [
+                {"name": "test", "base_url": "https://example.com/v1"},
+            ],
+            "model": {"provider": "custom", "model": "test-model"},
+        })
+        default_issues = [i for i in issues if "missing 'default'" in i.message]
+        assert len(default_issues) == 0
+
+    def test_complete_model_no_issues(self):
+        """Fully configured model section should produce no model-related warnings."""
+        issues = validate_config_structure({
+            "custom_providers": [
+                {"name": "test", "base_url": "https://example.com/v1"},
+            ],
+            "model": {"provider": "custom", "default": "test-model"},
+        })
+        model_issues = [i for i in issues if "model" in i.message.lower() and "missing" in i.message.lower()]
+        assert len(model_issues) == 0
+
+    def test_no_custom_providers_skips_subkey_check(self):
+        """Without custom_providers, model sub-key check should be skipped."""
+        issues = validate_config_structure({
+            "model": {},
+        })
+        subkey_issues = [i for i in issues if "missing 'provider'" in i.message]
+        assert len(subkey_issues) == 0
+
+    def test_model_as_string_skips_subkey_check(self):
+        """model as a string (shorthand) should not trigger sub-key validation."""
+        issues = validate_config_structure({
+            "custom_providers": [
+                {"name": "test", "base_url": "https://example.com/v1"},
+            ],
+            "model": "openrouter/claude-sonnet-4",
+        })
+        subkey_issues = [i for i in issues if "missing 'provider'" in i.message]
+        assert len(subkey_issues) == 0

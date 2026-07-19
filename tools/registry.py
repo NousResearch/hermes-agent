@@ -622,7 +622,10 @@ class ToolRegistry:
         """
         entry = self.get_entry(name)
         if not entry:
-            return json.dumps({"error": f"Unknown tool: {name}"})
+            return json.dumps({
+                "error": f"Unknown tool: {name}",
+                "error_type": "unknown_tool",
+            })
         try:
             if entry.is_async:
                 from model_tools import _run_async
@@ -641,7 +644,10 @@ class ToolRegistry:
                 sanitized = _sanitize_tool_error(raw)
             except Exception:
                 sanitized = raw  # defensive: never let the sanitizer block error propagation
-            return json.dumps({"error": sanitized})
+            return json.dumps({
+                "error": sanitized,
+                "error_type": "execution_error",
+            })
 
     # ------------------------------------------------------------------
     # Query helpers  (replace redundant dicts in model_tools.py)

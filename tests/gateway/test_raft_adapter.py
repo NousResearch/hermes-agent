@@ -296,6 +296,15 @@ class TestRaftActivityHttp:
                 status="ok",
                 duration_ms=321,
             )
+            _on_post_tool_call(
+                session_id="session-1",
+                turn_id="turn-1",
+                tool_name="missing_tool",
+                result='{"error":"Unknown tool: missing_tool","error_type":"unknown_tool"}',
+                status="error",
+                error_type="unknown_tool",
+                error_message="Unknown tool: missing_tool",
+            )
             _on_post_llm_call(
                 platform="raft",
                 session_id="session-1",
@@ -327,6 +336,7 @@ class TestRaftActivityHttp:
             "UserPromptSubmit",
             "PreToolUse",
             "PostToolUse",
+            "PostToolUseFailure",
             "Stop",
             "SessionEnd",
         ]
@@ -335,6 +345,9 @@ class TestRaftActivityHttp:
         assert '"cmd": "echo ok"' in tool_start["toolInput"]
         tool_result = drain["events"][2]
         assert tool_result["durationMs"] == 321
+        tool_failure = drain["events"][3]
+        assert tool_failure["errorClass"] == "unknown_tool"
+        assert tool_failure["toolOutput"] == "Unknown tool: missing_tool"
 
     def test_session_start_registers_raft_profile_env_passthrough(self):
         import tools.env_passthrough as env_passthrough_mod

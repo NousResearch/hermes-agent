@@ -28,6 +28,7 @@ import {
   $contextSuggestions,
   $freshDraftReady,
   $gatewayState,
+  $introBackgroundImage,
   $introPersonality,
   $introSeed,
   $resumeExhaustedSessionId,
@@ -265,6 +266,7 @@ export function ChatView({
   const gatewayState = useStore($gatewayState)
   const gatewaySwapTarget = useStore($gatewaySwapTarget)
   const gatewayOpen = gatewayState === 'open'
+  const introBackgroundImage = useStore($introBackgroundImage)
   const introPersonality = useStore($introPersonality)
   const introSeed = useStore($introSeed)
   // PERF: ChatView must not subscribe to the view's $messages — the atom is
@@ -452,7 +454,11 @@ export function ChatView({
             clampToComposer={showChatBar}
             cwd={currentCwd}
             gateway={gateway}
-            intro={showIntro ? { personality: introPersonality, seed: introSeed } : undefined}
+            intro={
+              showIntro
+                ? { backgroundImage: introBackgroundImage, personality: introPersonality, seed: introSeed }
+                : undefined
+            }
             loading={threadLoading}
             onBranchInNewChat={onBranchInNewChat}
             onCancel={onCancel}

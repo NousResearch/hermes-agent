@@ -289,6 +289,7 @@ export const FIELD_LABELS: Record<string, string> = defineFieldCopy({
   toolsets: 'Enabled Toolsets',
   timezone: 'Timezone',
   display: {
+    desktopBackgroundImage: 'New Chat Background',
     personality: 'Personality',
     showReasoning: 'Reasoning Blocks'
   },
@@ -441,6 +442,7 @@ export const FIELD_DESCRIPTIONS: Record<string, string> = defineFieldCopy({
   modelContextLength: "Leave at 0 to use the selected model's detected context window.",
   fallbackProviders: 'Backup provider:model entries to try if the default model fails.',
   display: {
+    desktopBackgroundImage: 'Image URL shown behind the new-chat landing page for this profile.',
     personality: 'Default assistant style for new sessions.',
     showReasoning: 'Show reasoning sections when the backend provides them.'
   },
@@ -525,7 +527,7 @@ export const SECTIONS: DesktopConfigSection[] = [
     id: 'appearance',
     label: 'Appearance',
     icon: Palette,
-    keys: []
+    keys: ['display.desktop_background_image']
   },
   {
     id: 'workspace',

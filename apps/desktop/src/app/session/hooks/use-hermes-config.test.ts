@@ -4,7 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { getHermesConfig } from '@/hermes'
 import { persistString } from '@/lib/storage'
-import { $currentCwd, setCurrentCwd } from '@/store/session'
+import { $currentCwd, $introBackgroundImage, setCurrentCwd, setIntroBackgroundImage } from '@/store/session'
 
 import { useHermesConfig } from './use-hermes-config'
 
@@ -22,7 +22,30 @@ describe('useHermesConfig refreshHermesConfig', () => {
   beforeEach(() => {
     // Reset atoms and localStorage between tests
     setCurrentCwd('')
+    setIntroBackgroundImage('')
     persistString(WORKSPACE_CWD_KEY, null)
+  })
+
+  it('applies and clears the profile-scoped landing background image', async () => {
+    mockConfig({ display: { desktop_background_image: 'https://example.com/coder.png' } })
+
+    const { result } = renderHook(() =>
+      useHermesConfig({
+        activeSessionIdRef: { current: null },
+        refreshProjectBranch: vi.fn().mockResolvedValue(undefined)
+      })
+    )
+
+    await act(async () => {
+      await result.current.refreshHermesConfig()
+    })
+    expect($introBackgroundImage.get()).toBe('https://example.com/coder.png')
+
+    mockConfig({ display: {} })
+    await act(async () => {
+      await result.current.refreshHermesConfig()
+    })
+    expect($introBackgroundImage.get()).toBe('')
   })
 
   it('applies terminal.cwd from config even when localStorage has a stale value', async () => {

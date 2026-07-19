@@ -338,7 +338,7 @@ class TestBareCustomNoBaseUrlHealsFromConfig:
 
         from tui_gateway import server as srv
 
-        monkeypatch.setattr(srv, "_get_db", lambda: _DB())
+        monkeypatch.setattr(srv, "_open_session_db", lambda _home=None: _DB())
         monkeypatch.setattr(srv, "_resolve_model", lambda: "mimo-v2.5-pro")
 
         session = {

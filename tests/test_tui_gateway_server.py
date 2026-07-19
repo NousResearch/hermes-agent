@@ -1430,7 +1430,7 @@ def test_session_resume_uses_parent_lineage_for_display(monkeypatch):
                 else [{"role": "user", "content": "tip prompt"}]
             )
 
-    monkeypatch.setattr(server, "_get_db", lambda: FakeDB())
+    monkeypatch.setattr(server, "_open_session_db", lambda _home=None: FakeDB())
     monkeypatch.setattr(server, "_enable_gateway_prompts", lambda: None)
     monkeypatch.setattr(server, "_set_session_context", lambda target: [])
     monkeypatch.setattr(server, "_clear_session_context", lambda tokens: None)
@@ -1507,7 +1507,7 @@ def test_session_resume_follows_compression_tip(monkeypatch, tmp_path):
         captured.setdefault("agent_session_id", session_id)
         return types.SimpleNamespace(model="test", provider="test")
 
-    monkeypatch.setattr(server, "_get_db", lambda: db)
+    monkeypatch.setattr(server, "_open_session_db", lambda _home=None: db)
     monkeypatch.setattr(server, "_enable_gateway_prompts", lambda: None)
     monkeypatch.setattr(server, "_set_session_context", lambda target: [])
     monkeypatch.setattr(server, "_clear_session_context", lambda tokens: None)
@@ -1565,7 +1565,7 @@ def test_session_resume_passes_stored_runtime_to_agent(monkeypatch):
         captured.update(kwargs)
         return types.SimpleNamespace(model="gpt-5.4", provider="openai-codex")
 
-    monkeypatch.setattr(server, "_get_db", lambda: FakeDB())
+    monkeypatch.setattr(server, "_open_session_db", lambda _home=None: FakeDB())
     monkeypatch.setattr(server, "_enable_gateway_prompts", lambda: None)
     monkeypatch.setattr(server, "_set_session_context", lambda target: [])
     monkeypatch.setattr(server, "_clear_session_context", lambda tokens: None)
@@ -3587,6 +3587,62 @@ def test_ensure_session_db_row_default_session_uses_launch_home(monkeypatch, tmp
     finally:
         if launch_db is not None:
             launch_db.close()
+        stale_db.close()
+
+
+def test_session_list_default_session_uses_launch_home(monkeypatch, tmp_path):
+    from hermes_state import SessionDB
+
+    launch_home = tmp_path / "launch-home"
+    stale_home = tmp_path / "stale-home"
+    launch_home.mkdir()
+    stale_home.mkdir()
+    launch_db = SessionDB(db_path=launch_home / "state.db")
+    stale_db = SessionDB(db_path=stale_home / "state.db")
+    launch_db.create_session("launch-session", source="tui")
+    try:
+        monkeypatch.setattr(server, "_hermes_home", launch_home)
+        monkeypatch.setattr(server, "_get_db", lambda: stale_db)
+
+        resp = server.handle_request({"id": "1", "method": "session.list", "params": {}})
+
+        assert [row["id"] for row in resp["result"]["sessions"]] == ["launch-session"]
+    finally:
+        launch_db.close()
+        stale_db.close()
+
+
+def test_session_resume_default_session_uses_launch_home(monkeypatch, tmp_path):
+    from hermes_state import SessionDB
+
+    launch_home = tmp_path / "launch-home"
+    stale_home = tmp_path / "stale-home"
+    launch_home.mkdir()
+    stale_home.mkdir()
+    launch_db = SessionDB(db_path=launch_home / "state.db")
+    stale_db = SessionDB(db_path=stale_home / "state.db")
+    launch_db.create_session("launch-session", source="tui")
+    launch_db.append_message("launch-session", role="user", content="hello")
+    launch_db.append_message("launch-session", role="assistant", content="world")
+
+    monkeypatch.setattr(server, "_hermes_home", launch_home)
+    monkeypatch.setattr(server, "_get_db", lambda: stale_db)
+    monkeypatch.setattr(server, "_enable_gateway_prompts", lambda: None)
+    monkeypatch.setattr(server, "_set_session_context", lambda target: [])
+    monkeypatch.setattr(server, "_clear_session_context", lambda tokens: None)
+    monkeypatch.setattr(server, "_make_agent", lambda *args, **kwargs: types.SimpleNamespace(model="test"))
+    monkeypatch.setattr(server, "_session_info", lambda agent, *args: {"model": "test", "tools": {}, "skills": {}})
+    monkeypatch.setattr(server, "_init_session", lambda *args, **kwargs: None)
+
+    try:
+        resp = server.handle_request(
+            {"id": "1", "method": "session.resume", "params": {"session_id": "launch-session", "eager_build": True}}
+        )
+
+        assert "error" not in resp
+        assert resp["result"]["session_key"] == "launch-session"
+    finally:
+        launch_db.close()
         stale_db.close()
 
 
@@ -7430,7 +7486,7 @@ def test_session_create_lazy_info_reports_desktop_contract(monkeypatch):
 
 
 def test_session_list_returns_clean_error_when_state_db_is_unavailable(monkeypatch):
-    monkeypatch.setattr(server, "_get_db", lambda: None)
+    monkeypatch.setattr(server, "_open_session_db", lambda _home=None: None)
     monkeypatch.setattr(server, "_db_error", "locking protocol")
 
     resp = server.handle_request({"id": "1", "method": "session.list", "params": {}})
@@ -8234,7 +8290,7 @@ def test_session_most_recent_returns_first_non_denied(monkeypatch):
                 {"id": "tui-1", "source": "tui", "title": "real", "started_at": 99},
             ]
 
-    monkeypatch.setattr(server, "_get_db", lambda: _DB())
+    monkeypatch.setattr(server, "_open_session_db", lambda _home=None: _DB())
 
     resp = server.handle_request({
         "id": "1",
@@ -8252,7 +8308,7 @@ def test_session_most_recent_returns_null_when_only_tool_rows(monkeypatch):
         def list_sessions_rich(self, *, source=None, limit=200, order_by_last_active=False, compact_rows=False):
             return [{"id": "tool-1", "source": "tool", "started_at": 1}]
 
-    monkeypatch.setattr(server, "_get_db", lambda: _DB())
+    monkeypatch.setattr(server, "_open_session_db", lambda _home=None: _DB())
 
     resp = server.handle_request({
         "id": "1",
@@ -8272,7 +8328,7 @@ def test_session_most_recent_folds_db_exception_into_null_result(monkeypatch):
         def list_sessions_rich(self, *, source=None, limit=200, order_by_last_active=False, compact_rows=False):
             raise RuntimeError("db locked")
 
-    monkeypatch.setattr(server, "_get_db", lambda: _BrokenDB())
+    monkeypatch.setattr(server, "_open_session_db", lambda _home=None: _BrokenDB())
 
     resp = server.handle_request({
         "id": "1",
@@ -8285,7 +8341,7 @@ def test_session_most_recent_folds_db_exception_into_null_result(monkeypatch):
 
 
 def test_session_most_recent_handles_db_unavailable(monkeypatch):
-    monkeypatch.setattr(server, "_get_db", lambda: None)
+    monkeypatch.setattr(server, "_open_session_db", lambda _home=None: None)
 
     resp = server.handle_request({
         "id": "1",

@@ -498,13 +498,14 @@ def _convert_content_to_converse(content) -> List[Dict]:
       - Content arrays with text/image_url parts → mixed text/image blocks
 
     Filters out empty text blocks — Bedrock's Converse API rejects messages
-    where a text content block has an empty ``text`` field (ValidationException:
-    "text content blocks must be non-empty"). Ref: issue #9486.
+    where a text content block has an empty or whitespace-only ``text`` field
+    (ValidationException: "text content blocks must contain non-whitespace
+    text"). Ref: issue #9486, #39829.
     """
     if content is None:
-        return [{"text": " "}]
+        return [{"text": "(empty message)"}]
     if isinstance(content, str):
-        return [{"text": content}] if content.strip() else [{"text": " "}]
+        return [{"text": content}] if content.strip() else [{"text": "(empty message)"}]
     if isinstance(content, list):
         blocks = []
         for part in content:
@@ -516,7 +517,7 @@ def _convert_content_to_converse(content) -> List[Dict]:
             part_type = part.get("type", "")
             if part_type == "text":
                 text = part.get("text", "")
-                blocks.append({"text": text if text else " "})
+                blocks.append({"text": text if text.strip() else "(empty message)"})
             elif part_type == "image_url":
                 image_url = part.get("image_url", {})
                 url = image_url.get("url", "") if isinstance(image_url, dict) else ""
@@ -547,7 +548,7 @@ def _convert_content_to_converse(content) -> List[Dict]:
                     # Remote URL — Converse doesn't support URLs directly,
                     # include as text reference for the model.
                     blocks.append({"text": f"[Image: {url}]"})
-        return blocks if blocks else [{"text": " "}]
+        return blocks if blocks else [{"text": "(empty message)"}]
     return [{"text": str(content)}]
 
 
@@ -635,7 +636,7 @@ def convert_messages_to_converse(
                 })
 
             if not content_blocks:
-                content_blocks = [{"text": " "}]
+                content_blocks = [{"text": "(empty message)"}]
 
             # Merge with previous assistant message if needed (strict alternation)
             if converse_msgs and converse_msgs[-1]["role"] == "assistant":
@@ -661,11 +662,11 @@ def convert_messages_to_converse(
 
     # Converse requires the first message to be from the user
     if converse_msgs and converse_msgs[0]["role"] != "user":
-        converse_msgs.insert(0, {"role": "user", "content": [{"text": " "}]})
+        converse_msgs.insert(0, {"role": "user", "content": [{"text": "(empty message)"}]})
 
     # Converse requires the last message to be from the user
     if converse_msgs and converse_msgs[-1]["role"] != "user":
-        converse_msgs.append({"role": "user", "content": [{"text": " "}]})
+        converse_msgs.append({"role": "user", "content": [{"text": "(empty message)"}]})
 
     return (system_blocks if system_blocks else None, converse_msgs)
 

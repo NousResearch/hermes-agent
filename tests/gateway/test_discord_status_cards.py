@@ -195,6 +195,52 @@ async def test_edit_failure_sends_exactly_one_fresh_plaintext_final_and_recaches
 
 
 @pytest.mark.asyncio
+async def test_partial_terminal_overflow_falls_back_once_before_latching(adapter):
+    adapter.send.side_effect = [
+        SendResult(success=True, message_id="7001"),
+        SendResult(
+            success=True,
+            message_id="8001",
+            raw_response={"message_ids": ["8001", "8002"]},
+        ),
+    ]
+    adapter.edit_message.return_value = SendResult(
+        success=True,
+        message_id="7002",
+        continuation_message_ids=("7002",),
+        raw_response={
+            "partial_overflow": True,
+            "delivered_chunks": 2,
+            "total_chunks": 3,
+            "last_message_id": "7002",
+            "continuation_message_ids": ("7002",),
+        },
+    )
+
+    await adapter.send_or_update_status(
+        "555", "run-1", "Working", metadata={"thread_id": "777"}
+    )
+    result = await adapter.send_or_update_status(
+        "555",
+        "run-1",
+        "Complete final result " * 300,
+        metadata={"thread_id": "777", "status_terminal": True},
+    )
+
+    assert result.message_id == "8001"
+    assert adapter.edit_message.await_count == 1
+    assert adapter.send.await_count == 2
+    fallback = adapter.send.await_args_list[1].kwargs
+    assert fallback["chat_id"] == "555"
+    assert fallback["content"] == "Complete final result " * 300
+    assert fallback["metadata"] == {"thread_id": "777"}
+    key = ("555", "777", "run-1")
+    assert adapter._status_message_ids[key] == "8001"
+    assert adapter._status_message_terminal[key] is True
+    assert adapter._last_self_message_id["777"] == "8002"
+
+
+@pytest.mark.asyncio
 async def test_embed_send_failure_falls_back_once_to_plaintext_and_recaches(adapter):
     adapter.send.side_effect = [
         SendResult(success=False, error="Invalid Form Body: embed"),
@@ -617,3 +663,76 @@ async def test_keyed_consumer_fallback_oversized_final_preserves_all_chunks(
         for message_id in visible_ids
     )
     assert instance._last_self_message_id["777"] == visible_ids[-1]
+
+
+@pytest.mark.asyncio
+async def test_keyed_oversized_terminal_continuation_failure_falls_back_fresh_once(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(
+        "plugins.platforms.discord.adapter._build_operator_card_embed",
+        lambda card: {"kind": card.card_type},
+    )
+    instance = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+    retained = SimpleNamespace(
+        id=7001,
+        edit=AsyncMock(),
+        to_reference=lambda **_kwargs: object(),
+    )
+    send_calls = []
+
+    async def send_message(**kwargs):
+        send_calls.append(kwargs)
+        call_number = len(send_calls)
+        if call_number == 1:
+            return retained
+        if call_number == 2:
+            return SimpleNamespace(
+                id=7002,
+                to_reference=lambda **_kwargs: object(),
+            )
+        if call_number in {3, 4}:
+            raise RuntimeError("continuation send failed")
+        return SimpleNamespace(
+            id=8000 + call_number,
+            to_reference=lambda **_kwargs: object(),
+        )
+
+    thread = SimpleNamespace(
+        id=777,
+        send=AsyncMock(side_effect=send_message),
+        fetch_message=AsyncMock(return_value=retained),
+    )
+    instance._client = SimpleNamespace(
+        get_channel=lambda channel_id: thread if channel_id == 777 else None,
+        fetch_channel=AsyncMock(),
+    )
+
+    await instance.send(
+        "555",
+        "Working",
+        metadata={"thread_id": "777", "status_key": "task_run:message:42"},
+    )
+    final_text = "Complete final result " * 300
+    result = await instance.send(
+        "555",
+        final_text,
+        metadata={
+            "thread_id": "777",
+            "status_key": "task_run:message:42",
+            "status_terminal": True,
+        },
+    )
+
+    fallback_ids = result.raw_response["message_ids"]
+    assert result.success is True
+    assert result.message_id == fallback_ids[0]
+    assert fallback_ids[0].startswith("800")
+    assert len(send_calls) == 4 + len(fallback_ids)
+    assert retained.edit.await_count == 1
+    key = ("555", "777", "task_run:message:42")
+    assert instance._status_message_ids[key] == fallback_ids[0]
+    assert instance._status_message_terminal[key] is True
+    assert instance._last_self_message_id["777"] == fallback_ids[-1]

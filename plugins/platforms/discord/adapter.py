@@ -3374,7 +3374,12 @@ class DiscordAdapter(BasePlatformAdapter):
                         finalize=terminal,
                         metadata=status_metadata,
                     )
-                    if result.success:
+                    raw_response = result.raw_response
+                    partial_overflow = bool(
+                        isinstance(raw_response, dict)
+                        and raw_response.get("partial_overflow")
+                    )
+                    if result.success and not partial_overflow:
                         retained_id = str(result.message_id or cached_id)
                         if terminal:
                             self._restore_terminal_status_to_conversation(
@@ -3390,6 +3395,12 @@ class DiscordAdapter(BasePlatformAdapter):
                             terminal=terminal,
                         )
                         return result
+                    # Discord deliberately reports a mid-continuation overflow
+                    # failure as partial success so callers know some chunks
+                    # are already visible.  It is not a completed terminal
+                    # delivery: do not fingerprint or latch it.  Reuse the
+                    # stale-edit fallback below to make exactly one fresh
+                    # plaintext send of the complete answer.
                     edit_failed = True
                     self._status_message_ids.pop(key, None)
                     self._status_message_fingerprints.pop(key, None)

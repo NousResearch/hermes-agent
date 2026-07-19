@@ -1148,7 +1148,7 @@ class TestSignalSendReturnsMessageId:
         result = await adapter.send(chat_id="+155****4567", content=long_content)
 
         assert result.success is False
-        assert result.error == "RPC send failed"
+        assert result.error == "One or more chunks failed to send"
         expected_chunks = adapter.truncate_message(long_content, adapter.MAX_MESSAGE_LENGTH)
         assert len(captured) == 2
         assert [call["params"]["message"] for call in captured] == expected_chunks[:2]

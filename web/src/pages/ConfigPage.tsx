@@ -255,9 +255,13 @@ export default function ConfigPage() {
   const searchMatchedFields = useMemo(() => {
     if (!isSearching || !schema) return [];
     return Object.entries(schema).filter(([key, s]) => {
+      // Match the raw key's own wording as well as the localized label, so a
+      // non-English UI stays searchable in both.
+      const rawLabel = (key.split(".").pop() ?? key).replace(/_/g, " ");
       const humanLabel = configFieldLabel(key, t.config);
       return (
         key.toLowerCase().includes(lowerSearch) ||
+        rawLabel.toLowerCase().includes(lowerSearch) ||
         humanLabel.toLowerCase().includes(lowerSearch) ||
         String(s.category ?? "")
           .toLowerCase()

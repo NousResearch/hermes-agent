@@ -242,7 +242,7 @@ const ApprovalBar: FC<{ request: ApprovalRequest; surface: 'floating' | 'inline'
           variant="ghost"
         >
           {submitting === 'deny' ? <Loader2 className="size-3 animate-spin" /> : copy.reject}
-          {submitting !== 'deny' && <span className="text-[0.625rem] opacity-55">⎋</span>}
+          {submitting !== 'deny' && <span className="text-[0.625rem] opacity-55">Esc</span>}
         </Button>
 
         {hasCommand && (

@@ -97,6 +97,12 @@ export function ChatSidebar({
 }: ChatSidebarProps) {
   const { t } = useI18n();
   const copy = { ...en.chatPage!, ...(t.chatPage ?? {}) };
+  // The events-feed effect must not resubscribe when the locale changes, so it
+  // reads its banner copy through a ref instead of taking `copy` as a dep.
+  const copyRef = useRef(copy);
+  useEffect(() => {
+    copyRef.current = copy;
+  });
   const stateLabel: Record<ConnectionState, string> = {
     idle: copy.stateIdle,
     connecting: copy.stateConnecting,
@@ -255,16 +261,18 @@ export function ChatSidebar({
       // `unmounting` suppresses the banner during cleanup — `ws.close()`
       // from the effect's return fires a close event with code 1005 that
       // would otherwise look like an unexpected drop.
-      const DISCONNECTED = "events feed disconnected — tool calls may not appear";
       const surface = (msg: string) => !unmounting && setError(msg);
+      const disconnected = () => surface(copyRef.current.eventsFeedDisconnected);
 
-      ws.addEventListener("error", () => surface(DISCONNECTED));
+      ws.addEventListener("error", disconnected);
 
       ws.addEventListener("close", (ev) => {
         if (ev.code === 4401 || ev.code === 4403) {
-          surface(`events feed rejected (${ev.code}) — reload the page`);
+          surface(
+            copyRef.current.eventsFeedRejected.replace("{code}", String(ev.code)),
+          );
         } else if (ev.code !== 1000) {
-          surface(DISCONNECTED);
+          disconnected();
         }
       });
 

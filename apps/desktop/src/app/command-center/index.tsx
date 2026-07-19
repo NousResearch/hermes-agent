@@ -504,22 +504,35 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
   )
 }
 
+// Arabic spells the unit out, so it can't reuse the shared `k`/`M` suffixes.
+// Everything else stays on `compactNumber` — its thresholds sit just under each
+// unit boundary on purpose, and hand-rolling `/ 1000` here would print "1000K"
+// for values like 999_960.
 function formatTokens(value: null | number | undefined, locale: string): string {
   const num = Number(value || 0)
-  const number = new Intl.NumberFormat(localeTag(locale), { maximumFractionDigits: 1 })
 
-  if (num >= 1_000_000) {
-    return locale === 'ar' ? `${number.format(num / 1_000_000)} مليون` : `${number.format(num / 1_000_000)}M`
+  if (locale !== 'ar') {
+    return compactNumber(num)
   }
 
-  if (num >= 1_000) {
-    return locale === 'ar' ? `${number.format(num / 1_000)} ألف` : `${number.format(num / 1_000)}K`
+  const number = new Intl.NumberFormat(localeTag(locale), { maximumFractionDigits: 1 })
+
+  if (num >= 999_950) {
+    return `${number.format(num / 1_000_000)} مليون`
+  }
+
+  if (num >= 999.5) {
+    return `${number.format(num / 1_000)} ألف`
   }
 
   return num.toLocaleString(localeTag(locale))
 }
 
 function formatInteger(value: null | number | undefined, locale: string): string {
+  if (locale !== 'ar') {
+    return compactNumber(value)
+  }
+
   return Number(value ?? 0).toLocaleString(localeTag(locale))
 }
 

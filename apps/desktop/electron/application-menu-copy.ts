@@ -1,8 +1,8 @@
 export type ApplicationMenuLocale = 'ar' | 'en'
 
 export interface ApplicationMenuCopy {
-  appName: string
-  about: string
+  // Takes the app name so `HERMES_DESKTOP_APP_NAME` rebrands still work.
+  about: (appName: string) => string
   actualSize: string
   checkForUpdates: string
   close: string
@@ -35,8 +35,7 @@ export interface ApplicationMenuCopy {
 }
 
 const ENGLISH_COPY: ApplicationMenuCopy = {
-  appName: 'Hermes',
-  about: 'About Hermes',
+  about: appName => `About ${appName}`,
   actualSize: 'Actual Size',
   checkForUpdates: 'Check for Updates…',
   close: 'Close',
@@ -69,8 +68,7 @@ const ENGLISH_COPY: ApplicationMenuCopy = {
 }
 
 const ARABIC_COPY: ApplicationMenuCopy = {
-  appName: 'هرمس',
-  about: 'حول هرمس',
+  about: appName => `حول ${appName}`,
   actualSize: 'الحجم الفعلي',
   checkForUpdates: 'التحقق من التحديثات…',
   close: 'إغلاق',

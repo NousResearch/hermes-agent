@@ -1103,6 +1103,8 @@ export const ar: Translations = {
     stateClosed: "مغلق",
     stateError: "خطأ",
     tokenMissingPanel: "رمز الجلسة غير متاح — يجب فتح الصفحة عبر لوحة هرمس",
+    eventsFeedDisconnected: "انقطع موجز الأحداث — قد لا تظهر استدعاءات الأدوات",
+    eventsFeedRejected: "رُفض موجز الأحداث ({code}) — أعد تحميل الصفحة",
   },
 
   toolsetDrawer: {
@@ -2212,6 +2214,19 @@ export const ar: Translations = {
       write_approval: "اشتراط الموافقة قبل الكتابة",
       write_json_snapshots: "كتابة لقطات الجلسات بصيغة جيسون",
       write_sessions_json: "كتابة الجلسات بصيغة جيسون",
+    },
+    fieldPatterns: {
+      max: "الحد الأقصى لـ {name}",
+      min: "الحد الأدنى لـ {name}",
+      enabled: "تفعيل {name}",
+      disabled: "تعطيل {name}",
+      timeout: "مهلة {name}",
+      count: "عدد {name}",
+      mode: "وضع {name}",
+      path: "مسار {name}",
+      url: "رابط {name}",
+      interval: "فاصل {name}",
+      limit: "حد {name}",
     },
     fieldTerms: {
       abort: "الإلغاء",

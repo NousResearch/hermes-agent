@@ -949,6 +949,12 @@ export interface Translations {
     fieldLabels?: Record<string, string>;
     fieldLeafLabels?: Record<string, string>;
     fieldTerms?: Record<string, string>;
+    /**
+     * Wording for schema keys with a recognisable shape (`max_*`, `*_timeout`,
+     * …), keyed by shape. `{name}` is replaced with the rest of the key. Omit
+     * this (English does) to keep the plain title-cased identifier.
+     */
+    fieldPatterns?: Record<string, string>;
     descriptionOverrides?: Record<string, string>;
   };
 

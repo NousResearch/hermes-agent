@@ -128,14 +128,20 @@ function skillSubtitle(skill: SkillInfo, t: Translations): React.ReactNode {
   )
 }
 
-function filteredSkills(skills: SkillInfo[], query: string, desc: boolean): SkillInfo[] {
+function filteredSkills(skills: SkillInfo[], query: string, desc: boolean, t: Translations): SkillInfo[] {
   const q = normalize(query)
   const sign = desc ? 1 : -1
 
   return skills
     .filter(
       skill =>
-        !q || includesQuery(skill.name, q) || includesQuery(skill.description, q) || includesQuery(skill.category, q)
+        !q ||
+        includesQuery(skill.name, q) ||
+        includesQuery(skill.description, q) ||
+        includesQuery(skill.category, q) ||
+        // The "Try …" hints below suggest the *localized* category, so it has
+        // to be searchable too — otherwise following a hint returns nothing.
+        includesQuery(localizedCategory(categoryFor(skill), t), q)
     )
     .sort((a, b) => sign * (usageOf(b) - usageOf(a)) || asText(a.name).localeCompare(asText(b.name)))
 }
@@ -286,8 +292,8 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
   })
 
   const visibleSkills = useMemo(
-    () => (skills ? filteredSkills(skills, query, skillsSortDesc) : []),
-    [query, skills, skillsSortDesc]
+    () => (skills ? filteredSkills(skills, query, skillsSortDesc, t) : []),
+    [query, skills, skillsSortDesc, t]
   )
 
   const visibleToolsets = useMemo(

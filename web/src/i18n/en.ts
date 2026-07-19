@@ -1034,6 +1034,8 @@ export const en: Translations = {
     stateError: "error",
     tokenMissingPanel:
       "Session token not available — page must be served by the Hermes dashboard",
+    eventsFeedDisconnected: "events feed disconnected — tool calls may not appear",
+    eventsFeedRejected: "events feed rejected ({code}) — reload the page",
   },
 
   toolsetDrawer: {

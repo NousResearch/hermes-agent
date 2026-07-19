@@ -26,30 +26,43 @@ function translateWords(value: string, terms?: Record<string, string>): string {
     .join(" ");
 }
 
+// Shape-based fallbacks for schema keys with no explicit label. The wording
+// lives in the locale catalogs — a locale that omits `fieldPatterns` (English
+// does) keeps upstream's plain title-cased identifier.
+const IDENTIFIER_SHAPES: Array<[RegExp, string]> = [
+  [/^max_(.+)$/, "max"],
+  [/^min_(.+)$/, "min"],
+  [/^(.+)_enabled$/, "enabled"],
+  [/^(.+)_disabled$/, "disabled"],
+  [/^(.+)_timeout$/, "timeout"],
+  [/^(.+)_count$/, "count"],
+  [/^(.+)_mode$/, "mode"],
+  [/^(.+)_path$/, "path"],
+  [/^(.+)_url$/, "url"],
+  [/^(.+)_interval$/, "interval"],
+  [/^(.+)_limit$/, "limit"],
+];
+
 function translateIdentifier(
   identifier: string,
-  terms?: Record<string, string>,
+  config: ConfigTranslations,
 ): string {
-  const patterns: Array<[RegExp, (match: RegExpMatchArray) => string]> = [
-    [/^max_(.+)$/, (match) => `الحد الأقصى لـ ${translateWords(match[1], terms)}`],
-    [/^min_(.+)$/, (match) => `الحد الأدنى لـ ${translateWords(match[1], terms)}`],
-    [/^(.+)_enabled$/, (match) => `تفعيل ${translateWords(match[1], terms)}`],
-    [/^(.+)_disabled$/, (match) => `تعطيل ${translateWords(match[1], terms)}`],
-    [/^(.+)_timeout$/, (match) => `مهلة ${translateWords(match[1], terms)}`],
-    [/^(.+)_count$/, (match) => `عدد ${translateWords(match[1], terms)}`],
-    [/^(.+)_mode$/, (match) => `وضع ${translateWords(match[1], terms)}`],
-    [/^(.+)_path$/, (match) => `مسار ${translateWords(match[1], terms)}`],
-    [/^(.+)_url$/, (match) => `رابط ${translateWords(match[1], terms)}`],
-    [/^(.+)_interval$/, (match) => `فاصل ${translateWords(match[1], terms)}`],
-    [/^(.+)_limit$/, (match) => `حد ${translateWords(match[1], terms)}`],
-  ];
+  const patterns = config.fieldPatterns;
 
-  for (const [pattern, render] of patterns) {
-    const match = identifier.match(pattern);
-    if (match) return render(match);
+  if (patterns) {
+    for (const [shape, key] of IDENTIFIER_SHAPES) {
+      const match = identifier.match(shape);
+      const template = match && patterns[key];
+      if (match && template) {
+        return template.replace(
+          "{name}",
+          translateWords(match[1], config.fieldTerms),
+        );
+      }
+    }
   }
 
-  return translateWords(identifier, terms);
+  return translateWords(identifier, config.fieldTerms);
 }
 
 export function configCategoryLabel(
@@ -82,7 +95,7 @@ export function configFieldLabel(
   return (
     config.fieldLabels?.[schemaKey] ??
     config.fieldLeafLabels?.[rawLabel] ??
-    translateIdentifier(rawLabel, config.fieldTerms)
+    translateIdentifier(rawLabel, config)
   );
 }
 
@@ -93,6 +106,11 @@ export function configDescription(
 ): string {
   const override = config.descriptionOverrides?.[schemaKey];
   if (override) return override;
+
+  // No term vocabulary means this locale has nothing to say about the schema's
+  // own prose — hand back the server's English description untouched, exactly
+  // as upstream rendered it (including the "Section → Field" arrow direction).
+  if (!config.fieldTerms) return description;
 
   if (description.includes("→")) {
     const parts = description.split("→").map((part) => part.trim());

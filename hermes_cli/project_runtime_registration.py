@@ -8,12 +8,15 @@ lifecycle work.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
+import re
 import secrets
 import sqlite3
 import time
 from dataclasses import dataclass, field as dataclass_field
+from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from hermes_cli import kanban_db as kb
@@ -46,6 +49,7 @@ ADMISSION_CREATED = "created"
 ADMISSION_ALREADY_ADMITTED = "already_admitted"
 
 CHECKER_EVIDENCE_KINDS = frozenset({"command", "file", "test", "review", "other"})
+DEFAULT_REPAIR_PROFILE = "builder-gptluna"
 
 
 @dataclass(frozen=True)
@@ -158,6 +162,8 @@ def _admission_identity(
     root_task_id: str,
     required_task_ids: Sequence[str],
     checker_profile: str,
+    repair_profile: str,
+    sealed_evidence_required: bool,
     notification_route_identity_value: str,
     notification_policy: str,
     retention_days: int,
@@ -170,6 +176,8 @@ def _admission_identity(
             "root_task_id": root_task_id,
             "required_task_ids": list(required_task_ids),
             "checker_profile": checker_profile,
+            "repair_profile": repair_profile,
+            "sealed_evidence_required": bool(sealed_evidence_required),
             "notification_route_identity": notification_route_identity_value,
             "notification_policy": notification_policy,
             "retention_days": retention_days,
@@ -334,6 +342,7 @@ def admit_existing_project(
     root_task_id: str,
     required_task_ids: Sequence[str],
     checker_profile: str,
+    repair_profile: str | None = None,
     notification_policy: str = "project_summary",
     retention_days: int = 3,
     repair_budget: int = 1,
@@ -360,6 +369,11 @@ def admit_existing_project(
 
     canonical_profile = normalize_profile_name(checker_profile)
     validate_profile_name(canonical_profile)
+    canonical_repair_profile = normalize_profile_name(
+        repair_profile if repair_profile is not None else DEFAULT_REPAIR_PROFILE
+    )
+    validate_profile_name(canonical_repair_profile)
+    sealed_evidence_required = repair_profile is not None
     validate_notification_policy(notification_policy)
     if notification_policy != "project_summary":
         raise ValueError("production admission requires notification_policy='project_summary'")
@@ -385,11 +399,29 @@ def admit_existing_project(
             durable_route_identity = existing["notification_route_identity"]
             if not isinstance(durable_route_identity, str) or not durable_route_identity:
                 raise ValueError("project admission conflicts with existing durable project state")
+            persisted_repair_profile = existing["repair_worker_profile"]
+            if not isinstance(persisted_repair_profile, str) or not persisted_repair_profile:
+                raise ValueError("admitted project has no durable repair worker authority")
+            persisted_repair_profile = normalize_profile_name(persisted_repair_profile)
+            validate_profile_name(persisted_repair_profile)
+            if not profile_exists(persisted_repair_profile):
+                raise ValueError(f"repair worker profile is unavailable: {persisted_repair_profile}")
+            if not profile_exists(canonical_profile):
+                raise ValueError(f"checker profile is unavailable: {canonical_profile}")
+            if canonical_repair_profile and canonical_repair_profile != persisted_repair_profile:
+                raise ValueError("project admission conflicts with repair worker authority")
+            canonical_repair_profile = persisted_repair_profile
+            if canonical_repair_profile == canonical_profile:
+                raise ValueError("repair worker profile must remain independent from checker authority")
+            if bool(existing["sealed_evidence_required"]) != sealed_evidence_required:
+                raise ValueError("project admission conflicts with sealed evidence authority")
             admission_key = _admission_identity(
                 board_id=board_id,
                 root_task_id=root_task_id,
                 required_task_ids=required_ids,
                 checker_profile=canonical_profile,
+                repair_profile=canonical_repair_profile,
+                sealed_evidence_required=sealed_evidence_required,
                 notification_route_identity_value=durable_route_identity,
                 notification_policy=notification_policy,
                 retention_days=retention_days,
@@ -428,8 +460,6 @@ def admit_existing_project(
                 ADMISSION_ALREADY_ADMITTED, finalization, admission_key
             )
 
-        if not profile_exists(canonical_profile):
-            raise ValueError(f"checker profile does not exist: {canonical_profile}")
         placeholders = ",".join("?" for _ in required_ids)
         rows = conn.execute(
             f"SELECT * FROM tasks WHERE id IN ({placeholders}) ORDER BY id",
@@ -439,6 +469,12 @@ def admit_existing_project(
         missing = [task_id for task_id in required_ids if task_id not in rows_by_id]
         if missing:
             raise ValueError("required tasks do not exist: " + ", ".join(missing))
+        if not profile_exists(canonical_repair_profile):
+            raise ValueError(f"repair worker profile does not exist: {canonical_repair_profile}")
+        if not profile_exists(canonical_profile):
+            raise ValueError(f"checker profile does not exist: {canonical_profile}")
+        if canonical_repair_profile == canonical_profile:
+            raise ValueError("repair worker profile must remain independent from checker authority")
 
         for task_id in required_ids:
             row = rows_by_id[task_id]
@@ -490,6 +526,8 @@ def admit_existing_project(
             root_task_id=root_task_id,
             required_task_ids=required_ids,
             checker_profile=canonical_profile,
+            repair_profile=canonical_repair_profile,
+            sealed_evidence_required=sealed_evidence_required,
             notification_route_identity_value=route_identity,
             notification_policy=notification_policy,
             retention_days=retention_days,
@@ -504,11 +542,12 @@ def admit_existing_project(
             INSERT INTO project_finalizations (
                 board_id, root_task_id, generation, state, terminal_outcome,
                 final_checker_task_id, checker_verdict,
-                admission_key, checker_profile, notification_route_identity,
+                admission_key, checker_profile, repair_worker_profile,
+                sealed_evidence_required, notification_route_identity,
                 checker_candidate_snapshot_version, checker_candidate_id,
                 repair_generation, repair_budget, notification_policy,
                 retention_days, created_at, updated_at, version
-            ) VALUES (?, ?, 1, 'open', NULL, ?, NULL, ?, ?, ?, NULL, NULL,
+            ) VALUES (?, ?, 1, 'open', NULL, ?, NULL, ?, ?, ?, ?, ?, NULL, NULL,
                       0, ?, ?, ?, ?, ?, 1)
             """,
             (
@@ -517,6 +556,8 @@ def admit_existing_project(
                 pending_identity,
                 admission_key,
                 canonical_profile,
+                canonical_repair_profile,
+                int(sealed_evidence_required),
                 route_identity,
                 repair_budget,
                 notification_policy,
@@ -557,6 +598,7 @@ def admit_existing_project(
                 "generation": 1,
                 "required_task_ids": list(required_ids),
                 "checker_profile": canonical_profile,
+                "repair_worker_profile": canonical_repair_profile,
                 "notification_route_identity": route_identity,
                 "notification_policy": notification_policy,
                 "retention_days": retention_days,
@@ -604,10 +646,10 @@ def register_project_repair(
         if project_row is None:
             return AtomicRepairRegistration(REGISTRATION_STALE_SNAPSHOT)
         if project_row["admission_key"] is not None:
-            try:
-                repair_profile = normalize_profile_name(action.worker_profile)
-            except ValueError:
-                repair_profile = action.worker_profile.strip().lower()
+            repair_profile = normalize_profile_name(action.worker_profile)
+            validate_profile_name(repair_profile)
+            if repair_profile != project_row["repair_worker_profile"]:
+                raise ValueError("repair worker profile does not match admitted authority")
             if repair_profile == project_row["checker_profile"]:
                 raise ValueError(
                     "repair worker profile must remain independent from checker authority"
@@ -819,6 +861,13 @@ def register_project_checker(
                 or not _checker_registration_evaluation_is_current(evaluation)
             ):
                 return AtomicCheckerRegistration(REGISTRATION_STALE_SNAPSHOT)
+            if project_row["sealed_evidence_required"]:
+                _validate_sealed_evidence(
+                    conn,
+                    project_row,
+                    (),
+                    candidate_snapshot_version=action.candidate_snapshot_version,
+                )
 
         existing = _task_for_identity(conn, action.idempotency_key)
         if existing is not None:
@@ -1018,14 +1067,17 @@ def register_project_checker(
         )
 
 
-def _normalize_checker_evidence(evidence: Sequence[Mapping[str, object]]) -> tuple[dict[str, str], ...]:
+def _normalize_checker_evidence(evidence: Sequence[Mapping[str, object]]) -> tuple[dict[str, object], ...]:
     if isinstance(evidence, (str, bytes)) or not evidence:
         raise ValueError("checker evidence must be a non-empty array")
     normalized: list[dict[str, str]] = []
     for index, item in enumerate(evidence):
         if not isinstance(item, Mapping):
             raise ValueError(f"checker evidence item {index} must be an object")
-        unknown = set(item) - {"kind", "reference", "summary"}
+        unknown = set(item) - {
+            "kind", "reference", "summary", "task_id", "path", "sha256",
+            "candidate_snapshot_version", "file_set", "manifest_sha256",
+        }
         if unknown:
             raise ValueError(
                 f"checker evidence item {index} has unknown fields: {', '.join(sorted(unknown))}"
@@ -1039,14 +1091,254 @@ def _normalize_checker_evidence(evidence: Sequence[Mapping[str, object]]) -> tup
             raise ValueError(f"checker evidence item {index} requires reference")
         if not isinstance(item_summary, str) or not item_summary.strip():
             raise ValueError(f"checker evidence item {index} requires summary")
-        normalized.append(
-            {
+        normalized.append({
                 "kind": str(kind),
                 "reference": reference.strip(),
                 "summary": item_summary.strip(),
-            }
-        )
+                **{key: item[key] for key in (
+                    "task_id", "path", "sha256", "candidate_snapshot_version",
+                    "file_set", "manifest_sha256",
+                ) if key in item},
+            })
     return tuple(normalized)
+
+
+def record_project_checker_evidence(
+    conn: sqlite3.Connection,
+    *,
+    board_id: str,
+    root_task_id: str,
+    generation: int,
+    candidate_snapshot_version: str,
+    evidence: Sequence[Mapping[str, object]],
+    now: int | None = None,
+) -> int:
+    """Persist sealed evidence identities idempotently for a candidate."""
+    normalized = _normalize_checker_evidence(evidence)
+    current_time = _validated_now(now)
+    transaction = write_txn(conn) if not conn.in_transaction else contextlib.nullcontext(conn)
+    with transaction:
+        row = _project_row(conn, board_id, root_task_id, generation)
+        if row is None or row["admission_key"] is None:
+            raise ValueError("project generation is not admitted")
+        if row["checker_candidate_snapshot_version"] not in (None, candidate_snapshot_version):
+            raise ValueError("sealed evidence candidate is stale")
+        from hermes_cli.project_finalizer import evaluate_project
+
+        evaluation = evaluate_project(
+            conn,
+            board_id=board_id,
+            root_task_id=root_task_id,
+            generation=generation,
+            evaluation_time=current_time,
+        )
+        if evaluation.candidate_snapshot_version != candidate_snapshot_version:
+            raise ValueError("sealed evidence candidate is stale")
+        _validate_sealed_evidence(
+            conn,
+            row,
+            normalized,
+            candidate_snapshot_version=candidate_snapshot_version,
+        )
+        for item in normalized:
+            for field in ("task_id", "path", "sha256", "candidate_snapshot_version"):
+                if field not in item:
+                    raise ValueError("sealed evidence requires task, path, hash, and candidate identity")
+            if item["candidate_snapshot_version"] != candidate_snapshot_version:
+                raise ValueError("sealed evidence candidate is stale")
+            path = Path(str(item["path"]))
+            if path.is_absolute() or ".." in path.parts:
+                raise ValueError("sealed evidence path must be workspace-relative")
+            digest = str(item["sha256"])
+            if not re.fullmatch(r"[0-9a-f]{64}", digest):
+                raise ValueError("sealed evidence hash is invalid")
+            conn.execute(
+                """
+                INSERT INTO project_checker_evidence
+                    (board_id, root_task_id, generation, candidate_snapshot_version,
+                     task_id, path, sha256, file_set_json, manifest_sha256, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(board_id, root_task_id, generation, candidate_snapshot_version, task_id, path)
+                DO UPDATE SET sha256=excluded.sha256, file_set_json=excluded.file_set_json,
+                              manifest_sha256=excluded.manifest_sha256
+                """,
+                (
+                    board_id, root_task_id, generation, candidate_snapshot_version,
+                    str(item["task_id"]), path.as_posix(), digest,
+                    json.dumps(item.get("file_set"), sort_keys=True, separators=(",", ":"))
+                    if item.get("file_set") is not None else None,
+                    item.get("manifest_sha256"),
+                    current_time,
+                ),
+            )
+    return len(normalized)
+
+
+def _validate_sealed_evidence(
+    conn: sqlite3.Connection,
+    project_row: sqlite3.Row,
+    evidence: Sequence[Mapping[str, object]],
+    *,
+    candidate_snapshot_version: str,
+) -> None:
+    """Require immutable, task-bound file evidence before checker authority.
+
+    Evidence is intentionally checked against the durable task attachment rows
+    and the live bounded workspace.  Prose references are accepted by the
+    legacy protocol only; an A2 admission must provide these fields.
+    """
+    if not evidence:
+        rows = conn.execute(
+            """
+            SELECT task_id, path, sha256, file_set_json, manifest_sha256
+              FROM project_checker_evidence
+             WHERE board_id=? AND root_task_id=? AND generation=?
+               AND candidate_snapshot_version=?
+             ORDER BY task_id, path
+            """,
+            (
+                project_row["board_id"], project_row["root_task_id"],
+                project_row["generation"], candidate_snapshot_version,
+            ),
+        ).fetchall()
+        evidence = [
+            {
+                "task_id": row["task_id"], "path": row["path"],
+                "sha256": row["sha256"],
+                "candidate_snapshot_version": candidate_snapshot_version,
+                "file_set": json.loads(row["file_set_json"]) if row["file_set_json"] else None,
+                "manifest_sha256": row["manifest_sha256"],
+            }
+            for row in rows
+        ]
+    if not evidence:
+        raise ValueError("sealed evidence invalid: evidence_missing")
+    required_rows = conn.execute(
+        """
+        SELECT t.id, t.status, t.workspace_path
+          FROM project_finalization_members AS m
+          JOIN tasks AS t ON t.id = m.task_id
+         WHERE m.board_id=? AND m.root_task_id=? AND m.generation=?
+           AND m.required=1 AND m.membership_kind IN ('required', 'repair')
+         ORDER BY t.id
+        """,
+        (project_row["board_id"], project_row["root_task_id"], project_row["generation"]),
+    ).fetchall()
+    if not required_rows:
+        raise ValueError("sealed evidence invalid: required_members_missing")
+    seen_tasks: set[str] = set()
+    file_records: dict[str, str] = {}
+    manifest_sets: list[set[str]] = []
+    manifest_hashes: set[str] = set()
+    for item in evidence:
+        task_id = item.get("task_id")
+        raw_path = item.get("path")
+        digest = item.get("sha256")
+        candidate = item.get("candidate_snapshot_version")
+        if not isinstance(task_id, str) or not task_id:
+            raise ValueError("sealed evidence invalid: task_binding_missing")
+        if not isinstance(raw_path, str) or not raw_path:
+            raise ValueError("sealed evidence invalid: path_missing")
+        if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
+            raise ValueError("sealed evidence invalid: hash_invalid")
+        if candidate != candidate_snapshot_version:
+            raise ValueError("sealed evidence invalid: candidate_stale")
+        row = next((candidate_row for candidate_row in required_rows if candidate_row["id"] == task_id), None)
+        if row is None:
+            raise ValueError("sealed evidence invalid: wrong_task")
+        if row["status"] != "done":
+            raise ValueError("sealed evidence invalid: task_incomplete")
+        relative = Path(raw_path)
+        if relative.is_absolute() or ".." in relative.parts:
+            raise ValueError("sealed evidence invalid: path_escape")
+        workspace = Path(str(row["workspace_path"] or "")).resolve()
+        target = (workspace / relative).resolve()
+        try:
+            target.relative_to(workspace)
+        except ValueError:
+            raise ValueError("sealed evidence invalid: path_escape")
+        if not target.is_file() or target.stat().st_size == 0:
+            raise ValueError("sealed evidence invalid: file_missing_or_empty")
+        actual = hashlib.sha256(target.read_bytes()).hexdigest()
+        if actual != digest:
+            raise ValueError("sealed evidence invalid: hash_mismatch")
+        attachment = conn.execute(
+            """
+            SELECT stored_path, filename, size FROM task_attachments
+             WHERE task_id=?
+             ORDER BY id
+            """,
+            (task_id,),
+        ).fetchall()
+        matching_attachment = next(
+            (
+                row
+                for row in attachment
+                if Path(str(row["stored_path"])).resolve() == target
+                and row["filename"] == relative.name
+            ),
+            None,
+        )
+        if matching_attachment is None:
+            raise ValueError("sealed evidence invalid: attachment_missing")
+        if int(matching_attachment["size"] or 0) != target.stat().st_size:
+            raise ValueError("sealed evidence invalid: attachment_size_mismatch")
+        seen_tasks.add(task_id)
+        relative_path = relative.as_posix()
+        prior_digest = file_records.get(relative_path)
+        if prior_digest is not None and prior_digest != digest:
+            raise ValueError("sealed evidence invalid: duplicate_path_conflict")
+        file_records[relative_path] = digest
+        file_set = item.get("file_set")
+        if file_set is not None:
+            if not isinstance(file_set, (list, tuple)) or not all(isinstance(path, str) for path in file_set):
+                raise ValueError("sealed evidence invalid: manifest_malformed")
+            normalized_set: set[str] = set()
+            for path in file_set:
+                candidate_path = Path(path)
+                if candidate_path.is_absolute() or ".." in candidate_path.parts:
+                    raise ValueError("sealed evidence invalid: path_escape")
+                normalized_set.add(candidate_path.as_posix())
+            manifest_sets.append(normalized_set)
+        manifest_sha256 = item.get("manifest_sha256")
+        if manifest_sha256 is not None:
+            if not isinstance(manifest_sha256, str) or not re.fullmatch(r"[0-9a-f]{64}", manifest_sha256):
+                raise ValueError("sealed evidence invalid: manifest_hash_invalid")
+            manifest_hashes.add(manifest_sha256)
+    expected_tasks = {row["id"] for row in required_rows}
+    if seen_tasks != expected_tasks:
+        raise ValueError("sealed evidence invalid: required_member_evidence_missing")
+    expected_paths = set(file_records)
+    if manifest_sets and any(manifest != expected_paths for manifest in manifest_sets):
+        raise ValueError("sealed evidence invalid: manifest_mismatch")
+    canonical_manifest = json.dumps(
+        [{"path": path, "sha256": file_records[path]} for path in sorted(file_records)],
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    calculated_manifest_hash = hashlib.sha256(canonical_manifest.encode("utf-8")).hexdigest()
+    if manifest_hashes and manifest_hashes != {calculated_manifest_hash}:
+        raise ValueError("sealed evidence invalid: manifest_hash_mismatch")
+
+
+def validate_project_checker_evidence(
+    conn: sqlite3.Connection,
+    *,
+    board_id: str,
+    root_task_id: str,
+    generation: int,
+    candidate_snapshot_version: str,
+) -> None:
+    """Validate already-sealed evidence without changing durable state."""
+    row = _project_row(conn, board_id, root_task_id, generation)
+    if row is None or row["admission_key"] is None:
+        raise ValueError("project generation is not admitted")
+    _validate_sealed_evidence(
+        conn,
+        row,
+        (),
+        candidate_snapshot_version=candidate_snapshot_version,
+    )
 
 
 def _implementation_non_success_evaluation(evaluation: Any) -> bool:
@@ -1179,6 +1471,22 @@ def submit_project_checker_verdict(
             != project_row["checker_candidate_snapshot_version"]
         ):
             raise ValueError("checker candidate is stale")
+        if project_row["sealed_evidence_required"]:
+            record_project_checker_evidence(
+                conn,
+                board_id=board_id,
+                root_task_id=project_row["root_task_id"],
+                generation=int(project_row["generation"]),
+                candidate_snapshot_version=project_row["checker_candidate_snapshot_version"],
+                evidence=normalized_evidence,
+                now=current_time,
+            )
+            _validate_sealed_evidence(
+                conn,
+                project_row,
+                (),
+                candidate_snapshot_version=project_row["checker_candidate_snapshot_version"],
+            )
         if _implementation_non_success_evaluation(evaluation) and verdict != "FAIL_TERMINAL":
             raise ValueError(
                 "implementation non-success candidates require a FAIL_TERMINAL verdict"
@@ -1429,6 +1737,7 @@ def _repair_binding(action: RepairAction) -> dict[str, object]:
         "failure_fingerprint": action.failure_fingerprint,
         "repair_index": action.repair_index,
         "task_retry_index": action.task_retry_index,
+        "repair_worker_profile": action.worker_profile,
     }
 
 
@@ -1772,6 +2081,8 @@ __all__ = [
     "notification_route_identity",
     "register_project_checker",
     "register_project_repair",
+    "record_project_checker_evidence",
+    "validate_project_checker_evidence",
     "resolve_project_telegram_destination",
     "submit_project_checker_verdict",
 ]

@@ -68,6 +68,7 @@ from hermes_cli.project_runtime_registration import (
     register_project_checker,
     register_project_repair,
     resolve_project_telegram_destination,
+    validate_project_checker_evidence,
 )
 
 DeliveryCallable = Callable[[str, str, str | None, str], Awaitable[Mapping[str, Any]]]
@@ -209,9 +210,21 @@ class ProjectFinalizationService:
         # is intentionally minimal and never elevates a task into a live runtime.
         return {"version": 1, "scope": "project finalization runtime", "allowed_files": [], "forbidden_files": [], "base_commit": "0" * 40, "required_evidence": [], "required_commands": [], "allow_child_creation": False, "forbidden_git_actions": ["push"], "notification_verified": True}
 
-    def _worker_profile(self, conn: sqlite3.Connection, task_id: str, fallback: str) -> str:
+    def _worker_profile(self, conn: sqlite3.Connection, task_id: str, fallback: str = "") -> str:
         task = kb.get_task(conn, task_id)
-        return (getattr(task, "assignee", None) or fallback).strip()
+        profile = getattr(task, "assignee", None) if task is not None else None
+        return profile.strip() if isinstance(profile, str) else fallback
+
+    def _repair_worker_profile(self, conn: sqlite3.Connection, current: Any) -> str:
+        if current.admission_key is not None:
+            profile = current.repair_worker_profile
+            if not isinstance(profile, str) or not profile.strip():
+                raise ValueError("admitted project has no repair worker authority")
+            return profile.strip()
+        profile = self._worker_profile(conn, current.root_task_id)
+        if not profile:
+            raise ValueError("legacy project has no repair worker authority")
+        return profile
 
     def _route_identities(self, destination: Any) -> tuple[str, ...]:
         if destination.status != DESTINATION_FOUND or not destination.route_identity:
@@ -237,6 +250,17 @@ class ProjectFinalizationService:
     def _reconcile_checker(self, conn: sqlite3.Connection, current: Any, evaluation: ProjectEvaluation, result: ProjectFinalizationTickResult, now: int) -> ProjectFinalizationTickResult:
         if not self._owns_lock(current, now):
             return result.plus(skipped=1)
+        if current.admission_key is not None and current.sealed_evidence_required:
+            try:
+                validate_project_checker_evidence(
+                    conn,
+                    board_id=current.board_id,
+                    root_task_id=current.root_task_id,
+                    generation=current.generation,
+                    candidate_snapshot_version=evaluation.candidate_snapshot_version,
+                )
+            except ValueError as exc:
+                return result.plus(skipped=1, failure=str(exc))
         # A pending authoritative checker already owns this candidate. Its
         # completion/verdict is the only event that may advance finalization;
         # do not mint a new identity merely because evaluator time changed.
@@ -278,13 +302,25 @@ class ProjectFinalizationService:
         # branch.  The atomic registrar remains the replay fence, so no
         # synthetic repair-membership reconstruction (and no guessed identity)
         # is needed here.
-        request = ProjectRepairRequest(project=project, evaluation=evaluation, failed_task_id=evaluation.checker_task_id, failed_run_id=None, failure_envelope=envelope, project_repair_budget=current.repair_budget, task_retry_limit=current.repair_budget, existing_repairs=(), worker_profile=self._worker_profile(conn, current.root_task_id, "builder"), allowed_worker_profiles=(self._worker_profile(conn, current.root_task_id, "builder"),), task_contract=self._task_contract(conn, current.root_task_id), notification_route_identities=self._route_identities(destination), version_token=self._version_token(current, evaluation))
+        repair_profile = self._repair_worker_profile(conn, current)
+        request = ProjectRepairRequest(project=project, evaluation=evaluation, failed_task_id=evaluation.checker_task_id, failed_run_id=None, failure_envelope=envelope, project_repair_budget=current.repair_budget, task_retry_limit=current.repair_budget, existing_repairs=(), worker_profile=repair_profile, allowed_worker_profiles=(repair_profile,), task_contract=self._task_contract(conn, current.root_task_id), notification_route_identities=self._route_identities(destination), version_token=self._version_token(current, evaluation))
         routed = route_project_repair(request, register_repair=lambda action, token: register_project_repair(conn, action, token, now=now))
         return result.plus(repaired=1 if routed.outcome in {"REPAIR_CREATED", "REPAIR_ALREADY_EXISTS"} else 0, skipped=1 if routed.outcome not in {"REPAIR_CREATED", "REPAIR_ALREADY_EXISTS"} else 0)
 
     async def _finalize(self, conn: sqlite3.Connection, current: Any, evaluation: ProjectEvaluation, outcome: str, result: ProjectFinalizationTickResult, now: int) -> ProjectFinalizationTickResult:
         if not self._owns_lock(current, now):
             return result.plus(skipped=1)
+        if current.admission_key is not None and current.sealed_evidence_required:
+            try:
+                validate_project_checker_evidence(
+                    conn,
+                    board_id=current.board_id,
+                    root_task_id=current.root_task_id,
+                    generation=current.generation,
+                    candidate_snapshot_version=evaluation.candidate_snapshot_version,
+                )
+            except ValueError as exc:
+                return result.plus(skipped=1, failure=str(exc))
         frozen = freeze_terminal_candidate(
             conn,
             board_id=current.board_id,

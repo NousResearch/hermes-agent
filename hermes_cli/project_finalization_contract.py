@@ -69,6 +69,8 @@ PROJECT_FINALIZATIONS_COLS = [
     ("checker_verdict", "TEXT"),
     ("admission_key", "TEXT"),
     ("checker_profile", "TEXT"),
+    ("repair_worker_profile", "TEXT"),
+    ("sealed_evidence_required", "INTEGER NOT NULL DEFAULT 0"),
     ("notification_route_identity", "TEXT"),
     ("checker_candidate_snapshot_version", "TEXT"),
     ("checker_candidate_id", "TEXT"),
@@ -113,6 +115,8 @@ class ProjectFinalization:
     checker_verdict: Optional[str]
     admission_key: Optional[str]
     checker_profile: Optional[str]
+    repair_worker_profile: Optional[str]
+    sealed_evidence_required: bool
     notification_route_identity: Optional[str]
     checker_candidate_snapshot_version: Optional[str]
     checker_candidate_id: Optional[str]
@@ -228,6 +232,8 @@ CREATE TABLE IF NOT EXISTS project_finalizations (
     checker_verdict       TEXT,
     admission_key         TEXT,
     checker_profile       TEXT,
+    repair_worker_profile TEXT,
+    sealed_evidence_required INTEGER NOT NULL DEFAULT 0,
     notification_route_identity TEXT,
     checker_candidate_snapshot_version TEXT,
     checker_candidate_id  TEXT,
@@ -341,6 +347,22 @@ CREATE TABLE IF NOT EXISTS project_finalization_notification_routes (
     PRIMARY KEY (board_id, root_task_id, generation, platform)
 );
 
+-- Sealed checker evidence stores only bounded relative identities and hashes;
+-- file bytes remain in the worker workspace/attachment store.
+CREATE TABLE IF NOT EXISTS project_checker_evidence (
+    board_id TEXT NOT NULL,
+    root_task_id TEXT NOT NULL,
+    generation INTEGER NOT NULL,
+    candidate_snapshot_version TEXT NOT NULL,
+    task_id TEXT NOT NULL,
+    path TEXT NOT NULL,
+    sha256 TEXT NOT NULL,
+    file_set_json TEXT,
+    manifest_sha256 TEXT,
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY (board_id, root_task_id, generation, candidate_snapshot_version, task_id, path)
+);
+
 -- Queryable migration identity for HOF-002 (named marker + version row)
 CREATE TABLE IF NOT EXISTS project_finalization_meta (
     key   TEXT PRIMARY KEY,
@@ -355,6 +377,7 @@ CREATE INDEX IF NOT EXISTS idx_pmembers_task ON project_finalization_members(tas
 CREATE INDEX IF NOT EXISTS idx_pdelivery_key ON project_delivery_attempts(idempotency_key, attempt_number);
 CREATE INDEX IF NOT EXISTS idx_pfailure_root ON project_failure_envelopes(board_id, root_task_id);
 CREATE INDEX IF NOT EXISTS idx_pcleanup_root ON project_cleanup_journal(board_id, root_task_id);
+CREATE INDEX IF NOT EXISTS idx_pevidence_candidate ON project_checker_evidence(board_id, root_task_id, generation, candidate_snapshot_version);
 """
 
 
@@ -752,6 +775,8 @@ _PROJECT_FINALIZATION_COLUMNS = (
     _schema_column("checker_verdict", "checker_verdict TEXT"),
     _schema_column("admission_key", "admission_key TEXT"),
     _schema_column("checker_profile", "checker_profile TEXT"),
+    _schema_column("repair_worker_profile", "repair_worker_profile TEXT"),
+    _schema_column("sealed_evidence_required", "sealed_evidence_required INTEGER NOT NULL DEFAULT 0", not_null=True, default="0"),
     _schema_column("notification_route_identity", "notification_route_identity TEXT"),
     _schema_column("checker_candidate_snapshot_version", "checker_candidate_snapshot_version TEXT"),
     _schema_column("checker_candidate_id", "checker_candidate_id TEXT"),
@@ -857,6 +882,19 @@ _PROJECT_NOTIFICATION_ROUTE_COLUMNS = (
     _schema_column("created_at", "created_at INTEGER NOT NULL", not_null=True),
 )
 
+_PROJECT_EVIDENCE_COLUMNS = (
+    _schema_column("board_id", "board_id TEXT NOT NULL", not_null=True, primary_key_position=1),
+    _schema_column("root_task_id", "root_task_id TEXT NOT NULL", not_null=True, primary_key_position=2),
+    _schema_column("generation", "generation INTEGER NOT NULL", not_null=True, primary_key_position=3),
+    _schema_column("candidate_snapshot_version", "candidate_snapshot_version TEXT NOT NULL", not_null=True, primary_key_position=4),
+    _schema_column("task_id", "task_id TEXT NOT NULL", not_null=True, primary_key_position=5),
+    _schema_column("path", "path TEXT NOT NULL", not_null=True, primary_key_position=6),
+    _schema_column("sha256", "sha256 TEXT NOT NULL", not_null=True),
+    _schema_column("file_set_json", "file_set_json TEXT"),
+    _schema_column("manifest_sha256", "manifest_sha256 TEXT"),
+    _schema_column("created_at", "created_at INTEGER NOT NULL", not_null=True),
+)
+
 _PROJECT_META_COLUMNS = (
     _schema_column("key", "key TEXT PRIMARY KEY", primary_key_position=1),
     _schema_column("value", "value TEXT NOT NULL", not_null=True),
@@ -869,6 +907,7 @@ _TABLE_COLUMNS: dict[str, tuple[_SchemaColumn, ...]] = {
     "project_failure_envelopes": _PROJECT_FAILURE_COLUMNS,
     "project_cleanup_journal": _PROJECT_CLEANUP_COLUMNS,
     "project_finalization_notification_routes": _PROJECT_NOTIFICATION_ROUTE_COLUMNS,
+    "project_checker_evidence": _PROJECT_EVIDENCE_COLUMNS,
     "project_finalization_meta": _PROJECT_META_COLUMNS,
 }
 
@@ -892,6 +931,7 @@ _REQUIRED_INDEXES = {
     "idx_pdelivery_key": ("project_delivery_attempts", ("idempotency_key", "attempt_number")),
     "idx_pfailure_root": ("project_failure_envelopes", ("board_id", "root_task_id")),
     "idx_pcleanup_root": ("project_cleanup_journal", ("board_id", "root_task_id")),
+    "idx_pevidence_candidate": ("project_checker_evidence", ("board_id", "root_task_id", "generation", "candidate_snapshot_version")),
 }
 
 
@@ -1259,6 +1299,8 @@ def _row_to_project_finalization(row: sqlite3.Row) -> ProjectFinalization:
         checker_verdict=row["checker_verdict"],
         admission_key=row["admission_key"],
         checker_profile=row["checker_profile"],
+        repair_worker_profile=row["repair_worker_profile"],
+        sealed_evidence_required=bool(row["sealed_evidence_required"]),
         notification_route_identity=row["notification_route_identity"],
         checker_candidate_snapshot_version=row["checker_candidate_snapshot_version"],
         checker_candidate_id=row["checker_candidate_id"],

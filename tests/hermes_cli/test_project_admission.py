@@ -6,6 +6,7 @@ not depend on the gateway loop or a live Hermes profile directory.
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
@@ -24,12 +25,15 @@ from hermes_cli.project_repair_router import ProjectIdentity, ProjectVersionToke
 from hermes_cli.project_runtime_registration import (
     ADMISSION_ALREADY_ADMITTED,
     ADMISSION_CREATED,
+    DEFAULT_REPAIR_PROFILE,
     CheckerRegistrationAction,
     admit_existing_project,
     checker_registration_identity,
     notification_route_identity,
+    record_project_checker_evidence,
     register_project_checker,
     submit_project_checker_verdict,
+    validate_project_checker_evidence,
 )
 
 
@@ -56,7 +60,7 @@ def board(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     monkeypatch.setattr(
         "hermes_cli.project_runtime_registration.profile_exists",
-        lambda profile: profile == "checker-profile",
+        lambda profile: profile in {"checker-profile", "builder-gptluna"},
     )
     kb.init_db()
     conn = kb.connect()
@@ -66,13 +70,20 @@ def board(tmp_path, monkeypatch):
         conn.close()
 
 
-def _task(conn, title: str, *, assignee: str = "builder-profile", contract: dict | None = None) -> str:
+def _task(
+    conn,
+    title: str,
+    *,
+    assignee: str = "builder-profile",
+    contract: dict | None = None,
+    workspace_path: str = "C:/repo",
+) -> str:
     return kb.create_task(
         conn,
         title=title,
         assignee=assignee,
         workspace_kind="dir",
-        workspace_path="C:/repo",
+        workspace_path=workspace_path,
         contract=_contract() if contract is None else contract,
     )
 
@@ -141,6 +152,166 @@ def _evidence() -> list[dict[str, str]]:
     return [{"kind": "test", "reference": "tests/g3", "summary": "focused authority test passed"}]
 
 
+def _sealed_checker_setup(board):
+    workspace = Path.home() / "sealed-workspace"
+    workspace.mkdir()
+    root = _task(board, "sealed root", workspace_path=str(workspace))
+    implementation = _task(board, "sealed implementation", workspace_path=str(workspace))
+    kb.add_notify_sub(board, task_id=root, platform="telegram", chat_id="-100-private", thread_id="42")
+    kb.recompute_ready(board)
+    admitted = admit_existing_project(
+        board,
+        board_id="board-a",
+        root_task_id=root,
+        required_task_ids=(implementation,),
+        checker_profile="checker-profile",
+        repair_profile=DEFAULT_REPAIR_PROFILE,
+        now=100,
+    )
+    assert admitted.finalization.sealed_evidence_required is True
+    board.execute(
+        "UPDATE tasks SET status='ready' WHERE id IN (?, ?)",
+        (root, implementation),
+    )
+    assert kb.complete_task(board, root, result="root complete")
+    kb.recompute_ready(board)
+    assert kb.complete_task(board, implementation, result="implementation complete")
+    root_path = workspace / "root.txt"
+    implementation_path = workspace / "implementation.txt"
+    root_path.write_text("root evidence", encoding="utf-8")
+    implementation_path.write_text("implementation evidence", encoding="utf-8")
+    kb.add_attachment(board, root, filename=root_path.name, stored_path=str(root_path), size=root_path.stat().st_size)
+    kb.add_attachment(
+        board,
+        implementation,
+        filename=implementation_path.name,
+        stored_path=str(implementation_path),
+        size=implementation_path.stat().st_size,
+    )
+    finalization = get_project_finalization(board, board_id="board-a", root_task_id=root)
+    assert finalization is not None
+    assert acquire_finalization_lock(
+        board,
+        board_id="board-a",
+        root_task_id=root,
+        generation=1,
+        owner="test-lock",
+        lease_seconds=1000,
+        now="100",
+    )
+    evaluation = evaluate_project(
+        board, board_id="board-a", root_task_id=root, generation=1, evaluation_time=101
+    )
+    project = ProjectIdentity("project-a", "board-a", root, 1)
+    checker_identity = checker_registration_identity(
+        project,
+        candidate_snapshot_version=evaluation.candidate_snapshot_version,
+        candidate_id=evaluation.candidate_snapshot_version,
+    )
+    action = CheckerRegistrationAction(
+        project=project,
+        checker_identity=checker_identity,
+        idempotency_key=checker_identity,
+        candidate_snapshot_version=evaluation.candidate_snapshot_version,
+        candidate_id=evaluation.candidate_snapshot_version,
+        worker_profile="checker-profile",
+        task_contract=_contract(),
+        notification_route_identities=(finalization.notification_route_identity,),
+    )
+    token = ProjectVersionToken(evaluation.snapshot_version, finalization.version, "test-lock")
+    return root, implementation, root_path, implementation_path, evaluation, action, token
+
+
+def _sealed_evidence(root, implementation, root_path, implementation_path, candidate):
+    return [
+        {
+            "kind": "file",
+            "reference": root_path.name,
+            "summary": "root artifact",
+            "task_id": root,
+            "path": root_path.name,
+            "sha256": hashlib.sha256(root_path.read_bytes()).hexdigest(),
+            "candidate_snapshot_version": candidate,
+        },
+        {
+            "kind": "file",
+            "reference": implementation_path.name,
+            "summary": "implementation artifact",
+            "task_id": implementation,
+            "path": implementation_path.name,
+            "sha256": hashlib.sha256(implementation_path.read_bytes()).hexdigest(),
+            "candidate_snapshot_version": candidate,
+        },
+    ]
+
+
+def test_sealed_evidence_fails_closed_before_checker_creation_and_accepts_current_candidate(board):
+    root, implementation, root_path, implementation_path, evaluation, action, token = _sealed_checker_setup(board)
+    with pytest.raises(ValueError, match="evidence_missing"):
+        register_project_checker(board, action, token, now=101)
+
+    candidate = evaluation.candidate_snapshot_version
+    valid_root_hash = hashlib.sha256(root_path.read_bytes()).hexdigest()
+    invalid_cases = (
+        (
+            "wrong_task",
+            {
+                "kind": "file", "reference": "root.txt", "summary": "wrong task",
+                "task_id": "not-a-member", "path": "root.txt", "sha256": valid_root_hash,
+                "candidate_snapshot_version": candidate,
+            },
+        ),
+        (
+            "hash_invalid",
+            {
+                "kind": "file", "reference": "root.txt", "summary": "bad hash",
+                "task_id": root, "path": "root.txt", "sha256": "0" * 63,
+                "candidate_snapshot_version": candidate,
+            },
+        ),
+        (
+            "path_escape",
+            {
+                "kind": "file", "reference": "escape", "summary": "escaping path",
+                "task_id": root, "path": "../escape", "sha256": valid_root_hash,
+                "candidate_snapshot_version": candidate,
+            },
+        ),
+    )
+    for reason, item in invalid_cases:
+        with pytest.raises(ValueError, match=reason):
+            record_project_checker_evidence(
+                board,
+                board_id="board-a",
+                root_task_id=root,
+                generation=1,
+                candidate_snapshot_version=candidate,
+                evidence=[item],
+                now=101,
+            )
+
+    assert board.execute("SELECT COUNT(*) FROM tasks WHERE idempotency_key=?", (action.idempotency_key,)).fetchone()[0] == 0
+    evidence = _sealed_evidence(root, implementation, root_path, implementation_path, candidate)
+    assert record_project_checker_evidence(
+        board,
+        board_id="board-a",
+        root_task_id=root,
+        generation=1,
+        candidate_snapshot_version=candidate,
+        evidence=evidence,
+        now=101,
+    ) == 2
+    validate_project_checker_evidence(
+        board,
+        board_id="board-a",
+        root_task_id=root,
+        generation=1,
+        candidate_snapshot_version=candidate,
+    )
+    registered = register_project_checker(board, action, token, now=101)
+    assert registered.checker_task_id
+
+
 def test_admission_is_atomic_private_and_has_no_checker_member(board):
     root, implementation, result = _admitted(board)
 
@@ -169,6 +340,59 @@ def test_admission_exact_replay_and_conflict_are_distinct(board):
         admit_existing_project(
             board, board_id="board-a", root_task_id=root, required_task_ids=(implementation,),
             checker_profile="checker-profile", retention_days=4,
+        )
+
+
+def test_admission_persists_builder_repair_authority_and_replay_is_stable(board):
+    root, implementation, created = _admitted(board)
+    finalization = get_project_finalization(board, board_id="board-a", root_task_id=root)
+    assert finalization is not None
+    assert finalization.repair_worker_profile == DEFAULT_REPAIR_PROFILE
+
+    replay = admit_existing_project(
+        board,
+        board_id="board-a",
+        root_task_id=root,
+        required_task_ids=(implementation,),
+        checker_profile="checker-profile",
+        now=101,
+    )
+    assert replay.disposition == ADMISSION_ALREADY_ADMITTED
+    assert replay.admission_key == created.admission_key
+    assert replay.finalization.repair_worker_profile == DEFAULT_REPAIR_PROFILE
+
+    with pytest.raises(ValueError, match="repair worker authority"):
+        admit_existing_project(
+            board,
+            board_id="board-a",
+            root_task_id=root,
+            required_task_ids=(implementation,),
+            checker_profile="checker-profile",
+            repair_profile="checker-profile",
+        )
+
+
+@pytest.mark.parametrize(
+    ("persisted_profile", "error"),
+    [(None, "no durable repair worker authority"), ("missing-profile", "unavailable")],
+)
+def test_admission_replay_rejects_missing_or_unavailable_repair_authority(
+    board, persisted_profile, error
+):
+    root, implementation, _ = _admitted(board)
+    board.execute(
+        "UPDATE project_finalizations SET repair_worker_profile=? "
+        "WHERE board_id='board-a' AND root_task_id=? AND generation=1",
+        (persisted_profile, root),
+    )
+
+    with pytest.raises(ValueError, match=error):
+        admit_existing_project(
+            board,
+            board_id="board-a",
+            root_task_id=root,
+            required_task_ids=(implementation,),
+            checker_profile="checker-profile",
         )
 
 

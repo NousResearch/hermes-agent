@@ -53,7 +53,11 @@ def production_board(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     db_path = tmp_path / "kanban.db"
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    monkeypatch.setattr(runtime, "profile_exists", lambda profile: profile == CHECKER_PROFILE)
+    monkeypatch.setattr(
+        runtime,
+        "profile_exists",
+        lambda profile: profile in {CHECKER_PROFILE, "builder-gptluna"},
+    )
     kb.init_db(db_path)
     conn = kb.connect(db_path)
     try:
@@ -1122,7 +1126,13 @@ def test_repairable_verdict_rotates_authority_and_fresh_checker_can_pass(
     repair_ids = [member.task_id for member in members if member.membership_kind == "repair"]
     assert len(repair_ids) == 1
     repair_id = repair_ids[0]
-    assert kb.get_task(conn, repair_id).assignee == "builder-sol"
+    assert kb.get_task(conn, repair_id).assignee == "builder-gptluna"
+    repair_event = next(
+        event
+        for event in kb.list_events(conn, repair_id)
+        if event.kind == "project_repair_registered"
+    )
+    assert repair_event.payload["repair_worker_profile"] == "builder-gptluna"
     assert [
         member.task_id
         for member in members

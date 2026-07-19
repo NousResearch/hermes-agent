@@ -479,3 +479,25 @@ def test_candidate_digest_ignores_live_noise_but_binds_implementation_evidence(b
         board, board_id="board-a", root_task_id=root, evaluation_time=200
     )
     assert changed_assignee.candidate_snapshot_version != changed_event.candidate_snapshot_version
+
+
+def test_candidate_digest_changes_when_implementation_evidence_mutates(board):
+    root = _task(board, "root")
+    checker = _task(board, "checker")
+    project = _project(board, root=root, checker=checker)
+    _complete(board, root)
+
+    baseline = evaluate_project(
+        board, board_id="board-a", root_task_id=root, generation=project.generation, evaluation_time=100
+    )
+    kb._append_event(
+        board,
+        root,
+        "evidence_mutated",
+        {"path": "artifacts/report.md", "sha256": "a" * 64},
+    )
+    mutated = evaluate_project(
+        board, board_id="board-a", root_task_id=root, generation=project.generation, evaluation_time=100
+    )
+
+    assert mutated.candidate_snapshot_version != baseline.candidate_snapshot_version

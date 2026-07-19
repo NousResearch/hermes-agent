@@ -7066,7 +7066,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if drained:
             logger.info("Drained %d inbound message(s) queued during startup restore", drained)
 
-    async def _redeliver_pending_obligations(self) -> int:
+    async def _redeliver_pending_obligations(
+        self,
+        platform: Optional[Platform] = None,
+    ) -> int:
         """Redeliver final responses recorded in the delivery ledger by a
         previous (now dead) gateway process.
 
@@ -7093,7 +7096,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             if not ledger_enabled():
                 return 0
-            claimed = await asyncio.to_thread(sweep_recoverable)
+            available_platforms = {
+                candidate.value
+                for candidate in self.adapters
+                if platform is None or candidate == platform
+            }
+            if not available_platforms:
+                return 0
+            claimed = await asyncio.to_thread(
+                sweep_recoverable,
+                platforms=available_platforms,
+            )
         except Exception:
             logger.debug("delivery ledger sweep failed", exc_info=True)
             return 0
@@ -7468,7 +7481,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
                 bound_session_id = str((binding or {}).get("session_id") or "")
                 if bound_session_id:
-                    return bound_session_id
+                    try:
+                        canonical_session_id = await session_db.get_compression_tip(
+                            bound_session_id
+                        )
+                    except Exception:
+                        logger.debug(
+                            "Failed to resolve compression tip for Telegram topic resume binding %s",
+                            bound_session_id,
+                            exc_info=True,
+                        )
+                        canonical_session_id = bound_session_id
+                    return str(canonical_session_id or bound_session_id)
             except Exception:
                 logger.debug("Failed to resolve Telegram topic resume binding", exc_info=True)
         return session_id
@@ -8895,12 +8919,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         except Exception:
                             pass
 
-                        # A platform that was offline at gateway startup never
-                        # got its restart-interrupted sessions auto-resumed —
-                        # the startup pass skips sessions whose adapter isn't
-                        # connected yet. Now that it's back, retry the
-                        # auto-resume scoped to this platform so recovery
-                        # doesn't silently wait for a manual user message.
+                        # A platform that was offline at gateway startup may
+                        # have both completed responses waiting in the durable
+                        # delivery ledger and interrupted turns waiting to be
+                        # resumed. Redeliver completed responses first so their
+                        # resume markers are cleared before considering another
+                        # model turn for the same session.
+                        try:
+                            await self._redeliver_pending_obligations(platform=platform)
+                        except Exception:
+                            logger.debug(
+                                "pending delivery redelivery after %s reconnect failed",
+                                platform.value,
+                                exc_info=True,
+                            )
                         try:
                             await self._schedule_resume_pending_sessions(platform=platform)
                         except Exception:

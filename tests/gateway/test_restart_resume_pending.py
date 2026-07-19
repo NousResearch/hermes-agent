@@ -2128,8 +2128,10 @@ async def test_startup_auto_resume_uses_bound_dm_topic_transcript_when_present()
         {"role": "tool", "content": "partial", "timestamp": time.time() - 2},
     ])
     runner._session_db = MagicMock()
-    runner._session_db.get_telegram_topic_binding = AsyncMock(return_value={        "session_id": "bound-session",
+    runner._session_db.get_telegram_topic_binding = AsyncMock(return_value={
+        "session_id": "bound-session",
     })
+    runner._session_db.get_compression_tip = AsyncMock(return_value="bound-session")
     runner._session_db.message_count = AsyncMock(return_value=3)
     adapter.handle_message = AsyncMock()
 

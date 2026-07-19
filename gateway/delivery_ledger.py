@@ -200,7 +200,10 @@ def _update_state(obligation_id: str, state: str, error: str = "") -> None:
         )
 
 
-def sweep_recoverable(now: Optional[float] = None) -> List[Dict[str, Any]]:
+def sweep_recoverable(
+    now: Optional[float] = None,
+    platforms: Optional[set[str]] = None,
+) -> List[Dict[str, Any]]:
     """Claim undelivered rows owned by dead processes; return them for
     redelivery.
 
@@ -208,9 +211,16 @@ def sweep_recoverable(now: Optional[float] = None) -> List[Dict[str, Any]]:
     ``attempts``, so a second gateway racing the same sweep cannot
     double-claim (the UPDATE is guarded on the previous owner stamp).
     Rows over the attempts cap or older than the stale cutoff transition to
-    'abandoned' instead of being returned.
+    'abandoned' instead of being returned. When ``platforms`` is provided,
+    rows for adapters that are not connected yet remain unclaimed so the same
+    gateway process can retry them after reconnect.
     """
     now = now if now is not None else time.time()
+    eligible_platforms = (
+        {str(platform) for platform in platforms}
+        if platforms is not None
+        else None
+    )
     pid, started = _owner_stamp()
     claimed: List[Dict[str, Any]] = []
     with _DB_LOCK, _connect() as conn:
@@ -223,6 +233,8 @@ def sweep_recoverable(now: Optional[float] = None) -> List[Dict[str, Any]]:
         ).fetchall()
         for (oid, session_key, platform, chat_id, thread_id, content, state,
              attempts, created_at, owner_pid, owner_started_at) in rows:
+            if eligible_platforms is not None and platform not in eligible_platforms:
+                continue
             if _owner_alive(owner_pid, owner_started_at):
                 continue  # a live gateway still owns this row
             if attempts >= MAX_ATTEMPTS or (now - created_at) > STALE_AFTER_SECONDS:

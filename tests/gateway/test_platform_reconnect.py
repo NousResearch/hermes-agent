@@ -276,18 +276,28 @@ class TestPlatformReconnectWatcher:
 
     @pytest.mark.asyncio
     async def test_reconnect_retries_resume_pending_for_platform(self):
-        """A successful reconnect retries the startup auto-resume scoped to
-        that platform.
+        """A successful reconnect redelivers ledger rows, then auto-resumes.
 
         Regression: a platform offline at gateway startup had its
         restart-interrupted sessions skipped by the one-shot startup pass and
-        never rescheduled, so the documented auto-resume silently dropped
-        until the user sent a fresh message. The watcher now re-runs the
-        platform-scoped auto-resume on reconnect.
+        never rescheduled. Completed answers may also wait in the durable
+        delivery ledger; reclaim/redeliver those first so resume markers are
+        cleared before another model turn is considered.
         """
         runner = _make_runner()
         runner._sync_voice_mode_state_to_adapter = MagicMock()
-        runner._schedule_resume_pending_sessions = AsyncMock(return_value=1)
+        recovery_calls = []
+
+        async def redeliver(*, platform=None):
+            recovery_calls.append(("redeliver", platform))
+            return 1
+
+        async def resume(*, platform=None):
+            recovery_calls.append(("resume", platform))
+            return 1
+
+        runner._redeliver_pending_obligations = AsyncMock(side_effect=redeliver)
+        runner._schedule_resume_pending_sessions = AsyncMock(side_effect=resume)
 
         platform_config = PlatformConfig(enabled=True, token="test")
         runner._failed_platforms[Platform.TELEGRAM] = {
@@ -318,9 +328,16 @@ class TestPlatformReconnectWatcher:
                 await run_one_iteration()
 
         assert Platform.TELEGRAM in runner.adapters
+        runner._redeliver_pending_obligations.assert_awaited_once_with(
+            platform=Platform.TELEGRAM
+        )
         runner._schedule_resume_pending_sessions.assert_awaited_once_with(
             platform=Platform.TELEGRAM
         )
+        assert recovery_calls == [
+            ("redeliver", Platform.TELEGRAM),
+            ("resume", Platform.TELEGRAM),
+        ]
 
     @pytest.mark.asyncio
     async def test_reconnect_nonretryable_removed_from_queue(self):

@@ -86,6 +86,19 @@ class TestSmsFormatAndTruncate:
         assert len(chunks) > 1
         assert all(len(chunk) <= SmsAdapter.MAX_MESSAGE_LENGTH for chunk in chunks)
 
+    @pytest.mark.asyncio
+    async def test_send_chunks_at_sms_max_message_length(self):
+        adapter = self._make_adapter()
+        adapter._http_session = MagicMock()
+        adapter.truncate_message = MagicMock(return_value=[])
+        content = "x" * 5000
+
+        await adapter.send("+15551234567", content)
+
+        adapter.truncate_message.assert_called_once_with(
+            content, adapter.MAX_MESSAGE_LENGTH
+        )
+
     def test_strips_bold(self):
         adapter = self._make_adapter()
         assert adapter.format_message("**hello**") == "hello"

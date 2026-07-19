@@ -959,10 +959,21 @@ class BaseEnvironment(ABC):
         # it means the non-blocking loop itself stopped cooperating.
         drain_thread.join(timeout=2)
 
-        try:
-            proc.stdout.close()
-        except Exception:
-            pass
+        # On Windows, if the drain thread is still alive it is blocked in a
+        # ``os.read`` on the stdout fd (no ``select()`` on pipe fds there), which
+        # only unblocks when a backgrounded child that inherited the write end
+        # finally closes it.  ``proc.stdout.close()`` then serializes on the same
+        # per-fd lock via the MSVCRT machinery and blocks for the child's whole
+        # lifetime — even though bash has exited and the output is fully captured
+        # (issue #67362).  Skip the blocking close in that case: the fd is left
+        # to the daemon drain thread, which reaches EOF (or is torn down with the
+        # interpreter) and is reclaimed by GC / ``Popen.__del__``.  On POSIX this
+        # is a no-op — ``close()`` there is independent of a concurrent read.
+        if not (os.name == "nt" and drain_thread.is_alive()):
+            try:
+                proc.stdout.close()
+            except Exception:
+                pass
 
         if _DEBUG_INTERRUPT:
             logger.info(

@@ -1703,6 +1703,20 @@ def convert_tools_to_anthropic(tools: List[Dict]) -> List[Dict]:
     return result
 
 
+_ANTHROPIC_IMAGE_MEDIA_TYPES = frozenset({
+    "image/jpeg",
+    "image/png",
+    "image/gif",
+    "image/webp",
+})
+_ANTHROPIC_IMAGE_MEDIA_ALIASES = {
+    "image/jpg": "image/jpeg",
+    "image/jpe": "image/jpeg",
+    "image/jfif": "image/jpeg",
+    "image/pjpeg": "image/jpeg",
+}
+
+
 def _image_source_from_openai_url(url: str) -> Dict[str, str]:
     """Convert an OpenAI-style image URL/data URL into Anthropic image source."""
     url = str(url or "").strip()
@@ -1716,6 +1730,35 @@ def _image_source_from_openai_url(url: str) -> Dict[str, str]:
             mime_part = header[len("data:"):].split(";", 1)[0].strip()
             if mime_part.startswith("image/"):
                 media_type = mime_part
+        media_type = _ANTHROPIC_IMAGE_MEDIA_ALIASES.get(media_type, media_type)
+
+        # Anthropic validates both the declared media type and the actual
+        # bytes. Correct a stale/misreported label when magic bytes identify a
+        # supported format. For unsupported raster formats, transcode instead
+        # of pretending the unchanged payload is JPEG (which still produces a
+        # provider-side 400). Vector/corrupt inputs are rejected locally with
+        # an actionable message.
+        try:
+            import base64
+
+            raw = base64.b64decode(data, validate=True)
+        except Exception as exc:
+            raise ValueError("Anthropic image data URL contains invalid base64 data") from exc
+
+        from agent.image_routing import _sniff_mime_from_bytes, _transcode_to_png
+
+        sniffed_type = _sniff_mime_from_bytes(raw)
+        if sniffed_type in _ANTHROPIC_IMAGE_MEDIA_TYPES:
+            media_type = sniffed_type
+        elif media_type not in _ANTHROPIC_IMAGE_MEDIA_TYPES:
+            transcoded = _transcode_to_png(raw)
+            if transcoded is None:
+                raise ValueError(
+                    f"Anthropic does not support image media type {media_type!r}, "
+                    "and the image could not be converted to PNG"
+                )
+            media_type = "image/png"
+            data = base64.b64encode(transcoded).decode("ascii")
         return {
             "type": "base64",
             "media_type": media_type,

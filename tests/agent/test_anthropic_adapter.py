@@ -1,5 +1,7 @@
 """Tests for agent/anthropic_adapter.py — Anthropic Messages API adapter."""
 
+import base64
+from io import BytesIO
 import json
 import sys
 import time
@@ -926,6 +928,96 @@ class TestConvertMessages:
                 ],
             }
         ]
+
+    def test_normalizes_jpg_alias_before_anthropic_request(self):
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "input_text", "text": "Describe this image"},
+                    {
+                        "type": "input_image",
+                        "image_url": "data:image/jpg;base64,QUJD",
+                    },
+                ],
+            }
+        ]
+
+        _, result = convert_messages_to_anthropic(messages)
+
+        assert result[0]["content"][1]["source"] == {
+            "type": "base64",
+            "media_type": "image/jpeg",
+            "data": "QUJD",
+        }
+
+    def test_uses_magic_bytes_when_data_url_label_is_wrong(self):
+        png_data = (
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGNg"
+            "YAAAAAMAASsJTYQAAAAASUVORK5CYII="
+        )
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "input_text", "text": "Describe this image"},
+                    {
+                        "type": "input_image",
+                        "image_url": f"data:image/svg+xml;base64,{png_data}",
+                    },
+                ],
+            }
+        ]
+
+        _, result = convert_messages_to_anthropic(messages)
+
+        source = result[0]["content"][1]["source"]
+        assert source["media_type"] == "image/png"
+        assert source["data"] == png_data
+
+    def test_transcodes_unsupported_raster_image_to_png(self):
+        image_module = pytest.importorskip("PIL.Image")
+        buffer = BytesIO()
+        image_module.new("RGB", (1, 1), color="red").save(buffer, format="BMP")
+        bmp_data = base64.b64encode(buffer.getvalue()).decode("ascii")
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "input_text", "text": "Describe this image"},
+                    {
+                        "type": "input_image",
+                        "image_url": f"data:image/bmp;base64,{bmp_data}",
+                    },
+                ],
+            }
+        ]
+
+        _, result = convert_messages_to_anthropic(messages)
+
+        source = result[0]["content"][1]["source"]
+        assert source["media_type"] == "image/png"
+        assert base64.b64decode(source["data"]).startswith(b"\x89PNG\r\n\x1a\n")
+
+    def test_rejects_unsupported_vector_image_without_mime_spoofing(self):
+        svg_data = base64.b64encode(
+            b'<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"/>'
+        ).decode("ascii")
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "input_text", "text": "Describe this image"},
+                    {
+                        "type": "input_image",
+                        "image_url": f"data:image/svg+xml;base64,{svg_data}",
+                    },
+                ],
+            }
+        ]
+
+        with pytest.raises(ValueError, match="does not support image media type"):
+            convert_messages_to_anthropic(messages)
 
     def test_converts_tool_calls(self):
         messages = [

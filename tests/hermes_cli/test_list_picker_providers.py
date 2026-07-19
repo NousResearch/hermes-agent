@@ -293,3 +293,82 @@ def test_current_custom_endpoint_passthrough_marks_current_row(monkeypatch):
     assert row["slug"] == "custom:ollama"
     assert row["is_current"] is True
     assert row["models"] == ["glm-5.1", "qwen3"]
+
+
+# ─── model.picker hide + order preferences ─────────────────────────────
+
+
+def test_picker_hide_drops_configured_slugs(monkeypatch):
+    """model.picker.hide drops matching provider rows from the picker."""
+    base = [
+        _make_provider("anthropic", models=["claude-opus-4-7"]),
+        _make_provider("openai-api", models=["gpt-5"]),
+        _make_provider("openrouter", models=["m1"]),
+    ]
+    cfg = {"model": {"picker": {"hide": ["openai-api", "anthropic"]}}}
+    monkeypatch.setattr(model_switch, "list_authenticated_providers",
+                        lambda **kw: list(base))
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: cfg)
+    monkeypatch.setattr("hermes_cli.models.fetch_openrouter_models",
+                        lambda *a, **kw: [("m1", "M1")])
+
+    result = model_switch.list_picker_providers(max_models=50)
+
+    assert [p["slug"] for p in result] == ["openrouter"]
+
+
+def test_picker_hide_never_hides_current_provider(monkeypatch):
+    """The currently-active provider is never hidden, even if in the hide set."""
+    base = [
+        _make_provider("anthropic", models=["claude-opus-4-7"], is_current=True),
+        _make_provider("openrouter", models=["m1"]),
+    ]
+    cfg = {"model": {"picker": {"hide": ["anthropic"]}}}
+    monkeypatch.setattr(model_switch, "list_authenticated_providers",
+                        lambda **kw: list(base))
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: cfg)
+    monkeypatch.setattr("hermes_cli.models.fetch_openrouter_models",
+                        lambda *a, **kw: [("m1", "M1")])
+
+    result = model_switch.list_picker_providers(
+        current_provider="anthropic", max_models=50,
+    )
+
+    assert "anthropic" in [p["slug"] for p in result]
+
+
+def test_picker_order_front_anchors_listed_slugs(monkeypatch):
+    """model.picker.order moves listed slugs to the front; unlisted keep order."""
+    base = [
+        _make_provider("openrouter", models=["m1"]),
+        _make_provider("anthropic", models=["claude-opus-4-7"]),
+        _make_provider("gemini", models=["gemini-3-flash-preview"]),
+    ]
+    cfg = {"model": {"picker": {"order": ["anthropic", "gemini"]}}}
+    monkeypatch.setattr(model_switch, "list_authenticated_providers",
+                        lambda **kw: list(base))
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: cfg)
+    monkeypatch.setattr("hermes_cli.models.fetch_openrouter_models",
+                        lambda *a, **kw: [("m1", "M1")])
+
+    result = model_switch.list_picker_providers(max_models=50)
+
+    # listed slugs front-anchored in config order; unlisted (openrouter) trails
+    assert [p["slug"] for p in result] == ["anthropic", "gemini", "openrouter"]
+
+
+def test_picker_prefs_absent_config_is_noop(monkeypatch):
+    """No model.picker config => rows returned unchanged."""
+    base = [
+        _make_provider("openrouter", models=["m1"]),
+        _make_provider("anthropic", models=["claude-opus-4-7"]),
+    ]
+    monkeypatch.setattr(model_switch, "list_authenticated_providers",
+                        lambda **kw: list(base))
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: {})
+    monkeypatch.setattr("hermes_cli.models.fetch_openrouter_models",
+                        lambda *a, **kw: [("m1", "M1")])
+
+    result = model_switch.list_picker_providers(max_models=50)
+
+    assert [p["slug"] for p in result] == ["openrouter", "anthropic"]

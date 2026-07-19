@@ -121,6 +121,7 @@ def build_models_payload(
     refresh: bool = False,
     probe_custom_providers: bool = True,
     probe_current_custom_provider: bool = False,
+    apply_picker_prefs: bool = False,
     max_models: int | None = None,
 ) -> dict:
     """Build the ``{providers, model, provider}`` shape every consumer
@@ -165,6 +166,13 @@ def build_models_payload(
       false, still live-probe the current custom endpoint. This keeps normal
       GUI/TUI picker opens fast while making the active custom provider's model
       list match the classic CLI picker.
+    - ``apply_picker_prefs``: apply the user's ``model.picker`` config
+      (``hide`` + ``order``), exactly as the interactive CLI/Discord picker
+      (:func:`hermes_cli.model_switch.list_picker_providers`) already does. Off
+      by default so non-picker consumers see the full set; desktop/TUI picker
+      opens set it True so every picker surface honors the same config. Purely
+      cosmetic — typed ``/model <slug>/...`` and every provider stay reachable;
+      the currently-active provider is never hidden.
     """
     from hermes_cli.model_switch import list_authenticated_providers
 
@@ -247,6 +255,8 @@ def build_models_payload(
         _apply_picker_hints(rows)
     if canonical_order:
         rows = _reorder_canonical(rows)
+    if apply_picker_prefs:
+        rows = _apply_desktop_picker_prefs(rows, current_provider=ctx.current_provider)
     if pricing:
         _apply_pricing(rows, force_fresh_nous_tier=force_fresh_nous_tier)
     if capabilities:
@@ -257,6 +267,31 @@ def build_models_payload(
         "model": ctx.current_model,
         "provider": ctx.current_provider,
     }
+
+
+def _apply_desktop_picker_prefs(
+    rows: list[dict], *, current_provider: str = ""
+) -> list[dict]:
+    """Apply the interactive-picker ``model.picker`` prefs to payload rows.
+
+    Brings the desktop/TUI ``build_models_payload`` picker in line with the
+    CLI/Discord ``list_picker_providers`` picker by applying the user's
+    ``model.picker`` ``hide`` + ``order`` config. Delegates to the same
+    ``_apply_picker_preferences`` helper ``list_picker_providers`` uses, so the
+    two surfaces can never drift. Cosmetic only: the currently-active provider
+    is never hidden, and typed ``/model <slug>/...`` reaches every provider
+    regardless. Best-effort — any failure returns ``rows`` unchanged.
+    """
+    try:
+        from hermes_cli.model_switch import _apply_picker_preferences
+    except Exception:
+        return rows
+    try:
+        return _apply_picker_preferences(
+            rows, current_provider=str(current_provider or "").strip().lower()
+        )
+    except Exception:
+        return rows
 
 
 def _apply_capabilities(rows: list[dict]) -> None:

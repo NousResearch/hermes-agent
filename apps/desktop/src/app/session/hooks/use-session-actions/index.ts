@@ -258,12 +258,9 @@ export function useSessionActions({
       })
       setSessionStartedAt(null)
       setTurnStartedAt(null)
-      // The composer's model/effort/fast is sticky UI state (persisted in
-      // localStorage) — a new chat FOLLOWS your last pick instead of snapping
-      // back to the profile default, so we deliberately don't reset it here. The
-      // profile default still owns first-run seeding and profile switches (see
-      // refreshCurrentModel). Only $currentServiceTier (a live-session mirror)
-      // is cleared.
+      // Model/provider reseeding happens after this transition, once the fresh
+      // draft is ready (see useBackgroundSync). Effort/fast remain sticky UI
+      // state. Only $currentServiceTier (a live-session mirror) is cleared here.
       setCurrentServiceTier('')
       setYoloActive(false)
       setNewChatWorkspaceTarget(hasWorkspaceTarget ? workspaceTarget : undefined)

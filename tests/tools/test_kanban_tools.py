@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
@@ -1248,6 +1249,102 @@ def test_create_default_child_inherits_project_without_reusing_worktree(
         assert child.branch_name != parent.branch_name
     finally:
         conn.close()
+
+
+def test_create_cross_profile_project_children_keep_isolated_worktree_routing(
+    monkeypatch, tmp_path,
+):
+    """A shared-board worker need not duplicate the creator's projects.db."""
+    from pathlib import Path as _Path
+
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import projects_db as pdb
+    from tools import kanban_tools as kt
+
+    profile_a = tmp_path / "profiles" / "creator"
+    profile_b = tmp_path / "profiles" / "worker"
+    profile_a.mkdir(parents=True)
+    profile_b.mkdir(parents=True)
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    shared_db = tmp_path / "shared-kanban.db"
+
+    monkeypatch.setattr(_Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(shared_db))
+    monkeypatch.setenv("HERMES_HOME", str(profile_a))
+    monkeypatch.setenv("HERMES_PROFILE", "creator")
+    kb._INITIALIZED_PATHS.clear()
+    kb.init_db()
+    with pdb.connect_closing() as project_conn:
+        project_id = pdb.create_project(
+            project_conn, name="Cross Profile Project", folders=[str(repo)],
+        )
+    with kb.connect() as conn:
+        parent_id = kb.create_task(
+            conn,
+            title="parent implementation",
+            assignee="worker",
+            project_id=project_id,
+        )
+        kb.claim_task(conn, parent_id)
+        parent = kb.get_task(conn, parent_id)
+        assert parent is not None
+
+    # Dispatcher switches to profile B but pins the shared board DB. Profile B
+    # intentionally has no copy of profile A's first-class Project row.
+    monkeypatch.setenv("HERMES_HOME", str(profile_b))
+    monkeypatch.setenv("HERMES_PROFILE", "worker")
+    monkeypatch.setenv("HERMES_KANBAN_TASK", parent_id)
+    assert not (profile_b / "projects.db").exists()
+
+    def create_child(index: int) -> dict:
+        return json.loads(kt._handle_create({
+            "title": f"parallel child {index}",
+            "assignee": "peer",
+            "parents": [parent_id],
+        }))
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        children = list(pool.map(create_child, range(2)))
+
+    assert all(result["ok"] is True for result in children)
+    child_ids = [result["task_id"] for result in children]
+    with kb.connect() as conn:
+        child_tasks = [kb.get_task(conn, task_id) for task_id in child_ids]
+    for task in child_tasks:
+        assert task is not None
+        assert task.project_id == project_id
+        assert task.workspace_kind == "worktree"
+        assert task.workspace_path == str(repo / ".worktrees" / task.id)
+        assert task.workspace_path != parent.workspace_path
+        assert task.branch_name is not None
+        assert task.branch_name.startswith(f"cross-profile-project/{task.id}")
+    assert len({task.workspace_path for task in child_tasks}) == 2
+    assert len({task.branch_name for task in child_tasks}) == 2
+
+    # Nested fan-out must route from the persisted child context too, without
+    # requiring the worker profile to learn or duplicate the Project record.
+    monkeypatch.setenv("HERMES_KANBAN_TASK", child_ids[0])
+    grandchild_result = json.loads(kt._handle_create({
+        "title": "nested review",
+        "assignee": "reviewer",
+        "parents": [child_ids[0]],
+    }))
+    assert grandchild_result["ok"] is True
+    with kb.connect() as conn:
+        grandchild = kb.get_task(conn, grandchild_result["task_id"])
+    assert grandchild is not None
+    assert grandchild.project_id == project_id
+    assert grandchild.workspace_kind == "worktree"
+    assert grandchild.workspace_path == str(repo / ".worktrees" / grandchild.id)
+    assert grandchild.workspace_path not in {
+        parent.workspace_path,
+        *(task.workspace_path for task in child_tasks),
+    }
+    assert grandchild.branch_name is not None
+    assert grandchild.branch_name.startswith(
+        f"cross-profile-project/{grandchild.id}"
+    )
 
 
 def test_create_no_worker_task_stays_scratch(monkeypatch, worker_env):

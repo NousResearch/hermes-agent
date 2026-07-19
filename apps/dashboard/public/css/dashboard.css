@@ -305,21 +305,23 @@ a { color: inherit; }
 
 /* ---------- page tabs ---------- */
 .pagetabs {
-  display: flex; align-items: center; gap: 4px; flex-wrap: wrap;
-  padding: 8px 20px 0; max-width: 1680px; width: 100%; margin: 0 auto;
+  display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+  padding: 6px 20px; max-width: 1680px; width: 100%; margin: 0 auto;
+  border-bottom: 1px solid var(--hairline);
 }
 .pagetab {
-  font: inherit; font-size: 12px; letter-spacing: 0.04em;
+  font: inherit; font-size: 13px; font-weight: 600; letter-spacing: 0.03em;
   display: inline-flex; align-items: center; gap: 6px;
-  background: none; border: 1px solid transparent; border-radius: 4px 4px 0 0;
-  color: var(--muted); padding: 6px 12px; cursor: pointer;
-  border-bottom: 2px solid transparent;
+  background: var(--surface-2); border: 1px solid var(--hairline-2); border-radius: 6px;
+  color: var(--ink-2); padding: 6px 14px; cursor: pointer;
+  transition: color 120ms, background 120ms, border-color 120ms;
 }
-.pagetab:hover { color: var(--ink); }
+.pagetab:hover { color: var(--ink); background: var(--surface); border-color: var(--accent); }
 .pagetab-on {
-  color: var(--accent); border-bottom-color: var(--accent);
-  background: var(--accent-dim);
+  color: var(--accent-ink); border-color: var(--accent);
+  background: var(--accent);
 }
+.pagetab-on:hover { color: var(--accent-ink); background: var(--accent); }
 .pagetab-x { color: var(--muted); font-size: 10px; }
 .pagetab-x:hover { color: var(--danger); }
 .pagetab-add { color: var(--ink-2); border: 1px dashed var(--hairline-2); }

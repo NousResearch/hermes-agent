@@ -226,6 +226,9 @@ _EPHEMERAL_SCAFFOLDING_FLAGS = (
     "_empty_recovery_synthetic",
     "_empty_terminal_sentinel",
     "_thinking_prefill",
+    # post-tool progress-placeholder nudge (#42503): synthetic assistant
+    # placeholder turn plus the user nudge that asks the model to continue.
+    "_post_tool_placeholder_synthetic",
     # verify-on-stop and pre_verify nudges append a synthetic assistant
     # "done" plus a synthetic user nudge to keep the agent going one more
     # turn before it can claim completion. Those messages exist only to
@@ -1767,6 +1770,7 @@ class AIAgent:
             and (
                 messages[-1].get("_empty_recovery_synthetic")
                 or messages[-1].get("_empty_terminal_sentinel")
+                or messages[-1].get("_post_tool_placeholder_synthetic")
             )
         ):
             messages.pop()
@@ -3083,6 +3087,15 @@ class AIAgent:
         # healthy terminal; anything that produced a real reply is fine.
         if reason.startswith("text_response"):
             return ""
+
+        if reason == "post_tool_placeholder_response":
+            # Unlike the "No reply" cases below, the user DID get text this
+            # turn — but it was a progress note, not a result (#42503).
+            return (
+                "⚠️ Incomplete turn: the reply above looks like a progress "
+                "update, not a final result — the model stopped without "
+                "finishing the task. Send `continue` to let it keep working."
+            )
 
         prefix = "⚠️ No reply: "
         if reason == "empty_response_exhausted":

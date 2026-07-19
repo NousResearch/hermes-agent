@@ -4918,16 +4918,27 @@ def run_conversation(
                         if clean:
                             agent._vprint(f"  ┊ 💬 {clean}")
                 
-                # Pop thinking-only prefill message(s) before appending
-                # (tool-call path — same rationale as the final-response path).
+                # Pop thinking-only prefill and progress-placeholder nudge
+                # scaffolding before appending (tool-call path — same
+                # rationale as the final-response path).  Must be ONE loop
+                # over both flags: the rows can interleave (tool round →
+                # thinking-only prefill → placeholder nudge → tool calls
+                # leaves [prefill, placeholder, nudge] on the stack), and
+                # sequential single-flag loops strand whichever flag sits
+                # beneath the other — the buried row then replays as fake
+                # context on every later call.
                 _had_prefill = False
                 while (
                     messages
                     and isinstance(messages[-1], dict)
-                    and messages[-1].get("_thinking_prefill")
+                    and (
+                        messages[-1].get("_thinking_prefill")
+                        or messages[-1].get("_post_tool_placeholder_synthetic")
+                    )
                 ):
+                    if messages[-1].get("_thinking_prefill"):
+                        _had_prefill = True
                     messages.pop()
-                    _had_prefill = True
 
                 # Reset prefill counter when tool calls follow a prefill
                 # recovery.  Without this, the counter accumulates across
@@ -4943,6 +4954,9 @@ def run_conversation(
                 # flag so it can fire again if the model goes empty on
                 # a LATER tool round.
                 agent._post_tool_empty_retried = False
+                # Same fresh start for the progress-placeholder nudge
+                # (#42503): each tool round gets its own retry budget.
+                agent._post_tool_placeholder_retries = 0
 
                 previous_msg = messages[-1] if messages else None
                 current_interim_visible = agent._interim_assistant_visible_text(assistant_msg)
@@ -5394,6 +5408,7 @@ def run_conversation(
 
                 from agent.agent_runtime_helpers import (
                     intent_ack_continuation_mode,
+                    looks_like_post_tool_progress_placeholder,
                 )
 
                 _ack_mode = intent_ack_continuation_mode(agent)
@@ -5436,7 +5451,65 @@ def run_conversation(
                     length_continue_retries = 0
                 
                 final_response = agent._strip_think_blocks(final_response).strip()
-                
+
+                # ── Post-tool progress-placeholder continuation (#42503) ──
+                # After running tools, some models close the turn with a
+                # short progress note ("Working on it...", "I'll now update
+                # the file…") instead of continuing or answering.  The
+                # intermediate-ack check above deliberately skips turns that
+                # already ran tools, so without this branch the note is
+                # accepted as the final response and the task silently ends
+                # unfinished.  Nudge the model to keep going, mirroring the
+                # post-tool empty-response nudge.
+                _placeholder_final = False
+                _recent_tool_turn = any(
+                    isinstance(m, dict) and m.get("role") == "tool"
+                    for m in messages[-5:]
+                )
+                if (
+                    _recent_tool_turn
+                    and agent.valid_tool_names
+                    and looks_like_post_tool_progress_placeholder(
+                        agent, final_response
+                    )
+                ):
+                    if agent._post_tool_placeholder_retries < 2:
+                        agent._post_tool_placeholder_retries += 1
+                        logger.info(
+                            "Progress-placeholder response after tool calls "
+                            "(%r) — nudging model to continue (%d/2)",
+                            final_response[:80],
+                            agent._post_tool_placeholder_retries,
+                        )
+                        agent._buffer_status(
+                            f"↻ Model paused with a progress note — nudging "
+                            f"to continue "
+                            f"({agent._post_tool_placeholder_retries}/2)"
+                        )
+                        interim_msg = agent._build_assistant_message(
+                            assistant_message, "incomplete"
+                        )
+                        interim_msg["_post_tool_placeholder_synthetic"] = True
+                        messages.append(interim_msg)
+                        messages.append({
+                            "role": "user",
+                            "content": (
+                                "[System: Your previous message was a "
+                                "progress update, not a final answer. "
+                                "Continue the task now — run the remaining "
+                                "tool calls and reply with the final result "
+                                "once the task is actually complete.]"
+                            ),
+                            "_post_tool_placeholder_synthetic": True,
+                        })
+                        agent._session_messages = messages
+                        continue
+                    # Nudges exhausted — accept the note as the final
+                    # response, but mark the turn abnormal so the finalizer
+                    # appends a visible explanation instead of ending the
+                    # turn silently with the task unfinished.
+                    _placeholder_final = True
+
                 final_msg = agent._build_assistant_message(assistant_message, finish_reason)
 
                 # Pop thinking-only prefill and empty-response retry
@@ -5451,6 +5524,7 @@ def run_conversation(
                         messages[-1].get("_thinking_prefill")
                         or messages[-1].get("_empty_recovery_synthetic")
                         or messages[-1].get("_empty_terminal_sentinel")
+                        or messages[-1].get("_post_tool_placeholder_synthetic")
                     )
                 ):
                     messages.pop()
@@ -5609,8 +5683,11 @@ def run_conversation(
                     continue
 
                 messages.append(final_msg)
-                
-                _turn_exit_reason = f"text_response(finish_reason={finish_reason})"
+
+                if _placeholder_final:
+                    _turn_exit_reason = "post_tool_placeholder_response"
+                else:
+                    _turn_exit_reason = f"text_response(finish_reason={finish_reason})"
                 if not agent.quiet_mode:
                     agent._safe_print(f"🎉 Conversation completed after {api_call_count} OpenAI-compatible API call(s)")
                 break

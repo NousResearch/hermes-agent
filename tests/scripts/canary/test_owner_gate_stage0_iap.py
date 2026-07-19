@@ -2097,7 +2097,8 @@ def test_sealer_stage_replay_removes_stale_inode_without_following(
         elif binary == "/bin/rm":
             local_path(command[-1]).unlink(missing_ok=True)
         elif binary == "/usr/bin/dd":
-            assert "oflag=excl,nofollow" in command
+            assert "conv=excl,fsync" in command
+            assert "oflag=nofollow" in command
             destination = local_path(
                 next(item for item in command if item.startswith("of=")).split(
                     "=", 1

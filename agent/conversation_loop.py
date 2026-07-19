@@ -34,6 +34,7 @@ from agent.error_classifier import FailoverReason, classify_api_error
 from agent.iteration_budget import IterationBudget
 from agent.turn_context import build_turn_context
 from agent.turn_retry_state import TurnRetryState
+from agent.tool_dispatch_helpers import _normalize_tool_call_id
 from agent.memory_manager import build_memory_context_block
 from agent.message_sanitization import (
     close_interrupted_tool_sequence,
@@ -4742,7 +4743,7 @@ def run_conversation(
                         messages.append({
                             "role": "tool",
                             "name": tc.function.name,
-                            "tool_call_id": tc.id,
+                            "tool_call_id": _normalize_tool_call_id(tc.id),
                             "content": content,
                         })
                     continue
@@ -4842,7 +4843,7 @@ def run_conversation(
                             messages.append({
                                 "role": "tool",
                                 "name": tc.function.name,
-                                "tool_call_id": tc.id,
+                                "tool_call_id": _normalize_tool_call_id(tc.id),
                                 "content": tool_result,
                             })
                         continue

@@ -347,6 +347,41 @@ class TestMakeToolResultMessage:
         }
 
 
+    def test_composite_tool_call_id_normalized(self):
+        """Composite tool_call ids (e.g., call_xxx|fc_yyy) are normalized to
+        the short form (call_xxx) to match the id stored in assistant tool_calls.
+        This fixes the silent drop of tool results from OpenAI-compatible gateways
+        that bridge Chat Completions to the Responses API (#63000).
+        """
+        # Composite id gets normalized to short form
+        msg = make_tool_result_message("terminal", "ls output", "call_abc|fc_def")
+        assert msg["tool_call_id"] == "call_abc"
+
+        # Short ids pass through unchanged
+        msg = make_tool_result_message("terminal", "ls output", "call_xyz")
+        assert msg["tool_call_id"] == "call_xyz"
+
+        # Other fields unaffected
+        assert msg["role"] == "tool"
+        assert msg["name"] == "terminal"
+        assert msg["tool_name"] == "terminal"
+        assert msg["content"] == "ls output"
+
+    def test_normalize_tool_call_id_helper(self):
+        """The _normalize_tool_call_id helper covers all three construction paths:
+        make_tool_result_message, and both recovery branches in conversation_loop.
+        """
+        from agent.tool_dispatch_helpers import _normalize_tool_call_id
+
+        # Composite id → short form
+        assert _normalize_tool_call_id("call_abc|fc_def") == "call_abc"
+        # Plain id → unchanged
+        assert _normalize_tool_call_id("call_xyz") == "call_xyz"
+        # Non-string → unchanged (defensive)
+        assert _normalize_tool_call_id(None) is None
+        assert _normalize_tool_call_id(123) == 123
+
+
 class TestFileMutationTargets:
     def test_v4a_move_file_includes_source_and_destination(self):
         targets = _extract_file_mutation_targets(

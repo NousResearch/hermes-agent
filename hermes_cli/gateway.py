@@ -3942,6 +3942,8 @@ def _launchd_fallback_to_detached(reason: str, *, exit_on_failure: bool = True) 
 
 
 def generate_launchd_plist() -> str:
+    from xml.sax.saxutils import escape
+
     python_path = get_python_path()
     # Stable cwd anchor — never the volatile source checkout. See
     # _stable_service_working_dir() for the rationale (same rot risk applies
@@ -3978,6 +3980,14 @@ def generate_launchd_plist() -> str:
             priority_dirs + [p for p in os.environ.get("PATH", "").split(":") if p]
         )
     )
+    no_proxy_entries = [
+        entry.strip()
+        for name in ("NO_PROXY", "no_proxy")
+        for entry in os.environ.get(name, "").split(",")
+        if entry.strip()
+    ]
+    no_proxy_entries.extend(("127.0.0.1", "localhost", "::1"))
+    no_proxy = escape(",".join(dict.fromkeys(no_proxy_entries)))
 
     # Build ProgramArguments array, including --profile when using a named profile
     prog_args = [
@@ -4020,6 +4030,10 @@ def generate_launchd_plist() -> str:
         <string>{venv_dir}</string>
         <key>HERMES_HOME</key>
         <string>{hermes_home}</string>
+        <key>NO_PROXY</key>
+        <string>{no_proxy}</string>
+        <key>no_proxy</key>
+        <string>{no_proxy}</string>
     </dict>
 
     <key>LimitLoadToSessionType</key>

@@ -1,6 +1,7 @@
 """Tests for gateway service management helpers."""
 
 import os
+import plistlib
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
@@ -2605,6 +2606,45 @@ class TestProfileArg:
         assert "<key>LimitLoadToSessionType</key>" in plist
         assert "<string>Aqua</string>" in plist
         assert "<string>Background</string>" in plist
+
+    @pytest.mark.parametrize(
+        ("upper", "lower", "expected"),
+        [
+            (None, None, "127.0.0.1,localhost,::1"),
+            ("example.com", None, "example.com,127.0.0.1,localhost,::1"),
+            (None, "example.net", "example.net,127.0.0.1,localhost,::1"),
+            (
+                "shared.example,upper.example",
+                "lower.example,shared.example",
+                "shared.example,upper.example,lower.example,127.0.0.1,localhost,::1",
+            ),
+        ],
+    )
+    def test_launchd_plist_includes_loopback_no_proxy(self, monkeypatch, upper, lower, expected):
+        for name, value in (("NO_PROXY", upper), ("no_proxy", lower)):
+            if value is None:
+                monkeypatch.delenv(name, raising=False)
+            else:
+                monkeypatch.setenv(name, value)
+
+        environment = plistlib.loads(
+            gateway_cli.generate_launchd_plist().encode("utf-8")
+        )["EnvironmentVariables"]
+
+        assert environment["NO_PROXY"] == expected
+        assert environment["no_proxy"] == expected
+
+    def test_launchd_plist_escapes_no_proxy_xml_special_characters(self, monkeypatch):
+        monkeypatch.setenv("NO_PROXY", "host&name")
+        monkeypatch.setenv("no_proxy", "<local>")
+
+        environment = plistlib.loads(
+            gateway_cli.generate_launchd_plist().encode("utf-8")
+        )["EnvironmentVariables"]
+
+        expected = "host&name,<local>,127.0.0.1,localhost,::1"
+        assert environment["NO_PROXY"] == expected
+        assert environment["no_proxy"] == expected
 
     def test_launchd_plist_path_uses_real_user_home_not_profile_home(self, tmp_path, monkeypatch):
         profile_dir = tmp_path / ".hermes" / "profiles" / "orcha"

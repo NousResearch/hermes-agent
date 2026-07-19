@@ -172,6 +172,7 @@ def run_oneshot(
     model: Optional[str] = None,
     provider: Optional[str] = None,
     toolsets: object = None,
+    skills: object = None,
     usage_file: Optional[str] = None,
 ) -> int:
     """Execute a single prompt and print only the final content block.
@@ -183,6 +184,7 @@ def run_oneshot(
         provider: Optional provider override. Falls back to config.yaml's
             model.provider, then "auto".
         toolsets: Optional comma-separated string or iterable of toolsets.
+        skills: Optional comma-separated string or iterable of skills to preload.
         usage_file: Optional path; when set, a JSON usage report (estimated
             cost, token counts, model, api_calls) is written there after the
             run — even when the run fails — so pipelines can account for
@@ -216,6 +218,29 @@ def run_oneshot(
         return 2
     use_config_toolsets = _normalize_toolsets(toolsets) is None
 
+    # Parse --skills / -s flag the same way cli.py does, so
+    # ``hermes -z -s my-skill`` preloads the skill before the agent runs.
+    # Must happen BEFORE the stderr redirect so error messages reach the user.
+    skills_prompt: Optional[str] = None
+    if skills:
+        try:
+            from cli import _parse_skills_argument
+            from agent.skill_commands import build_preloaded_skills_prompt as _build_skills
+
+            parsed = _parse_skills_argument(skills)
+            if parsed:
+                sp, loaded_skills, missing_skills = _build_skills(parsed)
+                if missing_skills and not loaded_skills:
+                    sys.stderr.write(
+                        f"hermes -z: unknown skill(s): {', '.join(missing_skills)}\n"
+                    )
+                    return 2
+                if sp:
+                    skills_prompt = sp
+        except Exception as exc:
+            sys.stderr.write(f"hermes -z: failed to preload skills: {exc}\n")
+            return 2
+
     # Auto-approve any shell / tool approvals.  Non-interactive by
     # definition — a prompt would hang forever.
     os.environ["HERMES_YOLO_MODE"] = "1"
@@ -248,6 +273,7 @@ def run_oneshot(
                     provider=provider,
                     toolsets=explicit_toolsets,
                     use_config_toolsets=use_config_toolsets,
+                    skills_prompt=skills_prompt,
                 )
             except BaseException as exc:  # noqa: BLE001
                 # Capture anything that escapes the agent (including OSError
@@ -316,6 +342,7 @@ def _run_agent(
     provider: Optional[str] = None,
     toolsets: object = None,
     use_config_toolsets: bool = True,
+    skills_prompt: Optional[str] = None,
 ) -> tuple[str, dict]:
     """Build an AIAgent exactly like a normal CLI chat turn would, then
     run a single conversation.  Returns ``(final_response, run_result)``."""
@@ -412,6 +439,7 @@ def _run_agent(
         session_db=session_db,
         credential_pool=runtime.get("credential_pool"),
         fallback_model=_fb or None,
+        ephemeral_system_prompt=skills_prompt,
         # Interactive callbacks are intentionally NOT wired beyond this
         # one.  In oneshot mode there's no user sitting at a terminal:
         #   - clarify  → returns a synthetic "pick a default" instruction

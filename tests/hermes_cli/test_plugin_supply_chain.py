@@ -143,6 +143,37 @@ def test_read_provenance_lock_fails_closed_on_unsafe_content(
         read_provenance_lock(tmp_path)
 
 
+@pytest.mark.parametrize(
+    "source_url",
+    [
+        "https://github.com/owner/repo.git?token=secret",
+        "https://github.com/owner/repo.git#access_token=secret",
+    ],
+)
+def test_read_provenance_lock_rejects_source_url_query_or_fragment(
+    tmp_path: Path, source_url: str
+) -> None:
+    data = dataclasses.asdict(_provenance(source_url=source_url))
+    (tmp_path / LOCK_FILENAME).write_text(json.dumps(data), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="query or fragment"):
+        read_provenance_lock(tmp_path)
+
+
+@pytest.mark.parametrize(
+    "source_url",
+    [
+        "https://github.com/owner/repo.git?token=secret",
+        "https://github.com/owner/repo.git#access_token=secret",
+    ],
+)
+def test_write_provenance_lock_rejects_source_url_query_or_fragment(
+    tmp_path: Path, source_url: str
+) -> None:
+    with pytest.raises(ValueError, match="query or fragment"):
+        write_provenance_lock(tmp_path, _provenance(source_url=source_url))
+
+
 def test_read_provenance_lock_fails_closed_on_malformed_json(tmp_path: Path) -> None:
     (tmp_path / LOCK_FILENAME).write_text("not json", encoding="utf-8")
 

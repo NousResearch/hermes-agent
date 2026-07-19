@@ -109,6 +109,8 @@ def _validate_source_url(value: object) -> str:
     parsed = urlsplit(value)
     if parsed.username is not None or parsed.password is not None:
         raise ValueError("provenance source_url must not contain credentials")
+    if parsed.query or parsed.fragment:
+        raise ValueError("provenance source_url must not contain a query or fragment")
     return value
 
 

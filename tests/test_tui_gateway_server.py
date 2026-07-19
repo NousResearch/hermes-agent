@@ -2431,7 +2431,7 @@ def test_finalize_session_closes_slash_worker(monkeypatch):
             closed["count"] += 1
 
     monkeypatch.setattr(server, "_notify_session_boundary", lambda *a, **k: None)
-    monkeypatch.setattr(server, "_get_db", lambda: None)
+    monkeypatch.setattr(server, "_new_session_db", lambda *_a, **_k: None)
 
     session = _session(slash_worker=_FakeWorker())
 
@@ -3449,7 +3449,7 @@ def test_ensure_session_db_row_persists_explicit_cwd(monkeypatch, tmp_path):
                 {"key": key, "source": source, "model": model, "model_config": model_config, "cwd": cwd}
             )
 
-    monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
+    monkeypatch.setattr(server, "_new_session_db", lambda _session, _label: _FakeDB())
     monkeypatch.setattr(server, "_resolve_model", lambda: "test-model")
 
     server._ensure_session_db_row({"session_key": "k1", "cwd": str(tmp_path), "explicit_cwd": True})
@@ -3468,7 +3468,7 @@ def test_ensure_session_db_row_persists_session_source(monkeypatch):
                 {"key": key, "source": source, "model": model, "model_config": model_config, "cwd": cwd}
             )
 
-    monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
+    monkeypatch.setattr(server, "_new_session_db", lambda _session, _label: _FakeDB())
     monkeypatch.setattr(server, "_resolve_model", lambda: "test-model")
 
     server._ensure_session_db_row({"session_key": "k1", "source": "tool"})
@@ -3489,7 +3489,7 @@ def test_ensure_session_db_row_defaults_to_no_workspace(monkeypatch, tmp_path):
                 {"key": key, "source": source, "model": model, "model_config": model_config, "cwd": cwd}
             )
 
-    monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
+    monkeypatch.setattr(server, "_new_session_db", lambda _session, _label: _FakeDB())
     monkeypatch.setattr(server, "_resolve_model", lambda: "test-model")
 
     server._ensure_session_db_row({"session_key": "k1", "cwd": str(tmp_path)})
@@ -3516,7 +3516,7 @@ def test_ensure_session_db_row_persists_session_model_override(monkeypatch):
                 {"key": key, "model": model, "model_config": model_config, "cwd": cwd}
             )
 
-    monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
+    monkeypatch.setattr(server, "_new_session_db", lambda _session, _label: _FakeDB())
     monkeypatch.setattr(server, "_resolve_model", lambda: "global/default")
 
     server._ensure_session_db_row(
@@ -3546,12 +3546,44 @@ def test_ensure_session_db_row_no_override_uses_global(monkeypatch):
         def create_session(self, key, source=None, model=None, model_config=None, parent_session_id=None, cwd=None):
             created.append({"model": model, "model_config": model_config})
 
-    monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
+    monkeypatch.setattr(server, "_new_session_db", lambda _session, _label: _FakeDB())
     monkeypatch.setattr(server, "_resolve_model", lambda: "global/default")
 
     server._ensure_session_db_row({"session_key": "k1", "model_override": None})
 
     assert created == [{"model": "global/default", "model_config": None}]
+
+
+def test_default_session_db_row_uses_launch_home_not_cached_global(monkeypatch, tmp_path):
+    """A default-profile session row must not reuse a stale global DB handle."""
+    from hermes_state import SessionDB
+
+    launch_home = tmp_path / "launch"
+    other_home = tmp_path / "profiles" / "other"
+    launch_home.mkdir()
+    other_home.mkdir(parents=True)
+
+    stale_db = SessionDB(db_path=other_home / "state.db")
+    monkeypatch.setattr(server, "_db", stale_db)
+    monkeypatch.setattr(server, "_db_error", None)
+    monkeypatch.setattr(server, "_hermes_home", launch_home)
+
+    server._ensure_session_db_row(
+        {
+            "session_key": "default-session",
+            "profile_home": None,
+            "model_override": {"model": "test-model"},
+            "source": "desktop",
+        }
+    )
+
+    launch_db = SessionDB(db_path=launch_home / "state.db")
+    try:
+        assert launch_db.get_session("default-session") is not None
+        assert stale_db.get_session("default-session") is None
+    finally:
+        launch_db.close()
+        stale_db.close()
 
 
 def test_session_title_clears_pending_after_persist(monkeypatch):
@@ -10277,7 +10309,7 @@ def test_session_create_records_ui_model_as_session_override(monkeypatch):
         server._sessions.clear()
 
 
-def test_start_agent_build_passes_session_model_override(monkeypatch):
+def test_start_agent_build_passes_session_model_override(monkeypatch, tmp_path):
     """A model staged on the session (e.g. by session.create from the desktop
     composer) must reach _make_agent so the first build runs on it directly —
     no global config, no build-then-switch.
@@ -10293,6 +10325,7 @@ def test_start_agent_build_passes_session_model_override(monkeypatch):
 
     def fake_make_agent(sid, key, session_id=None, session_db=None, **kwargs):
         captured.update(kwargs)
+        captured["session_db"] = session_db
         return types.SimpleNamespace(model="claude-sonnet-4.6")
 
     monkeypatch.setattr(server, "_set_session_context", lambda target: [])
@@ -10306,6 +10339,9 @@ def test_start_agent_build_passes_session_model_override(monkeypatch):
     monkeypatch.setattr(server, "_start_notification_poller", lambda *a, **k: None)
     monkeypatch.setattr(server, "_notify_session_boundary", lambda *a, **k: None)
     monkeypatch.setattr(server, "_probe_config_health", lambda *_a: None)
+    launch_home = tmp_path / "launch"
+    launch_home.mkdir()
+    monkeypatch.setattr(server, "_hermes_home", launch_home)
 
     sid = "build-sid"
     override = {"model": "claude-sonnet-4.6", "provider": "anthropic"}
@@ -10326,8 +10362,11 @@ def test_start_agent_build_passes_session_model_override(monkeypatch):
         assert captured.get("model_override") == override
         assert captured.get("reasoning_config_override") == reasoning
         assert captured.get("service_tier_override") == "priority"
+        assert captured["session_db"].db_path == launch_home / "state.db"
         assert session["agent"].model == "claude-sonnet-4.6"
     finally:
+        if captured.get("session_db") is not None:
+            captured["session_db"].close()
         server._sessions.clear()
 
 

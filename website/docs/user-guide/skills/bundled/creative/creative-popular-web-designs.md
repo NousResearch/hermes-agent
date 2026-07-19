@@ -1,14 +1,14 @@
 ---
-title: "Popular Web Designs — 54 production-quality design systems extracted from real websites"
+title: "Popular Web Designs — 54 real design systems (Stripe, Linear, Vercel) as HTML/CSS"
 sidebar_label: "Popular Web Designs"
-description: "54 production-quality design systems extracted from real websites"
+description: "54 real design systems (Stripe, Linear, Vercel) as HTML/CSS"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Popular Web Designs
 
-54 production-quality design systems extracted from real websites. Load a template to generate HTML/CSS that matches the visual identity of sites like Stripe, Linear, Vercel, Notion, Airbnb, and more. Each template includes colors, typography, components, layout rules, and ready-to-use CSS values.
+54 real design systems (Stripe, Linear, Vercel) as HTML/CSS.
 
 ## Skill metadata
 
@@ -19,6 +19,7 @@ description: "54 production-quality design systems extracted from real websites"
 | Version | `1.0.0` |
 | Author | Hermes Agent + Teknium (design systems sourced from VoltAgent/awesome-design-md) |
 | License | MIT |
+| Platforms | linux, macos, windows |
 
 ## Reference: full SKILL.md
 
@@ -31,6 +32,16 @@ The following is the complete skill definition that Hermes loads when this skill
 54 real-world design systems ready for use when generating HTML/CSS. Each template captures a
 site's complete visual language: color palette, typography hierarchy, component styles, spacing
 system, shadows, responsive behavior, and practical agent prompts with exact CSS values.
+
+## Related design skills
+
+- **`claude-design`** — use for the design *process and taste* (scoping a brief,
+  producing variants, verifying a local HTML artifact, avoiding AI-design slop).
+  Pair it with this skill when the user wants a thoughtfully-designed page styled
+  after a known brand: `claude-design` drives the workflow, this skill supplies
+  the visual vocabulary.
+- **`design-md`** — use when the deliverable is a formal DESIGN.md token spec
+  file, not a rendered artifact.
 
 ## How to Use
 

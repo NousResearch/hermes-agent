@@ -7,7 +7,6 @@ from toolsets import (
     resolve_toolset,
     resolve_multiple_toolsets,
     get_all_toolsets,
-    get_toolset_names,
     validate_toolset,
     create_custom_toolset,
     get_toolset_info,
@@ -31,6 +30,21 @@ class TestGetToolset:
         ts = get_toolset("web")
         assert ts is not None
         assert "web_search" in ts["tools"]
+
+    def test_merges_registry_tools_into_builtin_toolset(self, monkeypatch):
+        reg = ToolRegistry()
+        reg.register(
+            name="web_search_plus",
+            toolset="web",
+            schema=_make_schema("web_search_plus", "Plugin web search"),
+            handler=_dummy_handler,
+        )
+
+        monkeypatch.setattr("tools.registry.registry", reg)
+
+        ts = get_toolset("web")
+        assert ts is not None
+        assert set(ts["tools"]) == {"web_search", "web_extract", "web_search_plus"}
 
     def test_unknown_returns_none(self):
         assert get_toolset("nonexistent") is None
@@ -119,9 +133,9 @@ class TestValidateToolset:
     def test_mcp_alias_uses_live_registry(self, monkeypatch):
         reg = ToolRegistry()
         reg.register(
-            name="mcp_dynserver_ping",
+            name="mcp__dynserver__ping",
             toolset="mcp-dynserver",
-            schema=_make_schema("mcp_dynserver_ping", "Ping"),
+            schema=_make_schema("mcp__dynserver__ping", "Ping"),
             handler=_dummy_handler,
         )
         reg.register_toolset_alias("dynserver", "mcp-dynserver")
@@ -130,7 +144,7 @@ class TestValidateToolset:
 
         assert validate_toolset("dynserver") is True
         assert validate_toolset("mcp-dynserver") is True
-        assert "mcp_dynserver_ping" in resolve_toolset("dynserver")
+        assert "mcp__dynserver__ping" in resolve_toolset("dynserver")
 
 
 class TestGetToolsetInfo:
@@ -231,3 +245,49 @@ class TestPluginToolsets:
         all_toolsets = get_all_toolsets()
         assert "plugin_bundle" in all_toolsets
         assert all_toolsets["plugin_bundle"]["tools"] == ["plugin_tool"]
+
+
+class TestDefaultPlatformWebSearchCoverage:
+    def test_hermes_whatsapp_toolset_includes_web_search(self):
+        assert "web_search" in resolve_toolset("hermes-whatsapp")
+
+    def test_hermes_api_server_toolset_includes_web_search(self):
+        assert "web_search" in resolve_toolset("hermes-api-server")
+
+
+class TestResolveToolsetIncludeRegistry:
+    """include_registry flag exposes the static (pre-registry-merge) view used
+    by platform reverse-mapping. Regression harness for issue #49622."""
+
+    def test_include_registry_false_excludes_registry_tools(self):
+        from tools.registry import discover_builtin_tools
+        discover_builtin_tools()  # registers read_terminal into 'terminal'
+
+        merged = set(resolve_toolset("terminal"))
+        static = set(resolve_toolset("terminal", include_registry=False))
+
+        assert static == {"terminal", "process"}, static
+        # read_terminal is registered into 'terminal' but is desktop-only and
+        # not part of the static definition — it must only appear in the merged view.
+        assert "read_terminal" in merged
+        assert "read_terminal" not in static
+
+    def test_get_toolset_include_registry_false_is_static(self):
+        ts = get_toolset("delegation", include_registry=False)
+        assert ts is not None
+        assert ts["tools"] == ["delegate_task"]
+
+    def test_static_view_threads_through_includes(self):
+        # 'debugging' has direct tools [terminal, process] and includes [web, file]
+        static = set(resolve_toolset("debugging", include_registry=False))
+        assert {"terminal", "process"} <= static
+        assert "web_search" in static
+        assert "read_file" in static
+
+    def test_all_alias_accepts_include_registry(self):
+        merged = set(resolve_toolset("all"))
+        static = set(resolve_toolset("all", include_registry=False))
+        assert static <= merged
+
+    def test_registry_only_toolset_static_view_is_empty(self):
+        assert resolve_toolset("__definitely_not_a_real_toolset__", include_registry=False) == []

@@ -1,14 +1,14 @@
 ---
-title: "Segment Anything Model — Foundation model for image segmentation with zero-shot transfer"
+title: "Segment Anything Model — SAM: zero-shot image segmentation via points, boxes, masks"
 sidebar_label: "Segment Anything Model"
-description: "Foundation model for image segmentation with zero-shot transfer"
+description: "SAM: zero-shot image segmentation via points, boxes, masks"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Segment Anything Model
 
-Foundation model for image segmentation with zero-shot transfer. Use when you need to segment any object in images using points, boxes, or masks as prompts, or automatically generate all object masks in an image.
+SAM: zero-shot image segmentation via points, boxes, masks.
 
 ## Skill metadata
 
@@ -20,6 +20,7 @@ Foundation model for image segmentation with zero-shot transfer. Use when you ne
 | Author | Orchestra Research |
 | License | MIT |
 | Dependencies | `segment-anything`, `transformers>=4.30.0`, `torch>=1.7.0` |
+| Platforms | linux, macos, windows |
 | Tags | `Multimodal`, `Image Segmentation`, `Computer Vision`, `SAM`, `Zero-Shot` |
 
 ## Reference: full SKILL.md
@@ -152,6 +153,7 @@ masks = processor.image_processor.post_process_masks(
 ### Model architecture
 
 <!-- ascii-guard-ignore -->
+<!-- ascii-guard-ignore -->
 ```
 SAM Architecture:
 ┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
@@ -162,6 +164,7 @@ SAM Architecture:
    Image Embeddings      Prompt Embeddings         Masks + IoU
    (computed once)       (per prompt)             predictions
 ```
+<!-- ascii-guard-ignore-end -->
 <!-- ascii-guard-ignore-end -->
 
 ### Model variants

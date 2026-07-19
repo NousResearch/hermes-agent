@@ -6,18 +6,24 @@ turn counting, tags), and schema completeness.
 """
 
 import json
+import os
 import re
+import stat
+import sys
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from hermes_cli.memory_setup import _CANCELLED
 from plugins.memory.hindsight import (
     HindsightMemoryProvider,
     RECALL_SCHEMA,
     REFLECT_SCHEMA,
     RETAIN_SCHEMA,
     _load_config,
+    _build_embedded_profile_env,
+    _normalize_observation_scopes,
     _normalize_retain_tags,
     _resolve_bank_id_template,
     _sanitize_bank_segment,
@@ -34,8 +40,10 @@ def _clean_env(monkeypatch):
     """Ensure no stale env vars leak between tests."""
     for key in (
         "HINDSIGHT_API_KEY", "HINDSIGHT_API_URL", "HINDSIGHT_BANK_ID",
-        "HINDSIGHT_BUDGET", "HINDSIGHT_MODE", "HINDSIGHT_LLM_API_KEY",
-        "HINDSIGHT_RETAIN_TAGS", "HINDSIGHT_RETAIN_SOURCE",
+        "HINDSIGHT_BUDGET", "HINDSIGHT_MODE", "HINDSIGHT_TIMEOUT",
+        "HINDSIGHT_IDLE_TIMEOUT", "HINDSIGHT_LLM_API_KEY",
+        "HINDSIGHT_RETAIN_TAGS", "HINDSIGHT_RETAIN_OBSERVATION_SCOPES",
+        "HINDSIGHT_RETAIN_SOURCE",
         "HINDSIGHT_RETAIN_USER_PREFIX", "HINDSIGHT_RETAIN_ASSISTANT_PREFIX",
     ):
         monkeypatch.delenv(key, raising=False)
@@ -73,6 +81,66 @@ def _make_mock_client():
     client.aretain_batch = AsyncMock()
     client.aclose = AsyncMock()
     return client
+
+
+def _provider_for_mode(tmp_path, monkeypatch, mode: str):
+    """Create an initialized provider without pre-seeding its client."""
+    config = {
+        "mode": mode,
+        "apiKey": "test-key",
+        "api_url": "http://localhost:9999",
+        "bank_id": "test-bank",
+        "budget": "mid",
+        "memory_mode": "hybrid",
+    }
+    config_path = tmp_path / "hindsight" / "config.json"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text(json.dumps(config))
+
+    monkeypatch.setattr(
+        "plugins.memory.hindsight.get_hermes_home", lambda: tmp_path
+    )
+
+    provider = HindsightMemoryProvider()
+    provider.initialize(session_id="test-session", hermes_home=str(tmp_path), platform="cli")
+    return provider
+
+
+def _assert_cloud_client_lazy_installed_before_import(tmp_path, monkeypatch, mode: str):
+    """Cloud/local-external clients must ensure lazy deps before importing."""
+    import builtins
+
+    provider = _provider_for_mode(tmp_path, monkeypatch, mode)
+    ensure_calls = []
+
+    def fake_ensure(feature, prompt=True):
+        ensure_calls.append((feature, prompt))
+
+    class FakeHindsight:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+    real_import = builtins.__import__
+
+    def guarded_import(name, globals=None, locals=None, fromlist=(), level=0):
+        if name == "hindsight_client":
+            if ensure_calls != [("memory.hindsight", False)]:
+                raise ModuleNotFoundError("No module named 'hindsight_client'")
+            return SimpleNamespace(Hindsight=FakeHindsight)
+        return real_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr("tools.lazy_deps.ensure", fake_ensure)
+    monkeypatch.setattr(builtins, "__import__", guarded_import)
+
+    client = provider._get_client()
+
+    assert ensure_calls == [("memory.hindsight", False)]
+    assert isinstance(client, FakeHindsight)
+    assert client.kwargs == {
+        "base_url": "http://localhost:9999",
+        "timeout": 120.0,
+        "api_key": "test-key",
+    }
 
 
 class _FakeSessionDB:
@@ -148,6 +216,44 @@ def test_normalize_retain_tags_accepts_json_array_string():
     assert _normalize_retain_tags(value) == ["agent:fakeassistantname", "source_system:hermes-agent"]
 
 
+def test_normalize_observation_scopes_empty_is_none():
+    assert _normalize_observation_scopes("") is None
+    assert _normalize_observation_scopes(None) is None
+    assert _normalize_observation_scopes("   ") is None
+
+
+def test_normalize_observation_scopes_keywords_pass_through():
+    assert _normalize_observation_scopes("per_tag") == "per_tag"
+    assert _normalize_observation_scopes("combined") == "combined"
+    assert _normalize_observation_scopes(" all_combinations ") == "all_combinations"
+
+
+def test_normalize_observation_scopes_unknown_keyword_is_none():
+    assert _normalize_observation_scopes("nonsense") is None
+
+
+def test_normalize_observation_scopes_json_list_of_lists():
+    value = json.dumps([["user:alice"], ["team:eng"], ["user:alice", "team:eng"]])
+    assert _normalize_observation_scopes(value) == [
+        ["user:alice"],
+        ["team:eng"],
+        ["user:alice", "team:eng"],
+    ]
+
+
+def test_normalize_observation_scopes_flat_list_is_single_scope():
+    assert _normalize_observation_scopes(["user:alice", "team:eng"]) == [
+        ["user:alice", "team:eng"]
+    ]
+
+
+def test_normalize_observation_scopes_list_of_lists():
+    assert _normalize_observation_scopes([["user:alice"], ["team:eng"]]) == [
+        ["user:alice"],
+        ["team:eng"],
+    ]
+
+
 # ---------------------------------------------------------------------------
 # Schema tests
 # ---------------------------------------------------------------------------
@@ -186,6 +292,14 @@ class TestSchemas:
 
 
 class TestConfig:
+    def test_cloud_client_lazy_installs_dependency_before_import(self, tmp_path, monkeypatch):
+        _assert_cloud_client_lazy_installed_before_import(tmp_path, monkeypatch, "cloud")
+
+    def test_local_external_client_lazy_installs_dependency_before_import(self, tmp_path, monkeypatch):
+        _assert_cloud_client_lazy_installed_before_import(
+            tmp_path, monkeypatch, "local_external"
+        )
+
     def test_default_values(self, provider):
         assert provider._auto_retain is True
         assert provider._auto_recall is True
@@ -193,10 +307,43 @@ class TestConfig:
         assert provider._recall_max_tokens == 4096
         assert provider._recall_max_input_chars == 800
         assert provider._tags is None
+        assert provider._observation_scopes is None
         assert provider._recall_tags is None
+        # Default recall narrowed to observation-only; world/experience are
+        # aggregate facts that often crowd out concrete-event signal during
+        # auto-recall. Users opt back in via the recall_types config key.
+        assert provider._recall_types == ["observation"]
         assert provider._bank_mission == ""
         assert provider._bank_retain_mission is None
         assert provider._retain_context == "conversation between Hermes Agent and the User"
+
+    def test_recall_types_default_is_observation_only(self, provider):
+        """Auto-recall must filter to observation by default."""
+        assert provider._recall_types == ["observation"]
+
+    def test_recall_types_explicit_list_overrides_default(self, provider_with_config):
+        p = provider_with_config(recall_types=["world", "experience", "observation"])
+        assert p._recall_types == ["world", "experience", "observation"]
+
+    def test_recall_types_csv_string_accepted(self, provider_with_config):
+        """For parity with recall_tags, comma-separated strings work too."""
+        p = provider_with_config(recall_types="observation, world")
+        assert p._recall_types == ["observation", "world"]
+
+    def test_recall_types_empty_list_falls_back_to_default(self, provider_with_config):
+        """An empty list shouldn't disable the filter (would be wider than default)."""
+        p = provider_with_config(recall_types=[])
+        assert p._recall_types == ["observation"]
+
+    def test_observation_scopes_keyword_config(self, provider_with_config):
+        p = provider_with_config(observation_scopes="per_tag")
+        assert p._observation_scopes == "per_tag"
+
+    def test_observation_scopes_custom_list_config(self, provider_with_config):
+        p = provider_with_config(
+            observation_scopes=[["user:alice"], ["team:eng"]]
+        )
+        assert p._observation_scopes == [["user:alice"], ["team:eng"]]
 
     def test_custom_config_values(self, provider_with_config):
         p = provider_with_config(
@@ -251,8 +398,108 @@ class TestConfig:
         assert cfg["banks"]["hermes"]["bankId"] == "env-bank"
         assert cfg["banks"]["hermes"]["budget"] == "high"
 
+    def test_embedded_profile_env_includes_idle_timeout_from_config(self):
+        env = _build_embedded_profile_env({
+            "llm_provider": "openai",
+            "llm_model": "gpt-4o-mini",
+            "idle_timeout": 0,
+        })
+
+        assert env["HINDSIGHT_EMBED_DAEMON_IDLE_TIMEOUT"] == "0"
+
+    def test_embedded_profile_env_includes_idle_timeout_from_env(self, monkeypatch):
+        monkeypatch.setenv("HINDSIGHT_IDLE_TIMEOUT", "42")
+
+        env = _build_embedded_profile_env({
+            "llm_provider": "openai",
+            "llm_model": "gpt-4o-mini",
+        })
+
+        assert env["HINDSIGHT_EMBED_DAEMON_IDLE_TIMEOUT"] == "42"
+
+    def test_get_client_passes_idle_timeout_to_hindsight_embedded(self, monkeypatch):
+        captured = {}
+
+        class FakeHindsightEmbedded:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+        monkeypatch.setitem(sys.modules, "hindsight", SimpleNamespace(HindsightEmbedded=FakeHindsightEmbedded))
+        monkeypatch.setattr("plugins.memory.hindsight._check_local_runtime", lambda: (True, ""))
+
+        p = HindsightMemoryProvider()
+        p._mode = "local_embedded"
+        p._config = {
+            "profile": "hermes",
+            "llm_provider": "openai_compatible",
+            "llm_api_key": "test-key",
+            "llm_model": "test-model",
+            "idle_timeout": 0,
+        }
+        p._llm_base_url = "http://localhost:8060/v1"
+
+        p._get_client()
+
+        assert captured["idle_timeout"] == 0
+        assert captured["llm_provider"] == "openai"
+
 
 class TestPostSetup:
+    def test_setup_cancel_at_mode_picker_writes_nothing(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / "hermes-home"
+        user_home = tmp_path / "user-home"
+        user_home.mkdir()
+        monkeypatch.setenv("HOME", str(user_home))
+        monkeypatch.setattr("plugins.memory.hindsight.get_hermes_home", lambda: hermes_home)
+
+        save_config = MagicMock()
+        which = MagicMock(return_value="/usr/bin/uv")
+        run = MagicMock()
+        monkeypatch.setattr("hermes_cli.memory_setup._curses_select", lambda *args, **kwargs: _CANCELLED)
+        monkeypatch.setattr("shutil.which", which)
+        monkeypatch.setattr("subprocess.run", run)
+        monkeypatch.setattr("builtins.input", MagicMock(side_effect=AssertionError("prompt should not run")))
+        monkeypatch.setattr("getpass.getpass", MagicMock(side_effect=AssertionError("prompt should not run")))
+        monkeypatch.setattr("hermes_cli.config.save_config", save_config)
+
+        provider = HindsightMemoryProvider()
+        provider.post_setup(str(hermes_home), {"memory": {"provider": "builtin"}})
+
+        save_config.assert_not_called()
+        which.assert_not_called()
+        run.assert_not_called()
+        assert not (hermes_home / ".env").exists()
+        assert not (hermes_home / "hindsight" / "config.json").exists()
+        assert not (user_home / ".hindsight" / "profiles" / "hermes.env").exists()
+
+    def test_local_embedded_setup_cancel_at_llm_picker_writes_nothing(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / "hermes-home"
+        user_home = tmp_path / "user-home"
+        user_home.mkdir()
+        monkeypatch.setenv("HOME", str(user_home))
+        monkeypatch.setattr("plugins.memory.hindsight.get_hermes_home", lambda: hermes_home)
+
+        selections = iter([1, _CANCELLED])  # local_embedded, then cancel LLM picker
+        save_config = MagicMock()
+        which = MagicMock(return_value="/usr/bin/uv")
+        run = MagicMock()
+        monkeypatch.setattr("hermes_cli.memory_setup._curses_select", lambda *args, **kwargs: next(selections))
+        monkeypatch.setattr("shutil.which", which)
+        monkeypatch.setattr("subprocess.run", run)
+        monkeypatch.setattr("builtins.input", MagicMock(side_effect=AssertionError("prompt should not run")))
+        monkeypatch.setattr("getpass.getpass", MagicMock(side_effect=AssertionError("prompt should not run")))
+        monkeypatch.setattr("hermes_cli.config.save_config", save_config)
+
+        provider = HindsightMemoryProvider()
+        provider.post_setup(str(hermes_home), {"memory": {"provider": "builtin"}})
+
+        save_config.assert_not_called()
+        which.assert_not_called()
+        run.assert_not_called()
+        assert not (hermes_home / ".env").exists()
+        assert not (hermes_home / "hindsight" / "config.json").exists()
+        assert not (user_home / ".hindsight" / "profiles" / "hermes.env").exists()
+
     def test_local_embedded_setup_materializes_profile_env(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / "hermes-home"
         user_home = tmp_path / "user-home"
@@ -272,7 +519,10 @@ class TestPostSetup:
         provider.post_setup(str(hermes_home), {"memory": {}})
 
         assert saved_configs[-1]["memory"]["provider"] == "hindsight"
-        assert (hermes_home / ".env").read_text() == "HINDSIGHT_LLM_API_KEY=sk-local-test\nHINDSIGHT_TIMEOUT=120\n"
+        env_text = (hermes_home / ".env").read_text()
+        assert "HINDSIGHT_LLM_API_KEY=sk-local-test\n" in env_text
+        assert "HINDSIGHT_TIMEOUT=120\n" in env_text
+        assert "HINDSIGHT_IDLE_TIMEOUT=300\n" in env_text
 
         profile_env = user_home / ".hindsight" / "profiles" / "hermes.env"
         assert profile_env.exists()
@@ -281,6 +531,7 @@ class TestPostSetup:
             "HINDSIGHT_API_LLM_API_KEY=sk-local-test\n"
             "HINDSIGHT_API_LLM_MODEL=gpt-4o-mini\n"
             "HINDSIGHT_API_LOG_LEVEL=info\n"
+            "HINDSIGHT_EMBED_DAEMON_IDLE_TIMEOUT=300\n"
         )
 
     def test_local_embedded_setup_respects_existing_profile_name(self, tmp_path, monkeypatch):
@@ -332,6 +583,55 @@ class TestPostSetup:
         assert "HINDSIGHT_API_LLM_API_KEY=existing-key\n" in profile_env.read_text()
 
 
+    def test_local_embedded_setup_blank_inputs_preserve_existing_config(self, tmp_path, monkeypatch):
+        """Pressing Enter through setup should keep existing Hindsight values."""
+        hermes_home = tmp_path / "hermes-home"
+        user_home = tmp_path / "user-home"
+        user_home.mkdir()
+        monkeypatch.setenv("HOME", str(user_home))
+        monkeypatch.setattr("plugins.memory.hindsight.get_hermes_home", lambda: hermes_home)
+
+        existing_config = {
+            "mode": "local_embedded",
+            "llm_provider": "openai_compatible",
+            "llm_base_url": "http://192.168.1.161:8060/v1",
+            "llm_api_key": "9913",
+            "llm_model": "gemma-4-26B-A4B-it-heretic-oQ4",
+            "bank_id": "hermes",
+            "recall_budget": "mid",
+            "idle_timeout": 0,
+            "HINDSIGHT_EMBED_DAEMON_IDLE_TIMEOUT": "0",
+            "HINDSIGHT_API_CONSOLIDATION_LLM_BATCH_SIZE": "1",
+            "timeout": 120,
+        }
+        provider = HindsightMemoryProvider()
+        provider.save_config(existing_config, str(hermes_home))
+
+        # Simulate pressing Enter at the mode and LLM-provider pickers, which
+        # should select their current values, and pressing Enter at text prompts.
+        monkeypatch.setattr("hermes_cli.memory_setup._curses_select", lambda *args, **kwargs: kwargs.get("default", 0))
+        monkeypatch.setattr("shutil.which", lambda name: None)
+        monkeypatch.setattr("builtins.input", lambda prompt="": "")
+        monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+        monkeypatch.setattr("getpass.getpass", lambda prompt="": "")
+        monkeypatch.setattr("hermes_cli.config.save_config", lambda cfg: None)
+
+        provider = HindsightMemoryProvider()
+        provider.post_setup(str(hermes_home), {"memory": {}})
+
+        saved = json.loads((hermes_home / "hindsight" / "config.json").read_text())
+        assert saved["mode"] == "local_embedded"
+        assert saved["llm_provider"] == "openai_compatible"
+        assert saved["llm_base_url"] == "http://192.168.1.161:8060/v1"
+        assert saved["llm_api_key"] == "9913"
+        assert saved["llm_model"] == "gemma-4-26B-A4B-it-heretic-oQ4"
+        assert saved["idle_timeout"] == 0
+        assert saved["HINDSIGHT_EMBED_DAEMON_IDLE_TIMEOUT"] == "0"
+        assert saved["HINDSIGHT_API_CONSOLIDATION_LLM_BATCH_SIZE"] == "1"
+        assert saved["timeout"] == 120
+
+
+
 # ---------------------------------------------------------------------------
 # Tool handler tests
 # ---------------------------------------------------------------------------
@@ -343,16 +643,20 @@ class TestToolHandlers:
             "hindsight_retain", {"content": "user likes dark mode"}
         ))
         assert result["result"] == "Memory stored successfully."
-        provider._client.aretain.assert_called_once()
-        call_kwargs = provider._client.aretain.call_args.kwargs
+        provider._client.aretain_batch.assert_called_once()
+        call_kwargs = provider._client.aretain_batch.call_args.kwargs
         assert call_kwargs["bank_id"] == "test-bank"
-        assert call_kwargs["content"] == "user likes dark mode"
+        item = call_kwargs["items"][0]
+        assert item["content"] == "user likes dark mode"
+        # bank_id/retain_async are call-level args, never item keys.
+        assert "bank_id" not in item
+        assert "retain_async" not in item
 
     def test_retain_with_tags(self, provider_with_config):
         p = provider_with_config(retain_tags=["pref", "ui"])
         p.handle_tool_call("hindsight_retain", {"content": "likes dark mode"})
-        call_kwargs = p._client.aretain.call_args.kwargs
-        assert call_kwargs["tags"] == ["pref", "ui"]
+        item = p._client.aretain_batch.call_args.kwargs["items"][0]
+        assert item["tags"] == ["pref", "ui"]
 
     def test_retain_merges_per_call_tags_with_config_tags(self, provider_with_config):
         p = provider_with_config(retain_tags=["pref", "ui"])
@@ -360,13 +664,24 @@ class TestToolHandlers:
             "hindsight_retain",
             {"content": "likes dark mode", "tags": ["client:x", "ui"]},
         )
-        call_kwargs = p._client.aretain.call_args.kwargs
-        assert call_kwargs["tags"] == ["pref", "ui", "client:x"]
+        item = p._client.aretain_batch.call_args.kwargs["items"][0]
+        assert item["tags"] == ["pref", "ui", "client:x"]
 
     def test_retain_without_tags(self, provider):
         provider.handle_tool_call("hindsight_retain", {"content": "hello"})
-        call_kwargs = provider._client.aretain.call_args.kwargs
-        assert "tags" not in call_kwargs
+        item = provider._client.aretain_batch.call_args.kwargs["items"][0]
+        assert "tags" not in item
+
+    def test_retain_passes_observation_scopes(self, provider_with_config):
+        p = provider_with_config(observation_scopes="per_tag")
+        p.handle_tool_call("hindsight_retain", {"content": "likes dark mode"})
+        item = p._client.aretain_batch.call_args.kwargs["items"][0]
+        assert item["observation_scopes"] == "per_tag"
+
+    def test_retain_omits_observation_scopes_by_default(self, provider):
+        provider.handle_tool_call("hindsight_retain", {"content": "hello"})
+        item = provider._client.aretain_batch.call_args.kwargs["items"][0]
+        assert "observation_scopes" not in item
 
     def test_retain_missing_content(self, provider):
         result = json.loads(provider.handle_tool_call(
@@ -432,7 +747,7 @@ class TestToolHandlers:
         assert "error" in result
 
     def test_retain_error_handling(self, provider):
-        provider._client.aretain.side_effect = RuntimeError("connection failed")
+        provider._client.aretain_batch.side_effect = RuntimeError("connection failed")
         result = json.loads(provider.handle_tool_call(
             "hindsight_retain", {"content": "test"}
         ))
@@ -445,6 +760,28 @@ class TestToolHandlers:
             "hindsight_recall", {"query": "test"}
         ))
         assert "error" in result
+
+    def test_local_embedded_recall_reconnects_after_idle_shutdown(self, provider, monkeypatch):
+        first_client = _make_mock_client()
+        first_client.arecall.side_effect = RuntimeError("Cannot connect to host 127.0.0.1:8888")
+        second_client = _make_mock_client()
+        second_client.arecall.return_value = SimpleNamespace(
+            results=[SimpleNamespace(text="Recovered memory")]
+        )
+        clients = iter([first_client, second_client])
+
+        provider._mode = "local_embedded"
+        provider._client = first_client
+        monkeypatch.setattr(provider, "_get_client", lambda: next(clients))
+
+        result = json.loads(provider.handle_tool_call(
+            "hindsight_recall", {"query": "test"}
+        ))
+
+        assert result["result"] == "1. Recovered memory"
+        assert provider._client is second_client
+        first_client.arecall.assert_called_once()
+        second_client.arecall.assert_called_once()
 
 
 # ---------------------------------------------------------------------------
@@ -546,7 +883,7 @@ class TestSyncTurn:
         p._client = _make_mock_client()
 
         p.sync_turn("hello", "hi there")
-        p._sync_thread.join(timeout=5.0)
+        p._retain_queue.join()
 
         p._client.aretain_batch.assert_called_once()
         call_kwargs = p._client.aretain_batch.call_args.kwargs
@@ -587,8 +924,7 @@ class TestSyncTurn:
     def test_sync_turn_with_tags(self, provider_with_config):
         p = provider_with_config(retain_tags=["conv", "session1"])
         p.sync_turn("hello", "hi")
-        if p._sync_thread:
-            p._sync_thread.join(timeout=5.0)
+        p._retain_queue.join()
         item = p._client.aretain_batch.call_args.kwargs["items"][0]
         assert "conv" in item["tags"]
         assert "session1" in item["tags"]
@@ -597,8 +933,7 @@ class TestSyncTurn:
     def test_sync_turn_uses_aretain_batch(self, provider):
         """sync_turn should use aretain_batch with retain_async."""
         provider.sync_turn("hello", "hi")
-        if provider._sync_thread:
-            provider._sync_thread.join(timeout=5.0)
+        provider._retain_queue.join()
         provider._client.aretain_batch.assert_called_once()
         call_kwargs = provider._client.aretain_batch.call_args.kwargs
         assert call_kwargs["document_id"].startswith("test-session-")
@@ -609,8 +944,7 @@ class TestSyncTurn:
     def test_sync_turn_custom_context(self, provider_with_config):
         p = provider_with_config(retain_context="my-agent")
         p.sync_turn("hello", "hi")
-        if p._sync_thread:
-            p._sync_thread.join(timeout=5.0)
+        p._retain_queue.join()
         item = p._client.aretain_batch.call_args.kwargs["items"][0]
         assert item["context"] == "my-agent"
 
@@ -621,7 +955,7 @@ class TestSyncTurn:
         p.sync_turn("turn2-user", "turn2-asst")
         assert p._sync_thread is None
         p.sync_turn("turn3-user", "turn3-asst")
-        p._sync_thread.join(timeout=5.0)
+        p._retain_queue.join()
         p._client.aretain_batch.assert_called_once()
         call_kwargs = p._client.aretain_batch.call_args.kwargs
         assert call_kwargs["document_id"].startswith("test-session-")
@@ -636,34 +970,78 @@ class TestSyncTurn:
         assert item["metadata"]["turn_index"] == "3"
         assert item["metadata"]["message_count"] == "6"
 
-    def test_sync_turn_accumulates_full_session(self, provider_with_config):
-        """Each retain sends the ENTIRE session, not just the latest batch."""
+    def test_sync_turn_accumulates_full_session_without_append_support(self, provider_with_config):
+        """Legacy/overwrite APIs (no update_mode=append) resend the ENTIRE session each retain."""
         p = provider_with_config(retain_every_n_turns=2)
 
         p.sync_turn("turn1-user", "turn1-asst")
         p.sync_turn("turn2-user", "turn2-asst")
-        if p._sync_thread:
-            p._sync_thread.join(timeout=5.0)
+        p._retain_queue.join()
 
         p._client.aretain_batch.reset_mock()
 
         p.sync_turn("turn3-user", "turn3-asst")
         p.sync_turn("turn4-user", "turn4-asst")
-        if p._sync_thread:
-            p._sync_thread.join(timeout=5.0)
+        p._retain_queue.join()
 
         content = p._client.aretain_batch.call_args.kwargs["items"][0]["content"]
-        # Should contain ALL turns from the session
+        # Without append support the document is overwritten, so it must
+        # contain ALL turns from the session.
         assert "turn1-user" in content
         assert "turn2-user" in content
         assert "turn3-user" in content
         assert "turn4-user" in content
 
+    def test_sync_turn_appends_only_delta_when_append_supported(self, provider_with_config, monkeypatch):
+        """On append-capable APIs each retain ships only the new turns, not the whole session."""
+        monkeypatch.setattr(
+            "plugins.memory.hindsight._fetch_hindsight_api_version",
+            lambda *a, **kw: "0.5.6",
+        )
+        from plugins.memory.hindsight import _append_capability_cache, _append_capability_lock
+        # Clear before AND after: the capability cache is module-global and keyed
+        # per api_url, so a stale entry would leak into other tests.
+        with _append_capability_lock:
+            _append_capability_cache.clear()
+        try:
+            p = provider_with_config(retain_every_n_turns=2)
+
+            p.sync_turn("turn1-user", "turn1-asst")
+            p.sync_turn("turn2-user", "turn2-asst")
+            p._retain_queue.join()
+
+            first = p._client.aretain_batch.call_args.kwargs
+            first_item = first["items"][0]
+            assert first["document_id"] == "test-session"
+            assert first_item["update_mode"] == "append"
+            assert "turn1-user" in first_item["content"]
+            assert "turn2-user" in first_item["content"]
+
+            p._client.aretain_batch.reset_mock()
+
+            p.sync_turn("turn3-user", "turn3-asst")
+            p.sync_turn("turn4-user", "turn4-asst")
+            p._retain_queue.join()
+
+            second = p._client.aretain_batch.call_args.kwargs
+            second_item = second["items"][0]
+            assert second["document_id"] == "test-session"
+            assert second_item["update_mode"] == "append"
+            # Only the delta — the already-retained turns must NOT be resent.
+            assert "turn1-user" not in second_item["content"]
+            assert "turn2-user" not in second_item["content"]
+            assert "turn3-user" in second_item["content"]
+            assert "turn4-user" in second_item["content"]
+            # message_count reflects only the delta (2 turns -> 4 messages).
+            assert second_item["metadata"]["message_count"] == "4"
+        finally:
+            with _append_capability_lock:
+                _append_capability_cache.clear()
+
     def test_sync_turn_passes_document_id(self, provider):
         """sync_turn should pass document_id (session_id + per-startup ts)."""
         provider.sync_turn("hello", "hi")
-        if provider._sync_thread:
-            provider._sync_thread.join(timeout=5.0)
+        provider._retain_queue.join()
         call_kwargs = provider._client.aretain_batch.call_args.kwargs
         # Format: {session_id}-{YYYYMMDD_HHMMSS_microseconds}
         assert call_kwargs["document_id"].startswith("test-session-")
@@ -696,8 +1074,7 @@ class TestSyncTurn:
     def test_sync_turn_session_tag(self, provider):
         """Each retain should be tagged with session:<id> for filtering."""
         provider.sync_turn("hello", "hi")
-        if provider._sync_thread:
-            provider._sync_thread.join(timeout=5.0)
+        provider._retain_queue.join()
         item = provider._client.aretain_batch.call_args.kwargs["items"][0]
         assert "session:test-session" in item["tags"]
 
@@ -718,8 +1095,7 @@ class TestSyncTurn:
         )
         p._client = _make_mock_client()
         p.sync_turn("hello", "hi")
-        if p._sync_thread:
-            p._sync_thread.join(timeout=5.0)
+        p._retain_queue.join()
 
         item = p._client.aretain_batch.call_args.kwargs["items"][0]
         assert "session:child-session" in item["tags"]
@@ -728,15 +1104,14 @@ class TestSyncTurn:
     def test_sync_turn_error_does_not_raise(self, provider):
         provider._client.aretain_batch.side_effect = RuntimeError("network error")
         provider.sync_turn("hello", "hi")
-        if provider._sync_thread:
-            provider._sync_thread.join(timeout=5.0)
+        provider._retain_queue.join()
 
     def test_sync_turn_preserves_unicode(self, provider_with_config):
         """Non-ASCII text (CJK, ZWJ emoji) must survive JSON round-trip intact."""
         p = provider_with_config()
         p._client = _make_mock_client()
         p.sync_turn("안녕 こんにちは 你好", "👨‍👩‍👧‍👦 family")
-        p._sync_thread.join(timeout=5.0)
+        p._retain_queue.join()
         p._client.aretain_batch.assert_called_once()
         item = p._client.aretain_batch.call_args.kwargs["items"][0]
         # ensure_ascii=False means non-ASCII chars appear as-is in the raw JSON,
@@ -746,6 +1121,319 @@ class TestSyncTurn:
         assert "こんにちは" in raw_json
         assert "你好" in raw_json
         assert "👨‍👩‍👧‍👦" in raw_json
+
+
+# ---------------------------------------------------------------------------
+# Shutdown / writer tests
+# ---------------------------------------------------------------------------
+
+
+class TestShutdownRace:
+    def test_sync_turn_uses_single_writer_thread(self, provider):
+        """All retains run through one long-lived writer thread."""
+        provider.sync_turn("a", "b")
+        provider._retain_queue.join()
+        first_writer = provider._writer_thread
+        assert first_writer is not None
+        assert first_writer.is_alive()
+
+        provider.sync_turn("c", "d")
+        provider._retain_queue.join()
+        # Same thread reused — no ad-hoc thread per call.
+        assert provider._writer_thread is first_writer
+        assert provider._client.aretain_batch.call_count == 2
+
+    def test_sync_turn_after_shutdown_is_dropped(self, provider):
+        """Once shutdown has fired, new sync_turn() calls are no-ops.
+
+        This is the core of the fix: the plugin must not enqueue a retain
+        during interpreter teardown — that's what causes the
+        'cannot schedule new futures' RuntimeError + unclosed aiohttp
+        sessions on CLI exit.
+        """
+        client = provider._client
+        provider.shutdown()
+        before_calls = client.aretain_batch.call_count
+        provider.sync_turn("late", "turn")
+        # No new enqueue — the retain queue stays empty.
+        assert provider._retain_queue.empty()
+        # And no new client call (would be impossible anyway since shutdown
+        # nulled self._client; we assert via the captured handle).
+        assert client.aretain_batch.call_count == before_calls
+
+    def test_queue_prefetch_after_shutdown_is_dropped(self, provider):
+        provider.shutdown()
+        provider.queue_prefetch("late query")
+        assert provider._prefetch_thread is None
+
+    def test_shutdown_drains_pending_retains(self, provider):
+        """Shutdown must wait for queued retains to complete, not abandon them.
+
+        Otherwise the LAST in-flight turn — typically the most important —
+        is silently lost.
+        """
+        client = provider._client
+        provider.sync_turn("a", "b")
+        provider.sync_turn("c", "d")
+        provider.shutdown()
+        # Both retains drained before shutdown returned.
+        assert client.aretain_batch.call_count == 2
+        assert provider._retain_queue.empty()
+
+    def test_shutdown_is_idempotent(self, provider):
+        provider.sync_turn("a", "b")
+        provider.shutdown()
+        # Second shutdown shouldn't blow up or re-close the client.
+        provider.shutdown()
+        assert provider._shutting_down.is_set()
+
+
+# ---------------------------------------------------------------------------
+# on_session_switch — flush + prefetch reset behavior
+# ---------------------------------------------------------------------------
+
+
+class TestSessionSwitchBufferFlush:
+    def test_buffered_turns_flushed_before_clear(self, provider_with_config):
+        """retain_every_n_turns > 1 must not silently drop partial buffers
+        on session switch. Whatever's in _session_turns at switch time
+        should land in the OLD document under the OLD session id."""
+        p = provider_with_config(retain_every_n_turns=3, retain_async=False)
+        old_doc = p._document_id
+
+        # Two turns buffered, no retain yet (boundary is at turn 3). The
+        # writer hasn't been started either — sync_turn's early return
+        # skips _ensure_writer when no retain is due.
+        p.sync_turn("turn1-user", "turn1-asst")
+        p.sync_turn("turn2-user", "turn2-asst")
+        assert p._sync_thread is None
+        p._client.aretain_batch.assert_not_called()
+
+        # Switch — flush should fire under OLD document_id via the writer queue.
+        p.on_session_switch("new-sid", parent_session_id="test-session", reset=True)
+        p._retain_queue.join()
+
+        p._client.aretain_batch.assert_called_once()
+        kw = p._client.aretain_batch.call_args.kwargs
+        assert kw["document_id"] == old_doc
+        item = kw["items"][0]
+        # Both buffered turns must be present in the flushed payload.
+        content = json.loads(item["content"])
+        flat = json.dumps(content)
+        assert "turn1-user" in flat
+        assert "turn2-user" in flat
+        # Old session id must appear in lineage tags / metadata.
+        assert "session:test-session" in item["tags"]
+        assert item["metadata"]["session_id"] == "test-session"
+
+        # And the new session must start with a clean slate.
+        assert p._session_id == "new-sid"
+        assert p._session_turns == []
+        assert p._turn_counter == 0
+        assert p._document_id != old_doc
+        assert p._document_id.startswith("new-sid-")
+
+    def test_no_flush_when_buffer_empty(self, provider):
+        """Switch with no buffered turns must not fire a spurious retain."""
+        provider.on_session_switch("new-sid")
+        # Nothing enqueued — join is immediate.
+        provider._retain_queue.join()
+        provider._client.aretain_batch.assert_not_called()
+        assert provider._session_id == "new-sid"
+
+    def test_prefetch_result_cleared_on_switch(self, provider):
+        """Stale recall text from the old session must not leak into the
+        next session's first prefetch read."""
+        provider._prefetch_result = "old-session recall: User likes Rust"
+        provider.on_session_switch("new-sid")
+        assert provider._prefetch_result == ""
+        # And subsequent prefetch() should now report empty, not the leftover.
+        assert provider.prefetch("anything") == ""
+
+    def test_in_flight_prefetch_thread_drained_on_switch(self, provider, monkeypatch):
+        """on_session_switch must wait for an in-flight prefetch from the
+        old session to settle before clearing _prefetch_result, otherwise
+        the thread can race and re-populate the field after the clear."""
+        import threading
+
+        gate = threading.Event()
+        finished = threading.Event()
+
+        def _slow_prefetch():
+            gate.wait(timeout=5.0)
+            with provider._prefetch_lock:
+                provider._prefetch_result = "old-session recall"
+            finished.set()
+
+        provider._prefetch_thread = threading.Thread(target=_slow_prefetch, daemon=True)
+        provider._prefetch_thread.start()
+
+        # Release the prefetch worker so it writes _prefetch_result, then
+        # call on_session_switch — it must join the thread before clearing.
+        gate.set()
+        provider.on_session_switch("new-sid")
+
+        assert finished.is_set(), "switch returned before prefetch thread settled"
+        assert provider._prefetch_result == ""
+
+    def test_flush_serializes_behind_pending_retains_via_writer_queue(
+        self, provider_with_config
+    ):
+        """The flush closure must ride the same _retain_queue sync_turn
+        uses, so it lands FIFO behind any still-queued old-session
+        retains rather than racing them on a separate thread.
+
+        Regression guard: an earlier draft spawned a raw threading.Thread
+        for flush, overwriting _sync_thread and racing the writer against
+        the same document_id.
+        """
+        import threading as _threading
+
+        p = provider_with_config(retain_every_n_turns=2, retain_async=False)
+
+        # Block the first writer job until we've enqueued the flush
+        # behind it. This proves ordering — the flush MUST wait.
+        gate = _threading.Event()
+        call_order: list[str] = []
+
+        def _aretain_batch_tracking(**kw):
+            idx = kw["items"][0]["metadata"].get("turn_index", "")
+            call_order.append(str(idx))
+            if idx == "2":
+                # First retain blocks until we've enqueued the flush.
+                gate.wait(timeout=5.0)
+
+        p._client.aretain_batch = AsyncMock(side_effect=_aretain_batch_tracking)
+
+        # Turn 1+2 → boundary hit → retain enqueued (will block).
+        p.sync_turn("turn1-user", "turn1-asst")
+        p.sync_turn("turn2-user", "turn2-asst")
+
+        # One more buffered turn so flush has something to land.
+        p.sync_turn("turn3-user", "turn3-asst")
+
+        # Switch while the first retain is still blocked on `gate`.
+        p.on_session_switch("new-sid", parent_session_id="test-session")
+
+        # Release the first retain. Flush must have been enqueued
+        # BEHIND it, and run second.
+        gate.set()
+        p._retain_queue.join()
+
+        # The flush carries all buffered turns; sync_turn's retain #2
+        # carried the batch at boundary time. Two distinct calls.
+        assert p._client.aretain_batch.call_count == 2
+        # First call landed while buffer was [t1, t2]; flush landed
+        # after we added t3. So the second call must be strictly after.
+        assert call_order[0] == "2"
+        # Flush retain has turn_index matching the buffered count at
+        # switch time (3 turns accumulated, _turn_index was set to 3
+        # by the last sync_turn).
+        assert call_order[1] == "3"
+
+
+# ---------------------------------------------------------------------------
+# update_mode='append' capability probe + retain dispatch
+# ---------------------------------------------------------------------------
+
+
+class TestUpdateModeAppendCapability:
+    def _clear_capability_cache(self):
+        from plugins.memory.hindsight import _append_capability_cache, _append_capability_lock
+        with _append_capability_lock:
+            _append_capability_cache.clear()
+
+    def test_legacy_api_falls_back_to_per_process_doc_id(self, provider, monkeypatch):
+        """API returns no /version (or pre-0.5.0) — sync_turn must use the
+        per-process unique doc_id and NOT pass update_mode."""
+        self._clear_capability_cache()
+        monkeypatch.setattr(
+            "plugins.memory.hindsight._fetch_hindsight_api_version",
+            lambda *a, **kw: None,
+        )
+        old_doc = provider._document_id
+        provider.sync_turn("hello", "hi")
+        provider._retain_queue.join()
+
+        kw = provider._client.aretain_batch.call_args.kwargs
+        assert kw["document_id"] == old_doc
+        assert kw["document_id"].startswith("test-session-")
+        item = kw["items"][0]
+        assert "update_mode" not in item
+
+    def test_modern_api_uses_stable_doc_id_with_append(self, provider, monkeypatch):
+        """API on >=0.5.0 — retain uses stable session_id and sets update_mode='append'."""
+        self._clear_capability_cache()
+        monkeypatch.setattr(
+            "plugins.memory.hindsight._fetch_hindsight_api_version",
+            lambda *a, **kw: "0.5.6",
+        )
+        provider.sync_turn("hello", "hi")
+        provider._retain_queue.join()
+
+        kw = provider._client.aretain_batch.call_args.kwargs
+        # Stable: just the session id, no per-process timestamp suffix.
+        assert kw["document_id"] == "test-session"
+        item = kw["items"][0]
+        assert item["update_mode"] == "append"
+
+    def test_capability_cached_per_url(self, provider, monkeypatch):
+        """The /version probe must run at most once per (process, api_url)."""
+        self._clear_capability_cache()
+        calls = {"n": 0}
+
+        def _spy(*a, **kw):
+            calls["n"] += 1
+            return "0.5.6"
+
+        monkeypatch.setattr(
+            "plugins.memory.hindsight._fetch_hindsight_api_version", _spy
+        )
+        provider.sync_turn("a", "b")
+        provider._retain_queue.join()
+        provider.sync_turn("c", "d")
+        provider._retain_queue.join()
+        assert calls["n"] == 1
+
+    def test_legacy_warning_emitted_once(self, provider, monkeypatch, caplog):
+        """One-time WARN nudges users to upgrade Hindsight."""
+        import logging
+        self._clear_capability_cache()
+        monkeypatch.setattr(
+            "plugins.memory.hindsight._fetch_hindsight_api_version",
+            lambda *a, **kw: "0.4.22",
+        )
+        with caplog.at_level(logging.WARNING, logger="plugins.memory.hindsight"):
+            provider.sync_turn("a", "b")
+            provider._retain_queue.join()
+            provider.sync_turn("c", "d")
+            provider._retain_queue.join()
+        warns = [r for r in caplog.records
+                 if r.levelno == logging.WARNING
+                 and "older than 0.5.0" in r.getMessage()]
+        # Cache hit on the second call → no second warn.
+        assert len(warns) == 1
+
+    def test_session_switch_flush_picks_capability_against_old_session(
+        self, provider_with_config, monkeypatch
+    ):
+        """When the API supports append, the flush on /reset must land
+        in the OLD session's stable document, not a per-process id."""
+        self._clear_capability_cache()
+        monkeypatch.setattr(
+            "plugins.memory.hindsight._fetch_hindsight_api_version",
+            lambda *a, **kw: "0.5.6",
+        )
+        p = provider_with_config(retain_every_n_turns=3, retain_async=False)
+        p.sync_turn("turn1-user", "turn1-asst")
+        p.sync_turn("turn2-user", "turn2-asst")
+        p.on_session_switch("new-sid", parent_session_id="test-session", reset=True)
+        p._retain_queue.join()
+
+        kw = p._client.aretain_batch.call_args.kwargs
+        # Flush goes to the OLD session's stable doc, not new-sid's.
+        assert kw["document_id"] == "test-session"
+        assert kw["items"][0]["update_mode"] == "append"
 
 
 # ---------------------------------------------------------------------------
@@ -1102,3 +1790,32 @@ class TestSharedEventLoopLifecycle:
 
         mock_client.aclose.assert_called_once()
         assert provider._client is None
+
+
+class TestShutdown:
+    def test_local_embedded_shutdown_closes_inner_async_client_on_shared_loop(self, provider):
+        inner_client = _make_mock_client()
+        embedded = MagicMock()
+        embedded._client = inner_client
+        embedded.close = MagicMock()
+
+        provider._mode = "local_embedded"
+        provider._client = embedded
+
+        provider.shutdown()
+
+        inner_client.aclose.assert_awaited_once()
+        embedded.close.assert_called_once()
+        assert embedded._client is None
+        assert provider._client is None
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX mode bits not enforced on Windows")
+def test_save_config_sets_owner_only_permissions(tmp_path):
+    """hindsight/config.json must be written with 0o600 so API key is not world-readable."""
+    provider = HindsightMemoryProvider()
+    provider.save_config({"api_key": "hd-test-key"}, str(tmp_path))
+    config_file = tmp_path / "hindsight" / "config.json"
+    assert config_file.exists()
+    mode = stat.S_IMODE(config_file.stat().st_mode)
+    assert mode == 0o600, f"Expected 0o600 (owner-only), got {oct(mode)}"

@@ -20,6 +20,7 @@ Expert guidance for Fully Sharded Data Parallel training with PyTorch FSDP - par
 | Author | Orchestra Research |
 | License | MIT |
 | Dependencies | `torch>=2.0`, `transformers` |
+| Platforms | linux, macos |
 | Tags | `Distributed Training`, `PyTorch`, `FSDP`, `Data Parallel`, `Sharding`, `Mixed Precision`, `CPU Offloading`, `FSDP2`, `Large-Scale Training` |
 
 ## Reference: full SKILL.md

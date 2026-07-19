@@ -29,6 +29,12 @@ describe('terminalParityHints', () => {
     const readFile = vi.fn().mockResolvedValue(
       JSON.stringify([
         {
+          key: 'cmd+c',
+          command: 'workbench.action.terminal.sendSequence',
+          when: 'terminalFocus && terminalTextSelected',
+          args: { text: '\u001b[99;13u' }
+        },
+        {
           key: 'shift+enter',
           command: 'workbench.action.terminal.sendSequence',
           when: 'terminalFocus',

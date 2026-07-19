@@ -21,7 +21,7 @@ class StubAdapter(BasePlatformAdapter):
     def __init__(self):
         super().__init__(PlatformConfig(enabled=True, token="test"), Platform.TELEGRAM)
 
-    async def connect(self):
+    async def connect(self, *, is_reconnect: bool = False):
         return True
 
     async def disconnect(self):
@@ -103,6 +103,7 @@ class TestInterruptKeyConsistency:
     async def test_handle_message_stores_under_session_key(self):
         """handle_message stores pending messages under session_key, not chat_id."""
         adapter = StubAdapter()
+        adapter._busy_text_mode = ""
         adapter.set_message_handler(lambda event: asyncio.sleep(0, result=None))
 
         source = _source("-1001234", "group")
@@ -120,8 +121,8 @@ class TestInterruptKeyConsistency:
         # NOT stored under chat_id
         assert source.chat_id not in adapter._pending_messages
 
-        # Interrupt event was set
-        assert adapter._active_sessions[session_key].is_set()
+        # Text follow-ups queue silently and do not interrupt the active turn.
+        assert adapter._active_sessions[session_key].is_set() is False
 
     @pytest.mark.asyncio
     async def test_photo_followup_is_queued_without_interrupt(self):

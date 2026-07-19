@@ -1,5 +1,5 @@
 import { useSyncExternalStore } from "react";
-import { Loader2 } from "lucide-react";
+import { Spinner } from "@nous-research/ui/ui/components/spinner";
 import {
   getPluginComponent,
   getPluginLoadError,
@@ -35,7 +35,7 @@ export function PluginPage({ name }: { name: string }) {
       <div
         className={cn(
           "max-w-lg p-4",
-          "font-mondwest text-sm tracking-[0.08em] text-midground/80",
+          "font-mondwest text-sm tracking-[0.08em] text-text-secondary",
         )}
         role="alert"
       >
@@ -48,10 +48,10 @@ export function PluginPage({ name }: { name: string }) {
     <div
       className={cn(
         "flex items-center gap-2 p-4",
-        "font-mondwest text-sm tracking-[0.1em] text-midground/60",
+        "font-mondwest text-sm tracking-[0.1em] text-text-tertiary",
       )}
     >
-      <Loader2 className="h-4 w-4 shrink-0 animate-spin" aria-hidden />
+      <Spinner className="shrink-0" />
       <span>{t.common.loading}</span>
     </div>
   );

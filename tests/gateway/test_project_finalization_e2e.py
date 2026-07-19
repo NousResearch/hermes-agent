@@ -335,6 +335,21 @@ def test_repairable_verdict_rotates_authority_and_fresh_checker_can_pass(
         now=510,
     )
 
+    # Even in the narrow verdict-to-repair window, implementation authority
+    # may not be reassigned to the persisted checker profile.
+    assert kb.assign_task(conn, root, CHECKER_PROFILE)
+    fenced_tick = asyncio.run(service.tick(board_id=BOARD))
+    assert fenced_tick.repaired == 0
+    assert fenced_tick.failures
+    assert not [
+        member
+        for member in list_project_members(
+            conn, board_id=BOARD, root_task_id=root, generation=1
+        )
+        if member.membership_kind == "repair"
+    ]
+    assert kb.assign_task(conn, root, "builder-sol")
+
     repair_tick = asyncio.run(service.tick(board_id=BOARD))
     assert repair_tick.repaired == 1
     repairing = get_project_finalization(

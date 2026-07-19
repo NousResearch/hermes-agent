@@ -507,6 +507,15 @@ def register_project_repair(
         project_row = _project_row(conn, action.project.board_id, action.project.root_task_id, action.project.generation)
         if project_row is None:
             return AtomicRepairRegistration(REGISTRATION_STALE_SNAPSHOT)
+        if project_row["admission_key"] is not None:
+            try:
+                repair_profile = normalize_profile_name(action.worker_profile)
+            except ValueError:
+                repair_profile = action.worker_profile.strip().lower()
+            if repair_profile == project_row["checker_profile"]:
+                raise ValueError(
+                    "repair worker profile must remain independent from checker authority"
+                )
 
         existing = _task_for_identity(conn, action.idempotency_key)
         if existing is not None:

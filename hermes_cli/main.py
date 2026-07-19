@@ -9719,7 +9719,10 @@ def cmd_update(args):
     _update_io_state = _install_hangup_protection(gateway_mode=gateway_mode)
     try:
         request = UpdateRequest(args=args, gateway_mode=gateway_mode)
-        NativeUpdateEngine(legacy_runner=_run_legacy_native_update).run(request)
+        NativeUpdateEngine(
+            legacy_runner=_run_legacy_native_update,
+            update_lock_identity=str(PROJECT_ROOT),
+        ).run(request)
     finally:
         _finalize_update_output(_update_io_state)
 

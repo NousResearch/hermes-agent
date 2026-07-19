@@ -7,6 +7,7 @@ import {
   formatTranslation,
   normalizeLocale,
   persistConfiguredLocale,
+  readConfiguredLocaleChange,
   resolveNavLabel,
   resolveTranslationOverlay,
   resolveTranslations,
@@ -150,6 +151,59 @@ describe("Dashboard i18n framework", () => {
     await persistConfiguredLocale("zh");
 
     expect(save).toHaveBeenCalledWith({ display: { language: "zh" } });
+  });
+
+  it("skips the full config read while its lightweight revision is unchanged", async () => {
+    vi.spyOn(api, "getConfigRevision").mockResolvedValue({
+      mtime_ns: 10,
+      path: "/profile/config.yaml",
+      size: 20,
+    });
+    const getConfig = vi
+      .spyOn(api, "getConfig")
+      .mockResolvedValue({ display: { language: "zh" } });
+
+    const first = await readConfiguredLocaleChange(null);
+    const second = await readConfiguredLocaleChange(first.revision);
+
+    expect(getConfig).toHaveBeenCalledTimes(1);
+    expect(first.locale).toBe("zh");
+    expect(second).toEqual({ locale: null, revision: first.revision });
+  });
+
+  it("returns a stable changed locale and defers a concurrently changing config", async () => {
+    const getRevision = vi
+      .spyOn(api, "getConfigRevision")
+      .mockResolvedValueOnce({
+        mtime_ns: 11,
+        path: "/profile/config.yaml",
+        size: 20,
+      })
+      .mockResolvedValueOnce({
+        mtime_ns: 11,
+        path: "/profile/config.yaml",
+        size: 20,
+      })
+      .mockResolvedValueOnce({
+        mtime_ns: 12,
+        path: "/profile/config.yaml",
+        size: 21,
+      })
+      .mockResolvedValueOnce({
+        mtime_ns: 13,
+        path: "/profile/config.yaml",
+        size: 22,
+      });
+    vi.spyOn(api, "getConfig").mockResolvedValue({
+      display: { language: "zh" },
+    });
+
+    const stable = await readConfiguredLocaleChange("old");
+    const changing = await readConfiguredLocaleChange(stable.revision);
+
+    expect(stable.locale).toBe("zh");
+    expect(changing).toEqual({ locale: null, revision: stable.revision });
+    expect(getRevision).toHaveBeenCalledTimes(4);
   });
 
   it("interpolates named placeholders independent of language word order", () => {

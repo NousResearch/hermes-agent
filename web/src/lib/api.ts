@@ -475,6 +475,10 @@ export const api = {
     ),
   getConfig: (profile = getManagementProfile()) =>
     fetchJSON<Record<string, unknown>>(appendProfileParam("/api/config", profile)),
+  getConfigRevision: (profile = getManagementProfile()) =>
+    fetchJSON<ConfigRevisionResponse>(
+      appendProfileParam("/api/config/revision", profile),
+    ),
   getDefaults: () => fetchJSON<Record<string, unknown>>("/api/config/defaults"),
   getSchema: () => fetchJSON<{ fields: Record<string, unknown>; category_order: string[] }>("/api/config/schema"),
   getModelInfo: (profile = getManagementProfile()) =>
@@ -1820,6 +1824,12 @@ export interface StatusResponse {
   latest_config_version: number;
   release_date: string;
   version: string;
+}
+
+export interface ConfigRevisionResponse {
+  mtime_ns: number;
+  path: string;
+  size: number;
 }
 
 export interface SessionInfo {

@@ -102,6 +102,34 @@ class TestProfileScopedConfig:
         resp = client.get("/api/config/raw")
         assert resp.json()["path"] == str(isolated_profiles["default"] / "config.yaml")
 
+    def test_config_revision_is_lightweight_and_profile_scoped(self, client, isolated_profiles):
+        before = client.get(
+            "/api/config/revision", params={"profile": "worker_beta"}
+        ).json()
+        assert before["path"] == str(
+            isolated_profiles["worker_beta"] / "config.yaml"
+        )
+
+        resp = client.put(
+            "/api/config",
+            json={
+                "config": {"display": {"language": "zh"}},
+                "profile": "worker_beta",
+            },
+        )
+        assert resp.status_code == 200
+
+        after = client.get(
+            "/api/config/revision", params={"profile": "worker_beta"}
+        ).json()
+        assert (after["mtime_ns"], after["size"]) != (
+            before["mtime_ns"],
+            before["size"],
+        )
+        assert client.get("/api/config/revision").json()["path"] == str(
+            isolated_profiles["default"] / "config.yaml"
+        )
+
     def test_unknown_profile_404(self, client, isolated_profiles):
         resp = client.get("/api/config", params={"profile": "ghost"})
         assert resp.status_code == 404

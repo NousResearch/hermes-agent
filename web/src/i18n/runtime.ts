@@ -7,7 +7,11 @@ import {
   normalizeLocaleInput,
 } from "@hermes/shared/locale-registry";
 
-import { api } from "../lib/api";
+import {
+  api,
+  getManagementProfile,
+  type ConfigRevisionResponse,
+} from "../lib/api";
 import { af } from "./af";
 import { de } from "./de";
 import { en } from "./en";
@@ -145,6 +149,46 @@ export function readConfiguredLocale(
   const display = config.display;
   if (!display || typeof display !== "object") return null;
   return normalizeLocale((display as Record<string, unknown>).language);
+}
+
+function configRevisionSignature(revision: ConfigRevisionResponse): string {
+  return JSON.stringify([revision.path, revision.mtime_ns, revision.size]);
+}
+
+export interface ConfiguredLocaleChange {
+  locale: Locale | null;
+  revision: string | null;
+}
+
+/** 只在配置文件确实变化后读取完整配置，并拒绝应用并发写入期间的快照。 */
+export async function readConfiguredLocaleChange(
+  previousRevision: string | null,
+): Promise<ConfiguredLocaleChange> {
+  const profile = getManagementProfile();
+  const observed = await api.getConfigRevision(profile);
+  const observedSignature = configRevisionSignature(observed);
+
+  if (observedSignature === previousRevision) {
+    return { locale: null, revision: previousRevision };
+  }
+
+  const config = await api.getConfig(profile);
+  const confirmed = await api.getConfigRevision(profile);
+  const confirmedSignature = configRevisionSignature(confirmed);
+
+  // A writer changed config between the metadata and content reads. Keep the
+  // last-good revision so the next poll retries instead of applying stale UI.
+  if (
+    confirmedSignature !== observedSignature ||
+    getManagementProfile() !== profile
+  ) {
+    return { locale: null, revision: previousRevision };
+  }
+
+  return {
+    locale: readConfiguredLocale(config),
+    revision: confirmedSignature,
+  };
 }
 
 /** Resolve an optional plugin nav key without reading inherited object properties. */

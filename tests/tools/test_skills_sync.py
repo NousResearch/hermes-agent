@@ -1130,6 +1130,41 @@ class TestResetBundledSkill:
                 if p.exists():
                     os.chmod(p, stat.S_IRWXU)
 
+    def test_rmtree_writable_preserves_group_perms_on_parent(self, tmp_path):
+        """#67496: _rmtree_writable must merge owner-write into the existing
+        mode instead of replacing it. A skills root at 0750 (group-traversable)
+        must stay at 0750 after a retry that chmods the parent dir."""
+        import os
+        import stat
+
+        # Only POSIX has meaningful group/other permission bits.
+        if os.name != "posix":
+            pytest.skip("POSIX-only permission test")
+
+        skills_root = tmp_path / "skills"
+        dest = skills_root / "productivity" / "testskill"
+        dest.mkdir(parents=True)
+        (dest / "SKILL.md").write_text("# content\n")
+
+        # Set the skills root to 0750 (group-traversable).
+        os.chmod(skills_root, stat.S_IRWXU | stat.S_IRGRP | stat.S_IXGRP)
+
+        # Make a child read-only so rmtree triggers the retry path.
+        ro_dir = stat.S_IRUSR | stat.S_IXUSR | stat.S_IRGRP | stat.S_IXGRP | stat.S_IROTH | stat.S_IXOTH
+        os.chmod(dest / "SKILL.md", stat.S_IREAD)
+        os.chmod(dest, ro_dir)
+
+        from tools.skills_sync import _rmtree_writable
+
+        _rmtree_writable(dest)
+
+        # Skills root must still be 0750, not 0700 (group perms preserved).
+        root_mode = stat.S_IMODE(os.stat(skills_root).st_mode)
+        expected = stat.S_IRWXU | stat.S_IRGRP | stat.S_IXGRP
+        assert root_mode == expected, (
+            f"skills root mode changed to {oct(root_mode)} (expected {oct(expected)})"
+        )
+
     def test_reset_restore_preserves_manifest_on_rmtree_failure(self, tmp_path):
         """#34972: when the user copy genuinely cannot be removed, the manifest
         entry must NOT be deleted — otherwise the skill enters a limbo state

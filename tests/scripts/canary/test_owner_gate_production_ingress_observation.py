@@ -79,7 +79,11 @@ def _systemctl_output(unit: str, **changes: str) -> bytes:
     return "".join(f"{name}={values[name]}\n" for name in properties).encode()
 
 
-def _adapted(*, dial: str = "127.0.0.1:7341", duplicate_route: bool = False) -> bytes:
+def _adapted(
+    *,
+    dial: str = ingress.LEGACY_V1_UPSTREAM,
+    duplicate_route: bool = False,
+) -> bytes:
     route: dict[str, Any] = {
         "match": [{"host": [ingress.PUBLIC_HOST]}],
         "handle": [

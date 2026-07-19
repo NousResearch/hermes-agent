@@ -5077,6 +5077,62 @@ def run_conversation(
                                 pass
                     break
 
+                # ── Assistant-turn repetition guard ────────────────────
+                # The tool guardrails above key on tool results, so they
+                # cannot see the loop where every tool call SUCCEEDS but
+                # the model keeps emitting the identical message + tool
+                # calls without progress (e.g. re-screenshotting a page
+                # that changes by a few pixels while narrating the same
+                # "verifying the scene" line indefinitely).  Detect the
+                # repeated assistant turn itself and inject a corrective
+                # user message after this round's tool results; with
+                # ``repetition_guard.abort_enabled`` set, continued
+                # repetition after the nudge ends the turn cleanly.
+                _rep_action = "ok"
+                try:
+                    _rep_guard = getattr(agent, "_repetition_guard", None)
+                    if _rep_guard is not None:
+                        _rep_action = _rep_guard.observe(assistant_msg)
+                except Exception:
+                    logger.debug("repetition guard check failed", exc_info=True)
+                    _rep_action = "ok"
+
+                if _rep_action == "abort":
+                    _turn_exit_reason = "repetition_guard_abort"
+                    final_response = (
+                        "I stopped this run: the last several steps repeated "
+                        "the same action without making progress, even after "
+                        "a corrective notice. The session history is "
+                        "preserved — you can resume with new instructions or "
+                        "narrow the task."
+                    )
+                    agent._emit_status(
+                        "⚠️ Repetition guard ended the turn: identical steps kept repeating"
+                    )
+                    messages.append({"role": "assistant", "content": final_response})
+                    agent._safe_print(f"\n{final_response}\n")
+                    if agent.stream_delta_callback:
+                        try:
+                            agent.stream_delta_callback(final_response)
+                            agent.stream_delta_callback(None)
+                        except Exception:
+                            pass
+                    break
+                if _rep_action == "nudge":
+                    from agent.repetition_guard import REPETITION_NUDGE_MESSAGE
+                    messages.append({
+                        "role": "user",
+                        "content": REPETITION_NUDGE_MESSAGE,
+                        "_repetition_guard_synthetic": True,
+                    })
+                    agent._session_messages = messages
+                    logger.info(
+                        "repetition guard nudge issued (identical assistant turn repeated)"
+                    )
+                    agent._emit_status(
+                        "⚠️ Repeated identical steps detected — nudging the model to change approach"
+                    )
+
                 # Reset per-turn retry counters after successful tool
                 # execution so a single truncation doesn't poison the
                 # entire conversation.

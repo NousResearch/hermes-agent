@@ -27,6 +27,7 @@ from hermes_cli.env_loader import load_hermes_dotenv
 from utils import is_truthy_value
 from tools.environments.local import hermes_subprocess_env
 from agent.replay_cleanup import sanitize_replay_history
+from agent.prompt_builder import format_steer_marker as _format_steer_marker
 from tui_gateway import git_probe
 from tui_gateway.transport import (
     StdioTransport,
@@ -5447,6 +5448,13 @@ def _handle_busy_submit(rid, sid: str, session: dict, text: Any, transport: Any)
             pass  # fall through to queue
     if mode != "queue" and agent is not None and hasattr(agent, "interrupt"):
         try:
+            # Inject the user's message as an OOB steer so the model sees it
+            # immediately in the running tool-result stream — before the turn
+            # winds down — rather than only as the next-turn user message.
+            # This is the "hard interrupt acknowledgment" behaviour: the agent
+            # cannot miss the message even mid-tool-chain.
+            if hasattr(agent, "steer"):
+                agent.steer(_format_steer_marker(text))
             agent.interrupt()
         except Exception:
             pass

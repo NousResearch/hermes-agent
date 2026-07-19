@@ -93,7 +93,7 @@ describe('useModelControls', () => {
     expect(getCurrentModelSource()).toBe('default')
   })
 
-  it('does not clobber the active session footer state with global model info', async () => {
+  it('does not clobber the active session footer state even when force-reseeded', async () => {
     setCurrentModel('deepseek/deepseek-v4-pro')
     setCurrentProvider('deepseek')
     $activeSessionId.set('runtime-1')
@@ -109,7 +109,7 @@ describe('useModelControls', () => {
       })
     )
 
-    await result.current.refreshCurrentModel()
+    await result.current.refreshCurrentModel(true)
 
     expect($currentModel.get()).toBe('deepseek/deepseek-v4-pro')
     expect($currentProvider.get()).toBe('deepseek')
@@ -201,10 +201,13 @@ describe('useModelControls', () => {
     setCurrentProvider('anthropic')
     await result.current.refreshCurrentModel()
     expect($currentModel.get()).toBe('anthropic/claude-sonnet-4.6')
+    expect($currentProvider.get()).toBe('anthropic')
 
     // A profile swap forces a reseed to the new profile's default.
     await result.current.refreshCurrentModel(true)
     expect($currentModel.get()).toBe('openai/gpt-5.5')
+    expect($currentProvider.get()).toBe('openai-codex')
+    expect(getCurrentModelSource()).toBe('default')
   })
 
   it('refreshes legacy/default-derived composer state from the profile default', async () => {

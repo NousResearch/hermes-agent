@@ -68,7 +68,9 @@ export function useBackgroundSync({
       return
     }
 
-    void refreshCurrentModel()
+    // Opening onto a fresh draft must discard the previous chat's sticky
+    // composer pick. A live session keeps its session-scoped selection.
+    void refreshCurrentModel(!$activeSessionId.get())
     void refreshActiveProfile()
     void refreshSessions()
 
@@ -130,7 +132,7 @@ export function useBackgroundSync({
   // model + config so the composer pill reflects the profile default.
   useEffect(() => {
     if (gatewayState === 'open' && !activeSessionId && freshDraftReady) {
-      void refreshCurrentModel()
+      void refreshCurrentModel(true)
       void refreshHermesConfig()
     }
   }, [activeSessionId, freshDraftReady, gatewayState, refreshCurrentModel, refreshHermesConfig])

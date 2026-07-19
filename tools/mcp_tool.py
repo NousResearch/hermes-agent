@@ -121,6 +121,24 @@ logger = logging.getLogger(__name__)
 _OSV_MALWARE_CHECK_TIMEOUT_S = 12.0
 
 
+def _is_streamable_http_cleanup_lock_error(exc: BaseException) -> bool:
+    """Return whether ``exc`` is the MCP SDK's task-ownership cleanup error.
+
+    MCP 1.26's OAuth auth-flow generator holds an anyio lock across ``yield``.
+    If httpx tears that generator down from another task, its transport context
+    can raise this error after a session was already connected.  Nested task
+    groups preserve the error inside ``BaseExceptionGroup`` on Python 3.11+.
+    """
+    if isinstance(exc, RuntimeError):
+        return "the current task is not holding this lock" in str(exc).lower()
+    if isinstance(exc, BaseExceptionGroup):
+        return bool(exc.exceptions) and all(
+            _is_streamable_http_cleanup_lock_error(child)
+            for child in exc.exceptions
+        )
+    return False
+
+
 # ---------------------------------------------------------------------------
 # Stdio subprocess stderr redirection
 # ---------------------------------------------------------------------------
@@ -2701,30 +2719,43 @@ class MCPServerTask:
 
             # Caller owns the client lifecycle — the SDK skips cleanup when
             # http_client is provided, so we wrap in async-with.
-            async with httpx.AsyncClient(**client_kwargs) as http_client:
-                async with streamable_http_client(url, http_client=http_client) as (
-                    read_stream, write_stream, _get_session_id,
-                ):
-                    async with ClientSession(read_stream, write_stream, **sampling_kwargs) as session:
-                        # Bound the handshake (#59349) — see stdio path.
-                        self.initialize_result = await asyncio.wait_for(
-                            session.initialize(), timeout=float(connect_timeout)
-                        )
-                        self.session = session
-                        await self._discover_tools()
-                        self._ready.set()
-                        # Session is live again: clear any breaker state from
-                        # a prior outage so the first call after recovery
-                        # isn't gated on a stale failure count (#16788).
-                        _reset_server_error(self.name)
-                        self._reconnect_retries = 0
-                        reason = await self._wait_for_lifecycle_event()
-                        if reason == "reconnect":
-                            logger.info(
-                                "MCP server '%s': reconnect requested — "
-                                "tearing down HTTP session", self.name,
+            try:
+                async with httpx.AsyncClient(**client_kwargs) as http_client:
+                    async with streamable_http_client(url, http_client=http_client) as (
+                        read_stream, write_stream, _get_session_id,
+                    ):
+                        async with ClientSession(read_stream, write_stream, **sampling_kwargs) as session:
+                            # Bound the handshake (#59349) — see stdio path.
+                            self.initialize_result = await asyncio.wait_for(
+                                session.initialize(), timeout=float(connect_timeout)
                             )
-            return reason
+                            self.session = session
+                            await self._discover_tools()
+                            self._ready.set()
+                            # Session is live again: clear any breaker state from
+                            # a prior outage so the first call after recovery
+                            # isn't gated on a stale failure count (#16788).
+                            _reset_server_error(self.name)
+                            self._reconnect_retries = 0
+                            reason = await self._wait_for_lifecycle_event()
+                            if reason == "reconnect":
+                                logger.info(
+                                    "MCP server '%s': reconnect requested — "
+                                    "tearing down HTTP session", self.name,
+                                )
+                return reason
+            except BaseException as exc:
+                if (
+                    self._ready.is_set()
+                    and _is_streamable_http_cleanup_lock_error(exc)
+                ):
+                    logger.warning(
+                        "MCP server '%s': ignoring known Streamable HTTP "
+                        "OAuth cleanup lock error and reconnecting: %s",
+                        self.name, exc,
+                    )
+                    return "reconnect"
+                raise
         else:
             # Deprecated API (mcp < 1.24.0): manages httpx client internally.
             _http_kwargs: dict = {

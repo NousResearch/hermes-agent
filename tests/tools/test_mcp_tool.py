@@ -1973,6 +1973,71 @@ class TestHTTPConfig:
         assert captured["legacy_headers"]["MCP-Protocol-Version"] == "custom-version"
         assert "mcp-protocol-version" not in captured["legacy_headers"]
 
+    def test_http_cleanup_lock_error_reconnects_after_ready(self):
+        """An OAuth teardown error must not consume the reconnect budget."""
+        from tools.mcp_tool import MCPServerTask
+
+        class DummyAsyncClient:
+            def __init__(self, **kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+        class CleanupErrorTransportCtx:
+            async def __aenter__(self):
+                return MagicMock(), MagicMock(), (lambda: None)
+
+            async def __aexit__(self, exc_type, exc, tb):
+                raise ExceptionGroup("unhandled errors in a TaskGroup", [
+                    RuntimeError("The current task is not holding this lock"),
+                ])
+
+        class DummySession:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+            async def initialize(self):
+                return None
+
+        async def _test():
+            server = MCPServerTask("oauth_http")
+            with patch("tools.mcp_tool._MCP_HTTP_AVAILABLE", True), \
+                 patch("tools.mcp_tool._MCP_NEW_HTTP", True), \
+                 patch("httpx.AsyncClient", DummyAsyncClient), \
+                 patch("tools.mcp_tool.streamable_http_client", return_value=CleanupErrorTransportCtx()), \
+                 patch("tools.mcp_tool.ClientSession", DummySession), \
+                 patch.object(MCPServerTask, "_discover_tools", AsyncMock()), \
+                 patch.object(MCPServerTask, "_wait_for_lifecycle_event", AsyncMock(return_value="reconnect")):
+                assert await server._run_http({"url": "https://example.com/mcp"}) == "reconnect"
+
+        asyncio.run(_test())
+
+    def test_http_cleanup_only_ignores_the_known_lock_error(self):
+        """Other Streamable HTTP teardown failures still reach normal retry handling."""
+        from tools.mcp_tool import _is_streamable_http_cleanup_lock_error
+
+        assert _is_streamable_http_cleanup_lock_error(
+            ExceptionGroup("cleanup", [
+                RuntimeError("The current task is not holding this lock"),
+            ])
+        )
+        assert not _is_streamable_http_cleanup_lock_error(
+            ExceptionGroup("cleanup", [
+                RuntimeError("The current task is not holding this lock"),
+                OSError("socket closed"),
+            ])
+        )
+
 
 # ---------------------------------------------------------------------------
 # Reconnection logic

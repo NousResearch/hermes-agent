@@ -1,7 +1,9 @@
 """Tests for hermes_state.py — SessionDB SQLite CRUD, FTS5 search, export."""
 
 import sqlite3
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 import json
 import pytest
 
@@ -73,6 +75,44 @@ def db(tmp_path):
     session_db = SessionDB(db_path=db_path)
     yield session_db
     session_db.close()
+
+
+def _create_drifted_usage_table(conn, rows):
+    conn.executescript("""
+        DROP TABLE IF EXISTS session_model_usage;
+        CREATE TABLE session_model_usage (
+            session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+            model TEXT NOT NULL,
+            billing_provider TEXT NOT NULL DEFAULT '',
+            billing_base_url TEXT NOT NULL DEFAULT '',
+            billing_mode TEXT NOT NULL DEFAULT '',
+            task TEXT DEFAULT '',
+            api_call_count INTEGER NOT NULL DEFAULT 0,
+            input_tokens INTEGER NOT NULL DEFAULT 0,
+            output_tokens INTEGER NOT NULL DEFAULT 0,
+            cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+            cache_write_tokens INTEGER NOT NULL DEFAULT 0,
+            reasoning_tokens INTEGER NOT NULL DEFAULT 0,
+            estimated_cost_usd REAL NOT NULL DEFAULT 0,
+            actual_cost_usd REAL NOT NULL DEFAULT 0,
+            cost_status TEXT,
+            cost_source TEXT,
+            first_seen REAL,
+            last_seen REAL,
+            PRIMARY KEY (
+                session_id, model, billing_provider,
+                billing_base_url, billing_mode
+            )
+        );
+    """)
+    conn.executemany(
+        """INSERT INTO session_model_usage (
+               session_id, model, billing_provider, billing_base_url,
+               billing_mode, task, api_call_count, input_tokens
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+        rows,
+    )
+    conn.commit()
 
 
 # =========================================================================
@@ -647,6 +687,267 @@ class TestSessionLifecycle:
             assert tuple(row) == (7, 1)
         finally:
             reopened.close()
+
+    def test_usage_primary_key_repair_after_task_column_reconciliation(self, tmp_path):
+        """A pre-task table must commit reconciliation before BEGIN IMMEDIATE."""
+        db_path = tmp_path / "pre-task-v22.db"
+        db = SessionDB(db_path=db_path)
+        db.close()
+
+        conn = sqlite3.connect(db_path)
+        conn.executescript("""
+            DROP TABLE session_model_usage;
+            CREATE TABLE session_model_usage (
+                session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+                model TEXT NOT NULL,
+                billing_provider TEXT NOT NULL DEFAULT '',
+                billing_base_url TEXT NOT NULL DEFAULT '',
+                billing_mode TEXT NOT NULL DEFAULT '',
+                api_call_count INTEGER NOT NULL DEFAULT 0,
+                input_tokens INTEGER NOT NULL DEFAULT 0,
+                output_tokens INTEGER NOT NULL DEFAULT 0,
+                cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+                cache_write_tokens INTEGER NOT NULL DEFAULT 0,
+                reasoning_tokens INTEGER NOT NULL DEFAULT 0,
+                estimated_cost_usd REAL NOT NULL DEFAULT 0,
+                actual_cost_usd REAL NOT NULL DEFAULT 0,
+                cost_status TEXT,
+                cost_source TEXT,
+                first_seen REAL,
+                last_seen REAL,
+                PRIMARY KEY (
+                    session_id, model, billing_provider,
+                    billing_base_url, billing_mode
+                )
+            );
+            UPDATE schema_version SET version = 22;
+        """)
+        conn.commit()
+        conn.close()
+
+        repaired = SessionDB(db_path=db_path)
+        try:
+            assert repaired._session_model_usage_primary_key(
+                repaired._conn.cursor()
+            ) == [
+                "session_id", "model", "billing_provider",
+                "billing_base_url", "billing_mode", "task",
+            ]
+        finally:
+            repaired.close()
+
+    def test_concurrent_usage_primary_key_repair_retries_and_rechecks(
+        self, tmp_path, monkeypatch,
+    ):
+        db_path = tmp_path / "concurrent-drifted-v22.db"
+        db = SessionDB(db_path=db_path)
+        db.create_session(session_id="usage", source="cli")
+        db.close()
+
+        conn = sqlite3.connect(db_path)
+        _create_drifted_usage_table(conn, [(
+            "usage", "shared-model", "custom", "https://example.test/v1",
+            "api_key", "vision", 2, 20,
+        )])
+        conn.close()
+
+        opener_count = 4
+        observed_drift = threading.Barrier(opener_count + 1)
+        rebuild_count = 0
+        rebuild_count_lock = threading.Lock()
+        real_connect = sqlite3.connect
+
+        def instrumented_connect(*args, **kwargs):
+            nonlocal rebuild_count
+            opened_conn = real_connect(*args, **kwargs)
+            if args and str(args[0]) == str(db_path):
+                saw_initial_inspection = False
+
+                def trace(sql):
+                    nonlocal saw_initial_inspection, rebuild_count
+                    normalized = " ".join(sql.lower().split())
+                    if (
+                        not saw_initial_inspection
+                        and normalized.startswith("pragma table_info")
+                        and "session_model_usage" in normalized
+                    ):
+                        saw_initial_inspection = True
+                        observed_drift.wait(timeout=5)
+                    if normalized.startswith(
+                        "alter table session_model_usage rename to"
+                    ):
+                        with rebuild_count_lock:
+                            rebuild_count += 1
+
+                opened_conn.set_trace_callback(trace)
+            return opened_conn
+
+        def repair_only(session_db):
+            session_db._repair_session_model_usage_primary_key(
+                session_db._conn.cursor()
+            )
+
+        monkeypatch.setattr(hermes_state.sqlite3, "connect", instrumented_connect)
+        monkeypatch.setattr(SessionDB, "_init_schema", repair_only)
+
+        blocker = real_connect(db_path, timeout=1.0, isolation_level=None)
+        blocker.execute("BEGIN IMMEDIATE")
+        opened_dbs = []
+
+        def open_db():
+            session_db = SessionDB(db_path=db_path)
+            opened_dbs.append(session_db)
+            return session_db
+
+        try:
+            with ThreadPoolExecutor(max_workers=opener_count) as executor:
+                futures = [executor.submit(open_db) for _ in range(opener_count)]
+                observed_drift.wait(timeout=5)
+                time.sleep(1.2)
+                blocker.commit()
+                results = [future.result(timeout=10) for future in futures]
+
+            assert len(results) == opener_count
+            assert rebuild_count == 1
+            assert all(
+                result._conn is not None and not result._conn.in_transaction
+                for result in results
+            )
+        finally:
+            if blocker.in_transaction:
+                blocker.rollback()
+            blocker.close()
+            for session_db in opened_dbs:
+                session_db.close()
+
+        check = real_connect(db_path)
+        try:
+            pk_columns = [
+                row[1]
+                for row in check.execute(
+                    "PRAGMA table_info('session_model_usage')"
+                ).fetchall()
+                if row[5]
+            ]
+            assert pk_columns == [
+                "session_id", "model", "billing_provider",
+                "billing_base_url", "billing_mode", "task",
+            ]
+            assert check.execute(
+                "SELECT task, api_call_count, input_tokens "
+                "FROM session_model_usage"
+            ).fetchone() == ("vision", 2, 20)
+        finally:
+            check.close()
+
+    def test_usage_primary_key_repair_has_bounded_lock_retries(
+        self, tmp_path, monkeypatch,
+    ):
+        db_path = tmp_path / "retry-exhaustion.db"
+        conn = sqlite3.connect(db_path)
+        _create_drifted_usage_table(conn, [(
+            "usage", "model", "", "", "", "vision", 0, 20,
+        )])
+        conn.close()
+
+        class CountingConnection(sqlite3.Connection):
+            begin_attempts = 0
+
+            def execute(self, sql, parameters=()):
+                if sql.strip().upper() == "BEGIN IMMEDIATE":
+                    self.begin_attempts += 1
+                return super().execute(sql, parameters)
+
+        repair_conn = sqlite3.connect(
+            db_path, timeout=0, isolation_level=None,
+            factory=CountingConnection,
+        )
+        blocker = sqlite3.connect(db_path, timeout=0, isolation_level=None)
+        blocker.execute("BEGIN IMMEDIATE")
+        repair_db = SessionDB.__new__(SessionDB)
+        monkeypatch.setattr(SessionDB, "_WRITE_MAX_RETRIES", 3)
+        monkeypatch.setattr(hermes_state.time, "sleep", lambda _delay: None)
+
+        try:
+            with pytest.raises(sqlite3.OperationalError, match="locked"):
+                repair_db._repair_session_model_usage_primary_key(
+                    repair_conn.cursor()
+                )
+            assert repair_conn.begin_attempts == 3
+            assert not repair_conn.in_transaction
+        finally:
+            blocker.rollback()
+            blocker.close()
+            repair_conn.close()
+
+        check = sqlite3.connect(db_path)
+        try:
+            assert [
+                row[1]
+                for row in check.execute(
+                    "PRAGMA table_info('session_model_usage')"
+                ).fetchall()
+                if row[5]
+            ] == [
+                "session_id", "model", "billing_provider",
+                "billing_base_url", "billing_mode",
+            ]
+            assert check.execute(
+                "SELECT task, input_tokens FROM session_model_usage"
+            ).fetchone() == ("vision", 20)
+        finally:
+            check.close()
+
+    def test_usage_primary_key_copy_failure_rolls_back_transaction(
+        self, tmp_path,
+    ):
+        db_path = tmp_path / "copy-failure.db"
+        conn = sqlite3.connect(db_path)
+        _create_drifted_usage_table(conn, [(
+            "usage", "model", "", "", "", "vision", 0, 20,
+        )])
+        conn.close()
+
+        class FailingCopyCursor(sqlite3.Cursor):
+            def execute(self, sql, parameters=()):
+                normalized = " ".join(sql.lower().split())
+                if normalized.startswith("insert into session_model_usage"):
+                    raise sqlite3.OperationalError("injected copy failure")
+                return super().execute(sql, parameters)
+
+        class FailingCopyConnection(sqlite3.Connection):
+            def cursor(self, factory=None):
+                return super().cursor(factory or FailingCopyCursor)
+
+        repair_conn = sqlite3.connect(
+            db_path, isolation_level=None, factory=FailingCopyConnection,
+        )
+        repair_db = SessionDB.__new__(SessionDB)
+        try:
+            with pytest.raises(sqlite3.OperationalError, match="copy failure"):
+                repair_db._repair_session_model_usage_primary_key(
+                    repair_conn.cursor()
+                )
+            assert not repair_conn.in_transaction
+            assert repair_conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' "
+                "AND name = 'session_model_usage_old_pk'"
+            ).fetchone() is None
+            assert repair_conn.execute(
+                "SELECT task, input_tokens FROM session_model_usage"
+            ).fetchone() == ("vision", 20)
+            assert [
+                row[1]
+                for row in repair_conn.execute(
+                    "PRAGMA table_info('session_model_usage')"
+                ).fetchall()
+                if row[5]
+            ] == [
+                "session_id", "model", "billing_provider",
+                "billing_base_url", "billing_mode",
+            ]
+        finally:
+            repair_conn.close()
 
     def test_metadata_only_update_does_not_replace_requested_route(self, db):
         db.create_session(session_id="metadata", source="cli", model="primary")

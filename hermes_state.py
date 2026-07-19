@@ -1536,7 +1536,17 @@ class SessionDB:
                         )
 
     @staticmethod
-    def _repair_session_model_usage_primary_key(cursor: sqlite3.Cursor) -> None:
+    def _session_model_usage_primary_key(cursor: sqlite3.Cursor) -> List[str]:
+        table_info = cursor.execute(
+            "PRAGMA table_info('session_model_usage')"
+        ).fetchall()
+        return [
+            row[1]
+            for row in sorted(table_info, key=lambda row: row[5] or len(table_info) + 1)
+            if row[5]
+        ]
+
+    def _repair_session_model_usage_primary_key(self, cursor: sqlite3.Cursor) -> None:
         """Ensure task is the sixth component of the live usage primary key."""
         expected_pk = [
             "session_id",
@@ -1546,78 +1556,109 @@ class SessionDB:
             "billing_mode",
             "task",
         ]
-        table_info = cursor.execute(
-            "PRAGMA table_info('session_model_usage')"
-        ).fetchall()
-        live_pk = [
-            row[1]
-            for row in sorted(table_info, key=lambda row: row[5] or len(table_info) + 1)
-            if row[5]
-        ]
-        if live_pk == expected_pk:
+        if self._session_model_usage_primary_key(cursor) == expected_pk:
             return
 
-        cursor.execute("SAVEPOINT repair_session_model_usage_pk")
-        try:
-            cursor.execute(
-                "ALTER TABLE session_model_usage RENAME TO session_model_usage_old_pk"
-            )
-            cursor.execute(
-                """CREATE TABLE session_model_usage (
-                       session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
-                       model TEXT NOT NULL,
-                       billing_provider TEXT NOT NULL DEFAULT '',
-                       billing_base_url TEXT NOT NULL DEFAULT '',
-                       billing_mode TEXT NOT NULL DEFAULT '',
-                       task TEXT NOT NULL DEFAULT '',
-                       api_call_count INTEGER NOT NULL DEFAULT 0,
-                       input_tokens INTEGER NOT NULL DEFAULT 0,
-                       output_tokens INTEGER NOT NULL DEFAULT 0,
-                       cache_read_tokens INTEGER NOT NULL DEFAULT 0,
-                       cache_write_tokens INTEGER NOT NULL DEFAULT 0,
-                       reasoning_tokens INTEGER NOT NULL DEFAULT 0,
-                       estimated_cost_usd REAL NOT NULL DEFAULT 0,
-                       actual_cost_usd REAL NOT NULL DEFAULT 0,
-                       cost_status TEXT,
-                       cost_source TEXT,
-                       first_seen REAL,
-                       last_seen REAL,
-                       PRIMARY KEY (
-                           session_id, model, billing_provider,
-                           billing_base_url, billing_mode, task
+        connection = cursor.connection
+        for attempt in range(self._WRITE_MAX_RETRIES):
+            try:
+                connection.execute("BEGIN IMMEDIATE")
+            except sqlite3.OperationalError as exc:
+                err_msg = str(exc).lower()
+                if "locked" not in err_msg and "busy" not in err_msg:
+                    raise
+                if attempt >= self._WRITE_MAX_RETRIES - 1:
+                    raise
+                time.sleep(random.uniform(
+                    self._WRITE_RETRY_MIN_S,
+                    self._WRITE_RETRY_MAX_S,
+                ))
+                continue
+
+            savepoint_active = False
+            try:
+                # A concurrent process may have repaired the key while this
+                # connection waited for the migration write lock.
+                if self._session_model_usage_primary_key(cursor) == expected_pk:
+                    connection.commit()
+                    return
+
+                cursor.execute("SAVEPOINT repair_session_model_usage_pk")
+                savepoint_active = True
+                cursor.execute(
+                    "ALTER TABLE session_model_usage RENAME TO session_model_usage_old_pk"
+                )
+                cursor.execute(
+                    """CREATE TABLE session_model_usage (
+                           session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+                           model TEXT NOT NULL,
+                           billing_provider TEXT NOT NULL DEFAULT '',
+                           billing_base_url TEXT NOT NULL DEFAULT '',
+                           billing_mode TEXT NOT NULL DEFAULT '',
+                           task TEXT NOT NULL DEFAULT '',
+                           api_call_count INTEGER NOT NULL DEFAULT 0,
+                           input_tokens INTEGER NOT NULL DEFAULT 0,
+                           output_tokens INTEGER NOT NULL DEFAULT 0,
+                           cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+                           cache_write_tokens INTEGER NOT NULL DEFAULT 0,
+                           reasoning_tokens INTEGER NOT NULL DEFAULT 0,
+                           estimated_cost_usd REAL NOT NULL DEFAULT 0,
+                           actual_cost_usd REAL NOT NULL DEFAULT 0,
+                           cost_status TEXT,
+                           cost_source TEXT,
+                           first_seen REAL,
+                           last_seen REAL,
+                           PRIMARY KEY (
+                               session_id, model, billing_provider,
+                               billing_base_url, billing_mode, task
+                           )
+                       )"""
+                )
+                cursor.execute(
+                    """INSERT INTO session_model_usage (
+                           session_id, model, billing_provider, billing_base_url,
+                           billing_mode, task, api_call_count, input_tokens,
+                           output_tokens, cache_read_tokens, cache_write_tokens,
+                           reasoning_tokens, estimated_cost_usd, actual_cost_usd,
+                           cost_status, cost_source, first_seen, last_seen
                        )
-                   )"""
-            )
-            cursor.execute(
-                """INSERT INTO session_model_usage (
-                       session_id, model, billing_provider, billing_base_url,
-                       billing_mode, task, api_call_count, input_tokens,
-                       output_tokens, cache_read_tokens, cache_write_tokens,
-                       reasoning_tokens, estimated_cost_usd, actual_cost_usd,
-                       cost_status, cost_source, first_seen, last_seen
-                   )
-                   SELECT session_id, model, billing_provider, billing_base_url,
-                          billing_mode, COALESCE(task, ''), api_call_count,
-                          input_tokens, output_tokens, cache_read_tokens,
-                          cache_write_tokens, reasoning_tokens,
-                          estimated_cost_usd, actual_cost_usd, cost_status,
-                          cost_source, first_seen, last_seen
-                   FROM session_model_usage_old_pk"""
-            )
-            cursor.execute("DROP TABLE session_model_usage_old_pk")
-            cursor.execute(
-                "CREATE INDEX idx_session_model_usage_session "
-                "ON session_model_usage(session_id)"
-            )
-            cursor.execute(
-                "CREATE INDEX idx_session_model_usage_model "
-                "ON session_model_usage(model)"
-            )
-            cursor.execute("RELEASE SAVEPOINT repair_session_model_usage_pk")
-        except sqlite3.Error:
-            cursor.execute("ROLLBACK TO SAVEPOINT repair_session_model_usage_pk")
-            cursor.execute("RELEASE SAVEPOINT repair_session_model_usage_pk")
-            raise
+                       SELECT session_id, model, billing_provider, billing_base_url,
+                              billing_mode, COALESCE(task, ''), api_call_count,
+                              input_tokens, output_tokens, cache_read_tokens,
+                              cache_write_tokens, reasoning_tokens,
+                              estimated_cost_usd, actual_cost_usd, cost_status,
+                              cost_source, first_seen, last_seen
+                       FROM session_model_usage_old_pk"""
+                )
+                cursor.execute("DROP TABLE session_model_usage_old_pk")
+                cursor.execute(
+                    "CREATE INDEX idx_session_model_usage_session "
+                    "ON session_model_usage(session_id)"
+                )
+                cursor.execute(
+                    "CREATE INDEX idx_session_model_usage_model "
+                    "ON session_model_usage(model)"
+                )
+                cursor.execute("RELEASE SAVEPOINT repair_session_model_usage_pk")
+                savepoint_active = False
+                connection.commit()
+                return
+            except BaseException:
+                if savepoint_active:
+                    try:
+                        cursor.execute(
+                            "ROLLBACK TO SAVEPOINT repair_session_model_usage_pk"
+                        )
+                        cursor.execute(
+                            "RELEASE SAVEPOINT repair_session_model_usage_pk"
+                        )
+                    except sqlite3.Error:
+                        pass
+                try:
+                    connection.rollback()
+                except sqlite3.Error:
+                    pass
+                raise
 
     def _init_schema(self):
         """Create tables and FTS if they don't exist, reconcile columns.

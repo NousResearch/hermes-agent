@@ -8482,6 +8482,27 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         except Exception:
             return False
 
+    def _should_handle_profile_command_inline(self, text: str, has_images: bool = False) -> bool:
+        """Return True when /profile list should be handled on the UI thread.
+
+        The interactive picker uses prompt_toolkit terminal handoff helpers
+        that must run on the UI thread — same constraint as /model.
+        """
+        if not text or has_images or not _looks_like_slash_command(text):
+            return False
+        try:
+            from hermes_cli.commands import resolve_command
+            parts = text.split(None, 1)
+            base = parts[0].lower().lstrip('/')
+            cmd = resolve_command(base)
+            if not cmd or cmd.name != "profile":
+                return False
+            # Only inline when it's the interactive picker (no args or "list")
+            args = parts[1].strip().lower() if len(parts) > 1 else ""
+            return args in ("", "list")
+        except Exception:
+            return False
+
     def _should_handle_steer_command_inline(self, text: str, has_images: bool = False) -> bool:
         """Return True when /steer should be dispatched immediately while the agent is running.
 
@@ -13150,6 +13171,18 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     # keep showing the submitted text until some unrelated
                     # redraw fires. Every other early-return branch in this
                     # handler invalidates after reset — match them.
+                    event.app.invalidate()
+                    return
+
+                # Handle /profile list (and bare /profile) directly on the UI
+                # thread — the interactive picker needs prompt_toolkit terminal
+                # handoff, same as /model.
+                if self._should_handle_profile_command_inline(text, has_images=has_images):
+                    if not self.process_command(text):
+                        self._should_exit = True
+                        if event.app.is_running:
+                            event.app.exit()
+                    event.app.current_buffer.reset(append_to_history=True)
                     event.app.invalidate()
                     return
 

@@ -662,6 +662,7 @@ def _create_app(adapter: APIServerAdapter) -> web.Application:
     app.router.add_get("/v1/skills", adapter._handle_skills)
     app.router.add_get("/v1/toolsets", adapter._handle_toolsets)
     app.router.add_post("/v1/chat/completions", adapter._handle_chat_completions)
+    app.router.add_post("/api/voice/turns/stream", adapter._handle_voice_turn_stream)
     app.router.add_post("/v1/responses", adapter._handle_responses)
     app.router.add_get("/v1/responses/{response_id}", adapter._handle_get_response)
     app.router.add_delete("/v1/responses/{response_id}", adapter._handle_delete_response)
@@ -1042,10 +1043,18 @@ class TestCapabilitiesEndpoint:
             assert data["features"]["chat_completions"] is True
             assert data["features"]["run_status"] is True
             assert data["features"]["run_events_sse"] is True
+            assert data["features"]["session_chat_streaming"] is True
+            assert data["features"]["native_voice_turn_streaming"] is True
+            assert data["features"]["native_voice_audio"] is False
+            assert data["features"]["realtime_voice"] is False
             assert data["features"]["session_continuity_header"] == "X-Hermes-Session-Id"
             assert data["endpoints"]["run_status"]["path"] == "/v1/runs/{run_id}"
             assert data["endpoints"]["skills"] == {"method": "GET", "path": "/v1/skills"}
             assert data["endpoints"]["toolsets"] == {"method": "GET", "path": "/v1/toolsets"}
+            assert data["endpoints"]["voice_turn_stream"] == {
+                "method": "POST",
+                "path": "/api/voice/turns/stream",
+            }
 
     @pytest.mark.asyncio
     async def test_capabilities_requires_auth_when_key_configured(self, auth_adapter):
@@ -1061,6 +1070,121 @@ class TestCapabilitiesEndpoint:
             assert authed.status == 200
             data = await authed.json()
             assert data["auth"]["required"] is True
+
+
+# ---------------------------------------------------------------------------
+# /api/voice/turns/stream endpoint
+# ---------------------------------------------------------------------------
+
+
+class TestNativeVoiceTurnStreamEndpoint:
+    @pytest.mark.asyncio
+    async def test_streams_voice_text_events_and_voice_prompt(self, adapter):
+        app = _create_app(adapter)
+
+        async def _mock_run_agent(**kwargs):
+            cb = kwargs.get("stream_delta_callback")
+            if cb:
+                cb("Affirmative, ")
+                cb("Tim.")
+            assert kwargs["user_message"] == "Say hello."
+            assert kwargs["conversation_history"] == []
+            assert kwargs["session_id"] == "voice-session-1"
+            assert "Hermes is HAL" in kwargs["ephemeral_system_prompt"]
+            assert "voice playback" in kwargs["ephemeral_system_prompt"]
+            assert "Imperial" in kwargs["ephemeral_system_prompt"]
+            assert "America/Denver" in kwargs["ephemeral_system_prompt"]
+            return (
+                {"final_response": "Affirmative, Tim.", "session_id": "voice-session-1"},
+                {"input_tokens": 7, "output_tokens": 3, "total_tokens": 10},
+            )
+
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", side_effect=_mock_run_agent) as mock_run:
+                resp = await cli.post(
+                    "/api/voice/turns/stream",
+                    json={
+                        "session_id": "voice-session-1",
+                        "text": "Say hello.",
+                        "input_mode": "typed_stream",
+                        "synthesize_audio": False,
+                        "voice": {
+                            "assistant": "HAL",
+                            "spoken": True,
+                            "tts_friendly": True,
+                            "default_units": "imperial",
+                            "default_timezone": "America/Denver",
+                        },
+                        "metadata": {"channel": "web_voice"},
+                    },
+                )
+
+                assert resp.status == 200
+                assert "text/event-stream" in resp.headers.get("Content-Type", "")
+                assert resp.headers.get("X-Accel-Buffering") == "no"
+                assert resp.headers.get("X-Hermes-Session-Id") == "voice-session-1"
+                body = await resp.text()
+                assert mock_run.await_count == 1
+                assert "event: voice.started" in body
+                assert "event: voice.text.delta" in body
+                assert '"delta": "Affirmative, "' in body
+                assert '"delta": "Tim."' in body
+                assert "event: voice.text.completed" in body
+                assert '"text": "Affirmative, Tim."' in body
+                assert "event: voice.completed" in body
+                assert "event: done" in body
+
+    @pytest.mark.asyncio
+    async def test_voice_turn_stream_rejects_blank_text(self, adapter):
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/api/voice/turns/stream",
+                json={"session_id": "voice-session-1", "text": "   "},
+            )
+            assert resp.status == 400
+            data = await resp.json()
+            assert "text" in data["error"]["message"]
+
+    @pytest.mark.asyncio
+    async def test_voice_turn_stream_rejects_invalid_session_ids(self, adapter):
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            for bad_id in ["has\nnewline", "../escape", "x" * 300]:
+                resp = await cli.post(
+                    "/api/voice/turns/stream",
+                    json={"session_id": bad_id, "text": "hello"},
+                )
+                assert resp.status == 400, bad_id
+                data = await resp.json()
+                assert data["error"]["code"] == "invalid_session_id"
+
+    @pytest.mark.asyncio
+    async def test_voice_error_event_redacts_secret_like_exception(self, adapter, monkeypatch):
+        app = _create_app(adapter)
+
+        async def _boom(**kwargs):
+            raise RuntimeError("upstream failed api_key=sk-secret-12345")
+
+        # Force redact_sensitive_text to treat the secret-like token as sensitive
+        # even if the default pattern set changes; still exercise the voice.error path.
+        monkeypatch.setattr(
+            "gateway.platforms.api_server._redact_api_error_text",
+            lambda value, limit=None: "upstream failed api_key=[REDACTED]",
+        )
+
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", side_effect=_boom):
+                resp = await cli.post(
+                    "/api/voice/turns/stream",
+                    json={"session_id": "voice-session-1", "text": "hello"},
+                )
+            assert resp.status == 200
+            body = await resp.text()
+            assert "event: voice.error" in body
+            assert "sk-secret-12345" not in body
+            assert "[REDACTED]" in body or "upstream failed" in body
+            assert "event: done" in body
 
 
 # ---------------------------------------------------------------------------

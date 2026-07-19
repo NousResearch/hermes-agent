@@ -14,6 +14,7 @@ Exposes an HTTP server with endpoints:
 - GET  /api/sessions/{session_id}/messages — read session message history
 - POST /api/sessions/{session_id}/fork — branch a session using SessionDB lineage
 - POST /api/sessions/{session_id}/chat[/stream] — chat with a persisted session
+- POST /api/voice/turns/stream    — text-only native voice turn stream for HAL Voice
 - POST /v1/runs                    — start a run, returns run_id immediately (202)
 - GET  /v1/runs/{run_id}           — retrieve current run status
 - GET  /v1/runs/{run_id}/events    — SSE stream of structured lifecycle events
@@ -1570,6 +1571,7 @@ class APIServerAdapter(BasePlatformAdapter):
             ("POST", "/api/sessions/{session_id}/fork", self._handle_fork_session),
             ("POST", "/api/sessions/{session_id}/chat", self._handle_session_chat),
             ("POST", "/api/sessions/{session_id}/chat/stream", self._handle_session_chat_stream),
+            ("POST", "/api/voice/turns/stream", self._handle_voice_turn_stream),
             ("POST", "/v1/chat/completions", self._handle_chat_completions),
             ("POST", "/v1/responses", self._handle_responses),
             ("GET", "/v1/responses/{response_id}", self._handle_get_response),
@@ -2114,6 +2116,8 @@ class APIServerAdapter(BasePlatformAdapter):
                 "session_resources": True,
                 "session_chat": True,
                 "session_chat_streaming": True,
+                "native_voice_turn_streaming": True,
+                "native_voice_audio": False,
                 "session_fork": True,
                 "admin_config_rw": False,
                 "jobs_admin": False,
@@ -2147,6 +2151,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 "session_fork": {"method": "POST", "path": "/api/sessions/{session_id}/fork"},
                 "session_chat": {"method": "POST", "path": "/api/sessions/{session_id}/chat"},
                 "session_chat_stream": {"method": "POST", "path": "/api/sessions/{session_id}/chat/stream"},
+                "voice_turn_stream": {"method": "POST", "path": "/api/voice/turns/stream"},
             },
         })
 
@@ -2726,6 +2731,212 @@ class APIServerAdapter(BasePlatformAdapter):
         except Exception as exc:
             logger.debug("[api_server] session SSE stream error: %s", exc)
         return response
+
+    def _validate_voice_session_id(self, session_id: str) -> Optional["web.Response"]:
+        """Reject unsafe caller-controlled voice session IDs.
+
+        Mirrors Sessions API create-session validation (control chars, path
+        shape, length) so body ``session_id`` cannot bypass the same boundary.
+        """
+        from gateway.session import _is_path_unsafe
+
+        if not session_id or re.search(r"[\r\n\x00]", session_id) or _is_path_unsafe(session_id):
+            return web.json_response(
+                _openai_error("Invalid session ID", code="invalid_session_id"),
+                status=400,
+            )
+        if len(session_id) > self._MAX_SESSION_HEADER_LEN:
+            return web.json_response(
+                _openai_error("Session ID too long", code="invalid_session_id"),
+                status=400,
+            )
+        return None
+
+    @_admit_api_agent_request
+    async def _handle_voice_turn_stream(self, request: "web.Request") -> "web.StreamResponse":
+        """POST /api/voice/turns/stream — native text-only voice turn SSE.
+
+        This endpoint is intentionally text-only in its first increment. HAL
+        Voice remains responsible for browser audio capture, STT, TTS, and
+        playback while Hermes owns the turn reasoning/session orchestration.
+        """
+        gateway_session_key, key_err = self._parse_session_key_header(request)
+        if key_err is not None:
+            return key_err
+        body, err = await self._read_json_body(request)
+        if err:
+            return err
+
+        raw_session_id = body.get("session_id")
+        if raw_session_id is None or str(raw_session_id).strip() == "":
+            session_id = f"voice_{uuid.uuid4().hex}"
+        else:
+            session_id = str(raw_session_id).strip()
+            sid_err = self._validate_voice_session_id(session_id)
+            if sid_err is not None:
+                return sid_err
+
+        text = str(body.get("text") or "")
+        if not text.strip():
+            return web.json_response(
+                _openai_error("text must not be blank", code="invalid_text"),
+                status=400,
+            )
+        voice = body.get("voice") if isinstance(body.get("voice"), dict) else {}
+        input_mode = str(body.get("input_mode") or "typed_stream")
+        synthesize_audio = _coerce_request_bool(body.get("synthesize_audio"), default=False)
+        metadata = body.get("metadata") if isinstance(body.get("metadata"), dict) else {}
+        system_prompt = self._voice_turn_system_prompt(
+            voice=voice,
+            input_mode=input_mode,
+            synthesize_audio=synthesize_audio,
+            metadata=metadata,
+        )
+
+        loop = asyncio.get_running_loop()
+        queue: "asyncio.Queue[Optional[tuple[str, Dict[str, Any]]]]" = asyncio.Queue()
+        message_id = f"voice_msg_{uuid.uuid4().hex}"
+        run_id = f"voice_run_{uuid.uuid4().hex}"
+        seq = 0
+
+        def _event_payload(name: str, payload: Dict[str, Any]) -> tuple[str, Dict[str, Any]]:
+            nonlocal seq
+            seq += 1
+            payload.setdefault("session_id", session_id)
+            payload.setdefault("run_id", run_id)
+            payload.setdefault("seq", seq)
+            payload.setdefault("ts", time.time())
+            return name, payload
+
+        def _enqueue(name: str, payload: Dict[str, Any]) -> None:
+            event = _event_payload(name, payload)
+            try:
+                running_loop = asyncio.get_running_loop()
+            except RuntimeError:
+                running_loop = None
+            try:
+                if running_loop is loop:
+                    queue.put_nowait(event)
+                else:
+                    loop.call_soon_threadsafe(queue.put_nowait, event)
+            except RuntimeError:
+                pass
+
+        def _delta(delta: str) -> None:
+            if delta:
+                _enqueue("voice.text.delta", {"message_id": message_id, "delta": delta})
+
+        async def _run_and_signal() -> None:
+            try:
+                await queue.put(_event_payload("voice.started", {
+                    "message_id": message_id,
+                    "input_mode": input_mode,
+                    "synthesize_audio": synthesize_audio,
+                }))
+                history = await self._conversation_history_for_session(session_id)
+                result, usage = await self._run_agent(
+                    user_message=text,
+                    conversation_history=history,
+                    ephemeral_system_prompt=system_prompt,
+                    session_id=session_id,
+                    stream_delta_callback=_delta,
+                    gateway_session_key=gateway_session_key,
+                )
+                final_response = result.get("final_response", "") if isinstance(result, dict) else ""
+                effective_session_id = (
+                    result.get("session_id", session_id) if isinstance(result, dict) else session_id
+                )
+                await queue.put(_event_payload("voice.text.completed", {
+                    "session_id": effective_session_id,
+                    "message_id": message_id,
+                    "text": final_response,
+                }))
+                await queue.put(_event_payload("voice.completed", {
+                    "session_id": effective_session_id,
+                    "message_id": message_id,
+                    "completed": True,
+                    "audio": None,
+                    "usage": usage,
+                }))
+            except Exception as exc:
+                logger.exception("[api_server] native voice turn stream failed")
+                await queue.put(
+                    _event_payload("voice.error", {"message": _redact_api_error_text(exc)})
+                )
+            finally:
+                await queue.put(_event_payload("done", {}))
+                await queue.put(None)
+
+        task = asyncio.create_task(_run_and_signal())
+        try:
+            self._background_tasks.add(task)
+        except TypeError:
+            pass
+        if hasattr(task, "add_done_callback"):
+            task.add_done_callback(self._background_tasks.discard)
+
+        headers = {
+            "Content-Type": "text/event-stream",
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "X-Hermes-Session-Id": session_id,
+        }
+        if gateway_session_key:
+            headers["X-Hermes-Session-Key"] = gateway_session_key
+        response = web.StreamResponse(status=200, headers=headers)
+        await response.prepare(request)
+        try:
+            while True:
+                try:
+                    item = await asyncio.wait_for(
+                        queue.get(), timeout=CHAT_COMPLETIONS_SSE_KEEPALIVE_SECONDS
+                    )
+                except asyncio.TimeoutError:
+                    await response.write(b": keepalive\n\n")
+                    continue
+                if item is None:
+                    break
+                name, payload = item
+                data = json.dumps(payload, ensure_ascii=False)
+                await response.write(f"event: {name}\ndata: {data}\n\n".encode("utf-8"))
+        except (asyncio.CancelledError, ConnectionResetError):
+            task.cancel()
+            raise
+        except Exception as exc:
+            logger.debug("[api_server] native voice SSE stream error: %s", exc)
+        return response
+
+    @staticmethod
+    def _voice_turn_system_prompt(
+        *,
+        voice: Dict[str, Any],
+        input_mode: str,
+        synthesize_audio: bool,
+        metadata: Dict[str, Any],
+    ) -> str:
+        assistant = str(voice.get("assistant") or "HAL")
+        default_units = str(voice.get("default_units") or "imperial")
+        default_timezone = str(voice.get("default_timezone") or "America/Denver")
+        spoken = _coerce_request_bool(voice.get("spoken"), default=True)
+        tts_friendly = _coerce_request_bool(voice.get("tts_friendly"), default=True)
+        metadata_lines = "\n".join(
+            f"- {key}: {value}" for key, value in sorted(metadata.items())
+        ) or "- none"
+        return (
+            f"Hermes is {assistant}. This turn is part of a native voice interaction "
+            "initiated by HAL Voice.\n"
+            "The response may be read aloud through voice playback. Write concise, "
+            "natural, spoken prose. Avoid markdown tables and avoid terse symbols "
+            "when ordinary words are clearer.\n"
+            f"Input mode: {input_mode}. Spoken response expected: {spoken}. "
+            f"TTS-friendly prose requested: {tts_friendly}. "
+            f"HAL Voice requested audio synthesis: {synthesize_audio}.\n"
+            f"Default measurement units: {default_units.title()}. "
+            f"Default timezone: {default_timezone}.\n"
+            "Turn metadata:\n"
+            f"{metadata_lines}"
+        )
+
 
     @_admit_api_agent_request
     async def _handle_chat_completions(self, request: "web.Request") -> "web.Response":

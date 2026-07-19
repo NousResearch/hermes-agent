@@ -157,6 +157,24 @@ def direct_runtime(tmp_path, monkeypatch):
     relay_runtime._reset_for_tests()
 
 
+@pytest.fixture
+def real_binding_runtime(tmp_path, monkeypatch):
+    relay = pytest.importorskip("nemo_relay")
+    if getattr(relay, "_native", None) is None:
+        pytest.skip("NeMo Relay native binding is unavailable on this platform")
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes-home"))
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config_readonly",
+        lambda: {"telemetry": {"shared_metrics": {"enabled": True}}},
+    )
+    relay_shared_metrics._reset_for_tests()
+    relay_runtime._reset_for_tests()
+    monkeypatch.setattr(plugins, "_plugin_manager", PluginManager())
+    yield relay
+    relay_shared_metrics._reset_for_tests()
+    relay_runtime._reset_for_tests()
+
+
 def test_direct_runtime_records_without_enabling_a_plugin(direct_runtime, tmp_path):
     base = {
         "session_id": "sensitive-session",
@@ -298,6 +316,167 @@ def test_direct_runtime_records_without_enabling_a_plugin(direct_runtime, tmp_pa
         "termination": "none",
         "tool_call_count_bucket": "1",
     }
+
+
+def test_real_binding_drives_lifecycle_aggregation_export_and_snapshot(
+    real_binding_runtime,
+    tmp_path,
+):
+    assert real_binding_runtime._native is not None
+    prompt_canary = "real-relay-sensitive-prompt"
+    response_canary = "real-relay-sensitive-response"
+    model_canary = "gpt-real-relay-sensitive-model"
+    tool_canary = "real-relay-sensitive-tool-result"
+
+    def base(index: int) -> dict[str, Any]:
+        return {
+            "session_id": f"sensitive-session-{index}",
+            "task_id": f"sensitive-task-{index}",
+            "turn_id": f"sensitive-turn-{index}",
+            "api_request_id": f"sensitive-request-{index}",
+            "platform": "cli",
+            "provider": "custom",
+            "model": model_canary,
+            "base_url": "http://127.0.0.1:11434/v1",
+        }
+
+    success = base(1)
+    lifecycle.invoke_hook("on_session_start", **success)
+    lifecycle.invoke_hook("pre_llm_call", **success, messages=[prompt_canary])
+    lifecycle.invoke_hook("pre_api_request", **success, retry_count=0)
+    lifecycle.invoke_hook(
+        "api_request_error",
+        **success,
+        retry_count=0,
+        retryable=True,
+        error={"message": prompt_canary},
+    )
+    lifecycle.invoke_hook("pre_api_request", **success, retry_count=1)
+    lifecycle.invoke_hook(
+        "post_tool_call",
+        **success,
+        tool_call_id="sensitive-tool-call",
+        tool_name="terminal",
+        args={"command": prompt_canary},
+        result={"output": tool_canary},
+        status="ok",
+    )
+    lifecycle.invoke_hook(
+        "post_api_request",
+        **success,
+        retry_count=1,
+        response={"content": response_canary},
+    )
+    lifecycle.invoke_hook(
+        "on_session_end",
+        **success,
+        completed=True,
+        failed=False,
+        interrupted=False,
+        turn_exit_reason="text_response(stop)",
+    )
+    lifecycle.finalize_session(session_id=success["session_id"])
+
+    failed = base(2)
+    lifecycle.invoke_hook("on_session_start", **failed)
+    lifecycle.invoke_hook("pre_llm_call", **failed, messages=[prompt_canary])
+    lifecycle.invoke_hook("pre_api_request", **failed, retry_count=0)
+    lifecycle.invoke_hook(
+        "api_request_error",
+        **failed,
+        retry_count=0,
+        retryable=False,
+        error={"message": response_canary},
+    )
+    lifecycle.invoke_hook(
+        "on_session_end",
+        **failed,
+        completed=False,
+        failed=True,
+        interrupted=False,
+        turn_exit_reason="system_aborted",
+    )
+    lifecycle.finalize_session(session_id=failed["session_id"])
+
+    cancelled = base(3)
+    lifecycle.invoke_hook("on_session_start", **cancelled)
+    lifecycle.invoke_hook("pre_llm_call", **cancelled, messages=[prompt_canary])
+    lifecycle.invoke_hook("pre_api_request", **cancelled, retry_count=0)
+    lifecycle.invoke_hook(
+        "on_session_end",
+        **cancelled,
+        completed=False,
+        failed=False,
+        interrupted=True,
+        turn_exit_reason="interrupted_by_user",
+    )
+    lifecycle.finalize_session(session_id=cancelled["session_id"])
+
+    from hermes_cli.observability.shared_metrics import SharedMetricsStore
+
+    root = tmp_path / "hermes-home" / "telemetry" / "shared_metrics"
+    store = SharedMetricsStore(root / "metrics.sqlite3", root / "outbox")
+    snapshot = store.counter_snapshot()
+    by_metric: dict[str, list[dict[str, Any]]] = {}
+    for counter in snapshot:
+        by_metric.setdefault(counter["metric_name"], []).append(counter)
+
+    assert len(by_metric["hermes.task_run.started"]) == 1
+    assert by_metric["hermes.task_run.started"][0]["value"] == 3
+    assert {
+        counter["dimensions"]["outcome"]
+        for counter in by_metric["hermes.model_call.count"]
+    } == {"success", "failed", "cancelled"}
+    terminal_by_outcome = {
+        counter["dimensions"]["outcome"]: counter
+        for counter in by_metric["hermes.task_run.finished"]
+    }
+    assert set(terminal_by_outcome) == {"success", "failed", "cancelled"}
+    assert terminal_by_outcome["success"]["dimensions"]["retry_count_bucket"] == "1"
+    assert terminal_by_outcome["success"]["dimensions"]["tool_call_count_bucket"] == "1"
+    assert terminal_by_outcome["failed"]["dimensions"]["end_reason"] == (
+        "system_aborted"
+    )
+    assert terminal_by_outcome["cancelled"]["dimensions"]["termination"] == (
+        "user_cancelled"
+    )
+    assert all(counter["packaged_value"] == counter["value"] for counter in snapshot)
+
+    snapshot_values = {
+        (
+            counter["metric_name"],
+            tuple(sorted(counter["dimensions"].items())),
+        ): counter["value"]
+        for counter in snapshot
+    }
+    package_values: dict[tuple[str, tuple[tuple[str, str], ...]], int] = {}
+    packages = sorted((root / "outbox").glob("*.json"))
+    assert len(packages) == 3
+    package_payloads = [
+        json.loads(package.read_text(encoding="utf-8")) for package in packages
+    ]
+    for package in package_payloads:
+        assert package["schema_version"] == "hermes.shared_metrics.v1"
+        for metric in package["metrics"]:
+            key = (metric["name"], tuple(sorted(metric["dimensions"].items())))
+            package_values[key] = package_values.get(key, 0) + metric["value"]
+    assert package_values == snapshot_values
+
+    serialized_analytics = json.dumps({
+        "snapshot": snapshot,
+        "packages": package_payloads,
+    })
+    for canary in (
+        prompt_canary,
+        response_canary,
+        model_canary,
+        tool_canary,
+        "sensitive-session",
+        "sensitive-task",
+        "sensitive-request",
+        "sensitive-tool-call",
+    ):
+        assert canary not in serialized_analytics
 
 
 def test_direct_runtime_is_disabled_by_default(tmp_path, monkeypatch):

@@ -43,7 +43,9 @@ describe('useSessionStateCache — stored-id rotation provenance', () => {
     let cache!: Cache
 
     setActiveSessionId('runtime-A')
-    render(<Harness activeSessionId="runtime-A" onReady={value => (cache = value)} selectedStoredSessionId="stored-A" />)
+    render(
+      <Harness activeSessionId="runtime-A" onReady={value => (cache = value)} selectedStoredSessionId="stored-A" />
+    )
 
     act(() => {
       cache.updateSessionState('runtime-A', state => state, 'stored-A')
@@ -63,7 +65,9 @@ describe('useSessionStateCache — stored-id rotation provenance', () => {
     let cache!: Cache
 
     setActiveSessionId('runtime-B')
-    render(<Harness activeSessionId="runtime-B" onReady={value => (cache = value)} selectedStoredSessionId="stored-B" />)
+    render(
+      <Harness activeSessionId="runtime-B" onReady={value => (cache = value)} selectedStoredSessionId="stored-B" />
+    )
 
     act(() => {
       cache.updateSessionState('runtime-A', state => state, 'stored-A')

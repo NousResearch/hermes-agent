@@ -1004,6 +1004,12 @@ DEFAULT_CONFIG = {
     # Global active chat session cap across CLI, TUI/dashboard, and messaging.
     # None/0 = unbounded.
     "max_concurrent_sessions": None,
+    "prefix_warmer": {
+        "enabled": False,
+        "interval_seconds": 240,
+        "timeout_seconds": 120.0,
+        "min_idle_seconds": 180.0,
+    },
     # Soft LRU cap on in-memory TUI/desktop/dashboard sessions. When more than
     # this many are live, the gateway evicts the least-recently-active DETACHED
     # sessions (no live client) so accumulated agents don't pile up under memory

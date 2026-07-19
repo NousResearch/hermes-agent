@@ -7060,6 +7060,14 @@ def call_llm(
         reasoning_config=reasoning_config,
         base_url=_base_info or resolved_base_url)
 
+    # Snapshot the outbound prefix for the gateway prefix warmer (local
+    # tool-carrying requests only; no-op otherwise, never raises). This covers
+    # model calls that bypass build_api_kwargs — e.g. the MoA acting call.
+    from agent.prefix_warm_registry import record_call_prefix
+
+    record_call_prefix(_base_info or resolved_base_url,
+                       getattr(client, "api_key", None), kwargs)
+
     # Convert image blocks for Anthropic-compatible endpoints (e.g. MiniMax)
     _client_base = str(getattr(client, "base_url", "") or "")
     if _is_anthropic_compat_endpoint(resolved_provider, _client_base):

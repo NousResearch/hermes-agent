@@ -7983,6 +7983,24 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # engages drain on the first tick.
         self._spawn_supervised(self._drain_control_watcher, "drain_control_watcher")
 
+        # Start the local-backend prompt prefix warmer — keeps the shared
+        # prompt prefix (tool schemas + system prompt) hot in local llama.cpp
+        # caches so fresh sessions skip the entry-tax prefill. Opt-in via
+        # ``prefix_warmer.enabled`` in config.yaml (no-op for cloud providers,
+        # so it stays off unless the user turns it on).
+        try:
+            _pw_cfg = getattr(self.config, "prefix_warmer", None)
+            if _pw_cfg is not None and _pw_cfg.enabled:
+                from agent.prefix_warm_registry import enable_capture
+                from gateway.prefix_warmer import prefix_warmer_watcher
+
+                # Capture hooks on the request path are dormant until this —
+                # processes that never start the warmer pay nothing.
+                enable_capture()
+                asyncio.create_task(prefix_warmer_watcher(self, _pw_cfg))
+        except Exception:  # noqa: BLE001 - warmer must never block startup
+            logger.debug("prefix_warmer: failed to start", exc_info=True)
+
         logger.info("Press Ctrl+C to stop")
         
         return True

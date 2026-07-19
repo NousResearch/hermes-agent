@@ -11,6 +11,7 @@ import {
   $activeSessionId,
   $activeSessionStoredIdRotation,
   $currentCwd,
+  $freshDraftKey,
   $messages,
   $newChatWorkspaceTarget,
   $resumeFailedSessionId,
@@ -1135,5 +1136,17 @@ describe('createBackendSessionForSend workspace target', () => {
     )
 
     expect(params).toMatchObject({ cwd: '/clicked-workspace' })
+  })
+
+  it('can preserve the current fresh draft key when explicitly requested', async () => {
+    let handle: HarnessHandle | null = null
+    const requestGateway = vi.fn(async () => ({} as never))
+
+    render(<Harness onReady={h => (handle = h)} requestGateway={requestGateway} />)
+    await waitFor(() => expect(handle).not.toBeNull())
+
+    const before = $freshDraftKey.get()
+    await handle!.startFreshSessionDraft({ replaceRoute: true, rotateFreshDraftKey: false })
+    expect($freshDraftKey.get()).toBe(before)
   })
 })

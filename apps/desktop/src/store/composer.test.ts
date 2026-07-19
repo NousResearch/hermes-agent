@@ -73,6 +73,14 @@ describe('session drafts', () => {
     expect(takeSessionDraft('session-a').text).toBe('session draft')
   })
 
+  it('keeps separate fresh-chat lifecycle drafts isolated', () => {
+    stashSessionDraft('__new__:first', 'first unsent chat', [])
+    stashSessionDraft('__new__:second', 'second unsent chat', [])
+
+    expect(takeSessionDraft('__new__:first').text).toBe('first unsent chat')
+    expect(takeSessionDraft('__new__:second').text).toBe('second unsent chat')
+  })
+
   it('persists draft text (not attachments) to localStorage', () => {
     stashSessionDraft('session-a', 'survives reload', [attachment({ id: 'file:a' })])
 

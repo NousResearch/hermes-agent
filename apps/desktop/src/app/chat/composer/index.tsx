@@ -66,6 +66,7 @@ export function ChatBar({
   cwd,
   disabled,
   focusKey,
+  freshDraftKey,
   gateway,
   maxRecordingSeconds = 120,
   queueSessionKey,
@@ -111,7 +112,7 @@ export function ChatBar({
   // would discard a question the user may want to come back to. The blocking
   // prompt owns its own dismissal (Skip, Reject, dialog close).
   const awaitingInput = useStore(scope.$awaitingInput)
-  const activeQueueSessionKey = queueSessionKey || sessionId || null
+  const activeQueueSessionKey = queueSessionKey || sessionId || freshDraftKey || null
 
   // Status items (subagents, background processes) are keyed by the RUNTIME
   // session id — gateway events and process.list both speak that id. Only the

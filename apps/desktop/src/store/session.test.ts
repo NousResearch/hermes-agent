@@ -8,10 +8,12 @@ import {
   $activeSessionId,
   $connection,
   $currentCwd,
+  $freshDraftKey,
   $selectedStoredSessionId,
   $unreadFinishedSessionIds,
   applyConfiguredDefaultProjectDir,
   mergeSessionPage,
+  rotateFreshDraftKey,
   sessionPinId,
   setCurrentCwd,
   setSelectedStoredSessionId,
@@ -41,6 +43,19 @@ const session = (over: Partial<SessionInfo>): SessionInfo => ({
   title: null,
   tool_call_count: 0,
   ...over
+})
+
+describe('fresh draft identity', () => {
+  it('rotates for each new-chat lifecycle and persists the current key', () => {
+    const previous = $freshDraftKey.get()
+    const first = rotateFreshDraftKey()
+    const second = rotateFreshDraftKey()
+
+    expect(first).not.toBe(previous)
+    expect(second).not.toBe(first)
+    expect($freshDraftKey.get()).toBe(second)
+    expect(window.localStorage.getItem('hermes.desktop.freshDraftKey')).toBe(second)
+  })
 })
 
 describe('computed $attentionSessionIds', () => {

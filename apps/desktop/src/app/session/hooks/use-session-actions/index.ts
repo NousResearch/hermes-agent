@@ -25,6 +25,7 @@ import {
   $sessions,
   $yoloActive,
   type NewChatWorkspaceTarget,
+  rotateFreshDraftKey,
   sessionPinId,
   setActiveSessionId,
   setActiveSessionStoredIdRotation,
@@ -167,6 +168,7 @@ async function desktopSessionCreateParams(cwd: string): Promise<Record<string, u
 
 interface FreshSessionDraftOptions {
   replaceRoute?: boolean
+  rotateFreshDraftKey?: boolean
   workspaceTarget?: NewChatWorkspaceTarget
 }
 
@@ -246,6 +248,10 @@ export function useSessionActions({
       const workspaceTarget = hasWorkspaceTarget
         ? normalizeNewChatWorkspaceTarget(draftOptions.workspaceTarget)
         : undefined
+
+      if (draftOptions.rotateFreshDraftKey !== false) {
+        rotateFreshDraftKey()
+      }
 
       resetViewSync()
       busyRef.current = false

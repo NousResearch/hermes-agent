@@ -26,6 +26,7 @@ import { $petOverlayActive } from '@/store/pet-overlay'
 import { $gatewaySwapTarget, $profiles } from '@/store/profile'
 import {
   $contextSuggestions,
+  $freshDraftKey,
   $freshDraftReady,
   $gatewayState,
   $introPersonality,
@@ -262,6 +263,7 @@ export function ChatView({
   const petOverlayActive = useStore($petOverlayActive)
   const petPresent = petActive || petOverlayActive
   const freshDraftReady = useStore($freshDraftReady)
+  const freshDraftKey = useStore($freshDraftKey)
   const gatewayState = useStore($gatewayState)
   const gatewaySwapTarget = useStore($gatewaySwapTarget)
   const gatewayOpen = gatewayState === 'open'
@@ -509,6 +511,7 @@ export function ChatView({
               cwd={currentCwd}
               disabled={!gatewayOpen}
               focusKey={activeSessionId}
+              freshDraftKey={freshDraftKey}
               gateway={gateway}
               maxRecordingSeconds={maxVoiceRecordingSeconds}
               onAddContextRef={onAddContextRef}

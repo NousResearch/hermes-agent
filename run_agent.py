@@ -4321,7 +4321,13 @@ class AIAgent:
             else:
                 from hermes_cli.auth import resolve_xai_oauth_runtime_credentials
 
-                creds = resolve_xai_oauth_runtime_credentials(force_refresh=force)
+                # Carry the rejected bearer so the shared store can generation-
+                # compare: if another process already rotated, adopt that grant
+                # instead of POSTing a stale single-use refresh token (G4/G10).
+                creds = resolve_xai_oauth_runtime_credentials(
+                    force_refresh=force,
+                    rejected_access_token=str(self.api_key or "") or None,
+                )
         except Exception as exc:
             logger.debug("%s credential refresh failed: %s", self.provider, exc)
             return False

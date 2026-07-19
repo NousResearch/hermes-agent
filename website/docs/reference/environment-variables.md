@@ -89,6 +89,9 @@ Hermes reads environment variables from the process environment and, for user-ma
 | `OLLAMA_BASE_URL` | Override Ollama Cloud base URL (default: `https://ollama.com/v1`) |
 | `XAI_API_KEY` | xAI (Grok) API key for chat + TTS + web search ([console.x.ai](https://console.x.ai/)) |
 | `XAI_BASE_URL` | Override xAI base URL (default: `https://api.x.ai/v1`) |
+| `HERMES_XAI_SHARED_AUTH` | Opt-in to the **canonical shared xAI OAuth store** (`1`/`true`/`yes`/`on`). Required for multi-profile safety with xAI's single-use rotating refresh token. Does **not** activate just because `HERMES_SHARED_AUTH_DIR` is set (that dir is shared with Nous). See [xAI Grok OAuth](../guides/xai-grok-oauth.md#shared-store-mode-multi-profile). |
+| `HERMES_SHARED_AUTH_PROVIDERS` | Comma list of providers that own grants in `HERMES_SHARED_AUTH_DIR`. Include `xai-oauth` to enable shared xAI mode without `HERMES_XAI_SHARED_AUTH`. |
+| `HERMES_SHARED_AUTH_DIR` | Directory for cross-profile shared auth files (default: `<hermes-root>/shared/`). Holds `nous_auth.json` and, when shared xAI is enabled, `xai_oauth.json` + lock. Must be a **local** filesystem with reliable advisory locking (not NFS/SMB). Every gateway/cron/desktop process must resolve the same path. |
 | `MISTRAL_API_KEY` | Mistral API key for Voxtral TTS and Voxtral STT ([console.mistral.ai](https://console.mistral.ai)) |
 | `AWS_REGION` | AWS region for Bedrock inference (e.g. `us-east-1`, `eu-central-1`). Read by boto3. |
 | `AWS_PROFILE` | AWS named profile for Bedrock authentication (reads `~/.aws/credentials`). Leave unset to use default boto3 credential chain. |

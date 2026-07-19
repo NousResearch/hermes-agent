@@ -346,6 +346,16 @@ def auth_add_command(args) -> None:
         return
 
     if provider == "xai-oauth":
+        if auth_mod._xai_shared_auth_enabled():
+            raise SystemExit(
+                "Shared xAI OAuth mode is active: refusing to add a separate "
+                "manual:device_code pool entry that would fork the single-use "
+                "refresh-token family.\n"
+                "Use `hermes model` / device-code login (writes the canonical "
+                "shared store) or `hermes auth xai migrate-shared`.\n"
+                "Disable shared mode (unset HERMES_XAI_SHARED_AUTH) only if you "
+                "intentionally want independent per-entry grants."
+            )
         creds = auth_mod._xai_oauth_device_code_login(
             timeout_seconds=getattr(args, "timeout", None) or 20.0,
             open_browser=not getattr(args, "no_browser", False),
@@ -527,7 +537,15 @@ def auth_status_command(args) -> None:
 
 
 def auth_logout_command(args) -> None:
-    auth_mod.logout_command(SimpleNamespace(provider=getattr(args, "provider", None)))
+    auth_mod.logout_command(
+        SimpleNamespace(
+            provider=getattr(args, "provider", None),
+            global_logout=bool(
+                getattr(args, "global_logout", False) or getattr(args, "shared", False)
+            ),
+            shared=bool(getattr(args, "shared", False)),
+        )
+    )
 
 
 def auth_spotify_command(args) -> None:
@@ -775,6 +793,65 @@ def _interactive_strategy() -> None:
     print(f"Set {provider} strategy to: {strategy}")
 
 
+def auth_xai_command(args) -> None:
+    """Manage the canonical shared xAI OAuth store."""
+    action = getattr(args, "xai_action", None)
+    if action == "migrate-shared":
+        if not auth_mod._xai_shared_auth_enabled():
+            raise SystemExit(
+                "Shared xAI OAuth is not enabled.\n"
+                "Set HERMES_XAI_SHARED_AUTH=1 (or HERMES_SHARED_AUTH_PROVIDERS=xai-oauth) "
+                "in the environment seen by every gateway/cron/desktop process, then retry."
+            )
+        try:
+            written = auth_mod.migrate_xai_oauth_to_shared_store(
+                source=getattr(args, "source", "auto") or "auto",
+                strip_legacy=True,  # A8: --keep-legacy removed; sole ownership required
+                force=bool(getattr(args, "force", False)),
+            )
+        except auth_mod.AuthError as exc:
+            raise SystemExit(str(exc)) from exc
+        print("Migrated xAI OAuth grant into the canonical shared store.")
+        print(f"  Shared path: {auth_mod._xai_shared_store_path()}")
+        print(f"  Generation:  {written.get('generation')}")
+        print(f"  Last refresh:{written.get('last_refresh')}")
+        print(
+            "  Legacy secret material was stripped from all profiles + root "
+            "(sole ownership)."
+        )
+        return
+    if action == "enable-shared":
+        if not auth_mod._xai_shared_auth_enabled():
+            raise SystemExit(
+                "Shared xAI OAuth is not enabled. Set HERMES_XAI_SHARED_AUTH=1 first."
+            )
+        try:
+            auth_mod.enable_profile_xai_shared_auth()
+        except auth_mod.AuthError as exc:
+            raise SystemExit(str(exc)) from exc
+        print("Enabled shared xAI OAuth for this profile.")
+        return
+    if action == "disable-shared":
+        # F4b: gate must be on; never strip local tokens when shared mode is off.
+        if not auth_mod._xai_shared_auth_enabled():
+            raise SystemExit(
+                "Shared xAI OAuth is not enabled. Set HERMES_XAI_SHARED_AUTH=1 first."
+            )
+        try:
+            auth_mod.disable_profile_xai_shared_auth()
+        except auth_mod.AuthError as exc:
+            raise SystemExit(str(exc)) from exc
+        print(
+            "Disabled shared xAI OAuth for this profile only. "
+            "Canonical grant is unchanged. Use `hermes logout --provider xai-oauth --global` "
+            "to delete it for all profiles."
+        )
+        return
+    raise SystemExit(
+        "usage: hermes auth xai {migrate-shared,enable-shared,disable-shared}"
+    )
+
+
 def auth_command(args) -> None:
     action = getattr(args, "auth_action", "")
     if action == "add":
@@ -797,6 +874,9 @@ def auth_command(args) -> None:
         return
     if action == "spotify":
         auth_spotify_command(args)
+        return
+    if action == "xai":
+        auth_xai_command(args)
         return
     # No subcommand — launch interactive mode
     _interactive_auth()

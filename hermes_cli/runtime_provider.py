@@ -1691,6 +1691,39 @@ def resolve_runtime_provider(
             and not has_runtime_override
         )
 
+    # A6: shared xAI mode is CANONICAL-FIRST, not pool-first. A legacy
+    # local/manual pool row must never win over the shared fleet grant.
+    if provider == "xai-oauth":
+        try:
+            from hermes_cli import auth as _auth_mod
+
+            if _auth_mod._xai_shared_auth_enabled():
+                try:
+                    creds = resolve_xai_oauth_runtime_credentials()
+                    return {
+                        "provider": "xai-oauth",
+                        "api_mode": "codex_responses",
+                        "base_url": (creds.get("base_url") or "").rstrip("/")
+                        or DEFAULT_XAI_OAUTH_BASE_URL,
+                        "api_key": creds.get("api_key", ""),
+                        "source": creds.get("source", _auth_mod.XAI_SHARED_SOURCE),
+                        "last_refresh": creds.get("last_refresh"),
+                        "requested_provider": requested_provider,
+                    }
+                except AuthError:
+                    if requested_provider != "auto":
+                        raise
+                    logger.info(
+                        "Shared xAI OAuth credentials failed; "
+                        "falling through to next provider."
+                    )
+                    # Fall through to env-var providers below — skip pool.
+                    should_use_pool = False
+        except AuthError:
+            raise
+        except Exception:
+            pass
+
     try:
         pool = load_pool(provider) if should_use_pool else None
     except Exception:

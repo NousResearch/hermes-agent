@@ -33,12 +33,12 @@ import threading
 import time
 import uuid
 import webbrowser
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any, Callable, Dict, FrozenSet, Iterable, List, Optional, Tuple
+from typing import Any, Callable, Dict, FrozenSet, Iterable, List, Mapping, Optional, Sequence, Tuple
 from urllib.parse import parse_qs, urlencode, urlparse
 
 import httpx
@@ -1106,10 +1106,44 @@ def _auth_store_lock(
         yield
 
 
-def _load_auth_store(auth_file: Optional[Path] = None) -> Dict[str, Any]:
+def _empty_auth_store() -> Dict[str, Any]:
+    """Canonical empty auth-store shape (absent / empty-dict load result)."""
+    return {"version": AUTH_STORE_VERSION, "providers": {}}
+
+
+def _is_recognized_auth_store_shape(raw: Any) -> bool:
+    """True when decoded JSON is a recognized dict-shaped auth store.
+
+    Recognized:
+      - empty dict ``{}`` (legitimately empty)
+      - dict with ``providers`` mapping and/or ``credential_pool`` mapping
+      - legacy PR ``systems`` mapping (migrated on load)
+
+    Lists, strings, numbers, null, and other non-dict / unrecognized dict
+    shapes are NOT recognized — under ``fail_on_corrupt=True`` they must
+    raise rather than normalize to empty (R7-1).
+    """
+    if not isinstance(raw, dict):
+        return False
+    if not raw:
+        return True
+    if isinstance(raw.get("providers"), dict):
+        return True
+    if isinstance(raw.get("credential_pool"), dict):
+        return True
+    if isinstance(raw.get("systems"), dict):
+        return True
+    return False
+
+
+def _load_auth_store(
+    auth_file: Optional[Path] = None,
+    *,
+    fail_on_corrupt: bool = False,
+) -> Dict[str, Any]:
     auth_file = auth_file or _auth_file_path()
     if not auth_file.exists():
-        return {"version": AUTH_STORE_VERSION, "providers": {}}
+        return _empty_auth_store()
 
     try:
         raw = json.loads(auth_file.read_text())
@@ -1120,12 +1154,45 @@ def _load_auth_store(auth_file: Optional[Path] = None) -> Dict[str, Any]:
             shutil.copy2(auth_file, corrupt_path)
         except Exception:
             pass
+        if fail_on_corrupt:
+            # R5: sole-owner audit must not treat unreadable/corrupt stores as empty.
+            raise AuthError(
+                f"auth store at {auth_file} is unreadable/corrupt: {exc}. "
+                f"Corrupt copy preserved at {corrupt_path}.",
+                provider="xai-oauth",
+                code="auth_store_unreadable",
+                relogin_required=False,
+            ) from exc
         logger.warning(
             "auth: failed to parse %s (%s) — starting with empty store. "
             "Corrupt file preserved at %s",
             auth_file, exc, corrupt_path,
         )
-        return {"version": AUTH_STORE_VERSION, "providers": {}}
+        return _empty_auth_store()
+
+    # R7-1: parseable but unsupported shapes must fail closed under strict load.
+    # Absent file → empty (above). Empty dict ``{}`` → empty. Ordinary empty
+    # provider dicts remain valid. Lists / strings / numbers / unrecognized
+    # dicts are NOT silently normalized when fail_on_corrupt=True — a hidden
+    # durable RT in an invalid-shaped store must not be treated as empty and
+    # promoted-over / certified clean.
+    if not _is_recognized_auth_store_shape(raw):
+        if fail_on_corrupt:
+            raise AuthError(
+                f"auth store at {auth_file} has unsupported shape "
+                f"({type(raw).__name__}); refusing to treat as empty under "
+                f"fail-closed load.",
+                provider="xai-oauth",
+                code="auth_store_unreadable",
+                relogin_required=False,
+            )
+        logger.warning(
+            "auth: unsupported auth store shape at %s (%s) — starting with "
+            "empty store.",
+            auth_file,
+            type(raw).__name__,
+        )
+        return _empty_auth_store()
 
     if isinstance(raw, dict) and (
         isinstance(raw.get("providers"), dict)
@@ -1136,6 +1203,10 @@ def _load_auth_store(auth_file: Optional[Path] = None) -> Dict[str, Any]:
             _migrate_stale_nous_portal_url(raw["providers"])
         return raw
 
+    # Empty dict ``{}`` — legitimately empty recognized store.
+    if isinstance(raw, dict) and not raw:
+        return _empty_auth_store()
+
     # Migrate from PR's "systems" format if present
     if isinstance(raw, dict) and isinstance(raw.get("systems"), dict):
         systems = raw["systems"]
@@ -1145,7 +1216,17 @@ def _load_auth_store(auth_file: Optional[Path] = None) -> Dict[str, Any]:
         return {"version": AUTH_STORE_VERSION, "providers": providers,
                 "active_provider": "nous" if providers else None}
 
-    return {"version": AUTH_STORE_VERSION, "providers": {}}
+    # Defensive: recognized-shape predicate should have covered all cases.
+    if fail_on_corrupt:
+        raise AuthError(
+            f"auth store at {auth_file} has unsupported shape "
+            f"({type(raw).__name__}); refusing to treat as empty under "
+            f"fail-closed load.",
+            provider="xai-oauth",
+            code="auth_store_unreadable",
+            relogin_required=False,
+        )
+    return _empty_auth_store()
 
 
 def _save_auth_store(auth_store: Dict[str, Any], target_path: Optional[Path] = None) -> Path:
@@ -1479,6 +1560,14 @@ def write_credential_pool(
             if isinstance(entry, dict) else entry
             for entry in entries
         ]
+        # A2: final shared-mode guard — no durable xAI RT except the ephemeral
+        # shared reference, regardless of source label (device_code/manual/etc).
+        if str(provider_id or "").strip().lower() == "xai-oauth" and _xai_shared_auth_enabled():
+            sanitized_entries = [
+                sanitize_xai_shared_pool_payload(entry, provider_id)
+                if isinstance(entry, dict) else entry
+                for entry in sanitized_entries
+            ]
         existing = pool.get(provider_id)
         existing_list = existing if isinstance(existing, list) else []
         new_ids = {
@@ -1493,7 +1582,28 @@ def write_credential_pool(
             disk_id = disk_entry.get("id")
             if not disk_id or disk_id in new_ids or disk_id in removed:
                 continue
-            merged.append(sanitize_borrowed_credential_payload(disk_entry, provider_id))
+            merged_entry = sanitize_borrowed_credential_payload(disk_entry, provider_id)
+            if str(provider_id or "").strip().lower() == "xai-oauth" and _xai_shared_auth_enabled():
+                merged_entry = sanitize_xai_shared_pool_payload(merged_entry, provider_id)
+            merged.append(merged_entry)
+        # Collapse duplicate shared refs after merge (sole ownership).
+        if str(provider_id or "").strip().lower() == "xai-oauth" and _xai_shared_auth_enabled():
+            collapsed: List[Dict[str, Any]] = []
+            saw_shared = False
+            for entry in merged:
+                if not isinstance(entry, dict):
+                    continue
+                source = str(entry.get("source") or "")
+                if source == XAI_SHARED_SOURCE or not source.startswith("manual"):
+                    if saw_shared:
+                        continue
+                    collapsed.append(sanitize_xai_shared_pool_payload(entry, provider_id))
+                    saw_shared = True
+                else:
+                    # manual:* under shared mode is rewritten to shared ref above;
+                    # anything still labeled manual is dropped.
+                    continue
+            merged = collapsed
         pool[provider_id] = merged
         return _save_auth_store(auth_store)
 
@@ -3952,11 +4062,2373 @@ def _pool_codex_access_token() -> str:
 
 
 # =============================================================================
+# Shared xAI OAuth store — ONE grant family across all profiles
+# =============================================================================
+#
+# Canonical state lives at ${HERMES_SHARED_AUTH_DIR}/xai_oauth.json (default
+# ``<hermes-root>/shared/xai_oauth.json``). Every profile READS that store.
+# Any process may refresh, but only while holding ``xai_oauth.lock``. After a
+# waiter acquires the lock it re-reads and ADOPTS the winner's rotated tokens
+# instead of POSTing a stale single-use refresh token again.
+#
+# Explicit opt-in only (G7): HERMES_SHARED_AUTH_DIR may already be set for
+# Nous. Shared xAI ownership is gated by:
+#   - HERMES_XAI_SHARED_AUTH=1 (truthy), or
+#   - HERMES_SHARED_AUTH_PROVIDERS containing ``xai-oauth`` (comma list)
+#
+# When active, this OVERRIDES the legacy profile→root fallback + write-through
+# machinery. Profile auth.json / credential_pool rows keep non-secret metadata
+# and a reference (``source: shared:xai-oauth``) — NEVER the canonical refresh
+# token. Require a local filesystem with reliable advisory locking (no NFS/SMB).
+# =============================================================================
+
+XAI_SHARED_STORE_FILENAME = "xai_oauth.json"
+XAI_SHARED_SOURCE = "shared:xai-oauth"
+XAI_SHARED_SCHEMA_VERSION = 1
+# One-time post-upgrade marker: fleet sole-owner strip has run against a
+# pre-existing canonical grant (R4). Lives beside the shared store.
+XAI_SOLE_OWNER_MARKER_FILENAME = "xai_oauth.sole_owner_verified"
+# Pool/provider statuses that are never eligible for auto-promote (R2).
+_XAI_NON_PROMOTABLE_STATUSES = frozenset(
+    {
+        "dead",
+        "exhausted",
+        "invalid_grant",
+        "error",
+        "revoked",
+    }
+)
+_XAI_NON_PROMOTABLE_REASONS = frozenset(
+    {
+        "invalid_grant",
+        "invalid_token",
+        "token_invalidated",
+        "token_revoked",
+        "refresh_token_reused",
+        "unauthorized_client",
+    }
+)
+_xai_shared_lock_holder = threading.local()
+
+
+def _xai_shared_auth_enabled() -> bool:
+    """True when the canonical shared xAI OAuth store is deliberately enabled.
+
+    HERMES_SHARED_AUTH_DIR alone does NOT flip this — that env is shared with
+    the Nous convenience store and must not silently change xAI ownership.
+    """
+    if is_truthy_value(os.getenv("HERMES_XAI_SHARED_AUTH", ""), default=False):
+        return True
+    raw = os.getenv("HERMES_SHARED_AUTH_PROVIDERS", "").strip()
+    if not raw:
+        return False
+    tokens = {part.strip().lower() for part in raw.split(",") if part.strip()}
+    return bool(tokens & {"xai-oauth", "xai", "grok-oauth", "x-ai-oauth"})
+
+
+def _xai_shared_auth_dir() -> Path:
+    """Resolve the directory that holds the shared xAI OAuth store.
+
+    Same path resolution as the Nous shared store (``HERMES_SHARED_AUTH_DIR``
+    override, else ``<hermes-root>/shared/``).
+    """
+    override = os.getenv("HERMES_SHARED_AUTH_DIR", "").strip()
+    if override:
+        return Path(override).expanduser()
+    from hermes_constants import get_default_hermes_root
+    return get_default_hermes_root() / "shared"
+
+
+def _xai_shared_store_path() -> Path:
+    path = _xai_shared_auth_dir() / XAI_SHARED_STORE_FILENAME
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        # Compare against the *platform native* user home (not
+        # get_default_hermes_root(), which follows HERMES_HOME profile roots
+        # and would false-positive when a test uses tmp/profiles/<name> plus
+        # tmp/shared). Mirrors ``_auth_file_path`` seat belt intent.
+        from hermes_constants import _get_platform_default_hermes_home
+        real_home_shared = (
+            _get_platform_default_hermes_home() / "shared" / XAI_SHARED_STORE_FILENAME
+        ).resolve(strict=False)
+        try:
+            resolved = path.resolve(strict=False)
+        except Exception:
+            resolved = path
+        if resolved == real_home_shared:
+            raise RuntimeError(
+                f"Refusing to touch real user shared xAI auth store during test run: "
+                f"{path}. Set HERMES_SHARED_AUTH_DIR to a tmp_path in your test fixture."
+            )
+    return path
+
+
+@contextmanager
+def _xai_shared_store_lock(timeout_seconds: float = AUTH_LOCK_TIMEOUT_SECONDS):
+    """Cross-profile lock for the canonical shared xAI OAuth store.
+
+    Lock ordering (G3/H1): shared (outer) → auth-store locks in deterministic
+    sorted-path order (inner). NEVER hold a profile ``auth.lock`` while waiting
+    on this lock (deadlock risk against a waiter that already holds shared).
+
+    Network under locks (G3 — intentional sole-refresher design):
+      - NEVER perform network I/O under a profile/auth-store lock.
+      - The shared lock INTENTIONALLY serializes the runtime refresh HTTP
+        (``refresh_xai_oauth_pure`` / discovery) so only one process refreshes
+        the rotating RT. That is the sole-refresher design, not a bug.
+      - Election, promote, migrate, strip, and fleet-marker paths do no HTTP
+        under either lock class.
+
+    Promote/migrate holds shared outer, then BOTH profile and root store locks
+    (sorted path order) through elect + recheck + canonical write (H1/H2) so a
+    concurrent logout/writer cannot clear or inject a second live RT between
+    election and commit.
+    """
+    try:
+        lock_path = _xai_shared_store_path().with_suffix(".lock")
+    except RuntimeError:
+        yield
+        return
+
+    with _file_lock(
+        lock_path,
+        _xai_shared_lock_holder,
+        timeout_seconds,
+        "Timed out waiting for shared xAI OAuth auth lock",
+    ):
+        yield
+
+
+def _xai_shared_state_has_usable_tokens(state: Optional[Dict[str, Any]]) -> bool:
+    if not isinstance(state, dict):
+        return False
+    access = str(state.get("access_token", "") or "").strip()
+    refresh = str(state.get("refresh_token", "") or "").strip()
+    return bool(access and refresh)
+
+
+def _shared_xai_state_is_quarantined(state: Optional[Dict[str, Any]]) -> bool:
+    """R1: True when the canonical store is intentionally non-promotable.
+
+    Terminal quarantine (invalid_grant etc.) and global logout leave a
+    tombstone with ``last_auth_error`` and empty tokens. Auto-promote must
+    NOT resurrect these into a live grant.
+    """
+    if not isinstance(state, dict):
+        return False
+    if _xai_shared_state_has_usable_tokens(state):
+        return False
+    if state.get("last_auth_error"):
+        return True
+    if is_truthy_value(state.get("logged_out"), default=False):
+        return True
+    if is_truthy_value(state.get("quarantined"), default=False):
+        return True
+    return False
+
+
+def _shared_xai_store_is_never_initialized() -> bool:
+    """True when the canonical shared file has never been written (or is gone)."""
+    try:
+        path = _xai_shared_store_path()
+    except RuntimeError:
+        return True
+    return not path.is_file()
+
+
+def _xai_sole_owner_marker_path() -> Path:
+    return _xai_shared_auth_dir() / XAI_SOLE_OWNER_MARKER_FILENAME
+
+
+def _clear_xai_sole_owner_marker() -> None:
+    """Drop the post-upgrade sole-owner marker (e.g. after global logout)."""
+    try:
+        path = _xai_sole_owner_marker_path()
+    except RuntimeError:
+        return
+    try:
+        if path.is_file():
+            path.unlink()
+    except OSError:
+        pass
+
+
+def _fsync_parent_dir(
+    path: Path,
+    *,
+    context: str,
+    code: str = "xai_shared_parent_fsync_failed",
+) -> None:
+    """Crash-durability: fsync the parent directory of ``path`` (H5).
+
+    Parent-dir open AND fsync failures are raised — never swallowed — so a
+    rename/unlink that is not durable cannot be reported as success.
+    """
+    parent = path if path.is_dir() else path.parent
+    try:
+        dir_fd = os.open(str(parent), os.O_RDONLY)
+    except OSError as exc:
+        raise AuthError(
+            f"Failed to open parent directory for fsync ({context}) at "
+            f"{parent}: {exc}",
+            provider="xai-oauth",
+            code=code,
+            relogin_required=False,
+        ) from exc
+    try:
+        try:
+            os.fsync(dir_fd)
+        except OSError as exc:
+            raise AuthError(
+                f"Failed to fsync parent directory ({context}) at "
+                f"{parent}: {exc}",
+                provider="xai-oauth",
+                code=code,
+                relogin_required=False,
+            ) from exc
+    finally:
+        try:
+            os.close(dir_fd)
+        except OSError:
+            pass
+
+
+def _xai_auth_path_sort_key(path: Path) -> str:
+    """Deterministic lock/order key for an auth-store path."""
+    try:
+        return str(path.resolve(strict=False))
+    except Exception:
+        return str(path)
+
+
+@contextmanager
+def _xai_ordered_auth_store_locks(
+    paths: Sequence[Path],
+    *,
+    timeout_seconds: float = AUTH_LOCK_TIMEOUT_SECONDS,
+):
+    """Acquire auth-store locks in deterministic sorted-path order (H2/H3).
+
+    Fail-closed: any lock timeout or unresolvable path raises AuthError —
+    never silently omit a store from a multi-store critical section.
+    Yields the ordered list of distinct Paths actually locked.
+    """
+    resolved: List[Tuple[str, Path]] = []
+    seen: set = set()
+    for path in paths:
+        if path is None:
+            raise AuthError(
+                "Shared xAI multi-store operation received an unresolvable "
+                "auth path (None). Refusing to proceed fail-open.",
+                provider="xai-oauth",
+                code="xai_auth_store_unreadable",
+                relogin_required=False,
+            )
+        try:
+            key = _xai_auth_path_sort_key(path)
+        except Exception as exc:
+            raise AuthError(
+                f"Shared xAI multi-store operation cannot resolve auth path "
+                f"{path}: {exc}",
+                provider="xai-oauth",
+                code="xai_auth_store_unreadable",
+                relogin_required=False,
+            ) from exc
+        if key in seen:
+            continue
+        seen.add(key)
+        resolved.append((key, path))
+    resolved.sort(key=lambda item: item[0])
+    ordered_paths = [path for _key, path in resolved]
+
+    with ExitStack() as stack:
+        for path in ordered_paths:
+            try:
+                stack.enter_context(
+                    _auth_store_lock(
+                        timeout_seconds=timeout_seconds,
+                        target_path=path,
+                    )
+                )
+            except TimeoutError as exc:
+                raise AuthError(
+                    f"Timed out acquiring auth store lock for {path} during "
+                    f"shared xAI multi-store operation. Refusing fail-open.",
+                    provider="xai-oauth",
+                    code="xai_auth_store_lock_failed",
+                    relogin_required=False,
+                ) from exc
+            except AuthError:
+                raise
+            except Exception as exc:
+                raise AuthError(
+                    f"Failed to acquire auth store lock for {path} during "
+                    f"shared xAI multi-store operation: {exc}",
+                    provider="xai-oauth",
+                    code="xai_auth_store_lock_failed",
+                    relogin_required=False,
+                ) from exc
+        yield ordered_paths
+
+
+def _xai_profile_and_root_election_paths() -> List[Path]:
+    """Resolve active-profile + global-root auth paths for sole-live election.
+
+    Fail-closed: inability to resolve the active profile path raises. Root is
+    included only when distinct; root resolution failure raises (a live RT in
+    an unresolvable root must not escape the sole-live check).
+    """
+    try:
+        active_path = _auth_file_path()
+    except Exception as exc:
+        raise AuthError(
+            f"Cannot resolve active profile auth path for shared xAI election: "
+            f"{exc}",
+            provider="xai-oauth",
+            code="xai_auth_store_unreadable",
+            relogin_required=False,
+        ) from exc
+
+    paths: List[Path] = [active_path]
+    try:
+        root_path = _global_auth_file_path()
+    except Exception as exc:
+        raise AuthError(
+            f"Cannot resolve global-root auth path for shared xAI election: "
+            f"{exc}",
+            provider="xai-oauth",
+            code="xai_auth_store_unreadable",
+            relogin_required=False,
+        ) from exc
+    if root_path is not None and not _same_path(root_path, active_path):
+        paths.append(root_path)
+    return paths
+
+
+def _xai_fleet_auth_inventory(
+    *,
+    fail_loud: bool = True,
+    paths: Optional[Sequence[Path]] = None,
+) -> Tuple[str, List[Dict[str, Any]]]:
+    """Inventory audited auth-store paths for sole-owner marker binding.
+
+    Digest is SECURITY-RELEVANT only (R7-3): per-path presence plus whether a
+    durable xAI OAuth refresh_token remains. Volatile non-secret metadata
+    (``shared_generation``, timestamps, mtime/size of metadata-only rewrites)
+    is intentionally excluded so a normal refresh does not churn the marker
+    and force a full fleet re-audit.
+
+    A restored/new auth.json with (or without) a durable RT still changes the
+    digest and forces re-audit. Real RT reintroduction MUST invalidate.
+
+    Fail-closed (H3/R7-1): read/parse/unsupported-shape errors raise when
+    ``fail_loud`` (default) — they are NEVER hashed into a "valid" fleet
+    digest. Callers that hold fleet locks should pass ``paths`` so inventory
+    cannot race enumeration.
+    """
+    if paths is None:
+        paths = _iter_xai_auth_json_paths(
+            include_global_root=True,
+            fail_loud=fail_loud,
+        )
+    entries: List[Dict[str, Any]] = []
+    for path in paths:
+        try:
+            resolved = str(path.resolve(strict=False))
+        except Exception:
+            resolved = str(path)
+        if not path.is_file():
+            entries.append(
+                {
+                    "path": resolved,
+                    "present": False,
+                    "has_durable_xai_rt": False,
+                }
+            )
+            continue
+        try:
+            # R7-1/R7-3: strict load — unsupported shapes / corrupt JSON fail
+            # closed rather than hashing as "empty / RT-free".
+            store = _load_auth_store(path, fail_on_corrupt=True)
+            has_rt = _auth_store_holds_durable_xai_refresh_token(store)
+            entries.append(
+                {
+                    "path": resolved,
+                    "present": True,
+                    "has_durable_xai_rt": bool(has_rt),
+                }
+            )
+        except AuthError as exc:
+            if fail_loud:
+                raise AuthError(
+                    f"Fleet inventory cannot read auth store at {path}: "
+                    f"{exc}. Refusing to hash an unreadable store into a "
+                    f"sole-owner marker.",
+                    provider="xai-oauth",
+                    code="xai_shared_fleet_inventory_failed",
+                    relogin_required=False,
+                ) from exc
+            entries.append(
+                {
+                    "path": resolved,
+                    "present": True,
+                    "error": str(exc),
+                }
+            )
+        except OSError as exc:
+            if fail_loud:
+                raise AuthError(
+                    f"Fleet inventory cannot read/stat auth store at {path}: "
+                    f"{exc}. Refusing to hash an unreadable store into a "
+                    f"sole-owner marker.",
+                    provider="xai-oauth",
+                    code="xai_shared_fleet_inventory_failed",
+                    relogin_required=False,
+                ) from exc
+            entries.append(
+                {
+                    "path": resolved,
+                    "present": True,
+                    "error": str(exc),
+                }
+            )
+    entries.sort(key=lambda e: str(e.get("path") or ""))
+    blob = json.dumps(entries, sort_keys=True, separators=(",", ":"))
+    digest = hashlib.sha256(blob.encode("utf-8")).hexdigest()
+    return digest, entries
+
+
+def _persist_xai_sole_owner_marker_payload(payload: Dict[str, Any]) -> None:
+    """Durable write of an already-computed sole-owner marker payload."""
+    path = _xai_sole_owner_marker_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    secure_parent_dir(path)
+    tmp = path.with_name(f"{path.name}.tmp.{os.getpid()}.{uuid.uuid4().hex}")
+    text = json.dumps(payload, indent=2, sort_keys=True) + "\n"
+    try:
+        fd = os.open(
+            str(tmp),
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+            stat.S_IRUSR | stat.S_IWUSR,
+        )
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                fh.write(text)
+                fh.flush()
+                os.fsync(fh.fileno())
+            os.replace(tmp, path)
+            _fsync_parent_dir(
+                path,
+                context="sole-owner marker rename",
+                code="xai_shared_sole_owner_marker_failed",
+            )
+        finally:
+            try:
+                if tmp.exists():
+                    tmp.unlink()
+            except OSError:
+                pass
+    except AuthError:
+        raise
+    except Exception as exc:
+        raise AuthError(
+            f"Failed to persist shared xAI sole-owner verification marker at "
+            f"{path}: {exc}",
+            provider="xai-oauth",
+            code="xai_shared_sole_owner_marker_failed",
+            relogin_required=False,
+        ) from exc
+
+
+def _audit_fleet_refresh_token_free(
+    paths: Sequence[Path],
+    *,
+    fail_loud: bool = True,
+) -> List[str]:
+    """Fail-closed content audit: every store must be durable-RT-free.
+
+    Caller must already hold each path's auth-store lock. Returns residual
+    path strings; raises when ``fail_loud`` and any residual/unreadable.
+    """
+    residual: List[str] = []
+    failures: List[str] = []
+    for path in paths:
+        if not path.is_file():
+            continue
+        try:
+            store = _load_auth_store(path, fail_on_corrupt=True)
+            if _auth_store_holds_durable_xai_refresh_token(store):
+                residual.append(str(path))
+        except AuthError as exc:
+            failures.append(f"{path}: {exc}")
+        except Exception as exc:
+            failures.append(f"{path}: {exc}")
+    if (failures or residual) and fail_loud:
+        parts = []
+        if failures:
+            parts.append("audit failures: " + "; ".join(failures))
+        if residual:
+            parts.append(
+                "durable xAI refresh_token still present at: "
+                + ", ".join(residual)
+            )
+        raise AuthError(
+            "Shared xAI fleet is not refresh-token-free. "
+            + " | ".join(parts)
+            + ". Refusing to write a sole-owner marker over a dirty fleet.",
+            provider="xai-oauth",
+            code="xai_shared_strip_incomplete",
+            relogin_required=False,
+        )
+    return residual
+
+
+def _write_xai_sole_owner_marker(
+    *,
+    generation: Optional[int] = None,
+    _holding_shared_lock: bool = False,
+    _holding_store_locks: bool = False,
+    _locked_paths: Optional[Sequence[Path]] = None,
+) -> None:
+    """Persist a VERIFIABLE fleet sole-owner marker (R4/H3/R7-3).
+
+    Binds to a fail-closed digest of audited auth-store paths covering
+    security-relevant state only (path presence + durable xAI RT presence).
+    Existence alone never certifies a clean fleet — consumers must validate
+    via ``_xai_sole_owner_marker_is_valid``.
+
+    Atomicity (H3): when store locks are not already held, this acquires the
+    shared lock (outer) then ALL audited-store locks (sorted) and re-audits
+    that every store is refresh-token-free BEFORE hashing + persisting the
+    marker. Inventory read/stat errors raise — never hashed as clean.
+    """
+
+    def _do_write(paths: Sequence[Path]) -> None:
+        # Pre-commit fail-closed content audit under held locks.
+        _audit_fleet_refresh_token_free(paths, fail_loud=True)
+        fleet_digest, fleet_paths = _xai_fleet_auth_inventory(
+            fail_loud=True,
+            paths=paths,
+        )
+        payload = {
+            "verified_at": datetime.now(timezone.utc)
+            .isoformat()
+            .replace("+00:00", "Z"),
+            "generation": generation,
+            "schema": XAI_SHARED_SCHEMA_VERSION,
+            "fleet_digest": fleet_digest,
+            "fleet_path_count": len(fleet_paths),
+        }
+        _persist_xai_sole_owner_marker_payload(payload)
+
+    def _with_store_locks() -> None:
+        if _holding_store_locks:
+            if _locked_paths is None:
+                raise AuthError(
+                    "Internal error: sole-owner marker write claimed held "
+                    "store locks without providing locked paths.",
+                    provider="xai-oauth",
+                    code="xai_shared_sole_owner_marker_failed",
+                    relogin_required=False,
+                )
+            _do_write(_locked_paths)
+            return
+        paths = _iter_xai_auth_json_paths(
+            include_global_root=True,
+            fail_loud=True,
+        )
+        with _xai_ordered_auth_store_locks(paths):
+            _do_write(paths)
+
+    if _holding_shared_lock:
+        _with_store_locks()
+        return
+    with _xai_shared_store_lock():
+        _with_store_locks()
+
+
+def _xai_sole_owner_marker_is_valid(
+    *,
+    generation: Optional[int] = None,
+    _holding_shared_lock: bool = False,
+    _holding_store_locks: bool = False,
+    _locked_paths: Optional[Sequence[Path]] = None,
+) -> bool:
+    """H3/R7-2: True only when the marker matches current fleet digest.
+
+    A marker that cannot be parsed, whose fleet inventory cannot be read
+    (fail-closed), or whose digest does not match current inventory must NOT
+    skip the fleet audit.
+
+    Lock discipline (R7-2): inventory is read under the SAME protocol as
+    marker creation — shared outer lock then sorted store locks — unless the
+    caller already holds those locks and passes ``_locked_paths``. No skip may
+    be granted from an unlocked/stale inventory read (TOCTOU).
+
+    Ops: generation is recorded for diagnostics but a normal canonical gen
+    bump / profile metadata rewrite (refresh) does NOT by itself invalidate a
+    still-clean fleet digest (R7-3) — that avoids a full fleet re-strip on
+    every token refresh.
+    """
+    del generation  # retained for call-site compatibility; digest is authority
+    try:
+        marker = _xai_sole_owner_marker_path()
+    except RuntimeError:
+        return False
+    if not marker.is_file():
+        return False
+    try:
+        payload = json.loads(marker.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    if not isinstance(payload, dict):
+        return False
+    marker_digest = str(payload.get("fleet_digest") or "").strip()
+    if not marker_digest:
+        # Pre-H3 existence-only markers are never trusted.
+        return False
+
+    def _compare_under_paths(paths: Sequence[Path]) -> bool:
+        try:
+            current_digest, _entries = _xai_fleet_auth_inventory(
+                fail_loud=True,
+                paths=paths,
+            )
+        except AuthError:
+            # Cannot verify fleet → re-audit (treat as invalid).
+            return False
+        except Exception:
+            return False
+        return marker_digest == current_digest
+
+    def _with_store_locks() -> bool:
+        if _holding_store_locks:
+            if _locked_paths is None:
+                return False
+            return _compare_under_paths(_locked_paths)
+        try:
+            paths = _iter_xai_auth_json_paths(
+                include_global_root=True,
+                fail_loud=True,
+            )
+        except Exception:
+            return False
+        try:
+            with _xai_ordered_auth_store_locks(paths) as locked:
+                return _compare_under_paths(locked)
+        except AuthError:
+            return False
+        except Exception:
+            return False
+
+    if _holding_shared_lock:
+        return _with_store_locks()
+    try:
+        with _xai_shared_store_lock():
+            return _with_store_locks()
+    except Exception:
+        return False
+
+
+def _ensure_xai_fleet_sole_owner_verified(
+    *,
+    force: bool = False,
+    generation: Optional[int] = None,
+) -> None:
+    """R4/H3/R7-2: on shared consumption, sweep fleet unless marker validates.
+
+    A pre-existing canonical grant (deploy upgrade state) previously short-
+    circuited ``ensure_shared`` and never ran the fleet strip — leaving dormant
+    per-profile RTs. The marker gates the sweep but is VERIFIABLE: stale or
+    existence-only markers never certify a dirty fleet.
+
+    Atomicity (H3): strip → inventory → marker-persist is ONE critical section
+    holding the shared lock + ALL audited-store locks. No concurrent writer can
+    restore an RT between strip and the digest that certifies the fleet clean.
+
+    Marker validation (R7-2) itself takes the same lock protocol, so an early
+    skip is never granted on an unlocked inventory snapshot.
+    """
+    if not _xai_shared_auth_enabled():
+        return
+    if not force and _xai_sole_owner_marker_is_valid(generation=generation):
+        return
+
+    with _xai_shared_store_lock():
+        # Re-check under the shared lock so two consumers don't double-strip.
+        # Pass _holding_shared_lock so validation does not re-enter the shared
+        # lock unnecessarily; it still acquires store locks for inventory.
+        if not force and _xai_sole_owner_marker_is_valid(
+            generation=generation,
+            _holding_shared_lock=True,
+        ):
+            return
+        paths = _iter_xai_auth_json_paths(
+            include_global_root=True,
+            fail_loud=True,
+        )
+        with _xai_ordered_auth_store_locks(paths) as locked_fleet:
+            # Final locked re-check: skip strip only if fleet still matches
+            # under the same locks that protect strip → marker.
+            if not force and _xai_sole_owner_marker_is_valid(
+                generation=generation,
+                _holding_shared_lock=True,
+                _holding_store_locks=True,
+                _locked_paths=locked_fleet,
+            ):
+                return
+            _strip_legacy_xai_oauth_secrets_under_held_locks(
+                locked_fleet,
+                fail_loud=True,
+            )
+            _write_xai_sole_owner_marker(
+                generation=generation,
+                _holding_shared_lock=True,
+                _holding_store_locks=True,
+                _locked_paths=locked_fleet,
+            )
+
+
+def _normalize_shared_xai_state(payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Return a well-formed shared-state dict or None if unusable."""
+    if not isinstance(payload, dict):
+        return None
+    access = str(payload.get("access_token", "") or "").strip()
+    refresh = str(payload.get("refresh_token", "") or "").strip()
+    if not access or not refresh:
+        # Terminal-error-only payloads are still readable for status/clear.
+        if payload.get("last_auth_error"):
+            return dict(payload)
+        return None
+    state = dict(payload)
+    state["access_token"] = access
+    state["refresh_token"] = refresh
+    state["token_type"] = str(state.get("token_type") or "Bearer").strip() or "Bearer"
+    try:
+        state["generation"] = int(state.get("generation") or 0)
+    except (TypeError, ValueError):
+        state["generation"] = 0
+    try:
+        state["_schema"] = int(state.get("_schema") or XAI_SHARED_SCHEMA_VERSION)
+    except (TypeError, ValueError):
+        state["_schema"] = XAI_SHARED_SCHEMA_VERSION
+    discovery = state.get("discovery")
+    if not isinstance(discovery, dict):
+        state["discovery"] = {}
+    return state
+
+
+def _read_shared_xai_state(
+    *,
+    raise_on_unreadable: bool = False,
+) -> Optional[Dict[str, Any]]:
+    """Return the canonical shared xAI OAuth state, or None if missing/unusable.
+
+    When ``raise_on_unreadable`` is True and the store file exists but cannot
+    be parsed, raise AuthError instead of returning None (availability and
+    promote paths must fail closed — R7).
+    """
+    try:
+        path = _xai_shared_store_path()
+    except RuntimeError:
+        return None
+    if not path.is_file():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        logger.debug("Shared xAI auth store at %s is unreadable: %s", path, exc)
+        if raise_on_unreadable:
+            raise AuthError(
+                f"Shared xAI OAuth store at {path} is unreadable: {exc}",
+                provider="xai-oauth",
+                code="xai_shared_store_unreadable",
+                relogin_required=False,
+            ) from exc
+        return None
+    return _normalize_shared_xai_state(payload)
+
+
+def _write_shared_xai_state(
+    state: Dict[str, Any],
+    *,
+    bump_generation: bool = True,
+    _holding_lock: bool = False,
+) -> Dict[str, Any]:
+    """Persist canonical shared xAI state. Fail LOUD on write failure (G5).
+
+    Callers that already hold ``_xai_shared_store_lock`` must pass
+    ``_holding_lock=True`` to avoid re-entrancy issues with nested network work
+    (the lock itself is reentrant, but the contract is clearer this way).
+    """
+    access = str(state.get("access_token", "") or "").strip()
+    refresh = str(state.get("refresh_token", "") or "").strip()
+    if not access or not refresh:
+        raise AuthError(
+            "Refusing to write shared xAI OAuth state without access_token and "
+            "refresh_token.",
+            provider="xai-oauth",
+            code="xai_shared_write_incomplete",
+            relogin_required=True,
+        )
+
+    def _do_write() -> Dict[str, Any]:
+        path = _xai_shared_store_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        secure_parent_dir(path)
+
+        existing: Dict[str, Any] = {}
+        if path.is_file():
+            try:
+                raw = json.loads(path.read_text(encoding="utf-8"))
+                if isinstance(raw, dict):
+                    existing = raw
+            except (OSError, ValueError):
+                existing = {}
+
+        try:
+            prev_gen = int(existing.get("generation") or 0)
+        except (TypeError, ValueError):
+            prev_gen = 0
+        try:
+            incoming_gen = int(state.get("generation") or 0)
+        except (TypeError, ValueError):
+            incoming_gen = 0
+
+        if bump_generation:
+            generation = max(prev_gen, incoming_gen) + 1
+        else:
+            generation = max(prev_gen, incoming_gen, 1)
+
+        shared = {
+            "_schema": XAI_SHARED_SCHEMA_VERSION,
+            "generation": generation,
+            "access_token": access,
+            "refresh_token": refresh,
+            "token_type": str(state.get("token_type") or "Bearer").strip() or "Bearer",
+            "expires_in": state.get("expires_in"),
+            "last_refresh": state.get("last_refresh")
+            or datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            "updated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            "auth_mode": str(state.get("auth_mode") or "oauth_device_code"),
+            "discovery": dict(state.get("discovery") or {})
+            if isinstance(state.get("discovery"), dict)
+            else {},
+            "redirect_uri": str(state.get("redirect_uri") or ""),
+        }
+        # D3: refresh responses supply id_token; keep it in the canonical grant.
+        id_token = str(state.get("id_token") or "").strip()
+        if id_token:
+            shared["id_token"] = id_token
+        elif existing.get("id_token"):
+            # Preserve prior id_token when a write omits it (metadata-only updates).
+            shared["id_token"] = existing.get("id_token")
+        if state.get("last_auth_error") is not None:
+            shared["last_auth_error"] = state.get("last_auth_error")
+
+        tmp = path.with_name(f"{path.name}.tmp.{os.getpid()}.{uuid.uuid4().hex}")
+        payload = json.dumps(shared, indent=2, sort_keys=True) + "\n"
+        try:
+            fd = os.open(
+                str(tmp),
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                stat.S_IRUSR | stat.S_IWUSR,
+            )
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                    fh.write(payload)
+                    fh.flush()
+                    os.fsync(fh.fileno())
+                os.replace(tmp, path)
+                # H5: parent-dir open/fsync failures are crash-durability
+                # invariant violations — surface them, never swallow.
+                _fsync_parent_dir(
+                    path,
+                    context="shared xAI canonical write",
+                    code="xai_shared_persist_failed",
+                )
+            finally:
+                try:
+                    if tmp.exists():
+                        tmp.unlink()
+                except OSError:
+                    pass
+        except AuthError:
+            raise
+        except Exception as exc:
+            raise AuthError(
+                f"Failed to persist shared xAI OAuth state to {path}: {exc}. "
+                f"The refresh must NOT be treated as committed; re-authenticate "
+                f"or retry after fixing filesystem permissions on the shared "
+                f"auth directory (local FS with advisory locking required).",
+                provider="xai-oauth",
+                code="xai_shared_persist_failed",
+                relogin_required=False,
+            ) from exc
+
+        _oauth_trace(
+            "xai_shared_store_written",
+            path=str(path),
+            generation=generation,
+            refresh_token_fp=_token_fingerprint(refresh),
+            access_token_fp=_token_fingerprint(access),
+        )
+        return shared
+
+    if _holding_lock:
+        return _do_write()
+    with _xai_shared_store_lock():
+        return _do_write()
+
+
+def _persist_shared_xai_tombstone(
+    path: Path,
+    tombstone: Dict[str, Any],
+    *,
+    context: str,
+    fail_code: str,
+) -> None:
+    """Durably write a non-promotable shared-store tombstone (H4/H5).
+
+    Fail-closed: any write or parent-dir fsync failure raises AuthError and
+    leaves the prior store bytes in place (never unlinks to a promotable-absent
+    state that auto-promote could resurrect into).
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    secure_parent_dir(path)
+    tmp = path.with_name(f"{path.name}.tmp.{os.getpid()}.{uuid.uuid4().hex}")
+    payload = json.dumps(tombstone, indent=2, sort_keys=True) + "\n"
+    try:
+        fd = os.open(
+            str(tmp),
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+            stat.S_IRUSR | stat.S_IWUSR,
+        )
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                fh.write(payload)
+                fh.flush()
+                os.fsync(fh.fileno())
+            os.replace(tmp, path)
+            _fsync_parent_dir(
+                path,
+                context=context,
+                code=fail_code,
+            )
+        finally:
+            try:
+                if tmp.exists():
+                    tmp.unlink()
+            except OSError:
+                pass
+    except AuthError:
+        raise
+    except Exception as exc:
+        raise AuthError(
+            f"Failed to persist shared xAI OAuth tombstone at {path} "
+            f"({context}): {exc}. Store left non-promotable/in-place; "
+            f"refusing unlink fallback that would enable auto-promote "
+            f"resurrection.",
+            provider="xai-oauth",
+            code=fail_code,
+            relogin_required=True,
+        ) from exc
+
+
+def _clear_shared_xai_state(
+    reason: str,
+    *,
+    terminal_error: Optional[Dict[str, Any]] = None,
+    only_if_refresh_token: Optional[str] = None,
+    only_if_generation: Optional[int] = None,
+    _holding_lock: bool = False,
+) -> bool:
+    """Quarantine/clear the canonical shared grant (G6 compare-and-clear).
+
+    When ``only_if_refresh_token`` / ``only_if_generation`` are provided, clear
+    ONLY if the failed token is still canonical — a loser must not erase a
+    newer grant. Returns True if the store was cleared or rewritten.
+    """
+
+    def _do_clear() -> bool:
+        path = _xai_shared_store_path()
+        current = _read_shared_xai_state()
+        if current is None:
+            # Unusable/missing normalized state. If a raw file still exists,
+            # replace it with a durable logout tombstone (H4) rather than
+            # unlinking to a promotable-absent store.
+            if path.is_file():
+                try:
+                    raw = json.loads(path.read_text(encoding="utf-8"))
+                except (OSError, ValueError):
+                    raw = {}
+                if not isinstance(raw, dict):
+                    raw = {}
+                try:
+                    prev_gen = int(raw.get("generation") or 0)
+                except (TypeError, ValueError):
+                    prev_gen = 0
+                logout_error = {
+                    "code": "global_logout" if reason == "global_logout" else reason,
+                    "message": (
+                        "Shared xAI OAuth grant was cleared by global logout. "
+                        "Re-authenticate with `hermes model`."
+                        if reason == "global_logout"
+                        else f"Shared xAI OAuth grant cleared ({reason})."
+                    ),
+                    "relogin_required": True,
+                    "reason": reason,
+                }
+                tombstone = {
+                    "_schema": XAI_SHARED_SCHEMA_VERSION,
+                    "generation": prev_gen + 1,
+                    "access_token": "",
+                    "refresh_token": "",
+                    "token_type": "Bearer",
+                    "auth_mode": "oauth_device_code",
+                    "discovery": {},
+                    "redirect_uri": "",
+                    "updated_at": datetime.now(timezone.utc)
+                    .isoformat()
+                    .replace("+00:00", "Z"),
+                    "logged_out": True,
+                    "last_auth_error": logout_error,
+                }
+                _persist_shared_xai_tombstone(
+                    path,
+                    tombstone,
+                    context=f"shared xAI clear ({reason})",
+                    fail_code="xai_shared_logout_tombstone_failed",
+                )
+                _clear_xai_sole_owner_marker()
+                _oauth_trace("xai_shared_store_cleared", reason=reason)
+                return True
+            return False
+
+        if only_if_refresh_token is not None:
+            cur_rt = str(current.get("refresh_token") or "").strip()
+            if cur_rt and cur_rt != str(only_if_refresh_token or "").strip():
+                _oauth_trace(
+                    "xai_shared_quarantine_skipped_rt_changed",
+                    reason=reason,
+                    generation=current.get("generation"),
+                )
+                return False
+        if only_if_generation is not None:
+            try:
+                cur_gen = int(current.get("generation") or 0)
+            except (TypeError, ValueError):
+                cur_gen = 0
+            if cur_gen != int(only_if_generation):
+                _oauth_trace(
+                    "xai_shared_quarantine_skipped_gen_changed",
+                    reason=reason,
+                    generation=cur_gen,
+                    expected=only_if_generation,
+                )
+                return False
+
+        if terminal_error is not None:
+            # Atomically replace with terminal-error metadata, no usable tokens.
+            tombstone = {
+                "_schema": XAI_SHARED_SCHEMA_VERSION,
+                "generation": int(current.get("generation") or 0) + 1,
+                "access_token": "",
+                "refresh_token": "",
+                "token_type": current.get("token_type") or "Bearer",
+                "auth_mode": current.get("auth_mode") or "oauth_device_code",
+                "discovery": current.get("discovery") or {},
+                "redirect_uri": current.get("redirect_uri") or "",
+                "last_refresh": current.get("last_refresh"),
+                "updated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                "last_auth_error": terminal_error,
+            }
+            _persist_shared_xai_tombstone(
+                path,
+                tombstone,
+                context=f"shared xAI quarantine ({reason})",
+                fail_code="xai_shared_quarantine_failed",
+            )
+            _oauth_trace("xai_shared_store_quarantined", reason=reason)
+            return True
+
+        # R1/G6/H4: global logout writes a durable logout tombstone rather than
+        # a plain delete, so auto-promote cannot resurrect a dead grant.
+        # Tombstone-write failure is FAIL-CLOSED: never fall back to unlink
+        # (absent store is greenfield-promotable).
+        logout_error = {
+            "code": "global_logout" if reason == "global_logout" else reason,
+            "message": (
+                "Shared xAI OAuth grant was cleared by global logout. "
+                "Re-authenticate with `hermes model`."
+                if reason == "global_logout"
+                else f"Shared xAI OAuth grant cleared ({reason})."
+            ),
+            "relogin_required": True,
+            "reason": reason,
+        }
+        tombstone = {
+            "_schema": XAI_SHARED_SCHEMA_VERSION,
+            "generation": int(current.get("generation") or 0) + 1,
+            "access_token": "",
+            "refresh_token": "",
+            "token_type": current.get("token_type") or "Bearer",
+            "auth_mode": current.get("auth_mode") or "oauth_device_code",
+            "discovery": current.get("discovery") or {},
+            "redirect_uri": current.get("redirect_uri") or "",
+            "last_refresh": current.get("last_refresh"),
+            "updated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            "logged_out": True,
+            "last_auth_error": logout_error,
+        }
+        _persist_shared_xai_tombstone(
+            path,
+            tombstone,
+            context=f"shared xAI logout tombstone ({reason})",
+            fail_code="xai_shared_logout_tombstone_failed",
+        )
+        _clear_xai_sole_owner_marker()
+        _oauth_trace("xai_shared_store_cleared", reason=reason)
+        return True
+
+    if _holding_lock:
+        return _do_clear()
+    with _xai_shared_store_lock():
+        return _do_clear()
+
+
+def _merge_shared_xai_state(into: Dict[str, Any]) -> bool:
+    """Copy fresher canonical shared tokens into a local dict (bootstrap only).
+
+    Used only for migration/diagnostics. Runtime paths must treat the shared
+    store as authoritative — not a best-effort mirror of profile state.
+    """
+    shared = _read_shared_xai_state()
+    if not _xai_shared_state_has_usable_tokens(shared):
+        return False
+    assert shared is not None
+    shared_refresh = str(shared.get("refresh_token") or "").strip()
+    local_refresh = str(into.get("refresh_token") or "").strip()
+    try:
+        shared_gen = int(shared.get("generation") or 0)
+    except (TypeError, ValueError):
+        shared_gen = 0
+    try:
+        local_gen = int(into.get("generation") or 0)
+    except (TypeError, ValueError):
+        local_gen = 0
+    refresh_changed = shared_refresh != local_refresh
+    gen_newer = shared_gen > local_gen
+    if not refresh_changed and not gen_newer:
+        return False
+    for key in (
+        "access_token",
+        "refresh_token",
+        "id_token",
+        "token_type",
+        "expires_in",
+        "last_refresh",
+        "auth_mode",
+        "discovery",
+        "redirect_uri",
+        "generation",
+        "_schema",
+        "updated_at",
+        "last_auth_error",
+    ):
+        if key in shared:
+            into[key] = shared[key]
+    return True
+
+
+def _shared_xai_tokens_view(state: Dict[str, Any]) -> Dict[str, Any]:
+    """Project shared-state fields into the legacy tokens dict shape."""
+    tokens = {
+        "access_token": str(state.get("access_token", "") or "").strip(),
+        "refresh_token": str(state.get("refresh_token", "") or "").strip(),
+        "token_type": str(state.get("token_type") or "Bearer").strip() or "Bearer",
+    }
+    if state.get("expires_in") is not None:
+        tokens["expires_in"] = state.get("expires_in")
+    if state.get("id_token"):
+        tokens["id_token"] = state.get("id_token")
+    return tokens
+
+
+def _profile_xai_shared_disabled(auth_store: Optional[Dict[str, Any]] = None) -> bool:
+    """True when this profile has explicitly opted out of the shared xAI grant."""
+    try:
+        store = auth_store if auth_store is not None else _load_auth_store()
+    except Exception:
+        return False
+    providers = store.get("providers") if isinstance(store, dict) else None
+    state = providers.get("xai-oauth") if isinstance(providers, dict) else None
+    if not isinstance(state, dict):
+        return False
+    if state.get("enabled") is False:
+        return True
+    if is_truthy_value(state.get("shared_disabled"), default=False):
+        return True
+    return False
+
+
+def _xai_shared_pool_secret_keys() -> frozenset:
+    return frozenset(
+        {
+            "access_token",
+            "refresh_token",
+            "id_token",
+            "agent_key",
+            "api_key",
+            "token",
+            "tokens",
+        }
+    )
+
+
+def _strip_xai_pool_entry_to_shared_ref(entry: Dict[str, Any]) -> Dict[str, Any]:
+    """Rewrite one pool entry to a non-secret shared reference."""
+    secret_keys = _xai_shared_pool_secret_keys()
+    ref = {k: v for k, v in entry.items() if k not in secret_keys}
+    ref["source"] = XAI_SHARED_SOURCE
+    ref["auth_type"] = str(ref.get("auth_type") or "oauth")
+    # Explicitly clear any residual secret fields that slipped past filtering.
+    for key in secret_keys:
+        ref.pop(key, None)
+    return ref
+
+
+def _auth_store_holds_durable_xai_refresh_token(store: Dict[str, Any]) -> bool:
+    """True when any durable xAI OAuth refresh_token remains in ``store``."""
+    providers = store.get("providers") if isinstance(store, dict) else None
+    if isinstance(providers, dict):
+        state = providers.get("xai-oauth")
+        if isinstance(state, dict):
+            tokens = state.get("tokens")
+            if isinstance(tokens, dict) and str(tokens.get("refresh_token") or "").strip():
+                return True
+            if str(state.get("refresh_token") or "").strip():
+                return True
+    pool = store.get("credential_pool") if isinstance(store, dict) else None
+    if isinstance(pool, dict):
+        entries = pool.get("xai-oauth")
+        if isinstance(entries, list):
+            for entry in entries:
+                if not isinstance(entry, dict):
+                    continue
+                if str(entry.get("refresh_token") or "").strip():
+                    return True
+    return False
+
+
+def _strip_xai_secrets_in_store(
+    store: Dict[str, Any],
+    *,
+    remove_manuals: bool = True,
+    audit: Optional[List[str]] = None,
+) -> bool:
+    """Strip durable xAI OAuth secrets from one auth store in place.
+
+    When ``remove_manuals`` is True (shared sole-ownership mode), same-family
+    ``manual:*`` pool rows are removed rather than left as independent RT
+    holders. Returns True when the store was mutated.
+    """
+    changed = False
+    providers = store.get("providers")
+    if isinstance(providers, dict) and isinstance(providers.get("xai-oauth"), dict):
+        state = dict(providers["xai-oauth"])
+        had_tokens = "tokens" in state or "access_token" in state or "refresh_token" in state
+        state.pop("tokens", None)
+        state.pop("access_token", None)
+        state.pop("refresh_token", None)
+        state.pop("id_token", None)
+        # Preserve an explicit per-profile disable marker if present.
+        if state.get("enabled") is False or is_truthy_value(
+            state.get("shared_disabled"), default=False
+        ):
+            state["source"] = XAI_SHARED_SOURCE
+            state["enabled"] = False
+            state["shared_disabled"] = True
+        else:
+            state["source"] = XAI_SHARED_SOURCE
+        providers["xai-oauth"] = state
+        if had_tokens:
+            changed = True
+
+    pool = store.get("credential_pool")
+    if isinstance(pool, dict) and isinstance(pool.get("xai-oauth"), list):
+        cleaned: List[Dict[str, Any]] = []
+        saw_shared_ref = False
+        for entry in pool["xai-oauth"]:
+            if not isinstance(entry, dict):
+                continue
+            source = str(entry.get("source") or "")
+            if source.startswith("manual"):
+                if remove_manuals:
+                    changed = True
+                    if audit is not None:
+                        audit.append(
+                            f"removed same-family manual pool entry "
+                            f"(source={source!r}, id={entry.get('id')!r})"
+                        )
+                    continue
+                cleaned.append(entry)
+                continue
+            if str(entry.get("refresh_token") or "").strip() or source != XAI_SHARED_SOURCE:
+                changed = True
+            ref = _strip_xai_pool_entry_to_shared_ref(entry)
+            if not saw_shared_ref:
+                cleaned.append(ref)
+                saw_shared_ref = True
+            else:
+                # Collapse duplicate non-manual rows into a single shared ref.
+                changed = True
+        pool["xai-oauth"] = cleaned
+    return changed
+
+
+def _iter_xai_auth_json_paths(
+    *,
+    include_global_root: bool = True,
+    fail_loud: bool = True,
+) -> List[Path]:
+    """Return every durable auth.json path that may hold xAI OAuth secrets.
+
+    Covers the active HERMES_HOME, the global/default root, and every named
+    profile under the profiles root. Dedupes by resolved path.
+
+    Profile-root enumeration failures FAIL LOUD by default (F3a): a silent
+    omit would let migration claim "stripped from all profiles" without
+    actually enumerating them.
+    """
+    paths: List[Path] = []
+    seen: set = set()
+
+    def _add(path: Optional[Path]) -> None:
+        if path is None:
+            return
+        try:
+            key = str(path.resolve(strict=False))
+        except Exception:
+            key = str(path)
+        if key in seen:
+            return
+        seen.add(key)
+        paths.append(path)
+
+    path_failures: List[str] = []
+
+    try:
+        _add(_auth_file_path())
+    except Exception as exc:
+        # R5: do not silently omit the active auth path from the sole-owner audit.
+        path_failures.append(f"active auth path: {exc}")
+
+    if include_global_root:
+        try:
+            _add(_global_auth_file_path())
+        except Exception as exc:
+            path_failures.append(f"global auth path: {exc}")
+        try:
+            from hermes_constants import get_default_hermes_root
+
+            _add(get_default_hermes_root() / "auth.json")
+        except Exception as exc:
+            path_failures.append(f"default hermes root auth path: {exc}")
+
+    try:
+        from hermes_cli.profiles import _get_profiles_root
+
+        profiles_root = _get_profiles_root()
+        if profiles_root.is_dir():
+            for entry in sorted(profiles_root.iterdir()):
+                if entry.is_dir() and not entry.name.startswith("."):
+                    _add(entry / "auth.json")
+    except Exception as exc:
+        message = (
+            "Shared xAI OAuth sole-ownership strip cannot enumerate profiles: "
+            f"{exc}"
+        )
+        if fail_loud:
+            raise AuthError(
+                message,
+                provider="xai-oauth",
+                code="xai_shared_profile_enum_failed",
+                relogin_required=False,
+            ) from exc
+        logger.debug("xAI shared: profile enumeration for strip failed: %s", exc)
+        path_failures.append(f"profiles root: {exc}")
+
+    if path_failures and fail_loud:
+        raise AuthError(
+            "Shared xAI OAuth sole-ownership strip cannot resolve auth paths: "
+            + "; ".join(path_failures),
+            provider="xai-oauth",
+            code="xai_shared_profile_enum_failed",
+            relogin_required=False,
+        )
+
+    return paths
+
+
+def sanitize_xai_shared_pool_payload(
+    payload: Mapping[str, Any],
+    provider_id: Any = None,
+) -> Dict[str, Any]:
+    """Final persistence guard for xAI pool rows under shared mode (A2).
+
+    Strips every refresh_token / secret field from xai-oauth pool entries when
+    shared mode is on, regardless of source label (device_code, manual,
+    singleton). The only durable pool shape is a non-secret
+    ``shared:xai-oauth`` reference. Callers outside shared mode get a no-op.
+    """
+    result = dict(payload)
+    if str(provider_id or "").strip().lower() not in {"xai-oauth", "xai", "grok-oauth"}:
+        return result
+    if not _xai_shared_auth_enabled():
+        return result
+    source = str(result.get("source") or "")
+    # Manual same-family rows must not survive as durable local RTs.
+    if source.startswith("manual"):
+        return _strip_xai_pool_entry_to_shared_ref(result)
+    return _strip_xai_pool_entry_to_shared_ref(result)
+
+
+def _write_profile_xai_shared_reference(
+    *,
+    enabled: bool = True,
+    last_refresh: Optional[str] = None,
+    generation: Optional[int] = None,
+    set_active: bool = False,
+    target_path: Optional[Path] = None,
+) -> None:
+    """Persist NON-SECRET profile metadata referencing the shared store.
+
+    Never writes access_token / refresh_token into the profile.
+    Must be called AFTER releasing the shared lock (G3).
+
+    Fail-loud (F3b): lock/write failures raise AuthError — callers that treat
+    the marker as best-effort (post-resolve metadata) must catch explicitly.
+    When shared mode is OFF (F4b), only non-secret metadata is updated; durable
+    local tokens are NOT stripped.
+    """
+    shared_on = _xai_shared_auth_enabled()
+    try:
+        with _auth_store_lock(target_path=target_path):
+            auth_store = (
+                _load_auth_store(target_path)
+                if target_path is not None
+                else _load_auth_store()
+            )
+            state = {}
+            providers = auth_store.get("providers")
+            if isinstance(providers, dict) and isinstance(providers.get("xai-oauth"), dict):
+                prior = dict(providers["xai-oauth"])
+                if shared_on:
+                    # Drop any legacy secret material so a forgotten local RT
+                    # cannot refresh independently of the canonical store.
+                    prior.pop("tokens", None)
+                    prior.pop("access_token", None)
+                    prior.pop("refresh_token", None)
+                    prior.pop("id_token", None)
+                state = prior
+            if shared_on:
+                state["source"] = XAI_SHARED_SOURCE
+            state["enabled"] = bool(enabled)
+            state.pop("shared_disabled", None)
+            if not enabled:
+                state["shared_disabled"] = True
+            if last_refresh:
+                state["last_refresh"] = last_refresh
+            if generation is not None:
+                state["shared_generation"] = int(generation)
+            if shared_on:
+                # Ensure no nested secret blobs survive under shared mode.
+                state.pop("tokens", None)
+            _store_provider_state(auth_store, "xai-oauth", state, set_active=set_active)
+            # Strip profile-local pool RTs only when shared sole-ownership is on.
+            if shared_on:
+                pool = auth_store.get("credential_pool")
+                if isinstance(pool, dict):
+                    entries = pool.get("xai-oauth")
+                    if isinstance(entries, list):
+                        cleaned = []
+                        saw_shared = False
+                        for entry in entries:
+                            if not isinstance(entry, dict):
+                                continue
+                            source = str(entry.get("source") or "")
+                            if source.startswith("manual"):
+                                # Same-family manuals pure-refresh outside the
+                                # shared lock — drop them so sole ownership holds.
+                                continue
+                            if saw_shared:
+                                continue
+                            cleaned.append(_strip_xai_pool_entry_to_shared_ref(entry))
+                            saw_shared = True
+                        pool["xai-oauth"] = cleaned
+            _save_auth_store(auth_store, target_path=target_path)
+    except AuthError:
+        raise
+    except Exception as exc:
+        raise AuthError(
+            f"Failed to persist shared xAI OAuth profile reference/marker: {exc}",
+            provider="xai-oauth",
+            code="xai_shared_reference_write_failed",
+            relogin_required=False,
+        ) from exc
+
+
+def _legacy_xai_oauth_state_from_profile_or_root() -> Optional[Dict[str, Any]]:
+    """Read legacy profile/root xAI tokens for migration/bootstrap only."""
+    try:
+        auth_store = _load_auth_store()
+    except Exception:
+        auth_store = {}
+    state = _xai_oauth_state_from_store(auth_store)
+    if _xai_oauth_state_has_usable_tokens(state):
+        return state
+    try:
+        global_state = _xai_oauth_state_from_store(_load_global_auth_store())
+    except Exception:
+        global_state = None
+    if _xai_oauth_state_has_usable_tokens(global_state):
+        return global_state
+    return None
+
+
+def _xai_oauth_refresh_identity(state: Optional[Dict[str, Any]]) -> Optional[str]:
+    """Stable identity of a local grant: its refresh_token string."""
+    if not isinstance(state, dict):
+        return None
+    tokens = state.get("tokens") if isinstance(state.get("tokens"), dict) else None
+    if isinstance(tokens, dict):
+        rt = str(tokens.get("refresh_token") or "").strip()
+        if rt:
+            return rt
+    rt = str(state.get("refresh_token") or "").strip()
+    return rt or None
+
+
+def _elect_sole_promotable_xai_under_lock(
+    auth_path: Optional[Path],
+) -> Optional[Dict[str, Any]]:
+    """R2/R3: elect a sole live local grant while holding the profile auth lock.
+
+    Caller must already hold ``_auth_store_lock(target_path=auth_path)``.
+    Returns None when no live grant, or raises AuthError on ambiguous multi-grant.
+    """
+    store = (
+        _load_auth_store(auth_path, fail_on_corrupt=True)
+        if auth_path is not None
+        else _load_auth_store(fail_on_corrupt=True)
+    )
+    return _xai_oauth_state_from_store(store, sole_live=True)
+
+
+def _collect_live_promotable_xai_under_held_locks(
+    paths: Sequence[Path],
+) -> List[Tuple[Path, str, Dict[str, Any]]]:
+    """H2: elect sole-live grants from each path. Caller holds every lock.
+
+    Fail-closed: lock is assumed held; path/read/corrupt errors raise —
+    stores are NEVER silently omitted. Raises ``xai_promote_ambiguous_local``
+    when a single store itself has multiple live identities.
+    """
+    found: List[Tuple[Path, str, Dict[str, Any]]] = []
+    for path in paths:
+        try:
+            elected = _elect_sole_promotable_xai_under_lock(path)
+        except AuthError:
+            raise
+        except Exception as exc:
+            raise AuthError(
+                f"Cannot read auth store at {path} during shared xAI sole-live "
+                f"election: {exc}. Refusing fail-open omission.",
+                provider="xai-oauth",
+                code="xai_auth_store_unreadable",
+                relogin_required=False,
+            ) from exc
+        if not _xai_oauth_state_has_usable_tokens(elected):
+            continue
+        identity = _xai_oauth_refresh_identity(elected)
+        if not identity:
+            continue
+        assert elected is not None
+        found.append((path, identity, elected))
+    return found
+
+
+def _collect_live_promotable_xai_across_profile_and_root(
+    *,
+    _locks_held: bool = False,
+    _locked_paths: Optional[Sequence[Path]] = None,
+) -> List[Tuple[Path, str, Dict[str, Any]]]:
+    """H2: collect sole-live promotable grants from active profile AND root.
+
+    When ``_locks_held`` is False, acquires shared (outer) then BOTH profile
+    and root store locks in deterministic sorted-path order, collects, and
+    releases. Promote/migrate pass ``_locks_held=True`` so collection and
+    canonical commit share one critical section.
+
+    Fail-closed: unreadable/unlockable stores raise — never omit.
+    """
+    if _locks_held:
+        if _locked_paths is None:
+            raise AuthError(
+                "Internal error: election claimed held locks without paths.",
+                provider="xai-oauth",
+                code="xai_auth_store_unreadable",
+                relogin_required=False,
+            )
+        return _collect_live_promotable_xai_under_held_locks(_locked_paths)
+
+    paths = _xai_profile_and_root_election_paths()
+    with _xai_shared_store_lock():
+        with _xai_ordered_auth_store_locks(paths) as locked:
+            return _collect_live_promotable_xai_under_held_locks(locked)
+
+
+def _xai_sole_live_promotable_across_profile_and_root_for_probe() -> bool:
+    """Availability probe: True only when exactly one distinct live identity.
+
+    Consistent with the promoter (no profile-first short-circuit). Fail-closed
+    on unreadable/unlockable/ambiguous stores → False (never advertise
+    available when promote would reject).
+    """
+    try:
+        cross = _collect_live_promotable_xai_across_profile_and_root()
+    except Exception:
+        return False
+    identities = {identity for _path, identity, _state in cross}
+    return len(identities) == 1
+
+
+def migrate_xai_oauth_to_shared_store(
+    *,
+    source: str = "explicit",
+    strip_legacy: bool = True,
+    force: bool = False,
+) -> Dict[str, Any]:
+    """One-time migration: install a chosen legacy grant as the canonical store.
+
+    ``source``:
+      - ``login`` / ``explicit``: refuse unless shared already empty or force
+      - ``profile``: use this profile's providers.xai-oauth tokens
+      - ``root``: use the global-root auth.json tokens
+      - ``auto``: sole live identity across profile+root (explicit CLI choice)
+
+    Does NOT elect a winner by last_refresh clocks. Any validating refresh of
+    the chosen source must happen under the shared lock and persist there.
+    When ``strip_legacy`` is True, removes secret material from profile (and
+    root, when distinct) so forgotten local copies cannot refresh independently.
+
+    R1/R2/R3/H1/H2: promotion is quarantine-aware, sole-live across profile
+    AND root (no profile-first short-circuit), and atomic with local logout
+    (shared outer → BOTH profile and root locks held through elect + recheck
+    + canonical write; no network under auth-store locks; shared lock may
+    serialize refresh HTTP on the separate runtime path).
+    """
+    if not _xai_shared_auth_enabled():
+        raise AuthError(
+            "Shared xAI OAuth is not enabled. Set HERMES_XAI_SHARED_AUTH=1 "
+            "(or HERMES_SHARED_AUTH_PROVIDERS=xai-oauth) before migrating.",
+            provider="xai-oauth",
+            code="xai_shared_not_enabled",
+        )
+
+    source_key = (source or "explicit").strip().lower()
+    written: Optional[Dict[str, Any]] = None
+    with _xai_shared_store_lock():
+        existing = _read_shared_xai_state(raise_on_unreadable=True)
+        if _xai_shared_state_has_usable_tokens(existing) and not force:
+            raise AuthError(
+                "Canonical shared xAI OAuth store already has a grant. "
+                "Pass force=True / --force to overwrite, or log out globally first.",
+                provider="xai-oauth",
+                code="xai_shared_already_present",
+            )
+        # R1: never promote into a tombstoned / globally-logged-out store.
+        if (
+            not force
+            and existing is not None
+            and _shared_xai_state_is_quarantined(existing)
+        ):
+            err = existing.get("last_auth_error") if isinstance(existing, dict) else None
+            detail = ""
+            if isinstance(err, dict) and err.get("message"):
+                detail = f" Last error: {err.get('message')}"
+            raise AuthError(
+                "Canonical shared xAI OAuth store is quarantined or globally "
+                "logged out; refusing to auto-promote a local grant."
+                + detail
+                + " Re-authenticate with `hermes model` (writes a fresh grant).",
+                provider="xai-oauth",
+                code="xai_shared_quarantined",
+                relogin_required=True,
+            )
+
+        # H2: hold BOTH profile and root locks for election → commit so a
+        # concurrent writer cannot slip a second live RT into the unselected
+        # store after collection but before the canonical write.
+        election_paths = _xai_profile_and_root_election_paths()
+        with _xai_ordered_auth_store_locks(election_paths) as locked_paths:
+            cross = _collect_live_promotable_xai_under_held_locks(locked_paths)
+            distinct_identities = {
+                identity for _path, identity, _state in cross
+            }
+            if len(distinct_identities) > 1:
+                raise AuthError(
+                    "Ambiguous local xAI OAuth state: multiple distinct live "
+                    "refresh tokens present across the active profile and "
+                    "global root. Refusing to auto-promote; resolve to a "
+                    "single live grant or run an explicit migrate with a "
+                    "chosen source.",
+                    provider="xai-oauth",
+                    code="xai_promote_ambiguous_local",
+                    relogin_required=True,
+                )
+
+            chosen: Optional[Dict[str, Any]] = None
+            chosen_identity: Optional[str] = None
+            chosen_path: Optional[Path] = None
+
+            def _pick_from_cross(prefer: str) -> None:
+                nonlocal chosen, chosen_identity, chosen_path
+                if prefer == "profile":
+                    try:
+                        active = _auth_file_path()
+                    except Exception:
+                        active = None
+                    for path, identity, state in cross:
+                        if active is not None and _same_path(path, active):
+                            chosen, chosen_identity, chosen_path = (
+                                state,
+                                identity,
+                                path,
+                            )
+                            return
+                elif prefer == "root":
+                    try:
+                        root = _global_auth_file_path()
+                    except Exception:
+                        root = None
+                    if root is None:
+                        return
+                    for path, identity, state in cross:
+                        if _same_path(path, root):
+                            chosen, chosen_identity, chosen_path = (
+                                state,
+                                identity,
+                                path,
+                            )
+                            return
+                else:
+                    # auto/explicit/login: sole candidate (already disambiguated).
+                    if cross:
+                        path, identity, state = cross[0]
+                        chosen, chosen_identity, chosen_path = (
+                            state,
+                            identity,
+                            path,
+                        )
+
+            if source_key == "profile":
+                _pick_from_cross("profile")
+                if not _xai_oauth_state_has_usable_tokens(chosen):
+                    raise AuthError(
+                        "No usable xAI OAuth tokens in this profile's "
+                        "auth.json to migrate.",
+                        provider="xai-oauth",
+                        code="xai_migrate_source_empty",
+                        relogin_required=True,
+                    )
+            elif source_key == "root":
+                _pick_from_cross("root")
+                if not _xai_oauth_state_has_usable_tokens(chosen):
+                    raise AuthError(
+                        "No usable xAI OAuth tokens in the global-root "
+                        "auth.json to migrate.",
+                        provider="xai-oauth",
+                        code="xai_migrate_source_empty",
+                        relogin_required=True,
+                    )
+            else:
+                # auto / explicit / login
+                _pick_from_cross("auto")
+                if not _xai_oauth_state_has_usable_tokens(chosen):
+                    raise AuthError(
+                        "No usable legacy xAI OAuth tokens found to migrate. "
+                        "Prefer a fresh `hermes model` / device-code login with "
+                        "shared mode enabled (writes directly to the canonical "
+                        "store).",
+                        provider="xai-oauth",
+                        code="xai_migrate_source_empty",
+                        relogin_required=True,
+                    )
+            assert chosen is not None
+            assert chosen_path is not None
+            if not chosen_identity:
+                raise AuthError(
+                    "Elected local xAI grant has no refresh_token identity; "
+                    "refusing promote.",
+                    provider="xai-oauth",
+                    code="xai_migrate_source_empty",
+                    relogin_required=True,
+                )
+
+            # H1/H2: re-elect across ALL held stores (not just chosen) so a
+            # concurrent identity injected into the other store is observed.
+            recheck_cross = _collect_live_promotable_xai_under_held_locks(
+                locked_paths
+            )
+            recheck_identities = {
+                identity for _path, identity, _state in recheck_cross
+            }
+            if len(recheck_identities) > 1:
+                raise AuthError(
+                    "Ambiguous local xAI OAuth state detected during promotion "
+                    "(cross-store race). Refusing to write into the canonical "
+                    "shared store.",
+                    provider="xai-oauth",
+                    code="xai_promote_ambiguous_local",
+                    relogin_required=True,
+                )
+            recheck = _elect_sole_promotable_xai_under_lock(chosen_path)
+            recheck_identity = _xai_oauth_refresh_identity(recheck)
+            if recheck_identity != chosen_identity:
+                raise AuthError(
+                    "Local xAI OAuth grant was removed or changed during "
+                    "promotion (logout race). Refusing to write a stale grant "
+                    "into the canonical shared store.",
+                    provider="xai-oauth",
+                    code="xai_promote_local_race",
+                    relogin_required=True,
+                )
+            if not _xai_oauth_state_has_usable_tokens(recheck):
+                raise AuthError(
+                    "Local xAI OAuth grant was removed during promotion "
+                    "(logout race). Refusing to write a stale grant into the "
+                    "canonical shared store.",
+                    provider="xai-oauth",
+                    code="xai_promote_local_race",
+                    relogin_required=True,
+                )
+            chosen = recheck
+            tokens = (
+                chosen.get("tokens")
+                if isinstance(chosen.get("tokens"), dict)
+                else {}
+            )
+            shared_payload = {
+                "access_token": tokens.get("access_token"),
+                "refresh_token": tokens.get("refresh_token"),
+                "token_type": tokens.get("token_type") or "Bearer",
+                "expires_in": tokens.get("expires_in"),
+                "last_refresh": chosen.get("last_refresh"),
+                "auth_mode": chosen.get("auth_mode") or "oauth_device_code",
+                "discovery": chosen.get("discovery") or {},
+                "redirect_uri": chosen.get("redirect_uri") or "",
+                "generation": 0,
+            }
+            # F7: preserve id_token across migration.
+            id_token = str(
+                tokens.get("id_token") or chosen.get("id_token") or ""
+            ).strip()
+            if id_token:
+                shared_payload["id_token"] = id_token
+            # Final identity re-check immediately before the durable write,
+            # still under BOTH profile and root locks.
+            final_cross = _collect_live_promotable_xai_under_held_locks(
+                locked_paths
+            )
+            final_identities = {
+                identity for _path, identity, _state in final_cross
+            }
+            if len(final_identities) > 1:
+                raise AuthError(
+                    "Ambiguous local xAI OAuth state detected during promotion "
+                    "(cross-store race). Refusing to write into the canonical "
+                    "shared store.",
+                    provider="xai-oauth",
+                    code="xai_promote_ambiguous_local",
+                    relogin_required=True,
+                )
+            final = _elect_sole_promotable_xai_under_lock(chosen_path)
+            final_identity = _xai_oauth_refresh_identity(final)
+            if final_identity != chosen_identity:
+                raise AuthError(
+                    "Local xAI OAuth grant was removed or changed during "
+                    "promotion (logout race). Refusing to write a stale grant "
+                    "into the canonical shared store.",
+                    provider="xai-oauth",
+                    code="xai_promote_local_race",
+                    relogin_required=True,
+                )
+            written = _write_shared_xai_state(
+                shared_payload, bump_generation=True, _holding_lock=True
+            )
+
+        # H3: strip → inventory → marker under shared + ALL fleet locks while
+        # the shared lock is still held (no RT restore between strip and mark).
+        if strip_legacy and written is not None:
+            fleet_paths = _iter_xai_auth_json_paths(
+                include_global_root=True,
+                fail_loud=True,
+            )
+            with _xai_ordered_auth_store_locks(fleet_paths) as locked_fleet:
+                _strip_legacy_xai_oauth_secrets_under_held_locks(
+                    locked_fleet,
+                    fail_loud=True,
+                )
+                _write_xai_sole_owner_marker(
+                    generation=written.get("generation"),
+                    _holding_shared_lock=True,
+                    _holding_store_locks=True,
+                    _locked_paths=locked_fleet,
+                )
+
+    assert written is not None
+    if strip_legacy:
+        # Outside shared lock: non-secret profile reference only.
+        _write_profile_xai_shared_reference(
+            enabled=True,
+            last_refresh=written.get("last_refresh"),
+            generation=written.get("generation"),
+            set_active=True,
+        )
+    return written
+
+
+def _strip_legacy_xai_oauth_secrets_under_held_locks(
+    paths: Sequence[Path],
+    *,
+    fail_loud: bool = True,
+) -> List[str]:
+    """Strip durable xAI secrets from ``paths``. Caller holds every lock.
+
+    Fail-closed: unreadable/corrupt stores and residual RTs fail the strip
+    when ``fail_loud`` (default).
+    """
+    audit: List[str] = []
+    failures: List[str] = []
+    residual: List[str] = []
+
+    for path in paths:
+        if not path.is_file():
+            continue
+        try:
+            # R5: unreadable/corrupt stores FAIL the audit (never certify clean).
+            store = _load_auth_store(path, fail_on_corrupt=True)
+            if not isinstance(store, dict):
+                failures.append(f"{path}: auth store load returned non-dict")
+                continue
+            mutated = _strip_xai_secrets_in_store(
+                store, remove_manuals=True, audit=audit
+            )
+            if mutated:
+                _save_auth_store(store, target_path=path)
+                audit.append(f"stripped xAI secrets from {path}")
+            # Re-read after save to verify no durable RT remains.
+            verify = _load_auth_store(path, fail_on_corrupt=True)
+            if _auth_store_holds_durable_xai_refresh_token(verify):
+                residual.append(str(path))
+        except AuthError as exc:
+            failures.append(f"{path}: {exc}")
+            logger.warning(
+                "xAI shared: legacy secret strip failed for %s: %s", path, exc
+            )
+        except Exception as exc:
+            failures.append(f"{path}: {exc}")
+            logger.warning(
+                "xAI shared: legacy secret strip failed for %s: %s", path, exc
+            )
+
+    if failures or residual:
+        parts = []
+        if failures:
+            parts.append("cleanup failures: " + "; ".join(failures))
+        if residual:
+            parts.append(
+                "durable xAI refresh_token still present after strip at: "
+                + ", ".join(residual)
+            )
+        message = (
+            "Shared xAI OAuth sole-ownership strip incomplete. "
+            + " | ".join(parts)
+            + ". Migration/login cannot proceed while a local fork remains."
+        )
+        if fail_loud:
+            raise AuthError(
+                message,
+                provider="xai-oauth",
+                code="xai_shared_strip_incomplete",
+                relogin_required=False,
+            )
+        logger.error(message)
+    return audit
+
+
+def _strip_legacy_xai_oauth_secrets(
+    *,
+    include_global_root: bool = True,
+    fail_loud: bool = True,
+) -> List[str]:
+    """Hard-strip durable xAI OAuth secrets from ALL profiles + root.
+
+    Shared sole ownership (A1/A4/A5): every auth.json under the default hermes
+    root, every named profile, and the active HERMES_HOME must lose local
+    refresh tokens. Same-family ``manual:*`` pool rows are removed (they
+    pure-refresh outside the shared lock). Cleanup failures and residual
+    durable refresh tokens FAIL LOUDLY so migration/login cannot report
+    success while a fork still exists.
+
+    Atomicity: acquires ALL store locks in deterministic sorted-path order
+    before mutating any file, so a concurrent writer cannot restore an RT
+    between per-file strip steps of the same sweep.
+
+    Returns a list of audit lines describing removals.
+    """
+    # F3a: enumeration failure fails the strip when fail_loud (default).
+    try:
+        paths = _iter_xai_auth_json_paths(
+            include_global_root=include_global_root,
+            fail_loud=fail_loud,
+        )
+    except AuthError:
+        raise
+    except Exception as exc:
+        if fail_loud:
+            raise AuthError(
+                f"Shared xAI OAuth sole-ownership strip cannot enumerate auth "
+                f"paths: {exc}",
+                provider="xai-oauth",
+                code="xai_shared_profile_enum_failed",
+                relogin_required=False,
+            ) from exc
+        logger.error(
+            "Shared xAI OAuth sole-ownership strip cannot enumerate auth paths: %s",
+            exc,
+        )
+        return []
+
+    with _xai_ordered_auth_store_locks(paths):
+        return _strip_legacy_xai_oauth_secrets_under_held_locks(
+            paths,
+            fail_loud=fail_loud,
+        )
+
+
+def _strip_root_xai_oauth_secrets(*, fail_loud: bool = True) -> None:
+    """A5: strip durable xAI OAuth secrets from the global-root auth.json only."""
+    paths: List[Path] = []
+    try:
+        global_path = _global_auth_file_path()
+        if global_path is not None:
+            paths.append(global_path)
+    except Exception:
+        pass
+    try:
+        from hermes_constants import get_default_hermes_root
+
+        root = get_default_hermes_root() / "auth.json"
+        # Avoid double-work when profile == root (classic mode).
+        if not any(_same_path(root, p) for p in paths):
+            # Only add when distinct from the active profile auth path.
+            try:
+                active = _auth_file_path()
+            except Exception:
+                active = None
+            if active is None or not _same_path(root, active):
+                paths.append(root)
+    except Exception:
+        pass
+
+    residual: List[str] = []
+    failures: List[str] = []
+    for path in paths:
+        if not path.is_file():
+            continue
+        try:
+            with _auth_store_lock(target_path=path):
+                store = _load_auth_store(path)
+                if not store:
+                    continue
+                if _strip_xai_secrets_in_store(store, remove_manuals=True):
+                    _save_auth_store(store, target_path=path)
+                verify = _load_auth_store(path)
+                if _auth_store_holds_durable_xai_refresh_token(verify):
+                    residual.append(str(path))
+        except Exception as exc:
+            failures.append(f"{path}: {exc}")
+    if failures or residual:
+        message = (
+            "Shared xAI OAuth root strip incomplete. "
+            + (f"failures={failures}; " if failures else "")
+            + (f"residual_rt_at={residual}" if residual else "")
+        )
+        if fail_loud:
+            raise AuthError(
+                message,
+                provider="xai-oauth",
+                code="xai_shared_root_strip_incomplete",
+                relogin_required=False,
+            )
+        logger.error(message)
+
+
+def disable_profile_xai_shared_auth() -> bool:
+    """Per-profile opt-out of the shared xAI grant (does NOT clear the grant).
+
+    Writes the durable disable marker. Callers that also clear provider state
+    (logout / auth remove) MUST re-invoke this AFTER the clear so the marker
+    survives (B1).
+
+    Fail-loud (F3b/F4b): requires shared mode ON; marker write failures raise
+    (never report success when the disable did not persist).
+    """
+    if not _xai_shared_auth_enabled():
+        raise AuthError(
+            "Shared xAI OAuth is not enabled. Set HERMES_XAI_SHARED_AUTH=1 "
+            "(or HERMES_SHARED_AUTH_PROVIDERS=xai-oauth) before disabling.",
+            provider="xai-oauth",
+            code="xai_shared_not_enabled",
+        )
+    _write_profile_xai_shared_reference(enabled=False)
+    # Verify the marker actually landed — never claim "Disabled" on a no-op write.
+    if not _profile_xai_shared_disabled():
+        raise AuthError(
+            "Failed to persist per-profile shared xAI OAuth disable marker.",
+            provider="xai-oauth",
+            code="xai_shared_disable_failed",
+            relogin_required=False,
+        )
+    return True
+
+
+def enable_profile_xai_shared_auth() -> bool:
+    """Re-enable this profile's use of the shared xAI grant.
+
+    Also sweeps residual durable RTs from all profiles + root (A1) so enabling
+    cannot leave a silent fork.
+
+    F4a: requires shared mode ON and a usable canonical shared grant before any
+    multi-profile strip. Never strips the last local RT when the gate is off
+    or the shared store is empty.
+    """
+    if not _xai_shared_auth_enabled():
+        raise AuthError(
+            "Shared xAI OAuth is not enabled. Set HERMES_XAI_SHARED_AUTH=1 "
+            "(or HERMES_SHARED_AUTH_PROVIDERS=xai-oauth) before enabling.",
+            provider="xai-oauth",
+            code="xai_shared_not_enabled",
+        )
+    shared = _read_shared_xai_state()
+    if not _xai_shared_state_has_usable_tokens(shared):
+        raise AuthError(
+            "Cannot enable shared xAI OAuth: the canonical shared store is empty. "
+            "Log in via `hermes model` / device-code, or run "
+            "`hermes auth xai migrate-shared` first. Local refresh tokens were "
+            "NOT stripped.",
+            provider="xai-oauth",
+            code="xai_shared_empty",
+            relogin_required=True,
+        )
+    _write_profile_xai_shared_reference(enabled=True)
+    _strip_legacy_xai_oauth_secrets(include_global_root=True, fail_loud=True)
+    return True
+
+
+def ensure_shared_xai_grant_from_local(
+    *,
+    strip_legacy: bool = True,
+) -> Optional[Dict[str, Any]]:
+    """F1: when shared is empty but a local grant exists, promote it first.
+
+    Under shared mode, NEVER strip the last durable refresh token before a
+    durable write into the canonical shared store. Returns:
+
+    - the existing shared state if the canonical store already has a grant
+      (and R4: ensures a one-time fleet sole-owner sweep has run)
+    - the newly written shared state after a successful local→shared promote
+    - ``None`` when there is nothing to promote (truly empty) OR when the
+      canonical store is tombstoned/quarantined (R1 — no resurrection)
+
+    Raises AuthError when a local grant was found but the durable shared write
+    (or post-write sole-ownership strip) failed — in the write-failure case the
+    local grant is left intact.
+    """
+    if not _xai_shared_auth_enabled():
+        return None
+    if _profile_xai_shared_disabled():
+        return None
+
+    existing = _read_shared_xai_state(raise_on_unreadable=True)
+    if _xai_shared_state_has_usable_tokens(existing):
+        # R4: pre-existing canonical (upgrade deploy state) must still sweep
+        # dormant per-profile RTs once on first shared consumption.
+        try:
+            gen = int((existing or {}).get("generation") or 0)
+        except (TypeError, ValueError):
+            gen = 0
+        _ensure_xai_fleet_sole_owner_verified(generation=gen)
+        return existing
+
+    # R1: tombstoned / globally-logged-out / quarantined → do NOT promote.
+    if existing is not None and _shared_xai_state_is_quarantined(existing):
+        return None
+    if not _shared_xai_store_is_never_initialized() and existing is not None:
+        # File present, unusable, but not a recognized tombstone — still refuse
+        # silent resurrection (treat as intentionally non-live).
+        if not _xai_shared_state_has_usable_tokens(existing):
+            return None
+
+    # H2: atomic sole-live promote across profile AND root lives entirely
+    # inside migrate (shared outer → both store locks held election→commit).
+    # No separate unlocked pre-collect that could race.
+    try:
+        return migrate_xai_oauth_to_shared_store(
+            source="auto",
+            strip_legacy=strip_legacy,
+            force=False,
+        )
+    except AuthError as exc:
+        # Concurrent winner already installed the grant — adopt it.
+        if getattr(exc, "code", None) == "xai_shared_already_present":
+            shared = _read_shared_xai_state()
+            if _xai_shared_state_has_usable_tokens(shared):
+                return shared
+        code = getattr(exc, "code", None)
+        # Ambiguous / unreadable / unlockable / strip failures must surface
+        # (fail-closed). Empty/quarantined/race → no usable grant for callers
+        # that treat None as empty.
+        if code == "xai_promote_ambiguous_local":
+            raise
+        if code in {
+            "xai_auth_store_unreadable",
+            "xai_auth_store_lock_failed",
+            "xai_shared_strip_incomplete",
+            "xai_shared_fleet_inventory_failed",
+            "xai_shared_sole_owner_marker_failed",
+            "xai_shared_persist_failed",
+            "xai_shared_profile_enum_failed",
+        }:
+            raise
+        if code in {
+            "xai_shared_quarantined",
+            "xai_promote_local_race",
+            "xai_migrate_source_empty",
+        }:
+            return None
+        raise
+
+
+
+# =============================================================================
 # xAI Grok OAuth — tokens stored in ~/.hermes/auth.json
 # =============================================================================
 
-def _xai_oauth_state_from_store(auth_store: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    """Return usable xAI OAuth state from provider state or credential pool."""
+def _xai_entry_source_suppressed(auth_store: Dict[str, Any], source: str) -> bool:
+    suppressed = auth_store.get("suppressed_sources") if isinstance(auth_store, dict) else None
+    if not isinstance(suppressed, dict):
+        return False
+    entries = suppressed.get("xai-oauth")
+    if not isinstance(entries, list):
+        return False
+    source = str(source or "")
+    if source in entries:
+        return True
+    # Broad suppress of device_code also blocks pool device_code rows.
+    if "device_code" in entries and source in {
+        "device_code",
+        "loopback_pkce",
+        "hermes_pkce",
+        "",
+    }:
+        return True
+    return False
+
+
+def _xai_pool_entry_is_live_promotable(
+    entry: Dict[str, Any],
+    auth_store: Dict[str, Any],
+) -> bool:
+    """R2: True when a pool row is a live, unsuppressed, non-dead grant."""
+    if not isinstance(entry, dict):
+        return False
+    access_token = str(entry.get("access_token", "") or "").strip()
+    refresh_token = str(entry.get("refresh_token", "") or "").strip()
+    if not access_token or not refresh_token:
+        return False
+    source = str(entry.get("source") or "")
+    if source.startswith("shared:"):
+        return False
+    if _xai_entry_source_suppressed(auth_store, source):
+        return False
+    status = str(entry.get("last_status") or "").strip().lower()
+    if status in _XAI_NON_PROMOTABLE_STATUSES:
+        return False
+    reason = str(
+        entry.get("last_error_reason") or entry.get("last_error") or ""
+    ).strip().lower()
+    if reason in _XAI_NON_PROMOTABLE_REASONS:
+        return False
+    return True
+
+
+def _xai_provider_state_is_live_promotable(
+    state: Optional[Dict[str, Any]],
+    auth_store: Dict[str, Any],
+) -> bool:
+    """R2: True when providers.xai-oauth holds a live unsuppressed grant."""
+    if not isinstance(state, dict):
+        return False
+    if state.get("enabled") is False:
+        return False
+    if is_truthy_value(state.get("shared_disabled"), default=False):
+        return False
+    tokens = state.get("tokens") if isinstance(state.get("tokens"), dict) else None
+    if not isinstance(tokens, dict):
+        access = str(state.get("access_token", "") or "").strip()
+        refresh = str(state.get("refresh_token", "") or "").strip()
+        if not (access and refresh):
+            return False
+    else:
+        access = str(tokens.get("access_token", "") or "").strip()
+        refresh = str(tokens.get("refresh_token", "") or "").strip()
+        if not (access and refresh):
+            return False
+    source = str(state.get("source") or "device_code")
+    if source.startswith("shared:"):
+        return False
+    if _xai_entry_source_suppressed(auth_store, source):
+        return False
+    if _xai_entry_source_suppressed(auth_store, "device_code"):
+        return False
+    status = str(state.get("last_status") or "").strip().lower()
+    if status in _XAI_NON_PROMOTABLE_STATUSES:
+        return False
+    last_err = state.get("last_auth_error")
+    if isinstance(last_err, dict):
+        code = str(last_err.get("code") or "").strip().lower()
+        if code in _XAI_NON_PROMOTABLE_REASONS or code in _XAI_NON_PROMOTABLE_STATUSES:
+            # Terminal error still attached with residual tokens → not promotable.
+            return False
+        if is_truthy_value(last_err.get("relogin_required"), default=False):
+            return False
+    return True
+
+
+def _xai_oauth_state_from_store_legacy(
+    auth_store: Dict[str, Any],
+) -> Optional[Dict[str, Any]]:
+    """Gate-off resolution — byte-identical to 60891a4ef (H6/G7).
+
+    Legacy first-wins: providers singleton (via ``_load_provider_state``,
+    which may fall back to global root) if it has access+refresh, else the
+    first token-bearing pool row. Does NOT reject dead/suppressed/exhausted
+    rows and does NOT sole-live-dedup — those strict rules are shared-mode
+    only (``sole_live=True``).
+    """
     state = _load_provider_state(auth_store, "xai-oauth")
     tokens = state.get("tokens") if isinstance(state, dict) else None
     if isinstance(tokens, dict):
@@ -3985,12 +6457,106 @@ def _xai_oauth_state_from_store(auth_store: Dict[str, Any]) -> Optional[Dict[str
                 "refresh_token": refresh_token,
                 "token_type": str(entry.get("token_type") or "Bearer"),
             }
+            id_token = str(entry.get("id_token") or "").strip()
+            if id_token:
+                merged["tokens"]["id_token"] = id_token
             if entry.get("last_refresh"):
                 merged["last_refresh"] = entry.get("last_refresh")
             merged.setdefault("auth_mode", "oauth_pkce")
             return merged
 
     return state if isinstance(state, dict) else None
+
+
+def _xai_oauth_state_from_store(
+    auth_store: Dict[str, Any],
+    *,
+    sole_live: bool = False,
+) -> Optional[Dict[str, Any]]:
+    """Return usable xAI OAuth state from provider state or credential pool.
+
+    H6/G7: when ``sole_live`` is False (gate-off / legacy readers), behavior
+    is byte-identical to 60891a4ef — first token-bearing row wins, including
+    dead/suppressed rows.
+
+    When ``sole_live`` is True (shared-mode auto-promote / migrate), R2
+    rejects dead/exhausted/suppressed rows and AMBIGUOUS multi-live-grant
+    stores raise ``xai_promote_ambiguous_local``.
+    """
+    if not sole_live:
+        return _xai_oauth_state_from_store_legacy(auth_store)
+
+    # Shared-mode sole-live path: collect live candidates keyed by
+    # refresh_token identity so a singleton + matching pool row for the same
+    # grant counts as ONE candidate.
+    by_rt: Dict[str, Dict[str, Any]] = {}
+
+    # Provider singleton (do not use _load_provider_state — it may fall back to
+    # global root; callers that want root must load that store themselves).
+    providers = auth_store.get("providers") if isinstance(auth_store, dict) else None
+    state = providers.get("xai-oauth") if isinstance(providers, dict) else None
+    if isinstance(state, dict) and _xai_provider_state_is_live_promotable(state, auth_store):
+        tokens = state.get("tokens") if isinstance(state.get("tokens"), dict) else None
+        if isinstance(tokens, dict):
+            rt = str(tokens.get("refresh_token") or "").strip()
+            access = str(tokens.get("access_token") or "").strip()
+            if rt and access:
+                by_rt[rt] = dict(state)
+        else:
+            rt = str(state.get("refresh_token") or "").strip()
+            access = str(state.get("access_token") or "").strip()
+            if rt and access:
+                merged = dict(state)
+                merged["tokens"] = {
+                    "access_token": access,
+                    "refresh_token": rt,
+                    "token_type": str(state.get("token_type") or "Bearer"),
+                }
+                by_rt[rt] = merged
+
+    credential_pool = auth_store.get("credential_pool")
+    entries = (
+        credential_pool.get("xai-oauth")
+        if isinstance(credential_pool, dict)
+        else None
+    )
+    if isinstance(entries, list):
+        for entry in entries:
+            if not _xai_pool_entry_is_live_promotable(entry, auth_store):
+                continue
+            access_token = str(entry.get("access_token", "") or "").strip()
+            refresh_token = str(entry.get("refresh_token", "") or "").strip()
+            if refresh_token in by_rt:
+                # Same grant already seen via providers singleton.
+                continue
+            merged = dict(state or {}) if isinstance(state, dict) else {}
+            merged["tokens"] = {
+                "access_token": access_token,
+                "refresh_token": refresh_token,
+                "token_type": str(entry.get("token_type") or "Bearer"),
+            }
+            id_token = str(entry.get("id_token") or "").strip()
+            if id_token:
+                merged["tokens"]["id_token"] = id_token
+            if entry.get("last_refresh"):
+                merged["last_refresh"] = entry.get("last_refresh")
+            merged.setdefault("auth_mode", "oauth_pkce")
+            by_rt[refresh_token] = merged
+
+    if not by_rt:
+        return None
+
+    if len(by_rt) > 1:
+        raise AuthError(
+            "Ambiguous local xAI OAuth state: multiple distinct live refresh "
+            "tokens present. Refusing to auto-promote; resolve to a single "
+            "live grant or run an explicit migrate with a chosen source.",
+            provider="xai-oauth",
+            code="xai_promote_ambiguous_local",
+            relogin_required=True,
+        )
+
+    return next(iter(by_rt.values()))
 
 
 def _xai_oauth_state_has_usable_tokens(state: Optional[Dict[str, Any]]) -> bool:
@@ -4003,6 +6569,50 @@ def _xai_oauth_state_has_usable_tokens(state: Optional[Dict[str, Any]]) -> bool:
 
 
 def _read_xai_oauth_tokens(*, _lock: bool = True) -> Dict[str, Any]:
+    """Load xAI OAuth tokens.
+
+    When shared mode is active the canonical shared store is the ONLY durable
+    source of secret material. Profile/root stores are not consulted for tokens
+    (they may still carry non-secret references). When shared mode is off, the
+    legacy profile → credential-pool → global-root fallback remains unchanged.
+    """
+    if _xai_shared_auth_enabled():
+        if _profile_xai_shared_disabled():
+            raise AuthError(
+                "xAI shared OAuth is disabled for this profile. "
+                "Re-enable with `hermes auth xai enable-shared` or log in again.",
+                provider="xai-oauth",
+                code="xai_shared_profile_disabled",
+                relogin_required=False,
+            )
+        shared = _read_shared_xai_state()
+        if not _xai_shared_state_has_usable_tokens(shared):
+            err = (shared or {}).get("last_auth_error") if isinstance(shared, dict) else None
+            detail = ""
+            if isinstance(err, dict) and err.get("message"):
+                detail = f" Last error: {err.get('message')}"
+            raise AuthError(
+                "No xAI OAuth credentials in the shared store. "
+                "Select xAI Grok OAuth in `hermes model`, or run "
+                "`hermes auth xai migrate-shared`."
+                + detail,
+                provider="xai-oauth",
+                code="xai_auth_missing",
+                relogin_required=True,
+            )
+        assert shared is not None
+        tokens = _shared_xai_tokens_view(shared)
+        return {
+            "tokens": tokens,
+            "last_refresh": shared.get("last_refresh"),
+            "discovery": shared.get("discovery") or {},
+            "redirect_uri": shared.get("redirect_uri"),
+            "generation": shared.get("generation"),
+            "auth_mode": shared.get("auth_mode") or "oauth_device_code",
+            "auth_store": "shared",
+            "shared_path": str(_xai_shared_store_path()),
+        }
+
     if _lock:
         with _auth_store_lock():
             auth_store = _load_auth_store()
@@ -4077,7 +6687,13 @@ def _write_through_xai_oauth_to_global_root(state: Dict[str, Any]) -> None:
     profile store (the caller already saved that). Swallows all errors — a
     failed write-through degrades to the pre-existing behavior (root stale),
     it must never break the profile's own successful save.
+
+    When shared xAI mode is active (G2) this is a hard no-op: the canonical
+    shared store is the only durable secret home and running both systems
+    would re-fork rotating refresh tokens.
     """
+    if _xai_shared_auth_enabled():
+        return
     global_path = _global_auth_file_path()
     if global_path is None:
         # Classic mode (profile == root); the profile save already hit root.
@@ -4113,9 +6729,41 @@ def _save_xai_oauth_tokens(
     redirect_uri: str = "",
     last_refresh: Optional[str] = None,
     auth_mode: str = "oauth_device_code",
+    generation: Optional[int] = None,
 ) -> None:
     if last_refresh is None:
         last_refresh = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+    # Shared mode: canonical store is authoritative. Do NOT materialize tokens
+    # into the profile providers.xai-oauth block (G1 / invariant 5).
+    if _xai_shared_auth_enabled():
+        shared_payload = {
+            "access_token": tokens.get("access_token"),
+            "refresh_token": tokens.get("refresh_token"),
+            "token_type": tokens.get("token_type") or "Bearer",
+            "expires_in": tokens.get("expires_in"),
+            "id_token": tokens.get("id_token"),
+            "last_refresh": last_refresh,
+            "auth_mode": auth_mode,
+            "discovery": discovery or {},
+            "redirect_uri": redirect_uri,
+        }
+        if generation is not None:
+            shared_payload["generation"] = generation
+        written = _write_shared_xai_state(shared_payload, bump_generation=True)
+        # AFTER shared lock release inside _write_shared_xai_state: profile metadata only.
+        _write_profile_xai_shared_reference(
+            enabled=True,
+            last_refresh=written.get("last_refresh"),
+            generation=written.get("generation"),
+            set_active=True,
+        )
+        # A5: root providers.xai-oauth.tokens.refresh_token must not survive a
+        # shared save. Active profile is already reference-only above. Full
+        # multi-profile sweeps happen on migrate/login/enable (A1).
+        _strip_root_xai_oauth_secrets(fail_loud=True)
+        return
+
     with _auth_store_lock():
         auth_store = _load_auth_store()
         # A profile that lacks its own xai-oauth block is reading the root
@@ -4439,15 +7087,24 @@ def _refresh_xai_oauth_tokens(
     token_endpoint: str,
     redirect_uri: str = "",
     timeout_seconds: float,
+    auth_mode: str = "oauth_device_code",
+    discovery: Optional[Dict[str, Any]] = None,
+    expected_generation: Optional[int] = None,
+    persist: bool = True,
 ) -> Dict[str, Any]:
     # Re-persist whatever auth_mode is already stored (legacy pre-device-code
     # logins may still carry ``oauth_pkce``): the refresh hot path must not
     # relabel how the grant was originally obtained.
-    try:
-        state = _load_provider_state(_load_auth_store(), "xai-oauth") or {}
-        auth_mode = str(state.get("auth_mode") or "oauth_device_code")
-    except Exception:
-        auth_mode = "oauth_device_code"
+    if not auth_mode:
+        try:
+            if _xai_shared_auth_enabled():
+                shared = _read_shared_xai_state() or {}
+                auth_mode = str(shared.get("auth_mode") or "oauth_device_code")
+            else:
+                state = _load_provider_state(_load_auth_store(), "xai-oauth") or {}
+                auth_mode = str(state.get("auth_mode") or "oauth_device_code")
+        except Exception:
+            auth_mode = "oauth_device_code"
     refreshed = refresh_xai_oauth_pure(
         str(tokens.get("access_token", "") or ""),
         str(tokens.get("refresh_token", "") or ""),
@@ -4463,14 +7120,190 @@ def _refresh_xai_oauth_tokens(
         updated_tokens["expires_in"] = refreshed["expires_in"]
     if refreshed.get("token_type"):
         updated_tokens["token_type"] = refreshed["token_type"]
-    _save_xai_oauth_tokens(
-        updated_tokens,
-        discovery={"token_endpoint": token_endpoint},
-        redirect_uri=redirect_uri,
-        last_refresh=refreshed["last_refresh"],
-        auth_mode=auth_mode,
-    )
+    if persist:
+        _save_xai_oauth_tokens(
+            updated_tokens,
+            discovery=discovery or {"token_endpoint": token_endpoint},
+            redirect_uri=redirect_uri,
+            last_refresh=refreshed["last_refresh"],
+            auth_mode=auth_mode,
+            generation=expected_generation,
+        )
+    updated_tokens["last_refresh"] = refreshed["last_refresh"]
     return updated_tokens
+
+
+def _resolve_xai_oauth_runtime_credentials_shared(
+    *,
+    force_refresh: bool = False,
+    refresh_if_expiring: bool = True,
+    refresh_skew_seconds: Optional[int] = None,
+    rejected_access_token: Optional[str] = None,
+    expected_generation: Optional[int] = None,
+) -> Dict[str, Any]:
+    """Canonical shared-store resolver: one lock, one refresher, adopt-on-wait."""
+    if _profile_xai_shared_disabled():
+        raise AuthError(
+            "xAI shared OAuth is disabled for this profile.",
+            provider="xai-oauth",
+            code="xai_shared_profile_disabled",
+        )
+
+    # F1: empty canonical + sole local grant → promote (durable write) BEFORE
+    # any strip/refresh. Fail loud if promotion cannot write; leave local intact.
+    ensure_shared_xai_grant_from_local(strip_legacy=True)
+
+    refresh_timeout_seconds = env_float("HERMES_XAI_REFRESH_TIMEOUT_SECONDS", 20)
+    lock_timeout = max(float(AUTH_LOCK_TIMEOUT_SECONDS), refresh_timeout_seconds + 5.0)
+
+    # Snapshot pre-lock identity for generation compare (G4). Prefer explicit
+    # rejected-token args; otherwise snapshot current canonical state when a
+    # refresh is being requested so a waiter never re-POSTs after a winner.
+    pre_access = str(rejected_access_token or "").strip() or None
+    pre_generation = expected_generation
+    try:
+        pre = _read_shared_xai_state()
+    except Exception:
+        pre = None
+    if pre_access is None and isinstance(pre, dict):
+        pre_access = str(pre.get("access_token") or "").strip() or None
+    if pre_generation is None and isinstance(pre, dict):
+        try:
+            pre_generation = int(pre.get("generation") or 0)
+        except (TypeError, ValueError):
+            pre_generation = None
+
+    with _xai_shared_store_lock(timeout_seconds=lock_timeout):
+        shared = _read_shared_xai_state()
+        if not _xai_shared_state_has_usable_tokens(shared):
+            raise AuthError(
+                "No xAI OAuth credentials in the shared store. "
+                "Select xAI Grok OAuth in `hermes model`.",
+                provider="xai-oauth",
+                code="xai_auth_missing",
+                relogin_required=True,
+            )
+        assert shared is not None
+        tokens = _shared_xai_tokens_view(shared)
+        access_token = tokens["access_token"]
+        discovery = dict(shared.get("discovery") or {})
+        token_endpoint = str(discovery.get("token_endpoint", "") or "").strip()
+        redirect_uri = str(shared.get("redirect_uri", "") or "").strip()
+        auth_mode = str(shared.get("auth_mode") or "oauth_device_code")
+        try:
+            current_generation = int(shared.get("generation") or 0)
+        except (TypeError, ValueError):
+            current_generation = 0
+        last_refresh = shared.get("last_refresh")
+
+        effective_skew = (
+            int(refresh_skew_seconds)
+            if refresh_skew_seconds is not None
+            else _xai_proactive_refresh_skew_seconds(access_token)
+        )
+
+        # G4: force_refresh is NOT unconditional after re-read. Only refresh if
+        # the canonical generation/token still matches what the caller rejected
+        # (or what we observed pre-lock). Otherwise adopt the winner.
+        should_refresh = False
+        if force_refresh:
+            still_same_access = (
+                pre_access is None
+                or str(access_token).strip() == str(pre_access).strip()
+            )
+            still_same_gen = (
+                pre_generation is None
+                or int(current_generation) == int(pre_generation)
+            )
+            should_refresh = still_same_access and still_same_gen
+            if not should_refresh:
+                _oauth_trace(
+                    "xai_shared_adopt_winner",
+                    generation=current_generation,
+                    pre_generation=pre_generation,
+                    access_token_fp=_token_fingerprint(access_token),
+                )
+        elif refresh_if_expiring:
+            should_refresh = _xai_access_token_is_expiring(access_token, effective_skew)
+
+        if should_refresh:
+            if not token_endpoint:
+                # Discovery is network I/O while holding the shared lock — same
+                # trade-off as the legacy path (must serialize before refresh).
+                token_endpoint = _xai_oauth_discovery(refresh_timeout_seconds)["token_endpoint"]
+                discovery["token_endpoint"] = token_endpoint
+            try:
+                refreshed = refresh_xai_oauth_pure(
+                    access_token,
+                    tokens["refresh_token"],
+                    token_endpoint=token_endpoint,
+                    timeout_seconds=refresh_timeout_seconds,
+                )
+                new_state = {
+                    "access_token": refreshed["access_token"],
+                    "refresh_token": refreshed["refresh_token"],
+                    "token_type": refreshed.get("token_type") or "Bearer",
+                    "expires_in": refreshed.get("expires_in"),
+                    "id_token": refreshed.get("id_token"),
+                    "last_refresh": refreshed["last_refresh"],
+                    "auth_mode": auth_mode,
+                    "discovery": discovery,
+                    "redirect_uri": redirect_uri,
+                    "generation": current_generation,
+                }
+                # G5: durable write is NOT best-effort — fail loud if it fails.
+                written = _write_shared_xai_state(
+                    new_state, bump_generation=True, _holding_lock=True
+                )
+                access_token = str(written.get("access_token") or "").strip()
+                last_refresh = written.get("last_refresh")
+                current_generation = int(written.get("generation") or 0)
+                tokens = _shared_xai_tokens_view(written)
+            except AuthError as exc:
+                if _is_terminal_xai_oauth_refresh_error(exc):
+                    # G6: compare-and-clear under the lock.
+                    terminal = {
+                        "provider": "xai-oauth",
+                        "code": exc.code or "xai_refresh_failed",
+                        "message": str(exc),
+                        "reason": "runtime_refresh_failure",
+                        "relogin_required": True,
+                        "at": datetime.now(timezone.utc).isoformat(),
+                    }
+                    _clear_shared_xai_state(
+                        "runtime_refresh_failure",
+                        terminal_error=terminal,
+                        only_if_refresh_token=tokens.get("refresh_token"),
+                        only_if_generation=current_generation,
+                        _holding_lock=True,
+                    )
+                raise
+
+    # AFTER releasing the shared lock: best-effort non-secret profile metadata.
+    try:
+        _write_profile_xai_shared_reference(
+            enabled=True,
+            last_refresh=last_refresh if isinstance(last_refresh, str) else None,
+            generation=current_generation,
+        )
+    except Exception:
+        pass
+
+    base_url = _xai_validate_inference_base_url(
+        os.getenv("HERMES_XAI_BASE_URL", "").strip().rstrip("/")
+        or os.getenv("XAI_BASE_URL", "").strip().rstrip("/"),
+        fallback=DEFAULT_XAI_OAUTH_BASE_URL,
+    )
+    return {
+        "provider": "xai-oauth",
+        "base_url": base_url,
+        "api_key": access_token,
+        "source": XAI_SHARED_SOURCE,
+        "last_refresh": last_refresh,
+        "auth_mode": "oauth_device_code",
+        "generation": current_generation,
+        "auth_store": str(_xai_shared_store_path()),
+    }
 
 
 def resolve_xai_oauth_runtime_credentials(
@@ -4478,7 +7311,18 @@ def resolve_xai_oauth_runtime_credentials(
     force_refresh: bool = False,
     refresh_if_expiring: bool = True,
     refresh_skew_seconds: Optional[int] = None,
+    rejected_access_token: Optional[str] = None,
+    expected_generation: Optional[int] = None,
 ) -> Dict[str, Any]:
+    if _xai_shared_auth_enabled():
+        return _resolve_xai_oauth_runtime_credentials_shared(
+            force_refresh=force_refresh,
+            refresh_if_expiring=refresh_if_expiring,
+            refresh_skew_seconds=refresh_skew_seconds,
+            rejected_access_token=rejected_access_token,
+            expected_generation=expected_generation,
+        )
+
     data = _read_xai_oauth_tokens()
     tokens = dict(data["tokens"])
     access_token = str(tokens.get("access_token", "") or "").strip()
@@ -4486,6 +7330,10 @@ def resolve_xai_oauth_runtime_credentials(
     discovery = dict(data.get("discovery") or {})
     token_endpoint = str(discovery.get("token_endpoint", "") or "").strip()
     redirect_uri = str(data.get("redirect_uri", "") or "").strip()
+
+    # Snapshot for generation-style compare even on the legacy path so concurrent
+    # waiters adopt a winner's tokens when force_refresh is set.
+    pre_access = str(rejected_access_token or access_token or "").strip()
 
     effective_skew = (
         int(refresh_skew_seconds)
@@ -4508,9 +7356,16 @@ def resolve_xai_oauth_runtime_credentials(
                 if refresh_skew_seconds is not None
                 else _xai_proactive_refresh_skew_seconds(access_token)
             )
-            should_refresh = bool(force_refresh)
-            if (not should_refresh) and refresh_if_expiring:
-                should_refresh = _xai_access_token_is_expiring(access_token, effective_skew)
+            if force_refresh:
+                # Only refresh if the on-disk access token is still the one that
+                # failed/was observed; else adopt the winner.
+                should_refresh = (
+                    not pre_access or access_token == pre_access
+                )
+            else:
+                should_refresh = False
+                if refresh_if_expiring:
+                    should_refresh = _xai_access_token_is_expiring(access_token, effective_skew)
             if should_refresh:
                 if not token_endpoint:
                     token_endpoint = _xai_oauth_discovery(refresh_timeout_seconds)["token_endpoint"]
@@ -6301,6 +9156,42 @@ def get_codex_auth_status() -> Dict[str, Any]:
 
 
 def get_xai_oauth_auth_status() -> Dict[str, Any]:
+    shared_mode = _xai_shared_auth_enabled()
+    auth_store_path = (
+        str(_xai_shared_store_path()) if shared_mode else str(_auth_file_path())
+    )
+
+    if shared_mode:
+        if _profile_xai_shared_disabled():
+            return {
+                "logged_in": False,
+                "auth_store": auth_store_path,
+                "shared_mode": True,
+                "profile_enabled": False,
+                "error": "xAI shared OAuth disabled for this profile",
+            }
+        try:
+            creds = resolve_xai_oauth_runtime_credentials(refresh_if_expiring=False)
+            return {
+                "logged_in": True,
+                "auth_store": auth_store_path,
+                "shared_mode": True,
+                "profile_enabled": True,
+                "last_refresh": creds.get("last_refresh"),
+                "auth_mode": creds.get("auth_mode"),
+                "source": creds.get("source") or XAI_SHARED_SOURCE,
+                "api_key": creds.get("api_key"),
+                "generation": creds.get("generation"),
+            }
+        except AuthError as exc:
+            return {
+                "logged_in": False,
+                "auth_store": auth_store_path,
+                "shared_mode": True,
+                "profile_enabled": True,
+                "error": str(exc),
+            }
+
     try:
         from agent.credential_pool import load_pool
 
@@ -7101,6 +9992,37 @@ def _login_openai_codex(
     print(f"  Config updated: {config_path} (model.provider=openai-codex)")
 
 
+def _confirm_replace_shared_xai_grant(args, *, profile_disabled: bool) -> bool:
+    """B2: require explicit confirmation before clobbering the fleet grant."""
+    if bool(
+        getattr(args, "force_replace_shared", False)
+        or getattr(args, "force", False)
+        or getattr(args, "yes", False)
+    ):
+        return True
+    print()
+    if profile_disabled:
+        print(
+            "This profile has shared xAI OAuth disabled. A new device login would "
+            "REPLACE the canonical shared grant used by ALL profiles."
+        )
+        print(
+            "To re-use the existing fleet grant without replacing it, run: "
+            "`hermes auth xai enable-shared`"
+        )
+    else:
+        print(
+            "A canonical shared xAI OAuth grant already exists. A new device login "
+            "would REPLACE it for EVERY Hermes profile that uses shared mode."
+        )
+    print("Pass --force-replace-shared to confirm non-interactively.")
+    try:
+        answer = input("Replace the GLOBAL shared xAI grant? [y/N]: ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        answer = "n"
+    return answer in {"y", "yes"}
+
+
 def _login_xai_oauth(
     args,
     pconfig: ProviderConfig,
@@ -7109,7 +10031,16 @@ def _login_xai_oauth(
 ) -> None:
     del pconfig
 
-    if not force_new_login:
+    shared_mode = _xai_shared_auth_enabled()
+    profile_disabled = shared_mode and _profile_xai_shared_disabled()
+    shared_present = False
+    if shared_mode:
+        try:
+            shared_present = _xai_shared_state_has_usable_tokens(_read_shared_xai_state())
+        except Exception:
+            shared_present = False
+
+    if not force_new_login and not profile_disabled:
         try:
             existing = resolve_xai_oauth_runtime_credentials()
             api_key = existing.get("api_key", "")
@@ -7128,8 +10059,25 @@ def _login_xai_oauth(
                     print("Login successful!")
                     print(f"  Config updated: {config_path} (model.provider=xai-oauth)")
                     return
-        except AuthError:
-            pass
+        except AuthError as exc:
+            # B2: profile-disabled must NOT fall through as "missing auth" and
+            # silently overwrite the global grant.
+            if getattr(exc, "code", None) == "xai_shared_profile_disabled":
+                profile_disabled = True
+            # Other AuthErrors (missing shared grant, etc.) fall through to login.
+
+    # B2: any fresh device-code login writes the canonical store. When a
+    # usable fleet grant already exists, require explicit confirmation so a
+    # disabled profile (or declined reuse) cannot silently clobber everyone.
+    # Empty shared store is the normal first-seed path — no confirm.
+    if shared_mode and shared_present:
+        if not _confirm_replace_shared_xai_grant(
+            args, profile_disabled=profile_disabled
+        ):
+            print("Aborted. Shared grant was not modified.")
+            if profile_disabled:
+                print("Re-enable with: hermes auth xai enable-shared")
+            return
 
     print()
     print("Signing in to xAI Grok OAuth (SuperGrok / Premium+)...")
@@ -7161,11 +10109,22 @@ def _login_xai_oauth(
     # of ``_save_xai_oauth_tokens`` on purpose — that helper is shared with the
     # refresh hot path, which must never mutate suppression state.
     unsuppress_credential_source("xai-oauth", "device_code")
+    unsuppress_credential_source("xai-oauth", XAI_SHARED_SOURCE)
+    if shared_mode:
+        # Login is the preferred way to seed the canonical store; also strip
+        # any leftover legacy secret material so local copies cannot refresh.
+        # Fail loud (A1): login must not report success if a fork remains.
+        _strip_legacy_xai_oauth_secrets(include_global_root=True, fail_loud=True)
+        enable_profile_xai_shared_auth()
     config_path = _update_config_for_provider("xai-oauth", creds.get("base_url", DEFAULT_XAI_OAUTH_BASE_URL))
     print()
     print("Login successful!")
-    from hermes_constants import display_hermes_home as _dhh
-    print(f"  Auth state: {_dhh()}/auth.json")
+    if shared_mode:
+        print(f"  Auth state (shared, canonical): {_xai_shared_store_path()}")
+        print("  Profile holds a non-secret reference only (source: shared:xai-oauth).")
+    else:
+        from hermes_constants import display_hermes_home as _dhh
+        print(f"  Auth state: {_dhh()}/auth.json")
     print(f"  Config updated: {config_path} (model.provider=xai-oauth)")
 
 
@@ -8415,7 +11374,12 @@ def _login_nous(args, pconfig: ProviderConfig) -> None:
 
 
 def logout_command(args) -> None:
-    """Clear auth state for a provider."""
+    """Clear auth state for a provider.
+
+    For xAI OAuth under shared mode (G8):
+      - default / ``--profile``: per-profile disable (does NOT delete the grant)
+      - ``--global`` / ``--shared``: explicit GLOBAL logout (deletes canonical grant)
+    """
     provider_id = getattr(args, "provider", None)
 
     if provider_id and not is_known_auth_provider(provider_id):
@@ -8431,6 +11395,65 @@ def logout_command(args) -> None:
 
     should_reset_config = _should_reset_config_provider_on_logout(target)
     provider_name = get_auth_provider_display_name(target)
+
+    global_logout = bool(
+        getattr(args, "global_logout", False)
+        or getattr(args, "shared", False)
+        or getattr(args, "global", False)
+    )
+
+    if target == "xai-oauth" and _xai_shared_auth_enabled():
+        if global_logout:
+            print(
+                "GLOBAL xAI OAuth logout: deleting the canonical shared grant "
+                f"at {_xai_shared_store_path()}."
+            )
+            print(
+                "This affects EVERY Hermes profile that uses shared xAI OAuth."
+            )
+            cleared_shared = _clear_shared_xai_state("global_logout")
+            # Also clear local reference metadata / legacy material.
+            clear_provider_auth("xai-oauth")
+            # F3c: fleet strip must fail loud — never report global logout
+            # success while a durable xAI refresh token remains.
+            try:
+                _strip_legacy_xai_oauth_secrets(
+                    include_global_root=True, fail_loud=True
+                )
+            except AuthError as exc:
+                print(f"ERROR: global xAI OAuth logout incomplete: {exc}")
+                raise SystemExit(1) from exc
+            if should_reset_config:
+                _reset_config_provider()
+            if cleared_shared or should_reset_config:
+                print(f"Logged out of {provider_name} (GLOBAL shared grant cleared).")
+            else:
+                print(f"No shared auth state found for {provider_name}.")
+            return
+
+        # Per-profile disable (default). B1: clear first, THEN write the
+        # durable disable marker so clear_provider_auth cannot delete it.
+        clear_provider_auth("xai-oauth")
+        try:
+            disable_profile_xai_shared_auth()
+        except AuthError as exc:
+            print(f"ERROR: failed to disable shared xAI OAuth for this profile: {exc}")
+            raise SystemExit(1) from exc
+        if should_reset_config:
+            _reset_config_provider()
+        print(
+            f"Disabled shared xAI OAuth for this profile only "
+            f"(canonical grant at {_xai_shared_store_path()} is unchanged)."
+        )
+        print(
+            "To delete the grant for ALL profiles: "
+            "`hermes logout --provider xai-oauth --global`"
+        )
+        if should_reset_config and os.getenv("OPENROUTER_API_KEY"):
+            print("Hermes will use OpenRouter for inference.")
+        elif should_reset_config:
+            print("Run `hermes model` or configure an API key to use Hermes.")
+        return
 
     if clear_provider_auth(target) or should_reset_config:
         if should_reset_config:

@@ -328,7 +328,10 @@ def x_search_tool(
         timeout_seconds = _get_x_search_timeout_seconds()
         max_retries = _get_x_search_retries()
         response: Optional[requests.Response] = None
-        for attempt in range(max_retries + 1):
+        auth_refreshed = False
+        # +1 extra slot so a one-shot 401/403 auth refresh can retry even when
+        # max_retries is 0 (C3 must not depend on the 5xx retry budget).
+        for attempt in range(max_retries + 1 + (1 if source == "xai-oauth" else 0)):
             try:
                 response = requests.post(
                     f"{base_url}/responses",
@@ -344,6 +347,37 @@ def x_search_tool(
                 break
             except requests.HTTPError as e:
                 status_code = getattr(getattr(e, "response", None), "status_code", None)
+                # C3: on 401/403 auth failure, canonical-refresh once and retry.
+                if (
+                    status_code in {401, 403}
+                    and not auth_refreshed
+                    and source == "xai-oauth"
+                ):
+                    auth_refreshed = True
+                    try:
+                        from tools.xai_http import force_refresh_xai_http_credentials
+
+                        refreshed = force_refresh_xai_http_credentials(api_key)
+                        new_key = str(refreshed.get("api_key") or "").strip()
+                        if new_key and new_key != api_key:
+                            logger.info(
+                                "x_search got %s; refreshed xAI OAuth and retrying once",
+                                status_code,
+                            )
+                            api_key = new_key
+                            base_url = str(
+                                refreshed.get("base_url") or base_url
+                            ).strip().rstrip("/")
+                            continue
+                    except Exception as refresh_exc:
+                        logger.warning(
+                            "x_search OAuth refresh after %s failed: %s",
+                            status_code,
+                            refresh_exc,
+                        )
+                # Auth failures (after optional refresh) are terminal.
+                if status_code in {401, 403}:
+                    raise
                 if status_code is None or status_code < 500 or attempt >= max_retries:
                     raise
                 logger.warning(

@@ -2404,15 +2404,18 @@ def _run_single_child(
         except Exception:
             logger.debug("Failed to close child agent after delegation")
 
-        # The child owns its Relay scope lifetime. Close it here, on the worker
-        # that ran the child, before the parent emits its terminal report.
+        # The AIAgent turn boundary normally closes the child scope itself. This
+        # fallback covers failures before that boundary starts, but must not pop
+        # a scope while a timed-out child worker is still unwinding.
         try:
-            from hermes_cli.observability import relay_runtime
+            from agent import relay_runtime
 
             runtime = relay_runtime.get_runtime(create=False)
             child_session_id = str(getattr(child, "session_id", "") or "")
-            if runtime is not None and child_session_id:
-                runtime.close_session({"session_id": child_session_id})
+            pending_turn = getattr(child, "_relay_pending_turn_id", None)
+            child_turn_is_active = isinstance(pending_turn, str) and bool(pending_turn)
+            if runtime is not None and child_session_id and not child_turn_is_active:
+                runtime.unregister_subagent({"child_session_id": child_session_id})
         except Exception:
             logger.debug("Failed to close child Relay session after delegation")
 

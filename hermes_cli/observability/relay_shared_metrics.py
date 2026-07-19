@@ -10,9 +10,9 @@ from dataclasses import dataclass, field
 from time import monotonic_ns
 from typing import Any, Callable
 
+from agent import relay_runtime
 from hermes_cli import __version__
 
-from . import relay_runtime
 from .shared_metrics import SharedMetricsStore
 from .shared_metrics_contract import (
     MODEL_CALL_SCOPE,
@@ -164,13 +164,22 @@ class _Runtime:
                     return None
                 task_context = session.relay_session.context.copy()
                 start_fields = task_start_fields(event)
+                active_turn = relay_runtime.current_turn()
+                parent_handle = session.relay_session.handle
+                if (
+                    active_turn is not None
+                    and active_turn.lease.session_id == session.session_id
+                    and active_turn.task_id == task_id
+                    and active_turn.handle is not None
+                ):
+                    parent_handle = active_turn.handle
 
                 def push_task() -> Any:
                     self.relay.get_scope_stack()
                     return self.relay.scope.push(
                         TASK_SCOPE,
                         self.relay.ScopeType.Function,
-                        handle=session.relay_session.handle,
+                        handle=parent_handle,
                         input=start_fields,
                         metadata=self._event_metadata(),
                     )

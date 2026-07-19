@@ -73,6 +73,7 @@ _OWNER_GATE_PATHS = (
     "tests/scripts/canary/",
 )
 _OWNER_GATE_FILES = {
+    "gateway/production_owner_runtime.py",
     "pyproject.toml",
     "uv.lock",
     "scripts/run_tests.sh",

@@ -37,10 +37,11 @@ MAX_MANIFEST_BYTES = 32 * 1024 * 1024
 MAX_TREE_ENTRIES = 200_000
 MAX_TREE_BYTES = 4 * 1024 * 1024 * 1024
 TARGET_MODULE = "scripts.canary.production_cutover_owner_launcher"
+CANONICAL_MODULE_NAME = "gateway.production_owner_runtime"
 REQUIRED_MODULES = (
     "cryptography",
     "yaml",
-    "gateway.production_owner_runtime",
+    CANONICAL_MODULE_NAME,
     "gateway.canonical_writer_production_cutover",
     "gateway.operational_edge_assets",
     "gateway.operational_edge_catalog",
@@ -89,6 +90,31 @@ ATTESTATION_FIELDS = frozenset({
 
 class ProductionOwnerRuntimeError(RuntimeError):
     """Stable, secret-free owner-runtime failure."""
+
+
+def _bind_canonical_module_identity() -> None:
+    """Make ``python -m`` and canonical imports share one active gate."""
+
+    current = sys.modules.get(__name__)
+    package = sys.modules.get("gateway")
+    canonical = sys.modules.get(CANONICAL_MODULE_NAME)
+    exposed = getattr(package, "production_owner_runtime", None)
+    if (
+        __name__ not in {"__main__", CANONICAL_MODULE_NAME}
+        or not isinstance(current, ModuleType)
+        or current.__name__ != __name__
+        or not isinstance(current.__spec__, ModuleSpec)
+        or current.__spec__.name != CANONICAL_MODULE_NAME
+        or current.__spec__.parent != "gateway"
+        or not isinstance(package, ModuleType)
+        or (canonical is not None and canonical is not current)
+        or (exposed is not None and exposed is not current)
+    ):
+        raise ProductionOwnerRuntimeError(
+            "production_owner_runtime_module_identity_conflict"
+        )
+    sys.modules[CANONICAL_MODULE_NAME] = current
+    setattr(package, "production_owner_runtime", current)
 
 
 def _canonical(value: Any) -> bytes:
@@ -880,6 +906,7 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    _bind_canonical_module_identity()
     arguments = _parser().parse_args(argv)
     if arguments.action == "manifest":
         if arguments.launcher_args:

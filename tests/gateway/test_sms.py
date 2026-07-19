@@ -76,6 +76,16 @@ class TestSmsFormatAndTruncate:
             adapter._from_number = "+15550001111"
         return adapter
 
+    def test_declares_native_long_message_splitting(self):
+        from plugins.platforms.sms.adapter import SmsAdapter
+
+        content = "x" * 5000
+        chunks = SmsAdapter.truncate_message(content, SmsAdapter.MAX_MESSAGE_LENGTH)
+
+        assert SmsAdapter.splits_long_messages is True
+        assert len(chunks) > 1
+        assert all(len(chunk) <= SmsAdapter.MAX_MESSAGE_LENGTH for chunk in chunks)
+
     def test_strips_bold(self):
         adapter = self._make_adapter()
         assert adapter.format_message("**hello**") == "hello"

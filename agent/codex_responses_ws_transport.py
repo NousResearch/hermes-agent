@@ -3,41 +3,92 @@
 from __future__ import annotations
 
 import json
+import logging
+import time
 from collections.abc import Mapping
 from types import SimpleNamespace
 from typing import Any, Callable
 from urllib.parse import urlsplit, urlunsplit
 
+logger = logging.getLogger(__name__)
 
 VALID_TRANSPORTS = frozenset({"sse", "websocket", "auto"})
-_SDK_ONLY_FIELDS = frozenset({
-    "extra_body",
-    "extra_headers",
-    "extra_query",
-    "stream",
-    "timeout",
-})
+_SDK_ONLY_FIELDS = frozenset(
+    {
+        "extra_body",
+        "extra_headers",
+        "extra_query",
+        "stream",
+        "timeout",
+    }
+)
+_TERMINAL_EVENT_TYPES = frozenset(
+    {
+        "response.completed",
+        "response.failed",
+        "response.incomplete",
+        "response.cancelled",
+    }
+)
+DEFAULT_CONNECT_TIMEOUT_SECONDS = 15.0
+DEFAULT_RECV_POLL_SECONDS = 1.0
+DEFAULT_IDLE_TIMEOUT_SECONDS = 180.0
 
 
 class GenericWsNotStartedError(RuntimeError):
     """The WebSocket request was never sent and may safely fall back to SSE."""
 
-    def __init__(self, message: str, *, retryable: bool = True) -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        retryable: bool = True,
+        status_code: int | None = None,
+        body: Any = None,
+    ) -> None:
         super().__init__(message)
         self.retryable = retryable
+        self.status_code = status_code
+        self.body = body
 
 
 class GenericWsStartedError(RuntimeError):
     """The request may have reached the server and must never be replayed."""
 
+    def __init__(
+        self,
+        message: str,
+        *,
+        retryable: bool = False,
+        status_code: int | None = None,
+        body: Any = None,
+    ) -> None:
+        super().__init__(message)
+        self.retryable = retryable
+        self.status_code = status_code
+        self.body = body
+
 
 class GenericWsRejectedError(RuntimeError):
     """The server explicitly rejected the WebSocket request."""
 
+    def __init__(
+        self,
+        message: str,
+        *,
+        retryable: bool = False,
+        status_code: int | None = None,
+        body: Any = None,
+    ) -> None:
+        super().__init__(message)
+        self.retryable = retryable
+        self.status_code = status_code
+        self.body = body
+
 
 def normalize_responses_transport(value: Any) -> str:
     """Return a supported transport name, defaulting unknown values to SSE."""
-    transport = str(value or "").strip().lower()
+    transport = str(value or "").strip().lower().replace("_", "-")
     return transport if transport in VALID_TRANSPORTS else "sse"
 
 
@@ -72,6 +123,26 @@ def resolve_responses_ws_url(base_url: Any, override: Any = None) -> str:
     return urlunsplit((scheme, parsed.netloc, path, parsed.query, ""))
 
 
+def build_generic_ws_identity(
+    *,
+    session_id: Any,
+    transport_provider: Any,
+    base_url: Any,
+    model: Any,
+    responses_ws_url: Any = None,
+    transport: Any = None,
+) -> tuple[Any, ...]:
+    """Build a sticky-disable identity that includes WS endpoint and mode."""
+    return (
+        session_id,
+        str(transport_provider or "").strip().lower(),
+        str(base_url or "").rstrip("/"),
+        str(model or ""),
+        str(responses_ws_url or "").strip(),
+        normalize_responses_transport(transport),
+    )
+
+
 def build_ws_wire_body(api_kwargs: Mapping[str, Any]) -> dict[str, Any]:
     """Remove OpenAI-SDK-only options and flatten ``extra_body`` into the payload."""
     body = {
@@ -90,7 +161,11 @@ def build_ws_wire_body(api_kwargs: Mapping[str, Any]) -> dict[str, Any]:
 def _connect_websocket(url: str, *, headers: Mapping[str, str], timeout: float):
     from websockets.sync.client import connect
 
-    return connect(url, additional_headers=dict(headers) or None, open_timeout=timeout)
+    return connect(
+        url,
+        additional_headers=dict(headers) or None,
+        open_timeout=timeout,
+    )
 
 
 def _event_namespace(value: Any) -> Any:
@@ -111,13 +186,22 @@ def _event_value(event: Mapping[str, Any], name: str) -> Any:
 
 
 def _normalize_terminal_event(event: dict[str, Any]) -> dict[str, Any]:
-    if event.get("type") != "response.done":
+    event_type = str(event.get("type") or "")
+    if event_type == "response.canceled":
+        event = dict(event)
+        event["type"] = "response.cancelled"
         return event
+    if event_type != "response.done":
+        return event
+
+    event = dict(event)
     status = str(_event_value(event, "status") or "").strip().lower()
     if status == "completed":
         event["type"] = "response.completed"
     elif status == "failed":
         event["type"] = "response.failed"
+    elif status in {"cancelled", "canceled"}:
+        event["type"] = "response.cancelled"
     else:
         event["type"] = "response.incomplete"
     return event
@@ -132,6 +216,29 @@ def _server_error_message(event: Mapping[str, Any]) -> str:
     return str(message or "WebSocket server rejected the response request")
 
 
+def _server_error_status(event: Mapping[str, Any]) -> int | None:
+    candidates = [
+        event.get("status"),
+        event.get("status_code"),
+    ]
+    error = event.get("error")
+    if isinstance(error, Mapping):
+        candidates.extend([error.get("status"), error.get("status_code")])
+    response = event.get("response")
+    if isinstance(response, Mapping):
+        candidates.extend([response.get("status_code"), response.get("status")])
+    for candidate in candidates:
+        if candidate is None or isinstance(candidate, bool):
+            continue
+        try:
+            code = int(candidate)
+        except (TypeError, ValueError):
+            continue
+        if 100 <= code < 600:
+            return code
+    return None
+
+
 def _build_headers(
     *,
     api_kwargs: Mapping[str, Any],
@@ -140,7 +247,11 @@ def _build_headers(
     headers: Mapping[str, Any] | None,
 ) -> dict[str, str]:
     result: dict[str, str] = {}
-    for candidate in (getattr(client, "default_headers", None), headers, api_kwargs.get("extra_headers")):
+    for candidate in (
+        getattr(client, "default_headers", None),
+        headers,
+        api_kwargs.get("extra_headers"),
+    ):
         if isinstance(candidate, Mapping):
             result.update({str(key): str(value) for key, value in candidate.items()})
 
@@ -149,6 +260,14 @@ def _build_headers(
         if not any(name.lower() == "authorization" for name in result):
             result["Authorization"] = f"Bearer {key}"
     return result
+
+
+def _recv_frame(websocket: Any, *, poll_timeout: float) -> Any:
+    try:
+        return websocket.recv(timeout=poll_timeout)
+    except TypeError:
+        # Some test doubles / older wrappers accept no timeout kwarg.
+        return websocket.recv()
 
 
 def run_generic_codex_ws_stream(
@@ -164,7 +283,9 @@ def run_generic_codex_ws_stream(
     transport: Any,
     collect_events: Callable[[Any, Any], Any],
     interrupted: Callable[[], bool] | None,
-    timeout: float = 15.0,
+    timeout: float = DEFAULT_CONNECT_TIMEOUT_SECONDS,
+    idle_timeout: float | None = None,
+    recv_poll_timeout: float = DEFAULT_RECV_POLL_SECONDS,
     register_connection_abort: Callable[[Callable[[str], None]], None] | None = None,
 ) -> Any:
     """Send one generic Responses request over WebSocket and collect its events.
@@ -175,7 +296,10 @@ def run_generic_codex_ws_stream(
     del session_id  # Generic providers do not share a session header contract.
     normalized_transport = normalize_responses_transport(transport)
     if normalized_transport == "sse":
-        raise GenericWsNotStartedError("Responses WebSocket transport is disabled", retryable=False)
+        raise GenericWsNotStartedError(
+            "Responses WebSocket transport is disabled",
+            retryable=False,
+        )
     if not is_generic_codex_ws_eligible(
         provider=provider,
         base_url=base_url,
@@ -185,6 +309,16 @@ def run_generic_codex_ws_stream(
             "Responses WebSocket transport is only available for named custom Codex providers",
             retryable=False,
         )
+
+    connect_timeout = float(timeout or DEFAULT_CONNECT_TIMEOUT_SECONDS)
+    poll_timeout = float(recv_poll_timeout or DEFAULT_RECV_POLL_SECONDS)
+    if idle_timeout is None:
+        # Prefer a generous idle budget, but never shorter than the connect timeout.
+        idle_limit = max(float(DEFAULT_IDLE_TIMEOUT_SECONDS), connect_timeout)
+    else:
+        idle_limit = float(idle_timeout)
+    if idle_limit <= 0:
+        idle_limit = DEFAULT_IDLE_TIMEOUT_SECONDS
 
     started = False
     try:
@@ -197,7 +331,7 @@ def run_generic_codex_ws_stream(
                 api_key=api_key,
                 headers=headers,
             ),
-            timeout=float(timeout or 15.0),
+            timeout=connect_timeout,
         )
         with connection as websocket:
             def _abort(_reason: str) -> None:
@@ -208,14 +342,40 @@ def run_generic_codex_ws_stream(
             if register_connection_abort is not None:
                 register_connection_abort(_abort)
 
+            wire_body = build_ws_wire_body(api_kwargs)
+            payload = json.dumps({"type": "response.create", **wire_body})
+            # Mark started at the send boundary: once send is invoked the frame
+            # may have left the process even if the call later raises.
             started = True
-            websocket.send(json.dumps({"type": "response.create", **build_ws_wire_body(api_kwargs)}))
+            websocket.send(payload)
 
             def _events():
+                last_event_at = time.monotonic()
                 while True:
                     if interrupted is not None and interrupted():
-                        raise InterruptedError("Agent interrupted during Responses WebSocket stream")
-                    frame = websocket.recv()
+                        raise InterruptedError(
+                            "Agent interrupted during Responses WebSocket stream"
+                        )
+                    try:
+                        frame = _recv_frame(websocket, poll_timeout=poll_timeout)
+                    except TimeoutError:
+                        if time.monotonic() - last_event_at >= idle_limit:
+                            raise TimeoutError(
+                                f"Responses WebSocket stream idle for {idle_limit:g}s"
+                            )
+                        continue
+                    except Exception as exc:
+                        # websockets raises TimeoutError subclasses in some versions;
+                        # also tolerate bare timeout-like messages from fakes.
+                        if type(exc).__name__ in {"TimeoutError", "TimeoutException"}:
+                            if time.monotonic() - last_event_at >= idle_limit:
+                                raise TimeoutError(
+                                    f"Responses WebSocket stream idle for {idle_limit:g}s"
+                                ) from exc
+                            continue
+                        raise
+
+                    last_event_at = time.monotonic()
                     if isinstance(frame, bytes):
                         frame = frame.decode("utf-8")
                     event = json.loads(frame)
@@ -223,19 +383,33 @@ def run_generic_codex_ws_stream(
                         continue
                     event = _normalize_terminal_event(event)
                     if event.get("type") == "error":
-                        raise GenericWsRejectedError(_server_error_message(event))
+                        raise GenericWsRejectedError(
+                            _server_error_message(event),
+                            status_code=_server_error_status(event),
+                            body=event,
+                        )
                     yield _event_namespace(event)
-                    if event.get("type") in {
-                        "response.completed",
-                        "response.failed",
-                        "response.incomplete",
-                    }:
+                    if event.get("type") in _TERMINAL_EVENT_TYPES:
                         return
 
             return collect_events(_events(), None)
-    except (GenericWsNotStartedError, GenericWsStartedError, GenericWsRejectedError, InterruptedError):
+    except (
+        GenericWsNotStartedError,
+        GenericWsStartedError,
+        GenericWsRejectedError,
+        InterruptedError,
+    ):
         raise
     except Exception as exc:
+        status_code = getattr(exc, "status_code", None)
+        if not isinstance(status_code, int):
+            status_code = None
         if started:
-            raise GenericWsStartedError(f"Responses WebSocket stream failed after request start: {exc}") from exc
-        raise GenericWsNotStartedError(f"Responses WebSocket connection failed: {exc}") from exc
+            raise GenericWsStartedError(
+                f"Responses WebSocket stream failed after request start: {exc}",
+                status_code=status_code,
+            ) from exc
+        raise GenericWsNotStartedError(
+            f"Responses WebSocket connection failed: {exc}",
+            status_code=status_code,
+        ) from exc

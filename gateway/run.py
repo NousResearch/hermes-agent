@@ -17080,7 +17080,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             try:
                 runtime = _resolve_runtime_agent_kwargs_for_provider(provider)
                 override["api_key"] = runtime.get("api_key")
-                override["api_mode"] = runtime.get("api_mode")
+                # Use persisted api_mode when available (model-specific, e.g.
+                # "anthropic_messages" for minimax-m3 on opencode-go). For
+                # legacy sessions persisted before api_mode was added to
+                # PERSISTABLE_MODEL_OVERRIDE_KEYS, re-resolve from the model
+                # name so OpenCode providers route through the correct SDK.
+                persisted_api_mode = persisted.get("api_mode")
+                persisted_model = persisted.get("model")
+                if persisted_api_mode:
+                    override["api_mode"] = persisted_api_mode
+                elif provider in {"opencode-zen", "opencode-go"} and persisted_model:
+                    from hermes_cli.models import opencode_model_api_mode
+                    override["api_mode"] = opencode_model_api_mode(provider, persisted_model)
+                else:
+                    override["api_mode"] = runtime.get("api_mode")
                 override["credential_pool"] = runtime.get("credential_pool")
                 if not override.get("base_url"):
                     override["base_url"] = runtime.get("base_url")

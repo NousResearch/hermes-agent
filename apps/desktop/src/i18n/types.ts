@@ -1145,6 +1145,8 @@ export interface Translations {
     cloneFrom: string
     cloneFromNone: string
     cloneFromDesc: string
+    postgresSchema?: string
+    postgresSchemaHint?: string
     cloneFromDefault: string
     cloneFromDefaultDesc: string
     invalidName: (hint: string) => string

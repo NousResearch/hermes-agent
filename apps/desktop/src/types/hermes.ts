@@ -605,6 +605,7 @@ export interface ProfileCreatePayload {
   clone_from_default?: boolean
   name: string
   no_skills?: boolean
+  postgres_schema?: string
 }
 
 export interface ProfileInfo {

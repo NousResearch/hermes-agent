@@ -240,7 +240,7 @@ _EPHEMERAL_SCAFFOLDING_FLAGS = (
 
 def _is_ephemeral_scaffolding(msg: Any) -> bool:
     """Return True when ``msg`` is internal recovery scaffolding that must never
-    be persisted to the durable transcript (SQLite session store or JSON log)."""
+    be persisted to the durable transcript (session store or JSON log)."""
     return isinstance(msg, dict) and any(
         msg.get(flag) for flag in _EPHEMERAL_SCAFFOLDING_FLAGS
     )
@@ -249,7 +249,7 @@ def _is_ephemeral_scaffolding(msg: Any) -> bool:
 _MAX_TOOL_WORKERS = 8
 
 # Intrinsic marker stamped on a message dict once it has been written to the
-# SQLite session store.  Used by ``_flush_messages_to_session_db`` to decide
+# Session store. Used by ``_flush_messages_to_session_db`` to decide
 # what is already durable.  An object-identity (``id(msg)``) dedup set cannot be
 # trusted across turns: once a flushed message dict is dropped from the live
 # list (e.g. by scaffolding rewind or in-place compaction) and garbage-
@@ -572,11 +572,11 @@ class AIAgent:
 
         Most frontends pass ``session_db`` into ``AIAgent`` explicitly, but recall
         is important enough that a missing constructor argument should degrade by
-        opening the default state DB instead of making the advertised
+        opening the configured state store instead of making the advertised
         ``session_search`` tool unusable.
         """
         # Persistence-isolated forks (background review) must not lazily open the
-        # canonical state DB: doing so would re-arm _flush_messages_to_session_db
+        # canonical state store: doing so would re-arm _flush_messages_to_session_db
         # to write the fork's harness turn into the user's real session. Recall
         # degrades to None for them (they don't use session_search anyway).
         if getattr(self, "_persist_disabled", False):
@@ -586,7 +586,7 @@ class AIAgent:
         try:
             from hermes_state import SessionDB
 
-            self._session_db = SessionDB()
+            self._session_db = SessionDB.for_home(get_hermes_home())
             return self._session_db
         except Exception as exc:
             logger.debug("SessionDB unavailable for recall", exc_info=True)
@@ -620,7 +620,7 @@ class AIAgent:
             )
             self._session_db_created = True
         except Exception as e:
-            # Transient failure (e.g. SQLite lock). Keep _session_db alive —
+            # Transient store failure. Keep _session_db alive —
             # _session_db_created stays False so next run_conversation() retries.
             logger.warning(
                 "Session DB creation failed (will retry next turn): %s", e
@@ -1715,7 +1715,7 @@ class AIAgent:
                     msg["timestamp"] = timestamp
 
     def _persist_session(self, messages: List[Dict], conversation_history: List[Dict] = None):
-        """Save session state to both JSON log and SQLite on any exit path.
+        """Save session state to both JSON log and the session store on any exit path.
 
         Ensures conversations are never lost, even on errors or early returns.
 
@@ -1824,7 +1824,7 @@ class AIAgent:
         messages: List[Dict],
         conversation_history: Optional[List[Dict]] = None,
     ):
-        """Persist any un-flushed messages to the SQLite session store.
+        """Persist any un-flushed messages to the configured session store.
 
         Deduplicates via an intrinsic ``_DB_PERSISTED_MARKER`` stamped on each
         written message dict, so repeated calls (from multiple exit paths) only
@@ -1873,7 +1873,7 @@ class AIAgent:
             # new tail. repair_message_sequence can shrink/merge the history
             # copy before the final flush, making len(conversation_history)
             # larger than len(messages); the slice is then empty and delivered
-            # assistant responses never reach state.db (#46053).
+            # assistant responses never reach the session store (#46053).
             #
             # Track persistence with an intrinsic per-message marker rather than
             # id(msg). `messages` is a shallow copy of `conversation_history`, so
@@ -2639,8 +2639,8 @@ class AIAgent:
     def _save_session_log(self, messages: List[Dict[str, Any]] = None):
         """Optional per-session JSON snapshot writer.
 
-        Gated by ``sessions.write_json_snapshots`` (default False).  state.db
-        is the canonical message store; this writer exists only for users
+        Gated by ``sessions.write_json_snapshots`` (default False). The
+        configured session store is canonical; this writer exists only for users
         whose external tooling consumes ``~/.hermes/sessions/session_{sid}.json``
         directly.  When the flag is off this is a fast no-op.
 
@@ -2672,7 +2672,7 @@ class AIAgent:
         try:
             cleaned = []
             for msg in messages:
-                # Mirror the SQLite flush: ephemeral recovery scaffolding is
+                # Mirror the session-store flush: ephemeral recovery scaffolding is
                 # internal retry state, never durable transcript content.
                 if _is_ephemeral_scaffolding(msg):
                     continue
@@ -3621,7 +3621,7 @@ class AIAgent:
         except Exception:
             pass
 
-        # 7. Finalize the owned SQLite session row unless this agent is only a
+        # 7. Finalize the owned session-store row unless this agent is only a
         # temporary helper that deliberately handed session ownership forward
         # (manual compression helpers that rotate to a continuation session_id,
         # or background-review forks that share the live parent's session_id and

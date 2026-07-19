@@ -134,6 +134,54 @@ def test_show_status_reports_nous_inference_key_without_portal_login(monkeypatch
     assert "Nous inference credentials are configured" in output
 
 
+def test_show_status_uses_configured_postgres_state_without_leaking_dsn(
+    monkeypatch, capsys, tmp_path
+):
+    from hermes_cli import status as status_mod
+    from hermes_state import SessionDB
+
+    raw_dsn = "postgresql://user:secret@db.example/hermes"
+    config = {
+        "model": "gpt-5.4",
+        "sessions": {
+            "state": {
+                "backend": "postgres",
+                "postgres": {
+                    "dsn_env": "HERMES_STATE_POSTGRES_DSN",
+                    "schema": "hermes_state",
+                },
+            }
+        },
+    }
+    monkeypatch.setenv("HERMES_STATE_POSTGRES_DSN", raw_dsn)
+    monkeypatch.setattr(status_mod, "get_hermes_home", lambda: tmp_path)
+    monkeypatch.setattr(status_mod, "get_env_path", lambda: tmp_path / ".env")
+    monkeypatch.setattr(status_mod, "load_config", lambda: config)
+
+    class FakePostgresDB:
+        capabilities = {"core_schema": True, "full_text_search": True}
+
+        def list_gateway_sessions(self, *, active_only):
+            return [{"id": "session-1"}]
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(
+        SessionDB,
+        "for_home",
+        staticmethod(lambda *_args, **_kwargs: FakePostgresDB()),
+    )
+
+    status_mod.show_status(SimpleNamespace(all=False, deep=False))
+
+    output = capsys.readouterr().out
+    assert "Backend:      PostgreSQL" in output
+    assert "Capabilities: core schema, full text search" in output
+    assert "Active:       1 session(s)" in output
+    assert raw_dsn not in output
+
+
 # ---------------------------------------------------------------------------
 # Helpers shared by xAI OAuth status tests
 # ---------------------------------------------------------------------------

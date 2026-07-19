@@ -9,12 +9,16 @@ facade's contract and lock the gateway boundary so a 39th raw call can't regress
 import ast
 import asyncio
 import threading
+import time
+import types
 from pathlib import Path
 
 import pytest
 
 import hermes_state
 from hermes_state import AsyncSessionDB
+from gateway.config import PlatformConfig
+from gateway.platforms.api_server import APIServerAdapter
 
 
 class _SpyDB:
@@ -400,3 +404,305 @@ async def test_concurrent_create_session_idempotent(tmp_path):
 
     rows = await db.list_sessions_rich(limit=100)
     assert sum(1 for r in rows if r["id"] == sid) == 1
+
+
+# --------------------------------------------------------------------------
+# API server ownership: aiohttp handlers must use a per-home async facade.
+# --------------------------------------------------------------------------
+
+def test_api_session_handlers_do_not_use_raw_store_helper():
+    """The request path must not construct/access SessionDB synchronously."""
+    source = (_repo_root() / "gateway/platforms/api_server.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    violations = []
+    state_methods = {
+        "create_session",
+        "create_api_session_with_title",
+        "delete_session",
+        "end_session",
+        "fork_api_session",
+        "get_messages",
+        "get_messages_as_conversation",
+        "get_next_title_in_lineage",
+        "get_session",
+        "list_sessions_rich",
+        "replace_messages",
+        "resolve_resume_session_id",
+        "set_session_title",
+    }
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.AsyncFunctionDef) or not node.name.startswith("_handle_"):
+            continue
+        awaited = {
+            id(child.value)
+            for child in ast.walk(node)
+            if isinstance(child, ast.Await) and isinstance(child.value, ast.Call)
+        }
+        for child in ast.walk(node):
+            if (
+                isinstance(child, ast.Call)
+                and isinstance(child.func, ast.Attribute)
+                and isinstance(child.func.value, ast.Name)
+                and child.func.value.id == "self"
+                and child.func.attr == "_ensure_session_db"
+            ):
+                violations.append(f"{node.name}:{child.lineno}")
+            if (
+                isinstance(child, ast.Call)
+                and (
+                    (
+                        isinstance(child.func, ast.Name)
+                        and child.func.id == "SessionDB"
+                    )
+                    or (
+                        isinstance(child.func, ast.Attribute)
+                        and isinstance(child.func.value, ast.Name)
+                        and child.func.value.id == "SessionDB"
+                    )
+                )
+            ):
+                violations.append(f"{node.name}:{child.lineno} direct SessionDB call")
+            if (
+                isinstance(child, ast.Call)
+                and isinstance(child.func, ast.Attribute)
+                and isinstance(child.func.value, ast.Name)
+                and child.func.value.id == "db"
+                and child.func.attr in state_methods
+                and id(child) not in awaited
+            ):
+                violations.append(f"{node.name}:{child.lineno} db.{child.func.attr}")
+    assert not violations, "aiohttp handlers must use _ensure_async_session_db: " + ", ".join(violations)
+
+
+@pytest.mark.asyncio
+async def test_api_session_store_cache_tracks_resolved_store_and_config(monkeypatch, tmp_path):
+    """Resolved store/config identity scopes async facades and replaces stale raw stores."""
+    adapter = APIServerAdapter(PlatformConfig(enabled=True))
+    first_home = tmp_path / "first"
+    second_home = tmp_path / "second"
+    first_home.mkdir()
+    second_home.mkdir()
+    configs = {
+        first_home: {"model": {"default": "first"}},
+        second_home: {"model": {"default": "second"}},
+    }
+    stores = []
+    calls = []
+    loop_thread = threading.get_ident()
+
+    class Store:
+        def __init__(self, home):
+            self.home = home
+            self.closed = 0
+
+        def close(self):
+            self.closed += 1
+
+    def load_config(home):
+        return configs[home]
+
+    def open_for_home(home, *, config=None):
+        calls.append((home, config, threading.get_ident()))
+        store = Store(home)
+        stores.append(store)
+        return store
+
+    monkeypatch.setattr("hermes_cli.config.load_config_for_home", load_config)
+    monkeypatch.setattr(hermes_state.SessionDB, "for_home", open_for_home)
+    monkeypatch.setattr(adapter, "_session_db_home", lambda: first_home)
+
+    first = await adapter._ensure_async_session_db()
+    again = await adapter._ensure_async_session_db()
+    configs[first_home] = {"model": {"default": "first-reconfigured"}}
+    refreshed = await adapter._ensure_async_session_db()
+    monkeypatch.setattr(adapter, "_session_db_home", lambda: second_home)
+    second = await adapter._ensure_async_session_db()
+
+    assert first is again
+    assert refreshed is not first
+    assert first is not second
+    assert first._db.home == first_home
+    assert refreshed._db.home == first_home
+    assert second._db.home == second_home
+    assert first._db.closed == 1
+    assert len(adapter._session_dbs) == 2
+    assert len(adapter._async_session_dbs) == 2
+    assert all(key.startswith("sqlite:") for key in adapter._session_dbs)
+    assert [home for home, _config, _thread in calls] == [
+        first_home,
+        first_home,
+        second_home,
+    ]
+    assert all(worker_thread != loop_thread for _home, _config, worker_thread in calls)
+
+
+@pytest.mark.asyncio
+async def test_api_session_store_never_falls_back_from_configured_postgres(monkeypatch, tmp_path):
+    """A selected non-SQLite backend must fail closed without creating state.db."""
+    adapter = APIServerAdapter(PlatformConfig(enabled=True))
+    home = tmp_path / "postgres-profile"
+    home.mkdir()
+    config = {
+        "sessions": {
+            "state": {
+                "backend": "postgres",
+                "postgres": {"schema": "profile_state"},
+            },
+        },
+    }
+    monkeypatch.setattr("hermes_cli.config.load_config_for_home", lambda _home: config)
+    monkeypatch.setattr(adapter, "_session_db_home", lambda: home)
+
+    assert await adapter._ensure_async_session_db() is None
+    assert adapter._session_dbs == {}
+    assert adapter._async_session_dbs == {}
+    assert not (home / "state.db").exists()
+
+
+@pytest.mark.asyncio
+async def test_api_disconnect_closes_all_cached_raw_session_stores_off_loop():
+    """Shutdown releases every cached raw store without closing manual overrides."""
+    adapter = APIServerAdapter(PlatformConfig(enabled=True))
+    loop_thread = threading.get_ident()
+
+    class Store:
+        def __init__(self):
+            self.close_threads = []
+
+        def close(self):
+            self.close_threads.append(threading.get_ident())
+
+    first = Store()
+    second = Store()
+    adapter._session_dbs = {"one": first, "two": second}
+    adapter._session_db_home_keys = {"one-home": "one", "two-home": "two"}
+    adapter._async_session_dbs = {"one": object(), "two": object()}
+
+    await adapter.disconnect()
+
+    assert len(first.close_threads) == len(second.close_threads) == 1
+    assert first.close_threads[0] != loop_thread
+    assert second.close_threads[0] != loop_thread
+    assert adapter._session_dbs == {}
+    assert adapter._session_db_home_keys == {}
+    assert adapter._async_session_dbs == {}
+
+
+@pytest.mark.asyncio
+async def test_api_disconnect_waits_for_inflight_store_acquisition(monkeypatch, tmp_path):
+    """Shutdown drains an opening store instead of caching it after close begins."""
+    adapter = APIServerAdapter(PlatformConfig(enabled=True))
+    home = tmp_path / "profile"
+    home.mkdir()
+    opening = threading.Event()
+    release = threading.Event()
+
+    class Store:
+        def __init__(self):
+            self.closed = 0
+
+        def close(self):
+            self.closed += 1
+
+    store = Store()
+
+    def open_for_home(_home, *, config=None):
+        opening.set()
+        assert release.wait(timeout=3), "test did not release store opening"
+        return store
+
+    monkeypatch.setattr("hermes_cli.config.load_config_for_home", lambda _home: {})
+    monkeypatch.setattr(hermes_state.SessionDB, "for_home", open_for_home)
+    monkeypatch.setattr(adapter, "_session_db_home", lambda: home)
+
+    acquire = asyncio.create_task(adapter._ensure_async_session_db())
+    assert await asyncio.to_thread(opening.wait, 3)
+    shutdown = asyncio.create_task(adapter.disconnect())
+    await asyncio.sleep(0.02)
+    assert not shutdown.done(), "disconnect must wait for the active open"
+
+    release.set()
+    assert await acquire is None
+    await shutdown
+
+    assert store.closed == 1
+    assert adapter._session_dbs == {}
+    assert adapter._async_session_dbs == {}
+
+
+@pytest.mark.asyncio
+async def test_api_disconnect_waits_for_active_session_request_before_close(monkeypatch, tmp_path):
+    """A handler's off-loop DB call completes before disconnect closes its store."""
+    adapter = APIServerAdapter(PlatformConfig(enabled=True))
+    home = tmp_path / "profile"
+    home.mkdir()
+    started = threading.Event()
+    release = threading.Event()
+
+    class Store:
+        def __init__(self):
+            self.closed = 0
+
+        def list_sessions_rich(self, **_kwargs):
+            started.set()
+            assert release.wait(timeout=3), "test did not release DB call"
+            return []
+
+        def close(self):
+            self.closed += 1
+
+    store = Store()
+    monkeypatch.setattr("hermes_cli.config.load_config_for_home", lambda _home: {})
+    monkeypatch.setattr(hermes_state.SessionDB, "for_home", lambda _home, *, config=None: store)
+    monkeypatch.setattr(adapter, "_session_db_home", lambda: home)
+    await adapter._ensure_async_session_db()
+
+    request = types.SimpleNamespace(query={})
+    request_task = asyncio.create_task(adapter._handle_list_sessions(request))
+    assert await asyncio.to_thread(started.wait, 3)
+    shutdown = asyncio.create_task(adapter.disconnect())
+    await asyncio.sleep(0.02)
+    assert not shutdown.done(), "disconnect closed a store while a request used it"
+
+    release.set()
+    response = await request_task
+    await shutdown
+
+    assert response.status == 200
+    assert store.closed == 1
+
+
+@pytest.mark.asyncio
+async def test_api_session_history_does_not_stall_event_loop():
+    """A blocking store fake must run on a worker while the loop keeps ticking."""
+    adapter = APIServerAdapter(PlatformConfig(enabled=True))
+    started = threading.Event()
+    finished = threading.Event()
+    ticked = asyncio.Event()
+    worker_threads = []
+    loop_thread = threading.get_ident()
+
+    class BlockingStore:
+        def get_messages_as_conversation(self, session_id):
+            worker_threads.append(threading.get_ident())
+            started.set()
+            time.sleep(0.15)
+            finished.set()
+            return [{"role": "user", "content": session_id}]
+
+    async def ticker():
+        await asyncio.sleep(0.02)
+        ticked.set()
+
+    adapter._session_db = BlockingStore()
+    history_task = asyncio.create_task(adapter._conversation_history_for_session("session-1"))
+    ticker_task = asyncio.create_task(ticker())
+
+    await asyncio.sleep(0.05)
+
+    assert started.is_set()
+    assert ticked.is_set(), "blocking SessionDB work stalled the event loop"
+    assert not finished.is_set(), "store call unexpectedly ran on the event loop"
+    assert await history_task == [{"role": "user", "content": "session-1"}]
+    await ticker_task
+    assert worker_threads and all(thread_id != loop_thread for thread_id in worker_threads)

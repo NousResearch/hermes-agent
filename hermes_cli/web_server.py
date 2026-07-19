@@ -25,6 +25,7 @@ import inspect
 import importlib.util
 import json
 import logging
+import math
 import mimetypes
 import os
 import re
@@ -1255,15 +1256,12 @@ def _count_status_active_sessions() -> int:
     connection so /api/status never tries to initialise or migrate state.db
     while another Hermes process is writing to it.
     """
-    from hermes_state import DEFAULT_DB_PATH, SessionDB
+    from hermes_state import SessionDB
 
-    # read_only opens require the DB to already exist (see SessionDB.__init__
-    # read_only contract) — on a fresh install every /api/status poll would
-    # otherwise pay an OperationalError until the first session is written.
-    if not DEFAULT_DB_PATH.exists():
+    try:
+        db = SessionDB.for_home(get_hermes_home(), read_only=True)
+    except Exception:
         return 0
-
-    db = SessionDB(read_only=True)
     try:
         sessions = db.list_sessions_rich(limit=50, compact_rows=True)
         now = time.time()
@@ -4082,7 +4080,7 @@ def get_sessions(
     if profile:
         profile_name, _ = _cron_profile_home(profile)
     try:
-        db = _open_session_db_for_profile(profile)
+        db = _open_session_db_for_profile(profile, read_only=True)
         try:
             min_message_count = max(0, min_messages)
             archived_only = archived == "only"
@@ -4203,14 +4201,12 @@ def get_profiles_sessions(
     errors: List[Dict[str, str]] = []
     now = time.time()
     for name, home in targets:
-        db_path = Path(home) / "state.db"
-        if not db_path.exists():
-            continue
         try:
             # Read-only: this loop runs on every sidebar refresh, so it must
-            # never DDL/write-lock another profile's live DB (see SessionDB
-            # read_only docstring).
-            db = SessionDB(db_path=db_path, read_only=True)
+            # never initialize/migrate or write-lock another profile's live
+            # state store. for_home also honors a PostgreSQL backend selected
+            # by that profile instead of assuming state.db is SQLite.
+            db = SessionDB.for_home(Path(home), read_only=True)
         except Exception as exc:
             errors.append({"profile": name, "error": str(exc)})
             continue
@@ -4267,7 +4263,7 @@ def get_profiles_sessions(
 
 
 @app.get("/api/sessions/search")
-async def search_sessions(q: str = "", limit: int = 20, profile: Optional[str] = None):
+def search_sessions(q: str = "", limit: int = 20, profile: Optional[str] = None):
     """Search sessions by ID plus full-text message content using FTS5.
 
     Direct session-id matches are surfaced first, then FTS message-content
@@ -4281,7 +4277,7 @@ async def search_sessions(q: str = "", limit: int = 20, profile: Optional[str] =
     if not q or not q.strip():
         return {"results": []}
     try:
-        db = _open_session_db_for_profile(profile)
+        db = _open_session_db_for_profile(profile, read_only=True)
         try:
             safe_limit = max(1, min(int(limit or 20), 100))
 
@@ -9996,7 +9992,7 @@ async def count_empty_sessions_endpoint(profile: Optional[str] = None):
     that does nothing. Cheap, single-COUNT query.
     """
     def _count() -> int:
-        db = _open_session_db_for_profile(profile)
+        db = _open_session_db_for_profile(profile, read_only=True)
         try:
             return db.count_empty_sessions()
         finally:
@@ -10037,13 +10033,13 @@ async def delete_empty_sessions_endpoint(profile: Optional[str] = None):
 
 
 @app.get("/api/sessions/stats")
-async def get_session_stats(profile: Optional[str] = None):
+def get_session_stats(profile: Optional[str] = None):
     """Session-store statistics for the Sessions page (mirrors `hermes sessions stats`).
 
     Registered before ``/api/sessions/{session_id}`` so the literal ``stats``
     path isn't captured as a session id by the parameterized route.
     """
-    db = _open_session_db_for_profile(profile)
+    db = _open_session_db_for_profile(profile, read_only=True)
     try:
         total = db.session_count(include_archived=True)
         active_store = db.session_count(include_archived=False)
@@ -10067,24 +10063,44 @@ async def get_session_stats(profile: Optional[str] = None):
         db.close()
 
 
-def _open_session_db_for_profile(profile: Optional[str]):
-    """Open a SessionDB for read paths, optionally for another profile.
+def _open_session_db_for_profile(
+    profile: Optional[str], *, read_only: bool = False
+):
+    """Open the explicitly resolved state store for this or a named profile.
 
-    ``profile`` None/empty → this process's own ``state.db`` (the common,
-    single-profile case). A named profile opens that profile's on-disk
-    ``state.db`` directly so the primary backend can serve cross-profile reads
-    (transcripts, detail) without spawning that profile's backend.
+    Named profiles are resolved before opening state, so an invalid or missing
+    profile fails closed instead of silently using the dashboard's profile.
     """
     from hermes_state import SessionDB
-    if not profile:
-        return SessionDB()
-    _name, home = _cron_profile_home(profile)
-    return SessionDB(db_path=Path(home) / "state.db")
+
+    requested = (profile or "").strip()
+    if not requested or requested.lower() == "current":
+        home = get_hermes_home()
+        is_current = True
+    else:
+        _name, home = _cron_profile_home(requested)
+        is_current = False
+
+    from hermes_cli.config import load_config_for_home
+    from state_store import resolve_state_store
+
+    config = load_config_for_home(home)
+    spec = resolve_state_store(home, config, read_only=read_only)
+    if (
+        read_only
+        and is_current
+        and spec.backend == "sqlite"
+        and not spec.sqlite_path.exists()
+    ):
+        # Preserve the dashboard's fresh-install behavior without weakening
+        # named-profile isolation or hiding PostgreSQL connection failures.
+        return SessionDB.for_home(home, read_only=False, config=config)
+    return SessionDB.for_home(home, read_only=read_only, config=config)
 
 
 @app.get("/api/sessions/{session_id}")
-async def get_session_detail(session_id: str, profile: Optional[str] = None):
-    db = _open_session_db_for_profile(profile)
+def get_session_detail(session_id: str, profile: Optional[str] = None):
+    db = _open_session_db_for_profile(profile, read_only=True)
     try:
         sid = db.resolve_session_id(session_id)
         session = db.get_session(sid) if sid else None
@@ -10104,7 +10120,7 @@ async def get_session_latest_descendant(
     profile: Optional[str] = None,
 ):
     def _lookup():
-        db = _open_session_db_for_profile(profile)
+        db = _open_session_db_for_profile(profile, read_only=True)
         try:
             return _session_latest_descendant(session_id, db)
         finally:
@@ -10128,7 +10144,7 @@ async def get_session_messages(
     offset: int = 0,
 ):
     def _read():
-        db = _open_session_db_for_profile(profile)
+        db = _open_session_db_for_profile(profile, read_only=True)
         try:
             sid = db.resolve_session_id(session_id)
             if not sid:
@@ -10192,7 +10208,7 @@ class SessionRename(BaseModel):
 
 
 @app.patch("/api/sessions/{session_id}")
-async def rename_session_endpoint(session_id: str, body: SessionRename):
+def rename_session_endpoint(session_id: str, body: SessionRename):
     """Update a session: rename (or clear its title) and/or archive it.
 
     ``title`` renames (empty/null clears the title); ``archived`` soft-hides or
@@ -10229,7 +10245,7 @@ async def rename_session_endpoint(session_id: str, body: SessionRename):
 async def export_session_endpoint(session_id: str, profile: Optional[str] = None):
     """Export a single session (metadata + messages) as JSON."""
     def _export():
-        db = _open_session_db_for_profile(profile)
+        db = _open_session_db_for_profile(profile, read_only=True)
         try:
             sid = db.resolve_session_id(session_id)
             return db.export_session(sid) if sid else None
@@ -10705,7 +10721,7 @@ def _list_cron_job_runs_sync(job_id: str, profile: Optional[str] = None, limit: 
     except (TypeError, ValueError):
         limit_n = 20
 
-    db = _open_session_db_for_profile(selected)
+    db = _open_session_db_for_profile(selected, read_only=True)
     try:
         runs = db.list_cron_job_runs(canonical, limit=limit_n, offset=0)
         now = time.time()
@@ -13124,6 +13140,7 @@ async def scan_skill_hub(identifier: str = "", profile: Optional[str] = None):
 class ProfileCreate(BaseModel):
     name: str
     clone_from: Optional[str] = None
+    postgres_schema: Optional[str] = None
     # Backward compatibility for older dashboard/desktop clients. New clients
     # send clone_from="default" (or another profile name) explicitly.
     clone_from_default: bool = False
@@ -13416,6 +13433,7 @@ async def create_profile_endpoint(body: ProfileCreate):
             clone_config=clone_config,
             no_skills=body.no_skills,
             description=body.description,
+            target_postgres_schema=body.postgres_schema,
         )
         # Match the CLI's profile-create flow: fresh named profiles get the
         # bundled skills installed. When cloning from default, create_profile()
@@ -14553,37 +14571,62 @@ async def update_config_raw(body: RawConfigUpdate, profile: Optional[str] = None
 # ---------------------------------------------------------------------------
 
 
-def _aux_usage_rows(db, cutoff: float) -> List[Dict[str, Any]]:
-    """Per-(model, task) auxiliary usage within the window (issue #23270).
+def _analytics_cutoff(days: int) -> float:
+    """Match the legacy SQL window, which excluded rows exactly at its cutoff."""
+    return math.nextafter(time.time() - (days * 86400), math.inf)
 
-    Reads the task-dimension rows (task != '') that record_auxiliary_usage
-    writes into session_model_usage. Returns [] when the table predates the
-    task column (older DB opened read-only by newer code).
-    """
-    try:
-        cur = db._conn.execute("""
-            SELECT u.model,
-                   u.task,
-                   u.billing_provider,
-                   SUM(u.input_tokens) as input_tokens,
-                   SUM(u.output_tokens) as output_tokens,
-                   SUM(u.cache_read_tokens) as cache_read_tokens,
-                   SUM(u.reasoning_tokens) as reasoning_tokens,
-                   COALESCE(SUM(u.estimated_cost_usd), 0) as estimated_cost,
-                   COUNT(DISTINCT u.session_id) as sessions,
-                   SUM(COALESCE(u.api_call_count, 0)) as api_calls,
-                   MAX(u.last_seen) as last_used_at
-            FROM session_model_usage u
-            JOIN sessions s ON s.id = u.session_id
-            WHERE s.started_at > ? AND u.task != ''
-            GROUP BY u.model, u.task, u.billing_provider
-            ORDER BY SUM(u.input_tokens) + SUM(u.output_tokens) DESC
-        """, (cutoff,))
-        return [dict(r) for r in cur.fetchall()]
-    except Exception:
-        # Table predates the task column (older DB opened by newer code) —
-        # aux breakdown is simply unavailable.
-        return []
+
+def _aux_usage_rows(usage_rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Aggregate auxiliary per-model usage from the public SessionDB contract."""
+    grouped: Dict[Tuple[str, str, str], Dict[str, Any]] = {}
+    for row in usage_rows:
+        task = row.get("task") or ""
+        if not task:
+            continue
+        model = row.get("model") or "unknown"
+        provider = row.get("billing_provider") or ""
+        key = (model, task, provider)
+        aggregate = grouped.setdefault(
+            key,
+            {
+                "model": model,
+                "task": task,
+                "billing_provider": provider,
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "cache_read_tokens": 0,
+                "reasoning_tokens": 0,
+                "estimated_cost": 0,
+                "sessions": set(),
+                "api_calls": 0,
+                "last_used_at": None,
+            },
+        )
+        for field in (
+            "input_tokens",
+            "output_tokens",
+            "cache_read_tokens",
+            "reasoning_tokens",
+        ):
+            aggregate[field] += row.get(field) or 0
+        aggregate["estimated_cost"] += row.get("estimated_cost_usd") or 0
+        aggregate["api_calls"] += row.get("api_call_count") or 0
+        aggregate["last_used_at"] = max(
+            aggregate["last_used_at"] or 0,
+            row.get("last_seen") or 0,
+        ) or None
+        if session_id := row.get("session_id"):
+            aggregate["sessions"].add(session_id)
+
+    rows = []
+    for aggregate in grouped.values():
+        aggregate["sessions"] = len(aggregate["sessions"])
+        rows.append(aggregate)
+    rows.sort(
+        key=lambda row: (row.get("input_tokens") or 0) + (row.get("output_tokens") or 0),
+        reverse=True,
+    )
+    return rows
 
 
 def _merge_aux_into_by_model(
@@ -14662,59 +14705,131 @@ def _aux_task_summary(aux_rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return result
 
 
-def _get_usage_analytics(days: int = 30, profile: Optional[str] = None):
+def _analytics_sessions_for_profile(
+    profile: Optional[str], days: int
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], float]:
+    """Read analytics inputs through public state-store methods in a worker."""
+    db = _open_session_db_for_profile(profile, read_only=True)
+    try:
+        cutoff = _analytics_cutoff(days)
+        sessions = db.get_insights_sessions(cutoff)
+        try:
+            usage_rows = db.get_insights_model_usage(cutoff)
+        except Exception:
+            # Older stores can lack the optional per-model usage table.
+            usage_rows = []
+        return sessions, usage_rows, cutoff
+    finally:
+        db.close()
+
+
+def _usage_daily_rows(sessions: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    rows: Dict[str, Dict[str, Any]] = {}
+    for session in sessions:
+        started_at = float(session.get("started_at") or 0)
+        day = datetime.fromtimestamp(started_at, timezone.utc).date().isoformat()
+        row = rows.setdefault(
+            day,
+            {
+                "day": day,
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "cache_read_tokens": 0,
+                "reasoning_tokens": 0,
+                "estimated_cost": 0,
+                "actual_cost": 0,
+                "sessions": 0,
+                "api_calls": 0,
+            },
+        )
+        row["input_tokens"] += session.get("input_tokens") or 0
+        row["output_tokens"] += session.get("output_tokens") or 0
+        row["cache_read_tokens"] += session.get("cache_read_tokens") or 0
+        row["reasoning_tokens"] += session.get("reasoning_tokens") or 0
+        row["estimated_cost"] += session.get("estimated_cost_usd") or 0
+        row["actual_cost"] += session.get("actual_cost_usd") or 0
+        row["sessions"] += 1
+        row["api_calls"] += session.get("api_call_count") or 0
+    return [rows[day] for day in sorted(rows)]
+
+
+def _usage_model_rows(sessions: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    grouped: Dict[str, Dict[str, Any]] = {}
+    for session in sessions:
+        model = session.get("model")
+        if model is None:
+            continue
+        row = grouped.setdefault(
+            model,
+            {
+                "model": model,
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "estimated_cost": 0,
+                "sessions": 0,
+                "api_calls": 0,
+            },
+        )
+        row["input_tokens"] += session.get("input_tokens") or 0
+        row["output_tokens"] += session.get("output_tokens") or 0
+        row["estimated_cost"] += session.get("estimated_cost_usd") or 0
+        row["sessions"] += 1
+        row["api_calls"] += session.get("api_call_count") or 0
+    rows = list(grouped.values())
+    rows.sort(
+        key=lambda row: (row.get("input_tokens") or 0) + (row.get("output_tokens") or 0),
+        reverse=True,
+    )
+    return rows
+
+
+def _usage_totals(sessions: List[Dict[str, Any]]) -> Dict[str, Any]:
+    if not sessions:
+        # Preserve SQLite aggregate semantics from the former dashboard SQL.
+        return {
+            "total_input": None,
+            "total_output": None,
+            "total_cache_read": None,
+            "total_reasoning": None,
+            "total_estimated_cost": 0,
+            "total_actual_cost": 0,
+            "total_sessions": 0,
+            "total_api_calls": None,
+        }
+    totals = {
+        "total_input": 0,
+        "total_output": 0,
+        "total_cache_read": 0,
+        "total_reasoning": 0,
+        "total_estimated_cost": 0,
+        "total_actual_cost": 0,
+        "total_sessions": len(sessions),
+        "total_api_calls": 0,
+    }
+    for session in sessions:
+        totals["total_input"] += session.get("input_tokens") or 0
+        totals["total_output"] += session.get("output_tokens") or 0
+        totals["total_cache_read"] += session.get("cache_read_tokens") or 0
+        totals["total_reasoning"] += session.get("reasoning_tokens") or 0
+        totals["total_estimated_cost"] += session.get("estimated_cost_usd") or 0
+        totals["total_actual_cost"] += session.get("actual_cost_usd") or 0
+        totals["total_api_calls"] += session.get("api_call_count") or 0
+    return totals
+
+
+def _usage_analytics_for_profile(profile: Optional[str], days: int) -> Dict[str, Any]:
+    """Build the usage payload without coupling the dashboard to a SQL dialect."""
     from agent.insights import InsightsEngine
 
-    db = _open_session_db_for_profile(profile)
+    db = _open_session_db_for_profile(profile, read_only=True)
     try:
-        cutoff = time.time() - (days * 86400)
-        cur = db._conn.execute("""
-            SELECT date(started_at, 'unixepoch') as day,
-                   SUM(input_tokens) as input_tokens,
-                   SUM(output_tokens) as output_tokens,
-                   SUM(cache_read_tokens) as cache_read_tokens,
-                   SUM(reasoning_tokens) as reasoning_tokens,
-                   COALESCE(SUM(estimated_cost_usd), 0) as estimated_cost,
-                   COALESCE(SUM(actual_cost_usd), 0) as actual_cost,
-                   COUNT(*) as sessions,
-                   SUM(COALESCE(api_call_count, 0)) as api_calls
-            FROM sessions WHERE started_at > ?
-            GROUP BY day ORDER BY day
-        """, (cutoff,))
-        daily = [dict(r) for r in cur.fetchall()]
-
-        cur2 = db._conn.execute("""
-            SELECT model,
-                   SUM(input_tokens) as input_tokens,
-                   SUM(output_tokens) as output_tokens,
-                   COALESCE(SUM(estimated_cost_usd), 0) as estimated_cost,
-                   COUNT(*) as sessions,
-                   SUM(COALESCE(api_call_count, 0)) as api_calls
-            FROM sessions WHERE started_at > ? AND model IS NOT NULL
-            GROUP BY model ORDER BY SUM(input_tokens) + SUM(output_tokens) DESC
-        """, (cutoff,))
-        by_model = [dict(r) for r in cur2.fetchall()]
-
-        # Fold in auxiliary usage (vision, compression, title_generation, ...)
-        # recorded per (model, task) in session_model_usage. Aux calls never
-        # touch the sessions counters, so this is add-only — no double count.
-        # Without it the models list shows only the main agent model even when
-        # aux models are actively burning tokens (issue #23270).
-        aux_rows = _aux_usage_rows(db, cutoff)
-        by_model = _merge_aux_into_by_model(by_model, aux_rows)
-
-        cur3 = db._conn.execute("""
-            SELECT SUM(input_tokens) as total_input,
-                   SUM(output_tokens) as total_output,
-                   SUM(cache_read_tokens) as total_cache_read,
-                   SUM(reasoning_tokens) as total_reasoning,
-                   COALESCE(SUM(estimated_cost_usd), 0) as total_estimated_cost,
-                   COALESCE(SUM(actual_cost_usd), 0) as total_actual_cost,
-                   COUNT(*) as total_sessions,
-                   SUM(COALESCE(api_call_count, 0)) as total_api_calls
-            FROM sessions WHERE started_at > ?
-        """, (cutoff,))
-        totals = dict(cur3.fetchone())
+        cutoff = _analytics_cutoff(days)
+        sessions = db.get_insights_sessions(cutoff)
+        try:
+            usage_rows = db.get_insights_model_usage(cutoff)
+        except Exception:
+            usage_rows = []
+        aux_rows = _aux_usage_rows(usage_rows)
         insights_report = InsightsEngine(db).generate(days=days)
         skills = insights_report.get("skills", {
             "summary": {
@@ -14725,18 +14840,15 @@ def _get_usage_analytics(days: int = 30, profile: Optional[str] = None):
             },
             "top_skills": [],
         })
-
         return {
-            "daily": daily,
-            "by_model": by_model,
-            # Aux-task summary across models (vision, compression, ...). Lets
-            # the dashboard answer "what is compression costing me" directly.
+            "daily": _usage_daily_rows(sessions),
+            "by_model": _merge_aux_into_by_model(
+                _usage_model_rows(sessions), aux_rows
+            ),
             "by_task": _aux_task_summary(aux_rows),
-            "totals": totals,
+            "totals": _usage_totals(sessions),
             "period_days": days,
             "skills": skills,
-            # Per-tool-name call counts (already computed by InsightsEngine);
-            # the desktop Capabilities page aggregates these per toolset.
             "tools": insights_report.get("tools", []),
         }
     finally:
@@ -14745,80 +14857,191 @@ def _get_usage_analytics(days: int = 30, profile: Optional[str] = None):
 
 @app.get("/api/analytics/usage")
 async def get_usage_analytics(days: int = 30, profile: Optional[str] = None):
-    return await asyncio.to_thread(_get_usage_analytics, days, profile)
+    return await asyncio.to_thread(_usage_analytics_for_profile, profile, days)
 
 
-def _get_models_analytics(days: int = 30, profile: Optional[str] = None):
+def _models_session_rows(sessions: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    grouped: Dict[Tuple[str, str], Dict[str, Any]] = {}
+    for session in sessions:
+        model = session.get("model")
+        if not model:
+            continue
+        provider = session.get("billing_provider") or ""
+        key = (model, provider)
+        row = grouped.setdefault(
+            key,
+            {
+                "model": model,
+                "billing_provider": provider,
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "cache_read_tokens": 0,
+                "reasoning_tokens": 0,
+                "estimated_cost": 0,
+                "actual_cost": 0,
+                "sessions": 0,
+                "api_calls": 0,
+                "tool_calls": 0,
+                "last_used_at": None,
+                "avg_tokens_per_session": 0,
+            },
+        )
+        for field in (
+            "input_tokens",
+            "output_tokens",
+            "cache_read_tokens",
+            "reasoning_tokens",
+        ):
+            row[field] += session.get(field) or 0
+        row["estimated_cost"] += session.get("estimated_cost_usd") or 0
+        row["actual_cost"] += session.get("actual_cost_usd") or 0
+        row["sessions"] += 1
+        row["api_calls"] += session.get("api_call_count") or 0
+        row["tool_calls"] += session.get("tool_call_count") or 0
+        row["last_used_at"] = max(
+            row["last_used_at"] or 0, session.get("started_at") or 0
+        ) or None
+
+    rows = list(grouped.values())
+    for row in rows:
+        sessions_count = row["sessions"]
+        row["avg_tokens_per_session"] = (
+            (row["input_tokens"] + row["output_tokens"]) / sessions_count
+            if sessions_count
+            else 0
+        )
+    rows.sort(
+        key=lambda row: (row.get("input_tokens") or 0) + (row.get("output_tokens") or 0),
+        reverse=True,
+    )
+    return rows
+
+
+def _models_analytics_totals(sessions: List[Dict[str, Any]]) -> Dict[str, Any]:
+    model_sessions = [session for session in sessions if session.get("model")]
+    if not model_sessions:
+        # Preserve SQLite aggregate semantics from the former dashboard SQL.
+        return {
+            "distinct_models": 0,
+            "total_input": None,
+            "total_output": None,
+            "total_cache_read": None,
+            "total_reasoning": None,
+            "total_estimated_cost": 0,
+            "total_actual_cost": 0,
+            "total_sessions": 0,
+            "total_api_calls": None,
+        }
+    totals = {
+        "distinct_models": len({session["model"] for session in model_sessions}),
+        "total_input": 0,
+        "total_output": 0,
+        "total_cache_read": 0,
+        "total_reasoning": 0,
+        "total_estimated_cost": 0,
+        "total_actual_cost": 0,
+        "total_sessions": len(model_sessions),
+        "total_api_calls": 0,
+    }
+    for session in model_sessions:
+        totals["total_input"] += session.get("input_tokens") or 0
+        totals["total_output"] += session.get("output_tokens") or 0
+        totals["total_cache_read"] += session.get("cache_read_tokens") or 0
+        totals["total_reasoning"] += session.get("reasoning_tokens") or 0
+        totals["total_estimated_cost"] += session.get("estimated_cost_usd") or 0
+        totals["total_actual_cost"] += session.get("actual_cost_usd") or 0
+        totals["total_api_calls"] += session.get("api_call_count") or 0
+    return totals
+
+
+def _models_analytics_for_profile(
+    profile: Optional[str], days: int
+) -> Dict[str, Any]:
     """Rich per-model analytics for the Models dashboard page.
 
     Returns token/cost/session breakdown per model plus capability metadata
     from models.dev (context window, vision, tools, reasoning, etc.).
     """
-    db = _open_session_db_for_profile(profile)
-    try:
-        cutoff = time.time() - (days * 86400)
+    sessions, usage_rows, _cutoff = _analytics_sessions_for_profile(profile, days)
+    raw_rows = _models_session_rows(sessions)
 
-        cur = db._conn.execute("""
-            SELECT model,
-                   billing_provider,
-                   SUM(input_tokens) as input_tokens,
-                   SUM(output_tokens) as output_tokens,
-                   SUM(cache_read_tokens) as cache_read_tokens,
-                   SUM(reasoning_tokens) as reasoning_tokens,
-                   COALESCE(SUM(estimated_cost_usd), 0) as estimated_cost,
-                   COALESCE(SUM(actual_cost_usd), 0) as actual_cost,
-                   COUNT(*) as sessions,
-                   SUM(COALESCE(api_call_count, 0)) as api_calls,
-                   SUM(tool_call_count) as tool_calls,
-                   MAX(started_at) as last_used_at,
-                   AVG(input_tokens + output_tokens) as avg_tokens_per_session
-            FROM sessions WHERE started_at > ? AND model IS NOT NULL AND model != ''
-            GROUP BY model, billing_provider
-            ORDER BY SUM(input_tokens) + SUM(output_tokens) DESC
-        """, (cutoff,))
-        raw_rows = [dict(r) for r in cur.fetchall()]
+    # Add auxiliary usage as (model, provider) rows so aux-only models
+    # (dedicated vision/compression models) appear on the Models page
+    # instead of being invisible (issue #23270). Keyed by
+    # model+billing_provider to match the GROUP BY above.
+    for aux in _aux_usage_rows(usage_rows):
+        raw_rows.append({
+            "model": aux.get("model") or "unknown",
+            "billing_provider": aux.get("billing_provider") or "",
+            "input_tokens": aux.get("input_tokens") or 0,
+            "output_tokens": aux.get("output_tokens") or 0,
+            "cache_read_tokens": aux.get("cache_read_tokens") or 0,
+            "reasoning_tokens": aux.get("reasoning_tokens") or 0,
+            "estimated_cost": aux.get("estimated_cost") or 0,
+            "actual_cost": 0,
+            "sessions": aux.get("sessions") or 0,
+            "api_calls": aux.get("api_calls") or 0,
+            "tool_calls": 0,
+            "last_used_at": aux.get("last_used_at"),
+            "avg_tokens_per_session": 0,
+            "aux_task": aux.get("task") or "",
+        })
 
-        # Add auxiliary usage as (model, provider) rows so aux-only models
-        # (dedicated vision/compression models) appear on the Models page
-        # instead of being invisible (issue #23270). Keyed by
-        # model+billing_provider to match the GROUP BY above.
-        for aux in _aux_usage_rows(db, cutoff):
-            raw_rows.append({
-                "model": aux.get("model") or "unknown",
-                "billing_provider": aux.get("billing_provider") or "",
-                "input_tokens": aux.get("input_tokens") or 0,
-                "output_tokens": aux.get("output_tokens") or 0,
-                "cache_read_tokens": aux.get("cache_read_tokens") or 0,
-                "reasoning_tokens": aux.get("reasoning_tokens") or 0,
-                "estimated_cost": aux.get("estimated_cost") or 0,
-                "actual_cost": 0,
-                "sessions": aux.get("sessions") or 0,
-                "api_calls": aux.get("api_calls") or 0,
-                "tool_calls": 0,
-                "last_used_at": aux.get("last_used_at"),
-                "avg_tokens_per_session": 0,
-                "aux_task": aux.get("task") or "",
-            })
+    # Session rows can be created before the first billable provider call
+    # finishes. If that early row records only the model name, and a later row
+    # for the same model has real accounting + billing_provider, the Models
+    # page used to show a duplicate "0 tokens / — API calls" card next to the
+    # real provider card. Fold those session-only rows into the single
+    # accounted provider row when the ownership is unambiguous.
+    rows_by_model: Dict[str, List[Dict[str, Any]]] = {}
+    for row in raw_rows:
+        rows_by_model.setdefault(row.get("model") or "", []).append(row)
 
-        # Session rows can be created before the first billable provider call
-        # finishes. If that early row records only the model name, and a later
-        # row for the same model has real accounting + billing_provider, the
-        # Models page used to show a duplicate "0 tokens / — API calls" card
-        # next to the real provider card. Fold those session-only rows into
-        # the single accounted provider row when the ownership is unambiguous.
-        rows_by_model: Dict[str, List[Dict[str, Any]]] = {}
-        for row in raw_rows:
-            rows_by_model.setdefault(row.get("model") or "", []).append(row)
-
-        rows: List[Dict[str, Any]] = []
-        for model_rows in rows_by_model.values():
-            provider_rows = [r for r in model_rows if r.get("billing_provider")]
-            if len(provider_rows) == 1:
-                target = provider_rows[0]
-                for row in model_rows:
-                    if row is target or row.get("billing_provider"):
-                        continue
-                    has_usage = any(
+    rows: List[Dict[str, Any]] = []
+    for model_rows in rows_by_model.values():
+        provider_rows = [r for r in model_rows if r.get("billing_provider")]
+        if len(provider_rows) == 1:
+            target = provider_rows[0]
+            for row in model_rows:
+                if row is target or row.get("billing_provider"):
+                    continue
+                has_usage = any(
+                    (row.get(key) or 0) != 0
+                    for key in (
+                        "input_tokens",
+                        "output_tokens",
+                        "cache_read_tokens",
+                        "reasoning_tokens",
+                        "estimated_cost",
+                        "actual_cost",
+                        "api_calls",
+                        "tool_calls",
+                    )
+                )
+                if has_usage:
+                    continue
+                target["sessions"] = (target.get("sessions") or 0) + (
+                    row.get("sessions") or 0
+                )
+                target["last_used_at"] = max(
+                    target.get("last_used_at") or 0,
+                    row.get("last_used_at") or 0,
+                )
+                total_tokens = (target.get("input_tokens") or 0) + (
+                    target.get("output_tokens") or 0
+                )
+                sessions_count = target.get("sessions") or 0
+                target["avg_tokens_per_session"] = (
+                    total_tokens / sessions_count if sessions_count else 0
+                )
+            rows.append(target)
+            rows.extend(
+                row
+                for row in model_rows
+                if row is not target
+                and (
+                    row.get("billing_provider")
+                    or any(
                         (row.get(key) or 0) != 0
                         for key in (
                             "input_tokens",
@@ -14831,103 +15054,64 @@ def _get_models_analytics(days: int = 30, profile: Optional[str] = None):
                             "tool_calls",
                         )
                     )
-                    if has_usage:
-                        continue
-                    target["sessions"] = (target.get("sessions") or 0) + (row.get("sessions") or 0)
-                    target["last_used_at"] = max(target.get("last_used_at") or 0, row.get("last_used_at") or 0)
-                    total_tokens = (target.get("input_tokens") or 0) + (target.get("output_tokens") or 0)
-                    sessions = target.get("sessions") or 0
-                    target["avg_tokens_per_session"] = total_tokens / sessions if sessions else 0
-                rows.append(target)
-                rows.extend(
-                    r for r in model_rows
-                    if r is not target
-                    and (r.get("billing_provider") or any(
-                        (r.get(key) or 0) != 0
-                        for key in (
-                            "input_tokens",
-                            "output_tokens",
-                            "cache_read_tokens",
-                            "reasoning_tokens",
-                            "estimated_cost",
-                            "actual_cost",
-                            "api_calls",
-                            "tool_calls",
-                        )
-                    ))
                 )
-            else:
-                rows.extend(model_rows)
+            )
+        else:
+            rows.extend(model_rows)
 
-        rows.sort(
-            key=lambda r: (r.get("input_tokens") or 0) + (r.get("output_tokens") or 0),
-            reverse=True,
-        )
+    rows.sort(
+        key=lambda r: (r.get("input_tokens") or 0) + (r.get("output_tokens") or 0),
+        reverse=True,
+    )
 
-        models = []
-        for row in rows:
-            provider = row.get("billing_provider") or ""
-            model_name = row["model"]
-            caps = {}
-            try:
-                from agent.models_dev import get_model_capabilities
-                mc = get_model_capabilities(provider=provider, model=model_name)
-                if mc is not None:
-                    caps = {
-                        "supports_tools": mc.supports_tools,
-                        "supports_vision": mc.supports_vision,
-                        "supports_reasoning": mc.supports_reasoning,
-                        "context_window": mc.context_window,
-                        "max_output_tokens": mc.max_output_tokens,
-                        "model_family": mc.model_family,
-                    }
-            except Exception:
-                pass
+    models = []
+    for row in rows:
+        provider = row.get("billing_provider") or ""
+        model_name = row["model"]
+        caps = {}
+        try:
+            from agent.models_dev import get_model_capabilities
 
-            models.append({
-                "model": model_name,
-                "provider": provider,
-                "input_tokens": row["input_tokens"],
-                "output_tokens": row["output_tokens"],
-                "cache_read_tokens": row["cache_read_tokens"],
-                "reasoning_tokens": row["reasoning_tokens"],
-                "estimated_cost": row["estimated_cost"],
-                "actual_cost": row["actual_cost"],
-                "sessions": row["sessions"],
-                "api_calls": row["api_calls"],
-                "tool_calls": row["tool_calls"],
-                "last_used_at": row["last_used_at"],
-                "avg_tokens_per_session": row["avg_tokens_per_session"],
-                "capabilities": caps,
-            })
+            mc = get_model_capabilities(provider=provider, model=model_name)
+            if mc is not None:
+                caps = {
+                    "supports_tools": mc.supports_tools,
+                    "supports_vision": mc.supports_vision,
+                    "supports_reasoning": mc.supports_reasoning,
+                    "context_window": mc.context_window,
+                    "max_output_tokens": mc.max_output_tokens,
+                    "model_family": mc.model_family,
+                }
+        except Exception:
+            pass
 
-        totals_cur = db._conn.execute("""
-            SELECT COUNT(DISTINCT model) as distinct_models,
-                   SUM(input_tokens) as total_input,
-                   SUM(output_tokens) as total_output,
-                   SUM(cache_read_tokens) as total_cache_read,
-                   SUM(reasoning_tokens) as total_reasoning,
-                   COALESCE(SUM(estimated_cost_usd), 0) as total_estimated_cost,
-                   COALESCE(SUM(actual_cost_usd), 0) as total_actual_cost,
-                   COUNT(*) as total_sessions,
-                   SUM(COALESCE(api_call_count, 0)) as total_api_calls
-            FROM sessions WHERE started_at > ? AND model IS NOT NULL AND model != ''
-        """, (cutoff,))
-        totals = dict(totals_cur.fetchone())
+        models.append({
+            "model": model_name,
+            "provider": provider,
+            "input_tokens": row["input_tokens"],
+            "output_tokens": row["output_tokens"],
+            "cache_read_tokens": row["cache_read_tokens"],
+            "reasoning_tokens": row["reasoning_tokens"],
+            "estimated_cost": row["estimated_cost"],
+            "actual_cost": row["actual_cost"],
+            "sessions": row["sessions"],
+            "api_calls": row["api_calls"],
+            "tool_calls": row["tool_calls"],
+            "last_used_at": row["last_used_at"],
+            "avg_tokens_per_session": row["avg_tokens_per_session"],
+            "capabilities": caps,
+        })
 
-        return {
-            "models": models,
-            "totals": totals,
-            "period_days": days,
-        }
-    finally:
-        db.close()
+    return {
+        "models": models,
+        "totals": _models_analytics_totals(sessions),
+        "period_days": days,
+    }
 
 
 @app.get("/api/analytics/models")
 async def get_models_analytics(days: int = 30, profile: Optional[str] = None):
-    """Return model analytics without blocking the serving event loop."""
-    return await asyncio.to_thread(_get_models_analytics, days, profile)
+    return await asyncio.to_thread(_models_analytics_for_profile, profile, days)
 
 
 # ---------------------------------------------------------------------------
@@ -15393,7 +15577,8 @@ def _resolve_chat_argv(
 
     if resume:
         _resume_db = _open_session_db_for_profile(
-            requested if profile_dir is not None else None
+            requested if profile_dir is not None else None,
+            read_only=True,
         )
         try:
             latest_resume, _latest_path = _session_latest_descendant(resume, _resume_db)

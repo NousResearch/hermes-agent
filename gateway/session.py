@@ -1009,20 +1009,20 @@ class SessionStore:
     """
     Manages session storage and retrieval.
     
-    Uses SQLite (via SessionDB) for session metadata and message transcripts.
-    Falls back to legacy JSONL files if SQLite is unavailable.
+    Uses the configured SessionDB backend for session metadata and transcripts.
+    Falls back to legacy JSONL files if durable state is unavailable.
     """
     
     def __init__(self, sessions_dir: Path, config: GatewayConfig,
-                 has_active_processes_fn=None):
+                 has_active_processes_fn=None, state_home: Optional[Path] = None):
         self.sessions_dir = sessions_dir
         self.config = config
         self._entries: Dict[str, SessionEntry] = {}
         self._loaded = False
         self._lock = threading.Lock()
         # Serialize whole-index persistence without holding ``_lock`` across
-        # SQLite / fsync. Each writer snapshots the latest state only after
-        # acquiring this lock, preventing stale delayed writes.
+        # durable-state I/O / fsync. Each writer snapshots the latest state
+        # only after acquiring this lock, preventing stale delayed writes.
         self._save_lock = threading.Lock()
         self._routing_generation = 0
         self._persisted_routing_generation = 0
@@ -1040,13 +1040,17 @@ class SessionStore:
             getattr(config, "write_sessions_json", True)
         )
         
-        # Initialize SQLite session database
+        # Production passes an explicit home so backend selection follows that
+        # profile. Direct legacy/test construction keeps the SQLite-only path.
         self._db = None
         try:
             from hermes_state import SessionDB
-            self._db = SessionDB()
+            if state_home is not None:
+                self._db = SessionDB.for_home(state_home)
+            else:
+                self._db = SessionDB()
         except Exception as e:
-            print(f"[gateway] Warning: SQLite session store unavailable, falling back to JSONL: {e}")
+            print(f"[gateway] Warning: session store unavailable, falling back to JSONL: {e}")
 
     def _has_active_processes_safe(self, session_key: str, *, context: str) -> bool:
         """Return whether a session has active work, failing closed on registry errors."""

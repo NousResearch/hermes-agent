@@ -837,7 +837,8 @@ def test_oneshot_wires_session_db_for_recall(monkeypatch):
             return {"final_response": "ok", "failed": False, "partial": False}
 
     class FakeSessionDB:
-        def __new__(cls):
+        @classmethod
+        def for_home(cls, home):
             return sentinel_db
 
     def mod(name, **attrs):
@@ -847,7 +848,15 @@ def test_oneshot_wires_session_db_for_recall(monkeypatch):
         return module
 
     monkeypatch.setitem(sys.modules, "run_agent", mod("run_agent", AIAgent=FakeAgent))
-    monkeypatch.setitem(sys.modules, "hermes_state", mod("hermes_state", SessionDB=FakeSessionDB))
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_state",
+        mod(
+            "hermes_state",
+            SessionDB=FakeSessionDB,
+            format_session_db_unavailable=lambda: "Session database not available.",
+        ),
+    )
     monkeypatch.setitem(
         sys.modules,
         "hermes_cli.config",
@@ -1112,7 +1121,12 @@ def test_print_tui_exit_summary_includes_resume_and_token_totals(monkeypatch, ca
             return None
 
     monkeypatch.setitem(
-        sys.modules, "hermes_state", types.SimpleNamespace(SessionDB=lambda: _FakeDB())
+        sys.modules,
+        "hermes_state",
+        types.SimpleNamespace(
+            SessionDB=types.SimpleNamespace(for_home=lambda _home: _FakeDB()),
+            format_session_db_unavailable=lambda: "Session database not available.",
+        ),
     )
 
     main_mod._print_tui_exit_summary("20260409_000001_abc123")
@@ -1152,7 +1166,12 @@ def test_print_tui_exit_summary_prefers_actual_active_session_file(
     active = tmp_path / "active.json"
     active.write_text('{"session_id":"actual_session"}', encoding="utf-8")
     monkeypatch.setitem(
-        sys.modules, "hermes_state", types.SimpleNamespace(SessionDB=lambda: _FakeDB())
+        sys.modules,
+        "hermes_state",
+        types.SimpleNamespace(
+            SessionDB=types.SimpleNamespace(for_home=lambda _home: _FakeDB()),
+            format_session_db_unavailable=lambda: "Session database not available.",
+        ),
     )
 
     main_mod._print_tui_exit_summary("startup_resume", str(active))

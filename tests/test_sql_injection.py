@@ -1,43 +1,80 @@
-"""Tests that verify SQL injection mitigations in insights and state modules."""
+"""Tests that verify SQL injection mitigations in insights state queries."""
 
 import re
+import threading
 
-from agent.insights import InsightsEngine
+import pytest
 
-
-def test_session_cols_no_injection_chars():
-    """_SESSION_COLS must not contain SQL injection vectors."""
-    cols = InsightsEngine._SESSION_COLS
-    assert ";" not in cols
-    assert "--" not in cols
-    assert "'" not in cols
-    assert "DROP" not in cols.upper()
+from hermes_state import INSIGHTS_MAX_ROWS, SessionDB
+from state_store.postgres.ops_sessions import PostgresSessionOperations
 
 
-def test_get_sessions_all_query_is_parameterized():
-    """_GET_SESSIONS_ALL must use a ? placeholder for the cutoff value."""
-    query = InsightsEngine._GET_SESSIONS_ALL
-    assert "?" in query
-    assert "started_at >= ?" in query
-    # Must not embed any runtime-variable content via brace interpolation
-    assert "{" not in query
+class _SQLiteCapture:
+    def __init__(self) -> None:
+        self.calls = []
+
+    def execute(self, query, params):
+        self.calls.append((query, params))
+        return object()
 
 
-def test_get_sessions_with_source_query_is_parameterized():
-    """_GET_SESSIONS_WITH_SOURCE must use ? placeholders for both parameters."""
-    query = InsightsEngine._GET_SESSIONS_WITH_SOURCE
-    assert query.count("?") == 2
-    assert "started_at >= ?" in query
-    assert "source = ?" in query
-    assert "{" not in query
+def _sqlite_insights_query(source):
+    db = SessionDB.__new__(SessionDB)
+    db._lock = threading.RLock()
+    db._conn = _SQLiteCapture()
+    db._collect_rows_in_batches = lambda _cursor: []
+
+    assert db.get_insights_sessions(123.5, source) == []
+    return db._conn.calls[0]
 
 
-def test_session_col_names_are_safe_identifiers():
-    """Every column name listed in _SESSION_COLS must be a simple identifier."""
-    cols = InsightsEngine._SESSION_COLS
-    identifiers = [c.strip() for c in cols.split(",")]
+def _postgres_insights_query(source):
+    captured = []
+    db = PostgresSessionOperations.__new__(PostgresSessionOperations)
+    db._read_all_insight_rows = lambda query, params: captured.append(
+        (query, params)
+    ) or []
+
+    assert db.get_insights_sessions(123.5, source) == []
+    return captured[0]
+
+
+@pytest.mark.parametrize(
+    ("query_factory", "placeholder"),
+    [
+        (_sqlite_insights_query, "?"),
+        (_postgres_insights_query, "%s"),
+    ],
+)
+@pytest.mark.parametrize("source", [None, "cron'; DROP TABLE sessions; --"])
+def test_insights_session_filters_are_parameterized(
+    query_factory, placeholder, source
+):
+    query, params = query_factory(source)
+
+    assert f"started_at >= {placeholder}" in query
+    assert f"LIMIT {placeholder}" in query
+    assert query.count(placeholder) == (3 if source else 2)
+    assert params == (
+        (123.5, source, INSIGHTS_MAX_ROWS + 1)
+        if source
+        else (123.5, INSIGHTS_MAX_ROWS + 1)
+    )
+    if source:
+        assert f"source = {placeholder}" in query
+        assert source not in query
+
+
+@pytest.mark.parametrize(
+    "query_factory",
+    [_sqlite_insights_query, _postgres_insights_query],
+)
+def test_insights_session_columns_are_safe_identifiers(query_factory):
+    query, _params = query_factory(None)
+    selected = query.split("SELECT ", 1)[1].split(" FROM sessions", 1)[0]
     safe_identifier = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
-    for col in identifiers:
-        assert safe_identifier.match(col), (
-            f"Column name {col!r} is not a safe SQL identifier"
+
+    for column in (value.strip() for value in selected.split(",")):
+        assert safe_identifier.fullmatch(column), (
+            f"Column name {column!r} is not a safe SQL identifier"
         )

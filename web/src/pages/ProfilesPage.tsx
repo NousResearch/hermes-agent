@@ -294,6 +294,10 @@ export default function ProfilesPage() {
       cloneAll:
         p.cloneAll ?? "Clone everything (memories, sessions, skills, state)",
       noSkillsOption: p.noSkillsOption ?? "Don't seed bundled skills",
+      postgresSchema: p.postgresSchema ?? "PostgreSQL schema (optional)",
+      postgresSchemaHint:
+        p.postgresSchemaHint ??
+        "Required only when cloning a PostgreSQL-backed source profile.",
       descriptionOptional: p.descriptionOptional ?? "Description (optional)",
       modelOptional: p.modelOptional ?? "Model (optional)",
       modelInherit: p.modelInherit ?? "Inherit from clone / default",
@@ -316,6 +320,7 @@ export default function ProfilesPage() {
   const [newName, setNewName] = useState("");
   const [cloneFrom, setCloneFrom] = useState<string | null>("default");
   const [cloneAll, setCloneAll] = useState(false);
+  const [postgresSchema, setPostgresSchema] = useState("");
   const [noSkills, setNoSkills] = useState(false);
   const [newDescription, setNewDescription] = useState("");
   const [creating, setCreating] = useState(false);
@@ -442,6 +447,9 @@ export default function ProfilesPage() {
         clone_from: cloneFrom,
         clone_all: cloning && cloneAll,
         no_skills: cloning ? false : noSkills,
+        ...(cloning && postgresSchema.trim()
+          ? { postgres_schema: postgresSchema.trim() }
+          : {}),
         description: newDescription.trim() || undefined,
         provider: picked?.provider,
         model: picked?.model,
@@ -458,6 +466,7 @@ export default function ProfilesPage() {
       setNoSkills(false);
       setCloneAll(false);
       setCloneFrom("default");
+      setPostgresSchema("");
       setModelChoice("");
       setCreateModalOpen(false);
       load();
@@ -869,7 +878,10 @@ export default function ProfilesPage() {
                   onValueChange={(v) => {
                     const next = v || null;
                     setCloneFrom(next);
-                    if (next === null) setCloneAll(false);
+                    if (next === null) {
+                      setCloneAll(false);
+                      setPostgresSchema("");
+                    }
                   }}
                 >
                   <SelectOption value="">{t.profiles.cloneFromNone}</SelectOption>
@@ -880,6 +892,20 @@ export default function ProfilesPage() {
                   ))}
                 </Select>
               </div>
+
+              {cloning && (
+                <div className="grid gap-2">
+                  <Label htmlFor="postgres-schema">{L.postgresSchema}</Label>
+                  <Input
+                    id="postgres-schema"
+                    value={postgresSchema}
+                    onChange={(e) => setPostgresSchema(e.target.value)}
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    {L.postgresSchemaHint}
+                  </p>
+                </div>
+              )}
 
               <div className="grid gap-2">
                 <Label htmlFor="profile-description">

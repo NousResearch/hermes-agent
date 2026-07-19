@@ -119,6 +119,7 @@ _IMPORT_SKIP_NAMES = {
     "cron.pid",
     "gateway.lock",
     "processes.json",
+    "state-backend.json",
 }
 
 # zipfile.open() drops Unix mode bits on extract; restore tightens these to 0600.
@@ -130,6 +131,7 @@ _SECRET_FILE_NAMES = {".env", "auth.json", "state.db"}
 # relative to the user's home directory, and restored to their original
 # home-relative location on import. Anything not under home is skipped.
 _EXTERNAL_PREFIX = "_external/"
+_STATE_BACKEND_METADATA_NAME = "state-backend.json"
 
 
 def _collect_memory_provider_external_paths() -> List[Path]:
@@ -249,6 +251,78 @@ def _should_skip_backup_file(abs_path: Path, rel_path: Path, out_path: Path) -> 
         return False
 
 
+def _configured_state_specs(
+    hermes_root: Path, *, include_profiles: bool = False
+) -> list[Any]:
+    """Resolve local state-store specs without opening external backends."""
+    from hermes_cli.config import load_config_for_home
+    from state_store import resolve_state_store
+
+    homes = [hermes_root]
+    if include_profiles:
+        profiles_dir = hermes_root / "profiles"
+        if profiles_dir.is_dir():
+            try:
+                homes.extend(
+                    sorted(
+                        path
+                        for path in profiles_dir.iterdir()
+                        if path.is_dir() and not path.is_symlink()
+                    )
+                )
+            except OSError as exc:
+                logger.warning(
+                    "Could not inspect backup profiles at %s: %s",
+                    profiles_dir,
+                    type(exc).__name__,
+                )
+
+    specs = []
+    for home in homes:
+        try:
+            specs.append(resolve_state_store(home, load_config_for_home(home)))
+        except Exception as exc:
+            logger.warning("Could not resolve state backend for backup at %s: %s", home, type(exc).__name__)
+    return specs
+
+
+def _is_configured_postgres_state_file(path: Path, specs: list[Any]) -> bool:
+    """Avoid archiving a stale SQLite state file as a PostgreSQL database dump."""
+    try:
+        resolved = path.resolve()
+    except (OSError, ValueError):
+        return False
+    return any(
+        spec.backend == "postgres" and resolved == spec.sqlite_path.resolve()
+        for spec in specs
+    )
+
+
+def _postgres_state_backup_metadata(specs: list[Any]) -> dict[str, Any] | None:
+    """Return secret-safe archive metadata when PostgreSQL state is configured."""
+    postgres_specs = [spec for spec in specs if spec.backend == "postgres"]
+    if not postgres_specs:
+        return None
+    return {
+        "state_backends": [
+            {
+                "profile": spec.profile,
+                "backend": "postgres",
+                "schema": spec.postgres_schema,
+                "database_dump_included": False,
+                "external_backup_required": True,
+            }
+            for spec in postgres_specs
+        ]
+    }
+
+
+def _serialize_state_backup_metadata(metadata: dict[str, Any] | None) -> str | None:
+    if metadata is None:
+        return None
+    return json.dumps(metadata, indent=2, sort_keys=True)
+
+
 # ---------------------------------------------------------------------------
 # SQLite safe copy
 # ---------------------------------------------------------------------------
@@ -326,6 +400,9 @@ def run_backup(args) -> None:
     print(f"Scanning {display_hermes_home()} ...")
     files_to_add: list[tuple[Path, Path]] = []  # (absolute, relative)
     skipped_dirs = set()
+    state_specs = _configured_state_specs(hermes_root, include_profiles=True)
+    state_metadata = _postgres_state_backup_metadata(state_specs)
+    state_metadata_json = _serialize_state_backup_metadata(state_metadata)
 
     for dirpath, dirnames, filenames in os.walk(hermes_root, followlinks=False):
         dp = Path(dirpath)
@@ -348,6 +425,8 @@ def run_backup(args) -> None:
             rel = fpath.relative_to(hermes_root)
 
             if _should_skip_backup_file(fpath, rel, out_path):
+                continue
+            if _is_configured_postgres_state_file(fpath, state_specs):
                 continue
 
             files_to_add.append((fpath, rel))
@@ -381,7 +460,7 @@ def run_backup(args) -> None:
         return
 
     # Create the zip
-    file_count = len(files_to_add) + len(external_to_add)
+    file_count = len(files_to_add) + len(external_to_add) + bool(state_metadata_json)
     print(f"Backing up {file_count} files ...")
 
     total_bytes = 0
@@ -431,6 +510,10 @@ def run_backup(args) -> None:
                 errors.append(f"  {arcname}: {exc}")
                 continue
 
+        if state_metadata_json is not None:
+            zf.writestr(_STATE_BACKEND_METADATA_NAME, state_metadata_json)
+            total_bytes += len(state_metadata_json.encode("utf-8"))
+
     elapsed = time.monotonic() - t0
     zip_size = out_path.stat().st_size
 
@@ -458,6 +541,12 @@ def run_backup(args) -> None:
         )
         for p in sorted(skipped_external)[:10]:
             print(f"    {p}")
+
+    if state_metadata is not None:
+        print(
+            "\n  PostgreSQL state data is not included in this archive. "
+            "It preserves local config and state metadata only; back up PostgreSQL separately."
+        )
 
     if skipped_dirs:
         print("\n  Excluded directories:")
@@ -829,6 +918,8 @@ def create_quick_snapshot(
     """
     home = hermes_home or get_hermes_home()
     root = _quick_snapshot_root(home)
+    state_specs = _configured_state_specs(home)
+    state_metadata = _postgres_state_backup_metadata(state_specs)
 
     def _too_large(path: Path, rel_name: str) -> bool:
         """True (and warn) when ``path`` exceeds the max_file_size cap."""
@@ -877,6 +968,8 @@ def create_quick_snapshot(
                 # the board databases + their metadata to restore a board.
                 if "/workspaces/" in f"/{sub_rel}/" or "/attachments/" in f"/{sub_rel}/":
                     continue
+                if _is_configured_postgres_state_file(sub, state_specs):
+                    continue
                 if _too_large(sub, sub_rel):
                     continue
                 dst = snap_dir / sub_rel
@@ -896,6 +989,8 @@ def create_quick_snapshot(
             continue
 
         if not src.is_file():
+            continue
+        if _is_configured_postgres_state_file(src, state_specs):
             continue
 
         if _too_large(src, rel):
@@ -927,6 +1022,8 @@ def create_quick_snapshot(
         "total_size": sum(manifest.values()),
         "files": manifest,
     }
+    if state_metadata is not None:
+        meta["state_backends"] = state_metadata["state_backends"]
     with open(snap_dir / "manifest.json", "w", encoding="utf-8") as f:
         json.dump(meta, f, indent=2)
 
@@ -1208,6 +1305,9 @@ def _write_full_zip_backup(out_path: Path, hermes_root: Path) -> Optional[Path]:
     or write error — caller should surface the outcome but not raise).
     """
     files_to_add: list[tuple[Path, Path]] = []
+    state_specs = _configured_state_specs(hermes_root, include_profiles=True)
+    state_metadata = _postgres_state_backup_metadata(state_specs)
+    state_metadata_json = _serialize_state_backup_metadata(state_metadata)
     try:
         for dirpath, dirnames, filenames in os.walk(hermes_root, followlinks=False):
             dp = Path(dirpath)
@@ -1222,6 +1322,8 @@ def _write_full_zip_backup(out_path: Path, hermes_root: Path) -> Optional[Path]:
                     continue
 
                 if _should_skip_backup_file(fpath, rel, out_path):
+                    continue
+                if _is_configured_postgres_state_file(fpath, state_specs):
                     continue
 
                 files_to_add.append((fpath, rel))
@@ -1262,6 +1364,8 @@ def _write_full_zip_backup(out_path: Path, hermes_root: Path) -> Optional[Path]:
                 except (PermissionError, OSError, ValueError) as exc:
                     logger.debug("Skipping %s in zip backup: %s", rel_path, exc)
                     continue
+            if state_metadata_json is not None:
+                zf.writestr(_STATE_BACKEND_METADATA_NAME, state_metadata_json)
     except OSError as exc:
         logger.warning("Full-zip backup: zip write failed: %s", exc)
         # Best-effort cleanup of partial file

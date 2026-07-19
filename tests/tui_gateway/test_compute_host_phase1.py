@@ -127,6 +127,54 @@ def test_compute_host_flushes_sessions_on_orphan_shutdown(monkeypatch):
         host.close()
 
 
+def test_compute_host_resolves_configured_profile_state_store(tmp_path, monkeypatch):
+    from hermes_state import SessionDB
+
+    out = io.StringIO()
+    host = ComputeHost(stdout=out, max_workers=1, heartbeat_secs=0)
+    fake_db = object()
+    opened_homes: list[Path] = []
+
+    class _Server:
+        _sessions: dict[str, dict] = {}
+
+        @staticmethod
+        def _make_agent(_sid, _key, **kwargs):
+            assert kwargs["session_db"] is fake_db
+            return object()
+
+        @staticmethod
+        def _init_session(sid, key, agent, history, **kwargs):
+            _Server._sessions[sid] = {
+                "agent": agent,
+                "session_key": key,
+                "history": history,
+                "session_db": kwargs["session_db"],
+            }
+
+    def _for_home(cls, home, **_kwargs):
+        opened_homes.append(Path(home))
+        return fake_db
+
+    monkeypatch.setattr(SessionDB, "for_home", classmethod(_for_home))
+    try:
+        session = host._ensure_server_session(
+            _Server,
+            {
+                "sid": "profile-session",
+                "session_key": "profile-session",
+                "profile_home": str(tmp_path),
+                "history": [],
+            },
+        )
+    finally:
+        host.close()
+
+    assert opened_homes == [tmp_path]
+    assert session["session_db"] is fake_db
+    assert session["profile_home"] == str(tmp_path)
+
+
 def test_compute_host_parent_guard_exits_when_parent_pid_changes(monkeypatch):
     out = io.StringIO()
     host = ComputeHost(stdout=out, max_workers=1, heartbeat_secs=0)

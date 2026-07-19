@@ -1160,7 +1160,7 @@ def _resolve_last_session(source: str = "cli") -> Optional[str]:
     try:
         from hermes_state import SessionDB
 
-        db = SessionDB()
+        db = SessionDB.for_home(get_hermes_home())
         sessions = db.search_sessions(source=source, limit=1)
         return sessions[0]["id"] if sessions else None
     except Exception:
@@ -1296,10 +1296,11 @@ def _resolve_session_by_name_or_id(name_or_id: str) -> Optional[str]:
       from an exit summary printed before the bug fix, or from notes) get
       resumed at the live tip instead of a stale parent with no messages.
     """
+    db = None
     try:
         from hermes_state import SessionDB
 
-        db = SessionDB()
+        db = SessionDB.for_home(get_hermes_home())
 
         # Try as exact session ID first
         session = db.get_session(name_or_id)
@@ -1318,10 +1319,15 @@ def _resolve_session_by_name_or_id(name_or_id: str) -> Optional[str]:
             except Exception:
                 pass
 
-        db.close()
         return resolved_id
     except Exception:
         pass
+    finally:
+        if db is not None:
+            try:
+                db.close()
+            except Exception:
+                pass
     return None
 
 
@@ -1352,7 +1358,7 @@ def _print_tui_exit_summary(
     try:
         from hermes_state import SessionDB
 
-        db = SessionDB()
+        db = SessionDB.for_home(get_hermes_home())
         session = db.get_session(target)
         if not session:
             return
@@ -1377,7 +1383,10 @@ def _print_tui_exit_summary(
         return
     finally:
         if db is not None:
-            db.close()
+            try:
+                db.close()
+            except Exception:
+                pass
 
     print()
     print("Resume this session with:")
@@ -2340,10 +2349,12 @@ def cmd_chat(args):
         and not getattr(args, "no_restore_cwd", False)
         and not getattr(args, "worktree", False)
     ):
+        db = None
         try:
             from hermes_state import SessionDB
 
-            _saved_cwd = ((SessionDB().get_session(args.resume) or {}).get("cwd") or "").strip()
+            db = SessionDB.for_home(get_hermes_home())
+            _saved_cwd = ((db.get_session(args.resume) or {}).get("cwd") or "").strip()
             if _saved_cwd and not os.path.isdir(_saved_cwd):
                 print(f"⚠ session's recorded dir is gone ({_saved_cwd}); staying in {os.getcwd()}")
             elif _saved_cwd and os.path.realpath(_saved_cwd) != os.path.realpath(os.getcwd()):
@@ -2351,6 +2362,12 @@ def cmd_chat(args):
                 print(f"↪ restored workspace dir: {_saved_cwd}")
         except Exception:
             pass  # never let cwd-restore break a resume
+        finally:
+            if db is not None:
+                try:
+                    db.close()
+                except Exception:
+                    pass
 
     # xAI retirement warning — one-shot, non-blocking, never fails startup
     try:
@@ -11620,6 +11637,7 @@ def cmd_profile(args):
                 no_alias=no_alias,
                 no_skills=no_skills,
                 description=getattr(args, "description", None),
+                target_postgres_schema=getattr(args, "postgres_schema", None),
             )
             print(f"\nProfile '{name}' created at {profile_dir}")
 
@@ -13152,17 +13170,23 @@ def cmd_tools(args):
 
 
 def cmd_insights(args):
+    db = None
     try:
         from hermes_state import SessionDB
         from agent.insights import InsightsEngine
 
-        db = SessionDB()
+        db = SessionDB.for_home(get_hermes_home())
         engine = InsightsEngine(db)
         report = engine.generate(days=args.days, source=args.source)
         print(engine.format_terminal(report))
-        db.close()
     except Exception as e:
         print(f"Error generating insights: {e}")
+    finally:
+        if db is not None:
+            try:
+                db.close()
+            except Exception:
+                pass
 
 
 def cmd_skills(args):
@@ -13355,7 +13379,11 @@ def main():
     # =========================================================================
     # migrate command
     # =========================================================================
-    from hermes_cli.migrate import cmd_migrate, cmd_migrate_xai
+    from hermes_cli.migrate import (
+        cmd_migrate,
+        cmd_migrate_state_postgres,
+        cmd_migrate_xai,
+    )
 
     migrate_parser = subparsers.add_parser(
         "migrate",
@@ -13388,6 +13416,45 @@ def main():
         help="Skip the timestamped backup of config.yaml when applying",
     )
     migrate_xai.set_defaults(func=cmd_migrate_xai)
+
+    migrate_state_postgres = migrate_subparsers.add_parser(
+        "state-postgres",
+        allow_abbrev=False,
+        help="Migrate the SQLite state backend to a PostgreSQL schema",
+        description=(
+            "Preflight and migrate the active SQLite state database into an "
+            "explicit PostgreSQL schema. Dry-run is the default. PostgreSQL "
+            "credentials are read only from the named environment variable."
+        ),
+    )
+    migrate_state_postgres.add_argument(
+        "--apply",
+        action="store_true",
+        help="Copy, verify, publish, and atomically switch config.yaml",
+    )
+    migrate_state_postgres.add_argument(
+        "--dsn-env",
+        default="HERMES_STATE_POSTGRES_DSN",
+        metavar="NAME",
+        help="Environment variable holding the PostgreSQL DSN (never its value)",
+    )
+    migrate_state_postgres.add_argument(
+        "--schema",
+        required=True,
+        help="Explicit lowercase PostgreSQL target schema",
+    )
+    migrate_state_postgres.add_argument(
+        "--batch-size",
+        type=int,
+        default=1_000,
+        metavar="ROWS",
+        help="Bounded copy and verification batch size (default: 1000)",
+    )
+    migrate_state_postgres.add_argument(
+        "--run-id",
+        help="Resume or reconcile a prior migration run ID",
+    )
+    migrate_state_postgres.set_defaults(func=cmd_migrate_state_postgres)
     migrate_parser.set_defaults(func=cmd_migrate)
 
     # =========================================================================
@@ -13923,7 +13990,7 @@ def main():
     sessions_parser = subparsers.add_parser(
         "sessions",
         help="Manage session history (list, rename, export, prune, delete)",
-        description="View and manage the SQLite session store",
+        description="View and manage the configured session store",
     )
     sessions_subparsers = sessions_parser.add_subparsers(dest="sessions_action")
 
@@ -14208,9 +14275,9 @@ def main():
 
         action = args.sessions_action
 
-        # 'repair' must run BEFORE opening SessionDB(): a malformed schema is
-        # exactly the case where SessionDB() can't open, so it operates on the
-        # raw file path instead.
+        # 'repair' is SQLite-only and must run before the configured state
+        # store opens: a malformed SQLite schema is exactly the case where a
+        # direct SessionDB() cannot open, so repair operates on the raw path.
         if action == "repair":
             from hermes_state import (
                 DEFAULT_DB_PATH,
@@ -14240,9 +14307,13 @@ def main():
                 try:
                     from hermes_state import SessionDB
 
-                    n = SessionDB()._conn.execute(
-                        "SELECT COUNT(*) FROM sessions"
-                    ).fetchone()[0]
+                    repair_db = SessionDB()
+                    try:
+                        n = repair_db._conn.execute(
+                            "SELECT COUNT(*) FROM sessions"
+                        ).fetchone()[0]
+                    finally:
+                        repair_db.close()
                     print(f"✓ Repaired — {n} sessions recovered.")
                 except Exception:
                     print("✓ Repaired.")
@@ -14256,7 +14327,7 @@ def main():
         try:
             from hermes_state import SessionDB
 
-            db = SessionDB()
+            db = SessionDB.for_home(get_hermes_home())
         except Exception as e:
             print(f"Error: Could not open session database: {e}")
             return
@@ -14911,10 +14982,10 @@ def main():
             return  # won't reach here after execvp
 
         elif action == "optimize":
-            db_path = db.db_path
+            db_path = getattr(db, "db_path", None)
             before_mb = (
                 os.path.getsize(db_path) / (1024 * 1024)
-                if db_path.exists()
+                if db_path is not None and db_path.exists()
                 else 0.0
             )
             print("Optimizing session store (FTS merge + VACUUM)…")
@@ -14928,15 +14999,16 @@ def main():
                 return
             after_mb = (
                 os.path.getsize(db_path) / (1024 * 1024)
-                if db_path.exists()
+                if db_path is not None and db_path.exists()
                 else 0.0
             )
             saved = before_mb - after_mb
             print(f"Optimized {n} FTS index(es).")
-            print(
-                f"Database size: {before_mb:.1f} MB -> {after_mb:.1f} MB "
-                f"(reclaimed {saved:.1f} MB)"
-            )
+            if db_path is not None:
+                print(
+                    f"Database size: {before_mb:.1f} MB -> {after_mb:.1f} MB "
+                    f"(reclaimed {saved:.1f} MB)"
+                )
 
         elif action == "stats":
             total = db.session_count()
@@ -14947,8 +15019,8 @@ def main():
                 c = db.session_count(source=src)
                 if c > 0:
                     print(f"  {src}: {c} sessions")
-            db_path = db.db_path
-            if db_path.exists():
+            db_path = getattr(db, "db_path", None)
+            if db_path is not None and db_path.exists():
                 size_mb = os.path.getsize(db_path) / (1024 * 1024)
                 print(f"Database size: {size_mb:.1f} MB")
 

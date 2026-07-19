@@ -352,6 +352,9 @@ export const en: Translations = {
     advancedOptions: "Advanced options",
     cloneAll: "Clone everything (memories, sessions, skills, state)",
     noSkillsOption: "Don't seed bundled skills",
+    postgresSchema: "PostgreSQL schema (optional)",
+    postgresSchemaHint:
+      "Required only when cloning a PostgreSQL-backed source profile.",
     descriptionOptional: "Description (optional)",
     modelOptional: "Model (optional)",
     modelInherit: "Inherit from clone / default",

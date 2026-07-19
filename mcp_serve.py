@@ -70,10 +70,12 @@ def _get_sessions_dir() -> Path:
 
 
 def _get_session_db():
-    """Get a SessionDB instance for reading message transcripts."""
+    """Open the configured session store for reading message transcripts."""
     try:
         from hermes_state import SessionDB
-        return SessionDB()
+        from hermes_constants import get_hermes_home
+
+        return SessionDB.for_home(get_hermes_home())
     except Exception as e:
         logger.debug("SessionDB unavailable: %s", e)
         return None
@@ -84,7 +86,7 @@ def _load_sessions_index() -> dict:
 
     Returns a dict of session_key -> entry_dict with platform routing info.
 
-    state.db is the primary source (#9006): gateway sessions persist their
+    The configured session store is the primary source (#9006): gateway sessions persist their
     routing metadata (session_key, chat/thread ids, display_name, origin) on
     the durable session row, so a single database read replaces the old
     dual-file sessions.json dependency.  Falls back to sessions.json for
@@ -97,7 +99,7 @@ def _load_sessions_index() -> dict:
 
 
 def _row_to_index_entry(row: dict) -> dict:
-    """Convert a state.db gateway session row to the sessions.json entry shape."""
+    """Convert a session-store gateway row to the sessions.json entry shape."""
     origin = {}
     origin_json = row.get("origin_json")
     if origin_json:
@@ -141,7 +143,7 @@ def _row_to_index_entry(row: dict) -> dict:
 
 
 def _load_sessions_index_from_db() -> dict:
-    """Build the routing index from state.db gateway session rows."""
+    """Build the routing index from configured-store gateway session rows."""
     db = _get_session_db()
     if db is None:
         return {}
@@ -158,7 +160,7 @@ def _load_sessions_index_from_db() -> dict:
             entries[key] = _row_to_index_entry(row)
         return entries
     except Exception as e:
-        logger.debug("Failed to load gateway sessions from state.db: %s", e)
+        logger.debug("Failed to load gateway sessions from session store: %s", e)
         return {}
     finally:
         try:
@@ -303,7 +305,7 @@ class EventBridge:
     maintains an in-memory event queue with waiter support.
 
     This is the Hermes equivalent of OpenClaw's WebSocket gateway bridge.
-    Instead of WebSocket events, we poll the SQLite database for changes.
+    Instead of WebSocket events, we poll the configured session store.
     """
 
     def __init__(self):
@@ -316,8 +318,8 @@ class EventBridge:
         self._last_poll_timestamps: Dict[str, float] = {}  # session_key -> unix timestamp
         # In-memory approval tracking (populated from events)
         self._pending_approvals: Dict[str, dict] = {}
-        # mtime cache — skip expensive work when state.db hasn't changed
-        self._state_db_mtime: float = 0.0
+        # SQLite-only mtime cache. Remote stores must query on every tick.
+        self._sqlite_db_mtime: float = 0.0
         self._cached_sessions_index: dict = {}
 
     def start(self):
@@ -442,32 +444,25 @@ class EventBridge:
     def _poll_once(self, db):
         """Check for new messages across all sessions.
 
-        Uses a single mtime check on state.db to skip work when nothing
-        has changed — makes 200ms polling essentially free.  Since #9006
-        the routing index itself lives in state.db (session rows carry
-        session_key/origin metadata), so a new conversation and its first
-        message land in the SAME file and one mtime check covers both —
-        eliminating the old dual-file (sessions.json + state.db) race that
-        could drop brand-new conversations (#8925).
+        SQLite stores expose a local ``db_path``, so an mtime check skips
+        unchanged polls. Remote configured stores have no local file to watch
+        and are queried every tick.
         """
-        try:
-            from hermes_constants import get_hermes_home
-            db_file = get_hermes_home() / "state.db"
-        except ImportError:
-            db_file = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes")) / "state.db"
+        db_file = getattr(db, "db_path", None)
+        if db_file is not None:
+            db_file = Path(db_file)
+            try:
+                db_mtime = db_file.stat().st_mtime if db_file.exists() else 0.0
+            except OSError:
+                db_mtime = 0.0
 
-        try:
-            db_mtime = db_file.stat().st_mtime if db_file.exists() else 0.0
-        except OSError:
-            db_mtime = 0.0
+            if db_mtime == self._sqlite_db_mtime:
+                return  # Nothing changed since the previous SQLite poll.
 
-        if db_mtime == self._state_db_mtime:
-            return  # Nothing changed since last poll — skip entirely
+            self._sqlite_db_mtime = db_mtime
 
-        self._state_db_mtime = db_mtime
-        # Refresh the routing index from state.db on every change tick —
-        # it's a single indexed query and it can never lag the messages
-        # table (both live in the same database file).
+        # Refresh the routing index from the configured store on every
+        # actionable tick. A store-backed index cannot lag its messages.
         self._cached_sessions_index = _load_sessions_index()
         entries = self._cached_sessions_index
 

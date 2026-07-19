@@ -403,7 +403,7 @@ class SessionManager:
         try:
             from hermes_state import SessionDB
             hermes_home = get_hermes_home()
-            self._db_instance = SessionDB(db_path=hermes_home / "state.db")
+            self._db_instance = SessionDB.for_home(hermes_home)
             return self._db_instance
         except Exception:
             logger.debug("SessionDB unavailable for ACP persistence", exc_info=True)

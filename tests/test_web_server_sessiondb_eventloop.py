@@ -57,15 +57,32 @@ def test_sessiondb_handlers_open_connections_inside_executor_helpers():
             for arg in node.args[:1]
             if isinstance(arg, ast.Name)
         }
+
+        def opens_db_in_worker(helper_name: str, seen: set[str]) -> bool:
+            if helper_name in seen:
+                return False
+            helper = helpers.get(helper_name)
+            if helper is None:
+                return False
+            seen = seen | {helper_name}
+            calls = {
+                _call_name(node)
+                for node in ast.walk(helper)
+                if isinstance(node, ast.Call)
+            }
+            if "_open_session_db_for_profile" in calls:
+                return True
+            return any(
+                called is not None and opens_db_in_worker(called, seen)
+                for called in calls
+                if called in helpers
+            )
+
         db_open_owners = {
             helper_name
-            for helper_name, helper in helpers.items()
+            for helper_name in helpers
             if helper_name in offloaded
-            and any(
-                isinstance(node, ast.Call)
-                and _call_name(node) == "_open_session_db_for_profile"
-                for node in ast.walk(helper)
-            )
+            and opens_db_in_worker(helper_name, set())
         }
         assert db_open_owners, f"{name} does not offload SessionDB open + work"
 

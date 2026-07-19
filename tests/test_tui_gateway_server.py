@@ -1632,7 +1632,7 @@ def test_session_resume_profile_uses_profile_db_cwd(monkeypatch, tmp_path):
 
     monkeypatch.setenv("TERMINAL_CWD", str(launch_cwd))
     monkeypatch.setattr(server, "_profile_home", lambda _profile: profile_home)
-    monkeypatch.setattr("hermes_state.SessionDB", lambda db_path=None: profile_db)
+    monkeypatch.setattr("hermes_state.SessionDB.for_home", lambda home: profile_db)
     monkeypatch.setattr(server, "_get_db", lambda: launch_db)
     monkeypatch.setattr(server, "_enable_gateway_prompts", lambda: None)
     monkeypatch.setattr(server, "_set_session_context", lambda target: [])
@@ -1696,7 +1696,7 @@ def test_session_cwd_set_profile_session_updates_profile_db(monkeypatch, tmp_pat
 
     import tools.terminal_tool as terminal_tool
 
-    monkeypatch.setattr("hermes_state.SessionDB", lambda db_path=None: profile_db)
+    monkeypatch.setattr("hermes_state.SessionDB.for_home", lambda home: profile_db)
     monkeypatch.setattr(server, "_get_db", lambda: LaunchDB())
     monkeypatch.setattr(terminal_tool, "cleanup_vm", lambda _key: None)
     monkeypatch.setattr(server, "_register_session_cwd", lambda _session: None)
@@ -7335,7 +7335,9 @@ def test_get_db_degrades_cleanly_when_sessiondb_init_fails(monkeypatch):
     fake_mod = types.ModuleType("hermes_state")
 
     class _BrokenSessionDB:
-        def __init__(self):
+        @classmethod
+        def for_home(cls, home):
+            del cls, home
             raise RuntimeError("locking protocol")
 
     fake_mod.SessionDB = _BrokenSessionDB
@@ -7345,6 +7347,28 @@ def test_get_db_degrades_cleanly_when_sessiondb_init_fails(monkeypatch):
 
     assert server._get_db() is None
     assert server._db_error == "locking protocol"
+
+
+def test_get_db_resolves_the_launch_profile_backend(monkeypatch, tmp_path):
+    fake_mod = types.ModuleType("hermes_state")
+    expected = object()
+    homes = []
+
+    class _SessionDB:
+        @classmethod
+        def for_home(cls, home):
+            del cls
+            homes.append(home)
+            return expected
+
+    fake_mod.SessionDB = _SessionDB
+    monkeypatch.setitem(sys.modules, "hermes_state", fake_mod)
+    monkeypatch.setattr(server, "_hermes_home", tmp_path)
+    monkeypatch.setattr(server, "_db", None)
+    monkeypatch.setattr(server, "_db_error", None)
+
+    assert server._get_db() is expected
+    assert homes == [tmp_path]
 
 
 @pytest.mark.real_agent_prewarm
@@ -7426,7 +7450,7 @@ def test_session_list_returns_clean_error_when_state_db_is_unavailable(monkeypat
     resp = server.handle_request({"id": "1", "method": "session.list", "params": {}})
 
     assert "error" in resp
-    assert "state.db unavailable: locking protocol" in resp["error"]["message"]
+    assert "session store unavailable: locking protocol" in resp["error"]["message"]
 
 
 # --------------------------------------------------------------------------
@@ -7461,7 +7485,7 @@ def test_session_delete_returns_db_unavailable_when_no_db(monkeypatch):
 
     assert "error" in resp
     assert resp["error"]["code"] == 5036
-    assert "state.db unavailable" in resp["error"]["message"]
+    assert "session store unavailable" in resp["error"]["message"]
 
 
 def test_session_delete_refuses_active_session(monkeypatch):

@@ -676,6 +676,34 @@ class TestNeutralizeUntrustedInlineText:
 class TestSessionStoreRewriteTranscript:
     """Regression: /retry and /undo must persist truncated history to DB."""
 
+    def test_explicit_state_home_uses_configured_backend(self, tmp_path):
+        db = MagicMock()
+        state_home = tmp_path / "profile"
+
+        with patch("hermes_state.SessionDB.for_home", return_value=db) as open_for_home:
+            store = SessionStore(
+                sessions_dir=tmp_path / "sessions",
+                config=GatewayConfig(),
+                state_home=state_home,
+            )
+
+        open_for_home.assert_called_once_with(state_home)
+        assert store._db is db
+
+    def test_legacy_constructor_keeps_explicit_sqlite_path(self, tmp_path):
+        db = MagicMock()
+
+        with patch("hermes_state.SessionDB", return_value=db) as sqlite_db, \
+             patch("hermes_state.SessionDB.for_home") as open_for_home:
+            store = SessionStore(
+                sessions_dir=tmp_path / "sessions",
+                config=GatewayConfig(),
+            )
+
+        sqlite_db.assert_called_once_with()
+        open_for_home.assert_not_called()
+        assert store._db is db
+
     @pytest.fixture()
     def store(self, tmp_path, monkeypatch):
         import hermes_state

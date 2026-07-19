@@ -21,7 +21,7 @@ def test_sessions_delete_accepts_unique_id_prefix(monkeypatch, capsys):
         def close(self):
             captured["closed"] = True
 
-    monkeypatch.setattr(hermes_state, "SessionDB", lambda: FakeDB())
+    monkeypatch.setattr(hermes_state.SessionDB, "for_home", lambda _home: FakeDB())
     monkeypatch.setattr(
         sys,
         "argv",
@@ -53,7 +53,7 @@ def test_sessions_delete_reports_not_found_when_prefix_is_unknown(monkeypatch, c
         def close(self):
             pass
 
-    monkeypatch.setattr(hermes_state, "SessionDB", lambda: FakeDB())
+    monkeypatch.setattr(hermes_state.SessionDB, "for_home", lambda _home: FakeDB())
     monkeypatch.setattr(
         sys,
         "argv",
@@ -81,7 +81,7 @@ def test_sessions_delete_handles_eoferror_on_confirm(monkeypatch, capsys):
         def close(self):
             pass
 
-    monkeypatch.setattr(hermes_state, "SessionDB", lambda: FakeDB())
+    monkeypatch.setattr(hermes_state.SessionDB, "for_home", lambda _home: FakeDB())
     monkeypatch.setattr(
         sys, "argv",
         ["hermes", "sessions", "delete", "20260315_092437_c9a6"],
@@ -119,7 +119,7 @@ def test_sessions_prune_handles_eoferror_on_confirm(monkeypatch, capsys):
         def close(self):
             pass
 
-    monkeypatch.setattr(hermes_state, "SessionDB", lambda: FakeDB())
+    monkeypatch.setattr(hermes_state.SessionDB, "for_home", lambda _home: FakeDB())
     monkeypatch.setattr(
         sys, "argv",
         ["hermes", "sessions", "prune"],
@@ -171,7 +171,7 @@ def _run_prune(monkeypatch, capsys, argv_tail, candidates=None):
         def close(self):
             pass
 
-    monkeypatch.setattr(hermes_state, "SessionDB", lambda: FakeDB())
+    monkeypatch.setattr(hermes_state.SessionDB, "for_home", lambda _home: FakeDB())
     monkeypatch.setattr(
         sys, "argv", ["hermes", "sessions", "prune", *argv_tail]
     )

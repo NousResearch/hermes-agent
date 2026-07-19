@@ -3735,7 +3735,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             max_turns: Maximum tool-calling iterations shared with subagents (default: 90)
             verbose: Enable verbose logging
             compact: Use compact display mode
-            resume: Session ID to resume (restores conversation history from SQLite)
+            resume: Session ID to resume (restores conversation history from the session store)
             pass_session_id: Include the session ID in the agent's system prompt
         """
         # Initialize Rich console
@@ -3999,15 +3999,16 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         self._prompt_start_time: Optional[float] = None  # time.time() when turn started
         self._prompt_duration: float = 0.0  # frozen duration of last completed turn
         self._last_turn_finished_at: Optional[float] = None  # time.time() when the last agent loop finished
-        # Initialize SQLite session store early so /title works before first message
+        # Initialize the configured session store early so /title works before
+        # the first message.
         self._session_db = None
         self._session_db_unavailable = False
         try:
             from hermes_state import SessionDB
-            self._session_db = SessionDB()
+            self._session_db = SessionDB.for_home(get_hermes_home())
         except Exception as e:
             # #41386: a failed session store means the transcript is NOT
-            # persisted to state.db — the live chat looks healthy but resume
+            # persisted — the live chat looks healthy but resume
             # later shows a truncated/empty session. A buried log line is not
             # enough; surface it prominently so the user knows persistence is
             # off for this run and can fix the store before relying on resume.
@@ -4023,7 +4024,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     "this conversation will [bold]NOT be saved[/bold] to disk and "
                     "cannot be resumed later. Searching past sessions is also disabled.\n"
                     f"  Reason: {e}\n"
-                    "  Fix the state.db store (e.g. `hermes update` to rebuild the venv) to restore persistence."
+                    "  Fix the configured state store (e.g. `hermes update` to rebuild the venv) "
+                    "to restore persistence."
                 )
             except Exception:
                 # Never let the warning path itself break startup.
@@ -4072,7 +4074,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         # turn (which would make Ctrl+C feel like it did nothing).
         self._last_turn_interrupted = False
         self._should_exit = False
-        # /exit --delete: when True, the current session's SQLite history and
+        # /exit --delete: when True, the current session's stored history and
         # on-disk transcripts are deleted during shutdown. Set by
         # process_command() when the user runs /exit --delete or /quit --delete.
         # Ported from google-gemini/gemini-cli#19332.
@@ -7232,8 +7234,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         """Save the current conversation to a JSON snapshot under ~/.hermes/sessions/saved/.
 
         The snapshot is a convenience export for sharing or off-line inspection;
-        every message is already persisted incrementally to the SQLite session
-        DB, so the live session remains resumable via ``hermes --resume <id>``
+        every message is already persisted incrementally to the configured
+        session store, so the live session remains resumable via ``hermes --resume <id>``
         regardless of whether the user ever runs ``/save``.
         """
         if not self.conversation_history:
@@ -8577,7 +8579,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
 
         if canonical in {"quit", "exit"}:
             # Parse --delete flag: /exit --delete also removes the current
-            # session's transcripts + SQLite history. Ported from
+            # session's transcripts + stored history. Ported from
             # google-gemini/gemini-cli#19332.
             _rest = cmd_original.split(None, 1)
             _args = (_rest[1] if len(_rest) > 1 else "").strip().lower()
@@ -9979,7 +9981,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             from hermes_state import SessionDB
             from agent.insights import InsightsEngine
 
-            db = SessionDB()
+            db = SessionDB.for_home(get_hermes_home())
             engine = InsightsEngine(db)
             report = engine.generate(days=days, source=source)
             print(engine.format_terminal(report))
@@ -12361,13 +12363,13 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             pass
 
     def _persist_active_session_before_close(self):
-        """Best-effort SQLite/JSON flush before the CLI marks a session closed.
+        """Best-effort session-store/JSON flush before the CLI marks a session closed.
 
         ``run_conversation()`` normally persists at turn boundaries, but a
         terminal close/SIGHUP/SIGTERM can unwind the prompt_toolkit app while
         the agent thread still holds the current turn only in memory.  Flush the
         agent's live ``_session_messages`` before ``end_session()`` so resume,
-        session_search, and state.db do not lose the interrupted turn.
+        session_search, and durable history do not lose the interrupted turn.
         """
         agent = getattr(self, "agent", None)
         if not agent or not hasattr(agent, "_persist_session"):
@@ -15223,7 +15225,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             # daemon thread is reaped.
             self._persist_active_session_before_close()
 
-            # Close session in SQLite
+            # Close session in the configured store.
             if hasattr(self, '_session_db') and self._session_db and self.agent:
                 try:
                     self._session_db.end_session(self.agent.session_id, "cli_close")
@@ -15239,7 +15241,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     except (Exception, KeyboardInterrupt) as e:
                         logger.debug("Could not prune empty session: %s", e)
                 # /exit --delete: also remove the current session's transcripts
-                # and SQLite history. Ported from google-gemini/gemini-cli#19332.
+                # and stored history. Ported from google-gemini/gemini-cli#19332.
                 if getattr(self, '_delete_session_on_exit', False):
                     try:
                         from hermes_constants import get_hermes_home as _ghh

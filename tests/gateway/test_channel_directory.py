@@ -15,6 +15,7 @@ from gateway.channel_directory import (
     load_directory,
     _apply_channel_aliases,
     _build_from_sessions,
+    _build_from_sessions_db,
     _build_slack,
 )
 
@@ -359,6 +360,17 @@ class TestBuildFromSessions:
         assert "Coaching Chat" in names
         assert "Coaching Chat / topic 17585" in names
         assert "Coaching Chat / topic 17587" in names
+
+    def test_db_lookup_uses_configured_backend(self, tmp_path, monkeypatch):
+        db = MagicMock()
+        db.list_gateway_sessions.return_value = []
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        with patch("hermes_state.SessionDB.for_home", return_value=db) as open_for_home:
+            assert _build_from_sessions_db("telegram") == []
+
+        open_for_home.assert_called_once_with(tmp_path)
+        db.close.assert_called_once()
 
 
 class TestFormatDirectoryForDisplay:

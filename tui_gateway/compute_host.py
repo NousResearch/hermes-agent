@@ -440,7 +440,7 @@ class ComputeHost:
                 from hermes_state import SessionDB
 
                 home_token = set_hermes_home_override(profile_home)
-                session_db = SessionDB(db_path=Path(profile_home) / "state.db")
+                session_db = SessionDB.for_home(Path(profile_home))
             agent = server._make_agent(
                 sid,
                 key,

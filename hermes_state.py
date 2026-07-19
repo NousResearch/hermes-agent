@@ -27,7 +27,27 @@ from pathlib import Path
 
 from agent.memory_manager import sanitize_context
 from hermes_constants import get_hermes_home
-from typing import Any, Callable, Dict, List, Optional, Tuple, TypeVar
+from state_store.session_api import (
+    APISessionMutationAbort as _APISessionMutationAbort,
+    APISessionMutationResult,
+    INSIGHTS_MAX_ROWS,
+    InsightsRowLimitError,
+)
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Callable,
+    Dict,
+    List,
+    Literal,
+    Mapping,
+    Optional,
+    Tuple,
+    TypeVar,
+)
+
+if TYPE_CHECKING:
+    from state_store.postgres.session_db import PostgresSessionDB
 
 logger = logging.getLogger(__name__)
 
@@ -1010,6 +1030,39 @@ class SessionDB:
     _IMPORT_MAX_SESSION_BYTES = 5 * 1024 * 1024
     _IMPORT_MAX_TOTAL_BYTES = 25 * 1024 * 1024
 
+    @classmethod
+    def for_home(
+        cls,
+        home: Path,
+        read_only: bool = False,
+        config: Optional[Mapping[str, Any]] = None,
+        environ: Optional[Mapping[str, str]] = None,
+    ) -> "SessionDB | PostgresSessionDB":
+        """Open the explicitly resolved state store for ``home``.
+
+        Explicit ``SessionDB()`` construction remains SQLite-only. PostgreSQL
+        activation happens here so its optional backend stays lazy for normal
+        SQLite callers.
+        """
+        if config is None:
+            from hermes_cli.config import load_config_for_home
+
+            config = load_config_for_home(home)
+
+        from state_store import resolve_state_store
+
+        spec = resolve_state_store(
+            home,
+            config,
+            read_only=read_only,
+            environ=environ,
+        )
+        if spec.backend == "postgres":
+            from state_store.postgres.session_db import PostgresSessionDB
+
+            return PostgresSessionDB.from_spec(spec, environ=environ)
+        return cls(db_path=spec.sqlite_path, read_only=spec.read_only)
+
     def __init__(self, db_path: Path = None, read_only: bool = False):
         self.db_path = db_path or DEFAULT_DB_PATH
         self.read_only = read_only
@@ -1044,6 +1097,18 @@ class SessionDB:
                     isolation_level=None,
                 )
                 self._conn.row_factory = sqlite3.Row
+                schema_objects = {
+                    row[0]
+                    for row in self._conn.execute(
+                        """
+                        SELECT name
+                        FROM sqlite_master
+                        WHERE name IN ('messages_fts', 'messages_fts_trigram')
+                        """
+                    ).fetchall()
+                }
+                self._fts_enabled = "messages_fts" in schema_objects
+                self._trigram_available = "messages_fts_trigram" in schema_objects
                 return
 
             self.db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1959,41 +2024,78 @@ class SessionDB:
         no chat/thread to compare).
         """
         def _do(conn):
-            conn.execute(
-                """INSERT INTO sessions (
-                   id, source, user_id, session_key, chat_id, chat_type, thread_id,
-                   model, model_config, system_prompt, parent_session_id, cwd, profile_name, started_at
-                )
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                   ON CONFLICT(id) DO UPDATE SET
-                       model = COALESCE(sessions.model, excluded.model),
-                       model_config = COALESCE(sessions.model_config, excluded.model_config),
-                       system_prompt = COALESCE(sessions.system_prompt, excluded.system_prompt),
-                       session_key = COALESCE(sessions.session_key, excluded.session_key),
-                       chat_id = COALESCE(sessions.chat_id, excluded.chat_id),
-                       chat_type = COALESCE(sessions.chat_type, excluded.chat_type),
-                       thread_id = COALESCE(sessions.thread_id, excluded.thread_id),
-                       parent_session_id = COALESCE(sessions.parent_session_id, excluded.parent_session_id),
-                       cwd = COALESCE(sessions.cwd, excluded.cwd),
-                       profile_name = COALESCE(sessions.profile_name, excluded.profile_name)""",
-                (
-                    session_id,
-                    source,
-                    user_id,
-                    session_key,
-                    chat_id,
-                    chat_type,
-                    thread_id,
-                    model,
-                    json.dumps(model_config) if model_config else None,
-                    system_prompt,
-                    parent_session_id,
-                    cwd,
-                    profile_name,
-                    time.time(),
-                ),
+            self._insert_session_row_in_transaction(
+                conn,
+                session_id,
+                source,
+                model=model,
+                model_config=model_config,
+                system_prompt=system_prompt,
+                user_id=user_id,
+                session_key=session_key,
+                chat_id=chat_id,
+                chat_type=chat_type,
+                thread_id=thread_id,
+                parent_session_id=parent_session_id,
+                cwd=cwd,
+                profile_name=profile_name,
             )
+
         self._execute_write(_do)
+
+    def _insert_session_row_in_transaction(
+        self,
+        conn: sqlite3.Connection,
+        session_id: str,
+        source: str,
+        *,
+        model: Optional[str] = None,
+        model_config: Optional[Dict[str, Any]] = None,
+        system_prompt: Optional[str] = None,
+        user_id: Optional[str] = None,
+        session_key: Optional[str] = None,
+        chat_id: Optional[str] = None,
+        chat_type: Optional[str] = None,
+        thread_id: Optional[str] = None,
+        parent_session_id: Optional[str] = None,
+        cwd: Optional[str] = None,
+        profile_name: Optional[str] = None,
+    ) -> None:
+        """Insert/upsert a session using a caller-owned write transaction."""
+        conn.execute(
+            """INSERT INTO sessions (
+               id, source, user_id, session_key, chat_id, chat_type, thread_id,
+               model, model_config, system_prompt, parent_session_id, cwd, profile_name, started_at
+            )
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(id) DO UPDATE SET
+                   model = COALESCE(sessions.model, excluded.model),
+                   model_config = COALESCE(sessions.model_config, excluded.model_config),
+                   system_prompt = COALESCE(sessions.system_prompt, excluded.system_prompt),
+                   session_key = COALESCE(sessions.session_key, excluded.session_key),
+                   chat_id = COALESCE(sessions.chat_id, excluded.chat_id),
+                   chat_type = COALESCE(sessions.chat_type, excluded.chat_type),
+                   thread_id = COALESCE(sessions.thread_id, excluded.thread_id),
+                   parent_session_id = COALESCE(sessions.parent_session_id, excluded.parent_session_id),
+                   cwd = COALESCE(sessions.cwd, excluded.cwd),
+                   profile_name = COALESCE(sessions.profile_name, excluded.profile_name)""",
+            (
+                session_id,
+                source,
+                user_id,
+                session_key,
+                chat_id,
+                chat_type,
+                thread_id,
+                model,
+                json.dumps(model_config) if model_config else None,
+                system_prompt,
+                parent_session_id,
+                cwd,
+                profile_name,
+                time.time(),
+            ),
+        )
 
     def create_session(self, session_id: str, source: str, **kwargs) -> str:
         """Create a new session record. Returns the session_id."""
@@ -2361,6 +2463,142 @@ class SessionDB:
             )
         self._execute_write(_do)
 
+    def create_api_session_with_title(
+        self,
+        session_id: str,
+        *,
+        model: Optional[str],
+        system_prompt: Optional[str],
+        title: Optional[str] = None,
+    ) -> APISessionMutationResult:
+        """Atomically create an API session and optional title.
+
+        The explicit outcomes let API consumers preserve their existing
+        ``201``/``409``/``400`` response mapping without composing multiple
+        independently committed writes.
+        """
+        try:
+            sanitized_title = (
+                self.sanitize_title(title) if title is not None else None
+            )
+        except ValueError as exc:
+            return APISessionMutationResult("invalid_title", error=str(exc))
+
+        def _do(conn):
+            if conn.execute(
+                "SELECT 1 FROM sessions WHERE id = ? LIMIT 1", (session_id,)
+            ).fetchone() is not None:
+                return APISessionMutationResult("destination_exists")
+            self._insert_session_row_in_transaction(
+                conn,
+                session_id,
+                "api_server",
+                model=model,
+                system_prompt=system_prompt,
+            )
+            try:
+                self._set_session_title_in_transaction(
+                    conn, session_id, sanitized_title
+                )
+            except ValueError as exc:
+                raise _APISessionMutationAbort(
+                    APISessionMutationResult("invalid_title", error=str(exc))
+                )
+            row = conn.execute(
+                "SELECT * FROM sessions WHERE id = ?", (session_id,)
+            ).fetchone()
+            return APISessionMutationResult("created", session=dict(row))
+
+        try:
+            return self._execute_write(_do)
+        except _APISessionMutationAbort as exc:
+            return exc.result
+
+    def fork_api_session(
+        self,
+        source_session_id: str,
+        fork_session_id: str,
+        *,
+        title: Optional[str] = None,
+    ) -> APISessionMutationResult:
+        """Atomically end an API source session and create its transcript fork."""
+        explicit_title = title is not None
+        if explicit_title:
+            try:
+                requested_title = self.sanitize_title(title)
+            except ValueError as exc:
+                return APISessionMutationResult("invalid_title", error=str(exc))
+        else:
+            requested_title = None
+
+        def _do(conn):
+            source_row = conn.execute(
+                "SELECT * FROM sessions WHERE id = ?", (source_session_id,)
+            ).fetchone()
+            if source_row is None:
+                return APISessionMutationResult("source_missing")
+            if conn.execute(
+                "SELECT 1 FROM sessions WHERE id = ? LIMIT 1", (fork_session_id,)
+            ).fetchone() is not None:
+                return APISessionMutationResult("destination_exists")
+
+            source = dict(source_row)
+            if explicit_title:
+                fork_title = requested_title
+            else:
+                base_title = source.get("title") or "fork"
+                fork_title = self._get_next_title_in_lineage_in_transaction(
+                    conn, base_title
+                )
+                try:
+                    fork_title = self.sanitize_title(fork_title)
+                except ValueError as exc:
+                    return APISessionMutationResult(
+                        "invalid_title", error=str(exc)
+                    )
+
+            # Preserve the first end reason, matching end_session().
+            conn.execute(
+                "UPDATE sessions SET ended_at = ?, end_reason = ? "
+                "WHERE id = ? AND ended_at IS NULL",
+                (time.time(), "branched", source_session_id),
+            )
+            self._insert_session_row_in_transaction(
+                conn,
+                fork_session_id,
+                "api_server",
+                model=source.get("model"),
+                system_prompt=source.get("system_prompt"),
+                parent_session_id=source_session_id,
+            )
+            messages = self._get_active_messages_in_transaction(
+                conn, source_session_id
+            )
+            message_count, tool_call_count = self._insert_message_rows(
+                conn, fork_session_id, messages
+            )
+            conn.execute(
+                "UPDATE sessions SET message_count = ?, tool_call_count = ? WHERE id = ?",
+                (message_count, tool_call_count, fork_session_id),
+            )
+            try:
+                self._set_session_title_in_transaction(
+                    conn, fork_session_id, fork_title
+                )
+            except ValueError as exc:
+                raise _APISessionMutationAbort(
+                    APISessionMutationResult("invalid_title", error=str(exc))
+                )
+            fork_row = conn.execute(
+                "SELECT * FROM sessions WHERE id = ?", (fork_session_id,)
+            ).fetchone()
+            return APISessionMutationResult("created", session=dict(fork_row))
+
+        try:
+            return self._execute_write(_do)
+        except _APISessionMutationAbort as exc:
+            return exc.result
+
     def reopen_session(self, session_id: str) -> None:
         """Clear ended_at/end_reason so a session can be resumed."""
         def _do(conn):
@@ -2418,6 +2656,494 @@ class SessionDB:
             return bool(rows)
         except Exception:
             return False
+
+    @staticmethod
+    def _collect_rows_in_batches(
+        cursor: sqlite3.Cursor, *, batch_size: int = 200
+    ) -> List[sqlite3.Row]:
+        """Collect query rows without an unbounded SQLite ``fetchall()`` call."""
+        rows: List[sqlite3.Row] = []
+        while True:
+            batch = cursor.fetchmany(batch_size)
+            if not batch:
+                return rows
+            rows.extend(batch)
+
+    # ── Async delegation durability ─────────────────────────────────────
+
+    def persist_async_delegation(
+        self,
+        record: Mapping[str, Any],
+        *,
+        owner_pid: Optional[int],
+        owner_started_at: Optional[int],
+        updated_at: Optional[float] = None,
+    ) -> None:
+        """Persist a newly dispatched background delegation.
+
+        The payload remains backend-neutral at this boundary: callers provide
+        the task record and process ownership metadata, while the store owns
+        JSON serialization and transaction handling.
+        """
+        now = time.time() if updated_at is None else updated_at
+        task_payload = {
+            key: record.get(key)
+            for key in ("goal", "goals", "context", "toolsets", "role", "model", "is_batch")
+            if key in record
+        }
+
+        def _do(conn):
+            conn.execute(
+                """INSERT OR REPLACE INTO async_delegations
+                   (delegation_id, origin_session, origin_ui_session_id,
+                    parent_session_id, state, dispatched_at, updated_at,
+                    delivery_state, delivery_attempts, owner_pid,
+                    owner_started_at, task_json)
+                   VALUES (?, ?, ?, ?, 'running', ?, ?, 'pending', 0, ?, ?, ?)""",
+                (
+                    record["delegation_id"],
+                    record.get("session_key", ""),
+                    record.get("origin_ui_session_id", ""),
+                    record.get("parent_session_id"),
+                    record["dispatched_at"],
+                    now,
+                    owner_pid,
+                    owner_started_at,
+                    json.dumps(task_payload),
+                ),
+            )
+
+        self._execute_write(_do)
+
+    def delete_async_delegation(self, delegation_id: str) -> None:
+        """Remove one durable delegation after a failed dispatch."""
+        self._execute_write(
+            lambda conn: conn.execute(
+                "DELETE FROM async_delegations WHERE delegation_id = ?",
+                (delegation_id,),
+            )
+        )
+
+    def prune_async_delegations(
+        self,
+        *,
+        retention_seconds: float,
+        max_retained_completed: int,
+        max_pending: int,
+        now: Optional[float] = None,
+    ) -> None:
+        """Bound durable terminal delegation history without touching live work."""
+        timestamp = time.time() if now is None else now
+        cutoff = timestamp - retention_seconds
+
+        def _do(conn):
+            conn.execute(
+                "DELETE FROM async_delegations "
+                "WHERE delivery_state = 'delivered' AND updated_at < ?",
+                (cutoff,),
+            )
+            terminal_count = conn.execute(
+                "SELECT COUNT(*) FROM async_delegations "
+                "WHERE state NOT IN ('running', 'finalizing')"
+            ).fetchone()[0]
+            excess = max(0, terminal_count - max_retained_completed)
+            if excess:
+                conn.execute(
+                    """DELETE FROM async_delegations WHERE delegation_id IN (
+                         SELECT delegation_id FROM async_delegations
+                         WHERE state NOT IN ('running', 'finalizing')
+                         ORDER BY CASE delivery_state WHEN 'delivered' THEN 0 ELSE 1 END,
+                                  updated_at ASC LIMIT ?
+                       )""",
+                    (excess,),
+                )
+
+            pending_count = conn.execute(
+                """SELECT COUNT(*) FROM async_delegations
+                   WHERE state NOT IN ('running', 'finalizing')
+                     AND delivery_state = 'pending'"""
+            ).fetchone()[0]
+            overflow = max(0, pending_count - max_pending)
+            if overflow:
+                conn.execute(
+                    """DELETE FROM async_delegations WHERE delegation_id IN (
+                         SELECT delegation_id FROM async_delegations
+                         WHERE state NOT IN ('running', 'finalizing')
+                           AND delivery_state = 'pending'
+                         ORDER BY updated_at ASC LIMIT ?
+                       )""",
+                    (overflow,),
+                )
+
+        self._execute_write(_do)
+
+    def complete_async_delegation(
+        self,
+        event: Mapping[str, Any],
+        result: Mapping[str, Any],
+        *,
+        updated_at: Optional[float] = None,
+    ) -> None:
+        """Persist a terminal delegation result and make it pending delivery."""
+        now = time.time() if updated_at is None else updated_at
+
+        def _do(conn):
+            conn.execute(
+                """UPDATE async_delegations
+                   SET state = ?, completed_at = ?, updated_at = ?,
+                       event_json = ?, result_json = ?, delivery_state = 'pending'
+                   WHERE delegation_id = ?""",
+                (
+                    event.get("status", "completed"),
+                    event.get("completed_at", now),
+                    now,
+                    json.dumps(dict(event)),
+                    json.dumps(dict(result)),
+                    event["delegation_id"],
+                ),
+            )
+
+        self._execute_write(_do)
+
+    def note_async_delegation_delivery_attempt(
+        self,
+        delegation_id: str,
+        *,
+        updated_at: Optional[float] = None,
+    ) -> None:
+        """Record a durable delivery attempt for diagnostics."""
+        now = time.time() if updated_at is None else updated_at
+        self._execute_write(
+            lambda conn: conn.execute(
+                """UPDATE async_delegations
+                   SET delivery_attempts = delivery_attempts + 1, updated_at = ?
+                   WHERE delegation_id = ?""",
+                (now, delegation_id),
+            )
+        )
+
+    def list_recoverable_async_delegations(self) -> List[Dict[str, Any]]:
+        """Return live delegations whose process ownership should be checked."""
+        with self._lock:
+            cursor = self._conn.execute(
+                """SELECT delegation_id, origin_session, origin_ui_session_id,
+                          parent_session_id, dispatched_at, owner_pid,
+                          owner_started_at, task_json
+                   FROM async_delegations
+                   WHERE state IN ('running', 'finalizing')"""
+            )
+            rows = self._collect_rows_in_batches(cursor)
+        records = []
+        for row in rows:
+            records.append(
+                {
+                    "delegation_id": row["delegation_id"],
+                    "origin_session": row["origin_session"],
+                    "origin_ui_session_id": row["origin_ui_session_id"],
+                    "parent_session_id": row["parent_session_id"],
+                    "dispatched_at": row["dispatched_at"],
+                    "owner_pid": row["owner_pid"],
+                    "owner_started_at": row["owner_started_at"],
+                    "task": json.loads(row["task_json"] or "{}"),
+                }
+            )
+        return records
+
+    def mark_async_delegation_unknown(
+        self,
+        delegation_id: str,
+        event: Mapping[str, Any],
+        result: Mapping[str, Any],
+        *,
+        updated_at: Optional[float] = None,
+    ) -> bool:
+        """Atomically terminalize an abandoned live delegation as unknown."""
+        now = time.time() if updated_at is None else updated_at
+
+        def _do(conn):
+            cursor = conn.execute(
+                """UPDATE async_delegations
+                   SET state = 'unknown', completed_at = ?, updated_at = ?,
+                       event_json = ?, result_json = ?, delivery_state = 'pending'
+                   WHERE delegation_id = ?
+                     AND state IN ('running', 'finalizing')""",
+                (now, now, json.dumps(dict(event)), json.dumps(dict(result)), delegation_id),
+            )
+            return cursor.rowcount == 1
+
+        return self._execute_write(_do)
+
+    def list_pending_async_delegation_events(self) -> List[Dict[str, Any]]:
+        """Return terminal, durable completion events awaiting delivery."""
+        with self._lock:
+            cursor = self._conn.execute(
+                """SELECT event_json FROM async_delegations
+                   WHERE state != 'running'
+                     AND delivery_state = 'pending'
+                     AND event_json IS NOT NULL
+                   ORDER BY completed_at, delegation_id"""
+            )
+            rows = self._collect_rows_in_batches(cursor)
+        return [json.loads(row["event_json"]) for row in rows]
+
+    def mark_async_delegation_delivered(
+        self,
+        delegation_id: str,
+        *,
+        updated_at: Optional[float] = None,
+    ) -> bool:
+        """Acknowledge a durable completion delivered by a legacy consumer."""
+        now = time.time() if updated_at is None else updated_at
+
+        def _do(conn):
+            cursor = conn.execute(
+                """UPDATE async_delegations
+                   SET delivery_state = 'delivered', delivered_at = ?, updated_at = ?
+                   WHERE delegation_id = ? AND delivery_state != 'delivered'""",
+                (now, now, delegation_id),
+            )
+            return cursor.rowcount == 1
+
+        return self._execute_write(_do)
+
+    def claim_async_delegation_delivery(
+        self,
+        delegation_id: str,
+        claim_id: str,
+        *,
+        claim_timeout_seconds: float = 300,
+        updated_at: Optional[float] = None,
+    ) -> bool:
+        """Claim a pending completion, preserving legacy absent-row success."""
+        now = time.time() if updated_at is None else updated_at
+
+        def _do(conn):
+            row = conn.execute(
+                "SELECT delivery_state FROM async_delegations WHERE delegation_id = ?",
+                (delegation_id,),
+            ).fetchone()
+            if row is None:
+                return True
+            cursor = conn.execute(
+                """UPDATE async_delegations
+                   SET delivery_claim = ?, delivery_claimed_at = ?,
+                       delivery_attempts = delivery_attempts + 1, updated_at = ?
+                   WHERE delegation_id = ? AND delivery_state = 'pending'
+                     AND (delivery_claim IS NULL OR delivery_claimed_at < ?)""",
+                (claim_id, now, now, delegation_id, now - claim_timeout_seconds),
+            )
+            return cursor.rowcount == 1
+
+        return self._execute_write(_do)
+
+    def release_async_delegation_delivery(
+        self,
+        delegation_id: str,
+        claim_id: str,
+        *,
+        updated_at: Optional[float] = None,
+    ) -> bool:
+        """Release a pending completion claim so another consumer can retry."""
+        now = time.time() if updated_at is None else updated_at
+
+        def _do(conn):
+            cursor = conn.execute(
+                """UPDATE async_delegations
+                   SET delivery_claim = NULL, delivery_claimed_at = NULL, updated_at = ?
+                   WHERE delegation_id = ? AND delivery_state = 'pending'
+                     AND delivery_claim = ?""",
+                (now, delegation_id, claim_id),
+            )
+            return cursor.rowcount == 1
+
+        return self._execute_write(_do)
+
+    def complete_async_delegation_delivery(
+        self,
+        delegation_id: str,
+        claim_id: str,
+        *,
+        updated_at: Optional[float] = None,
+    ) -> bool:
+        """Mark a claimed completion as delivered."""
+        now = time.time() if updated_at is None else updated_at
+
+        def _do(conn):
+            cursor = conn.execute(
+                """UPDATE async_delegations
+                   SET delivery_state = 'delivered', delivered_at = ?, updated_at = ?,
+                       delivery_claim = NULL, delivery_claimed_at = NULL
+                   WHERE delegation_id = ? AND delivery_state = 'pending'
+                     AND delivery_claim = ?""",
+                (now, now, delegation_id, claim_id),
+            )
+            return cursor.rowcount == 1
+
+        return self._execute_write(_do)
+
+    def get_async_delegation(self, delegation_id: str) -> Optional[Dict[str, Any]]:
+        """Fetch one durable delegation record for status and recovery paths."""
+        with self._lock:
+            row = self._conn.execute(
+                """SELECT origin_session, state, dispatched_at, completed_at,
+                          result_json, delivery_state, delivery_attempts
+                   FROM async_delegations WHERE delegation_id = ?""",
+                (delegation_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return {
+            "delegation_id": delegation_id,
+            "origin_session": row["origin_session"],
+            "state": row["state"],
+            "dispatched_at": row["dispatched_at"],
+            "completed_at": row["completed_at"],
+            "result": json.loads(row["result_json"]) if row["result_json"] else None,
+            "delivery_state": row["delivery_state"],
+            "delivery_attempts": row["delivery_attempts"],
+        }
+
+    # ── Insights query contract ─────────────────────────────────────────
+
+    def get_insights_sessions(
+        self, cutoff: float, source: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        """Return session fields used by the insights report."""
+        columns = (
+            "id, source, model, started_at, ended_at, message_count, tool_call_count, "
+            "input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, "
+            "reasoning_tokens, "
+            "billing_provider, billing_base_url, billing_mode, estimated_cost_usd, "
+            "actual_cost_usd, cost_status, cost_source, api_call_count"
+        )
+        query = (
+            f"SELECT {columns} FROM sessions WHERE started_at >= ?"
+            + (" AND source = ?" if source else "")
+            + " ORDER BY started_at DESC LIMIT ?"
+        )
+        params: Tuple[Any, ...] = (
+            (cutoff, source, INSIGHTS_MAX_ROWS + 1)
+            if source
+            else (cutoff, INSIGHTS_MAX_ROWS + 1)
+        )
+        with self._lock:
+            cursor = self._conn.execute(query, params)
+            rows = self._collect_rows_in_batches(cursor)
+        if len(rows) > INSIGHTS_MAX_ROWS:
+            raise InsightsRowLimitError(
+                "Insights report exceeds 100000 session rows; narrow the report window."
+            )
+        return [dict(row) for row in rows]
+
+    def get_insights_tool_name_counts(
+        self, cutoff: float, source: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        """Return explicit tool response counts for the insights report."""
+        query = (
+            """SELECT m.tool_name, COUNT(*) AS count
+               FROM messages m JOIN sessions s ON s.id = m.session_id
+               WHERE s.started_at >= ?"""
+            + (" AND s.source = ?" if source else "")
+            + """ AND m.role = 'tool' AND m.tool_name IS NOT NULL
+                 GROUP BY m.tool_name ORDER BY count DESC"""
+        )
+        params: Tuple[Any, ...] = (cutoff, source) if source else (cutoff,)
+        with self._lock:
+            cursor = self._conn.execute(query, params)
+            rows = self._collect_rows_in_batches(cursor)
+        return [dict(row) for row in rows]
+
+    def get_insights_assistant_tool_calls_page(
+        self,
+        cutoff: float,
+        source: Optional[str] = None,
+        *,
+        after_message_id: int = 0,
+        limit: int = 200,
+        include_timestamp: bool = False,
+    ) -> List[Dict[str, Any]]:
+        """Return one bounded page of assistant tool-call payloads for insights."""
+        try:
+            page_limit = max(1, min(int(limit), 1000))
+        except (TypeError, ValueError):
+            page_limit = 200
+        selected = (
+            "m.id, m.tool_calls, m.timestamp"
+            if include_timestamp
+            else "m.id, m.tool_calls"
+        )
+        query = (
+            f"""SELECT {selected} FROM messages m
+                JOIN sessions s ON s.id = m.session_id
+                WHERE s.started_at >= ? AND m.id > ?"""
+            + (" AND s.source = ?" if source else "")
+            + " AND m.role = 'assistant' AND m.tool_calls IS NOT NULL"
+            + " ORDER BY m.id ASC LIMIT ?"
+        )
+        params: Tuple[Any, ...] = (
+            (cutoff, after_message_id, source, page_limit)
+            if source
+            else (cutoff, after_message_id, page_limit)
+        )
+        with self._lock:
+            cursor = self._conn.execute(query, params)
+            rows = cursor.fetchmany(page_limit)
+        return [dict(row) for row in rows]
+
+    def get_insights_message_stats(
+        self, cutoff: float, source: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Return aggregate message-role counts for the insights report."""
+        query = (
+            """SELECT COUNT(*) AS total_messages,
+                      SUM(CASE WHEN m.role = 'user' THEN 1 ELSE 0 END) AS user_messages,
+                      SUM(CASE WHEN m.role = 'assistant' THEN 1 ELSE 0 END) AS assistant_messages,
+                      SUM(CASE WHEN m.role = 'tool' THEN 1 ELSE 0 END) AS tool_messages
+               FROM messages m JOIN sessions s ON s.id = m.session_id
+               WHERE s.started_at >= ?"""
+            + (" AND s.source = ?" if source else "")
+        )
+        params: Tuple[Any, ...] = (cutoff, source) if source else (cutoff,)
+        with self._lock:
+            row = self._conn.execute(query, params).fetchone()
+        return dict(row) if row else {
+            "total_messages": 0,
+            "user_messages": 0,
+            "assistant_messages": 0,
+            "tool_messages": 0,
+        }
+
+    def get_insights_model_usage(
+        self, cutoff: float, source: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        """Return per-model usage rows, tolerating older uninitialized stores."""
+        query = (
+            """SELECT u.session_id, u.model, u.billing_provider, u.billing_base_url,
+                      u.api_call_count, u.input_tokens, u.output_tokens,
+                      u.cache_read_tokens, u.cache_write_tokens, u.reasoning_tokens,
+                      u.estimated_cost_usd, u.actual_cost_usd, u.cost_status,
+                      u.cost_source, u.billing_mode, u.task, u.last_seen
+               FROM session_model_usage u JOIN sessions s ON s.id = u.session_id
+               WHERE s.started_at >= ?"""
+            + (" AND s.source = ?" if source else "")
+            + " LIMIT ?"
+        )
+        params: Tuple[Any, ...] = (
+            (cutoff, source, INSIGHTS_MAX_ROWS + 1)
+            if source
+            else (cutoff, INSIGHTS_MAX_ROWS + 1)
+        )
+        try:
+            with self._lock:
+                cursor = self._conn.execute(query, params)
+                rows = self._collect_rows_in_batches(cursor)
+        except sqlite3.OperationalError:
+            return []
+        if len(rows) > INSIGHTS_MAX_ROWS:
+            raise InsightsRowLimitError(
+                "Insights report exceeds 100000 model-usage rows; narrow the report window."
+            )
+        return [dict(row) for row in rows]
 
     def update_session_cwd(
         self, session_id: str, cwd: str, git_branch: str = None, git_repo_root: str = None
@@ -3365,51 +4091,12 @@ class SessionDB:
         title = self.sanitize_title(title)
 
         def _do(conn):
-            if only_if_empty:
-                current = conn.execute(
-                    "SELECT title FROM sessions WHERE id = ?",
-                    (session_id,),
-                ).fetchone()
-                if current is None or current["title"] is not None:
-                    return 0
-
-            if title:
-                # Check uniqueness (allow the same session to keep its own title)
-                cursor = conn.execute(
-                    "SELECT id FROM sessions WHERE title = ? AND id != ?",
-                    (title, session_id),
-                )
-                conflict = cursor.fetchone()
-                if conflict:
-                    conflict_id = conflict["id"]
-                    # A compression continuation is the live, projected-forward
-                    # head of its conversation; its compressed predecessors are
-                    # ended and hidden from the session list (list_sessions_rich
-                    # projects roots → tip). When the title that "conflicts" is
-                    # held by such a hidden ancestor, the user has no way to free
-                    # it — renaming the visible tip back to the base name would
-                    # dead-end with "already in use by <session they can't see>".
-                    # Treat this as a transfer: move the title off the ancestor
-                    # onto the continuation. Uniqueness is preserved (still only
-                    # one session carries the exact title) and the parent-link
-                    # lineage is untouched.
-                    if self._is_compression_ancestor(
-                        conn, ancestor_id=conflict_id, descendant_id=session_id
-                    ):
-                        conn.execute(
-                            "UPDATE sessions SET title = NULL WHERE id = ?",
-                            (conflict_id,),
-                        )
-                    else:
-                        raise ValueError(
-                            f"Title '{title}' is already in use by session {conflict_id}"
-                        )
-            predicate = " AND title IS NULL" if only_if_empty else ""
-            cursor = conn.execute(
-                f"UPDATE sessions SET title = ? WHERE id = ?{predicate}",
-                (title, session_id),
+            return self._set_session_title_in_transaction(
+                conn,
+                session_id,
+                title,
+                only_if_empty=only_if_empty,
             )
-            return cursor.rowcount
 
         rowcount = self._execute_write(_do)
         return rowcount > 0
@@ -3432,6 +4119,51 @@ class SessionDB:
         :meth:`set_session_title`.
         """
         return self._set_session_title(session_id, title, only_if_empty=True)
+
+    def _set_session_title_in_transaction(
+        self,
+        conn: sqlite3.Connection,
+        session_id: str,
+        title: Optional[str],
+        *,
+        only_if_empty: bool = False,
+    ) -> int:
+        """Set a pre-sanitized title using a caller-owned write transaction."""
+        if only_if_empty:
+            current = conn.execute(
+                "SELECT title FROM sessions WHERE id = ?",
+                (session_id,),
+            ).fetchone()
+            if current is None or current["title"] is not None:
+                return 0
+        if title:
+            # Check uniqueness (allow the same session to keep its own title).
+            conflict = conn.execute(
+                "SELECT id FROM sessions WHERE title = ? AND id != ?",
+                (title, session_id),
+            ).fetchone()
+            if conflict:
+                conflict_id = conflict["id"]
+                # A compression continuation is the live, projected-forward
+                # head of its conversation; transfer a hidden ancestor title
+                # instead of making the visible continuation impossible to name.
+                if self._is_compression_ancestor(
+                    conn, ancestor_id=conflict_id, descendant_id=session_id
+                ):
+                    conn.execute(
+                        "UPDATE sessions SET title = NULL WHERE id = ?",
+                        (conflict_id,),
+                    )
+                else:
+                    raise ValueError(
+                        f"Title '{title}' is already in use by session {conflict_id}"
+                    )
+        predicate = " AND title IS NULL" if only_if_empty else ""
+        cursor = conn.execute(
+            f"UPDATE sessions SET title = ? WHERE id = ?{predicate}",
+            (title, session_id),
+        )
+        return cursor.rowcount
 
     def get_session_title(self, session_id: str) -> Optional[str]:
         """Get the title for a session, or None."""
@@ -3536,22 +4268,29 @@ class SessionDB:
         Strips any existing " #N" suffix to find the base name, then finds
         the highest existing number and increments.
         """
-        # Strip existing #N suffix to find the true base
-        match = re.match(r'^(.*?) #(\d+)$', base_title)
-        if match:
-            base = match.group(1)
-        else:
-            base = base_title
-
-        # Find all existing numbered variants
-        # Escape SQL LIKE wildcards (%, _) in the base to prevent false matches
-        escaped = base.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
         with self._lock:
-            cursor = self._conn.execute(
-                "SELECT title FROM sessions WHERE title = ? OR title LIKE ? ESCAPE '\\'",
-                (base, f"{escaped} #%"),
+            return self._get_next_title_in_lineage_in_transaction(
+                self._conn, base_title
             )
-            existing = [row["title"] for row in cursor.fetchall()]
+
+    @staticmethod
+    def _get_next_title_in_lineage_in_transaction(
+        conn: sqlite3.Connection, base_title: str
+    ) -> str:
+        """Generate a lineage title with a caller-owned connection."""
+        match = re.match(r"^(.*?) #(\d+)$", base_title)
+        base = match.group(1) if match else base_title
+        escaped = base.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        cursor = conn.execute(
+            "SELECT title FROM sessions WHERE title = ? OR title LIKE ? ESCAPE '\\'",
+            (base, f"{escaped} #%"),
+        )
+        existing = [row["title"] for row in cursor.fetchmany(200)]
+        while True:
+            batch = cursor.fetchmany(200)
+            if not batch:
+                break
+            existing.extend(row["title"] for row in batch)
 
         if not existing:
             return base  # No conflict, use the base name as-is
@@ -4312,6 +5051,33 @@ class SessionDB:
                 )
             now_ts = max(now_ts + 1e-6, message_timestamp + 1e-6)
         return inserted, tool_calls_total
+
+    def _get_active_messages_in_transaction(
+        self, conn: sqlite3.Connection, session_id: str
+    ) -> List[Dict[str, Any]]:
+        """Load active messages in the same transaction as an API fork."""
+        cursor = conn.execute(
+            "SELECT * FROM messages WHERE session_id = ? AND active = 1 ORDER BY id",
+            (session_id,),
+        )
+        messages: List[Dict[str, Any]] = []
+        while True:
+            rows = cursor.fetchmany(200)
+            if not rows:
+                return messages
+            for row in rows:
+                message = dict(row)
+                message["content"] = self._decode_content(message.get("content"))
+                if message.get("tool_calls"):
+                    try:
+                        message["tool_calls"] = json.loads(message["tool_calls"])
+                    except (json.JSONDecodeError, TypeError):
+                        logger.warning(
+                            "Failed to deserialize tool_calls while forking session; "
+                            "falling back to []"
+                        )
+                        message["tool_calls"] = []
+                messages.append(message)
 
     def replace_messages(
         self,

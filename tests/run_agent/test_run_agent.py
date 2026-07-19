@@ -56,6 +56,52 @@ def test_is_destructive_command_treats_install_as_mutating():
     assert run_agent._is_destructive_command("install template.env .env") is True
 
 
+def test_recall_store_uses_active_home_factory(monkeypatch, tmp_path):
+    """Lazy recall opens the active profile's configured store, never SQLite."""
+    import hermes_state
+
+    opened = []
+    expected_db = MagicMock()
+    agent = AIAgent.__new__(AIAgent)
+    agent._persist_disabled = False
+    agent._session_db = None
+
+    def _open_for_home(home):
+        opened.append(home)
+        return expected_db
+
+    def _unexpected_constructor(*_args, **_kwargs):
+        raise AssertionError("recall must not fall back to SessionDB()")
+
+    monkeypatch.setattr(run_agent, "get_hermes_home", lambda: tmp_path)
+    monkeypatch.setattr(hermes_state.SessionDB, "for_home", staticmethod(_open_for_home))
+    monkeypatch.setattr(hermes_state.SessionDB, "__init__", _unexpected_constructor)
+
+    assert agent._get_session_db_for_recall() is expected_db
+    assert opened == [tmp_path]
+
+
+def test_recall_store_failure_does_not_fallback_to_sqlite(monkeypatch, tmp_path):
+    import hermes_state
+
+    agent = AIAgent.__new__(AIAgent)
+    agent._persist_disabled = False
+    agent._session_db = None
+
+    def _raise_for_home(_home):
+        raise RuntimeError("configured backend unavailable")
+
+    def _unexpected_constructor(*_args, **_kwargs):
+        raise AssertionError("recall must not fall back to SessionDB()")
+
+    monkeypatch.setattr(run_agent, "get_hermes_home", lambda: tmp_path)
+    monkeypatch.setattr(hermes_state.SessionDB, "for_home", staticmethod(_raise_for_home))
+    monkeypatch.setattr(hermes_state.SessionDB, "__init__", _unexpected_constructor)
+
+    assert agent._get_session_db_for_recall() is None
+    assert agent._session_db is None
+
+
 def test_run_conversation_dict_returns_include_final_response():
     """Structurally enforce final_response on dict returns from run_conversation().
 

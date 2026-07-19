@@ -24,6 +24,7 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
+from hermes_state import SessionDB
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.api_server import (
     APIServerAdapter,
@@ -648,6 +649,13 @@ def _create_app(adapter: APIServerAdapter) -> web.Application:
     app.router.add_get("/v1/capabilities", adapter._handle_capabilities)
     app.router.add_get("/v1/skills", adapter._handle_skills)
     app.router.add_get("/v1/toolsets", adapter._handle_toolsets)
+    app.router.add_get("/api/sessions", adapter._handle_list_sessions)
+    app.router.add_post("/api/sessions", adapter._handle_create_session)
+    app.router.add_get("/api/sessions/{session_id}", adapter._handle_get_session)
+    app.router.add_patch("/api/sessions/{session_id}", adapter._handle_patch_session)
+    app.router.add_delete("/api/sessions/{session_id}", adapter._handle_delete_session)
+    app.router.add_get("/api/sessions/{session_id}/messages", adapter._handle_session_messages)
+    app.router.add_post("/api/sessions/{session_id}/fork", adapter._handle_fork_session)
     app.router.add_post("/v1/chat/completions", adapter._handle_chat_completions)
     app.router.add_post("/v1/responses", adapter._handle_responses)
     app.router.add_get("/v1/responses/{response_id}", adapter._handle_get_response)
@@ -793,7 +801,12 @@ class TestHealthDetailedEndpoint:
             "active_agents": 2,
             "exit_reason": None,
             "updated_at": "2026-04-14T00:00:00Z",
-        }), patch("gateway.run._resolve_gateway_model", return_value="test/model"):
+        }), patch(
+            "gateway.run._resolve_gateway_model", return_value="test/model"
+        ), patch(
+            "gateway.platforms.api_server.collect_runtime_readiness",
+            return_value={"status": "ok", "checks": {}},
+        ):
             async with TestClient(TestServer(app)) as cli:
                 resp = await cli.get("/health/detailed")
                 assert resp.status == 200
@@ -3775,12 +3788,13 @@ class TestSessionIdHeader:
     async def test_db_failure_falls_back_to_empty_history(self, auth_adapter):
         """If SessionDB raises, history falls back to empty and request still succeeds."""
         mock_result = {"final_response": "OK", "messages": [], "api_calls": 1}
-        # Simulate DB failure: _session_db is None and SessionDB() constructor raises
+        # Simulate resolver failure. The API path must not create a fallback
+        # state.db when the selected backend cannot be activated.
         auth_adapter._session_db = None
         app = _create_app(auth_adapter)
         async with TestClient(TestServer(app)) as cli:
             with patch.object(auth_adapter, "_run_agent", new_callable=AsyncMock) as mock_run, \
-                 patch("hermes_state.SessionDB", side_effect=Exception("DB unavailable")):
+                 patch("hermes_state.SessionDB.for_home", side_effect=Exception("DB unavailable")):
                 mock_run.return_value = (mock_result, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
 
                 resp = await cli.post(
@@ -3793,6 +3807,53 @@ class TestSessionIdHeader:
             call_kwargs = mock_run.call_args.kwargs
             assert call_kwargs["conversation_history"] == []
             assert call_kwargs["session_id"] == "some-session"
+
+
+class TestSessionResourceAtomicMutations:
+    @pytest.mark.asyncio
+    async def test_concurrent_duplicate_create_has_one_winner(self, adapter, tmp_path):
+        db = SessionDB(db_path=tmp_path / "state.db")
+        adapter._session_db = db
+        app = _create_app(adapter)
+        try:
+            async with TestClient(TestServer(app)) as cli:
+                responses = await asyncio.gather(*(
+                    cli.post("/api/sessions", json={"id": "duplicate", "title": "One"})
+                    for _ in range(2)
+                ))
+                payloads = [await response.json() for response in responses]
+
+            assert sorted(response.status for response in responses) == [201, 409]
+            assert sum(payload["error"]["code"] == "session_exists" for payload in payloads if "error" in payload) == 1
+            assert db.get_session("duplicate") is not None
+            assert sum(row["id"] == "duplicate" for row in db.list_sessions_rich(limit=20)) == 1
+        finally:
+            db.close()
+
+    @pytest.mark.asyncio
+    async def test_concurrent_duplicate_fork_has_one_winner(self, adapter, tmp_path):
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("source", "api_server", model="test/model")
+        db.append_message("source", "user", "hello")
+        adapter._session_db = db
+        app = _create_app(adapter)
+        try:
+            async with TestClient(TestServer(app)) as cli:
+                responses = await asyncio.gather(*(
+                    cli.post("/api/sessions/source/fork", json={"id": "duplicate-fork"})
+                    for _ in range(2)
+                ))
+                payloads = [await response.json() for response in responses]
+
+            assert sorted(response.status for response in responses) == [201, 409]
+            assert sum(payload["error"]["code"] == "session_exists" for payload in payloads if "error" in payload) == 1
+            child = db.get_session("duplicate-fork")
+            assert child is not None
+            assert child["parent_session_id"] == "source"
+            assert db.get_session("source")["end_reason"] == "branched"
+            assert db.get_messages("duplicate-fork")[0]["content"] == "hello"
+        finally:
+            db.close()
 
 
 # ---------------------------------------------------------------------------

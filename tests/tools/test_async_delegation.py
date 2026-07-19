@@ -5,6 +5,7 @@ onto the shared process_registry.completion_queue, the rich re-injection block
 formatting, capacity rejection, and crash handling.
 """
 
+import ast
 import json
 import os
 import queue
@@ -12,6 +13,7 @@ import subprocess
 import sys
 import threading
 import time
+from pathlib import Path
 
 import pytest
 
@@ -331,14 +333,14 @@ def test_submit_failure_removes_durable_running_record(tmp_path, monkeypatch):
             raise RuntimeError("submit failed")
 
     monkeypatch.setattr(ad, "_get_executor", lambda _max_workers: _BrokenExecutor())
+    monkeypatch.setattr(ad, "_new_delegation_id", lambda: "deleg_submit_failure")
     result = ad.dispatch_async_delegation(
         goal="never ran", context=None, toolsets=None, role="leaf", model="m",
         session_key="owner", runner=lambda: {},
     )
 
     assert result["status"] == "rejected"
-    with ad._DB_LOCK, ad._connect() as conn:
-        assert conn.execute("SELECT COUNT(*) FROM async_delegations").fetchone()[0] == 0
+    assert ad.get_durable_delegation("deleg_submit_failure") is None
 
 
 def test_pending_retention_prunes_delivered_before_undelivered(tmp_path, monkeypatch):
@@ -381,12 +383,15 @@ def test_recover_marks_abandoned_running_record_unknown(tmp_path, monkeypatch):
         "parent_session_id": None,
         "dispatched_at": 1.0,
     }
-    ad._persist_dispatch(record)
-    with ad._DB_LOCK, ad._connect() as conn:
-        conn.execute(
-            "UPDATE async_delegations SET owner_pid=?, owner_started_at=NULL WHERE delegation_id=?",
-            (99999999, "deleg_abandoned"),
+    from hermes_state import SessionDB
+
+    db = SessionDB.for_home(tmp_path)
+    try:
+        db.persist_async_delegation(
+            record, owner_pid=99999999, owner_started_at=None, updated_at=1.0
         )
+    finally:
+        db.close()
 
     assert ad.recover_abandoned_delegations() == 1
     durable = ad.get_durable_delegation("deleg_abandoned")
@@ -417,6 +422,310 @@ def test_durable_delivery_claim_is_exclusive_and_retryable(tmp_path, monkeypatch
     assert ad.complete_completion_delivery("deleg_claim", "consumer-b")
     assert not ad.claim_completion_delivery("deleg_claim", "consumer-c")
     assert ad.get_durable_delegation("deleg_claim")["delivery_state"] == "delivered"
+
+
+def test_durable_operations_use_profile_store_factory(tmp_path, monkeypatch):
+    """Durable delegation storage is cached separately for each explicit home."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    calls = []
+    real_factory = ad.SessionDB.for_home
+
+    class RecordingSessionDB:
+        @classmethod
+        def for_home(cls, home, *args, **kwargs):
+            calls.append(Path(home))
+            return real_factory(home, *args, **kwargs)
+
+    monkeypatch.setattr(ad, "SessionDB", RecordingSessionDB)
+    ad._persist_dispatch(
+        {
+            "delegation_id": "deleg_factory",
+            "session_key": "owner",
+            "origin_ui_session_id": "",
+            "parent_session_id": None,
+            "dispatched_at": 1.0,
+        }
+    )
+    ad._note_delivery_attempt("deleg_factory")
+    other_home = tmp_path / "other"
+    monkeypatch.setenv("HERMES_HOME", str(other_home))
+    ad._persist_dispatch(
+        {
+            "delegation_id": "deleg_factory_other",
+            "session_key": "owner",
+            "origin_ui_session_id": "",
+            "parent_session_id": None,
+            "dispatched_at": 1.0,
+        }
+    )
+    ad._reset_for_tests()
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    ad._persist_dispatch(
+        {
+            "delegation_id": "deleg_factory_reopened",
+            "session_key": "owner",
+            "origin_ui_session_id": "",
+            "parent_session_id": None,
+            "dispatched_at": 1.0,
+        }
+    )
+
+    assert calls == [tmp_path, other_home, tmp_path]
+
+
+def test_configured_store_cache_retires_stale_backend_path_and_schema(tmp_path, monkeypatch):
+    """A config cutover must never retain a prior store handle for this home."""
+    home = tmp_path / "profile"
+    configurations = [
+        {"sessions": {"state": {"backend": "sqlite", "sqlite_path": "one.db"}}},
+        {"sessions": {"state": {"backend": "sqlite", "sqlite_path": "two.db"}}},
+        {
+            "sessions": {
+                "state": {
+                    "backend": "postgres",
+                    "postgres": {
+                        "dsn_env": "HERMES_STATE_POSTGRES_DSN",
+                        "schema": "state_one",
+                    },
+                }
+            }
+        },
+        {
+            "sessions": {
+                "state": {
+                    "backend": "postgres",
+                    "postgres": {
+                        "dsn_env": "HERMES_STATE_POSTGRES_DSN",
+                        "schema": "state_two",
+                    },
+                }
+            }
+        },
+    ]
+    selected = {"index": 0}
+    stores = []
+
+    class FakeStore:
+        def __init__(self, config):
+            self.backend = config["sessions"]["state"]["backend"]
+            self.closed = False
+
+        def close(self):
+            self.closed = True
+
+    class RecordingSessionDB:
+        @classmethod
+        def for_home(cls, requested_home, *args, config=None, **kwargs):
+            assert Path(requested_home) == home.resolve()
+            store = FakeStore(config)
+            stores.append(store)
+            return store
+
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config_for_home",
+        lambda requested_home: configurations[selected["index"]],
+    )
+    monkeypatch.setattr(ad, "SessionDB", RecordingSessionDB)
+    monkeypatch.setattr(ad, "get_hermes_home", lambda: home)
+
+    for index in range(len(configurations)):
+        selected["index"] = index
+        with ad._state_db() as store:
+            assert store is stores[index]
+        if index:
+            assert stores[index - 1].closed
+        assert not stores[index].closed
+
+    assert [store.backend for store in stores] == [
+        "sqlite",
+        "sqlite",
+        "postgres",
+        "postgres",
+    ]
+
+
+@pytest.mark.parametrize("candidate_kind", ("single", "batch"))
+def test_finalizing_record_counts_against_async_admission(
+    tmp_path, monkeypatch, candidate_kind
+):
+    """A blocked durable completion must keep the slot unavailable."""
+    completion_entered = threading.Event()
+    release_completion = threading.Event()
+    candidate_ran = threading.Event()
+
+    def block_completion(_event, _result):
+        completion_entered.set()
+        assert release_completion.wait(timeout=5)
+        raise RuntimeError("completion persistence failed")
+
+    monkeypatch.setattr(ad, "_persist_completion", block_completion)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    first = ad.dispatch_async_delegation(
+        goal="first",
+        context=None,
+        toolsets=None,
+        role="leaf",
+        model="m",
+        session_key="owner",
+        runner=lambda: {"status": "completed", "summary": "first"},
+        max_async_children=1,
+    )
+    assert first["status"] == "dispatched"
+    assert completion_entered.wait(timeout=2)
+
+    try:
+        if candidate_kind == "single":
+            candidate = ad.dispatch_async_delegation(
+                goal="candidate",
+                context=None,
+                toolsets=None,
+                role="leaf",
+                model="m",
+                session_key="owner",
+                runner=lambda: candidate_ran.set() or {"status": "completed"},
+                max_async_children=1,
+            )
+        else:
+            candidate = ad.dispatch_async_delegation_batch(
+                goals=["candidate"],
+                context=None,
+                toolsets=None,
+                role="leaf",
+                model="m",
+                session_key="owner",
+                runner=lambda: candidate_ran.set()
+                or {"results": [{"status": "completed"}]},
+                max_async_children=1,
+            )
+
+        assert candidate["status"] == "rejected"
+        assert "capacity reached" in candidate["error"]
+        assert ad.active_count() == 1
+        assert not candidate_ran.is_set()
+    finally:
+        release_completion.set()
+
+    assert _drain_for(first["delegation_id"]) is not None
+
+
+def test_completed_record_pruning_never_removes_finalizing_work():
+    with ad._records_lock:
+        ad._records["deleg_finalizing"] = {
+            "delegation_id": "deleg_finalizing",
+            "status": "finalizing",
+            "dispatched_at": 0,
+        }
+        for index in range(ad._MAX_RETAINED_COMPLETED + 1):
+            ad._records[f"deleg_completed_{index}"] = {
+                "delegation_id": f"deleg_completed_{index}",
+                "status": "completed",
+                "completed_at": index,
+            }
+        ad._prune_completed_locked()
+
+        assert "deleg_finalizing" in ad._records
+        assert sum(
+            1
+            for record in ad._records.values()
+            if record.get("status") == "completed"
+        ) == ad._MAX_RETAINED_COMPLETED
+
+
+def test_dispatch_persistence_failure_rejects_without_running(monkeypatch):
+    ran = threading.Event()
+    monkeypatch.setattr(
+        ad,
+        "_persist_dispatch",
+        lambda _record: (_ for _ in ()).throw(RuntimeError("disk unavailable")),
+    )
+
+    result = ad.dispatch_async_delegation(
+        goal="never runs",
+        context=None,
+        toolsets=None,
+        role="leaf",
+        model="m",
+        session_key="owner",
+        runner=lambda: ran.set() or {"status": "completed"},
+    )
+
+    assert result["status"] == "rejected"
+    assert ad.active_count() == 0
+    assert not ran.is_set()
+
+
+def test_completion_persistence_failure_terminalizes_single_record(monkeypatch):
+    monkeypatch.setattr(
+        ad,
+        "_persist_completion",
+        lambda _event, _result: (_ for _ in ()).throw(RuntimeError("disk unavailable")),
+    )
+
+    result = ad.dispatch_async_delegation(
+        goal="complete",
+        context=None,
+        toolsets=None,
+        role="leaf",
+        model="m",
+        session_key="owner",
+        runner=lambda: {"status": "completed", "summary": "done"},
+    )
+
+    assert _drain_for(result["delegation_id"]) is not None
+    deadline = time.monotonic() + 2.0
+    while ad.active_count() and time.monotonic() < deadline:
+        time.sleep(0.01)
+    records = {
+        record["delegation_id"]: record for record in ad.list_async_delegations()
+    }
+    assert ad.active_count() == 0
+    assert records[result["delegation_id"]]["status"] == "completed"
+
+
+def test_completion_persistence_failure_terminalizes_batch_record(monkeypatch):
+    monkeypatch.setattr(
+        ad,
+        "_persist_completion",
+        lambda _event, _result: (_ for _ in ()).throw(RuntimeError("disk unavailable")),
+    )
+
+    result = ad.dispatch_async_delegation_batch(
+        goals=["one"],
+        context=None,
+        toolsets=None,
+        role="leaf",
+        model="m",
+        session_key="owner",
+        runner=lambda: {"results": [{"status": "completed", "summary": "done"}]},
+    )
+
+    assert _drain_for(result["delegation_id"]) is not None
+    deadline = time.monotonic() + 2.0
+    while ad.active_count() and time.monotonic() < deadline:
+        time.sleep(0.01)
+    records = {
+        record["delegation_id"]: record for record in ad.list_async_delegations()
+    }
+    assert ad.active_count() == 0
+    assert records[result["delegation_id"]]["status"] == "completed"
+
+
+def test_owned_production_consumers_do_not_access_sessiondb_connection():
+    """Backend consumers use SessionDB contracts instead of its SQLite handle."""
+    root = Path(__file__).resolve().parents[2]
+    consumers = (
+        root / "tools" / "async_delegation.py",
+        root / "agent" / "insights.py",
+        root / "hermes_cli" / "cli_agent_setup_mixin.py",
+    )
+    offenders = []
+    for path in consumers:
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Attribute) and node.attr == "_conn":
+                offenders.append(f"{path.relative_to(root)}:{node.lineno}")
+
+    assert not offenders, "SessionDB._conn access outside state internals: " + ", ".join(offenders)
 
 
 # ---------------------------------------------------------------------------
@@ -871,5 +1180,3 @@ def test_gateway_cli_origin_event_left_unrouted():
     evt = _make_async_evt(session_key="")
     runner._enrich_async_delegation_routing(evt)
     assert "platform" not in evt
-
-

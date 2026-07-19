@@ -98,6 +98,82 @@ class TestSessionLifecycle:
     def test_get_nonexistent_session(self, db):
         assert db.get_session("nonexistent") is None
 
+    def test_create_api_session_with_title_is_atomic_and_typed(self, db):
+        created = db.create_api_session_with_title(
+            "api_created",
+            model="test-model",
+            system_prompt="system",
+            title="  API Session  ",
+        )
+
+        assert created.outcome == "created"
+        assert created.session is not None
+        assert created.session["title"] == "API Session"
+        assert created.session["source"] == "api_server"
+        assert db.create_api_session_with_title(
+            "api_created",
+            model=None,
+            system_prompt=None,
+        ).outcome == "destination_exists"
+
+        db.create_session("title_owner", "cli")
+        db.set_session_title("title_owner", "Taken")
+        rejected = db.create_api_session_with_title(
+            "api_rolled_back",
+            model=None,
+            system_prompt=None,
+            title="Taken",
+        )
+
+        assert rejected.outcome == "invalid_title"
+        assert "already in use" in (rejected.error or "")
+        assert db.get_session("api_rolled_back") is None
+
+    def test_fork_api_session_is_atomic_and_copies_active_messages(self, db):
+        db.create_session(
+            "source",
+            "cli",
+            model="source-model",
+            system_prompt="source prompt",
+        )
+        db.set_session_title("source", "Original")
+        db.append_message("source", "user", "hello")
+        db.append_message(
+            "source",
+            "assistant",
+            [{"type": "text", "text": "world"}],
+            tool_calls=[{"function": {"name": "search"}}],
+        )
+
+        forked = db.fork_api_session("source", "forked")
+
+        assert forked.outcome == "created"
+        assert forked.session is not None
+        assert forked.session["parent_session_id"] == "source"
+        assert forked.session["source"] == "api_server"
+        assert forked.session["model"] == "source-model"
+        assert forked.session["system_prompt"] == "source prompt"
+        assert forked.session["title"] == "Original #2"
+        assert db.get_session("source")["end_reason"] == "branched"
+        copied = db.get_messages("forked")
+        original = db.get_messages("source")
+        assert [row["role"] for row in copied] == [row["role"] for row in original]
+        assert [row["content"] for row in copied] == [
+            row["content"] for row in original
+        ]
+        assert [row["tool_calls"] for row in copied] == [
+            row["tool_calls"] for row in original
+        ]
+
+        db.create_session("title_owner", "cli")
+        db.set_session_title("title_owner", "Taken")
+        rejected = db.fork_api_session("source", "failed_fork", title="Taken")
+
+        assert rejected.outcome == "invalid_title"
+        assert db.get_session("failed_fork") is None
+        assert db.fork_api_session("missing", "unused").outcome == "source_missing"
+        assert db.fork_api_session("source", "forked").outcome == "destination_exists"
+
     def test_create_session_enriches_null_metadata_on_conflict(self, db):
         """Gateway creates a bare row first; the agent's later create_session
         must backfill model/model_config/system_prompt without clobbering the

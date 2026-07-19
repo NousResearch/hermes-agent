@@ -1,16 +1,15 @@
-"""Regression test for a hung SessionDB() init permanently wedging a cron job.
+"""Regression test for a hung state-store open permanently wedging a cron job.
 
-Real-world incident: a cron job's ``SessionDB()`` construction inside
-``run_job`` blocked forever (a wedged sqlite3.connect against state.db, no
-other process holding a competing lock by the time it was diagnosed). Because
-that call had no timeout of its own — unlike the agent's run_conversation,
-which is already bounded by HERMES_CRON_TIMEOUT — the worker thread submitted
-by ``_submit_with_guard`` never returned. Its ``finally`` block, which is the
-only thing that discards the job ID from ``_running_job_ids``, never ran.
-Every later tick logged "already running — skipping" and the job never fired
-again until the whole gateway process was restarted days later.
+Real-world incident: a cron job's configured store open inside ``run_job``
+blocked forever. Because that call had no timeout of its own — unlike the
+agent's run_conversation, which is already bounded by HERMES_CRON_TIMEOUT —
+the worker thread submitted by ``_submit_with_guard`` never returned. Its
+``finally`` block, which is the only thing that discards the job ID from
+``_running_job_ids``, never ran. Every later tick logged "already running —
+skipping" and the job never fired again until the whole gateway process was
+restarted days later.
 
-These tests prove ``run_job`` now bounds the SessionDB init with its own
+These tests prove ``run_job`` now bounds the configured-store open with its own
 timeout (HERMES_CRON_SESSION_DB_TIMEOUT, default 10s) so a hang there can
 never again wedge the job past that bound, and — end to end — that the
 dispatch guard is released and the job becomes dispatchable again afterward.
@@ -32,16 +31,14 @@ from cron.scheduler import run_job
 
 
 def _hanging_session_db(never_set: threading.Event):
-    """Stand-in for hermes_state.SessionDB() that blocks until released —
-    like the real incident's wedged sqlite3.connect, but bounded so the test
-    process can still exit cleanly once the assertions are done."""
+    """Stand-in for a configured-store open that blocks until released."""
     never_set.wait(timeout=30)
     return MagicMock()
 
 
 class TestSessionDbInitTimeout:
     def test_run_job_does_not_hang_when_sessiondb_init_wedges(self, tmp_path, monkeypatch):
-        """run_job returns promptly even if SessionDB() never returns."""
+        """run_job returns promptly even if the configured-store open blocks."""
         monkeypatch.setenv("HERMES_CRON_SESSION_DB_TIMEOUT", "0.2")
         never_set = threading.Event()
         job = {"id": "wedged-sessiondb", "name": "test", "prompt": "hello"}
@@ -51,7 +48,7 @@ class TestSessionDbInitTimeout:
                  patch("cron.scheduler._resolve_origin", return_value=None), \
                  patch("hermes_cli.env_loader.load_hermes_dotenv"), \
                  patch("hermes_cli.env_loader.reset_secret_source_cache"), \
-                 patch("hermes_state.SessionDB", side_effect=lambda: _hanging_session_db(never_set)), \
+                 patch("hermes_state.SessionDB.for_home", side_effect=lambda _home, **_kwargs: _hanging_session_db(never_set)), \
                  patch(
                      "hermes_cli.runtime_provider.resolve_runtime_provider",
                      return_value={
@@ -92,7 +89,7 @@ class TestSessionDbInitTimeout:
              patch("cron.scheduler._resolve_origin", return_value=None), \
              patch("hermes_cli.env_loader.load_hermes_dotenv"), \
              patch("hermes_cli.env_loader.reset_secret_source_cache"), \
-             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch("hermes_state.SessionDB.for_home", return_value=fake_db) as open_for_home, \
              patch(
                  "hermes_cli.runtime_provider.resolve_runtime_provider",
                  return_value={
@@ -113,6 +110,7 @@ class TestSessionDbInitTimeout:
         assert success is True
         kwargs = mock_agent_cls.call_args.kwargs
         assert kwargs["session_db"] is fake_db  # default 10s was plenty for a MagicMock
+        open_for_home.assert_called_once_with(tmp_path)
         # The malformed env var must produce a warning so the misconfiguration
         # is observable — otherwise it silently falls back and operators can't
         # diagnose why their custom timeout isn't taking effect.
@@ -139,7 +137,7 @@ class TestSessionDbInitTimeout:
                  patch("cron.scheduler._resolve_origin", return_value=None), \
                  patch("hermes_cli.env_loader.load_hermes_dotenv"), \
                  patch("hermes_cli.env_loader.reset_secret_source_cache"), \
-                 patch("hermes_state.SessionDB", side_effect=lambda: _hanging_session_db(never_set)), \
+                 patch("hermes_state.SessionDB.for_home", side_effect=lambda _home, **_kwargs: _hanging_session_db(never_set)), \
                  patch(
                      "hermes_cli.runtime_provider.resolve_runtime_provider",
                      return_value={
@@ -194,7 +192,7 @@ class TestDispatchGuardReleasedAfterHang:
                  patch("cron.scheduler._resolve_origin", return_value=None), \
                  patch("hermes_cli.env_loader.load_hermes_dotenv"), \
                  patch("hermes_cli.env_loader.reset_secret_source_cache"), \
-                 patch("hermes_state.SessionDB", side_effect=lambda: _hanging_session_db(never_set)), \
+                 patch("hermes_state.SessionDB.for_home", side_effect=lambda _home, **_kwargs: _hanging_session_db(never_set)), \
                  patch(
                      "hermes_cli.runtime_provider.resolve_runtime_provider",
                      return_value={
@@ -206,6 +204,14 @@ class TestDispatchGuardReleasedAfterHang:
                  ), \
                  patch("run_agent.AIAgent") as mock_agent_cls, \
                  patch.object(sched, "get_due_jobs", return_value=[job]), \
+                 patch.object(sched, "claim_dispatch", return_value=True), \
+                 patch.object(
+                     sched,
+                     "create_execution",
+                     return_value={"id": "guard-sessiondb-hang-execution"},
+                 ), \
+                 patch.object(sched, "mark_execution_running"), \
+                 patch.object(sched, "finish_execution"), \
                  patch.object(sched, "advance_next_run"), \
                  patch.object(sched, "save_job_output", return_value="/tmp/out"), \
                  patch.object(sched, "mark_job_run"), \

@@ -7,6 +7,7 @@ import gateway.mirror as mirror_mod
 from gateway.mirror import (
     mirror_to_session,
     _find_session_id,
+    _append_to_state_store,
 )
 
 
@@ -163,14 +164,13 @@ class TestMirrorToSession:
 
         with patch.object(mirror_mod, "_SESSIONS_DIR", sessions_dir), \
              patch.object(mirror_mod, "_SESSIONS_INDEX", index_file), \
-             patch("gateway.mirror._append_to_sqlite") as mock_sqlite:
+             patch("gateway.mirror._append_to_state_store") as mock_state:
             result = mirror_to_session("telegram", "12345", "Hello!", source_label="cli")
 
         assert result is True
 
-        # Check SQLite writer was called with the mirror message
-        mock_sqlite.assert_called_once()
-        call_args = mock_sqlite.call_args
+        mock_state.assert_called_once()
+        call_args = mock_state.call_args
         assert call_args[0][0] == "sess_abc"
         msg = call_args[0][1]
         assert msg["content"] == "Hello!"
@@ -194,12 +194,12 @@ class TestMirrorToSession:
 
         with patch.object(mirror_mod, "_SESSIONS_DIR", sessions_dir), \
              patch.object(mirror_mod, "_SESSIONS_INDEX", index_file), \
-             patch("gateway.mirror._append_to_sqlite") as mock_sqlite:
+             patch("gateway.mirror._append_to_state_store") as mock_state:
             result = mirror_to_session("telegram", "-1001", "Hello topic!", source_label="cron", thread_id="10")
 
         assert result is True
-        mock_sqlite.assert_called_once()
-        assert mock_sqlite.call_args[0][0] == "sess_topic_a"
+        mock_state.assert_called_once()
+        assert mock_state.call_args[0][0] == "sess_topic_a"
 
     def test_successful_mirror_uses_user_id_for_group_session(self, tmp_path):
         sessions_dir, index_file = _setup_sessions(tmp_path, {
@@ -217,7 +217,7 @@ class TestMirrorToSession:
 
         with patch.object(mirror_mod, "_SESSIONS_DIR", sessions_dir), \
              patch.object(mirror_mod, "_SESSIONS_INDEX", index_file), \
-             patch("gateway.mirror._append_to_sqlite") as mock_sqlite:
+             patch("gateway.mirror._append_to_state_store") as mock_state:
             result = mirror_to_session(
                 "telegram",
                 "-1001",
@@ -227,8 +227,8 @@ class TestMirrorToSession:
             )
 
         assert result is True
-        mock_sqlite.assert_called_once()
-        assert mock_sqlite.call_args[0][0] == "sess_alice"
+        mock_state.assert_called_once()
+        assert mock_state.call_args[0][0] == "sess_alice"
 
     def test_no_matching_session(self, tmp_path):
         sessions_dir, index_file = _setup_sessions(tmp_path, {})
@@ -246,25 +246,24 @@ class TestMirrorToSession:
         assert result is False
 
 
-class TestAppendToSqlite:
+class TestAppendToStateStore:
     def test_connection_is_closed_after_use(self, tmp_path):
-        """Verify _append_to_sqlite closes the SessionDB connection."""
-        from gateway.mirror import _append_to_sqlite
+        """Verify the configured state-store connection closes after use."""
         mock_db = MagicMock()
 
-        with patch("hermes_state.SessionDB", return_value=mock_db):
-            _append_to_sqlite("sess_1", {"role": "assistant", "content": "hello"})
+        with patch("hermes_state.SessionDB.for_home", return_value=mock_db) as open_for_home:
+            _append_to_state_store("sess_1", {"role": "assistant", "content": "hello"})
 
+        open_for_home.assert_called_once()
         mock_db.append_message.assert_called_once()
         mock_db.close.assert_called_once()
 
     def test_connection_closed_even_on_error(self, tmp_path):
-        """Verify connection is closed even when append_message raises."""
-        from gateway.mirror import _append_to_sqlite
+        """Verify the connection closes even when the write raises."""
         mock_db = MagicMock()
         mock_db.append_message.side_effect = Exception("db error")
 
-        with patch("hermes_state.SessionDB", return_value=mock_db):
-            _append_to_sqlite("sess_1", {"role": "assistant", "content": "hello"})
+        with patch("hermes_state.SessionDB.for_home", return_value=mock_db):
+            _append_to_state_store("sess_1", {"role": "assistant", "content": "hello"})
 
         mock_db.close.assert_called_once()

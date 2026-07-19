@@ -54,6 +54,49 @@ def _make_cli(env_overrides=None, config_overrides=None, **kwargs):
             return _cli_mod.HermesCLI(**kwargs)
 
 
+def test_cli_uses_active_home_store_factory(monkeypatch, tmp_path):
+    import hermes_state
+
+    opened = []
+    expected_db = MagicMock()
+
+    def _open_for_home(home):
+        opened.append(home)
+        return expected_db
+
+    def _unexpected_constructor(*_args, **_kwargs):
+        raise AssertionError("CLI must not fall back to SessionDB()")
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(hermes_state.SessionDB, "for_home", staticmethod(_open_for_home))
+    monkeypatch.setattr(hermes_state.SessionDB, "__init__", _unexpected_constructor)
+
+    cli = _make_cli()
+
+    assert cli._session_db is expected_db
+    assert opened == [tmp_path]
+
+
+def test_cli_store_factory_failure_does_not_fallback_to_sqlite(monkeypatch, tmp_path):
+    import hermes_state
+
+    def _raise_for_home(_home):
+        raise RuntimeError("configured backend unavailable")
+
+    def _unexpected_constructor(*_args, **_kwargs):
+        raise AssertionError("CLI must not fall back to SessionDB()")
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(hermes_state.SessionDB, "for_home", staticmethod(_raise_for_home))
+    monkeypatch.setattr(hermes_state.SessionDB, "__init__", _unexpected_constructor)
+
+    cli = _make_cli()
+
+    assert cli._session_db is None
+    assert cli._session_db_unavailable is True
+    assert not (tmp_path / "state.db").exists()
+
+
 class TestMaxTurnsResolution:
     """max_turns must always resolve to a positive integer, never None."""
 

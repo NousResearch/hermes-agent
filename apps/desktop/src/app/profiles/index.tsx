@@ -14,6 +14,7 @@ import {
   DialogHeader,
   DialogTitle
 } from '@/components/ui/dialog'
+import { Input } from '@/components/ui/input'
 import { SanitizedInput } from '@/components/ui/sanitized-input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import {
@@ -113,14 +114,18 @@ export function ProfilesView({ onClose }: ProfilesViewProps) {
   }, [profiles, query])
 
   const handleCreate = useCallback(
-    async (name: string, cloneFrom: null | string) => {
+    async (name: string, cloneFrom: null | string, postgresSchema: string) => {
       const trimmed = name.trim()
 
       if (!isValidProfileName(trimmed)) {
         throw new Error(p.nameHint)
       }
 
-      await createProfile({ name: trimmed, clone_from: cloneFrom })
+      await createProfile({
+        name: trimmed,
+        clone_from: cloneFrom,
+        ...(cloneFrom && postgresSchema.trim() ? { postgres_schema: postgresSchema.trim() } : {})
+      })
       notify({ kind: 'success', title: p.created, message: trimmed })
       setSelectedName(trimmed)
       await refresh()
@@ -244,7 +249,7 @@ export function ProfilesView({ onClose }: ProfilesViewProps) {
 
       <CreateProfileDialog
         onClose={() => setCreateOpen(false)}
-        onCreate={async (name, cloneFrom) => handleCreate(name, cloneFrom)}
+        onCreate={async (name, cloneFrom, postgresSchema) => handleCreate(name, cloneFrom, postgresSchema)}
         open={createOpen}
         profiles={profiles ?? []}
       />
@@ -481,7 +486,7 @@ function CreateProfileDialog({
   profiles
 }: {
   onClose: () => void
-  onCreate: (name: string, cloneFrom: null | string) => Promise<void>
+  onCreate: (name: string, cloneFrom: null | string, postgresSchema: string) => Promise<void>
   open: boolean
   profiles: ProfileInfo[]
 }) {
@@ -489,6 +494,7 @@ function CreateProfileDialog({
   const p = t.profiles
   const [name, setName] = useState('')
   const [cloneFrom, setCloneFrom] = useState<null | string>('default')
+  const [postgresSchema, setPostgresSchema] = useState('')
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<null | string>(null)
 
@@ -499,6 +505,7 @@ function CreateProfileDialog({
 
     setName('')
     setCloneFrom('default')
+    setPostgresSchema('')
     setError(null)
     setSaving(false)
   }, [open])
@@ -519,7 +526,7 @@ function CreateProfileDialog({
     setError(null)
 
     try {
-      await onCreate(trimmed, cloneFrom)
+      await onCreate(trimmed, cloneFrom, postgresSchema)
       onClose()
     } catch (err) {
       setError(err instanceof Error ? err.message : p.failedCreate)
@@ -560,7 +567,14 @@ function CreateProfileDialog({
               {p.cloneFrom}
             </label>
             <Select
-              onValueChange={value => setCloneFrom(value === '__none__' ? null : value)}
+              onValueChange={value => {
+                const next = value === '__none__' ? null : value
+
+                setCloneFrom(next)
+                if (next === null) {
+                  setPostgresSchema('')
+                }
+              }}
               value={cloneFrom ?? '__none__'}
             >
               <SelectTrigger className="h-9 rounded-md" id="new-profile-clone-from">
@@ -577,6 +591,22 @@ function CreateProfileDialog({
             </Select>
             <p className="text-xs text-muted-foreground">{p.cloneFromDesc}</p>
           </div>
+
+          {cloneFrom && (
+            <div className="grid gap-1.5">
+              <label className="text-xs font-medium" htmlFor="new-profile-postgres-schema">
+                {p.postgresSchema ?? 'PostgreSQL schema (optional)'}
+              </label>
+              <Input
+                id="new-profile-postgres-schema"
+                onChange={event => setPostgresSchema(event.target.value)}
+                value={postgresSchema}
+              />
+              <p className="text-xs text-muted-foreground">
+                {p.postgresSchemaHint ?? 'Required only when cloning a PostgreSQL-backed source profile.'}
+              </p>
+            </div>
+          )}
 
           {error && (
             <div className="flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">

@@ -47,7 +47,7 @@ class TestCronJobCleanup:
             "model": "test/model",
         }
 
-        with patch("hermes_state.SessionDB", return_value=mock_db), \
+        with patch("hermes_state.SessionDB.for_home", return_value=mock_db), \
              patch.object(scheduler, "_build_job_prompt", return_value="hello"), \
              patch.object(scheduler, "_resolve_origin", return_value=None), \
              patch.object(scheduler, "_resolve_delivery_target", return_value=None), \
@@ -75,7 +75,7 @@ class TestCronJobCleanup:
             "model": "test/model",
         }
 
-        with patch("hermes_state.SessionDB", return_value=mock_db), \
+        with patch("hermes_state.SessionDB.for_home", return_value=mock_db), \
              patch.object(scheduler, "_build_job_prompt", return_value="hello"), \
              patch.object(scheduler, "_resolve_origin", return_value=None), \
              patch.object(scheduler, "_resolve_delivery_target", return_value=None), \

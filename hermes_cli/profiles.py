@@ -28,6 +28,7 @@ import stat
 import subprocess
 import sys
 import time
+from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import List, Optional, Tuple
@@ -35,6 +36,7 @@ from typing import List, Optional, Tuple
 from agent.skill_utils import is_excluded_skill_path
 
 _PROFILE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
+_POSTGRES_SCHEMA_RE = re.compile(r"^[a-z_][a-z0-9_]{0,62}$")
 
 # Directories bootstrapped inside every new profile
 _PROFILE_DIRS = [
@@ -132,6 +134,20 @@ _CLONE_ALL_HISTORY_EXCLUDE_ROOT: frozenset[str] = frozenset({
 # `hermes skills install` or drop SKILL.md files into the profile's skills/.
 # Delete the marker file to opt back in.
 NO_BUNDLED_SKILLS_MARKER = ".no-bundled-skills"
+
+
+@dataclass(frozen=True)
+class _PostgresClonePlan:
+    """Validated PostgreSQL isolation settings for one profile clone."""
+
+    target_schema: str
+    dsn_env: str
+    config_yaml: str
+    schema_created: bool
+
+
+class _PostgresTargetSchemaOccupiedError(Exception):
+    """Raised internally when a requested clone target already exists."""
 
 
 def has_bundled_skills_opt_out(profile_dir: Path) -> bool:
@@ -534,6 +550,239 @@ def _migrate_profile_config_if_outdated(profile_dir: Path) -> None:
         # not be migrated. The next `hermes doctor --fix` can still surface the
         # detailed error in the target profile.
         pass
+
+
+def _read_profile_config_for_clone(profile_dir: Path) -> dict:
+    """Read source config without surfacing user-provided config contents."""
+    config_path = profile_dir / "config.yaml"
+    try:
+        import yaml
+
+        with open(config_path, "r", encoding="utf-8") as config_file:
+            config = yaml.safe_load(config_file) or {}
+    except FileNotFoundError:
+        return {}
+    except Exception:
+        raise ValueError("Unable to read the source profile configuration.") from None
+    if not isinstance(config, dict):
+        raise ValueError("Unable to read the source profile configuration.")
+    return config
+
+
+def _local_postgres_schemas() -> set[str]:
+    """Return schemas claimed by local profiles, failing closed on unreadable config."""
+    from hermes_cli.config import load_config_for_home
+    from state_store.resolver import resolve_state_store
+
+    profile_dirs = [_get_default_hermes_home()]
+    profiles_root = _get_profiles_root()
+    if profiles_root.is_dir():
+        for entry in profiles_root.iterdir():
+            if entry.is_dir() and _PROFILE_ID_RE.fullmatch(entry.name):
+                profile_dirs.append(entry)
+
+    schemas: set[str] = set()
+    try:
+        for profile_dir in profile_dirs:
+            spec = resolve_state_store(
+                profile_dir,
+                load_config_for_home(profile_dir),
+            )
+            if spec.backend == "postgres" and spec.postgres_schema:
+                schemas.add(spec.postgres_schema)
+    except Exception:
+        raise ValueError(
+            "Unable to verify PostgreSQL schema isolation across local profiles."
+        ) from None
+    return schemas
+
+
+def _postgres_clone_lock_key(schema: str) -> str:
+    """Return the advisory-lock namespace for one PostgreSQL clone target."""
+    return f"hermes-profile-clone-schema:{schema}"
+
+
+def _provision_empty_postgres_schema(dsn_env: str, schema: str) -> bool:
+    """Atomically claim a previously absent PostgreSQL schema for a clone.
+
+    A successful call always creates the schema. Existing schemas are rejected,
+    even when empty, because their owner cannot be determined safely.
+    """
+    dsn = os.environ.get(dsn_env)
+    if not dsn:
+        raise ValueError(
+            "PostgreSQL target schema is unreachable through its configured DSN."
+        )
+
+    try:
+        import psycopg
+
+        quoted_schema = '"' + schema + '"'
+        with psycopg.connect(
+            dsn,
+            connect_timeout=5,
+            application_name="hermes-profile-create",
+        ) as connection:
+            with connection.transaction():
+                # Serialize clone claims for this schema. The schema itself is
+                # the durable claim after this transaction commits.
+                connection.execute(
+                    "SELECT pg_catalog.pg_advisory_xact_lock("
+                    "pg_catalog.hashtextextended(%s, 0))",
+                    (_postgres_clone_lock_key(schema),),
+                )
+                schema_exists = connection.execute(
+                    """
+                    SELECT 1
+                    FROM pg_catalog.pg_namespace
+                    WHERE nspname = %s
+                    """,
+                    (schema,),
+                ).fetchone() is not None
+                if schema_exists:
+                    raise _PostgresTargetSchemaOccupiedError
+                connection.execute(f"CREATE SCHEMA {quoted_schema}")
+                return True
+    except _PostgresTargetSchemaOccupiedError:
+        raise ValueError(
+            "PostgreSQL target schema already exists and cannot be claimed for cloning."
+        ) from None
+    except Exception:
+        raise ValueError(
+            "PostgreSQL target schema is unreachable or could not be provisioned."
+        ) from None
+
+
+def _cleanup_empty_postgres_schema(dsn_env: str, schema: str) -> None:
+    """Best-effort rollback for a schema created by a failed local clone."""
+    dsn = os.environ.get(dsn_env)
+    if not dsn:
+        return
+
+    try:
+        import psycopg
+
+        quoted_schema = '"' + schema + '"'
+        with psycopg.connect(
+            dsn,
+            connect_timeout=5,
+            application_name="hermes-profile-create-cleanup",
+        ) as connection:
+            with connection.transaction():
+                connection.execute(
+                    "SELECT pg_catalog.pg_advisory_xact_lock("
+                    "pg_catalog.hashtextextended(%s, 0))",
+                    (_postgres_clone_lock_key(schema),),
+                )
+                occupied = connection.execute(
+                    """
+                    SELECT 1
+                    FROM pg_catalog.pg_class AS relation
+                    JOIN pg_catalog.pg_namespace AS namespace
+                      ON namespace.oid = relation.relnamespace
+                    WHERE namespace.nspname = %s
+                      AND relation.relkind IN ('r', 'p', 'v', 'm', 'S', 'f')
+                    LIMIT 1
+                    """,
+                    (schema,),
+                ).fetchone() is not None
+                if not occupied:
+                    connection.execute(f"DROP SCHEMA IF EXISTS {quoted_schema}")
+    except Exception:
+        # Preserve the original local clone failure. An empty orphan schema is
+        # untidy but safer than masking the actionable filesystem error.
+        pass
+
+
+def _prepare_postgres_clone(
+    source_dir: Path,
+    target_postgres_schema: Optional[str],
+) -> Optional[_PostgresClonePlan]:
+    """Validate and provision isolated state before cloning a PostgreSQL profile."""
+    from hermes_cli.config import load_config_for_home
+    from state_store.resolver import resolve_state_store
+
+    try:
+        source_spec = resolve_state_store(
+            source_dir,
+            load_config_for_home(source_dir),
+        )
+    except Exception:
+        raise ValueError(
+            "Unable to resolve the source profile PostgreSQL state configuration."
+        ) from None
+
+    if source_spec.backend != "postgres":
+        if target_postgres_schema is not None:
+            raise ValueError(
+                "A PostgreSQL target schema can only be used when cloning "
+                "a PostgreSQL-backed profile."
+            )
+        return None
+
+    if (
+        not isinstance(target_postgres_schema, str)
+        or not _POSTGRES_SCHEMA_RE.fullmatch(target_postgres_schema)
+    ):
+        raise ValueError(
+            "Cloning a PostgreSQL-backed profile requires an explicit "
+            "lowercase PostgreSQL target schema."
+        )
+    if target_postgres_schema == source_spec.postgres_schema:
+        raise ValueError(
+            "PostgreSQL target schema must differ from the source profile schema."
+        )
+    if target_postgres_schema in _local_postgres_schemas():
+        raise ValueError(
+            "PostgreSQL target schema is already configured for a local profile."
+        )
+
+    source_config = deepcopy(_read_profile_config_for_clone(source_dir))
+    sessions = source_config.setdefault("sessions", {})
+    if not isinstance(sessions, dict):
+        raise ValueError("Unable to rewrite the cloned PostgreSQL configuration.")
+    state = sessions.setdefault("state", {})
+    if not isinstance(state, dict):
+        raise ValueError("Unable to rewrite the cloned PostgreSQL configuration.")
+    postgres = state.setdefault("postgres", {})
+    if not isinstance(postgres, dict):
+        raise ValueError("Unable to rewrite the cloned PostgreSQL configuration.")
+
+    state["backend"] = "postgres"
+    postgres["dsn_env"] = source_spec.postgres_dsn_env
+    postgres["schema"] = target_postgres_schema
+    try:
+        import yaml
+
+        config_yaml = yaml.safe_dump(
+            source_config,
+            sort_keys=False,
+            default_flow_style=False,
+        )
+    except Exception:
+        raise ValueError("Unable to rewrite the cloned PostgreSQL configuration.") from None
+
+    schema_created = _provision_empty_postgres_schema(
+        source_spec.postgres_dsn_env,
+        target_postgres_schema,
+    )
+    return _PostgresClonePlan(
+        target_schema=target_postgres_schema,
+        dsn_env=source_spec.postgres_dsn_env,
+        config_yaml=config_yaml,
+        schema_created=bool(schema_created),
+    )
+
+
+def _write_postgres_clone_config(profile_dir: Path, plan: _PostgresClonePlan) -> None:
+    """Replace a copied config symlink before writing isolated PostgreSQL settings."""
+    config_path = profile_dir / "config.yaml"
+    try:
+        if config_path.is_symlink():
+            config_path.unlink()
+        config_path.write_text(plan.config_yaml, encoding="utf-8")
+    except OSError:
+        raise ValueError("Unable to write the cloned PostgreSQL configuration.") from None
 
 
 def find_alias_for_profile(profile_name: str) -> Optional[str]:
@@ -995,6 +1244,7 @@ def create_profile(
     no_alias: bool = False,
     no_skills: bool = False,
     description: Optional[str] = None,
+    target_postgres_schema: Optional[str] = None,
 ) -> Path:
     """Create a new profile directory.
 
@@ -1017,6 +1267,9 @@ def create_profile(
         a marker file so ``hermes update`` skips re-seeding this profile's
         skills. Mutually exclusive with ``clone_config``/``clone_all`` (those
         explicitly copy skills from the source).
+    target_postgres_schema:
+        Explicit isolated schema for cloning a PostgreSQL-backed profile.
+        Required for PostgreSQL clones and rejected for SQLite/fresh profiles.
 
     Returns
     -------
@@ -1027,6 +1280,12 @@ def create_profile(
         raise ValueError(
             "--no-skills is mutually exclusive with --clone / --clone-from / --clone-all "
             "(cloning explicitly copies skills from the source profile)."
+        )
+    if target_postgres_schema is not None and not (
+        clone_from is not None or clone_all or clone_config
+    ):
+        raise ValueError(
+            "A PostgreSQL target schema can only be used when cloning a profile."
         )
     canon = normalize_profile_name(name)
     validate_profile_name(canon)
@@ -1056,55 +1315,81 @@ def create_profile(
                 f"Source profile '{clone_from or 'active'}' does not exist at {source_dir}"
             )
 
-    if clone_all and source_dir:
-        # Full copy of source profile (exclude sibling ~/.hermes/profiles/)
-        shutil.copytree(
+    postgres_clone_plan = None
+    if source_dir is not None:
+        # Validate the remote target before creating any profile files. This
+        # prevents failed PostgreSQL clones from leaving partial local profiles.
+        postgres_clone_plan = _prepare_postgres_clone(
             source_dir,
-            profile_dir,
-            symlinks=True,
-            ignore=_clone_all_copytree_ignore(source_dir),
+            target_postgres_schema,
         )
-        # Strip runtime files
-        for stale in _CLONE_ALL_STRIP:
-            (profile_dir / stale).unlink(missing_ok=True)
-    else:
-        # Bootstrap directory structure
-        profile_dir.mkdir(parents=True, exist_ok=True)
-        for subdir in _PROFILE_DIRS:
-            (profile_dir / subdir).mkdir(parents=True, exist_ok=True)
 
-        # Clone config files from source
-        if source_dir is not None:
-            for filename in _CLONE_CONFIG_FILES:
-                src = source_dir / filename
-                if src.exists():
-                    dst = profile_dir / filename
-                    shutil.copy2(src, dst)
-                    # Tighten .env to owner-only after copy. shutil.copy2
-                    # preserves source mode bits, but if the source's .env
-                    # was loose (host umask 0o022 leaving 0o644), tighten
-                    # explicitly so the clone doesn't inherit weak perms.
-                    if filename == ".env":
-                        try:
-                            os.chmod(str(dst), 0o600)
-                        except OSError:
-                            pass
+    try:
+        if clone_all and source_dir:
+            # Full copy of source profile (exclude sibling ~/.hermes/profiles/)
+            shutil.copytree(
+                source_dir,
+                profile_dir,
+                symlinks=True,
+                ignore=_clone_all_copytree_ignore(source_dir),
+            )
+            # Strip runtime files
+            for stale in _CLONE_ALL_STRIP:
+                (profile_dir / stale).unlink(missing_ok=True)
+        else:
+            # Bootstrap directory structure
+            profile_dir.mkdir(parents=True, exist_ok=True)
+            for subdir in _PROFILE_DIRS:
+                (profile_dir / subdir).mkdir(parents=True, exist_ok=True)
 
-            # Clone installed skills from the source profile. The dashboard's
-            # "clone from default" flow is expected to preserve both bundled
-            # and user-installed skills so the new profile immediately has the
-            # same agent capabilities as the source profile.
-            source_skills = source_dir / "skills"
-            if source_skills.is_dir():
-                shutil.copytree(source_skills, profile_dir / "skills", symlinks=True, dirs_exist_ok=True)
+            # Clone config files from source
+            if source_dir is not None:
+                for filename in _CLONE_CONFIG_FILES:
+                    src = source_dir / filename
+                    if src.exists():
+                        dst = profile_dir / filename
+                        shutil.copy2(src, dst)
+                        # Tighten .env to owner-only after copy. shutil.copy2
+                        # preserves source mode bits, but if the source's .env
+                        # was loose (host umask 0o022 leaving 0o644), tighten
+                        # explicitly so the clone doesn't inherit weak perms.
+                        if filename == ".env":
+                            try:
+                                os.chmod(str(dst), 0o600)
+                            except OSError:
+                                pass
 
-            # Clone memory and other subdirectory files
-            for relpath in _CLONE_SUBDIR_FILES:
-                src = source_dir / relpath
-                if src.exists():
-                    dst = profile_dir / relpath
-                    dst.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copy2(src, dst)
+                # Clone installed skills from the source profile. The dashboard's
+                # "clone from default" flow is expected to preserve both bundled
+                # and user-installed skills so the new profile immediately has the
+                # same agent capabilities as the source profile.
+                source_skills = source_dir / "skills"
+                if source_skills.is_dir():
+                    shutil.copytree(
+                        source_skills,
+                        profile_dir / "skills",
+                        symlinks=True,
+                        dirs_exist_ok=True,
+                    )
+
+                # Clone memory and other subdirectory files
+                for relpath in _CLONE_SUBDIR_FILES:
+                    src = source_dir / relpath
+                    if src.exists():
+                        dst = profile_dir / relpath
+                        dst.parent.mkdir(parents=True, exist_ok=True)
+                        shutil.copy2(src, dst)
+
+        if postgres_clone_plan is not None:
+            _write_postgres_clone_config(profile_dir, postgres_clone_plan)
+    except Exception:
+        shutil.rmtree(profile_dir, ignore_errors=True)
+        if postgres_clone_plan is not None and postgres_clone_plan.schema_created:
+            _cleanup_empty_postgres_schema(
+                postgres_clone_plan.dsn_env,
+                postgres_clone_plan.target_schema,
+            )
+        raise
 
     # Seed an empty .env so the profile has its own credentials file from
     # day one. Without it, profile-scoped env writes (dashboard Channels /

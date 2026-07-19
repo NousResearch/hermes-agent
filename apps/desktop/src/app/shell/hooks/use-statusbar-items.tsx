@@ -16,6 +16,7 @@ import { cn } from '@/lib/utils'
 import { copyFilePath, revealFile } from '@/store/file-actions'
 import { revealFileInTree } from '@/store/layout'
 import { $activeGatewayProfile } from '@/store/profile'
+import { $projectTree, projectNameForCwd } from '@/store/projects'
 import {
   $activeSessionId,
   $busy,
@@ -91,6 +92,12 @@ export function useStatusbarItems({
   const terminalTakeover = useStore($terminalTakeover)
   const primaryBusy = useStore($busy)
   const currentCwd = useStore($currentCwd)
+  // Derive the workspace's project name from the already-cached project tree
+  // (backend truth via projects.*), so the status item labels by project without
+  // a second per-session copy of the same fact. Re-derives whenever the cwd or
+  // the tree changes; null (no named project) falls back to the cwd leaf below.
+  const projectTree = useStore($projectTree)
+  const projectName = useMemo(() => projectNameForCwd(currentCwd), [currentCwd, projectTree])
   const primaryUsage = useStore($currentUsage)
   const gatewayRestarting = useStore($gatewayRestarting)
   const primarySessionStartedAt = useStore($sessionStartedAt)
@@ -313,7 +320,10 @@ export function useStatusbarItems({
         hidden: !currentCwd,
         icon: <FolderOpen className="size-3" />,
         id: 'workspace-cwd',
-        label: currentCwd ? workspaceLabel(currentCwd) : undefined,
+        // Prefer the named project; fall back to the cwd leaf. The full cwd is
+        // always in the tooltip (`title` below), so hovering reveals where the
+        // session actually sits — the worktree/subfolder, not just the project.
+        label: projectName || (currentCwd ? workspaceLabel(currentCwd) : undefined),
         menuItems: currentCwd
           ? [
               {
@@ -388,6 +398,7 @@ export function useStatusbarItems({
       inferenceReady,
       inferenceStatus?.reason,
       openAgents,
+      projectName,
       subagentsFailed,
       subagentsRunning,
       toggleCommandCenter

@@ -305,6 +305,53 @@ async def test_successful_turn_refreshes_header_without_changing_participation(a
     adapter.ensure_workspace_header.assert_not_awaited()
 
 
+@pytest.mark.asyncio
+async def test_processing_outcome_updates_existing_workspace_header_before_edit(adapter):
+    adapter._workspace_headers.put("111", "222", "7001")
+    header_message = SimpleNamespace(id=7001, edit=AsyncMock())
+    thread = SimpleNamespace(
+        id=222,
+        name="launch-plan",
+        guild=SimpleNamespace(id=111),
+        fetch_message=AsyncMock(return_value=header_message),
+    )
+    adapter._client = SimpleNamespace(
+        get_channel=lambda channel_id: thread if channel_id == 222 else None,
+        fetch_channel=AsyncMock(),
+    )
+    source = _source()
+    event = MessageEvent(
+        text="ship the reviewed plan",
+        message_type=MessageType.TEXT,
+        source=source,
+        raw_message=SimpleNamespace(id=123),
+    )
+
+    await adapter.on_processing_complete(event, ProcessingOutcome.FAILURE)
+
+    persisted = adapter._workspace_headers.get_state("111", "222")
+    assert persisted is not None
+    assert persisted.status == "Needs attention"
+    assert persisted.next_action == "Retry the last request"
+    header_message.edit.assert_awaited_once()
+    assert header_message.edit.await_args.kwargs["embed"]["fields"] == {
+        "Owner": "Hermes",
+        "Status": "Needs attention",
+        "Thread": "<#222>",
+        "Linked issue / artifact": "Not linked",
+        "Last decision": "No decision recorded",
+        "Next action": "Retry the last request",
+    }
+
+    await adapter.on_processing_complete(event, ProcessingOutcome.SUCCESS)
+
+    recovered = adapter._workspace_headers.get_state("111", "222")
+    assert recovered is not None
+    assert recovered.status == "Active"
+    assert recovered.next_action == "Awaiting next assistant turn"
+    assert header_message.edit.await_count == 2
+
+
 def test_backfill_candidates_are_known_workspaces_and_do_not_propose_title_changes(tmp_path):
     store = WorkspaceHeaderStore(path=tmp_path / "headers.json")
     store.put("111", "10", "9000")

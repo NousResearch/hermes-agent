@@ -2940,17 +2940,46 @@ class DiscordAdapter(BasePlatformAdapter):
                     await self._add_reaction(message, "✅")
                 elif outcome == ProcessingOutcome.FAILURE:
                     await self._add_reaction(message, "❌")
-        if outcome == ProcessingOutcome.SUCCESS:
-            # This hook runs after final delivery, so headers only appear for
-            # completed assistant turns. Header I/O remains non-fatal to chat.
-            try:
-                await self.ensure_workspace_header(event.source)
-            except Exception:
-                logger.debug(
-                    "[%s] Failed to refresh Discord workspace header",
-                    self.name,
-                    exc_info=True,
+        # The processing lifecycle is the concrete status producer for the
+        # persistent workspace card. Successful turns may create the header;
+        # failures and cancellations only edit an already-tracked message.
+        # Header I/O remains non-fatal to chat.
+        try:
+            source = event.source
+            binding = None
+            if (
+                source is not None
+                and source.scope_id
+                and source.thread_id
+            ):
+                binding = self._workspace_headers.get(
+                    source.scope_id,
+                    source.thread_id,
                 )
+            if outcome == ProcessingOutcome.SUCCESS or binding is not None:
+                if outcome == ProcessingOutcome.SUCCESS:
+                    status = "Active"
+                    next_action = "Awaiting next assistant turn"
+                elif outcome == ProcessingOutcome.FAILURE:
+                    status = "Needs attention"
+                    next_action = "Retry the last request"
+                else:
+                    status = "Paused"
+                    next_action = "Awaiting next instruction"
+                if source is not None and source.scope_id and source.thread_id:
+                    self._workspace_headers.update_state(
+                        source.scope_id,
+                        source.thread_id,
+                        status=status,
+                        next_action=next_action,
+                    )
+                await self.ensure_workspace_header(source)
+        except Exception:
+            logger.debug(
+                "[%s] Failed to refresh Discord workspace header",
+                self.name,
+                exc_info=True,
+            )
 
     async def send(
         self,

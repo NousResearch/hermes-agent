@@ -23166,6 +23166,27 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             "Failed to edit streamed message for session %s: %s",
                             session_key or "?", _edit_err,
                         )
+            elif _sc is not None and not _is_empty_sentinel:
+                # DUPLICATE-RISK DIAGNOSTIC: a stream consumer existed for this
+                # turn but suppression did NOT fire, so the gateway's normal
+                # final-send is about to run. On WeCom this is the exact window
+                # that produced "回复了两条" — a final-frame ack still in flight
+                # (final_content_delivered not yet set) while this send races
+                # ahead. Log the decision inputs so a recurrence can be pinned to
+                # "signal never set" vs "ack-pending race".
+                # See docs/rca-wecom-stream-final-ack-timeout-duplicate.md.
+                logger.warning(
+                    "Normal final-send NOT suppressed despite active stream "
+                    "consumer for session %s: streamed=%s previewed=%s "
+                    "content_delivered=%s transformed=%s final_len=%d — "
+                    "possible duplicate send (see wecom ack-timeout RCA).",
+                    session_key or "?",
+                    _streamed,
+                    _previewed,
+                    _content_delivered,
+                    _transformed,
+                    len(_final),
+                )
 
         # Schedule deletion of tracked temporary progress bubbles after the
         # final response lands. Failed runs skip this so bubbles remain as

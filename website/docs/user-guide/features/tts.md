@@ -640,13 +640,14 @@ For `format: json` / `srt` / `vtt`, Hermes returns the raw file content as the `
 
 #### STT command-provider optional keys
 
-| Key             | Default | Meaning                                                                                              |
-|-----------------|---------|------------------------------------------------------------------------------------------------------|
-| `timeout`       | `300`   | Seconds; the process tree is killed on expiry (Unix `start_new_session`, Windows `taskkill /T`).     |
-| `format`        | `txt`   | One of `txt` / `json` / `srt` / `vtt`. Sets the extension of `{output_path}`.                       |
-| `language`      | `en`    | Forwarded to `{language}`. Defaults to `stt.language` then `en`.                                     |
-| `model`         | empty   | Forwarded to `{model}`. The `model=` argument to `transcribe_audio()` overrides this.                |
-| `normalize`     | `false` | Transcode the input to 16 kHz mono m4a (ffmpeg) before the command runs; `{input_path}` then points at the normalized file. |
+| Key                              | Default | Meaning                                                                                              |
+|----------------------------------|---------|------------------------------------------------------------------------------------------------------|
+| `timeout`                        | `300`   | Seconds; the process tree is killed on expiry (Unix `start_new_session`, Windows `taskkill /T`).     |
+| `format`                         | `txt`   | One of `txt` / `json` / `srt` / `vtt`. Sets the extension of `{output_path}`.                       |
+| `language`                       | `en`    | Forwarded to `{language}`. Defaults to `stt.language` then `en`.                                     |
+| `model`                          | empty   | Forwarded to `{model}`. The `model=` argument to `transcribe_audio()` overrides this.                |
+| `normalize`                      | `false` | Transcode the input to 16 kHz mono m4a (ffmpeg) before the command runs; `{input_path}` then points at the normalized file. |
+| `fallback_provider` / `fallback` | empty   | Set to `local` or `faster-whisper` to retry a failed command with the configured local model.        |
 
 #### STT command-provider behavior notes
 

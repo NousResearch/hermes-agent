@@ -203,3 +203,80 @@ def relaunch(
             sys.exit(1)
     else:
         os.execvp(new_argv[0], new_argv)
+
+
+# ---------------------------------------------------------------------------
+# Generic deferred relaunch
+#
+# Hermes forbids an in-session ``os.execvp`` (it would orphan the TUI and skip
+# prompt_toolkit terminal restoration).  Built-in ``/update`` already defers via
+# ``self._pending_relaunch``, but that path is reachable only by built-in command
+# methods — not by plugin slash handlers (``fn(args)->str``).  These helpers
+# generalize the deferred relaunch into a tiny, feature-agnostic API any
+# in-session feature can use; the CLI and TUI teardown points consume it.
+# ---------------------------------------------------------------------------
+
+
+def _pending_relaunch_path():
+    """Path to the pending-relaunch handoff, anchored at the real Hermes root.
+
+    Anchored at the root (not the active per-profile ``HERMES_HOME``) so the
+    request survives a profile switch.
+    """
+    from pathlib import Path
+
+    try:
+        from hermes_constants import get_default_hermes_root
+
+        root = Path(get_default_hermes_root())
+    except Exception:
+        root = Path(os.path.expanduser("~/.hermes"))
+    return root / "pending_relaunch.json"
+
+
+def request_relaunch(extra_args, *, preserve_inherited=True) -> None:
+    """Record a deferred relaunch to perform at the next teardown point.
+
+    Generic: any in-session feature that cannot safely exec mid-session (e.g. a
+    plugin slash command) calls this; ``consume_pending_relaunch`` performs it
+    once the CLI/TUI has torn down cleanly.
+    """
+    import json
+
+    path = _pending_relaunch_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(
+        json.dumps(
+            {
+                "extra_args": list(extra_args),
+                "preserve_inherited": bool(preserve_inherited),
+            }
+        )
+    )
+    os.replace(str(tmp), str(path))
+
+
+def consume_pending_relaunch() -> bool:
+    """Perform a pending deferred relaunch, if one was requested.
+
+    Returns ``False`` when nothing is pending.  On POSIX ``relaunch`` execs and
+    does not return; callers treat a truthy outcome as "process is being
+    replaced".
+    """
+    import json
+
+    path = _pending_relaunch_path()
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return False
+    try:
+        path.unlink()
+    except OSError:
+        pass
+    relaunch(
+        list(data.get("extra_args", [])),
+        preserve_inherited=bool(data.get("preserve_inherited", True)),
+    )
+    return True

@@ -42,3 +42,18 @@ def test_update_lock_is_nonblocking_and_releases_deterministically(tmp_path):
 
     second.acquire()
     second.release()
+
+
+def test_non_git_install_gets_a_stable_per_install_lock_path(tmp_path):
+    install_a = tmp_path / "venv-a" / "site-packages"
+    install_b = tmp_path / "venv-b" / "site-packages"
+    install_a.mkdir(parents=True)
+    install_b.mkdir(parents=True)
+
+    path_a = get_update_lock_path(install_a)
+    path_b = get_update_lock_path(install_b)
+
+    assert path_a == get_update_lock_path(install_a)
+    assert path_a != path_b
+    assert path_a.name.startswith("update-")
+    assert path_a.suffix == ".lock"

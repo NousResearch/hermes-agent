@@ -9,6 +9,7 @@ append-only human log, and delegates the real update work back to the existing
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import plistlib
 import re
@@ -16,10 +17,12 @@ import shlex
 import shutil
 import subprocess
 import sys
+import time
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, NoReturn
+from typing import Any, Callable, NoReturn
 
 from hermes_constants import get_hermes_home
 from hermes_cli.update_lock import (
@@ -33,6 +36,9 @@ STATUS_FILENAME = "update-status.json"
 LOG_FILENAME = "update.log"
 LAUNCHD_LABEL = "com.hermes.agent.auto-update"
 SYSTEMD_BASENAME = "hermes-auto-update"
+
+_HEALTH_STARTUP_GRACE_SECONDS = 10.0
+_HEALTH_POLL_INTERVAL_SECONDS = 0.25
 
 STATUS_NOT_CONFIGURED = "not_configured"
 STATUS_RUNNING = "running"
@@ -56,6 +62,7 @@ DEFAULT_STATUS: dict[str, Any] = {
     "planSchedule": [],
     "schedulerType": None,
     "schedulerPath": None,
+    "schedulerIdentity": None,
     "lastRunAt": None,
     "lastPlanAt": None,
     "status": STATUS_NOT_CONFIGURED,
@@ -171,7 +178,19 @@ def append_log(
 
 def _current_version() -> str | None:
     from hermes_cli.main import PROJECT_ROOT
-    import subprocess
+
+    try:
+        from hermes_cli.config import detect_install_method
+
+        if detect_install_method(PROJECT_ROOT) == "pip":
+            from importlib.metadata import PackageNotFoundError, version
+
+            try:
+                return version("hermes-agent")
+            except PackageNotFoundError:
+                pass
+    except Exception:
+        pass
 
     try:
         result = subprocess.run(
@@ -184,6 +203,14 @@ def _current_version() -> str | None:
         return result.stdout.strip() or None
     except Exception:
         try:
+            from importlib.metadata import PackageNotFoundError, version
+
+            return version("hermes-agent")
+        except PackageNotFoundError:
+            pass
+        except Exception:
+            pass
+        try:
             from hermes_cli import __version__
 
             return __version__
@@ -191,12 +218,102 @@ def _current_version() -> str | None:
             return None
 
 
+def _live_process_metadata(pid: int) -> dict[str, Any] | None:
+    """Read process identity from the OS, never from the status file alone."""
+    try:
+        from gateway.status import _pid_exists, _read_process_cmdline, get_process_start_time
+
+        if not _pid_exists(pid):
+            return None
+        return {
+            "pid": pid,
+            "start_time": get_process_start_time(pid),
+            "command": _read_process_cmdline(pid),
+        }
+    except Exception:
+        return None
+
+
+def _live_gateway_identity(runtime: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Return an OS-validated gateway identity for a running status record."""
+    if not isinstance(runtime, dict) or not _gateway_was_running(runtime):
+        return None
+    try:
+        from gateway import status as gateway_status
+
+        recorded_pid, recorded_start = _gateway_process_identity(runtime) or (None, None)
+        if recorded_pid is None:
+            return None
+        live_pid = gateway_status.get_runtime_status_running_pid(
+            runtime,
+            expected_home=get_hermes_home(),
+        )
+        if live_pid != recorded_pid:
+            return None
+        live = _live_process_metadata(live_pid)
+        if live is None:
+            return None
+        live_start = live.get("start_time")
+        if (
+            recorded_start is not None
+            and live_start is not None
+            and recorded_start != live_start
+        ):
+            return None
+        command = live.get("command")
+        if not command:
+            argv = runtime.get("argv")
+            command = " ".join(str(part) for part in argv) if isinstance(argv, list) else None
+        if not command or not gateway_status.looks_like_gateway_runtime_command_line(command):
+            return None
+        return {
+            "pid": live_pid,
+            "start_time": live_start if live_start is not None else recorded_start,
+            "command": command,
+        }
+    except Exception:
+        return None
+
+
+def _stopped_runtime_is_live_validated(runtime: dict[str, Any] | None) -> bool:
+    """Prove that an explicitly stopped gateway has no live recorded process."""
+    if not isinstance(runtime, dict) or runtime.get("gateway_state") != "stopped":
+        return False
+    try:
+        from gateway import status as gateway_status
+
+        if gateway_status.get_running_pid() is not None:
+            return False
+    except Exception:
+        return False
+    identity = _gateway_process_identity(runtime)
+    if identity is None:
+        return True
+    return _live_process_metadata(identity[0]) is None
+
+
 def _capture_gateway_runtime() -> dict[str, Any] | None:
-    """Capture the gateway's pre-update intent and process identity."""
+    """Capture only an OS-validated pre-update gateway intent."""
     from gateway.status import read_runtime_status
 
     runtime = read_runtime_status()
-    return runtime if isinstance(runtime, dict) else None
+    if not isinstance(runtime, dict):
+        return None
+    if runtime.get("gateway_state") == "stopped":
+        if _stopped_runtime_is_live_validated(runtime):
+            captured = dict(runtime)
+            captured["_live_validated"] = True
+            return captured
+        return None
+    if not _gateway_was_running(runtime):
+        return None
+    identity = _live_gateway_identity(runtime)
+    if identity is None:
+        return None
+    captured = dict(runtime)
+    captured.update(identity)
+    captured["_live_validated"] = True
+    return captured
 
 
 def _gateway_process_identity(runtime: dict[str, Any] | None) -> tuple[int, Any] | None:
@@ -219,51 +336,73 @@ def _gateway_was_running(runtime: dict[str, Any] | None) -> bool:
 def _verify_health(
     previous_runtime: dict[str, Any] | None = None,
 ) -> tuple[bool, str]:
-    """Return a lightweight post-update health verdict.
-
-    A full ``hermes doctor`` run can perform provider/network checks and may be
-    slow or flaky in unattended contexts. Phase 1 uses the existing gateway
-    runtime status file instead: it is local, non-destructive, and fails only
-    when the gateway explicitly reports a failed terminal state.
-    """
+    """Return a bounded, live post-update health verdict."""
     try:
         from gateway.status import read_runtime_status
     except Exception as exc:
         return False, f"could not import gateway status helpers: {exc}"
 
-    runtime = read_runtime_status()
-    if not runtime:
-        if _gateway_was_running(previous_runtime):
-            return False, "gateway runtime status disappeared after a running gateway update"
-        if isinstance(previous_runtime, dict) and previous_runtime.get("gateway_state") == "stopped":
-            return True, "gateway remained stopped after update"
-        return False, "could not establish the gateway state before or after update"
+    was_live_validated = (
+        isinstance(previous_runtime, dict) and previous_runtime.get("_live_validated") is True
+    )
+    was_running = was_live_validated and _gateway_was_running(previous_runtime)
+    was_explicitly_stopped = (
+        was_live_validated
+        and isinstance(previous_runtime, dict)
+        and previous_runtime.get("gateway_state") == "stopped"
+    )
+    if not was_running and not was_explicitly_stopped:
+        return False, (
+            "could not establish a live gateway state before update; "
+            "pre-update process was not live-validated"
+        )
 
-    state = str(runtime.get("gateway_state") or "")
-    if state in {"startup_failed", "failed"}:
-        reason = runtime.get("exit_reason") or "gateway reported unhealthy state"
-        return False, str(reason)
+    old_identity = _gateway_process_identity(previous_runtime) if was_running else None
+    deadline = time.monotonic() + _HEALTH_STARTUP_GRACE_SECONDS
+    last_detail = "gateway did not return to a healthy state"
+    while True:
+        runtime = read_runtime_status()
+        if isinstance(runtime, dict):
+            state = str(runtime.get("gateway_state") or "")
+            if state in {"startup_failed", "failed"}:
+                reason = runtime.get("exit_reason") or "gateway reported unhealthy state"
+                return False, str(reason)
 
-    if _gateway_was_running(previous_runtime):
-        if state != "running":
-            return False, f"gateway did not return to running state (state: {state or 'unknown'})"
-        old_identity = _gateway_process_identity(previous_runtime)
-        new_identity = _gateway_process_identity(runtime)
-        if old_identity is None or new_identity is None:
-            return False, "could not verify the gateway process identity after restart"
-        old_pid, old_start = old_identity
-        new_pid, new_start = new_identity
-        if old_pid == new_pid and (
-            old_start is None or new_start is None or old_start == new_start
-        ):
-            return False, "gateway restart left the pre-update process running"
-        return True, f"gateway state: running (new process {new_pid})"
+            if was_running and state == "running":
+                new_identity = _live_gateway_identity(runtime)
+                if new_identity is not None and old_identity is not None:
+                    old_pid, old_start = old_identity
+                    if isinstance(new_identity, tuple):
+                        new_pid, new_start = new_identity
+                    else:
+                        new_pid, new_start = (
+                            new_identity["pid"],
+                            new_identity.get("start_time"),
+                        )
+                    if old_pid != new_pid:
+                        return True, f"gateway state: running (new process {new_pid})"
+                    return False, "gateway restart did not produce a distinct process identity"
+                else:
+                    last_detail = "could not verify the live gateway process identity after restart"
+            elif was_running:
+                last_detail = (
+                    f"gateway did not return to running state (state: {state or 'unknown'})"
+                )
+            elif state == "stopped":
+                if previous_runtime.get("_live_validated"):
+                    if _stopped_runtime_is_live_validated(runtime):
+                        return True, "gateway state: stopped (already stopped before update)"
+                    last_detail = "gateway reported stopped but a live recorded process remains"
+                else:
+                    return True, "gateway state: stopped (already stopped before update)"
+            else:
+                last_detail = f"gateway state: {state or 'unknown'}"
+        else:
+            last_detail = "gateway runtime status disappeared after update"
 
-    if state == "stopped":
-        if isinstance(previous_runtime, dict) and previous_runtime.get("gateway_state") == "stopped":
-            return True, "gateway state: stopped (already stopped before update)"
-        return False, "gateway stopped after update but was running or unknown before update"
-    return True, f"gateway state: {state or 'unknown'}"
+        if time.monotonic() >= deadline:
+            return False, last_detail
+        time.sleep(_HEALTH_POLL_INTERVAL_SECONDS)
 
 
 def _verify_expected_sha(expected_sha: str) -> tuple[bool, str]:
@@ -305,6 +444,7 @@ def _status_payload(
         "planSchedule": existing.get("planSchedule") or [],
         "schedulerType": existing.get("schedulerType"),
         "schedulerPath": existing.get("schedulerPath"),
+        "schedulerIdentity": existing.get("schedulerIdentity"),
         "lastRunAt": last_run_at,
         "lastPlanAt": existing.get("lastPlanAt"),
         "status": status,
@@ -419,12 +559,51 @@ def _hermes_command_prefix() -> list[str]:
     return [sys.executable, str(PROJECT_ROOT / "hermes_cli" / "main.py")]
 
 
+def _installation_identity() -> str:
+    try:
+        from hermes_cli.main import PROJECT_ROOT
+
+        install_root = Path(PROJECT_ROOT).resolve()
+    except Exception:
+        install_root = Path(__file__).resolve().parents[1]
+    executable = Path(sys.executable).resolve()
+    return f"{install_root}\0{sys.prefix}\0{executable}"
+
+
+def _scheduler_identity() -> str:
+    profile_home = get_hermes_home().resolve()
+    material = f"{_installation_identity()}\0{profile_home}"
+    return "v1-" + hashlib.sha256(material.encode("utf-8")).hexdigest()[:24]
+
+
+def _launchd_label() -> str:
+    return f"{LAUNCHD_LABEL}.{_scheduler_identity()[3:]}"
+
+
+def _systemd_basename() -> str:
+    return f"{SYSTEMD_BASENAME}-{_scheduler_identity()[3:]}"
+
+
+@dataclass
+class _SchedulerHandle:
+    scheduler_type: str
+    path: Path
+    _rollback_fn: Callable[[], None]
+    _rolled_back: bool = False
+
+    def rollback(self) -> None:
+        if self._rolled_back:
+            return
+        self._rolled_back = True
+        self._rollback_fn()
+
+
 def _scheduled_command() -> list[str]:
     return _hermes_command_prefix() + ["update", "auto", "run-scheduled"]
 
 
 def _launchd_plist_path() -> Path:
-    return Path.home() / "Library" / "LaunchAgents" / f"{LAUNCHD_LABEL}.plist"
+    return Path.home() / "Library" / "LaunchAgents" / f"{_launchd_label()}.plist"
 
 
 def _launchd_target() -> str:
@@ -503,23 +682,35 @@ def _require_command_success(
 
 
 def _snapshot_file(path: Path) -> tuple[bytes, int] | None:
-    if not path.exists():
+    try:
+        stat = path.lstat()
+    except FileNotFoundError:
         return None
-    stat = path.stat()
+    if stat.st_mode & 0o170000 == 0o120000:
+        target = os.readlink(path)
+        raise RuntimeError(f"refusing to follow scheduler symlink {path} -> {target}")
+    if not path.is_file():
+        raise RuntimeError(f"scheduler artifact is not a regular file: {path}")
     return path.read_bytes(), stat.st_mode
 
 
 def _restore_file(path: Path, snapshot: tuple[bytes, int] | None) -> None:
     if snapshot is None:
-        path.unlink(missing_ok=True)
+        try:
+            path.unlink(missing_ok=True)
+        except IsADirectoryError:
+            raise RuntimeError(f"scheduler artifact is a directory: {path}") from None
         return
     path.parent.mkdir(parents=True, exist_ok=True)
+    if path.is_symlink():
+        path.unlink()
     path.write_bytes(snapshot[0])
     os.chmod(path, snapshot[1] & 0o7777)
 
 
 def _launchd_state(target: str) -> dict[str, bool | None]:
-    loaded_result = _run_launchctl(["print", f"{target}/{LAUNCHD_LABEL}"])
+    label = _launchd_label()
+    loaded_result = _run_launchctl(["print", f"{target}/{label}"])
     if loaded_result.returncode != 0:
         _require_command_success(
             loaded_result,
@@ -533,7 +724,7 @@ def _launchd_state(target: str) -> dict[str, bool | None]:
     enabled_result = _run_launchctl(["print-disabled", target])
     _require_command_success(enabled_result, "launchctl print-disabled")
     match = re.search(
-        rf"[\"']?{re.escape(LAUNCHD_LABEL)}[\"']?\s*=>\s*(true|false)",
+        rf"[\"']?{re.escape(label)}[\"']?\s*=>\s*(true|false)",
         f"{enabled_result.stdout or ''}\n{enabled_result.stderr or ''}",
         re.IGNORECASE,
     )
@@ -578,41 +769,43 @@ def _restore_launchd(
         )
     if prior_state.get("enabled") is True:
         run(
-            ["enable", f"{target}/{LAUNCHD_LABEL}"],
+            ["enable", f"{target}/{_launchd_label()}"],
             "launchctl rollback enable",
         )
     elif prior_state.get("enabled") is False:
         run(
-            ["disable", f"{target}/{LAUNCHD_LABEL}"],
+            ["disable", f"{target}/{_launchd_label()}"],
             "launchctl rollback disable",
         )
     if prior_state.get("running") and prior_state.get("loaded"):
         run(
-            ["kickstart", "-k", f"{target}/{LAUNCHD_LABEL}"],
+            ["kickstart", "-k", f"{target}/{_launchd_label()}"],
             "launchctl rollback kickstart",
         )
     if errors:
         raise RuntimeError("; ".join(errors))
 
 
-def _enable_launchd(hour: int, minute: int, schedule: str, plan_schedules: list[str]) -> tuple[str, Path]:
+def _enable_launchd(
+    hour: int, minute: int, schedule: str, plan_schedules: list[str]
+) -> _SchedulerHandle:
     plist_path = _launchd_plist_path()
     plist_path.parent.mkdir(parents=True, exist_ok=True)
     get_log_path().parent.mkdir(parents=True, exist_ok=True)
     target = _launchd_target()
     prior_file = _snapshot_file(plist_path)
-    prior_state = _launchd_state(target) if prior_file is not None else {
-        "loaded": False,
-        "enabled": None,
-        "running": False,
-    }
+    prior_state = _launchd_state(target)
+    if prior_file is None and prior_state.get("loaded"):
+        raise RuntimeError(
+            "launchd job is loaded without its scheduler file; refusing to unload it"
+        )
 
     intervals = _calendar_intervals(schedule, plan_schedules)
     start_calendar_interval: dict[str, int] | list[dict[str, int]] = (
         intervals[0] if len(intervals) == 1 else intervals
     )
     payload = {
-        "Label": LAUNCHD_LABEL,
+        "Label": _launchd_label(),
         "ProgramArguments": _scheduled_command(),
         "StartCalendarInterval": start_calendar_interval,
         "EnvironmentVariables": {"HERMES_HOME": str(get_hermes_home())},
@@ -633,7 +826,7 @@ def _enable_launchd(hour: int, minute: int, schedule: str, plan_schedules: list[
         result = _run_launchctl(["bootstrap", target, str(plist_path)])
         _require_command_success(result, "launchctl bootstrap")
         _require_command_success(
-            _run_launchctl(["enable", f"{target}/{LAUNCHD_LABEL}"]),
+            _run_launchctl(["enable", f"{target}/{_launchd_label()}"]),
             "launchctl enable",
         )
     except Exception as exc:
@@ -647,13 +840,28 @@ def _enable_launchd(hour: int, minute: int, schedule: str, plan_schedules: list[
         except Exception as rollback_exc:
             raise RuntimeError(f"{exc}; scheduler rollback failed: {rollback_exc}") from exc
         raise
-    return "launchd", plist_path
+    return _SchedulerHandle(
+        "launchd",
+        plist_path,
+        lambda: _restore_launchd(
+            target=target,
+            plist_path=plist_path,
+            prior_file=prior_file,
+            prior_state=prior_state,
+        ),
+    )
 
 
 def _disable_launchd() -> tuple[str, Path, bool]:
     plist_path = _launchd_plist_path()
-    existed = plist_path.exists()
+    prior_file = _snapshot_file(plist_path)
+    existed = prior_file is not None
     target = _launchd_target()
+    prior_state = _launchd_state(target)
+    if prior_file is None and prior_state.get("loaded"):
+        raise RuntimeError(
+            "launchd job is loaded without its scheduler file; refusing to unload it"
+        )
     _require_command_success(
         _run_launchctl(["bootout", target, str(plist_path)]),
         "launchctl bootout",
@@ -670,7 +878,8 @@ def _systemd_user_dir() -> Path:
 
 def _systemd_paths() -> tuple[Path, Path]:
     root = _systemd_user_dir()
-    return root / f"{SYSTEMD_BASENAME}.service", root / f"{SYSTEMD_BASENAME}.timer"
+    basename = _systemd_basename()
+    return root / f"{basename}.service", root / f"{basename}.timer"
 
 
 def _systemctl_user(args: list[str]) -> subprocess.CompletedProcess:
@@ -701,7 +910,7 @@ def _systemd_available() -> bool:
     return result.returncode == 0
 
 
-def _systemd_state(timer_name: str) -> dict[str, bool | None]:
+def _systemd_state(timer_name: str) -> dict[str, Any]:
     result = _systemctl_user(
         ["show", timer_name, "--property=LoadState,UnitFileState,ActiveState"]
     )
@@ -712,18 +921,33 @@ def _systemd_state(timer_name: str) -> dict[str, bool | None]:
         if "=" in line:
             key, value = line.split("=", 1)
             values[key.strip()] = value.strip()
+    if not values and result.returncode == 0:
+        values = {
+            "LoadState": "not-found",
+            "UnitFileState": "not-found",
+            "ActiveState": "inactive",
+        }
+    elif result.returncode != 0 and _is_missing_scheduler(result):
+        values.setdefault("LoadState", "not-found")
+        values.setdefault("UnitFileState", "not-found")
+        values.setdefault("ActiveState", "inactive")
     missing = {"LoadState", "UnitFileState", "ActiveState"} - values.keys()
     if missing:
         raise RuntimeError(
             "systemctl --user show did not report scheduler state: "
             + ", ".join(sorted(missing))
         )
+    load_state = values.get("LoadState")
     unit_file_state = values.get("UnitFileState")
+    active_state = values.get("ActiveState")
     enabled_states = {"enabled", "enabled-runtime", "linked", "linked-runtime"}
     return {
-        "loaded": values.get("LoadState") == "loaded",
+        "load_state": load_state,
+        "unit_file_state": unit_file_state,
+        "active_state": active_state,
+        "loaded": load_state == "loaded",
         "enabled": unit_file_state in enabled_states if unit_file_state is not None else None,
-        "running": values.get("ActiveState") == "active",
+        "running": active_state == "active",
     }
 
 
@@ -734,7 +958,7 @@ def _restore_systemd(
     timer_name: str,
     prior_service: tuple[bytes, int] | None,
     prior_timer: tuple[bytes, int] | None,
-    prior_state: dict[str, bool | None],
+    prior_state: dict[str, Any],
 ) -> None:
     errors: list[str] = []
 
@@ -761,21 +985,50 @@ def _restore_systemd(
             errors.append(f"could not restore {path}: {exc}")
     run(["daemon-reload"], "systemctl --user rollback daemon-reload")
 
-    if prior_state.get("enabled") is True:
+    unit_file_state = prior_state.get("unit_file_state")
+    if unit_file_state is None:
+        unit_file_state = "enabled" if prior_state.get("enabled") is True else None
+    if unit_file_state == "enabled":
         run(["enable", timer_name], "systemctl --user rollback enable")
-    elif prior_state.get("enabled") is False:
+    elif unit_file_state == "enabled-runtime":
+        run(
+            ["enable", "--runtime", timer_name],
+            "systemctl --user rollback enable --runtime",
+        )
+    elif unit_file_state == "linked":
+        run(
+            ["link", str(timer_path)],
+            "systemctl --user rollback link",
+        )
+    elif unit_file_state == "linked-runtime":
+        run(
+            ["link", "--runtime", str(timer_path)],
+            "systemctl --user rollback link --runtime",
+        )
+    elif unit_file_state == "masked":
+        run(["mask", timer_name], "systemctl --user rollback mask")
+    elif unit_file_state == "masked-runtime":
+        run(
+            ["mask", "--runtime", timer_name],
+            "systemctl --user rollback mask --runtime",
+        )
+    elif unit_file_state == "disabled" or (
+        unit_file_state is None and prior_state.get("enabled") is False
+    ):
         run(
             ["disable", timer_name],
             "systemctl --user rollback disable",
             allow_missing=True,
         )
-    if prior_state.get("running"):
+    if prior_state.get("active_state") == "active" or prior_state.get("running"):
         run(["start", timer_name], "systemctl --user rollback start")
     if errors:
         raise RuntimeError("; ".join(errors))
 
 
-def _enable_systemd(hour: int, minute: int, schedule: str, plan_schedules: list[str]) -> tuple[str, Path]:
+def _enable_systemd(
+    hour: int, minute: int, schedule: str, plan_schedules: list[str]
+) -> _SchedulerHandle:
     if not _systemd_available():
         raise RuntimeError("systemd user services are not available")
 
@@ -784,11 +1037,11 @@ def _enable_systemd(hour: int, minute: int, schedule: str, plan_schedules: list[
     get_log_path().parent.mkdir(parents=True, exist_ok=True)
     prior_service = _snapshot_file(service_path)
     prior_timer = _snapshot_file(timer_path)
-    prior_state = _systemd_state(timer_path.name) if prior_service is not None or prior_timer is not None else {
-        "loaded": False,
-        "enabled": None,
-        "running": False,
-    }
+    prior_state = _systemd_state(timer_path.name)
+    if prior_service is None and prior_timer is None and prior_state.get("loaded"):
+        raise RuntimeError(
+            "systemd timer is loaded without scheduler files; refusing to unload it"
+        )
 
     command = " ".join(shlex.quote(part) for part in _scheduled_command())
     on_calendar_lines = [
@@ -855,17 +1108,35 @@ def _enable_systemd(hour: int, minute: int, schedule: str, plan_schedules: list[
         except Exception as rollback_exc:
             raise RuntimeError(f"{exc}; scheduler rollback failed: {rollback_exc}") from exc
         raise
-    return "systemd-user", timer_path
+    return _SchedulerHandle(
+        "systemd-user",
+        timer_path,
+        lambda: _restore_systemd(
+            service_path=service_path,
+            timer_path=timer_path,
+            timer_name=timer_path.name,
+            prior_service=prior_service,
+            prior_timer=prior_timer,
+            prior_state=prior_state,
+        ),
+    )
 
 
 def _disable_systemd() -> tuple[str, Path, bool]:
     service_path, timer_path = _systemd_paths()
-    existed = service_path.exists() or timer_path.exists()
+    prior_service = _snapshot_file(service_path)
+    prior_timer = _snapshot_file(timer_path)
+    existed = prior_service is not None or prior_timer is not None
     if not shutil.which("systemctl"):
         if existed:
             raise RuntimeError("systemctl is unavailable; scheduler files were kept")
         return "systemd-user", timer_path, False
 
+    prior_state = _systemd_state(timer_path.name)
+    if not existed and prior_state.get("loaded"):
+        raise RuntimeError(
+            "systemd timer is loaded without scheduler files; refusing to unload it"
+        )
     _require_command_success(
         _systemctl_user(["disable", "--now", timer_path.name]),
         "systemctl --user disable --now",
@@ -880,7 +1151,9 @@ def _disable_systemd() -> tuple[str, Path, bool]:
     return "systemd-user", timer_path, existed
 
 
-def _enable_scheduler(hour: int, minute: int, schedule: str, plan_schedules: list[str]) -> tuple[str, Path]:
+def _enable_scheduler(
+    hour: int, minute: int, schedule: str, plan_schedules: list[str]
+) -> _SchedulerHandle:
     if sys.platform == "darwin":
         return _enable_launchd(hour, minute, schedule, plan_schedules)
     if sys.platform.startswith("linux"):
@@ -890,6 +1163,22 @@ def _enable_scheduler(hour: int, minute: int, schedule: str, plan_schedules: lis
 
 def _disable_scheduler(status: dict[str, Any]) -> tuple[str | None, Path | None, bool]:
     scheduler = status.get("schedulerType")
+    if status.get("enabled") is True or scheduler or status.get("schedulerPath"):
+        expected_identity = _scheduler_identity()
+        if status.get("schedulerIdentity") != expected_identity:
+            raise RuntimeError("scheduler identity does not belong to this installation/profile")
+        if sys.platform == "darwin":
+            expected_type = "launchd"
+            expected_path = _launchd_plist_path()
+        elif sys.platform.startswith("linux"):
+            expected_type = "systemd-user"
+            _service_path, expected_path = _systemd_paths()
+        else:
+            raise RuntimeError(f"scheduler is unsupported on {sys.platform}")
+        if status.get("schedulerType") != expected_type:
+            raise RuntimeError(f"schedulerType must be {expected_type!r}")
+        if status.get("schedulerPath") != str(expected_path):
+            raise RuntimeError("schedulerPath does not match the configured scheduler")
     if scheduler == "launchd" or sys.platform == "darwin":
         kind, path, existed = _disable_launchd()
         return kind, path, existed
@@ -900,6 +1189,7 @@ def _disable_scheduler(status: dict[str, Any]) -> tuple[str | None, Path | None,
 
 
 def cmd_auto_enable(args) -> None:
+    scheduler_handle: _SchedulerHandle | None = None
     try:
         hour, minute, schedule = _parse_time(getattr(args, "time", ""))
         plan_schedules: list[str] = []
@@ -911,12 +1201,32 @@ def cmd_auto_enable(args) -> None:
             raise ValueError(
                 f"plan time {schedule} must differ from the update time"
             )
-        scheduler_type, scheduler_path = _enable_scheduler(
+        scheduler_handle = _enable_scheduler(
             hour,
             minute,
             schedule,
             plan_schedules,
         )
+        try:
+            update_status_fields(
+                mode="scheduled",
+                enabled=True,
+                schedule=schedule,
+                planSchedule=plan_schedules,
+                schedulerType=scheduler_handle.scheduler_type,
+                schedulerPath=str(scheduler_handle.path),
+                schedulerIdentity=_scheduler_identity(),
+                logPath=str(get_log_path()),
+            )
+        except Exception as status_exc:
+            try:
+                scheduler_handle.rollback()
+            except Exception as rollback_exc:
+                raise RuntimeError(
+                    f"could not persist scheduler status: {status_exc}; "
+                    f"scheduler rollback failed: {rollback_exc}"
+                ) from status_exc
+            raise
     except ValueError as exc:
         print(f"✗ Invalid schedule time: {exc}", file=sys.stderr)
         raise SystemExit(2) from exc
@@ -924,21 +1234,12 @@ def cmd_auto_enable(args) -> None:
         print(f"✗ Could not enable auto-update scheduler: {exc}", file=sys.stderr)
         raise SystemExit(1) from exc
 
-    update_status_fields(
-        mode="scheduled",
-        enabled=True,
-        schedule=schedule,
-        planSchedule=plan_schedules,
-        schedulerType=scheduler_type,
-        schedulerPath=str(scheduler_path),
-        logPath=str(get_log_path()),
-    )
     print("✓ Hermes auto-update scheduled.")
     print(f"  Update time: {schedule}")
     if plan_schedules:
         print(f"  Plan time:   {', '.join(plan_schedules)}")
-    print(f"  Scheduler:   {scheduler_type}")
-    print(f"  Path:        {scheduler_path}")
+    print(f"  Scheduler:   {scheduler_handle.scheduler_type}")
+    print(f"  Path:        {scheduler_handle.path}")
     print("  Command:     hermes update auto run-scheduled")
 
 
@@ -958,6 +1259,7 @@ def cmd_auto_disable(_args) -> None:
         planSchedule=[],
         schedulerType=None,
         schedulerPath=None,
+        schedulerIdentity=None,
         logPath=str(get_log_path()),
     )
     if removed or was_enabled:
@@ -1053,9 +1355,13 @@ def _validate_scheduler_status(status: dict[str, Any]) -> str | None:
 
     if status.get("schedulerType") != expected_type:
         return f"schedulerType must be {expected_type!r}"
+    if status.get("schedulerIdentity") != _scheduler_identity():
+        return "scheduler identity does not belong to this installation/profile"
     scheduler_path = status.get("schedulerPath")
     if not isinstance(scheduler_path, str) or scheduler_path != str(expected_path):
         return "schedulerPath does not match the configured scheduler"
+    if expected_path.is_symlink():
+        return "configured scheduler file must not be a symlink"
     if not expected_path.is_file():
         return f"configured scheduler file is missing: {expected_path}"
     return None

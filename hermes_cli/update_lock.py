@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import errno
+import hashlib
 import os
 from pathlib import Path
 
@@ -51,9 +52,25 @@ def _common_git_dir(project_root: Path) -> Path:
 
 
 def get_update_lock_path(project_root: Path) -> Path:
-    """Return a lock path shared by every worktree of this source checkout."""
+    """Return a stable lock path for this source checkout or package install.
 
-    return _common_git_dir(Path(project_root)) / "hermes-update.lock"
+    Git worktrees share their common git directory.  Pip installations have no
+    ``.git`` directory, so derive a user-writable, installation-specific path
+    from the canonical install root instead of failing closed before the update
+    can start.  The path deliberately does not include ``HERMES_HOME``: two
+    profiles using one installation must still serialize upgrades.
+    """
+
+    project_root = Path(project_root)
+    if (project_root / ".git").exists():
+        return _common_git_dir(project_root) / "hermes-update.lock"
+
+    install_identity = str(project_root.resolve())
+    digest = hashlib.sha256(install_identity.encode("utf-8")).hexdigest()[:24]
+    state_home = Path(
+        os.environ.get("XDG_STATE_HOME", str(Path.home() / ".local" / "state"))
+    )
+    return state_home / "hermes" / f"update-{digest}.lock"
 
 
 class UpdateLock:

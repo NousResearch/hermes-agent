@@ -739,6 +739,44 @@ def cmd_inspect(
         raise SystemExit(1) from None
 
 
+def _remove_partial_plugin_target(target: Path) -> None:
+    """Best-effort removal of a failed publication, never its backup."""
+    try:
+        if target.is_symlink() or target.is_file():
+            target.unlink()
+        elif target.exists():
+            shutil.rmtree(target)
+    except OSError:
+        logger.warning("Failed to remove partial plugin publication at %s", target)
+
+
+def _restore_plugin_backup(backup: Path, target: Path) -> None:
+    """Restore *backup* canonically, preserving it when recovery cannot finish."""
+    _remove_partial_plugin_target(target)
+    try:
+        os.replace(backup, target)
+        return
+    except OSError:
+        pass
+
+    try:
+        shutil.copytree(backup, target, symlinks=True)
+        if not target.exists():
+            raise OSError("restored target is unavailable after copy")
+    except OSError as exc:
+        _remove_partial_plugin_target(target)
+        recovery_path = backup.resolve()
+        raise PluginOperationError(
+            "PLUGIN_BACKUP_PRESERVED: automatic restoration failed; the old plugin "
+            f"is preserved at {recovery_path}. Manual recovery is required."
+        ) from exc
+
+    try:
+        shutil.rmtree(backup)
+    except OSError:
+        logger.warning("Restored previous plugin, but failed to clean up its backup at %s", backup)
+
+
 def _install_plugin_core(
     identifier: str, *, force: bool, requested_ref: str | None = None
 ) -> InstallResult:
@@ -845,11 +883,8 @@ def _install_plugin_core(
                     os.replace(target, backup)
                 os.replace(staged, target)
             except OSError as exc:
-                if backup is not None and backup.exists() and not target.exists():
-                    try:
-                        os.replace(backup, target)
-                    except OSError:
-                        logger.error("Failed to restore previous plugin after publication failure")
+                if backup is not None and backup.exists():
+                    _restore_plugin_backup(backup, target)
                 raise PluginOperationError("Failed to publish plugin installation.") from exc
 
             if backup is not None and backup.exists():

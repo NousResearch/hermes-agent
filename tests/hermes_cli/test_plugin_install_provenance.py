@@ -164,6 +164,112 @@ def test_publication_failure_restores_force_replacement(tmp_path, monkeypatch):
     assert (old / "old").read_text() == "yes"
 
 
+def test_publication_and_rename_restore_fail_falls_back_to_copy(tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    _repo(repo)
+    plugins = tmp_path / "plugins"
+    plugins.mkdir()
+    old = plugins / "pinned-plugin"
+    old.mkdir()
+    (old / "old").write_text("yes")
+    (old / LOCK_FILENAME).write_text("old-lock")
+    monkeypatch.setattr(pc, "_plugins_dir", lambda: plugins)
+    real_replace = pc.os.replace
+
+    def fail_publish_and_restore(src, dst):
+        src_path = Path(src)
+        dst_path = Path(dst)
+        if dst_path == old and (
+            src_path.name == "payload" or src_path.name.startswith(".backup-")
+        ):
+            raise OSError("rename failed")
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(pc.os, "replace", fail_publish_and_restore)
+    with pytest.raises(pc.PluginOperationError, match="publish"):
+        pc._install_plugin_core(f"file://{repo}", force=True)
+
+    assert (old / "old").read_text() == "yes"
+    assert (old / LOCK_FILENAME).read_text() == "old-lock"
+    assert not list(plugins.glob(".backup-*"))
+
+
+def test_failed_copy_restore_preserves_backup_and_reports_recovery_path(tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    _repo(repo)
+    plugins = tmp_path / "plugins"
+    plugins.mkdir()
+    old = plugins / "pinned-plugin"
+    old.mkdir()
+    (old / "old").write_text("yes")
+    (old / LOCK_FILENAME).write_text("old-lock")
+    monkeypatch.setattr(pc, "_plugins_dir", lambda: plugins)
+    real_replace = pc.os.replace
+    real_copytree = pc.shutil.copytree
+
+    def fail_publish_and_restore(src, dst):
+        src_path = Path(src)
+        dst_path = Path(dst)
+        if dst_path == old and (
+            src_path.name == "payload" or src_path.name.startswith(".backup-")
+        ):
+            raise OSError("rename failed")
+        return real_replace(src, dst)
+
+    def fail_backup_copy(src, dst, *args, **kwargs):
+        if Path(src).name.startswith(".backup-"):
+            raise OSError("copy failed")
+        return real_copytree(src, dst, *args, **kwargs)
+
+    monkeypatch.setattr(pc.os, "replace", fail_publish_and_restore)
+    monkeypatch.setattr(pc.shutil, "copytree", fail_backup_copy)
+    with pytest.raises(pc.PluginOperationError) as raised:
+        pc._install_plugin_core(f"file://{repo}", force=True)
+
+    backups = list(plugins.glob(".backup-*"))
+    assert len(backups) == 1
+    backup = backups[0]
+    assert (backup / "old").read_text() == "yes"
+    assert (backup / LOCK_FILENAME).read_text() == "old-lock"
+    assert not old.exists()
+    message = str(raised.value)
+    assert "PLUGIN_BACKUP_PRESERVED" in message
+    assert str(backup.resolve()) in message
+    assert "manual recovery" in message.lower()
+
+
+def test_force_publish_failure_leaves_config_bytes_unchanged(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    home.mkdir()
+    config = home / "config.yaml"
+    original = b"plugins:\n  enabled: [pinned-plugin]\n  disabled: [other]\n# preserve me\n"
+    config.write_bytes(original)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    repo = tmp_path / "repo"
+    _repo(repo)
+    plugins = home / "plugins"
+    plugins.mkdir()
+    old = plugins / "pinned-plugin"
+    old.mkdir()
+    (old / "old").write_text("yes")
+    real_replace = pc.os.replace
+    calls = 0
+
+    def fail_publish(src, dst):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise OSError("publish failed")
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(pc.os, "replace", fail_publish)
+    with pytest.raises(pc.PluginOperationError, match="publish"):
+        pc._install_plugin_core(f"file://{repo}", force=True)
+
+    assert config.read_bytes() == original
+
+
 @pytest.mark.parametrize("identifier", [
     "https://user:secret@example.com/repo.git",
     "https://example.com/repo.git?token=secret",

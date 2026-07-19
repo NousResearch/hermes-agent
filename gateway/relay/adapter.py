@@ -57,8 +57,13 @@ class RelayAdapter(BasePlatformAdapter):
         super().__init__(config, Platform.RELAY)
         self.descriptor = descriptor
         self._transport = transport
-        # Capability surface read by stream_consumer (getattr(..., 4096)).
+        # Capability surface read by stream_consumer.
         self.MAX_MESSAGE_LENGTH = descriptor.max_message_length
+        self.SUPPORTS_MESSAGE_EDITING = descriptor.supports_edit
+        # Relay's wire contract has an explicit terminal marker. Even when the
+        # final content equals the latest preview, the connector must observe
+        # finalize=True so it can durably close the streaming lifecycle.
+        self.REQUIRES_EDIT_FINALIZE = descriptor.supports_edit
         # chat_id -> scope_id (server/workspace scope), learned from inbound
         # events. The connector's egress guard resolves the owning tenant from
         # the OUTBOUND action's metadata.scope_id; the gateway's generic delivery
@@ -222,6 +227,8 @@ class RelayAdapter(BasePlatformAdapter):
         """Adopt a (re)negotiated descriptor into the live capability surface."""
         self.descriptor = descriptor
         self.MAX_MESSAGE_LENGTH = descriptor.max_message_length
+        self.SUPPORTS_MESSAGE_EDITING = descriptor.supports_edit
+        self.REQUIRES_EDIT_FINALIZE = descriptor.supports_edit
         self.supports_code_blocks = descriptor.markdown_dialect not in ("", "plain")
 
     async def _on_inbound(self, event) -> None:
@@ -493,6 +500,37 @@ class RelayAdapter(BasePlatformAdapter):
         return SendResult(
             success=bool(result.get("success")),
             message_id=result.get("message_id"),
+            error=result.get("error"),
+        )
+
+    async def edit_message(
+        self,
+        chat_id: str,
+        message_id: str,
+        content: str,
+        *,
+        finalize: bool = False,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Forward an edit through the connector when it advertised support."""
+        if not self.descriptor.supports_edit:
+            return SendResult(success=False, error="Not supported")
+        if self._transport is None:
+            return SendResult(success=False, error="no transport")
+        result = await self._transport.send_outbound(
+            {
+                "op": "edit",
+                "chat_id": chat_id,
+                "message_id": message_id,
+                "content": content,
+                "finalize": finalize,
+                "metadata": self._with_scope(chat_id, metadata),
+            },
+            platform=self._platform_by_chat.get(str(chat_id)),
+        )
+        return SendResult(
+            success=bool(result.get("success")),
+            message_id=result.get("message_id", message_id),
             error=result.get("error"),
         )
 

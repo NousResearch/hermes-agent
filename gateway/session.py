@@ -1976,6 +1976,15 @@ class SessionStore:
         was_auto_reset = False
         auto_reset_reason = None
         reset_had_activity = False
+        # Set when the #54878 self-heal drops a routing entry whose session
+        # was already ended in state.db under a reason the recovery finder
+        # doesn't consider resumable (e.g. "tui_shutdown" — anything other
+        # than "agent_close" / still-open). Used after the recovery attempt
+        # to decide whether the user needs to be told their old thread is
+        # gone, since that path otherwise falls through to "Create new
+        # session" in total silence (#59580).
+        stale_routing_dropped_session_id = None
+        stale_routing_had_activity = False
 
         with self._lock:
             self._ensure_loaded_locked()
@@ -2001,6 +2010,11 @@ class SessionStore:
                         "(#54878)",
                         session_key, entry.session_id,
                     )
+                    # Snapshot before pop — recovery may still reopen the row
+                    # (agent_close); if it can't, these drive the user-facing
+                    # stale_routing_recovered notice (#59580).
+                    _dropped_session_id = entry.session_id
+                    _dropped_had_activity = entry.last_prompt_tokens > 0
                     self._entries.pop(session_key, None)
                     # If an expiry watcher (daily/idle reset) already finalized
                     # this session, honour the reset decision instead of silently
@@ -2008,8 +2022,11 @@ class SessionStore:
                     if _reset_reason:
                         was_auto_reset = True
                         auto_reset_reason = _reset_reason
-                        reset_had_activity = entry.last_prompt_tokens > 0
-                        db_end_session_id = entry.session_id
+                        reset_had_activity = _dropped_had_activity
+                        db_end_session_id = _dropped_session_id
+                    else:
+                        stale_routing_dropped_session_id = _dropped_session_id
+                        stale_routing_had_activity = _dropped_had_activity
                     entry = None
                     _needs_recover = True
                 elif entry.session_id != _stale_session_id:
@@ -2049,6 +2066,21 @@ class SessionStore:
                 _needs_save = True
 
         if entry is None:
+            # If the #54878 self-heal dropped a stale routing entry above and
+            # recovery just failed to reopen it (end_reason was outside the
+            # ended_at IS NULL / 'agent_close' whitelist — e.g. 'tui_shutdown'),
+            # the user is about to receive a brand-new, empty session in place
+            # of a thread they may believe is still live. That's the same
+            # "your previous session was silently replaced" situation as any
+            # other auto-reset, so surface it the same way instead of staying
+            # silent. NOTE: db_end_session_id is intentionally left unset here
+            # — the old session was already ended (with its real reason) by
+            # whatever finalized it, and we must not overwrite that reason.
+            if stale_routing_dropped_session_id is not None and not was_auto_reset:
+                was_auto_reset = True
+                auto_reset_reason = "stale_routing_recovered"
+                reset_had_activity = stale_routing_had_activity
+
             # Create a candidate outside the lock, then publish only if another
             # worker has not already populated this routing key.
             session_id = f"{now.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"

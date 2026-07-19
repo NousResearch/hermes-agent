@@ -1911,6 +1911,7 @@ from gateway.config import (
 )
 from gateway.session import (
     AsyncSessionStore,
+    SessionEntry,
     SessionStore,
     SessionSource,
     SessionContext,
@@ -12098,68 +12099,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # so the agent knows this is a fresh conversation (not an intentional /reset).
         if _was_auto_reset:
             reset_reason = getattr(session_entry, 'auto_reset_reason', None) or 'idle'
-            if reset_reason == "suspended":
-                context_note = "[System note: The user's previous session was stopped and suspended. This is a fresh conversation with no prior context.]"
-            elif reset_reason == "daily":
-                context_note = "[System note: The user's session was automatically reset by the daily schedule. This is a fresh conversation with no prior context.]"
-            elif reset_reason == "resume_pending_expired":
-                context_note = "[System note: The previous gateway session could not be recovered after a restart (API recovery timed out). This is a fresh conversation — use /resume to restore history if needed.]"
-            else:
-                context_note = "[System note: The user's previous session expired due to inactivity. This is a fresh conversation with no prior context.]"
-            turn_sidecar_notes.append(context_note)
-
-            # Send a user-facing notification explaining the reset, unless:
-            # - notifications are disabled in config
-            # - the platform is excluded (e.g. api_server, webhook)
-            # - the expired session had no activity (nothing was cleared)
+            turn_sidecar_notes.append(self._auto_reset_context_note(reset_reason))
             try:
-                policy = self.session_store.config.get_reset_policy(
-                    platform=source.platform,
-                    session_type=getattr(source, 'chat_type', 'dm'),
+                await self._maybe_send_auto_reset_notice(
+                    source, session_entry, reset_reason,
                 )
-                platform_name = source.platform.value if source.platform else ""
-                had_activity = getattr(session_entry, 'reset_had_activity', False)
-                # Suspended and restart-recovery-expired sessions always notify
-                # regardless of policy.notify — the user had an active session
-                # that was silently replaced, so they need to know they can
-                # /resume it.  Idle/daily resets respect the policy flag.
-                should_notify = reset_reason in {"suspended", "resume_pending_expired"} or (
-                    policy.notify
-                    and had_activity
-                    and platform_name not in policy.notify_exclude_platforms
-                )
-                if should_notify:
-                    adapter = self._adapter_for_source(source)
-                    if adapter:
-                        if reset_reason == "suspended":
-                            reason_text = "previous session was stopped or interrupted"
-                        elif reset_reason == "resume_pending_expired":
-                            reason_text = "gateway restart recovery timed out"
-                        elif reset_reason == "daily":
-                            reason_text = f"daily schedule at {policy.at_hour}:00"
-                        else:
-                            hours = policy.idle_minutes // 60
-                            mins = policy.idle_minutes % 60
-                            duration = f"{hours}h" if not mins else f"{hours}h {mins}m" if hours else f"{mins}m"
-                            reason_text = f"inactive for {duration}"
-                        notice = (
-                            f"◐ Session automatically reset ({reason_text}). "
-                            f"Conversation history cleared.\n"
-                            f"Use /resume to browse and restore a previous session.\n"
-                            f"Adjust reset timing in config.yaml under session_reset."
-                        )
-                        try:
-                            session_info = await asyncio.to_thread(
-                                self._reset_notice_session_info, source
-                            )
-                            if session_info:
-                                notice = f"{notice}\n\n{session_info}"
-                        except Exception:
-                            pass
-                        await adapter.send(
-                            source.chat_id, notice,
-                            metadata=self._thread_metadata_for_source(source),
-                        )
             except Exception as e:
                 logger.debug("Auto-reset notification failed (non-fatal): %s", e)
 
@@ -13568,6 +13512,110 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         finally:
             # Restore session context variables to their pre-handler state
             self._clear_session_env(_session_env_tokens)
+
+    @staticmethod
+    def _auto_reset_context_note(reset_reason: str) -> str:
+        """Agent-facing system note for an auto-reset turn."""
+        if reset_reason == "suspended":
+            return (
+                "[System note: The user's previous session was stopped and "
+                "suspended. This is a fresh conversation with no prior context.]"
+            )
+        if reset_reason == "daily":
+            return (
+                "[System note: The user's session was automatically reset by "
+                "the daily schedule. This is a fresh conversation with no prior context.]"
+            )
+        if reset_reason == "resume_pending_expired":
+            return (
+                "[System note: The previous gateway session could not be "
+                "recovered after a restart (API recovery timed out). This is a "
+                "fresh conversation — use /resume to restore history if needed.]"
+            )
+        if reset_reason == "stale_routing_recovered":
+            return (
+                "[System note: The previous session ended in a way that could "
+                "not be automatically resumed (e.g. the client disconnected). "
+                "This is a fresh conversation — use /resume to restore history "
+                "if needed.]"
+            )
+        return (
+            "[System note: The user's previous session expired due to "
+            "inactivity. This is a fresh conversation with no prior context.]"
+        )
+
+    async def _maybe_send_auto_reset_notice(
+        self,
+        source: SessionSource,
+        session_entry: SessionEntry,
+        reset_reason: str,
+    ) -> None:
+        """Send a user-facing auto-reset notice via the platform adapter.
+
+        Suspended, restart-recovery-expired, and stale-routing-reset sessions
+        always notify regardless of ``policy.notify`` — the user had an active
+        session that was silently replaced, so they need to know they can
+        ``/resume`` it. Idle/daily resets respect the policy flag.
+        """
+        policy = self.session_store.config.get_reset_policy(
+            platform=source.platform,
+            session_type=getattr(source, "chat_type", "dm"),
+        )
+        platform_name = source.platform.value if source.platform else ""
+        had_activity = getattr(session_entry, "reset_had_activity", False)
+        should_notify = reset_reason in {
+            "suspended",
+            "resume_pending_expired",
+            "stale_routing_recovered",
+        } or (
+            policy.notify
+            and had_activity
+            and platform_name not in policy.notify_exclude_platforms
+        )
+        if not should_notify:
+            return
+
+        adapter = self._adapter_for_source(source)
+        if not adapter:
+            return
+
+        if reset_reason == "suspended":
+            reason_text = "previous session was stopped or interrupted"
+        elif reset_reason == "resume_pending_expired":
+            reason_text = "gateway restart recovery timed out"
+        elif reset_reason == "stale_routing_recovered":
+            reason_text = "previous session ended and could not be auto-resumed"
+        elif reset_reason == "daily":
+            reason_text = f"daily schedule at {policy.at_hour}:00"
+        else:
+            hours = policy.idle_minutes // 60
+            mins = policy.idle_minutes % 60
+            duration = (
+                f"{hours}h" if not mins
+                else f"{hours}h {mins}m" if hours
+                else f"{mins}m"
+            )
+            reason_text = f"inactive for {duration}"
+
+        notice = (
+            f"◐ Session automatically reset ({reason_text}). "
+            f"Conversation history cleared.\n"
+            f"Use /resume to browse and restore a previous session.\n"
+            f"Adjust reset timing in config.yaml under session_reset."
+        )
+        try:
+            session_info = await asyncio.to_thread(
+                self._reset_notice_session_info, source
+            )
+            if session_info:
+                notice = f"{notice}\n\n{session_info}"
+        except Exception:
+            pass
+        await adapter.send(
+            source.chat_id,
+            notice,
+            metadata=self._thread_metadata_for_source(source),
+        )
 
     def _reset_notice_session_info(self, source: SessionSource) -> str:
         """Session-info block for the auto-reset notice, profile-scoped.

@@ -6,10 +6,13 @@ Verifies that:
 - SessionResetPolicy.notify controls whether notifications are sent
 - notify_exclude_platforms skips notifications for excluded platforms
 - resume_pending_expired auto-reset sets the correct reason and DB end_reason
+- stale_routing_recovered notifies when #54878 self-heal can't reopen the old session
 """
 
 from datetime import datetime, timedelta
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
 
 from gateway.config import (
     GatewayConfig,
@@ -480,3 +483,202 @@ class TestResumePendingExpiredAutoReset:
         assert refreshed.session_id == old.session_id
         db.end_session.assert_not_called()
         db.promote_to_session_reset.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# stale_routing_recovered: notify when #54878 self-heal can't reopen (#59580)
+# ---------------------------------------------------------------------------
+
+class TestStaleRoutingSelfHealNotify:
+    """When sessions.json points at a session state.db already ended under a
+    non-recoverable reason, get_or_create_session drops the stale entry and
+    tries recovery. If that also declines to reopen it, a brand-new session
+    is created — this must set was_auto_reset=True with reason
+    'stale_routing_recovered' so the user is told, instead of silently
+    switching them to an empty thread (#59580)."""
+
+    def test_unrecoverable_end_reason_notifies_and_creates_new_session(
+        self, tmp_path
+    ):
+        """end_reason='tui_shutdown' can't be auto-recovered -> new session
+        with auto_reset_reason='stale_routing_recovered'."""
+        db = _make_db_mock()
+        store = _make_store_with_db(tmp_path, db)
+        source = _make_source()
+
+        old = store.get_or_create_session(source)
+
+        # Simulate: a TUI client attached to this session_id closed and ended
+        # it in state.db, but sessions.json (in-memory _entries) still routes
+        # here — and automatic recovery has nothing recoverable to offer.
+        db.get_session.return_value = {
+            "id": old.session_id,
+            "end_reason": "tui_shutdown",
+        }
+        db.find_latest_gateway_session_for_peer.return_value = None
+
+        new = store.get_or_create_session(source)
+
+        assert new.session_id != old.session_id, "should have created a new session"
+        assert new.was_auto_reset is True
+        assert new.auto_reset_reason == "stale_routing_recovered"
+
+    def test_unrecoverable_end_reason_does_not_overwrite_db_end_reason(
+        self, tmp_path
+    ):
+        """The old session's real end_reason ('tui_shutdown') must be left
+        alone in state.db — it was already finalized elsewhere, so
+        get_or_create_session must not call end_session()/promote on it again."""
+        db = _make_db_mock()
+        store = _make_store_with_db(tmp_path, db)
+        source = _make_source()
+
+        old = store.get_or_create_session(source)
+        db.get_session.return_value = {
+            "id": old.session_id,
+            "end_reason": "tui_shutdown",
+        }
+        db.find_latest_gateway_session_for_peer.return_value = None
+
+        store.get_or_create_session(source)
+
+        db.end_session.assert_not_called()
+        db.promote_to_session_reset.assert_not_called()
+
+    def test_had_activity_reflects_dropped_session(self, tmp_path):
+        """reset_had_activity on the fresh session reflects whether the
+        dropped/stale session had real conversation activity."""
+        db = _make_db_mock()
+        store = _make_store_with_db(tmp_path, db)
+        source = _make_source()
+
+        old = store.get_or_create_session(source)
+        with store._lock:
+            old.last_prompt_tokens = 12_000
+            store._save()
+
+        db.get_session.return_value = {
+            "id": old.session_id,
+            "end_reason": "tui_shutdown",
+        }
+        db.find_latest_gateway_session_for_peer.return_value = None
+
+        new = store.get_or_create_session(source)
+        assert new.reset_had_activity is True
+
+    def test_recoverable_end_reason_reopens_without_notifying(self, tmp_path):
+        """Non-regression: end_reason='agent_close' IS recoverable — the
+        finder returns a row and the SAME session_id is reopened silently
+        (transcript preserved), so no auto-reset notification should fire."""
+        db = _make_db_mock()
+        store = _make_store_with_db(tmp_path, db)
+        source = _make_source()
+
+        old = store.get_or_create_session(source)
+        db.get_session.return_value = {
+            "id": old.session_id,
+            "end_reason": "agent_close",
+        }
+        db.find_latest_gateway_session_for_peer.return_value = {
+            "id": old.session_id,
+            "started_at": None,
+        }
+
+        recovered = store.get_or_create_session(source)
+
+        assert recovered.session_id == old.session_id, "should reopen the SAME session"
+        assert recovered.was_auto_reset is False
+        db.reopen_session.assert_called_once_with(old.session_id)
+
+    def test_brand_new_peer_does_not_trigger_stale_routing_reason(self, tmp_path):
+        """A peer with no prior routing entry at all must not be treated as a
+        stale-routing self-heal — that's just a normal first-ever session."""
+        db = _make_db_mock()
+        store = _make_store_with_db(tmp_path, db)
+        source = _make_source()
+
+        entry = store.get_or_create_session(source)
+
+        assert entry.was_auto_reset is False
+        assert entry.auto_reset_reason is None
+
+
+# ---------------------------------------------------------------------------
+# GatewayRunner adapter delivery for stale_routing_recovered (#59580)
+# ---------------------------------------------------------------------------
+
+class TestStaleRoutingAdapterDelivery:
+    """Sweeper-requested regression: the user-facing notice must actually
+    reach the platform adapter when reason is stale_routing_recovered,
+    even when policy.notify is False."""
+
+    def _make_runner(self, *, notify: bool = False):
+        from gateway.run import GatewayRunner
+
+        runner = object.__new__(GatewayRunner)
+        runner.session_store = MagicMock()
+        runner.session_store.config.get_reset_policy.return_value = SessionResetPolicy(
+            mode="none",
+            notify=notify,
+            notify_exclude_platforms=["api_server", "webhook"],
+        )
+        runner._reset_notice_session_info = MagicMock(return_value="")
+        runner._thread_metadata_for_source = MagicMock(return_value={})
+        return runner
+
+    @pytest.mark.asyncio
+    async def test_stale_routing_always_notifies_even_when_policy_notify_false(self):
+        runner = self._make_runner(notify=False)
+        adapter = MagicMock()
+        adapter.send = AsyncMock()
+        runner._adapter_for_source = MagicMock(return_value=adapter)
+
+        source = _make_source()
+        entry = SessionEntry(
+            session_key="telegram:dm:123",
+            session_id="new_sess",
+            created_at=datetime.now(),
+            updated_at=datetime.now(),
+            was_auto_reset=True,
+            auto_reset_reason="stale_routing_recovered",
+            reset_had_activity=True,
+        )
+
+        await runner._maybe_send_auto_reset_notice(
+            source, entry, "stale_routing_recovered",
+        )
+
+        adapter.send.assert_awaited_once()
+        chat_id, notice = adapter.send.await_args.args[:2]
+        assert chat_id == source.chat_id
+        assert "could not be auto-resumed" in notice
+        assert "Session automatically reset" in notice
+
+    def test_stale_routing_context_note_mentions_resume(self):
+        from gateway.run import GatewayRunner
+
+        note = GatewayRunner._auto_reset_context_note("stale_routing_recovered")
+        assert "could not be automatically resumed" in note
+        assert "/resume" in note
+
+    @pytest.mark.asyncio
+    async def test_idle_respects_notify_false(self):
+        """Idle resets must still honour policy.notify=False (non-regression)."""
+        runner = self._make_runner(notify=False)
+        adapter = MagicMock()
+        adapter.send = AsyncMock()
+        runner._adapter_for_source = MagicMock(return_value=adapter)
+
+        source = _make_source()
+        entry = SessionEntry(
+            session_key="telegram:dm:123",
+            session_id="new_sess",
+            created_at=datetime.now(),
+            updated_at=datetime.now(),
+            was_auto_reset=True,
+            auto_reset_reason="idle",
+            reset_had_activity=True,
+        )
+
+        await runner._maybe_send_auto_reset_notice(source, entry, "idle")
+        adapter.send.assert_not_awaited()

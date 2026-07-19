@@ -409,10 +409,22 @@ The API server gives full access to hermes-agent's toolset, **including terminal
 
 ### config.yaml
 
+The API server can be enabled and configured entirely from `config.yaml` under the `gateway.api_server` section, without any environment variables. Env vars, when set, take precedence (env > config.yaml > built-in default); in particular `API_SERVER_ENABLED=false` overrides a YAML `enabled: true`.
+
 ```yaml
-# Not yet supported — use environment variables.
-# config.yaml support coming in a future release.
+gateway:
+  api_server:
+    enabled: true
+    port: 8642            # default 8642
+    host: "127.0.0.1"     # bind address; 0.0.0.0 to expose
+    key: "your-bearer-token"
+    cors_origins:         # optional: string (comma-separated) or list
+      - "http://localhost:3000"
+    model_name: "hermes"  # optional; defaults to profile name
+    max_concurrent_runs: 10
 ```
+
+All fields are optional; only `enabled: true` is required to turn the server on. The `gateway.api_server` block layers on top of any `platforms.api_server` / `gateway.platforms.api_server` spelling with the same precedence the rest of `config.yaml` uses.
 
 ## Security Headers
 
@@ -464,8 +476,10 @@ To give multiple users their own isolated Hermes instance (separate config, memo
 hermes profile create alice
 hermes profile create bob
 
-# Configure each profile's API server on a different port. API_SERVER_* are env
-# vars (not config.yaml keys), so write them to each profile's .env:
+# Configure each profile's API server on a different port.
+# API_SERVER_* env vars still work and take precedence over config.yaml; for a
+# self-hosted multi-user setup, each profile's config.yaml can carry its own
+# gateway.api_server block instead.
 cat >> ~/.hermes/profiles/alice/.env <<EOF
 API_SERVER_ENABLED=true
 API_SERVER_PORT=8643

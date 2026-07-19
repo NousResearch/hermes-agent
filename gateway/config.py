@@ -1114,6 +1114,71 @@ def load_gateway_config() -> GatewayConfig:
 
             _merge_platform_map(gateway_platforms)
             _merge_platform_map(yaml_cfg.get("platforms"))
+
+            # gateway.api_server — the documented config.yaml block for the
+            # OpenAI-compatible API server platform (see the ``gateway.api_server``
+            # entry in hermes_cli/config.py's CONFIG_DEFAULTS). Unlike the
+            # env-only platforms, self-hosted users enable/configure it via YAML
+            # without setting API_SERVER_* env vars. The production loader only
+            # forwards ``gateway.platforms`` into ``gw_data["platforms"]`` above,
+            # so without this normalisation the ``gateway.api_server`` block is
+            # silently ignored (#66630). We map it into the canonical
+            # ``gw_data["platforms"]["api_server"]`` shape here so it flows
+            # through ``GatewayConfig.from_dict()`` exactly like an env enable,
+            # and ``_apply_env_overrides`` still layers on top.
+            _api_server_yaml = gateway_cfg.get("api_server") if isinstance(gateway_cfg, dict) else None
+            if isinstance(_api_server_yaml, dict) and _api_server_yaml:
+                _api_server_enabled = _coerce_bool(_api_server_yaml.get("enabled"), False)
+                _api_server_extra: Dict[str, Any] = {}
+                for _field in ("port", "host", "key", "model_name"):
+                    _val = _api_server_yaml.get(_field)
+                    if _val is None:
+                        continue
+                    if _field == "port":
+                        try:
+                            _api_server_extra["port"] = int(_val)
+                        except (TypeError, ValueError):
+                            pass
+                    else:
+                        _api_server_extra[_field] = _val
+                _cors = _api_server_yaml.get("cors_origins")
+                if isinstance(_cors, str):
+                    _origins = [o.strip() for o in _cors.split(",") if o.strip()]
+                    if _origins:
+                        _api_server_extra["cors_origins"] = _origins
+                elif isinstance(_cors, list):
+                    _origins = [str(o).strip() for o in _cors if str(o).strip()]
+                    if _origins:
+                        _api_server_extra["cors_origins"] = _origins
+                _max_concurrent = _api_server_yaml.get("max_concurrent_runs")
+                if _max_concurrent is not None:
+                    try:
+                        _api_server_extra["max_concurrent_runs"] = int(_max_concurrent)
+                    except (TypeError, ValueError):
+                        pass
+                # Only register the platform when the user actually enabled it
+                # or set any configuration field. A bare
+                # ``gateway.api_server: {}`` / ``enabled: false`` with nothing
+                # else leaves the platform untouched, matching the env path
+                # which only enables API_SERVER when API_SERVER_ENABLED is
+                # truthy. ``enabled: true`` (or any config field present)
+                # materialises the entry so the runtime registers the platform.
+                if _api_server_enabled or _api_server_extra:
+                    _api_server_block = platforms_data.get("api_server")
+                    if not isinstance(_api_server_block, dict):
+                        _api_server_block = {}
+                    if _api_server_enabled:
+                        _api_server_block["enabled"] = True
+                        _api_server_block.setdefault("extra", {})["_enabled_explicit"] = True
+                    # Preserve existing extra (e.g. from platforms.api_server)
+                    # and only fill in keys the user set under gateway.api_server.
+                    _merged_extra = dict(_api_server_block.get("extra", {}))
+                    for _k, _v in _api_server_extra.items():
+                        _merged_extra.setdefault(_k, _v)
+                    if _merged_extra:
+                        _api_server_block["extra"] = _merged_extra
+                    platforms_data["api_server"] = _api_server_block
+
             if platforms_data:
                 gw_data["platforms"] = platforms_data
             # Iterate built-in platforms plus any registered plugin platforms
@@ -1736,11 +1801,21 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
         )
 
     # API Server
-    api_server_enabled = is_truthy_value(getenv("API_SERVER_ENABLED", ""))
+    # Explicit-disable precedence: ``API_SERVER_ENABLED=false`` must override a
+    # YAML-enabled platform (mirrors WHATSAPP_ENABLED). ``is_truthy_value``
+    # treats falsey strings as not-enabled, so we separately detect the explicit
+    # "false"/"0"/"no" spelling to honour a hard env disable even when YAML's
+    # ``gateway.api_server.enabled: true`` would otherwise enable it. This
+    # completes the env > config.yaml > default precedence for the platform.
+    _api_server_enabled_raw = getenv("API_SERVER_ENABLED", "")
+    api_server_enabled = is_truthy_value(_api_server_enabled_raw)
+    api_server_disabled_explicitly = _api_server_enabled_raw.lower() in {"false", "0", "no"}
     api_server_key = getenv("API_SERVER_KEY", "")
     api_server_cors_origins = getenv("API_SERVER_CORS_ORIGINS", "")
     api_server_port = getenv("API_SERVER_PORT")
     api_server_host = getenv("API_SERVER_HOST")
+    if api_server_disabled_explicitly and Platform.API_SERVER in config.platforms:
+        config.platforms[Platform.API_SERVER].enabled = False
     if api_server_enabled or api_server_key:
         if Platform.API_SERVER not in config.platforms:
             config.platforms[Platform.API_SERVER] = PlatformConfig()

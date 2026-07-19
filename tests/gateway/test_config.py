@@ -1317,6 +1317,209 @@ class TestHomeChannelEnvOverrides:
             assert (home.chat_id, home.name) == expected, platform.value
 
 
+class TestGatewayApiServerYamlLoader:
+    """End-to-end tests for the ``gateway.api_server`` config.yaml block.
+
+    These exercise the *production* loader path (``load_gateway_config()`` with
+    a temp ``HERMES_HOME``), not ``GatewayConfig.from_dict()`` directly. The
+    original regression (#66630) was that the YAML key was silently ignored
+    because the loader never normalised ``gateway.api_server`` into the
+    canonical ``gw_data["platforms"]["api_server"]`` shape that ``from_dict``
+    reads.
+    """
+
+    @staticmethod
+    def _write_config(hermes_home, yaml_text):
+        (hermes_home / "config.yaml").write_text(yaml_text, encoding="utf-8")
+
+    @staticmethod
+    def _clear_api_server_env(monkeypatch):
+        for _v in (
+            "API_SERVER_ENABLED",
+            "API_SERVER_KEY",
+            "API_SERVER_PORT",
+            "API_SERVER_HOST",
+            "API_SERVER_CORS_ORIGINS",
+            "API_SERVER_MODEL_NAME",
+        ):
+            monkeypatch.delenv(_v, raising=False)
+
+    def test_yaml_enables_and_populates_api_server(self, tmp_path, monkeypatch):
+        # Regression: ``gateway.api_server`` was silently ignored on main.
+        # The full block must enable the platform and carry every field the
+        # runtime adapter reads.
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        self._write_config(
+            hermes_home,
+            (
+                "gateway:\n"
+                "  api_server:\n"
+                "    enabled: true\n"
+                "    port: 8642\n"
+                "    host: '0.0.0.0'\n"
+                "    key: secret-key\n"
+                "    cors_origins: 'https://a.example, https://b.example'\n"
+                "    model_name: gpt-demo\n"
+                "    max_concurrent_runs: 5\n"
+            ),
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        self._clear_api_server_env(monkeypatch)
+
+        config = load_gateway_config()
+
+        assert Platform.API_SERVER in config.platforms
+        api = config.platforms[Platform.API_SERVER]
+        assert api.enabled is True
+        assert api.extra["port"] == 8642
+        assert api.extra["host"] == "0.0.0.0"
+        assert api.extra["key"] == "secret-key"
+        assert api.extra["cors_origins"] == ["https://a.example", "https://b.example"]
+        assert api.extra["model_name"] == "gpt-demo"
+        assert api.extra["max_concurrent_runs"] == 5
+
+    def test_yaml_absent_does_not_register_platform(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        self._write_config(hermes_home, "model: gpt-test\n")
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        self._clear_api_server_env(monkeypatch)
+
+        config = load_gateway_config()
+        assert Platform.API_SERVER not in config.platforms
+
+    def test_yaml_enabled_false_does_not_register_platform(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        self._write_config(
+            hermes_home, "gateway:\n  api_server:\n    enabled: false\n"
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        self._clear_api_server_env(monkeypatch)
+
+        config = load_gateway_config()
+        assert Platform.API_SERVER not in config.platforms
+
+    def test_yaml_string_port_is_coerced_to_int(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        self._write_config(
+            hermes_home,
+            "gateway:\n  api_server:\n    enabled: true\n    port: '9100'\n",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        self._clear_api_server_env(monkeypatch)
+
+        config = load_gateway_config()
+        assert config.platforms[Platform.API_SERVER].extra["port"] == 9100
+
+    def test_yaml_invalid_port_is_dropped_but_platform_enabled(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        self._write_config(
+            hermes_home,
+            "gateway:\n  api_server:\n    enabled: true\n    port: 'not-a-number'\n",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        self._clear_api_server_env(monkeypatch)
+
+        config = load_gateway_config()
+        api = config.platforms[Platform.API_SERVER]
+        assert api.enabled is True
+        assert "port" not in api.extra
+
+    def test_yaml_cors_origins_as_list(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        self._write_config(
+            hermes_home,
+            "gateway:\n  api_server:\n    enabled: true\n"
+            "    cors_origins:\n      - 'http://a.local'\n      - 'http://b.local'\n",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        self._clear_api_server_env(monkeypatch)
+
+        config = load_gateway_config()
+        assert config.platforms[Platform.API_SERVER].extra["cors_origins"] == [
+            "http://a.local",
+            "http://b.local",
+        ]
+
+    def test_yaml_merges_with_platforms_api_server_spelling(self, tmp_path, monkeypatch):
+        # ``gateway.api_server.enabled`` must enable a platform that
+        # ``platforms.api_server`` declared with extra but without enabling.
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        self._write_config(
+            hermes_home,
+            (
+                "platforms:\n"
+                "  api_server:\n"
+                "    extra:\n      model_name: from-platforms\n"
+                "gateway:\n"
+                "  api_server:\n    enabled: true\n    port: 7000\n"
+            ),
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        self._clear_api_server_env(monkeypatch)
+
+        config = load_gateway_config()
+        api = config.platforms[Platform.API_SERVER]
+        assert api.enabled is True
+        assert api.extra["port"] == 7000
+        # Pre-existing extra from platforms.api_server is preserved.
+        assert api.extra["model_name"] == "from-platforms"
+
+    def test_env_enabled_layers_on_top_of_yaml(self, tmp_path, monkeypatch):
+        # YAML block present but disabled; API_SERVER_ENABLED=true must enable.
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        self._write_config(
+            hermes_home,
+            "gateway:\n  api_server:\n    enabled: false\n    port: 7777\n",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("API_SERVER_ENABLED", "true")
+
+        config = load_gateway_config()
+        api = config.platforms[Platform.API_SERVER]
+        assert api.enabled is True
+        # YAML port is still carried (env only flipped the enabled flag).
+        assert api.extra["port"] == 7777
+
+    def test_env_disabled_false_overrides_yaml_enabled_true(self, tmp_path, monkeypatch):
+        # Explicit-disable precedence: API_SERVER_ENABLED=false wins over a
+        # YAML ``enabled: true`` (mirrors WHATSAPP_ENABLED). This is the
+        # operator's kill-switch — a misconfigured config.yaml must not pin the
+        # platform on against the operator's explicit env instruction.
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        self._write_config(
+            hermes_home,
+            "gateway:\n  api_server:\n    enabled: true\n    port: 8642\n",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("API_SERVER_ENABLED", "false")
+        monkeypatch.delenv("API_SERVER_KEY", raising=False)
+
+        config = load_gateway_config()
+        assert Platform.API_SERVER in config.platforms
+        assert config.platforms[Platform.API_SERVER].enabled is False
+
+    def test_env_disabled_false_no_op_when_platform_absent(self, tmp_path, monkeypatch):
+        # If neither YAML nor another env var enabled the platform,
+        # API_SERVER_ENABLED=false must not spontaneously register it.
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        self._write_config(hermes_home, "model: gpt-test\n")
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("API_SERVER_ENABLED", "false")
+
+        config = load_gateway_config()
+        assert Platform.API_SERVER not in config.platforms
+
+
 class TestMultiplexProfilesEnvOverride:
     """GATEWAY_MULTIPLEX_PROFILES env override — the 3-tier precedence chain.
 

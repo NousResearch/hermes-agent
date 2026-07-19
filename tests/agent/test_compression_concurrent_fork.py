@@ -70,6 +70,13 @@ def _build_agent_with_db(db: SessionDB, session_id: str):
         ]
 
     compressor.compress.side_effect = _compress_with_overlap
+    # Skip the lazy auxiliary-provider feasibility probe inside
+    # _compress_context - it is not covered by the compressor stub and, left
+    # enabled, makes a real openrouter.ai HTTP call plus a plugin-discovery
+    # pass (~15s+ on WSL2). That delay lands between _compress_context entry
+    # and the stubbed compress() call, so event/barrier waits in these tests
+    # (compression_started.wait(10), etc.) time out spuriously.
+    agent._compression_feasibility_checked = True
     compressor.compression_count = 1
     compressor.last_prompt_tokens = 0
     compressor.last_completion_tokens = 0

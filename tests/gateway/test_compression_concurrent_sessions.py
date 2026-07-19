@@ -63,6 +63,14 @@ def _build_agent_with_db(db: SessionDB, session_id: str):
         ]
 
     compressor.compress.side_effect = _compress_with_overlap
+    # Skip the lazy auxiliary-provider feasibility probe inside
+    # _compress_context. It is irrelevant to the lock contract under test and
+    # is NOT covered by the compressor stub: left enabled it makes a real
+    # openrouter.ai HTTP call (with the fake key) plus a full plugin-discovery
+    # pass (~15s+ on WSL2), and its module-global 60s unhealthy-provider cache
+    # leaks across tests so one thread takes the fast path while the other
+    # blows past the 15s barrier/join timeouts (the "got 0" failure).
+    agent._compression_feasibility_checked = True
     compressor.compression_count = 1
     compressor.last_prompt_tokens = 0
     compressor.last_completion_tokens = 0

@@ -1408,10 +1408,6 @@ export function useSessionActions({
       setSessionsTotal(prev => Math.max(0, prev - 1))
       $pinnedSessionIds.set(previousPinned.filter(id => id !== storedSessionId))
 
-      if (wasSelected) {
-        startFreshSessionDraft(true)
-      }
-
       // Tear down runtimes before awaiting so the route effect can't resume the
       // relocated session via the stale /<sid> URL.
       try {
@@ -1424,7 +1420,6 @@ export function useSessionActions({
         }
 
         await moveSessionToProfileApi(storedSessionId, targetProfile, session?.profile)
-        setSessions(prev => prev.filter(s => !sessionMatchesStoredId(s, storedSessionId)))
         $pinnedSessionIds.set($pinnedSessionIds.get().filter(id => id !== storedSessionId))
         closeSessionTile(storedSessionId)
 
@@ -1432,6 +1427,12 @@ export function useSessionActions({
           runtimeIdByStoredSessionIdRef.current.delete(storedSessionId)
           sessionStateByRuntimeIdRef.current.delete(tiledRuntimeId)
           dropSessionState(tiledRuntimeId)
+        }
+
+        // Only now (after a confirmed relocation) clear the foreground so
+        // we don't strand the user on an empty draft if the move failed.
+        if (wasSelected) {
+          startFreshSessionDraft(true)
         }
 
         notify({ durationMs: 2_000, kind: 'success', message: copy.movedToProfile(targetProfile) })
@@ -1443,6 +1444,15 @@ export function useSessionActions({
 
         untombstoneSessions([storedSessionId, session?.id, session?._lineage_root_id])
         $pinnedSessionIds.set(previousPinned)
+
+        // The selected/tiled runtimes were already closed above; drop their
+        // now-stale refs so a failed move can't resurface them.
+        if (tiledRuntimeId) {
+          runtimeIdByStoredSessionIdRef.current.delete(storedSessionId)
+          sessionStateByRuntimeIdRef.current.delete(tiledRuntimeId)
+          dropSessionState(tiledRuntimeId)
+        }
+
         notifyError(err, copy.moveFailed)
       }
     },

@@ -1480,6 +1480,11 @@ describe('moveSessionToProfile', () => {
       opts.requestGateway ??
       (vi.fn(async () => ({} as never)))
 
+    const runtimeIdByStoredSessionIdRef = ref(
+      opts.runtimeIdByStored ?? new Map<string, string>()
+    )
+    const sessionStateByRuntimeIdRef = ref(new Map<string, ClientSessionState>())
+
     let handle: ReturnType<typeof useSessionActions> | null = null
 
     function MoveHarness({
@@ -1497,10 +1502,10 @@ describe('moveSessionToProfile', () => {
         navigate: vi.fn() as never,
         requestGateway,
         resetViewSync: vi.fn(),
-        runtimeIdByStoredSessionIdRef: ref(opts.runtimeIdByStored ?? new Map<string, string>()),
+        runtimeIdByStoredSessionIdRef,
         selectedStoredSessionId: opts.selectedStoredSessionId ?? null,
         selectedStoredSessionIdRef: ref<string | null>(opts.selectedStoredSessionId ?? null),
-        sessionStateByRuntimeIdRef: ref(new Map<string, ClientSessionState>()),
+        sessionStateByRuntimeIdRef,
         syncSessionStateToView: vi.fn(),
         updateSessionState: () => ({}) as ClientSessionState
       })
@@ -1514,13 +1519,15 @@ describe('moveSessionToProfile', () => {
 
     render(<MoveHarness onReady={h => (handle = h)} />)
 
-    return {
-      get handle() {
-        return handle!
-      },
-      requestGateway
+      return {
+        get handle() {
+          return handle!
+        },
+        requestGateway,
+        runtimeIdByStoredSessionIdRef,
+        sessionStateByRuntimeIdRef
+      }
     }
-  }
 
   beforeEach(() => {
     setSessions([])
@@ -1574,9 +1581,16 @@ describe('moveSessionToProfile', () => {
     vi.mocked(moveSessionToProfile).mockRejectedValue(new Error('boom'))
 
     const sid = 'stored-move-2'
+    const tiledRuntime = 'rt-failed-tiled-1'
     setSessions([storedSession({ id: sid })])
 
-    const { handle } = moveHarness({ selectedStoredSessionId: sid })
+    const { handle, runtimeIdByStoredSessionIdRef, sessionStateByRuntimeIdRef } = moveHarness({
+      selectedStoredSessionId: sid,
+      runtimeIdByStored: new Map([[sid, tiledRuntime]])
+    })
+
+    // Seed the tiled runtime's mirrored state so we can assert it is evicted.
+    sessionStateByRuntimeIdRef.current.set(tiledRuntime, {} as never)
 
     await act(async () => {
       await handle.moveSessionToProfile(sid, 'coder')
@@ -1585,5 +1599,10 @@ describe('moveSessionToProfile', () => {
     // On failure the source row is restored to the sidebar.
     expect($sessions.get().some(s => s.id === sid)).toBe(true)
     expect(moveSessionToProfile).toHaveBeenCalledWith(sid, 'coder', undefined)
+
+    // The already-closed tiled runtime's stale refs are torn down even
+    // on the failed path, so they can't resurface a dead runtime.
+    expect(runtimeIdByStoredSessionIdRef.current.has(sid)).toBe(false)
+    expect(sessionStateByRuntimeIdRef.current.has(tiledRuntime)).toBe(false)
   })
 })

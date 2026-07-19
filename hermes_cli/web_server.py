@@ -11715,7 +11715,17 @@ async def rename_session_endpoint(session_id: str, body: SessionRename):
                     status_code=500, detail=f"Failed to move session: {e}"
                 )
             if not moved:
-                raise HTTPException(status_code=404, detail="Session not found")
+                # move_session_to_profile returns False for two distinct
+                # cases: the source row is gone (404) OR the target
+                # already owns this session id (collision — the session
+                # very much exists, just not where we tried to put it).
+                # Surface them differently so the UI can say what happened.
+                if db.get_session(sid) is None:
+                    raise HTTPException(status_code=404, detail="Session not found")
+                raise HTTPException(
+                    status_code=409,
+                    detail="Session already exists in target profile",
+                )
             return {"ok": True, "moved_to_profile": target_name}
         if body.title is not None:
             try:

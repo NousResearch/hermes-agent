@@ -86,6 +86,20 @@ That's enough — the bundled-plugin scan in `gateway/config.py` automatically p
 
 ---
 
+## Config-backed group prefixes
+
+To make selected groups respond only when addressed, configure the existing `platforms.line.extra` mapping in `~/.hermes/config.yaml`:
+
+```yaml
+platforms:
+  line:
+    extra:
+      require_prefix_groups: ["C1234567890abcdef"]
+      group_prefixes: ["Hermes:", "Joi:"]
+```
+
+The gate runs before reply-token storage and media download. Non-text events, unprefixed text, and prefix-only text are ignored without inbound side effects; matching prefixes are stripped before dispatch.
+
 ## Step 4: Set the webhook URL
 
 Back in the LINE console:

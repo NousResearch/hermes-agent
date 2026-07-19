@@ -41,7 +41,15 @@ def _reset_plugin_cache():
     web_server._dashboard_plugins_cache = None
 
 
-API_SRC = "from fastapi import APIRouter\nrouter = APIRouter()\n"
+API_SRC = (
+    "from fastapi import APIRouter\n"
+    "router = APIRouter()\n"
+    "\n"
+    "\n"
+    '@router.get("/hello")\n'
+    "def hello():\n"
+    '    return {"ok": True}\n'
+)
 
 
 @pytest.fixture
@@ -154,3 +162,92 @@ class TestListingGateAcceptsDirectoryKey:
             web_server._get_dashboard_plugins(force_rescan=True)
             served = asyncio.run(web_server.get_dashboard_plugins())
         assert "mobile" not in {p["name"] for p in served}
+
+
+class TestRequestTimeGatesAcceptDirectoryKey:
+    """End-to-end through the live app: mounting is not enough — the
+    ``_plugin_api_runtime_gate`` middleware re-checks the policy on every
+    authenticated ``/api/plugins/<name>/…`` request, and
+    ``/dashboard-plugins/<name>/…`` re-checks it per asset request.  Both
+    must honor the directory key, or a plugin enabled the documented way
+    mounts fine and then 404s at request time anyway.
+    """
+
+    @pytest.fixture
+    def live_client(self, mobile_plugin, monkeypatch):
+        """Authenticated TestClient against the real app with the
+        mismatched-key plugin mounted (mirrors the route snapshot /
+        reorder / restore dance of ``_install_example_plugin`` in
+        ``test_web_server.py``)."""
+        from starlette.testclient import TestClient
+
+        import hermes_state
+        from hermes_constants import get_hermes_home
+        from hermes_cli.web_server import _SESSION_HEADER_NAME, _SESSION_TOKEN
+
+        monkeypatch.setattr(
+            hermes_state, "DEFAULT_DB_PATH", get_hermes_home() / "state.db"
+        )
+        app = web_server.app
+        # Earlier suites in a full run can leak global app state that has
+        # nothing to do with the plugin gates: an OAuth/password-login
+        # suite leaves ``app.state.auth_required = True`` (engaging the
+        # cookie auth gate, so the legacy session-token header 401s) and
+        # a server-bind suite leaves ``app.state.bound_host`` set (the
+        # DNS-rebinding host check then 400s TestClient's ``testserver``
+        # host).  Neutralize both so these tests are order-independent;
+        # monkeypatch restores the prior values on teardown.
+        monkeypatch.setattr(app.state, "auth_required", False, raising=False)
+        monkeypatch.setattr(app.state, "bound_host", None, raising=False)
+        original_routes = list(app.router.routes)
+        with gate_config(enabled={"hermes-mobile"}):
+            web_server._get_dashboard_plugins(force_rescan=True)
+            web_server._mount_plugin_api_routes()
+        # Mid-flight mounts append after the SPA catch-all; move them to
+        # the front so they win the match-order race (as the app does
+        # when mounting at import time).
+        new_routes = [r for r in app.router.routes if r not in original_routes]
+        for route in new_routes:
+            app.router.routes.remove(route)
+        for offset, route in enumerate(new_routes):
+            app.router.routes.insert(offset, route)
+        client = TestClient(app)
+        client.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
+        try:
+            yield client
+        finally:
+            app.router.routes[:] = original_routes
+            web_server._dashboard_plugins_cache = None
+
+    def test_api_request_allowed_when_enabled_by_directory_key(self, live_client):
+        """The field regression's second half: enabled as
+        ``hermes plugins enable hermes-mobile``, an authenticated request
+        to the mounted route must reach the handler."""
+        with gate_config(enabled={"hermes-mobile"}):
+            resp = live_client.get("/api/plugins/mobile/hello")
+        assert resp.status_code == 200, resp.text
+
+    def test_api_request_blocked_when_disabled_by_directory_key(self, live_client):
+        """Runtime disable under either identifier wins immediately."""
+        with gate_config(
+            enabled={"hermes-mobile", "mobile"}, disabled={"hermes-mobile"}
+        ):
+            resp = live_client.get("/api/plugins/mobile/hello")
+        assert resp.status_code == 404
+
+    def test_api_request_blocked_when_not_enabled(self, live_client):
+        """#46435 invariant at request time: no enable spelling → 404,
+        even though the router is still mounted."""
+        with gate_config(enabled=set()):
+            resp = live_client.get("/api/plugins/mobile/hello")
+        assert resp.status_code == 404
+
+    def test_asset_served_when_enabled_by_directory_key(self, live_client):
+        with gate_config(enabled={"hermes-mobile"}):
+            resp = live_client.get("/dashboard-plugins/mobile/manifest.json")
+        assert resp.status_code == 200, resp.text
+
+    def test_asset_blocked_when_not_enabled(self, live_client):
+        with gate_config(enabled=set()):
+            resp = live_client.get("/dashboard-plugins/mobile/manifest.json")
+        assert resp.status_code == 404

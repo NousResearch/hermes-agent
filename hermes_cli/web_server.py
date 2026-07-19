@@ -544,14 +544,21 @@ async def _plugin_api_runtime_gate(request: Request, call_next):
                         None,
                     )
                     source = plugin.get("source") if plugin else "user"
+                    # Membership counts both the manifest name and the
+                    # install-directory key, matching the loader's
+                    # back-compat lookup (an unknown plugin keeps the
+                    # URL-derived name only, and blocks).
+                    gate_ids = (
+                        _plugin_gate_ids(plugin) if plugin else {plugin_name}
+                    )
                     if source == "user":
-                        if plugin_name in disabled_set or plugin_name not in enabled_set:
+                        if gate_ids & disabled_set or not (gate_ids & enabled_set):
                             return JSONResponse(
                                 status_code=404,
                                 content={"detail": "Plugin not found"},
                             )
                     elif source == "bundled":
-                        if plugin_name in disabled_set:
+                        if gate_ids & disabled_set:
                             return JSONResponse(
                                 status_code=404,
                                 content={"detail": "Plugin not found"},
@@ -17574,11 +17581,12 @@ async def serve_plugin_asset(plugin_name: str, file_path: str):
     except Exception:
         enabled_set = set()
         disabled_set = set()
+    gate_ids = _plugin_gate_ids(plugin)
     if plugin.get("source") == "user":
-        if plugin_name in disabled_set or plugin_name not in enabled_set:
+        if gate_ids & disabled_set or not (gate_ids & enabled_set):
             raise HTTPException(status_code=404, detail="Plugin not found")
     elif plugin.get("source") == "bundled":
-        if plugin_name in disabled_set:
+        if gate_ids & disabled_set:
             raise HTTPException(status_code=404, detail="Plugin not found")
 
     base = Path(plugin["_dir"])

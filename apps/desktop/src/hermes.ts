@@ -14,6 +14,9 @@ import type {
   CronJobCreatePayload,
   CronJobUpdates,
   CuratorStatusResponse,
+  CustomEndpointsResponse,
+  CustomEndpointUpdate,
+  CustomEndpointValidationResponse,
   DebugShareResponse,
   ElevenLabsVoicesResponse,
   EnvVarInfo,
@@ -105,6 +108,10 @@ export type {
   CronJobSchedule,
   CronJobUpdates,
   CuratorStatusResponse,
+  CustomEndpoint,
+  CustomEndpointsResponse,
+  CustomEndpointUpdate,
+  CustomEndpointValidationResponse,
   DebugShareResponse,
   ElevenLabsVoice,
   ElevenLabsVoicesResponse,
@@ -616,6 +623,42 @@ export function validateProviderCredential(
     path: '/api/providers/validate',
     method: 'POST',
     body: { key, value, api_key: apiKey ?? '' }
+  })
+}
+
+export function getCustomEndpoints(): Promise<CustomEndpointsResponse> {
+  return window.hermesDesktop.api<CustomEndpointsResponse>({
+    path: '/api/providers/custom-endpoints'
+  })
+}
+
+export function saveCustomEndpoint(endpoint: CustomEndpointUpdate): Promise<CustomEndpointsResponse> {
+  return window.hermesDesktop.api<CustomEndpointsResponse>({
+    path: '/api/providers/custom-endpoints',
+    method: 'POST',
+    body: endpoint
+  })
+}
+
+export function validateCustomEndpoint(endpoint: CustomEndpointUpdate): Promise<CustomEndpointValidationResponse> {
+  return window.hermesDesktop.api<CustomEndpointValidationResponse>({
+    path: '/api/providers/custom-endpoints/validate',
+    method: 'POST',
+    body: endpoint
+  })
+}
+
+export function activateCustomEndpoint(id: string): Promise<{ ok: boolean; provider: string; model: string }> {
+  return window.hermesDesktop.api<{ ok: boolean; provider: string; model: string }>({
+    path: `/api/providers/custom-endpoints/${encodeURIComponent(id)}/activate`,
+    method: 'POST'
+  })
+}
+
+export function deleteCustomEndpoint(id: string): Promise<CustomEndpointsResponse> {
+  return window.hermesDesktop.api<CustomEndpointsResponse>({
+    path: `/api/providers/custom-endpoints/${encodeURIComponent(id)}`,
+    method: 'DELETE'
   })
 }
 

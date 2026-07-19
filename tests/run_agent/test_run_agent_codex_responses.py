@@ -3746,3 +3746,109 @@ def test_codex_reasoning_only_fallback_grace_call_when_budget_consumed(monkeypat
     # The grace flag was consumed, not left armed for the next turn.
     assert agent._budget_grace_call is False
 
+
+def _build_codex_agent_with_fallback(monkeypatch, fallback):
+    _patch_agent_bootstrap(monkeypatch)
+    agent = run_agent.AIAgent(
+        model="gpt-5-codex",
+        base_url="https://chatgpt.com/backend-api/codex",
+        api_key="codex-token",
+        quiet_mode=True,
+        max_iterations=4,
+        skip_context_files=True,
+        skip_memory=True,
+        fallback_model=fallback,
+    )
+    agent._cleanup_task_resources = lambda task_id: None
+    agent._persist_session = lambda messages, history=None: None
+    agent._save_trajectory = lambda messages, user_message, completed: None
+    return agent
+
+
+def _chat_completion_final(text: str, model: str = "z-ai/glm-4.7"):
+    return SimpleNamespace(
+        choices=[
+            SimpleNamespace(
+                message=SimpleNamespace(content=text, tool_calls=None),
+                finish_reason="stop",
+            )
+        ],
+        model=model,
+        usage=SimpleNamespace(prompt_tokens=10, completion_tokens=3, total_tokens=13),
+    )
+
+
+def test_codex_reasoning_only_real_fallback_strips_codex_state_and_nudge(monkeypatch):
+    """Post-tool cross-protocol recovery (#67321): after a completed tool call
+    and three encrypted reasoning-only responses, a REAL fallback switches
+    api_mode to chat_completions. The fallback wire must carry neither the
+    opaque Codex replay state nor the synthetic continuation nudge, must keep
+    the tool evidence, and must stay role-valid."""
+    from unittest.mock import MagicMock
+
+    agent = _build_codex_agent_with_fallback(
+        monkeypatch, [{"provider": "openrouter", "model": "z-ai/glm-4.7"}]
+    )
+
+    mock_client = MagicMock()
+    mock_client.base_url = "https://openrouter.ai/api/v1"
+    mock_client.api_key = "or-key"
+    monkeypatch.setattr(
+        "agent.auxiliary_client.resolve_provider_client",
+        lambda *a, **k: (mock_client, "z-ai/glm-4.7"),
+    )
+    # Force the chain entry to look locally usable so the real
+    # _try_activate_fallback proceeds to the client swap.
+    monkeypatch.setattr(
+        "agent.chat_completion_helpers._fallback_entry_unavailable_without_network",
+        lambda agent, fb: None,
+    )
+
+    requests = []
+    responses = [
+        _codex_tool_call_response(),
+        _codex_reasoning_only_response(encrypted_content="enc_a"),
+        _codex_reasoning_only_response(encrypted_content="enc_b"),
+        _codex_reasoning_only_response(encrypted_content="enc_c"),
+        _chat_completion_final("Answered by the fallback provider."),
+    ]
+
+    def _fake_api_call(api_kwargs):
+        requests.append(api_kwargs)
+        return responses.pop(0)
+
+    monkeypatch.setattr(agent, "_interruptible_api_call", _fake_api_call)
+
+    def _fake_execute_tool_calls(assistant_message, messages, effective_task_id, *_args):
+        for call in assistant_message.tool_calls:
+            messages.append(
+                {"role": "tool", "tool_call_id": call.id, "content": '{"ok":true}'}
+            )
+
+    monkeypatch.setattr(agent, "_execute_tool_calls", _fake_execute_tool_calls)
+
+    result = agent.run_conversation("inspect the repo then stall on reasoning")
+
+    assert result["completed"] is True
+    assert result["final_response"] == "Answered by the fallback provider."
+    # The turn actually crossed protocols.
+    assert agent.api_mode == "chat_completions"
+
+    # The fallback request is the last one; chat-completions requests carry the
+    # wire under "messages" (Codex uses "input").
+    fb_wire = requests[-1].get("messages")
+    assert fb_wire is not None, "fallback request must use the chat-completions wire"
+
+    for m in fb_wire:
+        assert "codex_reasoning_items" not in m, "opaque Codex replay state leaked"
+        assert "codex_message_items" not in m, "opaque Codex message items leaked"
+        if m.get("role") == "user":
+            assert "only internal reasoning" not in str(m.get("content")), (
+                "synthetic continuation nudge leaked onto the non-Codex wire"
+            )
+
+    # Tool evidence is preserved across the protocol switch.
+    assert any(m.get("role") == "tool" for m in fb_wire)
+    # Role ordering stays valid — no user→user runs left by nudge removal.
+    roles = [m.get("role") for m in fb_wire]
+    assert not any(a == "user" and b == "user" for a, b in zip(roles, roles[1:]))

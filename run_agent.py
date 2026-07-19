@@ -3923,12 +3923,14 @@ class AIAgent:
         messages: List[Dict[str, Any]],
         *,
         drop_codex_reasoning_items: bool = True,
+        drop_nudge_marker: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """Forwarder — see ``agent.agent_runtime_helpers.drop_thinking_only_and_merge_users``."""
         from agent.agent_runtime_helpers import drop_thinking_only_and_merge_users
         return drop_thinking_only_and_merge_users(
             messages,
             drop_codex_reasoning_items=drop_codex_reasoning_items,
+            drop_nudge_marker=drop_nudge_marker,
         )
 
     @staticmethod

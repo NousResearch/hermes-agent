@@ -1209,6 +1209,7 @@ def drop_thinking_only_and_merge_users(
     messages: List[Dict[str, Any]],
     *,
     drop_codex_reasoning_items: bool = True,
+    drop_nudge_marker: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     """Drop thinking-only assistant turns; merge any adjacent user messages left behind.
 
@@ -1217,6 +1218,15 @@ def drop_thinking_only_and_merge_users(
     user still sees the thinking block in the CLI/gateway transcript and
     session persistence keeps the full trace. Only the wire copy sent to
     the provider is cleaned.
+
+    ``drop_nudge_marker`` (#67321): when set, user messages whose content
+    equals the marker are dropped too. This is the synthetic Codex/Responses
+    continuation nudge — a codex_responses-only control message. Once the turn
+    crosses to a non-Codex provider (fallback), the caller passes the marker so
+    the nudge is stripped from the Chat Completions wire; dropping it here (in
+    the same pass that already re-merges adjacent user turns) keeps role
+    alternation valid even when the nudge sat between two dropped reasoning-only
+    interims and is not adjacent to the original user message.
 
     Why drop-and-merge rather than inject stub text:
     - Fabricating ``"."`` / ``"(continued)"`` text lies in the history
@@ -1229,10 +1239,20 @@ def drop_thinking_only_and_merge_users(
     if not messages:
         return messages
 
-    # Pass 1: drop thinking-only assistant turns.
+    # Pass 1: drop thinking-only assistant turns (and, when requested, the
+    # synthetic Codex continuation nudge that must not cross to a non-Codex
+    # provider).
+    def _is_stripped_nudge(m: Dict[str, Any]) -> bool:
+        return (
+            drop_nudge_marker is not None
+            and m.get("role") == "user"
+            and m.get("content") == drop_nudge_marker
+        )
+
     kept = [
         m for m in messages
-        if not _ra().AIAgent._is_thinking_only_assistant(
+        if not _is_stripped_nudge(m)
+        and not _ra().AIAgent._is_thinking_only_assistant(
             m,
             drop_codex_reasoning_items=drop_codex_reasoning_items,
         )

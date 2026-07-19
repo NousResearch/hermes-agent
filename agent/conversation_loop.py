@@ -1035,9 +1035,18 @@ def run_conversation(
         # a thinking-only turn. Runs on the per-call copy only — the
         # stored conversation history keeps the reasoning block for the
         # UI transcript and session persistence.
+        # Cross-protocol cleanup (#67321): once a reasoning-only stall has
+        # crossed to a non-Codex provider, drop the synthetic continuation
+        # nudge from the wire alongside the opaque Codex replay state. The
+        # nudge is a codex_responses-only control message; on the Chat
+        # Completions payload it is noise, and after a tool result it is not
+        # adjacent to the original user turn so the merge pass alone would not
+        # remove it. History keeps it for the transcript.
+        _cross_protocol = agent.api_mode != "codex_responses"
         api_messages = agent._drop_thinking_only_and_merge_users(
             api_messages,
-            drop_codex_reasoning_items=agent.api_mode != "codex_responses",
+            drop_codex_reasoning_items=_cross_protocol,
+            drop_nudge_marker=_CODEX_INCOMPLETE_NUDGE if _cross_protocol else None,
         )
 
         # Normalize message whitespace and tool-call JSON for consistent

@@ -22,7 +22,9 @@ const MANIFEST_CACHE_KEY = "hermes:plugin-manifests";
 function getCachedManifests(): PluginManifest[] | null {
   try {
     const raw = sessionStorage.getItem(MANIFEST_CACHE_KEY);
-    return raw ? (JSON.parse(raw) as PluginManifest[]) : null;
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? (parsed as PluginManifest[]) : null;
   } catch {
     return null;
   }

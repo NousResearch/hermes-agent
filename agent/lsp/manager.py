@@ -358,18 +358,10 @@ class LSPService:
             baseline = self._delta_baseline.get(abs_path) or []
             if baseline:
                 if line_shift is not None:
-                    # Remap baseline diagnostics into post-edit
-                    # coordinates so shifted-but-otherwise-identical
-                    # entries hash equal under _diag_key.  Entries
-                    # that mapped into a deleted region drop out
-                    # silently — they no longer apply.
                     from agent.lsp.range_shift import shift_baseline
                     baseline = shift_baseline(baseline, line_shift)
                 seen = {_diag_key(d) for d in baseline}
                 diags = [d for d in diags if _diag_key(d) not in seen]
-            # Roll baseline forward — next call returns deltas relative
-            # to the just-emitted state, mirroring claude-code's
-            # diagnosticTracking.
             try:
                 fresh = self._loop.run(self._current_diags_async(file_path), timeout=2.0) or []
             except Exception:  # noqa: BLE001
@@ -422,8 +414,6 @@ class LSPService:
             client = self._clients.pop(key, None)
         if client is not None:
             try:
-                # Fire-and-forget shutdown — give it a second to cleanup,
-                # but don't block.  We're already on a slow path.
                 self._loop.run(client.shutdown(), timeout=1.0)
             except Exception:  # noqa: BLE001
                 pass
@@ -505,23 +495,44 @@ class LSPService:
         key = (srv.server_id, per_server_root)
         if key in self._broken:
             return None
+        # Pre-create the spawn future so we can atomically check-and-claim
+        # the spawn slot in a single _state_lock acquisition.  Splitting
+        # the "check _spawning" and "write _spawning[key]" across two
+        # critical sections leaves a GIL-level thread-switch window where
+        # two concurrent callers both see None and both spawn.
+        loop = asyncio.get_running_loop()
+        spawn_future: asyncio.Future = loop.create_future()
+
         with self._state_lock:
             client = self._clients.get(key)
             if client is not None and client.is_running:
                 eventlog.log_active(srv.server_id, per_server_root)
                 return client
+            if client is not None:
+                # Stale client — pop it so we don't leak the process.
+                self._clients.pop(key, None)
             spawning = self._spawning.get(key)
+            if spawning is None:
+                self._spawning[key] = spawn_future
         if spawning is not None:
             try:
                 return await spawning
             except Exception:  # noqa: BLE001
                 return None
 
-        # Begin spawn
-        loop = asyncio.get_running_loop()
-        spawn_future: asyncio.Future = loop.create_future()
-        with self._state_lock:
-            self._spawning[key] = spawn_future
+        if client is not None:
+            logger.debug(
+                "[%s] cleaning up stale client for %s before respawn",
+                srv.server_id, per_server_root,
+            )
+            try:
+                await client.shutdown()
+            except Exception as e:  # noqa: BLE001
+                logger.warning(
+                    "[%s] failed to terminate stale client for %s: %s",
+                    srv.server_id, per_server_root, e,
+                )
+
         try:
             ctx = ServerContext(
                 workspace_root=per_server_root,
@@ -532,10 +543,6 @@ class LSPService:
             )
             spec = srv.build_spawn(per_server_root, ctx)
             if spec is None:
-                # ``build_spawn`` returns None when the binary can't be
-                # located (auto-install disabled, manual-only server,
-                # or install attempt failed).  Surface this once via
-                # the structured logger so the user can act on it.
                 eventlog.log_server_unavailable(srv.server_id, srv.server_id)
                 self._broken.add(key)
                 spawn_future.set_result(None)
@@ -577,10 +584,6 @@ class LSPService:
             return_exceptions=True,
         )
 
-    # ------------------------------------------------------------------
-    # status / introspection (used by ``hermes lsp status``)
-    # ------------------------------------------------------------------
-
     def get_status(self) -> Dict[str, Any]:
         """Return a snapshot of the service for the CLI status command."""
         with self._state_lock:
@@ -606,19 +609,7 @@ class LSPService:
 
 
 def _diag_key(d: Dict[str, Any]) -> str:
-    """Content equality key used for cross-edit delta filtering.
-
-    Includes the diagnostic's position range — when used together
-    with :func:`agent.lsp.range_shift.shift_baseline`, the baseline
-    is line-shifted into post-edit coordinates BEFORE this key is
-    computed, so identical-but-shifted diagnostics hash equal.  Two
-    genuinely distinct diagnostics at different lines (e.g. the same
-    error class introduced at a second site) hash differently and
-    are surfaced as new.
-
-    Mirrors :func:`agent.lsp.client._diagnostic_key`; intentionally
-    identical so the two layers agree on diagnostic identity.
-    """
+    """Content equality key used for cross-edit delta filtering."""
     rng = d.get("range") or {}
     start = rng.get("start") or {}
     end = rng.get("end") or {}

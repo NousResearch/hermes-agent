@@ -90,11 +90,14 @@ platforms:
   telegram:
     extra:
       command_menu:
+        enabled: true          # true (default) or false to skip auto-registration
         max_commands: 60
         priority_mode: prepend  # prepend | append | replace
         priority:
           - my_plugin_command
 ```
+
+Set `enabled: false` to skip auto-registration entirely. This is useful when you have custom bot commands configured via BotFather and want Hermes to leave them intact. When disabled, neither the initial startup registration nor the lazy forum-topic registration will call `set_my_commands`.
 
 `priority_mode` controls how your list combines with Hermes' built-in priority list:
 

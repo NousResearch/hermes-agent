@@ -1,171 +1,210 @@
-"""Tests for tui_gateway/slash_worker.py — targeting ≥70% statement coverage.
-
-The module exposes two functions:
-- _run(cli, command): executes a slash command via HermesCLI, capturing stdout
-- main(): argparse entry point that reads JSON from stdin, dispatches _run, writes JSON to stdout
-"""
+"""Focused unit tests for the slash worker protocol and startup orchestration."""
 
 from __future__ import annotations
 
 import io
 import json
-from unittest.mock import MagicMock
+import sys
+from unittest.mock import MagicMock, call
 
+import pytest
+
+import cli as cli_mod
 from tui_gateway import slash_worker
 
 
-# ─── _run ─────────────────────────────────────────────────────────────────────
+_MISSING = object()
 
 
-class TestRun:
-    """Tests for _run() command execution."""
-
-    def _make_mock_cli(self):
-        cli = MagicMock()
-        cli.console = MagicMock()
-        cli.process_command = MagicMock()
-        return cli
-
-    def test_empty_string_returns_empty(self):
-        cli = self._make_mock_cli()
-        assert slash_worker._run(cli, "") == ""
-
-    def test_whitespace_only_returns_empty(self):
-        cli = self._make_mock_cli()
-        assert slash_worker._run(cli, "   ") == ""
-
-    def test_prepends_slash_to_bare_command(self):
-        cli = self._make_mock_cli()
-        slash_worker._run(cli, "help")
-        cli.process_command.assert_called_once_with("/help")
-
-    def test_preserves_existing_slash(self):
-        cli = self._make_mock_cli()
-        slash_worker._run(cli, "/status")
-        cli.process_command.assert_called_once_with("/status")
-
-    def test_captures_stdout_from_process_command(self):
-        cli = self._make_mock_cli()
-
-        def fake_process(cmd):
-            print("hello from cli")
-
-        cli.process_command = fake_process
-        result = slash_worker._run(cli, "/echo")
-        assert "hello from cli" in result
-
-    def test_strips_trailing_whitespace(self):
-        cli = self._make_mock_cli()
-
-        def fake_process(cmd):
-            print("output\n\n")
-
-        cli.process_command = fake_process
-        result = slash_worker._run(cli, "/test")
-        assert result == "output"
-
-    def test_restores_original_cprint(self):
-        import cli as cli_mod
-
-        cli = self._make_mock_cli()
-        original = getattr(cli_mod, "_cprint", None)
-        slash_worker._run(cli, "/noop")
-        assert getattr(cli_mod, "_cprint", None) is original
-
-    def test_restores_cprint_even_on_error(self):
-        """cprint must be restored even if process_command raises."""
-        import cli as cli_mod
-
-        cli = self._make_mock_cli()
-        cli.process_command.side_effect = RuntimeError("boom")
-        original = getattr(cli_mod, "_cprint", None)
-
-        try:
-            slash_worker._run(cli, "/fail")
-        except RuntimeError:
-            pass
-
-        assert getattr(cli_mod, "_cprint", None) is original
+@pytest.fixture(autouse=True)
+def _reset_in_flight_event():
+    slash_worker._in_flight.clear()
+    yield
+    slash_worker._in_flight.clear()
 
 
-# ─── main() ───────────────────────────────────────────────────────────────────
+def _make_cli() -> MagicMock:
+    cli = MagicMock()
+    cli.console = MagicMock()
+    cli.process_command = MagicMock()
+    return cli
 
 
-class TestMain:
-    """Tests for the main() entry point."""
+def _invoke_main(
+    monkeypatch,
+    stdin_text: str,
+    *,
+    session_key: str = "test-session",
+    model: str = "",
+    run_side_effect=_MISSING,
+):
+    fake_stdout = io.StringIO()
+    calls = MagicMock()
+    mock_cli = MagicMock(name="mock_cli")
+    calls.cli.return_value = mock_cli
+    if run_side_effect is _MISSING:
+        calls.run.return_value = "worker-output"
+    else:
+        calls.run.side_effect = run_side_effect
 
-    def test_processes_valid_json_command(self, monkeypatch):
-        """main() reads a JSON command from stdin and writes a JSON response."""
-        fake_stdin = io.StringIO(json.dumps({"id": "r1", "command": "/help"}) + "\n")
-        fake_stdout = io.StringIO()
+    monkeypatch.setattr(sys, "stdin", io.StringIO(stdin_text))
+    monkeypatch.setattr(sys, "stdout", fake_stdout)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["slash_worker", "--session-key", session_key, "--model", model],
+    )
+    monkeypatch.delenv("HERMES_SESSION_KEY", raising=False)
+    monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
+    monkeypatch.setattr(slash_worker.os, "getppid", lambda: 4242)
+    monkeypatch.setattr(slash_worker, "_start_parent_death_watchdog", calls.watchdog)
+    monkeypatch.setattr(slash_worker, "_prepare_slash_worker_runtime", calls.prepare)
+    monkeypatch.setattr(slash_worker, "HermesCLI", calls.cli)
+    monkeypatch.setattr(slash_worker, "_run", calls.run)
 
-        monkeypatch.setattr("sys.stdin", fake_stdin)
-        monkeypatch.setattr("sys.stdout", fake_stdout)
-        monkeypatch.setattr("sys.argv", ["slash_worker", "--session-key", "test-session", "--model", ""])
+    slash_worker.main()
 
-        mock_cli = MagicMock()
-        mock_cli.console = MagicMock()
-        mock_cli.process_command = MagicMock()
-        monkeypatch.setattr("tui_gateway.slash_worker.HermesCLI", lambda **kwargs: mock_cli)
+    responses = [json.loads(line) for line in fake_stdout.getvalue().splitlines() if line.strip()]
+    return calls, mock_cli, responses
 
-        slash_worker.main()
 
-        output = fake_stdout.getvalue().strip()
-        parsed = json.loads(output)
-        assert parsed["id"] == "r1"
-        assert parsed["ok"] is True
+def _startup_calls(mock_cli: MagicMock, model: str | None):
+    return [
+        call.watchdog(4242),
+        call.prepare(),
+        call.cli(model=model, compact=True, resume="test-session", verbose=False),
+    ]
 
-    def test_handles_invalid_json(self, monkeypatch):
-        """main() writes an error response when stdin contains invalid JSON."""
-        fake_stdin = io.StringIO("not json\n")
-        fake_stdout = io.StringIO()
 
-        monkeypatch.setattr("sys.stdin", fake_stdin)
-        monkeypatch.setattr("sys.stdout", fake_stdout)
-        monkeypatch.setattr("sys.argv", ["slash_worker", "--session-key", "test", "--model", ""])
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        (None, 1.5),
+        ("", 1.5),
+        ("2.25", 2.25),
+        ("not-a-number", 1.5),
+    ],
+)
+def test_env_float_uses_valid_values_or_default(monkeypatch, raw, expected):
+    name = "HERMES_TEST_SLASH_FLOAT"
+    if raw is None:
+        monkeypatch.delenv(name, raising=False)
+    else:
+        monkeypatch.setenv(name, raw)
 
-        mock_cli = MagicMock()
-        monkeypatch.setattr("tui_gateway.slash_worker.HermesCLI", lambda **kwargs: mock_cli)
+    assert slash_worker._env_float(name, 1.5) == expected
 
-        slash_worker.main()
 
-        output = fake_stdout.getvalue().strip()
-        parsed = json.loads(output)
-        assert parsed["ok"] is False
-        assert "error" in parsed
+@pytest.mark.parametrize("command", ["", "   ", None])
+def test_run_ignores_empty_commands(command):
+    cli = _make_cli()
 
-    def test_skips_blank_lines(self, monkeypatch):
-        """main() skips blank lines in stdin without producing output."""
-        fake_stdin = io.StringIO("\n\n\n")
-        fake_stdout = io.StringIO()
+    assert slash_worker._run(cli, command) == ""
+    cli.process_command.assert_not_called()
 
-        monkeypatch.setattr("sys.stdin", fake_stdin)
-        monkeypatch.setattr("sys.stdout", fake_stdout)
-        monkeypatch.setattr("sys.argv", ["slash_worker", "--session-key", "test", "--model", ""])
 
-        mock_cli = MagicMock()
-        monkeypatch.setattr("tui_gateway.slash_worker.HermesCLI", lambda **kwargs: mock_cli)
+@pytest.mark.parametrize(
+    ("command", "expected"),
+    [("help", "/help"), ("/status", "/status")],
+)
+def test_run_normalizes_command_prefix(command, expected):
+    cli = _make_cli()
 
-        slash_worker.main()
+    slash_worker._run(cli, command)
 
-        # No output — blank lines were skipped
-        assert fake_stdout.getvalue().strip() == ""
+    cli.process_command.assert_called_once_with(expected)
 
-    def test_sets_env_vars(self, monkeypatch):
-        """main() sets HERMES_SESSION_KEY and HERMES_INTERACTIVE env vars."""
-        import os
 
-        fake_stdin = io.StringIO("")
-        fake_stdout = io.StringIO()
+def test_run_restores_cprint_and_strips_trailing_whitespace(monkeypatch):
+    cli = _make_cli()
+    original_cprint = MagicMock(name="original_cprint")
+    monkeypatch.setattr(cli_mod, "_cprint", original_cprint, raising=False)
 
-        monkeypatch.setattr("sys.stdin", fake_stdin)
-        monkeypatch.setattr("sys.stdout", fake_stdout)
-        monkeypatch.setattr("sys.argv", ["slash_worker", "--session-key", "my-session", "--model", "gpt-4"])
+    def process_command(_command):
+        assert cli_mod._cprint is not original_cprint
+        print("output\n")
 
-        mock_cli = MagicMock()
-        monkeypatch.setattr("tui_gateway.slash_worker.HermesCLI", lambda **kwargs: mock_cli)
+    cli.process_command.side_effect = process_command
 
-        slash_worker.main()
+    assert slash_worker._run(cli, "/test") == "output"
+    assert cli_mod._cprint is original_cprint
 
-        assert os.environ.get("HERMES_SESSION_KEY") == "my-session"
-        assert os.environ.get("HERMES_INTERACTIVE") == "1"
+
+def test_run_restores_cprint_when_command_fails(monkeypatch):
+    cli = _make_cli()
+    original_cprint = MagicMock(name="original_cprint")
+    monkeypatch.setattr(cli_mod, "_cprint", original_cprint, raising=False)
+
+    def process_command(_command):
+        assert cli_mod._cprint is not original_cprint
+        raise RuntimeError("boom")
+
+    cli.process_command.side_effect = process_command
+
+    with pytest.raises(RuntimeError, match="boom"):
+        slash_worker._run(cli, "/fail")
+
+    assert cli_mod._cprint is original_cprint
+
+
+@pytest.mark.parametrize(("model", "expected_model"), [("", None), ("gpt-4", "gpt-4")])
+def test_main_runs_valid_command_after_ordered_startup(
+    monkeypatch,
+    model,
+    expected_model,
+):
+    def run_command(_cli, _command):
+        assert slash_worker._in_flight.is_set()
+        return "worker-output"
+
+    calls, mock_cli, responses = _invoke_main(
+        monkeypatch,
+        json.dumps({"id": "r1", "command": "/help"}) + "\n",
+        model=model,
+        run_side_effect=run_command,
+    )
+
+    assert responses == [{"id": "r1", "ok": True, "output": "worker-output"}]
+    assert calls.mock_calls == [
+        *_startup_calls(mock_cli, expected_model),
+        call.run(mock_cli, "/help"),
+    ]
+    assert slash_worker.os.environ["HERMES_SESSION_KEY"] == "test-session"
+    assert slash_worker.os.environ["HERMES_INTERACTIVE"] == "1"
+    assert not slash_worker._in_flight.is_set()
+
+
+def test_main_reports_invalid_json_without_dispatch(monkeypatch):
+    calls, mock_cli, responses = _invoke_main(monkeypatch, "not json\n")
+
+    assert len(responses) == 1
+    assert responses[0]["id"] is None
+    assert responses[0]["ok"] is False
+    assert responses[0]["error"]
+    assert calls.mock_calls == _startup_calls(mock_cli, None)
+    calls.run.assert_not_called()
+    assert not slash_worker._in_flight.is_set()
+
+
+def test_main_skips_blank_lines(monkeypatch):
+    calls, mock_cli, responses = _invoke_main(monkeypatch, "\n\n\n")
+
+    assert responses == []
+    assert calls.mock_calls == _startup_calls(mock_cli, None)
+    calls.run.assert_not_called()
+    assert not slash_worker._in_flight.is_set()
+
+
+def test_main_preserves_request_id_and_clears_in_flight_on_error(monkeypatch):
+    calls, mock_cli, responses = _invoke_main(
+        monkeypatch,
+        json.dumps({"id": "r1", "command": "/fail"}) + "\n",
+        run_side_effect=RuntimeError("boom"),
+    )
+
+    assert responses == [{"id": "r1", "ok": False, "error": "boom"}]
+    assert calls.mock_calls == [
+        *_startup_calls(mock_cli, None),
+        call.run(mock_cli, "/fail"),
+    ]
+    assert not slash_worker._in_flight.is_set()

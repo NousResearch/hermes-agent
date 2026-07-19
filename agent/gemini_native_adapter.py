@@ -343,7 +343,23 @@ def _build_gemini_contents(messages: List[Dict[str, Any]]) -> tuple[List[Dict[st
                     tool_name = str(((tool_call.get("function") or {}).get("name") or ""))
                     if tool_call_id and tool_name:
                         tool_name_by_call_id[tool_call_id] = tool_name
-                    parts.append(_translate_tool_call_to_gemini(tool_call))
+                    if _tool_call_extra_signature(tool_call):
+                        parts.append(_translate_tool_call_to_gemini(tool_call))
+                    else:
+                        # Non-Gemini tool calls lack thought_signature; Gemini 3+
+                        # rejects functionCall parts without it.  Emit a text
+                        # description so the model can see the prior tool call
+                        # in context without tripping the API validator.
+                        fn = tool_call.get("function") or {}
+                        args_raw = fn.get("arguments", "")
+                        try:
+                            args = json.loads(args_raw) if isinstance(args_raw, str) and args_raw else {}
+                        except json.JSONDecodeError:
+                            args = {"_raw": args_raw}
+                        if not isinstance(args, dict):
+                            args = {"_value": args}
+                        text_desc = f"[Tool call: {tool_name}({json.dumps(args)})]"
+                        parts.append({"text": text_desc})
 
         if parts:
             contents.append({"role": gemini_role, "parts": parts})

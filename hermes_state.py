@@ -3054,6 +3054,9 @@ class SessionDB:
             eff_base_url = billing_base_url or sess_base_url or ""
             eff_billing_mode = billing_mode or sess_billing_mode or ""
         now = time.time()
+        # Omit the conflict target for compatibility with drifted v22 databases
+        # where ``task`` exists but was not rebuilt into the primary key. The
+        # explicit six-column target makes SQLite reject the entire usage write.
         conn.execute(
             """INSERT INTO session_model_usage (
                    session_id, model, billing_provider, billing_base_url, billing_mode,
@@ -3062,8 +3065,7 @@ class SessionDB:
                    estimated_cost_usd, actual_cost_usd, cost_status, cost_source,
                    first_seen, last_seen
                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-               ON CONFLICT(session_id, model, billing_provider, billing_base_url, billing_mode, task)
-               DO UPDATE SET
+               ON CONFLICT DO UPDATE SET
                    api_call_count = api_call_count + excluded.api_call_count,
                    input_tokens = input_tokens + excluded.input_tokens,
                    output_tokens = output_tokens + excluded.output_tokens,

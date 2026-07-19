@@ -5,6 +5,10 @@ from __future__ import annotations
 import os
 from typing import Any
 
+from hermes_cli.providers import TRANSPORT_TO_API_MODE
+
+_SUPPORTED_API_MODES = frozenset(TRANSPORT_TO_API_MODE.values())
+
 
 def _normalized_base_url(value: Any) -> str:
     if not isinstance(value, str):
@@ -29,6 +33,26 @@ def resolve_entry_api_key(entry: dict[str, Any] | None) -> str | None:
     if key_env:
         return os.getenv(key_env, "").strip() or None
     return None
+
+
+def resolve_entry_api_mode(entry: dict[str, Any] | None) -> str | None:
+    """Return one fallback entry's explicit wire protocol.
+
+    ``api_mode`` is the canonical stored form. ``transport`` accepts the
+    provider-profile spelling (for example ``openai_chat``) and is normalized
+    through the same mapping used by provider resolution. Unknown explicit
+    values raise instead of silently falling back to model-name heuristics.
+    """
+    if not isinstance(entry, dict):
+        return None
+    raw_mode = str(entry.get("api_mode") or "").strip()
+    raw_transport = str(entry.get("transport") or "").strip()
+    mode = raw_mode or TRANSPORT_TO_API_MODE.get(raw_transport, raw_transport)
+    if not mode:
+        return None
+    if mode not in _SUPPORTED_API_MODES:
+        raise ValueError(f"unsupported fallback api_mode: {mode!r}")
+    return mode
 
 
 def _iter_fallback_entries(raw: Any) -> list[dict[str, Any]]:
@@ -60,11 +84,16 @@ def _iter_fallback_entries(raw: Any) -> list[dict[str, Any]]:
     return entries
 
 
-def _entry_identity(entry: dict[str, Any]) -> tuple[str, str, str]:
+def _entry_identity(entry: dict[str, Any]) -> tuple[str, str, str, str]:
+    try:
+        api_mode = resolve_entry_api_mode(entry) or ""
+    except ValueError:
+        api_mode = str(entry.get("api_mode") or entry.get("transport") or "").strip()
     return (
         str(entry.get("provider") or "").strip().lower(),
         str(entry.get("model") or "").strip().lower(),
         _normalized_base_url(entry.get("base_url")).lower(),
+        api_mode.lower(),
     )
 
 
@@ -79,7 +108,7 @@ def get_fallback_chain(config: dict[str, Any] | None) -> list[dict[str, Any]]:
 
     config = config or {}
     chain: list[dict[str, Any]] = []
-    seen: set[tuple[str, str, str]] = set()
+    seen: set[tuple[str, str, str, str]] = set()
 
     for key in ("fallback_providers", "fallback_model"):
         for entry in _iter_fallback_entries(config.get(key)):

@@ -172,6 +172,41 @@ def test_runtime_resolution_failure_is_not_sticky(monkeypatch):
     assert shell.agent is not None
 
 
+def test_primary_auth_fallback_preserves_explicit_transport(monkeypatch):
+    cli = _import_cli()
+    calls = []
+
+    def _runtime_resolve(**kwargs):
+        calls.append(kwargs)
+        if kwargs.get("requested") == "broken-primary":
+            raise AuthError("primary unavailable", code="auth_required")
+        return {
+            "provider": "custom-relay",
+            "api_mode": "chat_completions",
+            "base_url": "https://relay.example/v1",
+            "api_key": "fallback-key",
+            "source": "explicit",
+        }
+
+    monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", _runtime_resolve)
+    monkeypatch.setattr("hermes_cli.runtime_provider.format_runtime_provider_error", lambda exc: str(exc))
+
+    shell = cli.HermesCLI(model="primary-model", compact=True, max_turns=1)
+    shell.requested_provider = "broken-primary"
+    shell._fallback_model = [{
+        "provider": "custom-relay",
+        "model": "relay-model",
+        "base_url": "https://relay.example/v1",
+        "api_mode": "codex_responses",
+    }]
+
+    assert shell._ensure_runtime_credentials() is True
+    assert calls[1]["target_model"] == "relay-model"
+    assert shell.provider == "custom-relay"
+    assert shell.model == "relay-model"
+    assert shell.api_mode == "codex_responses"
+
+
 def test_runtime_resolution_rebuilds_agent_on_routing_change(monkeypatch):
     cli = _import_cli()
 

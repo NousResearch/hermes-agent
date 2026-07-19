@@ -1642,10 +1642,24 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         # (not substring) — see GHSA-76xc-57q6-vm5m.
         if fb_base_url_hint and base_url_host_matches(fb_base_url_hint, "ollama.com") and not fb_api_key_hint:
             fb_api_key_hint = os.getenv("OLLAMA_API_KEY") or None
+        from hermes_cli.fallback_config import resolve_entry_api_mode
+
+        try:
+            configured_mode = resolve_entry_api_mode(fb)
+        except ValueError as exc:
+            logger.warning(
+                "Fallback skip: %s/%s has invalid transport (%s)",
+                fb_provider,
+                fb_model,
+                exc,
+            )
+            unavailable.add(fb_key)
+            return agent._try_activate_fallback(reason)
         fb_client, _resolved_fb_model = resolve_provider_client(
             fb_provider, model=fb_model, raw_codex=True,
             explicit_base_url=fb_base_url_hint,
-            explicit_api_key=fb_api_key_hint)
+            explicit_api_key=fb_api_key_hint,
+            api_mode=configured_mode)
         if fb_client is None:
             logger.warning(
                 "Fallback to %s failed: provider not configured",
@@ -1662,11 +1676,21 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
                 fb_model, fb_provider, _norm_err,
             )
 
-        # Determine api_mode from provider / base URL / model
-        fb_api_mode = "chat_completions"
+        # Preserve an explicitly configured transport. Provider/model-name
+        # inference is only a legacy fallback: named relays can expose several
+        # wire protocols at one endpoint, so silently re-deriving the mode here
+        # can pair a valid client with the wrong request shape.
+        fb_api_mode = configured_mode or "chat_completions"
         fb_base_url = str(fb_client.base_url)
         _fb_is_azure = agent._is_azure_openai_url(fb_base_url)
-        if fb_provider == "openai-codex":
+        if configured_mode:
+            logger.info(
+                "Fallback %s/%s: preserving configured api_mode=%s",
+                fb_provider,
+                fb_model,
+                configured_mode,
+            )
+        elif fb_provider == "openai-codex":
             fb_api_mode = "codex_responses"
         elif (
             fb_provider == "anthropic"

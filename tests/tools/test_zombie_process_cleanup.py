@@ -342,6 +342,7 @@ class TestDelegationCleanup:
             raise RuntimeError("test abort")
 
         child.run_conversation.side_effect = run_conversation
+        child._relay_pending_turn_id = None
         relay_host = MagicMock()
         monkeypatch.setattr(relay_runtime, "get_runtime", lambda **kwargs: relay_host)
 
@@ -361,6 +362,36 @@ class TestDelegationCleanup:
 
         child.close.assert_called_once()
         assert observed["hermes_home"] == profile_home
-        relay_host.close_session.assert_called_once_with({"session_id": "child-session"})
+        relay_host.unregister_subagent.assert_called_once_with(
+            {"child_session_id": "child-session"}
+        )
         assert child not in parent._active_children
         assert result["status"] == "error"
+
+    def test_active_child_turn_owns_relay_scope_cleanup(self, monkeypatch):
+        from unittest.mock import MagicMock
+
+        from hermes_cli.observability import relay_runtime
+        from tools.delegate_tool import _run_single_child
+
+        parent = MagicMock()
+        parent._active_children = []
+        parent._active_children_lock = threading.Lock()
+        child = MagicMock()
+        child.session_id = "active-child-session"
+        child._relay_pending_turn_id = "active-child-turn"
+        child._delegate_saved_tool_names = ["tool1"]
+        child.run_conversation.side_effect = RuntimeError("test abort")
+        parent._active_children.append(child)
+        relay_host = MagicMock()
+        monkeypatch.setattr(relay_runtime, "get_runtime", lambda **kwargs: relay_host)
+
+        result = _run_single_child(
+            task_index=0,
+            goal="test active turn cleanup",
+            child=child,
+            parent_agent=parent,
+        )
+
+        assert result["status"] == "error"
+        relay_host.unregister_subagent.assert_not_called()

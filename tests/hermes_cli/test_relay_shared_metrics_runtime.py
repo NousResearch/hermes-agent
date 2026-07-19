@@ -330,6 +330,15 @@ def test_core_runtime_is_fail_open_without_a_published_binding(monkeypatch, capl
     monkeypatch.setattr(relay_runtime.importlib, "import_module", missing_relay)
 
     assert relay_runtime.get_runtime() is None
+    host = relay_runtime.get_host()
+    assert isinstance(host, relay_runtime.NoopRelayRuntime)
+    assert host.profile_key == relay_runtime.current_profile_key()
+    assert "nemo_relay" in host.reason
+    assert host.apply_tool_request_intercepts(
+        session_id="s1",
+        tool_name="terminal",
+        args={"command": "true"},
+    ) == {"command": "true"}
     assert not relay_runtime.emit_mark("hermes.probe", session_id="s1")
     assert "Hermes Relay runtime initialization failed" in caplog.text
     relay_runtime._reset_for_tests()
@@ -351,6 +360,117 @@ def test_core_mark_uses_the_shared_session_handle_without_a_plugin(direct_runtim
     assert mark[1] == "hermes.skill.created"
     assert mark[2]["handle"] == handle
     assert plugins.get_plugin_manager().list_plugins() == []
+
+
+def test_core_task_instrumentation_preserves_prompt_history_and_tool_schema(
+    direct_runtime,
+    monkeypatch,
+):
+    from run_agent import AIAgent
+
+    agent = object.__new__(AIAgent)
+    agent.session_id = "cache-stable-session"
+    agent.platform = "cli"
+    agent._parent_session_id = None
+    agent._session_db = None
+    agent._cached_system_prompt = "byte-stable-system-prompt\nwith exact spacing"
+    agent.tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "probe",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"value": {"type": "string"}},
+                },
+            },
+        }
+    ]
+    history = [{"role": "user", "content": "sensitive-history-canary"}]
+    prompt_before = agent._cached_system_prompt.encode("utf-8")
+    history_before = json.dumps(history, ensure_ascii=False, sort_keys=True)
+    tools_before = json.dumps(agent.tools, ensure_ascii=False, sort_keys=True)
+
+    def fake_run_conversation(
+        active_agent,
+        user_message,
+        system_message,
+        conversation_history,
+        task_id,
+        stream_callback,
+        persist_user_message,
+        **kwargs,
+    ):
+        del (
+            user_message,
+            system_message,
+            task_id,
+            stream_callback,
+            persist_user_message,
+            kwargs,
+        )
+        assert active_agent is agent
+        assert conversation_history is history
+        return {"final_response": "ok", "completed": True}
+
+    monkeypatch.setattr(
+        "agent.conversation_loop.run_conversation",
+        fake_run_conversation,
+    )
+
+    for task_id in ("cache-task-1", "cache-task-2"):
+        result = AIAgent.run_conversation(
+            agent,
+            "hello",
+            conversation_history=history,
+            task_id=task_id,
+        )
+        assert result["final_response"] == "ok"
+
+    assert agent._cached_system_prompt.encode("utf-8") == prompt_before
+    assert json.dumps(history, ensure_ascii=False, sort_keys=True) == history_before
+    assert json.dumps(agent.tools, ensure_ascii=False, sort_keys=True) == tools_before
+
+
+def test_session_coordinator_separates_turn_release_from_hard_finalize(
+    direct_runtime,
+):
+    profile_key = relay_runtime.current_profile_key()
+    coordinator = relay_runtime.SESSION_COORDINATOR
+    lease = coordinator.acquire_conversation(
+        profile_key=profile_key,
+        session_id="coordinated-session",
+        platform="cli",
+    )
+    turn = coordinator.begin_turn(
+        lease,
+        turn_id="turn-1",
+        task_id="task-1",
+    )
+
+    assert relay_runtime.current_turn() is turn
+    assert turn.handle is not None
+    session_handle = lease.session.handle
+    turn_push = next(
+        event
+        for event in direct_runtime.events
+        if event[0] == "scope.push" and event[1] == relay_runtime.TURN_SCOPE
+    )
+    assert turn_push[3]["handle"] == session_handle
+
+    coordinator.end_turn(turn, outcome="success")
+    coordinator.release_conversation(lease)
+
+    assert relay_runtime.current_turn() is None
+    runtime = relay_runtime.get_runtime(create=False)
+    assert runtime is not None
+    assert runtime.get_session("coordinated-session") is not None
+
+    coordinator.finalize_conversation(
+        profile_key=profile_key,
+        session_id="coordinated-session",
+    )
+    assert runtime.get_session("coordinated-session") is None
 
 
 def test_core_mark_lazily_starts_relay_without_metrics_or_a_plugin(
@@ -739,19 +859,23 @@ def test_shared_metrics_creates_one_task_under_concurrent_access(direct_runtime)
 def test_core_runtime_parents_subagent_session_without_exposing_ids(
     direct_runtime,
 ):
-    plugins.invoke_hook("on_session_start", session_id="parent", platform="cli")
-    parent_handle = relay_runtime.get_session_handle("parent")
-
-    plugins.invoke_hook(
-        "subagent_start",
-        parent_session_id="parent",
-        child_session_id="sensitive-child",
-        child_subagent_id="sensitive-subagent",
-    )
-    plugins.invoke_hook(
-        "on_session_start",
-        session_id="sensitive-child",
+    coordinator = relay_runtime.SESSION_COORDINATOR
+    profile_key = relay_runtime.current_profile_key()
+    parent_lease = coordinator.acquire_conversation(
+        profile_key=profile_key,
+        session_id="parent",
         platform="cli",
+    )
+    parent_turn = coordinator.begin_turn(
+        parent_lease,
+        turn_id="parent-turn",
+        task_id="parent-task",
+    )
+    child_lease = coordinator.acquire_conversation(
+        profile_key=profile_key,
+        session_id="sensitive-child",
+        platform="subagent",
+        parent_session_id="parent",
     )
 
     runtime = relay_runtime.get_runtime()
@@ -759,28 +883,54 @@ def test_core_runtime_parents_subagent_session_without_exposing_ids(
     child = runtime.get_session("sensitive-child")
     assert child is not None
     assert child.parent_session_id == "parent"
-    pushes = [event for event in direct_runtime.events if event[0] == "scope.push"]
-    assert len(pushes) == 2
-    child_kwargs = pushes[1][3]
-    assert child_kwargs["handle"] == parent_handle
+    session_pushes = [
+        event
+        for event in direct_runtime.events
+        if event[0] == "scope.push" and event[1] == relay_runtime.SESSION_SCOPE
+    ]
+    assert len(session_pushes) == 2
+    child_kwargs = session_pushes[1][3]
+    assert child_kwargs["handle"] == parent_turn.handle
     assert child_kwargs["metadata"] == {
+        "hermes.execution_surface": "subagent",
         relay_runtime.RUNTIME_SCHEMA_KEY: relay_runtime.RUNTIME_SCHEMA_VERSION,
         relay_runtime.RUNTIME_INSTANCE_KEY: runtime.runtime_id,
         "nemo_relay_scope_role": "subagent",
     }
-    assert "sensitive-child" not in json.dumps(pushes)
-    assert "sensitive-subagent" not in json.dumps(pushes)
+    assert "sensitive-child" not in json.dumps(session_pushes)
+
+    coordinator.finalize_conversation(
+        profile_key=profile_key,
+        session_id="sensitive-child",
+    )
+    coordinator.release_conversation(child_lease)
+    coordinator.end_turn(parent_turn, outcome="success")
+    coordinator.release_conversation(parent_lease)
+    coordinator.finalize_conversation(
+        profile_key=profile_key,
+        session_id="parent",
+    )
 
 
-def test_core_runtime_closes_child_session_on_subagent_stop(direct_runtime):
+def test_subagent_stop_hook_does_not_own_child_session_lifetime(direct_runtime):
     runtime = relay_runtime.get_runtime()
     assert runtime is not None
-    runtime.register_subagent({
-        "parent_session_id": "parent",
-        "child_session_id": "child",
-    })
-    child = runtime.ensure_session({"session_id": "child"})
+    child = runtime.register_subagent(
+        {
+            "parent_session_id": "parent",
+            "child_session_id": "child",
+        }
+    )
     assert child is not None
+
+    plugins.invoke_hook(
+        "subagent_stop",
+        parent_session_id="parent",
+        child_session_id="child",
+        child_status="completed",
+    )
+
+    assert runtime.get_session("child") is child
 
     runtime.unregister_subagent({"child_session_id": "child"})
 
@@ -791,6 +941,164 @@ def test_core_runtime_closes_child_session_on_subagent_stop(direct_runtime):
         if event[0] == "scope.pop" and event[1] == child.handle
     ]
     assert len(child_closes) == 1
+
+
+@pytest.mark.parametrize(
+    "terminal",
+    ["return", "exception", "cancelled", "timeout"],
+)
+def test_subagent_agent_boundary_closes_its_own_scope(
+    direct_runtime,
+    monkeypatch,
+    terminal,
+):
+    from run_agent import AIAgent
+
+    coordinator = relay_runtime.SESSION_COORDINATOR
+    profile_key = relay_runtime.current_profile_key()
+    parent_lease = coordinator.acquire_conversation(
+        profile_key=profile_key,
+        session_id="parent",
+        platform="cli",
+    )
+    parent_turn = coordinator.begin_turn(
+        parent_lease,
+        turn_id="parent-turn",
+        task_id="parent-task",
+    )
+    child_agent = SimpleNamespace(
+        session_id="child",
+        platform="subagent",
+        _parent_session_id="parent",
+        _session_db=None,
+        _conversation_root_id=lambda: "parent",
+    )
+
+    if terminal == "return":
+        monkeypatch.setattr(
+            "agent.conversation_loop.run_conversation",
+            lambda *_args, **_kwargs: {
+                "final_response": "done",
+                "completed": True,
+                "interrupted": False,
+            },
+        )
+        AIAgent.run_conversation(child_agent, "private", task_id="child-task")
+    elif terminal == "exception":
+        def fail(*_args, **_kwargs):
+            raise RuntimeError("child failed")
+
+        monkeypatch.setattr("agent.conversation_loop.run_conversation", fail)
+        with pytest.raises(RuntimeError, match="child failed"):
+            AIAgent.run_conversation(child_agent, "private", task_id="child-task")
+    elif terminal == "cancelled":
+        def cancel(*_args, **_kwargs):
+            raise KeyboardInterrupt
+
+        monkeypatch.setattr("agent.conversation_loop.run_conversation", cancel)
+        with pytest.raises(KeyboardInterrupt):
+            AIAgent.run_conversation(child_agent, "private", task_id="child-task")
+    else:
+        def time_out(*_args, **_kwargs):
+            raise TimeoutError("child timed out")
+
+        monkeypatch.setattr("agent.conversation_loop.run_conversation", time_out)
+        with pytest.raises(TimeoutError, match="child timed out"):
+            AIAgent.run_conversation(child_agent, "private", task_id="child-task")
+
+    runtime = relay_runtime.get_runtime(create=False)
+    assert runtime is not None
+    assert runtime.get_session("child") is None
+    child_push = next(
+        event
+        for event in direct_runtime.events
+        if event[0] == "scope.push"
+        and event[1] == relay_runtime.SESSION_SCOPE
+        and event[3]["metadata"].get("nemo_relay_scope_role") == "subagent"
+    )
+    assert child_push[3]["handle"] == parent_turn.handle
+    child_closes = [
+        event
+        for event in direct_runtime.events
+        if event[0] == "scope.pop" and event[1][1] == relay_runtime.SESSION_SCOPE
+    ]
+    assert len(child_closes) == 1
+    assert relay_runtime.current_turn() is parent_turn
+
+    coordinator.end_turn(parent_turn, outcome="success")
+    coordinator.release_conversation(parent_lease)
+    coordinator.finalize_conversation(
+        profile_key=profile_key,
+        session_id="parent",
+    )
+
+
+def test_concurrent_subagents_inherit_parent_turn_and_close_independently(
+    direct_runtime,
+):
+    from concurrent.futures import ThreadPoolExecutor
+
+    coordinator = relay_runtime.SESSION_COORDINATOR
+    profile_key = relay_runtime.current_profile_key()
+    parent_lease = coordinator.acquire_conversation(
+        profile_key=profile_key,
+        session_id="parent",
+        platform="cli",
+    )
+    parent_turn = coordinator.begin_turn(
+        parent_lease,
+        turn_id="parent-turn",
+        task_id="parent-task",
+    )
+
+    def run_child(child_id):
+        lease = coordinator.acquire_conversation(
+            profile_key=profile_key,
+            session_id=child_id,
+            platform="subagent",
+            parent_session_id="parent",
+        )
+        turn = coordinator.begin_turn(
+            lease,
+            turn_id=f"{child_id}-turn",
+            task_id=f"{child_id}-task",
+        )
+        coordinator.end_turn(turn, outcome="success")
+        coordinator.finalize_conversation(
+            profile_key=profile_key,
+            session_id=child_id,
+        )
+        coordinator.release_conversation(lease)
+
+    contexts = [contextvars.copy_context(), contextvars.copy_context()]
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [
+            executor.submit(context.run, run_child, f"child-{index}")
+            for index, context in enumerate(contexts)
+        ]
+        for future in futures:
+            future.result()
+
+    runtime = relay_runtime.get_runtime(create=False)
+    assert runtime is not None
+    assert runtime.get_session("child-0") is None
+    assert runtime.get_session("child-1") is None
+    child_pushes = [
+        event
+        for event in direct_runtime.events
+        if event[0] == "scope.push"
+        and event[1] == relay_runtime.SESSION_SCOPE
+        and event[3]["metadata"].get("nemo_relay_scope_role") == "subagent"
+    ]
+    assert len(child_pushes) == 2
+    assert all(event[3]["handle"] == parent_turn.handle for event in child_pushes)
+
+    coordinator.end_turn(parent_turn, outcome="success")
+    coordinator.release_conversation(parent_lease)
+    coordinator.finalize_conversation(
+        profile_key=profile_key,
+        session_id="parent",
+    )
 
 
 def test_core_runtime_ignores_self_parenting_subagent_event(direct_runtime):

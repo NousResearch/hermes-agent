@@ -132,8 +132,8 @@ def apply_tool_request_middleware(
     trace: List[Dict[str, Any]] = []
 
     session_id = str(context.get("session_id") or "")
-    if session_id:
-        from hermes_cli.observability import relay_runtime
+    if session_id and not context.pop("skip_relay", False):
+        from agent import relay_runtime
 
         relay_args = relay_runtime.apply_tool_request_intercepts(
             session_id=session_id,

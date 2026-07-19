@@ -6,7 +6,7 @@ import re
 from functools import lru_cache
 from typing import Any
 
-from .relay_runtime import RUNTIME_INSTANCE_KEY
+from agent.relay_runtime import RUNTIME_INSTANCE_KEY
 
 SCHEMA_KEY = "hermes.metrics.schema_version"
 SCHEMA_VERSION = "hermes.metrics.event.v1"

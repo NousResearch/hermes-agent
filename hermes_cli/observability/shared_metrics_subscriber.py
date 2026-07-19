@@ -6,9 +6,10 @@ import logging
 import threading
 from typing import Any
 
+from agent.relay_runtime import RUNTIME_INSTANCE_KEY
+
 from .shared_metrics import SharedMetricsStore
 from .shared_metrics_contract import model_call_dimensions, task_counter
-from .relay_runtime import RUNTIME_INSTANCE_KEY
 
 logger = logging.getLogger(__name__)
 

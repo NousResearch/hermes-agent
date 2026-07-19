@@ -550,7 +550,7 @@ def test_nemo_relay_plugin_metadata_promotes_trajectory_and_subagent_ids(monkeyp
     assert stop_mark[2]["metadata"]["child_status"] == "completed"
 
 
-def test_nemo_relay_plugin_reparents_child_session_scope_for_embedded_atif(monkeypatch):
+def test_nemo_relay_plugin_reuses_core_parented_child_scope_for_embedded_atif(monkeypatch):
     fake = _FakeNemoRelay()
     plugin = _fresh_plugin(monkeypatch, fake)
 
@@ -563,6 +563,15 @@ def test_nemo_relay_plugin_reparents_child_session_scope_for_embedded_atif(monke
         child_role="leaf",
         telemetry_schema_version="hermes.observer.v1",
     )
+    runtime = plugin._get_runtime()
+    assert runtime is not None
+    assert runtime.host.get_session("child-session") is None
+    runtime.host.register_subagent(
+        {
+            "parent_session_id": "parent-session",
+            "child_session_id": "child-session",
+        }
+    )
     plugin.on_session_start(session_id="child-session")
 
     session_pushes = [
@@ -573,16 +582,19 @@ def test_nemo_relay_plugin_reparents_child_session_scope_for_embedded_atif(monke
     assert len(session_pushes) == 2
     child_push = session_pushes[1]
     child_kwargs = child_push[3]
-    runtime = plugin._get_runtime()
-    assert runtime is not None
     assert child_kwargs["handle"] == runtime.sessions["parent-session"].handle
-    assert child_kwargs["metadata"]["session_id"] == "child-session"
-    assert child_kwargs["metadata"]["trajectory_id"] == "child-session"
     assert child_kwargs["metadata"]["nemo_relay_scope_role"] == "subagent"
-    assert child_kwargs["metadata"]["subagent_id"] == "child-sa"
-    assert child_kwargs["metadata"]["parent_session_id"] == "parent-session"
+    assert "session_id" not in child_kwargs["metadata"]
+    assert "subagent_id" not in child_kwargs["metadata"]
     assert runtime.sessions["child-session"].parent_session_id == "parent-session"
 
+    runtime.host.unregister_subagent({"child_session_id": "child-session"})
+    assert runtime.host.get_session("child-session") is None
+    child_close_index = max(
+        index
+        for index, event in enumerate(fake.events)
+        if event[0] == "scope.pop" and event[1] == runtime.sessions["child-session"].handle
+    )
     plugin.on_subagent_stop(
         parent_session_id="parent-session",
         child_session_id="child-session",
@@ -591,6 +603,12 @@ def test_nemo_relay_plugin_reparents_child_session_scope_for_embedded_atif(monke
 
     assert "child-session" not in runtime.sessions
     assert runtime.host.get_session("child-session") is None
+    stop_mark_index = next(
+        index
+        for index, event in enumerate(fake.events)
+        if event[0] == "scope.event" and event[1] == "hermes.subagent.stop"
+    )
+    assert child_close_index < stop_mark_index
 
 
 def test_nemo_relay_plugin_skips_embedded_child_atif_file_by_default(tmp_path, monkeypatch):
@@ -1000,7 +1018,9 @@ def test_managed_tool_refuses_post_authorization_argument_rewrite(
     assert not dispatched
 
 
-def test_nemo_relay_plugin_activates_before_registering_managed_middleware(tmp_path, monkeypatch):
+def test_nemo_relay_plugin_activates_without_registering_managed_middleware(
+    tmp_path, monkeypatch
+):
     fake = _FakeNemoRelay()
     plugin = _fresh_plugin(monkeypatch, fake)
     _enable_dynamic_plugin(tmp_path, monkeypatch)
@@ -1016,9 +1036,8 @@ def test_nemo_relay_plugin_activates_before_registering_managed_middleware(tmp_p
     plugin.register(_Context())
 
     event_names = [event[0] for event in fake.events]
-    assert event_names.index("plugin.activate_dynamic") < event_names.index(
-        "hermes.register_middleware"
-    )
+    assert "plugin.activate_dynamic" in event_names
+    assert "hermes.register_middleware" not in event_names
     runtime = plugin._get_runtime()
     assert runtime is not None
     runtime.shutdown()

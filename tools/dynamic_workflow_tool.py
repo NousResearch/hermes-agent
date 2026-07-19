@@ -61,7 +61,11 @@ def _workflow_scope(parent_agent: Any = None, *, session_id: Any = None) -> str:
     )
     gateway_session_key = getattr(parent_agent, "_gateway_session_key", None)
     if gateway_session_key and current_session_id:
-        return f"gateway:{gateway_session_key}:session:{current_session_id}"
+        return "gateway:" + json.dumps(
+            [str(gateway_session_key), str(current_session_id)],
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
     if current_session_id:
         return f"session_id:{current_session_id}"
     if gateway_session_key:

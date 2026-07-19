@@ -161,6 +161,33 @@ def test_gateway_workflow_scope_migrates_without_leaking_new_sessions():
     assert other["error"] == "unknown workflow_id: wf_compression"
 
 
+def test_gateway_workflow_scope_does_not_collide_on_delimiters():
+    first = SimpleNamespace(
+        session_id="leaf",
+        _gateway_session_key="route:session:other",
+    )
+    second = SimpleNamespace(
+        session_id="other:session:leaf",
+        _gateway_session_key="route",
+    )
+    _call(
+        {
+            "action": "create",
+            "workflow_id": "wf_collision",
+            "objective": "Route A private state",
+            "nodes": [{"node_id": "worker", "goal": "Complete work"}],
+        },
+        parent_agent=first,
+    )
+
+    result = _call(
+        {"action": "status", "workflow_id": "wf_collision"},
+        parent_agent=second,
+    )
+
+    assert result["error"] == "unknown workflow_id: wf_collision"
+
+
 def test_dispatch_ready_uses_delegate_task_background(monkeypatch):
     calls = []
 

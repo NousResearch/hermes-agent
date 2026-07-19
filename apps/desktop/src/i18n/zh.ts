@@ -193,6 +193,7 @@ export const zh: Translations = {
   keybinds: {
     title: '键盘快捷键',
     subtitle: open => `点击快捷键即可重新绑定 · ${open} 可重新打开此面板。`,
+    search: '搜索快捷键…',
     rebind: '重新绑定',
     reset: '恢复默认',
     resetAll: '全部重置',
@@ -306,11 +307,13 @@ export const zh: Translations = {
       providerApiKeys: 'API 密钥',
       gateway: '网关',
       apiKeys: '工具与密钥',
+      keybinds: '键盘快捷键',
       keysTools: '工具',
       keysSettings: '设置',
       mcp: 'MCP',
       archivedChats: '已归档对话',
       about: '关于',
+      billing: '账单',
       notifications: '通知',
       plugins: '插件'
     },
@@ -702,6 +705,7 @@ export const zh: Translations = {
     config: {
       none: '无',
       noneParen: '(无)',
+      builtinOnly: '仅内置',
       notSet: '未设置',
       commaSeparated: '逗号分隔的值',
       loading: '正在加载 Hermes 配置...',
@@ -951,6 +955,10 @@ export const zh: Translations = {
       noProviderKeys: '没有可用的提供方 API 密钥。',
       searchKeys: '搜索提供方…',
       noKeysMatch: '没有匹配的提供方。',
+      localEndpoint: {
+        title: '本地 / 自定义端点',
+        description: '将 Hermes 指向任意 OpenAI 兼容端点（Zyphra、vLLM、llama.cpp、Ollama 等）。'
+      },
       loading: '正在加载提供方...'
     },
     sessions: {
@@ -997,6 +1005,8 @@ export const zh: Translations = {
       noProviderOptions: '此工具集没有提供方选项；启用后即可使用当前配置。',
       noProviders: '此工具集当前没有可用提供方。',
       ready: '就绪',
+      needsSignIn: '需要登录',
+      needsSetup: '需要安装',
       nousIncluded: '包含在 Nous 订阅中；登录 Nous Portal 即可激活。',
       noApiKeyRequired: '不需要 API 密钥。',
       postSetupHint: step => `此后端需要一次性安装 (${step})。将在此机器上执行，可能需要几分钟。`,
@@ -1016,7 +1026,20 @@ export const zh: Translations = {
       modelInactiveHint: '请先选择此后端，然后再更改其模型。',
       modelSelectedTitle: '模型已选择',
       modelSelectedMessage: model => `${model} 将应用于新会话。`,
-      failedSelectModel: model => `选择 ${model} 失败`
+      failedSelectModel: model => `选择 ${model} 失败`,
+      terminalBackend: {
+        sectionTitle: '执行后端',
+        loading: '正在检查执行后端…',
+        failedLoad: '无法加载终端后端',
+        ready: '就绪',
+        needsSetup: '需要设置',
+        unavailable: '不可用',
+        inUse: '使用中',
+        selectedTitle: '已选择后端',
+        selectedMessage: backend => `终端命令现在通过 ${backend} 运行。将应用于新会话。`,
+        failedSelect: backend => `选择 ${backend} 失败`,
+        needsSetupHint: '现在即可选择此后端——但在完成设置前命令将会失败。'
+      }
     }
   },
 
@@ -1834,6 +1857,7 @@ export const zh: Translations = {
       finishedUnread: '已完成 — 未读',
       backgroundRunning: '后台任务运行中',
       handoffOrigin: platform => `从 ${platform} 转接`,
+      ownedByProfile: profile => `配置档：${profile}`,
       renamed: '已重命名',
       renameFailed: '重命名失败',
       renameTitle: '重命名会话',
@@ -2142,6 +2166,7 @@ export const zh: Translations = {
     recommended: '推荐',
     connected: '已连接',
     featuredPitch: '一个订阅，300+ 前沿模型 — 运行 Hermes 的推荐方式',
+    fireworksPitch: '直接模型 API — Fireworks 托管的前沿模型',
     openRouterPitch: '一个密钥，数百个模型 — 稳妥的默认选择',
     apiKeyOptions: {
       fireworks: { short: '直接模型 API', description: '直接访问 Fireworks AI 托管的模型。' },
@@ -2336,6 +2361,7 @@ export const zh: Translations = {
       noModel: '无模型',
       switchModel: '切换模型',
       openModelPicker: '打开模型选择器',
+      modelPinned: '已由你固定；新对话将使用此模型而非“设置”中的默认模型',
       modelTitle: (provider, model) => `模型 · ${provider}: ${model}`,
       providerModelTitle: (provider, model) => `${provider} · ${model}`
     }

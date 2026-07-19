@@ -120,6 +120,7 @@ export function useBackgroundSync({
       ACTIVE_MESSAGING_SESSION_POLL_INTERVAL_MS,
       () => void refreshActiveMessagingTranscript()
     )
+
     void refreshActiveMessagingTranscript()
 
     return dispose

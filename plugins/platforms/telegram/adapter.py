@@ -17,6 +17,7 @@ import os
 import html as _html
 import re
 import threading
+import time
 from contextvars import ContextVar
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Set, Any
@@ -543,6 +544,24 @@ _UPDATER_STOP_TIMEOUT = 15.0
 # reconnect ladder from stalling indefinitely and allows the heartbeat loop to
 # trigger its own recovery path. Refs: NousResearch/hermes-agent#59614
 _UPDATER_START_TIMEOUT = 30.0
+# shutdown()/initialize() on the getUpdates httpx request close and rebuild the
+# connection pool. When a connection is wedged on a stale CLOSE-WAIT socket that
+# close can block forever, hanging _drain_polling_connections() and freezing the
+# whole reconnect ladder (the tracked _polling_error_task never completes, so
+# every escalation path stays gated behind its in-flight guard). Bound the drain
+# so the ladder always advances toward the fatal-restart escalation. Matches
+# _UPDATER_STOP_TIMEOUT. Refs: NousResearch/hermes-agent#66377
+_DRAIN_TIMEOUT = 15.0
+# Cause-agnostic wedged-recovery watchdog (#66377). Every recovery path (the
+# reconnect ladder's re-entry, the pending-update probe, PTB's error callback)
+# gates new recovery on ``_polling_error_task.done()``; if that task ever wedges
+# on a hung await that no local bound covers, the whole gateway goes silently
+# deaf with nothing retrying. The heartbeat loop force-escalates a recovery task
+# that stays in-flight far longer than any healthy ladder attempt could take —
+# stop (_UPDATER_STOP_TIMEOUT) + drain (2x_DRAIN_TIMEOUT) + start
+# (_UPDATER_START_TIMEOUT) + max backoff (60s) is ~135s, so 300s is
+# unambiguously stuck.
+_POLLING_ERROR_TASK_STUCK_TIMEOUT = 300.0
 # A generation is not healthy until the dedicated getUpdates request returns
 # successfully. This exceeds a normal long-poll cycle for healthy idle bots.
 _POLLING_PROGRESS_TIMEOUT = 60.0
@@ -778,6 +797,7 @@ class TelegramAdapter(BasePlatformAdapter):
         )
         # Interactive model picker state per chat
         self._model_picker_state: Dict[str, dict] = {}
+        self._choice_picker_state: Dict[str, dict] = {}
         # Approval button state: message_id → session_key
         self._approval_state: Dict[int, str] = {}
         # Slash-confirm button state: confirm_id → session_key (for /reload-mcp
@@ -1986,20 +2006,22 @@ class TelegramAdapter(BasePlatformAdapter):
         except Exception:
             return
         try:
-            await polling_req.shutdown()
+            # Bounded: a wedged CLOSE-WAIT socket can make this close hang
+            # forever and freeze the reconnect ladder (#66377).
+            await asyncio.wait_for(polling_req.shutdown(), timeout=_DRAIN_TIMEOUT)
         except Exception:
             logger.debug(
-                "[%s] Polling request shutdown failed (non-fatal)",
+                "[%s] Polling request shutdown failed/timed out (non-fatal)",
                 self.name, exc_info=True,
             )
         try:
-            await polling_req.initialize()
+            await asyncio.wait_for(polling_req.initialize(), timeout=_DRAIN_TIMEOUT)
             logger.debug(
                 "[%s] Polling request pool drained before reconnect", self.name
             )
         except Exception:
             logger.debug(
-                "[%s] Polling request re-initialize failed (non-fatal)",
+                "[%s] Polling request re-initialize failed/timed out (non-fatal)",
                 self.name, exc_info=True,
             )
 
@@ -2453,6 +2475,16 @@ class TelegramAdapter(BasePlatformAdapter):
         HEARTBEAT_INTERVAL = 90   # seconds between probes
         PROBE_TIMEOUT = 15        # seconds before declaring the path dead
 
+        # Wedged-recovery watchdog state (#66377). Tracked locally so no
+        # _polling_error_task assignment site needs to stamp a timestamp: the
+        # heartbeat notes when it first observes a given recovery task still
+        # in-flight, and force-escalates if the *same* task object is still
+        # running after _POLLING_ERROR_TASK_STUCK_TIMEOUT. A healthy ladder
+        # attempt completes (task done) or chains to a new task well before
+        # then, so a single long-lived task is unambiguously wedged.
+        stuck_task_ref: Optional[asyncio.Task] = None
+        stuck_task_since = 0.0
+
         while True:
             try:
                 await asyncio.sleep(HEARTBEAT_INTERVAL)
@@ -2460,6 +2492,42 @@ class TelegramAdapter(BasePlatformAdapter):
                     return
                 if self.has_fatal_error:
                     return
+
+                # Independent wedged-recovery watchdog (#66377): if the tracked
+                # recovery task has hung (any await no local bound covers), every
+                # other recovery path is gated behind it and returns early
+                # forever — the gateway stays alive but deaf. Force a
+                # retryable-fatal so the background reconnector rebuilds the
+                # adapter instead of relying on the frozen ladder.
+                recovery_task = self._polling_error_task
+                if recovery_task is not None and not recovery_task.done():
+                    now = time.monotonic()
+                    if recovery_task is not stuck_task_ref:
+                        stuck_task_ref = recovery_task
+                        stuck_task_since = now
+                    elif now - stuck_task_since > _POLLING_ERROR_TASK_STUCK_TIMEOUT:
+                        stuck_for = now - stuck_task_since
+                        logger.error(
+                            "[%s] Telegram reconnect task wedged for %.0fs with no "
+                            "ladder progress; forcing retryable-fatal so the gateway "
+                            "reconnects instead of staying silently deaf.",
+                            self.name, stuck_for,
+                        )
+                        try:
+                            recovery_task.cancel()
+                        except Exception:
+                            pass
+                        self._set_fatal_error(
+                            "telegram_network_error",
+                            "Telegram reconnect task wedged for %.0fs; forcing "
+                            "gateway reconnect." % stuck_for,
+                            retryable=True,
+                        )
+                        await self._notify_fatal_error()
+                        return
+                else:
+                    stuck_task_ref = None
+
                 bot = self._app.bot if self._app else None
                 if bot is None:
                     continue
@@ -5213,6 +5281,128 @@ class TelegramAdapter(BasePlatformAdapter):
             return SendResult(success=False, error=_redact_telegram_error_text(e))
 
     _PROVIDER_PAGE_SIZE = 10
+
+    async def send_choice_picker(
+        self,
+        chat_id: str,
+        title: str,
+        choices: list,
+        session_key: str,
+        on_choice_selected,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send a flat inline-keyboard choice picker (one tap → one value).
+
+        Generic single-level companion to ``send_model_picker`` used by
+        `/reasoning`, `/fast`, and any future finite-choice command. Each
+        choice dict: ``{"value": str, "label": str, "is_current": bool}``.
+        """
+        if not self._bot:
+            return SendResult(success=False, error="Not connected")
+
+        try:
+            buttons = []
+            for i, choice in enumerate(choices):
+                label = str(choice.get("label") or choice.get("value") or "")
+                if choice.get("is_current"):
+                    label = f"✓ {label}"
+                buttons.append(
+                    InlineKeyboardButton(label, callback_data=f"cp:{i}")
+                )
+            if not buttons:
+                return SendResult(success=False, error="No choices")
+            # Two buttons per row keeps labels readable on mobile.
+            keyboard = InlineKeyboardMarkup(
+                [buttons[i:i + 2] for i in range(0, len(buttons), 2)]
+            )
+
+            thread_id = metadata.get("thread_id") if metadata else None
+            reply_to_id = self._reply_to_message_id_for_send(None, metadata, reply_to_mode=self._reply_to_mode)
+            msg = await self._send_message_with_thread_fallback(
+                chat_id=normalize_telegram_chat_id(chat_id),
+                text=self.format_message(title),
+                parse_mode=ParseMode.MARKDOWN_V2,
+                reply_markup=keyboard,
+                reply_to_message_id=reply_to_id,
+                **self._thread_kwargs_for_send(
+                    chat_id,
+                    thread_id,
+                    metadata,
+                    reply_to_message_id=reply_to_id,
+                    reply_to_mode=self._reply_to_mode
+                ),
+                **self._link_preview_kwargs(),
+            )
+
+            self._choice_picker_state[str(chat_id)] = {
+                "msg_id": msg.message_id,
+                "choices": choices,
+                "session_key": session_key,
+                "on_choice_selected": on_choice_selected,
+            }
+            return SendResult(success=True, message_id=str(msg.message_id))
+        except Exception as e:
+            logger.warning("[%s] send_choice_picker failed: %s", self.name, _redact_telegram_error_text(e))
+            return SendResult(success=False, error=_redact_telegram_error_text(e))
+
+    async def _handle_choice_picker_callback(
+        self, query, data: str, chat_id: str
+    ) -> None:
+        """Handle choice picker button taps (cp:<index>)."""
+        state = self._choice_picker_state.get(chat_id)
+        if not state:
+            await query.answer(text="Picker expired — run the command again.")
+            return
+
+        # Same authorization gate as approval buttons: unauthorized users in a
+        # shared group must not flip session/config state via someone else's
+        # picker message.
+        query_message = getattr(query, "message", None)
+        query_chat = getattr(query_message, "chat", None)
+        if not self._is_callback_user_authorized(
+            str(getattr(query.from_user, "id", "")),
+            chat_id=getattr(query_message, "chat_id", None),
+            chat_type=str(getattr(query_chat, "type", None)) if getattr(query_chat, "type", None) is not None else None,
+            thread_id=str(getattr(query_message, "message_thread_id", None)) if getattr(query_message, "message_thread_id", None) is not None else None,
+            user_name=getattr(query.from_user, "first_name", None),
+        ):
+            await query.answer(text="⛔ You are not authorized to change this setting.")
+            return
+
+        try:
+            idx = int(data[3:])
+            choice = state["choices"][idx]
+        except (ValueError, IndexError):
+            await query.answer(text="Invalid selection.")
+            return
+
+        callback = state.get("on_choice_selected")
+        if not callback:
+            await query.answer(text="Picker expired.")
+            return
+
+        try:
+            result_text = await callback(chat_id, str(choice.get("value") or ""))
+        except Exception as exc:
+            logger.error("Choice picker selection failed: %s", exc)
+            result_text = f"Error applying selection: {exc}"
+
+        try:
+            await query.edit_message_text(
+                text=self.format_message(result_text),
+                parse_mode=ParseMode.MARKDOWN_V2,
+                reply_markup=None,
+            )
+        except Exception:
+            try:
+                await query.edit_message_text(
+                    text=result_text, parse_mode=None, reply_markup=None,
+                )
+            except Exception:
+                pass
+        await query.answer()
+        self._choice_picker_state.pop(chat_id, None)
+
     _MODEL_PAGE_SIZE = 8
 
     def _build_provider_keyboard(self, providers: list, page: int = 0) -> tuple:
@@ -5707,6 +5897,13 @@ class TelegramAdapter(BasePlatformAdapter):
             chat_id = str(query.message.chat_id) if query.message else None
             if chat_id:
                 await self._handle_model_picker_callback(query, data, chat_id)
+            return
+
+        # --- Generic choice picker callbacks (/reasoning, /fast) ---
+        if data.startswith("cp:"):
+            chat_id = str(query.message.chat_id) if query.message else None
+            if chat_id:
+                await self._handle_choice_picker_callback(query, data, chat_id)
             return
 
         # --- Gmail-triage callbacks (gt:verb:arg) ---

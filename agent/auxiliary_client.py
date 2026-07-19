@@ -41,6 +41,9 @@ Payment / credit exhaustion fallback:
 """
 
 import contextlib
+import contextvars
+import hashlib
+import inspect
 import json
 import logging
 import os
@@ -2207,7 +2210,7 @@ def _read_main_model() -> str:
     that gate on "the active main model" (e.g. ``vision_analyze``'s native
     fast path) see the live runtime, not the persisted config default.
     """
-    override = _RUNTIME_MAIN_MODEL
+    override = _runtime_main_value("model")
     if isinstance(override, str) and override.strip():
         return override.strip()
     try:
@@ -2234,7 +2237,7 @@ def _read_main_provider() -> str:
     Runtime override: see ``_read_main_model`` — same mechanism for the
     provider half of the runtime tuple.
     """
-    override = _RUNTIME_MAIN_PROVIDER
+    override = _runtime_main_value("provider")
     if isinstance(override, str) and override.strip():
         return override.strip().lower()
     try:
@@ -2263,7 +2266,7 @@ def _read_main_api_key() -> str:
     the main model's credentials instead of falling to ``no-key-required``
     (issue #9318).
     """
-    override = _RUNTIME_MAIN_API_KEY
+    override = _runtime_main_value("api_key")
     if isinstance(override, str) and override.strip():
         return override.strip()
     try:
@@ -2284,7 +2287,7 @@ def _read_main_base_url() -> str:
 
     Same override-then-config pattern as ``_read_main_api_key``.
     """
-    override = _RUNTIME_MAIN_BASE_URL
+    override = _runtime_main_value("base_url")
     if isinstance(override, str) and override.strip():
         return override.strip()
     try:
@@ -2320,13 +2323,55 @@ def _read_main_api_key_if_same_host(aux_base_url: str) -> str:
     return _read_main_api_key()
 
 
-# Process-local override set by AIAgent at session/turn start. Single-threaded
-# per turn — no lock needed. Cleared by ``clear_runtime_main()``.
+# Compatibility mirrors for older readers/tests. The authoritative value is
+# the ContextVar below: gateway sessions can overlap in one process, so a
+# process-global tuple is not safe as routing or cache-key input.
 _RUNTIME_MAIN_PROVIDER: str = ""
 _RUNTIME_MAIN_MODEL: str = ""
 _RUNTIME_MAIN_BASE_URL: str = ""
-_RUNTIME_MAIN_API_KEY: str = ""
+_RUNTIME_MAIN_API_KEY: Any = ""
 _RUNTIME_MAIN_API_MODE: str = ""
+_RUNTIME_MAIN_AUTH_MODE: str = ""
+_RUNTIME_MAIN_CONTEXT: contextvars.ContextVar[Optional[Dict[str, Any]]] = (
+    contextvars.ContextVar("auxiliary_runtime_main", default=None)
+)
+_RUNTIME_MAIN_COMPAT_SNAPSHOT: Tuple[Any, ...] = ("", "", "", "", "", "")
+_RUNTIME_MAIN_COMPAT_LOCK = threading.Lock()
+
+
+def _compat_runtime_main() -> Optional[Dict[str, Any]]:
+    """Expose deliberately patched legacy globals in a single main context.
+
+    ``set_runtime_main`` mirrors values into the old module attributes for
+    introspection, but those mirrors must never become runtime inputs. A direct
+    patch is recognized only when it differs from the mirrored snapshot and
+    only on the main thread, keeping concurrent session workers isolated.
+    """
+    if threading.current_thread() is not threading.main_thread():
+        return None
+    values = (
+        _RUNTIME_MAIN_PROVIDER,
+        _RUNTIME_MAIN_MODEL,
+        _RUNTIME_MAIN_BASE_URL,
+        _RUNTIME_MAIN_API_KEY,
+        _RUNTIME_MAIN_API_MODE,
+        _RUNTIME_MAIN_AUTH_MODE,
+    )
+    if values == _RUNTIME_MAIN_COMPAT_SNAPSHOT:
+        return None
+    return dict(zip(_MAIN_RUNTIME_FIELDS, values))
+
+
+def _runtime_main_value(field: str) -> Any:
+    """Read one runtime field through context-local/controlled legacy state."""
+    runtime = _RUNTIME_MAIN_CONTEXT.get()
+    if runtime is None:
+        runtime = _compat_runtime_main()
+    if isinstance(runtime, dict):
+        value = runtime.get(field)
+        if value:
+            return value
+    return ""
 
 
 def set_runtime_main(
@@ -2334,38 +2379,85 @@ def set_runtime_main(
     model: str,
     *,
     base_url: str = "",
-    api_key: str = "",
+    api_key: Any = "",
     api_mode: str = "",
-) -> None:
-    """Record the live runtime provider/model/credentials for the current AIAgent.
+    auth_mode: str = "",
+) -> contextvars.Token:
+    """Record the current context's live main runtime for auxiliary routing.
 
-    Called by ``run_agent.AIAgent._sync_runtime_main_for_aux_routing`` (or
-    equivalent setter) at the top of each turn so that
-    ``_read_main_provider`` / ``_read_main_model`` reflect CLI/gateway
-    overrides instead of the stale config.yaml default.
-
-    For ``custom:`` providers, ``base_url`` and ``api_key`` must also be
-    recorded so that ``_resolve_auto`` can construct a valid client in
-    Step 1 instead of falling through to the aggregator chain.
+    Context-local state prevents concurrent gateway sessions from overwriting
+    one another while retaining compatibility mirrors for legacy readers.
     """
     global _RUNTIME_MAIN_PROVIDER, _RUNTIME_MAIN_MODEL
     global _RUNTIME_MAIN_BASE_URL, _RUNTIME_MAIN_API_KEY, _RUNTIME_MAIN_API_MODE
-    _RUNTIME_MAIN_PROVIDER = (provider or "").strip().lower()
-    _RUNTIME_MAIN_MODEL = (model or "").strip()
-    _RUNTIME_MAIN_BASE_URL = (base_url or "").strip()
-    _RUNTIME_MAIN_API_KEY = api_key.strip() if isinstance(api_key, str) else ""
-    _RUNTIME_MAIN_API_MODE = (api_mode or "").strip()
+    global _RUNTIME_MAIN_AUTH_MODE, _RUNTIME_MAIN_COMPAT_SNAPSHOT
+    runtime = {
+        "provider": (provider or "").strip().lower(),
+        "model": (model or "").strip(),
+        "base_url": (base_url or "").strip(),
+        "api_key": (
+            api_key.strip()
+            if isinstance(api_key, str)
+            else api_key if callable(api_key) else ""
+        ),
+        "api_mode": (api_mode or "").strip(),
+        "auth_mode": (auth_mode or "").strip().lower(),
+    }
+    # Publish authoritative context before updating locked compatibility
+    # mirrors; concurrent sessions never read those mirrors at runtime.
+    token = _RUNTIME_MAIN_CONTEXT.set(runtime)
+    with _RUNTIME_MAIN_COMPAT_LOCK:
+        (
+            _RUNTIME_MAIN_PROVIDER,
+            _RUNTIME_MAIN_MODEL,
+            _RUNTIME_MAIN_BASE_URL,
+            _RUNTIME_MAIN_API_KEY,
+            _RUNTIME_MAIN_API_MODE,
+            _RUNTIME_MAIN_AUTH_MODE,
+        ) = (runtime[field] for field in _MAIN_RUNTIME_FIELDS)
+        _RUNTIME_MAIN_COMPAT_SNAPSHOT = tuple(
+            runtime[field] for field in _MAIN_RUNTIME_FIELDS
+        )
+    return token
+
+
+def reset_runtime_main(token: contextvars.Token) -> None:
+    """Restore the runtime binding that preceded one scoped turn."""
+    if token is None:
+        return
+    try:
+        _RUNTIME_MAIN_CONTEXT.reset(token)
+    except (RuntimeError, ValueError):
+        # A token cannot be reset from another copied Context. Background
+        # workers inherit values, not ownership of the parent's token.
+        pass
+
+
+@contextlib.contextmanager
+def scoped_runtime_main(main_runtime: Optional[Dict[str, Any]]):
+    """Temporarily bind an explicit runtime without touching legacy mirrors."""
+    runtime = _normalize_main_runtime(main_runtime)
+    token = _RUNTIME_MAIN_CONTEXT.set(runtime or None)
+    try:
+        yield runtime
+    finally:
+        _RUNTIME_MAIN_CONTEXT.reset(token)
 
 
 def clear_runtime_main() -> None:
-    """Clear the runtime override (e.g. on session end)."""
+    """Clear the runtime override in the current context."""
     global _RUNTIME_MAIN_PROVIDER, _RUNTIME_MAIN_MODEL
     global _RUNTIME_MAIN_BASE_URL, _RUNTIME_MAIN_API_KEY, _RUNTIME_MAIN_API_MODE
-    _RUNTIME_MAIN_PROVIDER = ""
-    _RUNTIME_MAIN_MODEL = ""
-    _RUNTIME_MAIN_BASE_URL = ""
-    _RUNTIME_MAIN_API_KEY = ""
-    _RUNTIME_MAIN_API_MODE = ""
+    global _RUNTIME_MAIN_AUTH_MODE, _RUNTIME_MAIN_COMPAT_SNAPSHOT
+    _RUNTIME_MAIN_CONTEXT.set(None)
+    with _RUNTIME_MAIN_COMPAT_LOCK:
+        _RUNTIME_MAIN_PROVIDER = ""
+        _RUNTIME_MAIN_MODEL = ""
+        _RUNTIME_MAIN_BASE_URL = ""
+        _RUNTIME_MAIN_API_KEY = ""
+        _RUNTIME_MAIN_API_MODE = ""
+        _RUNTIME_MAIN_AUTH_MODE = ""
+        _RUNTIME_MAIN_COMPAT_SNAPSHOT = ("", "", "", "", "", "")
 
 
 def _resolve_custom_runtime() -> Tuple[Optional[str], Optional[str], Optional[str]]:
@@ -2784,6 +2876,14 @@ def _normalize_main_runtime(main_runtime: Optional[Dict[str, Any]]) -> Dict[str,
     surface as the main agent. The OpenAI SDK accepts ``Callable[[], str]``
     for ``api_key`` and calls it before every request.
     """
+    if main_runtime is None:
+        # Context-local state is inherited by tool worker wrappers while
+        # remaining isolated across concurrent gateway sessions. Never fall
+        # back to compatibility mirrors here: another session may have written
+        # them most recently, which would leak its endpoint/key into this call.
+        main_runtime = _RUNTIME_MAIN_CONTEXT.get()
+        if main_runtime is None:
+            main_runtime = _compat_runtime_main()
     if not isinstance(main_runtime, dict):
         return {}
     normalized: Dict[str, Any] = {}
@@ -3311,13 +3411,7 @@ def _evict_cached_clients(provider: str) -> None:
         for key in stale_keys:
             client = _client_cache.get(key, (None, None, None))[0]
             if client is not None:
-                _force_close_async_httpx(client)
-                try:
-                    close_fn = getattr(client, "close", None)
-                    if callable(close_fn):
-                        close_fn()
-                except Exception:
-                    pass
+                _close_cached_client(client)
             _client_cache.pop(key, None)
 
 
@@ -4308,17 +4402,6 @@ def _resolve_auto(
     runtime_api_key = runtime.get("api_key", "")
     runtime_api_mode = str(runtime.get("api_mode") or "")
 
-    # Fall back to process-local globals when main_runtime dict was not
-    # provided or was incomplete.  ``set_runtime_main()`` now records
-    # base_url/api_key/api_mode alongside provider/model, so custom:
-    # providers get the full credential surface in Step 1 of the
-    # auto-detect chain.
-    if not runtime_base_url and _RUNTIME_MAIN_BASE_URL:
-        runtime_base_url = _RUNTIME_MAIN_BASE_URL
-    if not runtime_api_key and _RUNTIME_MAIN_API_KEY:
-        runtime_api_key = _RUNTIME_MAIN_API_KEY
-    if not runtime_api_mode and _RUNTIME_MAIN_API_MODE:
-        runtime_api_mode = _RUNTIME_MAIN_API_MODE
 
     # ── Warn once if OPENAI_BASE_URL is set but config.yaml uses a named
     #    provider (not 'custom').  This catches the common "env poisoning"
@@ -4632,12 +4715,14 @@ def resolve_provider_client(
     # Normalise aliases
     provider = _normalize_aux_provider(provider)
 
-    # Universal model-resolution fallback chain.  Callers (notably title
-    # generation, vision, session search, and other auxiliary tasks) can
-    # reach this function without an explicit model — the user picked their
-    # main provider, didn't bother configuring a per-task ``auxiliary.<task>.model``,
-    # and just expects "use my main model for side tasks too."  Resolve in
-    # this order, stopping at the first non-empty answer:
+    # Universal model-resolution fallback for concrete providers. ``auto`` is
+    # intentionally excluded: `_resolve_auto(main_runtime=...)` returns the
+    # model paired with the provider it actually selected. Pre-filling an auto
+    # call from `_read_main_model()` can leak a stale process-global runtime
+    # into a different provider (for example Claude model slug on Codex OAuth)
+    # and override that correctly resolved model.
+    #
+    # Concrete provider resolution order:
     #
     #   1. ``model`` argument (caller knew what they wanted)
     #   2. Provider's catalog default — cheap/fast model the provider
@@ -5482,6 +5567,7 @@ def resolve_vision_provider_client(
     base_url: Optional[str] = None,
     api_key: Optional[str] = None,
     async_mode: bool = False,
+    main_runtime: Optional[Dict[str, Any]] = None,
 ) -> Tuple[Optional[str], Optional[Any], Optional[str]]:
     """Resolve the client actually used for vision tasks.
 
@@ -5490,6 +5576,7 @@ def resolve_vision_provider_client(
     backends, so users can intentionally force experimental providers. Auto mode
     stays conservative and only tries vision backends known to work today.
     """
+    runtime = _normalize_main_runtime(main_runtime)
     requested, resolved_model, resolved_base_url, resolved_api_key, resolved_api_mode = _resolve_task_provider_model(
         "vision", provider, model, base_url, api_key
     )
@@ -5515,6 +5602,7 @@ def resolve_vision_provider_client(
             explicit_base_url=resolved_base_url,
             explicit_api_key=resolved_api_key,
             api_mode=resolved_api_mode,
+            main_runtime=runtime,
         )
         if client is None:
             return provider_for_base_override, None, None
@@ -5538,8 +5626,8 @@ def resolve_vision_provider_client(
         #                   live from the catalog — tried when
         #                   DEEPINFRA_API_KEY is set)
         #   5. Stop
-        main_provider = _read_main_provider()
-        main_model = _read_main_model()
+        main_provider = str(runtime.get("provider") or _read_main_provider())
+        main_model = str(runtime.get("model") or _read_main_model())
         if main_provider and main_provider not in {"auto", ""}:
             # A provider-specific vision default wins over the user's chat model:
             # static overrides (xiaomi/zai) and catalog-backed discovery (the
@@ -5602,10 +5690,15 @@ def resolve_vision_provider_client(
                 rpc_api_key = None
                 rpc_api_mode = resolved_api_mode
                 if main_provider == "custom" or main_provider.startswith("custom:"):
-                    if _RUNTIME_MAIN_BASE_URL:
-                        rpc_base_url = _RUNTIME_MAIN_BASE_URL
-                        rpc_api_key = _RUNTIME_MAIN_API_KEY or None
-                        rpc_api_mode = resolved_api_mode or _RUNTIME_MAIN_API_MODE or None
+                    runtime_base_url = runtime.get("base_url")
+                    if runtime_base_url:
+                        rpc_base_url = runtime_base_url
+                        rpc_api_key = runtime.get("api_key") or None
+                        rpc_api_mode = (
+                            resolved_api_mode
+                            or runtime.get("api_mode")
+                            or None
+                        )
                     else:
                         # No live runtime recorded (non-gateway caller): fall
                         # back to resolving the configured custom endpoint.
@@ -5619,6 +5712,7 @@ def resolve_vision_provider_client(
                     api_mode=rpc_api_mode,
                     explicit_base_url=rpc_base_url,
                     explicit_api_key=rpc_api_key,
+                    main_runtime=runtime,
                     is_vision=True)
                 if rpc_client is not None:
                     logger.info(
@@ -5661,6 +5755,7 @@ def resolve_vision_provider_client(
                 base_url=_zai_url,
                 api_key=resolved_api_key or None,
                 api_mode="chat_completions",
+                main_runtime=runtime,
                 is_vision=True,
             )
             if client is not None:
@@ -5668,6 +5763,7 @@ def resolve_vision_provider_client(
         # Fallback: try without explicit base_url (old behavior)
         client, final_model = _get_cached_client(requested, resolved_model, async_mode,
                                                  api_mode=resolved_api_mode,
+                                                 main_runtime=runtime,
                                                  is_vision=True)
         if client is None:
             return requested, None, None
@@ -5675,6 +5771,7 @@ def resolve_vision_provider_client(
 
     client, final_model = _get_cached_client(requested, resolved_model, async_mode,
                                              api_mode=resolved_api_mode,
+                                             main_runtime=runtime,
                                              is_vision=True)
     if client is None:
         return requested, None, None
@@ -5742,6 +5839,38 @@ _client_cache_lock = threading.Lock()
 _CLIENT_CACHE_MAX_SIZE = 64  # safety belt — evict oldest when exceeded
 
 
+class _CallableCacheDiscriminator:
+    """Hash a credential callback by identity without exposing its state."""
+
+    __slots__ = ("_callback",)
+
+    def __init__(self, callback: Any) -> None:
+        # Retain the callback so its id cannot be reused while cached.
+        self._callback = callback
+
+    def __hash__(self) -> int:
+        return id(self._callback)
+
+    def __eq__(self, other: object) -> bool:
+        return (
+            isinstance(other, _CallableCacheDiscriminator)
+            and self._callback is other._callback
+        )
+
+    def __repr__(self) -> str:
+        return "<callable-api-key>"
+
+
+def _runtime_cache_discriminator(field: str, value: Any) -> Any:
+    """Return a hashable, secret-safe runtime cache-key component."""
+    if field == "api_key" and callable(value):
+        return _CallableCacheDiscriminator(value)
+    if field == "api_key" and isinstance(value, str) and value:
+        digest = hashlib.blake2b(value.encode("utf-8"), digest_size=16).digest()
+        return ("api-key-digest", digest)
+    return value
+
+
 def _client_cache_key(
     provider: str,
     *,
@@ -5755,7 +5884,10 @@ def _client_cache_key(
     model: Optional[str] = None,
 ) -> tuple:
     runtime = _normalize_main_runtime(main_runtime)
-    runtime_key = tuple(runtime.get(field, "") for field in _MAIN_RUNTIME_FIELDS) if provider == "auto" else ()
+    runtime_key = tuple(
+        _runtime_cache_discriminator(field, runtime.get(field, ""))
+        for field in _MAIN_RUNTIME_FIELDS
+    ) if provider == "auto" else ()
     # `auto` can now resolve through task-specific or main fallback policy,
     # so the task participates in the cache key. Non-auto providers keep the
     # old cache shape because the explicit provider/model tuple is sufficient.
@@ -5770,21 +5902,16 @@ def _client_cache_key(
     # APIConnectionError that fails the sibling advisor (root cause of the run2
     # double-advisor "Connection error" collapse). Keying on model gives each
     # model its own client, so concurrent fan-out calls never cross-close.
-    model_key = model or ""
-    return (provider, async_mode, base_url or "", api_key or "", api_mode or "", runtime_key, is_vision, task_key, pool_hint, model_key)
+    model_key = model or runtime.get("model", "")
+    api_key_key = _runtime_cache_discriminator("api_key", api_key or "")
+    return (provider, async_mode, base_url or "", api_key_key, api_mode or "", runtime_key, is_vision, task_key, pool_hint, model_key)
 
 
 def _store_cached_client(cache_key: tuple, client: Any, default_model: Optional[str], *, bound_loop: Any = None) -> None:
     with _client_cache_lock:
         old_entry = _client_cache.get(cache_key)
         if old_entry is not None and old_entry[0] is not client:
-            _force_close_async_httpx(old_entry[0])
-            try:
-                close_fn = getattr(old_entry[0], "close", None)
-                if callable(close_fn):
-                    close_fn()
-            except Exception:
-                pass
+            _close_cached_client(old_entry[0])
         _client_cache[cache_key] = (client, default_model, bound_loop)
 
 
@@ -5886,30 +6013,31 @@ def _force_close_async_httpx(client: Any) -> None:
         pass
 
 
+def _close_cached_client(client: Any) -> None:
+    """Apply the canonical best-effort close policy to one cached client."""
+    if client is None:
+        return
+    _force_close_async_httpx(client)
+    try:
+        close_fn = getattr(client, "close", None)
+        if callable(close_fn) and not inspect.iscoroutinefunction(close_fn):
+            close_fn()
+    except Exception:
+        pass
+
+
 def shutdown_cached_clients() -> None:
     """Close all cached clients (sync and async) to prevent event-loop errors.
 
     Call this during CLI shutdown, *before* the event loop is closed, to
     avoid ``AsyncHttpxClientWrapper.__del__`` raising on a dead loop.
     """
-    import inspect
-
     with _client_cache_lock:
         for key, entry in list(_client_cache.items()):
             client = entry[0]
             if client is None:
                 continue
-            # Mark any async httpx transport as closed first (prevents __del__
-            # from scheduling aclose() on a dead event loop).
-            _force_close_async_httpx(client)
-            # Sync clients: close the httpx connection pool cleanly.
-            # Async clients: skip — we already neutered __del__ above.
-            try:
-                close_fn = getattr(client, "close", None)
-                if close_fn and not inspect.iscoroutinefunction(close_fn):
-                    close_fn()
-            except Exception:
-                pass
+            _close_cached_client(client)
         _client_cache.clear()
 
 
@@ -6059,13 +6187,20 @@ def _get_cached_client(
             if cache_key not in _client_cache:
                 # Safety belt: if the cache has grown beyond the max, evict
                 # the oldest entries (FIFO — dict preserves insertion order).
+                # Do not close an evicted client here: another caller may be
+                # mid-request with the object it obtained from this cache.
+                # Dropping the cache reference lets normal refcount/GC cleanup
+                # happen after in-flight users release it.
                 while len(_client_cache) >= _CLIENT_CACHE_MAX_SIZE:
-                    evict_key, evict_entry = next(iter(_client_cache.items()))
-                    _force_close_async_httpx(evict_entry[0])
+                    evict_key = next(iter(_client_cache))
                     del _client_cache[evict_key]
                 _client_cache[cache_key] = (client, default_model, bound_loop)
             else:
+                built_client = client
                 client, default_model, _ = _client_cache[cache_key]
+                # This concurrently built loser was never exposed to a caller,
+                # so it is safe to close immediately.
+                _close_cached_client(built_client)
     return client, model or default_model
 
 
@@ -6118,6 +6253,13 @@ def _resolve_task_provider_model(
         cfg_model = str(task_config.get("model", "")).strip() or None
         cfg_base_url = str(task_config.get("base_url", "")).strip() or None
         cfg_api_key = str(task_config.get("api_key", "")).strip() or None
+        # Resolve key_env → env var when api_key is not set directly
+        if not cfg_api_key:
+            cfg_key_env = str(
+                task_config.get("key_env") or task_config.get("api_key_env") or ""
+            ).strip()
+            if cfg_key_env:
+                cfg_api_key = os.getenv(cfg_key_env, "").strip() or None
         cfg_api_mode = str(task_config.get("api_mode", "")).strip() or None
 
     # 'auto' is a sentinel meaning "inherit from main runtime / auto-detect", not
@@ -6818,6 +6960,11 @@ def call_llm(
     Raises:
         RuntimeError: If no provider is configured.
     """
+    # Capture one immutable runtime snapshot for keying, resolution, retries,
+    # and fallbacks. Reading ambient state independently in each phase lets a
+    # concurrent /model switch produce a key for one runtime and a client for
+    # another.
+    main_runtime = _normalize_main_runtime(main_runtime)
     resolved_provider, resolved_model, resolved_base_url, resolved_api_key, resolved_api_mode = _resolve_task_provider_model(
         task, provider, model, base_url, api_key)
     if api_mode:
@@ -6832,6 +6979,7 @@ def call_llm(
             base_url=resolved_base_url or base_url,
             api_key=resolved_api_key or api_key,
             async_mode=False,
+            main_runtime=main_runtime,
         )
         if client is None and resolved_provider != "auto" and not resolved_base_url:
             logger.warning(
@@ -6842,6 +6990,7 @@ def call_llm(
                 provider="auto",
                 model=resolved_model,
                 async_mode=False,
+                main_runtime=main_runtime,
             )
         if client is None:
             raise RuntimeError(
@@ -7444,6 +7593,9 @@ async def async_call_llm(
 
     Same as call_llm() but async. See call_llm() for full documentation.
     """
+    # Keep every async phase on the same runtime identity, even if another
+    # session switches models while this task is awaiting network I/O.
+    main_runtime = _normalize_main_runtime(main_runtime)
     resolved_provider, resolved_model, resolved_base_url, resolved_api_key, resolved_api_mode = _resolve_task_provider_model(
         task, provider, model, base_url, api_key)
     effective_extra_body = _get_task_extra_body(task)
@@ -7456,6 +7608,7 @@ async def async_call_llm(
             base_url=resolved_base_url or base_url,
             api_key=resolved_api_key or api_key,
             async_mode=True,
+            main_runtime=main_runtime,
         )
         if client is None and resolved_provider != "auto" and not resolved_base_url:
             logger.warning(
@@ -7466,6 +7619,7 @@ async def async_call_llm(
                 provider="auto",
                 model=resolved_model,
                 async_mode=True,
+                main_runtime=main_runtime,
             )
         if client is None:
             raise RuntimeError(
@@ -7481,6 +7635,7 @@ async def async_call_llm(
             base_url=resolved_base_url,
             api_key=resolved_api_key,
             api_mode=resolved_api_mode,
+            main_runtime=main_runtime,
         )
         if client is None:
             _explicit = (resolved_provider or "").strip().lower()

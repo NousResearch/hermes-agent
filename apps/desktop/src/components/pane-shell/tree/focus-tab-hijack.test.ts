@@ -39,8 +39,7 @@ describe('reactive unhide in a shared (Focus) group', () => {
       )
     )
 
-    const activeOf = (paneId: string) =>
-      model.findGroupOfPane(tree.$layoutTree.get()!, paneId)?.active ?? null
+    const activeOf = (paneId: string) => model.findGroupOfPane(tree.$layoutTree.get()!, paneId)?.active ?? null
 
     return { activeOf, tree }
   }

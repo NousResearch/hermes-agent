@@ -2040,16 +2040,40 @@ def _cmd_complete(args: argparse.Namespace) -> int:
                         failed.append(tid)
                         continue
 
-            if not kb.complete_task(
-                conn, tid,
-                result=args.result,
-                summary=summary,
-                metadata=metadata,
-                expected_run_id=_worker_run_id_for(tid),
-            ):
+            worker_run_id = _worker_run_id_for(tid)
+            try:
+                if worker_run_id is not None:
+                    completed = kb.stage_task_completion(
+                        conn,
+                        tid,
+                        result=args.result,
+                        summary=summary,
+                        metadata=metadata,
+                        expected_run_id=worker_run_id,
+                    )
+                else:
+                    completed = kb.complete_task(
+                        conn,
+                        tid,
+                        result=args.result,
+                        summary=summary,
+                        metadata=metadata,
+                    )
+            except kb.InvalidCompletionHandoffError as exc:
+                failed.append(tid)
+                print(
+                    f"cannot complete {tid}: {exc.reason}; the invalid attempt "
+                    f"was quarantined in blocked/needs_input",
+                    file=sys.stderr,
+                )
+                continue
+            if not completed:
                 failed.append(tid)
                 print(f"cannot complete {tid} (unknown id or terminal state)", file=sys.stderr)
             else:
+                # Preserve the stable CLI contract. Dispatcher workers stage
+                # this transition until their enclosing turn finalizes; manual
+                # callers complete immediately.
                 print(f"Completed {tid}")
     return 0 if not failed else 1
 

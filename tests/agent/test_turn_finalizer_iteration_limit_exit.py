@@ -1,5 +1,7 @@
 """Regression tests for iteration-limit exit normalization (#61631)."""
 
+import json
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -270,6 +272,7 @@ def test_pending_response_does_not_mask_later_terminal_exit(
 def test_pending_response_records_kanban_timeout(monkeypatch):
     monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
     monkeypatch.setenv("HERMES_KANBAN_TASK", "task-123")
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", "456")
     record = MagicMock(name="record_task_failure")
     conn = SimpleNamespace(close=lambda: None)
     monkeypatch.setattr("hermes_cli.kanban_db.connect", lambda: conn)
@@ -295,6 +298,7 @@ def test_pending_response_records_kanban_timeout(monkeypatch):
         release_claim=True,
         end_run=True,
         event_payload_extra={"budget_used": 60, "budget_max": 60},
+        expected_run_id=456,
     )
 
 
@@ -377,3 +381,116 @@ def test_terminal_verification_failure_is_persisted_as_one_correction(monkeypatc
     persisted_contents = [m.get("content") for m in agent.persisted_messages]
     assert "[System: run tests]" not in persisted_contents
     assert report in persisted_contents
+
+
+def _seed_worker_parent_child(monkeypatch, tmp_path):
+    from hermes_cli import kanban_db as kb
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    kb._INITIALIZED_PATHS.clear()
+    kb.init_db()
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="BUILD parent", assignee="engineer")
+        child = kb.create_task(
+            conn, title="BUILD child", assignee="engineer", parents=[parent]
+        )
+        kb.claim_task(conn, parent)
+        run = kb.latest_run(conn, parent)
+        assert run is not None
+    monkeypatch.setenv("HERMES_KANBAN_TASK", parent)
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(run.id))
+    return kb, parent, child, run.id
+
+
+def test_incident_rejected_completion_then_budget_timeout_never_releases_child(
+    monkeypatch, tmp_path
+):
+    """Reconstruct completion event 39475 followed by timeout event 39494."""
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
+    kb, parent, child, run_id = _seed_worker_parent_child(monkeypatch, tmp_path)
+    from tools import kanban_tools as kt
+
+    incident_summary = (
+        "Adversarial re-audit completed, but 2 CRITICAL and 2 HIGH "
+        "guard-efficacy defects remain; reviewer made no file changes."
+    )
+    output = kt._handle_complete({
+        "summary": incident_summary,
+        "metadata": {
+            "changed_files": [],
+            "findings": [
+                "CRITICAL: request classification fails open",
+                "CRITICAL: schema derivation omits aliases",
+                "HIGH: source scan misses aliases",
+                "HIGH: baseline is mutable",
+            ],
+        },
+    })
+    assert "non-pass handoff" in json.loads(output)["error"]
+
+    with kb.connect() as conn:
+        parent_task = kb.get_task(conn, parent)
+        child_task = kb.get_task(conn, child)
+        assert parent_task is not None and parent_task.status == "blocked"
+        assert child_task is not None and child_task.status == "todo"
+        assert kb.claim_task(conn, child) is None
+
+    result = _finalize(
+        _LimitAgent(),
+        final_response=None,
+        exit_reason="unknown",
+        pending_verification_response=incident_summary,
+    )
+    assert result["turn_exit_reason"] == "max_iterations_reached(60/60)"
+
+    with kb.connect() as conn:
+        parent_task = kb.get_task(conn, parent)
+        child_task = kb.get_task(conn, child)
+        run = kb.latest_run(conn, parent)
+        assert parent_task is not None and parent_task.status == "blocked"
+        assert child_task is not None and child_task.status == "todo"
+        assert run is not None and run.outcome == "invalid_completion"
+        assert kb.claim_task(conn, child) is None
+        events = kb.list_events(conn, parent)
+        rejected = [event for event in events if event.kind == "completion_rejected_non_pass"]
+        timed_out = [event for event in events if event.kind == "late_terminal_event"]
+        assert len(rejected) == 1 and rejected[0].run_id == run_id
+        assert len(timed_out) == 1 and timed_out[0].run_id == run_id
+
+
+def test_clean_turn_finalizes_staged_completion_and_promotes_child(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
+    kb, parent, child, run_id = _seed_worker_parent_child(monkeypatch, tmp_path)
+    from tools import kanban_tools as kt
+
+    output = kt._handle_complete({
+        "summary": "Implemented and verified the requested guard.",
+        "metadata": {"changed_files": ["hermes_cli/kanban_db.py"]},
+    })
+    assert json.loads(output)["ok"] is True
+    with kb.connect() as conn:
+        parent_task = kb.get_task(conn, parent)
+        child_task = kb.get_task(conn, child)
+        assert parent_task is not None and parent_task.status == "running"
+        assert child_task is not None and child_task.status == "todo"
+
+    result = _finalize(
+        _LimitAgent(budget_remaining=1),
+        final_response="done",
+        exit_reason="text_response(finish_reason=stop)",
+    )
+    assert result["completed"] is True
+
+    with kb.connect() as conn:
+        parent_task = kb.get_task(conn, parent)
+        child_task = kb.get_task(conn, child)
+        run = kb.latest_run(conn, parent)
+        assert parent_task is not None and parent_task.status == "done"
+        assert child_task is not None and child_task.status == "ready"
+        assert run is not None and run.outcome == "completed"
+        assert run.id == run_id

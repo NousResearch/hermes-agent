@@ -141,6 +141,18 @@ def finalize_turn(
         final_response = agent._handle_max_iterations(messages, api_call_count)
         iteration_limit_fallback = True
 
+    _kanban_task = os.environ.get("HERMES_KANBAN_TASK")
+    _kanban_run_id = None
+    if _kanban_task:
+        try:
+            _kanban_run_id = int(os.environ["HERMES_KANBAN_RUN_ID"])
+        except (KeyError, TypeError, ValueError):
+            logger.warning(
+                "Kanban worker %s has no valid HERMES_KANBAN_RUN_ID; "
+                "refusing unfenced turn-finalizer mutation",
+                _kanban_task,
+            )
+
     if iteration_limit_fallback:
         # If running as a kanban worker, signal the dispatcher that the
         # worker could not complete (rather than treating it as a
@@ -151,8 +163,7 @@ def finalize_turn(
         # We route through ``_record_task_failure(outcome="timed_out")``
         # rather than ``kanban_block`` so this counts toward the dispatcher's
         # consecutive-failure circuit breaker (#29747 gap 2).
-        _kanban_task = os.environ.get("HERMES_KANBAN_TASK")
-        if _kanban_task:
+        if _kanban_task and _kanban_run_id is not None:
             try:
                 from hermes_cli import kanban_db as _kb
                 _conn = _kb.connect()
@@ -173,6 +184,7 @@ def finalize_turn(
                             "budget_used": api_call_count,
                             "budget_max": agent.max_iterations,
                         },
+                        expected_run_id=_kanban_run_id,
                     )
                     logger.info(
                         "recorded budget-exhausted failure for task %s (%d/%d)",
@@ -624,5 +636,67 @@ def finalize_turn(
         )
     except Exception as exc:
         logger.warning("on_session_end hook failed: %s", exc)
+
+    if completed and _kanban_task and _kanban_run_id is not None:
+        # ``kanban_complete`` only stages a dispatcher worker's completion.
+        # Commit that intent as the final turn side effect, after persistence,
+        # external-memory sync, and lifecycle hooks have all returned. Until
+        # this point the task remains running and its children remain gated; a
+        # late same-run exception therefore cannot release BUILD work.
+        from hermes_cli import kanban_db as _kb
+        try:
+            _conn = _kb.connect()
+            try:
+                finalized = _kb.finalize_staged_completion(
+                    _conn,
+                    _kanban_task,
+                    expected_run_id=_kanban_run_id,
+                )
+                if finalized:
+                    logger.info(
+                        "finalized staged completion for task %s run %d",
+                        _kanban_task,
+                        _kanban_run_id,
+                    )
+            finally:
+                try:
+                    _conn.close()
+                except Exception:
+                    pass
+        except _kb.InvalidCompletionHandoffError as exc:
+            logger.warning(
+                "Rejected staged completion for task %s run %d: %s",
+                _kanban_task,
+                _kanban_run_id,
+                exc.reason,
+            )
+            try:
+                _conn = _kb.connect()
+                try:
+                    _kb._record_task_failure(
+                        _conn,
+                        _kanban_task,
+                        error=f"staged completion rejected: {exc.reason}",
+                        outcome="failed",
+                        release_claim=True,
+                        end_run=True,
+                        event_payload_extra={"reason": "invalid_completion_handoff"},
+                        expected_run_id=_kanban_run_id,
+                    )
+                finally:
+                    _conn.close()
+            except Exception:
+                logger.warning(
+                    "Failed to record staged-completion rejection for task %s",
+                    _kanban_task,
+                    exc_info=True,
+                )
+        except Exception:
+            logger.warning(
+                "Failed to finalize staged completion for task %s run %d",
+                _kanban_task,
+                _kanban_run_id,
+                exc_info=True,
+            )
 
     return result

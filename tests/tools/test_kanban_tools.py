@@ -313,6 +313,61 @@ def test_complete_happy_path(worker_env):
         conn.close()
 
 
+def test_dispatched_complete_stages_and_rejects_incident_non_pass_handoff(
+    worker_env, monkeypatch
+):
+    """A real run token defers release and rejects t_63a4b50b's handoff."""
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    with kb.connect() as conn:
+        run = kb.latest_run(conn, worker_env)
+        assert run is not None
+        child = kb.create_task(
+            conn,
+            title="BUILD child",
+            assignee="test-worker",
+            parents=[worker_env],
+        )
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(run.id))
+
+    rejected = kt._handle_complete({
+        "summary": (
+            "Adversarial re-audit complete, but 2 CRITICAL and 2 HIGH "
+            "guard-efficacy defects remain; reviewer made no file changes."
+        ),
+        "metadata": {
+            "changed_files": [],
+            "findings": [
+                "CRITICAL: request classification fails open",
+                "CRITICAL: schema derivation omits aliases",
+                "HIGH: SQL scan misses aliases",
+                "HIGH: baseline is mutable",
+            ],
+        },
+    })
+    error = json.loads(rejected).get("error", "")
+    assert "rejected this invalid completion handoff" in error
+    assert "quarantined" in error
+
+    with kb.connect() as conn:
+        parent_task = kb.get_task(conn, worker_env)
+        child_task = kb.get_task(conn, child)
+        current_run = kb.latest_run(conn, worker_env)
+        assert parent_task is not None and parent_task.status == "blocked"
+        assert child_task is not None and child_task.status == "todo"
+        assert current_run is not None and current_run.status == "blocked"
+        assert current_run.outcome == "invalid_completion"
+
+    # The rejected handoff is terminal for this run. Same-run retries cannot
+    # overwrite the quarantined receipt; an audited unblock creates a new run.
+    accepted = kt._handle_complete({
+        "summary": "Implemented the repair; focused and full tests pass.",
+        "metadata": {"changed_files": ["hermes_cli/kanban_db.py"]},
+    })
+    assert "already terminal" in json.loads(accepted)["error"]
+
+
 def test_complete_metadata_round_trips_through_show(worker_env):
     """Structured completion metadata should be visible to downstream agents."""
     from tools import kanban_tools as kt
@@ -1725,6 +1780,7 @@ def test_worker_complete_rejects_stale_run_id(worker_env, monkeypatch):
     out = kt._handle_complete({"summary": "current completion"})
     d = json.loads(out)
     assert d.get("ok") is True
+    assert d.get("staged") is True
 
 
 def test_orchestrator_complete_any_task_allowed(monkeypatch, tmp_path):
@@ -1752,6 +1808,7 @@ def test_orchestrator_complete_any_task_allowed(monkeypatch, tmp_path):
     out = kt._handle_complete({"task_id": tid, "summary": "orchestrator close"})
     d = json.loads(out)
     assert d.get("ok") is True and d.get("task_id") == tid
+    assert d.get("staged") is False
 
 
 # ---------------------------------------------------------------------------

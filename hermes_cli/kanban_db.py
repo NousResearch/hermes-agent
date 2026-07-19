@@ -1215,7 +1215,8 @@ CREATE TABLE IF NOT EXISTS task_runs (
     profile             TEXT,
     step_key            TEXT,
     status              TEXT NOT NULL,
-    -- status: running | done | blocked | crashed | timed_out | failed | released
+    -- status: running | completion_pending | done | blocked | crashed |
+    --         timed_out | failed | released
     claim_lock          TEXT,
     claim_expires       INTEGER,
     worker_pid          INTEGER,
@@ -2596,13 +2597,10 @@ def create_task(
                         missing = _find_missing_parents(conn, parents)
                         if missing:
                             raise ValueError(f"unknown parent task(s): {', '.join(missing)}")
-                        # If any parent is not yet done, we're todo.
-                        rows = conn.execute(
-                            "SELECT status FROM tasks WHERE id IN "
-                            "(" + ",".join("?" * len(parents)) + ")",
-                            parents,
-                        ).fetchall()
-                        if any(r["status"] != "done" for r in rows):
+                        # A status-only check released children from contradictory
+                        # done histories. The event/run-backed predicate preserves
+                        # legacy done rows but rejects invalidated completions.
+                        if any(not valid_completion(conn, parent) for parent in parents):
                             task_status = "todo"
                 # Even in triage mode we still need to validate parent ids
                 # so the eventual link rows don't dangle.
@@ -2826,11 +2824,11 @@ def link_tasks(conn: sqlite3.Connection, parent_id: str, child_id: str) -> None:
             "INSERT OR IGNORE INTO task_links (parent_id, child_id) VALUES (?, ?)",
             (parent_id, child_id),
         )
-        # If child was ready but parent is not yet done, demote child to todo.
-        parent_status = conn.execute(
-            "SELECT status FROM tasks WHERE id = ?", (parent_id,)
-        ).fetchone()["status"]
-        if parent_status != "done":
+        # Re-evaluate the whole dependency set after adding the edge. This uses
+        # the same completion receipt/history predicate as auto-promotion,
+        # claim, unblock, and manual promotion.
+        guard_reason, _ = _dependency_release_guard(conn, child_id)
+        if guard_reason:
             conn.execute(
                 "UPDATE tasks SET status = 'todo' WHERE id = ? AND status = 'ready'",
                 (child_id,),
@@ -3242,6 +3240,7 @@ def _end_run(
     error: Optional[str] = None,
     metadata: Optional[dict] = None,
     status: Optional[str] = None,
+    expected_run_id: Optional[int] = None,
 ) -> Optional[int]:
     """Close the currently-active run for ``task_id`` and clear the pointer.
 
@@ -3259,7 +3258,9 @@ def _end_run(
     if not row or not row["current_run_id"]:
         return None
     run_id = int(row["current_run_id"])
-    conn.execute(
+    if expected_run_id is not None and run_id != int(expected_run_id):
+        return None
+    cur = conn.execute(
         """
         UPDATE task_runs
            SET status        = ?,
@@ -3284,8 +3285,12 @@ def _end_run(
             run_id,
         ),
     )
+    if cur.rowcount != 1:
+        return None
     conn.execute(
-        "UPDATE tasks SET current_run_id = NULL WHERE id = ?", (task_id,),
+        "UPDATE tasks SET current_run_id = NULL "
+        "WHERE id = ? AND current_run_id = ?",
+        (task_id, run_id),
     )
     return run_id
 
@@ -3438,13 +3443,8 @@ def recompute_ready(
                 # legitimate exit (it emits ``"unblocked"`` which flips
                 # this predicate back).
                 continue
-            parents = conn.execute(
-                "SELECT t.status FROM tasks t "
-                "JOIN task_links l ON l.parent_id = t.id "
-                "WHERE l.child_id = ?",
-                (task_id,),
-            ).fetchall()
-            if all(p["status"] in ("done", "archived") for p in parents):
+            guard_reason, _ = _dependency_release_guard(conn, task_id)
+            if guard_reason is None:
                 if cur_status == "blocked":
                     # Don't auto-recover tasks that have hit the
                     # circuit-breaker failure limit.  Without this
@@ -3477,6 +3477,147 @@ def recompute_ready(
     return promoted
 
 
+def _demote_invalidated_dependents(
+    conn: sqlite3.Connection,
+    parent_task_id: str,
+    *,
+    reason: str,
+) -> int:
+    """Quarantine every released descendant of an invalidated completion.
+
+    Caller holds ``write_txn``. Ready descendants return to ``todo``; running
+    descendants lose their claim and their run is fenced closed; already-done
+    descendants are invalidated and recursively quarantine their own released
+    children. This closes the direct-completion/late-failure race in which a
+    child could claim or finish between the parent's completion event and its
+    same-run terminal diagnostic. An exact audited recovery override for the
+    *current* dependency snapshot remains authoritative.
+    """
+    demoted = 0
+    pending_parents = [parent_task_id]
+    visited: set[str] = set()
+    while pending_parents:
+        immediate_parent = pending_parents.pop()
+        children = conn.execute(
+            "SELECT t.id, t.status, t.current_run_id FROM tasks t "
+            "JOIN task_links l ON l.child_id = t.id "
+            "WHERE l.parent_id = ? "
+            "AND t.status IN ('ready', 'running', 'done')",
+            (immediate_parent,),
+        ).fetchall()
+        for child in children:
+            child_id = child["id"]
+            if child_id in visited:
+                continue
+            visited.add(child_id)
+            guard_reason, invalid_dependencies = _dependency_release_guard(
+                conn, child_id,
+            )
+            if guard_reason is None:
+                continue
+            if _audited_dependency_override_matches(
+                conn, child_id, guard_reason, invalid_dependencies,
+            ):
+                # The operator allowed this task to proceed against the exact
+                # current dependency snapshot. Its own unfinished state still
+                # cannot release grandchildren, so inspect that subtree too.
+                if child["status"] in ("ready", "running"):
+                    pending_parents.append(child_id)
+                continue
+
+            payload = {
+                "parent": immediate_parent,
+                "invalidated_root": parent_task_id,
+                "reason": reason,
+                "validity": guard_reason,
+            }
+            child_status = child["status"]
+            run_id = (
+                int(child["current_run_id"])
+                if child["current_run_id"] is not None
+                else None
+            )
+            if child_status == "ready":
+                cur = conn.execute(
+                    "UPDATE tasks SET status = 'todo', block_kind = 'dependency' "
+                    "WHERE id = ? AND status = 'ready'",
+                    (child_id,),
+                )
+            elif child_status == "running":
+                cur = conn.execute(
+                    "UPDATE tasks SET status = 'todo', block_kind = 'dependency', "
+                    "claim_lock = NULL, claim_expires = NULL, worker_pid = NULL, "
+                    "last_heartbeat_at = NULL "
+                    "WHERE id = ? AND status = 'running' AND current_run_id IS ?",
+                    (child_id, run_id),
+                )
+                if cur.rowcount == 1 and run_id is not None:
+                    closed_run_id = _end_run(
+                        conn,
+                        child_id,
+                        outcome="dependency_invalidated",
+                        status="dependency_invalidated",
+                        error=(
+                            f"upstream completion {parent_task_id} invalidated: "
+                            f"{guard_reason}"
+                        )[:500],
+                        expected_run_id=run_id,
+                    )
+                    if closed_run_id is not None:
+                        run_id = closed_run_id
+            else:
+                completed = conn.execute(
+                    "SELECT run_id FROM task_events "
+                    "WHERE task_id = ? AND kind = 'completed' "
+                    "ORDER BY id DESC LIMIT 1",
+                    (child_id,),
+                ).fetchone()
+                run_id = (
+                    int(completed["run_id"])
+                    if completed is not None and completed["run_id"] is not None
+                    else None
+                )
+                cur = conn.execute(
+                    "UPDATE tasks SET status = 'blocked', completed_at = NULL, "
+                    "block_kind = 'needs_input' "
+                    "WHERE id = ? AND status = 'done' AND current_run_id IS NULL",
+                    (child_id,),
+                )
+                if cur.rowcount == 1:
+                    _append_event(
+                        conn,
+                        child_id,
+                        "completion_invalidated",
+                        payload,
+                        run_id=run_id,
+                    )
+                    _append_event(
+                        conn,
+                        child_id,
+                        "blocked",
+                        {
+                            "reason": (
+                                f"upstream completion {parent_task_id} was invalidated"
+                            ),
+                            "kind": "needs_input",
+                            "source": "dependency_invalidated",
+                        },
+                        run_id=run_id,
+                    )
+            if cur.rowcount != 1:
+                continue
+            _append_event(
+                conn,
+                child_id,
+                "dependency_invalidated",
+                payload,
+                run_id=run_id,
+            )
+            demoted += 1
+            pending_parents.append(child_id)
+    return demoted
+
+
 # ---------------------------------------------------------------------------
 # Claim / complete / block
 # ---------------------------------------------------------------------------
@@ -3505,13 +3646,14 @@ def claim_task(
         # 'todo' here — recompute_ready will re-promote when the parents
         # actually finish. See RCA at
         # kanban/boards/cookai/workspaces/t_a6acd07d/root-cause.md.
-        undone = conn.execute(
-            "SELECT 1 FROM task_links l "
-            "JOIN tasks p ON p.id = l.parent_id "
-            "WHERE l.child_id = ? AND p.status NOT IN ('done', 'archived') LIMIT 1",
-            (task_id,),
-        ).fetchone()
-        if undone:
+        guard_reason, invalid_dependencies = _dependency_release_guard(conn, task_id)
+        dependency_override = bool(
+            guard_reason
+            and _audited_dependency_override_matches(
+                conn, task_id, guard_reason, invalid_dependencies,
+            )
+        )
+        if guard_reason and not dependency_override:
             conn.execute(
                 "UPDATE tasks SET status = 'todo' "
                 "WHERE id = ? AND status = 'ready'",
@@ -3519,7 +3661,11 @@ def claim_task(
             )
             _append_event(
                 conn, task_id, "claim_rejected",
-                {"reason": "parents_not_done"},
+                {
+                    "reason": "invalid_parent_completion",
+                    "details": guard_reason,
+                    "invalid_dependencies": invalid_dependencies,
+                },
             )
             return None
         # Defensive: if a prior run somehow leaked (invariant violation from
@@ -3589,7 +3735,12 @@ def claim_task(
         )
         _append_event(
             conn, task_id, "claimed",
-            {"lock": lock, "expires": expires, "run_id": run_id},
+            {
+                "lock": lock,
+                "expires": expires,
+                "run_id": run_id,
+                "dependency_override": dependency_override,
+            },
             run_id=run_id,
         )
         claimed = get_task(conn, task_id)
@@ -3851,6 +4002,9 @@ def release_stale_claims(
                 payload,
                 run_id=run_id,
             )
+            _demote_invalidated_dependents(
+                conn, row["id"], reason="parent_reclaimed",
+            )
             reclaimed += 1
     return reclaimed
 
@@ -3915,6 +4069,9 @@ def reclaim_task(
             conn, task_id, "reclaimed",
             payload,
             run_id=run_id,
+        )
+        _demote_invalidated_dependents(
+            conn, task_id, reason="parent_reclaimed",
         )
     # Operator intervention — they've looked at the task, so the
     # consecutive-failures counter is now stale. Give the next retry
@@ -4091,6 +4248,927 @@ class ArtifactPreservationError(RuntimeError):
     """Raised when a declared scratch deliverable cannot be preserved."""
 
 
+class InvalidCompletionHandoffError(ValueError):
+    """Raised when a worker completion explicitly reports a non-pass result."""
+
+    def __init__(self, reason: str):
+        self.reason = reason
+        super().__init__(f"completion blocked: {reason}")
+
+
+_NON_PASS_VERDICTS = frozenset({
+    "blocked",
+    "changes-requested",
+    "failed",
+    "failure",
+    "fix-required",
+    "needs-changes",
+    "rejected",
+})
+_FIX_REQUIRED_RE = re.compile(r"(?<![\w-])fix(?:[-\s]+)required(?![\w-])", re.IGNORECASE)
+_SEVERITY_SIGNAL = (
+    r"(?:\b(?:CRITICAL|HIGH)\b|"
+    r"\b(?i:critical|high)\s+"
+    r"(?i:severity|findings?|defects?|issues?|risks?|vulnerabilit(?:y|ies))\b)"
+)
+_UNRESOLVED_SEVERITY_RE = re.compile(
+    rf"(?:{_SEVERITY_SIGNAL}.{{0,120}}"
+    rf"\b(?i:remain(?:s|ing)?|unresolved|open)\b"
+    rf"|\b(?i:remain(?:s|ing)?|unresolved|open)\b.{{0,120}}{_SEVERITY_SIGNAL})",
+    re.DOTALL,
+)
+_SEVERE_FINDING_RE = re.compile(
+    r"^\s*(?:[-*]\s*)?(?:\[(?:critical|high)\]|(?:critical|high)\b)",
+    re.IGNORECASE,
+)
+_EXACT_GIT_OID_RE = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$", re.IGNORECASE)
+_BUILD_STEP_KEYS = frozenset({"build", "implement", "implementation"})
+_POST_STAGE_BENIGN_EVENT_KINDS = frozenset({"heartbeat"})
+
+
+def _completion_non_pass_reason(
+    *,
+    summary: Optional[str],
+    result: Optional[str],
+    metadata: Optional[dict],
+) -> Optional[str]:
+    """Return a deterministic reason when a handoff says the work did not pass.
+
+    Structured lifecycle fields are authoritative. The prose fallbacks are
+    deliberately limited to canonical FIX-REQUIRED and explicit unresolved
+    CRITICAL/HIGH language so ordinary mentions of "high coverage" or a fixed
+    finding do not become a brittle sentiment gate.
+    """
+    text = "\n".join(str(part) for part in (summary, result) if part)
+    if _FIX_REQUIRED_RE.search(text):
+        return "handoff contains an explicit FIX-REQUIRED verdict"
+
+    if isinstance(metadata, dict):
+        for key in ("completion_verdict", "review_verdict", "verdict", "outcome"):
+            raw_verdict = metadata.get(key)
+            if not isinstance(raw_verdict, str):
+                continue
+            verdict = re.sub(r"[\s_]+", "-", raw_verdict.strip().casefold())
+            if verdict in _NON_PASS_VERDICTS:
+                return f"metadata.{key} declares non-pass verdict {raw_verdict!r}"
+
+        blocking_findings = metadata.get("blocking_findings")
+        if blocking_findings is not None:
+            if not isinstance(blocking_findings, (list, tuple, dict)):
+                return "metadata.blocking_findings is malformed"
+            if blocking_findings:
+                return "metadata.blocking_findings is non-empty"
+
+        findings = metadata.get("findings")
+        severe_findings = (
+            [
+                item
+                for item in findings
+                if (
+                    isinstance(item, str)
+                    and _SEVERE_FINDING_RE.search(item)
+                )
+                or (
+                    isinstance(item, dict)
+                    and str(item.get("severity", "")).strip().casefold()
+                    in {"critical", "high"}
+                    and item.get("resolved") is not True
+                )
+            ]
+            if isinstance(findings, list)
+            else []
+        )
+        if severe_findings:
+            return "handoff reports unresolved CRITICAL/HIGH findings"
+
+    if _UNRESOLVED_SEVERITY_RE.search(text):
+        return "handoff says CRITICAL/HIGH findings remain unresolved"
+    return None
+
+
+def _build_receipt_reason(metadata: Optional[dict]) -> Optional[str]:
+    """Validate the exact-head receipt required by structured BUILD steps."""
+    if not isinstance(metadata, dict):
+        return "BUILD completion is missing structured receipt metadata"
+
+    final_head = metadata.get("final_head")
+    if not isinstance(final_head, str) or not _EXACT_GIT_OID_RE.fullmatch(final_head.strip()):
+        return "BUILD receipt requires final_head as a full 40- or 64-hex commit id"
+
+    base_sha = metadata.get("base_sha")
+    if not isinstance(base_sha, str) or not _EXACT_GIT_OID_RE.fullmatch(base_sha.strip()):
+        return "BUILD receipt requires base_sha as a full 40- or 64-hex commit id"
+
+    changed_files = metadata.get("changed_files")
+    if not isinstance(changed_files, list) or not changed_files or not all(
+        isinstance(path, str) and path.strip() for path in changed_files
+    ):
+        return "BUILD receipt requires a non-empty changed_files list"
+
+    artifacts = metadata.get("artifacts")
+    artifact_handle = metadata.get("artifact")
+    has_artifact = (
+        isinstance(artifact_handle, str) and bool(artifact_handle.strip())
+    ) or (
+        isinstance(artifacts, (list, tuple))
+        and any(isinstance(item, str) and item.strip() for item in artifacts)
+    )
+    if not has_artifact:
+        return "BUILD receipt requires an artifact handle"
+
+    verification = metadata.get("verification_summary", metadata.get("verification"))
+    if not (
+        (isinstance(verification, str) and verification.strip())
+        or (isinstance(verification, (list, tuple, dict)) and bool(verification))
+    ):
+        return "BUILD receipt requires a verification summary"
+
+    if metadata.get("blocking_findings") != []:
+        return "BUILD receipt requires blocking_findings=[]"
+    return None
+
+
+def _normalized_step_key(raw: object) -> str:
+    if not raw:
+        return ""
+    return re.sub(r"[\s_]+", "-", str(raw).strip().casefold())
+
+
+def _task_is_build_step(conn: sqlite3.Connection, task_id: str) -> bool:
+    row = conn.execute(
+        "SELECT current_step_key FROM tasks WHERE id = ?", (task_id,),
+    ).fetchone()
+    return bool(row) and _normalized_step_key(row["current_step_key"]) in _BUILD_STEP_KEYS
+
+
+def _completion_rejection_reason(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    summary: Optional[str],
+    result: Optional[str],
+    metadata: Optional[dict],
+) -> Optional[str]:
+    """Return the single lifecycle gate used by every completion writer."""
+    non_pass = _completion_non_pass_reason(
+        summary=summary,
+        result=result,
+        metadata=metadata,
+    )
+    if non_pass:
+        return non_pass
+    rework_reason = _required_rework_guard_reason(conn, task_id)
+    if rework_reason:
+        return rework_reason
+    if _task_is_build_step(conn, task_id):
+        return _build_receipt_reason(metadata)
+    return None
+
+
+def completion_validity(
+    conn: sqlite3.Connection,
+    task_id: str,
+) -> tuple[bool, str]:
+    """Return whether ``task_id`` is a dependency-satisfying completion.
+
+    ``tasks.status`` remains the fast lifecycle column, while the completed
+    event + run form the authoritative receipt. Legacy done rows without that
+    receipt remain compatible unless their existing run history is explicitly
+    contradictory. New structured BUILD steps must carry an exact-head receipt.
+    """
+    task = conn.execute(
+        "SELECT status, current_step_key FROM tasks WHERE id = ?", (task_id,),
+    ).fetchone()
+    if task is None:
+        return False, "parent task is missing"
+    if task["status"] == "archived":
+        return True, "archived compatibility"
+    if task["status"] != "done":
+        return False, f"parent status is {task['status']}"
+
+    completed = conn.execute(
+        "SELECT id, run_id FROM task_events "
+        "WHERE task_id = ? AND kind = 'completed' ORDER BY id DESC LIMIT 1",
+        (task_id,),
+    ).fetchone()
+    if completed is None:
+        latest = conn.execute(
+            "SELECT outcome, ended_at FROM task_runs "
+            "WHERE task_id = ? ORDER BY id DESC LIMIT 1",
+            (task_id,),
+        ).fetchone()
+        if latest and latest["ended_at"] is not None and latest["outcome"] not in (
+            None,
+            "completed",
+        ):
+            return False, f"historical done row contradicts run outcome {latest['outcome']}"
+        return True, "legacy done compatibility"
+
+    run_id = completed["run_id"]
+    metadata = None
+    if run_id is not None:
+        run = conn.execute(
+            "SELECT status, outcome, summary, metadata FROM task_runs "
+            "WHERE id = ? AND task_id = ?",
+            (int(run_id), task_id),
+        ).fetchone()
+        if run is None:
+            return False, "completed event references a missing run"
+        if run["status"] not in ("done", "completed") or run["outcome"] != "completed":
+            return False, (
+                f"completed event contradicts run terminal state "
+                f"{run['status']}/{run['outcome']}"
+            )
+        try:
+            metadata = json.loads(run["metadata"]) if run["metadata"] else None
+        except (TypeError, json.JSONDecodeError):
+            return False, "completion run metadata is malformed"
+        if metadata is not None and not isinstance(metadata, dict):
+            return False, "completion run metadata is malformed"
+        non_pass = _completion_non_pass_reason(
+            summary=run["summary"], result=None, metadata=metadata,
+        )
+        if non_pass:
+            return False, non_pass
+
+    invalidating = conn.execute(
+        "SELECT kind FROM task_events WHERE task_id = ? AND id > ? "
+        "AND kind IN ('completion_invalidated', 'crashed', 'gave_up', "
+        "             'protocol_violation', 'timed_out') "
+        "AND (run_id IS NULL OR run_id IS ?) ORDER BY id LIMIT 1",
+        (task_id, int(completed["id"]), run_id),
+    ).fetchone()
+    if invalidating is not None:
+        return False, f"completion was invalidated by {invalidating['kind']}"
+
+    if _normalized_step_key(task["current_step_key"]) in _BUILD_STEP_KEYS:
+        receipt_reason = _build_receipt_reason(metadata)
+        if receipt_reason:
+            return False, receipt_reason
+    return True, "valid completion"
+
+
+def valid_completion(conn: sqlite3.Connection, task_id: str) -> bool:
+    """Boolean convenience wrapper for dependency writers and integrations."""
+    return completion_validity(conn, task_id)[0]
+
+
+def _required_rework_tasks_from_history(
+    conn: sqlite3.Connection,
+    task_id: str,
+) -> tuple[list[str], Optional[str]]:
+    """Return the newest durable rework requirement from rejection history."""
+    events = conn.execute(
+        "SELECT payload FROM task_events "
+        "WHERE task_id = ? AND kind = 'completion_rejected_non_pass' "
+        "ORDER BY id DESC",
+        (task_id,),
+    ).fetchall()
+    for event in events:
+        try:
+            payload = json.loads(event["payload"] or "{}")
+        except (TypeError, json.JSONDecodeError):
+            return [], "latest non-pass completion event is malformed"
+        if not isinstance(payload, dict):
+            return [], "latest non-pass completion event is malformed"
+        required = payload.get("required_rework_tasks")
+        if not isinstance(required, list):
+            legacy_required = payload.get("required_rework_task")
+            required = [legacy_required] if isinstance(legacy_required, str) else []
+        rework_task_ids = list(dict.fromkeys(
+            item.strip() for item in required
+            if isinstance(item, str) and item.strip()
+        ))
+        if rework_task_ids:
+            return rework_task_ids, None
+    return [], None
+
+
+def _required_rework_guard_reason(
+    conn: sqlite3.Connection,
+    task_id: str,
+) -> Optional[str]:
+    """Keep FIX-REQUIRED work gated until named rework is linked and valid."""
+    rework_task_ids, history_error = _required_rework_tasks_from_history(
+        conn, task_id,
+    )
+    if history_error:
+        return history_error
+    for rework_task_id in rework_task_ids:
+        linked = conn.execute(
+            "SELECT 1 FROM task_links WHERE parent_id = ? AND child_id = ?",
+            (rework_task_id, task_id),
+        ).fetchone()
+        if linked is None:
+            return f"required rework task {rework_task_id} is not linked as a parent"
+        is_valid, reason = completion_validity(conn, rework_task_id)
+        if not is_valid:
+            return f"required rework task {rework_task_id} is not complete: {reason}"
+    return None
+
+
+def _dependency_release_guard(
+    conn: sqlite3.Connection,
+    child_task_id: str,
+) -> tuple[Optional[str], list[str]]:
+    """Return one shared release reason + invalid dependency tokens."""
+    invalid: list[str] = []
+    details: list[str] = []
+    lineage_reason = _required_rework_guard_reason(conn, child_task_id)
+    if lineage_reason:
+        invalid.append("@rework-lineage")
+        details.append(lineage_reason)
+    parents = conn.execute(
+        "SELECT parent_id FROM task_links WHERE child_id = ? ORDER BY parent_id",
+        (child_task_id,),
+    ).fetchall()
+    for parent in parents:
+        parent_id = parent["parent_id"]
+        is_valid, reason = completion_validity(conn, parent_id)
+        if not is_valid:
+            invalid.append(parent_id)
+            details.append(f"{parent_id}: {reason}")
+    if not details:
+        return None, []
+    return "; ".join(details), invalid
+
+
+def _audited_dependency_override_matches(
+    conn: sqlite3.Connection,
+    task_id: str,
+    dependency_guard: str,
+    invalid_dependencies: list[str],
+) -> bool:
+    """Recognize only the latest explicit, reasoned manual recovery override."""
+    if not invalid_dependencies:
+        return False
+    row = conn.execute(
+        "SELECT payload FROM task_events "
+        "WHERE task_id = ? AND kind = 'promoted_manual' "
+        "ORDER BY id DESC LIMIT 1",
+        (task_id,),
+    ).fetchone()
+    if row is None:
+        return False
+    try:
+        payload = json.loads(row["payload"] or "{}")
+    except (TypeError, json.JSONDecodeError):
+        return False
+    if not isinstance(payload, dict):
+        return False
+    if payload.get("forced") is not True:
+        return False
+    reason = payload.get("reason")
+    recorded = payload.get("invalid_dependencies")
+    recorded_guard = payload.get("dependency_guard")
+    return (
+        isinstance(reason, str)
+        and bool(reason.strip())
+        and recorded_guard == dependency_guard
+        and isinstance(recorded, list)
+        and sorted(str(item) for item in recorded) == sorted(invalid_dependencies)
+    )
+
+
+def _verify_completion_cards_or_raise(
+    conn: sqlite3.Connection,
+    task_id: str,
+    created_cards: Optional[Iterable[str]],
+    *,
+    summary: Optional[str],
+    result: Optional[str],
+    run_id: Optional[int] = None,
+) -> list[str]:
+    """Verify a completion's created-card manifest and audit rejections."""
+    if not created_cards:
+        return []
+    verified_cards, phantom_cards = _verify_created_cards(
+        conn, task_id, created_cards
+    )
+    if not phantom_cards:
+        return verified_cards
+    with write_txn(conn):
+        if run_id is not None:
+            current = conn.execute(
+                "SELECT t.status, t.current_run_id, r.ended_at AS run_ended_at "
+                "FROM tasks t LEFT JOIN task_runs r ON r.id = t.current_run_id "
+                "WHERE t.id = ?",
+                (task_id,),
+            ).fetchone()
+            if (
+                current is None
+                or current["status"] != "running"
+                or current["current_run_id"] != int(run_id)
+                or current["run_ended_at"] is not None
+            ):
+                # A stale worker is not allowed to leave even an audit event on
+                # the newer attempt. Its caller's main CAS will return False.
+                return verified_cards
+        _append_event(
+            conn, task_id, "completion_blocked_hallucination",
+            {
+                "phantom_cards": phantom_cards,
+                "verified_cards": verified_cards,
+                "summary_preview": (
+                    (summary or result or "").strip().splitlines()[0][:200]
+                    if (summary or result)
+                    else None
+                ),
+            },
+            run_id=run_id,
+        )
+    raise HallucinatedCardsError(phantom_cards, task_id)
+
+
+def _persist_completion_artifacts_and_attachments(
+    conn: sqlite3.Connection,
+    task_id: str,
+    metadata: Optional[dict],
+    *,
+    created_at: int,
+) -> None:
+    if not isinstance(metadata, dict):
+        return
+    _persist_scratch_completion_artifacts(conn, task_id, metadata)
+    for stored_path in metadata.pop("_staged_artifacts", []):
+        path = Path(stored_path)
+        _insert_completion_attachment(
+            conn,
+            task_id,
+            filename=path.name,
+            stored_path=str(path),
+            size=path.stat().st_size,
+            created_at=created_at,
+        )
+
+
+def _required_rework_task(metadata: Optional[dict]) -> Optional[str]:
+    if not isinstance(metadata, dict):
+        return None
+    raw = metadata.get("rework_task_id")
+    if not isinstance(raw, str):
+        return None
+    return raw.strip() or None
+
+
+def _quarantine_invalid_completion(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    reason: str,
+    summary: Optional[str],
+    result: Optional[str],
+    metadata: Optional[dict],
+    expected_run_id: Optional[int],
+    created_cards: Optional[Iterable[str]] = None,
+) -> bool:
+    """Atomically close an invalid completion attempt into a sticky block."""
+    run_id = int(expected_run_id) if expected_run_id is not None else None
+    with write_txn(conn):
+        row = conn.execute(
+            "SELECT status, current_run_id FROM tasks WHERE id = ?", (task_id,),
+        ).fetchone()
+        if row is None:
+            return False
+
+        if run_id is None:
+            duplicate = conn.execute(
+                "SELECT 1 FROM task_events "
+                "WHERE task_id = ? AND kind = 'completion_rejected_non_pass' "
+                "AND json_extract(payload, '$.reason') = ? LIMIT 1",
+                (task_id, reason),
+            ).fetchone()
+        else:
+            duplicate = conn.execute(
+                "SELECT 1 FROM task_events "
+                "WHERE task_id = ? AND kind = 'completion_rejected_non_pass' "
+                "AND run_id = ? AND json_extract(payload, '$.reason') = ? LIMIT 1",
+                (task_id, run_id, reason),
+            ).fetchone()
+        if duplicate is not None and row["status"] == "blocked":
+            return True
+
+        if expected_run_id is not None:
+            current_run_id = row["current_run_id"]
+            if row["status"] != "running" or current_run_id != run_id:
+                return False
+            open_run = conn.execute(
+                "SELECT 1 FROM task_runs "
+                "WHERE id = ? AND task_id = ? AND ended_at IS NULL",
+                (run_id, task_id),
+            ).fetchone()
+            if open_run is None:
+                return False
+
+        cur = conn.execute(
+            "UPDATE tasks SET status = 'blocked', completed_at = NULL, "
+            "claim_lock = NULL, claim_expires = NULL, worker_pid = NULL, "
+            "block_kind = 'needs_input' "
+            "WHERE id = ? AND status IN ('running', 'ready', 'blocked')",
+            (task_id,),
+        )
+        if cur.rowcount != 1:
+            return False
+
+        closed_run_id = _end_run(
+            conn,
+            task_id,
+            outcome="invalid_completion",
+            status="blocked",
+            summary=summary if summary is not None else result,
+            error=reason,
+            metadata=metadata,
+            expected_run_id=expected_run_id,
+        )
+        if expected_run_id is not None and closed_run_id is None:
+            raise RuntimeError("run fence changed while quarantining invalid completion")
+        if closed_run_id is None:
+            closed_run_id = _synthesize_ended_run(
+                conn,
+                task_id,
+                outcome="invalid_completion",
+                summary=summary if summary is not None else result,
+                error=reason,
+                metadata=metadata,
+            )
+
+        prior_rework, _ = _required_rework_tasks_from_history(conn, task_id)
+        explicit_rework = _required_rework_task(metadata)
+        created_rework = [
+            str(card).strip() for card in (created_cards or [])
+            if isinstance(card, str) and str(card).strip()
+        ]
+        is_review_rejection = any(
+            signal in reason
+            for signal in (
+                "non-pass verdict",
+                "FIX-REQUIRED",
+                "blocking_findings",
+                "CRITICAL/HIGH",
+            )
+        )
+        required_rework_tasks = (
+            [explicit_rework]
+            if explicit_rework
+            else (
+                list(dict.fromkeys(created_rework))
+                if is_review_rejection and created_rework
+                else prior_rework
+            )
+        )
+        payload = {
+            "reason": reason,
+            "summary": ((summary or result or "").strip()[:400] or None),
+            "required_rework_tasks": required_rework_tasks,
+        }
+        _append_event(
+            conn,
+            task_id,
+            "completion_rejected_non_pass",
+            payload,
+            run_id=closed_run_id,
+        )
+        _append_event(
+            conn,
+            task_id,
+            "blocked",
+            {
+                "reason": f"invalid completion handoff: {reason}",
+                "kind": "needs_input",
+                "source": "completion_validity_gate",
+            },
+            run_id=closed_run_id,
+        )
+        _demote_invalidated_dependents(
+            conn, task_id, reason="invalid_completion_handoff",
+        )
+    return True
+
+
+def _post_stage_conflict_reason(
+    conn: sqlite3.Connection,
+    task_id: str,
+    run_id: int,
+) -> Optional[str]:
+    staged = conn.execute(
+        "SELECT id FROM task_events "
+        "WHERE task_id = ? AND run_id = ? AND kind = 'completion_staged' "
+        "ORDER BY id DESC LIMIT 1",
+        (task_id, int(run_id)),
+    ).fetchone()
+    if staged is None:
+        return "completion_pending run has no completion_staged event"
+    later_events = conn.execute(
+        "SELECT kind, payload FROM task_events "
+        "WHERE task_id = ? AND id > ? ORDER BY id",
+        (task_id, int(staged["id"])),
+    ).fetchall()
+    for later in later_events:
+        if later["kind"] not in _POST_STAGE_BENIGN_EVENT_KINDS:
+            return f"material event {later['kind']} arrived after completion intent"
+        if later["kind"] == "heartbeat":
+            try:
+                heartbeat = json.loads(later["payload"] or "{}")
+            except (TypeError, json.JSONDecodeError):
+                return "malformed heartbeat arrived after completion intent"
+            if not isinstance(heartbeat, dict):
+                return "malformed heartbeat arrived after completion intent"
+            note = heartbeat.get("note")
+            if isinstance(note, str) and note.strip():
+                return "material heartbeat note arrived after completion intent"
+    return None
+
+
+def stage_task_completion(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    expected_run_id: int,
+    result: Optional[str] = None,
+    summary: Optional[str] = None,
+    metadata: Optional[dict] = None,
+    created_cards: Optional[Iterable[str]] = None,
+) -> bool:
+    """Stage a dispatcher worker's completion until its turn exits cleanly.
+
+    The task deliberately remains ``running`` and keeps its claim/current run,
+    so dependents cannot promote or claim in the window between a
+    ``kanban_complete`` tool call and :func:`agent.turn_finalizer.finalize_turn`.
+    The finalizer calls :func:`finalize_staged_completion` on a successful turn;
+    timeout/crash/protocol-violation paths instead close this same run as a
+    failure. No schema migration is needed: ``task_runs.status`` carries the
+    transient ``completion_pending`` lifecycle state.
+    """
+    expected_run_id = int(expected_run_id)
+    created_cards = list(created_cards or [])
+    run_row = conn.execute(
+        "SELECT t.status AS task_status, t.current_run_id, r.ended_at "
+        "FROM tasks t LEFT JOIN task_runs r ON r.id = t.current_run_id "
+        "WHERE t.id = ?",
+        (task_id,),
+    ).fetchone()
+    if (
+        run_row is None
+        or run_row["task_status"] != "running"
+        or run_row["current_run_id"] != expected_run_id
+        or run_row["ended_at"] is not None
+    ):
+        return False
+
+    verified_rework_cards, _ = _verify_created_cards(
+        conn, task_id, created_cards,
+    )
+
+    rejection_reason = _completion_rejection_reason(
+        conn,
+        task_id,
+        summary=summary,
+        result=result,
+        metadata=metadata,
+    )
+    if rejection_reason:
+        _quarantine_invalid_completion(
+            conn,
+            task_id,
+            reason=rejection_reason,
+            summary=summary,
+            result=result,
+            metadata=metadata,
+            expected_run_id=expected_run_id,
+            created_cards=verified_rework_cards,
+        )
+        raise InvalidCompletionHandoffError(rejection_reason)
+
+    verified_cards = _verify_completion_cards_or_raise(
+        conn,
+        task_id,
+        created_cards,
+        summary=summary,
+        result=result,
+        run_id=expected_run_id,
+    )
+    metadata = _merge_completion_prose_artifacts(
+        conn, task_id, metadata, summary=summary, result=result,
+    )
+    pending = conn.execute(
+        "SELECT status, summary, metadata FROM task_runs "
+        "WHERE id = ? AND task_id = ? AND ended_at IS NULL",
+        (expected_run_id, task_id),
+    ).fetchone()
+    if pending and pending["status"] == "completion_pending":
+        staged_event = conn.execute(
+            "SELECT payload FROM task_events "
+            "WHERE task_id = ? AND run_id = ? AND kind = 'completion_staged' "
+            "ORDER BY id DESC LIMIT 1",
+            (task_id, expected_run_id),
+        ).fetchone()
+        try:
+            prior_metadata = (
+                json.loads(pending["metadata"]) if pending["metadata"] else None
+            )
+            prior_payload = (
+                json.loads(staged_event["payload"] or "{}") if staged_event else {}
+            )
+        except (TypeError, json.JSONDecodeError):
+            prior_metadata = object()
+            prior_payload = {}
+        if not isinstance(prior_payload, dict):
+            prior_payload = {}
+        prior_comparable = (
+            {key: value for key, value in prior_metadata.items() if key != "artifacts"}
+            if isinstance(prior_metadata, dict)
+            else prior_metadata
+        )
+        current_comparable = (
+            {key: value for key, value in metadata.items() if key != "artifacts"}
+            if isinstance(metadata, dict) and metadata
+            else (None if metadata == {} else metadata)
+        )
+        same_payload = (
+            pending["summary"] == (summary if summary is not None else result)
+            and prior_comparable == current_comparable
+            and prior_payload.get("result") == result
+            and prior_payload.get("verified_cards") == verified_cards
+        )
+        if same_payload:
+            return True
+        reason = "completion handoff changed after the run entered completion_pending"
+        _quarantine_invalid_completion(
+            conn,
+            task_id,
+            reason=reason,
+            summary=summary,
+            result=result,
+            metadata=metadata,
+            expected_run_id=expected_run_id,
+        )
+        raise InvalidCompletionHandoffError(reason)
+
+    now = int(time.time())
+    with write_txn(conn):
+        current = conn.execute(
+            "SELECT t.status, t.current_run_id, r.ended_at AS run_ended_at "
+            "FROM tasks t LEFT JOIN task_runs r ON r.id = t.current_run_id "
+            "WHERE t.id = ?",
+            (task_id,),
+        ).fetchone()
+        if (
+            current is None
+            or current["status"] != "running"
+            or current["current_run_id"] != expected_run_id
+            or current["run_ended_at"] is not None
+        ):
+            return False
+        _persist_completion_artifacts_and_attachments(
+            conn, task_id, metadata, created_at=now,
+        )
+        cur = conn.execute(
+            """
+            UPDATE task_runs
+               SET status = 'completion_pending',
+                   summary = ?,
+                   metadata = ?
+             WHERE id = ?
+               AND task_id = ?
+               AND ended_at IS NULL
+               AND status = 'running'
+            """,
+            (
+                summary if summary is not None else result,
+                json.dumps(metadata, ensure_ascii=False) if metadata else None,
+                expected_run_id,
+                task_id,
+            ),
+        )
+        if cur.rowcount != 1:
+            return False
+        _append_event(
+            conn,
+            task_id,
+            "completion_staged",
+            {
+                "result": result,
+                "verified_cards": verified_cards,
+                "summary": ((summary or result or "").strip().splitlines()[0][:400] or None),
+            },
+            run_id=expected_run_id,
+        )
+    return True
+
+
+def finalize_staged_completion(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    expected_run_id: int,
+) -> bool:
+    """Commit one run-fenced completion intent and release dependents.
+
+    Replays the latest staged payload through :func:`complete_task`, whose
+    existing CAS performs the terminal transition. Repeated calls for the same
+    already-completed run are idempotent and do not duplicate events.
+    """
+    expected_run_id = int(expected_run_id)
+    row = conn.execute(
+        "SELECT t.status AS task_status, t.current_run_id, "
+        "       r.status AS run_status, r.summary, r.metadata, r.ended_at "
+        "FROM tasks t JOIN task_runs r ON r.id = ? AND r.task_id = t.id "
+        "WHERE t.id = ?",
+        (expected_run_id, task_id),
+    ).fetchone()
+    if row is None:
+        return False
+    if row["task_status"] == "done" and row["ended_at"] is not None:
+        return conn.execute(
+            "SELECT 1 FROM task_events "
+            "WHERE task_id = ? AND run_id = ? AND kind = 'completed' LIMIT 1",
+            (task_id, expected_run_id),
+        ).fetchone() is not None
+    if (
+        row["task_status"] != "running"
+        or row["current_run_id"] != expected_run_id
+        or row["run_status"] != "completion_pending"
+        or row["ended_at"] is not None
+    ):
+        return False
+
+    event_row = conn.execute(
+        "SELECT payload FROM task_events "
+        "WHERE task_id = ? AND run_id = ? AND kind = 'completion_staged' "
+        "ORDER BY id DESC LIMIT 1",
+        (task_id, expected_run_id),
+    ).fetchone()
+    if event_row is None:
+        return False
+    try:
+        payload = json.loads(event_row["payload"] or "{}")
+    except (TypeError, json.JSONDecodeError):
+        return False
+    if not isinstance(payload, dict):
+        return False
+    try:
+        metadata = json.loads(row["metadata"]) if row["metadata"] else None
+    except (TypeError, json.JSONDecodeError):
+        return False
+    if metadata is not None and not isinstance(metadata, dict):
+        return False
+    result = payload.get("result")
+    verified_cards = payload.get("verified_cards")
+    if result is not None and not isinstance(result, str):
+        return False
+    if not isinstance(verified_cards, list) or not all(
+        isinstance(card, str) for card in verified_cards
+    ):
+        return False
+
+    conflict_reason = _post_stage_conflict_reason(
+        conn, task_id, expected_run_id,
+    )
+    rejection_reason = conflict_reason or _completion_rejection_reason(
+        conn,
+        task_id,
+        summary=row["summary"],
+        result=result,
+        metadata=metadata,
+    )
+    if rejection_reason:
+        _quarantine_invalid_completion(
+            conn,
+            task_id,
+            reason=rejection_reason,
+            summary=row["summary"],
+            result=result,
+            metadata=metadata,
+            expected_run_id=expected_run_id,
+        )
+        raise InvalidCompletionHandoffError(rejection_reason)
+
+    staged_conflicts: list[str] = []
+    completed = complete_task(
+        conn,
+        task_id,
+        result=result,
+        summary=row["summary"],
+        metadata=metadata,
+        created_cards=verified_cards,
+        expected_run_id=expected_run_id,
+        _staged_conflict_out=staged_conflicts,
+    )
+    if staged_conflicts:
+        conflict_reason = staged_conflicts[0]
+        _quarantine_invalid_completion(
+            conn,
+            task_id,
+            reason=conflict_reason,
+            summary=row["summary"],
+            result=result,
+            metadata=metadata,
+            expected_run_id=expected_run_id,
+        )
+        raise InvalidCompletionHandoffError(conflict_reason)
+    return completed
+
+
 def complete_task(
     conn: sqlite3.Connection,
     task_id: str,
@@ -4100,6 +5178,7 @@ def complete_task(
     metadata: Optional[dict] = None,
     created_cards: Optional[Iterable[str]] = None,
     expected_run_id: Optional[int] = None,
+    _staged_conflict_out: Optional[list[str]] = None,
 ) -> bool:
     """Transition ``running|ready -> done`` and record ``result``.
 
@@ -4130,38 +5209,84 @@ def complete_task(
     and never blocks.
     """
     now = int(time.time())
+    created_cards = list(created_cards or [])
+
+    if expected_run_id is not None:
+        fenced = conn.execute(
+            "SELECT t.status, t.current_run_id, r.ended_at AS run_ended_at "
+            "FROM tasks t LEFT JOIN task_runs r ON r.id = t.current_run_id "
+            "WHERE t.id = ?",
+            (task_id,),
+        ).fetchone()
+        if (
+            fenced is None
+            or fenced["status"] not in ("running", "ready", "blocked")
+            or fenced["current_run_id"] != int(expected_run_id)
+            or fenced["run_ended_at"] is not None
+        ):
+            return False
+
+    verified_rework_cards, _ = _verify_created_cards(
+        conn, task_id, created_cards,
+    )
+
+    rejection_reason = _completion_rejection_reason(
+        conn,
+        task_id,
+        summary=summary,
+        result=result,
+        metadata=metadata,
+    )
+    if rejection_reason:
+        if not _quarantine_invalid_completion(
+            conn,
+            task_id,
+            reason=rejection_reason,
+            summary=summary,
+            result=result,
+            metadata=metadata,
+            expected_run_id=expected_run_id,
+            created_cards=verified_rework_cards,
+        ):
+            return False
+        raise InvalidCompletionHandoffError(rejection_reason)
 
     # Gate: verify created_cards BEFORE the main write txn. A rejected
     # completion still needs an auditable event, so we emit it in a
     # tiny dedicated txn, then raise. The caller is responsible for
     # surfacing HallucinatedCardsError to the worker; this function
     # never mutates task state on a phantom-card rejection.
-    if created_cards:
-        verified_cards, phantom_cards = _verify_created_cards(
-            conn, task_id, created_cards
-        )
-        if phantom_cards:
-            with write_txn(conn):
-                _append_event(
-                    conn, task_id, "completion_blocked_hallucination",
-                    {
-                        "phantom_cards": phantom_cards,
-                        "verified_cards": verified_cards,
-                        "summary_preview": (
-                            (summary or result or "").strip().splitlines()[0][:200]
-                            if (summary or result)
-                            else None
-                        ),
-                    },
-                )
-            raise HallucinatedCardsError(phantom_cards, task_id)
-    else:
-        verified_cards = []
+    verified_cards = _verify_completion_cards_or_raise(
+        conn,
+        task_id,
+        created_cards,
+        summary=summary,
+        result=result,
+        run_id=expected_run_id,
+    )
 
     metadata = _merge_completion_prose_artifacts(
         conn, task_id, metadata, summary=summary, result=result,
     )
     with write_txn(conn):
+        if expected_run_id is not None:
+            pending = conn.execute(
+                "SELECT status FROM task_runs WHERE id = ? AND task_id = ? "
+                "AND ended_at IS NULL",
+                (int(expected_run_id), task_id),
+            ).fetchone()
+            if pending and pending["status"] == "completion_pending":
+                # This second check is deliberately inside the same IMMEDIATE
+                # transaction as the done/event/run commit. It closes the
+                # check-then-write race between TurnFinalizer's first
+                # validation and this terminal CAS.
+                conflict_reason = _post_stage_conflict_reason(
+                    conn, task_id, int(expected_run_id),
+                )
+                if conflict_reason:
+                    if _staged_conflict_out is not None:
+                        _staged_conflict_out.append(conflict_reason)
+                    return False
         if expected_run_id is None:
             cur = conn.execute(
                 """
@@ -4194,29 +5319,35 @@ def complete_task(
                  WHERE id = ?
                    AND status IN ('running', 'ready', 'blocked')
                    AND current_run_id = ?
+                   AND EXISTS (
+                       SELECT 1 FROM task_runs r
+                        WHERE r.id = ?
+                          AND r.task_id = tasks.id
+                          AND r.ended_at IS NULL
+                   )
                 """,
-                (result, now, task_id, int(expected_run_id)),
+                (
+                    result,
+                    now,
+                    task_id,
+                    int(expected_run_id),
+                    int(expected_run_id),
+                ),
             )
         if cur.rowcount != 1:
             return False
-        if isinstance(metadata, dict):
-            _persist_scratch_completion_artifacts(conn, task_id, metadata)
-            for stored_path in metadata.pop("_staged_artifacts", []):
-                path = Path(stored_path)
-                _insert_completion_attachment(
-                    conn,
-                    task_id,
-                    filename=path.name,
-                    stored_path=str(path),
-                    size=path.stat().st_size,
-                    created_at=now,
-                )
+        _persist_completion_artifacts_and_attachments(
+            conn, task_id, metadata, created_at=now,
+        )
         run_id = _end_run(
             conn, task_id,
             outcome="completed", status="done",
             summary=summary if summary is not None else result,
             metadata=metadata,
+            expected_run_id=expected_run_id,
         )
+        if expected_run_id is not None and run_id is None:
+            raise RuntimeError("run fence changed while committing staged completion")
         # If complete_task was called on a never-claimed task (ready or
         # blocked → done with no run in flight), synthesize a
         # zero-duration run so the handoff fields are persisted in
@@ -5108,40 +6239,38 @@ def promote_task(
     ``(False, reason)`` if refused. ``dry_run=True`` validates the
     promotion would succeed without mutating state.
     """
-    row = conn.execute(
-        "SELECT status FROM tasks WHERE id = ?", (task_id,)
-    ).fetchone()
-    if row is None:
-        return False, f"task {task_id} not found"
-
-    cur_status = row["status"]
-    if cur_status not in ("todo", "blocked"):
-        return False, (
-            f"task {task_id} is {cur_status!r}; promote only applies to "
-            f"'todo' or 'blocked'"
-        )
-
-    if not force:
-        parents = conn.execute(
-            "SELECT t.id, t.status FROM tasks t "
-            "JOIN task_links l ON l.parent_id = t.id "
-            "WHERE l.child_id = ?",
-            (task_id,),
-        ).fetchall()
-        unsatisfied = [
-            p["id"] for p in parents
-            if p["status"] not in ("done", "archived")
-        ]
-        if unsatisfied:
-            return False, (
-                f"unsatisfied parent dependencies: "
-                f"{', '.join(unsatisfied)} (use --force to override)"
-            )
-
-    if dry_run:
-        return True, None
+    if force and not (isinstance(reason, str) and reason.strip()):
+        return False, "forced promotion requires a non-empty audit reason"
 
     with write_txn(conn):
+        row = conn.execute(
+            "SELECT status FROM tasks WHERE id = ?", (task_id,)
+        ).fetchone()
+        if row is None:
+            return False, f"task {task_id} not found"
+
+        cur_status = row["status"]
+        if cur_status not in ("todo", "blocked"):
+            return False, (
+                f"task {task_id} is {cur_status!r}; promote only applies to "
+                f"'todo' or 'blocked'"
+            )
+
+        # Keep the validity read and ready transition under one IMMEDIATE
+        # transaction. A completion invalidation cannot interleave between
+        # this check and the CAS below.
+        guard_reason, invalid_dependencies = _dependency_release_guard(
+            conn, task_id,
+        )
+        if guard_reason and not force:
+            return False, (
+                f"unsatisfied parent dependencies: {guard_reason} "
+                f"(use --force with an audit reason to override)"
+            )
+
+        if dry_run:
+            return True, None
+
         upd = conn.execute(
             "UPDATE tasks SET status = 'ready' "
             "WHERE id = ? AND status IN ('todo', 'blocked')",
@@ -5153,7 +6282,13 @@ def promote_task(
             conn,
             task_id,
             "promoted_manual",
-            {"actor": actor, "reason": reason, "forced": force},
+            {
+                "actor": actor,
+                "reason": reason,
+                "forced": force,
+                "dependency_guard": guard_reason if force else None,
+                "invalid_dependencies": invalid_dependencies if force else [],
+            },
         )
 
     return True, None
@@ -5193,13 +6328,8 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
         # if parents are still in progress the task must wait in 'todo'
         # until recompute_ready picks it up. RCA: Bug 2 at
         # kanban/boards/cookai/workspaces/t_a6acd07d/root-cause.md.
-        undone_parents = conn.execute(
-            "SELECT 1 FROM task_links l "
-            "JOIN tasks p ON p.id = l.parent_id "
-            "WHERE l.child_id = ? AND p.status != 'done' LIMIT 1",
-            (task_id,),
-        ).fetchone()
-        new_status = "todo" if undone_parents else "ready"
+        guard_reason, _ = _dependency_release_guard(conn, task_id)
+        new_status = "todo" if guard_reason else "ready"
         # NOTE: deliberately does NOT touch ``block_recurrences`` or
         # ``block_kind``. Resetting the recurrence counter on unblock is exactly
         # the amnesia that let a cron unblock → worker re-block loop run
@@ -6513,6 +7643,9 @@ def enforce_max_runtime(
                 _append_event(
                     conn, tid, "timed_out", payload, run_id=run_id,
                 )
+                _demote_invalidated_dependents(
+                    conn, tid, reason="parent_timed_out",
+                )
                 timed_out.append(tid)
         # Increment the unified failure counter. Outside the write_txn
         # above because ``_record_task_failure`` opens its own. If the
@@ -6651,6 +7784,9 @@ def detect_stale_running(
             )
             _append_event(
                 conn, tid, "stale", payload, run_id=run_id,
+            )
+            _demote_invalidated_dependents(
+                conn, tid, reason="parent_stale",
             )
             reclaimed.append(tid)
 
@@ -6896,6 +8032,11 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                     event_payload,
                     run_id=run_id,
                 )
+                _demote_invalidated_dependents(
+                    conn,
+                    row["id"],
+                    reason=f"parent_{event_kind}",
+                )
                 if rate_limited_exit:
                     # Stamp the failure-error column so ``check_respawn_guard``
                     # recognizes this as a quota blocker and defers the
@@ -7019,6 +8160,104 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
     return crashed
 
 
+def _handle_late_terminal_failure_locked(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    expected_run_id: int,
+    error: str,
+    outcome: str,
+    event_payload_extra: Optional[dict],
+) -> Optional[bool]:
+    """Diagnose a same-run terminal event without touching a newer attempt.
+
+    Caller holds ``write_txn``. ``None`` means the run is stale/unrelated and
+    must be ignored. A completed run is invalidated exactly once; an already
+    quarantined invalid-completion run receives one idempotent diagnostic.
+    """
+    run = conn.execute(
+        "SELECT outcome, ended_at FROM task_runs WHERE id = ? AND task_id = ?",
+        (int(expected_run_id), task_id),
+    ).fetchone()
+    if run is None or run["ended_at"] is None:
+        return None
+
+    task = conn.execute(
+        "SELECT status, current_run_id FROM tasks WHERE id = ?", (task_id,),
+    ).fetchone()
+    if task is None or task["current_run_id"] is not None:
+        # A newer attempt owns the task. The stale run cannot mutate it or add
+        # events that look like they belong to the new owner.
+        return None
+
+    payload = {
+        "trigger_outcome": outcome,
+        "error": error[:500],
+    }
+    if event_payload_extra:
+        payload.update(event_payload_extra)
+    duplicate = conn.execute(
+        "SELECT 1 FROM task_events "
+        "WHERE task_id = ? AND run_id = ? AND kind = 'late_terminal_event' "
+        "AND json_extract(payload, '$.trigger_outcome') = ? LIMIT 1",
+        (task_id, int(expected_run_id), outcome),
+    ).fetchone()
+    if duplicate is not None:
+        return False
+
+    if run["outcome"] == "completed" and task["status"] == "done":
+        latest_completed = conn.execute(
+            "SELECT run_id FROM task_events "
+            "WHERE task_id = ? AND kind = 'completed' ORDER BY id DESC LIMIT 1",
+            (task_id,),
+        ).fetchone()
+        if latest_completed is None or latest_completed["run_id"] != int(expected_run_id):
+            return None
+        cur = conn.execute(
+            "UPDATE tasks SET status = 'blocked', completed_at = NULL, "
+            "block_kind = 'needs_input', consecutive_failures = consecutive_failures + 1, "
+            "last_failure_error = ? WHERE id = ? AND status = 'done' "
+            "AND current_run_id IS NULL",
+            (error[:500], task_id),
+        )
+        if cur.rowcount != 1:
+            return None
+        _append_event(
+            conn, task_id, "late_terminal_event", payload,
+            run_id=int(expected_run_id),
+        )
+        _append_event(
+            conn,
+            task_id,
+            "completion_invalidated",
+            payload,
+            run_id=int(expected_run_id),
+        )
+        _append_event(
+            conn,
+            task_id,
+            "blocked",
+            {
+                "reason": f"late same-run {outcome} invalidated completion",
+                "kind": "needs_input",
+                "source": "late_terminal_event",
+            },
+            run_id=int(expected_run_id),
+        )
+        _demote_invalidated_dependents(
+            conn, task_id, reason=f"late_parent_{outcome}",
+        )
+        return True
+
+    if run["outcome"] == "invalid_completion" and task["status"] == "blocked":
+        _append_event(
+            conn, task_id, "late_terminal_event", payload,
+            run_id=int(expected_run_id),
+        )
+        return False
+    return None
+
+
 def _record_task_failure(
     conn: sqlite3.Connection,
     task_id: str,
@@ -7030,6 +8269,7 @@ def _record_task_failure(
     release_claim: bool = False,
     end_run: bool = False,
     event_payload_extra: Optional[dict] = None,
+    expected_run_id: Optional[int] = None,
 ) -> bool:
     """Record a non-success outcome (spawn_failed / crashed / timed_out)
     and maybe trip the circuit breaker.
@@ -7059,6 +8299,11 @@ def _record_task_failure(
     when the breaker trips, so callers can include outcome-specific
     context (e.g. pid on crash, elapsed on timeout).
 
+    ``expected_run_id`` fences worker-owned finalization. When provided, only
+    that still-current running attempt may be mutated; stale workers and
+    already-terminal attempts fail closed without incrementing counters or
+    emitting misleading failure events.
+
     Resolution order for the effective threshold:
       1. per-task ``max_retries`` if set (nothing else overrides)
       2. caller-supplied ``failure_limit`` (gateway passes the config
@@ -7079,13 +8324,32 @@ def _record_task_failure(
     blocked = False
     with write_txn(conn):
         row = conn.execute(
-            "SELECT consecutive_failures, status, max_retries "
-            "FROM tasks WHERE id = ?", (task_id,),
+            "SELECT t.consecutive_failures, t.status, t.max_retries, "
+            "       t.current_run_id, r.ended_at AS run_ended_at "
+            "FROM tasks t LEFT JOIN task_runs r ON r.id = t.current_run_id "
+            "WHERE t.id = ?",
+            (task_id,),
         ).fetchone()
         if row is None:
             return False
-        failures = int(row["consecutive_failures"]) + 1
         cur_status = row["status"]
+        if expected_run_id is not None and (
+            cur_status != "running"
+            or row["current_run_id"] != int(expected_run_id)
+            or row["run_ended_at"] is not None
+        ):
+            handled = _handle_late_terminal_failure_locked(
+                conn,
+                task_id,
+                expected_run_id=int(expected_run_id),
+                error=error,
+                outcome=outcome,
+                event_payload_extra=event_payload_extra,
+            )
+            return bool(handled) if handled is not None else False
+        if cur_status not in ("running", "ready"):
+            return False
+        failures = int(row["consecutive_failures"]) + 1
 
         # Per-task override wins over both caller-supplied and default
         # thresholds. None (the common case) falls through.
@@ -7103,23 +8367,29 @@ def _record_task_failure(
             # Trip the breaker.
             if release_claim:
                 # Spawn path: still running, also clear claim state.
-                conn.execute(
+                sql = (
                     "UPDATE tasks SET status = 'blocked', claim_lock = NULL, "
                     "claim_expires = NULL, worker_pid = NULL, "
                     "consecutive_failures = ?, last_failure_error = ? "
-                    "WHERE id = ? AND status IN ('running', 'ready')",
-                    (failures, error[:500], task_id),
+                    "WHERE id = ? AND status IN ('running', 'ready')"
                 )
+                params: tuple = (failures, error[:500], task_id)
+                if expected_run_id is not None:
+                    sql += " AND current_run_id = ?"
+                    params += (int(expected_run_id),)
+                state_cur = conn.execute(sql, params)
             else:
                 # Timeout/crash path: task is already at ``ready``
                 # with claim cleared; just flip to blocked + update
                 # counter fields.
-                conn.execute(
+                state_cur = conn.execute(
                     "UPDATE tasks SET status = 'blocked', "
                     "consecutive_failures = ?, last_failure_error = ? "
                     "WHERE id = ? AND status IN ('ready', 'running')",
                     (failures, error[:500], task_id),
                 )
+            if state_cur.rowcount != 1:
+                return False
             run_id = None
             if end_run:
                 # Only the spawn path has an open run to close.
@@ -7133,7 +8403,10 @@ def _record_task_failure(
                         "effective_limit": effective_limit,
                         "limit_source": limit_source,
                     },
+                    expected_run_id=expected_run_id,
                 )
+                if expected_run_id is not None and run_id is None:
+                    return False
             payload = {
                 "failures": failures,
                 "effective_limit": effective_limit,
@@ -7146,26 +8419,36 @@ def _record_task_failure(
             _append_event(
                 conn, task_id, "gave_up", payload, run_id=run_id,
             )
+            _demote_invalidated_dependents(
+                conn, task_id, reason=f"parent_{outcome}",
+            )
             blocked = True
         else:
             # Below threshold.
             if release_claim:
                 # Spawn path: transition running → ready + clear claim.
-                conn.execute(
+                sql = (
                     "UPDATE tasks SET status = 'ready', claim_lock = NULL, "
                     "claim_expires = NULL, worker_pid = NULL, "
                     "consecutive_failures = ?, last_failure_error = ? "
-                    "WHERE id = ? AND status = 'running'",
-                    (failures, error[:500], task_id),
+                    "WHERE id = ? AND status = 'running'"
                 )
+                params = (failures, error[:500], task_id)
+                if expected_run_id is not None:
+                    sql += " AND current_run_id = ?"
+                    params += (int(expected_run_id),)
+                state_cur = conn.execute(sql, params)
             else:
                 # Timeout/crash path: task is already at ``ready`` via
                 # its own UPDATE. Just bookkeep the counter + last error.
-                conn.execute(
+                state_cur = conn.execute(
                     "UPDATE tasks SET consecutive_failures = ?, "
-                    "last_failure_error = ? WHERE id = ?",
+                    "last_failure_error = ? WHERE id = ? "
+                    "AND status IN ('ready', 'running')",
                     (failures, error[:500], task_id),
                 )
+            if state_cur.rowcount != 1:
+                return False
             if end_run:
                 # Spawn path: close the open run with outcome.
                 run_id = _end_run(
@@ -7173,13 +8456,19 @@ def _record_task_failure(
                     outcome=outcome, status=outcome,
                     error=error[:500],
                     metadata={"failures": failures},
+                    expected_run_id=expected_run_id,
                 )
+                if expected_run_id is not None and run_id is None:
+                    return False
                 _append_event(
                     conn, task_id, outcome,
                     {"error": error[:500], "failures": failures},
                     run_id=run_id,
                 )
             # Timeout/crash path's caller already emitted its own event.
+            _demote_invalidated_dependents(
+                conn, task_id, reason=f"parent_{outcome}",
+            )
     return blocked
 
 

@@ -119,6 +119,7 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
     ),
     "minimax": HermesOverlay(
         transport="anthropic_messages",
+        base_url_override="https://api.minimax.io/anthropic",
         base_url_env_var="MINIMAX_BASE_URL",
     ),
     "minimax-oauth": HermesOverlay(
@@ -128,6 +129,7 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
     ),
     "minimax-cn": HermesOverlay(
         transport="anthropic_messages",
+        base_url_override="https://api.minimaxi.com/anthropic",
         base_url_env_var="MINIMAX_CN_BASE_URL",
     ),
     "deepseek": HermesOverlay(

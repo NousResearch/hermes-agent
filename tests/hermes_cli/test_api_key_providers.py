@@ -128,8 +128,8 @@ class TestProviderRegistry:
         assert PROVIDER_REGISTRY["zai"].inference_base_url == "https://api.z.ai/api/paas/v4"
         assert PROVIDER_REGISTRY["kimi-coding"].inference_base_url == "https://api.moonshot.ai/v1"
         assert PROVIDER_REGISTRY["stepfun"].inference_base_url == STEPFUN_STEP_PLAN_INTL_BASE_URL
-        assert PROVIDER_REGISTRY["minimax"].inference_base_url == "https://api.minimax.io/anthropic"
-        assert PROVIDER_REGISTRY["minimax-cn"].inference_base_url == "https://api.minimaxi.com/anthropic"
+        assert PROVIDER_REGISTRY["minimax"].inference_base_url == "https://api.minimax.io/v1"
+        assert PROVIDER_REGISTRY["minimax-cn"].inference_base_url == "https://api.minimaxi.com/v1"
         assert PROVIDER_REGISTRY["kilocode"].inference_base_url == "https://api.kilo.ai/api/gateway"
         assert PROVIDER_REGISTRY["gmi"].inference_base_url == "https://api.gmi-serving.com/v1"
         assert PROVIDER_REGISTRY["huggingface"].inference_base_url == "https://router.huggingface.co/v1"
@@ -544,14 +544,14 @@ class TestResolveApiKeyProviderCredentials:
         creds = resolve_api_key_provider_credentials("minimax")
         assert creds["provider"] == "minimax"
         assert creds["api_key"] == "mm-secret-key"
-        assert creds["base_url"] == "https://api.minimax.io/anthropic"
+        assert creds["base_url"] == "https://api.minimax.io/v1"
 
     def test_resolve_minimax_cn_with_key(self, monkeypatch):
         monkeypatch.setenv("MINIMAX_CN_API_KEY", "mmcn-secret-key")
         creds = resolve_api_key_provider_credentials("minimax-cn")
         assert creds["provider"] == "minimax-cn"
         assert creds["api_key"] == "mmcn-secret-key"
-        assert creds["base_url"] == "https://api.minimaxi.com/anthropic"
+        assert creds["base_url"] == "https://api.minimaxi.com/v1"
 
     def test_resolve_kilocode_with_key(self, monkeypatch):
         monkeypatch.setenv("KILOCODE_API_KEY", "kilo-secret-key")

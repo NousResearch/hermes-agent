@@ -524,9 +524,9 @@ def runtime_command(
         "-B",
         "-m",
         "gateway.production_owner_runtime",
-        action,
         "--revision",
         spec.revision,
+        action,
     )
     return command + (("--", *launcher_args) if launcher_args else ())
 

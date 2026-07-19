@@ -72,9 +72,9 @@ def test_runtime_argv_uses_site_imports_but_rejects_ambient_python(
     )
     assert command[4:8] == (
         "gateway.production_owner_runtime",
-        "run",
         "--revision",
         REVISION,
+        "run",
     )
     assert "-S" not in command
     assert command[8:] == (

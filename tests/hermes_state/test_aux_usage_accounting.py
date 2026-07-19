@@ -340,3 +340,49 @@ class TestAnalyticsAuxRows:
 
         tasks = _aux_task_summary(aux)
         assert {t["task"] for t in tasks} == {"vision", "compression"}
+
+
+class TestInsightsAuxTotals:
+    def test_overview_totals_include_aux_usage(self, db):
+        """`hermes insights` overview must count aux tokens, not just the
+        sessions counters (issues #58592, #9979)."""
+        from agent.insights import InsightsEngine
+
+        db.create_session("s1", source="cli")
+        db.update_token_counts(
+            "s1", input_tokens=1000, output_tokens=100,
+            model="main-model", billing_provider="nous", api_call_count=1,
+        )
+        db.record_auxiliary_usage(
+            "s1", "compression", model="glm-5",
+            billing_provider="openrouter", input_tokens=5000, output_tokens=500,
+        )
+        report = InsightsEngine(db).generate(days=30)
+        ov = report["overview"]
+        assert ov["total_input_tokens"] == 6000
+        assert ov["total_output_tokens"] == 600
+        models = {m["model"] for m in report["models"]}
+        assert {"main-model", "glm-5"} <= models
+
+    def test_overview_totals_not_double_counted_with_absolute_updates(self, db):
+        """Gateway absolute overwrites + aux rows must not inflate totals."""
+        from agent.insights import InsightsEngine
+
+        db.create_session("s2", source="telegram")
+        db.update_token_counts(
+            "s2", input_tokens=2000, output_tokens=200,
+            model="main-model", billing_provider="nous", api_call_count=1,
+        )
+        db.update_token_counts(
+            "s2", input_tokens=2000, output_tokens=200,
+            model="main-model", billing_provider="nous",
+            absolute=True, api_call_count=1,
+        )
+        db.record_auxiliary_usage(
+            "s2", "title_generation", model="main-model",
+            billing_provider="nous", input_tokens=40, output_tokens=8,
+        )
+        report = InsightsEngine(db).generate(days=30)
+        ov = report["overview"]
+        assert ov["total_input_tokens"] == 2040
+        assert ov["total_output_tokens"] == 208

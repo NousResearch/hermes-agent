@@ -125,6 +125,20 @@ def _is_loopback_host(host: Optional[str]) -> bool:
     return host.strip().lower() in _LOOPBACK_HOSTS
 
 
+def _hmac_str_equal(provided: str, expected: str) -> bool:
+    """Timing-safe equality for two ``str`` values, tolerant of non-ASCII input.
+
+    ``hmac.compare_digest`` raises ``TypeError`` when given a ``str`` that
+    contains non-ASCII characters. The ``provided`` value here is an
+    attacker-controlled signature/token header on a public, unauthenticated
+    webhook endpoint, so a single non-ASCII byte would otherwise raise out of
+    the request handler and return a 500 instead of rejecting the request.
+    Comparing as UTF-8 bytes keeps the constant-time guarantee while making a
+    hostile header fail closed with a clean rejection.
+    """
+    return hmac.compare_digest(provided.encode(), expected.encode())
+
+
 def check_webhook_requirements() -> bool:
     """Check if webhook adapter dependencies are available."""
     return AIOHTTP_AVAILABLE
@@ -132,6 +146,12 @@ def check_webhook_requirements() -> bool:
 
 class WebhookAdapter(BasePlatformAdapter):
     """Generic webhook receiver that triggers agent runs from HTTP POSTs."""
+
+    # No human is present to answer a "session restored — what next?" prompt:
+    # webhook runs are event-triggered.  The startup auto-resume turn must
+    # instruct the model to FINISH the interrupted work instead of emitting an
+    # interactive acknowledgement that abandons the task (#57056).
+    interactive_resume: bool = False
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.WEBHOOK)
@@ -969,12 +989,12 @@ class WebhookAdapter(BasePlatformAdapter):
             expected = "sha256=" + hmac.new(
                 secret.encode(), body, hashlib.sha256
             ).hexdigest()
-            return hmac.compare_digest(gh_sig, expected)
+            return _hmac_str_equal(gh_sig, expected)
 
         # GitLab: X-Gitlab-Token = <plain secret>
         gl_token = request.headers.get("X-Gitlab-Token", "")
         if gl_token:
-            return hmac.compare_digest(gl_token, secret)
+            return _hmac_str_equal(gl_token, secret)
 
         # Generic V2: X-Webhook-Signature-V2 = <hex HMAC-SHA256 of "<timestamp>.<body>">
         #             X-Webhook-Timestamp = <unix seconds> (required for V2)
@@ -1017,7 +1037,7 @@ class WebhookAdapter(BasePlatformAdapter):
             expected_v2 = hmac.new(
                 secret.encode(), signed_content, hashlib.sha256
             ).hexdigest()
-            return hmac.compare_digest(v2_sig, expected_v2)
+            return _hmac_str_equal(v2_sig, expected_v2)
 
         # Generic V1 (legacy): X-Webhook-Signature = <hex HMAC-SHA256 of body>
         # (deprecated — no replay protection, since the signature only
@@ -1041,7 +1061,7 @@ class WebhookAdapter(BasePlatformAdapter):
                     "'<timestamp>.<body>').",
                     route_name,
                 )
-            return hmac.compare_digest(generic_sig, expected)
+            return _hmac_str_equal(generic_sig, expected)
 
         # No recognised signature header but secret is configured → reject
         logger.debug(
@@ -1095,7 +1115,7 @@ class WebhookAdapter(BasePlatformAdapter):
                 version, signature = part.split(",", 1)
             except ValueError:
                 continue
-            if version == "v1" and hmac.compare_digest(signature, expected):
+            if version == "v1" and _hmac_str_equal(signature, expected):
                 return True
         return False
 
@@ -1131,6 +1151,8 @@ class WebhookAdapter(BasePlatformAdapter):
             # Special token: dump the entire payload as JSON
             if key == "__raw__":
                 return json.dumps(payload, indent=2)[:4000]
+            if key == "event_type":
+                return event_type
             value: Any = payload
             for part in key.split("."):
                 if isinstance(value, dict):
@@ -1279,7 +1301,18 @@ class WebhookAdapter(BasePlatformAdapter):
                 success=False, error=f"Unknown platform: {platform_name}"
             )
 
+        # Default adapters first; multiplex may park Slack/etc. only on a
+        # secondary profile (self._profile_adapters). Fall back so webhook
+        # deliver:slack still works when default has slack disabled.
         adapter = self.gateway_runner.adapters.get(target_platform)
+        if not adapter:
+            for _prof, amap in (getattr(self.gateway_runner, "_profile_adapters", None) or {}).items():
+                if not isinstance(amap, dict):
+                    continue
+                cand = amap.get(target_platform)
+                if cand is not None:
+                    adapter = cand
+                    break
         if not adapter:
             return SendResult(
                 success=False,

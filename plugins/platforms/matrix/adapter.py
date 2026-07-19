@@ -337,6 +337,21 @@ class _MatrixModelPickerPrompt:
     bot_reaction_events: dict[str, str] = field(default_factory=dict)
 
 
+@dataclass
+class _MatrixChoicePickerPrompt:
+    """Tracks a pending Matrix reaction-based choice picker (/reasoning, /fast)."""
+
+    chat_id: str
+    message_id: str
+    session_key: str
+    choices: dict[str, str]  # emoji -> value
+    on_choice_selected: Any
+    requester_user_id: str | None = None
+    expires_at: float | None = None
+    resolved: bool = False
+    bot_reaction_events: dict[str, str] = field(default_factory=dict)
+
+
 # Matrix message size limit (4000 chars practical, spec has no hard limit
 # but clients render poorly above this).
 MAX_MESSAGE_LENGTH = 4000
@@ -384,6 +399,14 @@ _MATRIX_MODEL_PICKER_REACTIONS = (
     "8\ufe0f\u20e3",
     "9\ufe0f\u20e3",
     "\U0001f51f",
+)
+
+# Choice pickers (/reasoning, /fast) can need more than 10 slots
+# (8 effort levels + none + reset/show/hide = 12), so extend the keycap
+# set with lettered squares.
+_MATRIX_CHOICE_PICKER_REACTIONS = _MATRIX_MODEL_PICKER_REACTIONS + (
+    "\U0001f170\ufe0f",  # 🅰️
+    "\U0001f171\ufe0f",  # 🅱️
 )
 
 _MATRIX_CAPABILITIES: Dict[str, str] = {
@@ -954,6 +977,7 @@ class MatrixAdapter(BasePlatformAdapter):
         except ValueError:
             self._approval_timeout_seconds = 300
         self._model_picker_prompts_by_event: Dict[str, _MatrixModelPickerPrompt] = {}
+        self._choice_picker_prompts_by_event: Dict[str, _MatrixChoicePickerPrompt] = {}
         allowed_users_raw = os.getenv("MATRIX_ALLOWED_USERS", "")
         self._allowed_user_ids: Set[str] = {
             u.strip() for u in allowed_users_raw.split(",") if u.strip()
@@ -2133,6 +2157,66 @@ class MatrixAdapter(BasePlatformAdapter):
                     prompt.bot_reaction_events[emoji] = str(reaction_event_id)
             except Exception as exc:
                 logger.debug("Matrix: failed to add model picker reaction %s: %s", emoji, exc)
+
+        return result
+
+    async def send_choice_picker(
+        self,
+        chat_id: str,
+        title: str,
+        choices: list,
+        session_key: str,
+        on_choice_selected,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send a Matrix reaction-based choice picker (/reasoning, /fast).
+
+        Generic single-level companion to ``send_model_picker``. Each choice
+        dict: ``{"value": str, "label": str, "is_current": bool}``.
+        """
+        if not self._client:
+            return SendResult(success=False, error="Not connected")
+
+        emoji_choices: dict[str, str] = {}
+        lines = [title, ""]
+        for i, choice in enumerate(choices):
+            if i >= len(_MATRIX_CHOICE_PICKER_REACTIONS):
+                break
+            emoji = _MATRIX_CHOICE_PICKER_REACTIONS[i]
+            value = str(choice.get("value") or "")
+            label = str(choice.get("label") or value)
+            if choice.get("is_current"):
+                label = f"{label} ← current"
+            emoji_choices[emoji] = value
+            lines.append(f"{emoji} {label}")
+
+        if not emoji_choices:
+            return SendResult(success=False, error="No choices")
+
+        lines.append("")
+        lines.append("React to choose.")
+        result = await self.send(chat_id, "\n".join(lines), metadata=metadata)
+        if not result.success or not result.message_id:
+            return result
+
+        prompt = _MatrixChoicePickerPrompt(
+            chat_id=chat_id,
+            message_id=result.message_id,
+            session_key=session_key,
+            choices=emoji_choices,
+            on_choice_selected=on_choice_selected,
+            requester_user_id=str((metadata or {}).get("requester_user_id") or "") or None,
+            expires_at=time.monotonic() + max(self._approval_timeout_seconds, 0),
+        )
+        self._choice_picker_prompts_by_event[result.message_id] = prompt
+
+        for emoji in emoji_choices:
+            try:
+                reaction_event_id = await self._send_reaction(chat_id, result.message_id, emoji)
+                if reaction_event_id:
+                    prompt.bot_reaction_events[emoji] = str(reaction_event_id)
+            except Exception as exc:
+                logger.debug("Matrix: failed to add choice picker reaction %s: %s", emoji, exc)
 
         return result
 
@@ -3324,6 +3408,40 @@ class MatrixAdapter(BasePlatformAdapter):
                     await self.send(
                         room_id,
                         f"Failed to switch model: {exc}",
+                        reply_to=reacts_to,
+                    )
+                return
+
+            choice_prompt = self._choice_picker_prompts_by_event.get(reacts_to)
+            if choice_prompt and not choice_prompt.resolved:
+                if room_id != choice_prompt.chat_id:
+                    return
+                if self._matrix_prompt_expired(choice_prompt):
+                    self._choice_picker_prompts_by_event.pop(reacts_to, None)
+                    return
+                if not await self._validate_matrix_prompt_reactor(
+                    room_id, reacts_to, sender, choice_prompt, "choice picker"
+                ):
+                    return
+                value = choice_prompt.choices.get(key)
+                if value is None:
+                    await self._send_invalid_reaction_feedback(
+                        room_id,
+                        reacts_to,
+                        "That reaction is not one of the available choices.",
+                    )
+                    return
+                choice_prompt.resolved = True
+                self._choice_picker_prompts_by_event.pop(reacts_to, None)
+                try:
+                    confirmation = await choice_prompt.on_choice_selected(room_id, value)
+                    if confirmation:
+                        await self.send(room_id, confirmation, reply_to=reacts_to)
+                except Exception as exc:
+                    logger.error("Failed to apply choice from Matrix reaction: %s", exc)
+                    await self.send(
+                        room_id,
+                        f"Failed to apply selection: {exc}",
                         reply_to=reacts_to,
                     )
                 return

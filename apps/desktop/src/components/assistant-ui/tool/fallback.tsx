@@ -39,7 +39,7 @@ import { useEnterAnimation } from '@/lib/use-enter-animation'
 import { cn } from '@/lib/utils'
 import { recordPreviewArtifact } from '@/store/preview-status'
 import { $activeSessionId, $currentCwd } from '@/store/session'
-import { $toolInlineDiffs } from '@/store/tool-diffs'
+import { $toolInlineDiff } from '@/store/tool-diffs'
 import { $toolRowDismissed, dismissToolRow } from '@/store/tool-dismiss'
 import { $toolDisclosureOpen, $toolViewMode, setToolDisclosureOpen } from '@/store/tool-view'
 
@@ -283,8 +283,9 @@ function ToolEntry({ part }: ToolEntryProps) {
   const disclosureId = `tool-entry:${messageId}:${toolPartDisclosureId(stablePart)}`
   const dismissed = useStore($toolRowDismissed(disclosureId))
   const isPending = messageRunning && result === undefined
-  const liveDiffs = useStore($toolInlineDiffs)
-  const sideDiff = toolCallId ? liveDiffs[toolCallId] || '' : ''
+  // Subscribe to this tool's diff only, so a live patch for one tool doesn't
+  // re-render every mounted tool row (the factory caches a per-id atom).
+  const sideDiff = useStore($toolInlineDiff(toolCallId ?? ''))
   const inlineDiff = stripInlineDiffChrome(sideDiff) || inlineDiffFromResult(result)
   const isFileEdit = isFileEditTool(toolName)
   const defaultOpen = Boolean(inlineDiff)
@@ -659,7 +660,10 @@ function useToolWindow(enabled: boolean) {
       syncFade()
     }
 
-    pin()
+    // No sync pin() here: the observer's guaranteed initial delivery runs it
+    // inside RO timing (layout already clean, still before paint). A sync call
+    // at effect time reads scrollHeight while the commit's layout is dirty —
+    // one forced reflow per tool group, which cascades on a session switch.
     const observer = new ResizeObserver(pin)
     observer.observe(content)
 

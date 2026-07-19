@@ -5,6 +5,7 @@ import type * as React from 'react'
 import { Suspense, useCallback, useMemo } from 'react'
 import { useLocation } from 'react-router-dom'
 
+import type { SubmitTextOptions } from '@/app/session/hooks/use-prompt-actions/utils'
 import { Thread } from '@/components/assistant-ui/thread'
 import { Backdrop } from '@/components/Backdrop'
 import { COMPOSER_HEART_CONFIG, HeartField } from '@/components/chat/vibe-hearts'
@@ -19,11 +20,10 @@ import type { ChatMessage } from '@/lib/chat-messages'
 import { quickModelOptions, sessionTitle } from '@/lib/chat-runtime'
 import { useIncrementalExternalStoreRuntime } from '@/lib/incremental-external-store-runtime'
 import { cn } from '@/lib/utils'
-import type { ComposerAttachment } from '@/store/composer'
 import { $pinnedSessionIds } from '@/store/layout'
 import { $petActive } from '@/store/pet'
 import { $petOverlayActive } from '@/store/pet-overlay'
-import { $gatewaySwapTarget } from '@/store/profile'
+import { $gatewaySwapTarget, $profiles } from '@/store/profile'
 import {
   $contextSuggestions,
   $freshDraftReady,
@@ -50,6 +50,7 @@ import { useComposerScope } from './composer/scope'
 import type { ChatBarState } from './composer/types'
 import { type DroppedFile, partitionDroppedFiles } from './hooks/use-composer-actions'
 import { type DragKind, useFileDropZone } from './hooks/use-file-drop-zone'
+import { ProfileTag } from './profile-tag'
 import { useRuntimeMessageRepository } from './runtime-repository'
 import { ScrollToBottomButton } from './scroll-to-bottom-button'
 import { useSessionView } from './session-view'
@@ -74,10 +75,7 @@ interface ChatViewProps extends Omit<React.ComponentProps<'div'>, 'onSubmit'> {
   onPickImages: () => void
   onRemoveAttachment: (id: string) => void
   onSteer: (text: string) => Promise<boolean> | boolean
-  onSubmit: (
-    text: string,
-    options?: { attachments?: ComposerAttachment[]; fromQueue?: boolean }
-  ) => Promise<boolean> | boolean
+  onSubmit: (text: string, options?: SubmitTextOptions) => Promise<boolean> | boolean
   onThreadMessagesChange: (messages: readonly ThreadMessage[]) => void
   onEdit: (message: AppendMessage) => Promise<void>
   onReload: (parentId: string | null) => Promise<void>
@@ -104,11 +102,17 @@ function ChatHeader({
 }: ChatHeaderProps) {
   const sessions = useStore($sessions)
   const pinnedSessionIds = useStore($pinnedSessionIds)
+  const profiles = useStore($profiles)
 
   const activeStoredSession =
     (selectedSessionId && sessions.find(session => sessionMatchesStoredId(session, selectedSessionId))) || null
 
   const title = activeStoredSession ? sessionTitle(activeStoredSession) : 'New session'
+
+  // Which agent/persona owns this chat — glanceable in the header once a
+  // second profile exists, so the open session's ownership is never ambiguous
+  // (#66003). Single-profile users see the unchanged header.
+  const showProfileTag = profiles.length > 1 && Boolean(activeStoredSession)
 
   // Pins live on the durable lineage-root id, but selectedSessionId is the live
   // (tip) id — resolve through the loaded row so the menu reflects the pin
@@ -129,12 +133,13 @@ function ChatHeader({
   return (
     <header className={cn(titlebarHeaderBaseClass, isRoutedSessionView && titlebarHeaderShadowClass)}>
       <div
-        className={titlebarHeaderTitleClass}
+        className={cn(titlebarHeaderTitleClass, showProfileTag && 'flex items-center')}
         style={{
           maxWidth:
             'calc(100vw - var(--titlebar-content-inset,0px) - var(--titlebar-tools-right) - var(--titlebar-tools-width) - 1.5rem)'
         }}
       >
+        {showProfileTag && <ProfileTag className="pointer-events-auto mr-1.5" profile={activeStoredSession?.profile} />}
         <SessionActionsMenu
           align="start"
           onDelete={selectedSessionId ? onDeleteSelectedSession : undefined}

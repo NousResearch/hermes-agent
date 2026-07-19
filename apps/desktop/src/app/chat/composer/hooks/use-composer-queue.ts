@@ -8,6 +8,7 @@ import { resetBrowseState } from '@/store/composer-input-history'
 import {
   $queuedPromptsBySession,
   enqueueQueuedPrompt,
+  getQueuedPrompts,
   MAX_AUTO_DRAIN_ATTEMPTS,
   migrateQueuedPrompts,
   promoteQueuedPrompt,
@@ -189,7 +190,9 @@ export function useComposerQueue({
         return false
       }
 
-      const entry = pickEntry(queuedPrompts)
+      const drainQueueSessionKey = activeQueueSessionKey
+      const drainRuntimeSessionId = sessionId ?? null
+      const entry = pickEntry(getQueuedPrompts(drainQueueSessionKey))
 
       if (!entry) {
         return false
@@ -199,7 +202,12 @@ export function useComposerQueue({
 
       try {
         const accepted = await Promise.resolve(
-          onSubmit(entry.text, { attachments: entry.attachments, fromQueue: true })
+          onSubmit(entry.text, {
+            attachments: entry.attachments,
+            fromQueue: true,
+            sessionId: drainRuntimeSessionId,
+            storedSessionId: drainQueueSessionKey
+          })
         )
 
         if (accepted === false) {
@@ -207,15 +215,15 @@ export function useComposerQueue({
         }
 
         drainFailuresRef.current.delete(entry.id)
-        removeQueuedPrompt(activeQueueSessionKey, entry.id)
-        resetBrowseState(sessionId)
+        removeQueuedPrompt(drainQueueSessionKey, entry.id)
+        resetBrowseState(drainRuntimeSessionId)
 
         return true
       } finally {
         drainingQueueRef.current = false
       }
     },
-    [activeQueueSessionKey, onSubmit, queuedPrompts, sessionId]
+    [activeQueueSessionKey, onSubmit, sessionId]
   )
 
   const pickDrainHead = useCallback(

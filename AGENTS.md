@@ -1094,14 +1094,16 @@ kanban task.
 
 - **CLI:** `hermes_cli/kanban.py` wires `hermes kanban` with verbs
   `init`, `create`, `list` (alias `ls`), `show`, `assign`, `link`,
-  `unlink`, `comment`, `complete`, `block`, `unblock`, `archive`,
-  `tail`, plus less-commonly-used `watch`, `stats`, `runs`, `log`,
-  `assignees`, `heartbeat`, `notify-*`, `dispatch`, `daemon`, `gc`.
+  `unlink`, `comment`, `attach`, `attachments`, `attach-rm`, `complete`,
+  `block`, `unblock`, `archive`, `tail`, plus less-commonly-used `watch`,
+  `stats`, `runs`, `log`, `assignees`, `heartbeat`, `notify-*`,
+  `dispatch`, `daemon`, `gc`.
 - **Worker/orchestrator toolset:** `tools/kanban_tools.py` exposes
   `kanban_show`, `kanban_complete`, `kanban_block`, `kanban_heartbeat`,
-  `kanban_comment`, `kanban_create`, `kanban_link`; profiles that
-  explicitly enable the `kanban` toolset outside a dispatcher-spawned
-  task also get `kanban_list` and `kanban_unblock` for board routing.
+  `kanban_comment`, `kanban_create`, `kanban_link`, `kanban_attach`,
+  `kanban_attach_url`, `kanban_attachments`; profiles that explicitly
+  enable the `kanban` toolset outside a dispatcher-spawned task also get
+  `kanban_list` and `kanban_unblock` for board routing.
 - **Dispatcher:** long-lived loop that (default every 60s) reclaims
   stale claims, promotes ready tasks, atomically claims, and spawns
   assigned profiles. Runs **inside the gateway** by default via
@@ -1291,6 +1293,14 @@ scripts/run_tests.sh tests/gateway/                   # one directory
 scripts/run_tests.sh tests/agent/test_foo.py::test_x  # one test
 scripts/run_tests.sh -v --tb=long                     # pass-through pytest flags
 ```
+
+**Flake policy:** the runner auto-retries a failing test FILE once in a fresh
+subprocess (`--file-retries`, default 1; `HERMES_TEST_FILE_RETRIES=0` to
+disable). Pass-on-retry counts as green but is printed in a `⚠ FLAKY` summary
+section with both attempts' output. A FLAKY report is a bug to fix, not noise
+to ignore — timing-sensitive tests must not assume a quiet runner (loose
+wall-clock bounds ≥ 2s, event-based sync, no `assert not _wait_until(...)`
+negative-timing races).
 
 #### Subprocess-per-test-file isolation
 

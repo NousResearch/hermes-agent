@@ -209,6 +209,71 @@ def test_registry_bounded_and_never_evicts_live_lease():
 
 
 # ---------------------------------------------------------------------------
+# Mid-turn rotation rebind
+# ---------------------------------------------------------------------------
+
+
+def test_rebind_moves_serialization_to_new_session_id():
+    """After a mid-turn compression rotation, an alias key acquiring the NEW
+    id must wait behind the holder; release under the new id frees it."""
+
+    async def scenario():
+        registry = SessionTurnLeaseRegistry()
+        token = await registry.acquire("parent", owner_key="key-a", generation=1, timeout=5)
+        assert registry.rebind(token, "child") is True
+        assert token is not None and token.session_id == "child"
+
+        # Alias key resolving the fresh child id serializes behind the holder.
+        waiter = asyncio.create_task(
+            registry.acquire("child", owner_key="key-b", generation=1, timeout=5)
+        )
+        await asyncio.sleep(0.02)
+        assert not waiter.done()
+
+        assert registry.release(token) is True
+        t2 = await waiter
+        assert t2 is not None and not t2.degraded
+        registry.release(t2)
+
+    _run(scenario())
+
+
+def test_rebind_is_ownership_checked_and_noop_safe():
+    async def scenario():
+        registry = SessionTurnLeaseRegistry()
+        token = await registry.acquire("s1", owner_key="k", generation=1, timeout=5)
+        assert token is not None
+        # Same id → no-op.
+        assert registry.rebind(token, "s1") is False
+        # Empty target → no-op.
+        assert registry.rebind(token, "") is False
+        # None / released tokens → no-op.
+        assert registry.rebind(None, "s2") is False
+        registry.release(token)
+        assert registry.rebind(token, "s2") is False
+
+    _run(scenario())
+
+
+def test_rebind_blocked_when_target_lease_is_live():
+    """Two live serialization domains can't be merged mid-wait — rebind
+    fails open (token stays on the old id) with a loud warning."""
+
+    async def scenario():
+        registry = SessionTurnLeaseRegistry()
+        t_a = await registry.acquire("sess-a", owner_key="key-a", generation=1, timeout=5)
+        t_b = await registry.acquire("sess-b", owner_key="key-b", generation=1, timeout=5)
+        assert t_a is not None and t_b is not None
+        assert registry.rebind(t_a, "sess-b") is False
+        assert t_a.session_id == "sess-a"  # unchanged
+        # Both still release cleanly under their own ids.
+        assert registry.release(t_a) is True
+        assert registry.release(t_b) is True
+
+    _run(scenario())
+
+
+# ---------------------------------------------------------------------------
 # GatewayRunner wiring
 # ---------------------------------------------------------------------------
 

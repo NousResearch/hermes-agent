@@ -212,6 +212,65 @@ class SessionTurnLeaseRegistry:
         lease.last_used = lease.acquired_at
         return token
 
+    def rebind(self, token: Optional[TurnLeaseToken], new_session_id: str) -> bool:
+        """Alias a HELD lease onto ``new_session_id`` after mid-turn rotation.
+
+        Compression can rotate the durable session_id while a turn is in
+        flight (session-hygiene pre-compression, in-agent compression). The
+        turn's flush then targets the NEW id — so the serialization boundary
+        must follow it, or an alias routing key resolving the new id (e.g. a
+        topic tip-walk landing on the fresh child) could start a concurrent
+        turn the lease never sees. This closes the rotation-alias window
+        flagged on #64934.
+
+        Mechanism: the SAME ``_SessionLease`` object is registered under the
+        new id (the old mapping stays until it goes idle and is evicted), so
+        acquirers on either id serialize against one lock — no lock state is
+        moved, no asyncio internals are touched. Only the current holder can
+        rebind (identity-checked like release), and the token follows to the
+        new id so release frees the shared object.
+
+        Edge: if the new id already has a live lease of its own (another
+        turn is running on the target session), the two serialization
+        domains cannot be merged mid-wait — log loudly and keep the token on
+        the old id. Fail-open, never deadlock: a holder cannot wait mid-turn.
+        """
+        if (
+            token is None
+            or token.degraded
+            or token.released
+            or not new_session_id
+            or new_session_id == token.session_id
+        ):
+            return False
+        lease = self._leases.get(token.session_id)
+        if lease is None or lease.holder is not token:
+            return False
+
+        existing = self._leases.get(new_session_id)
+        if existing is not None and existing is not lease and not existing.idle:
+            holder = existing.holder
+            logger.warning(
+                "turn lease rebind blocked: session %s rotated to %s mid-turn "
+                "(holder: routing key %s gen %s) but the target session's "
+                "lease is already live (holder: routing key %s gen %s) — "
+                "keeping the lease on the old id; transcript writes on %s "
+                "may interleave (#64934 rotation-alias edge)",
+                token.session_id,
+                new_session_id,
+                token.owner_key,
+                token.generation,
+                holder.owner_key if holder else "?",
+                holder.generation if holder else "?",
+                new_session_id,
+            )
+            return False
+
+        self._leases[new_session_id] = lease
+        lease.last_used = time.time()
+        token.session_id = new_session_id
+        return True
+
     def release(self, token: Optional[TurnLeaseToken]) -> bool:
         """Release ``token``'s lease. Idempotent; ownership-checked.
 

@@ -7123,7 +7123,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         still be healthy.
         """
         platform = adapter.platform
-        registry = self._account_adapters.get(platform) or {}
+        registry = (getattr(self, "_account_adapters", None) or {}).get(platform) or {}
         existing = registry.get(account_name)
         if existing is not None and existing is not adapter:
             logger.debug(
@@ -7235,7 +7235,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # would see the DEFAULT adapter occupying the slot and silently
         # ignore a dying account — no reconnect, no status, no log.
         _account_name = getattr(adapter, "account_name", None)
-        if _account_name:
+        # isinstance-guard: a MagicMock adapter auto-creates a truthy
+        # account_name (pitfall #17); only a real named account is a str.
+        if isinstance(_account_name, str) and _account_name:
             await self._handle_account_adapter_fatal_error(adapter, _account_name)
             return
 
@@ -7287,7 +7289,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # the same object twice.
             self.adapters.pop(adapter.platform, None)
             self.delivery_router.adapters = self.adapters
-            self.delivery_router.account_adapters = self._account_adapters
+            self.delivery_router.account_adapters = getattr(self, "_account_adapters", {}) or {}
             # A half-closed transport can wedge an adapter's native close()
             # indefinitely. Reuse the shutdown-path timeout so this runtime
             # fatal handler always reaches the reconnect queue.
@@ -11350,7 +11352,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if await self._abort_startup_if_shutdown_requested():
             return True
         self.delivery_router.adapters = self.adapters
-        self.delivery_router.account_adapters = self._account_adapters
+        self.delivery_router.account_adapters = getattr(self, "_account_adapters", {}) or {}
         self._wire_teams_pipeline_runtime()
 
         self._running = True
@@ -12425,8 +12427,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # Named-account reconnects (#8287): independent of the platform
             # pass below — an account's retry cadence mirrors a platform's,
             # but success re-registers into _account_adapters, never the
-            # default slot.
-            for _acct_key in list(self._failed_account_adapters.keys()):
+            # default slot. getattr-guarded: partially-constructed test
+            # runners (and any pre-#8287 pickle/restore) may lack the dict.
+            _failed_accounts = getattr(self, "_failed_account_adapters", None)
+            for _acct_key in list(_failed_accounts.keys()) if _failed_accounts else []:
                 if not self._running:
                     return
                 _acct_platform, _acct_name = _acct_key
@@ -12559,7 +12563,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         if hasattr(adapter, "_voice_input_callback"):
                             adapter._voice_input_callback = self._handle_voice_channel_input
                         self.delivery_router.adapters = self.adapters
-                        self.delivery_router.account_adapters = self._account_adapters
+                        self.delivery_router.account_adapters = getattr(self, "_account_adapters", {}) or {}
                         del self._failed_platforms[platform]
                         self._update_platform_runtime_status(
                             platform.value,

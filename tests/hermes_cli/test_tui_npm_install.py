@@ -531,6 +531,132 @@ def test_tui_launch_install_uses_workspace_scope(
     assert "--workspace" in install_cmd
     assert "ui-tui" in install_cmd
 
+# ── failure-output formatting ───────────────────────────────────────
+#
+# Every npm failure branch renders `stdout + stderr` into one preview blob.
+# npm does not terminate its streams with a newline, so concatenating them
+# raw welds the last line of stdout onto the first line of stderr:
+#
+#     npm ERR! code ELIFECYCLEnpm ERR! Exit status 1
+#
+# The `\n` separator between the two is what keeps them on separate lines,
+# and `.strip()` means it costs nothing when either side is empty.  These
+# tests pin the separator on all three branches (install / dev prebuild /
+# build) by feeding stdout and stderr that have no boundary newline of
+# their own — the merge only shows up when neither side supplies one.
+
+_STDOUT_TAIL = "npm ERR! code ELIFECYCLE"
+_STDERR_HEAD = "npm ERR! Exit status 1"
+_MERGED = _STDOUT_TAIL + _STDERR_HEAD
+
+
+def _failing_run(*_args, **_kwargs):
+    return types.SimpleNamespace(
+        returncode=1, stdout=_STDOUT_TAIL, stderr=_STDERR_HEAD
+    )
+
+
+def _assert_streams_not_welded(out: str) -> None:
+    assert _MERGED not in out, (
+        "stdout and stderr were concatenated without a separator, welding "
+        f"the last stdout line onto the first stderr line: {_MERGED!r}"
+    )
+    assert _STDOUT_TAIL in out.splitlines()
+    assert _STDERR_HEAD in out.splitlines()
+
+
+def test_npm_install_failure_separates_stdout_and_stderr(
+    tmp_path: Path, main_mod, monkeypatch, capsys
+) -> None:
+    tui_dir = tmp_path / "ui-tui"
+    tui_dir.mkdir()
+    (tui_dir / "package.json").write_text("{}")
+    (tmp_path / "package-lock.json").write_text("{}")
+
+    monkeypatch.delenv("TERMUX_VERSION", raising=False)
+    monkeypatch.setenv("PREFIX", "/usr")
+    monkeypatch.setattr(main_mod, "_tui_need_npm_install", lambda _root: True)
+    monkeypatch.setattr(main_mod.shutil, "which", lambda name: f"/bin/{name}")
+    monkeypatch.setattr(main_mod.subprocess, "run", _failing_run)
+
+    with pytest.raises(SystemExit) as exc:
+        main_mod._make_tui_argv(tui_dir, tui_dev=False)
+
+    assert exc.value.code == 1
+    out = capsys.readouterr().out
+    assert "npm install failed." in out
+    _assert_streams_not_welded(out)
+
+
+def test_dev_prebuild_failure_separates_stdout_and_stderr(
+    tmp_path: Path, main_mod, monkeypatch, capsys
+) -> None:
+    ink_dir = tmp_path / "packages" / "hermes-ink"
+    ink_dir.mkdir(parents=True)
+
+    monkeypatch.setattr(main_mod, "_tui_need_npm_install", lambda _root: False)
+    monkeypatch.setattr(main_mod.shutil, "which", lambda name: f"/bin/{name}")
+    monkeypatch.setattr(main_mod.subprocess, "run", _failing_run)
+
+    with pytest.raises(SystemExit) as exc:
+        main_mod._make_tui_argv(tmp_path, tui_dev=True)
+
+    assert exc.value.code == 1
+    out = capsys.readouterr().out
+    assert "TUI dev prebuild failed." in out
+    _assert_streams_not_welded(out)
+
+
+def test_tui_build_failure_separates_stdout_and_stderr(
+    tmp_path: Path, main_mod, monkeypatch, capsys
+) -> None:
+    _touch_tui_entry(tmp_path)
+
+    monkeypatch.delenv("TERMUX_VERSION", raising=False)
+    monkeypatch.setenv("PREFIX", "/usr")
+    monkeypatch.setattr(main_mod, "_tui_need_npm_install", lambda _root: False)
+    monkeypatch.setattr(main_mod, "_tui_need_rebuild", lambda _root: False)
+    monkeypatch.setattr(main_mod.shutil, "which", lambda name: f"/bin/{name}")
+    monkeypatch.setattr(main_mod.subprocess, "run", _failing_run)
+
+    with pytest.raises(SystemExit) as exc:
+        main_mod._make_tui_argv(tmp_path, tui_dev=False)
+
+    assert exc.value.code == 1
+    out = capsys.readouterr().out
+    assert "TUI build failed." in out
+    _assert_streams_not_welded(out)
+
+
+def test_failure_preview_tolerates_empty_stream(
+    tmp_path: Path, main_mod, monkeypatch, capsys
+) -> None:
+    """The separator must not introduce a leading blank line when a build
+    fails with stderr only — `.strip()` is what makes the `\\n` free, and a
+    stray blank line above the preview would be a regression in its own right.
+    """
+    _touch_tui_entry(tmp_path)
+
+    monkeypatch.delenv("TERMUX_VERSION", raising=False)
+    monkeypatch.setenv("PREFIX", "/usr")
+    monkeypatch.setattr(main_mod, "_tui_need_npm_install", lambda _root: False)
+    monkeypatch.setattr(main_mod, "_tui_need_rebuild", lambda _root: False)
+    monkeypatch.setattr(main_mod.shutil, "which", lambda name: f"/bin/{name}")
+    monkeypatch.setattr(
+        main_mod.subprocess,
+        "run",
+        lambda *a, **kw: types.SimpleNamespace(
+            returncode=1, stdout="", stderr=_STDERR_HEAD
+        ),
+    )
+
+    with pytest.raises(SystemExit):
+        main_mod._make_tui_argv(tmp_path, tui_dev=False)
+
+    out = capsys.readouterr().out
+    assert out.splitlines() == ["TUI build failed.", _STDERR_HEAD]
+
+
 def test_make_tui_argv_omits_workspace_when_tui_has_own_lockfile(
     tmp_path: Path, main_mod, monkeypatch
 ) -> None:

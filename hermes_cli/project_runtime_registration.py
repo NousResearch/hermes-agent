@@ -1372,6 +1372,11 @@ def _validate_submitted_sealed_evidence(
     ).fetchall()
     if not stored:
         raise ValueError("sealed evidence invalid: evidence_missing")
+    for item in evidence:
+        reference = item.get("reference")
+        path = item.get("path")
+        if not isinstance(reference, str) or reference != path:
+            raise ValueError("sealed evidence invalid: reference_mismatch")
 
     def base_identity(item: Mapping[str, object]) -> tuple[object, ...]:
         return (item.get("task_id"), item.get("path"), item.get("sha256"))
@@ -1404,6 +1409,44 @@ def _validate_submitted_sealed_evidence(
         persisted_manifest = persisted_by_base[base]
         if submitted_manifest != (None, None) and submitted_manifest != persisted_manifest:
             raise ValueError("sealed evidence invalid: manifest_mismatch")
+
+
+def _canonical_sealed_evidence_for_event(
+    conn: sqlite3.Connection,
+    project_row: sqlite3.Row,
+    *,
+    candidate_snapshot_version: str,
+) -> tuple[dict[str, object], ...]:
+    """Return the bounded evidence representation safe for a verdict event."""
+    rows = conn.execute(
+        """
+        SELECT task_id, path, sha256, file_set_json, manifest_sha256
+          FROM project_checker_evidence
+         WHERE board_id=? AND root_task_id=? AND generation=?
+           AND candidate_snapshot_version=?
+         ORDER BY task_id, path
+        """,
+        (
+            project_row["board_id"], project_row["root_task_id"],
+            project_row["generation"], candidate_snapshot_version,
+        ),
+    ).fetchall()
+    if not rows:
+        raise ValueError("sealed evidence invalid: evidence_missing")
+    return tuple(
+        {
+            "kind": "file",
+            "reference": row["path"],
+            "summary": "sealed task attachment",
+            "task_id": row["task_id"],
+            "path": row["path"],
+            "sha256": row["sha256"],
+            "candidate_snapshot_version": candidate_snapshot_version,
+            "file_set": json.loads(row["file_set_json"]) if row["file_set_json"] else None,
+            "manifest_sha256": row["manifest_sha256"],
+        }
+        for row in rows
+    )
 
 
 def _validate_sealed_evidence(
@@ -1471,6 +1514,11 @@ def _validate_sealed_evidence(
             raise ValueError("sealed evidence invalid: task_binding_missing")
         if not isinstance(raw_path, str) or not raw_path:
             raise ValueError("sealed evidence invalid: path_missing")
+        reference = item.get("reference")
+        if reference is not None and (
+            not isinstance(reference, str) or reference != raw_path
+        ):
+            raise ValueError("sealed evidence invalid: reference_mismatch")
         if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
             raise ValueError("sealed evidence invalid: hash_invalid")
         if candidate != candidate_snapshot_version:
@@ -1617,6 +1665,7 @@ def submit_project_checker_verdict(
     canonical_profile = normalize_profile_name(worker_profile)
     validate_profile_name(canonical_profile)
     normalized_evidence = _normalize_checker_evidence(evidence)
+    event_evidence: tuple[dict[str, object], ...] = normalized_evidence
     current_time = _validated_now(now)
     clean_summary = summary.strip() if isinstance(summary, str) and summary.strip() else None
 
@@ -1702,6 +1751,11 @@ def submit_project_checker_verdict(
                 (),
                 candidate_snapshot_version=project_row["checker_candidate_snapshot_version"],
             )
+            event_evidence = _canonical_sealed_evidence_for_event(
+                conn,
+                project_row,
+                candidate_snapshot_version=project_row["checker_candidate_snapshot_version"],
+            )
         if _implementation_non_success_evaluation(evaluation) and verdict != "FAIL_TERMINAL":
             raise ValueError(
                 "implementation non-success candidates require a FAIL_TERMINAL verdict"
@@ -1720,7 +1774,7 @@ def submit_project_checker_verdict(
             "candidate_id": project_row["checker_candidate_id"],
             "verdict": verdict,
             "reason": reason.strip(),
-            "evidence": list(normalized_evidence),
+            "evidence": list(event_evidence),
             "summary": clean_summary,
         }
         prior_events = conn.execute(
@@ -1816,7 +1870,7 @@ def submit_project_checker_verdict(
             summary=clean_summary or reason.strip(),
             metadata={
                 "project_checker_verdict": verdict,
-                "evidence": list(normalized_evidence),
+                "evidence": list(event_evidence),
             },
             expected_run_id=run_id,
         )

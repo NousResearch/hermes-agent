@@ -279,7 +279,7 @@ def test_sealed_evidence_fails_closed_before_checker_creation_and_accepts_curren
         (
             "path_escape",
             {
-                "kind": "file", "reference": "escape", "summary": "escaping path",
+                "kind": "file", "reference": "../escape", "summary": "escaping path",
                 "task_id": root, "path": "../escape", "sha256": valid_root_hash,
                 "candidate_snapshot_version": candidate,
             },
@@ -381,6 +381,36 @@ def test_sealed_attachment_mutation_makes_checker_candidate_stale(board):
                 evaluation.candidate_snapshot_version,
             ),
         )
+
+
+@pytest.mark.parametrize("absolute_reference", ("/private/verification-leak.txt", r"C:\private\verification-leak.txt"))
+def test_sealed_checker_rejects_private_absolute_reference_without_a_verdict_event(
+    board, absolute_reference
+):
+    root, implementation, root_path, implementation_path, evaluation, action, token = _sealed_checker_setup(board)
+    registered = register_project_checker(board, action, token, now=101)
+    claimed = kb.claim_task(board, registered.checker_task_id, claimer="checker")
+    assert claimed is not None and claimed.current_run_id is not None
+    evidence = _sealed_evidence(
+        root, implementation, root_path, implementation_path, evaluation.candidate_snapshot_version
+    )
+    evidence[0]["reference"] = absolute_reference
+
+    with pytest.raises(ValueError, match="reference_mismatch"):
+        submit_project_checker_verdict(
+            board,
+            board_id="board-a",
+            task_id=registered.checker_task_id,
+            run_id=int(claimed.current_run_id),
+            worker_profile="checker-profile",
+            verdict="PASS",
+            reason="sealed evidence checked",
+            evidence=evidence,
+        )
+    assert board.execute(
+        "SELECT COUNT(*) FROM task_events WHERE task_id=? AND kind='project_checker_verdict_recorded'",
+        (registered.checker_task_id,),
+    ).fetchone()[0] == 0
 
 
 def test_admission_is_atomic_private_and_has_no_checker_member(board):

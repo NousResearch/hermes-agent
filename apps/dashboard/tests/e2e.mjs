@@ -123,7 +123,7 @@ const WIDGET_PAGES = {
   Feeds: ["news", "reading", "socials", "gaming", "podcasts"],
   Sports: ["scores"],
   Intel: ["worldclock", "quakes", "fx", "convert", "air", "space", "alerts", "flights"],
-  Health: ["medbot", "pubmed", "trials"],
+  Health: ["medbot", "pubmed", "trials", "drug"],
 };
 const pageOf = (type) => Object.keys(WIDGET_PAGES).find((p) => WIDGET_PAGES[p].includes(type)) || "Main";
 const gotoPage = async (name) => {
@@ -666,6 +666,16 @@ check("pubmed lists recent articles", (await page.locator(".widget-pubmed .pubme
 await gotoWidget("trials");
 check("clinical trials list renders", (await page.locator(".widget-trials .trial-item").count()) >= 2);
 check("trial shows a status chip", (await page.locator(".widget-trials .trial-status").count()) >= 1);
+await gotoWidget("drug");
+await page.waitForSelector(".widget-drug .drug-name", { timeout: 5000 });
+check("drug reference shows a medication name", (await page.locator(".widget-drug .drug-name").innerText()).length > 2);
+check("drug reference lists label sections", (await page.locator(".widget-drug .drug-section").count()) >= 2);
+// collapsible: the first section's panel toggles
+const panelHiddenBefore = await page.locator(".widget-drug .drug-panel").first().isHidden();
+await page.locator(".widget-drug .drug-section-btn").first().click();
+await page.waitForTimeout(150);
+check("drug section toggles on click",
+  (await page.locator(".widget-drug .drug-panel").first().isHidden()) !== panelHiddenBefore);
 await gotoWidget("medbot");
 check("medbot shows the SA decision-support intro", /South African/i.test(await page.locator(".widget-medbot").innerText()));
 await page.locator(".widget-medbot .med-input").fill("First-line HIV-TB co-infection management?");

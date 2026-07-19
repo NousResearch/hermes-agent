@@ -141,6 +141,7 @@ export const api = {
     streamJSON("/api/assistant/medchat-stream", { messages }, onDelta),
   pubmed: (q) => getJSON("/api/pubmed", { q }),
   trials: (q) => getJSON("/api/trials", { q }),
+  drug: (q) => getJSON("/api/drug", { q }),
   runTool: (name, input) => postJSON("/api/assistant/tool", { name, input }),
   cryptoCoin: (id) => getJSON("/api/crypto/coin", { id }),
   cryptoChart: (id, days) => getJSON("/api/crypto/chart", { id, days }),

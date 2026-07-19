@@ -1041,6 +1041,29 @@ a { color: inherit; }
 .trial-done { color: var(--muted); }
 .trial-other { color: var(--status-warning); border-color: color-mix(in srgb, var(--status-warning) 40%, transparent); }
 
+/* ---------- drug reference ---------- */
+.drug-head { display: flex; gap: 8px; margin-bottom: 10px; }
+.drug-search { flex: 1; min-width: 0; }
+.drug-go { flex: 0 0 auto; }
+.drug-name { font-size: 17px; font-weight: 650; line-height: 1.25; }
+.drug-sub { margin-top: 2px; text-transform: capitalize; }
+.drug-sections { display: flex; flex-direction: column; gap: 6px; margin-top: 12px; }
+.drug-section { border: 1px solid var(--hairline); border-radius: 5px; overflow: hidden; }
+.drug-section-btn {
+  width: 100%; display: flex; align-items: center; justify-content: space-between;
+  gap: 8px; padding: 8px 10px; background: var(--surface-2); border: none;
+  color: var(--ink); font: inherit; font-weight: 600; font-size: 13px; cursor: pointer;
+  border-left: 3px solid var(--hairline-2);
+}
+.drug-section-btn.drug-warn { border-left-color: var(--status-critical); }
+.drug-section-btn.drug-caution { border-left-color: var(--status-elevated, orange); }
+.drug-section-btn.drug-info { border-left-color: var(--accent); }
+.drug-section-btn:hover { background: var(--surface); }
+.drug-caret { color: var(--muted); font-size: 11px; transition: transform 120ms; }
+.drug-section-btn[aria-expanded="true"] .drug-caret { transform: rotate(180deg); }
+.drug-panel { padding: 10px 12px; line-height: 1.5; font-size: 13px; color: var(--ink-2); max-height: 260px; overflow-y: auto; }
+.drug-note { margin-top: 12px; }
+
 /* ---------- podcasts ---------- */
 .pod-head { display: flex; align-items: center; gap: 8px; }
 .pod-add { margin-left: auto; }

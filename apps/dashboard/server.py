@@ -1411,6 +1411,80 @@ def sample_trials(query: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Drug reference — openFDA drug labelling (no key). Official label text only;
+# reference, not clinical advice.
+# ---------------------------------------------------------------------------
+DRUG_TTL = 12 * 60 * 60
+# Label fields we surface, in clinical reading order (each is an array of text).
+_DRUG_SECTIONS = [
+    ("boxed_warning", "Boxed warning"),
+    ("indications_and_usage", "Indications"),
+    ("dosage_and_administration", "Dosage"),
+    ("contraindications", "Contraindications"),
+    ("warnings_and_cautions", "Warnings"),
+    ("warnings", "Warnings"),
+    ("drug_interactions", "Interactions"),
+    ("adverse_reactions", "Adverse reactions"),
+    ("mechanism_of_action", "Mechanism"),
+    ("pregnancy", "Pregnancy"),
+]
+
+
+def _drug_record(result: dict) -> dict:
+    openfda = result.get("openfda") or {}
+
+    def first(key):
+        v = openfda.get(key)
+        return v[0] if isinstance(v, list) and v else ""
+
+    sections = []
+    seen_labels = set()
+    for field, label in _DRUG_SECTIONS:
+        if label in seen_labels:
+            continue
+        val = result.get(field)
+        if isinstance(val, list) and val:
+            text = strip_html(" ".join(val), 1500)
+            if text:
+                sections.append({"label": label, "text": text})
+                seen_labels.add(label)
+    return {
+        "brand": first("brand_name"),
+        "generic": first("generic_name"),
+        "manufacturer": first("manufacturer_name"),
+        "route": first("route"),
+        "sections": sections,
+    }
+
+
+def live_drug(query: str) -> dict:
+    url = ("https://api.fda.gov/drug/label.json"
+           f"?search={urllib.parse.quote(query)}&limit=1")
+    raw = json.loads(fetch_url(url, timeout=8))
+    results = raw.get("results") or []
+    if not results:
+        return {"source": "live", "query": query, "drug": None}
+    return {"source": "live", "query": query, "drug": _drug_record(results[0])}
+
+
+def sample_drug(query: str) -> dict:
+    return {
+        "source": "sample", "query": query,
+        "drug": {
+            "brand": "Glucophage", "generic": "Metformin hydrochloride",
+            "manufacturer": "Sample Pharma", "route": "ORAL",
+            "sections": [
+                {"label": "Indications", "text": "Adjunct to diet and exercise to improve glycemic control in adults and children with type 2 diabetes mellitus. (Sample label text — run online for live openFDA data.)"},
+                {"label": "Dosage", "text": "Start 500 mg orally twice daily or 850 mg once daily with meals; titrate gradually. Maximum 2550 mg/day in divided doses."},
+                {"label": "Contraindications", "text": "Severe renal impairment (eGFR below 30 mL/min/1.73m²); acute or chronic metabolic acidosis, including diabetic ketoacidosis; known hypersensitivity."},
+                {"label": "Warnings", "text": "Lactic acidosis is a rare but serious metabolic complication. Risk factors include renal impairment, sepsis, dehydration, excess alcohol intake and hepatic impairment."},
+                {"label": "Adverse reactions", "text": "Diarrhoea, nausea, vomiting, flatulence, abdominal discomfort and metallic taste are common, especially at initiation."},
+            ],
+        },
+    }
+
+
+# ---------------------------------------------------------------------------
 # Podcasts — parse an RSS feed's audio enclosures into playable episodes
 # ---------------------------------------------------------------------------
 PODCAST_TTL = 30 * 60
@@ -2174,6 +2248,7 @@ SOURCES: dict[str, dict] = {
                   "live": live_team_schedule, "sample": sample_team_schedule},
     "teamnews": {"ttl": TEAM_NEWS_TTL, "live": live_team_news, "sample": sample_team_news},
     "trials": {"ttl": TRIALS_TTL, "live": live_trials, "sample": sample_trials},
+    "drug": {"ttl": DRUG_TTL, "live": live_drug, "sample": sample_drug},
 }
 
 
@@ -2599,6 +2674,12 @@ class Api:
     def trials(self, params: dict) -> dict:
         query = " ".join(params.get("q", [""])[0].split())[:200] or "South Africa"
         return self.fetch_source("trials", query)
+
+    def drug(self, params: dict) -> dict:
+        query = re.sub(r"[^A-Za-z0-9 .\-]", "", params.get("q", [""])[0]).strip()[:60]
+        if not query:
+            raise ApiError(400, "missing drug name")
+        return self.fetch_source("drug", query.lower())
 
     def podcast(self, params: dict) -> dict:
         url = params.get("url", [""])[0].strip()
@@ -3116,6 +3197,7 @@ class HubHandler(BaseHTTPRequestHandler):
         "/api/podcast": "podcast",
         "/api/pubmed": "pubmed",
         "/api/trials": "trials",
+        "/api/drug": "drug",
         "/api/social": "social",
         "/api/gaming/free": "gaming_free",
         "/api/gaming/deals": "gaming_deals",

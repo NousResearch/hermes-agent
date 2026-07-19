@@ -209,11 +209,12 @@ def test_default_config_and_child_prompt_are_byte_stable() -> None:
     from tools.delegate_tool import _build_child_system_prompt
 
     raw_delegation = DEFAULT_CONFIG["delegation"]
+    assert isinstance(raw_delegation, dict)
     assert load_delegation_context_policy(raw_delegation) == DelegationContextPolicy()
 
-    assert raw_delegation["context_mode"] == "explicit"
-    assert raw_delegation["context_recent_turns"] == 3
-    assert raw_delegation["context_max_chars"] == 12000
+    assert raw_delegation.get("context_mode") == "explicit"
+    assert raw_delegation.get("context_recent_turns") == 3
+    assert raw_delegation.get("context_max_chars") == 12000
     expected = (
         "You are a focused subagent working on a specific delegated task.\n\n"
         "YOUR TASK:\nGOAL\n\nCONTEXT:\nCTX\n\nWORKSPACE PATH:\n/tmp/work\n"
@@ -233,25 +234,27 @@ def test_default_config_and_child_prompt_are_byte_stable() -> None:
 def test_context_policy_is_not_exposed_in_model_tool_schema() -> None:
     from tools.delegate_tool import DELEGATE_TASK_SCHEMA
     from tools.delegate_context import DelegationContextPolicy
-    from typing import Dict, cast
 
     policy_fields = {
         "context_mode",
         "context_recent_turns",
         "context_max_chars",
     }
+    assert isinstance(DELEGATE_TASK_SCHEMA, dict)
     parameters = DELEGATE_TASK_SCHEMA.get("parameters", {})
     assert isinstance(parameters, dict)
-    raw_properties = parameters.get("properties", {})
-    properties = dict(cast(Dict[str, object], raw_properties))
-    task_properties: dict = {}
-    raw_tasks = properties.get("tasks")
-    if isinstance(raw_tasks, dict) and isinstance(raw_tasks.get("items"), dict):
-        task_properties = dict(
-            cast(Dict[str, object], raw_tasks["items"].get("properties", {}))
-        )
+    properties = parameters.get("properties", {})
+    assert isinstance(properties, dict)
 
     assert policy_fields.isdisjoint(properties)
+
+    raw_tasks = properties.get("tasks")
+    assert isinstance(raw_tasks, dict)
+    raw_items = raw_tasks.get("items")
+    assert isinstance(raw_items, dict)
+    task_properties = raw_items.get("properties", {})
+    assert isinstance(task_properties, dict)
+
     assert policy_fields.isdisjoint(task_properties)
 
 def test_opt_in_child_prompt_projects_safe_context_and_ends_with_task() -> None:

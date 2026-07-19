@@ -1966,6 +1966,16 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
         # turns so Anthropic-family providers don't 400 the summary call.
         api_messages = agent._drop_thinking_only_and_merge_users(api_messages)
 
+        # Mirror the transport's last-line guard: drop assistant messages that
+        # are empty AS SERIALIZED. The summary path bypasses
+        # ChatCompletionsTransport.convert_messages(), so without this an
+        # empty shell that slipped the semantic filters (unknown block types,
+        # junk tool_calls, stripped scaffolding) wedges the summary request on
+        # strict providers with HTTP 400 "assistant must not be empty" —
+        # observed live 2026-07-19 at max-iterations summary, position 3.
+        from agent.transports.chat_completions import _drop_wire_empty_assistants
+        api_messages = _drop_wire_empty_assistants(api_messages)
+
         summary_extra_body = {}
         try:
             from agent.auxiliary_client import _fixed_temperature_for_model, OMIT_TEMPERATURE as _OMIT_TEMP

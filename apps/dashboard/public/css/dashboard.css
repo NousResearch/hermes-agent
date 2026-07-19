@@ -1063,6 +1063,11 @@ a { color: inherit; }
 .drug-section-btn[aria-expanded="true"] .drug-caret { transform: rotate(180deg); }
 .drug-panel { padding: 10px 12px; line-height: 1.5; font-size: 13px; color: var(--ink-2); max-height: 260px; overflow-y: auto; }
 .drug-note { margin-top: 12px; }
+.drug-sa { margin-top: 12px; border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent); border-radius: 6px; padding: 10px; background: var(--accent-dim); }
+.drug-sa-note { line-height: 1.45; margin-bottom: 8px; }
+.drug-sa-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.drug-sa-actions .btn { font-size: 12px; padding: 5px 10px; }
+.drug-sa-link { text-decoration: none; }
 
 /* ---------- podcasts ---------- */
 .pod-head { display: flex; align-items: center; gap: 8px; }

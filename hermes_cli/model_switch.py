@@ -2168,7 +2168,17 @@ def list_authenticated_providers(
                         headers=_extra_headers_from_config(ep_cfg) or None,
                     )
                     if live_models:
-                        models_list = live_models
+                        # Merge: keep configured models, add live models that aren't already present.
+                        # fetch_api_models returns list[str]; models_list may contain dicts or strings.
+                        existing_slugs = {
+                            m if isinstance(m, str) else m.get("slug", m.get("id", ""))
+                            for m in models_list
+                        }
+                        for lm in live_models:
+                            lm_slug = lm if isinstance(lm, str) else lm.get("slug", lm.get("id", ""))
+                            if lm_slug and lm_slug not in existing_slugs:
+                                models_list.append(lm)
+                                existing_slugs.add(lm_slug)
                 except Exception:
                     pass
 
@@ -2445,8 +2455,18 @@ def list_authenticated_providers(
                         headers=grp.get("extra_headers") or None,
                     )
                     if live_models:
-                        grp["models"] = live_models
-                        grp["total_models"] = len(live_models)
+                        # Merge: keep configured models, add live models that aren't already present.
+                        # fetch_api_models returns list[str]; grp["models"] may contain dicts or strings.
+                        existing_slugs = {
+                            m if isinstance(m, str) else m.get("slug", m.get("id", ""))
+                            for m in grp["models"]
+                        }
+                        for lm in live_models:
+                            lm_slug = lm if isinstance(lm, str) else lm.get("slug", lm.get("id", ""))
+                            if lm_slug and lm_slug not in existing_slugs:
+                                grp["models"].append(lm)
+                                existing_slugs.add(lm_slug)
+                        grp["total_models"] = len(grp["models"])
                 except Exception:
                     pass
             results.append({

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import type { HermesConfigRecord } from '@/types/hermes'
 
+import { FIELD_OPTION_LABELS } from './constants'
 import { defineFieldCopy, fieldCopyForSchemaKey, schemaKeyToFieldCopyKey } from './field-copy'
 import {
   enumOptionsFor,
@@ -20,19 +21,24 @@ describe('settings helpers', () => {
 
     // Built-in memory is not a provider plugin; the empty sentinel is the
     // only built-in-shaped entry (#49513).
-    expect(options).toEqual(['', 'honcho', 'hindsight'])
+    expect(options).toEqual(['', 'honcho', 'hindsight', 'openviking'])
   })
 
   it('keeps a legacy literal builtin value visible as the current selection', () => {
     const options = enumOptionsFor('memory.provider', 'builtin', {})
 
-    expect(options).toEqual(['', 'honcho', 'hindsight', 'builtin'])
+    expect(options).toEqual(['', 'honcho', 'hindsight', 'openviking', 'builtin'])
+  })
+
+  it('uses the OpenViking product name in the provider picker', () => {
+    expect(FIELD_OPTION_LABELS['memory.provider'].openviking).toBe('OpenViking')
   })
 
   describe('isExternalMemoryProvider', () => {
     it('treats only real plugin names as external providers', () => {
       expect(isExternalMemoryProvider('honcho')).toBe(true)
       expect(isExternalMemoryProvider('hindsight')).toBe(true)
+      expect(isExternalMemoryProvider('openviking')).toBe(true)
     })
 
     it('treats built-in aliases and empty values as not external', () => {

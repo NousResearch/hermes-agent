@@ -40,6 +40,12 @@ import type {
   OAuthProvidersResponse,
   OAuthStartResponse,
   OAuthSubmitResponse,
+  OpenVikingHealth,
+  OpenVikingSetup,
+  OpenVikingSetupSaveRequest,
+  OpenVikingSetupSaveResponse,
+  OpenVikingSetupValidationRequest,
+  OpenVikingSetupValidationResponse,
   PaginatedSessions,
   ProfileCreatePayload,
   ProfileSetupCommand,
@@ -703,6 +709,44 @@ export function saveMemoryProviderConfig(provider: string, values: Record<string
     method: 'PUT',
     body: { values }
   })
+}
+
+export function getMemoryProviderCustomConfig<T>(provider: string): Promise<T> {
+  return window.hermesDesktop.api<T>({
+    ...profileScoped(),
+    path: `/api/memory/providers/${encodeURIComponent(provider)}/config?surface=custom`
+  })
+}
+
+export function runMemoryProviderAction<T>(provider: string, action: string, payload: unknown): Promise<T> {
+  return window.hermesDesktop.api<T>({
+    ...profileScoped(),
+    path: `/api/memory/providers/${encodeURIComponent(provider)}/actions/${encodeURIComponent(action)}`,
+    method: 'POST',
+    body: { payload }
+  })
+}
+
+export function getOpenVikingSetup(): Promise<OpenVikingSetup> {
+  return getMemoryProviderCustomConfig<OpenVikingSetup>('openviking')
+}
+
+export function getOpenVikingHealth(): Promise<OpenVikingHealth> {
+  return runMemoryProviderAction<OpenVikingHealth>('openviking', 'health', {})
+}
+
+export function validateOpenVikingSetup(
+  request: OpenVikingSetupValidationRequest
+): Promise<OpenVikingSetupValidationResponse> {
+  return runMemoryProviderAction<OpenVikingSetupValidationResponse>('openviking', 'validate', request)
+}
+
+export function saveOpenVikingSetup(request: OpenVikingSetupSaveRequest): Promise<OpenVikingSetupSaveResponse> {
+  return runMemoryProviderAction<OpenVikingSetupSaveResponse>('openviking', 'save', request)
+}
+
+export function startOpenVikingLocal(url: string): Promise<{ message: string; ok: boolean }> {
+  return runMemoryProviderAction<{ message: string; ok: boolean }>('openviking', 'start-local', { url })
 }
 
 export function getEnvVars(): Promise<Record<string, EnvVarInfo>> {

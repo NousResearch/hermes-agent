@@ -4,11 +4,16 @@ import {
   checkHermesUpdate,
   getActionStatus,
   getMemoryProviderConfig,
+  getOpenVikingHealth,
+  getOpenVikingSetup,
   getStatus,
   restartGateway,
   saveMemoryProviderConfig,
+  saveOpenVikingSetup,
   setApiRequestProfile,
-  updateHermes
+  startOpenVikingLocal,
+  updateHermes,
+  validateOpenVikingSetup
 } from './hermes'
 
 // Contract: every backend-targeted action helper must carry the active gateway
@@ -40,6 +45,23 @@ describe('backend action helpers are profile-scoped', () => {
 
     void getMemoryProviderConfig('honcho')
     void saveMemoryProviderConfig('honcho', { workspace: 'w' })
+
+    for (const call of api.mock.calls) {
+      expect(call[0].profile).toBe('coder')
+    }
+  })
+
+  it('forwards the active profile to custom memory provider calls', () => {
+    setApiRequestProfile('coder')
+
+    void getOpenVikingSetup()
+    void getOpenVikingHealth()
+    void saveOpenVikingSetup({
+      save_mode: 'profile',
+      values: { actor_peer_id: 'hermes', url: 'http://127.0.0.1:1933' }
+    })
+    void validateOpenVikingSetup({ values: { actor_peer_id: 'hermes', url: 'http://127.0.0.1:1933' } })
+    void startOpenVikingLocal('http://127.0.0.1:1933')
 
     for (const call of api.mock.calls) {
       expect(call[0].profile).toBe('coder')

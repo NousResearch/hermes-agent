@@ -618,26 +618,6 @@ _MEDIA_MIME = {
 }
 _MEDIA_DATA_URL_MAX_BYTES = 5 * 1024 * 1024  # skip images larger than 5MB
 
-# The LLM may fragment a MEDIA: tag across multiple streaming deltas
-# (e.g. "MEDI" then "A:/f.pdf").  Every prefix of "MEDIA:" is tracked
-# so the streaming buffer can hold back a partial tag until the next
-# delta arrives or the stream ends.
-_MEDIA_PREFIX = "MEDIA:"
-_MEDIA_PARTIALS = frozenset({"M", "ME", "MED", "MEDI", "MEDIA", "MEDIA:"})
-
-
-def _buf_ends_with_media_prefix(buf: str) -> int:
-    """If *buf* ends with any prefix of ``"MEDIA:"`` return the character
-    index where that prefix starts, else -1.
-
-    Used by the streaming Chat Completions path to detect incomplete
-    MEDIA: tags that may continue in the next delta.
-    """
-    for plen in range(len(_MEDIA_PREFIX), 0, -1):
-        if len(buf) >= plen and buf[-plen:] in _MEDIA_PARTIALS:
-            return len(buf) - plen
-    return -1
-
 
 def _resolve_media_to_data_urls(text: str) -> str:
     """Replace ``MEDIA:<path>`` image tags with inline base64 data URLs.
@@ -2999,158 +2979,22 @@ class APIServerAdapter(BasePlatformAdapter):
                     await response.write(f"data: {json.dumps(content_chunk)}\n\n".encode())
                 return time.monotonic()
 
-            # Streaming MEDIA: tag detector — accumulates text, uploads
-            # files when a complete tag is detected, and emits clean deltas
-            # with [filename](url) replacements.
-            _stream_buf: str = ""
-            _MAX_STREAM_BUF_CHARS = 64_000  # ~64KB — enough for a few
-            # paragraphs + a path, not so large that a long unbuffered
-            # stream consumes unbounded memory.
-
-            async def _flush_stream_buf(final: bool = False) -> None:
-                """Process accumulated streaming text — detect complete
-                MEDIA: tags, upload files, and emit clean deltas.
-
-                When *final* is True the entire buffer is flushed (any
-                trailing MEDIA: prefix is treated as plain text).
-
-                Never raises — failures during upload are logged and the
-                buffer text is always emitted so the stream is not broken.
-                """
-                nonlocal _stream_buf, last_activity
-                if not _stream_buf:
-                    return
-
-                try:
-                    await _media_flush(final)
-                except Exception:
-                    logger.exception(
-                        "Streaming buffer flush failed, emitting raw text"
-                    )
-                    # Flush buffer as-is on failure — don't break the stream.
-                    await _media_flush(True)
-
-            async def _media_flush(final: bool) -> None:
-                nonlocal _stream_buf, last_activity
-                if not _stream_buf:
-                    return
-
-                # Find all complete MEDIA: tags in the buffer.
-                matches = list(MEDIA_TAG_CLEANUP_RE.finditer(_stream_buf))
-                if not matches and not final:
-                    # Check for an incomplete MEDIA: prefix at the tail.
-                    media_at = _buf_ends_with_media_prefix(_stream_buf)
-                    if media_at < 0:
-                        # Also: does the tail contain "MEDIA:" followed by
-                        # a partial (incomplete) path?
-                        tail_start = max(0, len(_stream_buf) - 512)
-                        tail = _stream_buf[tail_start:]
-                        media_full_at = tail.rfind(_MEDIA_PREFIX)
-                        if media_full_at >= 0:
-                            media_at = tail_start + media_full_at
-                    if media_at >= 0:
-                        safe_pos = media_at
-                        if safe_pos > 0:
-                            await _emit(_stream_buf[:safe_pos])
-                            last_activity = time.monotonic()
-                        _stream_buf = _stream_buf[safe_pos:]
-                        return
-                    # Safe — no MEDIA: anywhere.  Bound the buffer by
-                    # flushing when it exceeds a reasonable size so a
-                    # long unbuffered stream doesn't grow memory forever.
-                    if len(_stream_buf) > _MAX_STREAM_BUF_CHARS:
-                        await _emit(_stream_buf)
-                        last_activity = time.monotonic()
-                        _stream_buf = ""
-                    return
-
-                if not matches:
-                    # No matches even in final mode — emit everything.
-                    await _emit(_stream_buf)
-                    last_activity = time.monotonic()
-                    _stream_buf = ""
-                    return
-
-                # Process each complete MEDIA: tag in reverse order so
-                # earlier spans stay valid.
-                cleaned = _stream_buf
-                for m in reversed(matches):
-                    raw_path = m.group("path")
-                    norm = _normalize_media_tag_path(raw_path)
-                    if not norm:
-                        continue
-                    safe = validate_media_delivery_path(norm)
-                    if not safe:
-                        continue
-                    try:
-                        expanded = os.path.expanduser(safe)
-                    except (OSError, RuntimeError, ValueError):
-                        continue
-                    # Upload the file (non-blocking on the event loop
-                    # since uploads are async HTTP).
-                    uploaded = await self._upload_file_to_server(expanded)
-                    if not uploaded:
-                        continue
-                    file_name = uploaded.get("filename", Path(expanded).name)
-                    file_id = uploaded.get("id", "")
-                    if self._upload_files_download_url:
-                        dl_url = self._upload_files_download_url.replace(
-                            "{file_id}", file_id
-                        )
-                    else:
-                        dl_url = f"file:{file_id}"
-                    replacement = f"[{file_name}]({dl_url})"
-                    start, end = m.span()
-                    cleaned = cleaned[:start] + replacement + cleaned[end:]
-
-                # Determine the safe cutoff: emit up to the last position
-                # before any remaining incomplete MEDIA: prefix or full
-                # MEDIA: followed by partial path.
-                if not final:
-                    media_at2 = _buf_ends_with_media_prefix(cleaned)
-                    if media_at2 < 0:
-                        tail_start2 = max(0, len(cleaned) - 512)
-                        tail2 = cleaned[tail_start2:]
-                        mf = tail2.rfind(_MEDIA_PREFIX)
-                        media_at2 = (tail_start2 + mf) if mf >= 0 else -1
-                    if media_at2 >= 0:
-                        safe_pos = media_at2
-                        if safe_pos > 0:
-                            # Emit clean text up to the incomplete MEDIA:
-                            await _emit(cleaned[:safe_pos])
-                            last_activity = time.monotonic()
-                        _stream_buf = cleaned[safe_pos:]
-                        return
-
-                # No incomplete MEDIA: — emit everything and clear.
-                await _emit(cleaned)
-                last_activity = time.monotonic()
-                _stream_buf = ""
-
-            # Stream content chunks as they arrive from the agent.
-            # Text deltas are buffered and flushed through a streaming
-            # MEDIA: tag detector: when a complete MEDIA:/path/to/file.ext
-            # is detected the file is uploaded and replaced with a
-            # [filename](url) link before the delta reaches the client.
+            # Stream content chunks as they arrive from the agent
             loop = asyncio.get_running_loop()
             while True:
                 try:
                     delta = await loop.run_in_executor(None, lambda: stream_q.get(timeout=0.5))
                 except _q.Empty:
                     if agent_task.done():
-                        # Drain any remaining items, then flush buffer.
+                        # Drain any remaining items
                         while True:
                             try:
                                 delta = stream_q.get_nowait()
                                 if delta is None:
                                     break
-                                if isinstance(delta, tuple):
-                                    last_activity = await _emit(delta)
-                                elif isinstance(delta, str):
-                                    _stream_buf += delta
+                                last_activity = await _emit(delta)
                             except _q.Empty:
                                 break
-                        await _flush_stream_buf(final=True)
                         break
                     if time.monotonic() - last_activity >= CHAT_COMPLETIONS_SSE_KEEPALIVE_SECONDS:
                         await response.write(b": keepalive\n\n")
@@ -3158,21 +3002,9 @@ class APIServerAdapter(BasePlatformAdapter):
                     continue
 
                 if delta is None:  # End of stream sentinel
-                    await _flush_stream_buf(final=True)
                     break
 
-                # Tool progress events pass through directly.  Text
-                # strings go into the accumulator for MEDIA: detection
-                # when upload is configured; otherwise emit immediately.
-                if isinstance(delta, tuple):
-                    await _flush_stream_buf()
-                    last_activity = await _emit(delta)
-                elif isinstance(delta, str):
-                    if self._upload_files_url:
-                        _stream_buf += delta
-                        last_activity = await _flush_stream_buf()
-                    else:
-                        last_activity = await _emit(delta)
+                last_activity = await _emit(delta)
 
             # Get usage from completed agent. The agent can fail two ways
             # after the content queue terminates cleanly: (1) ``agent_task``

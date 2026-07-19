@@ -24,10 +24,7 @@ import pytest
 pytest.importorskip("aiohttp")
 
 from gateway.config import PlatformConfig
-from gateway.platforms.api_server import (
-    APIServerAdapter,
-    _buf_ends_with_media_prefix,
-)
+from gateway.platforms.api_server import APIServerAdapter
 
 
 # ---------------------------------------------------------------------------
@@ -113,9 +110,9 @@ class TestProcessResponseFilesFallback:
         assert items == []
 
     def test_no_upload_url_strips_media_tags(self):
-        """Without API_UPLOAD_FILES_URL, MEDIA: tags are stripped.
-        No base64 inlining — images go through upload pipeline when
-        configured."""
+        """Without API_UPLOAD_FILES_URL, MEDIA: tags are stripped and
+        images are inlined if possible; non-images are left as bare
+        text for reference."""
         adapter = _make_adapter()
         png = _write_temp_file(".png")
         pdf = _write_temp_file(".pdf")
@@ -123,7 +120,6 @@ class TestProcessResponseFilesFallback:
         cleaned, items = asyncio.run(adapter._process_response_files(text))
         assert items == []
         assert "MEDIA:" not in cleaned
-        assert "data:image" not in cleaned
         assert "Before" in cleaned
         assert "After" in cleaned
 
@@ -249,7 +245,6 @@ class TestProcessResponseFilesUpload:
         cleaned, items = asyncio.run(adapter._process_response_files(text))
         assert items == []
         assert str(pdf) in cleaned
-        assert "MEDIA:" in cleaned
 
     def test_multiple_files(self):
         adapter = _make_adapter(
@@ -352,24 +347,6 @@ class TestUploadFileToServer:
             adapter._upload_file_to_server("/nonexistent/path/file.pdf")
         )
         assert result is None
-
-    def test_oversized_file_rejected_before_read(self):
-        """A file exceeding MAX_UPLOAD_FILE_BYTES is rejected after stat(),
-        before any read/upload — protecting the event loop from a giant
-        allocation."""
-        from gateway.platforms import api_server as mod
-
-        adapter = _make_adapter(
-            upload_files_url="https://api.example.com/v1/files",
-        )
-        pdf = _write_temp_file(".pdf", content=b"x" * 1024)
-        orig = mod.MAX_UPLOAD_FILE_BYTES
-        mod.MAX_UPLOAD_FILE_BYTES = 512  # smaller than our 1 KiB file
-        try:
-            result = asyncio.run(adapter._upload_file_to_server(str(pdf)))
-            assert result is None
-        finally:
-            mod.MAX_UPLOAD_FILE_BYTES = orig
 
     @pytest.mark.asyncio
     async def test_successful_upload(self):
@@ -514,7 +491,7 @@ class TestUploadFileToServer:
         file_calls = [c for c in add_field_calls if c[0] == "file"]
         assert len(file_calls) == 1
         file_args = file_calls[0]
-        # The second positional arg is an open binary file handle (not bytes).
+        # File is passed as an open binary handle (streaming), not bytes.
         assert hasattr(file_args[1], "read"), "expected a file handle"
         assert file_args[1].read() == b"hello world"
         assert mock_formdata.add_field.call_args_list[-1].kwargs.get(
@@ -553,12 +530,10 @@ class TestAnnotations:
         )
 
         # Build annotations the same way _handle_responses does.
-        # url_citation now spans the entire [filename](url) markdown link.
         download_url = items[0]["download_url"]
-        link_text = f"[{items[0]['filename']}]({download_url})"
-        start = cleaned.find(link_text)
-        assert start == 0, "markdown link must appear at the start of cleaned text"
-        assert cleaned[start + len(link_text) - 1] == ")"
+        start = cleaned.find(download_url)
+        assert start > 0, "download URL must appear in cleaned text"
+        assert start + len(download_url) == len(cleaned) - 1  # ends with )
 
     def test_file_citation_when_no_download_url(self):
         """Without API_UPLOAD_FILES_DOWNLOAD_URL, annotations use
@@ -660,129 +635,3 @@ class TestUnicodePaths:
         assert items[0]["filename"] == "PPT模板.pptx"
         assert "MEDIA:" not in cleaned
         assert "PPT模板.pptx" in cleaned
-
-
-# ---------------------------------------------------------------------------
-# _buf_ends_with_media_prefix — streaming prefix detection
-# ---------------------------------------------------------------------------
-
-
-class TestBufEndsWithMediaPrefix:
-    def test_empty_buffer_returns_negative(self):
-        assert _buf_ends_with_media_prefix("") == -1
-
-    def test_no_prefix_match(self):
-        assert _buf_ends_with_media_prefix("hello world") == -1
-        assert _buf_ends_with_media_prefix("program") == -1
-
-    def test_full_prefix_match(self):
-        """Buffer ends with complete MEDIA: prefix."""
-        assert _buf_ends_with_media_prefix("text MEDIA:") == 5
-
-    def test_partial_prefix_medi(self):
-        """Buffer ends with 'MEDI' — could become MEDIA: in next delta."""
-        assert _buf_ends_with_media_prefix("text MEDI") == 5
-
-    def test_partial_prefix_media(self):
-        assert _buf_ends_with_media_prefix("text MEDIA") == 5
-
-    def test_partial_prefix_med(self):
-        assert _buf_ends_with_media_prefix("text MED") == 5
-
-    def test_partial_prefix_me(self):
-        assert _buf_ends_with_media_prefix("text ME") == 5
-
-    def test_partial_prefix_m(self):
-        assert _buf_ends_with_media_prefix("text M") == 5
-
-    def test_longest_prefix_wins(self):
-        """When buffer matches multiple prefixes, return the longest (MEDIA:)."""
-        assert _buf_ends_with_media_prefix("MEDIA:") == 0
-
-    def test_prefix_at_very_end(self):
-        """The prefix must be at the VERY end of the buffer."""
-        assert _buf_ends_with_media_prefix("MEDIA: then text") == -1
-
-    def test_prefix_normal_text_boundary(self):
-        """Prefix-like substrings inside words don't match at end."""
-        assert _buf_ends_with_media_prefix("named") == -1
-        assert _buf_ends_with_media_prefix("immediately") == -1
-
-    def test_all_prefixes_tabulated(self):
-        """Table-driven: every prefix at the tail is detected."""
-        for prefix in ("M", "ME", "MED", "MEDI", "MEDIA", "MEDIA:"):
-            buf = f"before {prefix}"
-            expected = len(buf) - len(prefix)
-            assert _buf_ends_with_media_prefix(buf) == expected, (
-                f"prefix={prefix!r}"
-            )
-
-
-# ---------------------------------------------------------------------------
-# Streaming buffer simulation — fragmented MEDIA: tag arrival
-# ---------------------------------------------------------------------------
-
-
-class TestStreamingMediaBuffer:
-    """Simulate the streaming Chat Completions buffer: text arrives in
-    fragments, and the buffer holds back incomplete MEDIA: prefixes."""
-
-    def test_fragmented_tag_across_four_deltas(self):
-        """MEDIA:/file.pdf split into 'M', 'EDI', 'A:', '/file.pdf'."""
-        buf = ""
-        emitted: list[str] = []
-
-        # Delta 1: "M" — hold
-        buf += "M"
-        pos = _buf_ends_with_media_prefix(buf)
-        assert pos == 0, "M should be held"
-        assert emitted == []
-
-        # Delta 2: "EDI" → "MEDI" — still hold
-        buf += "EDI"
-        pos = _buf_ends_with_media_prefix(buf)
-        assert pos == 0, "MEDI should be held"
-        assert emitted == []
-
-        # Delta 3: "A:" → "MEDIA:" — still hold
-        buf += "A:"
-        pos = _buf_ends_with_media_prefix(buf)
-        assert pos == 0, "MEDIA: should be held"
-        assert emitted == []
-
-        # Delta 4: "/file.pdf" → complete tag → process
-        buf += "/file.pdf"
-        assert "MEDIA:/file.pdf" in buf
-        pos = _buf_ends_with_media_prefix(buf)
-        assert pos == -1, "complete path should not match as prefix"
-
-    def test_fragmented_tag_medi_then_path(self):
-        """'MEDI' then 'A:/report.pdf'."""
-        buf = "MEDI"
-        assert _buf_ends_with_media_prefix(buf) == 0
-
-        buf += "A:/report.pdf\n"
-        assert "MEDIA:/report.pdf" in buf
-        assert _buf_ends_with_media_prefix(buf) == -1
-
-    def test_text_before_media_prefix(self):
-        """'Report\n' then 'MEDIA:' then '/tmp/f.pdf'."""
-        buf = "Report\n"
-        assert _buf_ends_with_media_prefix(buf) == -1
-
-        buf += "MEDIA:"
-        assert _buf_ends_with_media_prefix(buf) == 7
-
-        buf += "/tmp/f.pdf"
-        assert "/tmp/f.pdf" in buf
-        assert _buf_ends_with_media_prefix(buf) == -1
-
-    def test_plain_text_no_hold(self):
-        """Ordinary text flows through without buffering."""
-        buf = "Here is the report you asked for."
-        assert _buf_ends_with_media_prefix(buf) == -1
-
-    def test_tool_progress_does_not_go_into_buffer(self):
-        """Tool progress tuples are emitted directly, not buffered."""
-        buf = "Some text "
-        assert _buf_ends_with_media_prefix(buf) == -1

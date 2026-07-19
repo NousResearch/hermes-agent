@@ -537,8 +537,8 @@ After processing (with download URL configured):
       "type": "url_citation",
       "url": "https://api.example.com/v1/files/file_abc123/content",
       "title": "report.pdf",
-      "start_index": 18,
-      "end_index": 84
+      "start_index": 7,
+      "end_index": 67
     }
   ]
 }

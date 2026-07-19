@@ -91,17 +91,25 @@ def test_periodic_timer_fires(caplog):
     caplog.set_level(logging.INFO, logger="gateway.memory_monitor")
     # Short interval so we can observe multiple ticks inside the test budget.
     mm.start_memory_monitoring(interval_seconds=0.1)
-    time.sleep(0.45)
+
+    def periodic_records():
+        # Bare "[MEMORY] rss=..." lines only: baseline and shutdown snapshots
+        # carry a prefix tag so they don't match this strict prefix.
+        return [
+            r for r in caplog.records
+            if r.getMessage().startswith("[MEMORY] rss=")
+        ]
+
+    # Wait on the observable condition instead of a fixed sleep: macOS timer
+    # coalescing stretches Event.wait(0.1) to ~0.25s, so a fixed wall-clock
+    # budget makes the tick count nondeterministic.  The contract is
+    # unchanged: the background timer must keep firing on its own.
+    deadline = time.monotonic() + 5.0
+    while len(periodic_records()) < 3 and time.monotonic() < deadline:
+        time.sleep(0.02)
     mm.stop_memory_monitoring(timeout=1.0)
 
-    periodic = [
-        r for r in caplog.records
-        if r.getMessage().startswith("[MEMORY] rss=") or r.getMessage().startswith("[MEMORY] rss=unavailable")
-    ]
-    # baseline + at least 2 periodic + shutdown — but shutdown has the
-    # "shutdown " prefix so it won't match the strict "[MEMORY] rss=" start.
-    # We expect >= 3 bare "[MEMORY] rss=..." lines.
-    assert len(periodic) >= 3, [r.getMessage() for r in caplog.records]
+    assert len(periodic_records()) >= 3, [r.getMessage() for r in caplog.records]
 
 
 def test_thread_is_daemon():

@@ -17,7 +17,8 @@ vi.mock('@/hermes', () => ({
   getToolsetConfig: (name: string) => getToolsetConfig(name),
   getToolsetModels: (name: string, provider?: string) => getToolsetModels(name, provider),
   selectToolsetModel: (name: string, model: string, provider?: string) => selectToolsetModel(name, model, provider),
-  selectToolsetProvider: (name: string, provider: string) => selectToolsetProvider(name, provider),
+  selectToolsetProvider: (name: string, provider: string, capability?: string) =>
+    capability === undefined ? selectToolsetProvider(name, provider) : selectToolsetProvider(name, provider, capability),
   setEnvVar: (key: string, value: string) => setEnvVar(key, value),
   deleteEnvVar: (key: string) => deleteEnvVar(key),
   revealEnvVar: (key: string) => revealEnvVar(key),
@@ -563,6 +564,89 @@ describe('ToolsetConfigPanel', () => {
       fireEvent.click(screen.getByRole('button', { name: 'Save' }))
 
       await waitFor(() => expect(screen.getByText('Ready')).toBeTruthy())
+    })
+  })
+
+  describe('web capability split', () => {
+    function webConfig(overrides: Partial<ToolsetConfig> = {}): ToolsetConfig {
+      return {
+        name: 'web',
+        has_category: true,
+        active_provider: 'SearXNG',
+        active_search_backend: 'searxng',
+        active_extract_backend: 'firecrawl',
+        providers: [
+          {
+            name: 'SearXNG',
+            badge: 'free · self-hosted',
+            tag: 'Free metasearch',
+            env_vars: [],
+            post_setup: null,
+            requires_nous_auth: false,
+            is_active: true,
+            status: 'ready',
+            web_backend: 'searxng',
+            capabilities: ['search']
+          },
+          {
+            name: 'Firecrawl',
+            badge: 'paid',
+            tag: 'Full search + extract',
+            env_vars: [],
+            post_setup: null,
+            requires_nous_auth: false,
+            is_active: false,
+            status: 'ready',
+            web_backend: 'firecrawl',
+            capabilities: ['search', 'extract']
+          }
+        ],
+        ...overrides
+      }
+    }
+
+    it('shows the resolved per-capability backends as badges', async () => {
+      getToolsetConfig.mockResolvedValue(webConfig())
+
+      const { ToolsetConfigPanel } = await import('./toolset-config-panel')
+      render(<ToolsetConfigPanel onConfiguredChange={vi.fn()} toolset="web" />)
+
+      expect(await screen.findByText('Search: searxng')).toBeTruthy()
+      expect(screen.getByText('Extract: firecrawl')).toBeTruthy()
+      // The row backing each capability gets an assignment pill.
+      expect(screen.getByText('Search backend')).toBeTruthy()
+      expect(screen.getByText('Extract backend')).toBeTruthy()
+    })
+
+    it('hides "Use for Extract" on a search-only provider and wires capability selection', async () => {
+      getToolsetConfig.mockResolvedValue(webConfig())
+      selectToolsetProvider.mockResolvedValue({ ok: true, name: 'web', provider: 'SearXNG', capability: 'search' })
+
+      const { ToolsetConfigPanel } = await import('./toolset-config-panel')
+      render(<ToolsetConfigPanel onConfiguredChange={vi.fn()} toolset="web" />)
+
+      // Active/expanded provider is search-only SearXNG.
+      await screen.findByText('Search: searxng')
+      expect(await screen.findByRole('button', { name: 'Use for Search' })).toBeTruthy()
+      expect(screen.queryByRole('button', { name: 'Use for Extract' })).toBeNull()
+
+      // Expand Firecrawl (search + extract) and assign it as the search backend.
+      fireEvent.click(screen.getByRole('button', { name: /Firecrawl/ }))
+      const useForSearch = await screen.findByRole('button', { name: 'Use for Search' })
+      fireEvent.click(useForSearch)
+
+      await waitFor(() => expect(selectToolsetProvider).toHaveBeenCalledWith('web', 'Firecrawl', 'search'))
+      // Badge tracks the local write without a refetch.
+      await waitFor(() => expect(screen.getByText('Search: firecrawl')).toBeTruthy())
+    })
+
+    it('does not render capability chrome for non-web toolsets', async () => {
+      const { ToolsetConfigPanel } = await import('./toolset-config-panel')
+      render(<ToolsetConfigPanel onConfiguredChange={vi.fn()} toolset="tts" />)
+
+      await screen.findByText('Microsoft Edge TTS')
+      expect(screen.queryByText(/^Search: /)).toBeNull()
+      expect(screen.queryByRole('button', { name: 'Use for Search' })).toBeNull()
     })
   })
 })

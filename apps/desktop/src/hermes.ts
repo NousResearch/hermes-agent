@@ -867,13 +867,14 @@ export function selectToolsetModel(
 
 export function selectToolsetProvider(
   name: string,
-  provider: string
-): Promise<{ ok: boolean; name: string; provider: string }> {
-  return window.hermesDesktop.api<{ ok: boolean; name: string; provider: string }>({
+  provider: string,
+  capability?: 'search' | 'extract'
+): Promise<{ ok: boolean; name: string; provider: string; capability?: string }> {
+  return window.hermesDesktop.api<{ ok: boolean; name: string; provider: string; capability?: string }>({
     ...profileScoped(),
     path: `/api/tools/toolsets/${encodeURIComponent(name)}/provider`,
     method: 'PUT',
-    body: { provider }
+    body: capability ? { provider, capability } : { provider }
   })
 }
 

@@ -5456,6 +5456,118 @@ class TestNewEndpoints:
         )
         assert resp.status_code == 400
 
+    # -- Web capability split (search vs extract backends) ------------------
+
+    def test_web_config_reports_per_capability_backends(self):
+        """GET web/config carries the resolved search/extract backends.
+
+        The runtime resolves web_search and web_extract independently
+        (web.search_backend / web.extract_backend → web.backend → auto-detect);
+        the config payload must surface both so the GUI can show which backend
+        each capability actually hits.
+        """
+        resp = self.client.get("/api/tools/toolsets/web/config")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "active_search_backend" in data
+        assert "active_extract_backend" in data
+        # Provider rows carry their backend key + supported capabilities so
+        # the GUI can hide "Use for Extract" on search-only rows.
+        rows_with_backend = [p for p in data["providers"] if p.get("web_backend")]
+        assert rows_with_backend, "expected at least one provider with a web backend key"
+        for prov in rows_with_backend:
+            assert isinstance(prov["capabilities"], list)
+            assert set(prov["capabilities"]) <= {"search", "extract"}
+            assert prov["capabilities"], "a web provider must support at least one capability"
+
+    def test_web_capability_fields_only_on_web_toolset(self):
+        resp = self.client.get("/api/tools/toolsets/tts/config")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "active_search_backend" not in data
+        assert "active_extract_backend" not in data
+
+    def test_select_web_search_backend_matches_runtime_resolution(self, monkeypatch):
+        """PUT provider with capability=search writes web.search_backend and the
+        runtime search dispatcher resolves to it — while extract is untouched."""
+        # Make SearXNG available so both the endpoint gate and the runtime
+        # availability check agree it's usable.
+        monkeypatch.setenv("SEARXNG_URL", "http://localhost:8888")
+        # Give extract an explicit shared backend so the assertion isn't
+        # hostage to whatever creds exist on the machine running the tests.
+        monkeypatch.setenv("FIRECRAWL_API_URL", "http://localhost:3002")
+        base = self.client.put(
+            "/api/tools/toolsets/web/provider",
+            json={"provider": "Firecrawl Self-Hosted"},
+        )
+        assert base.status_code == 200
+
+        resp = self.client.put(
+            "/api/tools/toolsets/web/provider",
+            json={"provider": "SearXNG", "capability": "search"},
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["ok"] is True
+        assert body["capability"] == "search"
+
+        from hermes_cli.config import load_config
+        cfg = load_config()
+        assert cfg["web"]["search_backend"] == "searxng"
+        # The shared backend selected first must be preserved for extract.
+        assert cfg["web"]["backend"] == "firecrawl"
+
+        # The REAL runtime resolution — not a parallel reimplementation.
+        from tools.web_tools import _get_extract_backend, _get_search_backend
+        assert _get_search_backend() == "searxng"
+        assert _get_extract_backend() == "firecrawl"
+
+        # And the config endpoint reports the same split.
+        data = self.client.get("/api/tools/toolsets/web/config").json()
+        assert data["active_search_backend"] == "searxng"
+        assert data["active_extract_backend"] == "firecrawl"
+
+    def test_select_web_extract_backend_writes_extract_key(self, monkeypatch):
+        monkeypatch.setenv("FIRECRAWL_API_URL", "http://localhost:3002")
+        resp = self.client.put(
+            "/api/tools/toolsets/web/provider",
+            json={"provider": "Firecrawl Self-Hosted", "capability": "extract"},
+        )
+        assert resp.status_code == 200
+
+        from hermes_cli.config import load_config
+        cfg = load_config()
+        assert cfg["web"]["extract_backend"] == "firecrawl"
+        # Whole-provider/search keys untouched by a capability-scoped write
+        # (the default config seeds them as empty strings).
+        assert not cfg["web"].get("search_backend")
+
+        from tools.web_tools import _get_extract_backend
+        assert _get_extract_backend() == "firecrawl"
+
+    def test_select_web_capability_rejects_unsupported_capability(self):
+        """A search-only provider (ddgs) can't be set as the extract backend."""
+        resp = self.client.put(
+            "/api/tools/toolsets/web/provider",
+            json={"provider": "DuckDuckGo (ddgs)", "capability": "extract"},
+        )
+        assert resp.status_code == 400
+        assert "does not support extract" in resp.json()["detail"]
+
+    def test_select_web_capability_rejects_bad_values(self):
+        resp = self.client.put(
+            "/api/tools/toolsets/web/provider",
+            json={"provider": "Firecrawl Self-Hosted", "capability": "browse"},
+        )
+        assert resp.status_code == 400
+
+        # capability is a web-only concept.
+        resp = self.client.put(
+            "/api/tools/toolsets/tts/provider",
+            json={"provider": "Microsoft Edge TTS", "capability": "search"},
+        )
+        assert resp.status_code == 400
+
     # -- Terminal execution backend picker ---------------------------------
 
     def test_get_terminal_backends_shape_and_local_ready(self, monkeypatch):

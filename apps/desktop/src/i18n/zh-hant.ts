@@ -846,6 +846,16 @@ export const zhHant = defineLocale({
       postSetupErrorTitle: '設定完成但有錯誤',
       postSetupErrorMessage: step => `請檢查 ${step} 日誌。`,
       postSetupFailed: step => `執行 ${step} 設定失敗`,
+      webSearchActive: backend => `搜尋：${backend}`,
+      webExtractActive: backend => `擷取：${backend}`,
+      webCapabilityUnset: '未設定',
+      webUseForSearch: '用於搜尋',
+      webUseForExtract: '用於擷取',
+      webUsedForSearch: '搜尋後端',
+      webUsedForExtract: '擷取後端',
+      webCapabilitySelectedMessage: (provider, capability) =>
+        `${provider} 現在負責網頁${capability === 'search' ? '搜尋' : '擷取'}。`,
+      failedSelectCapability: provider => `無法設定 ${provider}`,
       terminalBackend: {
         sectionTitle: '執行後端',
         loading: '正在檢查執行後端…',

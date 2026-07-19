@@ -316,6 +316,15 @@ async def handle_ws(ws: Any) -> None:
             thread_name="tui-ws-mcp-discovery",
         )
 
+        # Same once-per-process startup pass for session rows orphaned by a
+        # previous gateway process (#65194): the desktop/dashboard reach the
+        # agent through this WS sidecar, not entry.main(), so schedule it
+        # here too. Idempotent + config-gated inside.
+        try:
+            server._schedule_startup_orphan_sweep()
+        except Exception:
+            _log.warning("startup orphan sweep scheduling failed", exc_info=True)
+
         ready_ok = await transport.write_async(
             {
                 "jsonrpc": "2.0",

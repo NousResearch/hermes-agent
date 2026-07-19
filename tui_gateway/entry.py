@@ -293,6 +293,15 @@ def join_mcp_discovery(timeout: float | None = None) -> bool:
 def main():
     _install_sidecar_publisher()
 
+    # One-time sweep of session rows orphaned by a previous gateway process
+    # (#65194) — the in-process WS-orphan reap timer dies with the process,
+    # so leftovers must be revisited at startup like every other resource
+    # type. Config-gated + once-per-process guarded inside.
+    try:
+        server._schedule_startup_orphan_sweep()
+    except Exception:
+        logger.warning("startup orphan sweep scheduling failed", exc_info=True)
+
     # MCP tool discovery — runs in a background daemon thread so a slow or
     # unreachable MCP server can't freeze TUI startup.  Previously this ran
     # inline before ``gateway.ready``, which meant any configured-but-down

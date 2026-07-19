@@ -50,6 +50,7 @@ export function useVoiceConversation({
   const busyRef = useRef(busy)
   const statusRef = useRef<ConversationStatus>('idle')
   const wasEnabledRef = useRef(enabled)
+  const retryStartTimerRef = useRef<number | null>(null)
 
   useEffect(() => {
     enabledRef.current = enabled
@@ -192,11 +193,11 @@ export function useVoiceConversation({
     // assistant turn finishes. Clearing this before the guard caused the next
     // voice turn to be lost until the user clicked the microphone again.
     if (!enabledRef.current || mutedRef.current || busyRef.current) {
-      return
+      return false
     }
 
     if (statusRef.current !== 'idle') {
-      return
+      return false
     }
 
     pendingStartRef.current = false
@@ -216,13 +217,51 @@ export function useVoiceConversation({
       })
       setStatus('listening')
       turnTimeoutRef.current = window.setTimeout(() => void handleTurn(), 60_000)
+      return true
     } catch (error) {
-      notifyError(error, voiceCopy.couldNotStartSession)
-      pendingStartRef.current = false
+      pendingStartRef.current = true
       setStatus('idle')
-      onFatalError?.()
+      notifyError(error, voiceCopy.couldNotStartSession)
+      return false
     }
   }, [handle, handleTurn, onFatalError, voiceCopy.couldNotStartSession, voiceCopy.microphoneFailed])
+
+  const schedulePendingStartRetry = useCallback(() => {
+    if (retryStartTimerRef.current !== null) {
+      window.clearTimeout(retryStartTimerRef.current)
+    }
+
+    let attempts = 0
+    const retry = () => {
+      retryStartTimerRef.current = null
+      if (!enabledRef.current || mutedRef.current || !pendingStartRef.current) {
+        return
+      }
+
+      if (!busyRef.current && statusRef.current === 'idle') {
+        void startListening().then(started => {
+          if (!started && pendingStartRef.current && attempts < 20) {
+            attempts += 1
+            retryStartTimerRef.current = window.setTimeout(retry, 150)
+          }
+        })
+        return
+      }
+
+      if (attempts < 20) {
+        attempts += 1
+        retryStartTimerRef.current = window.setTimeout(retry, 150)
+      }
+    }
+
+    retryStartTimerRef.current = window.setTimeout(retry, 0)
+  }, [startListening])
+
+  useEffect(() => () => {
+    if (retryStartTimerRef.current !== null) {
+      window.clearTimeout(retryStartTimerRef.current)
+    }
+  }, [])
 
   const speak = useCallback(
     async (text: string) => {
@@ -236,12 +275,13 @@ export function useVoiceConversation({
         if (enabledRef.current) {
           pendingStartRef.current = true
           setStatus('idle')
+          schedulePendingStartRetry()
         } else {
           setStatus('idle')
         }
       }
     },
-    [voiceCopy.playbackFailed]
+    [schedulePendingStartRetry, voiceCopy.playbackFailed]
   )
 
   const start = useCallback(async () => {
@@ -384,9 +424,9 @@ export function useVoiceConversation({
     }
 
     if (pendingStartRef.current) {
-      void startListening()
+      schedulePendingStartRetry()
     }
-  }, [busy, consumePendingResponse, enabled, muted, pendingResponse, speak, startListening, status])
+  }, [busy, consumePendingResponse, enabled, muted, pendingResponse, schedulePendingStartRetry, speak, startListening, status])
 
   // If the renderer loses focus while the previous response is spoken or
   // submitted, the normal idle transition can happen without a usable audio

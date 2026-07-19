@@ -245,6 +245,134 @@ function Invoke-NativeWithRelaxedErrorAction {
         $ErrorActionPreference = $prevEAP
     }
 }
+
+function Invoke-PythonProbeProcess {
+    param(
+        [Parameter(Mandatory=$true)] [string]$PythonExe,
+        [Parameter(Mandatory=$true)] [string]$Code
+    )
+
+    # Avoid PowerShell's native stderr plumbing entirely. On hosts affected by
+    # #60129, `2>&1` can raise a StandardErrorEncoding error before Python even
+    # starts. Start-Process with file redirects captures both streams without
+    # involving that path (the same strategy being developed in #60143).
+    $tempOut = [System.IO.Path]::GetTempFileName()
+    $tempErr = [System.IO.Path]::GetTempFileName()
+    $tempScript = [System.IO.Path]::Combine(
+        [System.IO.Path]::GetTempPath(),
+        "hermes-import-probe-$([System.Guid]::NewGuid().ToString('N')).py"
+    )
+    try {
+        [System.IO.File]::WriteAllText(
+            $tempScript,
+            $Code,
+            (New-Object System.Text.UTF8Encoding $false)
+        )
+        $escapedScript = $tempScript.Replace('"', '\"')
+        $arguments = "-I `"$escapedScript`""
+        $process = Start-Process -FilePath $PythonExe -ArgumentList $arguments `
+            -WorkingDirectory (Get-Location).Path -NoNewWindow -Wait -PassThru `
+            -RedirectStandardOutput $tempOut -RedirectStandardError $tempErr
+
+        $stdout = [System.IO.File]::ReadAllText($tempOut).TrimEnd()
+        $stderr = [System.IO.File]::ReadAllText($tempErr).TrimEnd()
+        $parts = @()
+        if ($stdout) { $parts += $stdout }
+        if ($stderr) { $parts += $stderr }
+        return [PSCustomObject]@{
+            ExitCode = $process.ExitCode
+            Output = $parts -join [Environment]::NewLine
+        }
+    } finally {
+        Remove-Item $tempOut, $tempErr, $tempScript -Force -ErrorAction SilentlyContinue
+    }
+}
+
+function Invoke-BaselineImportProbe {
+    param(
+        [Parameter(Mandatory=$true)] [string]$PythonExe,
+        [int[]]$RetryDelaysSeconds = @(0, 2, 2)
+    )
+
+    $moduleList = "dotenv, openai, rich, prompt_toolkit"
+    # Validate lexical import paths. uv's supported symlink link mode keeps
+    # module.__file__ under the venv while realpath points into uv's cache.
+    $probeCode = @(
+        "import os, sys, dotenv, openai, rich, prompt_toolkit"
+        "modules = {'dotenv': dotenv, 'openai': openai, 'rich': rich, 'prompt_toolkit': prompt_toolkit}"
+        "root = os.path.normcase(os.path.abspath(sys.prefix))"
+        "origins = {name: os.path.normcase(os.path.abspath(module.__file__)) for name, module in modules.items()}"
+        "resolved = {name: os.path.normcase(os.path.realpath(module.__file__)) for name, module in modules.items()}"
+        "outside = {name: path for name, path in origins.items() if os.path.commonpath([root, path]) != root}"
+        "assert not outside, 'baseline modules outside managed prefix: ' + repr(outside)"
+        "print('module_origins=' + ';'.join(name + '=' + path for name, path in origins.items()))"
+        "print('module_resolved_origins=' + ';'.join(name + '=' + path for name, path in resolved.items()))"
+    ) -join [Environment]::NewLine
+    $environmentCode = "import site, sys; print(sys.executable); print(sys.prefix); print(chr(59).join(site.getsitepackages()))"
+
+    $environmentSummary = "unavailable"
+    try {
+        $environmentResult = Invoke-PythonProbeProcess -PythonExe $PythonExe -Code $environmentCode
+        $environmentLines = @($environmentResult.Output -split "`r?`n")
+        $environmentSummary = "unavailable (exit $($environmentResult.ExitCode))"
+        if ($environmentResult.ExitCode -eq 0 -and $environmentLines.Count -ge 2) {
+            $sitePackages = if ($environmentLines.Count -ge 3) { $environmentLines[2] } else { "unknown" }
+            $environmentSummary = "executable=$($environmentLines[0]); prefix=$($environmentLines[1]); site_packages=$sitePackages"
+        }
+    } catch {
+        $environmentSummary = "unavailable ($($_.Exception.Message))"
+    }
+
+    $lastOutput = ""
+    $probeExitCode = 1
+    $exitCodes = @()
+    $attemptCount = $RetryDelaysSeconds.Count
+    for ($i = 0; $i -lt $attemptCount; $i++) {
+        $delay = $RetryDelaysSeconds[$i]
+        if ($delay -gt 0) {
+            Start-Sleep -Seconds $delay
+        }
+
+        try {
+            $probeResult = Invoke-PythonProbeProcess -PythonExe $PythonExe -Code $probeCode
+            $probeExitCode = $probeResult.ExitCode
+            $lastOutput = $probeResult.Output
+        } catch {
+            # A launch failure is retryable too. Use a synthetic exit code so
+            # the final diagnostic distinguishes it from Python's own status.
+            $probeExitCode = -1
+            $lastOutput = $_.Exception.Message
+        }
+        $exitCodes += $probeExitCode
+
+        if ($probeExitCode -eq 0) {
+            return [PSCustomObject]@{
+                Ok = $true
+                Attempts = $i + 1
+                ExitCode = 0
+                ExitCodes = @($exitCodes)
+                Output = $lastOutput
+                Environment = $environmentSummary
+                Modules = $moduleList
+            }
+        }
+
+        Write-Warn "Baseline import probe failed (attempt $($i + 1)/$attemptCount, exit $probeExitCode)."
+        if ($lastOutput) {
+            Write-Info "Probe output: $lastOutput"
+        }
+    }
+
+    return [PSCustomObject]@{
+        Ok = $false
+        Attempts = $attemptCount
+        ExitCode = $probeExitCode
+        ExitCodes = @($exitCodes)
+        Output = $lastOutput
+        Environment = $environmentSummary
+        Modules = $moduleList
+    }
+}
 function Discard-LockfileChurn {
     param([string]$Repo = $InstallDir)
 
@@ -2083,37 +2211,29 @@ except Exception:
         throw "Failed to install hermes-agent package even with no extras. Inspect the uv pip install output above."
     }
 
-    # Baseline-import gate. Even if a tier reported success above, the
-    # actual deps may have landed somewhere other than $InstallDir\venv\
-    # (e.g. uv 0.5+ syncing into a sibling .venv\ when UV_PROJECT_ENVIRONMENT
-    # isn't set, leaving venv\ empty and hermes.exe broken with
-    # `ModuleNotFoundError: No module named 'dotenv'` on first run).
-    # We probe via the venv's own python so a misdirected sync is caught
-    # here, not 30 seconds later when the user runs `hermes`.
+    # Baseline-import gate. A successful install command above does not prove
+    # imports are immediately usable. Probe via the venv's own isolated Python
+    # with bounded retries so transient file contention can clear, then report
+    # the captured evidence on persistent failure.
+
     if (-not $NoVenv) {
         $venvPython = "$InstallDir\venv\Scripts\python.exe"
         if (-not (Test-Path $venvPython)) {
             throw "Install reported success but $venvPython does not exist. The dependency sync likely landed in a sibling .venv\ directory. Re-run the installer; if it persists, manually: cd '$InstallDir'; Remove-Item -Recurse -Force venv,.venv; uv venv venv --python $PythonVersion; `$env:UV_PROJECT_ENVIRONMENT='$InstallDir\venv'; uv sync --extra all --locked"
         }
-        # Relax EAP=Stop while running the import probe.  Python writes
-        # deprecation warnings and import-system info to stderr; under
-        # EAP=Stop the 2>&1 merge wraps those as ErrorRecord objects and
-        # throws even when the imports succeed.  $LASTEXITCODE is the
-        # reliable signal (it's 0 iff the python invocation exited 0,
-        # regardless of what was written to stderr).
-        $prevEAP = $ErrorActionPreference
-        $ErrorActionPreference = "Continue"
-        & $venvPython -c "import dotenv, openai, rich, prompt_toolkit" 2>&1 | Out-Null
-        $importExitCode = $LASTEXITCODE
-        $ErrorActionPreference = $prevEAP
-        if ($importExitCode -ne 0) {
+        $baselineProbe = Invoke-BaselineImportProbe -PythonExe $venvPython
+        if (-not $baselineProbe.Ok) {
+            $capturedOutput = if ($baselineProbe.Output) { $baselineProbe.Output } else { "<no output captured>" }
+            $exitSummary = ($baselineProbe.ExitCodes | ForEach-Object { $_.ToString() }) -join ", "
             $sibling = "$InstallDir\.venv"
-            $hint = if (Test-Path $sibling) {
-                "Detected sibling .venv\ at $sibling -- uv synced there instead of venv\. Recover with: cd '$InstallDir'; Remove-Item -Recurse -Force venv; Move-Item .venv venv"
-            } else {
-                "Recover with: cd '$InstallDir'; `$env:UV_PROJECT_ENVIRONMENT='$InstallDir\venv'; uv sync --extra all --locked"
-            }
-            throw "Baseline imports failed in $InstallDir\venv (dotenv/openai/rich/prompt_toolkit). The install completed but dependencies are not in the venv. $hint"
+            $siblingNote = if (Test-Path $sibling) {
+                " A sibling .venv also exists at '$sibling'; inspect it while troubleshooting."
+            } else { "" }
+            throw "Baseline imports failed after $($baselineProbe.Attempts) attempts. Exact interpreter: '$venvPython'. Modules: $($baselineProbe.Modules). Exit codes: [$exitSummary]. Environment: $($baselineProbe.Environment). Captured probe output: $capturedOutput.$siblingNote"
+        }
+        Write-Info "Python environment probe: $($baselineProbe.Environment)"
+        if ($baselineProbe.Output) {
+            Write-Info "Python baseline probe: $($baselineProbe.Output)"
         }
         Write-Success "Baseline imports verified in venv"
     }

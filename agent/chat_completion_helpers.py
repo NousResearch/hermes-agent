@@ -30,6 +30,7 @@ from hermes_cli.timeouts import get_provider_request_timeout, get_provider_stale
 from hermes_constants import PARTIAL_STREAM_STUB_ID, FINISH_REASON_LENGTH
 from agent.error_classifier import FailoverReason
 from agent.errors import EmptyStreamError
+from agent.turn_context import substitute_api_content
 from agent.gemini_native_adapter import is_native_gemini_base_url
 from agent.model_metadata import is_local_endpoint
 from agent.message_content import flatten_message_text
@@ -1929,6 +1930,15 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
             # and every Hermes-internal underscore-prefixed scaffolding key.
             for schema_foreign in ("tool_name", "codex_reasoning_items", "codex_message_items", "timestamp"):
                 api_msg.pop(schema_foreign, None)
+            # api_content (the persist-what-you-send sidecar) carries the
+            # exact bytes every main-loop call sent for this message —
+            # substitute it before dropping the key (Hermes bookkeeping,
+            # never a provider field), mirroring the loop's api_messages
+            # build. Popping without substituting would send CLEAN content
+            # here, diverging the summary request's prefix at the EARLIEST
+            # sidecar-carrying message and re-prefilling the whole transcript
+            # at exactly the moment the context is largest.
+            substitute_api_content(api_msg)
             for internal_key in [k for k in api_msg if isinstance(k, str) and k.startswith("_")]:
                 api_msg.pop(internal_key, None)
             if _needs_sanitize:

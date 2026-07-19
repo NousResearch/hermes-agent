@@ -7568,12 +7568,13 @@ def save_config(
     Full-document replacement callers (dashboard raw YAML editor, callers that
     already deep-merge) must leave this False so intentional deletions survive.
     """
+    if is_managed():
+        managed_error("save configuration")
+        return
+
     ensure_hermes_home()
     config_path = get_config_path()
     with _CONFIG_LOCK, _config_file_lock(config_path):
-        if is_managed():
-            managed_error("save configuration")
-            return
         # Managed scope: strip any leaf the managed layer pins, so a bulk write
         # (wizard / programmatic save) never persists a user value that would
         # silently lose to managed on the next load. Single-key `config set`

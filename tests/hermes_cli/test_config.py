@@ -2240,3 +2240,25 @@ class TestCodexAppServerAutoConfig:
             assert raw["compression"]["codex_app_server_auto"] == "hermes"
 
 
+def test_save_config_managed_read_only_home_returns_before_lock(
+    tmp_path, monkeypatch, capsys
+):
+    import hermes_cli.config as config_mod
+
+    home = tmp_path / "managed-home"
+    home.mkdir()
+    config_file = home / "config.yaml"
+    original = "model: managed/model\n"
+    config_file.write_text(original, encoding="utf-8")
+    home.chmod(0o555)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(config_mod, "is_managed", lambda: True)
+    try:
+        config_mod.save_config({"model": "user/override"})
+    finally:
+        home.chmod(0o755)
+
+    assert config_file.read_text(encoding="utf-8") == original
+    assert not (home / "config.lock").exists()
+    assert "managed" in capsys.readouterr().err.lower()
+

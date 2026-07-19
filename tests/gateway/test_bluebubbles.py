@@ -1,6 +1,8 @@
 """Tests for the BlueBubbles iMessage gateway adapter."""
 import asyncio
 import json
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -406,6 +408,312 @@ class TestBlueBubblesWebhookParsing:
         assert record["text"] == "hello"
 
 
+class TestBlueBubblesInboundDeduplication:
+    @staticmethod
+    def _payload(message_guid, *, event_type="new-message", chat_guid=None, text="hello"):
+        return {
+            "type": event_type,
+            "data": {
+                "guid": message_guid,
+                "text": text,
+                "handle": {"address": "user@example.com"},
+                "isFromMe": False,
+                "chatGuid": chat_guid or "iMessage;-;user@example.com",
+                "chatIdentifier": "user@example.com",
+            },
+        }
+
+    @pytest.mark.asyncio
+    async def test_same_message_guid_dispatches_once_across_new_and_updated_events(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch, send_read_receipts=False)
+        handled = []
+        monkeypatch.setattr(adapter, "handle_message", AsyncMock(side_effect=handled.append))
+
+        first = self._payload("stable-guid", event_type="new-message")
+        updated = self._payload(
+            "stable-guid",
+            event_type="updated-message",
+            chat_guid="iMessage;-;different-chat-fields@example.com",
+        )
+
+        assert (await adapter._handle_webhook(_FakeBlueBubblesRequest(first))).status == 200
+        assert (await adapter._handle_webhook(_FakeBlueBubblesRequest(updated))).status == 200
+        await asyncio.sleep(0)
+
+        assert [event.message_id for event in handled] == ["stable-guid"]
+
+    @pytest.mark.asyncio
+    async def test_distinct_message_guids_still_dispatch(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch, send_read_receipts=False)
+        handled = []
+        monkeypatch.setattr(adapter, "handle_message", AsyncMock(side_effect=handled.append))
+
+        for guid in ("guid-1", "guid-2"):
+            response = await adapter._handle_webhook(
+                _FakeBlueBubblesRequest(self._payload(guid))
+            )
+            assert response.status == 200
+        await asyncio.sleep(0)
+
+        assert [event.message_id for event in handled] == ["guid-1", "guid-2"]
+
+    @pytest.mark.asyncio
+    async def test_malformed_delivery_does_not_poison_valid_retry(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch, send_read_receipts=False)
+        handled = []
+        monkeypatch.setattr(adapter, "handle_message", AsyncMock(side_effect=handled.append))
+        malformed = self._payload("retry-guid", text="")
+        valid = self._payload("retry-guid", text="valid retry")
+
+        assert (await adapter._handle_webhook(_FakeBlueBubblesRequest(malformed))).status == 400
+        assert (await adapter._handle_webhook(_FakeBlueBubblesRequest(valid))).status == 200
+        await asyncio.sleep(0)
+
+        assert [event.text for event in handled] == ["valid retry"]
+
+    @pytest.mark.asyncio
+    async def test_seen_guid_cache_has_size_bound_and_ttl(self, monkeypatch):
+        import gateway.platforms.bluebubbles as bluebubbles
+
+        now = [100.0]
+        monkeypatch.setattr(bluebubbles, "_MESSAGE_DEDUP_CACHE_SIZE", 2)
+        monkeypatch.setattr(bluebubbles, "_MESSAGE_DEDUP_TTL_SECONDS", 5.0)
+        monkeypatch.setattr(bluebubbles.time, "monotonic", lambda: now[0])
+        adapter = _make_adapter(monkeypatch, send_read_receipts=False)
+        handled = []
+        monkeypatch.setattr(adapter, "handle_message", AsyncMock(side_effect=handled.append))
+
+        for guid in ("guid-1", "guid-2", "guid-3"):
+            await adapter._handle_webhook(
+                _FakeBlueBubblesRequest(self._payload(guid))
+            )
+        await asyncio.sleep(0)
+        assert len(adapter._seen_message_guids) == 2
+
+        now[0] += 6.0
+        await adapter._handle_webhook(
+            _FakeBlueBubblesRequest(self._payload("guid-3"))
+        )
+        await asyncio.sleep(0)
+
+        assert [event.message_id for event in handled] == [
+            "guid-1",
+            "guid-2",
+            "guid-3",
+            "guid-3",
+        ]
+
+
+def _quick_ack_runner(monkeypatch, config, *, platform=Platform.BLUEBUBBLES):
+    from gateway.platforms.base import MessageEvent, SessionSource
+    from gateway.run import GatewayRunner
+
+    runner = GatewayRunner.__new__(GatewayRunner)
+    runner._pending_turn_sidecar_notes = {}
+    adapter = _make_adapter(monkeypatch)
+    adapter.send = AsyncMock(return_value=SimpleNamespace(success=True))
+    runner._adapter_for_source = lambda source: adapter
+    monkeypatch.setattr("gateway.run._load_gateway_config", lambda: config)
+    source = SessionSource(
+        platform=platform,
+        chat_id="iMessage;-;user@example.com",
+        user_id="user@example.com",
+        chat_type="dm",
+    )
+    event = MessageEvent(text="Please compare these two contracts", source=source)
+    return runner, adapter, event, source
+
+
+def _quick_ack_config(**overrides):
+    return {
+        "display": {
+            "platforms": {
+                "bluebubbles": {
+                    "quick_ack_enabled": True,
+                    **overrides,
+                }
+            }
+        }
+    }
+
+
+def _aux_response(text):
+    return SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content=text))]
+    )
+
+
+class TestBlueBubblesQuickAcknowledgment:
+    @pytest.mark.asyncio
+    async def test_enabled_bluebubbles_sends_contextual_ack_before_main_turn(self, monkeypatch):
+        runner, adapter, event, source = _quick_ack_runner(
+            monkeypatch,
+            _quick_ack_config(quick_ack_model="fast-model", quick_ack_timeout_seconds=2),
+        )
+        aux = AsyncMock(return_value=_aux_response('"I’ll compare both carefully."'))
+        monkeypatch.setattr("agent.auxiliary_client.async_call_llm", aux)
+        notes = []
+
+        ack = await runner._maybe_send_bluebubbles_quick_ack(
+            event, source, event.text, notes
+        )
+
+        assert ack == "I’ll compare both carefully."
+        adapter.send.assert_awaited_once_with(source.chat_id, ack)
+        kwargs = aux.await_args.kwargs
+        assert kwargs["model"] == "fast-model"
+        assert kwargs["timeout"] == 2.0
+        assert kwargs.get("tools") is None
+        assert "stream" not in kwargs
+        prompt = kwargs["messages"][0]["content"]
+        assert "under 8 words" in prompt
+        assert "no quotes or Markdown" in prompt
+        assert "do not claim" in prompt
+        assert event.text in prompt
+
+    @pytest.mark.asyncio
+    async def test_disabled_setting_skips_ack(self, monkeypatch):
+        runner, adapter, event, source = _quick_ack_runner(monkeypatch, {})
+        aux = AsyncMock(return_value=_aux_response("Taking a look now."))
+        monkeypatch.setattr("agent.auxiliary_client.async_call_llm", aux)
+
+        ack = await runner._maybe_send_bluebubbles_quick_ack(
+            event, source, event.text, []
+        )
+
+        assert ack is None
+        aux.assert_not_awaited()
+        adapter.send.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_timeout_setting_is_bounded(self, monkeypatch):
+        runner, _adapter, event, source = _quick_ack_runner(
+            monkeypatch,
+            _quick_ack_config(quick_ack_timeout_seconds=999),
+        )
+        aux = AsyncMock(return_value=_aux_response("I’ll inspect this now."))
+        monkeypatch.setattr("agent.auxiliary_client.async_call_llm", aux)
+
+        await runner._maybe_send_bluebubbles_quick_ack(
+            event, source, event.text, []
+        )
+
+        assert aux.await_args.kwargs["timeout"] == 10.0
+
+    @pytest.mark.asyncio
+    async def test_non_bluebubbles_message_skips_ack(self, monkeypatch):
+        runner, adapter, event, source = _quick_ack_runner(
+            monkeypatch, _quick_ack_config(), platform=Platform.TELEGRAM
+        )
+        aux = AsyncMock(return_value=_aux_response("Taking a look now."))
+        monkeypatch.setattr("agent.auxiliary_client.async_call_llm", aux)
+
+        ack = await runner._maybe_send_bluebubbles_quick_ack(
+            event, source, event.text, []
+        )
+
+        assert ack is None
+        aux.assert_not_awaited()
+        adapter.send.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("text", ["/help", "hi", "ping", "thanks", "yes", "no"])
+    async def test_slash_and_trivial_messages_skip_ack(self, monkeypatch, text):
+        runner, adapter, event, source = _quick_ack_runner(
+            monkeypatch, _quick_ack_config()
+        )
+        event.text = text
+        aux = AsyncMock(return_value=_aux_response("Taking a look now."))
+        monkeypatch.setattr("agent.auxiliary_client.async_call_llm", aux)
+
+        ack = await runner._maybe_send_bluebubbles_quick_ack(
+            event, source, event.text, []
+        )
+
+        assert ack is None
+        aux.assert_not_awaited()
+        adapter.send.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_auxiliary_failure_sends_configured_fallback(self, monkeypatch):
+        runner, adapter, event, source = _quick_ack_runner(
+            monkeypatch,
+            _quick_ack_config(quick_ack_fallback="Got it — I’m checking."),
+        )
+        monkeypatch.setattr(
+            "agent.auxiliary_client.async_call_llm",
+            AsyncMock(side_effect=RuntimeError("aux unavailable")),
+        )
+        notes = []
+
+        ack = await runner._maybe_send_bluebubbles_quick_ack(
+            event, source, event.text, notes
+        )
+
+        assert ack == "Got it — I’m checking."
+        adapter.send.assert_awaited_once_with(source.chat_id, ack)
+        assert ack in notes[0]
+
+    @pytest.mark.asyncio
+    async def test_ack_send_failure_does_not_abort_main_turn(self, monkeypatch):
+        runner, adapter, event, source = _quick_ack_runner(
+            monkeypatch, _quick_ack_config()
+        )
+        monkeypatch.setattr(
+            "agent.auxiliary_client.async_call_llm",
+            AsyncMock(return_value=_aux_response("I’ll inspect this now.")),
+        )
+        adapter.send.side_effect = RuntimeError("BlueBubbles offline")
+        main_turn = AsyncMock(return_value="main response")
+        notes = []
+
+        ack = await runner._maybe_send_bluebubbles_quick_ack(
+            event, source, event.text, notes
+        )
+        result = await main_turn()
+
+        assert ack is None
+        assert notes == []
+        assert result == "main response"
+        main_turn.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_visible_ack_is_one_shot_sidecar_not_user_authored_text(self, monkeypatch):
+        """The ack note changes no role/content history and is consumed once.
+
+        It is composed onto the API copy of this user turn, preserving strict
+        alternation and the persisted clean user text while keeping later prompt
+        prefixes byte-stable through the existing api_content sidecar.
+        """
+        from agent.turn_context import compose_user_api_content
+
+        runner, _adapter, event, source = _quick_ack_runner(
+            monkeypatch, _quick_ack_config()
+        )
+        monkeypatch.setattr(
+            "agent.auxiliary_client.async_call_llm",
+            AsyncMock(return_value=_aux_response("I’ll compare both carefully.")),
+        )
+        original_user_text = event.text
+        notes = []
+
+        await runner._maybe_send_bluebubbles_quick_ack(
+            event, source, event.text, notes
+        )
+        runner._set_pending_turn_sidecar_notes("session", notes)
+        staged = runner._consume_pending_turn_sidecar_notes("session")
+        api_content = compose_user_api_content(
+            original_user_text, "", "\n\n".join(staged)
+        )
+
+        assert event.text == original_user_text
+        assert len(staged) == 1
+        assert "visible quick acknowledgment" in staged[0]
+        assert "I’ll compare both carefully." in api_content
+        assert api_content.startswith(original_user_text)
+        assert runner._consume_pending_turn_sidecar_notes("session") == []
+
+
 class TestBlueBubblesGuidResolution:
     def test_raw_guid_returned_as_is(self, monkeypatch):
         """If target already contains ';' it's a raw GUID — return unchanged."""
@@ -658,19 +966,19 @@ class TestBlueBubblesAttachmentDownload:
 
 
 class TestBlueBubblesWebhookUrl:
-    """_webhook_url property normalises local hosts to 'localhost'."""
+    """_webhook_url keeps local callbacks on explicit IPv4 loopback."""
 
     def test_default_host(self, monkeypatch):
         adapter = _make_adapter(monkeypatch)
-        # Default webhook_host is 0.0.0.0 → normalized to localhost
-        assert "localhost" in adapter._webhook_url
+        # Default webhook_host is 0.0.0.0 → safe local registration target.
+        assert "127.0.0.1" in adapter._webhook_url
         assert str(adapter.webhook_port) in adapter._webhook_url
         assert adapter.webhook_path in adapter._webhook_url
 
     @pytest.mark.parametrize("host", ["0.0.0.0", "127.0.0.1", "localhost", "::"])
     def test_local_hosts_normalized(self, monkeypatch, host):
         adapter = _make_adapter(monkeypatch, webhook_host=host)
-        assert adapter._webhook_url.startswith("http://localhost:")
+        assert adapter._webhook_url.startswith("http://127.0.0.1:")
 
     def test_custom_host_preserved(self, monkeypatch):
         adapter = _make_adapter(monkeypatch, webhook_host="192.168.1.50")
@@ -763,6 +1071,52 @@ class TestBlueBubblesWebhookRegistration:
         assert len(result) == 1
         assert result[0]["id"] == 1
 
+    def test_find_registered_webhooks_treats_loopback_aliases_as_equivalent(self, monkeypatch):
+        import asyncio
+
+        adapter = _make_adapter(monkeypatch, webhook_host="127.0.0.1")
+        canonical = adapter._webhook_register_url
+        alias = (
+            canonical.replace("127.0.0.1", "localhost")
+            if "127.0.0.1" in canonical
+            else canonical.replace("localhost", "127.0.0.1")
+        )
+        adapter.client = self._mock_client(
+            get_response={"status": 200, "data": [
+                {"id": 1, "url": canonical, "events": ["new-message", "updated-message"]},
+                {"id": 2, "url": alias, "events": ["new-message", "updated-message"]},
+            ]}
+        )
+
+        result = asyncio.get_event_loop().run_until_complete(
+            adapter._find_registered_webhooks(canonical)
+        )
+
+        assert [item["id"] for item in result] == [1, 2]
+
+    def test_webhook_equivalence_preserves_userinfo_and_query_order(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+        canonical = (
+            "http://127.0.0.1:8645/bluebubbles-webhook"
+            "?password=secret&event=new-message&event=updated-message"
+        )
+        alias = canonical.replace("127.0.0.1", "localhost")
+        with_userinfo = alias.replace("http://", "http://user@")
+        reordered = (
+            "http://localhost:8645/bluebubbles-webhook"
+            "?event=updated-message&event=new-message&password=secret"
+        )
+
+        assert adapter._normalized_webhook_url(alias) == adapter._normalized_webhook_url(canonical)
+        assert adapter._normalized_webhook_url(with_userinfo) != adapter._normalized_webhook_url(canonical)
+        assert adapter._normalized_webhook_url(reordered) != adapter._normalized_webhook_url(canonical)
+
+    def test_webhook_normalization_preserves_custom_ipv6_brackets(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+        url = "http://[2001:db8::1]:8645/bluebubbles-webhook?password=secret"
+
+        assert adapter._normalized_webhook_url(url) == url
+
     def test_find_registered_webhooks_empty_when_none(self, monkeypatch):
         import asyncio
         adapter = _make_adapter(monkeypatch)
@@ -824,7 +1178,7 @@ class TestBlueBubblesWebhookRegistration:
         url = adapter._webhook_register_url
         adapter.client = self._mock_client(
             get_response={"status": 200, "data": [
-                {"id": 7, "url": url, "events": ["new-message"]},
+                {"id": 7, "url": url, "events": ["new-message", "updated-message"]},
             ]},
         )
 
@@ -842,6 +1196,56 @@ class TestBlueBubblesWebhookRegistration:
         )
         assert ok is True
         assert not post_called, "Should reuse existing, not POST again"
+
+    @pytest.mark.asyncio
+    async def test_register_collapses_duplicate_equivalent_webhooks(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch, webhook_host="127.0.0.1")
+        canonical = adapter._webhook_register_url
+        alias = canonical.replace("127.0.0.1", "localhost")
+        delete_response = SimpleNamespace(raise_for_status=lambda: None)
+        adapter.client = SimpleNamespace(
+            delete=AsyncMock(return_value=delete_response),
+        )
+        monkeypatch.setattr(
+            adapter,
+            "_find_registered_webhooks",
+            AsyncMock(return_value=[
+                {"id": 7, "url": canonical, "events": ["new-message", "updated-message"]},
+                {"id": 8, "url": alias, "events": ["new-message", "updated-message"]},
+            ]),
+        )
+        post = AsyncMock(return_value={"status": 200, "data": {"id": 9}})
+        monkeypatch.setattr(adapter, "_api_post", post)
+
+        assert await adapter._register_webhook() is True
+        client = adapter.client
+        assert client is not None
+        client.delete.assert_awaited_once()
+        assert client.delete.await_args.args[0].endswith("/api/v1/webhook/8?password=secret")
+        post.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_register_post_failure_preserves_existing_alias(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch, webhook_host="127.0.0.1")
+        alias = adapter._webhook_register_url.replace("127.0.0.1", "localhost")
+        adapter.client = SimpleNamespace(delete=AsyncMock())
+        monkeypatch.setattr(
+            adapter,
+            "_find_registered_webhooks",
+            AsyncMock(return_value=[
+                {"id": 8, "url": alias, "events": ["new-message", "updated-message"]},
+            ]),
+        )
+        monkeypatch.setattr(
+            adapter,
+            "_api_post",
+            AsyncMock(return_value={"status": 500, "message": "server error"}),
+        )
+
+        assert await adapter._register_webhook() is False
+        client = adapter.client
+        assert client is not None
+        client.delete.assert_not_awaited()
 
     def test_register_returns_false_without_client(self, monkeypatch):
         import asyncio

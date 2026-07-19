@@ -120,6 +120,26 @@ Hermes → BlueBubbles REST API → Messages.app → iMessage
 
 Auto-marking messages as read is controlled by the `send_read_receipts` key under `platforms.bluebubbles.extra` in `~/.hermes/config.yaml` (default: `true`). There is no corresponding environment variable.
 
+### Optional quick acknowledgment
+
+BlueBubbles can send a short, contextual acknowledgment before the main agent
+turn starts. It is off by default and applies only to normal, non-trivial
+iMessages (not slash commands, greetings, pings, thanks, or yes/no replies):
+
+```yaml
+display:
+  platforms:
+    bluebubbles:
+      quick_ack_enabled: true
+      quick_ack_model: fast-model       # optional; uses auxiliary routing
+      quick_ack_fallback: "Got it — I’m looking into that."
+      quick_ack_timeout_seconds: 3      # clamped to 0.5–10 seconds
+```
+
+If generation times out or fails, Hermes sends the fallback and continues the
+main turn. If sending the acknowledgment itself fails, the main turn still
+continues.
+
 ## Features
 
 ### Text Messaging
@@ -168,4 +188,3 @@ Without the Private API, basic text messaging and media still work.
 ### "Private API helper not connected"
 - Install the Private API helper: [docs.bluebubbles.app](https://docs.bluebubbles.app/helper-bundle/installation)
 - Basic messaging works without it — only reactions, typing, and read receipts require it
-

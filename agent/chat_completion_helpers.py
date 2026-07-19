@@ -2631,22 +2631,28 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         # 'stream_options'`), so omit it only for that endpoint.
         if not is_native_gemini_base_url(agent.base_url):
             stream_kwargs["stream_options"] = {"include_usage": True}
-        request_client = _set_request_client(
-            agent._create_request_openai_client(
-                reason="chat_completion_stream_request",
-                api_kwargs=stream_kwargs,
+        
+        # MoA provider special handling: route through the in-process facade
+        # to support custom reference models and aggregators without hitting
+        # the virtual "moa://local" HTTP endpoint.
+        if agent.provider == "moa":
+            last_chunk_time["t"] = time.time()
+            agent._touch_activity("waiting for MoA aggregator response (streaming)")
+            _diag = agent._stream_diag_init()
+            request_client_holder["diag"] = _diag
+            stream = agent.client.chat.completions.create(**stream_kwargs)
+        else:
+            request_client = _set_request_client(
+                agent._create_request_openai_client(
+                    reason="chat_completion_stream_request",
+                    api_kwargs=stream_kwargs,
+                )
             )
-        )
-        # Reset stale-stream timer so the detector measures from this
-        # attempt's start, not a previous attempt's last chunk.
-        last_chunk_time["t"] = time.time()
-        agent._touch_activity("waiting for provider response (streaming)")
-        # Initialize per-attempt stream diagnostics so the retry block can
-        # reach for them after the stream dies.  Lives on
-        # ``request_client_holder["diag"]`` for closure access.
-        _diag = agent._stream_diag_init()
-        request_client_holder["diag"] = _diag
-        stream = request_client.chat.completions.create(**stream_kwargs)
+            last_chunk_time["t"] = time.time()
+            agent._touch_activity("waiting for provider response (streaming)")
+            _diag = agent._stream_diag_init()
+            request_client_holder["diag"] = _diag
+            stream = request_client.chat.completions.create(**stream_kwargs)
         # Claim the delta sink for THIS attempt (#65991). If a prior attempt's
         # stream is somehow still alive (a stale-stream reconnect whose socket
         # abort raced), this claim supersedes it so its late chunks are fenced

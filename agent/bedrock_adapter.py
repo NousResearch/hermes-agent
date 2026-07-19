@@ -57,6 +57,8 @@ except Exception:
 _bedrock_runtime_client_cache: Dict[str, Any] = {}
 _bedrock_control_client_cache: Dict[str, Any] = {}
 
+_EMPTY_MESSAGE_PLACEHOLDER = "(empty message)"
+
 
 _MIN_BOTO3_VERSION = (1, 34, 59)
 
@@ -497,26 +499,27 @@ def _convert_content_to_converse(content) -> List[Dict]:
       - Plain text strings → [{"text": "..."}]
       - Content arrays with text/image_url parts → mixed text/image blocks
 
-    Filters out empty text blocks — Bedrock's Converse API rejects messages
-    where a text content block has an empty ``text`` field (ValidationException:
-    "text content blocks must be non-empty"). Ref: issue #9486.
+    Filters out empty or whitespace-only text blocks — Bedrock's Converse API
+    rejects messages where a text content block is empty or whitespace-only
+    (ValidationException: "text content blocks must contain non-whitespace
+    text"). Ref: issues #9486 and #39829.
     """
     if content is None:
-        return [{"text": " "}]
+        return [{"text": _EMPTY_MESSAGE_PLACEHOLDER}]
     if isinstance(content, str):
-        return [{"text": content}] if content.strip() else [{"text": " "}]
+        return [{"text": content}] if content.strip() else [{"text": _EMPTY_MESSAGE_PLACEHOLDER}]
     if isinstance(content, list):
         blocks = []
         for part in content:
             if isinstance(part, str):
-                blocks.append({"text": part})
+                blocks.append({"text": part if part.strip() else _EMPTY_MESSAGE_PLACEHOLDER})
                 continue
             if not isinstance(part, dict):
                 continue
             part_type = part.get("type", "")
             if part_type == "text":
                 text = part.get("text", "")
-                blocks.append({"text": text if text else " "})
+                blocks.append({"text": text if text and text.strip() else _EMPTY_MESSAGE_PLACEHOLDER})
             elif part_type == "image_url":
                 image_url = part.get("image_url", {})
                 url = image_url.get("url", "") if isinstance(image_url, dict) else ""
@@ -547,7 +550,7 @@ def _convert_content_to_converse(content) -> List[Dict]:
                     # Remote URL — Converse doesn't support URLs directly,
                     # include as text reference for the model.
                     blocks.append({"text": f"[Image: {url}]"})
-        return blocks if blocks else [{"text": " "}]
+        return blocks if blocks else [{"text": _EMPTY_MESSAGE_PLACEHOLDER}]
     return [{"text": str(content)}]
 
 
@@ -635,7 +638,7 @@ def convert_messages_to_converse(
                 })
 
             if not content_blocks:
-                content_blocks = [{"text": " "}]
+                content_blocks = [{"text": _EMPTY_MESSAGE_PLACEHOLDER}]
 
             # Merge with previous assistant message if needed (strict alternation)
             if converse_msgs and converse_msgs[-1]["role"] == "assistant":
@@ -661,11 +664,11 @@ def convert_messages_to_converse(
 
     # Converse requires the first message to be from the user
     if converse_msgs and converse_msgs[0]["role"] != "user":
-        converse_msgs.insert(0, {"role": "user", "content": [{"text": " "}]})
+        converse_msgs.insert(0, {"role": "user", "content": [{"text": _EMPTY_MESSAGE_PLACEHOLDER}]})
 
     # Converse requires the last message to be from the user
     if converse_msgs and converse_msgs[-1]["role"] != "user":
-        converse_msgs.append({"role": "user", "content": [{"text": " "}]})
+        converse_msgs.append({"role": "user", "content": [{"text": _EMPTY_MESSAGE_PLACEHOLDER}]})
 
     return (system_blocks if system_blocks else None, converse_msgs)
 

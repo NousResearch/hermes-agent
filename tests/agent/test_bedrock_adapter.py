@@ -326,8 +326,89 @@ class TestConvertMessagesToConverse:
         from agent.bedrock_adapter import convert_messages_to_converse
         messages = [{"role": "user", "content": ""}]
         system, msgs = convert_messages_to_converse(messages)
-        # Empty string should get a space placeholder
-        assert msgs[0]["content"][0]["text"].strip() != "" or msgs[0]["content"][0]["text"] == " "
+        # Empty string must get a non-whitespace placeholder (#39829)
+        assert msgs[0]["content"][0]["text"] == "(empty message)"
+
+    def test_whitespace_only_content_gets_placeholder(self):
+        """Whitespace-only user content must not produce whitespace-only text blocks (#39829)."""
+        from agent.bedrock_adapter import convert_messages_to_converse
+        messages = [{"role": "user", "content": "   \n\t  "}]
+        system, msgs = convert_messages_to_converse(messages)
+        assert msgs[0]["content"][0]["text"] == "(empty message)"
+
+    def test_none_content_gets_non_whitespace_placeholder(self):
+        """None content must produce non-whitespace placeholder (#39829, layer 1)."""
+        from agent.bedrock_adapter import convert_messages_to_converse
+        messages = [{"role": "user", "content": None}]
+        system, msgs = convert_messages_to_converse(messages)
+        assert msgs[0]["content"][0]["text"] == "(empty message)"
+        assert msgs[0]["content"][0]["text"].strip() != ""
+
+    def test_empty_text_part_in_list_gets_placeholder(self):
+        """Empty text part in content array must not produce whitespace-only block (#39829, layer 3)."""
+        from agent.bedrock_adapter import convert_messages_to_converse
+        messages = [{"role": "user", "content": [{"type": "text", "text": ""}]}]
+        system, msgs = convert_messages_to_converse(messages)
+        assert msgs[0]["content"][0]["text"] == "(empty message)"
+
+    def test_whitespace_text_part_in_list_gets_placeholder(self):
+        """Whitespace-only text part must be replaced with non-whitespace placeholder (#39829, edge case)."""
+        from agent.bedrock_adapter import convert_messages_to_converse
+        messages = [{"role": "user", "content": [{"type": "text", "text": "\n"}]}]
+        system, msgs = convert_messages_to_converse(messages)
+        assert msgs[0]["content"][0]["text"] == "(empty message)"
+
+    def test_whitespace_string_part_in_list_gets_placeholder(self):
+        """String entries in content arrays must not pass through whitespace-only blocks (#39829)."""
+        from agent.bedrock_adapter import convert_messages_to_converse
+        messages = [{"role": "user", "content": ["\t\n"]}]
+        system, msgs = convert_messages_to_converse(messages)
+        assert msgs[0]["content"][0]["text"] == "(empty message)"
+
+    def test_empty_assistant_content_gets_placeholder(self):
+        """Assistant with no content blocks must get non-whitespace placeholder (#39829, layer 5)."""
+        from agent.bedrock_adapter import convert_messages_to_converse
+        messages = [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": ""},
+        ]
+        system, msgs = convert_messages_to_converse(messages)
+        # Assistant content is at index 1; last is trailing user pad
+        assert msgs[0]["role"] == "user"
+        assert msgs[1]["role"] == "assistant"
+        assert msgs[1]["content"][0]["text"] == "(empty message)"
+
+    def test_assistant_first_history_gets_non_whitespace_leading_pad(self):
+        """History starting with assistant must get non-whitespace user padding (#39829, layer 6)."""
+        from agent.bedrock_adapter import convert_messages_to_converse
+        messages = [
+            {"role": "assistant", "content": "Sure, let me help."},
+            {"role": "user", "content": "thanks"},
+        ]
+        system, msgs = convert_messages_to_converse(messages)
+        assert msgs[0]["role"] == "user"
+        assert msgs[0]["content"][0]["text"] == "(empty message)"
+        assert msgs[0]["content"][0]["text"].strip() != ""
+
+    def test_trailing_user_pad_is_non_whitespace(self):
+        """Trailing user pad for assistant-last history must be non-whitespace (#39829, layer 7)."""
+        from agent.bedrock_adapter import convert_messages_to_converse
+        messages = [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "Hi there"},
+        ]
+        system, msgs = convert_messages_to_converse(messages)
+        last = msgs[-1]
+        assert last["role"] == "user"
+        assert last["content"][0]["text"] == "(empty message)"
+        assert last["content"][0]["text"].strip() != ""
+
+    def test_no_valid_blocks_in_list_gets_placeholder(self):
+        """Content array with no extractable blocks must get non-whitespace placeholder (#39829, layer 4)."""
+        from agent.bedrock_adapter import convert_messages_to_converse
+        messages = [{"role": "user", "content": [{}]}]
+        system, msgs = convert_messages_to_converse(messages)
+        assert msgs[0]["content"][0]["text"] == "(empty message)"
 
     def test_image_data_url_converted(self):
         from agent.bedrock_adapter import convert_messages_to_converse
@@ -1305,22 +1386,22 @@ class TestIsAnthropicBedrockModel:
 
 
 class TestEmptyTextBlockFix:
-    """Test that empty text blocks are replaced with space placeholders."""
+    """Test that empty text blocks are replaced with non-whitespace placeholders (#39829)."""
 
-    def test_none_content_gets_space(self):
+    def test_none_content_gets_placeholder(self):
         from agent.bedrock_adapter import _convert_content_to_converse
         blocks = _convert_content_to_converse(None)
-        assert blocks[0]["text"] == " "
+        assert blocks[0]["text"] == "(empty message)"
 
-    def test_empty_string_gets_space(self):
+    def test_empty_string_gets_placeholder(self):
         from agent.bedrock_adapter import _convert_content_to_converse
         blocks = _convert_content_to_converse("")
-        assert blocks[0]["text"] == " "
+        assert blocks[0]["text"] == "(empty message)"
 
-    def test_whitespace_only_gets_space(self):
+    def test_whitespace_only_gets_placeholder(self):
         from agent.bedrock_adapter import _convert_content_to_converse
         blocks = _convert_content_to_converse("   ")
-        assert blocks[0]["text"] == " "
+        assert blocks[0]["text"] == "(empty message)"
 
     def test_real_text_preserved(self):
         from agent.bedrock_adapter import _convert_content_to_converse

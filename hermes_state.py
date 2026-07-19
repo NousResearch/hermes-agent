@@ -598,13 +598,31 @@ def _db_opens_cleanly(db_path: Path) -> Optional[str]:
                 # No-op queries against the actual FTS5 APIs the search
                 # tools use. The trigram table is included because it backs
                 # the title-resolution path; either corruption mode would
-                # break session recall without this probe. Empty MATCH
-                # string is the safest probe — every FTS5 index accepts it
-                # without requiring populated content.
+                # break session recall without this probe. MATCH '""' is
+                # the empty phrase-token probe — FTS5 rejects MATCH ''
+                # outright ("fts5: syntax error"), but a quoted empty
+                # phrase parses, scans zero rows, and exercises the same
+                # shadow-table read path the search tools use.
                 conn.execute(
-                    f"SELECT 1 FROM {fts_table} WHERE {fts_table} MATCH '' LIMIT 1"
+                    f"SELECT 1 FROM {fts_table} WHERE {fts_table} MATCH '\"\"' LIMIT 1"
                 ).fetchone()
             except sqlite3.OperationalError as exc:
+                # Use the canonical capability classifier instead of a
+                # hand-rolled substring check. On SQLite builds without the
+                # fts5 module, the legacy messages_fts table may exist on
+                # disk (from a prior build that had FTS5) and MATCH queries
+                # against it raise OperationalError("no such module: fts5");
+                # the substring check below would misclassify that as
+                # corruption and send the DB into the repair path, whose
+                # final fallback deletes the messages_fts% schema
+                # (hermes_state.py:645-723). The supported degraded-runtime
+                # path (SessionDB._is_fts5_unavailable_error + the
+                # regression suite in tests/test_hermes_state.py:600-632)
+                # treats both "no such module: fts5" and
+                # "no such tokenizer: trigram" as the capability error.
+                if SessionDB._is_fts5_unavailable_error(exc):
+                    # Degraded runtime — not the corruption class we probe.
+                    continue
                 msg = str(exc).lower()
                 if "no such table" in msg or "no such column" in msg:
                     # FTS5 not built yet (brand new file mid-init) — not the

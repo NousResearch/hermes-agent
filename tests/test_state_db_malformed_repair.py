@@ -256,6 +256,160 @@ def test_repair_on_clean_db_is_noop(tmp_path):
     conn.close()
 
 
+# ── FTS read-corruption class (#66724) ───────────────────────────────────
+# Even when writes succeed, partial FTS5 shadow-table damage makes MATCH /
+# snippet / rank queries fail with DatabaseError("database disk image is
+# malformed") while plain reads of the FTS5 table still parse. The read
+# probe in _db_opens_cleanly must surface this corruption class as a reason
+# so the repair path triggers, but it must NOT misclassify the supported
+# degraded-runtime path (no fts5 module / no trigram tokenizer) as
+# corruption — doing so would route a healthy degraded DB through the
+# repair fallback that deletes the messages_fts% schema.
+
+
+def _corrupt_fts_shadow_segments(db_path: Path) -> None:
+    """Overwrite the FTS5 shadow b-tree blocks for ``messages_fts`` only.
+
+    Distinct from ``_corrupt_fts_index_data`` which targets the writes-side
+    trigger path; this targets the MATCH query path so the read probe is
+    what fires.
+    """
+    conn = sqlite3.connect(str(db_path), isolation_level=None)
+    conn.execute("UPDATE messages_fts_data SET block = X'BADC0FFEE0DDF00D'")
+    conn.close()
+
+
+def test_fts_read_corruption_detected_by_read_probe(tmp_path):
+    """Partial shadow-table damage is caught by the FTS5 read probe.
+
+    Without the read probe, ``_db_opens_cleanly`` reports the DB healthy
+    even though ``session_search`` and ``/resume`` title resolution fail
+    with ``database disk image is malformed`` — the exact silent-fail
+    behavior reported in #66724.
+    """
+    from hermes_state import _db_opens_cleanly
+
+    db_path = tmp_path / "state.db"
+    _build_healthy_db(db_path)
+    assert _db_opens_cleanly(db_path) is None
+
+    _corrupt_fts_shadow_segments(db_path)
+
+    reason = _db_opens_cleanly(db_path)
+    assert reason is not None
+    assert "messages_fts" in reason
+    assert "malformed" in reason.lower() or "database disk image" in reason.lower()
+
+
+def test_fts_read_corruption_repaired_in_place(tmp_path):
+    """``repair_state_db_schema`` rebuilds the FTS index so reads resume."""
+    from hermes_state import _db_opens_cleanly
+
+    db_path = tmp_path / "state.db"
+    _build_healthy_db(db_path)
+    _corrupt_fts_shadow_segments(db_path)
+
+    assert _db_opens_cleanly(db_path) is not None  # unhealthy before
+
+    report = repair_state_db_schema(db_path)
+    assert report["repaired"] is True
+    assert _db_opens_cleanly(db_path) is None  # healthy after rebuild
+
+    # Search back online.
+    db = SessionDB(db_path=db_path)
+    try:
+        hits = db._conn.execute(
+            "SELECT COUNT(*) FROM messages_fts WHERE messages_fts MATCH 'pizza'"
+        ).fetchone()[0]
+        assert hits >= 5
+    finally:
+        db.close()
+
+
+# ── Degraded-runtime compatibility (regression for #66906 review) ────────
+# The read probe must NOT misclassify a supported degraded runtime (no
+# fts5 module / no trigram tokenizer) as corruption. If it did, a healthy
+# degraded DB would be sent into the repair path, whose final fallback
+# deletes the messages_fts% schema — breaking the very FTS tables that
+# may have been inherited from a prior build that did have FTS5.
+
+
+class _NoFts5RuntimeCursor(sqlite3.Cursor):
+    """Simulate a runtime without the fts5 module: fts5 table exists but
+    MATCH queries raise the canonical capability error."""
+
+    def execute(self, sql, parameters=()):
+        probe = sql.strip()
+        if "MATCH" in probe and '""' in probe and "messages_fts " in probe:
+            raise sqlite3.OperationalError("no such module: fts5")
+        return super().execute(sql, parameters)
+
+
+class _NoFts5RuntimeConnection(sqlite3.Connection):
+    def cursor(self, factory=None):
+        return super().cursor(factory or _NoFts5RuntimeCursor)
+
+
+class _NoTrigramRuntimeCursor(sqlite3.Cursor):
+    """Simulate a runtime with FTS5 but without the trigram tokenizer."""
+
+    def execute(self, sql, parameters=()):
+        probe = sql.strip()
+        if "MATCH" in probe and '""' in probe and "messages_fts_trigram" in probe:
+            raise sqlite3.OperationalError("no such tokenizer: trigram")
+        return super().execute(sql, parameters)
+
+
+class _NoTrigramRuntimeConnection(sqlite3.Connection):
+    def cursor(self, factory=None):
+        return super().cursor(factory or _NoTrigramRuntimeCursor)
+
+
+def test_fts_read_probe_returns_none_when_fts5_module_missing(tmp_path, monkeypatch):
+    """Capability error on MATCH must not surface as corruption.
+
+    Simulates a healthy DB on a SQLite build without the fts5 module:
+    the messages_fts table exists (from a previous init on a build with
+    fts5) and MATCH queries raise the canonical "no such module: fts5".
+    _db_opens_cleanly must NOT classify this as corruption — otherwise
+    repair would be triggered and its final fallback would delete the
+    messages_fts% schema, breaking the search feature entirely.
+    """
+    from hermes_state import _db_opens_cleanly
+
+    db_path = tmp_path / "state.db"
+    _build_healthy_db(db_path)
+
+    real_connect = sqlite3.connect
+
+    def connect_no_fts5(*args, **kwargs):
+        kwargs["factory"] = _NoFts5RuntimeConnection
+        return real_connect(*args, **kwargs)
+
+    monkeypatch.setattr("hermes_state.sqlite3.connect", connect_no_fts5)
+
+    # Healthy degraded DB → probe returns None. Repair path must NOT fire.
+    assert _db_opens_cleanly(db_path) is None
+
+
+def test_fts_read_probe_returns_none_when_trigram_missing(tmp_path, monkeypatch):
+    """Capability error on trigram MATCH must not surface as corruption."""
+    from hermes_state import _db_opens_cleanly
+
+    db_path = tmp_path / "state.db"
+    _build_healthy_db(db_path)
+
+    real_connect = sqlite3.connect
+
+    def connect_no_trigram(*args, **kwargs):
+        kwargs["factory"] = _NoTrigramRuntimeConnection
+        return real_connect(*args, **kwargs)
+
+    monkeypatch.setattr("hermes_state.sqlite3.connect", connect_no_trigram)
+
+    assert _db_opens_cleanly(db_path) is None
+
+
 # ── FTS write-corruption class (#50502) ──────────────────────────────────
 # A readable state.db can still reject every message write through the
 # messages_fts* triggers when the FTS index is corrupt. Plain

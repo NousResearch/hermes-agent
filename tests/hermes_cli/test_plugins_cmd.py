@@ -489,12 +489,19 @@ class TestCmdUpdate:
     """Test the update command."""
 
     @patch("hermes_cli.plugins_cmd._plugin_operation_lock", side_effect=lambda _target: nullcontext())
+    @patch("hermes_cli.plugins_cmd._validate_update_local_git_config")
     @patch("hermes_cli.plugins_cmd._update_provenance_preflight", return_value=None)
     @patch("hermes_cli.plugins_cmd._sanitize_plugin_name")
     @patch("hermes_cli.plugins_cmd._plugins_dir")
     @patch("hermes_cli.plugins_cmd.subprocess.run")
     def test_update_git_pull_success(
-        self, mock_run, mock_plugins_dir, mock_sanitize, mock_preflight, mock_operation_lock
+        self,
+        mock_run,
+        mock_plugins_dir,
+        mock_sanitize,
+        mock_preflight,
+        mock_validate,
+        mock_operation_lock,
     ):
         from hermes_cli.plugins_cmd import cmd_update
 
@@ -512,6 +519,7 @@ class TestCmdUpdate:
         cmd_update("test-plugin")
 
         mock_run.assert_called_once()
+        mock_validate.assert_called_once_with(mock_target, None)
         mock_operation_lock.assert_called_once_with(mock_target)
 
     @patch("hermes_cli.plugins_cmd._sanitize_plugin_name")

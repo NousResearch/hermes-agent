@@ -29,7 +29,26 @@ def _installed(tmp_path: Path, monkeypatch) -> Path:
     target = plugins / "demo"
     (target / ".git").mkdir(parents=True)
     monkeypatch.setattr(pc, "_plugins_dir", lambda: plugins)
+    monkeypatch.setattr(pc, "_validate_update_local_git_config", lambda *_: None)
     return target
+
+
+def _real_update_repo(tmp_path: Path, monkeypatch) -> tuple[Path, Path]:
+    remote = tmp_path / "remote.git"
+    seed = tmp_path / "seed"
+    clone = tmp_path / "plugins" / "demo"
+    subprocess.run(["git", "init", "--bare", str(remote)], check=True, capture_output=True)
+    subprocess.run(["git", "clone", str(remote), str(seed)], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(seed), "config", "user.email", "test@example.com"], check=True)
+    subprocess.run(["git", "-C", str(seed), "config", "user.name", "Test"], check=True)
+    (seed / "plugin.yaml").write_text("name: demo\n")
+    subprocess.run(["git", "-C", str(seed), "add", "."], check=True)
+    subprocess.run(["git", "-C", str(seed), "commit", "-m", "one"], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(seed), "push", "origin", "HEAD"], check=True, capture_output=True)
+    subprocess.run(["git", "clone", str(remote), str(clone)], check=True, capture_output=True)
+    monkeypatch.setattr(pc, "_plugins_dir", lambda: tmp_path / "plugins")
+    monkeypatch.setattr(pc, "_copy_example_files", lambda *_: None)
+    return remote, clone
 
 
 def test_pinned_cli_refuses_without_pull_and_preserves_target(tmp_path, monkeypatch, capsys):
@@ -208,7 +227,7 @@ def test_unpinned_update_refreshes_lock_to_real_remote_head(tmp_path, monkeypatc
     subprocess.run(["git", "-C", str(seed), "add", "."], check=True)
     subprocess.run(["git", "-C", str(seed), "commit", "-m", "one"], check=True, capture_output=True)
     subprocess.run(["git", "-C", str(seed), "push", "origin", "HEAD"], check=True, capture_output=True)
-    subprocess.run(["git", "clone", str(remote), str(clone)], check=True, capture_output=True)
+    subprocess.run(["git", "clone", f"file://{remote}", str(clone)], check=True, capture_output=True)
     old = subprocess.run(["git", "-C", str(clone), "rev-parse", "HEAD"], check=True, text=True, capture_output=True).stdout.strip()
     write_provenance_lock(clone, _provenance(commit=old, source=f"file://{remote}"))
     (seed / "plugin.yaml").write_text("name: demo\nversion: 2\n")
@@ -227,6 +246,64 @@ def test_unpinned_update_refreshes_lock_to_real_remote_head(tmp_path, monkeypatc
     assert lock.source_url == f"file://{remote}"
 
 
+def test_update_rejects_smudge_filter_without_executing_or_pulling(tmp_path, monkeypatch, capsys):
+    remote, clone = _real_update_repo(tmp_path, monkeypatch)
+    marker = tmp_path / "executed"
+    secret = f"touch {marker} secret-value"
+    subprocess.run(["git", "-C", str(clone), "config", "filter.attack.smudge", secret], check=True)
+    before = subprocess.run(["git", "-C", str(clone), "rev-parse", "HEAD"], check=True, text=True, capture_output=True).stdout
+
+    with pytest.raises(SystemExit):
+        pc.cmd_update("demo")
+
+    assert not marker.exists()
+    after = subprocess.run(["git", "-C", str(clone), "rev-parse", "HEAD"], check=True, text=True, capture_output=True).stdout
+    assert after == before
+    output = capsys.readouterr().out
+    assert "Unsafe local Git configuration; reinstall the plugin instead." in output
+    assert "filter.attack" not in output
+    assert "secret-value" not in output
+
+
+@pytest.mark.parametrize("key", ["core.fsmonitor", "credential.example.helper"])
+def test_update_rejects_other_executable_local_config(tmp_path, monkeypatch, key):
+    _remote, clone = _real_update_repo(tmp_path, monkeypatch)
+    subprocess.run(["git", "-C", str(clone), "config", key, "secret-command"], check=True)
+
+    result = pc.dashboard_update_user_plugin("demo")
+
+    assert result["ok"] is False
+    assert result["error"] == "Unsafe local Git configuration; reinstall the plugin instead."
+    assert "secret" not in result["error"]
+
+
+def test_update_rejects_origin_drift_from_provenance_without_pull(tmp_path, monkeypatch):
+    remote, clone = _real_update_repo(tmp_path, monkeypatch)
+    head = subprocess.run(["git", "-C", str(clone), "rev-parse", "HEAD"], check=True, text=True, capture_output=True).stdout.strip()
+    write_provenance_lock(clone, _provenance(commit=head, source=f"file://{remote}"))
+    subprocess.run(["git", "-C", str(clone), "remote", "set-url", "origin", "https://example.invalid/drift.git"], check=True)
+
+    result = pc.dashboard_update_user_plugin("demo")
+
+    assert result["ok"] is False
+    assert result["error"] == "Unsafe local Git configuration; reinstall the plugin instead."
+
+
+def test_update_rejects_multiple_origin_urls_from_provenance_without_pull(tmp_path, monkeypatch):
+    remote, clone = _real_update_repo(tmp_path, monkeypatch)
+    head = subprocess.run(["git", "-C", str(clone), "rev-parse", "HEAD"], check=True, text=True, capture_output=True).stdout.strip()
+    write_provenance_lock(clone, _provenance(commit=head, source=str(remote)))
+    subprocess.run(
+        ["git", "-C", str(clone), "config", "--add", "remote.origin.url", str(remote)],
+        check=True,
+    )
+
+    result = pc.dashboard_update_user_plugin("demo")
+
+    assert result["ok"] is False
+    assert result["error"] == "Unsafe local Git configuration; reinstall the plugin instead."
+
+
 def test_lock_refresh_failure_is_partial_for_cli_and_dashboard(tmp_path, monkeypatch, capsys):
     target = _installed(tmp_path, monkeypatch)
     write_provenance_lock(target, _provenance())
@@ -239,12 +316,12 @@ def test_lock_refresh_failure_is_partial_for_cli_and_dashboard(tmp_path, monkeyp
         pc.cmd_update("demo")
     assert exc.value.code == 1
     output = capsys.readouterr().out
-    assert "Plugin updated, but provenance lock refresh failed." in output
+    assert "Git pull succeeded, but provenance lock refresh failed." in output
     assert "raw-secret" not in output
     copy.assert_not_called()
 
     result = pc.dashboard_update_user_plugin("demo")
-    assert result == {"ok": False, "updated": True, "error": "Plugin updated, but provenance lock refresh failed.", "name": "demo"}
+    assert result == {"ok": False, "pull_succeeded": True, "unchanged": False, "error": "Git pull succeeded, but provenance lock refresh failed.", "name": "demo"}
     copy.assert_not_called()
 
 

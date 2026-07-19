@@ -15,6 +15,7 @@ import importlib.metadata
 import json
 import logging
 import os
+import re
 import shlex
 import shutil
 import stat
@@ -1154,6 +1155,7 @@ def cmd_update(name: str) -> None:
                 )
                 sys.exit(1)
             console.print(f"[dim]Updating {name}...[/dim]")
+            _validate_update_local_git_config(target, provenance)
             ok, output = _git_pull_plugin_dir(target)
             if not ok:
                 console.print(f"[red]Error:[/red] {output}")
@@ -1163,7 +1165,7 @@ def cmd_update(name: str) -> None:
                     _refresh_update_provenance(target, provenance)
                 except Exception:
                     console.print(
-                        "[red]Error:[/red] Plugin updated, but provenance lock refresh failed."
+                        "[red]Error:[/red] Git pull succeeded, but provenance lock refresh failed."
                     )
                     sys.exit(1)
             _copy_example_files(target, console)
@@ -2500,6 +2502,7 @@ def dashboard_update_user_plugin(name: str) -> dict[str, Any]:
                     "ok": False,
                     "error": f"Plugin '{name}' is not a git checkout; cannot pull updates.",
                 }
+            _validate_update_local_git_config(target, provenance)
             ok, msg = _git_pull_plugin_dir(target)
             if not ok:
                 return {"ok": False, "error": msg}
@@ -2507,10 +2510,12 @@ def dashboard_update_user_plugin(name: str) -> dict[str, Any]:
                 try:
                     _refresh_update_provenance(target, provenance)
                 except Exception:
+                    unchanged = "Already up to date" in msg
                     return {
                         "ok": False,
-                        "updated": True,
-                        "error": "Plugin updated, but provenance lock refresh failed.",
+                        "pull_succeeded": True,
+                        "unchanged": unchanged,
+                        "error": "Git pull succeeded, but provenance lock refresh failed.",
                         "name": name,
                     }
             from rich.console import Console
@@ -2547,12 +2552,91 @@ def _update_provenance_preflight(
         source = provenance.source_url
         if provenance.subdir:
             source = f"{source}#{provenance.subdir}"
+        if os.name == "nt":
+            guidance = (
+                f"Source: {source}. Run `hermes plugins install <source-shown-above> "
+                "--ref <40-char-sha> --force`."
+            )
+        else:
+            guidance = (
+                "Reinstall with a new exact SHA: "
+                f"`hermes plugins install {shlex.quote(source)} "
+                "--ref <40-char-sha> --force`."
+            )
         raise PluginOperationError(
-            "Pinned plugins cannot be updated in place. Reinstall with a new exact SHA: "
-            f"`hermes plugins install {shlex.quote(source)} "
-            "--ref <40-char-sha> --force`."
+            "Pinned plugins cannot be updated in place. " + guidance
         )
     return provenance
+
+
+_UNSAFE_LOCAL_GIT_CONFIG = re.compile(
+    r"(?:"
+    r"filter\..+\.(?:clean|smudge|process|required)|"
+    r"core\.(?:fsmonitor|sshcommand|gitproxy|hookspath)|"
+    r"credential(?:\..+)?\.helper|"
+    r"include\.path|includeif\..+\.path|"
+    r"remote\..+\.(?:uploadpack|receivepack|proxy)|"
+    r"url\..+\.(?:insteadof|pushinsteadof)|"
+    r"protocol\..+\.allow|"
+    r"diff\..+\.command|merge\..+\.driver|"
+    r"difftool\..+\.cmd|mergetool\..+\.cmd|"
+    r"alias\..+"
+    r")\Z",
+    re.IGNORECASE,
+)
+_UNSAFE_LOCAL_GIT_MESSAGE = "Unsafe local Git configuration; reinstall the plugin instead."
+
+
+def _safe_local_git_config_query(target: Path, args: list[str]) -> bytes:
+    """Run a local-only, no-includes config query without exposing its output on failure."""
+    git_exe = _resolve_git_executable()
+    if not git_exe:
+        raise PluginOperationError(_UNSAFE_LOCAL_GIT_MESSAGE)
+    try:
+        result = subprocess.run(
+            [git_exe, "-c", f"core.hooksPath={os.devnull}", "config", "--local", "--no-includes", *args],
+            cwd=str(target),
+            capture_output=True,
+            timeout=60,
+            env=_inspection_git_env(),
+        )
+    except (FileNotFoundError, OSError, subprocess.TimeoutExpired) as exc:
+        raise PluginOperationError(_UNSAFE_LOCAL_GIT_MESSAGE) from exc
+    if result.returncode != 0:
+        raise PluginOperationError(_UNSAFE_LOCAL_GIT_MESSAGE)
+    return result.stdout
+
+
+def _validate_update_local_git_config(
+    target: Path, provenance: PluginProvenance | None
+) -> None:
+    """Reject local Git configuration that can execute, rewrite, or drift an update."""
+    names = _safe_local_git_config_query(target, ["--name-only", "--null", "--list"])
+    try:
+        decoded_names = [name.decode("utf-8") for name in names.split(b"\0") if name]
+    except UnicodeDecodeError as exc:
+        raise PluginOperationError(_UNSAFE_LOCAL_GIT_MESSAGE) from exc
+    if any(_UNSAFE_LOCAL_GIT_CONFIG.fullmatch(name) for name in decoded_names):
+        raise PluginOperationError(_UNSAFE_LOCAL_GIT_MESSAGE)
+
+    # Legacy installs retain their historical remote compatibility. Provenance-backed
+    # installs must still point exactly at the source Hermes inspected and locked.
+    if provenance is not None:
+        raw_urls = _safe_local_git_config_query(
+            target, ["--null", "--get-all", "remote.origin.url"]
+        )
+        try:
+            values = raw_urls.split(b"\0")
+            if values[-1:] == [b""]:
+                values.pop()
+            if len(values) != 1:
+                raise ValueError("origin must have exactly one URL")
+            remote_url = values[0].decode("utf-8")
+            validated_url = validate_source_url(remote_url)
+        except (UnicodeDecodeError, ValueError) as exc:
+            raise PluginOperationError(_UNSAFE_LOCAL_GIT_MESSAGE) from exc
+        if validated_url != provenance.source_url:
+            raise PluginOperationError(_UNSAFE_LOCAL_GIT_MESSAGE)
 
 
 def _refresh_update_provenance(target: Path, provenance: PluginProvenance) -> None:

@@ -182,6 +182,63 @@ staging, Phase-B preflight, and apply. Before a cutover plan is staged, a
 failure invokes the fixed `abort-freeze` recovery path. The private signing key
 is never passed to the production transport.
 
+The isolated-canary prerequisite is not hand-authored JSON. Build it from the
+four immutable canonical public receipts with the edge author:
+
+```bash
+python -m scripts.canary.owner_gate_release_author \
+  author-isolated-canary-prerequisite \
+  --release-revision <exact-40-character-release-sha> \
+  --fixture /absolute/immutable/fixture.json \
+  --workspace-gateway /absolute/immutable/workspace-gateway.json \
+  --cleanup-receipt /absolute/immutable/cleanup-receipt.json \
+  --production-diff /absolute/immutable/production-diff.json
+```
+
+It reuses the production validator, derives the fixture digest itself, and
+publishes only to the fixed mode-`0444` owner path
+`~/.hermes/owner-gate-production-cutover/isolated-canary-prerequisites/<release-sha>.json`.
+There is no output-path argument.
+
+### Host-authority authoring blocker
+
+There is deliberately no generic owner CLI that accepts the seven semantic
+host-authority fields as JSON. The existing remote host-authority action can
+validate a request, but it cannot derive or safely stage the live production
+facts needed to create one. Launch remains blocked until a fixed root-side,
+read-only collector/stager exists that:
+
+- renders and materializes every release-contracted file at the fixed staged
+  host paths, then reads all of them back with owner/group/mode/digest evidence;
+- derives the gateway, writer, and connector target service identities;
+- captures user/group pre-state, Discord and operational-edge key-foundation
+  receipts, token source/target/retirement paths, passkey paths, Discord policy
+  continuity, and lease-directory pre-state; and
+- derives the host transition and capability topology from those fixed facts,
+  accepting from the owner only explicit per-cron continuity dispositions.
+
+Until that collector exists, caller-authored `host_transition`, target identity,
+or `capability_topology` JSON is not authority and must not be fed to
+`execute-cutover` or `prepare-cutover`. This is the remaining B5 launch blocker,
+not a reason to widen the owner launcher.
+
+### Rollback authority boundary
+
+Before the fsynced `activation_commit_intent` exists, failures use the exact
+`abort-freeze` path and restore every approved database, host, token, service,
+and Caddy preimage. This is the only rollback window. The intent is the
+irreversible forward-only authority boundary: after it exists, recovery must
+never restore or route to v1. The transaction may only converge to verified v2
+or to the fixed 503 maintenance route while preserving the v2 authority
+database and mutation journal, followed by forward recovery.
+
+The existing `muncho-auto-deploy-release run <SHA> <PR>` action remains valid
+only before cutover while the loaded production unit still uses the legacy
+mutable-release symlink topology. It is a reversible pre-cutover deploy, not a
+cutover stage action and not a launch blocker. Once the SHA-pinned cutover
+identity or any ambiguous cutover state is present, that helper remains
+fail-closed; no new stage-only variant is introduced.
+
 This layer deliberately does not invent a production gateway `ExecStart`.
 The production model-sovereignty startup-contract renderer must supply the
 normal GPT-5.6 agent loop + API/Relay + Canonical Writer target unit/config;

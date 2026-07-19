@@ -311,6 +311,60 @@ field in this handoff.
 
 ### Inert owner-gate HOST/CLOUD observation
 
+The owner-side release author is a separate edge command. It never accepts a
+private key or a caller-selected publication path. First publish an exact clean
+`main` checkout whose sole `origin` is the reviewed fork and whose
+`origin/main`, `HEAD`, tree, worktree, submodules, and outer-stage-zero sources
+all resolve to the release SHA:
+
+```bash
+python -m scripts.canary.owner_gate_release_author \
+  publish-release-source \
+  --source-root /absolute/clean/fork-main \
+  --release-revision <exact-40-character-release-sha>
+```
+
+This performs a local `--no-hardlinks --no-checkout` clone, checks out the
+exact SHA detached, resets and re-verifies the fixed fork origin, and publishes
+with one atomic no-replace rename at
+`~/.hermes/trusted/owner-gate-release-sources/<release-sha>`. A conflicting
+destination or fixed `.pending` path fails closed.
+
+After Foundation A, the same edge author can build the canonical unsigned
+release trust manifest from the exact offline package inventory, the one
+Foundation collector key used by both network and ancestry evidence, the three
+distinct final collector keys, and the signed credential-migration envelope:
+
+```bash
+python -m scripts.canary.owner_gate_release_author \
+  author-unsigned-trust \
+  --source-root /absolute/clean/fork-main \
+  --release-revision <final-release-sha> \
+  --wheelhouse-root /absolute/immutable/wheelhouse \
+  --wheelhouse-manifest /absolute/immutable/wheelhouse-manifest.json \
+  --interpreter-sha256 <sha256> \
+  --foundation-source-revision <foundation-release-sha> \
+  --foundation-source-tree-oid <foundation-tree-oid> \
+  --pre-foundation-authority /absolute/immutable/pre-foundation.json \
+  --owner-reauth-receipt /absolute/immutable/owner-reauth.json \
+  --network-evidence /absolute/immutable/network-evidence.json \
+  --foundation-collector-public-key /absolute/immutable/foundation.pub \
+  --project-ancestry-evidence /absolute/immutable/project-ancestry.json \
+  --direct-iam-identity-authority /absolute/immutable/direct-iam.json \
+  --network-collector-public-key /absolute/immutable/final-network.pub \
+  --cloud-collector-public-key /absolute/immutable/final-cloud.pub \
+  --host-collector-public-key /absolute/immutable/final-host.pub \
+  --credential-migration-envelope /absolute/immutable/credential.json
+```
+
+The fixed output is
+`~/.hermes/owner-gate-release-authority/manifests/<release-sha>.trust.unsigned.json`
+at mode `0444`. It can then be passed to the existing
+`owner_gate_trust_author sign` action. The author revalidates the complete
+signed Foundation apply
+journal lineage and package inventory; it does not accept a Foundation apply
+receipt path or an output path.
+
 The first combined inert observation is a separate exact action on the
 release-bound full owner launcher. It does not replay the Foundation operation
 and accepts no evidence, key, plan, journal, stream, output, or remote-command

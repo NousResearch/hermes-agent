@@ -164,7 +164,7 @@ from agent.prompt_builder import (  # noqa: F401  # re-exported via _ra() / mock
     build_nous_subscription_prompt,
     load_soul_md,
 )
-from agent.process_bootstrap import _get_proxy_from_env  # noqa: F401
+from agent.process_bootstrap import _get_proxy_from_env, _get_agent_keepalive_expiry  # noqa: F401
 from agent.message_sanitization import (  # noqa: F401
     _SURROGATE_RE,
     _sanitize_surrogates,
@@ -4022,11 +4022,16 @@ class AIAgent:
         and SSE encoding.
 
         The fix moves connection lifecycle management from the socket layer
-        to the HTTP pool layer: ``keepalive_expiry=20.0`` tells httpx to
-        close idle pooled connections *before* a reverse proxy's typical
-        30–60 s timeout drops them, preventing CLOSE-WAIT accumulation
+        to the HTTP pool layer: ``keepalive_expiry`` (default 300.0 s)
+        tells httpx to close idle pooled connections *before* a reverse
+        proxy's timeout drops them, preventing CLOSE-WAIT accumulation
         without modifying socket options.  The default httpx transport
         preserves OS TCP defaults (including ``TCP_NODELAY``).
+
+        The default 300 s accommodates Cloudflare/OpenRouter (100–600 s
+        proxy timeout, #67012) while still preventing unbounded CLOSE-WAIT
+        accumulation.  Override via ``HERMES_HTTPX_KEEPALIVE_EXPIRY``
+        env var.
 
         ``verify`` carries per-provider ``ssl_ca_cert`` / ``ssl_verify`` and
         ``HERMES_CA_BUNDLE`` settings.  It is passed on the client AND on
@@ -4040,13 +4045,14 @@ class AIAgent:
             # HTTP_PROXY / HTTPS_PROXY / NO_PROXY correctly.
             _proxy = _get_proxy_for_base_url(base_url)
 
-            # Proactive pool reaping: close idle connections at 20 s,
-            # before reverse proxies (30–60 s typical) send FIN and
-            # cause CLOSE-WAIT accumulation.
+            # Proactive pool reaping: close idle connections at the
+            # configured keepalive_expiry (default 300 s, configurable
+            # via HERMES_HTTPX_KEEPALIVE_EXPIRY) — accommodates
+            # Cloudflare/OpenRouter streaming (#67012).
             _limits = _httpx.Limits(
                 max_keepalive_connections=20,
                 max_connections=100,
-                keepalive_expiry=20.0,
+                keepalive_expiry=_get_agent_keepalive_expiry(),
             )
 
             # Timeouts: generous read=None for SSE streaming endpoints.

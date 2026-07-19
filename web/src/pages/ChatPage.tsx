@@ -46,7 +46,10 @@ import {
 } from "@/lib/pty-reconnect";
 import {
   MOBILE_REPLACEMENT_WINDOW_MS,
+  isIosLikeUserAgent,
+  normalizePtyMobileHangulInput,
   normalizePtyMobileInput,
+  shouldSuppressPtyImeData,
   shouldTreatInputAsMobileReplacement,
 } from "@/lib/pty-mobile-input";
 import {
@@ -710,6 +713,15 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     term.loadAddon(new WebLinksAddon());
 
     let mobileInputCleanup: (() => void) | null = null;
+    let mobileImeComposing = false;
+    let mobileHangulRawComposition = "";
+    let mobileReconcileNativeFinal = false;
+    const isMobileLike =
+      typeof navigator !== "undefined" &&
+      /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent);
+    const isIosLike =
+      typeof navigator !== "undefined" &&
+      isIosLikeUserAgent(navigator.userAgent, navigator.maxTouchPoints);
     term.open(host);
 
     const textarea = term.textarea;
@@ -719,9 +731,13 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       textarea.setAttribute("autocapitalize", "off");
       textarea.setAttribute("spellcheck", "false");
 
-      const isMobileLike =
-        typeof navigator !== "undefined" &&
-        /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent);
+      const markCompositionStart = () => {
+        // Keep any raw-jamo fallback state. WebKit can report compositionstart
+        // late, after those jamo were already synthesized; the eventual native
+        // final must still reconcile against that state instead of duplicating.
+        mobileImeComposing = true;
+        mobileReconcileNativeFinal = Boolean(mobileHangulRawComposition);
+      };
       const markReplacementInput = (ev: Event) => {
         const input = ev as InputEvent;
         if (
@@ -735,13 +751,16 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         }
       };
       const markCompositionEnd = () => {
+        mobileImeComposing = false;
         mobileReplacementInputUntilRef.current = Date.now() + MOBILE_REPLACEMENT_WINDOW_MS;
       };
 
       textarea.addEventListener("beforeinput", markReplacementInput, true);
+      textarea.addEventListener("compositionstart", markCompositionStart, true);
       textarea.addEventListener("compositionend", markCompositionEnd, true);
       mobileInputCleanup = () => {
         textarea.removeEventListener("beforeinput", markReplacementInput, true);
+        textarea.removeEventListener("compositionstart", markCompositionStart, true);
         textarea.removeEventListener("compositionend", markCompositionEnd, true);
       };
     }
@@ -1089,6 +1108,12 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
           return;
         }
 
+        // iOS WebKit can expose physical Korean keys through xterm onData
+        // while its hidden textarea is still composing the final syllable.
+        if (shouldSuppressPtyImeData(data, mobileImeComposing, isIosLike)) {
+          return;
+        }
+
         if (
           ws.readyState !== WebSocket.OPEN ||
           shouldBlockPtyInput(ptyStateRef.current)
@@ -1099,6 +1124,22 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
               `\r\n\x1b[33m[${PTY_RECONNECT_INPUT_MESSAGE}]\x1b[0m\r\n`,
             );
           }
+          return;
+        }
+
+        const hangul = normalizePtyMobileHangulInput(
+          data,
+          ptyInputLineRef.current,
+          isIosLike,
+          mobileHangulRawComposition,
+          mobileReconcileNativeFinal,
+        );
+        mobileReconcileNativeFinal = false;
+        mobileHangulRawComposition = hangul.nextRawComposition;
+        if (hangul.normalized) {
+          ptyInputLineRef.current = hangul.nextLine;
+          mobileReplacementInputUntilRef.current = 0;
+          if (hangul.data) ws.send(hangul.data);
           return;
         }
 

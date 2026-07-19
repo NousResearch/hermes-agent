@@ -291,6 +291,7 @@ Each built-in ships its own palette, typography, and layout — switching produc
 | **Mono** (`mono`) | Grayscale | IBM Plex Sans + IBM Plex Mono, 13px | 0 radius, compact |
 | **Cyberpunk** (`cyberpunk`) | Neon green on black | Share Tech Mono everywhere, 14px | 0 radius, compact |
 | **Rosé** (`rose`) | Pink + ivory | Fraunces (serif) + DM Mono, 16px | 1rem radius, spacious |
+| **Night Osaka** (`night-osaka`) | Indigo black + magenta & cyan neon, pixel sakura wind | Geist + Geist Mono, 14px | 0.625rem radius, comfortable |
 
 Themes that reference Google Fonts (all except Hermes Teal) load the stylesheet on demand — the first time you switch to them a `<link>` tag is injected into `<head>`.
 

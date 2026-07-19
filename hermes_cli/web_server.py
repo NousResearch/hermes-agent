@@ -17702,6 +17702,7 @@ _BUILTIN_DASHBOARD_THEMES = [
     {"name": "mono",      "label": "Mono",           "description": "Clean grayscale — minimal and focused"},
     {"name": "cyberpunk", "label": "Cyberpunk",      "description": "Neon green on black — matrix terminal"},
     {"name": "rose",      "label": "Rosé",           "description": "Soft pink and warm ivory — easy on the eyes"},
+    {"name": "night-osaka", "label": "Night Osaka", "description": "Cyberpunk Osaka night with pixel sakura drifting in gusty wind"},
 ]
 
 

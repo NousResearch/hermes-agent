@@ -712,6 +712,12 @@ export interface Translations {
       needsSignIn: string
       needsSetup: string
       nousIncluded: string
+      nousAuthNeededTitle: string
+      nousAuthNeededMessage: (provider: string) => string
+      nousAuthSignIn: string
+      nousAuthDoneTitle: string
+      nousAuthDoneMessage: string
+      nousAuthFailed: string
       noApiKeyRequired: string
       postSetupHint: (step: string) => string
       postSetupInstalledHint: string

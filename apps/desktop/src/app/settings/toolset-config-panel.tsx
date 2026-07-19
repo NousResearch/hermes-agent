@@ -7,11 +7,13 @@ import {
   getActionStatus,
   getToolsetConfig,
   getToolsetModels,
+  pollOAuthSession,
   revealEnvVar,
   runToolsetPostSetup,
   selectToolsetModel,
   selectToolsetProvider,
-  setEnvVar
+  setEnvVar,
+  startOAuthLogin
 } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { Check, Loader2, Save, Terminal } from '@/lib/icons'
@@ -479,6 +481,16 @@ export function ToolsetConfigPanel({ toolset, onConfiguredChange }: ToolsetConfi
   const [activeProvider, setActiveProvider] = useState<string | null>(null)
   // Live per-key set/unset state, seeded from the endpoint then patched locally.
   const [envState, setEnvState] = useState<Record<string, boolean>>({})
+  // Guard the Nous Portal sign-in poll loop against unmount/state updates.
+  const mountedRef = useRef(true)
+
+  useEffect(() => {
+    mountedRef.current = true
+
+    return () => {
+      mountedRef.current = false
+    }
+  }, [])
 
   const refresh = useCallback(async () => {
     setLoading(true)
@@ -532,7 +544,7 @@ export function ToolsetConfigPanel({ toolset, onConfiguredChange }: ToolsetConfi
     setSelecting(provider.name)
 
     try {
-      await selectToolsetProvider(toolset, provider.name)
+      const result = await selectToolsetProvider(toolset, provider.name)
       // Mirror the backend write locally so dependent UI (model catalog
       // enablement) tracks the new active backend without a refetch.
       setCfg(current =>
@@ -544,12 +556,84 @@ export function ToolsetConfigPanel({ toolset, onConfiguredChange }: ToolsetConfi
             }
           : current
       )
+
+      if (result.needs_nous_auth) {
+        // Managed Nous row selected without Portal entitlement: the config
+        // keys are written but the backend won't activate until the user
+        // signs in (the CLI runs this gate inline; the GUI surfaces it as a
+        // sign-in action). Reuses the existing Nous Portal device-code flow.
+        notify({
+          kind: 'warning',
+          title: copy.nousAuthNeededTitle,
+          message: copy.nousAuthNeededMessage(provider.name),
+          action: { label: copy.nousAuthSignIn, onClick: () => void signInToNousPortal() }
+        })
+
+        return
+      }
+
       notify({ kind: 'success', title: copy.selectedTitle, message: copy.selectedMessage(provider.name) })
       onConfiguredChange?.()
     } catch (err) {
       notifyError(err, copy.failedSelect(provider.name))
     } finally {
       setSelecting(null)
+    }
+  }
+
+  // Drive the existing Nous Portal OAuth device-code flow (the same session
+  // machinery onboarding uses: start → open verification URL → poll), then
+  // refetch the toolset config so is_active / status flip once entitled.
+  async function signInToNousPortal() {
+    try {
+      const start = await startOAuthLogin('nous')
+
+      if (start.flow !== 'device_code') {
+        notifyError(new Error(`unexpected flow: ${start.flow}`), copy.nousAuthFailed)
+
+        return
+      }
+
+      const url = start.verification_url
+
+      if (window.hermesDesktop?.openExternal) {
+        try {
+          await window.hermesDesktop.openExternal(url)
+        } catch {
+          window.open(url, '_blank', 'noopener,noreferrer')
+        }
+      } else {
+        window.open(url, '_blank', 'noopener,noreferrer')
+      }
+
+      // Poll until the device-code session resolves (~5s cadence, bounded).
+      for (let attempt = 0; attempt < 120 && mountedRef.current; attempt += 1) {
+        await new Promise(resolve => window.setTimeout(resolve, 5000))
+
+        if (!mountedRef.current) {
+          return
+        }
+
+        const polled = await pollOAuthSession('nous', start.session_id)
+
+        if (polled.status === 'approved') {
+          notify({ kind: 'success', title: copy.nousAuthDoneTitle, message: copy.nousAuthDoneMessage })
+          await refresh()
+          onConfiguredChange?.()
+
+          return
+        }
+
+        if (polled.status !== 'pending') {
+          notifyError(new Error(polled.error_message || `Sign-in ${polled.status}`), copy.nousAuthFailed)
+
+          return
+        }
+      }
+    } catch (err) {
+      if (mountedRef.current) {
+        notifyError(err, copy.nousAuthFailed)
+      }
     }
   }
 

@@ -569,7 +569,54 @@ def interruptible_api_call(agent, api_kwargs: dict):
         else:
             agent._close_request_openai_client(request_client, reason=reason)
 
+    # #67142: owner-aware teardown for the SHARED Anthropic client. The direct
+    # Anthropic path does not build per-request clients, so it can't reuse the
+    # OpenAI ``request_client_holder`` machinery above — but it has the identical
+    # FD-recycling hazard: the stale-call / interrupt watchdog runs on a stranger
+    # thread and previously called ``_anthropic_client.close()`` there, racing
+    # the worker's live SSL BIO and corrupting SQLite via a recycled TLS FD.
+    # ``owner_tid`` is stamped by the worker; a stranger-thread teardown only
+    # aborts sockets (unblocking the worker) and defers the close+rebuild to the
+    # worker via ``rebuild_pending``.
+    _anthropic_teardown = {"owner_tid": None, "rebuild_pending": False}
+
+    def _teardown_anthropic_client(reason: str) -> None:
+        owner_tid = _anthropic_teardown.get("owner_tid")
+        stranger_thread = (
+            owner_tid is not None and owner_tid != threading.get_ident()
+        )
+        if stranger_thread:
+            # Stranger thread → abort sockets only; the worker owns the close.
+            _anthropic_teardown["rebuild_pending"] = True
+            agent._abort_anthropic_client(reason=reason)
+            return
+        # Owning (worker) thread → full close + rebuild is FD-safe here.
+        _anthropic_teardown["rebuild_pending"] = False
+        try:
+            agent._anthropic_client.close()
+        except Exception:
+            pass
+        agent._rebuild_anthropic_client()
+
+    def _drain_pending_anthropic_rebuild() -> None:
+        # Worker-thread finalizer: if a stranger-thread watchdog aborted the
+        # Anthropic sockets, complete the deferred close+rebuild here so the FD
+        # is released from the owning thread (#67142).
+        if not _anthropic_teardown.get("rebuild_pending"):
+            return
+        _anthropic_teardown["rebuild_pending"] = False
+        try:
+            agent._anthropic_client.close()
+        except Exception:
+            pass
+        try:
+            agent._rebuild_anthropic_client()
+        except Exception:
+            pass
+
     def _call():
+        if agent.api_mode == "anthropic_messages":
+            _anthropic_teardown["owner_tid"] = threading.get_ident()
         try:
             # _set_request_client registers each per-request OpenAI client with
             # the stranger-thread abort machinery above; the shared dispatch
@@ -599,6 +646,7 @@ def interruptible_api_call(agent, api_kwargs: dict):
             result["error"] = e
         finally:
             _close_request_client_once("request_complete")
+            _drain_pending_anthropic_rebuild()
 
     # ── Stale-call timeout (mirrors streaming stale detector) ────────
     # Non-streaming calls return nothing until the full response is
@@ -894,8 +942,9 @@ def interruptible_api_call(agent, api_kwargs: dict):
                 )
             try:
                 if agent.api_mode == "anthropic_messages":
-                    agent._anthropic_client.close()
-                    agent._rebuild_anthropic_client()
+                    # #67142: stranger-thread teardown aborts sockets only; the
+                    # worker completes the close+rebuild from its own thread.
+                    _teardown_anthropic_client("stale_call_kill")
                 else:
                     _close_request_client_once("stale_call_kill")
             except Exception:
@@ -936,8 +985,9 @@ def interruptible_api_call(agent, api_kwargs: dict):
             # seed future retries.
             try:
                 if agent.api_mode == "anthropic_messages":
-                    agent._anthropic_client.close()
-                    agent._rebuild_anthropic_client()
+                    # #67142: stranger-thread teardown aborts sockets only; the
+                    # worker completes the close+rebuild from its own thread.
+                    _teardown_anthropic_client("interrupt_abort")
                 else:
                     _close_request_client_once("interrupt_abort")
             except Exception:
@@ -2433,6 +2483,47 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         else:
             agent._close_request_openai_client(request_client, reason=reason)
 
+    # #67142: owner-aware teardown for the SHARED Anthropic client — streaming
+    # sibling of the non-streaming helper in ``interruptible_api_call``. The
+    # Anthropic stream runs on ``agent._anthropic_client``; the stale-stream /
+    # interrupt watchdog runs on the outer poll thread (a stranger thread) and
+    # previously called ``_anthropic_client.close()`` there, racing the worker's
+    # live SSL BIO and clobbering SQLite via a recycled TLS socket FD. A
+    # stranger-thread teardown now only aborts sockets (unblocking the worker)
+    # and defers close+rebuild to the worker via ``rebuild_pending``; the
+    # in-worker retry cleanup and the worker finally still close+rebuild from
+    # the owning thread, preserving the #28161 no-hang behavior.
+    _anthropic_teardown = {"owner_tid": None, "rebuild_pending": False}
+
+    def _teardown_anthropic_client(reason: str) -> None:
+        owner_tid = _anthropic_teardown.get("owner_tid")
+        stranger_thread = (
+            owner_tid is not None and owner_tid != threading.get_ident()
+        )
+        if stranger_thread:
+            _anthropic_teardown["rebuild_pending"] = True
+            agent._abort_anthropic_client(reason=reason)
+            return
+        _anthropic_teardown["rebuild_pending"] = False
+        try:
+            agent._anthropic_client.close()
+        except Exception:
+            pass
+        agent._rebuild_anthropic_client()
+
+    def _drain_pending_anthropic_rebuild() -> None:
+        if not _anthropic_teardown.get("rebuild_pending"):
+            return
+        _anthropic_teardown["rebuild_pending"] = False
+        try:
+            agent._anthropic_client.close()
+        except Exception:
+            pass
+        try:
+            agent._rebuild_anthropic_client()
+        except Exception:
+            pass
+
     first_delta_fired = {"done": False}
     deltas_were_sent = {"yes": False}  # Track if any deltas were fired (for fallback)
     # Wall-clock timestamp of the last real streaming chunk.  The outer
@@ -3133,6 +3224,9 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
     def _call():
         import httpx as _httpx
 
+        if agent.api_mode == "anthropic_messages":
+            _anthropic_teardown["owner_tid"] = threading.get_ident()
+
         _max_stream_retries = env_int("HERMES_STREAM_RETRIES", 2)
 
         try:
@@ -3277,9 +3371,12 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                         _cancel_current_stream_attempt("stream_mid_tool_retry_cleanup")
                         _close_request_client_once("stream_mid_tool_retry_cleanup")
                         if agent.api_mode == "anthropic_messages":
+                            # Worker-owned close+rebuild (#67142): runs on this
+                            # worker thread, so the FD release is safe.
                             try:
-                                agent._anthropic_client.close()
-                                agent._rebuild_anthropic_client()
+                                _teardown_anthropic_client(
+                                    "stream_mid_tool_retry_pool_cleanup"
+                                )
                             except Exception:
                                 pass
                         else:
@@ -3344,9 +3441,12 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                             # Also rebuild the primary client to purge
                             # any dead connections from the pool.
                             if agent.api_mode == "anthropic_messages":
+                                # Worker-owned close+rebuild (#67142): runs on
+                                # this worker thread, so the FD release is safe.
                                 try:
-                                    agent._anthropic_client.close()
-                                    agent._rebuild_anthropic_client()
+                                    _teardown_anthropic_client(
+                                        "stream_retry_pool_cleanup"
+                                    )
                                 except Exception:
                                     pass
                             else:
@@ -3456,6 +3556,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             return
         finally:
             _close_request_client_once("stream_request_complete")
+            _drain_pending_anthropic_rebuild()
 
     # Provider-configured stale timeout takes priority over env default.
     _cfg_stale = get_provider_stale_timeout(agent.provider, agent.model)
@@ -3589,9 +3690,10 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             # Rebuild the primary client too — its connection pool
             # may hold dead sockets from the same provider outage.
             if agent.api_mode == "anthropic_messages":
+                # #67142: stranger-thread teardown aborts sockets only; the
+                # worker completes the close+rebuild from its own thread.
                 try:
-                    agent._anthropic_client.close()
-                    agent._rebuild_anthropic_client()
+                    _teardown_anthropic_client("stale_stream_pool_cleanup")
                 except Exception:
                     pass
             else:
@@ -3623,8 +3725,9 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             try:
                 _cancel_current_stream_attempt("stream_interrupt_abort")
                 if agent.api_mode == "anthropic_messages":
-                    agent._anthropic_client.close()
-                    agent._rebuild_anthropic_client()
+                    # #67142: stranger-thread teardown aborts sockets only; the
+                    # worker completes the close+rebuild from its own thread.
+                    _teardown_anthropic_client("stream_interrupt_abort")
                 else:
                     _close_request_client_once("stream_interrupt_abort")
             except Exception:

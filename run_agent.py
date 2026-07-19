@@ -4259,6 +4259,45 @@ class AIAgent:
                 exc,
             )
 
+    def _abort_anthropic_client(self, *, reason: str) -> None:
+        """Cross-thread abort of the shared Anthropic client (#67142).
+
+        Anthropic companion to :meth:`_abort_request_openai_client`. The outer
+        stale/interrupt watchdog runs on a *stranger* thread relative to the
+        worker driving ``_anthropic_client.messages.stream(...)``. Calling
+        ``_anthropic_client.close()`` there raced the worker's still-live SSL
+        ``BIO`` and, when the kernel recycled the just-freed TLS socket FD into
+        an unrelated ``open()`` (e.g. ``cron/executions.db``), a pending 24-byte
+        TLS application-data record was flushed into that file's header —
+        corrupting a SQLite database the same way #29507 did for the OpenAI
+        path.
+
+        Here we only ``shutdown(SHUT_RDWR)`` the Anthropic client's pool sockets
+        so the owning worker's blocked ``recv``/``send`` unwinds with EOF /
+        ``EPIPE``. The worker then performs ``close()`` + ``_rebuild_anthropic_client()``
+        from its own thread, where FD release is safe — preserving the #28161
+        no-hang cleanup without releasing the FD from a stranger thread.
+        """
+        client = getattr(self, "_anthropic_client", None)
+        if client is None:
+            return
+        try:
+            shutdown_count = self._force_close_tcp_sockets(client)
+            logger.info(
+                "Anthropic client aborted (%s, tcp_force_closed=%d, "
+                "deferred_close=stranger_thread) %s",
+                reason,
+                shutdown_count,
+                self._client_log_context(),
+            )
+        except Exception as exc:
+            logger.debug(
+                "Anthropic client abort failed (%s) %s error=%s",
+                reason,
+                self._client_log_context(),
+                exc,
+            )
+
     def _run_codex_stream(self, api_kwargs: dict, client: Any = None, on_first_delta: callable = None):
         """Forwarder — see ``agent.codex_runtime.run_codex_stream``."""
         from agent.codex_runtime import run_codex_stream

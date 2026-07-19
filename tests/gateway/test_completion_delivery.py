@@ -452,7 +452,7 @@ def test_unobserved_normal_completion_still_notifies(monkeypatch):
     adapter.handle_message.assert_awaited_once()
 
 
-def test_autonomous_completion_redacts_real_command_and_output_secrets(monkeypatch):
+def test_autonomous_completion_omits_output_and_redacts_command_secret(monkeypatch):
     import agent.redact as redact_module
     import tools.process_registry as pr_module
 
@@ -491,4 +491,8 @@ def test_autonomous_completion_redacts_real_command_and_output_secrets(monkeypat
 
     delivered = adapter.handle_message.await_args.args[0]
     assert secret not in delivered.text
-    assert "HOME=/home/user" in delivered.text
+    assert "HOME=/home/user" not in delivered.text
+    assert (
+        'process(action="log", session_id="proc_autonomous_redaction")'
+        in delivered.text
+    )

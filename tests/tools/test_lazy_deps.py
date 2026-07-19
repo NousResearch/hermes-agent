@@ -13,6 +13,8 @@ call is mocked — we never actually shell out during unit tests.
 from __future__ import annotations
 
 
+import subprocess
+
 import pytest
 
 import tools.lazy_deps as ld
@@ -448,3 +450,46 @@ class TestRefreshActiveFeatures:
         result = ld.refresh_active_features()
         assert result["a.ok"] == "current"
         assert result["b.fail"].startswith("failed:")
+
+
+class TestPipInstallSubprocessEncoding:
+    def test_uv_install_uses_explicit_text_encoding(self, monkeypatch):
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append((cmd, kwargs))
+            return subprocess.CompletedProcess(cmd, 0, "ok", "")
+
+        monkeypatch.setattr(
+            ld.shutil, "which", lambda name: "uv" if name == "uv" else None
+        )
+        monkeypatch.setattr(ld.subprocess, "run", fake_run)
+        monkeypatch.setattr(ld, "_lazy_install_target", lambda: None)
+        monkeypatch.setattr(ld.sys, "platform", "win32")
+
+        result = ld._venv_pip_install(("demo==1",))
+
+        assert result.success is True
+        assert calls
+        assert calls[0][1]["encoding"] == "utf-8"
+        assert calls[0][1]["errors"] == "replace"
+
+    def test_pip_fallback_uses_explicit_text_encoding(self, monkeypatch):
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append((cmd, kwargs))
+            return subprocess.CompletedProcess(cmd, 0, "ok", "")
+
+        monkeypatch.setattr(ld.shutil, "which", lambda name: None)
+        monkeypatch.setattr(ld.subprocess, "run", fake_run)
+        monkeypatch.setattr(ld, "_lazy_install_target", lambda: None)
+        monkeypatch.setattr(ld.sys, "platform", "win32")
+
+        result = ld._venv_pip_install(("demo==1",))
+
+        assert result.success is True
+        assert len(calls) == 2
+        for _, kwargs in calls:
+            assert kwargs["encoding"] == "utf-8"
+            assert kwargs["errors"] == "replace"

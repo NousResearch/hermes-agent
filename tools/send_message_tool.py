@@ -819,6 +819,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     # migrated to plugins in #41112).
     _MAX_LENGTHS = {
         Platform.TELEGRAM: TelegramAdapter.MAX_MESSAGE_LENGTH if _telegram_available else 4096,
+        Platform.SIGNAL: 8000,  # signal-cli message limit
     }
 
     # Check plugin registry for max_message_length

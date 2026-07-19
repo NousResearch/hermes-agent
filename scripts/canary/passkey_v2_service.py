@@ -213,12 +213,35 @@ ACTIVATION_RELEASE_LINEAGE_SCHEMA = (
     "muncho-owner-gate-portable-release-lineage.v1"
 )
 WEB_VERIFY_SCHEMA = "muncho-passkey-v2-web-verify.v1"
-MAX_FRAME_BYTES = 1024 * 1024
+MAX_FRAME_BYTES = protocol.MAXIMUM_JSON_BYTES
+MAX_AUTHORITY_FRAME_BYTES = protocol.MAXIMUM_AUTHORITY_JSON_BYTES
 MAX_HTTP_BODY_BYTES = 256 * 1024
 MAX_CONFIG_BYTES = 64 * 1024
+MAX_EXECUTOR_CONFIG_BYTES = 4 * 1024 * 1024
 MAX_SEAL_BYTES = 16 * 1024
 MAX_FUTURE_SKEW_SECONDS = 300
 MAX_HTTP_RESPONSE_BYTES = 1024 * 1024
+
+_FULL_IAM_SERVICE_REQUEST_OPERATIONS = frozenset({
+    "create_request",
+    "execute",
+    "reconcile_read_only",
+    "verify_observation",
+})
+_FULL_IAM_SERVICE_RESPONSE_OPERATIONS = frozenset({
+    "attest_cloud_observation",
+    "consume",
+    "context",
+    "render",
+})
+_FULL_IAM_INTAKE_REQUEST_OPERATIONS = frozenset({
+    "execute_or_recover",
+    "request_initial",
+    "request_resume",
+})
+_FULL_IAM_INTAKE_RESPONSE_OPERATIONS = frozenset({
+    "attest_cloud_observation",
+})
 COMPUTE_POLL_ATTEMPTS = 90
 
 _REVISION = re.compile(r"^[0-9a-f]{40}$")
@@ -411,10 +434,15 @@ def _load_config(
 ) -> Mapping[str, Any]:
     if path != exact_path:
         raise PasskeyV2ServiceError("passkey_v2_service_config_path_invalid")
-    raw, metadata = _read_regular_file(path, maximum=MAX_CONFIG_BYTES)
+    maximum = (
+        MAX_EXECUTOR_CONFIG_BYTES
+        if exact_path == EXECUTOR_CONFIG
+        else MAX_CONFIG_BYTES
+    )
+    raw, metadata = _read_regular_file(path, maximum=maximum)
     if metadata.st_uid != 0 or stat.S_IMODE(metadata.st_mode) not in {0o444, 0o640}:
         raise PasskeyV2ServiceError("passkey_v2_service_config_identity_invalid")
-    value = decode_strict_json(raw, maximum=MAX_CONFIG_BYTES)
+    value = decode_strict_json(raw, maximum=maximum)
     if set(value) != fields or value.get("schema") != schema:
         raise PasskeyV2ServiceError("passkey_v2_service_config_invalid")
     return value
@@ -1169,6 +1197,59 @@ def _mechanical_authority_facts(
     raise PasskeyV2ServiceError("passkey_v2_action_schema_forbidden")
 
 
+def _render_authority_action(
+    action: Mapping[str, Any],
+) -> Mapping[str, Any]:
+    """Build and bound the exact UI response before request persistence."""
+
+    result = {
+        **protocol.build_ui_view(action),
+        "mechanical_facts": _mechanical_authority_facts(action),
+    }
+    response_raw = protocol.canonical_json_bytes(
+        build_service_response("render", result)
+    ) + b"\n"
+    maximum_response_bytes = (
+        MAX_AUTHORITY_FRAME_BYTES
+        if action["action_payload"].get("schema")
+        == protocol.FULL_IAM_ACTION_PAYLOAD_SCHEMA
+        else MAX_FRAME_BYTES
+    )
+    if len(response_raw) > maximum_response_bytes + 1:
+        raise PasskeyV2ServiceError("passkey_v2_action_ui_view_too_large")
+    return result
+
+
+def _service_frame_has_full_iam_action(
+    operation: str,
+    document: Mapping[str, Any],
+) -> bool:
+    action: Any
+    if operation == "create_request":
+        action = document.get("action_envelope")
+    elif operation == "consume":
+        action = document.get("action_envelope")
+    elif operation == "render":
+        rendered = document.get("exact_action_envelope_canonical_json")
+        if not isinstance(rendered, str):
+            return False
+        try:
+            action = protocol.decode_canonical_json(
+                rendered.encode("utf-8", errors="strict"),
+                maximum_bytes=MAX_AUTHORITY_FRAME_BYTES,
+            )
+        except (UnicodeError, protocol.PasskeyV2ProtocolError):
+            return False
+    else:
+        return False
+    return (
+        isinstance(action, Mapping)
+        and isinstance(action.get("action_payload"), Mapping)
+        and action["action_payload"].get("schema")
+        == protocol.FULL_IAM_ACTION_PAYLOAD_SCHEMA
+    )
+
+
 def handle_authority_frame(
     value: Any,
     *,
@@ -1193,10 +1274,7 @@ def handle_authority_frame(
         if operation == "render":
             state = authority.read_request_state(request_id)
             action = _validate_authority_action(state["action_envelope"])
-            result = {
-                **protocol.build_ui_view(action),
-                "mechanical_facts": _mechanical_authority_facts(action),
-            }
+            result = _render_authority_action(action)
         else:
             result = _authority_options(authority, request_id)
     elif operation == "verify":
@@ -1232,6 +1310,7 @@ def handle_authority_frame(
             checked = _validate_authority_action(
                 document["action_envelope"]
             )
+            _render_authority_action(checked)
             action = authority.create_request(checked)
             challenge_bytes = secrets.token_bytes(32)
             challenge = protocol.build_challenge_record(
@@ -1716,10 +1795,38 @@ class UnixServiceClient:
     def __init__(self, path: Path) -> None:
         self.path = path
 
-    def call(self, operation: str, document: Mapping[str, Any]) -> Mapping[str, Any]:
+    def call(
+        self,
+        operation: str,
+        document: Mapping[str, Any],
+        *,
+        maximum_request_bytes: int = MAX_FRAME_BYTES,
+        maximum_response_bytes: int = MAX_FRAME_BYTES,
+    ) -> Mapping[str, Any]:
+        if (
+            maximum_request_bytes not in {
+                MAX_FRAME_BYTES,
+                MAX_AUTHORITY_FRAME_BYTES,
+            }
+            or maximum_response_bytes not in {
+                MAX_FRAME_BYTES,
+                MAX_AUTHORITY_FRAME_BYTES,
+            }
+            or (
+                maximum_request_bytes == MAX_AUTHORITY_FRAME_BYTES
+                and operation not in _FULL_IAM_SERVICE_REQUEST_OPERATIONS
+            )
+            or (
+                maximum_response_bytes == MAX_AUTHORITY_FRAME_BYTES
+                and operation not in _FULL_IAM_SERVICE_RESPONSE_OPERATIONS
+            )
+        ):
+            raise PasskeyV2ServiceError(
+                "passkey_v2_service_frame_limit_invalid"
+            )
         frame = build_service_frame(operation, document)
         raw = protocol.canonical_json_bytes(frame) + b"\n"
-        if len(raw) > MAX_FRAME_BYTES:
+        if len(raw) > maximum_request_bytes + 1:
             raise PasskeyV2ServiceError("passkey_v2_service_frame_oversized")
         response_timeout = SERVICE_OPERATION_RESPONSE_TIMEOUT_SECONDS.get(
             operation
@@ -1751,7 +1858,7 @@ class UnixServiceClient:
                 if not chunk:
                     break
                 response.extend(chunk)
-                if len(response) > MAX_FRAME_BYTES + 1:
+                if len(response) > maximum_response_bytes + 1:
                     raise PasskeyV2ServiceError(
                         "passkey_v2_service_response_oversized"
                     )
@@ -1767,7 +1874,10 @@ class UnixServiceClient:
             connection.close()
         if not response.endswith(b"\n") or b"\n" in response[:-1]:
             raise PasskeyV2ServiceError("passkey_v2_service_response_invalid")
-        value = protocol.decode_canonical_json(bytes(response[:-1]))
+        value = protocol.decode_canonical_json(
+            bytes(response[:-1]),
+            maximum_bytes=maximum_response_bytes,
+        )
         return validate_service_response(value, expected_operation=operation)
 
 
@@ -1867,10 +1977,13 @@ def _handle_service_connection(
     handler: Callable[[Mapping[str, Any], int], Mapping[str, Any]],
     *,
     peer_uid: int | None = None,
+    large_request_operations: frozenset[str] = frozenset(),
+    large_response_operations: frozenset[str] = frozenset(),
 ) -> None:
     """Handle one bounded frame; failure is isolated to this connection."""
 
     connection.settimeout(SERVICE_FRAME_TIMEOUT_SECONDS)
+    operation = "rejected"
     try:
         selected_uid = _peer_uid(connection) if peer_uid is None else peer_uid
         if type(selected_uid) is not int or selected_uid < 0:
@@ -1883,7 +1996,7 @@ def _handle_service_connection(
             if not chunk:
                 break
             raw.extend(chunk)
-            if len(raw) > MAX_FRAME_BYTES + 1:
+            if len(raw) > MAX_AUTHORITY_FRAME_BYTES + 1:
                 raise PasskeyV2ServiceError(
                     "passkey_v2_service_frame_oversized"
                 )
@@ -1891,12 +2004,63 @@ def _handle_service_connection(
             raise PasskeyV2ServiceError(
                 "passkey_v2_service_frame_invalid"
             )
-        value = protocol.decode_canonical_json(bytes(raw[:-1]))
+        value = protocol.decode_canonical_json(
+            bytes(raw[:-1]),
+            maximum_bytes=MAX_AUTHORITY_FRAME_BYTES,
+        )
+        checked_frame = validate_service_frame(value)
+        operation = checked_frame["operation"]
+        maximum_request_bytes = (
+            MAX_AUTHORITY_FRAME_BYTES
+            if operation in large_request_operations
+            else MAX_FRAME_BYTES
+        )
+        maximum_response_bytes = (
+            MAX_AUTHORITY_FRAME_BYTES
+            if operation in large_response_operations
+            else MAX_FRAME_BYTES
+        )
+        if len(raw) > maximum_request_bytes + 1:
+            raise PasskeyV2ServiceError(
+                "passkey_v2_service_frame_oversized"
+            )
+        if (
+            len(raw) > MAX_FRAME_BYTES + 1
+            and operation == "create_request"
+            and not _service_frame_has_full_iam_action(
+                operation,
+                checked_frame["document"],
+            )
+        ):
+            raise PasskeyV2ServiceError(
+                "passkey_v2_service_frame_oversized"
+            )
         response = handler(value, selected_uid)
     except Exception:
         response = build_service_error()
+        maximum_response_bytes = MAX_FRAME_BYTES
+    response_raw = protocol.canonical_json_bytes(response) + b"\n"
+    if (
+        len(response_raw) > MAX_FRAME_BYTES + 1
+        and operation in {"consume", "render"}
+        and (
+            not isinstance(response, Mapping)
+            or not isinstance(response.get("document"), Mapping)
+            or not _service_frame_has_full_iam_action(
+                operation,
+                response["document"],
+            )
+        )
+    ):
+        response_raw = protocol.canonical_json_bytes(
+            build_service_error()
+        ) + b"\n"
+    if len(response_raw) > maximum_response_bytes + 1:
+        response_raw = protocol.canonical_json_bytes(
+            build_service_error()
+        ) + b"\n"
     try:
-        connection.sendall(protocol.canonical_json_bytes(response) + b"\n")
+        connection.sendall(response_raw)
     except OSError:
         # A disconnected client cannot terminate the socket service.
         pass
@@ -2006,6 +2170,9 @@ def _dispatch_service_connection(
     connection: socket.socket,
     handler: Callable[[Mapping[str, Any], int], Mapping[str, Any]],
     gate: _ServiceConnectionGate,
+    *,
+    large_request_operations: frozenset[str] = frozenset(),
+    large_response_operations: frozenset[str] = frozenset(),
 ) -> threading.Thread | None:
     """Admit and start one bounded worker, or reject it synchronously."""
 
@@ -2026,6 +2193,8 @@ def _dispatch_service_connection(
                         connection,
                         handler,
                         peer_uid=peer_uid,
+                        large_request_operations=large_request_operations,
+                        large_response_operations=large_response_operations,
                     )
             finally:
                 gate.release(peer_uid)
@@ -2119,7 +2288,22 @@ def _serve_activated_socket(
     *,
     expected_path: Path,
     expected_name: str,
+    large_request_operations: frozenset[str] = frozenset(),
+    large_response_operations: frozenset[str] = frozenset(),
 ) -> int:
+    if (
+        not isinstance(large_request_operations, frozenset)
+        or not isinstance(large_response_operations, frozenset)
+        or not large_request_operations.issubset(
+            _FULL_IAM_SERVICE_REQUEST_OPERATIONS
+        )
+        or not large_response_operations.issubset(
+            _FULL_IAM_SERVICE_RESPONSE_OPERATIONS
+        )
+    ):
+        raise PasskeyV2ServiceError(
+            "passkey_v2_service_frame_limit_invalid"
+        )
     listener = _validated_activated_listener(
         expected_path=expected_path,
         expected_name=expected_name,
@@ -2128,7 +2312,13 @@ def _serve_activated_socket(
     try:
         while True:
             connection, _address = listener.accept()
-            _dispatch_service_connection(connection, handler, gate)
+            _dispatch_service_connection(
+                connection,
+                handler,
+                gate,
+                large_request_operations=large_request_operations,
+                large_response_operations=large_response_operations,
+            )
     finally:
         listener.close()
 
@@ -2296,7 +2486,12 @@ def create_web_app(config: Mapping[str, Any]) -> Any:
             )
         assert request_id is not None
         if route == "render":
-            await run_in_threadpool(client.call, "render", {"request_id": request_id})
+            await run_in_threadpool(
+                client.call,
+                "render",
+                {"request_id": request_id},
+                maximum_response_bytes=MAX_AUTHORITY_FRAME_BYTES,
+            )
             token = base64.urlsafe_b64encode(secrets.token_bytes(32)).rstrip(b"=").decode("ascii")
             response = HTMLResponse(_APPROVAL_HTML, headers=headers)
             response.set_cookie(
@@ -2311,7 +2506,10 @@ def create_web_app(config: Mapping[str, Any]) -> Any:
             return response
         if route == "view":
             document = await run_in_threadpool(
-                client.call, "render", {"request_id": request_id}
+                client.call,
+                "render",
+                {"request_id": request_id},
+                maximum_response_bytes=MAX_AUTHORITY_FRAME_BYTES,
             )
         elif route == "options":
             document = await run_in_threadpool(
@@ -2776,6 +2974,8 @@ def authority_main(argv: Sequence[str]) -> int:
         ),
         expected_path=AUTHORITY_SOCKET,
         expected_name="passkey-authority",
+        large_request_operations=frozenset({"create_request"}),
+        large_response_operations=frozenset({"consume", "render"}),
     )
 
 
@@ -4201,7 +4401,40 @@ def executor_main(argv: Sequence[str]) -> int:
         ),
         expected_path=EXECUTOR_SOCKET,
         expected_name="privileged-executor",
+        large_request_operations=frozenset({
+            "execute",
+            "reconcile_read_only",
+            "verify_observation",
+        }),
+        large_response_operations=frozenset({
+            "attest_cloud_observation",
+            "context",
+        }),
     )
+
+
+def _validate_intake_frame(
+    value: Any,
+    *,
+    release_revision: str,
+) -> Mapping[str, Any]:
+    if not isinstance(value, Mapping) or set(value) != {
+        "schema", "operation", "release_sha", "document", "frame_sha256"
+    }:
+        raise PasskeyV2ServiceError("passkey_v2_intake_frame_invalid")
+    frame = dict(value)
+    unsigned = {
+        key: item for key, item in frame.items() if key != "frame_sha256"
+    }
+    if (
+        frame.get("schema") != storage.REMOTE_FRAME_SCHEMA
+        or frame.get("release_sha") != release_revision
+        or not isinstance(frame.get("operation"), str)
+        or not isinstance(frame.get("document"), Mapping)
+        or frame.get("frame_sha256") != protocol.sha256_json(unsigned)
+    ):
+        raise PasskeyV2ServiceError("passkey_v2_intake_frame_invalid")
+    return frame
 
 
 def intake_main(argv: Sequence[str]) -> int:
@@ -4209,20 +4442,46 @@ def intake_main(argv: Sequence[str]) -> int:
 
     if tuple(argv):
         raise PasskeyV2ServiceError("passkey_v2_intake_arguments_forbidden")
-    raw = sys.stdin.buffer.read(MAX_FRAME_BYTES + 1)
-    if not raw or len(raw) > MAX_FRAME_BYTES or raw.endswith(b"\n"):
+    raw = sys.stdin.buffer.read(MAX_AUTHORITY_FRAME_BYTES + 1)
+    if (
+        not raw
+        or len(raw) > MAX_AUTHORITY_FRAME_BYTES
+        or raw.endswith(b"\n")
+    ):
         raise PasskeyV2ServiceError("passkey_v2_intake_frame_invalid")
-    frame = protocol.decode_canonical_json(raw)
-    if not isinstance(frame, Mapping):
+    frame = protocol.decode_canonical_json(
+        raw,
+        maximum_bytes=MAX_AUTHORITY_FRAME_BYTES,
+    )
+    release_revision = _release_revision()
+    frame = _validate_intake_frame(
+        frame,
+        release_revision=release_revision,
+    )
+    operation = frame["operation"]
+    maximum_request_bytes = (
+        MAX_AUTHORITY_FRAME_BYTES
+        if operation in _FULL_IAM_INTAKE_REQUEST_OPERATIONS
+        else MAX_FRAME_BYTES
+    )
+    maximum_response_bytes = (
+        MAX_AUTHORITY_FRAME_BYTES
+        if operation in _FULL_IAM_INTAKE_RESPONSE_OPERATIONS
+        else MAX_FRAME_BYTES
+    )
+    if len(raw) > maximum_request_bytes:
         raise PasskeyV2ServiceError("passkey_v2_intake_frame_invalid")
     response = handle_intake_frame(
         frame,
         authority_client=UnixServiceClient(AUTHORITY_SOCKET),
         executor_client=UnixServiceClient(EXECUTOR_SOCKET),
-        release_revision=_release_revision(),
+        release_revision=release_revision,
         now_unix=int(time.time()),
     )
-    sys.stdout.buffer.write(protocol.canonical_json_bytes(response))
+    response_raw = protocol.canonical_json_bytes(response)
+    if len(response_raw) > maximum_response_bytes:
+        raise PasskeyV2ServiceError("passkey_v2_intake_response_oversized")
+    sys.stdout.buffer.write(response_raw)
     sys.stdout.buffer.flush()
     return 0
 
@@ -4242,20 +4501,11 @@ def handle_intake_frame(
         tuple[Mapping[str, Any], str, str, Mapping[str, Any]],
     ] = _local_cutover_authority_binding,
 ) -> Mapping[str, Any]:
-    if not isinstance(value, Mapping) or set(value) != {
-        "schema", "operation", "release_sha", "document", "frame_sha256"
-    }:
-        raise PasskeyV2ServiceError("passkey_v2_intake_frame_invalid")
-    frame = dict(value)
-    unsigned = {key: item for key, item in frame.items() if key != "frame_sha256"}
-    if (
-        frame.get("schema") != storage.REMOTE_FRAME_SCHEMA
-        or frame.get("release_sha") != release_revision
-        or not isinstance(frame.get("document"), Mapping)
-        or frame.get("frame_sha256") != protocol.sha256_json(unsigned)
-    ):
-        raise PasskeyV2ServiceError("passkey_v2_intake_frame_invalid")
-    operation = str(frame["operation"])
+    frame = _validate_intake_frame(
+        value,
+        release_revision=release_revision,
+    )
+    operation = frame["operation"]
     document = dict(frame["document"])
     if operation == "preflight":
         if document:
@@ -4320,6 +4570,7 @@ def handle_intake_frame(
                 "transaction_id": document["transaction_id"],
                 "attestation_request": document["attestation_request"],
             },
+            maximum_response_bytes=MAX_AUTHORITY_FRAME_BYTES,
         )
     elif operation == "request_production_cutover":
         if set(document) != {"freeze_publication"} or not isinstance(
@@ -4430,7 +4681,7 @@ def handle_intake_frame(
                     "passkey_v2_cutover_request_binding_invalid"
                 )
             preview_action = protocol.decode_canonical_json(
-                rendered.encode("utf-8", errors="strict")
+                rendered.encode("utf-8", errors="strict"),
             )
             production_cutover.validate_cutover_action_envelope(
                 preview_action,
@@ -4536,7 +4787,9 @@ def handle_intake_frame(
             bundle = document["continuation_preflight"]
             checkpoint = observation_request["checkpoint"]
             context = executor_client.call(
-                "context", {"transaction_id": transaction_id}
+                "context",
+                {"transaction_id": transaction_id},
+                maximum_response_bytes=MAX_AUTHORITY_FRAME_BYTES,
             )
             milestones = set(context["milestone_event_kinds"])
             if "resize_complete" not in milestones:
@@ -4576,6 +4829,7 @@ def handle_intake_frame(
                 "observation_bundle": bundle,
                 "expected_binding": expected_binding,
             },
+            maximum_request_bytes=MAX_AUTHORITY_FRAME_BYTES,
         )
         observation_state = verified["observation"]["state"]
         if (
@@ -4602,6 +4856,7 @@ def handle_intake_frame(
         result = authority_client.call(
             "create_request",
             {"action_envelope": action},
+            maximum_request_bytes=MAX_AUTHORITY_FRAME_BYTES,
         )
         result = {
             **result,
@@ -4669,6 +4924,7 @@ def handle_intake_frame(
                     "continuation_preflight"
                 ],
             },
+            maximum_request_bytes=MAX_AUTHORITY_FRAME_BYTES,
         )
         if reconciliation["terminal"] is True:
             result = {
@@ -4761,6 +5017,7 @@ def handle_intake_frame(
                 "consume_attempt_id": document["consume_attempt_id"],
                 "runtime_binding": runtime_binding,
             },
+            maximum_response_bytes=MAX_AUTHORITY_FRAME_BYTES,
         )
         if consumed["action_envelope"]["transaction_id"] != transaction_id:
             raise PasskeyV2ServiceError(
@@ -4777,6 +5034,7 @@ def handle_intake_frame(
                     "continuation_preflight"
                 ],
             },
+            maximum_request_bytes=MAX_AUTHORITY_FRAME_BYTES,
         )
         action = consumed["action_envelope"]
         result = {

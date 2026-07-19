@@ -1965,3 +1965,69 @@ def test_production_transport_performs_identity_preflight_before_mutation() -> N
         "postflight",
         "identity",
     ]
+
+
+def test_stopped_release_transport_accepts_opt_in_live_sized_iam_response() -> None:
+    transport = _production_transport()
+    snapshot = ("1" * 64, "2" * 64, "3" * 64)
+    transport._authorization_snapshot = lambda _account: snapshot
+    transport._validate_dry_run = lambda _argv: None
+    transport._postflight = lambda: None
+    response = _canonical({"data": "x" * 2_700_000}) + b"\n"
+    calls: list[tuple[tuple[str, ...], dict]] = []
+
+    def run(argv, **kwargs):
+        calls.append((tuple(argv), kwargs))
+        return subprocess.CompletedProcess(
+            argv,
+            0,
+            stdout=response,
+            stderr=b"",
+        )
+
+    transport._preflight_runner = run
+    remote = transport._remote_command(REVISION, "stage-publication")
+    completed = transport._run_remote_input(
+        remote,
+        account="owner@example.com",
+        input_bytes=b'{"action":"freeze"}',
+        maximum_output_bytes=(
+            canary_transport._STOPPED_RELEASE_REMOTE_OUTPUT_MAX_BYTES
+        ),
+    )
+
+    assert (
+        canary_transport._HTTP_RESPONSE_MAX_BYTES
+        < len(response)
+        <= canary_transport._STOPPED_RELEASE_REMOTE_OUTPUT_MAX_BYTES
+    )
+    assert completed.stdout == response
+    assert len(calls) == 1
+    assert calls[0][1]["input"] == b'{"action":"freeze"}'
+
+
+def test_stopped_release_transport_rejects_excessive_output_limit_before_runner() -> None:
+    transport = _production_transport()
+    runner_calls: list[tuple[str, ...]] = []
+
+    def run(argv, **_kwargs):
+        runner_calls.append(tuple(argv))
+        raise AssertionError("runner must not be called")
+
+    transport._preflight_runner = run
+    remote = transport._remote_command(REVISION, "stage-publication")
+
+    with pytest.raises(
+        canary_transport.OwnerLauncherError,
+        match="stopped_release_remote_input_invalid",
+    ):
+        transport._run_remote_input(
+            remote,
+            account="owner@example.com",
+            input_bytes=b'{"action":"freeze"}',
+            maximum_output_bytes=(
+                canary_transport._STOPPED_RELEASE_REMOTE_OUTPUT_MAX_BYTES + 1
+            ),
+        )
+
+    assert runner_calls == []

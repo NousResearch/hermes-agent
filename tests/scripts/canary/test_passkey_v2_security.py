@@ -35,6 +35,7 @@ from scripts.canary.passkey_v2_signer import ReceiptSigner
 
 NOW = 1_785_000_000
 OWNER = "1279454038731264061"
+LIVE_ACTION_PAYLOAD_BYTES = 2_689_240
 
 
 def _b64(value: bytes) -> str:
@@ -56,7 +57,27 @@ def _noncanonical_pad_bits(value: str) -> str:
     return changed
 
 
-def _envelope(*, request_id: str = "R" * 32) -> Mapping[str, Any]:
+def _envelope(
+    *,
+    request_id: str = "R" * 32,
+    action_payload: Mapping[str, Any] | None = None,
+) -> Mapping[str, Any]:
+    payload = action_payload
+    if payload is None:
+        payload = {
+            "operation": "resize_boot_disk",
+            "project": "adventico-ai-platform",
+            "zone": "europe-west3-a",
+            "instance": "muncho-canary-v2-01",
+            "disk_id": "4195397669213846393",
+            "source_size_gb": 40,
+            "target_size_gb": 80,
+            "remaining_actions": [
+                "resize",
+                "conditional_stop_start",
+                "postflight",
+            ],
+        }
     return protocol.build_action_envelope(
         request_id=request_id,
         requester_discord_user_id=OWNER,
@@ -67,16 +88,7 @@ def _envelope(*, request_id: str = "R" * 32) -> Mapping[str, Any]:
         action_summary="Resize the exact canary boot disk from 40 GB to 80 GB.",
         risk="The bounded disk resize could require one conditional reboot.",
         rollback="Stop before mutation on drift; preserve the prior stopped release.",
-        action_payload={
-            "operation": "resize_boot_disk",
-            "project": "adventico-ai-platform",
-            "zone": "europe-west3-a",
-            "instance": "muncho-canary-v2-01",
-            "disk_id": "4195397669213846393",
-            "source_size_gb": 40,
-            "target_size_gb": 80,
-            "remaining_actions": ["resize", "conditional_stop_start", "postflight"],
-        },
+        action_payload=payload,
         executor_release_sha="a" * 40,
         executor_plan_sha256="b" * 64,
         transaction_id="c" * 64,
@@ -94,6 +106,45 @@ def _envelope(*, request_id: str = "R" * 32) -> Mapping[str, Any]:
         issued_at_unix=NOW,
         approval_ttl_seconds=300,
     )
+
+
+def _payload_with_exact_canonical_size(character: str) -> Mapping[str, Any]:
+    base = {
+        "schema": protocol.FULL_IAM_ACTION_PAYLOAD_SCHEMA,
+        "padding": "",
+    }
+    empty_size = len(protocol.canonical_json_bytes(base))
+    unit_size = (
+        len(protocol.canonical_json_bytes({**base, "padding": character}))
+        - empty_size
+    )
+    count, remainder = divmod(
+        LIVE_ACTION_PAYLOAD_BYTES - empty_size,
+        unit_size,
+    )
+    assert remainder == 0
+    payload = {**base, "padding": character * count}
+    assert len(protocol.canonical_json_bytes(payload)) == (
+        LIVE_ACTION_PAYLOAD_BYTES
+    )
+    return payload
+
+
+def _replace_action_payload_unchecked(
+    envelope: Mapping[str, Any],
+    payload: Mapping[str, Any],
+) -> Mapping[str, Any]:
+    candidate = {
+        **envelope,
+        "action_payload": dict(payload),
+        "action_payload_sha256": protocol.sha256_json(payload),
+    }
+    candidate["envelope_sha256"] = protocol.sha256_json({
+        key: value
+        for key, value in candidate.items()
+        if key != "envelope_sha256"
+    })
+    return candidate
 
 
 def _challenge(envelope: Mapping[str, Any]) -> Mapping[str, Any]:
@@ -328,6 +379,162 @@ def test_action_envelope_and_ui_render_every_exact_bound_value() -> None:
         "Content-Security-Policy"
     ]
     assert protocol.UI_SECURITY_HEADERS["X-Frame-Options"] == "DENY"
+
+
+def test_live_sized_ascii_action_leaves_exact_ui_frame_reserve() -> None:
+    payload = _payload_with_exact_canonical_size("x")
+    envelope = _envelope(action_payload=payload)
+    view = protocol.build_ui_view(envelope)
+    render_response = service.build_service_response(
+        "render",
+        {
+            **view,
+            "mechanical_facts": {
+                "schema": "muncho-passkey-v2-storage-growth-facts.v1",
+                "values_are_complete_and_untruncated": True,
+            },
+        },
+    )
+
+    assert len(protocol.canonical_json_bytes(view)) + 1024 * 1024 <= (
+        protocol.MAXIMUM_AUTHORITY_JSON_BYTES
+    )
+    assert len(protocol.canonical_json_bytes(render_response)) <= (
+        service.MAX_AUTHORITY_FRAME_BYTES
+    )
+
+
+@pytest.mark.parametrize("character", ['"', "\\"])
+def test_escape_heavy_action_is_rejected_before_persistence(
+    tmp_path: Path,
+    character: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = _payload_with_exact_canonical_size(character)
+    candidate = _replace_action_payload_unchecked(_envelope(), payload)
+    exact_strings = {
+        "exact_action_payload_canonical_json": (
+            protocol.canonical_json_bytes(payload).decode("utf-8")
+        ),
+        "exact_action_envelope_canonical_json": (
+            protocol.canonical_json_bytes(candidate).decode("utf-8")
+        ),
+    }
+    assert len(protocol.canonical_json_bytes(exact_strings)) + 1024 * 1024 > (
+        protocol.MAXIMUM_AUTHORITY_JSON_BYTES
+    )
+
+    path, uid, gid = _database_root(tmp_path)
+    database.bootstrap_authority_database(
+        path,
+        authority_uid=uid,
+        authority_gid=gid,
+        now_unix=NOW - 200,
+        require_root=False,
+    )
+    authority = database.PasskeyV2AuthorityDatabase(
+        path,
+        authority_uid=uid,
+        authority_gid=gid,
+    )
+    monkeypatch.setattr(
+        service,
+        "_validate_authority_action",
+        protocol.validate_action_envelope,
+    )
+    monkeypatch.setattr(
+        service,
+        "_mechanical_authority_facts",
+        lambda _action: {
+            "schema": "muncho-passkey-v2-storage-growth-facts.v1",
+            "values_are_complete_and_untruncated": True,
+        },
+    )
+    with pytest.raises(
+        service.PasskeyV2ServiceError,
+        match="^passkey_v2_action_ui_view_too_large$",
+    ):
+        service.handle_authority_frame(
+            service.build_service_frame(
+                "create_request",
+                {"action_envelope": candidate},
+            ),
+            authority=authority,
+            signer=ReceiptSigner(ed25519.Ed25519PrivateKey.generate()),
+            peer_uid=service.AUTHORITY_UID,
+            now_unix=NOW,
+        )
+    with pytest.raises(
+        database.PasskeyV2SqliteDenied,
+        match="^passkey_v2_request_unknown$",
+    ):
+        authority.read_request_state(candidate["request_id"])
+
+
+def test_action_payload_raw_cap_is_independent_of_exact_ui_admission() -> None:
+    assert (
+        protocol.MAXIMUM_AUTHORITY_JSON_BYTES
+        - 2 * protocol.MAXIMUM_FULL_IAM_ACTION_PAYLOAD_BYTES
+        == 1024 * 1024
+    )
+    empty_payload = {
+        "schema": protocol.FULL_IAM_ACTION_PAYLOAD_SCHEMA,
+        "padding": "",
+    }
+    empty_size = len(protocol.canonical_json_bytes(empty_payload))
+    payload = {
+        "padding": "x" * (
+            protocol.MAXIMUM_FULL_IAM_ACTION_PAYLOAD_BYTES
+            - empty_size
+        ),
+        "schema": protocol.FULL_IAM_ACTION_PAYLOAD_SCHEMA,
+    }
+    assert len(protocol.canonical_json_bytes(payload)) == (
+        protocol.MAXIMUM_FULL_IAM_ACTION_PAYLOAD_BYTES
+    )
+
+    envelope = _envelope(action_payload=payload)
+    assert envelope["action_payload"] == payload
+
+    oversized_payload = {
+        "padding": payload["padding"] + "x",
+        "schema": protocol.FULL_IAM_ACTION_PAYLOAD_SCHEMA,
+    }
+    assert len(protocol.canonical_json_bytes(oversized_payload)) == (
+        protocol.MAXIMUM_FULL_IAM_ACTION_PAYLOAD_BYTES + 1
+    )
+    with pytest.raises(
+        protocol.PasskeyV2ProtocolError,
+        match="^passkey_v2_action_payload_too_large$",
+    ):
+        _envelope(action_payload=oversized_payload)
+
+
+@pytest.mark.parametrize(
+    "schema",
+    [None, "muncho-passkey-v2-production-cutover-action.v1"],
+)
+def test_non_storage_action_payload_keeps_generic_half_mib_cap(
+    schema: str | None,
+) -> None:
+    base = {"padding": ""}
+    if schema is not None:
+        base["schema"] = schema
+    empty_size = len(protocol.canonical_json_bytes(base))
+    payload = {
+        **base,
+        "padding": "x" * (
+            protocol.MAXIMUM_ACTION_PAYLOAD_BYTES + 1 - empty_size
+        ),
+    }
+    assert len(protocol.canonical_json_bytes(payload)) == (
+        protocol.MAXIMUM_ACTION_PAYLOAD_BYTES + 1
+    )
+    with pytest.raises(
+        protocol.PasskeyV2ProtocolError,
+        match="^passkey_v2_action_payload_too_large$",
+    ):
+        _envelope(action_payload=payload)
 
 
 def test_production_boundary_rejects_wrong_rp_or_origin_and_totp() -> None:

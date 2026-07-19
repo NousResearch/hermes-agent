@@ -25,7 +25,7 @@ OWNER_GATE_SERVICE_ACCOUNT_EMAIL = (
 TARGET_SERVICE_ACCOUNT_EMAIL = (
     "muncho-canary-v2-runtime@adventico-ai-platform.iam.gserviceaccount.com"
 )
-MAX_BYTES = 256 * 1024
+MAX_BYTES = 8 * 1024 * 1024
 
 _REVISION = re.compile(r"^[0-9a-f]{40}$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
@@ -37,7 +37,10 @@ _ROLE = re.compile(
     r"(?:projects/[a-z][a-z0-9-]{4,62}|organizations/[1-9][0-9]{5,30})"
     r"/roles/[A-Za-z0-9_.]{1,128})$"
 )
-_PERMISSION = re.compile(r"^[A-Za-z][A-Za-z0-9_.]{2,255}$")
+_PERMISSION = re.compile(
+    r"^(?=.{3,256}$)[A-Za-z][A-Za-z0-9_.-]*"
+    r"(?:/[A-Za-z][A-Za-z0-9_.-]*)?$"
+)
 class DirectIamIdentityAuthorityError(RuntimeError):
     """Stable validation failure for the non-secret signed pin asset."""
 

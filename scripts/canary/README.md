@@ -325,9 +325,14 @@ byte-identical, owner-owned, single-link mode-`0400` copies of `authority.json`,
 new owner-only mode-`0700` directory, and verify each copy byte-for-byte. Then
 remove the temporary `roles/iam.organizationRoleAdmin` binding, verify its
 absence, and invoke the canonical direct-IAM author while the copied authority
-is still fresh. If freshness expires before that author has durably published
-a candidate, recovery-only mode correctly refuses to collect; preserve both
-journals and use a fresh reviewed release revision.
+is still fresh. The source-artifact transaction may durably publish its exact
+`intent.json` before live IAM collection begins. An exact retry while the same
+owner reauthentication remains fresh may revalidate that immutable intent and
+perform collection, but an empty or intent-only transaction is never recovery
+authority. After freshness expires, recovery-only mode can resume only from an
+already-published complete candidate or final artifact and must not construct
+new live gcloud capabilities. Preserve every transaction and Foundation journal
+unchanged, then create, review, and merge a fresh successor release revision.
 
 `success.json` is a signed journal transition wrapper, not a raw foundation
 apply receipt.  Downstream owner gates must not copy it, loosen its mode, or

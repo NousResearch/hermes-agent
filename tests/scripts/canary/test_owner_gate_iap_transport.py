@@ -36,6 +36,24 @@ HOST_KEY_LINE = (
 )
 
 
+def _owner_gate_frame(
+    operation: str,
+    document: Mapping[str, Any],
+) -> bytes:
+    unsigned = {
+        "schema": "muncho-passkey-v2-owner-gate-frame.v1",
+        "operation": operation,
+        "release_sha": RELEASE,
+        "document": dict(document),
+    }
+    return launcher._canonical_bytes({
+        **unsigned,
+        "frame_sha256": hashlib.sha256(
+            launcher._canonical_bytes(unsigned)
+        ).hexdigest(),
+    })
+
+
 class _Executable:
     prefix = (
         "/trusted/python3.11",
@@ -916,11 +934,14 @@ def test_transport_rejects_any_nonexact_ssh_argv(
 def test_transport_kills_oversized_stdout_before_accepting_it(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    chunk_count = (
+        launcher.OwnerGateIapTransport._MAX_RESPONSE_BYTES // 65536
+    ) + 1
     source = (
         "import os;"
         "os.read(0, 2_000_000);"
         "chunk=b'x'*65536;"
-        "[(os.write(1,chunk)) for _ in range(17)]"
+        f"[(os.write(1,chunk)) for _ in range({chunk_count})]"
     )
     processes: list[subprocess.Popen[bytes]] = []
     factory = _script_factory(source)
@@ -1102,6 +1123,126 @@ def test_transport_handles_partial_nonblocking_stdin_writes(
     )
     assert transport.invoke_owner_gate(frame) == frame
     assert writes > 100
+
+
+def test_transport_accepts_live_sized_full_iam_request_only_for_exact_operation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from scripts.canary import direct_iam_identity_author as direct_author
+
+    document = {
+        "trusted_iam_projection": {
+            "canonical_role_inventory": "p" * (
+                direct_author.MAX_HTTP_BODY_BYTES + 64 * 1024
+            )
+        }
+    }
+    frame = _owner_gate_frame("request_initial", document)
+    response = launcher._canonical_bytes({"ok": True})
+    assert (
+        direct_author.MAX_HTTP_BODY_BYTES
+        < len(frame)
+        <= launcher.OwnerGateIapTransport._MAX_FRAME_BYTES
+    )
+    transport, _configuration, _identity, _host_identity = _transport(
+        monkeypatch,
+        popen_factory=_script_factory(
+            "import sys;sys.stdin.buffer.read();"
+            f"sys.stdout.buffer.write({response!r})"
+        ),
+    )
+
+    assert transport.invoke_owner_gate(frame) == response
+
+    calls: list[tuple[tuple[str, ...], Mapping[str, Any]]] = []
+    generic, _configuration, _identity, _host_identity = _transport(
+        monkeypatch,
+        popen_factory=_passthrough_factory(calls),
+    )
+    with pytest.raises(
+        launcher.OwnerLauncherError,
+        match="^owner_gate_iap_frame_invalid$",
+    ):
+        generic.invoke_owner_gate(_owner_gate_frame("preflight", document))
+    assert calls == []
+
+
+def test_transport_accepts_live_sized_full_iam_response_only_for_exact_operation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    response = launcher._canonical_bytes({
+        "trusted_iam_projection": "p" * (
+            launcher.OwnerGateIapTransport._DEFAULT_RESPONSE_BYTES
+            + 64 * 1024
+        )
+    })
+    frame = _owner_gate_frame("attest_cloud_observation", {})
+    response_overhead = len(b'{"trusted_iam_projection":""}')
+    padding_bytes = len(response) - response_overhead
+    transport, _configuration, _identity, _host_identity = _transport(
+        monkeypatch,
+        popen_factory=_script_factory(
+            "import sys;sys.stdin.buffer.read();"
+            "sys.stdout.buffer.write(b'{\"trusted_iam_projection\":\"'"
+            f" + b'p'*{padding_bytes}"
+            " + b'\"}')"
+        ),
+    )
+
+    assert transport.invoke_owner_gate(frame) == response
+
+
+def test_host_attestor_transport_carries_live_sized_iam_projection() -> None:
+    from scripts.canary import direct_iam_identity_author as direct_author
+    from scripts.canary import storage_growth_trusted_collector as trusted
+
+    request = {
+        "schema": trusted.ATTESTATION_REQUEST_SCHEMA,
+        "role": "host",
+        "trusted_iam_projection": "p" * (
+            direct_author.MAX_HTTP_BODY_BYTES + 64 * 1024
+        ),
+    }
+    response = {
+        "schema": trusted.ATTESTATION_RESPONSE_SCHEMA,
+        "role": "host",
+        "trusted_iam_projection": request["trusted_iam_projection"],
+    }
+    frame = trusted.protocol.canonical_json_bytes(request)
+    response_raw = trusted.protocol.canonical_json_bytes(response) + b"\n"
+    calls: list[Mapping[str, Any]] = []
+
+    class Remote:
+        def _run_remote_input(self, _argv: Any, **kwargs: Any) -> Any:
+            calls.append(kwargs)
+            assert kwargs["input_bytes"] == frame + b"\n"
+            return type("Completed", (), {"stdout": response_raw})()
+
+    identity = _Identity(_Configuration())
+    transport = object.__new__(
+        launcher.CanaryHostObservationAttestorTransport
+    )
+    transport._release_sha = RELEASE
+    transport._owner_identity = identity
+    transport._account = ACCOUNT
+    transport._transport = Remote()
+    transport._remote_interpreter = "/trusted/python"
+    transport._remote_entrypoint = "/trusted/host-attestor"
+
+    assert (
+        direct_author.MAX_HTTP_BODY_BYTES
+        < len(frame)
+        <= transport._MAX_FRAME_BYTES
+    )
+    assert transport.attest_host_observation(frame) == response
+    assert calls == [{
+        "account": ACCOUNT,
+        "input_bytes": frame + b"\n",
+        "timeout_seconds": 90.0,
+        "maximum_input_bytes": transport._MAX_FRAME_BYTES + 1,
+        "maximum_output_bytes": transport._MAX_FRAME_BYTES + 1,
+    }]
+    assert identity.stability_checks == 1
 
 
 @pytest.mark.parametrize(

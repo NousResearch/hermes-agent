@@ -359,6 +359,97 @@ def test_author_builds_only_schema_canonical_bytes_and_binds_chain() -> None:
     assert value["authority_sha256"] == foundation.sha256_json(unsigned)
 
 
+def test_predefined_role_legacy_permission_names_are_canonical() -> None:
+    facts = copy.deepcopy(_live_facts())
+    legacy_permissions = [
+        "cloudonefs.isiloncloud.com/clusters.create",
+        "cloudvolumesgcp-api.netapp.com/activeDirectories.list",
+    ]
+    facts["roles"]["roles/owner"]["includedPermissions"] = legacy_permissions
+
+    value = authority_schema.decode_canonical(
+        _build(facts), release_revision=REVISION
+    )
+
+    definitions = value["external_gcp_admin_trust_root"][
+        "allowed_residual_role_definitions"
+    ]
+    assert definitions[0]["included_permissions"] == sorted(
+        legacy_permissions
+    )
+
+
+@pytest.mark.parametrize(
+    "permission",
+    [
+        "/clusters.create",
+        "cloudonefs.isiloncloud.com/",
+        "cloudonefs.isiloncloud.com//clusters.create",
+        "cloudonefs.isiloncloud.com/clusters/create",
+        "cloudonefs.isiloncloud.com:clusters.create",
+        "cloudonefs.isiloncloud.com/clusters create",
+        "cloudonefs.isiloncloud.com/clusters\ncreate",
+        "p" * 257,
+    ],
+)
+def test_malformed_legacy_permission_names_remain_rejected(
+    permission: str,
+) -> None:
+    facts = copy.deepcopy(_live_facts())
+    facts["roles"]["roles/owner"]["includedPermissions"] = [permission]
+
+    with pytest.raises(
+        author.DirectIamIdentityAuthorError,
+        match="^direct_iam_identity_author_output_invalid$",
+    ):
+        _build(facts)
+
+
+def test_large_residual_role_inventory_fits_bounded_canonical_authority(
+) -> None:
+    facts = copy.deepcopy(_live_facts())
+    facts["policies"][0]["bindings"].append({
+        "role": "roles/editor",
+        "members": ["user:editor@example.test"],
+    })
+    large_permissions = [
+        f"service.resource.permission{index:05d}"
+        for index in range(12_000)
+    ]
+    facts["roles"]["roles/owner"] = _role(
+        "roles/owner",
+        title="Owner",
+        description="Full project authority",
+        permissions=large_permissions,
+    )
+    facts["roles"]["roles/editor"] = _role(
+        "roles/editor",
+        title="Editor",
+        description="Project editor authority",
+        permissions=large_permissions,
+    )
+
+    raw = _build(facts)
+
+    assert 256 * 1024 < len(raw) <= authority_schema.MAX_BYTES
+    decoded = authority_schema.decode_canonical(raw, release_revision=REVISION)
+    definitions = decoded["external_gcp_admin_trust_root"][
+        "allowed_residual_role_definitions"
+    ]
+    assert {item["name"] for item in definitions} == {
+        "roles/editor",
+        "roles/owner",
+    }
+    with pytest.raises(
+        authority_schema.DirectIamIdentityAuthorityError,
+        match="^direct_iam_identity_authority_invalid$",
+    ):
+        authority_schema.decode_canonical(
+            b"x" * (authority_schema.MAX_BYTES + 1),
+            release_revision=REVISION,
+        )
+
+
 def test_canonical_authority_revalidates_real_signed_apply_chain(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -738,6 +829,29 @@ class _Response:
 
     def read(self, maximum: int) -> bytes:
         return self._raw[:maximum]
+
+
+def test_http_body_bound_accepts_large_predefined_role_and_rejects_oversize(
+) -> None:
+    current_large_role = _Response({
+        "name": "roles/owner",
+        "description": "x" * (600 * 1024),
+    })
+    current_large_role._headers.pop("Content-Length")
+    assert 512 * 1024 < len(current_large_role._raw)
+    assert len(current_large_role._raw) <= author.MAX_HTTP_BODY_BYTES
+    assert author._bounded_http_body(current_large_role) == current_large_role._raw
+
+    oversized = _Response({
+        "name": "roles/owner",
+        "description": "x" * author.MAX_HTTP_BODY_BYTES,
+    })
+    assert len(oversized._raw) > author.MAX_HTTP_BODY_BYTES
+    with pytest.raises(
+        author.DirectIamIdentityAuthorError,
+        match="^direct_iam_identity_author_cloud_http_invalid$",
+    ):
+        author._bounded_http_body(oversized)
 
 
 class _Router:

@@ -2173,21 +2173,33 @@ def test_replay_adopts_crash_consumed_canonical_plus_claim_state(
 
 def test_two_concurrent_atomic_consume_attempts_have_exactly_one_winner(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _action, _requests, grants, grant = _seed_legacy_authorization_files(
         tmp_path
     )
     canonical = grants / f"{LEGACY_REQUEST_ID}.json"
+    temporary = grants / f".{LEGACY_REQUEST_ID}.muncho-caddy-consume"
     snapshot = caddy._stable_legacy_file(
         canonical,
         parent=grants,
         expected_uid=os.getuid(),
         expected_gid=os.getgid(),
     )
-    start = threading.Barrier(2)
+    winner_at_replace = threading.Event()
+    allow_winner_replace = threading.Event()
+    original_replace = caddy.os.replace
+
+    def paused_replace(source: Path, destination: Path) -> None:
+        if Path(source) == temporary and Path(destination) == canonical:
+            winner_at_replace.set()
+            if not allow_winner_replace.wait(timeout=5):
+                raise AssertionError("winner replace was not released")
+        original_replace(source, destination)
+
+    monkeypatch.setattr(caddy.os, "replace", paused_replace)
 
     def consume() -> bool:
-        start.wait()
         try:
             caddy._atomic_consume_legacy_grant(
                 snapshot,
@@ -2202,9 +2214,16 @@ def test_two_concurrent_atomic_consume_attempts_have_exactly_one_winner(
         return True
 
     with ThreadPoolExecutor(max_workers=2) as pool:
-        winners = list(pool.map(lambda _index: consume(), range(2)))
+        winner = pool.submit(consume)
+        assert winner_at_replace.wait(timeout=5)
+        loser = pool.submit(consume)
+        try:
+            assert loser.result(timeout=5) is False
+            assert temporary.is_file()
+        finally:
+            allow_winner_replace.set()
+        assert winner.result(timeout=5) is True
 
-    assert winners.count(True) == 1
     assert json.loads(canonical.read_text())["used_at_ts"] == NOW
 
 

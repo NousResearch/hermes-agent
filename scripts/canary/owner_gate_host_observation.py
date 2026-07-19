@@ -537,6 +537,7 @@ def _load_direct_iam_identity(
         OWNER_RELEASE_BASE
         / release_revision
         / "trust/direct-iam-identity-authority.json",
+        maximum=direct_iam.MAX_BYTES,
         modes=frozenset({0o444}),
     )
     try:

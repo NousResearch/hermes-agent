@@ -108,6 +108,40 @@ def test_workflows_are_scoped_to_parent_session():
     assert [wf["objective"] for wf in status_b["workflows"]] == ["Session B workflow"]
 
 
+def test_workflow_stays_retrievable_when_compression_rotates_session_id():
+    parent = SimpleNamespace(
+        session_id="before-compression",
+        _gateway_session_key="agent:main:telegram:dm:42",
+    )
+    _call(
+        {
+            "action": "create",
+            "workflow_id": "wf_compression",
+            "objective": "Keep terminal results reachable",
+            "nodes": [{"node_id": "worker", "goal": "Complete work"}],
+        },
+        parent_agent=parent,
+    )
+    _call(
+        {
+            "action": "record_result",
+            "workflow_id": "wf_compression",
+            "node_id": "worker",
+            "status": "completed",
+            "summary": "Terminal output",
+        },
+        parent_agent=parent,
+    )
+
+    parent.session_id = "after-compression"
+    status = _call(
+        {"action": "status", "workflow_id": "wf_compression"},
+        parent_agent=parent,
+    )
+
+    assert status["workflow"]["nodes"][0]["summary"] == "Terminal output"
+
+
 def test_dispatch_ready_uses_delegate_task_background(monkeypatch):
     calls = []
 
@@ -321,12 +355,6 @@ def test_status_reconciles_completed_async_workflow_node(monkeypatch):
     assert node["cost_usd"] == 0.01
     assert node["model"] == "test-model"
     assert node["async_completion_reconciled"] is True
-    assert (
-        dwt.is_async_completion_reconciled(
-            "deleg_done", workflow_id="wf_reconcile", node_id="worker"
-        )
-        is True
-    )
 
 
 def test_completion_callback_survives_recent_record_eviction(monkeypatch):

@@ -245,6 +245,7 @@ class TestStripBlockedTools(unittest.TestCase):
             "clarify",
             "cronjob",
             "delegation",
+            "dynamic_workflow",
             "code_execution",
             "memory",
         ):
@@ -259,6 +260,7 @@ class TestStripBlockedTools(unittest.TestCase):
         names = {item["function"]["name"] for item in definitions}
         self.assertTrue(names & {"terminal", "read_file", "web_search"})
         self.assertTrue(DELEGATE_BLOCKED_TOOLS.isdisjoint(names))
+        self.assertNotIn("dynamic_workflow", names)
 
     def test_orchestrator_composite_regains_only_delegate_task(self):
         import model_tools
@@ -299,6 +301,7 @@ class TestStripBlockedTools(unittest.TestCase):
         self.assertTrue(
             (DELEGATE_BLOCKED_TOOLS - {"delegate_task"}).isdisjoint(names)
         )
+        self.assertNotIn("dynamic_workflow", names)
 
 
 class TestDelegateTask(unittest.TestCase):

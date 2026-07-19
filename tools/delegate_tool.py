@@ -797,6 +797,7 @@ def _blocked_toolsets_for_role(role: str) -> List[str]:
     stored ``disabled_toolsets``.
     """
     blocked_names = set(DELEGATE_BLOCKED_TOOLS)
+    blocked_names.add("dynamic_workflow")
     if role == "orchestrator":
         blocked_names.discard("delegate_task")
     return sorted(

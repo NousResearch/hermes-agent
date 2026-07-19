@@ -425,6 +425,16 @@ class TestBlockingApprovalE2E:
         os.environ.pop("HERMES_GATEWAY_SESSION", None)
         os.environ.pop("HERMES_EXEC_ASK", None)
         os.environ.pop("HERMES_SESSION_KEY", None)
+        # These E2E tests exercise manual gateway blocking; default config is
+        # approvals.mode=smart which may auto-approve/deny via aux LLM before
+        # notify_cb runs (flaky on CI when the LLM is slow or unavailable).
+        self._approval_mode_patch = patch(
+            "tools.approval._get_approval_mode", return_value="manual"
+        )
+        self._approval_mode_patch.start()
+
+    def teardown_method(self):
+        self._approval_mode_patch.stop()
 
     def test_blocking_approval_approve_once(self):
         """check_all_command_guards blocks until resolve_gateway_approval is called."""

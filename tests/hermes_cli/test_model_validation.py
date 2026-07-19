@@ -949,7 +949,7 @@ class TestProbeApiModelsUserAgent:
 
         body = b'{"data":[]}'
         with patch(
-            "hermes_cli.models.urllib.request.urlopen",
+            "hermes_cli.models._urlopen_model_catalog_request",
             return_value=self._make_mock_response(body),
         ) as mock_urlopen:
             probe_api_models(
@@ -965,7 +965,7 @@ class TestProbeApiModelsUserAgent:
 
         body = b'{"data":[]}'
         with patch(
-            "hermes_cli.models.urllib.request.urlopen",
+            "hermes_cli.models._urlopen_model_catalog_request",
             return_value=self._make_mock_response(body),
         ) as mock_urlopen:
             probe_api_models("provider-key", "https://api.example.com/v1")

@@ -548,7 +548,13 @@ The `_session_expiry_watcher` task runs in the gateway event loop every 300 seco
    - Clean up cached AIAgent resources (close tool resources, shut down memory provider).
    - Evict the cached agent entry.
    - Clear per-session overrides (`_session_model_overrides`, reasoning overrides, etc.).
-   - Mark `expiry_finalized=True` and persist.
+   - Mark `expiry_finalized=True` and persist (sessions.json + state.db).
+   - Promote the state.db session row to `end_reason='session_reset'` via
+     `promote_to_session_reset()` — conditional: only live rows or rows ended with a
+     recoverable accidental reason (`agent_close`, `ws_orphan_reap`) are promoted, so
+     explicit boundaries (`compression`, `session_switch`, …) are never overwritten. This
+     durably records the reset so stale-route recovery cannot resurrect the expired
+     session with its full history (#61220, #61993, #63539).
 
 2. **Sweep idle cached agents** — Calls `_sweep_idle_cached_agents()` to evict agents that
    have been idle beyond `_AGENT_CACHE_IDLE_TTL_SECS` (3600s / 1h), regardless of session

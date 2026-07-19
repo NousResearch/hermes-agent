@@ -208,6 +208,7 @@ function routeProfileForApiRequest(
   opts: { globalRemote?: boolean; profileRemoteOverride?: boolean } = {},
 ) {
   const scopedProfile = connectionScopeKey(profile)
+
   if (!scopedProfile) {
     return null
   }
@@ -224,6 +225,7 @@ function routeProfileForApiRequest(
  */
 function pathWithGlobalRemoteProfile(path, profile, opts: any = {}) {
   const scopedProfile = connectionScopeKey(profile)
+
   if (!scopedProfile || opts.profileRemoteOverride || (!opts.globalRemote && !opts.localPrimary)) {
     return path
   }
@@ -364,7 +366,7 @@ export {
   profileRemoteOverride,
   resolveAuthMode,
   resolveTestWsUrl,
-  RT_COOKIE_VARIANTS,
   routeProfileForApiRequest,
+  RT_COOKIE_VARIANTS,
   tokenPreview
 }

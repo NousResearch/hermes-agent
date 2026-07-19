@@ -1,11 +1,12 @@
 import { type MutableRefObject, useCallback } from 'react'
 
-import { PROMPT_SUBMIT_REQUEST_TIMEOUT_MS, getSessionMessages } from '@/hermes'
+import { PROMPT_SUBMIT_REQUEST_TIMEOUT_MS } from '@/hermes'
 import type { Translations } from '@/i18n'
-import { type ChatMessage, preserveLocalAssistantErrors, textPart, toChatMessages } from '@/lib/chat-messages'
+import { type ChatMessage, textPart } from '@/lib/chat-messages'
 import { optimisticAttachmentRef } from '@/lib/chat-runtime'
 import { sanitizeComposerInput } from '@/lib/composer-input-sanitize'
 import { setMutableRef } from '@/lib/mutable-ref'
+import { refreshIfTranscriptStale } from '@/lib/stale-transcript-guard'
 import {
   isVoicePlaybackActive,
   markVoicePlaybackInterrupted,
@@ -139,7 +140,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         )
       }
 
-      // Queue drains fire on the busy?�false settle edge, where busyRef (synced
+      // Queue drains fire on the busy?’false settle edge, where busyRef (synced
       // from $busy by a separate effect) may still read true ??honoring it would
       // bounce the drained send. The drain lock serializes them; the user path
       // keeps the guard so a stray Enter mid-turn can't double-submit.
@@ -513,57 +514,45 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         // Multi-window stale guard (#65047): another Desktop window may own the
         // live transcript while this one still shows an open-time snapshot.
         // Block send + refresh rather than injecting an out-of-date context.
+        // Profile is resolved inside refreshIfTranscriptStale so cross-profile
+        // sessions hit the owning backend (see getSessionMessages routing).
         const guardStoredId = targetStoredSessionId ?? selectedStoredSessionIdRef.current
 
         if (guardStoredId && sessionId) {
           const localSnapshot = updateSessionState(sessionId, state => state, targetStoredSessionId)
-          const localCount = localSnapshot.messages.filter(message => message.id !== optimisticId).length
+          const refreshed = await refreshIfTranscriptStale(guardStoredId, localSnapshot.messages, {
+            excludeMessageId: optimisticId
+          })
 
-          try {
-            const remote = await getSessionMessages(guardStoredId)
+          if (sessionDriftReason()) {
+            return abortForSessionSwitch(sessionId)
+          }
 
-            if (sessionDriftReason()) {
-              return abortForSessionSwitch(sessionId)
+          if (refreshed) {
+            updateSessionState(
+              sessionId,
+              state => ({
+                ...state,
+                messages: refreshed,
+                busy: false,
+                awaitingResponse: false,
+                pendingBranchGroup: null
+              }),
+              targetStoredSessionId
+            )
+
+            if (targetIsCurrentView()) {
+              scope.setMessages(() => refreshed)
+              notify({
+                kind: 'warning',
+                title: copy.staleSessionTitle,
+                message: copy.staleSessionBody
+              })
             }
 
-            // Compare ChatMessage lengths (tools are folded by toChatMessages),
-            // not raw SessionMessage counts — otherwise a tool-using transcript
-            // looks "ahead" forever and soft-locks every subsequent send.
-            const remoteChat = toChatMessages(remote.messages)
+            releaseBusy()
 
-            if (remoteChat.length > localCount) {
-              const refreshed = preserveLocalAssistantErrors(
-                remoteChat,
-                localSnapshot.messages.filter(message => message.id !== optimisticId)
-              )
-
-              updateSessionState(
-                sessionId,
-                state => ({
-                  ...state,
-                  messages: refreshed,
-                  busy: false,
-                  awaitingResponse: false,
-                  pendingBranchGroup: null
-                }),
-                targetStoredSessionId
-              )
-
-              if (targetIsCurrentView()) {
-                scope.setMessages(() => refreshed)
-                notify({
-                  kind: 'warning',
-                  title: copy.staleSessionTitle,
-                  message: copy.staleSessionBody
-                })
-              }
-
-              releaseBusy()
-
-              return false
-            }
-          } catch {
-            // Authoritative check failed: do not soft-lock the composer.
+            return false
           }
         }
 

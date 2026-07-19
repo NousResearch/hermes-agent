@@ -1278,12 +1278,14 @@ describe('usePromptActions stale multi-window guard (#65047)', () => {
   beforeEach(() => {
     resetSessionMessagesMock()
     $notifications.set([])
+    setSessions(() => [])
   })
 
   afterEach(() => {
     cleanup()
     resetSessionMessagesMock()
     $notifications.set([])
+    setSessions(() => [])
   })
 
   it('blocks prompt.submit when the local transcript is behind and refreshes messages', async () => {
@@ -1318,13 +1320,48 @@ describe('usePromptActions stale multi-window guard (#65047)', () => {
     const accepted = await handle!.submitText('stale send from secondary window')
 
     expect(accepted).toBe(false)
-    expect(getSessionMessages).toHaveBeenCalledWith(RUNTIME_SESSION_ID)
+    expect(getSessionMessages).toHaveBeenCalledWith(RUNTIME_SESSION_ID, undefined)
     expect(requestGateway).not.toHaveBeenCalledWith('prompt.submit', expect.anything(), expect.anything())
 
     const last = seeds.at(-1) as { busy?: boolean; messages?: unknown[] } | undefined
     expect(last?.busy).toBe(false)
     expect(last?.messages).toHaveLength(4)
     expect($notifications.get().some(n => n.kind === 'warning')).toBe(true)
+  })
+
+  it('routes the hard-guard transcript read through the session owning profile', async () => {
+    const STORED_ID = 'stored-cross-profile'
+    setSessions(() => [sessionInfo({ id: STORED_ID, profile: 'work-vps', title: 'Remote chat' })])
+
+    vi.mocked(getSessionMessages).mockResolvedValue({
+      session_id: STORED_ID,
+      messages: [
+        { content: 'a', role: 'user', timestamp: 1 },
+        { content: 'b', role: 'assistant', timestamp: 2 },
+        { content: 'c', role: 'user', timestamp: 3 },
+        { content: 'd', role: 'assistant', timestamp: 4 }
+      ]
+    })
+
+    const requestGateway = vi.fn(async () => ({}) as never)
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        seedMessages={[
+          { id: 'u1', role: 'user', parts: [textPart('a')] },
+          { id: 'a1', role: 'assistant', parts: [textPart('b')] }
+        ]}
+        storedSessionId={STORED_ID}
+      />
+    )
+
+    expect(await handle!.submitText('stale cross-profile send')).toBe(false)
+    expect(getSessionMessages).toHaveBeenCalledWith(STORED_ID, 'work-vps')
+    expect(requestGateway).not.toHaveBeenCalledWith('prompt.submit', expect.anything(), expect.anything())
   })
 
   it('allows prompt.submit when the authoritative transcript is not ahead', async () => {

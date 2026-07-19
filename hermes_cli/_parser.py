@@ -240,6 +240,13 @@ def build_top_level_parser():
     )
     _inherited_flag(
         parser,
+        "--sandbox",
+        action="store_true",
+        default=False,
+        help="Enable terminal sandboxing (PID namespace isolation via the terminal-jail plugin). Sets HERMES_TERMINAL_JAIL_ENABLED=true; see also terminal.jail_enabled in config.yaml",
+    )
+    _inherited_flag(
+        parser,
         "--tui",
         action="store_true",
         default=False,
@@ -418,6 +425,13 @@ def build_top_level_parser():
         action="store_true",
         default=argparse.SUPPRESS,
         help="Troubleshooting mode: disable ALL customizations — user config, AGENTS.md/memory injection, plugins, and MCP servers (implies --ignore-user-config and --ignore-rules). Use to isolate whether a problem comes from your setup or from Hermes itself.",
+    )
+    _inherited_flag(
+        chat_parser,
+        "--sandbox",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="Enable terminal sandboxing (PID namespace isolation via the terminal-jail plugin). Sets HERMES_TERMINAL_JAIL_ENABLED=true; see also terminal.jail_enabled in config.yaml",
     )
     chat_parser.add_argument(
         "--source",

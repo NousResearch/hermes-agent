@@ -1291,6 +1291,11 @@ DEFAULT_CONFIG = {
         # Enabled by default for non-local backends (SSH); local is always opt-in
         # via TERMINAL_LOCAL_PERSISTENT env var.
         "persistent_shell": True,
+        # Opt-in terminal sandboxing via the terminal-jail plugin (Linux PID
+        # namespace isolation through `unshare`).  Bridged to
+        # HERMES_TERMINAL_JAIL_ENABLED.  `hermes chat --sandbox` force-enables
+        # it for a single run regardless of this setting.
+        "jail_enabled": False,
     },
 
     "web": {
@@ -7230,6 +7235,7 @@ TERMINAL_CONFIG_ENV_MAP = {
     "docker_orphan_reaper": "TERMINAL_DOCKER_ORPHAN_REAPER",
     "sandbox_dir": "TERMINAL_SANDBOX_DIR",
     "persistent_shell": "TERMINAL_PERSISTENT_SHELL",
+    "jail_enabled": "HERMES_TERMINAL_JAIL_ENABLED",
 }
 
 
@@ -7285,6 +7291,15 @@ def apply_terminal_config_to_env(
                 continue
             if isinstance(value, str):
                 value = os.path.expanduser(value)
+        if cfg_key == "jail_enabled":
+            # Opt-in only: export "true" when enabled, never export a falsy
+            # value — the terminal-jail plugin treats the var's absence as
+            # its own default, and presence-based checks must not see a
+            # "False" string.  `hermes chat --sandbox` sets the env var
+            # directly and always wins over config.
+            if not value:
+                continue
+            value = "true"
         if should_override or env_var not in target:
             target[env_var] = _terminal_env_value(value)
     return target

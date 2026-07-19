@@ -1167,6 +1167,12 @@ def _resolve_single_delivery_target(job: dict, deliver_value: str) -> Optional[d
 
     if ":" in deliver_value:
         platform_name, rest = deliver_value.split(":", 1)
+        # Named bot account (#8287): "telegram@support:123" delivers through
+        # the support account's adapter. Split the account off before any
+        # platform validation/lookup — downstream maps know "telegram", not
+        # "telegram@support".
+        platform_name, _at_sep, account_name = platform_name.partition("@")
+        account_name = account_name.strip().lower() or None
         platform_key = platform_name.lower()
 
         from tools.send_message_tool import _parse_target_ref
@@ -1192,11 +1198,14 @@ def _resolve_single_delivery_target(job: dict, deliver_value: str) -> Optional[d
         except Exception:
             pass
 
-        return {
+        target = {
             "platform": platform_name,
             "chat_id": chat_id,
             "thread_id": thread_id,
         }
+        if account_name:
+            target["account"] = account_name
+        return target
 
     platform_name = deliver_value
     if origin and origin.get("platform") == platform_name:
@@ -1533,6 +1542,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
         platform_name = target["platform"]
         chat_id = target["chat_id"]
         thread_id = target.get("thread_id")
+        account_name = target.get("account")
 
         # Diagnostic: log thread_id for topic-aware delivery debugging
         origin = _resolve_origin(job) or {}
@@ -1732,11 +1742,29 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                     from agent.async_utils import safe_schedule_threadsafe
 
                     router = DeliveryRouter(config, adapters)
+                    # Named-account routing (#8287): sync the gateway's
+                    # account registry so account targets resolve fail-closed
+                    # (never through the default bot). The live runner is
+                    # reachable via the module weakref gateway/run.py keeps
+                    # for exactly this kind of module-level consumer; when no
+                    # gateway is running (CLI cron), the registry stays empty
+                    # and account targets are skipped with the router's
+                    # "No adapter configured" error.
+                    try:
+                        from gateway.run import _gateway_runner_ref
+                        _runner = _gateway_runner_ref()
+                        if _runner is not None:
+                            router.account_adapters = getattr(
+                                _runner, "_account_adapters", {}
+                            ) or {}
+                    except Exception:
+                        pass
                     route_target = DeliveryTarget(
                         platform=platform,
                         chat_id=str(chat_id),
                         thread_id=route_thread_id,
                         is_explicit=True,
+                        account=account_name,
                     )
                     # Pass thread routing via the target (not a bare metadata
                     # "thread_id"): the router only applies its Telegram DM-topic

@@ -6360,8 +6360,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # elsewhere), which would otherwise trigger
         # ``RuntimeError: dictionary changed size during iteration`` —
         # observed in a user report during gateway shutdown.
-        for platform, adapter in list(self.adapters.items()):
-            home = self.config.get_home_channel(platform)
+        for platform, adapter, home in self._iter_live_adapters_with_home(snapshot=True):
             if not home or not home.chat_id:
                 continue
 
@@ -9908,6 +9907,25 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             home_channel=home_channel,
             extra=merged_extra,
         )
+
+    def _iter_live_adapters_with_home(self, snapshot: bool = False):
+        """Yield (platform, adapter, home_channel) for every live adapter.
+
+        Default-account adapters use the platform-level home channel; named
+        account adapters (#8287) use their own derived config's home channel,
+        so each bot broadcasts to its own home. ``snapshot=True`` list()s the
+        maps first so adapter.send() fatal paths popping registry entries
+        can't break iteration (the shutdown-broadcast lesson).
+        """
+        adapters = list(self.adapters.items()) if snapshot else self.adapters.items()
+        for platform, adapter in adapters:
+            yield platform, adapter, self.config.get_home_channel(platform)
+        account_map = getattr(self, "_account_adapters", None) or {}
+        account_items = list(account_map.items()) if snapshot else account_map.items()
+        for platform, accounts in account_items:
+            account_adapters = list(accounts.values()) if snapshot else accounts.values()
+            for adapter in account_adapters:
+                yield platform, adapter, getattr(adapter.config, "home_channel", None)
 
     def _wire_account_adapter(self, adapter: BasePlatformAdapter) -> None:
         """Wire a named-account adapter's handlers — identical to a default
@@ -16520,8 +16538,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         skipped = skip_targets or set()
         message = "♻️ Gateway online — Hermes is back and ready."
 
-        for platform, adapter in self.adapters.items():
-            home = self.config.get_home_channel(platform)
+        for platform, adapter, home in self._iter_live_adapters_with_home():
             if not home or not home.chat_id:
                 continue
 

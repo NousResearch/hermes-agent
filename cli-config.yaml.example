@@ -878,6 +878,22 @@ platform_toolsets:
 #         priority_mode: prepend
 #         priority:
 #           - my_plugin_command
+#     # Multi-account bots: declare each additional bot's credential in .env
+#     # as TELEGRAM_BOT_TOKEN_<ACCOUNT> (e.g. TELEGRAM_BOT_TOKEN_SUPPORT);
+#     # this yaml block carries only per-account behavioral settings.
+#     # Account names must match [a-z0-9][a-z0-9_-]*. The unsuffixed
+#     # TELEGRAM_BOT_TOKEN remains the default account, so single-bot
+#     # setups need no changes. Target a specific bot when delivering with
+#     # telegram@<account>:<chat_id>, e.g. deliver: "telegram@support:123456789".
+#     accounts:
+#       support:
+#         display_name: "Support Bot"
+#         home_channel:
+#           chat_id: "123456789"
+#       sales:
+#         display_name: "Sales Bot"
+#         home_channel:
+#           chat_id: "987654321"
 #   webhook:
 #     extra:
 #       # Route scripts default to a 30 second timeout. Scripts must live under

@@ -33,6 +33,26 @@ def _skill_dir(tmp_path):
         yield
 
 
+def _cron_store_with_legacy_refs(monkeypatch, tmp_path):
+    """Create a real cron store whose plural and legacy refs use old-skill."""
+
+    import cron.jobs as jobs_mod
+
+    hermes_home = tmp_path / "hermes-home"
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setattr(jobs_mod, "HERMES_DIR", hermes_home)
+    monkeypatch.setattr(jobs_mod, "CRON_DIR", hermes_home / "cron")
+    monkeypatch.setattr(jobs_mod, "JOBS_FILE", hermes_home / "cron" / "jobs.json")
+    monkeypatch.setattr(jobs_mod, "OUTPUT_DIR", hermes_home / "cron" / "output")
+    job = jobs_mod.create_job(
+        prompt="",
+        schedule="every 1h",
+        skills=["old-skill", "keep-skill"],
+    )
+    before = jobs_mod.JOBS_FILE.read_text()
+    return jobs_mod, job["id"], before
+
+
 VALID_SKILL_CONTENT = """\
 ---
 name: test-skill
@@ -383,11 +403,20 @@ class TestRenameSkill:
         assert 'name: "new-skill"' in content
         assert "name: old-skill" not in content
 
-    def test_rename_rolls_back_when_cron_reference_rewrite_fails(self, tmp_path):
+    def test_rename_rolls_back_when_cron_reference_rewrite_fails(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        jobs_mod, job_id, cron_before = _cron_store_with_legacy_refs(
+            monkeypatch,
+            tmp_path,
+        )
         with _skill_dir(tmp_path):
             _create_skill("old-skill", _skill_content("old-skill"))
-            with patch(
-                "cron.jobs.rewrite_skill_refs",
+            with patch.object(
+                jobs_mod,
+                "save_jobs",
                 side_effect=OSError("jobs.json write failed"),
             ):
                 result = _rename_skill("old-skill", "new-skill")
@@ -398,13 +427,22 @@ class TestRenameSkill:
         old_skill_md = tmp_path / "old-skill" / "SKILL.md"
         assert old_skill_md.exists()
         assert "name: old-skill" in old_skill_md.read_text()
+        assert jobs_mod.JOBS_FILE.read_text() == cron_before
+        stored_job = jobs_mod.get_job(job_id)
+        assert stored_job["skills"] == ["old-skill", "keep-skill"]
+        assert stored_job["skill"] == "old-skill"
 
     def test_rename_reports_inconsistent_state_when_frontmatter_rollback_fails(
         self,
         tmp_path,
+        monkeypatch,
     ):
         import tools.skill_manager_tool as manager
 
+        jobs_mod, _job_id, cron_before = _cron_store_with_legacy_refs(
+            monkeypatch,
+            tmp_path,
+        )
         with _skill_dir(tmp_path):
             _create_skill("old-skill", _skill_content("old-skill"))
             original = (tmp_path / "old-skill" / "SKILL.md").read_text()
@@ -416,8 +454,9 @@ class TestRenameSkill:
                 return real_write(path, content)
 
             with (
-                patch(
-                    "cron.jobs.rewrite_skill_refs",
+                patch.object(
+                    jobs_mod,
+                    "save_jobs",
                     side_effect=OSError("jobs.json write failed"),
                 ),
                 patch(
@@ -433,6 +472,7 @@ class TestRenameSkill:
         assert result["inconsistent_state"]["new_path_exists"] is False
         assert any("frontmatter restore failed" in item for item in result["rollback_errors"])
         assert "_change" not in result
+        assert jobs_mod.JOBS_FILE.read_text() == cron_before
         assert 'name: "new-skill"' in (
             tmp_path / "old-skill" / "SKILL.md"
         ).read_text()
@@ -440,9 +480,14 @@ class TestRenameSkill:
     def test_rename_reports_inconsistent_state_when_directory_rollback_fails(
         self,
         tmp_path,
+        monkeypatch,
     ):
         import tools.skill_manager_tool as manager
 
+        jobs_mod, _job_id, cron_before = _cron_store_with_legacy_refs(
+            monkeypatch,
+            tmp_path,
+        )
         with _skill_dir(tmp_path):
             _create_skill("old-skill", _skill_content("old-skill"))
             real_move = manager._move_skill_dir
@@ -453,8 +498,9 @@ class TestRenameSkill:
                 return real_move(src, dest)
 
             with (
-                patch(
-                    "cron.jobs.rewrite_skill_refs",
+                patch.object(
+                    jobs_mod,
+                    "save_jobs",
                     side_effect=OSError("jobs.json write failed"),
                 ),
                 patch(
@@ -470,6 +516,7 @@ class TestRenameSkill:
         assert result["inconsistent_state"]["new_path_exists"] is True
         assert any("directory restore failed" in item for item in result["rollback_errors"])
         assert "_change" not in result
+        assert jobs_mod.JOBS_FILE.read_text() == cron_before
         assert "name: old-skill" in (
             tmp_path / "new-skill" / "SKILL.md"
         ).read_text()

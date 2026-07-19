@@ -116,8 +116,8 @@ class GatewayKanbanWatchersMixin:
         """Poll ``kanban_notify_subs`` and deliver terminal events to users.
 
         For each subscription row, fetches ``task_events`` newer than the
-        stored cursor with kind in the terminal set (``completed``,
-        ``blocked``, ``gave_up``, ``crashed``, ``timed_out``). Sends one
+        stored cursor with kind in the notifiable set (``completed``,
+        ``blocked``, ``scheduled``, ``gave_up``, ``crashed``, ``timed_out``). Sends one
         message per new event to ``(platform, chat_id, thread_id)``,
         then advances the cursor. When a task reaches a terminal state
         (``completed`` / ``archived``), the subscription is removed.
@@ -130,31 +130,11 @@ class GatewayKanbanWatchersMixin:
         tick. Subscriptions live inside each board's own DB and cannot
         cross boards, so delivery semantics are unchanged — this is
         purely a fan-out of the single-DB poll.
+
+        Notification delivery is intentionally independent from embedded
+        dispatch. A gateway may own the user's chat subscription while task
+        execution is owned by another dispatcher process.
         """
-        # Gate: only the dispatch-owning gateway opens kanban DBs for notifier polling.
-        # Non-dispatch gateways have no subscriptions to deliver — all kanban state lives
-        # in the dispatch owner's per-board DBs. This prevents N-gateway -shm contention.
-        # TODO: gate per-board when per-board dispatcher_owner tracking lands.
-        try:
-            from hermes_cli.config import load_config as _load_config
-        except Exception:
-            logger.warning("kanban notifier: config loader unavailable; disabled")
-            return
-        env_override = os.environ.get("HERMES_KANBAN_DISPATCH_IN_GATEWAY", "").strip().lower()
-        if env_override in {"0", "false", "no", "off"}:
-            logger.info("kanban notifier: disabled via HERMES_KANBAN_DISPATCH_IN_GATEWAY env")
-            return
-        try:
-            cfg = _load_config()
-        except Exception as exc:
-            logger.warning("kanban notifier: cannot load config (%s); disabled", exc)
-            return
-        kanban_cfg = cfg.get("kanban", {}) if isinstance(cfg, dict) else {}
-        if not kanban_cfg.get("dispatch_in_gateway", True):
-            logger.info(
-                "kanban notifier: disabled via config kanban.dispatch_in_gateway=false"
-            )
-            return
         from gateway.config import Platform as _Platform
         try:
             from hermes_cli import kanban_db as _kb
@@ -164,7 +144,17 @@ class GatewayKanbanWatchersMixin:
 
         # "status" covers dashboard drag-drop and `_set_status_direct()`
         # writes — surface those transitions to subscribers too.
-        TERMINAL_KINDS = ("completed", "blocked", "gave_up", "crashed", "timed_out", "status", "archived", "unblocked")
+        NOTIFIABLE_KINDS = (
+            "completed",
+            "blocked",
+            "scheduled",
+            "gave_up",
+            "crashed",
+            "timed_out",
+            "status",
+            "archived",
+            "unblocked",
+        )
         # Subscriptions are removed only when the task reaches a truly final
         # status (done / archived). We used to also unsub on any terminal
         # event kind (gave_up / crashed / timed_out / blocked), but that
@@ -274,7 +264,7 @@ class GatewayKanbanWatchersMixin:
                                     platform=sub["platform"],
                                     chat_id=sub["chat_id"],
                                     thread_id=sub.get("thread_id") or "",
-                                    kinds=TERMINAL_KINDS,
+                                    kinds=NOTIFIABLE_KINDS,
                                 )
                                 if not events:
                                     continue
@@ -368,8 +358,13 @@ class GatewayKanbanWatchersMixin:
                         elif kind == "blocked":
                             reason = ""
                             if ev.payload and ev.payload.get("reason"):
-                                reason = f": {str(ev.payload['reason'])[:160]}"
+                                reason = f": {str(ev.payload['reason'])}"
                             msg = f"⏸ {board_tag}{tag}Kanban {sub['task_id']} blocked{reason}"
+                        elif kind == "scheduled":
+                            reason = ""
+                            if ev.payload and ev.payload.get("reason"):
+                                reason = f": {str(ev.payload['reason'])}"
+                            msg = f"⏰ {board_tag}{tag}Kanban {sub['task_id']} scheduled{reason}"
                         elif kind == "gave_up":
                             err = ""
                             if ev.payload and ev.payload.get("error"):
@@ -397,7 +392,7 @@ class GatewayKanbanWatchersMixin:
                                 new_status = str(ev.payload["status"])
                             msg = f"🔄 {board_tag}{tag}Kanban {sub['task_id']} → {new_status}"
                         else:
-                            # archived / unblocked are claimed by TERMINAL_KINDS
+                            # archived / unblocked are claimed by NOTIFIABLE_KINDS
                             # (so the cursor advances past them and they can't
                             # wedge a later completed/blocked event behind an
                             # unclaimed row) but are intentionally SILENT: an
@@ -413,6 +408,10 @@ class GatewayKanbanWatchersMixin:
                             sub["chat_id"], sub.get("thread_id") or "",
                         )
                         try:
+                            # Preserve the complete event payload here. Platform
+                            # adapters own their transport limits (Telegram and
+                            # Discord chunk in ``send``), so notifier-level
+                            # truncation would silently drop decision fields.
                             await adapter.send(
                                 sub["chat_id"], msg, metadata=metadata,
                             )
@@ -486,7 +485,7 @@ class GatewayKanbanWatchersMixin:
                         # gave_up / crashed / timed_out the subscription is
                         # kept alive so the user gets notified again if the
                         # dispatcher respawns the task and it cycles into the
-                        # same state. See the longer comment on TERMINAL_KINDS
+                        # same state. See the longer comment on NOTIFIABLE_KINDS
                         # above for the failure mode this prevents.
                         task_terminal = task and task.status in {"done", "archived"}
                         _WAKE_KINDS = ("completed", "gave_up", "crashed", "timed_out", "blocked")

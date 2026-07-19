@@ -88,7 +88,7 @@ async def test_notifier_unsubs_after_abnormal_events(kind, kanban_home):
     reclaimed, and crashes a second time); the user must hear about the
     second event too. Subscriptions are removed only when the task hits
     a truly final status (done / archived) — see the comment on
-    TERMINAL_KINDS in gateway/run.py and PR #21398.
+    NOTIFIABLE_KINDS in gateway/kanban_watchers.py and PR #21398.
     """
     import hermes_cli.kanban_db as kb
     from gateway.run import GatewayRunner

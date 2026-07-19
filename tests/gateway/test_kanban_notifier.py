@@ -1,5 +1,6 @@
 import asyncio
 from pathlib import Path
+from unittest.mock import patch
 
 
 from gateway.config import Platform
@@ -67,6 +68,149 @@ def _unseen_terminal_events(tid):
         return events
     finally:
         conn.close()
+
+
+def test_kanban_notifier_delivers_both_dev_boards_when_dispatch_disabled(
+    tmp_path, monkeypatch,
+):
+    """Notifier ownership is independent from embedded dispatcher ownership.
+
+    A default-profile gateway must poll subscriptions on both sanctioned dev
+    boards even when the gateway dispatcher is disabled by config and env.
+    Polling notifications must never call the dispatcher as a side effect.
+    """
+    monkeypatch.delenv("HERMES_KANBAN_DB", raising=False)
+    monkeypatch.setenv("HERMES_KANBAN_DISPATCH_IN_GATEWAY", "false")
+
+    task_ids = {}
+    for board in ("work-dev", "personal-dev"):
+        kb.create_board(board)
+        conn = kb.connect(board=board)
+        try:
+            tid = kb.create_task(conn, title=f"{board} decision", assignee="dev-lead")
+            task_ids[board] = tid
+            kb.add_notify_sub(
+                conn,
+                task_id=tid,
+                platform="telegram",
+                chat_id="owner-chat",
+                notifier_profile="default",
+            )
+            assert kb.block_task(
+                conn,
+                tid,
+                reason=f"ASK: decide {board}",
+                kind="needs_input",
+            )
+        finally:
+            conn.close()
+
+    adapter = RecordingAdapter()
+    runner = _make_runner(adapter)
+    runner._kanban_notifier_profile = "default"
+
+    with patch(
+        "hermes_cli.config.load_config",
+        return_value={"kanban": {"dispatch_in_gateway": False}},
+    ), patch.object(kb, "dispatch_once") as dispatch_once:
+        asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+
+    assert len(adapter.sent) == 2
+    delivered = "\n".join(item["text"] for item in adapter.sent)
+    for board, tid in task_ids.items():
+        assert f"[{board}]" in delivered
+        assert tid in delivered
+    dispatch_once.assert_not_called()
+
+
+def _decision_brief(task_id, *, include_window=False):
+    lines = [
+        "ASK: Choose whether to launch the notifier-only gateway.",
+        "WHY GATED: Owner approval is required before changing the live routing lane.",
+        "SCOPE: Notification polling only; dispatcher ownership and task execution stay unchanged.",
+        "ROLLBACK: Restore kanban.dispatch_in_gateway and restart the gateway.",
+        f"REPLY: APPROVE {task_id} / VETO {task_id}",
+    ]
+    if include_window:
+        lines.append("WINDOW: Approval closes at 2026-07-20T17:00:00-07:00.")
+    return "\n".join(lines)
+
+
+def test_kanban_notifier_preserves_complete_blocked_decision_brief(
+    tmp_path, monkeypatch,
+):
+    db = tmp_path / "blocked-brief.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db))
+    kb.init_db(db)
+    conn = kb.connect(db)
+    tid = kb.create_task(conn, title="Owner decision", assignee="dev-lead")
+    kb.add_notify_sub(
+        conn,
+        task_id=tid,
+        platform="telegram",
+        chat_id="owner-chat",
+        notifier_profile="default",
+    )
+    brief = _decision_brief(tid)
+    assert len(brief) > 160
+    assert kb.block_task(conn, tid, reason=brief, kind="needs_input")
+    conn.close()
+
+    adapter = RecordingAdapter()
+    runner = _make_runner(adapter)
+    runner._kanban_notifier_profile = "default"
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+
+    assert len(adapter.sent) == 1
+    delivered = adapter.sent[0]["text"]
+    assert brief in delivered
+    for field in (
+        "ASK:",
+        "WHY GATED:",
+        "SCOPE:",
+        "ROLLBACK:",
+        "REPLY:",
+    ):
+        assert field in delivered
+    assert f"APPROVE {tid}" in delivered
+    assert f"VETO {tid}" in delivered
+
+
+def test_kanban_notifier_delivers_complete_scheduled_decision_brief(
+    tmp_path, monkeypatch,
+):
+    db = tmp_path / "scheduled-brief.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db))
+    kb.init_db(db)
+    conn = kb.connect(db)
+    tid = kb.create_task(conn, title="Scheduled owner decision", assignee="dev-lead")
+    kb.add_notify_sub(
+        conn,
+        task_id=tid,
+        platform="telegram",
+        chat_id="owner-chat",
+        notifier_profile="default",
+    )
+    brief = _decision_brief(tid, include_window=True)
+    assert len(brief) > 160
+    assert kb.schedule_task(conn, tid, reason=brief)
+    conn.close()
+
+    adapter = RecordingAdapter()
+    runner = _make_runner(adapter)
+    runner._kanban_notifier_profile = "default"
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+
+    assert len(adapter.sent) == 1
+    delivered = adapter.sent[0]["text"]
+    assert "scheduled" in delivered
+    assert brief in delivered
+    assert f"APPROVE {tid}" in delivered
+    assert f"VETO {tid}" in delivered
+    assert "SCOPE:" in delivered
+    assert "ROLLBACK:" in delivered
+    assert "REPLY:" in delivered
+    assert "WINDOW:" in delivered
 
 
 def test_kanban_notifier_dedupes_board_slugs_pointing_to_same_db(tmp_path, monkeypatch):

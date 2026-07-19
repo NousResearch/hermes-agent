@@ -104,7 +104,7 @@ class _OpenAIProxy:
 
 OpenAI = _OpenAIProxy()  # module-level name, resolves lazily on call/isinstance
 
-from agent.credential_pool import load_pool
+from agent.credential_pool import AUTH_TYPE_API_KEY, load_pool
 from agent.model_metadata import MINIMUM_CONTEXT_LENGTH, get_model_context_length
 from hermes_cli.config import get_hermes_home
 from hermes_constants import OPENROUTER_BASE_URL
@@ -1762,6 +1762,13 @@ def _resolve_nous_pool_runtime_api(*, force_refresh: bool = False) -> Optional[t
 
     if entry is None:
         return None
+
+    if getattr(entry, "auth_type", None) == AUTH_TYPE_API_KEY:
+        api_key = _pool_runtime_api_key(entry)
+        base_url = _pool_runtime_base_url(entry, _NOUS_DEFAULT_BASE_URL)
+        if not api_key or not base_url:
+            return None
+        return api_key, base_url
 
     state = {
         "agent_key": getattr(entry, "agent_key", None),

@@ -1292,6 +1292,38 @@ class TestVisionClientFallback:
 
 
 class TestAuxiliaryPoolAwareness:
+    def test_resolve_nous_api_key_pool_entry_without_refresh(self):
+        class _Entry:
+            provider = "nous"
+            auth_type = "api_key"
+            access_token = "direct-nous-api-key"
+            inference_base_url = "https://inference.pool.example/v1"
+
+        class _Pool:
+            refresh_called = False
+
+            def has_credentials(self):
+                return True
+
+            def select(self):
+                return _Entry()
+
+            def try_refresh_current(self):
+                self.refresh_called = True
+                raise AssertionError("direct API keys must not be refreshed")
+
+        pool = _Pool()
+        with patch("agent.auxiliary_client.load_pool", return_value=pool):
+            from agent.auxiliary_client import _resolve_nous_pool_runtime_api
+
+            runtime = _resolve_nous_pool_runtime_api(force_refresh=True)
+
+        assert runtime == (
+            "direct-nous-api-key",
+            "https://inference.pool.example/v1",
+        )
+        assert pool.refresh_called is False
+
     def test_try_nous_uses_pool_entry(self):
         pooled_token = _jwt_with_claims({
             "scope": "inference:invoke",

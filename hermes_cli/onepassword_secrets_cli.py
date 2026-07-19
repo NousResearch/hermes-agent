@@ -408,6 +408,8 @@ def _op_version(binary: Path) -> str:
             [str(binary), "--version"],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=5,
         )
         if res.returncode == 0:

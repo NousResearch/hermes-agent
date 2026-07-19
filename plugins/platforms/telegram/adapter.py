@@ -423,20 +423,38 @@ def check_telegram_requirements() -> bool:
 # when it appears outside a code span or fenced code block.
 _MDV2_ESCAPE_RE = re.compile(r'([_*\[\]()~`>#\+\-=|{}.!\\])')
 
+# Matches a MarkdownV2 escape sequence: backslash + special character.
+_MDV2_STRIP_RE = re.compile(r'\\([_*\[\]()~`>#\+\-=|{}.!\\])')
+
 
 def _escape_mdv2(text: str) -> str:
     """Escape Telegram MarkdownV2 special characters with a preceding backslash."""
     return _MDV2_ESCAPE_RE.sub(r'\\\1', text)
 
 
-def _strip_mdv2(text: str) -> str:
-    """Strip MarkdownV2 escape backslashes to produce clean plain text.
+def _escape_mdv2_backslashes(text: str) -> str:
+    """Strip MarkdownV2 escape backslashes, preserving markdown formatting.
 
-    Also removes MarkdownV2 formatting markers so the fallback
-    doesn't show stray syntax characters from format_message conversion.
+    Use this in fallback paths where Telegram rejects MarkdownV2 but the
+    content should still be readable — bold markers, italic, etc. are kept
+    so that pipe tables and other formatted text remain legible in plain
+    text mode.
+
+    Unlike _strip_mdv2(), this does NOT remove **bold**,
+    *italic*, ~strike~, or ||spoiler|| markers.
+    """
+    return _MDV2_STRIP_RE.sub(r'\1', text)
+
+
+def _strip_mdv2(text: str) -> str:
+    """Strip MarkdownV2 escape backslashes AND formatting markers.
+
+    Produces fully unformatted plain text.  Use only when the downstream
+    consumer cannot render any markdown at all (e.g. notification bodies).
+    For Telegram fallback paths prefer _escape_mdv2_backslashes().
     """
     # Remove escape backslashes before special characters
-    cleaned = re.sub(r'\\([_*\[\]()~`>#\+\-=|{}.!\\])', r'\1', text)
+    cleaned = _MDV2_STRIP_RE.sub(r'\1', text)
     # Remove standard markdown bold (**text** → text) BEFORE MarkdownV2 bold
     cleaned = re.sub(r'\*\*([^*]+)\*\*', r'\1', cleaned)
     # Remove MarkdownV2 bold markers that format_message converted from **bold**
@@ -4138,7 +4156,7 @@ class TelegramAdapter(BasePlatformAdapter):
                             # Markdown parsing failed, try plain text
                             if "parse" in str(md_error).lower() or "markdown" in str(md_error).lower():
                                 logger.warning("[%s] MarkdownV2 parse failed, falling back to plain text: %s", self.name, md_error)
-                                plain_chunk = _strip_mdv2(chunk)
+                                plain_chunk = _escape_mdv2_backslashes(chunk)
                                 msg = await self._bot.send_message(
                                     chat_id=normalize_telegram_chat_id(chat_id),
                                     text=plain_chunk,
@@ -4463,7 +4481,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     self.name,
                     safe_format_error,
                 )
-                _plain = _strip_mdv2(content) if content else content
+                _plain = _escape_mdv2_backslashes(content) if content else content
                 await self._bot.edit_message_text(
                     chat_id=normalize_telegram_chat_id(chat_id),
                     message_id=int(message_id),
@@ -4639,7 +4657,7 @@ class TelegramAdapter(BasePlatformAdapter):
                         await self._bot.edit_message_text(
                             chat_id=normalize_telegram_chat_id(chat_id),
                             message_id=int(message_id),
-                            text=_strip_mdv2(first_chunk),
+                            text=_escape_mdv2_backslashes(first_chunk),
                         )
             else:
                 await self._bot.edit_message_text(
@@ -4690,7 +4708,7 @@ class TelegramAdapter(BasePlatformAdapter):
                         # failed, so degrade to clean stripped text, never
                         # the raw chunk (raw ** / ``` markers would render
                         # literally); streaming previews stay raw.
-                        text = _strip_mdv2(chunk) if finalize else chunk
+                        text = _escape_mdv2_backslashes(chunk) if finalize else chunk
                     sent_msg = await self._bot.send_message(
                         chat_id=normalize_telegram_chat_id(chat_id),
                         text=text,
@@ -4716,7 +4734,7 @@ class TelegramAdapter(BasePlatformAdapter):
                         try:
                             sent_msg = await self._bot.send_message(
                                 chat_id=normalize_telegram_chat_id(chat_id),
-                                text=_strip_mdv2(chunk) if finalize else chunk,
+                                text=_escape_mdv2_backslashes(chunk) if finalize else chunk,
                                 **retry_thread_kwargs,
                                 **self._link_preview_kwargs(),
                                 **self._notification_kwargs(metadata),

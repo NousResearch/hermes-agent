@@ -1099,18 +1099,25 @@ def check_cronjob_requirements() -> bool:
     The cron system is internal (JSON file-based scheduler ticked by the gateway),
     so no external crontab executable is required.
 
-    Session env vars must hold an explicit truthy string (``1``, ``true``,
-    ``yes``, ``on``) — false-like values (``0``, ``false``, ``no``, ``off``)
-    leave the tool disabled. Uses the shared ``env_var_enabled`` helper so
-    every consumer of these flags agrees on the truthy set.
+    Legacy process env vars must hold an explicit truthy string (``1``,
+    ``true``, ``yes``, ``on``). Gateway turns bind their platform identity in
+    ContextVars, so they must not depend on process-global env flags.
     """
     from utils import env_var_enabled
 
-    return (
+    if (
         env_var_enabled("HERMES_INTERACTIVE")
         or env_var_enabled("HERMES_GATEWAY_SESSION")
         or env_var_enabled("HERMES_EXEC_ASK")
-    )
+    ):
+        return True
+
+    try:
+        from gateway.session_context import get_session_env
+
+        return bool(get_session_env("HERMES_SESSION_PLATFORM", ""))
+    except Exception:
+        return False
 
 
 # --- Registry ---
@@ -1143,5 +1150,6 @@ registry.register(
         task_id=kw.get("task_id"),
     ))(),
     check_fn=check_cronjob_requirements,
+    check_fn_session_scoped=True,
     emoji="⏰",
 )

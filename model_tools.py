@@ -29,7 +29,7 @@ import threading
 import time
 from typing import Dict, Any, List, Optional, Tuple
 
-from tools.registry import discover_builtin_tools, registry
+from tools.registry import discover_builtin_tools, get_availability_cache_key, registry
 from toolsets import resolve_toolset, validate_toolset
 
 logger = logging.getLogger(__name__)
@@ -248,7 +248,8 @@ _LEGACY_TOOLSET_MAP = {
 # =============================================================================
 
 # Module-level memoization for get_tool_definitions(). Keyed on
-# (frozenset(enabled_toolsets), frozenset(disabled_toolsets), registry._generation).
+# (frozenset(enabled_toolsets), frozenset(disabled_toolsets), registry._generation,
+# availability cache key).
 # Hot callers (gateway runner, AIAgent.__init__) invoke this on every turn
 # with quiet_mode=True; caching avoids ~7 ms of registry walking + schema
 # filtering + check_fn probing per call. Only active when quiet_mode=True
@@ -259,6 +260,7 @@ _LEGACY_TOOLSET_MAP = {
 # inner check_fn TTL cache in registry.py handles environment drift (Docker
 # daemon start/stop, env var changes, etc.) on a 30 s horizon.
 _tool_defs_cache: Dict[tuple, List[Dict[str, Any]]] = {}
+_tool_defs_cache_expiry: Dict[tuple, float] = {}
 
 # Hard cap on memoized get_tool_definitions() results. A long-lived Gateway
 # process sees many distinct toolset/config fingerprints over its lifetime
@@ -274,6 +276,7 @@ def _clear_tool_defs_cache() -> None:
     schema dependencies change (e.g. discord capability cache reset,
     execute_code sandbox reconfigured)."""
     _tool_defs_cache.clear()
+    _tool_defs_cache_expiry.clear()
 
 
 def get_tool_definitions(
@@ -304,7 +307,9 @@ def get_tool_definitions(
     # The cache key captures every argument-level input; the registry
     # generation captures registry mutations (MCP refresh, plugin load).
     # check_fn results are TTL-cached one level down, inside
-    # registry.get_definitions. The config-mtime fingerprint below captures
+    # registry.get_definitions. The availability cache key separates
+    # session/environment-gated schemas and advances on explicit availability
+    # invalidation. The config-mtime fingerprint below captures
     # user-visible config edits that affect dynamic schemas (execute_code
     # mode, discord action allowlist, etc.) without needing an explicit
     # invalidate hook on every config-writer.
@@ -320,12 +325,13 @@ def get_tool_definitions(
             frozenset(enabled_toolsets) if enabled_toolsets is not None else None,
             frozenset(disabled_toolsets) if disabled_toolsets else None,
             registry._generation,
+            get_availability_cache_key(session_scoped=True),
             cfg_fp,
             bool(os.environ.get("HERMES_KANBAN_TASK")),
             bool(skip_tool_search_assembly),
         )
         cached = _tool_defs_cache.get(cache_key)
-        if cached is not None:
+        if cached is not None and time.monotonic() < _tool_defs_cache_expiry.get(cache_key, float("inf")):
             # Update _last_resolved_tool_names so downstream callers see
             # consistent state even on a cache hit.
             global _last_resolved_tool_names
@@ -334,8 +340,21 @@ def get_tool_definitions(
             # schemas are treated as read-only by all known callers.
             return list(cached)
 
-    result = _compute_tool_definitions(enabled_toolsets, disabled_toolsets, quiet_mode,
-                                       skip_tool_search_assembly=skip_tool_search_assembly)
+    if quiet_mode:
+        result, availability_expires_at = _compute_tool_definitions(
+            enabled_toolsets,
+            disabled_toolsets,
+            quiet_mode,
+            skip_tool_search_assembly=skip_tool_search_assembly,
+            return_availability_expiry=True,
+        )
+    else:
+        result = _compute_tool_definitions(
+            enabled_toolsets,
+            disabled_toolsets,
+            quiet_mode,
+            skip_tool_search_assembly=skip_tool_search_assembly,
+        )
     if quiet_mode:
         # Cache the freshly-computed list, but hand callers a shallow copy so
         # downstream mutations (e.g. run_agent appending memory/LCM tool
@@ -348,8 +367,11 @@ def get_tool_definitions(
         # doesn't accumulate entries unboundedly across the many distinct
         # toolset/config fingerprints it sees over its lifetime (#19251).
         if len(_tool_defs_cache) >= _TOOL_DEFS_CACHE_MAX:
-            _tool_defs_cache.pop(next(iter(_tool_defs_cache)))  # evict oldest
+            oldest_key = next(iter(_tool_defs_cache))
+            _tool_defs_cache.pop(oldest_key)
+            _tool_defs_cache_expiry.pop(oldest_key, None)
         _tool_defs_cache[cache_key] = result
+        _tool_defs_cache_expiry[cache_key] = availability_expires_at
         return list(result)
     return result
 
@@ -359,7 +381,8 @@ def _compute_tool_definitions(
     disabled_toolsets: Optional[List[str]] = None,
     quiet_mode: bool = False,
     skip_tool_search_assembly: bool = False,
-) -> List[Dict[str, Any]]:
+    return_availability_expiry: bool = False,
+) -> List[Dict[str, Any]] | tuple[List[Dict[str, Any]], float]:
     """Uncached implementation of :func:`get_tool_definitions`."""
     # Determine which tool names the caller wants
     tools_to_include: set = set()
@@ -442,7 +465,15 @@ def _compute_tool_definitions(
     # other toolset.
 
     # Ask the registry for schemas (only returns tools whose check_fn passes)
-    filtered_tools = registry.get_definitions(tools_to_include, quiet=quiet_mode)
+    registry_result = registry.get_definitions(
+        tools_to_include,
+        quiet=quiet_mode,
+        return_availability_expiry=return_availability_expiry,
+    )
+    if return_availability_expiry:
+        filtered_tools, availability_expires_at = registry_result
+    else:
+        filtered_tools = registry_result
 
     # The set of tool names that actually passed check_fn filtering.
     # Use this (not tools_to_include) for any downstream schema that references
@@ -564,6 +595,8 @@ def _compute_tool_definitions(
     except Exception as e:  # pragma: no cover — never break tool loading
         logger.warning("Tool search assembly skipped: %s", e)
 
+    if return_availability_expiry:
+        return filtered_tools, availability_expires_at
     return filtered_tools
 
 

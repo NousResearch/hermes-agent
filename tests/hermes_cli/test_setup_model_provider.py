@@ -279,7 +279,7 @@ def test_setup_summary_marks_anthropic_auth_as_vision_available(tmp_path, monkey
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     _clear_provider_env(monkeypatch)
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-api03-key")
-    monkeypatch.setattr("shutil.which", lambda _name: None)
+    monkeypatch.setattr("shutil.which", lambda *_args, **_kwargs: None)
     monkeypatch.setattr("agent.auxiliary_client.get_available_vision_backends", lambda: ["anthropic"])
 
     _print_setup_summary(load_config(), tmp_path)

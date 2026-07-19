@@ -14577,8 +14577,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             from gateway.platforms.base import (
                 BasePlatformAdapter,
+                attachment_delivery_status,
                 confirmed_attachment_delivery_count,
                 should_send_media_as_audio,
+                status_terminal_metadata,
             )
 
             media_files, cleaned = adapter.extract_media(response)
@@ -14694,26 +14696,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # not own Discord's keyed text lifecycle. For a MEDIA-only final,
                 # replace the retained running card after at least one attachment
                 # succeeds so the run cannot remain visibly stuck.
-                _terminal_metadata = dict(_thread_meta or {})
-                _terminal_metadata.update(
-                    {
-                        "notify": True,
-                        "status_key": str(_status_key),
-                        "status_terminal": True,
-                    }
-                )
-                if _reply_anchor is not None:
-                    _terminal_metadata["reply_to_message_id"] = str(_reply_anchor)
-                attachment_label = (
-                    "Attachment delivered."
-                    if _attachment_deliveries == 1
-                    else "Attachments delivered."
-                )
                 await adapter._send_with_retry(
                     chat_id=event.source.chat_id,
-                    content=attachment_label,
+                    content=attachment_delivery_status(_attachment_deliveries),
                     reply_to=_reply_anchor,
-                    metadata=_terminal_metadata,
+                    metadata=status_terminal_metadata(
+                        _thread_meta,
+                        _status_key,
+                        _reply_anchor,
+                    ),
                 )
 
         except Exception as e:

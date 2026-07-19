@@ -578,6 +578,150 @@ async def test_stream_edit_and_base_final_share_one_real_discord_message(
 
 
 @pytest.mark.asyncio
+async def test_attachment_reaches_thread_before_retained_card_terminalizes(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(
+        "plugins.platforms.discord.adapter._build_operator_card_embed",
+        lambda card: {"kind": card.card_type},
+    )
+    image_path = tmp_path / "report.png"
+    image_path.write_bytes(b"\x89PNG" + b"\x00" * 20)
+
+    instance = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+    retained = SimpleNamespace(id=7001, edit=AsyncMock())
+    attachment = SimpleNamespace(id=7002)
+    delivery_order = []
+
+    async def send_to_thread(**kwargs):
+        if kwargs.get("embed") is not None:
+            delivery_order.append("status")
+            return retained
+        if kwargs.get("file") is not None:
+            delivery_order.append("attachment")
+            return attachment
+        raise AssertionError(f"unexpected thread send: {kwargs}")
+
+    parent = SimpleNamespace(id=555, send=AsyncMock())
+    thread = SimpleNamespace(
+        id=777,
+        send=AsyncMock(side_effect=send_to_thread),
+        fetch_message=AsyncMock(return_value=retained),
+    )
+    instance._client = SimpleNamespace(
+        get_channel=lambda channel_id: {555: parent, 777: thread}.get(channel_id),
+        fetch_channel=AsyncMock(),
+    )
+
+    await instance.send(
+        "555",
+        "Working",
+        metadata={"thread_id": "777", "status_key": "task_run:message:42"},
+    )
+    attachment_result = await instance.send_image_file(
+        "555",
+        str(image_path),
+        metadata={
+            "thread_id": "777",
+            "status_key": "task_run:message:42",
+            "status_terminal": True,
+        },
+    )
+    await instance.send(
+        "555",
+        "Attachment delivered.",
+        metadata={
+            "thread_id": "777",
+            "status_key": "task_run:message:42",
+            "status_terminal": True,
+        },
+    )
+
+    assert attachment_result.delivered_attachment_count == 1
+    assert delivery_order == ["status", "attachment"]
+    parent.send.assert_not_awaited()
+    retained.edit.assert_awaited_once_with(
+        content="Attachment delivered.",
+        embed=None,
+    )
+
+
+@pytest.mark.asyncio
+async def test_attachment_warning_fallback_stays_in_thread_without_terminal_receipt(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(
+        "plugins.platforms.discord.adapter._build_operator_card_embed",
+        lambda card: {"kind": card.card_type},
+    )
+    image_path = tmp_path / "report.png"
+    image_path.write_bytes(b"\x89PNG" + b"\x00" * 20)
+
+    instance = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+    record_response = Mock()
+    instance._record_discord_response = record_response
+    retained = SimpleNamespace(id=7001, edit=AsyncMock())
+    warning = SimpleNamespace(id=7002)
+
+    async def send_to_thread(**kwargs):
+        if kwargs.get("embed") is not None:
+            return retained
+        if kwargs.get("file") is not None:
+            raise RuntimeError("native attachment unavailable")
+        if kwargs.get("content") == "⚠️ Couldn't deliver the image attachment.":
+            return warning
+        raise AssertionError(f"unexpected thread send: {kwargs}")
+
+    parent = SimpleNamespace(id=555, send=AsyncMock())
+    thread = SimpleNamespace(
+        id=777,
+        send=AsyncMock(side_effect=send_to_thread),
+        fetch_message=AsyncMock(return_value=retained),
+    )
+    instance._client = SimpleNamespace(
+        get_channel=lambda channel_id: {555: parent, 777: thread}.get(channel_id),
+        fetch_channel=AsyncMock(),
+    )
+    await instance.send(
+        "555",
+        "Working",
+        metadata={"thread_id": "777", "status_key": "task_run:message:42"},
+    )
+    record_response.reset_mock()
+    retained.edit.reset_mock()
+
+    fallback_result = await instance.send_image_file(
+        "555",
+        str(image_path),
+        reply_to="42",
+        metadata={
+            "thread_id": "777",
+            "reply_to_message_id": "42",
+            "notify": True,
+            "status_key": "task_run:message:42",
+            "status_terminal": True,
+        },
+    )
+
+    assert fallback_result.success is True
+    assert fallback_result.delivered_attachment_count == 0
+    parent.send.assert_not_awaited()
+    retained.edit.assert_not_awaited()
+    text_sends = [
+        call.kwargs.get("content")
+        for call in thread.send.await_args_list
+        if call.kwargs.get("file") is None
+    ]
+    assert text_sends[-1] == "⚠️ Couldn't deliver the image attachment."
+    assert [
+        call.kwargs for call in record_response.call_args_list
+        if call.kwargs.get("final")
+    ] == []
+
+
+@pytest.mark.asyncio
 async def test_failed_image_only_final_keeps_real_card_and_receipt_nonterminal(
     tmp_path, monkeypatch
 ):

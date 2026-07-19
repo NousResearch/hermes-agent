@@ -980,6 +980,61 @@ class DiscordAdapter(BasePlatformAdapter):
 
     # Auto-disconnect from voice channel after this many seconds of inactivity
     VOICE_TIMEOUT = 300
+    _ATTACHMENT_FALLBACK_TERMINAL_KEYS = frozenset(
+        {"notify", "status_key", "status_terminal"}
+    )
+
+    @staticmethod
+    def _attachment_target_id(
+        chat_id: str,
+        metadata: Optional[Dict[str, Any]],
+    ) -> str:
+        """Return the routed Discord destination for an attachment send."""
+        return str((metadata or {}).get("thread_id") or chat_id)
+
+    @classmethod
+    def _attachment_fallback_metadata(
+        cls,
+        metadata: Optional[Dict[str, Any]],
+    ) -> Optional[Dict[str, Any]]:
+        """Keep fallback routing without falsely terminalizing a status card."""
+        if not metadata:
+            return None
+        fallback_metadata = {
+            key: value
+            for key, value in metadata.items()
+            if key not in cls._ATTACHMENT_FALLBACK_TERMINAL_KEYS
+        }
+        return fallback_metadata or None
+
+    async def _resolve_attachment_channel(
+        self,
+        chat_id: str,
+        metadata: Optional[Dict[str, Any]],
+    ) -> tuple[Any, str]:
+        target_id = self._attachment_target_id(chat_id, metadata)
+        channel = self._client.get_channel(int(target_id))
+        if not channel:
+            channel = await self._client.fetch_channel(int(target_id))
+        return channel, target_id
+
+    async def _attachment_reply_reference(
+        self,
+        channel: Any,
+        reply_to: Optional[str],
+        metadata: Optional[Dict[str, Any]],
+    ) -> Any:
+        anchor = reply_to or (metadata or {}).get("reply_to_message_id")
+        if not anchor or self._reply_to_mode == "off":
+            return None
+        try:
+            message = await channel.fetch_message(int(anchor))
+            if hasattr(message, "to_reference"):
+                return message.to_reference(fail_if_not_exists=False)
+            return message
+        except Exception as exc:
+            logger.debug("Could not fetch attachment reply target: %s", exc)
+            return None
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.DISCORD)
@@ -4061,6 +4116,8 @@ class DiscordAdapter(BasePlatformAdapter):
         file_path: str,
         caption: Optional[str] = None,
         file_name: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """Send a local file as a Discord attachment.
 
@@ -4070,11 +4127,12 @@ class DiscordAdapter(BasePlatformAdapter):
         if not self._client:
             return SendResult(success=False, error="Not connected")
 
-        channel = self._client.get_channel(int(chat_id))
+        channel, target_id = await self._resolve_attachment_channel(
+            chat_id,
+            metadata,
+        )
         if not channel:
-            channel = await self._client.fetch_channel(int(chat_id))
-        if not channel:
-            return SendResult(success=False, error=f"Channel {chat_id} not found")
+            return SendResult(success=False, error=f"Channel {target_id} not found")
 
         filename = file_name or os.path.basename(file_path)
         with open(file_path, "rb") as fh:
@@ -4085,7 +4143,18 @@ class DiscordAdapter(BasePlatformAdapter):
                     content=(caption or "").strip(),
                     file=file,
                 )
-            msg = await channel.send(content=caption if caption else None, file=file)
+            send_kwargs: Dict[str, Any] = {
+                "content": caption if caption else None,
+                "file": file,
+            }
+            reference = await self._attachment_reply_reference(
+                channel,
+                reply_to,
+                metadata,
+            )
+            if reference is not None:
+                send_kwargs["reference"] = reference
+            msg = await channel.send(**send_kwargs)
         return SendResult(
             success=True,
             message_id=str(msg.id),
@@ -4119,24 +4188,37 @@ class DiscordAdapter(BasePlatformAdapter):
             from urllib.parse import unquote as _unquote
         except Exception:  # pragma: no cover
             return await super().send_multiple_images(
-                chat_id, images, metadata, human_delay
+                chat_id,
+                images,
+                self._attachment_fallback_metadata(metadata),
+                human_delay,
             )
 
         try:
-            channel = self._client.get_channel(int(chat_id))
+            channel, target_id = await self._resolve_attachment_channel(
+                chat_id,
+                metadata,
+            )
             if not channel:
-                channel = await self._client.fetch_channel(int(chat_id))
-            if not channel:
-                logger.warning("[%s] Channel %s not found for multi-image send", self.name, chat_id)
+                logger.warning("[%s] Channel %s not found for multi-image send", self.name, target_id)
                 return SendResult(
                     success=False,
-                    error=f"Channel {chat_id} not found",
+                    error=f"Channel {target_id} not found",
                 )
         except Exception as e:
             logger.warning("[%s] Failed to resolve channel for multi-image send: %s", self.name, e)
             return await super().send_multiple_images(
-                chat_id, images, metadata, human_delay
+                chat_id,
+                images,
+                self._attachment_fallback_metadata(metadata),
+                human_delay,
             )
+
+        reference = await self._attachment_reply_reference(
+            channel,
+            None,
+            metadata,
+        )
 
         CHUNK = 10
         chunks = [images[i:i + CHUNK] for i in range(0, len(images), CHUNK)]
@@ -4223,7 +4305,13 @@ class DiscordAdapter(BasePlatformAdapter):
                     delivered_attachment_count += confirmed_count
                     last_message_id = forum_result.message_id
                 else:
-                    message = await channel.send(content=content, files=files)
+                    send_kwargs: Dict[str, Any] = {
+                        "content": content,
+                        "files": files,
+                    }
+                    if reference is not None and chunk_idx == 0:
+                        send_kwargs["reference"] = reference
+                    message = await channel.send(**send_kwargs)
                     delivered_attachment_count += len(files)
                     last_message_id = str(message.id)
             except Exception as e:
@@ -4233,7 +4321,10 @@ class DiscordAdapter(BasePlatformAdapter):
                     exc_info=True,
                 )
                 fallback_result = await super().send_multiple_images(
-                    chat_id, chunk, metadata, human_delay=human_delay
+                    chat_id,
+                    chunk,
+                    self._attachment_fallback_metadata(metadata),
+                    human_delay=human_delay,
                 )
                 if fallback_result.success:
                     delivered_attachment_count += (
@@ -4293,11 +4384,12 @@ class DiscordAdapter(BasePlatformAdapter):
         try:
             import io
 
-            channel = self._client.get_channel(int(chat_id))
+            channel, target_id = await self._resolve_attachment_channel(
+                chat_id,
+                metadata,
+            )
             if not channel:
-                channel = await self._client.fetch_channel(int(chat_id))
-            if not channel:
-                return SendResult(success=False, error=f"Channel {chat_id} not found")
+                return SendResult(success=False, error=f"Channel {target_id} not found")
 
             if not os.path.exists(audio_path):
                 return SendResult(success=False, error=f"Audio file not found: {audio_path}")
@@ -4344,6 +4436,16 @@ class DiscordAdapter(BasePlatformAdapter):
                         "waveform": waveform_b64,
                     }],
                 })
+                reply_anchor = reply_to or (metadata or {}).get(
+                    "reply_to_message_id"
+                )
+                if reply_anchor and self._reply_to_mode != "off":
+                    payload_data = _json.loads(payload)
+                    payload_data["message_reference"] = {
+                        "message_id": str(reply_anchor),
+                        "fail_if_not_exists": False,
+                    }
+                    payload = _json.dumps(payload_data)
                 form = [
                     {"name": "payload_json", "value": payload},
                     {
@@ -4365,7 +4467,15 @@ class DiscordAdapter(BasePlatformAdapter):
             except Exception as voice_err:
                 logger.debug("Voice message flag failed, falling back to file: %s", voice_err)
                 file = discord.File(io.BytesIO(file_data), filename=filename)
-                msg = await channel.send(file=file)
+                send_kwargs: Dict[str, Any] = {"file": file}
+                reference = await self._attachment_reply_reference(
+                    channel,
+                    reply_to,
+                    metadata,
+                )
+                if reference is not None:
+                    send_kwargs["reference"] = reference
+                msg = await channel.send(**send_kwargs)
                 return SendResult(
                     success=True,
                     message_id=str(msg.id),
@@ -4373,7 +4483,13 @@ class DiscordAdapter(BasePlatformAdapter):
                 )
         except Exception as e:  # pragma: no cover - defensive logging
             logger.error("[%s] Failed to send audio, falling back to base adapter: %s", self.name, e, exc_info=True)
-            return await super().send_voice(chat_id, audio_path, caption, reply_to, metadata=metadata)
+            return await super().send_voice(
+                chat_id,
+                audio_path,
+                caption,
+                reply_to,
+                metadata=self._attachment_fallback_metadata(metadata),
+            )
 
     # ------------------------------------------------------------------
     # Voice channel methods (join / leave / play)
@@ -5312,12 +5428,24 @@ class DiscordAdapter(BasePlatformAdapter):
     ) -> SendResult:
         """Send a local image file natively as a Discord file attachment."""
         try:
-            return await self._send_file_attachment(chat_id, image_path, caption)
+            return await self._send_file_attachment(
+                chat_id,
+                image_path,
+                caption,
+                reply_to=reply_to,
+                metadata=metadata,
+            )
         except FileNotFoundError:
             return SendResult(success=False, error=f"Image file not found: {image_path}")
         except Exception as e:  # pragma: no cover - defensive logging
             logger.error("[%s] Failed to send local image, falling back to base adapter: %s", self.name, e, exc_info=True)
-            return await super().send_image_file(chat_id, image_path, caption, reply_to, metadata=metadata)
+            return await super().send_image_file(
+                chat_id,
+                image_path,
+                caption,
+                reply_to,
+                metadata=self._attachment_fallback_metadata(metadata),
+            )
 
     async def send_image(
         self,
@@ -5333,16 +5461,23 @@ class DiscordAdapter(BasePlatformAdapter):
 
         if not is_safe_url(image_url):
             logger.warning("[%s] Blocked unsafe image URL during Discord send_image", self.name)
-            return await super().send_image(chat_id, image_url, caption, reply_to, metadata=metadata)
+            return await super().send_image(
+                chat_id,
+                image_url,
+                caption,
+                reply_to,
+                metadata=self._attachment_fallback_metadata(metadata),
+            )
 
         try:
             import aiohttp
 
-            channel = self._client.get_channel(int(chat_id))
+            channel, target_id = await self._resolve_attachment_channel(
+                chat_id,
+                metadata,
+            )
             if not channel:
-                channel = await self._client.fetch_channel(int(chat_id))
-            if not channel:
-                return SendResult(success=False, error=f"Channel {chat_id} not found")
+                return SendResult(success=False, error=f"Channel {target_id} not found")
 
             # Download the image and send as a Discord file attachment
             # (Discord renders attachments inline, unlike plain URLs)
@@ -5376,10 +5511,18 @@ class DiscordAdapter(BasePlatformAdapter):
                             file=file,
                         )
 
-                    msg = await channel.send(
-                        content=caption if caption else None,
-                        file=file,
+                    send_kwargs: Dict[str, Any] = {
+                        "content": caption if caption else None,
+                        "file": file,
+                    }
+                    reference = await self._attachment_reply_reference(
+                        channel,
+                        reply_to,
+                        metadata,
                     )
+                    if reference is not None:
+                        send_kwargs["reference"] = reference
+                    msg = await channel.send(**send_kwargs)
                     return SendResult(
                         success=True,
                         message_id=str(msg.id),
@@ -5392,7 +5535,13 @@ class DiscordAdapter(BasePlatformAdapter):
                 self.name,
                 exc_info=True,
             )
-            return await super().send_image(chat_id, image_url, caption, reply_to)
+            return await super().send_image(
+                chat_id,
+                image_url,
+                caption,
+                reply_to,
+                metadata=self._attachment_fallback_metadata(metadata),
+            )
         except Exception as e:  # pragma: no cover - defensive logging
             logger.error(
                 "[%s] Failed to send image attachment, falling back to URL: %s",
@@ -5400,7 +5549,13 @@ class DiscordAdapter(BasePlatformAdapter):
                 e,
                 exc_info=True,
             )
-            return await super().send_image(chat_id, image_url, caption, reply_to)
+            return await super().send_image(
+                chat_id,
+                image_url,
+                caption,
+                reply_to,
+                metadata=self._attachment_fallback_metadata(metadata),
+            )
 
     async def send_animation(
         self,
@@ -5416,16 +5571,23 @@ class DiscordAdapter(BasePlatformAdapter):
 
         if not is_safe_url(animation_url):
             logger.warning("[%s] Blocked unsafe animation URL during Discord send_animation", self.name)
-            return await super().send_animation(chat_id, animation_url, caption, reply_to, metadata=metadata)
+            return await super().send_animation(
+                chat_id,
+                animation_url,
+                caption,
+                reply_to,
+                metadata=self._attachment_fallback_metadata(metadata),
+            )
 
         try:
             import aiohttp
 
-            channel = self._client.get_channel(int(chat_id))
+            channel, target_id = await self._resolve_attachment_channel(
+                chat_id,
+                metadata,
+            )
             if not channel:
-                channel = await self._client.fetch_channel(int(chat_id))
-            if not channel:
-                return SendResult(success=False, error=f"Channel {chat_id} not found")
+                return SendResult(success=False, error=f"Channel {target_id} not found")
 
             # Download the GIF and send as a Discord file attachment
             # (Discord renders .gif attachments as auto-playing animations inline)
@@ -5449,10 +5611,18 @@ class DiscordAdapter(BasePlatformAdapter):
                             file=file,
                         )
 
-                    msg = await channel.send(
-                        content=caption if caption else None,
-                        file=file,
+                    send_kwargs: Dict[str, Any] = {
+                        "content": caption if caption else None,
+                        "file": file,
+                    }
+                    reference = await self._attachment_reply_reference(
+                        channel,
+                        reply_to,
+                        metadata,
                     )
+                    if reference is not None:
+                        send_kwargs["reference"] = reference
+                    msg = await channel.send(**send_kwargs)
                     return SendResult(
                         success=True,
                         message_id=str(msg.id),
@@ -5465,7 +5635,13 @@ class DiscordAdapter(BasePlatformAdapter):
                 self.name,
                 exc_info=True,
             )
-            return await super().send_animation(chat_id, animation_url, caption, reply_to, metadata=metadata)
+            return await super().send_animation(
+                chat_id,
+                animation_url,
+                caption,
+                reply_to,
+                metadata=self._attachment_fallback_metadata(metadata),
+            )
         except Exception as e:  # pragma: no cover - defensive logging
             logger.error(
                 "[%s] Failed to send animation attachment, falling back to URL: %s",
@@ -5473,7 +5649,13 @@ class DiscordAdapter(BasePlatformAdapter):
                 e,
                 exc_info=True,
             )
-            return await super().send_animation(chat_id, animation_url, caption, reply_to, metadata=metadata)
+            return await super().send_animation(
+                chat_id,
+                animation_url,
+                caption,
+                reply_to,
+                metadata=self._attachment_fallback_metadata(metadata),
+            )
 
     async def send_video(
         self,
@@ -5485,12 +5667,24 @@ class DiscordAdapter(BasePlatformAdapter):
     ) -> SendResult:
         """Send a local video file natively as a Discord attachment."""
         try:
-            return await self._send_file_attachment(chat_id, video_path, caption)
+            return await self._send_file_attachment(
+                chat_id,
+                video_path,
+                caption,
+                reply_to=reply_to,
+                metadata=metadata,
+            )
         except FileNotFoundError:
             return SendResult(success=False, error=f"Video file not found: {video_path}")
         except Exception as e:  # pragma: no cover - defensive logging
             logger.error("[%s] Failed to send local video, falling back to base adapter: %s", self.name, e, exc_info=True)
-            return await super().send_video(chat_id, video_path, caption, reply_to, metadata=metadata)
+            return await super().send_video(
+                chat_id,
+                video_path,
+                caption,
+                reply_to,
+                metadata=self._attachment_fallback_metadata(metadata),
+            )
 
     async def send_document(
         self,
@@ -5503,12 +5697,26 @@ class DiscordAdapter(BasePlatformAdapter):
     ) -> SendResult:
         """Send an arbitrary file natively as a Discord attachment."""
         try:
-            return await self._send_file_attachment(chat_id, file_path, caption, file_name=file_name)
+            return await self._send_file_attachment(
+                chat_id,
+                file_path,
+                caption,
+                file_name=file_name,
+                reply_to=reply_to,
+                metadata=metadata,
+            )
         except FileNotFoundError:
             return SendResult(success=False, error=f"File not found: {file_path}")
         except Exception as e:  # pragma: no cover - defensive logging
             logger.error("[%s] Failed to send document, falling back to base adapter: %s", self.name, e, exc_info=True)
-            return await super().send_document(chat_id, file_path, caption, file_name, reply_to, metadata=metadata)
+            return await super().send_document(
+                chat_id,
+                file_path,
+                caption,
+                file_name,
+                reply_to,
+                metadata=self._attachment_fallback_metadata(metadata),
+            )
 
     async def send_typing(self, chat_id: str, metadata=None) -> None:
         """Start a persistent typing indicator for a channel.

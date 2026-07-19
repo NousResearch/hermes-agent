@@ -92,6 +92,30 @@ def _mark_notify_metadata(metadata: dict | None) -> dict:
     return notify_metadata
 
 
+def status_terminal_metadata(
+    metadata: dict | None,
+    status_key: object,
+    reply_to_message_id: object = None,
+) -> dict:
+    """Clone routing metadata and mark one keyed status as terminal."""
+    terminal_metadata = dict(metadata) if metadata else {}
+    terminal_metadata["notify"] = True
+    terminal_metadata["status_key"] = str(status_key)
+    terminal_metadata["status_terminal"] = True
+    if reply_to_message_id is not None:
+        terminal_metadata["reply_to_message_id"] = str(reply_to_message_id)
+    return terminal_metadata
+
+
+def attachment_delivery_status(delivered_attachment_count: int) -> str:
+    """Return the terminal card text for confirmed attachment delivery."""
+    return (
+        "Attachment delivered."
+        if delivered_attachment_count == 1
+        else "Attachments delivered."
+    )
+
+
 def _reply_anchor_for_event(event) -> str | None:
     """Return reply_to id for platforms that need reply semantics.
 
@@ -5178,10 +5202,14 @@ class BasePlatformAdapter(ABC):
                 _final_thread_metadata = _mark_notify_metadata(_thread_metadata)
                 _attachment_deliveries = 0
                 _status_key = getattr(event, "_status_key", None)
-                if _status_key:
-                    _final_thread_metadata = dict(_final_thread_metadata or {})
-                    _final_thread_metadata["status_key"] = str(_status_key)
-                    _final_thread_metadata["status_terminal"] = True
+                _terminal_thread_metadata = (
+                    status_terminal_metadata(
+                        _final_thread_metadata,
+                        _status_key,
+                    )
+                    if _status_key
+                    else _final_thread_metadata
+                )
 
                 # Auto-TTS: if voice message, generate audio FIRST (before sending text)
                 # Gated via ``_should_auto_tts_for_chat``: fires when the chat has
@@ -5293,7 +5321,7 @@ class BasePlatformAdapter(ABC):
                         chat_id=event.source.chat_id,
                         content=text_content,
                         reply_to=_reply_anchor,
-                        metadata=_final_thread_metadata,
+                        metadata=_terminal_thread_metadata,
                     )
                     _record_delivery(result)
                     if _obligation_id is not None:
@@ -5459,16 +5487,14 @@ class BasePlatformAdapter(ABC):
                     # explicitly replace the retained running card so it cannot
                     # remain stuck indefinitely.
                     delivery_adapter = self._final_delivery_adapter(event.source)
-                    attachment_label = (
-                        "Attachment delivered."
-                        if _attachment_deliveries == 1
-                        else "Attachments delivered."
-                    )
                     terminal_result = await delivery_adapter._send_with_retry(
                         chat_id=event.source.chat_id,
-                        content=attachment_label,
+                        content=attachment_delivery_status(_attachment_deliveries),
                         reply_to=_reply_anchor_for_event(event),
-                        metadata=_final_thread_metadata,
+                        metadata=status_terminal_metadata(
+                            _final_thread_metadata,
+                            _status_key,
+                        ),
                     )
                     _record_delivery(terminal_result)
 

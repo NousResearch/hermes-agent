@@ -458,8 +458,6 @@ async def test_attachment_only_final_explicitly_terminalizes_status_card():
         metadata={
             "thread_id": "777",
             "notify": True,
-            "status_key": "task_run:message:42",
-            "status_terminal": True,
         },
     )
     assert adapter.sent == [

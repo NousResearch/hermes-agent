@@ -79,20 +79,22 @@ import {
 import { BoardSwitcher } from './board-switcher'
 import { TaskDrawer } from './drawer'
 import { OrchestrationPanel } from './orchestration'
-import { columnMeta, COMPLEXITY_LABEL, type KanbanBoard, type KanbanTask, type TaskEstimate } from './types'
+import { columnMeta, type KanbanBoard, type KanbanTask, type TaskEstimate } from './types'
 import {
   ago,
-  ARC_TITLES,
   type ArcState,
   arcState,
   Avatar,
+  columnHelp,
+  columnLabel,
   errText,
   FIELD_LABEL,
   isLockedTarget,
-  LOCKED_COLUMNS,
+  lockedReason,
   RunClock,
   shortId,
   useDefaultAssignee,
+  useKanban,
   useOrchestration
 } from './ui'
 
@@ -140,6 +142,7 @@ function Meta({ children, icon }: { children: ReactNode; icon: string }) {
 }
 
 function CardFooter({ arc, task }: { arc: ArcState | null; task: KanbanTask }) {
+  const k = useKanban()
   const created = ago(task.created_at)
   const links = task.link_counts ? task.link_counts.parents + task.link_counts.children : 0
   const fallback = useDefaultAssignee()
@@ -163,12 +166,12 @@ function CardFooter({ arc, task }: { arc: ArcState | null; task: KanbanTask }) {
         <Tip
           label={
             task.status === 'review'
-              ? 'A review agent is checking the completed work.'
+              ? k.reviewChecking
               : task.assignee
-                ? `${attached} is attached — the dispatcher hands this over on its next tick (≤1m).`
+                ? k.attachedTip(attached)
                 : task.status === 'triage'
-                  ? `${attached} (the orchestrator) picks this up on the next tick and writes the spec.`
-                  : `Auto-assigns to “${attached}” (kanban.default_assignee) on the next dispatch tick.`
+                  ? k.orchestratorTip(attached)
+                  : k.autoAssignTip(attached)
           }
         >
           <span className="inline-flex min-w-0 cursor-help items-center gap-1 font-medium" style={{ color: meta.tone }}>
@@ -183,22 +186,22 @@ function CardFooter({ arc, task }: { arc: ArcState | null; task: KanbanTask }) {
         <Avatar name={task.assignee} size="1.125rem" />
       ) : null}
       {arc === 'running' && (
-        <Tip label={ARC_TITLES.running}>
+        <Tip label={k.arcRunning}>
           <span className="shrink-0 cursor-help">
             <RunClock task={task} />
           </span>
         </Tip>
       )}
       {arc === 'stale' && (
-        <Tip label={ARC_TITLES.stale}>
-          <span className="shrink-0 cursor-help font-medium text-amber-500">no heartbeat</span>
+        <Tip label={k.arcStale}>
+          <span className="shrink-0 cursor-help font-medium text-amber-500">{k.noHeartbeat}</span>
         </Tip>
       )}
       {unassignedReady && !fallback && (
-        <Tip label="Ready cards only run once a profile is assigned. Open the card and set an assignee, or configure a default assignee in orchestration settings.">
+        <Tip label={k.wontRunTip}>
           <span className="inline-flex shrink-0 cursor-help items-center gap-1 text-amber-500">
             <Codicon name="debug-disconnect" size="0.7rem" />
-            won't run
+            {k.wontRun}
           </span>
         </Tip>
       )}
@@ -248,6 +251,7 @@ function Card({
   selected: boolean
   task: KanbanTask
 }) {
+  const k = useKanban()
   const [dragging, setDragging] = useState(false)
   const meta = columnMeta(task.status)
   const summary = task.latest_summary || task.body
@@ -299,11 +303,11 @@ function Card({
       <ContextMenuContent>
         <ContextMenuItem onSelect={() => onOpen(task.id)}>
           <Codicon name="link-external" size="0.85rem" />
-          Open
+          {k.open}
         </ContextMenuItem>
         <ContextMenuItem onSelect={() => onToggleSelect(task.id)}>
           <Codicon name={selected ? 'close' : 'check-all'} size="0.85rem" />
-          {selected ? 'Deselect' : 'Select (⌘-click)'}
+          {selected ? k.deselect : k.select}
         </ContextMenuItem>
         <ContextMenuSeparator />
         {columns
@@ -311,13 +315,13 @@ function Card({
           .map(name => (
             <ContextMenuItem key={name} onSelect={() => onMove(task.id, name)}>
               <span className="size-2 rounded-full" style={{ backgroundColor: columnMeta(name).tone }} />
-              Move to {columnMeta(name).label}
+              {k.moveTo(columnLabel(k, name))}
             </ContextMenuItem>
           ))}
         <ContextMenuSeparator />
         <ContextMenuItem onSelect={() => onDelete(task.id)} variant="destructive">
           <Codicon name="trash" size="0.85rem" />
-          Delete
+          {k.delete}
         </ContextMenuItem>
       </ContextMenuContent>
     </ContextMenu>
@@ -351,8 +355,10 @@ function Column({
   onToggleSelect: (id: string) => void
   selected: ReadonlySet<string>
 }) {
+  const k = useKanban()
   const [over, setOver] = useState(false)
   const meta = columnMeta(column.name)
+  const label = columnLabel(k, column.name)
   const locked = isLockedTarget(column.name)
   const byProfile = useValue($lanesByProfile)
 
@@ -409,7 +415,7 @@ function Column({
     return (
       <button
         {...dragHandlers}
-        aria-label={`Expand ${meta.label}`}
+        aria-label={k.expand(label)}
         className={cn(
           'flex h-full w-8 shrink-0 flex-col items-center gap-1.5 rounded-lg p-2 transition-colors hover:bg-(--ui-bg-quinary)',
           wash
@@ -421,7 +427,7 @@ function Column({
           <span className="size-1.5 rounded-full" style={{ backgroundColor: meta.tone }} />
         </span>
         <span className="text-[0.6875rem] font-medium uppercase tracking-wide text-(--ui-text-tertiary) [writing-mode:vertical-rl]">
-          {meta.label}
+          {label}
         </span>
         {column.tasks.length > 0 && (
           <span className="text-[0.625rem] tabular-nums text-(--ui-text-quaternary)">{column.tasks.length}</span>
@@ -437,14 +443,14 @@ function Column({
     >
       <header className="mb-1.5 flex h-5 items-center gap-1.5 px-1">
         <span className="size-1.5 rounded-full" style={{ backgroundColor: meta.tone }} />
-        <Tip label={meta.help}>
+        <Tip label={columnHelp(k, column.name)}>
           <span className="cursor-help text-[0.6875rem] font-medium uppercase tracking-wide text-(--ui-text-tertiary)">
-            {meta.label}
+            {label}
           </span>
         </Tip>
         <span className="text-[0.625rem] tabular-nums text-(--ui-text-quaternary)">{column.tasks.length}</span>
         <button
-          aria-label={`Collapse ${meta.label}`}
+          aria-label={k.collapse(label)}
           className="ml-auto grid size-5 place-items-center rounded text-(--ui-text-tertiary) opacity-0 transition-opacity hover:bg-(--chrome-action-hover) hover:text-foreground focus-visible:opacity-100 group-hover/col:opacity-100"
           onClick={onToggle}
           type="button"
@@ -492,7 +498,7 @@ function Column({
             Locked lanes get none: you can't create into a system state. */}
         {!locked && (
           <button
-            aria-label={`New task in ${meta.label}`}
+            aria-label={k.newTaskIn(label)}
             className="flex shrink-0 items-center justify-center rounded-md border border-dashed border-(--ui-stroke-secondary) py-1.5 text-(--ui-text-tertiary) opacity-0 transition-[opacity,color,border-color] group-hover/col:opacity-100 hover:border-(--ui-text-quaternary) hover:bg-(--chrome-action-hover) hover:text-foreground focus-visible:opacity-100"
             onClick={() => onAdd(column.name)}
             type="button"
@@ -502,7 +508,7 @@ function Column({
         )}
         {column.tasks.length === 0 && (
           <div className="pointer-events-none absolute inset-0 grid place-items-center text-[0.6875rem] text-(--ui-text-quaternary)">
-            Empty
+            {k.empty}
           </div>
         )}
       </div>
@@ -534,6 +540,7 @@ function NewTaskDialog({
   parents: Array<{ id: string; title: string }>
   target: null | string
 }) {
+  const k = useKanban()
   const qc = useQueryClient()
   const { data: roster } = useQuery({ queryKey: PROFILES_KEY, queryFn: fetchProfiles, staleTime: 60_000 })
   // Title-only creates must RUN: "auto" resolves to the orchestration default
@@ -576,7 +583,7 @@ function NewTaskDialog({
       if (r.ok) {
         setEstimate(r)
       } else {
-        host.notify({ kind: 'warning', message: r.reason || 'Could not estimate' })
+        host.notify({ kind: 'warning', message: r.reason || k.couldNotEstimate })
       }
     }
   })
@@ -655,7 +662,7 @@ function NewTaskDialog({
     <Dialog onOpenChange={open => !open && onClose()} open={Boolean(target)}>
       <DialogContent className="w-[min(42rem,94vw)] max-w-none">
         <DialogHeader>
-          <DialogTitle>New task{target ? ` in ${columnMeta(target).label}` : ''}</DialogTitle>
+          <DialogTitle>{target ? k.newTaskIn(columnLabel(k, target)) : k.newTask}</DialogTitle>
         </DialogHeader>
         <div className="flex max-h-[min(72vh,44rem)] flex-col gap-3 overflow-y-auto pr-0.5">
           <Input
@@ -667,21 +674,21 @@ function NewTaskDialog({
                 void submit()
               }
             }}
-            placeholder={isTriage ? 'Rough idea — a specifier will flesh it out' : 'Title'}
+            placeholder={isTriage ? k.titlePlaceholderTriage : k.titlePlaceholder}
             value={title}
           />
           <Textarea
             className="min-h-20"
             onChange={event => setBodyText(event.target.value)}
-            placeholder="Description (optional)"
+            placeholder={k.descPlaceholder}
             value={bodyText}
           />
 
           <div className="grid grid-cols-2 gap-3">
-            <Field label="Priority">
+            <Field label={k.priority}>
               <Input onChange={event => setPriority(event.target.value)} type="number" value={priority} />
             </Field>
-            <Field label="Workspace">
+            <Field label={k.workspace}>
               <Select onValueChange={setWorkspaceKind} value={workspaceKind}>
                 <SelectTrigger>
                   <SelectValue />
@@ -690,7 +697,7 @@ function NewTaskDialog({
                   {WORKSPACE_KINDS.map(kind => (
                     <SelectItem key={kind} value={kind}>
                       {kind}
-                      {kind === boardDefaultKind ? ' · board default' : ''}
+                      {kind === boardDefaultKind ? k.boardDefaultSuffix : ''}
                     </SelectItem>
                   ))}
                 </SelectContent>
@@ -699,27 +706,25 @@ function NewTaskDialog({
           </div>
 
           {workspaceKind !== 'scratch' && (
-            <Field label="Workspace path (optional override)">
+            <Field label={k.workspaceOverride}>
               <Input
                 onChange={event => setWorkspacePath(event.target.value)}
-                placeholder={boardDefaultDir || 'Inherits the board’s project directory'}
+                placeholder={boardDefaultDir || k.workspaceInherit}
                 value={workspacePath}
               />
               <span className="text-[0.625rem] text-(--ui-text-quaternary)">
-                {boardDefaultDir
-                  ? `Leave empty to inherit ${boardDefaultDir}`
-                  : 'Leave empty to inherit the board’s project directory.'}
+                {boardDefaultDir ? k.workspaceInheritDir(boardDefaultDir) : k.workspaceInheritGeneric}
               </span>
             </Field>
           )}
 
-          <Field label="Assignee">
+          <Field label={k.assignee}>
             <Select onValueChange={v => setAssignee(v === NO_PARENT ? '' : v)} value={assignee || NO_PARENT}>
               <SelectTrigger>
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value={NO_PARENT}>{resolvedDefault} (default)</SelectItem>
+                <SelectItem value={NO_PARENT}>{k.defaultOption(resolvedDefault)}</SelectItem>
                 {(roster?.profiles ?? [])
                   .filter(profile => profile.name !== resolvedDefault)
                   .map(profile => (
@@ -727,23 +732,23 @@ function NewTaskDialog({
                       {profile.name}
                     </SelectItem>
                   ))}
-                <SelectItem value={PARKED}>unassigned (parked — won't run)</SelectItem>
+                <SelectItem value={PARKED}>{k.parkedOption}</SelectItem>
               </SelectContent>
             </Select>
           </Field>
 
-          <Field label="Skills (comma-separated)">
-            <Input onChange={event => setSkills(event.target.value)} placeholder="translation, github" value={skills} />
+          <Field label={k.skills}>
+            <Input onChange={event => setSkills(event.target.value)} placeholder={k.skillsPlaceholder} value={skills} />
           </Field>
 
           {parents.length > 0 && (
-            <Field label="Parent (blocks until it's done)">
+            <Field label={k.parent}>
               <Select onValueChange={v => setParent(v === NO_PARENT ? '' : v)} value={parent || NO_PARENT}>
                 <SelectTrigger>
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value={NO_PARENT}>— no parent —</SelectItem>
+                  <SelectItem value={NO_PARENT}>{k.noParent}</SelectItem>
                   {parents.map(option => (
                     <SelectItem key={option.id} value={option.id}>
                       {option.title || option.id}
@@ -755,8 +760,8 @@ function NewTaskDialog({
           )}
 
           <label className="flex cursor-pointer items-center gap-2 text-[0.75rem] text-(--ui-text-secondary)">
-            <Switch aria-label="Goal mode" checked={goalMode} onCheckedChange={setGoalMode} size="xs" />
-            Goal mode (worker loops until a judge agrees it's done)
+            <Switch aria-label={k.goalMode} checked={goalMode} onCheckedChange={setGoalMode} size="xs" />
+            {k.goalMode}
           </label>
 
           {error && <span className="text-[0.75rem] text-destructive">{error}</span>}
@@ -765,15 +770,15 @@ function NewTaskDialog({
           <div className="mr-auto flex items-center gap-1 text-[0.75rem] text-(--ui-text-tertiary)">
             {estimate?.ok ? (
               <>
-                <Tip label={estimate.rationale || 'Rough estimate'}>
+                <Tip label={estimate.rationale || k.roughEstimate}>
                   <span className="font-medium tabular-nums text-(--ui-text-secondary)">
-                    ~{compactNumber(estimate.est_tokens)} tok
-                    {estimate.complexity ? ` · ${COMPLEXITY_LABEL[estimate.complexity] ?? estimate.complexity}` : ''}
+                    ~{compactNumber(estimate.est_tokens)} {k.tokUnit}
+                    {estimate.complexity ? ` · ${k.complexity[estimate.complexity] ?? estimate.complexity}` : ''}
                   </span>
                 </Tip>
-                <Tip label="Re-estimate">
+                <Tip label={k.reEstimate}>
                   <Button
-                    aria-label="Re-estimate"
+                    aria-label={k.reEstimate}
                     disabled={!title.trim() || estMut.isPending}
                     onClick={() => estMut.mutate()}
                     size="icon-xs"
@@ -784,7 +789,7 @@ function NewTaskDialog({
                 </Tip>
               </>
             ) : (
-              <Tip label="Rough token + complexity estimate from the auxiliary model — makes a model call.">
+              <Tip label={k.estimateTip}>
                 <Button
                   disabled={!title.trim() || estMut.isPending}
                   onClick={() => estMut.mutate()}
@@ -792,16 +797,16 @@ function NewTaskDialog({
                   variant="ghost"
                 >
                   <Codicon name={estMut.isPending ? 'loading' : 'dashboard'} size="0.75rem" spinning={estMut.isPending} />
-                  {estMut.isPending ? 'Estimating…' : 'Estimate'}
+                  {estMut.isPending ? k.estimating : k.estimate}
                 </Button>
               </Tip>
             )}
           </div>
           <Button onClick={onClose} variant="text">
-            Cancel
+            {k.cancel}
           </Button>
           <Button disabled={!title.trim() || busy} onClick={() => void submit()}>
-            {busy ? 'Creating…' : 'Create task'}
+            {busy ? k.creating : k.createTask}
           </Button>
         </DialogFooter>
       </DialogContent>
@@ -814,6 +819,7 @@ function NewTaskDialog({
 // One-time explainer for the board's core gotcha: this is a dispatcher queue,
 // not a todo list. Dismissal persists via plugin storage.
 function Intro() {
+  const k = useKanban()
   const dismissed = useValue($introDismissed)
 
   if (dismissed) {
@@ -825,14 +831,9 @@ function Intro() {
       className="mx-4 mb-2 flex flex-col items-start gap-1.5 rounded-lg bg-(--ui-bg-quinary) px-3 py-2.5 text-[0.75rem] leading-relaxed text-(--ui-text-secondary)"
       data-selectable-text="true"
     >
-      <p className="min-w-0">
-        You don't run the cards — agents do. Put a card in <b>Ready</b> with an assignee and an agent picks it up within
-        a minute. No assignee, no run. <b>Triage</b>: an agent rewrites the idea into a proper task first. <b>Todo</b>:
-        waiting on other cards. <b>Scheduled</b>: waiting on a timer. <b>Running</b> and <b>Review</b>: the agents'
-        lanes, hands off. <b>Blocked</b>: it's waiting on you. Results come back on the card.
-      </p>
+      <p className="min-w-0">{k.introBody}</p>
       <Button onClick={() => $introDismissed.set(true)} size="inline" variant="textStrong">
-        Got it
+        {k.introGotIt}
       </Button>
     </div>
   )
@@ -859,6 +860,7 @@ function FilterMenu({
   onTenant: (v: string) => void
   tenant: string
 }) {
+  const k = useKanban()
   const active = Boolean(assignee || tenant || archived)
   const lanesByProfile = useValue($lanesByProfile)
 
@@ -868,7 +870,7 @@ function FilterMenu({
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
         <Button
-          aria-label="Filters"
+          aria-label={k.filters}
           className={cn(active && 'bg-(--ui-control-active-background) text-foreground')}
           size="icon-xs"
           variant="ghost"
@@ -877,7 +879,10 @@ function FilterMenu({
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="start">
-        <DropdownMenuItem onSelect={() => onAssignee('')}>All profiles{check(!assignee)}</DropdownMenuItem>
+        <DropdownMenuItem onSelect={() => onAssignee('')}>
+          {k.allProfiles}
+          {check(!assignee)}
+        </DropdownMenuItem>
         {board.assignees.map(name => (
           <DropdownMenuItem key={name} onSelect={() => onAssignee(name)}>
             <Avatar name={name} size="0.875rem" />
@@ -888,7 +893,10 @@ function FilterMenu({
         {board.tenants.length > 0 && (
           <>
             <DropdownMenuSeparator />
-            <DropdownMenuItem onSelect={() => onTenant('')}>All tenants{check(!tenant)}</DropdownMenuItem>
+            <DropdownMenuItem onSelect={() => onTenant('')}>
+              {k.allTenants}
+              {check(!tenant)}
+            </DropdownMenuItem>
             {board.tenants.map(name => (
               <DropdownMenuItem key={name} onSelect={() => onTenant(name)}>
                 {name}
@@ -898,9 +906,13 @@ function FilterMenu({
           </>
         )}
         <DropdownMenuSeparator />
-        <DropdownMenuItem onSelect={() => onArchived(!archived)}>Show archived{check(archived)}</DropdownMenuItem>
+        <DropdownMenuItem onSelect={() => onArchived(!archived)}>
+          {k.showArchived}
+          {check(archived)}
+        </DropdownMenuItem>
         <DropdownMenuItem onSelect={() => $lanesByProfile.set(!lanesByProfile)}>
-          Group Running by profile{check(lanesByProfile)}
+          {k.groupRunning}
+          {check(lanesByProfile)}
         </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>
@@ -927,6 +939,7 @@ function SelectionBar({
   onDone: (failed: string[]) => void
   selected: ReadonlySet<string>
 }) {
+  const k = useKanban()
   const qc = useQueryClient()
   const { data: roster } = useQuery({ queryKey: PROFILES_KEY, queryFn: fetchProfiles, staleTime: 60_000 })
 
@@ -936,7 +949,7 @@ function SelectionBar({
     if (failed.length > 0) {
       host.notify({
         kind: 'warning',
-        message: `${failed.length} of ${selected.size} failed — ${failed[0].error ?? 'refused'}. Failed cards stay selected.`
+        message: k.bulkFailed(failed.length, selected.size, failed[0].error ?? k.refused)
       })
     }
 
@@ -973,12 +986,12 @@ function SelectionBar({
     <div className="pointer-events-none absolute inset-x-0 bottom-4 z-10 flex justify-center px-4">
       {/* Flat overlay: stroke + elevated surface do the separating, no shadow. */}
       <div className="pointer-events-auto flex items-center gap-1 rounded-lg border border-(--ui-stroke-secondary) bg-(--ui-bg-elevated) py-1 pr-1 pl-3">
-        <span className="mr-1 text-xs tabular-nums text-(--ui-text-secondary)">{selected.size} selected</span>
+        <span className="mr-1 text-xs tabular-nums text-(--ui-text-secondary)">{k.nSelected(selected.size)}</span>
 
         <DropdownMenu onOpenChange={open => setMenu(open ? 'move' : null)} open={menu === 'move'}>
           <DropdownMenuTrigger asChild>
             <Button disabled={busy} size="xs" variant="ghost">
-              Move to
+              {k.moveToShort}
               <Codicon name="chevron-down" size="0.7rem" />
             </Button>
           </DropdownMenuTrigger>
@@ -988,7 +1001,7 @@ function SelectionBar({
               .map(name => (
                 <DropdownMenuItem key={name} onSelect={() => bulk.mutate({ status: name })}>
                   <span className="size-2 rounded-full" style={{ backgroundColor: columnMeta(name).tone }} />
-                  {columnMeta(name).label}
+                  {columnLabel(k, name)}
                 </DropdownMenuItem>
               ))}
           </DropdownMenuContent>
@@ -997,7 +1010,7 @@ function SelectionBar({
         <DropdownMenu onOpenChange={open => setMenu(open ? 'assign' : null)} open={menu === 'assign'}>
           <DropdownMenuTrigger asChild>
             <Button disabled={busy} size="xs" variant="ghost">
-              Assign
+              {k.assign}
               <Codicon name="chevron-down" size="0.7rem" />
             </Button>
           </DropdownMenuTrigger>
@@ -1013,13 +1026,13 @@ function SelectionBar({
             ))}
             <DropdownMenuSeparator />
             <DropdownMenuItem onSelect={() => bulk.mutate({ assignee: '', reclaim_first: true })}>
-              Unassign
+              {k.unassignAction}
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
 
         <Button disabled={busy} onClick={() => bulk.mutate({ archive: true })} size="xs" variant="ghost">
-          Archive
+          {k.archive}
         </Button>
         <Button
           className="text-destructive"
@@ -1028,11 +1041,11 @@ function SelectionBar({
           size="xs"
           variant="ghost"
         >
-          Delete
+          {k.delete}
         </Button>
 
-        <Tip label="Clear selection (Esc)">
-          <Button aria-label="Clear selection" onClick={onClear} size="icon-xs" variant="ghost">
+        <Tip label={k.clearSelection}>
+          <Button aria-label={k.clearSelection} onClick={onClear} size="icon-xs" variant="ghost">
             <Codicon name="close" size="0.8rem" />
           </Button>
         </Tip>
@@ -1044,6 +1057,7 @@ function SelectionBar({
 // ── page ─────────────────────────────────────────────────────────────────────
 
 export function KanbanBoardPage() {
+  const k = useKanban()
   const qc = useQueryClient()
   const slug = useValue($boardSlug)
   const [archived, setArchived] = useState(false)
@@ -1188,7 +1202,7 @@ export function KanbanBoardPage() {
     }
 
     if (isLockedTarget(status)) {
-      host.notify({ kind: 'info', message: LOCKED_COLUMNS[status] })
+      host.notify({ kind: 'info', message: lockedReason(k, status) })
 
       return
     }
@@ -1267,7 +1281,7 @@ export function KanbanBoardPage() {
       </Contribute>
 
       <header className="flex shrink-0 flex-wrap items-center gap-2 px-4 py-2">
-        <h1 className="text-sm font-semibold text-foreground">Kanban</h1>
+        <h1 className="text-sm font-semibold text-foreground">{k.title}</h1>
         <span className="rounded-full bg-(--ui-bg-quaternary) px-1.5 py-px text-[0.625rem] tabular-nums text-(--ui-text-tertiary)">
           {total}
         </span>
@@ -1282,11 +1296,11 @@ export function KanbanBoardPage() {
             tenant={tenant}
           />
         )}
-        <SearchField aria-label="Filter cards" onChange={setSearch} placeholder="Filter cards…" value={search} />
+        <SearchField aria-label={k.filterCards} onChange={setSearch} placeholder={k.filterCards} value={search} />
         <div className="ml-auto flex items-center gap-1">
-          <Tip label="Orchestration settings">
+          <Tip label={k.orchestrationSettings}>
             <Button
-              aria-label="Orchestration settings"
+              aria-label={k.orchestrationSettings}
               className={cn(settingsOpen && 'bg-(--ui-control-active-background) text-foreground')}
               onClick={() => setSettingsOpen(!settingsOpen)}
               size="icon-xs"
@@ -1297,7 +1311,7 @@ export function KanbanBoardPage() {
           </Tip>
           <Button onClick={() => setAddStatus('triage')} size="sm">
             <Codicon name="add" size="0.8rem" />
-            New task
+            {k.newTask}
           </Button>
         </div>
       </header>
@@ -1319,11 +1333,11 @@ export function KanbanBoardPage() {
           <div className="flex flex-col items-center gap-2">
             <Codicon className="text-(--ui-text-quaternary)" name="project" size="1.25rem" />
             <p className="text-xs text-(--ui-text-tertiary)">
-              {search || tenant || assignee ? 'No tasks match the filters' : 'No tasks on this board'}
+              {search || tenant || assignee ? k.noMatch : k.noTasks}
             </p>
             <Button className="mt-0.5" onClick={() => setAddStatus('triage')} size="sm" variant="outline">
               <Codicon name="add" size="0.75rem" />
-              New task
+              {k.newTask}
             </Button>
           </div>
         </div>

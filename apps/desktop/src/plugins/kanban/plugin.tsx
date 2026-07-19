@@ -30,11 +30,13 @@ import {
 
 import { $boardSlug, bindApi, boardKey, fetchBoard } from './api'
 import { KanbanBoardPage } from './board'
+import { useKanban } from './ui'
 
 // Live "N running / ready" pill — one glance at fleet activity from anywhere,
 // clicks through to the board. Shares the board query (one cache, one poll with
 // the page); hidden when nothing is in flight (or unloaded).
 function KanbanCount() {
+  const k = useKanban()
   const slug = useValue($boardSlug)
 
   // Socket-invalidated like the page (same cache); slow socketless heartbeat.
@@ -56,7 +58,7 @@ function KanbanCount() {
   }
 
   return (
-    <Tip label={`Kanban — ${count('running')} running, ${count('ready')} ready`}>
+    <Tip label={k.countTip(count('running'), count('ready'))}>
       <button
         className={cn(
           'inline-flex h-full items-center gap-1 rounded-none px-1.5 text-[0.6875rem] tabular-nums transition-colors',

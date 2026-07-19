@@ -5,7 +5,8 @@ import type { NavigateFunction } from 'react-router-dom'
 import { revealTreePane } from '@/components/pane-shell/tree/store'
 import { deleteSession, getSessionMessages, setSessionArchived } from '@/hermes'
 import { useI18n } from '@/i18n'
-import { preserveLocalAssistantErrors, toChatMessages } from '@/lib/chat-messages'
+import { type ChatMessage, preserveLocalAssistantErrors, toChatMessages } from '@/lib/chat-messages'
+import { isMissingRpcMethod } from '@/lib/gateway-rpc'
 import { setSessionYolo } from '@/lib/yolo-session'
 import { clearQueuedPrompts } from '@/store/composer-queue'
 import { $pinnedSessionIds } from '@/store/layout'
@@ -62,12 +63,14 @@ import { NEW_CHAT_ROUTE, sessionRoute, SETTINGS_ROUTE } from '../../../routes'
 import type { ClientSessionState, SidebarNavItem } from '../../../types'
 
 import {
+  appendLiveSessionProjection,
   applyRuntimeInfo,
   applyStoredSessionPreviewRuntimeInfo,
   type BranchMessage,
   chatMessageArraysEquivalent,
   isSessionGoneError,
   patchSessionWorkspace,
+  preserveLocalPendingTurnMessages,
   reconcileResumeMessages,
   resolveStoredSession,
   sessionMatchesStoredId,
@@ -115,6 +118,19 @@ function applyStoredUsage(stored: { input_tokens?: number | null; output_tokens?
   const output = stored.output_tokens || 0
 
   setCurrentUsage(current => ({ ...current, input, output, total: input + output }))
+}
+
+function reconcileAuthoritativeMessages(
+  authoritativeMessages: SessionResumeResponse['messages'],
+  previousMessages: ChatMessage[],
+  liveProjection?: Pick<SessionResumeResponse, 'inflight' | 'queued' | 'session_id'>
+): ChatMessage[] {
+  const authoritative = toChatMessages(authoritativeMessages)
+  const withLiveProjection = liveProjection ? appendLiveSessionProjection(authoritative, liveProjection) : authoritative
+  const reconciled = reconcileResumeMessages(withLiveProjection, previousMessages)
+  const withPendingTurn = preserveLocalPendingTurnMessages(reconciled, previousMessages)
+
+  return preserveLocalAssistantErrors(withPendingTurn, previousMessages)
 }
 
 // `session.create` params from the current profile + sticky-UI model/effort/fast,
@@ -431,6 +447,8 @@ export function useSessionActions({
     async (storedSessionId: string, replaceRoute = false) => {
       const requestId = resumeRequestRef.current + 1
       resumeRequestRef.current = requestId
+      const resumedSameSelectedSession = selectedStoredSessionIdRef.current === storedSessionId
+      const resumeStartMessages = resumedSameSelectedSession ? $messages.get() : []
 
       const isCurrentResume = () =>
         resumeRequestRef.current === requestId && selectedStoredSessionIdRef.current === storedSessionId
@@ -462,7 +480,7 @@ export function useSessionActions({
       // session being resumed. A pooled profile backend that gets idle-reaped
       // and respawned (pruneSecondaryGateways) re-mints runtime ids, so a
       // recycled id can resolve to a live-but-DIFFERENT session's cache entry.
-      // The session.usage 404 guard below only catches a fully-DEAD id — a
+      // The session.activate 404 guard below only catches a fully-DEAD id — a
       // recycled-live id 200s, so an unchecked hit paints the wrong transcript
       // under the current route (the "open chat A, chat B loads" bug). On a
       // mismatch the mapping is cross-wired: purge both sides and report a miss
@@ -489,7 +507,10 @@ export function useSessionActions({
       if (!takeWarmCache()) {
         setActiveSessionId(null)
         activeSessionIdRef.current = null
-        setMessages([])
+
+        if (!resumedSameSelectedSession) {
+          setMessages([])
+        }
       }
 
       // Swap the single live gateway to this session's profile before any
@@ -517,13 +538,21 @@ export function useSessionActions({
         const stored =
           $sessions.get().find(session => sessionMatchesStoredId(session, storedSessionId)) ?? storedForProfile
 
-        const cachedViewState =
+        let cachedViewState =
           !cachedState.model && stored?.model != null
             ? {
                 ...cachedState,
                 model: stored.model || ''
               }
             : cachedState
+
+        if (resumedSameSelectedSession) {
+          const messages = preserveLocalPendingTurnMessages(cachedViewState.messages, resumeStartMessages)
+
+          if (messages !== cachedViewState.messages) {
+            cachedViewState = { ...cachedViewState, messages }
+          }
+        }
 
         if (cachedViewState !== cachedState) {
           sessionStateByRuntimeIdRef.current.set(cachedRuntimeId, cachedViewState)
@@ -535,6 +564,17 @@ export function useSessionActions({
           sessionStateByRuntimeIdRef.current.delete(cachedRuntimeId)
           dropSessionState(cachedRuntimeId)
         } else {
+          // Paint the warm cache immediately, but also refresh the persisted
+          // transcript in parallel. A resumed runtime carries the agent's
+          // compression projection, which can have the same row count as the
+          // stored conversation while containing different rows. Trusting that
+          // projection alone made completed prompts disappear after an app
+          // restart whenever this warm path short-circuited the cold REST
+          // prefetch. Watch mirrors stay live-only by design.
+          const persistedTranscriptPromise = isWatchWindow()
+            ? null
+            : getSessionMessages(storedSessionId, sessionProfile).catch(() => null)
+
           setFreshDraftReady(false)
           clearNotifications()
           setSelectedStoredSessionId(storedSessionId)
@@ -547,24 +587,108 @@ export function useSessionActions({
           setSessionStartedAt(Date.now())
 
           try {
-            const usage = await requestGateway<UsageStats>('session.usage', { session_id: cachedRuntimeId })
+            let activated: SessionResumeResponse | null = null
+
+            try {
+              activated = await requestGateway<SessionResumeResponse>('session.activate', {
+                session_id: cachedRuntimeId,
+                cols: 96
+              })
+            } catch (error) {
+              // Compatibility for older backends. Modern backends require
+              // session.activate here because it rebinds the live session's
+              // event transport to this newly-opened WebSocket.
+              if (!isMissingRpcMethod(error)) {
+                throw error
+              }
+
+              const usage = await requestGateway<UsageStats>('session.usage', { session_id: cachedRuntimeId })
+
+              if (!isCurrentResume()) {
+                return
+              }
+
+              if (usage) {
+                setCurrentUsage(current => ({ ...current, ...usage }))
+              }
+
+              return
+            }
 
             if (!isCurrentResume()) {
               return
             }
 
-            if (usage) {
-              setCurrentUsage(current => ({ ...current, ...usage }))
-            }
+            if (activated.session_key && activated.session_key !== storedSessionId) {
+              runtimeIdByStoredSessionIdRef.current.delete(storedSessionId)
+              sessionStateByRuntimeIdRef.current.delete(cachedRuntimeId)
+              dropSessionState(cachedRuntimeId)
+            } else {
+              const runtimeInfo = applyRuntimeInfo(activated.info)
 
-            return
-          } catch {
+              let activatedMessages =
+                activated.messages.length || activated.inflight || activated.queued
+                  ? reconcileAuthoritativeMessages(activated.messages, cachedViewState.messages, activated)
+                  : cachedViewState.messages
+
+              const running = Boolean(activated.running ?? cachedViewState.busy)
+
+              // While idle, the persisted REST transcript is the display
+              // authority: session.activate returns the runtime's compressed
+              // context projection, not necessarily the complete conversation.
+              // During a live turn, keep the runtime/cache projection so an
+              // accepted but not-yet-persisted prompt or stream is never lost.
+              if (!running && persistedTranscriptPromise) {
+                const persisted = await persistedTranscriptPromise
+
+                if (!isCurrentResume()) {
+                  return
+                }
+
+                const activatedStoredSessionId = activated.session_key || activated.resumed
+
+                const persistedMatchesActivatedSession =
+                  !persisted?.session_id ||
+                  !activatedStoredSessionId ||
+                  persisted.session_id === activatedStoredSessionId
+
+                if (persisted && persistedMatchesActivatedSession) {
+                  activatedMessages = reconcileAuthoritativeMessages(persisted.messages, activatedMessages)
+                }
+              }
+
+              const activatedState = updateSessionState(
+                cachedRuntimeId,
+                state => ({
+                  ...state,
+                  ...(runtimeInfo ?? {}),
+                  messages: activatedMessages,
+                  busy: running,
+                  awaitingResponse: running
+                }),
+                storedSessionId
+              )
+
+              busyRef.current = running
+              setBusy(running)
+              setAwaitingResponse(running)
+              syncSessionStateToView(cachedRuntimeId, activatedState)
+
+              return
+            }
+          } catch (error) {
             // The cached runtime id was minted by a prior backend instance. A
             // pooled profile backend that gets idle-reaped (pruneSecondaryGateways)
             // and respawned across a profile swap mints fresh ids, so this mapping
             // now 404s ("session not found"). Drop it and fall through to a full
-            // resume that rebinds a live runtime id.
+            // resume that rebinds a live runtime id. A transient timeout or
+            // transport error is NOT proof that the session is dead: keep the
+            // cache and optimistic turn intact for the next reconnect attempt.
             if (!isCurrentResume()) {
+              return
+            }
+
+            if (!isSessionGoneError(error)) {
               return
             }
 
@@ -585,7 +709,7 @@ export function useSessionActions({
       // session's transcript would leak into this cold resume ("switching
       // sessions shows the same messages"). Clear it so the loader/prefetch
       // paints fresh; guarded so the normal cold path (already cleared) no-ops.
-      if ($messages.get().length > 0) {
+      if (!resumedSameSelectedSession && $messages.get().length > 0) {
         setMessages([])
       }
 
@@ -610,7 +734,14 @@ export function useSessionActions({
 
       try {
         const watchWindow = isWatchWindow()
-        let localSnapshot = $messages.get()
+
+        let localSnapshot = resumedSameSelectedSession
+          ? preserveLocalPendingTurnMessages($messages.get(), resumeStartMessages)
+          : $messages.get()
+
+        let prefetchApplied = false
+        let prefetchedMessageCount = 0
+        let prefetchedStoredSessionId: string | null = null
 
         // REST transcript prefetch and the gateway resume RPC are independent
         // — run them concurrently so a big session's wall time is
@@ -641,7 +772,14 @@ export function useSessionActions({
             const storedMessages = await prefetchPromise
 
             if (isCurrentResume()) {
-              localSnapshot = preserveLocalAssistantErrors(toChatMessages(storedMessages.messages), $messages.get())
+              const previousMessages = resumedSameSelectedSession
+                ? preserveLocalPendingTurnMessages($messages.get(), resumeStartMessages)
+                : $messages.get()
+
+              localSnapshot = reconcileAuthoritativeMessages(storedMessages.messages, previousMessages)
+              prefetchApplied = true
+              prefetchedMessageCount = storedMessages.messages.length
+              prefetchedStoredSessionId = storedMessages.session_id || storedSessionId
 
               if (!chatMessageArraysEquivalent($messages.get(), localSnapshot)) {
                 setMessages(localSnapshot)
@@ -665,14 +803,25 @@ export function useSessionActions({
         // skip converting/reconciling the resume payload entirely — on a
         // 1000+-message session that second conversion plus the deep
         // equivalence compare costs over a second of main-thread time.
+        const resumedStoredSessionId = resumed.session_key || resumed.resumed
+
+        const prefetchMatchesResumedSession =
+          !prefetchedStoredSessionId || !resumedStoredSessionId || prefetchedStoredSessionId === resumedStoredSessionId
+
+        const hasLiveProjection = Boolean(resumed.inflight || resumed.queued)
+
         const preferredMessages =
-          localSnapshot.length > 0
+          prefetchApplied &&
+          prefetchMatchesResumedSession &&
+          !hasLiveProjection &&
+          resumed.messages.length <= prefetchedMessageCount
             ? localSnapshot
             : (() => {
-                const resumedMessages = preserveLocalAssistantErrors(
-                  reconcileResumeMessages(toChatMessages(resumed.messages), currentMessages),
-                  currentMessages
-                )
+                const previousMessages = resumedSameSelectedSession
+                  ? preserveLocalPendingTurnMessages(currentMessages, resumeStartMessages)
+                  : currentMessages
+
+                const resumedMessages = reconcileAuthoritativeMessages(resumed.messages, previousMessages, resumed)
 
                 return chatMessageArraysEquivalent(currentMessages, resumedMessages) ? currentMessages : resumedMessages
               })()
@@ -735,7 +884,11 @@ export function useSessionActions({
             return
           }
 
-          setMessages(preserveLocalAssistantErrors(toChatMessages(fallback.messages), $messages.get()))
+          const previousMessages = resumedSameSelectedSession
+            ? preserveLocalPendingTurnMessages($messages.get(), resumeStartMessages)
+            : $messages.get()
+
+          setMessages(reconcileAuthoritativeMessages(fallback.messages, previousMessages))
         } catch (e) {
           // Fallback also failed: nothing to paint. Leave whatever messages are
           // already shown and fall through to arm the resume-failure latch so

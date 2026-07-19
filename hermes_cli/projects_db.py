@@ -90,7 +90,9 @@ CREATE TABLE IF NOT EXISTS project_meta (
 -- changing where its backend runs.
 CREATE TABLE IF NOT EXISTS project_session_assignments (
     session_id  TEXT PRIMARY KEY,
-    project_id  TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    -- NULL is an explicit "No project" override. Its presence means do not
+    -- fall back to cwd-derived Project membership for this session.
+    project_id  TEXT REFERENCES projects(id) ON DELETE CASCADE,
     assigned_at INTEGER NOT NULL
 );
 
@@ -650,16 +652,21 @@ def assign_session(conn: sqlite3.Connection, session_id: str, project_id: str) -
 
 
 def unassign_session(conn: sqlite3.Connection, session_id: str) -> bool:
-    """Remove an explicit session assignment without touching the session or cwd."""
+    """Explicitly place a session in No project without touching its cwd."""
     sid = str(session_id or "").strip()
     if not sid:
         raise ValueError("session_id must not be empty")
     with write_txn(conn):
-        return conn.execute("DELETE FROM project_session_assignments WHERE session_id = ?", (sid,)).rowcount > 0
+        conn.execute(
+            "INSERT INTO project_session_assignments (session_id, project_id, assigned_at) VALUES (?, NULL, ?) "
+            "ON CONFLICT(session_id) DO UPDATE SET project_id = NULL, assigned_at = excluded.assigned_at",
+            (sid, _now()),
+        )
+    return True
 
 
-def assigned_project_ids(conn: sqlite3.Connection, session_ids: Iterable[str]) -> dict[str, str]:
-    """Return explicit Project ids keyed by stored session id for the supplied rows."""
+def assigned_project_ids(conn: sqlite3.Connection, session_ids: Iterable[str]) -> dict[str, Optional[str]]:
+    """Return explicit Project (or No-project) overrides keyed by stored session id."""
     ids = [str(sid).strip() for sid in session_ids if str(sid).strip()]
     if not ids:
         return {}

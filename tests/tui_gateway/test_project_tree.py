@@ -336,6 +336,25 @@ def test_explicit_session_assignment_keeps_a_detached_session_visible_without_ch
     assert placed["cwd"] is None
 
 
+def test_explicit_no_project_override_beats_cwd_derived_membership():
+    project = _project("p_app", "App", ["/www/app"])
+    session = _session("/www/app", branch="main")
+
+    tree = pt.build_tree(
+        [project],
+        [session],
+        [],
+        resolve=lambda _cwd: None,
+        explicit_session_projects={session["id"]: None},
+        hydrate=True,
+    )
+    by_id = {node["id"]: node for node in tree["projects"]}
+
+    assert by_id["p_app"]["sessionCount"] == 0
+    assert by_id["/www/app"]["isAuto"] is True
+    assert by_id["/www/app"]["sessionCount"] == 1
+
+
 def test_scoped_session_ids_is_union_of_placed_sessions():
     project = _project("p_app", "App", ["/www/app"])
     resolve = _resolver(

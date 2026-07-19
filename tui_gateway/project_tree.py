@@ -476,7 +476,7 @@ def build_tree(
     discovered_repos: list[dict],
     resolve: Optional[Resolve] = None,
     *,
-    explicit_session_projects: Optional[dict[str, str]] = None,
+    explicit_session_projects: Optional[dict[str, Optional[str]]] = None,
     preview_limit: int = 3,
     hydrate: bool = False,
     is_junk_root: Optional[Callable[[str], bool]] = None,
@@ -509,8 +509,13 @@ def build_tree(
     by_project: dict[str, list[dict]] = {}
     unowned: list[dict] = []
     for session in sessions:
-        owner = projects_by_id.get(assignments.get(str(session.get("id") or ""), ""))
-        if owner is None:
+        session_id = str(session.get("id") or "")
+        if session_id in assignments:
+            # An explicit None means the user deliberately moved this session
+            # to No project. Do not reattach it just because its cwd happens
+            # to live beneath a Project folder.
+            owner = projects_by_id.get(assignments[session_id] or "")
+        else:
             owner = _project_for_session(session, folder_index, resolve)
         if owner:
             by_project.setdefault(owner["id"], []).append(session)

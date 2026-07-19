@@ -12167,7 +12167,7 @@ def _project_tree_row(r: dict) -> dict:
 
 def _project_tree_inputs(
     db, session_limit: int, *, include_discovered: bool
-) -> tuple[list[dict], list[dict], list[dict], str | None, dict[str, str]]:
+) -> tuple[list[dict], list[dict], list[dict], str | None, dict[str, str | None]]:
     """Gather (sessions, projects, discovered_repos, active_id) for build_tree.
 
     ``include_discovered`` is the zero-session-repo overview tier; the entered

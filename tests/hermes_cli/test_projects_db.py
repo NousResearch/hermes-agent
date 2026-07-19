@@ -160,7 +160,7 @@ def test_explicit_session_assignment_moves_and_removes_without_project_changes(c
     assert pdb.get_project(conn, second) is not None
 
     assert pdb.unassign_session(conn, "session-1") is True
-    assert pdb.assigned_project_ids(conn, ["session-1"]) == {}
+    assert pdb.assigned_project_ids(conn, ["session-1"]) == {"session-1": None}
 
 
 def test_branch_name_for_is_deterministic():

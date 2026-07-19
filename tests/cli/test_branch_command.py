@@ -6,6 +6,7 @@ Verifies that:
 - Auto-generated titles use lineage numbering
 - Custom branch names are used when provided
 - parent_session_id links are set correctly
+- Structured reasoning fields survive the copy
 - Edge cases: empty conversation, missing session DB
 """
 
@@ -258,3 +259,53 @@ class TestBranchFlushesBeforeEndSession:
         agent._flush_messages_to_session_db.assert_called_once_with(
             cli_instance.conversation_history
         )
+
+
+REASONING_DETAILS = [
+    {"type": "reasoning.text", "text": "sort in place instead", "format": "unknown"}
+]
+CODEX_REASONING_ITEMS = [
+    {"id": "rs_1", "type": "reasoning", "encrypted_content": "opaque-blob"}
+]
+CODEX_MESSAGE_ITEMS = [
+    {
+        "id": "msg_1",
+        "type": "message",
+        "role": "assistant",
+        "content": [{"type": "output_text", "text": "done"}],
+    }
+]
+
+
+class TestBranchPreservesReasoningFields:
+    """The copy loop must carry the structured reasoning columns across.
+
+    Only ``reasoning`` was forwarded to append_message, so a branch dropped
+    the preserved Anthropic thinking blocks and the Codex
+    encrypted-reasoning/message-item continuation state that the parent had
+    accumulated — the branch then replayed without them, because every
+    consumer gates on isinstance(..., list) and a missing field reads as None.
+    """
+
+    def test_reasoning_fields_survive_branch(self, cli_instance, session_db):
+        from cli import HermesCLI
+
+        cli_instance.conversation_history = [
+            {"role": "user", "content": "Sort this list."},
+            {
+                "role": "assistant",
+                "content": "def sort_list(lst): return sorted(lst)",
+                "reasoning": "picked sorted()",
+                "reasoning_details": REASONING_DETAILS,
+                "codex_reasoning_items": CODEX_REASONING_ITEMS,
+                "codex_message_items": CODEX_MESSAGE_ITEMS,
+            },
+        ]
+
+        HermesCLI._handle_branch_command(cli_instance, "/branch")
+
+        messages = session_db.get_messages_as_conversation(cli_instance.session_id)
+        assistant = next(m for m in messages if m["role"] == "assistant")
+        assert assistant["reasoning_details"] == REASONING_DETAILS
+        assert assistant["codex_reasoning_items"] == CODEX_REASONING_ITEMS
+        assert assistant["codex_message_items"] == CODEX_MESSAGE_ITEMS

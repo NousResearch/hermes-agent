@@ -2034,7 +2034,16 @@ def _persist_branch_seed(session: dict) -> None:
             return
         try:
             for msg in seed:
-                db.append_message(session_id=key, role=msg.get("role", "user"), content=msg.get("content"))
+                db.append_message(
+                    session_id=key,
+                    role=msg.get("role", "user"),
+                    content=msg.get("content"),
+                    reasoning=msg.get("reasoning"),
+                    reasoning_content=msg.get("reasoning_content"),
+                    reasoning_details=msg.get("reasoning_details"),
+                    codex_reasoning_items=msg.get("codex_reasoning_items"),
+                    codex_message_items=msg.get("codex_message_items"),
+                )
             session["_branch_seed_persisted"] = True
         except Exception:
             logger.debug("branch seed persist failed", exc_info=True)
@@ -8929,6 +8938,11 @@ def _(rid, params: dict) -> dict:
                 session_id=new_key,
                 role=msg.get("role", "user"),
                 content=msg.get("content"),
+                reasoning=msg.get("reasoning"),
+                reasoning_content=msg.get("reasoning_content"),
+                reasoning_details=msg.get("reasoning_details"),
+                codex_reasoning_items=msg.get("codex_reasoning_items"),
+                codex_message_items=msg.get("codex_message_items"),
             )
         db.set_session_title(new_key, title)
     except Exception as e:

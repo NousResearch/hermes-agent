@@ -4119,6 +4119,28 @@ class SessionDB:
                 return content
         return content
 
+    @staticmethod
+    def _reasoning_json_text(value: Any) -> Optional[str]:
+        """Serialize a structured reasoning field for its TEXT column.
+
+        ``reasoning_details`` / ``codex_reasoning_items`` / ``codex_message_items``
+        arrive as list/dict structures from the live runtime, but callers that
+        round-trip stored rows — ``get_messages`` straight into
+        ``replace_messages``, e.g. the POST /api/sessions/{id}/fork handler —
+        hand back the raw TEXT these columns already hold, because
+        ``get_messages`` only deserializes ``content`` and ``tool_calls``.
+        Re-dumping that TEXT double-encodes it, and the forked session's next
+        ``get_messages_as_conversation`` json.loads then yields the inner
+        string instead of the original list, so every reasoning-replay consumer
+        (all of which check ``isinstance(..., list)``) silently drops it.
+        Strings are therefore stored as-is; structures are dumped.
+        """
+        if not value:
+            return None
+        if isinstance(value, str):
+            return value
+        return json.dumps(value)
+
     def append_message(
         self,
         session_id: str,
@@ -4152,18 +4174,9 @@ class SessionDB:
         message by its platform-side identifier.
         """
         # Serialize structured fields to JSON before entering the write txn
-        reasoning_details_json = (
-            json.dumps(reasoning_details)
-            if reasoning_details else None
-        )
-        codex_items_json = (
-            json.dumps(codex_reasoning_items)
-            if codex_reasoning_items else None
-        )
-        codex_message_items_json = (
-            json.dumps(codex_message_items)
-            if codex_message_items else None
-        )
+        reasoning_details_json = self._reasoning_json_text(reasoning_details)
+        codex_items_json = self._reasoning_json_text(codex_reasoning_items)
+        codex_message_items_json = self._reasoning_json_text(codex_message_items)
         tool_calls_json = json.dumps(tool_calls) if tool_calls else None
         # Multimodal content (list of parts) must be JSON-encoded: sqlite3
         # cannot bind list/dict parameters directly.
@@ -4262,15 +4275,9 @@ class SessionDB:
             codex_message_items = (
                 msg.get("codex_message_items") if role == "assistant" else None
             )
-            reasoning_details_json = (
-                json.dumps(reasoning_details) if reasoning_details else None
-            )
-            codex_items_json = (
-                json.dumps(codex_reasoning_items) if codex_reasoning_items else None
-            )
-            codex_message_items_json = (
-                json.dumps(codex_message_items) if codex_message_items else None
-            )
+            reasoning_details_json = self._reasoning_json_text(reasoning_details)
+            codex_items_json = self._reasoning_json_text(codex_reasoning_items)
+            codex_message_items_json = self._reasoning_json_text(codex_message_items)
             tool_calls_json = json.dumps(tool_calls) if tool_calls else None
             # Accept either `platform_message_id` (new explicit name) or
             # `message_id` (yuanbao's existing convention on message dicts).

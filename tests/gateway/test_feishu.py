@@ -846,6 +846,22 @@ class TestAdapterModule(unittest.TestCase):
 
         self.assertEqual(captured["kwargs"].get("proxy"), "socks5h://127.0.0.1:8687")
 
+    def test_proxy_log_mode_never_leaks_credentials(self):
+        # A proxy URL can carry user:password@ userinfo the global log formatter
+        # leaves unmasked; the connect-override log must emit only the scheme.
+        from plugins.platforms.feishu.adapter import _proxy_log_mode
+
+        for url, expected in (
+            ("socks5h://user:s3cret@127.0.0.1:8687", "socks5h proxy"),
+            ("http://alice:hunter2@127.0.0.1:8686", "http proxy"),
+            (None, "direct connection"),
+        ):
+            mode = _proxy_log_mode(url)
+            self.assertEqual(mode, expected)
+            self.assertNotIn("s3cret", mode)
+            self.assertNotIn("hunter2", mode)
+            self.assertNotIn("127.0.0.1", mode)
+
 
 def _admits_group(adapter, message, sender_id, chat_id=""):
     """Group-path shim: run a message through ``_admit`` and return a bool."""

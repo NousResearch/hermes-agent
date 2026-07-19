@@ -1361,6 +1361,19 @@ def _resolve_ws_socks_proxy_override(conn_url: str) -> tuple[bool, Optional[str]
     return True, None
 
 
+def _proxy_log_mode(proxy_url: Optional[str]) -> str:
+    """Describe a proxy for logging using only its scheme — never its host or userinfo.
+
+    A proxy URL can embed ``user:password@`` credentials that the global log
+    redactor leaves unmasked, so only the scheme (or ``direct connection``) is safe
+    to emit.
+    """
+    if not proxy_url:
+        return "direct connection"
+    scheme = proxy_url.split("://", 1)[0].strip().lower()
+    return f"{scheme} proxy" if scheme else "proxy"
+
+
 def _run_official_feishu_ws_client(ws_client: Any, adapter: Any) -> None:
     """Run the official Lark WS client in its own thread-local event loop."""
     import lark_oapi.ws.client as ws_client_module
@@ -1392,10 +1405,14 @@ def _run_official_feishu_ws_client(ws_client: Any, adapter: Any) -> None:
             override, proxy_url = _resolve_ws_socks_proxy_override(str(conn_url or ""))
             if override:
                 kwargs["proxy"] = proxy_url
+                # Log only the scheme, never the full URL: a proxy URL may carry
+                # ``user:password@`` userinfo that the global log formatter leaves
+                # unmasked (see agent/redact.py), which would persist proxy
+                # credentials in gateway.log.
                 logger.info(
                     "[Feishu] Rewrote unsupported system SOCKS proxy for WS event "
                     "channel -> %s",
-                    proxy_url if proxy_url is not None else "direct connection",
+                    _proxy_log_mode(proxy_url),
                 )
         return original_connect(*args, **kwargs)
 

@@ -868,12 +868,13 @@ class TestHermesHomeLeakGuard:
         This entry is written to ``~/.codex/config.toml`` at MIGRATE time, so any
         per-session value baked in here is frozen for the life of that config and
         would forever name the wrong session — the same burn-in failure the
-        HERMES_HOME guards above exist to prevent. Session identity must reach the
-        shim through the live spawn environment instead (``HERMES_SESSION_ID``,
-        carried by ``_inject_session_context_env`` in ``hermes_subprocess_env``).
-
-        Guard for the review on PR #65978: it forbids "wiring propagation" here,
-        which is the intuitive fix and the wrong one."""
+        HERMES_HOME guards above exist to prevent. The one legitimate delivery
+        under codex is the entry's ``env_vars`` name-passthrough (a spawn-time
+        snapshot of the codex process env — a NAME, never a value); this entry
+        does not wire it, so the shim's own-lineage exclusion stays INACTIVE
+        (fail-open) under codex rather than wrong. What this test pins is the
+        burn-in rule: no literal session id, under any key, may land in the
+        entry's ``env`` map."""
         monkeypatch.setenv("HERMES_SESSION_ID", "sess-must-not-persist")
         entry = _build_hermes_tools_mcp_entry()
         env = entry.get("env", {})

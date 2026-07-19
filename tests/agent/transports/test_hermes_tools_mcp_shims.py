@@ -163,11 +163,14 @@ class TestSessionSearchShim:
         assert "state DB" in out.get("error", "")
 
     def test_session_id_read_from_canonical_env(self, tmp_hermes_home, monkeypatch):
-        # The shim must read the CANONICAL `HERMES_SESSION_ID` — the variable
-        # Hermes actually produces (`set_current_session_id` -> `_VAR_MAP` ->
-        # `_inject_session_context_env` -> the codex spawn env). Reading a
-        # bespoke name instead means own-lineage exclusion never runs in
-        # production, which is the defect this replaces.
+        # The shim must read the CANONICAL `HERMES_SESSION_ID` — the name Hermes
+        # actually produces (`set_current_session_id` -> `_VAR_MAP` ->
+        # `_inject_session_context_env` -> the HOST process's spawn env; a codex
+        # MCP child additionally needs the entry to name it in `env_vars` — see
+        # the `_SESSION_ID_ENV` note in the server module). A bespoke name has a
+        # producer in NO launch path; the canonical name is delivered wherever
+        # the host forwards or sets it, and exclusion stays fail-open (inactive)
+        # where it doesn't.
         db_path = tmp_hermes_home / "state.db"
         self._seed_db(db_path)
         monkeypatch.setenv("HERMES_MCP_STATE_DB", str(db_path))
@@ -189,11 +192,14 @@ class TestSessionSearchShim:
     def test_calling_session_excluded_via_production_producer(
         self, tmp_hermes_home, monkeypatch
     ):
-        # End-to-end through the REAL producer: `set_current_session_id()` is what
-        # Hermes itself calls. Establishing the precondition that way — rather than
-        # a bare `setenv` of the very name under test — is what makes a
-        # producer/consumer name mismatch fail LOUDLY here instead of passing
-        # silently, which is how the original defect survived review.
+        # Producer/consumer NAME agreement, proven through the REAL producer:
+        # `set_current_session_id()` is what Hermes itself calls. Establishing the
+        # precondition that way — rather than a bare `setenv` of the very name
+        # under test — makes a name mismatch fail loudly here, which is how the
+        # original defect survived review. Scope honestly: producer and shim share
+        # this test process, so this pins the NAME contract, not delivery across a
+        # host's process boundary (see the `_SESSION_ID_ENV` note for who
+        # forwards it).
         from gateway.session_context import set_current_session_id
         from hermes_state import SessionDB
 

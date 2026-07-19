@@ -202,12 +202,16 @@ EXPOSED_TOOLS: tuple[str, ...] = (
 # The CANONICAL session-context variable — deliberately not a shim-specific name.
 # `set_current_session_id()` writes it (gateway/session_context.py), `_VAR_MAP` carries
 # it, and `_inject_session_context_env()` inside `hermes_subprocess_env()` bridges it
-# into the codex spawn env — the same channel `HERMES_KANBAN_TASK` already rides. A
-# bespoke name has no producer in any launch path, so own-lineage exclusion would
-# silently never run. Hand-rolling a producer for one would also be worse than useless:
-# the cross-session leak guard in `_inject_session_context_env` covers only `_VAR_MAP`
-# keys, so a bespoke var could carry a SIBLING session's id under a concurrent host and
-# exclude the wrong lineage.
+# into the HOST process's spawn env. That is hop 1 only: codex builds an MCP child's
+# env from a fixed whitelist plus the names listed in the entry's `env_vars` (a
+# spawn-time snapshot of the codex process env), and the migration entry names none —
+# so under codex today the shim does not receive this var and own-lineage exclusion is
+# INACTIVE (fail-open, documented above). A host delivers it by naming it in the
+# entry's `env_vars` or by setting it in the server's spawn env directly. Reading a
+# bespoke name instead would be strictly worse: it has no producer in any launch path,
+# and the cross-session leak guard in `_inject_session_context_env` covers only
+# `_VAR_MAP` keys, so a bespoke var could carry a SIBLING session's id under a
+# concurrent host and exclude the wrong lineage.
 _SESSION_ID_ENV = "HERMES_SESSION_ID"
 _STATE_DB_ENV = "HERMES_MCP_STATE_DB"
 

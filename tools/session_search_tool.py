@@ -141,6 +141,55 @@ def _shape_message(m: Dict[str, Any], anchor_id: Optional[int] = None) -> Dict[s
     return {k: v for k, v in entry.items() if v is not None or k in ("content",)}
 
 
+def _build_citation(
+    messages: List[Dict[str, Any]],
+    anchor_id: Optional[int],
+    session_id: str,
+) -> Dict[str, Any]:
+    """Derive a citation block from the existing anchored window.
+
+    Pure derivation — the anchor message is already flagged via
+    ``_shape_message(m, anchor_id=...)`` setting ``entry["anchor"] = True``.
+    No new DB calls. Reply is taken from the same window: the next message
+    in id order if anchor is user (the assistant answer), or the previous
+    message if anchor is assistant (the user prompt that prompted it).
+
+    Returns a citation dict suitable for inclusion in a discovery entry.
+    Empty dict if anchor can't be located.
+    """
+    if anchor_id is None or not messages:
+        return {}
+
+    anchor = next((m for m in messages if m.get("id") == anchor_id), None)
+    if not anchor:
+        return {}
+
+    # Find a neighbour in the same window: prefer the next message by id,
+    # fall back to the previous. Filter to a different role (assistant reply
+    # to user prompt, or vice versa) — pure same-role continuation is noise.
+    neighbours = [m for m in messages if m.get("id") != anchor_id]
+    next_neighbour = next((m for m in neighbours if m.get("id", 0) > anchor_id), None)
+    prev_neighbour = next(
+        (m for m in reversed(neighbours) if m.get("id", 0) < anchor_id), None
+    )
+    reply = None
+    for candidate in (next_neighbour, prev_neighbour):
+        if candidate and candidate.get("role") != anchor.get("role") and candidate.get("content"):
+            reply = candidate["content"]
+            break
+
+    return {
+        "exact_quote": anchor.get("content", ""),
+        "speaker": anchor.get("role"),
+        "decided_at": _format_timestamp(anchor.get("timestamp")),
+        "reply_quote": reply,
+        "context_url": (
+            f'session_search(session_id="{session_id}", '
+            f"around_message_id={anchor_id}, window=10)"
+        ),
+    }
+
+
 def _resolve_profile_db(profile: str):
     """Open another profile's ``state.db`` read-only, or None for the current one.
 
@@ -484,6 +533,11 @@ def _title_match_result(
         "matched_role": "session_title",
         "match_message_id": anchor_id,
         "snippet": f"Session title matched: {session_meta.get('title') or title_query}",
+        "citation": _build_citation(
+            [_shape_message(m, anchor_id=anchor_id) for m in (view.get("window") or messages[:5])],
+            anchor_id,
+            session_id,
+        ),
         "bookend_start": [_shape_message(m) for m in (view.get("bookend_start") or messages[:3])],
         "messages": [_shape_message(m, anchor_id=anchor_id) for m in (view.get("window") or messages[:5])],
         "bookend_end": [_shape_message(m) for m in (view.get("bookend_end") or messages[-3:])],
@@ -596,6 +650,11 @@ def _discover(
             "matched_role": match_info.get("role"),
             "match_message_id": msg_id,
             "snippet": match_info.get("snippet") or "",
+            "citation": _build_citation(
+                [_shape_message(m, anchor_id=msg_id) for m in (view.get("window") or [])],
+                msg_id,
+                hit_sid,
+            ),
             "bookend_start": [_shape_message(m) for m in (view.get("bookend_start") or [])],
             "messages": [_shape_message(m, anchor_id=msg_id) for m in (view.get("window") or [])],
             "bookend_end": [_shape_message(m) for m in (view.get("bookend_end") or [])],
@@ -780,6 +839,13 @@ SESSION_SEARCH_SCHEMA = {
         "       - bookend_end: last 3 user+assistant messages of the session "
         "(the resolution / decisions)\n"
         "       - match_message_id, messages_before, messages_after\n"
+        "     Each discovery result also carries a 'citation' block — exact_quote "
+        "(the matched message's verbatim content), speaker (user/assistant), "
+        "decided_at (timestamp of the match), reply_quote (the neighbour "
+        "message in the same window when one exists), and a context_url recipe "
+        "the model can paste into a follow-up session_search(...) call to "
+        "expand context. Use the citation block to attribute decisions "
+        "verbatim when answering the user.\n"
         "     Bookends + window together let you reconstruct goal → match → resolution "
         "without paying for the whole transcript.\n\n"
         "  2) SCROLL — pass `session_id` + `around_message_id`:\n"

@@ -3697,6 +3697,165 @@ def save_config_value(key_path: str, value: any) -> bool:
 
 
 # ============================================================================
+# Cursor Movement Helper Functions
+# ============================================================================
+# Character-by-character walks using get_cwidth for wide-char (CJK/emoji) safety.
+# \n is treated as a visual row break. First visual row uses cols - prompt_width,
+# subsequent rows use the full terminal width.
+
+
+def _cursor_prompt_width(cli_self, event):
+    """Return the display width of the CLI prompt (e.g. '❯ ' = 2 cols).
+
+    Falls back to a minimum of 2 if the prompt fragments can't be read,
+    which is the default prompt width.
+    """
+    try:
+        fragments = cli_self._get_tui_prompt_fragments()
+        prompt_text = ''.join(f[1] for f in fragments)
+        from prompt_toolkit.utils import get_cwidth
+        return sum(get_cwidth(ch) for ch in prompt_text)
+    except (AttributeError, Exception):
+        return 2
+
+
+def _visual_row_col(text, pos, cols, prompt_width, get_cwidth):
+    """Map a character position to (visual_row, visual_col).
+
+    text:  full buffer text
+    pos:   character index (0..len(text))
+    cols:  terminal width in columns
+    prompt_width: columns consumed by the prompt on the first display row
+    get_cwidth: prompt_toolkit.utils.get_cwidth
+
+    Returns (vr, vc) where vr is 0-based visual row and vc is the visual
+    column (display columns, not character count) of the cursor.
+
+    vc is a *screen* column: on the first row the prompt occupies the
+    leading ``prompt_width`` columns, so the first character of the buffer
+    sits at vc == prompt_width, not vc == 0. This lets up/down movement
+    track the cursor's visible position across the prompt offset.
+    """
+    if prompt_width < 0:
+        prompt_width = 0
+
+    vr = 0
+    # Row 0 begins after the prompt; ``available`` is the full terminal
+    # width because dc already starts at prompt_width (so the usable text
+    # span on row 0 is cols - prompt_width). Wrapped rows reset dc to 0.
+    dc = prompt_width
+    available = cols
+    if available < 1:
+        available = 1
+
+    for ch in text[:pos]:
+        if ch == '\n':
+            vr += 1
+            dc = 0
+            available = cols
+            continue
+        cw = get_cwidth(ch)
+        if dc + cw > available:
+            vr += 1
+            dc = 0
+            available = cols
+        dc += cw
+
+    # Cursor at position *pos* is past the last character processed.
+    # If we filled the row exactly, the cursor sits at the start of
+    # the next visual row.  (After a \n, dc is 0 so this is a no-op.)
+    # Guard pos == 0: when no character has been consumed, dc is still the
+    # initial prompt offset and must not trigger a phantom wrap (matters only
+    # in the degenerate case where prompt_width >= cols).
+    if pos > 0 and dc >= available:
+        vr += 1
+        dc = 0
+
+    return vr, dc
+
+
+def _max_visual_row(text, cols, prompt_width, get_cwidth):
+    """Return the last visual row index for *text* (0-indexed, -1 if empty)."""
+    if not text:
+        return -1
+
+    if prompt_width < 0:
+        prompt_width = 0
+
+    vr = 0
+    dc = prompt_width
+    available = cols
+    if available < 1:
+        available = 1
+
+    for ch in text:
+        if ch == '\n':
+            vr += 1
+            dc = 0
+            available = cols
+            continue
+        cw = get_cwidth(ch)
+        if dc + cw > available:
+            vr += 1
+            dc = 0
+            available = cols
+        dc += cw
+
+    return vr
+
+
+def _pos_from_visual(text, target_row, target_col, cols, prompt_width, get_cwidth):
+    """Find the character position at the given visual (row, col).
+
+    Clamps to row ends when target_col is past the row contents.
+    Returns len(text) if target_row is beyond the last row.
+
+    Columns are screen columns (see _visual_row_col). On row 0 the prompt
+    occupies the first ``prompt_width`` columns, so a target column landing
+    inside that prompt zone has no character beneath it; clamp it forward to
+    the first real character of the row.
+    """
+    if prompt_width < 0:
+        prompt_width = 0
+
+    if target_row == 0 and target_col < prompt_width:
+        target_col = prompt_width
+
+    vr = 0
+    dc = prompt_width
+    available = cols
+    if available < 1:
+        available = 1
+
+    for i, ch in enumerate(text):
+        if ch == '\n':
+            if vr == target_row:
+                return i
+            vr += 1
+            dc = 0
+            available = cols
+            continue
+
+        cw = get_cwidth(ch)
+        if dc + cw > available:
+            if vr == target_row:
+                return i
+            vr += 1
+            dc = 0
+            available = cols
+
+        if vr > target_row:
+            return i
+
+        if vr == target_row and dc <= target_col < dc + cw:
+            return i
+
+        dc += cw
+
+    return len(text)
+
+
+# ============================================================================
 # HermesCLI Class
 # ============================================================================
 
@@ -13381,23 +13540,62 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             _idx = 9 if _num == 0 else _num - 1
             kb.add(str(_num), filter=Condition(lambda: bool(self._slash_confirm_state)))(_make_slash_confirm_number_handler(_idx))
 
-        # --- History navigation: up/down browse history in normal input mode ---
-        # The TextArea is multiline, so by default up/down only move the cursor.
-        # Buffer.auto_up/auto_down handle both: cursor movement when multi-line,
-        # history browsing when on the first/last line (or single-line input).
+        # --- History navigation: up/down always browse history ---
+        # Cursor movement is handled separately via Ctrl+Up/Down and Shift+Up/Down.
+        # Left/Right cross hard-newline boundaries by wrapping at column 0 / end-of-line.
         _normal_input = Condition(
             lambda: not self._clarify_state and not self._approval_state and not self._slash_confirm_state and not self._sudo_state and not self._secret_state and not self._model_picker_state
         )
 
         @kb.add('up', filter=_normal_input)
         def history_up(event):
-            """Up arrow: browse history when on first line, else move cursor up."""
-            event.app.current_buffer.auto_up(count=event.arg)
+            """Up arrow: browse history."""
+            event.app.current_buffer.history_backward(count=event.arg)
 
         @kb.add('down', filter=_normal_input)
         def history_down(event):
-            """Down arrow: browse history when on last line, else move cursor down."""
-            event.app.current_buffer.auto_down(count=event.arg)
+            """Down arrow: browse history."""
+            event.app.current_buffer.history_forward(count=event.arg)
+
+        # ── Cursor line movement (never triggers history) ──
+        # Ctrl+Up/Down: Windows Terminal, xterm, iTerm2, WezTerm, Ghostty
+        # Shift+Up/Down: Kitty, foot, CSI u / modifyOtherKeys terminals
+        # Uses visual-row helpers for correct wide-char and prompt-width handling.
+
+        def _move_cursor_up(event):
+            buf = event.app.current_buffer
+            text = buf.text
+            from prompt_toolkit.utils import get_cwidth
+            cols = event.app.output.get_size().columns
+            prompt_width = _cursor_prompt_width(self, event)
+            vr, vc = _visual_row_col(text, buf.cursor_position, cols, prompt_width, get_cwidth)
+            if vr > 0:
+                buf.cursor_position = _pos_from_visual(
+                    text, vr - 1, vc, cols, prompt_width, get_cwidth
+                )
+
+        def _move_cursor_down(event):
+            buf = event.app.current_buffer
+            text = buf.text
+            from prompt_toolkit.utils import get_cwidth
+            cols = event.app.output.get_size().columns
+            prompt_width = _cursor_prompt_width(self, event)
+            vr, vc = _visual_row_col(text, buf.cursor_position, cols, prompt_width, get_cwidth)
+            max_row = _max_visual_row(text, cols, prompt_width, get_cwidth)
+            if vr < max_row:
+                buf.cursor_position = _pos_from_visual(
+                    text, vr + 1, vc, cols, prompt_width, get_cwidth
+                )
+
+        @kb.add('c-up', filter=_normal_input)
+        @kb.add('s-up', filter=_normal_input)
+        def _bound_move_cursor_up(event):
+            _move_cursor_up(event)
+
+        @kb.add('c-down', filter=_normal_input)
+        @kb.add('s-down', filter=_normal_input)
+        def _bound_move_cursor_down(event):
+            _move_cursor_down(event)
 
         @kb.add('c-l')
         def handle_ctrl_l(event):

@@ -6,7 +6,7 @@ import argparse
 import subprocess
 import sys
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -1052,6 +1052,22 @@ def test_force_adhoc_signing_respects_explicit_caller_flag(monkeypatch):
     env = {"CSC_IDENTITY_AUTO_DISCOVERY": "true"}
     assert cli_main._force_adhoc_macos_signing(env, source_mode=False) is False
     assert env["CSC_IDENTITY_AUTO_DISCOVERY"] == "true"
+
+
+def test_stable_local_signing_identity_prefers_keychain_cert():
+    probe = MagicMock(stdout='  1) ABC123 "Developer ID Application: Hermes Local Signing"\n')
+    with patch("hermes_cli.main.subprocess.run", return_value=probe):
+        assert cli_main._stable_local_signing_identity() == (
+            "Developer ID Application: Hermes Local Signing"
+        )
+
+
+def test_stable_local_signing_identity_falls_back_to_adhoc():
+    probe = MagicMock(stdout="  0 valid identities found\n")
+    with patch("hermes_cli.main.subprocess.run", return_value=probe):
+        assert cli_main._stable_local_signing_identity() == "-"
+    with patch("hermes_cli.main.subprocess.run", side_effect=OSError("no security bin")):
+        assert cli_main._stable_local_signing_identity() == "-"
 
 
 # --- desktop.* launch options (config.yaml) -------------------------------

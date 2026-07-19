@@ -2946,7 +2946,14 @@ install_desktop() {
     # real signing identity is configured so a signed build isn't clobbered.
     if [ "$OS" = "macos" ] && [ -z "${CSC_LINK:-}" ] && [ -z "${APPLE_SIGNING_IDENTITY:-}" ] && command -v codesign >/dev/null 2>&1; then
         xattr -cr "$app" 2>/dev/null || true
-        codesign --force --deep --sign - "$app" >/dev/null 2>&1 || true
+        # Prefer a stable local signing identity (keeps TCC permission grants
+        # across rebuilds; ad-hoc gets a new cdhash-only DR every build and
+        # macOS re-asks for every Files-and-Folders / ext-drive approval).
+        local sign_id="-"
+        if security find-identity -v -p codesigning 2>/dev/null | grep -q "Hermes Local Signing"; then
+            sign_id="Developer ID Application: Hermes Local Signing"
+        fi
+        codesign --force --deep --sign "$sign_id" "$app" >/dev/null 2>&1 || true
     fi
 
     # `npm install` + `npm run pack` rewrite lockfiles; restore them so the

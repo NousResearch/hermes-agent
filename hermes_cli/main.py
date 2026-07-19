@@ -5507,6 +5507,32 @@ def _stop_desktop_processes_locking_build(desktop_dir: Path) -> list[int]:
     return stopped
 
 
+def _stable_local_signing_identity() -> str:
+    """Return the local signing identity for desktop rebuilds, or "-" (ad-hoc).
+
+    An ad-hoc signature's Designated Requirement is just the cdhash of that
+    exact build, so every self-update rebuild looks like a brand-new app to
+    macOS TCC and all previously granted permissions (Files and Folders,
+    external volumes, microphone, ...) are silently dropped and re-prompted.
+
+    A persistent self-signed codesigning cert named "Hermes Local Signing" in
+    the login keychain gives the bundle a stable identifier+certificate DR, so
+    TCC grants survive rebuilds. Users opt in by creating/importing the cert
+    (openssl req -x509 with extendedKeyUsage=codeSigning, import via
+    `security import`); when absent we fall back to ad-hoc exactly as before.
+    """
+    try:
+        probe = subprocess.run(
+            ["security", "find-identity", "-v", "-p", "codesigning"],
+            capture_output=True, text=True, check=False,
+        )
+        if "Hermes Local Signing" in (probe.stdout or ""):
+            return "Developer ID Application: Hermes Local Signing"
+    except Exception:
+        pass
+    return "-"
+
+
 def _desktop_macos_relaunchable_fixup(desktop_dir: Path) -> None:
     """Make a locally-built (unsigned) macOS desktop app survive in-place self-update.
 
@@ -5517,11 +5543,15 @@ def _desktop_macos_relaunchable_fixup(desktop_dir: Path) -> None:
     bundle also inherits the com.apple.quarantine flag from the downloaded
     installer process chain. Both make the relaunch fail.
 
-    Clearing the quarantine xattrs and re-applying a clean deep ad-hoc signature
+    Clearing the quarantine xattrs and re-applying a clean deep signature
     (omitting the hardened-runtime flag, which is meaningless without a real
-    Developer ID) lets the rebuilt app relaunch. No-op when a real signing
-    identity is configured (CSC_LINK / APPLE_SIGNING_IDENTITY) so a properly
-    signed/notarized build is never clobbered. Best-effort: never raises.
+    Developer ID) lets the rebuilt app relaunch. Signs with the stable
+    "Hermes Local Signing" keychain identity when the user has created one
+    (keeps TCC permission grants across rebuilds, see
+    ``_stable_local_signing_identity``), otherwise ad-hoc. No-op when a real
+    signing identity is configured (CSC_LINK / APPLE_SIGNING_IDENTITY) so a
+    properly signed/notarized build is never clobbered. Best-effort: never
+    raises.
     """
     if sys.platform != "darwin":
         return
@@ -5537,9 +5567,10 @@ def _desktop_macos_relaunchable_fixup(desktop_dir: Path) -> None:
     codesign = shutil.which("codesign")
     if not codesign:
         return
+    sign_id = _stable_local_signing_identity()
     try:
         subprocess.run(["xattr", "-cr", str(app)], check=False)
-        subprocess.run([codesign, "--force", "--deep", "--sign", "-", str(app)], check=False)
+        subprocess.run([codesign, "--force", "--deep", "--sign", sign_id, str(app)], check=False)
     except Exception as exc:
         print(f"  (warning: macOS relaunch fixup skipped: {exc})")
 

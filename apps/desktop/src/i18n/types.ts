@@ -2047,6 +2047,10 @@ export interface Translations {
       readAloud: string
       editMessage: string
       expandMessage: string
+      subagentCompleted: string
+      subagentsCompleted: string
+      showFullPayload: string
+      hideFullPayload: string
       scrollToBottom: string
       stop: string
       restorePrevious: string

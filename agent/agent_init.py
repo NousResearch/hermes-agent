@@ -69,8 +69,40 @@ def _ra():
 
 
 def _moa_reference_output_allowed(agent: Any) -> bool:
-    """Keep MoA advisor display events off machine-readable quiet surfaces."""
-    return not bool(getattr(agent, "quiet_mode", False))
+    """Keep MoA display events off only the machine-readable ``-Q`` surface."""
+    return not (
+        getattr(agent, "platform", None) == "cli"
+        and getattr(agent, "tool_progress_mode", "all") == "off"
+    )
+
+
+def _relay_moa_reference_event(agent: Any, event: str, **kwargs: Any) -> None:
+    """Relay MoA display events while preserving the ``-Q`` stdout contract."""
+    if not _moa_reference_output_allowed(agent):
+        return
+    cb = getattr(agent, "tool_progress_callback", None)
+    if cb is None:
+        return
+    try:
+        if event == "moa.reference":
+            cb(
+                "moa.reference",
+                str(kwargs.get("label") or ""),
+                str(kwargs.get("text") or ""),
+                None,
+                moa_index=kwargs.get("index"),
+                moa_count=kwargs.get("count"),
+            )
+        elif event == "moa.aggregating":
+            cb(
+                "moa.aggregating",
+                str(kwargs.get("aggregator") or ""),
+                None,
+                None,
+                moa_ref_count=kwargs.get("ref_count"),
+            )
+    except Exception:
+        pass
 
 
 def _build_codex_gpt5_autoraise_notice(autoraise: Dict[str, Any]) -> str:
@@ -885,35 +917,7 @@ def init_agent(
         # the tool lifecycle uses. Best-effort and cache-safe — these are
         # display-only events, they never touch the message history.
         def _moa_reference_relay(event: str, **kwargs: Any) -> None:
-            if not _moa_reference_output_allowed(agent):
-                return
-            cb = getattr(agent, "tool_progress_callback", None)
-            if cb is None:
-                return
-            try:
-                if event == "moa.reference":
-                    label = str(kwargs.get("label") or "")
-                    text = str(kwargs.get("text") or "")
-                    idx = kwargs.get("index")
-                    count = kwargs.get("count")
-                    cb(
-                        "moa.reference",
-                        label,
-                        text,
-                        None,
-                        moa_index=idx,
-                        moa_count=count,
-                    )
-                elif event == "moa.aggregating":
-                    cb(
-                        "moa.aggregating",
-                        str(kwargs.get("aggregator") or ""),
-                        None,
-                        None,
-                        moa_ref_count=kwargs.get("ref_count"),
-                    )
-            except Exception:
-                pass
+            _relay_moa_reference_event(agent, event, **kwargs)
 
         agent.client = MoAClient(
             agent.model or "default",

@@ -437,46 +437,105 @@ def _message_text(message: Any) -> str:
     return ""
 
 
+_SYNTHETIC_USER_FLAGS = (
+    "_todo_snapshot_synthetic",
+    "_empty_recovery_synthetic",
+    "_verification_stop_synthetic",
+    "_pre_verify_synthetic",
+)
+
+
 def _is_real_user_message(message: Any) -> bool:
-    """Distinguish human intent from user-role runtime scaffolding."""
+    """Distinguish human intent from user-role runtime scaffolding.
+
+    A compaction summary pinned to ``role="user"`` (the compressor flips the
+    summary role to preserve alternation when the tail starts with an
+    assistant message) is scaffolding too: treating it as human intent would
+    short-circuit anchor restoration with a message the model is explicitly
+    told NOT to act on.
+    """
     if not isinstance(message, dict) or message.get("role") != "user":
         return False
-    if any(
-        message.get(flag)
-        for flag in (
-            "_length_continuation_synthetic",
-            "_todo_snapshot_synthetic",
-            "_empty_recovery_synthetic",
-            "_verification_stop_synthetic",
-            "_pre_verify_synthetic",
-        )
-    ):
+    if any(message.get(flag) for flag in _SYNTHETIC_USER_FLAGS):
         return False
     text = _message_text(message).strip()
     if not text:
         return False
-    return not text.startswith(_SYNTHETIC_USER_PREFIXES)
+    if text.startswith(_SYNTHETIC_USER_PREFIXES):
+        return False
+    from agent.context_compressor import ContextCompressor
+
+    return not ContextCompressor._is_context_summary_content(text)
+
+
+def _merge_anchor_into_user_message(target: dict, anchor: dict) -> None:
+    """Fold the human anchor into an existing user-role scaffolding turn.
+
+    Used only when every insertion slot would create two consecutive
+    user-role messages. The anchor text leads (it is the active task), the
+    scaffolding content is preserved after it, and the synthetic flags are
+    cleared because the merged turn now carries real human intent.
+    """
+    anchor_content = anchor.get("content")
+    target_content = target.get("content")
+    if isinstance(anchor_content, list) or isinstance(target_content, list):
+        anchor_parts = (
+            list(anchor_content)
+            if isinstance(anchor_content, list)
+            else [{"type": "text", "text": str(anchor_content or "")}]
+        )
+        target_parts = (
+            list(target_content)
+            if isinstance(target_content, list)
+            else [{"type": "text", "text": str(target_content or "")}]
+        )
+        target["content"] = anchor_parts + target_parts
+    else:
+        merged = f"{anchor_content or ''}\n\n{target_content or ''}".strip()
+        target["content"] = merged
+    for flag in _SYNTHETIC_USER_FLAGS:
+        target.pop(flag, None)
 
 
 def _insert_real_user_anchor(messages: list, anchor: dict) -> None:
-    """Insert the latest human turn at a valid summary boundary."""
+    """Insert the latest human turn without breaking role alternation."""
+
+    def _role(msg: Any) -> Optional[str]:
+        return msg.get("role") if isinstance(msg, dict) else None
+
+    # Preferred: the summary boundary — before the first assistant message
+    # not already preceded by a user turn. The left neighbour is then
+    # non-user by construction and the right neighbour is an assistant.
     for index, message in enumerate(messages):
-        if not isinstance(message, dict) or message.get("role") != "assistant":
+        if _role(message) != "assistant":
             continue
-        previous_role = (
-            messages[index - 1].get("role")
-            if index > 0 and isinstance(messages[index - 1], dict)
-            else None
-        )
+        previous_role = _role(messages[index - 1]) if index > 0 else None
         if previous_role != "user":
             messages.insert(index, anchor)
             return
-    if not messages or not (
-        isinstance(messages[-1], dict) and messages[-1].get("role") == "user"
-    ):
+    # Every assistant is user-preceded (or there are none). Appending is
+    # safe whenever the transcript does not already end with a user turn.
+    if not messages or _role(messages[-1]) != "user":
         messages.append(anchor)
-    else:
-        messages.insert(0, anchor)
+        return
+    # The transcript ends with a user-role message and no slot avoids
+    # user/user adjacency.
+    from agent.context_compressor import ContextCompressor
+
+    if ContextCompressor._is_context_summary_content(
+        _message_text(messages[-1])
+    ):
+        # Never merge into a compaction summary: the summary prefix must
+        # stay at the start of its message for downstream summary detection.
+        # Appending after it makes the anchor "the latest user message after
+        # the summary" — exactly what the handoff prefix instructs — and the
+        # adjacent user turns are merged summary-first by
+        # repair_message_sequence before the next API call.
+        messages.append(anchor)
+        return
+    # Trailing user-role scaffolding (e.g. the todo snapshot): merge instead
+    # of inserting a consecutive same-role message (#55677 strict templates).
+    _merge_anchor_into_user_message(messages[-1], anchor)
 
 
 def _ensure_compressed_has_user_turn(original_messages: list, compressed: list) -> None:

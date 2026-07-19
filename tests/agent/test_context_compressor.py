@@ -806,6 +806,65 @@ None.
         assert latest in summary
         assert "deterministic, from compacted turns" in summary
 
+    def test_task_snapshot_skips_synthetic_user_scaffolding(self):
+        """Grounding must anchor on the human ask, not runtime scaffolding.
+
+        Todo snapshots, truncation notices, and background-process reports
+        are injected with role="user"; if the newest user turn is one of
+        those, the deterministic snapshot must look past it to the real ask
+        (and return None when no real ask exists at all).
+        """
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(model="test", quiet_mode=True)
+
+        messages = [
+            {"role": "user", "content": "fix the login bug on prod"},
+            {"role": "assistant", "content": "on it"},
+            {
+                "role": "user",
+                "content": "[Your active task list was preserved across context compression]\n- item",
+                "_todo_snapshot_synthetic": True,
+            },
+        ]
+        snapshot = c._latest_user_task_snapshot(messages)
+        assert snapshot is not None
+        assert "fix the login bug on prod" in snapshot
+        assert "task list was preserved" not in snapshot
+
+        only_synthetic = [
+            {"role": "user", "content": "[System: Your previous response was truncated ...]"},
+        ]
+        assert c._latest_user_task_snapshot(only_synthetic) is None
+
+    def test_grounding_preserves_following_sections_across_regrounding(self):
+        """The snapshot rewrite must keep later headings intact — twice.
+
+        A replacement that consumes the section's trailing newlines glues the
+        next "## " heading mid-line; on the following iterative compaction the
+        heading is no longer at line start, the regex matches through \\Z, and
+        every later section is silently deleted.
+        """
+        import re as _re
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(model="test", quiet_mode=True)
+
+        summary = (
+            f"{HISTORICAL_TASK_HEADING}\n"
+            "User asked: stale example\n\n"
+            "## Historical Remaining Work\n- keep me\n\n"
+            "## Goal\nfinish"
+        )
+        turns = [{"role": "user", "content": "real ask"}]
+
+        first = c._ground_historical_task_snapshot(summary, turns)
+        assert _re.search(r"(?m)^## Historical Remaining Work$", first)
+        assert "- keep me" in first and "## Goal" in first
+
+        second = c._ground_historical_task_snapshot(first, turns)
+        assert "- keep me" in second and "## Goal" in second
+        assert second.count(HISTORICAL_TASK_HEADING) == 1
+
     def test_summary_call_passes_live_main_runtime(self):
         mock_response = MagicMock()
         mock_response.choices = [MagicMock()]

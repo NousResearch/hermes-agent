@@ -1168,6 +1168,31 @@ def _strip_auto_continue_noise(content: Any) -> Any:
 _JSON_MEDIA_TOOL_PATH_FIELDS = ("host_image", "image", "agent_visible_image")
 
 
+def _iter_json_image_paths(payload: Dict[str, Any]) -> List[str]:
+    """Return unique image paths from an ``image_generate`` result payload.
+
+    ``image`` remains the compatibility primary result. ``images`` carries
+    additional local artifacts for providers that generate multiple outputs.
+    Keep the primary-path precedence for host/sandbox bridging, then append
+    any distinct list entries in provider order.
+    """
+    paths: List[str] = []
+    seen: set[str] = set()
+    for field in _JSON_MEDIA_TOOL_PATH_FIELDS:
+        path = payload.get(field)
+        if isinstance(path, str) and path:
+            paths.append(path)
+            seen.add(path)
+            break
+    images = payload.get("images")
+    if isinstance(images, list):
+        for path in images:
+            if isinstance(path, str) and path and path not in seen:
+                paths.append(path)
+                seen.add(path)
+    return paths
+
+
 # Extension-anchored MEDIA: matcher for tool results. Mirrors the dispatch-site
 # pattern so a bare ``MEDIA:`` token in prose (no deliverable extension) is never
 # auto-appended. Kept local to the auto-append path; the producer-tool allowlist
@@ -1224,6 +1249,7 @@ def _collect_auto_append_media_tags(
                 tool_name_by_call_id[str(call_id)] = name
 
     media_tags: List[str] = []
+    emitted_paths = set(history_media_paths)
     has_voice_directive = False
     for msg in new_messages:
         if msg.get("role") not in ("tool", "function"):
@@ -1242,13 +1268,13 @@ def _collect_auto_append_media_tags(
             except Exception:
                 payload = None
             if isinstance(payload, dict) and payload.get("success"):
-                for field in _JSON_MEDIA_TOOL_PATH_FIELDS:
-                    path = payload.get(field)
-                    if (isinstance(path, str)
-                            and _TOOL_MEDIA_RE.fullmatch(f"MEDIA:{path}")
-                            and path not in history_media_paths):
+                for path in _iter_json_image_paths(payload):
+                    if (
+                        _TOOL_MEDIA_RE.fullmatch(f"MEDIA:{path}")
+                        and path not in emitted_paths
+                    ):
                         media_tags.append(f"MEDIA:{path}")
-                        break
+                        emitted_paths.add(path)
             continue
         if "MEDIA:" not in content:
             continue
@@ -1303,11 +1329,7 @@ def _collect_history_media_paths(agent_history: List[Dict[str, Any]]) -> set:
             except Exception:
                 payload = None
             if isinstance(payload, dict) and payload.get("success"):
-                for field in _JSON_MEDIA_TOOL_PATH_FIELDS:
-                    jp = payload.get(field)
-                    if isinstance(jp, str) and jp:
-                        paths.add(jp)
-                        break
+                paths.update(_iter_json_image_paths(payload))
     return paths
 
 # ---------------------------------------------------------------------------

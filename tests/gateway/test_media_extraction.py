@@ -185,6 +185,30 @@ caption
         assert tags == ["MEDIA:/tmp/gen/cat.png"]
         assert voice is False
 
+    def test_gateway_auto_append_image_generate_all_images(self):
+        """A multi-output image tool result attaches every unique local image."""
+        from gateway.run import _collect_auto_append_media_tags
+
+        messages = [
+            {
+                "role": "assistant",
+                "tool_calls": [{"id": "call_img", "function": {"name": "image_generate"}}],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_img",
+                "content": (
+                    '{"success": true, "image": "/tmp/gen/first.png", '
+                    '"images": ["/tmp/gen/first.png", "/tmp/gen/second.webp", '
+                    '"https://example.com/not-local.png"]}'
+                ),
+            },
+        ]
+
+        tags, voice = _collect_auto_append_media_tags(messages, history_offset=0)
+        assert tags == ["MEDIA:/tmp/gen/first.png", "MEDIA:/tmp/gen/second.webp"]
+        assert voice is False
+
     def test_gateway_auto_append_image_generate_prefers_host_path(self):
         """When host and sandbox paths differ, the host-deliverable path wins."""
         from gateway.run import _collect_auto_append_media_tags
@@ -277,7 +301,10 @@ caption
             {
                 "role": "tool",
                 "tool_call_id": "c",
-                "content": '{"success": true, "image": "/tmp/gen/cat.png"}',
+                "content": (
+                    '{"success": true, "image": "/tmp/gen/cat.png", '
+                    '"images": ["/tmp/gen/cat.png", "/tmp/gen/cat-2.webp"]}'
+                ),
             },
             # A separate MEDIA: text tag from another tool, to confirm both shapes.
             {
@@ -288,6 +315,7 @@ caption
         ]
         paths = _collect_history_media_paths(history)
         assert "/tmp/gen/cat.png" in paths  # JSON-payload path (the bug)
+        assert "/tmp/gen/cat-2.webp" in paths  # Additional multi-output image
         assert "/tmp/voice/note.ogg" in paths  # MEDIA: text path (already worked)
 
     def test_image_generate_not_reemitted_after_compression(self):

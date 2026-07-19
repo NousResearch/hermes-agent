@@ -22,6 +22,7 @@ import { composerPromptText } from '../lib/prompt.js'
 
 import { AgentsOverlay } from './agentsOverlay.js'
 import { GoodVibesHeart, StatusRule, StickyPromptTracker, TranscriptScrollbar } from './appChrome.js'
+import { ArcStatusBar } from './arcStatusBar.js'
 import { FloatingOverlays, PromptZone } from './appOverlays.js'
 import { Banner, Panel, SessionPanel } from './branding.js'
 import { FpsOverlay } from './fpsOverlay.js'
@@ -359,7 +360,7 @@ const ComposerPane = memo(function ComposerPane({
 
       <StatusRulePane at="top" composer={composer} status={status} />
 
-      <Box flexDirection="column" marginTop={ui.statusBar === 'top' ? 0 : 1} position="relative">
+      <Box flexDirection="column" marginTop={ui.statusBar === 'top' || ui.statusBar === 'arc' ? 0 : 1} position="relative">
         <FloatingOverlays
           cols={composer.cols}
           compIdx={composer.compIdx}
@@ -465,6 +466,24 @@ const StatusRulePane = memo(function StatusRulePane({
   status
 }: Pick<AppLayoutProps, 'composer' | 'status'> & { at: 'bottom' | 'top' }) {
   const ui = useStore($uiState)
+
+  // Arc mode is a top-anchored 3-line variant. Render it in the top slot and
+  // suppress the classic single-line rule entirely.
+  if (ui.statusBar === 'arc') {
+    if (at !== 'top') {
+      return null
+    }
+
+    return (
+      <Box marginTop={1}>
+        <ArcStatusBar
+          model={ui.info?.model ?? ''}
+          sessionStartedAt={status.sessionStartedAt}
+          usage={ui.usage}
+        />
+      </Box>
+    )
+  }
 
   if (ui.statusBar !== at) {
     return null

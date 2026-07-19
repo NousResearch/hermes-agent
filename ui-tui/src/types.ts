@@ -184,13 +184,40 @@ export interface Usage {
   context_max?: number
   context_percent?: number
   context_used?: number
+  cost_source?: string
   cost_status?: string
   cost_usd?: number
   dev_credits_spent_micros?: number
   input: number
   output: number
+  rate_limits?: RateLimits
   reasoning?: number
   total: number
+}
+
+// Optional subscription/credit gauges for the Arc status bar's CAPACITY line.
+// Provider-agnostic: `five_hour`/`seven_day` come from an Anthropic-style
+// rolling-window usage API; `credits` is a single remaining/limit balance
+// (e.g. OpenRouter key balance or Nous portal). All fields are optional — the
+// renderer shows whichever the active provider actually reports, and falls
+// back to "NO RATE DATA" when the whole object is absent.
+export interface RateWindow {
+  used_percentage: number
+  resets_at?: number | string
+}
+
+export interface RateCredits {
+  remaining_usd?: number
+  limit_usd?: number
+  used_percentage?: number
+  label?: string
+}
+
+export interface RateLimits {
+  source?: string
+  five_hour?: RateWindow
+  seven_day?: RateWindow
+  credits?: RateCredits
 }
 
 export interface SudoReq {

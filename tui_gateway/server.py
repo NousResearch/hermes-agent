@@ -2780,7 +2780,7 @@ def _write_config_key(key_path: str, value):
     _save_cfg(cfg)
 
 
-_STATUSBAR_MODES = frozenset({"off", "top", "bottom"})
+_STATUSBAR_MODES = frozenset({"off", "top", "bottom", "arc"})
 _APPROVAL_MODES = frozenset({"manual", "smart", "off"})
 
 
@@ -3566,6 +3566,17 @@ def _sync_session_key_after_compress(
             pass
 
 
+def _statusbar_rate_probe_enabled() -> bool:
+    """Whether the opt-in status-bar credit/balance probe is on (config flag)."""
+    try:
+        display = _load_cfg().get("display")
+        if isinstance(display, dict):
+            return is_truthy_value(display.get("statusbar_rate_probe"))
+    except Exception:
+        pass
+    return False
+
+
 def _get_usage(agent) -> dict:
     g = lambda k, fb=None: getattr(agent, k, 0) or (getattr(agent, fb, 0) if fb else 0)
     usage = {
@@ -3606,6 +3617,36 @@ def _get_usage(agent) -> dict:
             usage["context_max"] = ctx_max
             usage["context_percent"] = max(0, min(100, round(last_prompt / ctx_max * 100)))
         usage["compressions"] = getattr(comp, "compression_count", 0) or 0
+    # Live session cost readout for the status bar. Sourced from the agent's
+    # running estimate (agent/usage_pricing.py): OpenRouter is priced from its
+    # live models API, other providers from the pricing snapshot DB, and any
+    # provider that reports an actual/reconciled cost overrides the estimate.
+    # cost_status is one of actual|estimated|included|unknown so the renderer
+    # can badge a `~` prefix on estimates and hide the segment when unknown.
+    try:
+        cost = getattr(agent, "session_estimated_cost_usd", None)
+        if cost is not None:
+            usage["cost_usd"] = float(cost)
+            usage["cost_status"] = getattr(agent, "session_cost_status", "unknown") or "unknown"
+            usage["cost_source"] = getattr(agent, "session_cost_source", "none") or "none"
+    except Exception:
+        pass
+    # Optional provider credit/balance readout for the Arc status bar's CAPACITY
+    # line. Off by default (opt-in via display.statusbar_rate_probe) so normal
+    # sessions make zero extra network calls. Non-blocking + cached in
+    # agent/rate_probe.py; fails open to no gauge.
+    try:
+        if is_truthy_value(os.environ.get("HERMES_STATUSBAR_RATE_PROBE")) or _statusbar_rate_probe_enabled():
+            from agent.rate_probe import get_rate_limits
+
+            rl = get_rate_limits(
+                str(getattr(agent, "provider", "") or ""),
+                str(getattr(agent, "api_key", "") or ""),
+            )
+            if rl:
+                usage["rate_limits"] = rl
+    except Exception:
+        pass
     # Live count of background/async subagents still running (delegate_task
     # batches + background single delegations). Mirrors the classic CLI status
     # bar's ⛓ indicator; sourced from the same async_delegation registry.

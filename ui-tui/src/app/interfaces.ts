@@ -35,7 +35,7 @@ export interface StateSetter<T> {
   (value: SetStateAction<T>): void
 }
 
-export type StatusBarMode = 'bottom' | 'off' | 'top'
+export type StatusBarMode = 'arc' | 'bottom' | 'off' | 'top'
 
 export type BusyInputMode = 'interrupt' | 'queue' | 'steer'
 

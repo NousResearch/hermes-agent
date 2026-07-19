@@ -18,6 +18,7 @@ import { turnController } from './turnController.js'
 import { patchUiState } from './uiStore.js'
 
 const STATUSBAR_ALIAS: Record<string, StatusBarMode> = {
+  arc: 'arc',
   bottom: 'bottom',
   off: 'off',
   on: 'top',

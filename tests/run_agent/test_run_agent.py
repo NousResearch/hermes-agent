@@ -8236,3 +8236,75 @@ class TestMemoryProviderTurnStart:
         # The extracted body uses ``agent.X`` rather than ``self.X``;
         # assert the extracted-form spelling directly.
         assert "on_turn_start(agent._user_turn_count" in src
+
+
+class TestMaxToolImagesConfig:
+    """Config propagation for agent.max_tool_images (OpenAI-path screenshot eviction).
+
+    The agent section is read via ``_agent_section = _agent_cfg.get("agent", {})``
+    in agent/agent_init.py; the setting MUST live under ``agent:`` in config.yaml.
+    Regression test for #63933 review: an earlier draft read from top-level
+    ``_agent_cfg`` so ``agent.max_tool_images: 0`` was silently ignored.
+    """
+
+    def _make_agent(self, agent_section=None):
+        cfg = {"agent": agent_section} if agent_section is not None else {}
+        with (
+            patch(
+                "run_agent.get_tool_definitions",
+                return_value=_make_tool_defs("terminal", "web_search"),
+            ),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+            patch("hermes_cli.config.load_config", return_value=cfg),
+        ):
+            a = AIAgent(
+                model="deepseek/deepseek-chat",
+                api_key="test-key-1234567890",
+                base_url="https://api.deepseek.com/v1",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+            a.client = MagicMock()
+            return a
+
+    def test_default_is_3(self):
+        """No config → documented default of 3 retained images."""
+        agent = self._make_agent()
+        assert agent.max_tool_images == 3
+
+    def test_override_honored(self):
+        """agent.max_tool_images: 10 in config → attribute reflects the override."""
+        agent = self._make_agent(agent_section={"max_tool_images": 10})
+        assert agent.max_tool_images == 10
+
+    def test_zero_disables_eviction(self):
+        """agent.max_tool_images: 0 must be honored (disables eviction)."""
+        agent = self._make_agent(agent_section={"max_tool_images": 0})
+        assert agent.max_tool_images == 0
+
+    def test_top_level_key_ignored(self):
+        """A top-level ``max_tool_images`` (wrong path) must NOT leak through —
+        guards against the regression where init read from ``_agent_cfg`` directly."""
+        with (
+            patch(
+                "run_agent.get_tool_definitions",
+                return_value=_make_tool_defs("terminal", "web_search"),
+            ),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+            # top-level key set, agent section missing it → must stay default
+            patch("hermes_cli.config.load_config", return_value={"max_tool_images": 99}),
+        ):
+            a = AIAgent(
+                model="deepseek/deepseek-chat",
+                api_key="test-key-1234567890",
+                base_url="https://api.deepseek.com/v1",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+            assert a.max_tool_images == 3, (
+                "top-level max_tool_images must be ignored; only agent.max_tool_images counts"
+            )

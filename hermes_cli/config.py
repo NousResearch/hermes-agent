@@ -1080,6 +1080,12 @@ DEFAULT_CONFIG = {
         # (docker/modal/ssh — they have their own probe).  Set False to
         # disable entirely.
         "environment_probe": True,
+        # Maximum number of tool-result images (browser_vision screenshots,
+        # vision_analyze outputs) to keep in the outgoing request on the
+        # OpenAI-compatible path. Older images are replaced with a
+        # "[screenshot removed to save context]" placeholder to prevent
+        # token bloat and local-model OOM. 0 disables eviction entirely.
+        "max_tool_images": 3,
         # Embedder-supplied environment description appended to the system
         # prompt's environment-hints block. Lets a host that wraps Hermes
         # (sandbox runner, managed platform) explain the runtime environment

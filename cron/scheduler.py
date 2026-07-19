@@ -343,11 +343,9 @@ def _is_wake_gate_silent_run(output: str, final_response: str) -> bool:
     if final_response.strip().upper() != SILENT_MARKER:
         return False
 
-    lines = {line.strip().lower() for line in output.splitlines()}
-    return (
-        "script gate returned `wakeagent=false` — agent skipped." in lines
-        or "**status:** silent (wakeagent=false)" in lines
-    )
+    marker = "<!-- hermes-cron:wakeagent=false -->"
+    first_line = next((line.strip().lower() for line in output.splitlines() if line.strip()), "")
+    return first_line == marker
 
 # ---------------------------------------------------------------------------
 # Persistent thread pool for parallel cron jobs.
@@ -2772,6 +2770,7 @@ def run_job(
                 "Job '%s' (no_agent): wakeAgent=false gate — silent run", job_id
             )
             silent_doc = (
+                "<!-- hermes-cron:wakeagent=false -->\n"
                 f"# Cron Job: {job_name}\n\n"
                 f"**Job ID:** {job_id}\n"
                 f"**Run Time:** {now_iso}\n"
@@ -2891,6 +2890,7 @@ def run_job(
                 job_name, job_id,
             )
             silent_doc = (
+                "<!-- hermes-cron:wakeagent=false -->\n"
                 f"# Cron Job: {job_name}\n\n"
                 f"**Job ID:** {job_id}\n"
                 f"**Run Time:** {_hermes_now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"

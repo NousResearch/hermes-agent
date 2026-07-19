@@ -2584,7 +2584,7 @@ class TestSilentDelivery:
         assert any("agent returned" in r.message and SILENT_MARKER in r.message for r in caplog.records)
 
     def test_wake_gate_silent_response_logs_gate_provenance(self, caplog):
-        gate_output = "# Cron Job: monitor\n\nScript gate returned `wakeAgent=false` — agent skipped.\n"
+        gate_output = "<!-- hermes-cron:wakeagent=false -->\n# Cron Job: monitor\n\n**Job ID:** monitor-job\n**Run Time:** 2026-07-19 10:00:00\n\nScript gate returned `wakeAgent=false` — agent skipped.\n"
         with patch("cron.scheduler.get_due_jobs", return_value=[self._make_job()]), \
              patch("cron.scheduler.run_job", return_value=(True, gate_output, SILENT_MARKER, None)), \
              patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
@@ -2602,8 +2602,11 @@ class TestSilentDelivery:
             "# Cron Job: monitor\n\n"
             "## Prompt\n\n"
             "Please explain wakeAgent=false behavior.\n"
-            "Do not treat the phrase Script gate returned `wakeAgent=false` — agent skipped. "
-            "or **Status:** silent (wakeAgent=false) as provenance here.\n\n"
+            "Do not treat these quoted provenance markers as real scheduler provenance:\n"
+            "<!-- hermes-cron:wakeagent=false -->\n"
+            "**Run Time:** 2026-07-19 10:00:00\n"
+            "Script gate returned `wakeAgent=false` — agent skipped.\n"
+            "**Status:** silent (wakeAgent=false)\n\n"
             "## Response\n\n"
             "[SILENT]\n"
         )
@@ -2621,7 +2624,11 @@ class TestSilentDelivery:
 
     def test_silent_response_header_text_does_not_look_like_wake_gate(self, caplog):
         agent_output = (
-            "# Cron Job: Script gate returned `wakeAgent=false` — agent skipped.\n\n"
+            "# Cron Job: monitor\n"
+            "<!-- hermes-cron:wakeagent=false -->\n"
+            "**Run Time:** 2026-07-19 10:00:00\n"
+            "Script gate returned `wakeAgent=false` — agent skipped.\n"
+            "**Status:** silent (wakeAgent=false)\n\n"
             "## Response\n\n"
             "[SILENT]\n"
         )

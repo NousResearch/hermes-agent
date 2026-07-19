@@ -1,7 +1,7 @@
 """Tests for credential file passthrough and skills directory mounting."""
 
 import os
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from unittest.mock import patch
 
 import pytest
@@ -202,6 +202,34 @@ class TestIterSkillsFiles:
 
         with patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}):
             assert iter_skills_files() == []
+
+    def test_nested_container_path_uses_posix_separators_on_windows(
+        self, tmp_path, monkeypatch,
+    ):
+        """Skills container paths must use '/' even on a Windows host.
+
+        See the matching iter_cache_files test — container paths are POSIX
+        regardless of host OS, but Windows ``relative_to`` yields backslash
+        parts that must be normalized via ``as_posix()``.
+        """
+        hermes_home = tmp_path / ".hermes"
+        skills_dir = hermes_home / "skills"
+        (skills_dir / "cat" / "myskill" / "scripts").mkdir(parents=True)
+        (skills_dir / "cat" / "myskill" / "scripts" / "run.sh").write_text("#!/bin/bash")
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        real_relative_to = Path.relative_to
+
+        def _windows_relative_to(self, *other):
+            rel = real_relative_to(self, *other)
+            return PureWindowsPath(*rel.parts)
+
+        monkeypatch.setattr(Path, "relative_to", _windows_relative_to)
+
+        files = iter_skills_files()
+        paths = {f["container_path"] for f in files}
+        assert all("\\" not in p for p in paths), paths
+        assert "/root/.hermes/skills/cat/myskill/scripts/run.sh" in paths
 
 class TestPathTraversalSecurity:
     """Path traversal and absolute path rejection.
@@ -530,3 +558,38 @@ class TestIterCacheFiles:
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
 
         assert iter_cache_files() == []
+
+    def test_nested_container_path_uses_posix_separators_on_windows(
+        self, tmp_path, monkeypatch,
+    ):
+        """Container paths must use '/' even when the host is Windows.
+
+        Container/remote paths are POSIX regardless of the host OS. On a
+        Windows host ``Path.relative_to`` yields backslash-separated parts;
+        formatting that straight into the container path produced e.g.
+        ``/root/.hermes/cache/screenshots/session_abc\\screen1.png``, which
+        is a broken mount path. Simulate Windows by making the relative path
+        a ``PureWindowsPath`` and assert the separators are normalized.
+        """
+        hermes_home = tmp_path / ".hermes"
+        ss_dir = hermes_home / "cache" / "screenshots"
+        sub = ss_dir / "session_abc"
+        sub.mkdir(parents=True)
+        (sub / "screen1.png").write_bytes(b"PNG")
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        # Force a Windows-style relative path the way relative_to() would
+        # return one on a Windows host.
+        real_relative_to = Path.relative_to
+
+        def _windows_relative_to(self, *other):
+            rel = real_relative_to(self, *other)
+            return PureWindowsPath(*rel.parts)
+
+        monkeypatch.setattr(Path, "relative_to", _windows_relative_to)
+
+        entries = iter_cache_files()
+        assert len(entries) == 1
+        container_path = entries[0]["container_path"]
+        assert "\\" not in container_path
+        assert container_path == "/root/.hermes/cache/screenshots/session_abc/screen1.png"

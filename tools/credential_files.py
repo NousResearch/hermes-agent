@@ -313,7 +313,7 @@ def iter_skills_files(
             rel = item.relative_to(skills_dir)
             result.append({
                 "host_path": str(item),
-                "container_path": f"{container_root}/{rel}",
+                "container_path": f"{container_root}/{rel.as_posix()}",
             })
 
     # Include external skill dirs
@@ -329,7 +329,7 @@ def iter_skills_files(
                 rel = item.relative_to(ext_dir)
                 result.append({
                     "host_path": str(item),
-                    "container_path": f"{container_root}/{rel}",
+                    "container_path": f"{container_root}/{rel.as_posix()}",
                 })
     except ImportError:
         pass
@@ -469,7 +469,7 @@ def iter_cache_files(
             rel = item.relative_to(host_dir)
             result.append({
                 "host_path": str(item),
-                "container_path": f"{container_root}/{rel}",
+                "container_path": f"{container_root}/{rel.as_posix()}",
             })
     return result
 

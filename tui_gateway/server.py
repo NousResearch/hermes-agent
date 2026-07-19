@@ -14126,7 +14126,7 @@ def _(rid, params: dict) -> dict:
     """
     try:
         from hermes_cli.auth import PROVIDER_REGISTRY
-        from hermes_cli.config import is_managed, save_env_value
+        from hermes_cli.config import is_managed
         from hermes_cli.inventory import build_models_payload, load_picker_context
 
         slug = (params.get("slug") or "").strip()
@@ -14150,9 +14150,13 @@ def _(rid, params: dict) -> dict:
         if not pconfig.api_key_env_vars:
             return _err(rid, 4004, f"no env var defined for {pconfig.name}")
 
-        # Save the key to ~/.hermes/.env
+        # Save the key to ~/.hermes/.env via the unified credential lifecycle
+        # so any stale config.yaml mirror of the previous key (model.api_key,
+        # custom_providers[*].api_key) is rotated in the same action (#62269).
         env_var = pconfig.api_key_env_vars[0]
-        save_env_value(env_var, api_key)
+        from hermes_cli.credential_lifecycle import save_provider_env_credential
+
+        save_provider_env_credential(env_var, api_key)
         # Also set in current process so the refreshed inventory sees it.
         import os
 
@@ -14208,7 +14212,7 @@ def _(rid, params: dict) -> dict:
     """
     try:
         from hermes_cli.auth import PROVIDER_REGISTRY, clear_provider_auth
-        from hermes_cli.config import remove_env_value
+        from hermes_cli.credential_lifecycle import remove_provider_env_credential
 
         slug = (params.get("slug") or "").strip()
         if not slug:
@@ -14218,13 +14222,19 @@ def _(rid, params: dict) -> dict:
         cleared_env = False
         cleared_auth = False
 
-        # Remove API key env vars from .env and process
+        # Remove API key env vars from .env and process, plus every mirror
+        # (env-seeded credential_pool entries, provider model cache rows,
+        # value-matched config.yaml api_key copies) via the unified helper —
+        # otherwise the provider resurrects in the picker after restart
+        # (#51071 / #59761).
         if pconfig and pconfig.api_key_env_vars:
             for ev in pconfig.api_key_env_vars:
-                if remove_env_value(ev):
+                if remove_provider_env_credential(ev).get("found"):
                     cleared_env = True
 
-        # Clear OAuth / credential pool state
+        # Clear OAuth / credential pool state. This is a full provider
+        # disconnect (TUI "disconnect" action), so removing OAuth grants
+        # here is the documented intent — unlike the key-only delete paths.
         cleared_auth = clear_provider_auth(slug)
 
         if not cleared_env and not cleared_auth:

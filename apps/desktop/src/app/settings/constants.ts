@@ -247,7 +247,10 @@ export const ENUM_OPTIONS: Record<string, string[]> = {
   'code_execution.mode': ['project', 'strict'],
   'context.engine': ['compressor', 'default', 'custom'],
   'delegation.reasoning_effort': ['', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
-  'memory.provider': ['', 'builtin', 'hindsight', 'honcho'],
+  // Built-in memory is not a provider plugin: the empty sentinel renders as
+  // "Built-in only" and a legacy literal `builtin` value is only kept visible
+  // via enumOptionsFor's current-value passthrough (#49513).
+  'memory.provider': ['', 'honcho', 'hindsight'],
   // Terminal execution backends — kept in sync with the dispatch ladder in
   // tools/terminal_tool.py::_create_environment (local/docker/singularity/
   // modal/daytona/ssh). Remote backends need extra env (image, tokens, host).

@@ -9,6 +9,7 @@ from unittest.mock import MagicMock
 
 from tools.file_operations import (
     _is_write_denied,
+    ExecuteResult,
     ReadResult,
     WriteResult,
     PatchResult,
@@ -444,6 +445,49 @@ def mock_env():
 @pytest.fixture()
 def file_ops(mock_env):
     return ShellFileOperations(mock_env)
+
+
+class TestReadFileTotalLines:
+    """total_lines must account for files without a trailing newline.
+
+    `wc -l` counts newline characters, so a file whose final line has no
+    trailing newline is undercounted by one. Regression for #20814.
+    """
+
+    def _routed_file_ops(self, file_ops, *, wc_l, last_byte_hex, content):
+        def fake_exec(command, *args, **kwargs):
+            if command.startswith("wc -c"):
+                return ExecuteResult(stdout=str(len(content)), exit_code=0)
+            if command.startswith("head -c"):
+                return ExecuteResult(stdout=content[:1000], exit_code=0)
+            if command.startswith("sed -n"):
+                return ExecuteResult(stdout=content, exit_code=0)
+            if command.startswith("wc -l"):
+                return ExecuteResult(stdout=str(wc_l), exit_code=0)
+            if command.startswith("tail -c 1"):
+                return ExecuteResult(stdout=last_byte_hex, exit_code=0)
+            return ExecuteResult(stdout="", exit_code=0)
+
+        file_ops._exec = fake_exec
+        return file_ops
+
+    def test_no_trailing_newline_counts_final_line(self, file_ops):
+        # Three lines, last one has no trailing newline -> wc -l reports 2.
+        content = "line1\nline2\nline3"
+        ops = self._routed_file_ops(
+            file_ops, wc_l=2, last_byte_hex="33", content=content
+        )
+        result = ops.read_file("/tmp/no_newline.txt")
+        assert result.total_lines == 3
+
+    def test_trailing_newline_not_double_counted(self, file_ops):
+        # Two lines, both terminated -> wc -l reports 2, last byte is \n (0a).
+        content = "line1\nline2\n"
+        ops = self._routed_file_ops(
+            file_ops, wc_l=2, last_byte_hex="0a", content=content
+        )
+        result = ops.read_file("/tmp/trailing.txt")
+        assert result.total_lines == 2
 
 
 class TestShellFileOpsHelpers:

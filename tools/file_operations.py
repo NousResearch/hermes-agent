@@ -1164,7 +1164,20 @@ class ShellFileOperations(FileOperations):
             total_lines = int(wc_output.strip())
         except ValueError:
             total_lines = 0
-        
+
+        # wc -l counts newline characters, not lines. A file whose final line
+        # has no trailing newline therefore has one more line of content than
+        # wc -l reports. Detect this by inspecting the last byte of the file
+        # and, when it is not 0x0a (\n), account for the uncounted final line.
+        if file_size > 0:
+            tail_cmd = (
+                f"tail -c 1 {self._escape_shell_arg(path)} | od -An -tx1 | tr -d ' '"
+            )
+            tail_result = self._exec(tail_cmd)
+            last_byte = _strip_terminal_fence_leaks(tail_result.stdout).strip()
+            if last_byte and last_byte != "0a":
+                total_lines += 1
+
         # Check if truncated
         truncated = total_lines > end_line
         hint = None

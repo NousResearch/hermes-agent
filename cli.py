@@ -12862,6 +12862,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             self._handle_review_command(cmd_original)
         elif canonical == "loop":
             self._handle_loop_command(cmd_original)
+        elif canonical == "plan":
+            self._handle_plan_command(cmd_original)
         elif canonical == "moa":
             # /moa is one-shot sugar only: run a single prompt through the
             # default MoA preset, then restore the prior model. To *switch* to a

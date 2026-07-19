@@ -865,15 +865,30 @@ export function selectToolsetModel(
   })
 }
 
+export interface SelectToolsetProviderResponse {
+  ok: boolean
+  name: string
+  provider: string
+  /** Present when the selection was scoped to one web capability. */
+  capability?: string
+  /** Present (true) when a managed Nous row was selected but the Portal
+   *  entitlement is missing — the row won't activate until the user signs
+   *  in to Nous Portal. */
+  needs_nous_auth?: boolean
+  /** The managed feature key (e.g. "browser") when needs_nous_auth is set. */
+  feature?: string
+}
+
 export function selectToolsetProvider(
   name: string,
-  provider: string
-): Promise<{ ok: boolean; name: string; provider: string }> {
-  return window.hermesDesktop.api<{ ok: boolean; name: string; provider: string }>({
+  provider: string,
+  capability?: 'search' | 'extract'
+): Promise<SelectToolsetProviderResponse> {
+  return window.hermesDesktop.api<SelectToolsetProviderResponse>({
     ...profileScoped(),
     path: `/api/tools/toolsets/${encodeURIComponent(name)}/provider`,
     method: 'PUT',
-    body: { provider }
+    body: capability ? { provider, capability } : { provider }
   })
 }
 
@@ -943,6 +958,7 @@ export function testMessagingPlatform(platformId: string): Promise<MessagingPlat
 
 export function getCronJobs(): Promise<CronJob[]> {
   return window.hermesDesktop.api<CronJob[]>({
+    ...profileScoped(),
     path: '/api/cron/jobs',
     timeoutMs: STARTUP_REQUEST_TIMEOUT_MS
   })
@@ -950,12 +966,14 @@ export function getCronJobs(): Promise<CronJob[]> {
 
 export function getCronJob(jobId: string): Promise<CronJob> {
   return window.hermesDesktop.api<CronJob>({
+    ...profileScoped(),
     path: `/api/cron/jobs/${encodeURIComponent(jobId)}`
   })
 }
 
 export async function getCronJobRuns(jobId: string, limit = 20): Promise<SessionInfo[]> {
   const { runs } = await window.hermesDesktop.api<{ runs: SessionInfo[] }>({
+    ...profileScoped(),
     path: `/api/cron/jobs/${encodeURIComponent(jobId)}/runs?limit=${limit}`
   })
 
@@ -964,6 +982,7 @@ export async function getCronJobRuns(jobId: string, limit = 20): Promise<Session
 
 export function createCronJob(body: CronJobCreatePayload): Promise<CronJob> {
   return window.hermesDesktop.api<CronJob>({
+    ...profileScoped(),
     path: '/api/cron/jobs',
     method: 'POST',
     body
@@ -972,6 +991,7 @@ export function createCronJob(body: CronJobCreatePayload): Promise<CronJob> {
 
 export function updateCronJob(jobId: string, updates: CronJobUpdates): Promise<CronJob> {
   return window.hermesDesktop.api<CronJob>({
+    ...profileScoped(),
     path: `/api/cron/jobs/${encodeURIComponent(jobId)}`,
     method: 'PUT',
     body: { updates }
@@ -980,6 +1000,7 @@ export function updateCronJob(jobId: string, updates: CronJobUpdates): Promise<C
 
 export function pauseCronJob(jobId: string): Promise<CronJob> {
   return window.hermesDesktop.api<CronJob>({
+    ...profileScoped(),
     path: `/api/cron/jobs/${encodeURIComponent(jobId)}/pause`,
     method: 'POST'
   })
@@ -987,6 +1008,7 @@ export function pauseCronJob(jobId: string): Promise<CronJob> {
 
 export function resumeCronJob(jobId: string): Promise<CronJob> {
   return window.hermesDesktop.api<CronJob>({
+    ...profileScoped(),
     path: `/api/cron/jobs/${encodeURIComponent(jobId)}/resume`,
     method: 'POST'
   })
@@ -994,6 +1016,7 @@ export function resumeCronJob(jobId: string): Promise<CronJob> {
 
 export function triggerCronJob(jobId: string): Promise<CronJob> {
   return window.hermesDesktop.api<CronJob>({
+    ...profileScoped(),
     path: `/api/cron/jobs/${encodeURIComponent(jobId)}/trigger`,
     method: 'POST'
   })
@@ -1001,6 +1024,7 @@ export function triggerCronJob(jobId: string): Promise<CronJob> {
 
 export function deleteCronJob(jobId: string): Promise<{ ok: boolean }> {
   return window.hermesDesktop.api<{ ok: boolean }>({
+    ...profileScoped(),
     path: `/api/cron/jobs/${encodeURIComponent(jobId)}`,
     method: 'DELETE'
   })

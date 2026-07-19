@@ -4684,6 +4684,53 @@ class AIAgent:
                 drop_context_1m_beta=_drop_1m,
             )
 
+    def _abort_anthropic_client(self, *, reason: str) -> None:
+        """Cross-thread abort: shut sockets down, then rebuild client.
+
+        Companion to :meth:`_rebuild_anthropic_client` for stranger-thread
+        callers (interrupt-check loop, stale-call detector). Calling
+        ``client.close()`` from a thread that does not own the active
+        connection races the still-live SSL BIO and can corrupt unrelated
+        file descriptors when the kernel recycles the just-freed TCP FD
+        (#29507, #67142).
+
+        Here we only ``shutdown(SHUT_RDWR)`` the sockets — that unblocks
+        the owning worker thread's pending ``recv``/``send`` with an EOF
+        or ``EPIPE`` so it can unwind and release FDs from its own
+        context. We still call :meth:`_rebuild_anthropic_client` afterward
+        to preserve the #28161 pool-cleanup guarantee: without a rebuild,
+        a stale stream can hang for up to 15 minutes on the next request.
+        """
+        if self._anthropic_client is None:
+            return
+        try:
+            shutdown_count = self._force_close_tcp_sockets(self._anthropic_client)
+            logger.info(
+                "Anthropic client aborted (%s, tcp_force_closed=%d, "
+                "deferred_close=stranger_thread) %s",
+                reason,
+                shutdown_count,
+                self._client_log_context(),
+            )
+        except Exception as exc:
+            logger.debug(
+                "Anthropic client abort socket-shutdown failed (%s) %s error=%s",
+                reason,
+                self._client_log_context(),
+                exc,
+            )
+        # Rebuild the client to purge dead connections from the pool —
+        # preserves the #28161 guarantee that stale streams won't hang.
+        try:
+            self._rebuild_anthropic_client()
+        except Exception as exc:
+            logger.debug(
+                "Anthropic client rebuild after abort failed (%s) %s error=%s",
+                reason,
+                self._client_log_context(),
+                exc,
+            )
+
     def _interruptible_api_call(self, api_kwargs: dict):
         """Forwarder — see ``agent.chat_completion_helpers.interruptible_api_call``."""
         from agent.chat_completion_helpers import interruptible_api_call

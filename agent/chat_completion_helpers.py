@@ -894,8 +894,7 @@ def interruptible_api_call(agent, api_kwargs: dict):
                 )
             try:
                 if agent.api_mode == "anthropic_messages":
-                    agent._anthropic_client.close()
-                    agent._rebuild_anthropic_client()
+                    agent._abort_anthropic_client(reason="stale_call_kill")
                 else:
                     _close_request_client_once("stale_call_kill")
             except Exception:
@@ -936,8 +935,7 @@ def interruptible_api_call(agent, api_kwargs: dict):
             # seed future retries.
             try:
                 if agent.api_mode == "anthropic_messages":
-                    agent._anthropic_client.close()
-                    agent._rebuild_anthropic_client()
+                    agent._abort_anthropic_client(reason="interrupt_abort")
                 else:
                     _close_request_client_once("interrupt_abort")
             except Exception:
@@ -3590,8 +3588,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             # may hold dead sockets from the same provider outage.
             if agent.api_mode == "anthropic_messages":
                 try:
-                    agent._anthropic_client.close()
-                    agent._rebuild_anthropic_client()
+                    agent._abort_anthropic_client(reason="stale_stream_pool_cleanup")
                 except Exception:
                     pass
             else:
@@ -3623,8 +3620,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             try:
                 _cancel_current_stream_attempt("stream_interrupt_abort")
                 if agent.api_mode == "anthropic_messages":
-                    agent._anthropic_client.close()
-                    agent._rebuild_anthropic_client()
+                    agent._abort_anthropic_client(reason="stream_interrupt_abort")
                 else:
                     _close_request_client_once("stream_interrupt_abort")
             except Exception:

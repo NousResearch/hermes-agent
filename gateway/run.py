@@ -10231,7 +10231,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 sweep_recoverable,
             )
 
-            if not ledger_enabled():
+            if not await asyncio.to_thread(ledger_enabled):
                 return 0
             # Only claim rows we can actually send this boot: self.adapters
             # holds a platform only after its connect() succeeded, and each
@@ -10283,7 +10283,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 result = None
             try:
                 if result is not None and getattr(result, "success", False):
-                    mark_delivered(row["obligation_id"])
+                    await asyncio.to_thread(mark_delivered, row["obligation_id"])
                     redelivered += 1
                     logger.info(
                         "Redelivered recovered final response to %s:%s "
@@ -10292,7 +10292,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         row["obligation_id"], row["attempts"],
                     )
                 else:
-                    mark_failed(
+                    await asyncio.to_thread(
+                        mark_failed,
                         row["obligation_id"],
                         str(getattr(result, "error", "") or "send failed"),
                     )

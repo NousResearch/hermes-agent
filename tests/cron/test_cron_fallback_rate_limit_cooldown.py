@@ -85,3 +85,140 @@ class TestWaitForLiveAdapterRateLimitCooldown:
 
         assert result == 0.0
         sleep_mock.assert_not_called()
+
+
+class TestDeliverResultWaitsBeforeStandaloneFallback:
+    """End-to-end: when live delivery fails, ``_deliver_result`` MUST wait out
+    the live adapter's rate-limit cooldown before invoking the standalone
+    fallback. Without this wait the standalone adapter — built fresh with its
+    own closed breaker — re-triggers the iLink -2 immediately and opens its
+    own breaker, double-failing the job (#66928).
+
+    Mirrors the integration pattern in
+    ``tests/cron/test_scheduler.py::TestDeliverResultTimeoutCancelsFuture``
+    so the assertion model is familiar to anyone who has debugged that path.
+    """
+
+    def test_live_failure_with_open_breaker_sleeps_then_falls_back(self):
+        from concurrent.futures import Future
+        from unittest.mock import AsyncMock, MagicMock
+
+        from gateway.config import Platform
+
+        from cron.scheduler import _deliver_result
+
+        # Live adapter carries an OPEN circuit breaker (10s remaining).
+        # Use a generous headroom so the assertion tolerates the few-ms
+        # elapsed between setting the cooldown and reading it inside the
+        # fallback path (mock setup runs real time.monotonic() once).
+        adapter = AsyncMock()
+        adapter._rate_limit_circuit_until = time.monotonic() + 10.0
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+
+        loop = MagicMock()
+        loop.is_running.return_value = True
+
+        # Live delivery raises a real exception so the fallback branch runs.
+        captured_future = Future()
+        captured_future.result = MagicMock(side_effect=RuntimeError("adapter exploded"))
+
+        def fake_run_coro(coro, _loop):
+            coro.close()
+            return captured_future
+
+        job = {
+            "id": "rl-cooldown-job",
+            "deliver": "origin",
+            "origin": {"platform": "telegram", "chat_id": "123"},
+        }
+
+        standalone_send = AsyncMock(return_value={"success": True})
+
+        sleep_calls = []
+
+        def record_sleep(duration):
+            sleep_calls.append(duration)
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+             patch("asyncio.run_coroutine_threadsafe", side_effect=fake_run_coro), \
+             patch("tools.send_message_tool._send_to_platform", new=standalone_send), \
+             patch.object(scheduler.time, "sleep", side_effect=record_sleep):
+            _deliver_result(
+                job,
+                "Hello world",
+                adapters={Platform.TELEGRAM: adapter},
+                loop=loop,
+            )
+
+        # 1. The wait ran (10.0s remaining + 0.1s buffer ≈ 10.1s, give or
+        #    take the few-ms drift between breaker-set and breaker-read).
+        assert len(sleep_calls) == 1, (
+            f"expected exactly one cooldown wait, got {sleep_calls!r}"
+        )
+        assert sleep_calls[0] == pytest.approx(10.1, abs=0.2), (
+            f"sleep duration {sleep_calls[0]} should match remaining + buffer"
+        )
+        # 2. The standalone fallback still ran (the wait does NOT swallow
+        #    the delivery — it just sequences it after the cooldown).
+        standalone_send.assert_awaited_once()
+
+    def test_live_failure_with_closed_breaker_skips_wait(self):
+        """A live adapter without an open breaker must NOT block the fallback.
+
+        Negative control for the integration contract — the helper is a
+        no-op when the breaker is closed, and ``_deliver_result`` must
+        honour that. Without the contract a healthy adapter would incur
+        a pointless sleep on every failed live send.
+        """
+        from concurrent.futures import Future
+        from unittest.mock import AsyncMock, MagicMock
+
+        from gateway.config import Platform
+
+        from cron.scheduler import _deliver_result
+
+        adapter = AsyncMock()
+        adapter._rate_limit_circuit_until = 0.0  # closed
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+
+        loop = MagicMock()
+        loop.is_running.return_value = True
+
+        captured_future = Future()
+        captured_future.result = MagicMock(side_effect=RuntimeError("adapter exploded"))
+
+        def fake_run_coro(coro, _loop):
+            coro.close()
+            return captured_future
+
+        job = {
+            "id": "rl-closed-job",
+            "deliver": "origin",
+            "origin": {"platform": "telegram", "chat_id": "123"},
+        }
+
+        standalone_send = AsyncMock(return_value={"success": True})
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+             patch("asyncio.run_coroutine_threadsafe", side_effect=fake_run_coro), \
+             patch("tools.send_message_tool._send_to_platform", new=standalone_send), \
+             patch.object(scheduler.time, "sleep") as sleep_mock:
+            _deliver_result(
+                job,
+                "Hello world",
+                adapters={Platform.TELEGRAM: adapter},
+                loop=loop,
+            )
+
+        sleep_mock.assert_not_called()
+        standalone_send.assert_awaited_once()

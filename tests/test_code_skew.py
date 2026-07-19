@@ -5,8 +5,11 @@ crash; these prove the guard that turns it into a clear "restart the gateway"
 message before a model switch can hit it.
 """
 
+import importlib
+import importlib.abc
+from importlib.machinery import ModuleSpec
 import subprocess
-from pathlib import Path
+import sys
 
 import pytest
 
@@ -169,67 +172,6 @@ class TestBootstrapBytecodePurge:
         assert calls == [(False, True)], f"service path expected, got {calls}"
 
 
-class TestPurgeStalePycache:
-    """Tests for purge_stale_pycache — purging __pycache__ when the checkout
-    advanced between the previous gateway boot and the current one."""
-
-    def test_no_purge_when_previous_fingerprint_missing(self, monkeypatch, tmp_path):
-        """No persisted fingerprint file → nothing to compare → no purge."""
-        monkeypatch.setattr(code_skew, "_fingerprint", lambda: "git:refs/heads/main:abc1234567")
-        monkeypatch.setattr(code_skew, "_fingerprint_file", lambda: tmp_path / "nonexistent")
-        monkeypatch.setattr(code_skew, "_PROJECT_ROOT", tmp_path)
-        assert code_skew.purge_stale_pycache() is False
-
-    def test_no_purge_when_fingerprints_match(self, monkeypatch, tmp_path):
-        """Same checkout as previous boot → no drift → no purge."""
-        fp_file = tmp_path / ".gateway_boot_fingerprint"
-        fp_file.write_text("git:refs/heads/main:abc1234567")
-        monkeypatch.setattr(code_skew, "_fingerprint", lambda: "git:refs/heads/main:abc1234567")
-        monkeypatch.setattr(code_skew, "_fingerprint_file", lambda: fp_file)
-        monkeypatch.setattr(code_skew, "_PROJECT_ROOT", tmp_path)
-        assert code_skew.purge_stale_pycache() is False
-
-    def test_purges_pyc_files_on_drift(self, monkeypatch, tmp_path):
-        """Drift detected → .pyc files inside __pycache__ are deleted."""
-        fp_file = tmp_path / ".gateway_boot_fingerprint"
-        fp_file.write_text("git:refs/heads/main:oldhash123")
-        monkeypatch.setattr(code_skew, "_fingerprint", lambda: "git:refs/heads/main:newhash456")
-        monkeypatch.setattr(code_skew, "_fingerprint_file", lambda: fp_file)
-        monkeypatch.setattr(code_skew, "_PROJECT_ROOT", tmp_path)
-
-        # Create a fake __pycache__ with .pyc files
-        pycache = tmp_path / "gateway" / "__pycache__"
-        pycache.mkdir(parents=True)
-        (pycache / "slash_commands.cpython-311.pyc").write_bytes(b"stale bytecode")
-        (pycache / "run.cpython-311.pyc").write_bytes(b"stale bytecode")
-
-        assert code_skew.purge_stale_pycache() is True
-        assert not (pycache / "slash_commands.cpython-311.pyc").exists()
-        assert not (pycache / "run.cpython-311.pyc").exists()
-
-    def test_skips_venv_pycache(self, monkeypatch, tmp_path):
-        """.pyc inside .venv are not purged (they're managed by pip)."""
-        fp_file = tmp_path / ".gateway_boot_fingerprint"
-        fp_file.write_text("git:refs/heads/main:oldhash123")
-        monkeypatch.setattr(code_skew, "_fingerprint", lambda: "git:refs/heads/main:newhash456")
-        monkeypatch.setattr(code_skew, "_fingerprint_file", lambda: fp_file)
-        monkeypatch.setattr(code_skew, "_PROJECT_ROOT", tmp_path)
-
-        venv_pycache = tmp_path / ".venv" / "lib" / "__pycache__"
-        venv_pycache.mkdir(parents=True)
-        (venv_pycache / "site.cpython-311.pyc").write_bytes(b"should not be touched")
-
-        code_skew.purge_stale_pycache()
-        assert (venv_pycache / "site.cpython-311.pyc").exists()
-
-    def test_no_purge_when_fingerprint_unreadable(self, monkeypatch, tmp_path):
-        """If _fingerprint returns None (non-git), no purge."""
-        monkeypatch.setattr(code_skew, "_fingerprint", lambda: None)
-        monkeypatch.setattr(code_skew, "_fingerprint_file", lambda: tmp_path / "x")
-        monkeypatch.setattr(code_skew, "_PROJECT_ROOT", tmp_path)
-        assert code_skew.purge_stale_pycache() is False
-
-
 class TestPersistBootFingerprint:
     def test_persists_fingerprint_to_file(self, monkeypatch, tmp_path):
         fp_file = tmp_path / ".gateway_boot_fingerprint"
@@ -243,16 +185,60 @@ class TestPersistBootFingerprint:
         code_skew._persist_boot_fingerprint(None)
         assert not fp_file.exists()
 
-    def test_canonical_gateway_launcher_bootstraps_before_import(self):
-        launcher = Path(__file__).parents[1] / "hermes_cli" / "gateway.py"
-        source = launcher.read_text(encoding="utf-8")
+    def test_direct_module_path_bootstraps_before_gateway_run_import(self, monkeypatch, tmp_path):
+        """Package initialization is the pre-import boundary for ``-m``."""
+        marker = tmp_path / "bootstrap-ran"
+        import gateway
+        from hermes_cli import gateway_bootstrap
 
-        assert source.index("purge_stale_gateway_pycache_before_import()") < source.index(
-            "from gateway.run import start_gateway"
+        main_module = sys.modules["__main__"]
+        original_main_spec = main_module.__spec__
+        original_run = sys.modules.get("gateway.run")
+        missing = object()
+        original_package_run = gateway.__dict__.get("run", missing)
+        original_purge = gateway.__dict__.get(
+            "purge_stale_gateway_pycache_before_import", missing
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(
+            gateway_bootstrap,
+            "purge_stale_gateway_pycache_before_import",
+            lambda: marker.write_text("ran", encoding="utf-8"),
         )
 
-    def test_direct_module_execution_fails_closed(self):
-        run_source = Path(__file__).parents[1] / "gateway" / "run.py"
-        source = run_source.read_text(encoding="utf-8")
+        observed_import = []
 
-        assert "Direct module execution is unsupported" in source
+        class BootstrapProbe(importlib.abc.MetaPathFinder):
+            def find_spec(self, fullname, path=None, target=None):
+                if fullname == "gateway.run":
+                    assert marker.read_text(encoding="utf-8") == "ran"
+                    observed_import.append(fullname)
+                return None
+
+        probe = BootstrapProbe()
+        try:
+            main_module.__spec__ = ModuleSpec("gateway.run", loader=None)
+            importlib.reload(gateway)
+            assert marker.read_text(encoding="utf-8") == "ran"
+
+            sys.modules.pop("gateway.run", None)
+            gateway.__dict__.pop("run", None)
+            sys.meta_path.insert(0, probe)
+            importlib.import_module("gateway.run")
+            assert observed_import == ["gateway.run"]
+        finally:
+            if probe in sys.meta_path:
+                sys.meta_path.remove(probe)
+            main_module.__spec__ = original_main_spec
+            if original_run is None:
+                sys.modules.pop("gateway.run", None)
+            else:
+                sys.modules["gateway.run"] = original_run
+            if original_package_run is missing:
+                gateway.__dict__.pop("run", None)
+            else:
+                setattr(gateway, "run", original_package_run)
+            if original_purge is missing:
+                gateway.__dict__.pop("purge_stale_gateway_pycache_before_import", None)
+            else:
+                gateway.purge_stale_gateway_pycache_before_import = original_purge

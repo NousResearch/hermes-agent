@@ -27,7 +27,6 @@ from pathlib import Path
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 _boot_fingerprint: str | None = None
-
 logger = logging.getLogger("gateway.code_skew")
 
 
@@ -81,49 +80,6 @@ def _persist_boot_fingerprint(fingerprint: str | None) -> None:
         fp_file.write_text(fingerprint, encoding="utf-8")
     except Exception:
         logger.debug("Failed to persist boot fingerprint", exc_info=True)
-
-
-def purge_stale_pycache() -> bool:
-    """Purge stale ``__pycache__`` directories if the checkout advanced.
-
-    At gateway boot, compares the persisted fingerprint from the *previous*
-    gateway run with the current checkout. If they differ, Python's
-    ``__pycache__`` may contain bytecode compiled against the old source
-    (``.pyc`` files whose header mtime matches the old ``.py`` because git
-    operations can preserve mtime). Deleting the ``__pycache__`` dirs forces
-    a clean recompile on first import.
-
-    Returns ``True`` if a purge was performed, ``False`` otherwise.
-    """
-    current = _fingerprint()
-    if current is None:
-        return False
-    try:
-        previous = _fingerprint_file().read_text(encoding="utf-8").strip()
-    except (FileNotFoundError, OSError):
-        return False
-    if not previous or previous == current:
-        return False
-
-    purged = 0
-    for pycache in _PROJECT_ROOT.rglob("__pycache__"):
-        # Skip .venv and node_modules to avoid slow/unnecessary I/O
-        if ".venv" in pycache.parts or "node_modules" in pycache.parts:
-            continue
-        try:
-            for pyc in pycache.glob("*.pyc"):
-                pyc.unlink()
-                purged += 1
-        except OSError:
-            pass
-    if purged:
-        logger.info(
-            "Purged %d stale .pyc file(s) — checkout advanced from %s to %s",
-            purged,
-            _short(previous),
-            _short(current),
-        )
-    return purged > 0
 
 
 def _short(fingerprint: str) -> str:

@@ -1188,8 +1188,9 @@ def _media_delivery_denied_paths() -> List[Path]:
         os.path.join("auth", "google_oauth.json"),
         # Webhook subscription HMAC secrets.
         "webhook_subscriptions.json",
-        # Bitwarden Secrets Manager plaintext disk cache.
+        # Bitwarden Secrets Manager plaintext and encrypted disk caches.
         os.path.join("cache", "bws_cache.json"),
+        os.path.join("cache", "bws_cache.enc.json"),
     )
     # Directory trees whose every child is credential material.
     #

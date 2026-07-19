@@ -271,6 +271,7 @@ def test_dispatch_ready_records_terminal_synchronous_fallback_once(monkeypatch, 
     [
         {"error": "background dispatch unavailable"},
         {"results": [{"status": "not-a-terminal-status"}]},
+        [],
     ],
 )
 def test_dispatch_ready_keeps_error_or_malformed_fallback_retryable(monkeypatch, first_result):

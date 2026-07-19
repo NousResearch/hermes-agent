@@ -465,6 +465,8 @@ def _dispatch_ready(workflow: Dict[str, Any], parent_agent: Any, max_dispatch: i
             parsed = json.loads(raw)
         except Exception:
             parsed = {"error": raw}
+        if not isinstance(parsed, dict):
+            parsed = {"error": raw}
 
         if parsed.get("status") == "dispatched" and parsed.get("delegation_id"):
             node["status"] = "dispatched"

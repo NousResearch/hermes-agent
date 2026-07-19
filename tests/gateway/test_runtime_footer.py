@@ -404,3 +404,63 @@ def test_format_footer_cwd_label_alias(tmp_path):
     )
     assert out.startswith("cwd ")
     assert "proj" in out
+
+
+# ---------------------------------------------------------------------------
+# style: openclaw without explicit fields → implied agent/model/provider
+# ---------------------------------------------------------------------------
+
+
+def test_openclaw_style_only_supplies_default_trio():
+    """style: openclaw without explicit fields resolves to agent/model/provider."""
+    user = {"display": {"runtime_footer": {"enabled": True, "style": "openclaw"}}}
+    cfg = resolve_footer_config(user, "feishu")
+    assert cfg["style"] == "openclaw"
+    assert cfg["fields"] == ["agent", "model", "provider"]
+
+
+def test_openclaw_style_only_platform_override_supplies_trio():
+    """Platform-level style: openclaw without fields also resolves the trio."""
+    user = {
+        "display": {
+            "runtime_footer": {"enabled": True},
+            "platforms": {
+                "feishu": {"runtime_footer": {"style": "openclaw"}},
+            },
+        },
+    }
+    cfg = resolve_footer_config(user, "feishu")
+    assert cfg["fields"] == ["agent", "model", "provider"]
+
+
+def test_openclaw_style_explicit_fields_not_overridden():
+    """Explicit fields alongside style: openclaw are respected."""
+    user = {
+        "display": {
+            "runtime_footer": {
+                "enabled": True,
+                "style": "openclaw",
+                "fields": ["model", "provider"],
+            },
+        },
+    }
+    cfg = resolve_footer_config(user, "feishu")
+    assert cfg["fields"] == ["model", "provider"]
+
+
+def test_openclaw_style_only_end_to_end():
+    """build_footer_line with style: openclaw and no fields renders the labeled trio."""
+    out = build_footer_line(
+        user_config={
+            "display": {
+                "runtime_footer": {"enabled": True, "style": "openclaw"},
+            },
+        },
+        platform_key="feishu",
+        model="k3",
+        context_tokens=0,
+        context_length=None,
+        provider="kimi",
+        agent="main",
+    )
+    assert out == "Agent: main | Model: k3 | Provider: kimi"

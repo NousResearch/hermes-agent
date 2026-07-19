@@ -109,6 +109,12 @@ def resolve_footer_config(
                 if isinstance(plat_footer.get("style"), str) and plat_footer["style"].strip():
                     resolved["style"] = plat_footer["style"].strip()
 
+    # OpenClaw style implies the labeled agent/model/provider trio when the
+    # user hasn't explicitly chosen fields — the compact defaults
+    # [model, context_pct, cwd] are meaningless to the OpenClaw renderer.
+    if resolved["style"] == "openclaw" and resolved["fields"] == list(_DEFAULT_FIELDS):
+        resolved["fields"] = list(_OPENCLAW_STYLE_FIELDS)
+
     return resolved
 
 

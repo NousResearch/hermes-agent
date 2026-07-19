@@ -1142,6 +1142,14 @@ class HonchoSessionManager:
         # peer_perspective spans the target peer's sessions across all authors.
         peer_id = self._resolve_peer_id(session, peer)
 
+        # Conclusions first: in a conclusions-only workspace (e.g. saveMessages
+        # disabled, curated memory) there are no raw messages to search, yet the
+        # durable facts live in conclusions. Query them in the assistant->target
+        # scope (their write direction), independent of observation toggles.
+        conclusions_out = self._search_conclusions(session, peer, query)
+        if conclusions_out:
+            return conclusions_out
+
         # Honcho caps query length for the embedding model; keep well under it.
         q = (query or "").strip()
         if not q:
@@ -1201,6 +1209,32 @@ class HonchoSessionManager:
             used += len(separator) + len(entry)
 
         return "\n\n".join(lines)
+
+    def _search_conclusions(self, session: Any, peer: str, query: str) -> str:
+        """Semantic search over conclusions in the assistant->target scope.
+
+        Returns formatted excerpts, or "" when there are none (caller then
+        falls back to message search). Independent of observation toggles:
+        those gate writing observations, not reading conclusions.
+        """
+        q = (query or "").strip()
+        if not q:
+            return ""
+        target_peer_id = self._resolve_peer_id(session, peer)
+        observer_id = session.assistant_peer_id
+        observed_id = target_peer_id
+        try:
+            observer_peer = self._get_or_create_peer(observer_id)
+            conclusions = observer_peer.conclusions_of(observed_id).query(q, top_k=10)
+        except Exception as e:
+            logger.debug("Honcho conclusions search failed: %s", e)
+            return ""
+        lines = []
+        for c in conclusions:
+            content = (getattr(c, "content", "") or getattr(c, "text", "") or "").strip()
+            if content:
+                lines.append(f"- {content}")
+        return "\n".join(lines)
 
     def _conclusions_scope(self, session: Any, target_peer_id: str) -> Any:
         """Resolve the ConclusionScope for observing target_peer_id.

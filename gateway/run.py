@@ -5782,6 +5782,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # sites are untouched when multiplexing is off (this dict is empty).
         # Populated by _start_secondary_profile_adapters().
         self._profile_adapters: Dict[str, Dict[Platform, BasePlatformAdapter]] = {}
+        # Multi-account (#8287): adapters for NAMED bot accounts live here,
+        # keyed by Platform then account name. self.adapters stays the
+        # default account's map — same pattern as _profile_adapters, so the
+        # ~93 existing self.adapters[...] sites are untouched when no named
+        # accounts are configured (this dict is empty). Populated by
+        # _start_account_adapters().
+        self._account_adapters: Dict[Platform, Dict[str, BasePlatformAdapter]] = {}
         self._warn_if_docker_media_delivery_is_risky()
         _gateway_runner_ref = _weakref.ref(self)
 
@@ -10959,7 +10966,34 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _multiplex_skipped_platforms.append(platform)
                 continue
             enabled_platform_count += 1
-            
+
+            # Accounts-only configuration (#8287): named account tokens with
+            # no default credential. Don't attempt a doomed token-less
+            # default connect (it would fail and queue reconnects forever) —
+            # start the named account adapters directly.
+            if (
+                not _platform_has_bot_credential(platform, platform_config)
+                and isinstance((platform_config.extra or {}).get("accounts"), dict)
+                and platform_config.extra["accounts"]
+            ):
+                logger.info(
+                    "%s has no default-account credential; starting named "
+                    "accounts only.",
+                    platform.value,
+                )
+                _acct_connected = await self._start_account_adapters(
+                    platform, platform_config
+                )
+                connected_count += _acct_connected
+                if _acct_connected:
+                    self._update_platform_runtime_status(
+                        platform.value,
+                        platform_state="connected",
+                        error_code=None,
+                        error_message=None,
+                    )
+                continue
+
             adapter = self._create_adapter(platform, platform_config)
             if not adapter:
                 # Distinguish between missing builtin deps and missing plugin
@@ -11019,6 +11053,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         error_message=None,
                     )
                     logger.info("✓ %s connected", platform.value)
+                    # Named bot accounts on this platform (#8287) start after
+                    # the default account; each is independent and a failed
+                    # account never blocks the others.
+                    connected_count += await self._start_account_adapters(
+                        platform, platform_config
+                    )
                 else:
                     logger.warning("✗ %s failed to connect", platform.value)
                     # Defensive cleanup: a failed connect() may have
@@ -13598,9 +13638,120 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         import hashlib
         return hashlib.sha256(("hermes-mux:" + token).encode("utf-8")).hexdigest()[:16]
 
+    @staticmethod
+    def _account_platform_config(
+        platform: Platform,
+        platform_config: "PlatformConfig",
+        account_name: str,
+        account_block: Dict[str, Any],
+    ) -> "PlatformConfig":
+        """Derive a per-account PlatformConfig from the platform's config (#8287).
+
+        The account adapter sees an ordinary PlatformConfig — its own token,
+        its own home_channel, and account-block settings overriding the
+        platform-level extra — so adapter internals stay account-agnostic.
+        The ``accounts`` map itself is stripped from the derived extra.
+        """
+        import dataclasses as _dc
+
+        from gateway.config import HomeChannel as _HomeChannel
+
+        merged_extra = {
+            k: v for k, v in (platform_config.extra or {}).items()
+            if k != "accounts"
+        }
+        home_channel = platform_config.home_channel
+        token = platform_config.token
+        for key, value in (account_block or {}).items():
+            if key == "token":
+                token = value
+            elif key == "home_channel" and isinstance(value, dict):
+                # The platform is implicit inside its own account block.
+                _hc = dict(value)
+                _hc.setdefault("platform", platform.value)
+                home_channel = _HomeChannel.from_dict(_hc)
+            else:
+                merged_extra[key] = value
+        return _dc.replace(
+            platform_config,
+            token=token,
+            home_channel=home_channel,
+            extra=merged_extra,
+        )
+
+    async def _start_account_adapters(
+        self, platform: Platform, platform_config: "PlatformConfig"
+    ) -> int:
+        """Start one adapter per NAMED bot account on ``platform`` (#8287).
+
+        Called after the platform's default adapter is handled. Each account
+        adapter is wired identically to a default adapter, stamped with its
+        account name (adapters copy it onto every inbound
+        ``SessionSource.account``), and registered in
+        ``_account_adapters[platform][name]`` — the account-dimension mirror
+        of ``_profile_adapters``. Returns the number of accounts connected.
+
+        A failed account connect is logged and skipped: it must not block the
+        default account or other accounts. (Account-aware reconnect queueing
+        lands with the per-account delivery/reconnect consumers.)
+        """
+        accounts = (platform_config.extra or {}).get("accounts")
+        if not isinstance(accounts, dict) or not accounts:
+            return 0
+        connected = 0
+        for account_name, account_block in accounts.items():
+            block = account_block if isinstance(account_block, dict) else {}
+            if not block.get("token"):
+                logger.warning(
+                    "Skipping %s account %r: no token "
+                    "(set %s_BOT_TOKEN_%s in .env)",
+                    platform.value, account_name,
+                    platform.value.upper(), account_name.upper(),
+                )
+                continue
+            account_config = self._account_platform_config(
+                platform, platform_config, account_name, block
+            )
+            adapter = self._create_adapter(platform, account_config)
+            if not adapter:
+                logger.warning(
+                    "No adapter available for %s account %r",
+                    platform.value, account_name,
+                )
+                continue
+            adapter.account_name = account_name
+            adapter.set_message_handler(self._handle_message)
+            adapter.set_fatal_error_handler(self._handle_adapter_fatal_error)
+            adapter.set_session_store(self.session_store)
+            adapter.set_busy_session_handler(self._handle_active_session_busy_message)
+            adapter.set_topic_recovery_fn(self._recover_telegram_topic_thread_id)
+            adapter.set_authorization_check(self._make_adapter_auth_check(adapter.platform))
+            adapter._busy_text_mode = self._busy_text_mode
+            logger.info("Connecting to %s (account %r)...", platform.value, account_name)
+            try:
+                success = await self._connect_adapter_with_timeout(adapter, platform)
+            except Exception as exc:
+                logger.error(
+                    "%s account %r failed to connect: %s",
+                    platform.value, account_name, exc,
+                )
+                await self._safe_adapter_disconnect(adapter, platform)
+                continue
+            if not success:
+                logger.warning(
+                    "✗ %s account %r failed to connect", platform.value, account_name
+                )
+                await self._safe_adapter_disconnect(adapter, platform)
+                continue
+            self._account_adapters.setdefault(platform, {})[account_name] = adapter
+            self._sync_voice_mode_state_to_adapter(adapter)
+            connected += 1
+            logger.info("✓ %s connected (account %r)", platform.value, account_name)
+        return connected
+
     def _create_adapter(
-        self, 
-        platform: Platform, 
+        self,
+        platform: Platform,
         config: Any
     ) -> Optional[BasePlatformAdapter]:
         """Create the appropriate adapter for a platform.

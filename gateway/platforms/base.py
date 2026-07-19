@@ -2750,6 +2750,13 @@ class BasePlatformAdapter(ABC):
     def __init__(self, config: PlatformConfig, platform: Platform):
         self.config = config
         self.platform = platform
+        # Bot account this adapter instance serves (#8287). None = the
+        # platform's default account (single-bot gateways never set it).
+        # The gateway stamps this after construction when it starts named
+        # account adapters; adapters copy it onto every inbound
+        # ``SessionSource.account`` so session keys, busy guards, and
+        # outbound routing stay per-account.
+        self.account_name: Optional[str] = None
         self._message_handler: Optional[MessageHandler] = None
         # Optional gateway-supplied fan-out for platform-native emoji
         # reaction events (see ``set_reaction_handler``).

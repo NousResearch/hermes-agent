@@ -138,6 +138,14 @@ def test_active_list_excludes_terminal_clutter_and_is_stably_ordered(board):
     terminal_root, terminal_checker, terminal = _project(board, title="terminal")
     _complete(board, terminal_root)
     _complete(board, terminal_checker)
+    record_checker_verdict(
+        board,
+        board_id="default",
+        root_task_id=terminal_root,
+        generation=terminal.generation,
+        checker_task_id=terminal_checker,
+        verdict="PASS",
+    )
     record_terminal_outcome(
         board,
         board_id="default",

@@ -10,6 +10,7 @@ import pytest
 from hermes_cli import kanban_db as kb
 from hermes_cli.project_finalization_contract import (
     create_project_finalization,
+    record_checker_verdict,
     record_delivery_attempt,
     record_final_artifacts,
     record_terminal_outcome,
@@ -38,6 +39,10 @@ def _finalized(tmp_path, *, cleanup_after=None, include_artifacts=True, delivery
     register_project_member(
         conn, board_id="board", root_task_id=root, generation=1,
         task_id=child, membership_kind="required", required=True,
+    )
+    record_checker_verdict(
+        conn, board_id="board", root_task_id=root, generation=1,
+        checker_task_id=child, verdict="PASS",
     )
     record_terminal_outcome(conn, board_id="board", root_task_id=root, generation=1, outcome="COMPLETE")
     if include_artifacts:

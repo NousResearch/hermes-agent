@@ -2217,6 +2217,8 @@ def record_terminal_outcome(
         if row is None:
             raise ValueError("project finalization does not exist")
         _validate_immutable_persisted_value(row, "terminal_outcome", outcome)
+        if outcome == "COMPLETE" and row["checker_verdict"] != "PASS":
+            raise ValueError("COMPLETE requires a PASS verdict")
         if row["terminal_outcome"] == outcome:
             return _row_to_project_finalization(row)
         if row["admission_key"] is not None and row["terminal_candidate_snapshot_version"] is None:

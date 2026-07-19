@@ -53,7 +53,6 @@ from hermes_cli.project_finalization_contract import (
     record_failure_envelope,
     record_cleanup_journal,
     PROJECT_SCHEMA_SQL,
-    _validate_admitted_terminal_checker_binding,
 )
 
 
@@ -727,12 +726,13 @@ def test_legacy_complete_still_requires_a_pass_checker_verdict():
         create_project_finalization(
             conn, board_id="legacy", root_task_id="root", final_checker_task_id="chk"
         )
-        row = conn.execute(
-            "SELECT * FROM project_finalizations WHERE board_id='legacy' AND root_task_id='root'"
-        ).fetchone()
         with pytest.raises(ValueError, match="COMPLETE requires a PASS verdict"):
-            _validate_admitted_terminal_checker_binding(
-                row, outcome="COMPLETE", candidate_snapshot_version="legacy-candidate"
+            record_terminal_outcome(
+                conn,
+                board_id="legacy",
+                root_task_id="root",
+                generation=1,
+                outcome="COMPLETE",
             )
 
         record_checker_verdict(
@@ -743,12 +743,31 @@ def test_legacy_complete_still_requires_a_pass_checker_verdict():
             checker_task_id="chk",
             verdict="PASS",
         )
-        passed = conn.execute(
-            "SELECT * FROM project_finalizations WHERE board_id='legacy' AND root_task_id='root'"
-        ).fetchone()
-        _validate_admitted_terminal_checker_binding(
-            passed, outcome="COMPLETE", candidate_snapshot_version="legacy-candidate"
+        completed = record_terminal_outcome(
+            conn,
+            board_id="legacy",
+            root_task_id="root",
+            generation=1,
+            outcome="COMPLETE",
         )
+        assert completed.terminal_outcome == "COMPLETE"
+
+        for outcome in ("BLOCKED", "FAILED"):
+            root_task_id = outcome.lower()
+            create_project_finalization(
+                conn,
+                board_id="legacy",
+                root_task_id=root_task_id,
+                final_checker_task_id=f"{root_task_id}-checker",
+            )
+            non_success = record_terminal_outcome(
+                conn,
+                board_id="legacy",
+                root_task_id=root_task_id,
+                generation=1,
+                outcome=outcome,
+            )
+            assert non_success.terminal_outcome == outcome
     finally:
         _close_and_unlink(conn, path)
 
@@ -775,6 +794,10 @@ def test_artifacts_terminal_cleanup_idempotent_and_validations():
         )
         assert rec2.finalized_at == rec.finalized_at
 
+        record_checker_verdict(
+            conn, board_id="b", root_task_id="rt", generation=1,
+            checker_task_id="chk", verdict="PASS",
+        )
         term = record_terminal_outcome(conn, board_id="b", root_task_id="rt", generation=1,
                                        outcome="COMPLETE")
         assert term.terminal_outcome == "COMPLETE"
@@ -846,6 +869,11 @@ def test_cleanup_schedule_accepts_timezone_aware_iso8601_timestamp(
     try:
         ensure_project_finalization_schema(conn)
         create_project_finalization(conn, board_id="b", root_task_id="rt", final_checker_task_id="chk")
+        if outcome == "COMPLETE":
+            record_checker_verdict(
+                conn, board_id="b", root_task_id="rt", generation=1,
+                checker_task_id="chk", verdict="PASS",
+            )
         terminal = record_terminal_outcome(
             conn, board_id="b", root_task_id="rt", generation=1, outcome=outcome
         )
@@ -1068,6 +1096,10 @@ def test_reopen_creates_next_generation_and_preserves_completed_generation():
             notification_policy="verbose",
             retention_days=7,
             repair_budget=0,
+        )
+        record_checker_verdict(
+            conn, board_id="board", root_task_id="root", generation=1,
+            checker_task_id="checker", verdict="PASS",
         )
         terminal = record_terminal_outcome(
             conn, board_id="board", root_task_id="root", generation=1, outcome="COMPLETE"

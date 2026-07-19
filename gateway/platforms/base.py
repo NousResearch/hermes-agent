@@ -5210,13 +5210,14 @@ class BasePlatformAdapter(ABC):
                                 record_obligation,
                             )
 
-                            if ledger_enabled():
+                            if await asyncio.to_thread(ledger_enabled):
                                 _obligation_id = compute_obligation_id(
                                     session_key,
                                     str(getattr(event, "message_id", "") or ""),
                                     text_content,
                                 )
-                                record_obligation(
+                                await asyncio.to_thread(
+                                    record_obligation,
                                     obligation_id=_obligation_id,
                                     session_key=session_key,
                                     platform=str(
@@ -5227,7 +5228,7 @@ class BasePlatformAdapter(ABC):
                                     thread_id=getattr(event.source, "thread_id", None),
                                     content=text_content,
                                 )
-                                mark_attempting(_obligation_id)
+                                await asyncio.to_thread(mark_attempting, _obligation_id)
                         except Exception:
                             logger.debug("delivery ledger record failed", exc_info=True)
                             _obligation_id = None
@@ -5246,9 +5247,10 @@ class BasePlatformAdapter(ABC):
                             )
 
                             if getattr(result, "success", False):
-                                mark_delivered(_obligation_id)
+                                await asyncio.to_thread(mark_delivered, _obligation_id)
                             else:
-                                mark_failed(
+                                await asyncio.to_thread(
+                                    mark_failed,
                                     _obligation_id,
                                     str(getattr(result, "error", "") or ""),
                                 )

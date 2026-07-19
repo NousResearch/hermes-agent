@@ -8,6 +8,7 @@ block the send.
 """
 
 import asyncio
+import threading
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -63,6 +64,28 @@ def _rows():
         return conn.execute(
             "SELECT obligation_id, state, content FROM delivery_obligations"
         ).fetchall()
+
+
+def _blocking_probe():
+    """Return a blocking ledger call and an event-loop progress witness."""
+    ledger_started = threading.Event()
+    event_loop_progressed = threading.Event()
+    blocked_event_loop = []
+
+    def _slow_ledger_call(*args, **kwargs):
+        ledger_started.set()
+        if not event_loop_progressed.wait(timeout=0.5):
+            blocked_event_loop.append(True)
+
+    async def _event_loop_witness():
+        deadline = asyncio.get_running_loop().time() + 1
+        while not ledger_started.is_set():
+            if asyncio.get_running_loop().time() >= deadline:
+                raise AssertionError("ledger call never started")
+            await asyncio.sleep(0)
+        event_loop_progressed.set()
+
+    return _slow_ledger_call, _event_loop_witness, blocked_event_loop
 
 
 async def _run(adapter, event, response="final answer"):
@@ -135,6 +158,36 @@ class TestProducerHook:
             side_effect=RuntimeError("disk full"),
         ):
             await _run(adapter, _event())
+        assert adapter.sent == ["final answer"]
+
+    @pytest.mark.asyncio
+    async def test_slow_ledger_record_does_not_block_event_loop(self):
+        adapter = _Adapter()
+        slow_record, event_loop_witness, blocked_event_loop = _blocking_probe()
+
+        with patch(
+            "gateway.delivery_ledger.record_obligation",
+            side_effect=slow_record,
+        ), patch("gateway.delivery_ledger.mark_attempting"):
+            await asyncio.gather(_run(adapter, _event()), event_loop_witness())
+
+        assert blocked_event_loop == []
+        assert adapter.sent == ["final answer"]
+
+    @pytest.mark.asyncio
+    async def test_slow_ledger_update_does_not_block_event_loop(self):
+        adapter = _Adapter()
+        slow_delivered, event_loop_witness, blocked_event_loop = _blocking_probe()
+
+        with patch("gateway.delivery_ledger.record_obligation"), patch(
+            "gateway.delivery_ledger.mark_attempting"
+        ), patch(
+            "gateway.delivery_ledger.mark_delivered",
+            side_effect=slow_delivered,
+        ):
+            await asyncio.gather(_run(adapter, _event()), event_loop_witness())
+
+        assert blocked_event_loop == []
         assert adapter.sent == ["final answer"]
 
     @pytest.mark.asyncio

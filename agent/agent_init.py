@@ -68,6 +68,11 @@ def _ra():
     return run_agent
 
 
+def _moa_reference_output_allowed(agent: Any) -> bool:
+    """Keep MoA advisor display events off machine-readable quiet surfaces."""
+    return not bool(getattr(agent, "quiet_mode", False))
+
+
 def _build_codex_gpt5_autoraise_notice(autoraise: Dict[str, Any]) -> str:
     """Build the one-time notice shown when Codex gpt-5.x raises compaction.
 
@@ -880,6 +885,8 @@ def init_agent(
         # the tool lifecycle uses. Best-effort and cache-safe — these are
         # display-only events, they never touch the message history.
         def _moa_reference_relay(event: str, **kwargs: Any) -> None:
+            if not _moa_reference_output_allowed(agent):
+                return
             cb = getattr(agent, "tool_progress_callback", None)
             if cb is None:
                 return

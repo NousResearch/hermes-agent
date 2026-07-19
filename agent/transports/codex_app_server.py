@@ -16,9 +16,11 @@ runtime is not selected.
 
 from __future__ import annotations
 
+import glob
 import json
 import os
 import queue
+import shutil
 import subprocess
 import threading
 import time
@@ -30,6 +32,29 @@ from tools.environments.local import hermes_subprocess_env
 # Default minimum codex version we test against. The PR sets this from the
 # `codex --version` parsed at install time; bumping is a one-line change here.
 MIN_CODEX_VERSION = (0, 125, 0)
+
+
+def resolve_codex_binary(
+    codex_bin: str = "codex",
+    *,
+    is_windows: Optional[bool] = None,
+    which=None,
+) -> str:
+    """Resolve the safe executable for a bare Windows npm Codex install."""
+    if is_windows is None:
+        is_windows = os.name == "nt"
+    if not is_windows or codex_bin.strip().lower() != "codex":
+        return codex_bin
+    finder = which or shutil.which
+    cmd_shim = finder("codex.cmd")
+    if not cmd_shim:
+        return codex_bin
+    native_bins = glob.glob(os.path.join(
+        os.path.dirname(cmd_shim), "node_modules", "@openai", "codex",
+        "node_modules", "@openai", "codex-win32-*", "vendor", "*",
+        "bin", "codex.exe",
+    ))
+    return native_bins[0] if native_bins else cmd_shim
 
 
 @dataclass
@@ -75,7 +100,7 @@ class CodexAppServerClient:
         extra_args: Optional[list[str]] = None,
         env: Optional[dict[str, str]] = None,
     ) -> None:
-        self._codex_bin = codex_bin
+        self._codex_bin = resolve_codex_binary(codex_bin)
         # codex app-server is a model-driving CLI executor: it runs a
         # model-chosen agentic loop that executes shell commands, so it
         # legitimately needs LLM provider credentials (inherit_credentials=True)
@@ -123,7 +148,7 @@ class CodexAppServerClient:
                 ]
             )
 
-        cmd = [codex_bin, "app-server"] + app_server_args
+        cmd = [self._codex_bin, "app-server"] + app_server_args
         # Codex emits tracing to stderr; default WARN keeps it quiet for users.
         spawn_env.setdefault("RUST_LOG", "warn")
 
@@ -301,7 +326,7 @@ class CodexAppServerClient:
         try:
             self._proc.stdin.write((json.dumps(obj) + "\n").encode("utf-8"))
             self._proc.stdin.flush()
-        except (BrokenPipeError, ValueError) as exc:
+        except (BrokenPipeError, OSError, ValueError) as exc:
             raise RuntimeError(
                 f"codex app-server stdin closed unexpectedly: {exc}"
             ) from exc
@@ -385,9 +410,10 @@ def check_codex_binary(
     """Verify codex CLI is installed and meets minimum version.
 
     Returns (ok, message). Used by setup wizard and runtime startup."""
+    resolved_bin = resolve_codex_binary(codex_bin)
     try:
         proc = subprocess.run(
-            [codex_bin, "--version"],
+            [resolved_bin, "--version"],
             capture_output=True,
             text=True,
             timeout=10,
@@ -395,7 +421,7 @@ def check_codex_binary(
         )
     except FileNotFoundError:
         return False, (
-            f"codex CLI not found at {codex_bin!r}. Install with: "
+            f"codex CLI not found at {resolved_bin!r}. Install with: "
             f"npm i -g @openai/codex"
         )
     except subprocess.TimeoutExpired:

@@ -204,6 +204,7 @@ class CodexAppServerSession:
         cwd: Optional[str] = None,
         codex_bin: str = "codex",
         codex_home: Optional[str] = None,
+        extra_args: Optional[list[str]] = None,
         permission_profile: Optional[str] = None,
         approval_callback: Optional[Callable[..., str]] = None,
         on_event: Optional[Callable[[dict], None]] = None,
@@ -213,6 +214,11 @@ class CodexAppServerSession:
         self._cwd = cwd or os.getcwd()
         self._codex_bin = codex_bin
         self._codex_home = codex_home
+        # Hermes passes the active session's model controls as ephemeral
+        # ``codex app-server -c`` overrides.  This keeps the app-server
+        # subprocess aligned with Hermes/ Desktop selection without editing
+        # the user's standalone Codex configuration.
+        self._extra_args = list(extra_args or [])
         self._permission_profile = (
             permission_profile or _HERMES_TO_CODEX_PERMISSION_PROFILE.get(
                 os.environ.get("HERMES_TERMINAL_SECURITY_MODE", "auto"),
@@ -245,7 +251,9 @@ class CodexAppServerSession:
             return self._thread_id
         if self._client is None:
             self._client = self._client_factory(
-                codex_bin=self._codex_bin, codex_home=self._codex_home
+                codex_bin=self._codex_bin,
+                codex_home=self._codex_home,
+                extra_args=self._extra_args,
             )
         self._client.initialize(
             client_name="hermes",

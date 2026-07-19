@@ -186,11 +186,7 @@ function ConfigField({
         onChange={e => {
           try {
             onChange(JSON.parse(e.target.value))
-          } catch (err) {
-            if (!(err instanceof Error)) {
-              throw err
-            }
-
+          } catch {
             /* keep last valid */
           }
         }}
@@ -322,10 +318,6 @@ export function ConfigSettings({
             onConfigSaved?.()
           }
         } catch (err) {
-          if (!(err instanceof Error)) {
-            throw err
-          }
-
           if (saveVersionRef.current === v) {
             notifyError(err, c.autosaveFailed)
           }
@@ -403,10 +395,6 @@ export function ConfigSettings({
         updateConfig(JSON.parse(String(reader.result)))
         notify({ kind: 'success', title: c.imported, message: t.common.saving })
       } catch (err) {
-        if (!(err instanceof Error)) {
-          throw err
-        }
-
         notifyError(err, c.invalidJson)
       }
     }

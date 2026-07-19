@@ -123,10 +123,6 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
         const result = await getMessagingPlatforms()
         setPlatforms(result.platforms)
       } catch (err) {
-        if (!(err instanceof Error)) {
-          throw err
-        }
-
         if (!silent) {
           notifyError(err, m.loadFailed)
         }
@@ -216,10 +212,6 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
         action: restartGatewayAction
       })
     } catch (err) {
-      if (!(err instanceof Error)) {
-        throw err
-      }
-
       notifyError(err, m.failedUpdate(platform.name))
     } finally {
       setSaving(null)
@@ -246,10 +238,6 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
         action: restartGatewayAction
       })
     } catch (err) {
-      if (!(err instanceof Error)) {
-        throw err
-      }
-
       notifyError(err, m.failedSave(platform.name))
     } finally {
       setSaving(null)
@@ -271,10 +259,6 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
       await refreshPlatforms()
       notify({ kind: 'success', title: m.keyCleared(key), message: m.setupUpdated(platform.name) })
     } catch (err) {
-      if (!(err instanceof Error)) {
-        throw err
-      }
-
       notifyError(err, m.failedClear(key))
     } finally {
       setSaving(null)

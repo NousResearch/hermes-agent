@@ -525,11 +525,6 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
         await saveHermesConfig(next)
       } catch (err) {
         setConfig(prev)
-
-        if (!(err instanceof Error)) {
-          throw err
-        }
-
         notifyError(err, m.defaultsFailed)
       }
     },

@@ -66,9 +66,12 @@ Usage:
     content = skill_view("axolotl", "references/dataset-formats.md")
 """
 
+import hashlib
 import json
 import logging
+import threading
 import time
+from collections import OrderedDict
 
 from hermes_constants import get_hermes_home, display_hermes_home
 import os
@@ -77,6 +80,7 @@ from enum import Enum
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Dict, Any, List, Optional, Set, Tuple
 
+from agent.markdown_sections import select_markdown_section
 from tools.registry import registry, tool_error
 from hermes_cli.config import cfg_get
 from utils import env_var_enabled
@@ -174,6 +178,55 @@ _REMOTE_ENV_BACKENDS = frozenset(
     {"docker", "singularity", "modal", "ssh", "daytona"}
 )
 _secret_capture_callback = None
+
+_SKILL_VIEW_LOAD_CACHE: "OrderedDict[tuple[str, str, str, str], str]" = OrderedDict()
+_SKILL_VIEW_LOAD_CACHE_LOCK = threading.Lock()
+_SKILL_VIEW_LOAD_CACHE_MAX = 2048
+
+
+def _content_hash(
+    content: str,
+    linked_files: Optional[dict[str, list[str]]] = None,
+) -> str:
+    """Hash the complete load contract: instructions plus linked-file manifest."""
+    if not linked_files:
+        payload = content
+    else:
+        payload = json.dumps(
+            {"content": content, "linked_files": linked_files},
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _clear_skill_view_load_cache() -> None:
+    """Clear duplicate-load state (public for deterministic tests)."""
+    with _SKILL_VIEW_LOAD_CACHE_LOCK:
+        _SKILL_VIEW_LOAD_CACHE.clear()
+
+
+def _duplicate_skill_load(
+    session_key: str,
+    resolved_name: str,
+    file_path: str,
+    section: str,
+    content_hash: str,
+    *,
+    force_reload: bool,
+) -> bool:
+    """Record a load and report whether the same bytes are already in context."""
+    if not session_key:
+        return False
+    key = (session_key, resolved_name, file_path, section)
+    with _SKILL_VIEW_LOAD_CACHE_LOCK:
+        previous = _SKILL_VIEW_LOAD_CACHE.get(key)
+        _SKILL_VIEW_LOAD_CACHE[key] = content_hash
+        _SKILL_VIEW_LOAD_CACHE.move_to_end(key)
+        while len(_SKILL_VIEW_LOAD_CACHE) > _SKILL_VIEW_LOAD_CACHE_MAX:
+            _SKILL_VIEW_LOAD_CACHE.popitem(last=False)
+    return not force_reload and previous == content_hash
 
 
 def _skill_lookup_path_error(name: str) -> Optional[str]:
@@ -782,19 +835,27 @@ def _sort_skills(skills: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return sorted(skills, key=lambda s: (s.get("category") or "", s["name"]))
 
 
-def skills_list(category: str = None, task_id: str = None) -> str:
-    """
-    List all available skills (progressive disclosure tier 1 - minimal metadata).
+def skills_list(
+    category: Optional[str] = None,
+    query: Optional[str] = None,
+    limit: int = 5,
+    task_id: Optional[str] = None,
+) -> str:
+    """List skills or search the local skill index using compact metadata.
 
-    Returns only name + description to minimize token usage. Use skill_view() to
-    load full content, tags, related files, etc.
+    With no ``query``, returns the existing name/description/category catalog.
+    With a query, deterministically searches an on-disk SQLite FTS5 index and
+    returns routing cards that point to the smallest useful ``skill_view`` call.
+    Full instruction bodies are never returned from this tier.
 
     Args:
-        category: Optional category filter (e.g., "mlops")
-        task_id: Optional task identifier used to probe the active backend
+        category: Optional category filter (e.g., "mlops").
+        query: Optional natural-language task or skill query.
+        limit: Maximum ranked routing matches when ``query`` is supplied.
+        task_id: Optional task identifier used to probe the active backend.
 
     Returns:
-        JSON string with minimal skill info: name, description, category
+        JSON string with minimal skill metadata and optional routing matches.
     """
     try:
         active_skills_dir = _skills_dir()
@@ -810,7 +871,56 @@ def skills_list(category: str = None, task_id: str = None) -> str:
                 ensure_ascii=False,
             )
 
-        # Find all skills
+        if query and query.strip():
+            from agent.skill_utils import get_external_skills_dirs
+            from tools.local_skill_index import ensure_skill_index, search_skill_index
+
+            roots = [active_skills_dir, *get_external_skills_dirs()]
+            index_path = get_hermes_home() / "cache" / "skill-index.sqlite3"
+            ensure_skill_index(roots, index_path)
+            requested_limit = max(1, min(int(limit or 5), 20))
+            matches = search_skill_index(
+                index_path,
+                query.strip(),
+                limit=min(20, requested_limit * 4),
+            )
+            if category:
+                matches = [match for match in matches if match.get("category") == category]
+            matches = matches[:requested_limit]
+
+            skills: list[dict[str, Any]] = []
+            seen: set[str] = set()
+            for match in matches:
+                name = str(match["name"])
+                if name in seen:
+                    continue
+                seen.add(name)
+                skills.append(
+                    {
+                        "name": name,
+                        "description": match.get("description", ""),
+                        "category": match.get("category"),
+                        "char_count": match.get("char_count"),
+                        "token_estimate": match.get("token_estimate"),
+                        "reference_count": match.get("reference_count"),
+                    }
+                )
+
+            return json.dumps(
+                {
+                    "success": True,
+                    "query": query.strip(),
+                    "skills": skills,
+                    "matches": matches,
+                    "categories": sorted(
+                        {skill["category"] for skill in skills if skill.get("category")}
+                    ),
+                    "count": len(skills),
+                    "hint": "Load only the recommended skill section/reference; do not reload an unchanged skill already present in this session.",
+                },
+                ensure_ascii=False,
+            )
+
         all_skills = _find_all_skills()
 
         if not all_skills:
@@ -824,14 +934,10 @@ def skills_list(category: str = None, task_id: str = None) -> str:
                 ensure_ascii=False,
             )
 
-        # Filter by category if specified
         if category:
             all_skills = [s for s in all_skills if s.get("category") == category]
 
-        # Sort by category then name
         all_skills = _sort_skills(all_skills)
-
-        # Extract unique categories
         categories = sorted(
             {s.get("category") for s in all_skills if s.get("category")}
         )
@@ -842,7 +948,7 @@ def skills_list(category: str = None, task_id: str = None) -> str:
                 "skills": all_skills,
                 "categories": categories,
                 "count": len(all_skills),
-                "hint": "Use skill_view(name) to see full content, tags, and linked files",
+                "hint": "Use skills_list(query=...) to route by task, then skill_view(name, section=... or file_path=...) to load only the needed instructions.",
             },
             ensure_ascii=False,
         )
@@ -860,7 +966,8 @@ def _serve_plugin_skill(
     bare: str,
     *,
     preprocess: bool = True,
-    session_id: str | None = None,
+    session_id: Optional[str] = None,
+    section: Optional[str] = None,
 ) -> str:
     """Read a plugin-provided skill, apply guards, return JSON."""
     from hermes_cli.plugins import _get_disabled_plugins, get_plugin_manager
@@ -945,11 +1052,29 @@ def _serve_plugin_skill(
                 "Could not preprocess plugin skill %s:%s", namespace, bare, exc_info=True
             )
 
+    if section:
+        selected, selected_title, available = select_markdown_section(rendered_content, section)
+        if selected is None:
+            return json.dumps(
+                {
+                    "success": False,
+                    "error": f"Section '{section}' not found exactly once in skill '{namespace}:{bare}'.",
+                    "available_sections": available,
+                },
+                ensure_ascii=False,
+            )
+        rendered_content = selected
+    else:
+        selected_title = None
+
+    final_content = f"{banner}{rendered_content}" if banner and not section else rendered_content
     return json.dumps(
         {
             "success": True,
             "name": f"{namespace}:{bare}",
-            "content": f"{banner}{rendered_content}" if banner else rendered_content,
+            "content": final_content,
+            "content_hash": _content_hash(final_content),
+            "section": selected_title,
             "description": description,
             "linked_files": None,
             "readiness_status": SkillReadinessStatus.AVAILABLE.value,
@@ -960,24 +1085,31 @@ def _serve_plugin_skill(
 
 def skill_view(
     name: str,
-    file_path: str = None,
-    task_id: str = None,
+    file_path: Optional[str] = None,
+    task_id: Optional[str] = None,
     preprocess: bool = True,
+    section: Optional[str] = None,
 ) -> str:
-    """
-    View the content of a skill or a specific file within a skill directory.
+    """View a skill, one linked file, or one complete Markdown section.
+
+    ``section`` selects an exact, case-insensitive heading and returns that
+    heading through the next heading of the same or shallower level. This is
+    focused retrieval, not pagination: the complete instruction unit is always
+    returned.
 
     Args:
         name: Name or path of the skill (e.g., "axolotl" or "03-fine-tuning/axolotl").
             Qualified names like "plugin:skill" resolve to plugin-provided skills.
-        file_path: Optional path to a specific file within the skill (e.g., "references/api.md")
-        task_id: Optional task identifier used to probe the active backend
+        file_path: Optional path to a specific file within the skill (e.g., "references/api.md").
+        task_id: Optional task identifier used to probe the active backend.
         preprocess: Apply configured SKILL.md template and inline shell rendering
             to main skill content. Internal slash/preload callers disable this
             because they render the skill message themselves.
+        section: Optional exact Markdown heading to load from SKILL.md or a linked
+            Markdown file.
 
     Returns:
-        JSON string with skill content or error message
+        JSON string with skill content or error message.
     """
     try:
         # Validate before the ':' qualified-name dispatch so a Windows drive
@@ -1042,6 +1174,7 @@ def skill_view(
                     bare,
                     preprocess=preprocess,
                     session_id=task_id,
+                    section=section,
                 )
 
             # Plugin exists but this specific skill is missing?
@@ -1390,12 +1523,37 @@ def skill_view(
                     exc_info=True,
                 )
 
+            if section:
+                if target_file.suffix.lower() not in {".md", ".markdown"}:
+                    return json.dumps(
+                        {
+                            "success": False,
+                            "error": "Focused section retrieval is available only for Markdown files.",
+                        },
+                        ensure_ascii=False,
+                    )
+                selected, selected_title, available = select_markdown_section(content, section)
+                if selected is None:
+                    return json.dumps(
+                        {
+                            "success": False,
+                            "error": f"Section '{section}' not found exactly once in '{file_path}'.",
+                            "available_sections": available,
+                        },
+                        ensure_ascii=False,
+                    )
+                content = selected
+            else:
+                selected_title = None
+
             return json.dumps(
                 {
                     "success": True,
                     "name": name,
                     "file": file_path,
+                    "section": selected_title,
                     "content": content,
+                    "content_hash": _content_hash(content),
                     "file_type": target_file.suffix,
                 },
                 ensure_ascii=False,
@@ -1471,6 +1629,10 @@ def skill_view(
             linked_files["assets"] = asset_files
         if script_files:
             linked_files["scripts"] = script_files
+        linked_files = {
+            kind: sorted(paths)
+            for kind, paths in sorted(linked_files.items())
+        }
 
         try:
             rel_path = str(skill_md.relative_to(active_skills_dir))
@@ -1561,6 +1723,21 @@ def skill_view(
                     "Could not preprocess skill content for %s", skill_name, exc_info=True
                 )
 
+        if section:
+            selected, selected_title, available = select_markdown_section(rendered_content, section)
+            if selected is None:
+                return json.dumps(
+                    {
+                        "success": False,
+                        "error": f"Section '{section}' not found exactly once in skill '{skill_name}'.",
+                        "available_sections": available,
+                    },
+                    ensure_ascii=False,
+                )
+            rendered_content = selected
+        else:
+            selected_title = None
+
         result = {
             "success": True,
             "name": skill_name,
@@ -1568,6 +1745,8 @@ def skill_view(
             "tags": tags,
             "related_skills": related_skills,
             "content": rendered_content,
+            "content_hash": _content_hash(rendered_content, linked_files),
+            "section": selected_title,
             "path": rel_path,
             "skill_dir": str(skill_dir) if skill_dir else None,
             "linked_files": linked_files if linked_files else None,
@@ -1683,14 +1862,25 @@ if __name__ == "__main__":
 
 SKILLS_LIST_SCHEMA = {
     "name": "skills_list",
-    "description": "List available skills (name + description). Use skill_view(name) to load full content.",
+    "description": "List skills with compact metadata, or search the local FTS index for the smallest relevant skill section/reference. Full instructions are loaded only with skill_view.",
     "parameters": {
         "type": "object",
         "properties": {
             "category": {
                 "type": "string",
                 "description": "Optional category filter to narrow results",
-            }
+            },
+            "query": {
+                "type": "string",
+                "description": "Optional task/query for deterministic local skill routing",
+            },
+            "limit": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 20,
+                "default": 5,
+                "description": "Maximum compact routing matches when query is provided",
+            },
         },
         "required": [],
     },
@@ -1698,17 +1888,26 @@ SKILLS_LIST_SCHEMA = {
 
 SKILL_VIEW_SCHEMA = {
     "name": "skill_view",
-    "description": "Skills allow for loading information about specific tasks and workflows, as well as scripts and templates. Load a skill's full content or access its linked files (references, templates, scripts). First call returns SKILL.md content plus a 'linked_files' dict showing available references/templates/scripts. To access those, call again with file_path parameter.",
+    "description": "Load a skill, one linked file, or one complete Markdown heading section. Prefer section/file_path for focused retrieval. Successful loads include content_hash; unchanged duplicate loads in one session return a compact already_loaded response.",
     "parameters": {
         "type": "object",
         "properties": {
             "name": {
                 "type": "string",
-                "description": "The skill name (use skills_list to see available skills). For plugin-provided skills, use the qualified form 'plugin:skill' (e.g. 'superpowers:writing-plans').",
+                "description": "The skill name (use skills_list or skills_list(query=...) to discover it). For plugin skills use 'plugin:skill'.",
             },
             "file_path": {
                 "type": "string",
-                "description": "OPTIONAL: Path to a linked file within the skill (e.g., 'references/api.md', 'templates/config.yaml', 'scripts/validate.py'). Omit to get the main SKILL.md content.",
+                "description": "Optional linked file path such as references/api.md. Omit for SKILL.md.",
+            },
+            "section": {
+                "type": "string",
+                "description": "Optional exact Markdown heading. Returns the complete heading section including child headings, never a partial page.",
+            },
+            "force_reload": {
+                "type": "boolean",
+                "default": False,
+                "description": "Return full content even if unchanged content is already loaded in this session.",
             },
         },
         "required": ["name"],
@@ -1720,31 +1919,70 @@ registry.register(
     toolset="skills",
     schema=SKILLS_LIST_SCHEMA,
     handler=lambda args, **kw: skills_list(
-        category=args.get("category"), task_id=kw.get("task_id")
+        category=args.get("category"),
+        query=args.get("query"),
+        limit=args.get("limit", 5),
+        task_id=kw.get("task_id"),
     ),
     check_fn=check_skills_requirements,
     emoji="📚",
 )
 def _skill_view_with_bump(args, **kw):
-    """Invoke skill_view, then bump view_count on success. Best-effort: a
-    telemetry failure never breaks the tool call."""
+    """Load a skill once per live session, then bump usage telemetry.
+
+    Context compression rotates Hermes to a child session id, so the bounded
+    cache naturally misses after compression and the full instructions are
+    available again. A process restart also clears it.
+    """
     name = args.get("name", "")
+    file_path = args.get("file_path")
+    section = args.get("section")
     result = skill_view(
-        name, file_path=args.get("file_path"), task_id=kw.get("task_id")
+        name,
+        file_path=file_path,
+        task_id=kw.get("task_id"),
+        section=section,
     )
     try:
         parsed = json.loads(result)
         if isinstance(parsed, dict) and parsed.get("success"):
-            # Use the resolved skill name from the payload when present —
-            # qualified forms ("plugin:skill") return with the canonical name.
-            resolved = parsed.get("name") or name
+            resolved = str(parsed.get("name") or name)
+            content = parsed.get("content")
+            content_hash = parsed.get("content_hash")
+            if isinstance(content, str) and not content_hash:
+                content_hash = _content_hash(content)
+                parsed["content_hash"] = content_hash
+
+            session_key = str(kw.get("session_id") or kw.get("task_id") or "")
+            if content_hash and _duplicate_skill_load(
+                session_key,
+                resolved,
+                str(file_path or "SKILL.md"),
+                str(parsed.get("section") or section or ""),
+                str(content_hash),
+                force_reload=bool(args.get("force_reload")),
+            ):
+                compact = {
+                    "success": True,
+                    "name": resolved,
+                    "content_hash": content_hash,
+                    "already_loaded": True,
+                    "message": (
+                        "Unchanged content is already present in this session; "
+                        "full instructions were suppressed to preserve context."
+                    ),
+                }
+                for key in ("file", "path", "section", "file_type", "readiness_status"):
+                    if parsed.get(key) is not None:
+                        compact[key] = parsed[key]
+                parsed = compact
+                result = json.dumps(parsed, ensure_ascii=False)
+
             if resolved:
                 from tools.skill_usage import bump_use, bump_view
-                bump_view(str(resolved))
-                # A skill_view tool call is the agent actively loading the skill
-                # to act on it — that counts as use, not just a browse/view.
-                # Curator's stale timer keys off last_used_at (see agent/curator.py).
-                bump_use(str(resolved))
+
+                bump_view(resolved)
+                bump_use(resolved)
     except Exception:
         pass
     return result

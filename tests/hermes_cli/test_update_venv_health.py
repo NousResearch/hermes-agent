@@ -667,9 +667,9 @@ def test_venv_holder_guard_wiring_lowercases_and_filters_invalid_entries():
     )
     assert result == "past_guard"
     # strings are lower-cased; ints are str()'d and lowercased; None and dict
-    # are filtered; "" passes through (its substring-match-everything pitfall
-    # is the operator's responsibility, not enforced here).
-    assert captured["allowlist"] == ["ok", "123", "", "alsook"]
+    # are filtered; "" is dropped because empty matches every holder (silent
+    # safety-guard neutralization — see sweeper review 2026-07-19).
+    assert captured["allowlist"] == ["ok", "123", "alsook"]
 
 
 def test_venv_holder_guard_wiring_config_load_failure_keeps_existing_behavior():
@@ -710,3 +710,198 @@ def test_venv_holder_guard_wiring_config_load_failure_keeps_existing_behavior():
     assert det.call_args.kwargs.get("allowlist") == []
     # Gateways were either resumed or never registered (either is fine here).
     assert resume.call_count >= 0
+
+
+# ---------------------------------------------------------------------------
+# Sweeper-review follow-ups on #67398 (2026-07-19):
+# 1. Empty/whitespace allowlist entries silently disable the safety guard
+#    because "" is a substring of every holder name+cmdline. Operators
+#    deserve a warning + the entry dropped, not silent neutralization.
+# 2. pre_update_command must reject malformed config (int, dict, mixed
+#    argv) BEFORE subprocess.run is invoked, else the helper's
+#    "Never raises" contract is broken on operator typos.
+# ---------------------------------------------------------------------------
+
+
+class _PastGuardSweep(Exception):
+    pass
+
+
+class _ProjectRootSentinelSweep:
+    def __truediv__(self, _other):
+        raise _PastGuardSweep
+
+
+def _sweep_update_args():
+    return SimpleNamespace(
+        gateway=False,
+        check=False,
+        no_backup=True,
+        backup=False,
+        yes=True,
+        branch=None,
+        force=False,
+        force_venv=False,
+    )
+
+
+@patch.object(cli_main, "_is_windows", return_value=True)
+@patch.object(cli_main, "_venv_scripts_dir", return_value=None)
+@patch.object(cli_main, "_run_pre_update_backup")
+@patch.object(cli_main, "_pause_windows_gateways_for_update", return_value=None)
+@patch.object(cli_main, "_resume_windows_gateways_after_update")
+@patch.object(cli_main, "_run_pre_update_hook", return_value=True)
+def test_allowlist_empty_string_entries_are_dropped(
+    _hk, _rw, _pwgw, _rub, _vsd, _isw
+):
+    # venv_holder_allowlist: [""] used to silently include every holder
+    # because "" is a substring of every cmdline. Fix: drop with a warning.
+    detected = [(101, "ecosystem_bridge.exe", "ecosystem_bridge.exe --profile worker")]
+    with patch.object(
+        cli_main, "_detect_venv_python_processes", return_value=detected
+    ) as det, patch.object(
+        cli_main, "PROJECT_ROOT", _ProjectRootSentinelSweep()
+    ), patch(
+        "hermes_cli.config.load_config",
+        return_value={"updates": {"venv_holder_allowlist": [""]}},
+    ):
+        try:
+            cli_main._cmd_update_impl(_sweep_update_args(), gateway_mode=False)
+        except SystemExit as exc:
+            assert exc.code == 2
+        except _PastGuardSweep:
+            pass
+    det.assert_called_once()
+    assert det.call_args.kwargs.get("allowlist") == []
+
+
+@patch.object(cli_main, "_is_windows", return_value=True)
+@patch.object(cli_main, "_venv_scripts_dir", return_value=None)
+@patch.object(cli_main, "_run_pre_update_backup")
+@patch.object(cli_main, "_pause_windows_gateways_for_update", return_value=None)
+@patch.object(cli_main, "_resume_windows_gateways_after_update")
+@patch.object(cli_main, "_run_pre_update_hook", return_value=True)
+def test_allowlist_mixed_types_filter_ints_drop_none_dict_empty(
+    _hk, _rw, _pwgw, _rub, _vsd, _isw
+):
+    detected = [(101, "x.exe", "x")]
+    with patch.object(
+        cli_main, "_detect_venv_python_processes", return_value=detected
+    ) as det, patch.object(
+        cli_main, "PROJECT_ROOT", _ProjectRootSentinelSweep()
+    ), patch(
+        "hermes_cli.config.load_config",
+        return_value={
+            "updates": {
+                "venv_holder_allowlist": [
+                    "okprocess",
+                    123,
+                    None,
+                    {"x": "y"},
+                    "",
+                    "  ",
+                    "alsogood",
+                ]
+            }
+        },
+    ):
+        try:
+            cli_main._cmd_update_impl(_sweep_update_args(), gateway_mode=False)
+        except (SystemExit, _PastGuardSweep):
+            pass
+    det.assert_called_once()
+    allowed = det.call_args.kwargs.get("allowlist")
+    assert "okprocess" in allowed
+    assert "alsogood" in allowed
+    assert "123" in allowed
+    assert "" not in allowed
+    assert len([a for a in allowed if a.strip()]) == len(allowed)
+
+
+def test_pre_update_hook_rejects_int_command():
+    args = SimpleNamespace(force_venv=False)
+    cfg = {"updates": {"pre_update_command": 123}}
+    with patch("hermes_cli.config.load_config", return_value=cfg), patch.object(
+        cli_main.subprocess, "run"
+    ) as run:
+        assert cli_main._run_pre_update_hook(args) is True
+    run.assert_not_called()
+
+
+def test_pre_update_hook_rejects_dict_command():
+    args = SimpleNamespace(force_venv=False)
+    cfg = {"updates": {"pre_update_command": {"x": "y"}}}
+    with patch("hermes_cli.config.load_config", return_value=cfg), patch.object(
+        cli_main.subprocess, "run"
+    ) as run:
+        assert cli_main._run_pre_update_hook(args) is True
+    run.assert_not_called()
+
+
+def test_pre_update_hook_rejects_list_with_non_string_entries():
+    args = SimpleNamespace(force_venv=False)
+    cfg = {"updates": {"pre_update_command": ["sc", None]}}
+    with patch("hermes_cli.config.load_config", return_value=cfg), patch.object(
+        cli_main.subprocess, "run"
+    ) as run:
+        assert cli_main._run_pre_update_hook(args) is True
+    run.assert_not_called()
+
+
+def test_pre_update_hook_accepts_int_inside_list():
+    args = SimpleNamespace(force_venv=False)
+    cfg = {
+        "updates": {
+            "pre_update_command": ["sc", "stop", 123],
+            "pre_update_command_timeout": 5,
+        }
+    }
+    fake = SimpleNamespace(returncode=0, stdout="", stderr="")
+    with patch("hermes_cli.config.load_config", return_value=cfg), patch.object(
+        cli_main.subprocess, "run", return_value=fake
+    ) as run:
+        assert cli_main._run_pre_update_hook(args) is True
+    args_used, _ = run.call_args
+    assert args_used[0] == ["sc", "stop", "123"]
+
+
+def test_pre_update_hook_rejects_empty_string():
+    args = SimpleNamespace(force_venv=False)
+    cfg = {"updates": {"pre_update_command": ""}}
+    with patch("hermes_cli.config.load_config", return_value=cfg), patch.object(
+        cli_main.subprocess, "run"
+    ) as run:
+        assert cli_main._run_pre_update_hook(args) is True
+    run.assert_not_called()
+
+
+def test_pre_update_hook_rejects_whitespace_string():
+    args = SimpleNamespace(force_venv=False)
+    cfg = {"updates": {"pre_update_command": "   "}}
+    with patch("hermes_cli.config.load_config", return_value=cfg), patch.object(
+        cli_main.subprocess, "run"
+    ) as run:
+        assert cli_main._run_pre_update_hook(args) is True
+    run.assert_not_called()
+
+
+@patch.object(cli_main, "_is_windows", return_value=True)
+def test_detect_venv_python_skips_empty_allowlist_entries_internally(_winp, tmp_path):
+    """Defense in depth: even if a caller hands us ['', '  ', None], empty
+    entries are silently skipped — they never match every holder."""
+    venv_py = str(tmp_path / "venv" / "Scripts" / "python.exe")
+    me = MagicMock()
+    me.parents.return_value = []
+    fake_psutil = types.SimpleNamespace(
+        process_iter=lambda attrs: iter(
+            [_proc(101, venv_py, "ecosystem_bridge.exe", [])]
+        ),
+        Process=lambda *a, **k: me,
+    )
+    with patch.object(cli_main, "PROJECT_ROOT", tmp_path), patch.dict(
+        sys.modules, {"psutil": fake_psutil}
+    ):
+        matches = cli_main._detect_venv_python_processes(
+            allowlist=["", "  ", None]
+        )
+    assert [m[0] for m in matches] == [101]

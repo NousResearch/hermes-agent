@@ -104,7 +104,55 @@ updates:
   pre_update_backup: quick       # quick (state snapshot, default) | full (snapshot + HERMES_HOME zip) | off
   backup_keep: 5                 # Keep this many full pre-update backup zips
   non_interactive_local_changes: stash  # stash | discard
+
+  # Optional opt-in escape hatches for supervised venv deployments
+  # where an external service (NSSM / systemd / supervisor) runs from
+  # the install's venv interpreter and would otherwise deadlock the
+  # update. See "Supervised venv holders" below. Both default off.
+  pre_update_command: null      # shell cmd (string) or argv (list) — runs
+                                  # BEFORE the venv-holder guard re-checks.
+                                  # Use to release external locks (e.g.
+                                  # `Stop-Service MyBridge`). Non-zero exit
+                                  # OR timeout -> update aborted cleanly
+                                  # with a clear message.
+  pre_update_command_timeout: 60   # seconds; 0 disables the timeout
+  venv_holder_allowlist: []         # case-insensitive substring list
+                                     # matched against each detected
+                                     # holder's process name AND full
+                                     # command line. Empty entries are
+                                     # ignored (and warned) so a
+                                     # spurious "" never disables the
+                                     # safety guard for all holders.
 ```
+
+### Supervised venv holders
+
+By default the Windows update guard *refuses* any update whose install
+has other processes running from its Python interpreter — those holders
+keep native extension files (`.pyd`) mapped and a dependency sync that
+dies partway on access-denied strands the install between versions.
+
+If an external process (NSSM service, systemd unit, supervisor script)
+runs from this install's venv interpreter and cannot be paused by the
+updater, supervised deployments have two ways to break the resulting
+deadlock without disabling the guard for everyone:
+
+- `updates.pre_update_command` — runs *before* the guard re-checks. Use
+  it to release external locks (e.g. `Stop-Service MyBridge` /
+  `systemctl stop my-bridge`). The hook's exit code is honored: 0
+  proceeds, non-zero aborts the update with a clear message. A timeout
+  (default 60s, configurable) bounds unattended deploys.
+- `updates.venv_holder_allowlist` — a list of case-insensitive substrings
+  matched against each detected holder's process name and command line.
+  Holders matching any entry are dropped from the refusal list.
+
+Both keys are independently opt-in. Use the hook to release external
+locks first, then list the supervised holder in the allowlist so the
+guard recognizes it as safe to leave running while the venv mutates.
+The one-off `hermes update --force-venv` flag remains available for
+ad-hoc overrides.
+
+Leaving both unset preserves the strict refusal behavior unchanged.
 
 `pre_update_backup` is the single pre-update safety knob: `quick` (default) snapshots critical state files (pairing data, cron jobs, config, auth; files over 1 GiB are skipped) into `state-snapshots/`; `full` additionally zips all of `HERMES_HOME` into `backups/` and can add minutes on large homes; `off` disables both. Legacy booleans are honored (`true` → `full`, `false` → `off`).
 

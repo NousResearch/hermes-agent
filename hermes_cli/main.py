@@ -9350,10 +9350,17 @@ def _detect_venv_python_processes(
         # a holder matching any allowlist substring against its name OR
         # cmdline is dropped, on the operator's attestation that it is
         # safe to keep running while the venv mutates. See #66933.
+        # Empty entries are silently skipped — `""` is a substring of
+        # every holder and would silently disable the guard. Callers
+        # filter up front as well; this is defense-in-depth.
         if allowlist:
             name_low = str(name).lower()
             if any(
-                (isinstance(s, str) and (s in name_low or s in cmdline_low))
+                (
+                    isinstance(s, str)
+                    and s  # empty string is not a usable allowlist entry
+                    and (s in name_low or s in cmdline_low)
+                )
                 for s in allowlist
             ):
                 continue
@@ -9422,19 +9429,54 @@ def _run_pre_update_hook(args) -> bool:
     cmd = cfg.get("pre_update_command")
     if not cmd:
         return True
+    # Strict type validation. Setting `pre_update_command: 123` (int) or
+    # `pre_update_command: {x: y}` (dict) used to silently coerce — `str(x)`
+    # gave `"None"` for None entries, etc. The "Never raises" contract on
+    # this helper means we must catch malformed config here, not at the
+    # subprocess invocation. See sweeper review on #67398.
+    if isinstance(cmd, str):
+        if not cmd.strip():
+            logger.warning(
+                "updates.pre_update_command: empty string; skipping hook run"
+            )
+            return True
+        cmd_argv: tuple[str, ...] | str = cmd
+        label = cmd
+    elif isinstance(cmd, list):
+        argv_list: list[str] = []
+        for entry in cmd:
+            if not isinstance(entry, (str, int)):
+                logger.warning(
+                    "updates.pre_update_command: non-string argv entry %r (%s); skipping hook run",
+                    entry,
+                    type(entry).__name__,
+                )
+                return True
+            argv_list.append(str(entry))
+        if not argv_list:
+            logger.warning(
+                "updates.pre_update_command: empty argv list; skipping hook run"
+            )
+            return True
+        cmd_argv = tuple(argv_list)
+        label = " ".join(argv_list)
+    else:
+        logger.warning(
+            "updates.pre_update_command: unsupported type %s (expected str or list); skipping hook run",
+            type(cmd).__name__,
+        )
+        return True
     try:
         timeout_f = float(cfg.get("pre_update_command_timeout", 60))
     except (TypeError, ValueError):
         timeout_f = 60.0
     if timeout_f < 0:
         timeout_f = 0
-    rendered = cmd if isinstance(cmd, str) else list(cmd)
-    label = rendered if isinstance(rendered, str) else " ".join(rendered)
     print(f"⚙ Running pre-update hook ({timeout_f:g}s timeout): {label}")
     try:
-        if isinstance(cmd, str):
+        if isinstance(cmd_argv, str):
             result = subprocess.run(
-                cmd,
+                cmd_argv,
                 shell=True,
                 capture_output=True,
                 text=True,
@@ -9442,7 +9484,7 @@ def _run_pre_update_hook(args) -> bool:
             )
         else:
             result = subprocess.run(
-                [str(x) for x in cmd],
+                list(cmd_argv),
                 capture_output=True,
                 text=True,
                 timeout=timeout_f or None,
@@ -9973,9 +10015,25 @@ def _cmd_update_impl(args, gateway_mode: bool):
         logger.debug("Could not read updates.venv_holder_allowlist: %s", exc)
         _raw_allowlist = []
     if isinstance(_raw_allowlist, list):
-        _holder_allowlist = [
-            str(s).lower() for s in _raw_allowlist if isinstance(s, (str, int))
-        ]
+        # Drop empty / whitespace-only entries BEFORE lowercasing — an empty
+        # string is a substring of every holder name+cmdline, which silently
+        # disables the safety guard. Operators get a one-shot warning so the
+        # config mistake is visible. See sweeper review on #67398.
+        _holder_allowlist: list[str] = []
+        for s in _raw_allowlist:
+            if not isinstance(s, (str, int)):
+                logger.warning(
+                    "updates.venv_holder_allowlist: skipping non-string entry %r",
+                    type(s).__name__,
+                )
+                continue
+            lowered = str(s).strip().lower()
+            if not lowered:
+                logger.warning(
+                    "updates.venv_holder_allowlist: skipping empty/whitespace-only entry"
+                )
+                continue
+            _holder_allowlist.append(lowered)
     if _is_windows() and not getattr(args, "force_venv", False):
         _venv_holders = _detect_venv_python_processes(allowlist=_holder_allowlist)
         if _venv_holders:

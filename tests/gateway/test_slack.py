@@ -16,6 +16,7 @@ from unittest.mock import AsyncMock, MagicMock, patch, call
 
 import pytest
 
+import agent.secret_scope as secret_scope
 from gateway.config import Platform, PlatformConfig
 from gateway.run import GatewayRunner
 from gateway.platforms.base import (
@@ -262,6 +263,139 @@ class TestAppMentionHandler:
             assert slash_matcher.match(
                 expected
             ), f"Slack slash regex does not match {expected}"
+
+    @pytest.mark.asyncio
+    async def test_connect_uses_profile_scoped_app_token(self):
+        """Socket Mode must use the active profile's app token in multiplex mode."""
+        config = PlatformConfig(enabled=True, token="xoxb-profile")
+        adapter = SlackAdapter(config)
+
+        def _noop_decorator(_matcher):
+            def decorator(fn):
+                return fn
+
+            return decorator
+
+        mock_app = MagicMock()
+        mock_app.event = _noop_decorator
+        mock_app.command = _noop_decorator
+        mock_app.action = _noop_decorator
+        mock_app.client = AsyncMock()
+
+        mock_web_client = AsyncMock()
+        mock_web_client.auth_test = AsyncMock(
+            return_value={
+                "user_id": "U_PROFILE",
+                "user": "profilebot",
+                "team_id": "T_PROFILE",
+                "team": "ProfileTeam",
+            }
+        )
+
+        created_handlers = []
+
+        class FakeSocketModeHandler:
+            def __init__(self, app, app_token, proxy=None):
+                self.app = app
+                self.app_token = app_token
+                self.proxy = proxy
+                self.client = MagicMock(proxy=None)
+                created_handlers.append(self)
+
+            async def start_async(self):
+                return None
+
+            async def close_async(self):
+                return None
+
+        secret_scope.set_multiplex_active(True)
+        token = secret_scope.set_secret_scope({"SLACK_APP_TOKEN": "xapp-profile"})
+        try:
+            with (
+                patch.object(_slack_mod, "AsyncApp", return_value=mock_app),
+                patch.object(_slack_mod, "AsyncWebClient", return_value=mock_web_client),
+                patch.object(
+                    _slack_mod, "AsyncSocketModeHandler", FakeSocketModeHandler
+                ),
+                patch.dict(os.environ, {"SLACK_APP_TOKEN": "xapp-default"}),
+                patch("gateway.status.acquire_scoped_lock", return_value=(True, None)),
+                patch("asyncio.create_task", side_effect=_fake_create_task),
+            ):
+                result = await adapter.connect()
+        finally:
+            secret_scope.reset_secret_scope(token)
+            secret_scope.set_multiplex_active(False)
+
+        assert result is True
+        assert created_handlers
+        assert created_handlers[0].app_token == "xapp-profile"
+
+    @pytest.mark.asyncio
+    async def test_connect_unscoped_multiplex_falls_back_to_env(self):
+        """Default-profile connect (multiplex active, NO scope installed) must
+        fall back to process env instead of raising UnscopedSecretError —
+        the primary startup loop and background reconnect rebuild both call
+        connect() unscoped (#59739 salvage follow-up)."""
+        config = PlatformConfig(enabled=True, token="xoxb-default")
+        adapter = SlackAdapter(config)
+
+        def _noop_decorator(_matcher):
+            def decorator(fn):
+                return fn
+
+            return decorator
+
+        mock_app = MagicMock()
+        mock_app.event = _noop_decorator
+        mock_app.command = _noop_decorator
+        mock_app.action = _noop_decorator
+        mock_app.client = AsyncMock()
+
+        mock_web_client = AsyncMock()
+        mock_web_client.auth_test = AsyncMock(
+            return_value={
+                "user_id": "U_DEFAULT",
+                "user": "defaultbot",
+                "team_id": "T_DEFAULT",
+                "team": "DefaultTeam",
+            }
+        )
+
+        created_handlers = []
+
+        class FakeSocketModeHandler:
+            def __init__(self, app, app_token, proxy=None):
+                self.app = app
+                self.app_token = app_token
+                self.proxy = proxy
+                self.client = MagicMock(proxy=None)
+                created_handlers.append(self)
+
+            async def start_async(self):
+                return None
+
+            async def close_async(self):
+                return None
+
+        secret_scope.set_multiplex_active(True)
+        try:
+            with (
+                patch.object(_slack_mod, "AsyncApp", return_value=mock_app),
+                patch.object(_slack_mod, "AsyncWebClient", return_value=mock_web_client),
+                patch.object(
+                    _slack_mod, "AsyncSocketModeHandler", FakeSocketModeHandler
+                ),
+                patch.dict(os.environ, {"SLACK_APP_TOKEN": "xapp-default"}),
+                patch("gateway.status.acquire_scoped_lock", return_value=(True, None)),
+                patch("asyncio.create_task", side_effect=_fake_create_task),
+            ):
+                result = await adapter.connect()
+        finally:
+            secret_scope.set_multiplex_active(False)
+
+        assert result is True
+        assert created_handlers
+        assert created_handlers[0].app_token == "xapp-default"
 
 
 class TestSlackConnectCleanup:
@@ -2060,6 +2194,74 @@ class TestSendTyping:
         )
 
     @pytest.mark.asyncio
+    async def test_custom_typing_status_text(self):
+        # typing_status_text overrides the default status wording.
+        config = PlatformConfig(
+            enabled=True, token="xoxb-fake-token",
+            typing_status_text="is pouncing… 🐾",
+        )
+        a = SlackAdapter(config)
+        a._app = MagicMock()
+        a._app.client = AsyncMock()
+        a._app.client.assistant_threads_setStatus = AsyncMock()
+        await a.send_typing("C123", metadata={"thread_id": "parent_ts"})
+        a._app.client.assistant_threads_setStatus.assert_called_once_with(
+            channel_id="C123",
+            thread_ts="parent_ts",
+            status="is pouncing… 🐾",
+        )
+
+    @pytest.mark.asyncio
+    async def test_live_status_text_overrides_default(self, adapter):
+        # set_status_text() feeds the live per-tool phrase into the next
+        # typing refresh.
+        adapter._app.client.assistant_threads_setStatus = AsyncMock()
+        adapter.set_status_text("C123", "is running pytest…")
+        await adapter.send_typing("C123", metadata={"thread_id": "parent_ts"})
+        adapter._app.client.assistant_threads_setStatus.assert_called_once_with(
+            channel_id="C123",
+            thread_ts="parent_ts",
+            status="is running pytest…",
+        )
+
+    @pytest.mark.asyncio
+    async def test_live_status_beats_configured_static_text(self):
+        # Dynamic per-tool phrase wins over typing_status_text while set;
+        # clearing it falls back to the configured static string.
+        config = PlatformConfig(
+            enabled=True, token="xoxb-fake-token",
+            typing_status_text="is pouncing… 🐾",
+        )
+        a = SlackAdapter(config)
+        a._app = MagicMock()
+        a._app.client = AsyncMock()
+        a._app.client.assistant_threads_setStatus = AsyncMock()
+        a.set_status_text("C123", "is reading docs/api.md…")
+        await a.send_typing("C123", metadata={"thread_id": "parent_ts"})
+        assert (
+            a._app.client.assistant_threads_setStatus.call_args.kwargs["status"]
+            == "is reading docs/api.md…"
+        )
+        a.set_status_text("C123", None)
+        await a.send_typing("C123", metadata={"thread_id": "parent_ts"})
+        assert (
+            a._app.client.assistant_threads_setStatus.call_args.kwargs["status"]
+            == "is pouncing… 🐾"
+        )
+
+    @pytest.mark.asyncio
+    async def test_live_status_scoped_per_chat(self, adapter):
+        # A phrase for one channel must not leak into another channel's
+        # status line.
+        adapter._app.client.assistant_threads_setStatus = AsyncMock()
+        adapter.set_status_text("C_OTHER", "is running pytest…")
+        await adapter.send_typing("C123", metadata={"thread_id": "parent_ts"})
+        assert (
+            adapter._app.client.assistant_threads_setStatus.call_args.kwargs["status"]
+            == "is thinking..."
+        )
+
+    @pytest.mark.asyncio
     async def test_noop_without_thread(self, adapter):
         adapter._app.client.assistant_threads_setStatus = AsyncMock()
         await adapter.send_typing("C123")
@@ -2106,6 +2308,45 @@ class TestSendTyping:
         await adapter.stop_typing("C123")
 
         adapter._app.client.assistant_threads_setStatus.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_stop_typing_clears_untracked_thread_from_metadata(self, adapter):
+        """Explicit thread metadata clears a status the map no longer tracks.
+
+        A gateway restart (or cache eviction) wipes _active_status_threads
+        while Slack's persistent assistant status stays visible. A caller
+        that names the exact thread must still be able to dismiss it (#32295).
+        """
+        adapter._app.client.assistant_threads_setStatus = AsyncMock()
+        assert adapter._active_status_threads == {}
+
+        await adapter.stop_typing("C123", metadata={"thread_id": "stuck_ts"})
+
+        adapter._app.client.assistant_threads_setStatus.assert_called_once_with(
+            channel_id="C123",
+            thread_ts="stuck_ts",
+            status="",
+        )
+
+    @pytest.mark.asyncio
+    async def test_stop_typing_untracked_fallback_respects_ambiguous_workspaces(
+        self, adapter
+    ):
+        """Team-less clear must NOT fire when multiple workspaces track the thread."""
+        team_one, team_two = AsyncMock(), AsyncMock()
+        adapter._team_clients.update({"T_ONE": team_one, "T_TWO": team_two})
+        for team_id in ("T_ONE", "T_TWO"):
+            await adapter.send_typing(
+                "D_SHARED",
+                metadata={"thread_id": "171.000", "slack_team_id": team_id},
+            )
+        adapter._app.client.assistant_threads_setStatus = AsyncMock()
+
+        await adapter.stop_typing("D_SHARED", metadata={"thread_id": "171.000"})
+
+        adapter._app.client.assistant_threads_setStatus.assert_not_called()
+        assert ("T_ONE", "D_SHARED", "171.000") in adapter._active_status_threads
+        assert ("T_TWO", "D_SHARED", "171.000") in adapter._active_status_threads
 
     @pytest.mark.asyncio
     async def test_stop_typing_handles_api_error_gracefully(self, adapter):

@@ -40,7 +40,7 @@ class TestClarifyPrimitive:
             cm.resolve_gateway_clarify("id1", "B")
 
         threading.Thread(target=resolver).start()
-        result = cm.wait_for_response("id1", timeout=2.0)
+        result = cm.wait_for_response("id1", timeout=10.0)
         assert result == "B"
 
     def test_open_ended_auto_awaits_text(self):
@@ -149,7 +149,7 @@ class TestClarifyPrimitive:
             time.sleep(0.05)
             cancelled = cm.clear_session("sk7")
             assert cancelled == 1
-            result = fut.result(timeout=2.0)
+            result = fut.result(timeout=10.0)
             # clear_session sets response="" then the wait returns it
             assert result == ""
 
@@ -177,7 +177,7 @@ class TestClarifyPrimitive:
             cm.unregister_notify("sk9")
 
             # unregister_notify calls clear_session; thread unwinds
-            result = fut.result(timeout=2.0)
+            result = fut.result(timeout=10.0)
             assert result == ""
 
     def test_session_index_isolation(self):

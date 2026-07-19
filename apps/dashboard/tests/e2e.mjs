@@ -1044,6 +1044,23 @@ const tabNames = await page.$$eval(".pagetab", (els) => els.map((e) => e.textCon
 check(`legacy Main-only state backfills all pages (${tabNames.length})`,
   ["Markets", "Feeds", "Sports", "Intel", "Health"].every((n) => tabNames.some((t) => t.includes(n))));
 
+// ---- mobile: page tabs become a pinned bottom nav -------------------------------
+await page.setViewportSize({ width: 390, height: 844 });
+await page.reload({ waitUntil: "networkidle" });
+await page.waitForSelector(".pagetab", { timeout: 10000 });
+await page.evaluate(() => window.scrollTo(0, 1200));   // scroll a long page
+await page.waitForTimeout(300);
+const navPinned = await page.evaluate(() => {
+  const el = document.querySelector(".pagetabs");
+  const r = el.getBoundingClientRect();
+  return getComputedStyle(el).position === "fixed" && Math.abs(r.bottom - window.innerHeight) < 3;
+});
+check("mobile: page tabs pinned as bottom nav while scrolled", navPinned);
+const noHScroll = await page.evaluate(() =>
+  document.documentElement.scrollWidth <= document.documentElement.clientWidth + 1);
+check("mobile: no horizontal page overflow", noHScroll);
+await page.setViewportSize({ width: 1280, height: 900 });
+
 // ---- console health -----------------------------------------------------------------
 const realErrors = errors.filter((e) => !e.includes("favicon"));
 check(`no console/page errors (${realErrors.length})`, realErrors.length === 0);

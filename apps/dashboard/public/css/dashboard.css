@@ -1930,10 +1930,27 @@ a { color: inherit; }
     padding-top: calc(8px + env(safe-area-inset-top));
     gap: 10px;
   }
-  .grid { padding-bottom: calc(20px + env(safe-area-inset-bottom)); }
+  /* Page tabs become a thumb-reachable bottom nav bar that stays visible while
+     scrolling — the phone-native pattern. Pure CSS repositioning of the same
+     <nav>, so no JS changes and desktop is untouched. */
+  .pagetabs {
+    position: fixed; left: 0; right: 0; bottom: 0; top: auto;
+    z-index: 30; margin: 0; max-width: none;
+    padding: 8px 10px calc(8px + env(safe-area-inset-bottom));
+    gap: 8px; flex-wrap: nowrap; overflow-x: auto; -webkit-overflow-scrolling: touch;
+    background: color-mix(in srgb, var(--surface) 94%, transparent);
+    backdrop-filter: blur(12px);
+    border-top: 1px solid var(--hairline); border-bottom: none;
+    scrollbar-width: none;
+  }
+  .pagetabs::-webkit-scrollbar { display: none; }
+  .pagetab { flex: 0 0 auto; padding: 9px 16px; }   /* bigger touch target */
+  /* clear the fixed bottom nav so no content hides behind it */
+  .grid { padding-bottom: calc(78px + env(safe-area-inset-bottom)); }
+  .toast-host { bottom: calc(72px + env(safe-area-inset-bottom)); right: 12px; left: 12px; }
   .clock-time { font-size: 38px; }
   .btn { padding: 8px 12px; }               /* comfortable touch targets */
-  .icon-btn { width: 32px; height: 32px; }
+  .icon-btn { width: 40px; height: 40px; }  /* ≥40px hit area for touch */
   .tab, .note-tab { padding: 7px 12px; }
   .task-item { padding: 10px 4px; }
   .task-item .icon-btn, .cal-event .icon-btn, .sum-inline { opacity: 1; } /* no hover on touch */

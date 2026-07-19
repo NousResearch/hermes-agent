@@ -279,6 +279,34 @@ class TestConvertMessagesToConverse:
         assert tr["toolResult"]["toolUseId"] == "call_1"
         assert tr["toolResult"]["content"][0]["text"] == "file contents here"
 
+    def test_multimodal_tool_result_keeps_image_block(self):
+        """A tool result carrying an image (computer-use screenshot, image
+        tool, vision result) must convert to a Converse image block, not a
+        json.dumps text dump that hides the image from the model and inlines
+        the base64 as text."""
+        from agent.bedrock_adapter import convert_messages_to_converse
+        png = (
+            "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1"
+            "HAwCAAAAC0lEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+        )
+        messages = [
+            {"role": "user", "content": "screenshot it"},
+            {"role": "assistant", "content": None, "tool_calls": [{
+                "id": "tu1", "type": "function",
+                "function": {"name": "screenshot", "arguments": "{}"},
+            }]},
+            {"role": "tool", "tool_call_id": "tu1", "content": [
+                {"type": "text", "text": "Here:"},
+                {"type": "image_url", "image_url": {"url": png}},
+            ]},
+        ]
+        _, msgs = convert_messages_to_converse(messages)
+        tr = [b for m in msgs for b in m["content"] if "toolResult" in b][0]
+        blocks = tr["toolResult"]["content"]
+        assert any("image" in b for b in blocks), blocks
+        # The base64 payload must not be leaked into a text block.
+        assert not any("iVBORw0KGgo" in b.get("text", "") for b in blocks)
+
     def test_merges_consecutive_user_messages(self):
         from agent.bedrock_adapter import convert_messages_to_converse
         messages = [

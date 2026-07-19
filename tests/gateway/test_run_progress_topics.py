@@ -127,6 +127,7 @@ class NoProgressEditCaptureAdapter(ProgressCaptureAdapter):
 
     SUPPORTS_MESSAGE_EDITING = True
     SUPPORTS_STREAMING_EDITS = False
+    SUPPORTS_PROGRESS_EDITS = False
 
     def __init__(self):
         super().__init__(platform=Platform.SIGNAL)
@@ -151,6 +152,69 @@ class NoProgressEditCaptureAdapter(ProgressCaptureAdapter):
             }
         )
         return SendResult(success=True, message_id="progress-2")
+
+
+class TimestampChainProgressAdapter(ProgressCaptureAdapter):
+    """Signal-style adapter whose progress edits mint the next target."""
+
+    SUPPORTS_MESSAGE_EDITING = True
+    SUPPORTS_STREAMING_EDITS = False
+    SUPPORTS_PROGRESS_EDITS = True
+    EDIT_RESULT_ID_IS_NEXT_TARGET = True
+
+    def __init__(self):
+        super().__init__(platform=Platform.SIGNAL)
+        self._next_id = 0
+
+    def _mint_id(self):
+        self._next_id += 1
+        return f"progress-{self._next_id}"
+
+    async def send(self, chat_id, content, reply_to=None, metadata=None) -> SendResult:
+        self.sent.append(
+            {
+                "chat_id": chat_id,
+                "content": content,
+                "reply_to": reply_to,
+                "metadata": metadata,
+            }
+        )
+        return SendResult(success=True, message_id=self._mint_id())
+
+    async def edit_message(self, chat_id, message_id, content) -> SendResult:
+        self.edits.append(
+            {
+                "chat_id": chat_id,
+                "message_id": message_id,
+                "content": content,
+            }
+        )
+        return SendResult(success=True, message_id=self._mint_id())
+
+
+class MissingIdProgressAdapter(ProgressCaptureAdapter):
+    """Editable adapter whose first send cannot provide an edit handle."""
+
+    SUPPORTS_MESSAGE_EDITING = True
+    SUPPORTS_STREAMING_EDITS = False
+    SUPPORTS_PROGRESS_EDITS = True
+
+    def __init__(self):
+        super().__init__(platform=Platform.SIGNAL)
+
+    async def send(self, chat_id, content, reply_to=None, metadata=None) -> SendResult:
+        self.sent.append(
+            {
+                "chat_id": chat_id,
+                "content": content,
+                "reply_to": reply_to,
+                "metadata": metadata,
+            }
+        )
+        return SendResult(success=True, message_id=None)
+
+    async def edit_message(self, chat_id, message_id, content) -> SendResult:
+        raise AssertionError("progress without an edit handle must not attempt edits")
 
 
 class ChainedHeartbeatAdapter(ProgressCaptureAdapter):
@@ -204,6 +268,29 @@ class FakeAgent:
             time.sleep(0.35)
             cb("tool.started", "browser_navigate", "https://example.com", {})
             time.sleep(0.35)
+        return {
+            "final_response": "done",
+            "messages": [],
+            "api_calls": 1,
+        }
+
+
+class TimestampChainProgressAgent:
+    """Emit three spaced tool events so two progress edits are observable."""
+
+    def __init__(self, **kwargs):
+        self.tool_progress_callback = kwargs.get("tool_progress_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        cb = self.tool_progress_callback
+        assert cb is not None
+        cb("tool.started", "terminal", "first", {})
+        time.sleep(1.7)
+        cb("tool.started", "browser_navigate", "https://example.com/second", {})
+        time.sleep(1.7)
+        cb("tool.started", "terminal", "third", {})
+        time.sleep(0.4)
         return {
             "final_response": "done",
             "messages": [],
@@ -352,14 +439,8 @@ def _make_runner(adapter):
 
 
 @pytest.mark.asyncio
-async def test_run_agent_progress_respects_streaming_edit_capability(monkeypatch, tmp_path):
-    """Adapters that opt out of streaming/progress edits must stay quiet.
-
-    Signal exposes explicit timestamp-based ``edit_message()`` for user/operator
-    edits, but high-frequency progress edits are noisy and timestamp-chained.
-    The progress sender should therefore honor the same narrow capability gate
-    as token streaming instead of checking only whether ``edit_message`` exists.
-    """
+async def test_run_agent_progress_respects_explicit_progress_opt_out(monkeypatch, tmp_path):
+    """An adapter can allow explicit edits while keeping progress disabled."""
     monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "all")
 
     fake_dotenv = types.ModuleType("dotenv")
@@ -389,6 +470,90 @@ async def test_run_agent_progress_respects_streaming_edit_capability(monkeypatch
 
     assert result["final_response"] == "done"
     assert adapter.sent == []
+    assert adapter.edits == []
+
+
+@pytest.mark.asyncio
+async def test_run_agent_progress_adopts_timestamp_chain_targets(monkeypatch, tmp_path):
+    """Opted-in Signal progress edits must target each freshly minted timestamp."""
+    fake_dotenv = types.ModuleType("dotenv")
+    setattr(fake_dotenv, "load_dotenv", lambda *args, **kwargs: None)
+    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
+
+    fake_run_agent = types.ModuleType("run_agent")
+    setattr(fake_run_agent, "AIAgent", TimestampChainProgressAgent)
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+    import tools.terminal_tool  # noqa: F401 - register terminal emoji for this fake-agent test
+
+    adapter = TimestampChainProgressAdapter()
+    runner = _make_runner(adapter)
+    gateway_run = importlib.import_module("gateway.run")
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "fake"})
+    (tmp_path / "config.yaml").write_text(
+        "display:\n"
+        "  platforms:\n"
+        "    signal:\n"
+        "      tool_progress: all\n",
+        encoding="utf-8",
+    )
+    source = SessionSource(platform=Platform.SIGNAL, chat_id="+155****4567", chat_type="dm")
+
+    result = await runner._run_agent(
+        message="hello",
+        context_prompt="",
+        history=[],
+        source=source,
+        session_id="sess-signal-progress-chain",
+        session_key="agent:main:signal:dm:+155****4567",
+    )
+
+    assert result["final_response"] == "done"
+    assert len(adapter.sent) == 1
+    assert len(adapter.edits) >= 2
+    assert [call["message_id"] for call in adapter.edits[:2]] == [
+        "progress-1",
+        "progress-2",
+    ]
+    assert [len(call["content"].splitlines()) for call in adapter.edits[:2]] == [2, 3]
+
+
+@pytest.mark.asyncio
+async def test_run_agent_progress_degrades_to_separate_lines_without_message_id(
+    monkeypatch,
+    tmp_path,
+):
+    """Missing edit handles must not replay the accumulated progress transcript."""
+    monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "all")
+
+    fake_dotenv = types.ModuleType("dotenv")
+    setattr(fake_dotenv, "load_dotenv", lambda *args, **kwargs: None)
+    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
+
+    fake_run_agent = types.ModuleType("run_agent")
+    setattr(fake_run_agent, "AIAgent", TimestampChainProgressAgent)
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+    import tools.terminal_tool  # noqa: F401 - register terminal emoji for this fake-agent test
+
+    adapter = MissingIdProgressAdapter()
+    runner = _make_runner(adapter)
+    gateway_run = importlib.import_module("gateway.run")
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "fake"})
+    source = SessionSource(platform=Platform.SIGNAL, chat_id="+155****4567", chat_type="dm")
+
+    result = await runner._run_agent(
+        message="hello",
+        context_prompt="",
+        history=[],
+        source=source,
+        session_id="sess-signal-progress-no-id",
+        session_key="agent:main:signal:dm:+155****4567",
+    )
+
+    assert result["final_response"] == "done"
+    assert len(adapter.sent) == 3
+    assert [len(call["content"].splitlines()) for call in adapter.sent] == [1, 1, 1]
     assert adapter.edits == []
 
 

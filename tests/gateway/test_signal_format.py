@@ -451,11 +451,12 @@ class TestSignalStreamingPatch:
         }
         return SignalAdapter(config)
 
-    def test_signal_supports_explicit_edit_but_not_streaming_edits(self, monkeypatch):
-        """Explicit edit_message is separate from noisy stream-progress edits."""
+    def test_signal_supports_explicit_and_opt_in_progress_edits(self, monkeypatch):
+        """Signal edits tool progress only when display settings opt in."""
         monkeypatch.setenv("SIGNAL_GROUP_ALLOWED_USERS", "")
         assert SignalAdapter.SUPPORTS_MESSAGE_EDITING is True
         assert SignalAdapter.SUPPORTS_STREAMING_EDITS is False
+        assert SignalAdapter.SUPPORTS_PROGRESS_EDITS is True
 
     @pytest.mark.asyncio
     async def test_send_returns_signal_timestamp_as_message_id(self, monkeypatch):

@@ -256,13 +256,14 @@ class SignalAdapter(BasePlatformAdapter):
     """Signal messenger adapter using signal-cli HTTP daemon."""
 
     platform = Platform.SIGNAL
-    # signal-cli exposes explicit message edits via send(editTimestamp=...).
-    # Keep high-frequency gateway streaming/tool-progress edits disabled: real
-    # clients surface each Signal edit as a visible edit event, so explicit edits
-    # are safe while stream-consumer cadence remains too noisy.
+    # signal-cli exposes message edits via send(editTimestamp=...). Keep
+    # token-by-token response streaming disabled, but allow the lower-frequency
+    # accumulated tool-progress bubble when the user explicitly enables it.
+    # Signal stays on the tier-low display default, so progress is off unless
+    # /verbose or a config override opts in.
     SUPPORTS_MESSAGE_EDITING = True
     SUPPORTS_STREAMING_EDITS = False
-    SUPPORTS_PROGRESS_EDITS = False
+    SUPPORTS_PROGRESS_EDITS = True
     EDIT_RESULT_ID_IS_NEXT_TARGET = True
 
     def __init__(self, config: PlatformConfig):
@@ -1163,11 +1164,15 @@ class SignalAdapter(BasePlatformAdapter):
             success, err_msg = self._validate_send_result(result)
             if not success:
                 return SendResult(success=False, error=err_msg, raw_response=result)
+            fresh_timestamp = self._extract_send_timestamp(result)
+            if fresh_timestamp is None:
+                return SendResult(
+                    success=False,
+                    error="Signal edit response missing fresh timestamp",
+                    raw_response=result,
+                )
             self._track_sent_timestamp(result)
-            return SendResult(
-                success=True,
-                message_id=self._extract_send_timestamp(result) or str(message_id),
-            )
+            return SendResult(success=True, message_id=fresh_timestamp)
         return SendResult(success=False, error="RPC edit failed")
 
     def _track_sent_timestamp(self, rpc_result) -> None:

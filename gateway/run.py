@@ -18980,10 +18980,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 return
 
             # Skip tool/thinking progress for platforms that cannot safely edit
-            # progress bubbles. Some adapters (Signal) support explicit
-            # edit_message() calls but opt out of high-frequency automatic
-            # progress edits because clients surface every edit or require
-            # timestamp-chained edit handles.
+            # progress bubbles. An adapter may support explicit edits while
+            # independently opting out of automatic progress cadence.
             if (
                 not _adapter_supports_progress_edits(adapter)
                 or type(adapter).edit_message is BasePlatformAdapter.edit_message
@@ -19034,6 +19032,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _edit_accepts_metadata = False
 
             async def _edit_progress_message(message_id: str, content: str):
+                nonlocal progress_msg_id
                 kwargs = {
                     "chat_id": source.chat_id,
                     "message_id": message_id,
@@ -19043,7 +19042,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     kwargs["finalize"] = True
                 if _edit_accepts_metadata:
                     kwargs["metadata"] = _progress_metadata
-                return await adapter.edit_message(**kwargs)
+                result = await adapter.edit_message(**kwargs)
+                progress_msg_id = next_edit_target_message_id(
+                    adapter,
+                    message_id,
+                    result,
+                )
+                return result
 
             def _progress_text(lines: list) -> str:
                 return "\n".join(str(line) for line in lines)
@@ -19253,6 +19258,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             progress_msg_id = result.message_id
                             if _cleanup_progress:
                                 _cleanup_msg_ids.append(str(result.message_id))
+                        elif result.success and can_edit:
+                            # The message was delivered but cannot be addressed
+                            # for a later edit. Degrade to one new line per update
+                            # instead of replaying the accumulated transcript.
+                            can_edit = False
 
                     _last_edit_ts = time.monotonic()
 

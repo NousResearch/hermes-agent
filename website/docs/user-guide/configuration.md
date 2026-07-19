@@ -1546,7 +1546,7 @@ display:
 
 In the CLI, cycle through these modes with `/verbose`. To use `/verbose` in messaging platforms (Telegram, Discord, Slack, etc.), set `tool_progress_command: true` in the `display` section above. The command will then cycle the mode and save to config.
 
-Tool progress requires a gateway adapter that can display progress updates safely. Platforms without message editing support, including Signal, suppress tool-progress bubbles even if `/verbose` saves a non-`off` mode.
+Tool progress requires a gateway adapter that can display updates safely. Adapters without a usable message-edit path suppress accumulated tool-progress bubbles even if `/verbose` saves a non-`off` mode. Signal supports timestamp-based progress edits, but its built-in platform default remains `off`; enable it explicitly with `/verbose` or a per-platform override.
 
 ### Runtime-metadata footer (gateway only)
 
@@ -1578,7 +1578,7 @@ display:
   tool_progress: all          # global default
   platforms:
     signal:
-      tool_progress: 'off'    # Signal cannot currently display tool-progress bubbles
+      tool_progress: all      # opt in to one timestamp-edited Signal progress bubble
     telegram:
       tool_progress: verbose  # detailed progress on Telegram
     slack:
@@ -1587,7 +1587,7 @@ display:
 
 Platforms without an override fall back to the global `tool_progress` value. Valid platform keys: `telegram`, `discord`, `slack`, `signal`, `whatsapp`, `matrix`, `mattermost`, `email`, `sms`, `homeassistant`, `dingtalk`, `feishu`, `wecom`, `weixin`, `bluebubbles`, `qqbot`. The legacy `display.tool_progress_overrides` key still loads for backward compatibility but is deprecated and migrated into `display.platforms` on first load.
 
-Signal is listed as a valid platform key because the setting can be saved per platform, but the current Signal adapter cannot edit sent messages and does not render tool-progress bubbles. Keep Signal `tool_progress` set to `off`; use the CLI or an editing-capable messaging platform if you need to watch each tool call live.
+Signal's default remains `off` to avoid unsolicited edit traffic. When explicitly set to `new`, `all`, or `verbose`, Hermes accumulates tool activity in one Signal message and follows the fresh timestamp returned by each edit. Token-by-token assistant-response streaming remains disabled independently.
 
 `interim_assistant_messages` is gateway-only. When enabled, Hermes sends completed mid-turn assistant updates as separate chat messages. This is independent from `tool_progress` and does not require gateway streaming.
 

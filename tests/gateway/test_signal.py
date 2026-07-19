@@ -1081,14 +1081,14 @@ class TestSignalSendDocumentViaHelper:
 # ---------------------------------------------------------------------------
 
 class TestSignalStreamingCapabilities:
-    """Signal supports explicit edits but opts out of streaming edit cadence."""
+    """Signal supports explicit and opt-in progress edits, not token streaming."""
 
-    def test_signal_declares_explicit_message_editing_only(self, monkeypatch):
+    def test_signal_declares_explicit_and_progress_edit_capabilities(self, monkeypatch):
         adapter = _make_signal_adapter(monkeypatch)
 
         assert adapter.SUPPORTS_MESSAGE_EDITING is True
         assert adapter.SUPPORTS_STREAMING_EDITS is False
-        assert adapter.SUPPORTS_PROGRESS_EDITS is False
+        assert adapter.SUPPORTS_PROGRESS_EDITS is True
         assert adapter.EDIT_RESULT_ID_IS_NEXT_TARGET is True
 
     def test_gateway_streaming_capability_uses_narrow_flag(self, monkeypatch):
@@ -1103,7 +1103,25 @@ class TestSignalStreamingCapabilities:
 
         adapter = _make_signal_adapter(monkeypatch)
 
-        assert _adapter_supports_progress_edits(adapter) is False
+        assert _adapter_supports_progress_edits(adapter) is True
+
+    def test_signal_tool_progress_remains_off_by_default(self):
+        from gateway.display_config import resolve_display_setting
+
+        assert resolve_display_setting({}, "signal", "tool_progress") == "off"
+
+    def test_signal_tool_progress_can_be_enabled_per_platform(self):
+        from gateway.display_config import resolve_display_setting
+
+        config = {
+            "display": {
+                "platforms": {
+                    "signal": {"tool_progress": "all"},
+                }
+            }
+        }
+
+        assert resolve_display_setting(config, "signal", "tool_progress") == "all"
 
     def test_streaming_capability_falls_back_to_message_editing(self):
         from gateway.run import _adapter_supports_progress_edits, _adapter_supports_streaming_edits
@@ -1179,6 +1197,24 @@ class TestSignalSendReturnsMessageId:
         assert params["editTimestamp"] == 1712345678000
         assert params["message"] == "edited hello"
         assert params["recipient"] == ["+155****4567"]
+
+    @pytest.mark.asyncio
+    async def test_edit_message_fails_without_fresh_timestamp(self, monkeypatch):
+        """A successful RPC without the next edit handle must fail closed."""
+        adapter = _make_signal_adapter(monkeypatch)
+        mock_rpc, _ = _stub_rpc({})
+        adapter._rpc = mock_rpc
+        adapter._stop_typing_indicator = AsyncMock()
+
+        result = await adapter.edit_message(
+            chat_id="+155****4567",
+            message_id="1712345678000",
+            content="edited hello",
+        )
+
+        assert result.success is False
+        assert result.message_id is None
+        assert "fresh timestamp" in result.error
 
     @pytest.mark.asyncio
     async def test_successive_edits_chain_through_fresh_timestamps(self, monkeypatch):

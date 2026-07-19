@@ -18253,14 +18253,25 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return ReplyDeliveryPolicy()
 
         if adapter and hasattr(adapter, "reply_delivery_policy"):
-            policy = adapter.reply_delivery_policy(
-                event,
-                response,
-                voice_mode=voice_mode,
-                already_sent=already_sent,
-            )
-            if isinstance(policy, ReplyDeliveryPolicy):
-                return policy
+            # Isolate adapter policy failures: a buggy callback must never
+            # disrupt final reply delivery (same pattern as
+            # _observe_inbound_message). Fall back to the legacy path below.
+            try:
+                policy = adapter.reply_delivery_policy(
+                    event,
+                    response,
+                    voice_mode=voice_mode,
+                    already_sent=already_sent,
+                )
+            except Exception:
+                logger.warning(
+                    "Adapter reply_delivery_policy failed for %s; falling back to legacy delivery",
+                    getattr(event.source.platform, "value", event.source.platform),
+                    exc_info=True,
+                )
+            else:
+                if isinstance(policy, ReplyDeliveryPolicy):
+                    return policy
 
         # Legacy fallback for adapters without a policy hook. Mirrors the
         # pre-policy inline logic, including the ``voice.auto_tts`` term

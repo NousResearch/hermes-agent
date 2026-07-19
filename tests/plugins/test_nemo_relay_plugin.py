@@ -34,7 +34,7 @@ class _FakeNemoRelay:
         self._scope_context = contextvars.ContextVar(
             "fake_nemo_relay_scope", default=None
         )
-        self.ScopeType = SimpleNamespace(Agent="agent")
+        self.ScopeType = SimpleNamespace(Agent="agent", Function="function")
         self.scope = SimpleNamespace(
             push=self._scope_push,
             pop=self._scope_pop,
@@ -49,6 +49,7 @@ class _FakeNemoRelay:
             call=self._tool_call,
             call_end=self._tool_call_end,
             execute=self._tool_execute,
+            request_intercepts=self._tool_request_intercepts,
         )
         self.plugin = SimpleNamespace(
             initialize=self._plugin_initialize,
@@ -126,9 +127,13 @@ class _FakeNemoRelay:
 
     def _tool_execute(self, name, args, func, **kwargs):
         self.events.append(("tool.execute.start", name, args, kwargs))
-        result = func({"intercepted": True, **args})
+        result = func(args)
         self.events.append(("tool.execute.end", name, result, kwargs))
         return result
+
+    def _tool_request_intercepts(self, name, args):
+        self.events.append(("tool.request_intercepts", name, args))
+        return {"intercepted": True, **args}
 
     def _make_atof_exporter(self, config):
         return _FakeAtofExporter(self.events, config)
@@ -411,8 +416,11 @@ def test_shared_metrics_and_rich_plugin_share_one_core_session(
         if item[0] == "scope.push" and item[1] == relay_runtime.SESSION_SCOPE
     ]
     assert len(session_pushes) == 1
-    register_metrics = fake.events.index(
-        ("subscribers.register", "hermes.nemo_relay.shared_metrics")
+    register_metrics = next(
+        index
+        for index, item in enumerate(fake.events)
+        if item[0] == "subscribers.register"
+        and item[1].startswith("hermes.nemo_relay.shared_metrics.")
     )
     register_atif = next(
         index for index, item in enumerate(fake.events) if item[0] == "atif.register"
@@ -575,6 +583,15 @@ def test_nemo_relay_plugin_reparents_child_session_scope_for_embedded_atif(monke
     assert child_kwargs["metadata"]["parent_session_id"] == "parent-session"
     assert runtime.sessions["child-session"].parent_session_id == "parent-session"
 
+    plugin.on_subagent_stop(
+        parent_session_id="parent-session",
+        child_session_id="child-session",
+        child_status="completed",
+    )
+
+    assert "child-session" not in runtime.sessions
+    assert runtime.host.get_session("child-session") is None
+
 
 def test_nemo_relay_plugin_skips_embedded_child_atif_file_by_default(tmp_path, monkeypatch):
     fake = _FakeNemoRelay()
@@ -698,10 +715,15 @@ def test_nemo_relay_plugin_activates_and_owns_dynamic_plugins(tmp_path, monkeypa
         request={"messages": []},
         next_call=lambda request: {"request": request},
     )
-    tool_result = plugin.on_tool_execution_middleware(
+    tool_args = relay_runtime.apply_tool_request_intercepts(
         session_id="s1",
         tool_name="fixture-tool",
         args={"value": 1},
+    )
+    tool_result = plugin.on_tool_execution_middleware(
+        session_id="s1",
+        tool_name="fixture-tool",
+        args=tool_args,
         next_call=lambda args: {"args": args},
     )
     assert llm_result["request"]["intercepted"] is True
@@ -900,7 +922,7 @@ def test_nemo_relay_managed_tool_returns_post_interceptor_result(tmp_path, monke
 
     def execute(name, args, func, **kwargs):
         fake.events.append(("tool.execute.start", name, args, kwargs))
-        raw = func({"intercepted": True, **args})
+        raw = func(args)
         result = {"compressed": True, "raw": raw}
         fake.events.append(("tool.execute.end", name, result, kwargs))
         return result
@@ -918,8 +940,64 @@ def test_nemo_relay_managed_tool_returns_post_interceptor_result(tmp_path, monke
 
     assert result == {
         "compressed": True,
-        "raw": {"tool_output": {"intercepted": True, "value": 1}},
+        "raw": {"tool_output": {"value": 1}},
     }
+
+
+def test_relay_tool_request_rewrite_precedes_hermes_authorization_boundary(
+    tmp_path,
+    monkeypatch,
+):
+    from hermes_cli.middleware import apply_tool_request_middleware
+
+    fake = _FakeNemoRelay()
+    plugin = _fresh_plugin(monkeypatch, fake)
+    _enable_dynamic_plugin(tmp_path, monkeypatch)
+    plugin.on_session_start(session_id="s1")
+
+    result = apply_tool_request_middleware(
+        "fixture-tool",
+        {"value": 1},
+        session_id="s1",
+        tool_call_id="tool-1",
+    )
+
+    assert result.payload == {"intercepted": True, "value": 1}
+    assert result.trace[0] == {"source": "nemo_relay"}
+
+
+def test_managed_tool_refuses_post_authorization_argument_rewrite(
+    tmp_path,
+    monkeypatch,
+):
+    fake = _FakeNemoRelay()
+
+    def execute(name, args, func, **kwargs):
+        del name, kwargs
+        return func({**args, "after_approval": True})
+
+    fake.tools.execute = execute
+    plugin = _fresh_plugin(monkeypatch, fake)
+    _enable_dynamic_plugin(tmp_path, monkeypatch)
+    dispatched = False
+
+    def next_call(args):
+        nonlocal dispatched
+        dispatched = True
+        return args
+
+    with pytest.raises(
+        RuntimeError,
+        match="changed tool arguments after Hermes authorization",
+    ):
+        plugin.on_tool_execution_middleware(
+            session_id="s1",
+            tool_name="fixture-tool",
+            args={"value": 1},
+            next_call=next_call,
+        )
+
+    assert not dispatched
 
 
 def test_nemo_relay_plugin_activates_before_registering_managed_middleware(tmp_path, monkeypatch):
@@ -1744,6 +1822,11 @@ mode = "observe_only"
         seen_args.update(args)
         return {"raw": True, "args": args}
 
+    approved_args = relay_runtime.apply_tool_request_intercepts(
+        session_id="s1",
+        tool_name="terminal",
+        args={"command": "pwd"},
+    )
     response = plugin.on_tool_execution_middleware(
         session_id="s1",
         task_id="t1",
@@ -1751,7 +1834,7 @@ mode = "observe_only"
         api_request_id="api-1",
         tool_name="terminal",
         tool_call_id="tool-1",
-        args={"command": "pwd"},
+        args=approved_args,
         next_call=next_call,
     )
 
@@ -1768,7 +1851,7 @@ def test_nemo_relay_adaptive_tool_execution_preserves_downstream_error(tmp_path,
     def native_like_execute(name, args, func, **kwargs):
         fake.events.append(("tool.execute.start", name, args, kwargs))
         try:
-            return func({"intercepted": True, **args})
+            return func(args)
         except Exception as exc:
             raise RuntimeError(f"internal error: {type(exc).__name__}: {exc}") from None
 
@@ -1827,7 +1910,7 @@ def test_nemo_relay_adaptive_tool_execution_keeps_wrapped_relay_error_after_down
 
     def translated_execute(name, args, func, **kwargs):
         try:
-            return func({"intercepted": True, **args})
+            return func(args)
         except Exception:
             raise relay_error
 
@@ -1859,7 +1942,7 @@ def test_nemo_relay_adaptive_tool_execution_keeps_relay_translated_error(tmp_pat
 
     def translated_execute(name, args, func, **kwargs):
         try:
-            return func({"intercepted": True, **args})
+            return func(args)
         except Exception:
             raise relay_error
 

@@ -6347,6 +6347,20 @@ class AIAgent:
             reset_conversation_context,
             set_conversation_context,
         )
+        from hermes_cli.observability.relay_shared_metrics import (
+            finish_task_run,
+            start_task_run,
+        )
+        effective_task_id = task_id or str(uuid.uuid4())
+        task_context = {
+            "session_id": self.session_id or "",
+            "task_id": effective_task_id,
+            "platform": getattr(self, "platform", None) or "",
+        }
+        start_task_run(
+            **task_context,
+            parent_session_id=getattr(self, "_parent_session_id", None) or "",
+        )
         # Publish the conversation id for ambient Nous Portal tagging. Every
         # LLM call made inside this turn — main loop, compression, vision,
         # web_extract, session_search, MoA slots, background-review forks
@@ -6368,17 +6382,23 @@ class AIAgent:
         # which may be observed from another thread.
         with scoped_runtime_main({}):
             try:
-                return run_conversation(
+                result = run_conversation(
                     self,
                     user_message,
                     system_message,
                     conversation_history,
-                    task_id,
+                    effective_task_id,
                     stream_callback,
                     persist_user_message,
                     persist_user_timestamp=persist_user_timestamp,
                     moa_config=moa_config,
                 )
+            except BaseException as exc:
+                finish_task_run(**task_context, error=exc)
+                raise
+            else:
+                finish_task_run(**task_context, result=result)
+                return result
             finally:
                 reset_accounting_context(acct_token)
                 reset_conversation_context(token)

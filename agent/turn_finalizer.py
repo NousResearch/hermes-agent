@@ -571,7 +571,9 @@ def finalize_turn(
             task_id=effective_task_id,
             turn_id=turn_id,
             completed=completed,
+            failed=failed,
             interrupted=interrupted,
+            turn_exit_reason=_turn_exit_reason,
             model=agent.model,
             platform=getattr(agent, "platform", None) or "",
         )

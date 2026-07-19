@@ -504,6 +504,20 @@ def check_compression_model_feasibility(agent: Any) -> None:
                     new_threshold / main_ctx
                 )
             safe_pct = int((aux_context / main_ctx) * 100) if main_ctx else 50
+            # The "lower the threshold" suggestion must survive the
+            # compressor's raise-only small-context floor (#67422): for main
+            # windows under 512K, _effective_threshold_percent() raises any
+            # configured value below 75% back up, so recommending e.g. 0.40
+            # would be silently ignored and this warning would reappear every
+            # session. Only offer the option when the floored value still
+            # fits the auxiliary model's context.
+            from agent.context_compressor import ContextCompressor as _CC
+
+            threshold_suggestion_viable = (
+                not main_ctx
+                or _CC._effective_threshold_percent(main_ctx, safe_pct / 100) * main_ctx
+                <= aux_context
+            )
             # Build human-readable "model (provider)" labels for both
             # the main model and the compression model so users can
             # tell at a glance which provider each side is actually
@@ -537,15 +551,30 @@ def check_compression_model_feasibility(agent: Any) -> None:
                 f"{old_threshold:,} tokens. "
                 f"Auto-lowered this session's threshold to "
                 f"{new_threshold:,} tokens so compression can run.\n"
-                f"  To make this permanent, edit config.yaml — either:\n"
-                f"  1. Use a larger compression model:\n"
-                f"       auxiliary:\n"
-                f"         compression:\n"
-                f"           model: <model-with-{old_threshold:,}+-context>\n"
-                f"  2. Lower the compression threshold:\n"
-                f"       compression:\n"
-                f"         threshold: 0.{safe_pct:02d}"
             )
+            if threshold_suggestion_viable:
+                msg += (
+                    f"  To make this permanent, edit config.yaml — either:\n"
+                    f"  1. Use a larger compression model:\n"
+                    f"       auxiliary:\n"
+                    f"         compression:\n"
+                    f"           model: <model-with-{old_threshold:,}+-context>\n"
+                    f"  2. Lower the compression threshold:\n"
+                    f"       compression:\n"
+                    f"         threshold: 0.{safe_pct:02d}"
+                )
+            else:
+                msg += (
+                    f"  To make this permanent, use a larger compression "
+                    f"model in config.yaml:\n"
+                    f"       auxiliary:\n"
+                    f"         compression:\n"
+                    f"           model: <model-with-{old_threshold:,}+-context>\n"
+                    f"  (Lowering compression.threshold cannot help here — "
+                    f"{_main_label}'s {main_ctx:,}-token window is under "
+                    f"512K, where Hermes floors the compression trigger at "
+                    f"75% and raises any lower configured value back up.)"
+                )
             agent._compression_warning = msg
             agent._emit_status(msg)
             logger.warning(

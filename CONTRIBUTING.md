@@ -395,6 +395,11 @@ You must still add the tool name to the appropriate list in `toolsets.py`
 registers but is never exposed to the agent. If you introduce a new toolset,
 add it in `toolsets.py` and wire it into the relevant platform presets.
 
+Plugin tools don't need to touch `toolsets.py`: pass
+`include_in_messaging_toolsets=True` to `ctx.register_tool(...)` (or
+`registry.register(...)`) to have the tool unioned into every toolset that
+carries the full core tool set — CLI, cron, and all messaging platforms.
+
 See `AGENTS.md` (section **Adding New Tools**) for profile-aware paths and
 plugin vs core guidance.
 

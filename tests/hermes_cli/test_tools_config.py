@@ -1830,3 +1830,173 @@ def test_save_platform_tools_disabling_a_toolset_does_not_touch_disabled_toolset
     assert "todo" not in config["platform_toolsets"]["cli"]
     # disabled_toolsets is untouched by a disable action.
     assert config["agent"]["disabled_toolsets"] == ["memory"]
+
+
+# =============================================================================
+# Messaging opt-in tools on the effective platform-schema path
+# (_get_platform_tools -> get_tool_definitions)
+# =============================================================================
+
+
+class TestMessagingOptInPlatformPath:
+    """Tools registered with include_in_messaging_toolsets=True must reach
+    ordinary CLI/gateway/cron sessions through the normal platform resolution
+    path (_get_platform_tools -> get_tool_definitions), not only when a
+    hermes-* bundle is resolved directly, while explicit webhook/ACP/API
+    exclusions and user-disable semantics stay intact."""
+
+    def _schema(self, name):
+        return {
+            "name": name,
+            "description": "test tool",
+            "parameters": {"type": "object", "properties": {}},
+        }
+
+    def _patch_registry(self, monkeypatch):
+        # Import model_tools BEFORE patching: its import runs
+        # discover_builtin_tools(), whose tool modules bind whatever registry
+        # is current at import time. Importing under the patch would register
+        # every builtin into the throwaway registry and lose them for the
+        # rest of the process.
+        import model_tools  # noqa: F401
+        from tools.registry import ToolRegistry
+
+        reg = ToolRegistry()
+        reg.register(
+            name="optin_tool",
+            toolset="notes_plugin",
+            schema=self._schema("optin_tool"),
+            handler=lambda args: "{}",
+            include_in_messaging_toolsets=True,
+        )
+        reg.register(
+            name="plain_tool",
+            toolset="notes_plugin",
+            schema=self._schema("plain_tool"),
+            handler=lambda args: "{}",
+        )
+        # resolve_toolset / _get_platform_tools late-import the module attr;
+        # model_tools binds it at import time, so patch both references.
+        monkeypatch.setattr("tools.registry.registry", reg)
+        monkeypatch.setattr("model_tools.registry", reg)
+        return reg
+
+    def _tool_names(self, config, platform):
+        """Run the real two-stage pipeline a gateway/cron/CLI session runs."""
+        from model_tools import get_tool_definitions
+
+        enabled = sorted(_get_platform_tools(config, platform))
+        agent_cfg = config.get("agent") or {}
+        disabled = agent_cfg.get("disabled_toolsets") or None
+        # quiet_mode=False bypasses the module-level definitions cache so
+        # tests with identical toolset sets can't see each other's results.
+        defs = get_tool_definitions(
+            enabled_toolsets=enabled, disabled_toolsets=disabled, quiet_mode=False
+        )
+        return {d["function"]["name"] for d in defs}
+
+    def test_optin_tool_reaches_messaging_platform_default_config(self, monkeypatch, capsys):
+        self._patch_registry(monkeypatch)
+        got = self._tool_names({}, "telegram")
+        assert "optin_tool" in got
+        assert "plain_tool" not in got
+
+    def test_optin_tool_reaches_platform_with_explicit_config_not_naming_plugin(
+        self, monkeypatch, capsys
+    ):
+        # The user saved an explicit toolset list that never mentions the
+        # plugin toolset — the opt-in must still be carried through.
+        self._patch_registry(monkeypatch)
+        config = {"platform_toolsets": {"telegram": ["terminal", "web"]}}
+        got = self._tool_names(config, "telegram")
+        assert "optin_tool" in got
+        assert "plain_tool" not in got
+
+    def test_optin_tool_reaches_cli_and_cron(self, monkeypatch, capsys):
+        self._patch_registry(monkeypatch)
+        for platform in ("cli", "cron"):
+            got = self._tool_names({}, platform)
+            assert "optin_tool" in got, platform
+            assert "plain_tool" not in got, platform
+
+    def test_optin_tool_excluded_from_webhook_and_api_server(self, monkeypatch, capsys):
+        # Raw/curated surfaces never get the union, even on default config.
+        self._patch_registry(monkeypatch)
+        for platform in ("webhook", "api_server"):
+            names = _get_platform_tools({}, platform)
+            assert "optin_tool" not in names, platform
+            got = self._tool_names({}, platform)
+            assert "optin_tool" not in got, platform
+
+    def test_optin_tool_excluded_from_acp_direct_resolution(self, monkeypatch, capsys):
+        # ACP doesn't go through _get_platform_tools; it resolves its curated
+        # bundle directly. The opt-in must not leak in there either.
+        from model_tools import get_tool_definitions
+
+        self._patch_registry(monkeypatch)
+        defs = get_tool_definitions(enabled_toolsets=["hermes-acp"], quiet_mode=False)
+        assert "optin_tool" not in {d["function"]["name"] for d in defs}
+
+    def test_user_disable_of_owning_toolset_wins(self, monkeypatch, capsys):
+        # agent.disabled_toolsets naming the plugin toolset must not be
+        # resurrected by the opt-in union.
+        self._patch_registry(monkeypatch)
+        config = {"agent": {"disabled_toolsets": ["notes_plugin"]}}
+        got = self._tool_names(config, "telegram")
+        assert "optin_tool" not in got
+        assert "plain_tool" not in got
+
+    def test_user_disable_of_the_tool_itself_wins(self, monkeypatch, capsys):
+        self._patch_registry(monkeypatch)
+        config = {"agent": {"disabled_toolsets": ["optin_tool"]}}
+        got = self._tool_names(config, "telegram")
+        assert "optin_tool" not in got
+
+    def test_user_unchecked_plugin_toolset_wins(self, monkeypatch, capsys):
+        # A plugin toolset that is known for the platform but absent from the
+        # user's saved list was explicitly disabled in `hermes tools` — the
+        # opt-in union must not bring its tools back.
+        self._patch_registry(monkeypatch)
+        monkeypatch.setattr(
+            "hermes_cli.tools_config._get_plugin_toolset_keys",
+            lambda: {"notes_plugin"},
+        )
+        config = {
+            "platform_toolsets": {"telegram": ["terminal", "web"]},
+            "known_plugin_toolsets": {"telegram": ["notes_plugin"]},
+        }
+        names = _get_platform_tools(config, "telegram")
+        assert "notes_plugin" not in names
+        assert "optin_tool" not in names
+        got = self._tool_names(config, "telegram")
+        assert "optin_tool" not in got
+
+    def test_optin_rides_along_when_plugin_toolset_enabled(self, monkeypatch, capsys):
+        # New (not-yet-known) plugin toolsets are enabled by default; the
+        # opt-in tool then arrives with its own toolset, not as a bare name.
+        self._patch_registry(monkeypatch)
+        monkeypatch.setattr(
+            "hermes_cli.tools_config._get_plugin_toolset_keys",
+            lambda: {"notes_plugin"},
+        )
+        names = _get_platform_tools({}, "telegram")
+        assert "notes_plugin" in names
+        assert "optin_tool" not in names  # no bare-name duplicate
+        got = self._tool_names({}, "telegram")
+        assert {"optin_tool", "plain_tool"} <= got
+
+    def test_explicit_empty_selection_gets_no_optin(self, monkeypatch, capsys):
+        # An explicit empty toolset list means "no tools" — same contract as
+        # the context_engine carve-out.
+        self._patch_registry(monkeypatch)
+        config = {"platform_toolsets": {"telegram": []}}
+        got = self._tool_names(config, "telegram")
+        assert "optin_tool" not in got
+
+    def test_config_editing_variant_stays_pure(self, monkeypatch, capsys):
+        # include_default_mcp_servers=False is the config-editing variant
+        # whose result may be persisted by _save_platform_tools; bare tool
+        # names must never appear there.
+        self._patch_registry(monkeypatch)
+        names = _get_platform_tools({}, "telegram", include_default_mcp_servers=False)
+        assert "optin_tool" not in names

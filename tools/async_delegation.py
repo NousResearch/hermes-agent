@@ -923,6 +923,28 @@ def interrupt_for_session(
     return count
 
 
+def interrupt_delegation(delegation_id: str, reason: str = "cancelled") -> bool:
+    """Signal one running async delegation to stop.
+
+    Returns True when an interrupt function was found and called. The worker
+    still owns final status and completion-event delivery.
+    """
+    with _records_lock:
+        record = _records.get(delegation_id)
+        if not record or record.get("status") != "running":
+            return False
+        fn = record.get("interrupt_fn")
+    if not callable(fn):
+        return False
+    try:
+        fn()
+        logger.info("Interrupted async delegation %s (%s)", delegation_id, reason)
+        return True
+    except Exception as exc:
+        logger.debug("interrupt_delegation: %s interrupt failed: %s", delegation_id, exc)
+        return False
+
+
 def _reset_for_tests() -> None:
     """Test-only: clear all state and tear down the executor."""
     global _executor, _executor_max_workers

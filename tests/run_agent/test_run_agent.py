@@ -3083,8 +3083,24 @@ class TestConcurrentToolExecution:
                 enabled_toolsets=agent.enabled_toolsets,
                 disabled_toolsets=agent.disabled_toolsets,
                 tool_request_middleware_trace=[],
+                parent_agent=agent,
             )
             assert result == "result"
+
+    def test_dynamic_workflow_tool_call_receives_parent_agent(self, agent):
+        """dynamic_workflow dispatch needs the active agent to spawn workers."""
+        tool_call = _mock_tool_call(
+            name="dynamic_workflow",
+            arguments='{"action":"dispatch_ready","workflow_id":"wf_test"}',
+            call_id="wf-1",
+        )
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tool_call])
+        messages = []
+
+        with patch("run_agent.handle_function_call", return_value='{"ok":true}') as mock_hfc:
+            agent._execute_tool_calls_sequential(mock_msg, messages, "task-1")
+
+        assert mock_hfc.call_args.kwargs["parent_agent"] is agent
 
     def test_sequential_tool_callbacks_fire_in_order(self, agent):
         tool_call = _mock_tool_call(name="web_search", arguments='{"query":"hello"}', call_id="c1")

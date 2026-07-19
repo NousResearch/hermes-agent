@@ -2031,7 +2031,7 @@ def _format_age(seconds: float) -> str:
     return f"{h}h" if m == 0 else f"{h}h{m}m"
 
 
-def _format_async_delegation(evt: dict) -> str:
+def _format_async_delegation(evt: dict) -> "str | None":
     """Format an async-delegation completion into a self-contained re-injection.
 
     Carries the FULL original task source (goal, the context the parent
@@ -2044,6 +2044,21 @@ def _format_async_delegation(evt: dict) -> str:
     import time as _time
 
     deleg_id = evt.get("delegation_id", "unknown")
+    workflow_id = evt.get("workflow_id")
+    workflow_node_id = evt.get("workflow_node_id")
+    if workflow_id and workflow_node_id:
+        try:
+            from tools.dynamic_workflow_tool import is_async_completion_reconciled
+
+            if is_async_completion_reconciled(
+                deleg_id,
+                workflow_id=workflow_id,
+                node_id=workflow_node_id,
+            ):
+                return None
+        except Exception:
+            pass
+
     goal = evt.get("goal", "") or ""
     context = evt.get("context")
     toolsets = evt.get("toolsets")

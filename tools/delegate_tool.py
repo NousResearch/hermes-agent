@@ -774,7 +774,9 @@ def _strip_blocked_tools(toolsets: List[str]) -> List[str]:
     """
     # Composite toolsets that should never pass through to children, even
     # though their individual tools aren't all in DELEGATE_BLOCKED_TOOLS.
-    _COMPOSITE_BLOCKED_TOOLSETS = frozenset({"delegation", "code_execution"})
+    _COMPOSITE_BLOCKED_TOOLSETS = frozenset(
+        {"delegation", "dynamic_workflow", "code_execution"}
+    )
     blocked_toolset_names = {
         name
         for name, defn in TOOLSETS.items()

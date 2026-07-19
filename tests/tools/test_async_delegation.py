@@ -229,6 +229,57 @@ def test_interrupt_all_signals_running_children():
     assert evt["status"] == "interrupted"
 
 
+def test_interrupt_delegation_signals_only_requested_child():
+    first = threading.Event()
+    second = threading.Event()
+    interrupted = []
+
+    def first_runner():
+        first.wait(timeout=5)
+        return {"status": "interrupted", "summary": None, "error": "cancelled"}
+
+    def second_runner():
+        second.wait(timeout=5)
+        return {"status": "completed", "summary": "ok"}
+
+    first_res = ad.dispatch_async_delegation(
+        goal="first",
+        context=None,
+        toolsets=None,
+        role="leaf",
+        model="m",
+        session_key="",
+        runner=first_runner,
+        interrupt_fn=lambda: (interrupted.append("first"), first.set()),
+        max_async_children=3,
+    )
+    second_res = ad.dispatch_async_delegation(
+        goal="second",
+        context=None,
+        toolsets=None,
+        role="leaf",
+        model="m",
+        session_key="",
+        runner=second_runner,
+        interrupt_fn=lambda: (interrupted.append("second"), second.set()),
+        max_async_children=3,
+    )
+
+    assert ad.interrupt_delegation(first_res["delegation_id"], reason="test") is True
+    assert interrupted == ["first"]
+    second.set()
+
+    events = []
+    deadline = time.monotonic() + 5
+    while len(events) < 2 and time.monotonic() < deadline:
+        evt = _drain_one(timeout=0.2)
+        if evt is not None:
+            events.append(evt)
+    by_id = {evt["delegation_id"]: evt for evt in events}
+    assert by_id[first_res["delegation_id"]]["status"] == "interrupted"
+    assert by_id[second_res["delegation_id"]]["status"] == "completed"
+
+
 def test_completed_records_pruned_to_cap():
     # Run more than the retention cap quickly; ensure list doesn't grow forever.
     for i in range(ad._MAX_RETAINED_COMPLETED + 10):

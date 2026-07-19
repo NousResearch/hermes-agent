@@ -404,6 +404,8 @@ export const ja: Translations = {
     delegationProviderLabel: "Subagent provider",
     delegationModelLabel: "Subagent model",
     delegationCustomModelPlaceholder: "Custom model ID…",
+    delegationModelOnlyOption: "Custom model",
+    delegationCredentialsInherited: "Credentials inherited from the parent agent.",
     categories: {
       general: "一般",
       agent: "エージェント",

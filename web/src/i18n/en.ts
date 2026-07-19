@@ -459,6 +459,8 @@ export const en: Translations = {
     delegationProviderLabel: "Subagent provider",
     delegationModelLabel: "Subagent model",
     delegationCustomModelPlaceholder: "Custom model ID…",
+    delegationModelOnlyOption: "Custom model",
+    delegationCredentialsInherited: "Credentials inherited from the parent agent.",
     categories: {
       general: "General",
       agent: "Agent",

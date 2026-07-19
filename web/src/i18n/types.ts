@@ -475,6 +475,8 @@ export interface Translations {
     delegationProviderLabel: string;
     delegationModelLabel: string;
     delegationCustomModelPlaceholder: string;
+    delegationModelOnlyOption: string;
+    delegationCredentialsInherited: string;
     categories: {
       general: string;
       agent: string;

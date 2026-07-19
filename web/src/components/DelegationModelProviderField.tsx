@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { Input } from "@nous-research/ui/ui/components/input";
 import { Label } from "@nous-research/ui/ui/components/label";
@@ -7,7 +7,15 @@ import { Select, SelectOption } from "@nous-research/ui/ui/components/select";
 import { api, type ModelOptionsResponse } from "@/lib/api";
 import { useI18n } from "@/i18n";
 
-const INHERIT_VALUE = "__inherit__";
+const INHERIT_VALUE = "__inherit__"
+
+// Sentinel for the "model-only" configuration: `delegation.model` is set
+// while `delegation.provider` is blank. The resolver at
+// `tools/delegate_tool.py:3139-3149` preserves parent credentials in this
+// state (documented in `website/docs/user-guide/configuration.md:2023`).
+// Surfacing this as a distinct dropdown option lets users create and edit
+// the state explicitly instead of getting it stripped by the picker.
+const MODEL_ONLY_VALUE = "__model_only__";
 
 interface DelegationValue {
   model: string;
@@ -94,22 +102,92 @@ export function DelegationModelProviderField({
     config.delegation && typeof config.delegation === "object"
       ? (config.delegation as Record<string, unknown>)
       : {};
-  const delegationModel = String(delegationBlock.model ?? "");
-  const delegationProvider = String(delegationBlock.provider ?? "");
+  // Snapshot the persisted values once on mount — used to seed the local
+  // draft state and to detect external config changes (profile switch,
+  // reset-to-defaults). Same pattern as `FallbackModelsField` on the
+  // Desktop side.
+  const persistedModel = String(delegationBlock.model ?? "");
+  const persistedProvider = String(delegationBlock.provider ?? "");
 
-  const isInherit = !delegationModel && !delegationProvider;
+  // Local draft state — owned by the component so mid-edit values
+  // (e.g. an empty input while typing) don't flip the persisted state
+  // derivation and snap the dropdown back to "Inherit". The parent only
+  // sees the commit emitted via `onChange`.
+  const [draftProvider, setDraftProvider] = useState(persistedProvider);
+  const [draftModel, setDraftModel] = useState(persistedModel);
 
-  const selectedRow = providers.find((p) => p.slug === delegationProvider);
-  const catalog = selectedRow?.models ?? [];
+  // The dropdown's selection is user INTENT — distinct from the
+  // persisted model/provider pair. Tracking it separately means selecting
+  // "Custom model" from a clean inherit state immediately shows the
+  // model-only branch (with an empty input ready for typing), instead of
+  // snapping back to inherit because the model is empty. Same for
+  // backspace mid-edit: the dropdown stays where the user left it.
+  const initialSelectValue = !persistedProvider && !persistedModel
+    ? INHERIT_VALUE
+    : !persistedProvider && persistedModel
+      ? MODEL_ONLY_VALUE
+      : persistedProvider;
+  const [providerSelectValue, setProviderSelectValue] = useState<string>(initialSelectValue);
+
+  // Track the last pair we emitted so we can ignore the autosave echo
+  // through `config` (parent writes through `onChange`, then the new
+  // config round-trips back through the `config` prop).
+  const lastEmittedRef = useRef({ provider: persistedProvider, model: persistedModel });
+
+  // Resync local draft when the persisted config changes from OUTSIDE
+  // (profile switch, reset). Skip when the change is just our own emit
+  // echoing back through the parent.
+  useEffect(() => {
+    const emitted = lastEmittedRef.current
+    if (persistedProvider === emitted.provider && persistedModel === emitted.model) {
+      return
+    }
+    setDraftProvider(persistedProvider)
+    setDraftModel(persistedModel)
+    // Also resync the dropdown's selected value to match the new
+    // persisted state — otherwise a profile switch with the same model
+    // but different provider would leave the dropdown showing the old
+    // selection.
+    setProviderSelectValue(
+      !persistedProvider && !persistedModel
+        ? INHERIT_VALUE
+        : !persistedProvider && persistedModel
+          ? MODEL_ONLY_VALUE
+          : persistedProvider
+    )
+    lastEmittedRef.current = { provider: persistedProvider, model: persistedModel }
+  }, [persistedProvider, persistedModel])
+
+  const commit = (next: { provider: string; model: string }) => {
+    lastEmittedRef.current = next
+    onChange(next)
+  }
+
+  // Three distinct picker states — derived from the LOCAL DRAFT, not
+  // the persisted config, so the model field can be empty in the
+  // model-only state without the picker flipping back to inherit.
+  //  - `isInherit`: both fields blank → use the parent's main model + credentials.
+  //  - `isModelOnly`: dropdown is on MODEL_ONLY_VALUE → use the explicit
+  //    model but inherit credentials from the parent (preserved by the
+  //    resolver at `tools/delegate_tool.py:3139-3149`).
+  //  - explicit pick → fully pinned to the chosen provider.
+  const isInherit =
+    providerSelectValue === INHERIT_VALUE ||
+    (draftProvider === "" && draftModel === "");
+  const isModelOnly =
+    providerSelectValue === MODEL_ONLY_VALUE && draftProvider === "";
+
+  const selectedRow = providers.find((p) => p.slug === draftProvider)
+  const catalog = selectedRow?.models ?? []
 
   // Keep an out-of-catalog persisted model selectable.
   const modelItems =
-    delegationModel && !catalog.includes(delegationModel)
-      ? [delegationModel, ...catalog]
-      : catalog;
+    draftModel && !catalog.includes(draftModel)
+      ? [draftModel, ...catalog]
+      : catalog
 
   const providerHasEmptyCatalog =
-    delegationProvider !== "" && catalog.length === 0;
+    draftProvider !== "" && catalog.length === 0
 
   // Compute "what's being inherited" once for the helper line.
   const inheritedDisplay =
@@ -125,20 +203,24 @@ export function DelegationModelProviderField({
         <p className="text-xs text-warning">{c.delegationLoadFailed}</p>
         <Input
           className="text-xs"
-          onChange={(e) => onChange({ provider: e.target.value, model: "" })}
+          onChange={(e) => {
+            setDraftProvider(e.target.value)
+            commit({ provider: e.target.value, model: draftModel })
+          }}
           placeholder={c.delegationProviderLabel}
-          value={delegationProvider}
+          value={draftProvider}
         />
         <Input
           className="text-xs"
-          onChange={(e) =>
-            onChange({ provider: delegationProvider, model: e.target.value })
-          }
+          onChange={(e) => {
+            setDraftModel(e.target.value)
+            commit({ provider: draftProvider, model: e.target.value })
+          }}
           placeholder={c.delegationCustomModelPlaceholder}
-          value={delegationModel}
+          value={draftModel}
         />
       </div>
-    );
+    )
   }
 
   return (
@@ -146,19 +228,37 @@ export function DelegationModelProviderField({
       <Label className="text-sm">{c.delegationProviderLabel}</Label>
       <Select
         disabled={isLoading}
-        value={isInherit ? INHERIT_VALUE : delegationProvider}
+        value={providerSelectValue}
         onValueChange={(next) => {
+          // The dropdown's selected value is user INTENT — track it
+          // explicitly so it doesn't flip back when the persisted model
+          // is briefly empty (mid-edit, model-only entry, etc).
+          setProviderSelectValue(next)
           if (next === INHERIT_VALUE) {
-            onChange({ provider: "", model: "" });
+            // Full inherit — clear both fields locally and commit.
+            setDraftProvider("")
+            setDraftModel("")
+            commit({ provider: "", model: "" })
+          } else if (next === MODEL_ONLY_VALUE) {
+            // Model-only — clear the provider, keep the current draft
+            // model (preserves whatever the user typed mid-edit) so the
+            // resolver sees a coherent `provider="", model="…"` pair.
+            setDraftProvider("")
+            commit({ provider: "", model: draftModel })
           } else {
-            // Switching providers clears the model — old provider's model
-            // paired with the new provider would never resolve at the gateway.
-            onChange({ provider: next, model: "" });
+            // Switching to an explicit provider clears the model — the old
+            // provider's model wouldn't resolve at the gateway.
+            setDraftProvider(next)
+            setDraftModel("")
+            commit({ provider: next, model: "" })
           }
         }}
       >
         <SelectOption value={INHERIT_VALUE}>
           {c.delegationInheritFromMain}
+        </SelectOption>
+        <SelectOption value={MODEL_ONLY_VALUE}>
+          {c.delegationModelOnlyOption}
         </SelectOption>
         {providers.map((p) => (
           <SelectOption key={p.slug} value={p.slug}>
@@ -176,26 +276,50 @@ export function DelegationModelProviderField({
         <p className="text-xs text-text-secondary">
           {c.delegationCurrentlyInheriting(inheritedDisplay)}
         </p>
+      ) : isModelOnly ? (
+        // Model-only/provider-inherit — free-text input so the user can
+        // edit the model; helper line explains the credentials-inherited
+        // behavior. Stays mounted across edits so a brief empty value
+        // (mid-type) doesn't unmount the input.
+        <>
+          <Label className="text-sm">{c.delegationModelLabel}</Label>
+          <Input
+            aria-label={c.delegationModelLabel}
+            className="text-xs"
+            onChange={(e) => {
+              setDraftModel(e.target.value)
+              commit({ provider: "", model: e.target.value })
+            }}
+            placeholder={c.delegationCustomModelPlaceholder}
+            value={draftModel}
+          />
+          <p className="text-xs text-text-secondary">
+            {c.delegationCredentialsInherited}
+          </p>
+        </>
       ) : providerHasEmptyCatalog ? (
         <>
           <Label className="text-sm">{c.delegationModelLabel}</Label>
           <Input
+            aria-label={c.delegationModelLabel}
             className="text-xs"
-            onChange={(e) =>
-              onChange({ provider: delegationProvider, model: e.target.value })
-            }
+            onChange={(e) => {
+              setDraftModel(e.target.value)
+              commit({ provider: draftProvider, model: e.target.value })
+            }}
             placeholder={c.delegationCustomModelPlaceholder}
-            value={delegationModel}
+            value={draftModel}
           />
         </>
       ) : (
         <>
           <Label className="text-sm">{c.delegationModelLabel}</Label>
           <Select
-            value={delegationModel}
-            onValueChange={(next) =>
-              onChange({ provider: delegationProvider, model: next })
-            }
+            value={draftModel}
+            onValueChange={(next) => {
+              setDraftModel(next)
+              commit({ provider: draftProvider, model: next })
+            }}
           >
             {modelItems.map((model) => (
               <SelectOption key={model} value={model}>

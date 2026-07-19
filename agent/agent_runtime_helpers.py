@@ -748,27 +748,17 @@ def strip_think_blocks(agent, content: str) -> str:
     # object, got 'list'``, which the outer conversation loop swallows and
     # retries forever (observed as an infinite "preparing terminal…" loop on
     # Anthropic models via OpenRouter).  Flatten here so every caller is safe.
+    #
+    # This helper intentionally delegates all content-shape handling to the
+    # canonical projector in ``agent.message_content`` (single owner): typed
+    # text parts are concatenated with no inserted separator (``sep=""``) so
+    # provider-split tags like ``<thi`` + ``nk>`` are reassembled exactly
+    # before the scrubber runs, and unknown objects return "" instead of
+    # being stringified into visible text.
     if not isinstance(content, str):
-        if isinstance(content, list):
-            _parts: list[str] = []
-            for _part in content:
-                if isinstance(_part, str):
-                    _parts.append(_part)
-                elif isinstance(_part, dict):
-                    _ptype = str(_part.get("type") or "").strip().lower()
-                    # Drop reasoning/thinking blocks outright — this function's
-                    # whole job is to strip them, and their text lives under
-                    # different keys ("thinking", "reasoning") per provider.
-                    if _ptype in {"thinking", "reasoning", "redacted_thinking"}:
-                        continue
-                    _text = _part.get("text")
-                    if isinstance(_text, str) and _text:
-                        _parts.append(_text)
-            content = "".join(_parts)
-        elif isinstance(content, dict):
-            content = str(content.get("text") or content.get("content") or "")
-        else:
-            content = str(content)
+        from agent.message_content import flatten_message_text
+
+        content = flatten_message_text(content, sep="")
         if not content:
             return ""
     # 1. Closed tag pairs — case-insensitive for all variants so

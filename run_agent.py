@@ -4986,7 +4986,7 @@ class AIAgent:
         if visible:
             return visible
         content = assistant_msg.get("content")
-        return self._strip_think_blocks(flatten_message_text(content)).strip()
+        return self._strip_think_blocks(flatten_message_text(content, sep="")).strip()
 
     def _interim_text_was_delivered(self, text: str) -> bool:
         normalized = self._normalize_interim_visible_text(text)

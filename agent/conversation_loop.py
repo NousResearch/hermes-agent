@@ -1796,7 +1796,11 @@ def run_conversation(
                         )
                     else:
                         _refusal_result = _refusal_transport.normalize_response(response)
-                    _refusal_text = (getattr(_refusal_result, "content", None) or "").strip()
+                    from agent.message_content import flatten_message_text
+
+                    _refusal_text = flatten_message_text(
+                        getattr(_refusal_result, "content", None), sep=""
+                    ).strip()
                     # Some refusals carry the explanation only in the reasoning
                     # channel; fall back to it so the user sees *something*.
                     if not _refusal_text:
@@ -1908,6 +1912,14 @@ def run_conversation(
                     _trunc_msg = _trunc_result
 
                     _trunc_content = getattr(_trunc_msg, "content", None) if _trunc_msg else None
+                    if _trunc_content is not None and not isinstance(_trunc_content, str):
+                        # Project structured content to visible text via the
+                        # canonical projector before any regex/strip sink —
+                        # typed parts join without separators, unknown
+                        # structures drop out instead of crashing here.
+                        from agent.message_content import flatten_message_text
+
+                        _trunc_content = flatten_message_text(_trunc_content, sep="")
                     _trunc_has_tool_calls = bool(getattr(_trunc_msg, "tool_calls", None)) if _trunc_msg else False
 
                     # ── Detect thinking-budget exhaustion ──────────────
@@ -2027,8 +2039,18 @@ def run_conversation(
                             length_continue_retries += 1
                             interim_msg = agent._build_assistant_message(assistant_message, finish_reason)
                             messages.append(interim_msg)
-                            if assistant_message.content:
-                                truncated_response_parts.append(assistant_message.content)
+                            # Project the raw content to visible text via the
+                            # canonical projector (no TypeError on list), but
+                            # WITHOUT build_assistant_message's .strip() — the
+                            # continuation join must preserve the truncated
+                            # fragment byte-for-byte (e.g. trailing spaces).
+                            from agent.message_content import flatten_message_text
+
+                            _trunc_partial = flatten_message_text(
+                                getattr(assistant_message, "content", None), sep=""
+                            )
+                            if _trunc_partial:
+                                truncated_response_parts.append(_trunc_partial)
 
                             if length_continue_retries < 4:
                                 _is_partial_stream_stub = (
@@ -4444,26 +4466,23 @@ def run_conversation(
             assistant_message = normalized
             finish_reason = normalized.finish_reason
             
-            # Normalize content to string — some OpenAI-compatible servers
-            # (llama-server, etc.) return content as a dict or list instead
-            # of a plain string, which crashes downstream .strip() calls.
+            # Normalize visible content to a string BEFORE any downstream
+            # string sink — some OpenAI-compatible servers return content as
+            # a dict or list instead of a plain string, which crashes
+            # downstream .strip()/regex calls. This goes through the canonical
+            # projector in agent.message_content (single owner): typed text
+            # parts are concatenated without inserting separators, and
+            # images, metadata and unknown structures are dropped instead of
+            # being stringified into visible text.
             if assistant_message.content is not None and not isinstance(assistant_message.content, str):
-                raw = assistant_message.content
-                if isinstance(raw, dict):
-                    assistant_message.content = raw.get("text", "") or raw.get("content", "") or json.dumps(raw)
-                elif isinstance(raw, list):
-                    # Multimodal content list — extract text parts
-                    parts = []
-                    for part in raw:
-                        if isinstance(part, str):
-                            parts.append(part)
-                        elif isinstance(part, dict) and part.get("type") == "text":
-                            parts.append(part.get("text", ""))
-                        elif isinstance(part, dict) and "text" in part:
-                            parts.append(str(part["text"]))
-                    assistant_message.content = "\n".join(parts)
-                else:
-                    assistant_message.content = str(raw)
+                from agent.message_content import flatten_message_text
+                # Preserve structured reasoning BEFORE projecting, otherwise
+                # thinking/reasoning blocks die here before
+                # build_assistant_message can capture them.
+                _extracted_reasoning = agent._extract_reasoning(assistant_message)
+                if _extracted_reasoning and not getattr(assistant_message, "reasoning", None):
+                    assistant_message.reasoning = _extracted_reasoning
+                assistant_message.content = flatten_message_text(assistant_message.content, sep="")
 
             try:
                 from hermes_cli.plugins import (
@@ -4593,7 +4612,10 @@ def run_conversation(
                     # dedup and causes message storms (#52711).
                     last_interim_visible = (
                         agent._interim_assistant_visible_text(last_msg)
-                        if isinstance(last_msg, dict)
+                        if (
+                            isinstance(last_msg, dict)
+                            and last_msg.get("role") == "assistant"
+                        )
                         else ""
                     )
                     current_interim_visible = agent._interim_assistant_visible_text(interim_msg)
@@ -4992,7 +5014,10 @@ def run_conversation(
                 current_interim_visible = agent._interim_assistant_visible_text(assistant_msg)
                 previous_interim_visible = (
                     agent._interim_assistant_visible_text(previous_msg)
-                    if isinstance(previous_msg, dict)
+                    if (
+                        isinstance(previous_msg, dict)
+                        and previous_msg.get("role") == "assistant"
+                    )
                     else ""
                 )
                 duplicate_previous_interim = (

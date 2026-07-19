@@ -23,8 +23,10 @@ Design:
 - Frozen snapshot pattern: system prompt is stable, tool responses show live state
 """
 
+import hashlib
 import json
 import logging
+import re
 import os
 import tempfile
 import time
@@ -55,6 +57,78 @@ logger = logging.getLogger(__name__)
 def get_memory_dir() -> Path:
     """Return the profile-scoped memories directory."""
     return get_hermes_home() / "memories"
+
+
+def _sanitize_user_scope(key: str) -> str:
+    """Normalize a user-scope key to a filesystem-safe slug ("" = legacy).
+
+    Lossy by design — meant for ADMIN-CHOSEN keys (registry ``key`` values,
+    ``memory.default_user_key``) where "Owner" and "owner" are the same
+    person, and for re-sanitizing already-resolved scopes (idempotent: any
+    resolved scope is a clean slug and passes through unchanged). Raw
+    platform ids take the collision-resistant :func:`_isolated_id_scope`
+    path instead.
+    """
+    return re.sub(r"[^a-z0-9_-]", "", (key or "").strip().lower())
+
+
+def _isolated_id_scope(user_id: str, platform: str = "") -> str:
+    """Collision-resistant scope for an UNREGISTERED platform user id.
+
+    Platform-qualified ("<platform>-<id>") so equal raw ids from different
+    platforms can never share a profile, and digest-hardened: whenever
+    slugging would alter the qualified id (case-folding, dropped characters)
+    a short stable digest of the raw value is appended, so distinct ids can
+    never merge into one scope ("a/b" vs "ab", "UCx" vs "ucx", or two
+    all-symbol ids).
+    """
+    raw = f"{platform}-{user_id}" if platform else user_id
+    slug = re.sub(r"[^a-z0-9_-]", "", raw.lower())
+    if slug == raw:
+        return slug
+    digest = hashlib.sha256(raw.encode("utf-8", "replace")).hexdigest()[:8]
+    return f"{slug}-{digest}" if slug else f"u-{digest}"
+
+
+def resolve_user_scope(user_id: Optional[str], mem_config: Dict[str, Any],
+                       platform: Optional[str] = None) -> str:
+    """Map a platform user_id to a USER.md scope key.
+
+    Returns "" (legacy shared USER.md) unless memory.per_user_profiles is
+    enabled. With the flag on:
+      - a session WITHOUT a user_id (CLI, cron) uses memory.default_user_key;
+      - a user_id listed in the registry file (memory.users_registry, default
+        <hermes_home>/data/users.json, schema {"users": {"<id>": {"key": ...}}})
+        maps to that entry's key; a platform-qualified entry
+        ("<platform>:<id>") takes precedence over a bare "<id>" one;
+      - an unlisted user_id falls back to its own platform-qualified,
+        collision-resistant scope ("<platform>-<id>" fed through
+        _sanitize_user_scope), so unknown speakers get an isolated profile
+        and equal raw ids from different platforms can never share one.
+    """
+    if not mem_config or not mem_config.get("per_user_profiles", False):
+        return ""
+    uid = str(user_id or "").strip()
+    if not uid:
+        return _sanitize_user_scope(str(mem_config.get("default_user_key", "")))
+    plat = str(platform or "").strip().lower()
+    reg_path = str(mem_config.get("users_registry", "") or
+                   (get_hermes_home() / "data" / "users.json"))
+    key = ""
+    try:
+        with open(reg_path, encoding="utf-8") as fh:
+            users = json.load(fh).get("users") or {}
+        entry = users.get(f"{plat}:{uid}") if plat else None
+        if entry is None:
+            entry = users.get(uid)
+        if isinstance(entry, dict):
+            key = str(entry.get("key", ""))
+    except Exception:
+        key = ""
+    scoped = _sanitize_user_scope(key)
+    if scoped:
+        return scoped
+    return _isolated_id_scope(uid, plat)
 
 ENTRY_DELIMITER = "\n§\n"
 
@@ -127,9 +201,13 @@ class MemoryStore:
     # turn to budget exhaustion and suppress the user's reply (issue #42405).
     _MAX_CONSOLIDATION_FAILURES_PER_TURN = 3
 
-    def __init__(self, memory_char_limit: int = 2200, user_char_limit: int = 1375):
+    def __init__(self, memory_char_limit: int = 2200, user_char_limit: int = 1375,
+                 user_scope: str = ""):
         self.memory_entries: List[str] = []
         self.user_entries: List[str] = []
+        # Scope key for the USER.md profile ("" = legacy shared file).
+        # MEMORY.md is always shared; only the user profile is per-person.
+        self.user_scope = _sanitize_user_scope(user_scope)
         self.memory_char_limit = memory_char_limit
         self.user_char_limit = user_char_limit
         # Frozen snapshot for system prompt -- set once at load_from_disk()
@@ -186,7 +264,7 @@ class MemoryStore:
         mem_dir.mkdir(parents=True, exist_ok=True)
 
         self.memory_entries = self._read_file(mem_dir / "MEMORY.md")
-        self.user_entries = self._read_file(mem_dir / "USER.md")
+        self.user_entries = self._read_file(self._path_for("user"))
 
         # Deduplicate entries (preserves order, keeps first occurrence)
         self.memory_entries = list(dict.fromkeys(self.memory_entries))
@@ -277,10 +355,11 @@ class MemoryStore:
                     pass
             fd.close()
 
-    @staticmethod
-    def _path_for(target: str) -> Path:
+    def _path_for(self, target: str) -> Path:
         mem_dir = get_memory_dir()
         if target == "user":
+            if self.user_scope:
+                return mem_dir / "users" / self.user_scope / "USER.md"
             return mem_dir / "USER.md"
         return mem_dir / "MEMORY.md"
 
@@ -308,8 +387,9 @@ class MemoryStore:
 
     def save_to_disk(self, target: str):
         """Persist entries to the appropriate file. Called after every mutation."""
-        get_memory_dir().mkdir(parents=True, exist_ok=True)
-        self._write_file(self._path_for(target), self._entries_for(target))
+        path = self._path_for(target)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        self._write_file(path, self._entries_for(target))
 
     def _entries_for(self, target: str) -> List[str]:
         if target == "user":
@@ -788,7 +868,7 @@ class MemoryStore:
             raise RuntimeError(f"Failed to write memory file {path}: {e}")
 
 
-def load_on_disk_store() -> "MemoryStore":
+def load_on_disk_store(user_scope: str = "") -> "MemoryStore":
     """Build a fresh on-disk :class:`MemoryStore`, honoring configured char limits.
 
     Use this from any context that has no live agent (the messaging gateway, the
@@ -797,6 +877,9 @@ def load_on_disk_store() -> "MemoryStore":
     in ``agent/agent_init.py`` — including the user's ``memory.memory_char_limit``
     / ``memory.user_char_limit`` overrides — so an approval applied without a live
     agent enforces the SAME caps as one applied with one.
+
+    ``user_scope`` selects a per-user USER.md profile ("" = legacy shared file);
+    pass a staged payload's recorded scope when replaying approved writes.
 
     Falls back to the built-in defaults if config can't be loaded, so this can
     never raise on a missing/unreadable config.
@@ -815,18 +898,23 @@ def load_on_disk_store() -> "MemoryStore":
     store = MemoryStore(
         memory_char_limit=memory_char_limit,
         user_char_limit=user_char_limit,
+        user_scope=user_scope,
     )
     store.load_from_disk()
     return store
 
 
 def _apply_write_gate(action: str, target: str, content: Optional[str],
-                      old_text: Optional[str]) -> Optional[str]:
+                      old_text: Optional[str],
+                      user_scope: str = "") -> Optional[str]:
     """Evaluate the memory write gate. Returns a JSON tool-result string when
     the write should NOT proceed normally (blocked or staged), or None when the
     caller should perform the real write.
 
-    Only the mutating actions (add/replace/remove) are gated.
+    Only the mutating actions (add/replace/remove) are gated. ``user_scope``
+    (the staging store's per-user profile scope) is recorded in the staged
+    payload so approval replay writes to the same profile the write was
+    created under — the approver's own store may be scoped differently.
     """
     if action not in {"add", "replace", "remove"}:
         return None
@@ -864,6 +952,7 @@ def _apply_write_gate(action: str, target: str, content: Optional[str],
         "target": target,
         "content": content,
         "old_text": old_text,
+        "user_scope": user_scope,
     }
     record = wa.stage_write(
         wa.MEMORY, payload,
@@ -877,12 +966,16 @@ def _apply_write_gate(action: str, target: str, content: Optional[str],
     )
 
 
-def _apply_batch_write_gate(target: str, operations: List[Dict[str, Any]]) -> Optional[str]:
+def _apply_batch_write_gate(target: str, operations: List[Dict[str, Any]],
+                            user_scope: str = "") -> Optional[str]:
     """Evaluate the write gate for a batch of memory operations.
 
     Returns a JSON tool-result string when the batch should NOT proceed
     (blocked or staged), or None when the caller should perform the real
-    batch write. The whole batch is gated as a single unit.
+    batch write. The whole batch is gated as a single unit. ``user_scope``
+    is recorded in the staged payload for the same reason as in
+    :func:`_apply_write_gate` — approval replay must target the profile the
+    batch was staged under.
     """
     try:
         from tools import write_approval as wa
@@ -911,7 +1004,8 @@ def _apply_batch_write_gate(target: str, operations: List[Dict[str, Any]]) -> Op
     if decision.blocked:
         return tool_error(decision.message, success=False)
 
-    payload = {"action": "batch", "target": target, "operations": operations}
+    payload = {"action": "batch", "target": target, "operations": operations,
+               "user_scope": user_scope}
     record = wa.stage_write(
         wa.MEMORY, payload,
         summary=f"{summary}: {detail[:120]}",
@@ -990,7 +1084,8 @@ def memory_tool(
     if operations:
         if not isinstance(operations, list):
             return tool_error("operations must be a list of {action, content?, old_text?} objects.", success=False)
-        gate_result = _apply_batch_write_gate(target, operations)
+        gate_result = _apply_batch_write_gate(target, operations,
+                                              user_scope=store.user_scope)
         if gate_result is not None:
             return gate_result
         result = store.apply_batch(target, operations)
@@ -1015,7 +1110,8 @@ def memory_tool(
 
     # Approval gate: when on, stages the write (background/gateway) or prompts
     # inline (interactive CLI); when off (default) passes straight through.
-    gate_result = _apply_write_gate(action, target, content, old_text)
+    gate_result = _apply_write_gate(action, target, content, old_text,
+                                    user_scope=store.user_scope)
     if gate_result is not None:
         return gate_result
 
@@ -1043,12 +1139,25 @@ def apply_memory_pending(payload: Dict[str, Any], store: "MemoryStore") -> Dict[
     """Replay a staged memory write directly against the store, bypassing the
     write gate. Called by the /memory approve handler.
 
+    The staged payload records the ``user_scope`` it was created under
+    (per-user USER.md profiles). The approver's store may be scoped
+    differently — the gateway applies against an unscoped on-disk store, an
+    interactive CLI against its own session's store — so recover the staged
+    scope and rebuild the store when they differ; otherwise an approved
+    ``user`` write would land in the approver's profile instead of the
+    stager's. Payloads staged before scopes existed carry no ``user_scope``
+    and keep applying to the legacy shared USER.md.
+
     Returns the store's result dict.
     """
     action = payload.get("action")
     target = payload.get("target", "memory")
     content = payload.get("content") or ""
     old_text = payload.get("old_text") or ""
+    if target == "user":
+        staged_scope = _sanitize_user_scope(str(payload.get("user_scope", "") or ""))
+        if staged_scope != getattr(store, "user_scope", ""):
+            store = load_on_disk_store(user_scope=staged_scope)
     if action == "batch":
         return store.apply_batch(target, payload.get("operations") or [])
     if action == "add":

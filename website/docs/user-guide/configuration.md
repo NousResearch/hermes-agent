@@ -618,9 +618,14 @@ memory:
   memory_char_limit: 2200   # ~800 tokens
   user_char_limit: 1375     # ~500 tokens
   write_approval: false     # true = require approval before any memory write
+  per_user_profiles: false  # true = per-user USER.md profiles on multi-user gateways
+  users_registry: ""        # optional id→key registry; empty = ~/.hermes/data/users.json
+  default_user_key: ""      # profile scope for sessions without a user_id (CLI, cron)
 ```
 
 With `memory.write_approval: true`, memory writes need your approval before they land: interactive CLI turns prompt inline; messaging sessions and the background self-improvement review stage the write for `/memory pending` → `/memory approve <id>` / `/memory reject <id>` review. Toggle at runtime with `/memory approval on|off`. See [Controlling memory writes](/user-guide/features/memory#controlling-memory-writes-write_approval).
+
+With `memory.per_user_profiles: true`, the memory tool's `user` target becomes per person: each platform user id maps to `memories/users/<key>/USER.md`, while `MEMORY.md` stays shared. `<key>` resolves from the registry file (schema `{"users": {"telegram:12345": {"key": "alice"}}}`; a platform-qualified `"<platform>:<id>"` entry wins over a bare `"<id>"` one). Ids not in the registry get their own isolated, collision-resistant scope — an unknown speaker never inherits someone else's profile — and sessions without a user id (CLI, cron) use `memory.default_user_key` (empty = legacy shared file). Staged writes record the scope they were created under, so approving them later from another session or platform still lands them in the right profile.
 
 ## Context File Truncation
 

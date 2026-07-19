@@ -25,6 +25,7 @@ from .shared_metrics_contract import (
 _PACKAGE_SCHEMA_VERSION = "hermes.shared_metrics.v1"
 _STORE_SCHEMA_VERSION = "1"
 _BUSY_TIMEOUT_MS = 250
+_SCHEMA_BUSY_TIMEOUT_MS = 5_000
 
 
 def _utc_now() -> datetime:
@@ -140,14 +141,18 @@ class SharedMetricsStore:
         ]
 
     @contextmanager
-    def _connection(self) -> Iterator[sqlite3.Connection]:
+    def _connection(
+        self,
+        *,
+        busy_timeout_ms: int = _BUSY_TIMEOUT_MS,
+    ) -> Iterator[sqlite3.Connection]:
         connection = sqlite3.connect(
             self.database_path,
-            timeout=_BUSY_TIMEOUT_MS / 1000,
+            timeout=busy_timeout_ms / 1000,
         )
         try:
             connection.row_factory = sqlite3.Row
-            connection.execute(f"PRAGMA busy_timeout={_BUSY_TIMEOUT_MS}")
+            connection.execute(f"PRAGMA busy_timeout={busy_timeout_ms}")
             with connection:
                 yield connection
         finally:
@@ -170,7 +175,7 @@ class SharedMetricsStore:
             pass
 
     def _ensure_schema(self) -> None:
-        with self._connection() as connection:
+        with self._connection(busy_timeout_ms=_SCHEMA_BUSY_TIMEOUT_MS) as connection:
             # Serialize first-run creation and upgrades across Hermes processes.
             with write_txn(connection):
                 self._ensure_schema_in_transaction(connection)

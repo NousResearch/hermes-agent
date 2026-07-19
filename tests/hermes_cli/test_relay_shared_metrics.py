@@ -8,6 +8,7 @@ import os
 import sqlite3
 import stat
 import threading
+import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
@@ -720,6 +721,30 @@ def test_cross_process_model_call_updates_are_transactional(tmp_path):
 
     restarted = SharedMetricsStore(database_path, outbox_directory)
     assert restarted.counter_snapshot()[0]["value"] == 20
+
+
+def test_schema_initialization_waits_for_an_existing_writer(tmp_path):
+    database_path = tmp_path / "metrics.sqlite3"
+    outbox_directory = tmp_path / "outbox"
+    database_path.touch()
+    blocker = sqlite3.connect(database_path)
+    blocker.execute("BEGIN IMMEDIATE")
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(
+            SharedMetricsStore,
+            database_path,
+            outbox_directory,
+        )
+        try:
+            time.sleep(0.4)
+            assert not future.done()
+        finally:
+            blocker.rollback()
+            blocker.close()
+        store = future.result(timeout=2)
+
+    assert store.counter_snapshot() == []
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX permission modes are unavailable")

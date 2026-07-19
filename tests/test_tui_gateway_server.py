@@ -7795,6 +7795,63 @@ def test_model_options_preserves_canonical_custom_row_after_agent_init(monkeypat
     )
 
 
+def test_model_save_key_uses_credential_lifecycle_and_picker_context(monkeypatch):
+    env_var = "TEST_PROVIDER_API_KEY"
+    agent = object()
+    picker_ctx = object()
+    provider = {
+        "slug": "test-provider",
+        "name": "Test Provider",
+        "models": ["test-model"],
+        "total_models": 1,
+    }
+    server._sessions["save-key-session"] = _session(agent=agent)
+    monkeypatch.setattr(
+        "hermes_cli.auth.PROVIDER_REGISTRY",
+        {
+            "test-provider": types.SimpleNamespace(
+                name="Test Provider",
+                auth_type="api_key",
+                api_key_env_vars=(env_var,),
+            )
+        },
+    )
+    monkeypatch.setattr("hermes_cli.config.is_managed", lambda: False)
+    save_credential = Mock()
+    monkeypatch.setattr(
+        "hermes_cli.credential_lifecycle.save_provider_env_credential",
+        save_credential,
+    )
+    picker_context = Mock(return_value=picker_ctx)
+    monkeypatch.setattr(server, "_model_picker_context", picker_context)
+    build_payload = Mock(return_value={"providers": [provider]})
+    monkeypatch.setattr(
+        "hermes_cli.inventory.build_models_payload",
+        build_payload,
+    )
+    monkeypatch.setenv(env_var, "previous-value")
+    fake_key = "replacement-" + "value"
+
+    resp = server._methods["model.save_key"](
+        103,
+        {
+            "slug": "test-provider",
+            "api_key": fake_key,
+            "session_id": "save-key-session",
+        },
+    )
+
+    assert "result" in resp, resp
+    assert resp["result"]["provider"] == {**provider, "authenticated": True}
+    save_credential.assert_called_once_with(env_var, fake_key)
+    picker_context.assert_called_once_with(agent)
+    build_payload.assert_called_once_with(
+        picker_ctx,
+        picker_hints=True,
+        max_models=50,
+    )
+
+
 # ---------------------------------------------------------------------------
 # prompt.submit — auto-title
 # ---------------------------------------------------------------------------

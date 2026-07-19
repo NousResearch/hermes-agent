@@ -94,6 +94,15 @@ _executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="acp-agent")
 # paginate against using `cursor` / `next_cursor`.
 _LIST_SESSIONS_PAGE_SIZE = 50
 _MAX_ACP_RESOURCE_BYTES = 512 * 1024
+
+# Hard cap on decoded attachment bytes materialized into the document cache.
+# Mirrors the MCP resource guards (tools/mcp_tool.py) so a large or repeated
+# ACP blob cannot fill the cache disk before the 24-hour cleanup runs.
+_MAX_ACP_CACHED_ATTACHMENT_BYTES = 50 * 1024 * 1024
+
+# Base64 expands raw bytes by ~4/3; reject oversized payloads before decoding
+# so a multi-GB blob string is never transiently doubled in memory.
+_MAX_ACP_ATTACHMENT_B64_CHARS = _MAX_ACP_CACHED_ATTACHMENT_BYTES * 4 // 3 + 4
 _TEXT_RESOURCE_MIME_PREFIXES = ("text/",)
 _TEXT_RESOURCE_MIME_TYPES = {
     "application/json",
@@ -216,9 +225,18 @@ def _format_resource_text(
 def _save_attachment_to_cache(data: bytes, display_name: str) -> str | None:
     """Materialize undeliverable attachment bytes into the document cache.
 
-    Returns the saved path, or None when saving fails — an attachment must
-    never fail the prompt; callers fall back to the omit placeholder.
+    Returns the saved path, or None when saving fails or *data* exceeds
+    ``_MAX_ACP_CACHED_ATTACHMENT_BYTES`` — an attachment must never fail the
+    prompt; callers fall back to the omit placeholder.
     """
+    if len(data) > _MAX_ACP_CACHED_ATTACHMENT_BYTES:
+        logger.warning(
+            "ACP attachment %r too large to cache: %d bytes (cap=%d)",
+            display_name,
+            len(data),
+            _MAX_ACP_CACHED_ATTACHMENT_BYTES,
+        )
+        return None
     try:
         from gateway.platforms.base import cache_document_from_bytes
 
@@ -347,6 +365,22 @@ def _embedded_resource_to_parts(block: EmbeddedResourceContentBlock) -> list[dic
 
     if isinstance(resource, BlobResourceContents):
         blob = resource.blob or ""
+        # Pre-decode guard: reject oversized Base64 payloads before decoding so
+        # a multi-GB blob string is never transiently doubled in memory and
+        # never reaches the document cache (mirrors tools/mcp_tool.py).
+        if len(blob) > _MAX_ACP_ATTACHMENT_B64_CHARS:
+            approx = len(blob) * 3 // 4
+            return [{
+                "type": "text",
+                "text": _format_resource_text(
+                    uri=uri,
+                    body=(
+                        f"[Binary embedded file omitted: too large to cache "
+                        f"(~{approx} bytes, cap={_MAX_ACP_CACHED_ATTACHMENT_BYTES}), "
+                        f"mime={mime_type or 'unknown'}]"
+                    ),
+                ),
+            }]
         try:
             data = base64.b64decode(blob, validate=True)
         except Exception:

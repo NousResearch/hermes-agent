@@ -213,12 +213,8 @@ def test_unprefixed_temp_script_is_not_ad_hoc_evidence(tmp_path, monkeypatch):
 
 
 def test_temp_script_does_not_replace_detected_suite(tmp_path, monkeypatch):
-    # When canonical verifyCommands exist, a *passing* ad-hoc run is still
-    # recorded as ad_hoc evidence — but it does not masquerade as the
-    # canonical suite. Its kind remains "ad_hoc" so verification_status()
-    # can mark the workspace as passed without claiming the canonical suite
-    # ran.  (Fix for the verify-on-stop loop where passing ad-hoc runs
-    # were silently dropped, leaving the workspace stuck in "stale".)
+    # A passing temporary script is worth recording as targeted evidence, but
+    # it must not masquerade as the detected canonical suite.
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
     _node_project(tmp_path)
     script = Path(tempfile.gettempdir()) / f"hermes-ad-hoc-{tmp_path.name}.py"
@@ -239,6 +235,31 @@ def test_temp_script_does_not_replace_detected_suite(tmp_path, monkeypatch):
     assert evidence.canonical_command == "ad-hoc verification script"
     assert evidence.scope == "targeted"
     assert evidence.status == "passed"
+
+
+def test_passed_ad_hoc_with_verify_commands_is_targeted_not_suite_green(
+    tmp_path, monkeypatch,
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    _node_project(tmp_path)
+    mark_workspace_edited(session_id="s1", cwd=tmp_path, paths=[str(tmp_path / "src/index.ts")])
+    script = Path(tempfile.gettempdir()) / f"hermes-verify-{tmp_path.name}.py"
+    script.write_text("print('ok')\n", encoding="utf-8")
+    try:
+        record_terminal_result(
+            command=f"python {script}",
+            cwd=tmp_path,
+            session_id="s1",
+            exit_code=0,
+            output="ok",
+        )
+        status = verification_status(session_id="s1", cwd=tmp_path)
+    finally:
+        script.unlink(missing_ok=True)
+
+    assert status["status"] == "targeted_passed"
+    assert status["evidence"] is not None
+    assert status["evidence"]["kind"] == "ad_hoc"
 
 
 def test_failed_ad_hoc_is_skipped_when_verify_commands_exist(tmp_path, monkeypatch):
@@ -264,14 +285,13 @@ def test_failed_ad_hoc_is_skipped_when_verify_commands_exist(tmp_path, monkeypat
     assert evidence is None
 
 
-def test_passed_ad_hoc_recorded_when_verify_commands_exist_clears_stale(
+def test_passed_ad_hoc_recorded_when_verify_commands_exist_clears_stale_to_targeted(
     tmp_path, monkeypatch,
 ):
     # End-to-end verification_status() behavior: after mark_workspace_edited()
     # on the node project, a passing ad-hoc run (with verifyCommands present)
-    # must record evidence so verification_status() reports "passed", not
-    # "stale" or "unverified".  This is the exact flow that was broken on
-    # 2026-07-19 in session 20260719_083847_b95a8004.
+    # records targeted evidence so verification_status() reports
+    # "targeted_passed", not full suite "passed".
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
     _node_project(tmp_path)
     mark_workspace_edited(session_id="s1", cwd=tmp_path, paths=[str(tmp_path / "src/index.ts")])
@@ -289,7 +309,7 @@ def test_passed_ad_hoc_recorded_when_verify_commands_exist_clears_stale(
     finally:
         script.unlink(missing_ok=True)
 
-    assert status["status"] == "passed"
+    assert status["status"] == "targeted_passed"
     assert status["evidence"] is not None
     assert status["evidence"]["kind"] == "ad_hoc"
 

@@ -615,6 +615,9 @@ def verification_status(
         status = "stale"
     else:
         status = evidence["status"]
+        verify_commands = [str(cmd).strip() for cmd in (facts.get("verifyCommands") or []) if str(cmd).strip()]
+        if status == "passed" and evidence.get("kind") == "ad_hoc" and verify_commands:
+            status = "targeted_passed"
     return {
         "status": status,
         "evidence": evidence,

@@ -133,7 +133,19 @@ def build_verify_on_stop_nudge(
     if state == "passed":
         return None
 
-    if verify_commands:
+    if state == "targeted_passed" and verify_commands and attempts > 0:
+        return None
+
+    if state == "targeted_passed" and verify_commands:
+        command_instruction = (
+            "Targeted ad-hoc verification passed, but the detected canonical "
+            "verification command has not run yet. Run the relevant canonical "
+            "command now ("
+            + ", ".join(f"`{cmd}`" for cmd in verify_commands[:3])
+            + (", ..." if len(verify_commands) > 3 else "")
+            + "), or explicitly say that only targeted ad-hoc verification passed."
+        )
+    elif verify_commands:
         command_instruction = (
             "Run the relevant verification command now ("
             + ", ".join(f"`{cmd}`" for cmd in verify_commands[:3])

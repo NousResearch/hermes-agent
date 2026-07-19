@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 import uuid
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
@@ -36,6 +37,27 @@ from agent.model_metadata import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _format_elapsed(seconds: float) -> str:
+    """Format a time duration (in seconds) into a concise human-readable string.
+
+    Granularity decreases with duration: reports the largest whole unit
+    (days, hours, or minutes).  "A few seconds" for gaps under a minute
+    or any negative value.
+    """
+    if seconds < 0:
+        return "a few seconds"
+    minutes = int(seconds // 60)
+    if minutes < 1:
+        return "a few seconds"
+    hours = minutes // 60
+    if hours < 1:
+        return f"{minutes} minute{'s' if minutes > 1 else ''}"
+    days = hours // 24
+    if days < 1:
+        return f"{hours} hour{'s' if hours > 1 else ''}"
+    return f"{days} day{'s' if days > 1 else ''}"
 
 
 def _compression_made_progress(
@@ -314,6 +336,66 @@ def build_turn_context(
             agent._user_turn_count = prior_user_turns
             if agent._memory_nudge_interval > 0 and agent._turns_since_memory == 0:
                 agent._turns_since_memory = prior_user_turns % agent._memory_nudge_interval
+
+    # Rehydrate the time-awareness baseline from persisted timestamps so a
+    # session restored with nonempty history measures the actual conversation
+    # gap rather than time since agent reconstruction (teknium1, PR #64696).
+    # Compute user-turn count independently so this block doesn't silently
+    # break if the nudge-counter hydration above is refactored.
+    if conversation_history and getattr(agent, "_time_awareness_enabled", False):
+        _rehydrate_turn_count = agent._user_turn_count or sum(
+            1 for m in conversation_history if m.get("role") == "user"
+        )
+        if _rehydrate_turn_count > 0:
+            for _msg in reversed(conversation_history):
+                if _msg.get("role") == "user" and "timestamp" in _msg:
+                    agent._last_user_turn_ts = float(_msg["timestamp"])
+                    break
+
+    # ── Time-awareness injection ──
+    # When enabled and a significant gap has passed since the last user
+    # turn, prepend a brief annotation to the user message so the agent
+    # knows time has elapsed.  Skips the first turn (no history to compare
+    # against).  The annotation is stripped from transcripts via the
+    # persist override mechanism below.
+    if getattr(agent, "_time_awareness_enabled", False) and conversation_history:
+        _ta_threshold = getattr(agent, "_time_awareness_threshold", 7200.0)
+        _elapsed = time.time() - getattr(agent, "_last_user_turn_ts", time.time())
+        if _elapsed >= _ta_threshold:
+            try:
+                from hermes_time import now as _hermes_now
+                _now = _hermes_now()
+                _elapsed_str = _format_elapsed(_elapsed)
+                _annotation = (
+                    f"[It is now {_now.strftime('%A, %B %d, %I:%M %p %Z')}. "
+                    f"Your last message was about {_elapsed_str} ago.]"
+                )
+                # Preserve native multimodal content lists (gateway image/audio
+                # blocks) by prepending a text part rather than coercing the
+                # list to a string via format.  See teknium1 review on PR #64696.
+                if isinstance(user_msg["content"], list):
+                    user_msg["content"] = [
+                        {"type": "text", "text": f"{_annotation}\n\n"},
+                        *user_msg["content"],
+                    ]
+                else:
+                    user_msg["content"] = f"{_annotation}\n\n{user_msg['content']}"
+
+                # Ensure the annotation does not leak into the persisted
+                # transcript.  For text content, prefer the gateway-provided
+                # persist_user_message (which excludes system notes); for
+                # multimodal content, the original user_message IS the clean
+                # content list — using it as a list override is required
+                # because _apply_persist_user_message_override refuses to
+                # replace list content with a plain string (PR #64696).
+                if isinstance(user_msg["content"], list):
+                    agent._persist_user_message_override = user_message
+                else:
+                    agent._persist_user_message_override = (
+                        persist_user_message if persist_user_message is not None else user_message
+                    )
+            except Exception:
+                logger.debug("Time-awareness injection failed (non-fatal)", exc_info=True)
 
     # Add the current user message after the prompt/session setup has made
     # close persistence safe. The handoff above preserves any marker already
@@ -609,6 +691,13 @@ def build_turn_context(
             ext_prefetch_cache = agent._memory_manager.prefetch_all(_query) or ""
         except Exception:
             pass
+
+    # Stamp the user-turn timestamp for the NEXT turn's gap check.
+    # Unconditional so _last_user_turn_ts stays accurate even when
+    # time-awareness is disabled or this is the first turn — the
+    # gateway does NOT reset this between turns (_last_activity_ts
+    # is the heartbeat that gets reset, see _init_cached_agent_for_turn).
+    agent._last_user_turn_ts = time.time()
 
     return TurnContext(
         user_message=user_message,

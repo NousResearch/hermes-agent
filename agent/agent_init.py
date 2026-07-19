@@ -672,6 +672,12 @@ def init_agent(
     # notifications to show progress.
     agent._last_activity_ts: float = time.time()
     agent._last_activity_desc: str = "initializing"
+    # User-turn timestamp — tracks when the most recent user turn started.
+    # Separate from _last_activity_ts (heartbeat/activity tracking) because
+    # the gateway resets _last_activity_ts before each turn, which would
+    # destroy the gap signal used by the time-skip awareness feature.
+    # Updated unconditionally at the end of build_turn_context.
+    agent._last_user_turn_ts: float = time.time()
     agent._current_tool: str | None = None
     agent._api_call_count: int = 0
     # Opt-out flag for the between-turns MCP tool refresh (build_turn_context).
@@ -1442,7 +1448,19 @@ def init_agent(
                 agent._memory_store.load_from_disk()
         except Exception:
             pass  # Memory is optional -- don't break agent init
-    
+
+    # Time-awareness config (context.time_awareness) — opt-in, default off.
+    # Read before the memory-provider block since it's lightweight and
+    # unrelated to the memory subsystem.
+    try:
+        _context_cfg = _agent_cfg.get("context", {})
+        _ta_cfg = _context_cfg.get("time_awareness", {}) if isinstance(_context_cfg, dict) else {}
+        agent._time_awareness_enabled = bool(_ta_cfg.get("enabled", False)) if isinstance(_ta_cfg, dict) else False
+        _ta_threshold = _ta_cfg.get("threshold_minutes", 120) if isinstance(_ta_cfg, dict) else 120
+        agent._time_awareness_threshold = max(1.0, float(_ta_threshold)) * 60.0  # minutes → seconds
+    except Exception:
+        agent._time_awareness_enabled = False
+        agent._time_awareness_threshold = 7200.0  # 120 min default
 
 
     # Memory provider plugin (external — one at a time, alongside built-in)

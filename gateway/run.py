@@ -17500,6 +17500,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         fresh external turns (depth 0); they are semantically paired —
         desc describes the activity *at* ts, so updating one without the
         other would make get_activity_summary() misleading.
+        _last_user_turn_ts is NOT reset here — it tracks the start of the
+        previous user turn for time-skip gap detection, and resetting it
+        would destroy the gap signal across cached-agent reuse.
         For interrupt-recursive turns both are preserved so the inactivity
         watchdog can accumulate stuck-turn idle time and fire the 30-min
         timeout (#15654).  The depth-0 reset is still needed: a session

@@ -2435,12 +2435,76 @@ class MatrixAdapter(BasePlatformAdapter):
     # Event callbacks
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _without_stale_left_room_invites(
+        sync_data: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Remove historical invite events from rooms the account has left.
+
+        A full Matrix sync can include the complete timeline for ``rooms.leave``.
+        Passing an old ``membership=invite`` event from that timeline through
+        mautrix dispatches ``InternalEventType.INVITE`` and makes Hermes try to
+        rejoin a room that the account subsequently left.  Current invitations
+        live under ``rooms.invite`` and remain untouched.
+        """
+
+        rooms = sync_data.get("rooms")
+        if not isinstance(rooms, dict):
+            return sync_data
+        leave = rooms.get("leave")
+        if not isinstance(leave, dict):
+            return sync_data
+
+        filtered_leave: Optional[Dict[str, Any]] = None
+        for room_id, room_data in leave.items():
+            if not isinstance(room_data, dict):
+                continue
+            updated_room: Optional[Dict[str, Any]] = None
+            for bucket_name in ("state", "timeline"):
+                bucket = room_data.get(bucket_name)
+                if not isinstance(bucket, dict):
+                    continue
+                events = bucket.get("events")
+                if not isinstance(events, list):
+                    continue
+                filtered_events = [
+                    event
+                    for event in events
+                    if not (
+                        isinstance(event, dict)
+                        and event.get("type") == "m.room.member"
+                        and isinstance(event.get("content"), dict)
+                        and event["content"].get("membership") == "invite"
+                    )
+                ]
+                if len(filtered_events) == len(events):
+                    continue
+                if updated_room is None:
+                    updated_room = dict(room_data)
+                updated_bucket = dict(bucket)
+                updated_bucket["events"] = filtered_events
+                updated_room[bucket_name] = updated_bucket
+
+            if updated_room is not None:
+                if filtered_leave is None:
+                    filtered_leave = dict(leave)
+                filtered_leave[room_id] = updated_room
+
+        if filtered_leave is None:
+            return sync_data
+
+        filtered_sync = dict(sync_data)
+        filtered_rooms = dict(rooms)
+        filtered_rooms["leave"] = filtered_leave
+        filtered_sync["rooms"] = filtered_rooms
+        return filtered_sync
+
     async def _dispatch_sync(self, sync_data: Dict[str, Any]) -> None:
         """Dispatch a sync response through the mautrix event machinery."""
         client = self._client
         if not client or not hasattr(client, "handle_sync"):
             return
-        tasks = client.handle_sync(sync_data)
+        tasks = client.handle_sync(self._without_stale_left_room_invites(sync_data))
         if inspect.isawaitable(tasks):
             tasks = await tasks
         if tasks:

@@ -444,12 +444,15 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   // also drills the sidebar into that project so the new lane is visible.
   const startSessionInWorkspace = useCallback(
     (path: null | string) => {
-      startFreshSessionDraft()
-
       // A worktree lane carries its own path; the trunk "+" can be path-less
       // (the main checkout is implicit), so fall back to the active project's
       // root instead of no-op'ing on null.
       const target = path?.trim() || resolveNewSessionCwd()
+
+      // Project/worktree creation is explicit. Capture its target before
+      // resetting the draft so the later session.create cannot observe a stale
+      // global cwd or infer intent from the persisted sidebar scope.
+      startFreshSessionDraft({ workspaceTarget: target || null })
 
       if (!target) {
         return

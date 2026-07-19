@@ -353,7 +353,7 @@ describe('createBackendSessionForSend profile routing', () => {
     expect(params).toMatchObject({ cwd: '/remote/worktree' })
   })
 
-  it('falls back to the entered project cwd when the current cwd is blank', async () => {
+  it('does not fall back to the entered project cwd when the current cwd is blank', async () => {
     const params = await createWith(() => {
       $projectTree.set([
         {
@@ -368,7 +368,7 @@ describe('createBackendSessionForSend profile routing', () => {
       $currentCwd.set('')
     })
 
-    expect(params).toMatchObject({ cwd: '/repo/app' })
+    expect(params).not.toHaveProperty('cwd')
   })
 })
 
@@ -1135,5 +1135,30 @@ describe('createBackendSessionForSend workspace target', () => {
     )
 
     expect(params).toMatchObject({ cwd: '/clicked-workspace' })
+  })
+
+  it('does not inherit the entered project cwd for a global new chat', async () => {
+    $projectScope.set('p_project')
+    $projectTree.set([
+      {
+        id: 'p_project',
+        label: 'Project',
+        path: '/project',
+        repos: [],
+        sessionCount: 0
+      }
+    ])
+
+    const params = await createWith(
+      () => {
+        $activeGatewayProfile.set('default')
+      },
+      handle => {
+        handle.startFreshSessionDraft()
+      }
+    )
+
+    expect(params).not.toHaveProperty('cwd')
+    expect($currentCwd.get()).toBe('')
   })
 })

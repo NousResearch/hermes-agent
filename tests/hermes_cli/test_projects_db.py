@@ -145,6 +145,24 @@ def test_active_pointer(conn):
     assert pdb.get_active_id(conn) is None
 
 
+def test_explicit_session_assignment_moves_and_removes_without_project_changes(conn):
+    first = pdb.create_project(conn, name="First")
+    second = pdb.create_project(conn, name="Second")
+
+    pdb.assign_session(conn, "session-1", first)
+    assert pdb.assigned_project_ids(conn, ["session-1", "missing"]) == {"session-1": first}
+
+    # Assigning another Project moves the organizational association; it does
+    # not duplicate membership or mutate either Project.
+    pdb.assign_session(conn, "session-1", second)
+    assert pdb.assigned_project_ids(conn, ["session-1"]) == {"session-1": second}
+    assert pdb.get_project(conn, first) is not None
+    assert pdb.get_project(conn, second) is not None
+
+    assert pdb.unassign_session(conn, "session-1") is True
+    assert pdb.assigned_project_ids(conn, ["session-1"]) == {}
+
+
 def test_branch_name_for_is_deterministic():
     proj = pdb.Project(id="p_1", slug="web-app", name="Web App", created_at=0)
 

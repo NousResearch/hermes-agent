@@ -552,20 +552,96 @@ def _check_permissions_deny_path(filepath: str, task_id: str = "default") -> str
         or bool(re.match(r"^[A-Za-z]:[\\/]", expanded))
         or expanded.startswith("\\\\")
     )
+    candidates = [expanded]
     if is_absolute:
-        candidate = expanded
+        resolved = None
     else:
         try:
-            candidate = str(_resolve_path_for_task(expanded, task_id))
+            resolved = str(_resolve_path_for_task(expanded, task_id))
         except (OSError, ValueError, RuntimeError, TypeError):
-            candidate = expanded
+            resolved = None
+    if resolved and resolved not in candidates:
+        candidates.append(resolved)
     try:
-        from agent.deny_policy import match_permissions_deny_path, path_deny_error
+        from agent.deny_policy import (
+            match_permissions_deny_path,
+            path_deny_error,
+            permissions_deny_paths,
+        )
 
-        match = match_permissions_deny_path(candidate)
+        patterns = permissions_deny_paths()
+        local_backend = _terminal_env_type_for_task(task_id) == "local"
+        match = None
+        for candidate in candidates:
+            match = match_permissions_deny_path(
+                candidate,
+                patterns=patterns,
+                canonicalize=local_backend,
+            )
+            if match is not None:
+                break
     except Exception:
-        logger.debug("permissions.deny.paths check failed open for %s", filepath, exc_info=True)
+        logger.warning("permissions.deny.paths check failed closed for %s", filepath, exc_info=True)
+        from agent.deny_policy import path_deny_policy_error
+
+        return path_deny_policy_error(filepath)
+    if match is None:
         return None
+    return path_deny_error(filepath, match)
+
+
+def _check_permissions_deny_search_root(filepath: str, task_id: str = "default") -> str | None:
+    """Block a search root that is denied or may contain denied descendants."""
+    text = str(filepath)
+    expanded = _expand_tilde(text)
+    candidates = [expanded]
+    try:
+        resolved = str(_resolve_path_for_task(expanded, task_id))
+    except (OSError, ValueError, RuntimeError, TypeError):
+        resolved = None
+    if resolved and resolved not in candidates:
+        candidates.append(resolved)
+    try:
+        from agent.deny_policy import (
+            match_permissions_deny_search_root,
+            path_deny_error,
+            permissions_deny_paths,
+        )
+
+        patterns = permissions_deny_paths()
+        local_backend = _terminal_env_type_for_task(task_id) == "local"
+        root_probe = resolved
+        if root_probe is None and (
+            os.path.isabs(expanded)
+            or posixpath.isabs(expanded)
+            or bool(re.match(r"^[A-Za-z]:[\\/]", expanded))
+            or expanded.startswith("\\\\")
+        ):
+            root_probe = expanded
+        root_is_file = bool(
+            local_backend
+            and root_probe is not None
+            and os.path.isfile(root_probe)
+        )
+        match = None
+        for candidate in candidates:
+            match = match_permissions_deny_search_root(
+                candidate,
+                patterns=patterns,
+                root_is_file=root_is_file,
+                canonicalize=local_backend,
+            )
+            if match is not None:
+                break
+    except Exception:
+        logger.warning(
+            "permissions.deny.paths search check failed closed for %s",
+            filepath,
+            exc_info=True,
+        )
+        from agent.deny_policy import path_deny_policy_error
+
+        return path_deny_policy_error(filepath)
     if match is None:
         return None
     return path_deny_error(filepath, match)
@@ -1204,7 +1280,7 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
         # permissions.deny.paths is a deny-wins floor for file tools. Check it
         # immediately after path resolution, before structured-document
         # extraction or any other path that could open the target.
-        block_error = _check_permissions_deny_path(str(_resolved), task_id)
+        block_error = _check_permissions_deny_path(path, task_id)
         if block_error:
             return json.dumps({"error": block_error})
 
@@ -1981,7 +2057,7 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
             resolved_path = _resolve_path_for_task(path, task_id)
         except (OSError, ValueError, RuntimeError):
             resolved_path = None
-        policy_error = _check_permissions_deny_path(str(resolved_path) if resolved_path else path, task_id)
+        policy_error = _check_permissions_deny_search_root(path, task_id)
         if policy_error:
             return json.dumps({"error": policy_error}, ensure_ascii=False)
         block_error = get_read_block_error(str(resolved_path) if resolved_path else path)

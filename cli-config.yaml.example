@@ -364,6 +364,8 @@ terminal:
 # Defense-in-depth rules for paths and commands the agent should never access
 # through its tools. These guard an honest-but-wrong agent; they are not an OS
 # sandbox because terminal access still runs as your user account.
+# Policy load/shape errors fail closed. Recursive searches whose roots may
+# overlap denied descendants are rejected before backend enumeration.
 #
 # permissions:
 #   deny:

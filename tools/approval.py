@@ -535,24 +535,19 @@ def _match_user_deny_rule(command: str) -> str | None:
     quoting tricks (``r\\m``, ``git st""atus``) can't sidestep a rule any
     more easily than they sidestep detection. Empty/absent lists = no-op.
     """
-    try:
-        deny_patterns = list(_get_approval_config().get("deny") or [])
-    except Exception:
-        return None
-    try:
-        from agent.deny_policy import permissions_deny_commands
-        deny_patterns.extend(permissions_deny_commands())
-    except Exception:
-        pass
+    from agent.deny_policy import parse_deny_patterns, permissions_deny_commands
+
+    deny_patterns = parse_deny_patterns(
+        _get_approval_config().get("deny"),
+        field="approvals.deny",
+        require_list=True,
+    )
+    deny_patterns.extend(permissions_deny_commands())
     if not deny_patterns:
-        return None
-    globs = [p.strip() for p in deny_patterns
-             if isinstance(p, str) and p.strip()]
-    if not globs:
         return None
     for command_variant in _command_detection_variants(command):
         candidate = command_variant.lower().strip()
-        for pattern in globs:
+        for pattern in deny_patterns:
             if fnmatch.fnmatchcase(candidate, pattern.lower()):
                 return pattern
     return None
@@ -569,6 +564,20 @@ def _user_deny_block_result(pattern: str) -> dict:
             "config.yaml). It cannot be executed via the agent — not even "
             "with --yolo, /yolo, or approvals.mode=off. Do NOT retry or "
             "rephrase this command; the user has explicitly forbidden it."
+        ),
+    }
+
+
+def _user_deny_policy_error_result() -> dict:
+    """Fail closed when configured command deny rules cannot be evaluated."""
+    return {
+        "approved": False,
+        "user_deny": True,
+        "message": (
+            "BLOCKED: approvals.deny / permissions.deny.commands could not be "
+            "evaluated. No command was executed because command deny-policy "
+            "configuration and matching errors fail closed. Check config.yaml "
+            "and retry after fixing the policy."
         ),
     }
 
@@ -2904,8 +2913,12 @@ def check_dangerous_command(command: str, env_type: str,
 
     # User-defined deny rules (approvals.deny in config.yaml): like the
     # hardline floor, these fire BEFORE the yolo bypass — a deny rule is the
-    # user saying "never, even under yolo".
-    deny_pattern = _match_user_deny_rule(command)
+    # user saying "never, even under yolo". Policy errors also fail closed.
+    try:
+        deny_pattern = _match_user_deny_rule(command)
+    except Exception:
+        logger.exception("User deny policy evaluation failed closed")
+        return _user_deny_policy_error_result()
     if deny_pattern is not None:
         logger.warning("User deny rule %r blocked command: %s",
                        deny_pattern, command[:200])
@@ -3215,8 +3228,13 @@ def check_all_command_guards(command: str, env_type: str,
 
     # User-defined deny rules (approvals.deny in config.yaml): like the
     # hardline floor, these fire BEFORE the yolo / mode=off bypass — a deny
-    # rule is the user saying "never, even under yolo".
-    deny_pattern = _match_user_deny_rule(command)
+    # rule is the user saying "never, even under yolo". Policy errors also
+    # fail closed.
+    try:
+        deny_pattern = _match_user_deny_rule(command)
+    except Exception:
+        logger.exception("User deny policy evaluation failed closed")
+        return _user_deny_policy_error_result()
     if deny_pattern is not None:
         logger.warning("User deny rule %r blocked command: %s",
                        deny_pattern, command[:200])

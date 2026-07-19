@@ -2682,7 +2682,8 @@ DEFAULT_CONFIG = {
     },
 
     # User-defined, deny-wins policy namespace shared by file and command tools.
-    # `permissions.deny.paths` blocks file-tool reads/writes/search results;
+    # `permissions.deny.paths` blocks file-tool reads/writes and rejects
+    # recursive searches that may overlap denied descendants before enumeration;
     # `permissions.deny.commands` is an alias for `approvals.deny` command
     # globs and is checked before approval bypass modes.
     "permissions": {

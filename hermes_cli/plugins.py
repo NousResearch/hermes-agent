@@ -187,6 +187,17 @@ VALID_HOOKS: Set[str] = {
     #   decided_by: "aux_llm"  -- only on surface="smart"
     "pre_approval_request",
     "post_approval_response",
+    # Pre-transcription transform hook. Fired by the STT dispatcher
+    # (tools.transcription_tools.transcribe_audio) after provider resolution
+    # and BEFORE any backend — built-in, command-type, or plugin-registered —
+    # is invoked. Callbacks receive keyword args:
+    #   file_path, provider, model, language, prompt, source
+    # and may return None (unchanged) or a dict mutating any of
+    # ``prompt`` / ``language`` / ``model``. Results are applied in
+    # registration order, last-writer-wins per field. ``file_path`` is
+    # read-only — attempts to change it are logged and dropped. The static
+    # ``stt.prompt`` config value is the base; hook results mutate on top.
+    "pre_transcription",
     # Kanban task lifecycle hooks. Fired by hermes_cli.kanban_db when a task
     # transitions state, AFTER the change is committed to the board DB (so the
     # hook always sees durable state and a slow plugin can never hold the

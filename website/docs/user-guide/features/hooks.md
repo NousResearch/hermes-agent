@@ -392,6 +392,7 @@ def register(ctx):
 | [`pre_gateway_dispatch`](#pre_gateway_dispatch) | Gateway received a user message, before auth + dispatch | `{"action": "skip" \| "rewrite" \| "allow", ...}` to influence flow |
 | [`pre_approval_request`](#pre_approval_request) | An approval decision is requested, including smart-mode auto decisions | ignored |
 | [`post_approval_response`](#post_approval_response) | An approval decision is made (or a prompt times out) | ignored |
+| [`pre_transcription`](#pre_transcription) | Before an audio file is sent to any STT backend | `{"prompt"/"language"/"model": str}` to modify the request, `None` to leave unchanged |
 | [`transform_tool_result`](#transform_tool_result) | After any tool returns, before the result is handed back to the model | `str` to replace the result, `None` to leave unchanged |
 | [`transform_terminal_output`](#transform_terminal_output) | Inside the `terminal` tool, before truncation/ANSI-strip/redact | `str` to replace the raw output, `None` to leave unchanged |
 | [`transform_llm_output`](#transform_llm_output) | After the tool-calling loop completes, before the final response is delivered | `str` to replace the response text, `None`/empty to leave unchanged |
@@ -1147,6 +1148,53 @@ def log_decision(command, choice, session_key, **kwargs):
 def register(ctx):
     ctx.register_hook("post_approval_response", log_decision)
 ```
+
+---
+
+### `pre_transcription`
+
+Fires inside the STT dispatcher (`tools.transcription_tools.transcribe_audio`) **after** the provider has been resolved and **before** any backend is invoked, whether that backend is built-in, a `type: command` provider, or a plugin-registered provider. Lets a plugin steer the transcription request itself instead of only observing the transcript afterwards.
+
+**Callback signature:**
+
+```python
+def my_callback(
+    file_path: str,
+    provider: str,
+    model: str | None,
+    language: str | None,
+    prompt: str | None,
+    source: str | None,
+    **kwargs,
+) -> dict | None:
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `file_path` | `str` | Absolute path to the audio file about to be transcribed. Read-only. |
+| `provider` | `str` | Resolved STT provider (`local`, `groq`, `openai`, `mistral`, `xai`, `elevenlabs`, `deepinfra`, `local_command`, a command provider name, or a plugin provider name). |
+| `model` | `str \| None` | Model resolved so far, or `None` when the backend default applies. |
+| `language` | `str \| None` | Language from the provider's config section, or `None`. |
+| `prompt` | `str \| None` | The static [`stt.prompt`](/user-guide/configuration#transcription-prompt-vocabulary-hints) value, or `None`. |
+| `source` | `str \| None` | Caller surface label (`gateway`, `voice_mode`, …). Observability only, not used for dispatch. |
+
+**Return value:** a `dict` with any of `"prompt"`, `"language"`, `"model"` mapped to strings, or `None` to leave the request unchanged. Non-string values, unknown keys, and `file_path` are ignored (`file_path` attempts are logged as a warning). Results are applied in **registration order, last-writer-wins per field**, on top of the `stt.prompt` config value. Returning `""` for `prompt` clears the configured prompt for that request.
+
+**Use cases:** Inject a per-user or per-chat vocabulary list before the audio is uploaded, force `language` from the caller's locale, downgrade `model` for long recordings, route noisy sources to a different model.
+
+```python
+VOCAB = "Hermes, Teknium, Nous Research, kanban"
+
+def add_vocab(provider, prompt, source, **kwargs):
+    if source != "gateway":
+        return None
+    return {"prompt": f"{prompt}. {VOCAB}" if prompt else VOCAB}
+
+def register(ctx):
+    ctx.register_hook("pre_transcription", add_vocab)
+```
+
+Not every backend accepts a prompt. `local` maps it to faster-whisper's `initial_prompt`; `openai`, `groq`, `mistral`, and `deepinfra` send it as `prompt`; `xai`, `elevenlabs`, `local_command`, and `type: command` providers log at DEBUG and transcribe without it. See the [provider support table](/user-guide/configuration#transcription-prompt-vocabulary-hints) for the full matrix and the privacy boundary. Hook-plumbing errors are fail-open: the dispatch continues with the unmodified request.
 
 ---
 

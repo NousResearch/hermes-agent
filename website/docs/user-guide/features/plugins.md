@@ -201,6 +201,7 @@ Plugins can register callbacks for these lifecycle events. See the **[Event Hook
 | [`on_session_reset`](/user-guide/features/hooks#on_session_reset) | Gateway swaps in a new session key (`/new`, `/reset`, `/clear`, idle rotation) |
 | [`subagent_stop`](/user-guide/features/hooks#subagent_stop) | Once per child after `delegate_task` finishes |
 | [`pre_gateway_dispatch`](/user-guide/features/hooks#pre_gateway_dispatch) | Gateway received a user message, before auth + dispatch. Return `{"action": "skip" \| "rewrite" \| "allow", ...}` to influence flow. |
+| [`pre_transcription`](/user-guide/features/hooks#pre_transcription) | Before an audio file is sent to any STT backend. Return `{"prompt" \| "language" \| "model": "..."}` to modify the request, `None` to leave it unchanged. |
 
 ## Plugin types
 

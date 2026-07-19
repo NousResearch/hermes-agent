@@ -893,7 +893,7 @@ def transcribe_recording(wav_path: str, model: Optional[str] = None) -> Dict[str
     if _should_chunk_for_transcription(wav_path, MAX_FILE_SIZE):
         result = _transcribe_wav_in_chunks(wav_path, model=model, max_file_size=MAX_FILE_SIZE)
     else:
-        result = transcribe_audio(wav_path, model=model)
+        result = transcribe_audio(wav_path, model=model, source="voice_mode")
 
     # Filter out Whisper hallucinations (common on silent/near-silent audio)
     if result.get("success") and is_whisper_hallucination(result.get("transcript", "")):
@@ -932,7 +932,7 @@ def _transcribe_wav_in_chunks(
 
         logger.info("Transcribing oversized WAV in %d chunks: %s", len(chunk_paths), wav_path)
         for index, chunk_path in enumerate(chunk_paths, start=1):
-            result = transcribe_audio(chunk_path, model=model)
+            result = transcribe_audio(chunk_path, model=model, source="voice_mode")
             if not result.get("success"):
                 error = result.get("error", "Unknown transcription error")
                 return {

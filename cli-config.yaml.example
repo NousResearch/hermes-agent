@@ -1033,6 +1033,30 @@ platform_toolsets:
 stt:
   enabled: true
   # provider: "local"          # auto-detected if omitted
+  # Optional static transcription prompt: vocabulary/context hints for
+  # prompt-capable backends. Composition is deterministic: this config value
+  # is the base, then `pre_transcription` hooks run in registration order with
+  # last-writer-wins semantics per field.
+  #
+  # Privacy: the final prompt is sent to the configured STT provider alongside
+  # the audio. Do not include secrets or session context you would not send to
+  # that provider.
+  #
+  # Length / truncation contract: Hermes forwards the final prompt unchanged;
+  # it does not silently truncate by characters or tokens because limits and
+  # tokenizers differ by provider/model. Keep hints concise (Whisper-family
+  # models commonly allow about 224 prompt tokens). The backend SDK/API owns
+  # validation, truncation, or rejection beyond its model-specific limit.
+  #
+  # Provider behavior:
+  #   local (faster-whisper)  -> `initial_prompt`, forwarded unchanged
+  #   openai / groq          -> `prompt`, forwarded unchanged
+  #   mistral                -> `prompt`, forwarded unchanged
+  #   deepinfra              -> OpenAI-compatible `prompt`, unchanged
+  #   local_command/xai/
+  #   elevenlabs             -> unsupported; DEBUG log, then continue
+  #   plugin providers       -> `prompt` in `**extra`; plugin owns limits
+  # prompt: "Hermes, Teknium, Nous Research, kanban"
   local:
     model: "base"              # tiny | base | small | medium | large-v3 | turbo
     # language: ""             # auto-detect; set to "en", "es", "fr", etc. to force

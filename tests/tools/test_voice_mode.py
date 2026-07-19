@@ -760,7 +760,9 @@ class TestTranscribeRecording:
 
         assert result["success"] is True
         assert result["transcript"] == "hello world"
-        mock_transcribe.assert_called_once_with("/tmp/test.wav", model="whisper-1")
+        mock_transcribe.assert_called_once_with(
+            "/tmp/test.wav", model="whisper-1", source="voice_mode",
+        )
 
     def test_filters_whisper_hallucination(self):
         mock_transcribe = MagicMock(return_value={
@@ -806,7 +808,7 @@ class TestTranscribeRecording:
 
         seen_paths = []
 
-        def fake_transcribe(path, model=None):
+        def fake_transcribe(path, model=None, source=None):
             seen_paths.append(path)
             assert model == "base"
             assert path != str(wav_path)
@@ -844,7 +846,7 @@ class TestTranscribeRecording:
         monkeypatch.setattr("tools.voice_mode._TEMP_DIR", str(temp_dir))
         monkeypatch.setattr("tools.transcription_tools.MAX_FILE_SIZE", 70 * 1024)
 
-        def fake_transcribe(path, model=None):
+        def fake_transcribe(path, model=None, source=None):
             return {"success": False, "transcript": "", "error": "provider rejected audio"}
 
         with patch("tools.transcription_tools.transcribe_audio", side_effect=fake_transcribe):

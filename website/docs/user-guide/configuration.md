@@ -1621,6 +1621,7 @@ stt:
   enabled: true                # Auto-transcribe inbound voice messages (default: true)
   echo_transcripts: true       # Post raw transcripts back to the chat as 🎙️ "..." (default: true)
   provider: "local"            # "local" | "groq" | "openai" | "mistral"
+  # prompt: "Hermes, Teknium, Nous Research, kanban"   # Static vocabulary hint (see below)
   local:
     model: "base"              # tiny, base, small, medium, large-v3
   openai:
@@ -1646,6 +1647,39 @@ STT_OPENAI_MODEL=whisper-1
 GROQ_BASE_URL=https://api.groq.com/openai/v1
 STT_OPENAI_BASE_URL=https://api.openai.com/v1
 ```
+
+### Transcription prompt (vocabulary hints)
+
+`stt.prompt` is an optional static hint passed to prompt-capable STT backends. Use it for proper nouns, product names, and jargon that Whisper-family models otherwise mis-hear:
+
+```yaml
+stt:
+  provider: "local"
+  prompt: "Hermes, Teknium, Nous Research, kanban, Ollama"
+```
+
+**Composition.** The config value is the base. Plugins that register the [`pre_transcription`](/user-guide/features/hooks#pre_transcription) hook run in registration order and mutate on top of it, last-writer-wins per field. A hook returning an empty string for `prompt` clears the config prompt for that request. Hooks may also override `language` and `model`; `file_path` is read-only and any attempt to change it is logged and dropped. With no hook registered and no `stt.prompt` set, the outgoing request is identical to previous releases.
+
+**Provider support.**
+
+| Provider | Prompt parameter | Behavior |
+|----------|-----------------|----------|
+| `local` (faster-whisper) | `initial_prompt` | Forwarded unchanged to the local model |
+| `openai` | `prompt` | Forwarded unchanged in the transcription request |
+| `groq` | `prompt` | Forwarded unchanged in the transcription request |
+| `mistral` | `prompt` | Forwarded unchanged in the transcription request |
+| `deepinfra` | `prompt` | OpenAI-compatible path, forwarded unchanged |
+| `xai` | not supported | Logged at DEBUG, the request proceeds without the prompt |
+| `elevenlabs` | not supported | Logged at DEBUG, the request proceeds without the prompt |
+| `local_command` | not supported | Logged at DEBUG, the request proceeds without the prompt |
+| `stt.providers.<name>` with `type: command` | not supported | Logged at DEBUG, the request proceeds without the prompt |
+| Plugin-registered providers | `prompt` in the `transcribe(**extra)` kwargs | Only sent when a prompt is set, so providers that predate this key see unchanged calls |
+
+**Length.** Hermes forwards the final prompt unchanged and never silently truncates it. Token limits differ by provider and model; Whisper-family models commonly accept about 224 prompt tokens. The backend SDK or API owns validation, truncation, and rejection beyond its own limit, so keep hints short and specific.
+
+:::warning Prompts are uploaded with your audio
+The final prompt is sent to the configured STT provider alongside the audio file. Keep secrets and session-derived context out of `stt.prompt` and out of anything a `pre_transcription` hook returns, especially when the provider is a hosted API rather than local `faster-whisper`.
+:::
 
 ## Voice Mode (CLI)
 

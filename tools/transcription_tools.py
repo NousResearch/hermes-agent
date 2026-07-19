@@ -623,6 +623,8 @@ def _transcribe_command_stt(
     config: Dict[str, Any],
     stt_config: Dict[str, Any],
     model_override: Optional[str] = None,
+    language_override: Optional[str] = None,
+    prompt: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Transcribe via a user-declared ``stt.providers.<name>: type: command``.
 
@@ -643,6 +645,12 @@ def _transcribe_command_stt(
     Returns the standard transcribe-response envelope (``success``,
     ``transcript``, ``provider``, ``error``).
     """
+    if prompt:
+        logger.debug(
+            "Command STT provider '%s' does not support transcription "
+            "prompts — proceeding without the prompt.", provider_name,
+        )
+
     command_template = str(config.get("command") or "").strip()
     if not command_template:
         return {
@@ -663,8 +671,10 @@ def _transcribe_command_stt(
 
     timeout = _get_command_stt_timeout(config)
     output_format = _get_command_stt_output_format(config)
+    # Language: hook override > provider config > stt.language > default.
     language = (
-        config.get("language")
+        language_override
+        or config.get("language")
         or stt_config.get("language")
         or DEFAULT_COMMAND_STT_LANGUAGE
     )
@@ -897,6 +907,7 @@ def _dispatch_to_plugin_provider(
     *,
     model: Optional[str] = None,
     language: Optional[str] = None,
+    prompt: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     """Route the call to a plugin-registered transcription provider, or
     return None.
@@ -1001,11 +1012,19 @@ def _dispatch_to_plugin_provider(
         }
 
     logger.info("Transcribing with plugin STT provider '%s'...", key)
+    # Plugin providers receive the transcription prompt via the ABC's
+    # existing ``**extra`` kwargs — no signature change needed. The key is
+    # only sent when a prompt is actually set so providers that predate it
+    # see byte-identical calls on the no-prompt path.
+    extra_kwargs: Dict[str, Any] = {}
+    if prompt is not None:
+        extra_kwargs["prompt"] = prompt
     try:
         result = plugin_provider.transcribe(
             file_path,
             model=model,
             language=language,
+            **extra_kwargs,
         )
     except Exception as exc:  # noqa: BLE001
         logger.warning(
@@ -1031,6 +1050,102 @@ def _dispatch_to_plugin_provider(
     # Stamp provider if the plugin forgot to.
     result.setdefault("provider", key)
     return result
+
+
+# ---------------------------------------------------------------------------
+# pre_transcription plugin hook (issue #64168 — STT prompt/vocab threading)
+# ---------------------------------------------------------------------------
+
+
+# Fields a pre_transcription hook may mutate. ``file_path`` is deliberately
+# absent — it is read-only; attempts to change it are logged and dropped.
+_PRE_TRANSCRIPTION_MUTABLE_FIELDS = ("prompt", "language", "model")
+
+
+def _apply_pre_transcription_hook(
+    *,
+    file_path: str,
+    provider: str,
+    model: Optional[str],
+    language: Optional[str],
+    prompt: Optional[str],
+    source: Optional[str],
+) -> tuple[Optional[str], Optional[str], Optional[str]]:
+    """Fire the ``pre_transcription`` plugin hook and merge its results.
+
+    Mirrors the ``transform_*`` hook mechanics from
+    ``model_tools.handle_function_call`` (``transform_tool_result``): gated
+    on ``has_hook`` so the no-hook dispatch path never builds hook kwargs,
+    and fail-open — any hook-plumbing error leaves the dispatch untouched.
+    ``invoke_hook`` returns results in registration order; each dict result
+    is applied field-by-field on top of the previous ones, so the last hook
+    to write a field wins (last-writer-wins per field).
+
+    Model values are accepted as-is: the dispatcher has no catalog-level
+    validation today, so a hook-set model flows through the exact same
+    per-backend normalization/auto-correction (``_normalize_local_model``,
+    the Groq/OpenAI cross-corrections) a caller-supplied model would, and
+    otherwise errors at the backend as it would today.
+
+    Returns ``(model, language_override, prompt)``. ``language_override``
+    is ``None`` unless a hook explicitly set ``language`` — backends keep
+    their existing config/env language resolution when no hook overrides
+    it.
+    """
+    try:
+        from hermes_cli.plugins import has_hook, invoke_hook
+
+        # No-hook short-circuit: keep the no-plugin dispatch path
+        # byte-identical (no kwargs built, no invoke_hook call).
+        if not has_hook("pre_transcription"):
+            return model, None, prompt
+
+        hook_results = invoke_hook(
+            "pre_transcription",
+            file_path=file_path,
+            provider=provider,
+            model=model,
+            language=language,
+            prompt=prompt,
+            source=source,
+        )
+        overrides: Dict[str, Any] = {}
+        for hook_result in hook_results:
+            if not isinstance(hook_result, dict):
+                continue
+            for key, value in hook_result.items():
+                if key == "file_path":
+                    # file_path is read-only for hooks — log and drop.
+                    logger.warning(
+                        "pre_transcription hook attempted to change "
+                        "file_path (read-only) — ignoring the attempt."
+                    )
+                    continue
+                if key not in _PRE_TRANSCRIPTION_MUTABLE_FIELDS:
+                    logger.debug(
+                        "pre_transcription hook returned unsupported field "
+                        "%r — ignoring.", key,
+                    )
+                    continue
+                if not isinstance(value, str):
+                    logger.debug(
+                        "pre_transcription hook returned non-string value "
+                        "%r for field %r — ignoring.", value, key,
+                    )
+                    continue
+                overrides[key] = value
+
+        if "model" in overrides:
+            model = overrides["model"]
+        if "prompt" in overrides:
+            # Hook results win over the static ``stt.prompt`` config value —
+            # config is the base, hooks mutate on top. An empty string
+            # clears the config prompt.
+            prompt = overrides["prompt"] or None
+        return model, overrides.get("language") or None, prompt
+    except Exception as _hook_err:  # noqa: BLE001 — hook plumbing is fail-open
+        logger.debug("pre_transcription hook error: %s", _hook_err)
+        return model, None, prompt
 
 
 # ---------------------------------------------------------------------------
@@ -1132,7 +1247,13 @@ def _load_local_whisper_model(model_name: str):
         return WhisperModel(model_name, device="cpu", compute_type="int8")
 
 
-def _transcribe_local(file_path: str, model_name: str) -> Dict[str, Any]:
+def _transcribe_local(
+    file_path: str,
+    model_name: str,
+    *,
+    language: Optional[str] = None,
+    prompt: Optional[str] = None,
+) -> Dict[str, Any]:
     """Transcribe using faster-whisper (local, free)."""
     global _local_model, _local_model_name
 
@@ -1147,15 +1268,20 @@ def _transcribe_local(file_path: str, model_name: str) -> Dict[str, Any]:
             _local_model = _load_local_whisper_model(model_name)
             _local_model_name = model_name
 
-        # Language: config.yaml (stt.local.language) > env var > auto-detect.
+        # Language: hook override > config.yaml (stt.local.language) >
+        # env var > auto-detect.
         _forced_lang = (
-            (_load_stt_config().get("local") or {}).get("language")
+            language
+            or (_load_stt_config().get("local") or {}).get("language")
             or os.getenv(LOCAL_STT_LANGUAGE_ENV)
             or None
         )
         transcribe_kwargs = {"beam_size": 5}
         if _forced_lang:
             transcribe_kwargs["language"] = _forced_lang
+        if prompt:
+            # faster-whisper's vocabulary/context hint parameter.
+            transcribe_kwargs["initial_prompt"] = prompt
 
         try:
             segments, info = _local_model.transcribe(file_path, **transcribe_kwargs)
@@ -1218,8 +1344,20 @@ def _prepare_local_audio(file_path: str, work_dir: str) -> tuple[Optional[str], 
         return None, f"Failed to convert audio for local STT: {details}"
 
 
-def _transcribe_local_command(file_path: str, model_name: str) -> Dict[str, Any]:
+def _transcribe_local_command(
+    file_path: str,
+    model_name: str,
+    *,
+    language: Optional[str] = None,
+    prompt: Optional[str] = None,
+) -> Dict[str, Any]:
     """Run the configured local STT command template and read back a .txt transcript."""
+    if prompt:
+        logger.debug(
+            "STT provider 'local_command' does not support transcription "
+            "prompts — proceeding without the prompt."
+        )
+
     command_template = _get_local_command_template()
     if not command_template:
         return {
@@ -1230,9 +1368,11 @@ def _transcribe_local_command(file_path: str, model_name: str) -> Dict[str, Any]
             ),
         }
 
-    # Language: config.yaml (stt.local.language) > env var > "en" default.
+    # Language: hook override > config.yaml (stt.local.language) > env var
+    # > "en" default.
     language = (
-        (_load_stt_config().get("local") or {}).get("language")
+        language
+        or (_load_stt_config().get("local") or {}).get("language")
         or os.getenv(LOCAL_STT_LANGUAGE_ENV)
         or DEFAULT_LOCAL_STT_LANGUAGE
     )
@@ -1294,7 +1434,13 @@ def _transcribe_local_command(file_path: str, model_name: str) -> Dict[str, Any]
 # ---------------------------------------------------------------------------
 
 
-def _transcribe_groq(file_path: str, model_name: str) -> Dict[str, Any]:
+def _transcribe_groq(
+    file_path: str,
+    model_name: str,
+    *,
+    language: Optional[str] = None,
+    prompt: Optional[str] = None,
+) -> Dict[str, Any]:
     """Transcribe using Groq Whisper API (free tier available)."""
     api_key = get_env_value("GROQ_API_KEY")
     if not api_key:
@@ -1312,11 +1458,19 @@ def _transcribe_groq(file_path: str, model_name: str) -> Dict[str, Any]:
         from openai import OpenAI, APIError, APIConnectionError, APITimeoutError
         client = OpenAI(api_key=api_key, base_url=GROQ_BASE_URL, timeout=30, max_retries=0)
         try:
+            # Only send prompt/language when set so the no-hook, no-config
+            # request stays byte-identical to today's.
+            extra_params: Dict[str, Any] = {}
+            if prompt:
+                extra_params["prompt"] = prompt
+            if language:
+                extra_params["language"] = language
             with open(file_path, "rb") as audio_file:
                 transcription = client.audio.transcriptions.create(
                     model=model_name,
                     file=audio_file,
                     response_format="text",
+                    **extra_params,
                 )
 
             transcript_text = str(transcription).strip()
@@ -1353,6 +1507,8 @@ def _transcribe_openai(
     api_key: Optional[str] = None,
     base_url: Optional[str] = None,
     provider_label: str = "openai",
+    language: Optional[str] = None,
+    prompt: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Transcribe via the OpenAI ``audio.transcriptions.create`` SDK shape.
 
@@ -1383,11 +1539,19 @@ def _transcribe_openai(
         from openai import OpenAI, APIError, APIConnectionError, APITimeoutError
         client = OpenAI(api_key=api_key, base_url=base_url, timeout=30, max_retries=0)
         try:
+            # Only send prompt/language when set so the no-hook, no-config
+            # request stays byte-identical to today's.
+            extra_params: Dict[str, Any] = {}
+            if prompt:
+                extra_params["prompt"] = prompt
+            if language:
+                extra_params["language"] = language
             with open(file_path, "rb") as audio_file:
                 transcription = client.audio.transcriptions.create(
                     model=model_name,
                     file=audio_file,
                     response_format="text" if model_name == "whisper-1" else "json",
+                    **extra_params,
                 )
 
             transcript_text = _extract_transcript_text(transcription)
@@ -1419,7 +1583,13 @@ def _transcribe_openai(
 # ---------------------------------------------------------------------------
 
 
-def _transcribe_mistral(file_path: str, model_name: str) -> Dict[str, Any]:
+def _transcribe_mistral(
+    file_path: str,
+    model_name: str,
+    *,
+    language: Optional[str] = None,
+    prompt: Optional[str] = None,
+) -> Dict[str, Any]:
     """Transcribe using Mistral Voxtral Transcribe API.
 
     Uses the ``mistralai`` Python SDK to call ``/v1/audio/transcriptions``.
@@ -1437,11 +1607,20 @@ def _transcribe_mistral(file_path: str, model_name: str) -> Dict[str, Any]:
             pass
         from mistralai.client import Mistral
 
+        # Only send prompt/language when set so the no-hook, no-config
+        # request stays byte-identical to today's.
+        extra_params: Dict[str, Any] = {}
+        if prompt:
+            extra_params["prompt"] = prompt
+        if language:
+            extra_params["language"] = language
+
         with Mistral(api_key=api_key) as client:
             with open(file_path, "rb") as audio_file:
                 result = client.audio.transcriptions.complete(
                     model=model_name,
                     file={"content": audio_file, "file_name": Path(file_path).name},
+                    **extra_params,
                 )
 
             transcript_text = _extract_transcript_text(result)
@@ -1463,7 +1642,13 @@ def _transcribe_mistral(file_path: str, model_name: str) -> Dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-def _transcribe_xai(file_path: str, model_name: str) -> Dict[str, Any]:
+def _transcribe_xai(
+    file_path: str,
+    model_name: str,
+    *,
+    language: Optional[str] = None,
+    prompt: Optional[str] = None,
+) -> Dict[str, Any]:
     """Transcribe using xAI Grok STT API.
 
     Uses the ``POST /v1/stt`` REST endpoint with multipart/form-data.
@@ -1471,6 +1656,12 @@ def _transcribe_xai(file_path: str, model_name: str) -> Dict[str, Any]:
     Requires ``XAI_API_KEY`` environment variable.
     """
     from tools.xai_http import resolve_xai_http_credentials
+
+    if prompt:
+        logger.debug(
+            "STT provider 'xai' does not support transcription prompts — "
+            "proceeding without the prompt."
+        )
 
     creds = resolve_xai_http_credentials()
     api_key = str(creds.get("api_key") or "").strip()
@@ -1489,8 +1680,11 @@ def _transcribe_xai(file_path: str, model_name: str) -> Dict[str, Any]:
         or creds.get("base_url")
         or XAI_STT_BASE_URL
     ).strip().rstrip("/")
+    # Language: hook override > config.yaml (stt.xai.language) > env var
+    # > "en" default.
     language = str(
-        xai_config.get("language")
+        language
+        or xai_config.get("language")
         or os.getenv("HERMES_LOCAL_STT_LANGUAGE")
         or DEFAULT_LOCAL_STT_LANGUAGE
     ).strip()
@@ -1570,8 +1764,20 @@ def _transcribe_xai(file_path: str, model_name: str) -> Dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-def _transcribe_elevenlabs(file_path: str, model_name: str) -> Dict[str, Any]:
+def _transcribe_elevenlabs(
+    file_path: str,
+    model_name: str,
+    *,
+    language: Optional[str] = None,
+    prompt: Optional[str] = None,
+) -> Dict[str, Any]:
     """Transcribe using ElevenLabs Scribe STT API."""
+    if prompt:
+        logger.debug(
+            "STT provider 'elevenlabs' does not support transcription "
+            "prompts — proceeding without the prompt."
+        )
+
     api_key = get_env_value("ELEVENLABS_API_KEY")
     if not api_key:
         return {"success": False, "transcript": "", "error": "ELEVENLABS_API_KEY not set"}
@@ -1583,7 +1789,10 @@ def _transcribe_elevenlabs(file_path: str, model_name: str) -> Dict[str, Any]:
         or get_env_value("ELEVENLABS_STT_BASE_URL")
         or ELEVENLABS_STT_BASE_URL
     ).strip().rstrip("/")
-    language_code = str(elevenlabs_config.get("language_code") or "").strip()
+    # Language: hook override > config.yaml (stt.elevenlabs.language_code).
+    language_code = str(
+        language or elevenlabs_config.get("language_code") or ""
+    ).strip()
     tag_audio_events = is_truthy_value(elevenlabs_config.get("tag_audio_events", False))
     diarize = is_truthy_value(elevenlabs_config.get("diarize", False))
 
@@ -1656,7 +1865,13 @@ def _transcribe_elevenlabs(file_path: str, model_name: str) -> Dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-def _transcribe_deepinfra(file_path: str, model_name: str) -> Dict[str, Any]:
+def _transcribe_deepinfra(
+    file_path: str,
+    model_name: str,
+    *,
+    language: Optional[str] = None,
+    prompt: Optional[str] = None,
+) -> Dict[str, Any]:
     """Resolve DeepInfra credentials/model, then delegate to the OpenAI handler.
 
     DeepInfra's STT endpoint is OpenAI-compatible, so the actual SDK
@@ -1701,6 +1916,8 @@ def _transcribe_deepinfra(file_path: str, model_name: str) -> Dict[str, Any]:
         api_key=api_key,
         base_url=base_url,
         provider_label="deepinfra",
+        language=language,
+        prompt=prompt,
     )
 
 
@@ -1709,7 +1926,11 @@ def _transcribe_deepinfra(file_path: str, model_name: str) -> Dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, Any]:
+def transcribe_audio(
+    file_path: str,
+    model: Optional[str] = None,
+    source: Optional[str] = None,
+) -> Dict[str, Any]:
     """
     Transcribe an audio file using the configured STT provider.
 
@@ -1720,6 +1941,9 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
     Args:
         file_path: Absolute path to the audio file to transcribe.
         model:     Override the model. If None, uses config or provider default.
+        source:    Optional caller-surface label (e.g. ``"gateway"``,
+                   ``"voice_mode"``) forwarded to the ``pre_transcription``
+                   plugin hook for observability. Not used for dispatch.
 
     Returns:
         dict with keys:
@@ -1744,49 +1968,92 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
 
     provider = _get_provider(stt_config)
 
+    # Optional static transcription prompt (``stt.prompt`` in config.yaml):
+    # vocabulary/context hints threaded to prompt-capable backends.
+    # Ordering: config is the base; pre_transcription hook results mutate on
+    # top, in registration order, so the last hook to set a field wins.
+    # Hermes deliberately does not truncate the final prompt: provider/model
+    # tokenizers and limits differ, so the configured backend owns validation,
+    # truncation, or rejection. The user-facing config example documents the
+    # per-provider behavior and privacy boundary.
+    prompt = stt_config.get("prompt")
+    if not isinstance(prompt, str) or not prompt.strip():
+        prompt = None
+
+    # pre_transcription plugin hook — fires after provider resolution and
+    # BEFORE any backend (built-in, command-type, or plugin-registered) is
+    # invoked. Hooks may mutate prompt/language/model; file_path is
+    # read-only. The helper short-circuits on has_hook() so the no-hook
+    # dispatch path stays byte-identical. ``language`` stays None unless a
+    # hook overrides it — backends keep their own config/env resolution.
+    model, language, prompt = _apply_pre_transcription_hook(
+        file_path=file_path,
+        provider=provider,
+        model=model,
+        language=_get_stt_section(stt_config, provider).get("language"),
+        prompt=prompt,
+        source=source,
+    )
+
     if provider == "local":
         local_cfg = stt_config.get("local") or {}
         model_name = _normalize_local_model(
             model or local_cfg.get("model", DEFAULT_LOCAL_MODEL)
         )
-        return _transcribe_local(file_path, model_name)
+        return _transcribe_local(
+            file_path, model_name, language=language, prompt=prompt,
+        )
 
     if provider == "local_command":
         local_cfg = stt_config.get("local") or {}
         model_name = _normalize_local_command_model(
             model or local_cfg.get("model", DEFAULT_LOCAL_MODEL)
         )
-        return _transcribe_local_command(file_path, model_name)
+        return _transcribe_local_command(
+            file_path, model_name, language=language, prompt=prompt,
+        )
 
     if provider == "groq":
         model_name = model or DEFAULT_GROQ_STT_MODEL
-        return _transcribe_groq(file_path, model_name)
+        return _transcribe_groq(
+            file_path, model_name, language=language, prompt=prompt,
+        )
 
     if provider == "openai":
         openai_cfg = stt_config.get("openai") or {}
         model_name = model or openai_cfg.get("model", DEFAULT_STT_MODEL)
-        return _transcribe_openai(file_path, model_name)
+        return _transcribe_openai(
+            file_path, model_name, language=language, prompt=prompt,
+        )
 
     if provider == "mistral":
         mistral_cfg = stt_config.get("mistral") or {}
         model_name = model or mistral_cfg.get("model", DEFAULT_MISTRAL_STT_MODEL)
-        return _transcribe_mistral(file_path, model_name)
+        return _transcribe_mistral(
+            file_path, model_name, language=language, prompt=prompt,
+        )
 
     if provider == "xai":
         # xAI Grok STT doesn't use a model parameter — pass through for logging
         model_name = model or "grok-stt"
-        return _transcribe_xai(file_path, model_name)
+        return _transcribe_xai(
+            file_path, model_name, language=language, prompt=prompt,
+        )
 
     if provider == "elevenlabs":
         elevenlabs_cfg = stt_config.get("elevenlabs") or {}
         model_name = model or elevenlabs_cfg.get("model_id", DEFAULT_ELEVENLABS_STT_MODEL)
-        return _transcribe_elevenlabs(file_path, model_name)
+        return _transcribe_elevenlabs(
+            file_path, model_name, language=language, prompt=prompt,
+        )
 
     if provider == "deepinfra":
         di_config = stt_config.get("deepinfra")  # may be None (YAML null)
         di_config = di_config if isinstance(di_config, dict) else {}
         model_name = model or di_config.get("model") or ""
-        return _transcribe_deepinfra(file_path, model_name)
+        return _transcribe_deepinfra(
+            file_path, model_name, language=language, prompt=prompt,
+        )
 
     # User-declared command-type provider
     # (``stt.providers.<name>: type: command``). Fires after the built-in
@@ -1802,6 +2069,8 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
             command_provider_config,
             stt_config,
             model_override=model,
+            language_override=language,
+            prompt=prompt,
         )
 
     # Plugin-registered STT backend (e.g. OpenRouter, SenseAudio,
@@ -1818,7 +2087,7 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
     # forwards ``language`` from there. Top-level ``model`` argument
     # overrides any config-set model.
     plugin_cfg = stt_config.get(provider, {}) if isinstance(stt_config.get(provider), dict) else {}
-    plugin_language = plugin_cfg.get("language")
+    plugin_language = language or plugin_cfg.get("language")
     plugin_model = model or plugin_cfg.get("model")
     plugin_result = _dispatch_to_plugin_provider(
         file_path,
@@ -1826,6 +2095,7 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
         stt_config,
         model=plugin_model,
         language=plugin_language,
+        prompt=prompt,
     )
     if plugin_result is not None:
         return plugin_result

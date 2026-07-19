@@ -184,6 +184,14 @@ _DEFAULT_PAYLOADS = {
         "assistant_content_chars": 1200,
         "assistant_tool_call_count": 0,
     },
+    "pre_transcription": {
+        "file_path": "/tmp/voice-message.ogg",
+        "provider": "local",
+        "model": "base",
+        "language": "en",
+        "prompt": None,
+        "source": "gateway",
+    },
     "subagent_stop": {
         "parent_session_id": "parent-sess",
         "child_role": None,

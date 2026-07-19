@@ -1462,18 +1462,24 @@ def _termux_workspace_install_context(
     return ws_root, tuple(workspace_args)
 
 
-def _npm_lock_workspace_closure(packages: dict, start: str) -> Optional[set]:
-    """Package-map keys reachable from workspace ``start`` via npm resolution.
+def _npm_lock_workspace_closure(packages: dict, starts) -> Optional[set]:
+    """Package-map keys reachable from the selected workspaces via npm resolution.
 
-    Returns ``None`` when ``start`` is absent from *packages* so callers fall
-    back to the full-lockfile comparison.
+    *starts* is the set of workspace keys the launch install explicitly scopes
+    to (a single str is accepted for convenience).  ``devDependencies`` are
+    followed for **each** of those workspaces, since ``npm install`` installs
+    the dev toolchain for every workspace it selects.  Returns ``None`` when
+    none of *starts* are present in *packages* so callers fall back to the
+    full-lockfile comparison.
 
     The launch install is scoped with ``npm install --workspace ui-tui`` (see
     ``_make_tui_argv``), so only the ui-tui workspace's dependency closure is
-    written to the hidden ``.package-lock.json``.  The shared root
-    ``package-lock.json`` additionally lists every *other* workspace's deps
-    (``apps/desktop``, ``web``, …); comparing the two in full reports those
-    unrelated packages as "missing" and reinstalls on every launch (#66978).
+    written to the hidden ``.package-lock.json``.  On Termux it additionally
+    selects ui-tui's child ``packages/*`` workspaces, so their devDependencies
+    join the closure too.  The shared root ``package-lock.json`` additionally
+    lists every *other* workspace's deps (``apps/desktop``, ``web``, …);
+    comparing the two in full reports those unrelated packages as "missing" and
+    reinstalls on every launch (#66978).
 
     Keys follow npm's v3 ``packages`` map (``""`` root, ``ui-tui`` /
     ``apps/desktop`` workspace members, ``node_modules/<name>`` hoisted deps,
@@ -1482,7 +1488,9 @@ def _npm_lock_workspace_closure(packages: dict, start: str) -> Optional[set]:
     workspace symlinks (``link: true``) are followed to their real entry so a
     linked workspace's own deps join the closure.
     """
-    if start not in packages:
+    start_set = {starts} if isinstance(starts, str) else {s for s in starts if s}
+    present = [s for s in start_set if s in packages]
+    if not present:
         return None
 
     def resolve(from_key: str, dep: str) -> Optional[str]:
@@ -1497,7 +1505,7 @@ def _npm_lock_workspace_closure(packages: dict, start: str) -> Optional[set]:
             base = base.rsplit("/", 1)[0] if "/" in base else ""
 
     seen: set = set()
-    stack = [start]
+    stack = list(present)
     while stack:
         key = stack.pop()
         if key in seen:
@@ -1511,10 +1519,10 @@ def _npm_lock_workspace_closure(packages: dict, start: str) -> Optional[set]:
         resolved = entry.get("resolved")
         if entry.get("link") and isinstance(resolved, str) and resolved in packages:
             stack.append(resolved)
-        # devDependencies are installed for the workspace being scoped (ui-tui's
-        # build toolchain), but not for transitive deps.
+        # devDependencies are installed for each explicitly-selected workspace
+        # (its build toolchain), but not for transitive deps.
         fields = ["dependencies", "optionalDependencies", "peerDependencies"]
-        if key == start:
+        if key in start_set:
             fields.append("devDependencies")
         for field in fields:
             deps = entry.get(field)
@@ -1525,6 +1533,35 @@ def _npm_lock_workspace_closure(packages: dict, start: str) -> Optional[set]:
                 if target is not None:
                     stack.append(target)
     return seen
+
+
+def _tui_selected_workspace_keys(tui_dir: Path, ws_root: Path) -> set:
+    """Lock-map keys for the workspaces the launch install scopes to.
+
+    Mirrors ``_make_tui_argv``: always the ui-tui workspace, plus its child
+    ``packages/*`` workspaces on Termux (where ``include_child_workspaces=True``
+    in ``_termux_workspace_install_context``).  ``npm install`` installs the
+    devDependencies of every workspace it selects, so the freshness closure must
+    treat each as a dev-included root — otherwise a devDependency unique to a
+    selected child is dropped from the closure and a genuine missing package
+    slips past the check.  Returns an empty set when ui-tui can't be located
+    under *ws_root*, so the caller falls back to the full comparison.
+    """
+    try:
+        primary = tui_dir.relative_to(ws_root).as_posix()
+    except ValueError:
+        return set()
+    keys = {primary}
+    if _is_termux_startup_environment():
+        packages_dir = tui_dir / "packages"
+        if packages_dir.is_dir():
+            for child in sorted(packages_dir.iterdir()):
+                if child.is_dir() and (child / "package.json").is_file():
+                    try:
+                        keys.add(child.relative_to(ws_root).as_posix())
+                    except ValueError:
+                        continue
+    return keys
 
 
 def _tui_need_npm_install(root: Path) -> bool:
@@ -1589,19 +1626,17 @@ def _tui_need_npm_install(root: Path) -> bool:
         return {k: v for k, v in pkg.items() if k not in _NPM_LOCK_RUNTIME_KEYS}
 
     # In a shared workspace checkout the launch install is scoped to the ui-tui
-    # workspace, so only its dependency closure lands in the hidden lock.  Limit
-    # the comparison to that closure so unrelated workspace deps (apps/desktop,
+    # workspace (plus its child packages/* workspaces on Termux), so only that
+    # dependency closure lands in the hidden lock.  Limit the comparison to the
+    # same selected-workspace closure so unrelated workspace deps (apps/desktop,
     # web, …) don't force a reinstall every launch (#66978).  Standalone /
     # own-lockfile layouts (ws_root == root) do a full install, so keep the full
     # comparison; a missing/unlocatable workspace falls back to it too.
     closure: Optional[set] = None
     if ws_root != root:
-        try:
-            workspace_key = root.relative_to(ws_root).as_posix()
-        except ValueError:
-            workspace_key = ""
-        if workspace_key:
-            closure = _npm_lock_workspace_closure(wanted, workspace_key)
+        selected = _tui_selected_workspace_keys(root, ws_root)
+        if selected:
+            closure = _npm_lock_workspace_closure(wanted, selected)
 
     for name, pkg in wanted.items():
         if not name:

@@ -244,6 +244,62 @@ def test_workspace_closure_returns_none_when_start_absent(main_mod) -> None:
     assert main_mod._npm_lock_workspace_closure({"node_modules/foo": {}}, "ui-tui") is None
 
 
+def test_workspace_closure_includes_dev_deps_of_selected_child_workspace(main_mod) -> None:
+    """On Termux the install also scopes to ui-tui's child packages/* workspaces,
+    so each selected child's devDependencies join the closure — a dev dep unique
+    to a child is NOT dropped (regression for the child-scope false-negative)."""
+    packages = {
+        "ui-tui": {"dependencies": {"@hermes/ink": "*"}},
+        "node_modules/@hermes/ink": {
+            "link": True,
+            "resolved": "ui-tui/packages/hermes-ink",
+        },
+        "ui-tui/packages/hermes-ink": {"devDependencies": {"child-dev-only": "1"}},
+        "node_modules/child-dev-only": {},
+    }
+    # Only ui-tui selected (desktop): the child's dev dep is not installed.
+    desktop = main_mod._npm_lock_workspace_closure(packages, {"ui-tui"})
+    assert "node_modules/child-dev-only" not in desktop
+    # ui-tui + child selected (Termux): the child's dev dep is in the closure.
+    termux = main_mod._npm_lock_workspace_closure(
+        packages, {"ui-tui", "ui-tui/packages/hermes-ink"}
+    )
+    assert "node_modules/child-dev-only" in termux
+
+
+def test_termux_install_catches_missing_child_workspace_dev_dep(
+    tmp_path: Path, main_mod, monkeypatch
+) -> None:
+    """On Termux the launch install selects ui-tui/packages/* too, installing
+    each child's devDependencies.  A child dev dep missing from the hidden lock
+    must trigger a reinstall — off Termux (child not selected) it must not."""
+    ws_lock = (
+        '{"packages":{'
+        '"ui-tui":{"dependencies":{"@hermes/ink":"*"}},'
+        '"node_modules/@hermes/ink":{"link":true,"resolved":"ui-tui/packages/hermes-ink"},'
+        '"ui-tui/packages/hermes-ink":{"devDependencies":{"child-dev-only":"1.0.0"}},'
+        '"node_modules/child-dev-only":{"version":"1.0.0"}'
+        "}}"
+    )
+    hidden_lock = (
+        '{"packages":{'
+        '"ui-tui":{"dependencies":{"@hermes/ink":"*"}},'
+        '"node_modules/@hermes/ink":{"link":true,"resolved":"ui-tui/packages/hermes-ink"},'
+        '"ui-tui/packages/hermes-ink":{"devDependencies":{"child-dev-only":"1.0.0"}}'
+        "}}"
+    )
+    tui_dir = _write_ws(tmp_path, ws_lock, hidden_lock)
+    child = tui_dir / "packages" / "hermes-ink"
+    child.mkdir(parents=True, exist_ok=True)
+    (child / "package.json").write_text('{"name":"@hermes/ink"}')
+
+    monkeypatch.setattr(main_mod, "_is_termux_startup_environment", lambda: False)
+    assert main_mod._tui_need_npm_install(tui_dir) is False
+
+    monkeypatch.setattr(main_mod, "_is_termux_startup_environment", lambda: True)
+    assert main_mod._tui_need_npm_install(tui_dir) is True
+
+
 def test_no_install_prebuilt_bundle_mode(tmp_path: Path, main_mod) -> None:
     """dist/entry.js present and no package-lock.json → prebuilt bundle, skip npm install."""
     _touch_tui_entry(tmp_path)

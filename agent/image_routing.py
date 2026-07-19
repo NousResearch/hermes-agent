@@ -478,6 +478,13 @@ class ImageFeedbackStatus:
     succeeded: int = 0
     failed: int = 0
     reasons: List[str] = field(default_factory=list)
+    # IMG-FIX1: the effective main model for THIS turn, captured at image-routing
+    # time from ``_resolve_session_agent_runtime`` (so ``/model`` overrides and
+    # per-session runtimes are reflected). ``build_image_feedback_line`` renders
+    # the main model name from here — NOT from cfg — because the cfg default can
+    # disagree with the actually-running turn model. Empty until populated by
+    # the routing site; falls back to a placeholder at render time.
+    main_model: str = ""
 
 
 def _classify_vision_failure(exc: Optional[BaseException], result: Any = None) -> str:
@@ -504,38 +511,6 @@ def _classify_vision_failure(exc: Optional[BaseException], result: Any = None) -
     return "empty"
 
 
-def _read_main_model_name(cfg: Optional[Dict[str, Any]]) -> str:
-    """Resolve the configured main model name for display, without hardcoding.
-
-    Mirrors ``auxiliary_client._read_main_model`` but reads purely from cfg so
-    the feedback line reflects the persisted config at feedback-build time.
-    Falls back to ``""`` (caller prints "this model") when unresolved.
-    """
-    try:
-        from agent.auxiliary_client import _RUNTIME_MAIN_MODEL
-
-        override = _RUNTIME_MAIN_MODEL
-        if isinstance(override, str) and override.strip():
-            return override.strip()
-    except Exception:
-        pass
-    if not isinstance(cfg, dict):
-        return ""
-    model_cfg_raw = cfg.get("model")
-    if isinstance(model_cfg_raw, str) and model_cfg_raw.strip():
-        return model_cfg_raw.strip()
-    if isinstance(model_cfg_raw, dict):
-        # Mirror run.py's single-source-of-truth model resolver: try
-        # "default" then "model" so all three legal cfg forms resolve
-        # (cfg["model"] str / ["model"]["default"] / ["model"]["model"]).
-        # IMG-004: never hardcode, read dynamically.
-        for _key in ("default", "model"):
-            _val = model_cfg_raw.get(_key, "")
-            if isinstance(_val, str) and _val.strip():
-                return _val.strip()
-    return ""
-
-
 def _read_vision_model_name(cfg: Optional[Dict[str, Any]]) -> str:
     """Resolve the auxiliary vision model name for display, without hardcoding."""
     if not isinstance(cfg, dict):
@@ -558,15 +533,18 @@ def build_image_feedback_line(status: ImageFeedbackStatus, cfg: Optional[Dict[st
       * total == 0 (no images were processed this turn).
 
     Otherwise returns a single status line. See the design's IMG-001..008
-    scenarios. Model names are read dynamically from ``cfg`` so this never
-    hardcodes a provider/model literal (IMG-004).
+    scenarios. The MAIN model name is rendered from ``status.main_model``
+    (captured at routing time from ``_resolve_session_agent_runtime`` — IMG-FIX1)
+    so it reflects the actually-running turn model (incl. ``/model`` overrides),
+    never a hardcoded literal (IMG-004). The auxiliary VISION model name is
+    still read dynamically from ``cfg["auxiliary"]["vision"]["model"]``.
     """
     if status is None:
         return ""
     if status.mode == "native" or status.total <= 0:
         return ""
 
-    main_model = _read_main_model_name(cfg) or "this model"
+    main_model = (status.main_model or "").strip() or "this model"
     vision_model = _read_vision_model_name(cfg) or "vision model"
 
     # All images failed to describe.

@@ -2,16 +2,17 @@
 
 Drives the REAL GatewayRunner prepend-path components (not a mock of the
 implementation): the per-session status store, ``_pop_image_feedback_status``,
-``build_image_feedback_line``, and source-level proof the prepend is wired
-into ``_handle_message_with_agent`` AFTER footer append / BEFORE return
-response (contract C1).
+and ``build_image_feedback_line``. Behavioral prepend wiring (IMG-007
+prepend-non-replace) is covered by red-team ``test_image_feedback.py``; this
+module deliberately does NOT read implementation source text (forbidden
+by AGENTS.md source-shape rule).
 
 Full ``_handle_message_with_agent`` end-to-end needs ~20 mocked前置
 (session_db / topic recovery / history / hooks / guards) which would test
-the mocks rather than the feedback layer. Instead we verify each REAL piece
-plus the wiring, complementing red-team ``test_image_feedback.py`` which
-covers IMG-003 send-delta==0, IMG-007 prepend-non-replace, IMG-011
-cross-turn isolation at the behavioral level.
+the mocks rather than the feedback layer. Instead we verify each REAL piece,
+complementing red-team ``test_image_feedback.py`` which covers IMG-003
+send-delta==0, IMG-007 prepend-non-replace, IMG-011 cross-turn isolation at
+the behavioral level.
 """
 
 import inspect
@@ -19,22 +20,6 @@ import inspect
 from agent.image_routing import ImageFeedbackStatus, build_image_feedback_line
 from gateway.config import GatewayConfig
 from gateway.run import GatewayRunner
-
-
-def test_prepend_is_wired_into_handle_message_with_agent():
-    """Source-level proof the prepend lives in _handle_message_with_agent,
-    AFTER footer append and BEFORE return response (contract C1)."""
-    src = inspect.getsource(GatewayRunner._handle_message_with_agent)
-    assert "build_image_feedback_line as _bfl" in src, "prepend must import build_image_feedback_line"
-    assert "_pop_image_feedback_status" in src, "prepend must pop per-session status"
-    assert "_img_line" in src, "prepend must assign the status line to a local"
-    # Positioned after the runtime footer append so the status line is the
-    # absolute first line (not reordered by reasoning/footer preprocessing).
-    footer_idx = src.find("_footer_line and response")
-    prepend_idx = src.find("build_image_feedback_line as _bfl")
-    assert footer_idx != -1 and prepend_idx != -1 and footer_idx < prepend_idx, (
-        "prepend must come AFTER footer append"
-    )
 
 
 def test_real_runner_pop_reads_and_clears():
@@ -54,13 +39,17 @@ def test_real_runner_pop_reads_and_clears():
 
 
 def test_real_runner_build_reads_cfg_and_prepends_verbatim():
-    """Real build_image_feedback_line: reads model names from cfg (IMG-004),
-    prepend formula `line + "\\n" + body` preserves body verbatim (IMG-007)."""
+    """Real build_image_feedback_line: renders the MAIN model name from the
+    captured ``status.main_model`` (IMG-FIX1) and the vision model name from
+    cfg; prepend formula `line + "\\n" + body` preserves body verbatim (IMG-007)."""
     cfg = {
         "model": {"default": "deepseek-v4-pro"},
         "auxiliary": {"vision": {"model": "qwen3-vl-plus"}},
     }
-    status = ImageFeedbackStatus(mode="text", total=1, succeeded=1, failed=0, reasons=[])
+    # main_model is CAPTURED at routing time (IMG-FIX1) — it is NOT read from cfg.
+    status = ImageFeedbackStatus(
+        mode="text", total=1, succeeded=1, failed=0, reasons=[], main_model="deepseek-v4-pro"
+    )
     line = build_image_feedback_line(status, cfg)
     assert "deepseek-v4-pro" in line, f"main model name missing: {line!r}"
     assert "qwen3-vl-plus" in line, f"vision model name missing: {line!r}"

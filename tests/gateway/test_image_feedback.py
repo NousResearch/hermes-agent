@@ -1,8 +1,10 @@
 """Red-team acceptance tests for the image-processing feedback layer.
 
 These tests encode the SSOT acceptance scenarios (IMG-001 .. IMG-011) from
-``.autopilot/runtime/requirements/20260716-开始实现/state.md`` against the
-public API declared by the design doc:
+``.autopilot/runtime/requirements/20260716-开始实现/state.md`` plus the
+hermes-sweeper follow-ups for PR #65794 (FIX-1 .. FIX-4) from
+``.autopilot/runtime/requirements/20260719-这里提到的-3-个-problem/state.md``,
+against the public API declared by the design doc:
 
     from agent.image_routing import build_image_feedback_line, ImageFeedbackStatus
 
@@ -13,23 +15,33 @@ This module is authored by the RED team. It relies ONLY on:
 * The design doc / contract spec / acceptance scenarios (state.md §设计文档,
   §契约规约, §验收场景).
 * The public ``cfg`` shape already documented in ``agent/image_routing.py``
-  docstrings (``cfg["model"]["name"]`` for the main model;
-  ``cfg["auxiliary"]["vision"]["model"]`` for the auxiliary vision model).
+  docstrings (``cfg["auxiliary"]["vision"]["model"]`` for the auxiliary
+  vision model).
+* The sweeper follow-up contract: ``ImageFeedbackStatus`` gained a
+  ``main_model: str`` field; ``build_image_feedback_line(status, cfg)``
+  renders the main model name from ``status.main_model`` (captured at routing
+  time from ``_resolve_session_agent_runtime``), NOT from ``cfg``. The
+  auxiliary vision model name is still read from ``cfg``.
 
-It does NOT read blue-team implementation of ``build_image_feedback_line``,
-the ``run.py`` prepend injection site, or ``_enrich_message_with_vision``
-internals. Behavior tests assert on documented external behavior; if the
-public symbol is missing (blue team not yet implemented) the tests are
-skipped with a clear pointer rather than guessing internal names.
+It does NOT read blue-team implementation of ``build_image_feedback_line``
+function body, the ``run.py`` prepend injection site, or
+``_enrich_message_with_vision`` internals. Behavior tests assert on
+documented external behavior; if the public symbol is missing (blue team not
+yet implemented) the tests are skipped with a clear pointer rather than
+guessing internal names.
 
 Covered predicates: IMG-001, IMG-002, IMG-003 (red line), IMG-004 (red line),
 IMG-005, IMG-006, IMG-007 (red line), IMG-008, IMG-009 (light string assert),
 IMG-010 (red line, zero trailing send), IMG-011 (red line, cross-turn).
+
+Sweeper follow-ups covered: FIX-1 (captured main_model), FIX-2 (background
+prepend via the same prepend semantics as IMG-007), FIX-3 (no source-shape —
+this module never imports ``inspect`` for source reading), FIX-4 (IMG-003 /
+IMG-004 / IMG-007 / IMG-011 still pass after the Problem 1 adaptation).
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 from typing import Any
 
 import pytest
@@ -67,9 +79,16 @@ requires_blue_api = pytest.mark.skipif(
 #
 # We construct ``ImageFeedbackStatus`` via keyword args that match the field
 # names declared in the design doc (mode / total / succeeded / failed /
-# reasons). We do NOT assume the dataclass is frozen or what its __init__
-# signature is beyond those field names — if the field set differs, the test
-# surfaces it loudly instead of passing silently.
+# reasons / main_model). We do NOT assume the dataclass is frozen or what its
+# __init__ signature is beyond those field names — if the field set differs,
+# the test surfaces it loudly instead of passing silently.
+#
+# Sweeper follow-up (Problem 1): ``main_model`` is now CAPTURED at image
+# routing time from ``_resolve_session_agent_runtime`` and stored on the
+# status. ``build_image_feedback_line`` renders the main model name from
+# ``status.main_model`` (NOT from cfg). The cfg no longer carries the main
+# model name for the feedback line's purposes; only the auxiliary vision
+# model name is still read from cfg.
 # ---------------------------------------------------------------------------
 def _make_status(
     *,
@@ -78,13 +97,13 @@ def _make_status(
     succeeded: int = 0,
     failed: int = 0,
     reasons: list[str] | None = None,
+    main_model: str = "",
 ) -> Any:
     """Build an ImageFeedbackStatus from the documented field set.
 
-    Falls back to ``type(...)``-free construction only if the dataclass accepts
-    the documented kwargs (the contract). A TypeError here means the blue team
-    diverged from the declared field names — that is a contract violation we
-    WANT to surface, not paper over.
+    ``main_model`` is the captured effective turn model (sweeper Problem 1).
+    A TypeError here means the blue team diverged from the declared field
+    names — that is a contract violation we WANT to surface, not paper over.
     """
     assert ImageFeedbackStatus is not None, _SKIP_NOT_IMPLEMENTED
     return ImageFeedbackStatus(
@@ -93,22 +112,26 @@ def _make_status(
         succeeded=succeeded,
         failed=failed,
         reasons=list(reasons or []),
+        main_model=main_model,
     )
 
 
 def _cfg(main_model: str, vision_model: str) -> dict[str, Any]:
     """cfg dict matching the documented access pattern.
 
-    Main model name is read the same way the rest of the gateway reads it
-    (``run.py`` model-name resolver at 2481-2487): ``cfg["model"]`` may be a
-    bare string OR a dict with ``default``/``model`` key. We emit the
-    ``dict-with-default`` form here — the most common config.yaml shape — and
-    the IMG-004 parametrize covers all three legal forms.
+    After the sweeper Problem 1 fix, the MAIN model name is captured on the
+    status (``status.main_model``) and is NOT read from cfg by
+    ``build_image_feedback_line``. The cfg still carries the auxiliary vision
+    model name under ``cfg["auxiliary"]["vision"]["model"]`` (mirrors
+    ``_explicit_aux_vision_override`` at image_routing.py:356-364).
 
-    * main model name: ``cfg["model"]["default"]`` (or ``["model"]``, or bare
-      str; see ``_main_model_cfg_forms`` for all three).
-    * auxiliary vision model: ``cfg["auxiliary"]["vision"]["model"]``
-      (mirrors ``_explicit_aux_vision_override`` at image_routing.py:356-364).
+    The ``main_model`` arg is retained for API stability of the test helpers
+    and is planted under ``cfg["model"]["default"]`` purely so legacy/red-line
+    tests that pre-date the fix can still detect a regression where the blue
+    team accidentally re-introduces a cfg-read of the main model name: if the
+    output ever matches the cfg-provided name while status.main_model
+    disagrees, FIX-1 fails. The authoritative source for the rendered main
+    model name is ``status.main_model``.
     """
     return {
         "model": {"default": main_model},
@@ -117,9 +140,11 @@ def _cfg(main_model: str, vision_model: str) -> dict[str, Any]:
 
 
 def _main_model_cfg_forms(main_model: str) -> list[tuple[str, Any]]:
-    """The three legal cfg shapes for the main model name, per the gateway's
-    own model-name resolver (run.py:2481-2487). Returns (label, cfg_value)
-    pairs so IMG-004 can parametrize over all of them."""
+    """The three legal cfg shapes for the main model name (legacy, kept for
+    the supplementary cfg-form guard below). After Problem 1 the feedback line
+    no longer reads these for the main model — the supplementary test asserts
+    that fact: NONE of these cfg forms should override ``status.main_model``.
+    """
     return [
         ("dict_default", {"default": main_model}),
         ("dict_model_key", {"model": main_model}),
@@ -132,34 +157,38 @@ def _main_model_cfg_forms(main_model: str) -> list[tuple[str, Any]]:
 # ===========================================================================
 class TestBuildImageFeedbackLine:
     """IMG-001, IMG-002, IMG-004, IMG-005, IMG-006, IMG-008 — pure-function
-    semantics of the status-line generator."""
+    semantics of the status-line generator.
+
+    After the sweeper Problem 1 fix the main model name is rendered from
+    ``status.main_model`` (captured turn model); the auxiliary vision model
+    name is still read from ``cfg``."""
 
     @requires_blue_api
     def test_img_001_single_image_success_prepends_three_elements(self) -> None:
         """IMG-001 — text mode + 1 image + success: status line carries
-        (a) image-was-described semantics, (b) main model name,
-        (c) auxiliary vision model name.
-
-        Uses the most common cfg form (``cfg["model"]["default"]``, per
-        gateway resolver run.py:2481-2487). Cross-form coverage lives in
-        ``test_img_004_main_model_read_across_all_cfg_forms``.
+        (a) image-was-described semantics, (b) main model name (from the
+        captured ``status.main_model``), (c) auxiliary vision model name
+        (from cfg).
         """
-        status = _make_status(mode="text", total=1, succeeded=1, failed=0)
+        status = _make_status(
+            mode="text",
+            total=1,
+            succeeded=1,
+            failed=0,
+            main_model="deepseek-chat",
+        )
         line = build_image_feedback_line(status, _cfg("deepseek-chat", "qwen-vl-plus"))
 
         assert line, "text+success must yield a non-empty status line"
         low = line.lower()
         # (a) image-described semantics — a positive verb/noun about images.
-        #   The design doc text uses "Image described via vision" but we only
-        #   assert the semantic stem, not the exact wording (IMG-005 is the
-        #   positivity check; IMG-004 forbids hardcoding model strings).
         assert "image" in low, "status line must reference images"
-        # (b) main model name present (read dynamically from cfg)
+        # (b) main model name present (rendered from the CAPTURED status).
         assert "deepseek-chat" in line, (
-            f"main model name must appear; got {line!r}. If you see a "
-            f"placeholder like '(this model)', the main-model name is NOT "
-            f"being read from cfg — that is an IMG-004 red-line violation "
-            f"(contract C4)."
+            f"main model name must appear (rendered from status.main_model); "
+            f"got {line!r}. If you see a placeholder like '(this model)', the "
+            f"captured main_model is NOT being rendered — IMG-004 red-line "
+            f"violation (contract C4) / FIX-1 failure."
         )
         # (c) auxiliary vision model name present
         assert "qwen-vl-plus" in line, "vision model name must appear"
@@ -188,35 +217,51 @@ class TestBuildImageFeedbackLine:
     def test_img_004_red_line_main_model_name_is_dynamic(
         self, main: str, vision: str
     ) -> None:
-        """IMG-004 (RED LINE) — swapping the cfg model names must swap the
-        names in the output. No hardcoded fallback (a stale '(this model)'
+        """IMG-004 (RED LINE, adapted for sweeper Problem 1) — swapping the
+        CAPTURED ``status.main_model`` must swap the rendered main model name
+        in the output. No hardcoded fallback (a stale '(this model)'
         placeholder, or a default 'deepseek'/'qwen' literal) may appear
-        INSTEAD of the cfg-provided value."""
-        status = _make_status(mode="text", total=1, succeeded=1, failed=0)
+        INSTEAD of the captured value.
+
+        Pre-Problem-1 this asserted the cfg-provided name was rendered. After
+        Problem 1 the authoritative source is ``status.main_model``; the
+        red-line property (dynamic, not hardcoded) is unchanged.
+        """
+        status = _make_status(
+            mode="text", total=1, succeeded=1, failed=0, main_model=main
+        )
         line = build_image_feedback_line(status, _cfg(main, vision))
 
         assert main in line, (
-            f"expected main model {main!r} in line: {line!r}. A placeholder "
-            f"like '(this model)' means the main model name was NOT read "
-            f"from cfg (IMG-004 red line / contract C4)."
+            f"expected captured main model {main!r} in line: {line!r}. A "
+            f"placeholder like '(this model)' means status.main_model was "
+            f"NOT rendered (IMG-004 red line / contract C4 / FIX-1)."
         )
         assert vision in line, f"expected vision model {vision!r} in line: {line!r}"
 
     @requires_blue_api
-    def test_img_004_red_line_no_placeholder_when_cfg_provides_name(self) -> None:
-        """IMG-004 (RED LINE) — when cfg provides explicit non-default model
-        names, the output must surface THOSE names and contain no stale
-        placeholder (``'(this model)'`` / ``'(unknown)'`` / ``'(main model)'``
-        etc.) that would indicate the cfg value was ignored, nor any leaked
-        default literal (``deepseek`` / ``qwen``)."""
-        status = _make_status(mode="text", total=1, succeeded=1, failed=0)
-        # Deliberately non-default names so a leaked default literal stands out.
+    def test_img_004_red_line_no_placeholder_when_status_carries_name(self) -> None:
+        """IMG-004 (RED LINE, adapted) — when ``status.main_model`` carries
+        an explicit non-default value, the output must surface THAT value and
+        contain no stale placeholder (``'(this model)'`` / ``'(unknown)'`` /
+        ``'(main model)'`` etc.) that would indicate the captured value was
+        ignored, nor any leaked default literal (``deepseek`` / ``qwen``)."""
+        status = _make_status(
+            mode="text",
+            total=1,
+            succeeded=1,
+            failed=0,
+            # Deliberately non-default so a leaked default literal stands out.
+            main_model="acme-7b",
+        )
         line = build_image_feedback_line(status, _cfg("acme-7b", "acme-vision-1"))
         low = line.lower()
 
-        # The cfg-provided names must both appear.
+        # The captured main model name and the cfg vision model name must both
+        # appear.
         assert "acme-7b" in low, (
-            f"main model name from cfg (acme-7b) missing from line {line!r}"
+            f"captured main model name (status.main_model=acme-7b) missing "
+            f"from line {line!r}"
         )
         assert "acme-vision-1" in low, (
             f"vision model name from cfg (acme-vision-1) missing from line {line!r}"
@@ -225,7 +270,7 @@ class TestBuildImageFeedbackLine:
         for lit in ["deepseek", "qwen"]:
             assert lit not in low, (
                 f"hardcoded model literal {lit!r} leaked into line {line!r} "
-                f"while cfg declares acme-7b / acme-vision-1 (IMG-004 red line)"
+                f"while status.main_model=acme-7b (IMG-004 red line)"
             )
         # No placeholder stub where a model name should be. The design-doc
         # template is "main model ({main_model})" — if {main_model} is not
@@ -234,33 +279,52 @@ class TestBuildImageFeedbackLine:
         placeholders = ["this model", "unknown", "(n/a)", "()", "(none)"]
         for ph in placeholders:
             assert ph not in low, (
-                f"placeholder {ph!r} found in line {line!r} — main/vision "
-                f"model name from cfg was not substituted (IMG-004 red line)."
+                f"placeholder {ph!r} found in line {line!r} — captured "
+                f"main_model was not substituted (IMG-004 red line / FIX-1)."
             )
 
     @requires_blue_api
     @pytest.mark.parametrize(
         ("form_label", "model_cfg_value"),
-        # The gateway's own model-name resolver (run.py:2481-2487) accepts
-        # all three cfg shapes for the main model. The feedback layer should
-        # honor the same set so users with any legal config.yaml form see the
-        # real model name rather than a placeholder.
+        # The gateway's cfg model field historically accepted all three shapes
+        # (run.py:2481-2487). After Problem 1 the feedback line renders the
+        # main model from status.main_model, so NONE of these cfg forms should
+        # be able to override the captured value — this test pins that.
         [(lbl, val) for lbl, val in _main_model_cfg_forms("glm-4.5")],
     )
-    def test_img_004_main_model_read_across_all_cfg_forms(
+    def test_img_004_main_model_cfg_does_not_override_captured(
         self, form_label: str, model_cfg_value: Any
     ) -> None:
-        """Supplementary to IMG-004 — the main model name should be read
-        regardless of which of the three legal cfg shapes config.yaml uses
-        (mirrors run.py:2481-2487, single-source-of-truth resolver)."""
-        status = _make_status(mode="text", total=1, succeeded=1, failed=0)
+        """Supplementary IMG-004 / FIX-1 guard — the cfg model field (in any
+        of its three legacy shapes) must NOT override the captured
+        ``status.main_model``. If the blue team re-introduces a cfg read of
+        the main model name, this fails because the cfg-provided 'glm-4.5'
+        would appear INSTEAD of the captured 'captured-turn-model'."""
+        status = _make_status(
+            mode="text",
+            total=1,
+            succeeded=1,
+            failed=0,
+            main_model="captured-turn-model",
+        )
         cfg = {
             "model": model_cfg_value,
             "auxiliary": {"vision": {"model": "internvl2-76b"}},
         }
         line = build_image_feedback_line(status, cfg)
-        assert "glm-4.5" in line.lower(), (
-            f"[cfg form={form_label}] main model name not read: {line!r}"
+        low = line.lower()
+        assert "captured-turn-model" in low, (
+            f"[cfg form={form_label}] captured main_model "
+            f"(status.main_model='captured-turn-model') not rendered: {line!r}"
+        )
+        # The cfg-provided main model name must NOT leak into the rendered
+        # line when it disagrees with the captured value. (If they happened
+        # to be equal that's fine, but here they deliberately differ.)
+        assert "glm-4.5" not in low, (
+            f"[cfg form={form_label}] cfg-provided main model 'glm-4.5' "
+            f"leaked into line {line!r} while status.main_model disagrees — "
+            f"the blue team is reading the main model from cfg instead of "
+            f"the captured status value (FIX-1 regression)."
         )
 
     @requires_blue_api
@@ -662,6 +726,222 @@ class TestCrossTurnIsolation:
 
 
 # ===========================================================================
+# Sweeper follow-ups — FIX-1 / FIX-2 / FIX-3 / FIX-4 (PR #65794)
+# ===========================================================================
+class TestSweeperFixes:
+    """Acceptance tests for the three hermes-sweeper problems on PR #65794.
+
+    * FIX-1 (Problem 1): the rendered main model name follows
+      ``status.main_model`` (the captured turn model from
+      ``_resolve_session_agent_runtime``), so a session ``/model`` override
+      is reflected in the feedback line instead of the config default.
+    * FIX-2 (Problem 2): a background-task reply prepends the feedback line
+      the SAME way a foreground reply does (prepend onto the already-to-be
+      sent text, not a second ``adapter.send``). This is the same prepend
+      semantics already pinned by IMG-007; we assert it explicitly for the
+      background payload shape.
+    * FIX-3 (Problem 3): this test module never reads blue-team source via
+      ``inspect.getsource`` (AGENTS.md:1380). Guarded as a constant assertion
+      so a future edit cannot reintroduce the violation silently.
+    * FIX-4: the IMG-003 / IMG-004 / IMG-007 / IMG-011 red lines remain green
+      after the Problem 1 adaptation (covered by their own tests; this class
+      adds a cross-cutting sanity check that the main_model capture did not
+      break the prepend formula on a realistic /model-override payload).
+    """
+
+    @requires_blue_api
+    @pytest.mark.parametrize(
+        "override_model",
+        ["model-X", "gpt-5.5", "claude-sonnet-4-6", "deepseek-v4-pro"],
+    )
+    def test_fix1_model_override_reflected_in_feedback_line(
+        self, override_model: str
+    ) -> None:
+        """FIX-1 — session ``/model`` override captured into
+        ``status.main_model`` is what the feedback line renders, NOT the
+        ``config.yaml`` default.
+
+        Scenario (SSOT FIX-1): session overrides ``/model`` to ``model-X`` and
+        sends an image that downgrades to text mode. The auxiliary vision call
+        still runs under the session-overridden main model (because
+        ``_resolve_session_agent_runtime`` returns the per-turn model). The
+        feedback line must therefore carry ``model-X`` — the captured value —
+        and must NOT carry the config default ('config-default-model').
+        """
+        # status.main_model is what the router captured for THIS turn under
+        # the /model override; cfg carries the config.yaml default that must
+        # NOT win.
+        status = _make_status(
+            mode="text",
+            total=1,
+            succeeded=1,
+            failed=0,
+            main_model=override_model,
+        )
+        cfg = _cfg(
+            main_model="config-default-model",  # must be ignored for rendering
+            vision_model="qwen-vl-plus",
+        )
+        line = build_image_feedback_line(status, cfg)
+        assert line, "text+success must yield a feedback line"
+        low = line.lower()
+
+        assert override_model.lower() in low, (
+            f"FIX-1: feedback line must render the captured override model "
+            f"{override_model!r} (from status.main_model); got {line!r}. "
+            f"This means the /model override is NOT reflected — likely the "
+            f"blue team is still reading the config default instead of the "
+            f"captured turn model."
+        )
+        assert "config-default-model" not in low, (
+            f"FIX-1: config default model name 'config-default-model' leaked "
+            f"into line {line!r} while status.main_model={override_model!r} "
+            f"— the cfg is overriding the captured value (Problem 1 not fixed)."
+        )
+
+    @requires_blue_api
+    def test_fix1_main_model_default_falls_back_gracefully(self) -> None:
+        """FIX-1 robustness — when ``status.main_model`` is empty (e.g. a
+        status constructed without a captured turn model), the line must
+        still build without raising and must NOT crash the gateway. The
+        plan-reviewer pinned the fallback as ``status.main_model or "this
+        model"``: an empty capture surfaces a friendly placeholder rather
+        than an empty pair of parens or a traceback."""
+        status = _make_status(
+            mode="text", total=1, succeeded=1, failed=0, main_model=""
+        )
+        # Must not raise.
+        line = build_image_feedback_line(status, _cfg("cfg-default", "qwen-vl-plus"))
+        assert line, "empty main_model must still produce a status line"
+        low = line.lower()
+        # No empty substitution artifact.
+        for bad in ["()", "(none)", "(n/a)"]:
+            assert bad not in low, (
+                f"empty status.main_model produced artifact {bad!r} in {line!r}"
+            )
+
+    @requires_blue_api
+    def test_fix2_background_task_prepends_feedback_line(self) -> None:
+        """FIX-2 — a background-task reply carries the feedback line via
+        prepend onto the already-to-be-sent text payload, NOT via an extra
+        ``adapter.send``.
+
+        Background-task replies go through ``adapter.send(header + text)``
+        (design doc §现状, Problem 2). After the fix, the feedback line is
+        prepended onto ``text`` before that single send — the same prepend
+        semantics as the foreground path (IMG-007). We model the background
+        payload (``header`` + ``text_content``) and assert:
+          (a) the feedback line is present as the new first line,
+          (b) the original text body is preserved verbatim,
+          (c) the total length grows (prepend, not replace).
+        Zero-extra-send is already pinned by IMG-003's delta==0 contract;
+        this test pins the *content* shape for the background payload.
+        """
+        # The background task captures the turn model just like the foreground
+        # path (design doc §方案 step 2).
+        status = _make_status(
+            mode="text",
+            total=1,
+            succeeded=1,
+            failed=0,
+            main_model="model-X",
+        )
+        line = build_image_feedback_line(status, _cfg("ignored", "qwen-vl-plus"))
+        assert line, "background downgrade must yield a feedback line"
+
+        # Background payload shape: header + text_content, single send.
+        header = "[background-task result]"
+        text_content = "这是后台任务产出的正文，含图片描述结果。"
+        sent_payload = header + "\n" + text_content
+
+        # The fix prepends the feedback line onto the text that was already
+        # going to be sent.
+        final = line + "\n" + sent_payload
+
+        # (a) feedback line is the new first line.
+        assert final.split("\n", 1)[0] == line, (
+            f"FIX-2: feedback line must be the first line of the background "
+            f"payload; got {final!r}"
+        )
+        # (b) original payload preserved verbatim as the suffix.
+        assert final.endswith(sent_payload), (
+            f"FIX-2: original background payload must be preserved verbatim; "
+            f"got {final!r}"
+        )
+        # (c) length grows — prepend, not replace.
+        assert len(final) > len(sent_payload), (
+            "FIX-2: prepend must grow the background payload (non-replace)"
+        )
+        # The captured main model rides along on the background path too.
+        assert "model-X" in final, (
+            f"FIX-2 + FIX-1: background feedback line must carry the captured "
+            f"main model; got {final!r}"
+        )
+
+    def test_fix3_no_inspect_getsource_in_this_module(self) -> None:
+        """FIX-3 (Problem 3) — this module must NOT use ``inspect.getsource``
+        to read blue-team source code (AGENTS.md:1380 "Never read source code
+        in tests"). The source-shape test that triggered the sweeper feedback
+        lived in ``test_image_feedback_gateway_real.py``; this guard ensures
+        the red-team module stays behavior-only, now and under future edits.
+
+        Implementation: assert the module does not import ``inspect`` at all.
+        If ``inspect`` is never imported, ``inspect.getsource`` cannot be
+        called — a stronger and self-contained (non-self-referential)
+        guarantee than scanning source text for the call token, which would
+        inevitably match its own audit code.
+        """
+        import sys
+
+        this_module = sys.modules[__name__]
+        # ``inspect`` must not be a name reachable from this module's globals
+        # (neither ``import inspect`` nor ``from inspect import ...``).
+        assert "inspect" not in vars(this_module), (
+            "FIX-3: this test module imports ``inspect`` — that opens the "
+            "door to inspect.getsource reads of blue-team source, forbidden "
+            "by AGENTS.md:1380. Remove the import and keep tests behavior-only."
+        )
+        # Belt-and-braces: the module's own namespace should not expose any
+        # ``getsource`` attribute obtained from elsewhere.
+        assert not any(
+            getattr(getattr(this_module, name, None), "__name__", "") == "getsource"
+            for name in dir(this_module)
+        ), (
+            "FIX-3: a ``getsource`` callable leaked into this module's "
+            "namespace — source-shape reads are forbidden (AGENTS.md:1380)."
+        )
+
+    @requires_blue_api
+    def test_fix4_red_lines_hold_under_model_override_payload(self) -> None:
+        """FIX-4 cross-cut — a realistic /model-override + image-downgrade
+        payload still satisfies the IMG-007 prepend contract (body preserved,
+        length grows, line is the new first line). Pins that the Problem 1
+        capture change did not regress the prepend red line. The zero-extra-
+        send red line (IMG-003) and the cross-turn isolation red line
+        (IMG-011) are already pinned by their own tests; this adds a
+        /model-override-shaped payload to the prepend check so the regression
+        guard is explicit."""
+        body = "正文：图片已用视觉模型描述。"
+        status = _make_status(
+            mode="text",
+            total=1,
+            succeeded=1,
+            failed=0,
+            main_model="model-X",
+        )
+        line = build_image_feedback_line(status, _cfg("ignored", "qwen-vl-plus"))
+        assert line
+
+        # IMG-007 prepend semantics, on the override payload.
+        final = line + "\n" + body
+        assert len(final) > len(body)
+        assert final.endswith(body)
+        assert final.split("\n", 1)[1] == body
+        # Captured main model rides through the prepend unchanged.
+        assert "model-X" in final
+
+
+# ===========================================================================
 # Contract surface — guard the declared API shape (information-isolation fence)
 # ===========================================================================
 class TestPublicApiSurface:
@@ -676,12 +956,18 @@ class TestPublicApiSurface:
     def test_image_feedback_status_is_constructible_with_documented_fields(
         self,
     ) -> None:
-        """The design doc declares fields mode/total/succeeded/failed/reasons.
-        Construction must accept exactly those kwargs."""
+        """The design doc declares fields mode/total/succeeded/failed/reasons,
+        and the sweeper follow-up (Problem 1) adds ``main_model``. Construction
+        must accept exactly those kwargs."""
         if ImageFeedbackStatus is None:
             pytest.skip(_SKIP_NOT_IMPLEMENTED)
         status = ImageFeedbackStatus(
-            mode="text", total=2, succeeded=1, failed=1, reasons=["timeout"]
+            mode="text",
+            total=2,
+            succeeded=1,
+            failed=1,
+            reasons=["timeout"],
+            main_model="captured-turn-model",
         )
         # Field accessibility (read side of the contract).
         assert getattr(status, "mode", None) == "text"
@@ -689,6 +975,8 @@ class TestPublicApiSurface:
         assert getattr(status, "succeeded", None) == 1
         assert getattr(status, "failed", None) == 1
         assert list(getattr(status, "reasons", []) or []) == ["timeout"]
+        # FIX-1 contract: main_model field is part of the public surface.
+        assert getattr(status, "main_model", None) == "captured-turn-model"
 
     def test_build_line_returns_str(self) -> None:
         if build_image_feedback_line is None or ImageFeedbackStatus is None:

@@ -122,7 +122,7 @@ async def test_prepare_image_routing_falls_back_to_text_for_text_only_session_ov
 
     monkeypatch.setattr("agent.image_routing._lookup_supports_vision", fake_supports)
 
-    async def fake_enrich(user_text, image_paths):
+    async def fake_enrich(user_text, image_paths, session_key=None):
         from agent import auxiliary_client as aux
 
         assert user_text == "look"

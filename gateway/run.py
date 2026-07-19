@@ -11580,6 +11580,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         )
                         vision_runtime = dict(runtime_kwargs or {})
                         vision_runtime["model"] = turn_model
+                        # IMG-FIX1: capture the effective turn model onto this
+                        # session's status so build_image_feedback_line renders
+                        # the actually-running model (not the cfg default, which
+                        # can disagree for /model overrides). Best-effort — the
+                        # status was initialized above at routing-decision time.
+                        try:
+                            _s = self._image_feedback_status_by_session.get(session_key)
+                            if _s is not None and isinstance(turn_model, str):
+                                _s.main_model = turn_model.strip()
+                        except Exception:
+                            pass
                     except Exception:
                         logger.debug(
                             "vision enrichment: session runtime resolution failed",
@@ -13116,9 +13127,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if _img_status is not None:
                 try:
                     from agent.image_routing import build_image_feedback_line as _bfl
-                    from hermes_cli.config import load_config
 
-                    _img_line = _bfl(_img_status, load_config())
+                    # IMG-FIX1: main model name comes from the captured
+                    # ``status.main_model``; cfg is only needed for the
+                    # auxiliary vision model name. Use the gateway's own
+                    # config reader (already used for the footer above) rather
+                    # than a fresh ``load_config()`` import.
+                    _img_line = _bfl(_img_status, _load_gateway_config())
                 except Exception:
                     _img_line = ""
                 if _img_line:
@@ -14742,9 +14757,46 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         image_paths.append(path)
                 if image_paths:
                     try:
-                        enriched_prompt = await self._enrich_message_with_vision(
-                            prompt, image_paths,
-                        )
+                        # IMG-FIX2: mirror the main routing path so background
+                        # tasks get the SAME feedback-layer treatment —
+                        # (a) resolve this session's runtime (with session_key
+                        #     so /model overrides apply, matching the main path),
+                        # (b) initialize the per-session feedback status with
+                        #     the CAPTURED turn model (IMG-FIX1) — background
+                        #     has no _decide_image_input_mode call, so we
+                        #     initialize here; mode is "text" because only the
+                        #     text/vision-described branch enriches,
+                        # (c) wrap _enrich in scoped_runtime_main so the
+                        #     auxiliary vision backend resolves credentials
+                        #     from the session runtime (the main path had this
+                        #     but background didn't — same-shaped hole as FIX1),
+                        # (d) pass session_key so _record_outcome updates the
+                        #     status populated here.
+                        bg_session_key = None
+                        try:
+                            bg_session_key = self._session_key_for_source(source)
+                        except Exception:
+                            bg_session_key = None
+                        bg_vision_runtime = dict(runtime_kwargs or {})
+                        bg_vision_runtime["model"] = model
+                        if bg_session_key:
+                            try:
+                                from agent.image_routing import ImageFeedbackStatus as _BgImgFb
+
+                                self._image_feedback_status_by_session[bg_session_key] = _BgImgFb(
+                                    mode="text",
+                                    total=len(image_paths),
+                                    main_model=(model or "").strip() if isinstance(model, str) else "",
+                                )
+                            except Exception:
+                                pass
+                        from agent.auxiliary_client import scoped_runtime_main
+
+                        with scoped_runtime_main(bg_vision_runtime):
+                            enriched_prompt = await self._enrich_message_with_vision(
+                                prompt, image_paths,
+                                session_key=bg_session_key,
+                            )
                     except Exception as e:
                         logger.warning("Background task vision enrichment failed: %s", e)
 
@@ -14802,6 +14854,30 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
                 preview = prompt[:60] + ("..." if len(prompt) > 60 else "")
                 header = f'✅ Background task complete\nPrompt: "{preview}"\n\n'
+
+                # IMG-FIX2: prepend the image-feedback line to the text that was
+                # ALREADY going to be sent — zero extra adapter.send (IMG-003
+                # red line). Mirrors the main _handle_message_with_agent prepend.
+                # Only fires when this background turn actually vision-described
+                # images (status was initialized in the image_paths branch).
+                if text_content:
+                    try:
+                        _bg_sk = None
+                        try:
+                            _bg_sk = self._session_key_for_source(source)
+                        except Exception:
+                            _bg_sk = None
+                        _bg_status = self._pop_image_feedback_status(_bg_sk)
+                        if _bg_status is not None:
+                            from agent.image_routing import build_image_feedback_line as _bg_bfl
+
+                            _bg_line = _bg_bfl(_bg_status, user_config)
+                        else:
+                            _bg_line = ""
+                    except Exception:
+                        _bg_line = ""
+                    if _bg_line:
+                        text_content = f"{_bg_line}\n{text_content}"
 
                 if text_content:
                     await adapter.send(

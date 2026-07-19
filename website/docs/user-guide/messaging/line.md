@@ -175,6 +175,7 @@ Cron jobs with `deliver: line` route to `LINE_HOME_CHANNEL`. The adapter ships a
 | `LINE_BUTTON_LABEL` | no | "Get answer" | Button label |
 | `LINE_DELIVERED_TEXT` | no | "Already replied ✅" | Reply when an already-delivered button is tapped again |
 | `LINE_INTERRUPTED_TEXT` | no | "Run was interrupted before completion." | Reply when a `/stop` orphan button is tapped |
+| `LINE_SMART_MODALITY` | no | `false` | Opt-in reply modality routing: text turns get text replies, voice turns get voice replies (text suppressed), photo turns inherit the sender's last text/voice modality. Successful audio delivery requires `LINE_PUBLIC_URL` |
 
 ---
 

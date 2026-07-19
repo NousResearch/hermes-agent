@@ -889,6 +889,7 @@ class ContextCompressor(ContextEngine):
         self._verify_compaction_cleared_threshold = False
         self._last_compression_made_progress = False
         self._summary_failure_cooldown_until = 0.0  # transient errors must not block a fresh session
+        self._cooldown_persist_failed = False
         self._last_summary_error = None
         self._last_compress_aborted = False
         self.last_real_prompt_tokens = 0
@@ -928,6 +929,7 @@ class ContextCompressor(ContextEngine):
         self._verify_compaction_cleared_threshold = False
         self._last_compression_made_progress = False
         self._summary_failure_cooldown_until = 0.0
+        self._cooldown_persist_failed = False
         self._last_compress_aborted = False
         self._context_probed = False
         self._context_probe_persistable = False
@@ -941,6 +943,7 @@ class ContextCompressor(ContextEngine):
         self._session_db = session_db
         self._session_id = session_id or ""
         self._summary_failure_cooldown_until = 0.0
+        self._cooldown_persist_failed = False
         self._last_summary_error = None
         self._consecutive_timeout_failures = 0
         self._fallback_compression_streak = 0
@@ -1022,42 +1025,66 @@ class ContextCompressor(ContextEngine):
             self._fallback_compression_streak = 0
         self._persist_fallback_compression_streak()
 
-    def get_active_compression_failure_cooldown(self) -> Optional[Dict[str, Any]]:
+    def get_active_compression_failure_cooldown(
+        self,
+        *,
+        refresh: bool = False,
+    ) -> Optional[Dict[str, Any]]:
         """Return the live compression-failure cooldown for the bound session."""
         now_mono = time.monotonic()
+        local_state = None
         if self._summary_failure_cooldown_until > now_mono:
-            return {
+            local_state = {
                 "cooldown_until": time.time() + (
                     self._summary_failure_cooldown_until - now_mono
                 ),
                 "remaining_seconds": self._summary_failure_cooldown_until - now_mono,
                 "error": self._last_summary_error,
             }
+            if not refresh:
+                return local_state
 
         session_db = getattr(self, "_session_db", None)
         session_id = getattr(self, "_session_id", "")
         if not session_db or not session_id:
-            return None
+            return local_state
 
         getter = getattr(session_db, "get_compression_failure_cooldown", None)
         if getter is None:
-            return None
+            return local_state
         try:
             state = getter(session_id)
         except sqlite3.Error as exc:
             logger.debug("compression failure cooldown lookup failed: %s", exc)
-            return None
+            return local_state
         except Exception:
-            return None
+            return local_state
         if not state:
+            if refresh:
+                if local_state is not None and self._cooldown_persist_failed:
+                    # The live local cooldown never made it to the DB (persist
+                    # failed), so the empty row is not evidence that another
+                    # agent cleared it. Honouring the DB here would re-enable
+                    # auto-compress mid-cooldown and reopen the #11529 thrash
+                    # window. Keep the local timer authoritative until it
+                    # expires or a successful DB read supersedes it.
+                    return local_state
+                self._summary_failure_cooldown_until = 0.0
+                self._last_summary_error = None
             return None
 
         remaining_seconds = float(state.get("remaining_seconds") or 0.0)
         if remaining_seconds <= 0:
+            if refresh:
+                if local_state is not None and self._cooldown_persist_failed:
+                    return local_state
+                self._summary_failure_cooldown_until = 0.0
+                self._last_summary_error = None
             return None
 
         self._summary_failure_cooldown_until = now_mono + remaining_seconds
         self._last_summary_error = state.get("error")
+        self._cooldown_persist_failed = False
         return {
             "cooldown_until": float(state.get("cooldown_until") or 0.0),
             "remaining_seconds": remaining_seconds,
@@ -1080,18 +1107,23 @@ class ContextCompressor(ContextEngine):
 
         recorder = getattr(session_db, "record_compression_failure_cooldown", None)
         if recorder is None:
+            self._cooldown_persist_failed = True
             return
         try:
             recorder(session_id, cooldown_until, error)
+            self._cooldown_persist_failed = False
         except sqlite3.Error as exc:
+            self._cooldown_persist_failed = True
             logger.debug("compression failure cooldown persist failed: %s", exc)
         except Exception as exc:
+            self._cooldown_persist_failed = True
             logger.debug("compression failure cooldown persist failed (non-sqlite): %s", exc)
 
     def _clear_compression_failure_cooldown(self) -> None:
         self._summary_failure_cooldown_until = 0.0
         self._last_summary_error = None
         self._consecutive_timeout_failures = 0
+        self._cooldown_persist_failed = False
 
         session_db = getattr(self, "_session_db", None)
         session_id = getattr(self, "_session_id", "")
@@ -1385,6 +1417,10 @@ class ContextCompressor(ContextEngine):
         # no-op/abort without inferring progress from message-list length.
         self._last_compression_made_progress: bool = False
         self._summary_failure_cooldown_until: float = 0.0
+        # True while the live local cooldown failed to persist to the DB;
+        # a refresh must then treat an empty durable row as unknown, not
+        # cleared (see get_active_compression_failure_cooldown).
+        self._cooldown_persist_failed: bool = False
         self._last_summary_error: Optional[str] = None
         # When summary generation fails and a static fallback is inserted,
         # record how many turns were unrecoverably dropped so callers
@@ -1530,8 +1566,48 @@ class ContextCompressor(ContextEngine):
             return False
         return not self._automatic_compression_blocked()
 
+    def _refresh_durable_guards(self) -> None:
+        """Re-read durable cooldown + fallback-streak state from the DB.
+
+        Cheap, best-effort, and only called when a gate is about to say
+        "blocked": another agent on the same session may have cleared the
+        durable rows (successful boundary, forced retry) after this
+        compressor was bound, and a fallback streak has no timer — without
+        a re-read the stale in-memory snapshot blocks forever.
+        """
+        try:
+            self.get_active_compression_failure_cooldown(refresh=True)
+        except Exception as exc:
+            logger.debug("compression cooldown refresh failed: %s", exc)
+        try:
+            self._load_fallback_compression_streak()
+        except Exception as exc:
+            logger.debug("compression fallback-streak refresh failed: %s", exc)
+
     def _automatic_compression_blocked(self) -> bool:
         """Return whether automatic compaction is in cooldown or tripped."""
+        if not self._automatic_compression_blocked_locally():
+            return False
+        # Blocked on the in-memory snapshot. Durable guard rows may have
+        # been cleared by another agent since bind_session_state(); refresh
+        # and re-evaluate so a stale local block cannot outlive the durable
+        # state that justified it. The unblocked hot path above never pays
+        # for the DB reads.
+        if (
+            self._summary_failure_cooldown_until <= time.monotonic()
+            and self._fallback_compression_streak < 2
+        ):
+            # Blocked solely by the in-memory ineffective-compression
+            # counter, which is not durable — there is nothing in the DB
+            # that could unblock it, so skip the refresh (otherwise this
+            # branch would re-read the DB on every gate check for the rest
+            # of the session).
+            return True
+        self._refresh_durable_guards()
+        return self._automatic_compression_blocked_locally()
+
+    def _automatic_compression_blocked_locally(self) -> bool:
+        """Evaluate the automatic-compaction gate on in-memory state only."""
         # Do not trigger compression while the summary LLM is in cooldown.
         # On a 429/transient failure _generate_summary() sets a cooldown and
         # returns None; compress() then inserts a static fallback marker and

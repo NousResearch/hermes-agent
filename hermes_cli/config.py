@@ -1912,7 +1912,8 @@ DEFAULT_CONFIG = {
         # iteration/budget limit.  Replaces the bare "(empty)" sentinel so the
         # failure isn't silent from the UI's perspective.  Set false to suppress.
         "turn_completion_explainer": True,
-        "show_cost": False,       # Show $ cost in the status bar (off by default)
+        "show_reasoning_effort": False,  # Show live reasoning effort in status chrome
+        "show_cost": False,       # Show truthful session cost/status in status chrome
         "skin": "default",
         # UI language for static user-facing messages (approval prompts, a
         # handful of gateway slash-command replies).  Does NOT affect agent

@@ -246,7 +246,7 @@ export interface SessionUsageResponse {
   context_max?: number
   context_percent?: number
   context_used?: number
-  cost_status?: 'estimated' | 'exact'
+  cost_status?: 'actual' | 'estimated' | 'included' | 'unknown'
   cost_usd?: number
   credits_lines?: string[]
   input?: number

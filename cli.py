@@ -4587,6 +4587,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             model_short = f"{model_short[:23]}..."
 
         elapsed_seconds = max(0.0, (datetime.now() - self.session_start).total_seconds())
+        display_config = (getattr(self, "config", {}) or {}).get("display", {}) or {}
         snapshot = {
             "model_name": model_name,
             "model_short": model_short,
@@ -4611,6 +4612,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             "session_completion_tokens": 0,
             "session_total_tokens": 0,
             "session_api_calls": 0,
+            "reasoning_label": "",
+            "cost_label": "",
             "compressions": 0,
             "active_background_tasks": 0,
             "active_background_processes": 0,
@@ -4657,6 +4660,20 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         snapshot["session_completion_tokens"] = getattr(agent, "session_completion_tokens", 0) or 0
         snapshot["session_total_tokens"] = getattr(agent, "session_total_tokens", 0) or 0
         snapshot["session_api_calls"] = getattr(agent, "session_api_calls", 0) or 0
+
+        from agent.runtime_display import format_reasoning_label, format_session_cost
+
+        if display_config.get("show_reasoning_effort", False):
+            snapshot["reasoning_label"] = format_reasoning_label(
+                getattr(agent, "reasoning_config", None),
+                compact=True,
+            )
+        if display_config.get("show_cost", False):
+            snapshot["cost_label"] = format_session_cost(
+                getattr(agent, "session_estimated_cost_usd", None),
+                getattr(agent, "session_cost_status", None),
+                compact=True,
+            )
 
         compressor = getattr(agent, "context_compressor", None)
         if compressor:
@@ -5096,15 +5113,20 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             percent = snapshot["context_percent"]
             percent_label = f"{percent}%" if percent is not None else "--"
             duration_label = snapshot["duration"]
+            reasoning_label = snapshot.get("reasoning_label")
+            cost_label = snapshot.get("cost_label")
+            model_label = snapshot["model_short"]
+            if reasoning_label:
+                model_label = f"{model_label} {reasoning_label}"
 
             yolo_active = self._is_session_yolo_active()
             if width < 52:
-                text = f"⚕ {snapshot['model_short']} · {duration_label}"
+                text = f"⚕ {model_label} · {duration_label}"
                 if yolo_active:
                     text += " · ⚠ YOLO"
                 return self._trim_status_bar_text(text, width)
             if width < 76:
-                parts = [f"⚕ {snapshot['model_short']}", percent_label]
+                parts = [f"⚕ {model_label}", percent_label]
                 compressions = snapshot.get("compressions", 0)
                 if compressions:
                     parts.append(f"🗜️ {compressions}")
@@ -5130,7 +5152,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 context_label = "ctx --"
 
             compressions = snapshot.get("compressions", 0)
-            parts = [f"⚕ {snapshot['model_short']}", context_label, percent_label]
+            parts = [f"⚕ {model_label}", context_label, percent_label]
+            if cost_label:
+                parts.append(cost_label)
             if compressions:
                 parts.append(f"🗜️ {compressions}")
             bg_count = snapshot.get("active_background_tasks", 0)
@@ -5167,6 +5191,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             # line and produce duplicated status bar rows over long sessions.
             width = self._get_tui_terminal_width()
             duration_label = snapshot["duration"]
+            reasoning_label = snapshot.get("reasoning_label")
+            cost_label = snapshot.get("cost_label")
             yolo_active = self._is_session_yolo_active()
 
             if width < 52:
@@ -5176,6 +5202,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     ("class:status-bar-dim", " · "),
                     ("class:status-bar-dim", duration_label),
                 ]
+                if reasoning_label:
+                    frags.insert(2, ("class:status-bar-strong", f" {reasoning_label}"))
                 if yolo_active:
                     frags.append(("class:status-bar-dim", " · "))
                     frags.append(("class:status-bar-yolo", "⚠ YOLO"))
@@ -5194,6 +5222,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                         ("class:status-bar-dim", " · "),
                         (self._status_bar_context_style(percent), percent_label),
                     ]
+                    if reasoning_label:
+                        frags.insert(2, ("class:status-bar-strong", f" {reasoning_label}"))
                     if compressions:
                         frags.append(("class:status-bar-dim", " · "))
                         frags.append((self._compression_count_style(compressions), f"🗜️ {compressions}"))
@@ -5237,6 +5267,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                         ("class:status-bar-dim", " "),
                         (bar_style, percent_label),
                     ]
+                    if reasoning_label:
+                        frags.insert(2, ("class:status-bar-strong", f" {reasoning_label}"))
+                    if cost_label:
+                        frags.append(("class:status-bar-dim", " │ "))
+                        frags.append(("class:status-bar-strong", cost_label))
                     if compressions:
                         frags.append(("class:status-bar-dim", " │ "))
                         frags.append((self._compression_count_style(compressions), f"🗜️ {compressions}"))
@@ -9891,10 +9926,20 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
 
         msg_count = len(self.conversation_history)
         elapsed = format_duration_compact((datetime.now() - self.session_start).total_seconds())
+        from agent.runtime_display import effective_reasoning_effort, format_session_cost
+
+        reasoning_effort = effective_reasoning_effort(
+            getattr(agent, "reasoning_config", None)
+        )
+        session_cost = format_session_cost(
+            getattr(agent, "session_estimated_cost_usd", None),
+            getattr(agent, "session_cost_status", None),
+        ).removeprefix("cost ")
 
         print("  📊 Session Token Usage")
         print(f"  {'─' * 40}")
         print(f"  Model:                     {agent.model}")
+        print(f"  Reasoning effort:            {reasoning_effort}")
         print(f"  Input tokens:              {input_tokens:>10,}")
         print(f"  Output tokens:             {output_tokens:>10,}")
         if reasoning_tokens:
@@ -9903,6 +9948,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         print(f"  Completion tokens:         {completion:>10,}")
         print(f"  Total tokens:              {total:>10,}")
         print(f"  API calls:                 {calls:>10,}")
+        print(f"  Session cost:                {session_cost}")
         print(f"  Session duration:          {elapsed:>10}")
         print(f"  {'─' * 40}")
         print(f"  Current context:  {last_prompt:,} / {ctx_len:,} ({pct:.0f}%)")

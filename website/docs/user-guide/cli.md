@@ -63,21 +63,22 @@ The welcome banner shows your model, terminal backend, working directory, availa
 A persistent status bar sits above the input area, updating in real time:
 
 ```
- ⚕ claude-sonnet-4-20250514 │ 12.4K/200K │ [██████░░░░] 6% │ $0.06 │ 15m
+ ⚕ claude-sonnet-4-20250514 r:high │ 12.4K/200K │ [██████░░░░] 6% │ ~$0.06 │ 15m
 ```
 
 | Element | Description |
 |---------|-------------|
 | Model name | Current model (truncated if longer than 26 chars) |
+| Reasoning effort | Effective live level (`r:high`, `r:none`, or `r:default`) when `display.show_reasoning_effort` is enabled |
 | Token count | Context tokens used / max context window |
 | Context bar | Visual fill indicator with color-coded thresholds |
-| Cost | Estimated session cost (or `n/a` for unknown/zero-priced models) |
+| Cost | Truthful cumulative state when `display.show_cost` is enabled: actual `$`, estimated `~$`, `included`, or `cost n/a` |
 | 🗜️ N | **Context compression count** — how many times the running session has been auto-compressed. Appears once the first compression fires. |
 | ▶ N | **Active background tasks** — how many `/background` prompts are still running in the current session. Appears whenever at least one task is in flight. |
 | Duration | Elapsed session time |
 | ⚠ YOLO | **YOLO mode warning** — shown whenever `HERMES_YOLO_MODE` is on (either `hermes --yolo` at launch or `/yolo` toggled mid-session). Mirrors the banner-line warning so you can't forget you're in auto-approve mode. |
 
-The bar adapts to terminal width — full layout at ≥ 76 columns, compact at 52–75, minimal (model + duration, plus the YOLO badge when active) below 52.
+The bar adapts to terminal width — full layout at ≥ 76 columns, compact at 52–75, minimal (model + duration, plus the YOLO badge when active) below 52. Reasoning effort and cost are off by default; enable them with `display.show_reasoning_effort: true` and `display.show_cost: true`. The Ink TUI uses the same settings and drops the low-priority cost segment first when space is tight.
 
 **Context color coding:**
 

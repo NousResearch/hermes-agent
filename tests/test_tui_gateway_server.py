@@ -6332,6 +6332,26 @@ def test_session_info_includes_session_title(monkeypatch):
     assert info["title"] == "Dashboard title"
 
 
+def test_session_info_includes_runtime_metadata_display_flags(monkeypatch):
+    monkeypatch.setattr(
+        server,
+        "_load_cfg",
+        lambda: {
+            "display": {
+                "show_reasoning_effort": True,
+                "show_cost": True,
+            }
+        },
+    )
+
+    info = server._session_info(
+        types.SimpleNamespace(tools=[], model="test/model", provider="openai")
+    )
+
+    assert info["show_reasoning_effort"] is True
+    assert info["show_cost"] is True
+
+
 def test_session_info_includes_install_warning_for_pip(monkeypatch):
     """pip installs surface install_warning; git installs don't (issue: pip/brew deprecation)."""
     monkeypatch.setattr("hermes_cli.config.detect_install_method", lambda: "pip")
@@ -10555,6 +10575,20 @@ class _BareAgent:
     independent of the `if comp:` context-percent block."""
 
     model = "x"
+
+
+def test_get_usage_includes_session_cost_metadata(monkeypatch):
+    import tools.async_delegation as ad_mod
+
+    monkeypatch.setattr(ad_mod, "active_count", lambda: 0)
+    agent = _BareAgent()
+    agent.session_estimated_cost_usd = 0.1234
+    agent.session_cost_status = "estimated"
+
+    usage = server._get_usage(agent)
+
+    assert usage["cost_usd"] == 0.1234
+    assert usage["cost_status"] == "estimated"
 
 
 def test_get_usage_includes_active_subagents(monkeypatch):

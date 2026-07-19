@@ -160,6 +160,8 @@ export interface SessionInfo {
   reasoning_effort?: string
   release_date?: string
   service_tier?: string
+  show_cost?: boolean
+  show_reasoning_effort?: boolean
   skills: Record<string, string[]>
   system_prompt?: string
   tools: Record<string, string[]>

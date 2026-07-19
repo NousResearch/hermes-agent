@@ -94,6 +94,9 @@ def format_runtime_footer(
     context_tokens: int,
     context_length: Optional[int],
     cwd: Optional[str] = None,
+    reasoning_effort: Optional[str] = None,
+    estimated_cost_usd: object = None,
+    cost_status: Optional[str] = None,
     fields: Iterable[str] = _DEFAULT_FIELDS,
 ) -> str:
     """Render the footer line, or return "" if no fields have data.
@@ -115,6 +118,14 @@ def format_runtime_footer(
             rel = _home_relative_cwd(cwd or os.environ.get("TERMINAL_CWD", ""))
             if rel:
                 parts.append(rel)
+        elif field == "reasoning_effort":
+            effort = str(reasoning_effort or "").strip()
+            if effort:
+                parts.append(f"reasoning {effort}")
+        elif field == "cost":
+            from agent.runtime_display import format_session_cost
+
+            parts.append(format_session_cost(estimated_cost_usd, cost_status))
         # Unknown field names are silently ignored.
 
     if not parts:
@@ -130,6 +141,9 @@ def build_footer_line(
     context_tokens: int,
     context_length: Optional[int],
     cwd: Optional[str] = None,
+    reasoning_effort: Optional[str] = None,
+    estimated_cost_usd: object = None,
+    cost_status: Optional[str] = None,
 ) -> str:
     """Top-level entry point used by gateway/run.py.
 
@@ -145,5 +159,8 @@ def build_footer_line(
         context_tokens=context_tokens,
         context_length=context_length,
         cwd=cwd,
+        reasoning_effort=reasoning_effort,
+        estimated_cost_usd=estimated_cost_usd,
+        cost_status=cost_status,
         fields=cfg.get("fields") or _DEFAULT_FIELDS,
     )

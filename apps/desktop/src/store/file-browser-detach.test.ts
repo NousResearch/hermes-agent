@@ -20,14 +20,8 @@ describe('file browser closes on workspace detach', () => {
     session.setCurrentCwd('/some/project')
     expect(layout.$fileBrowserOpen.get()).toBe(true)
 
-    const syncFileBrowserClosedWhenDetached = (hasWorkspace: boolean) => {
-      if (!hasWorkspace) {
-        layout.setFileBrowserOpen(false)
-      }
-    }
-
     session.setCurrentCwd('')
-    syncFileBrowserClosedWhenDetached(Boolean(session.$currentCwd.get().trim()))
+    layout.closeFileBrowserWhenDetached(Boolean(session.$currentCwd.get().trim()))
 
     expect(layout.$fileBrowserOpen.get()).toBe(false)
   })
@@ -39,14 +33,8 @@ describe('file browser closes on workspace detach', () => {
     layout.setFileBrowserOpen(true)
     session.setCurrentCwd('/some/project')
 
-    const syncFileBrowserClosedWhenDetached = (hasWorkspace: boolean) => {
-      if (!hasWorkspace) {
-        layout.setFileBrowserOpen(false)
-      }
-    }
-
     session.setCurrentCwd('/other/project')
-    syncFileBrowserClosedWhenDetached(Boolean(session.$currentCwd.get().trim()))
+    layout.closeFileBrowserWhenDetached(Boolean(session.$currentCwd.get().trim()))
 
     expect(layout.$fileBrowserOpen.get()).toBe(true)
   })

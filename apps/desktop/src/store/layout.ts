@@ -218,6 +218,16 @@ export function setFileBrowserOpen(open: boolean) {
   revealNarrowPane(FILE_BROWSER_PANE_ID, open ? 'open' : 'close')
 }
 
+// A workspace detach (cwd cleared) must close the files rail: otherwise a
+// persisted-open flag re-expands it the moment session.info adopts a process
+// cwd, which is the "files panel auto-opens on first reply" bug. Wired to
+// $hasWorkspace in contrib/controller.tsx.
+export function closeFileBrowserWhenDetached(hasWorkspace: boolean): void {
+  if (!hasWorkspace) {
+    setFileBrowserOpen(false)
+  }
+}
+
 // "Reveal this file in the file-browser tree" — an absolute path the tree
 // subscribes to, expanding ancestor folders and selecting/scrolling to it. Reset
 // to null by the tree once consumed.

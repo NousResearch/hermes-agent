@@ -40,6 +40,7 @@ import {
   $fileBrowserOpen,
   $panesFlipped,
   $sidebarOpen,
+  closeFileBrowserWhenDetached,
   FILE_BROWSER_DEFAULT_WIDTH,
   FILE_BROWSER_MAX_WIDTH,
   FILE_BROWSER_MIN_WIDTH,
@@ -535,14 +536,8 @@ bindTreeSideVisibility('right', $fileBrowserOpen, setFileBrowserOpen)
 // the rail's row and vanished with it), its zone stands on its own.
 const $hasWorkspace = computed($currentCwd, cwd => Boolean(cwd.trim()))
 
-const syncFileBrowserClosedWhenDetached = (hasWorkspace: boolean) => {
-  if (!hasWorkspace) {
-    setFileBrowserOpen(false)
-  }
-}
-
-syncFileBrowserClosedWhenDetached($hasWorkspace.get())
-$hasWorkspace.listen(syncFileBrowserClosedWhenDetached)
+closeFileBrowserWhenDetached($hasWorkspace.get())
+$hasWorkspace.listen(closeFileBrowserWhenDetached)
 
 bindPaneVisibility('files', $hasWorkspace, undefined, undefined, { revealOnShow: false })
 // ⌘G — the review sidebar appears/disappears (and comes to the front).

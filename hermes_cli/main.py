@@ -3167,6 +3167,7 @@ def select_provider_and_model(args=None):
     from hermes_cli.models import (
         CANONICAL_PROVIDERS,
         _PROVIDER_LABELS,
+        _PROVIDER_ALIASES,
         group_providers,
         provider_group_for_slug,
     )
@@ -3190,7 +3191,30 @@ def select_provider_and_model(args=None):
     # resolves back to a concrete slug, so the dispatch chain below is
     # unchanged. Custom providers and the trailing actions stay flat.
     canonical_descs = {p.slug: p.tui_desc for p in CANONICAL_PROVIDERS}
-    grouped_rows = group_providers([p.slug for p in CANONICAL_PROVIDERS])
+    # Honor ``model_catalog.excluded_providers`` so the CLI ``hermes model``
+    # picker hides the same providers the gateway/TUI pickers do. A canonical
+    # provider is hidden if its slug OR any of its aliases appears in the
+    # exclusion list (case-insensitive), matching list_authenticated_providers'
+    # matching against hermes_id / alias / canonical slug.
+    _cli_excluded = {
+        str(p).strip().lower()
+        for p in (config.get("model_catalog", {}) or {}).get("excluded_providers") or []
+        if p
+    }
+    if _cli_excluded:
+        _alias_to_canon = _PROVIDER_ALIASES
+        _names_for: dict[str, set[str]] = {}
+        for _p in CANONICAL_PROVIDERS:
+            _names_for[_p.slug] = {_p.slug.lower()}
+        for _alias, _canon in _alias_to_canon.items():
+            _names_for.setdefault(_canon, {_canon.lower()}).add(_alias.lower())
+        _visible_slugs = [
+            p.slug for p in CANONICAL_PROVIDERS
+            if not _names_for.get(p.slug, {p.slug.lower()}) & _cli_excluded
+        ]
+    else:
+        _visible_slugs = [p.slug for p in CANONICAL_PROVIDERS]
+    grouped_rows = group_providers(_visible_slugs)
 
     # The group/slug that should be pre-selected: the active provider's group
     # if it's grouped, otherwise the active slug itself.

@@ -175,7 +175,10 @@ declare global {
           createPr: (repoPath: string) => Promise<{ url: string }>
         }
         // Repo-first discovery: scan bounded roots for git repos (depth-capped).
-        scanRepos: (roots: string[], options?: { maxDepth?: number }) => Promise<{ root: string; label: string }[]>
+        scanRepos: (
+          roots: string[],
+          options?: { maxDepth?: number; enabled?: boolean; excludePaths?: string[] }
+        ) => Promise<{ root: string; label: string }[]>
       }
       terminal: {
         /** Best-effort current working directory of the live PTY child (POSIX

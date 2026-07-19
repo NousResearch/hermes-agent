@@ -12085,7 +12085,67 @@ def _is_session_cwd_junk(cwd: str) -> bool:
     return real == home or real == hermes_home
 
 
-def _discover_repos_payload(db, *, conn=None, backfill: bool = True) -> list[dict]:
+def _repo_discovery_policy(raw: dict | None = None) -> dict:
+    """Return the effective, profile-local Desktop repository scan policy."""
+    from hermes_cli.config import DEFAULT_CONFIG
+
+    defaults = DEFAULT_CONFIG["desktop"]
+    source = raw if isinstance(raw, dict) else (_load_cfg().get("desktop") or {})
+    if not isinstance(source, dict):
+        source = {}
+
+    enabled = source.get("enabled", source.get("repo_scan_enabled", defaults["repo_scan_enabled"]))
+    roots = source.get("roots", source.get("repo_scan_roots", defaults["repo_scan_roots"]))
+    excludes = source.get(
+        "exclude_paths",
+        source.get("repo_scan_exclude_paths", defaults["repo_scan_exclude_paths"]),
+    )
+
+    return {
+        "enabled": enabled if isinstance(enabled, bool) else defaults["repo_scan_enabled"],
+        "roots": [value.strip() for value in roots if isinstance(value, str) and value.strip()]
+        if isinstance(roots, list)
+        else list(defaults["repo_scan_roots"]),
+        "exclude_paths": [
+            value.strip()
+            for value in excludes
+            if isinstance(value, str) and value.strip()
+        ]
+        if isinstance(excludes, list)
+        else list(defaults["repo_scan_exclude_paths"]),
+    }
+
+
+def _repo_discovery_policy_key(policy: dict) -> str:
+    def _paths(values: list[str]) -> list[str]:
+        normalized = set()
+        home = os.path.expanduser("~")
+        for value in values:
+            expanded = os.path.expanduser(value)
+            if not os.path.isabs(expanded):
+                expanded = os.path.join(home, expanded)
+            normalized.add(os.path.normcase(os.path.abspath(expanded)))
+        return sorted(normalized)
+
+    canonical = {
+        "enabled": bool(policy["enabled"]),
+        "roots": _paths(policy["roots"]),
+        "exclude_paths": _paths(policy["exclude_paths"]),
+    }
+    return json.dumps(canonical, sort_keys=True, separators=(",", ":"))
+
+
+def _repo_discovery_policy_is_default(policy: dict) -> bool:
+    from hermes_cli.config import DEFAULT_CONFIG
+
+    return _repo_discovery_policy_key(policy) == _repo_discovery_policy_key(
+        _repo_discovery_policy(DEFAULT_CONFIG["desktop"])
+    )
+
+
+def _discover_repos_payload(
+    db, *, conn=None, backfill: bool = True, include_cached: bool = True
+) -> list[dict]:
     """Merge filesystem-scanned repos (cached) with session-derived repo roots.
 
     Repo-first: the disk scan (persisted by `projects.record_repos`) surfaces
@@ -12129,6 +12189,16 @@ def _discover_repos_payload(db, *, conn=None, backfill: bool = True) -> list[dic
         except Exception:
             logger.debug("failed to backfill repo roots", exc_info=True)
 
+    if not include_cached:
+        out = sorted(repos.values(), key=lambda repo: repo["last_active"], reverse=True)
+        for repo in out:
+            repo["label"] = (
+                repo["label"]
+                or os.path.basename(repo["root"].rstrip("/\\"))
+                or repo["root"]
+            )
+        return out
+
     # Filesystem-scanned roots from the cache (may have zero sessions). Reuse the
     # caller's projects.db connection when given, else open a short-lived one.
     try:
@@ -12165,7 +12235,20 @@ def _(rid, params: dict) -> dict:
         db = _get_db()
         if db is None:
             return _ok(rid, {"repos": []})
-        return _ok(rid, {"repos": _discover_repos_payload(db)})
+        from hermes_cli import projects_db as pdb
+
+        policy = _repo_discovery_policy()
+        policy_key = _repo_discovery_policy_key(policy)
+        with pdb.connect_closing() as conn:
+            pdb.reconcile_discovered_repos_policy(
+                conn,
+                policy_key,
+                preserve_unversioned=_repo_discovery_policy_is_default(policy),
+            )
+            repos = _discover_repos_payload(
+                db, conn=conn, include_cached=policy["enabled"]
+            )
+        return _ok(rid, {"repos": repos, "discovery_policy": policy})
     except Exception as e:
         return _err(rid, 5061, str(e))
 
@@ -12178,6 +12261,22 @@ def _(rid, params: dict) -> dict:
     try:
         from hermes_cli import projects_db as pdb
 
+        policy = _repo_discovery_policy()
+        policy_key = _repo_discovery_policy_key(policy)
+        incoming_raw = params.get("discovery_policy")
+        incoming_policy = (
+            _repo_discovery_policy(incoming_raw)
+            if isinstance(incoming_raw, dict)
+            else None
+        )
+        incoming_matches = (
+            incoming_policy is not None
+            and _repo_discovery_policy_key(incoming_policy) == policy_key
+        )
+        accept_legacy_default = (
+            incoming_policy is None and _repo_discovery_policy_is_default(policy)
+        )
+
         pairs: list[tuple[str, str | None]] = []
         for item in params.get("repos") or []:
             if isinstance(item, str):
@@ -12186,10 +12285,34 @@ def _(rid, params: dict) -> dict:
                 pairs.append((str(item["root"]), item.get("label")))
 
         with pdb.connect_closing() as conn:
-            pdb.record_discovered_repos(conn, pairs, replace=True)
+            pdb.reconcile_discovered_repos_policy(
+                conn,
+                policy_key,
+                preserve_unversioned=_repo_discovery_policy_is_default(policy),
+            )
+            accepted = bool(
+                policy["enabled"] and (incoming_matches or accept_legacy_default)
+            )
+            if accepted:
+                pdb.record_discovered_repos(
+                    conn, pairs, replace=True, policy_key=policy_key
+                )
+            elif not policy["enabled"]:
+                pdb.clear_discovered_repos(conn, policy_key=policy_key)
 
         db = _get_db()
-        return _ok(rid, {"repos": _discover_repos_payload(db) if db is not None else []})
+        return _ok(
+            rid,
+            {
+                "repos": _discover_repos_payload(
+                    db, include_cached=policy["enabled"]
+                )
+                if db is not None
+                else [],
+                "accepted": accepted,
+                "discovery_policy": policy,
+            },
+        )
     except Exception as e:
         return _err(rid, 5061, str(e))
 
@@ -12260,11 +12383,28 @@ def _project_tree_inputs(
 
     from hermes_cli import projects_db as pdb
 
+    policy = _repo_discovery_policy()
+    policy_key = _repo_discovery_policy_key(policy)
     with pdb.connect_closing() as conn:
+        if include_discovered:
+            pdb.reconcile_discovered_repos_policy(
+                conn,
+                policy_key,
+                preserve_unversioned=_repo_discovery_policy_is_default(policy),
+            )
         projects = [p.to_dict() for p in pdb.list_projects(conn)]
         active_id = pdb.get_active_id(conn)
         # backfill stays off the hot tree path — grouping uses the live resolver.
-        discovered = _discover_repos_payload(db, conn=conn, backfill=False) if include_discovered else []
+        discovered = (
+            _discover_repos_payload(
+                db,
+                conn=conn,
+                backfill=False,
+                include_cached=policy["enabled"],
+            )
+            if include_discovered
+            else []
+        )
 
     return sessions, projects, discovered, active_id
 

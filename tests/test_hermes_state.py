@@ -6217,6 +6217,65 @@ class TestGetMessagesPagination:
 
 
 # =========================================================================
+# archive_live_messages (ACP /reset soft-archive)
+# =========================================================================
+
+class TestArchiveLiveMessages:
+    """Soft-archive live rows rewind-style without touching compaction archives."""
+
+    def test_soft_archives_live_rows_without_deleting(self, db):
+        db.create_session("s1", source="acp")
+        db.append_message("s1", "user", "keep for audit")
+        db.append_message("s1", "assistant", "reply")
+
+        archived = db.archive_live_messages("s1")
+
+        assert archived == 2
+        assert db.get_messages("s1") == []
+        assert db.get_messages_as_conversation("s1") == []
+        inactive = db.get_messages("s1", include_inactive=True)
+        assert [m["content"] for m in inactive] == ["keep for audit", "reply"]
+        assert all(m["active"] == 0 for m in inactive)
+        # Rewind-style: not compacted=1 (those stay searchable as summaries).
+        assert all(int(m.get("compacted") or 0) == 0 for m in inactive)
+        session = db.get_session("s1")
+        assert session["message_count"] == 0
+        assert session["tool_call_count"] == 0
+
+    def test_leaves_compaction_archives_untouched(self, db):
+        db.create_session("s1", source="acp")
+        db.append_message("s1", "user", "pre-compact needle")
+        db.archive_and_compact(
+            "s1", [{"role": "user", "content": "live summary"}]
+        )
+        db.append_message("s1", "assistant", "after compact")
+
+        archived = db.archive_live_messages("s1")
+
+        assert archived == 2  # summary + after compact
+        live = db.get_messages("s1")
+        assert live == []
+        all_rows = {
+            m["content"]: m for m in db.get_messages("s1", include_inactive=True)
+        }
+        assert all_rows["pre-compact needle"]["compacted"] == 1
+        assert all_rows["pre-compact needle"]["active"] == 0
+        assert all_rows["live summary"]["compacted"] == 0
+        assert all_rows["live summary"]["active"] == 0
+        assert all_rows["after compact"]["active"] == 0
+        # Compaction archives remain discoverable via session_search.
+        hits = {r["session_id"] for r in db.search_messages("needle")}
+        assert "s1" in hits
+
+    def test_idempotent_when_no_live_rows(self, db):
+        db.create_session("s1", source="acp")
+        db.append_message("s1", "user", "once")
+        assert db.archive_live_messages("s1") == 1
+        assert db.archive_live_messages("s1") == 0
+        assert len(db.get_messages("s1", include_inactive=True)) == 1
+
+
+# =========================================================================
 # Lone-surrogate persistence
 # =========================================================================
 

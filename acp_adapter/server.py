@@ -1918,19 +1918,44 @@ class HermesACPAgent(acp.Agent):
         return "\n".join(lines)
 
     def _cmd_reset(self, args: str, state: SessionState) -> str:
+        """Clear the live conversation under the same ACP session id.
+
+        ACP clients hold a stable session handle, so we cannot rotate to a new
+        id the way CLI ``/new`` does. Clear in-memory history, then soft-archive
+        live SessionDB rows (``active=1 → 0``, rewind-style) so a later
+        ``load_session`` / ``resume_session`` does not revive the discarded
+        transcript. Rows stay on disk for audit; compaction archives
+        (``compacted=1``) are untouched.
+        """
         state.history.clear()
-        reset_failed = False
-        try:
-            reset_session_state = getattr(state.agent, "reset_session_state", None)
-            if callable(reset_session_state):
-                reset_session_state()
-        except Exception:
-            reset_failed = True
-            logger.warning("ACP session state reset failed for %s", state.session_id, exc_info=True)
-        finally:
-            self.session_manager.save_session(state.session_id)
-        if reset_failed:
-            return "Conversation history cleared. Agent session state reset failed; see logs."
+
+        db = self.session_manager._get_db()
+        if db is not None:
+            try:
+                # Soft-archive only — never DELETE. Matches rewind/undo
+                # durability; compaction archives remain searchable.
+                db.archive_live_messages(state.session_id)
+            except Exception:
+                logger.warning(
+                    "Failed to soft-archive live SessionDB messages for ACP reset %s",
+                    state.session_id,
+                    exc_info=True,
+                )
+
+        agent = state.agent
+        if agent is not None:
+            # Match CLI /new: next turns must flush from an empty live set.
+            if hasattr(agent, "_last_flushed_db_idx"):
+                agent._last_flushed_db_idx = 0
+            if hasattr(agent, "reset_session_state"):
+                try:
+                    agent.reset_session_state()
+                except Exception:
+                    logger.debug(
+                        "reset_session_state failed during ACP /reset",
+                        exc_info=True,
+                    )
+
         return "Conversation history cleared."
 
     def _cmd_compact(self, args: str, state: SessionState) -> str:

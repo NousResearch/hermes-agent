@@ -4418,6 +4418,40 @@ class SessionDB:
             )
             return cursor.fetchone() is not None
 
+    def archive_live_messages(self, session_id: str) -> int:
+        """Soft-archive every live (``active = 1``) message for *session_id*.
+
+        Rewind-style durability: flip ``active → 0`` without setting
+        ``compacted = 1``, so rows stay on disk for audit but are excluded from
+        :meth:`get_messages` / :meth:`get_messages_as_conversation` and from
+        default :meth:`search_messages`. Compaction archives (already
+        ``active = 0``, ``compacted = 1``) are untouched and remain searchable.
+
+        Zeros ``sessions.message_count`` / ``tool_call_count`` to match an empty
+        live set. Returns the number of rows newly flipped inactive.
+        """
+
+        def _do(conn):
+            cursor = conn.execute(
+                "SELECT id FROM messages WHERE session_id = ? AND active = 1",
+                (session_id,),
+            )
+            ids = [r[0] for r in cursor.fetchall()]
+            if ids:
+                placeholders = ",".join("?" for _ in ids)
+                conn.execute(
+                    f"UPDATE messages SET active = 0 WHERE id IN ({placeholders})",
+                    ids,
+                )
+            conn.execute(
+                "UPDATE sessions SET message_count = 0, tool_call_count = 0 "
+                "WHERE id = ?",
+                (session_id,),
+            )
+            return len(ids)
+
+        return self._execute_write(_do)
+
     def archive_and_compact(
         self, session_id: str, compacted_messages: List[Dict[str, Any]]
     ) -> int:

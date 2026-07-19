@@ -1557,32 +1557,77 @@ class TestSlashCommands:
         state = self._make_state(mock_manager)
         state.history = [{"role": "user", "content": "hello"}]
         state.agent.reset_session_state = MagicMock()
+        state.agent._last_flushed_db_idx = 7
 
-        with patch.object(agent.session_manager, "save_session") as mock_save:
-            result = agent._handle_slash_command("/reset", state)
+        result = agent._handle_slash_command("/reset", state)
 
         assert "cleared" in result.lower()
         assert state.history == []
+        assert state.agent._last_flushed_db_idx == 0
         state.agent.reset_session_state.assert_called_once_with()
-        mock_save.assert_called_once_with(state.session_id)
 
-    def test_reset_saves_session_when_agent_state_reset_fails(self, agent, mock_manager):
+    def test_reset_continues_when_agent_state_reset_fails(self, agent, mock_manager):
         state = self._make_state(mock_manager)
         state.history = [{"role": "user", "content": "hello"}]
         state.agent.reset_session_state = MagicMock(side_effect=RuntimeError("boom"))
 
-        with (
-            patch.object(agent.session_manager, "save_session") as mock_save,
-            patch("acp_adapter.server.logger") as mock_logger,
-        ):
+        with patch("acp_adapter.server.logger") as mock_logger:
             result = agent._handle_slash_command("/reset", state)
 
         assert "cleared" in result.lower()
-        assert "state reset failed" in result.lower()
+        assert "state reset failed" not in result.lower()
         assert state.history == []
         state.agent.reset_session_state.assert_called_once_with()
-        mock_save.assert_called_once_with(state.session_id)
-        mock_logger.warning.assert_called_once()
+        mock_logger.debug.assert_called()
+
+    def test_reset_soft_archives_live_sessiondb_rows(self, tmp_path):
+        """ACP keeps a stable session id — /reset must soft-archive live rows
+        so load/resume after restart does not revive the discarded transcript.
+        """
+        db = SessionDB(tmp_path / "state.db")
+
+        def factory(**_kwargs):
+            agent = MagicMock(name="MockAIAgent")
+            agent.model = "test-model"
+            agent.provider = "openrouter"
+            agent._session_db = db
+            agent._session_db_created = True
+            agent._last_flushed_db_idx = 4
+            agent.reset_session_state = MagicMock()
+            return agent
+
+        manager = SessionManager(agent_factory=factory, db=db)
+        acp_agent = HermesACPAgent(session_manager=manager)
+        state = manager.create_session(cwd="/tmp")
+        db.append_message(state.session_id, "user", "discard me")
+        db.append_message(state.session_id, "assistant", "old reply")
+        db.archive_and_compact(
+            state.session_id,
+            [{"role": "user", "content": "compacted keep"}],
+        )
+        db.append_message(state.session_id, "assistant", "live after compact")
+        state.history = [
+            {"role": "user", "content": "compacted keep"},
+            {"role": "assistant", "content": "live after compact"},
+        ]
+
+        result = acp_agent._handle_slash_command("/reset", state)
+
+        assert "cleared" in result.lower()
+        assert state.history == []
+        assert state.agent._last_flushed_db_idx == 0
+        state.agent.reset_session_state.assert_called_once_with()
+        assert db.get_messages_as_conversation(state.session_id) == []
+        inactive = {
+            m["content"]: m
+            for m in db.get_messages(state.session_id, include_inactive=True)
+        }
+        assert "discard me" in inactive
+        assert inactive["discard me"]["compacted"] == 1
+        assert inactive["live after compact"]["active"] == 0
+        assert int(inactive["live after compact"].get("compacted") or 0) == 0
+        hits = {r["session_id"] for r in db.search_messages("discard")}
+        assert state.session_id in hits
 
     def test_version(self, agent, mock_manager):
         state = self._make_state(mock_manager)

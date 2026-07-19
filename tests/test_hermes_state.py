@@ -6359,3 +6359,80 @@ class TestLoneSurrogatePersistence:
         assert db.set_session_title("s1", "title \ud835 bad") is True
         assert db.get_session("s1")["title"] == "title \ufffd bad"
 
+
+class TestInsightsToolCallIndex:
+    """The Insights assistant tool-call scan has a predicate-aligned index.
+
+    ``InsightsEngine._get_tool_usage`` / ``_get_skill_usage`` filter messages by
+    ``role = 'assistant' AND tool_calls IS NOT NULL``.  A partial index over that
+    predicate keeps the scan off the full ``messages`` table on a large state.db.
+    """
+
+    _INDEX = "idx_messages_assistant_calls_by_session"
+
+    def _index_defn(self, conn):
+        row = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'index' AND name = ?",
+            (self._INDEX,),
+        ).fetchone()
+        return row["sql"] if row else None
+
+    def test_index_created_on_fresh_db(self, tmp_path):
+        db = SessionDB(db_path=tmp_path / "fresh.db")
+        try:
+            sql = self._index_defn(db._conn)
+            assert sql is not None, "partial index missing on a fresh database"
+            # Partial predicate must match the queried rows exactly.
+            assert "role = 'assistant'" in sql
+            assert "tool_calls IS NOT NULL" in sql
+        finally:
+            db.close()
+
+    def test_index_created_on_existing_db(self, tmp_path):
+        """Reopening a DB that predates the index must create it (SCHEMA_SQL is
+        re-run on every open; role/tool_calls are original base columns)."""
+        db_path = tmp_path / "legacy.db"
+        db = SessionDB(db_path=db_path)
+        # Simulate a database created before the index shipped.
+        db._conn.execute(f"DROP INDEX IF EXISTS {self._INDEX}")
+        db._conn.commit()
+        assert self._index_defn(db._conn) is None
+        db.close()
+
+        db2 = SessionDB(db_path=db_path)
+        try:
+            assert self._index_defn(db2._conn) is not None, (
+                "index not recreated when reopening an existing database"
+            )
+        finally:
+            db2.close()
+
+    def test_index_serves_assistant_tool_call_scan(self, db):
+        """The planner uses the partial index for the exact Insights predicate.
+
+        Seed enough rows that the optimizer prefers the partial index over a
+        full table scan, then assert the plan names it.
+        """
+        db.create_session(session_id="s1", source="cli")
+        for i in range(200):
+            if i % 5 == 0:
+                db.append_message(
+                    "s1", role="assistant", content=f"m{i}",
+                    tool_calls=[{"function": {"name": "search_files"}}],
+                )
+            else:
+                db.append_message("s1", role="user", content=f"m{i}")
+        db._conn.execute("ANALYZE")
+        db._conn.commit()
+
+        plan = "\n".join(
+            row["detail"]
+            for row in db._conn.execute(
+                "EXPLAIN QUERY PLAN "
+                "SELECT m.tool_calls FROM messages m "
+                "JOIN sessions s ON s.id = m.session_id "
+                "WHERE s.started_at >= 0 "
+                "AND m.role = 'assistant' AND m.tool_calls IS NOT NULL"
+            ).fetchall()
+        )
+        assert self._INDEX in plan, plan

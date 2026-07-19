@@ -506,6 +506,31 @@ class TestInsightsPopulated:
         # All 5 sessions should be included
         assert report["overview"]["total_sessions"] == 5
 
+    def test_tool_and_skill_usage_invariant_to_partial_index(self, populated_db):
+        """The assistant tool-call partial index is a pure optimization: tool
+        and skill usage must be byte-for-byte identical with and without it."""
+        engine = InsightsEngine(populated_db)
+        cutoff = 0.0
+        index = "idx_messages_assistant_calls_by_session"
+
+        with_index_tools = engine._get_tool_usage(cutoff)
+        with_index_skills = engine._get_skill_usage(cutoff)
+        # The index must exist by default (it lives in SCHEMA_SQL).
+        assert populated_db._conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = ?",
+            (index,),
+        ).fetchone() is not None
+
+        populated_db._conn.execute(f"DROP INDEX IF EXISTS {index}")
+        populated_db._conn.commit()
+        without_index_tools = engine._get_tool_usage(cutoff)
+        without_index_skills = engine._get_skill_usage(cutoff)
+
+        assert with_index_tools == without_index_tools
+        assert with_index_skills == without_index_skills
+        # Sanity: the fixture actually exercises the assistant tool_calls path.
+        assert any(t["tool_name"] == "search_files" for t in with_index_tools)
+
 
 # =========================================================================
 # Formatting

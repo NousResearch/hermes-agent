@@ -23,12 +23,14 @@ Design:
 - Frozen snapshot pattern: system prompt is stable, tool responses show live state
 """
 
+import hashlib
 import json
 import logging
 import os
 import tempfile
 import time
 from contextlib import contextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 from hermes_constants import get_hermes_home
 from typing import Dict, Any, List, Optional
@@ -57,6 +59,9 @@ def get_memory_dir() -> Path:
     return get_hermes_home() / "memories"
 
 ENTRY_DELIMITER = "\n§\n"
+
+# Stale threshold: entries not accessed in this many seconds are deprioritized.
+_STALE_THRESHOLD_SECONDS = 14 * 24 * 60 * 60  # 2 weeks
 
 
 # ---------------------------------------------------------------------------
@@ -137,6 +142,8 @@ class MemoryStore:
         # Per-turn counter of failed at-capacity consolidation attempts; reset
         # at each turn boundary by reset_consolidation_failures() (#42405).
         self._consolidation_failures = 0
+        # Entry metadata: maps entry-content hash -> {"last_accessed": float_unix_ts}
+        self._metadata: Dict[str, Dict[str, Any]] = {"memory": {}, "user": {}}
 
     def reset_consolidation_failures(self) -> None:
         """Reset the per-turn consolidation-failure counter (call at turn start)."""
@@ -187,6 +194,19 @@ class MemoryStore:
 
         self.memory_entries = self._read_file(mem_dir / "MEMORY.md")
         self.user_entries = self._read_file(mem_dir / "USER.md")
+
+        # Load entry metadata (last_accessed timestamps)
+        self._metadata["memory"] = self._load_metadata("memory")
+        self._metadata["user"] = self._load_metadata("user")
+
+        # Touch last_accessed for newly-seen entries (no prior metadata),
+        # so first access sets a baseline timestamp.
+        for target, entries in [("memory", self.memory_entries), ("user", self.user_entries)]:
+            now = time.time()
+            for entry in entries:
+                h = self._entry_hash(entry)
+                if h not in self._metadata.get(target, {}):
+                    self._metadata[target].setdefault(h, {"last_accessed": now})
 
         # Deduplicate entries (preserves order, keeps first occurrence)
         self.memory_entries = list(dict.fromkeys(self.memory_entries))
@@ -310,6 +330,7 @@ class MemoryStore:
         """Persist entries to the appropriate file. Called after every mutation."""
         get_memory_dir().mkdir(parents=True, exist_ok=True)
         self._write_file(self._path_for(target), self._entries_for(target))
+        self._save_metadata(target)
 
     def _entries_for(self, target: str) -> List[str]:
         if target == "user":
@@ -381,6 +402,11 @@ class MemoryStore:
 
             entries.append(content)
             self._set_entries(target, entries)
+            # Set last_accessed timestamp for the new entry
+            now = time.time()
+            h = self._entry_hash(content)
+            meta = self._metadata.setdefault(target, {})
+            meta.setdefault(h, {})["last_accessed"] = now
             self.save_to_disk(target)
 
         return self._success_response(target, "Entry added.")
@@ -450,6 +476,11 @@ class MemoryStore:
 
             entries[idx] = new_content
             self._set_entries(target, entries)
+            # Update last_accessed for the replaced entry
+            now = time.time()
+            h = self._entry_hash(new_content)
+            meta = self._metadata.setdefault(target, {})
+            meta.setdefault(h, {})["last_accessed"] = now
             self.save_to_disk(target)
 
         return self._success_response(target, "Entry replaced.")
@@ -597,6 +628,12 @@ class MemoryStore:
 
             # Commit.
             self._set_entries(target, working)
+            # Set last_accessed for all entries in the batch result
+            now = time.time()
+            meta = self._metadata.setdefault(target, {})
+            for entry in working:
+                h = self._entry_hash(entry)
+                meta.setdefault(h, {})["last_accessed"] = now
             self.save_to_disk(target)
 
         return self._success_response(target, f"Applied {len(operations)} operation(s).")
@@ -625,6 +662,62 @@ class MemoryStore:
         block = self._system_prompt_snapshot.get(target, "")
         return block if block else None
 
+    # -- Metadata (decay/refresh) helpers --
+
+    @staticmethod
+    def _entry_hash(content: str) -> str:
+        """Stable hash of entry content for metadata keying."""
+        return hashlib.sha256(content.encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _meta_path_for(target: str) -> Path:
+        """Path to the metadata sidecar file for a memory target."""
+        mem_dir = get_memory_dir()
+        if target == "user":
+            return mem_dir / "USER.md.meta"
+        return mem_dir / "MEMORY.md.meta"
+
+    def _load_metadata(self, target: str) -> Dict[str, Any]:
+        """Load metadata dict from the sidecar JSON file."""
+        meta_path = self._meta_path_for(target)
+        if not meta_path.exists():
+            return {}
+        try:
+            raw = meta_path.read_text(encoding="utf-8")
+            return json.loads(raw) if raw.strip() else {}
+        except (OSError, IOError, json.JSONDecodeError):
+            return {}
+
+    def _save_metadata(self, target: str) -> None:
+        """Persist metadata dict to the sidecar JSON file."""
+        meta_path = self._meta_path_for(target)
+        meta_data = self._metadata.get(target, {})
+        content = json.dumps(meta_data, ensure_ascii=False, indent=2)
+        try:
+            meta_path.write_text(content, encoding="utf-8")
+        except (OSError, IOError) as e:
+            logger.warning("Failed to save metadata for %s: %s", target, e)
+
+    def _stale_entries(self, target: str, entries: List[str]) -> List[int]:
+        """Return indices of entries that haven't been accessed in >2 weeks.
+
+        An entry with no metadata timestamp is treated as stale (never
+        accessed since the decay mechanism was introduced).
+        """
+        now = time.time()
+        meta = self._metadata.get(target, {})
+        stale: List[int] = []
+        for i, entry in enumerate(entries):
+            h = self._entry_hash(entry)
+            entry_meta = meta.get(h)
+            if entry_meta is None:
+                stale.append(i)
+            else:
+                last_ts = entry_meta.get("last_accessed", 0)
+                if now - last_ts > _STALE_THRESHOLD_SECONDS:
+                    stale.append(i)
+        return stale
+
     # -- Internal helpers --
 
     @staticmethod
@@ -642,6 +735,11 @@ class MemoryStore:
         limit = self._char_limit(target)
         pct = min(100, int((current / limit) * 100)) if limit > 0 else 0
 
+        # Include stale entry count so the model knows which entries are
+        # consolidation candidates.
+        stale_indices = self._stale_entries(target, entries)
+        stale_count = len(stale_indices)
+
         # The success response is intentionally TERMINAL: it confirms the write
         # landed and tells the model to stop. We do NOT echo the full entries
         # list here -- dumping it invites the model to "find more to fix" and
@@ -656,13 +754,26 @@ class MemoryStore:
             "usage": f"{pct}% — {current:,}/{limit:,} chars",
             "entry_count": len(entries),
         }
+        if stale_count > 0:
+            resp["stale_entries"] = stale_count
+            resp["note"] = (
+                f"Write saved. {stale_count} stale entr{'y' if stale_count == 1 else 'ies'} "
+                f"not accessed in >2 weeks {'is' if stale_count == 1 else 'are'} "
+                f"candidates for consolidation via replace/remove."
+            )
+        else:
+            resp["note"] = "Write saved. This update is complete — do not repeat it."
         if message:
             resp["message"] = message
-        resp["note"] = "Write saved. This update is complete — do not repeat it."
         return resp
 
     def _render_block(self, target: str, entries: List[str]) -> str:
-        """Render a system prompt block with header and usage indicator."""
+        """Render a system prompt block with header, usage indicator, and decay info.
+
+        Updates ``last_accessed`` for every rendered entry. Entries not accessed
+        in >2 weeks are annotated with a ``[stale]`` tag in the header count so
+        the model can deprioritize or consolidate them.
+        """
         if not entries:
             return ""
 
@@ -671,10 +782,25 @@ class MemoryStore:
         current = len(content)
         pct = min(100, int((current / limit) * 100)) if limit > 0 else 0
 
+        # Update last_accessed for EVERY rendered entry
+        now = time.time()
+        meta = self._metadata.setdefault(target, {})
+        for entry in entries:
+            h = self._entry_hash(entry)
+            entry_meta = meta.setdefault(h, {})
+            entry_meta["last_accessed"] = now
+        self._save_metadata(target)
+
+        # Count stale entries
+        stale_indices = self._stale_entries(target, entries)
+        stale_count = len(stale_indices)
+
         if target == "user":
-            header = f"USER PROFILE (who the user is) [{pct}% — {current:,}/{limit:,} chars]"
+            stale_tag = f" [{stale_count} stale]" if stale_count > 0 else ""
+            header = f"USER PROFILE (who the user is) [{pct}% — {current:,}/{limit:,} chars]{stale_tag}"
         else:
-            header = f"MEMORY (your personal notes) [{pct}% — {current:,}/{limit:,} chars]"
+            stale_tag = f" [{stale_count} stale]" if stale_count > 0 else ""
+            header = f"MEMORY (your personal notes) [{pct}% — {current:,}/{limit:,} chars]{stale_tag}"
 
         separator = "═" * 46
         return f"{separator}\n{header}\n{separator}\n{content}"
@@ -1078,7 +1204,9 @@ MEMORY_SCHEMA = {
         "Priority: user preferences & corrections > environment facts > procedures. The best "
         "memory stops the user repeating themselves.\n\n"
         "IF FULL: an add is rejected with the current entries shown. Reissue as ONE batch that "
-        "removes or shortens enough stale entries and adds the new one together.\n\n"
+        "removes or shortens enough stale entries and adds the new one together. "
+        "Stale entries (marked [stale] in the system prompt, not accessed in >2 weeks) "
+        "are the first candidates for consolidation.\n\n"
         "TARGETS: 'user' = who the user is (name, role, preferences, style). 'memory' = your "
         "notes (environment, conventions, tool quirks, lessons).\n\n"
         "SKIP: trivial/obvious info, easily re-discovered facts, raw data dumps, task progress, "

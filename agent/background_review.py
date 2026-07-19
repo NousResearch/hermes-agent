@@ -175,7 +175,10 @@ _MEMORY_REVIEW_PROMPT = (
     "2. Has the user expressed expectations about how you should behave, their work "
     "style, or ways they want you to operate?\n\n"
     "If something stands out, save it using the memory tool. "
-    "If nothing is worth saving, just say 'Nothing to save.' and stop."
+    "If nothing is worth saving, just say 'Nothing to save.' and stop.\n\n"
+    "When memory is near capacity, deprioritize stale entries (marked [stale] — "
+    "not accessed in >2 weeks) when choosing what to remove or shorten. "
+    "Stale entries are the first candidates for consolidation via replace/remove."
 )
 
 _SKILL_REVIEW_PROMPT = (
@@ -289,6 +292,9 @@ _COMBINED_REVIEW_PROMPT = (
     "desires, preferences, personal details, or expectations about "
     "how you should behave? Save facts about the user and durable "
     "preferences with the memory tool.\n\n"
+    "When memory is near capacity, deprioritize stale entries (marked [stale] — "
+    "not accessed in >2 weeks). Stale entries are the first candidates for "
+    "consolidation via replace/remove.\n\n"
     "**Skills**: how to do this class of task. Be ACTIVE — most "
     "sessions produce at least one skill update. A pass that does "
     "nothing is a missed learning opportunity, not a neutral outcome.\n\n"

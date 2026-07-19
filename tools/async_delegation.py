@@ -388,6 +388,10 @@ def get_durable_delegation(delegation_id: str) -> Optional[Dict[str, Any]]:
     }
 
 
+def _format_timeout_seconds(timeout_seconds: float) -> str:
+    return f"{timeout_seconds:g}"
+
+
 def _get_executor(max_workers: int) -> ThreadPoolExecutor:
     """Lazily create (or grow) the shared daemon executor.
 
@@ -448,6 +452,7 @@ def dispatch_async_delegation(
     origin_ui_session_id: str = "",
     interrupt_fn: Optional[Callable[[], None]] = None,
     max_async_children: int = _DEFAULT_MAX_ASYNC_CHILDREN,
+    timeout_seconds: Optional[float] = None,
 ) -> Dict[str, Any]:
     """Spawn ``runner`` on the daemon executor and return a handle immediately.
 
@@ -499,6 +504,7 @@ def dispatch_async_delegation(
         "dispatched_at": dispatched_at,
         "completed_at": None,
         "interrupt_fn": interrupt_fn,
+        "timeout_seconds": timeout_seconds,
     }
     # Capacity check and record insert under ONE lock hold — checking
     # active_count() separately would let two concurrent dispatches (e.g.
@@ -554,6 +560,7 @@ def dispatch_async_delegation(
             "status": "rejected",
             "error": f"Failed to schedule async delegation: {exc}",
         }
+    _start_timeout_watchdog(delegation_id, timeout_seconds, is_batch=False)
 
     logger.info(
         "Dispatched async delegation %s (session_key=%s): %s",
@@ -564,19 +571,39 @@ def dispatch_async_delegation(
 
 def _finalize(delegation_id: str, result: Dict[str, Any], status: str) -> None:
     """Mark a record complete and push the completion event onto the queue."""
+    claimed = _begin_finalization(delegation_id)
+    if claimed is None:
+        return
+    event_record, _interrupt_fn = claimed
+
+    _push_completion_event(event_record, result, status)
+    _finish_finalization(delegation_id, status)
+
+
+def _begin_finalization(
+    delegation_id: str,
+) -> Optional[tuple[Dict[str, Any], Optional[Callable[[], None]]]]:
+    """Atomically claim terminal delivery while keeping the record active."""
     with _records_lock:
         record = _records.get(delegation_id)
-        if record is None:
+        if record is None or record.get("status") != "running":
             return
         # Stay active until durable persistence and queue publication finish;
         # otherwise process shutdown can kill this daemon worker in the narrow
         # gap after status flips but before SQLite is committed.
         record["status"] = "finalizing"
         record["completed_at"] = time.time()
+        interrupt_fn = record.get("interrupt_fn")
         record["interrupt_fn"] = None  # drop the closure; child is done
+        timer = record.pop("_timeout_timer", None)
         event_record = dict(record)
 
-    _push_completion_event(event_record, result, status)
+    if timer is not None:
+        timer.cancel()
+    return event_record, interrupt_fn
+
+
+def _finish_finalization(delegation_id: str, status: str) -> None:
     with _records_lock:
         record = _records.get(delegation_id)
         if record is not None:
@@ -655,6 +682,7 @@ def dispatch_async_delegation_batch(
     origin_ui_session_id: str = "",
     interrupt_fn: Optional[Callable[[], None]] = None,
     max_async_children: int = _DEFAULT_MAX_ASYNC_CHILDREN,
+    timeout_seconds: Optional[float] = None,
 ) -> Dict[str, Any]:
     """Dispatch a WHOLE fan-out batch as ONE background unit.
 
@@ -699,6 +727,7 @@ def dispatch_async_delegation_batch(
         "completed_at": None,
         "interrupt_fn": interrupt_fn,
         "is_batch": True,
+        "timeout_seconds": timeout_seconds,
     }
     with _records_lock:
         running = sum(
@@ -755,6 +784,7 @@ def dispatch_async_delegation_batch(
             "status": "rejected",
             "error": f"Failed to schedule async delegation batch: {exc}",
         }
+    _start_timeout_watchdog(delegation_id, timeout_seconds, is_batch=True)
 
     logger.info(
         "Dispatched async delegation batch %s (%d task(s), session_key=%s)",
@@ -767,22 +797,26 @@ def _finalize_batch(
     delegation_id: str, combined: Dict[str, Any], status: str
 ) -> None:
     """Mark a batch record complete and push ONE combined completion event."""
-    with _records_lock:
-        record = _records.get(delegation_id)
-        if record is None:
-            return
-        record["status"] = "finalizing"
-        record["completed_at"] = time.time()
-        record["interrupt_fn"] = None
-        event_record = dict(record)
+    claimed = _begin_finalization(delegation_id)
+    if claimed is None:
+        return
+    event_record, _interrupt_fn = claimed
 
+    _push_batch_completion_event(event_record, combined, status)
+    _finish_finalization(delegation_id, status)
+
+
+def _push_batch_completion_event(
+    event_record: Dict[str, Any], combined: Dict[str, Any], status: str
+) -> None:
+    """Push a combined async-delegation batch completion event."""
     try:
         from tools.process_registry import process_registry
     except Exception as exc:  # pragma: no cover
         logger.error(
             "Async delegation batch %s finished but process_registry import "
             "failed; result lost: %s",
-            delegation_id, exc,
+            event_record.get("delegation_id"), exc,
         )
         return
 
@@ -790,7 +824,7 @@ def _finalize_batch(
     completed_at = event_record.get("completed_at") or time.time()
     evt = {
         "type": "async_delegation",
-        "delegation_id": delegation_id,
+        "delegation_id": event_record.get("delegation_id"),
         "session_key": event_record.get("session_key", ""),
         "origin_ui_session_id": event_record.get("origin_ui_session_id", ""),
         "parent_session_id": event_record.get("parent_session_id"),
@@ -817,14 +851,102 @@ def _finalize_batch(
         logger.error(
             "Async delegation batch %s: failed to enqueue completion event; "
             "result lost: %s",
-            delegation_id, exc,
+            event_record.get("delegation_id"), exc,
         )
-    finally:
-        with _records_lock:
-            record = _records.get(delegation_id)
-            if record is not None:
-                record["status"] = status
-            _prune_completed_locked()
+
+
+def _start_timeout_watchdog(
+    delegation_id: str,
+    timeout_seconds: Optional[float],
+    *,
+    is_batch: bool,
+) -> None:
+    """Finalize a detached delegation if its worker never returns.
+
+    ``delegate_task(background=true)`` returns a handle immediately; the only
+    user-visible result is the completion event this module enqueues later. If
+    the worker thread wedges before returning, the normal ``finally`` block is
+    never reached and users only see a permanent "dispatched" state. A
+    configured timeout must therefore be enforced by the async registry itself,
+    not only inside ``delegate_tool._run_single_child``.
+    """
+    if timeout_seconds is None or timeout_seconds <= 0:
+        return
+
+    timer = threading.Timer(
+        timeout_seconds,
+        _expire_delegation,
+        args=(delegation_id, float(timeout_seconds)),
+        kwargs={"is_batch": is_batch},
+    )
+    timer.daemon = True
+    with _records_lock:
+        record = _records.get(delegation_id)
+        if record is None or record.get("status") != "running":
+            return
+        record["timeout_seconds"] = float(timeout_seconds)
+        record["_timeout_timer"] = timer
+    timer.start()
+
+
+def _expire_delegation(
+    delegation_id: str,
+    timeout_seconds: float,
+    *,
+    is_batch: bool,
+) -> None:
+    """Timeout a still-running async delegation and emit one completion."""
+    claimed = _begin_finalization(delegation_id)
+    if claimed is None:
+        return
+    event_record, interrupt_fn = claimed
+
+    completed_at = event_record.get("completed_at") or time.time()
+    duration = round(
+        completed_at - (event_record.get("dispatched_at") or completed_at),
+        2,
+    )
+    timeout_text = _format_timeout_seconds(timeout_seconds)
+    error = (
+        f"Async delegation {delegation_id} timed out after {timeout_text}s "
+        "without producing a completion event. Hermes requested interruption; "
+        "the detached worker may be stuck before or inside the first model API "
+        "call."
+    )
+    if is_batch:
+        _push_batch_completion_event(
+            event_record,
+            {
+                "results": [],
+                "error": error,
+                "total_duration_seconds": duration,
+            },
+            "timeout",
+        )
+    else:
+        _push_completion_event(
+            event_record,
+            {
+                "status": "timeout",
+                "summary": None,
+                "error": error,
+                "api_calls": 0,
+                "duration_seconds": duration,
+                "exit_reason": "timeout",
+            },
+            "timeout",
+        )
+    _finish_finalization(delegation_id, "timeout")
+
+    if callable(interrupt_fn):
+        try:
+            interrupt_fn()
+        except Exception as exc:
+            logger.debug(
+                "Async delegation %s timeout interrupt failed: %s",
+                delegation_id,
+                exc,
+            )
 
 
 def list_async_delegations() -> List[Dict[str, Any]]:
@@ -834,7 +956,11 @@ def list_async_delegations() -> List[Dict[str, Any]]:
     """
     with _records_lock:
         return [
-            {k: v for k, v in r.items() if k != "interrupt_fn"}
+            {
+                k: v
+                for k, v in r.items()
+                if k not in {"interrupt_fn", "_timeout_timer"}
+            }
             for r in _records.values()
         ]
 
@@ -932,4 +1058,11 @@ def _reset_for_tests() -> None:
         _executor = None
         _executor_max_workers = 0
     with _records_lock:
+        timers = [
+            timer
+            for record in _records.values()
+            if (timer := record.get("_timeout_timer")) is not None
+        ]
         _records.clear()
+    for timer in timers:
+        timer.cancel()

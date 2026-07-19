@@ -229,6 +229,183 @@ def test_interrupt_all_signals_running_children():
     assert evt["status"] == "interrupted"
 
 
+def test_async_delegation_timeout_finalizes_stuck_runner():
+    gate = threading.Event()
+    interrupted = {"count": 0}
+
+    def stuck_runner():
+        gate.wait(timeout=5)
+        return {"status": "completed", "summary": "too late"}
+
+    def interrupt_fn():
+        interrupted["count"] += 1
+
+    res = ad.dispatch_async_delegation(
+        goal="stuck child", context=None, toolsets=None, role="leaf",
+        model="m", session_key="", runner=stuck_runner,
+        interrupt_fn=interrupt_fn, max_async_children=1, timeout_seconds=0.1,
+    )
+    assert res["status"] == "dispatched"
+
+    evt = _drain_one(timeout=2.0)
+    try:
+        assert evt is not None
+        assert evt["type"] == "async_delegation"
+        assert evt["status"] == "timeout"
+        assert evt["delegation_id"] == res["delegation_id"]
+        assert evt["api_calls"] == 0
+        assert "timed out after 0.1s" in evt["error"]
+        assert interrupted["count"] == 1
+        assert ad.active_count() == 0
+    finally:
+        gate.set()
+
+    # If the ignored runner eventually returns, it must not enqueue a second
+    # completion for a delegation the watchdog already finalized.
+    assert _drain_one(timeout=0.5) is None
+
+
+def test_async_delegation_batch_timeout_finalizes_stuck_runner():
+    gate = threading.Event()
+    interrupted = {"count": 0}
+
+    def stuck_batch():
+        gate.wait(timeout=5)
+        return {"results": [{"status": "completed", "summary": "too late"}]}
+
+    def interrupt_fn():
+        interrupted["count"] += 1
+
+    res = ad.dispatch_async_delegation_batch(
+        goals=["a", "b"], context="ctx", toolsets=None, role="leaf",
+        model="m", session_key="", runner=stuck_batch,
+        interrupt_fn=interrupt_fn, max_async_children=1, timeout_seconds=0.1,
+    )
+    assert res["status"] == "dispatched"
+
+    evt = _drain_one(timeout=2.0)
+    try:
+        assert evt is not None
+        assert evt["type"] == "async_delegation"
+        assert evt["status"] == "timeout"
+        assert evt["is_batch"] is True
+        assert evt["goals"] == ["a", "b"]
+        assert evt["results"] == []
+        assert "timed out after 0.1s" in evt["error"]
+        assert interrupted["count"] == 1
+        assert ad.active_count() == 0
+    finally:
+        gate.set()
+
+    assert _drain_one(timeout=0.5) is None
+
+
+def test_timeout_stays_finalizing_until_durable_persistence(tmp_path, monkeypatch):
+    gate = threading.Event()
+    persist_entered = threading.Event()
+    allow_persist = threading.Event()
+    real_persist = ad._persist_completion
+
+    def blocking_persist(event, result):
+        persist_entered.set()
+        allow_persist.wait(timeout=5)
+        real_persist(event, result)
+
+    def stuck_runner():
+        gate.wait(timeout=5)
+        return {"status": "completed", "summary": "too late"}
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(ad, "_persist_completion", blocking_persist)
+    dispatched = ad.dispatch_async_delegation(
+        goal="durable timeout", context=None, toolsets=None, role="leaf",
+        model="m", session_key="owner", runner=stuck_runner,
+        max_async_children=1, timeout_seconds=0.05,
+    )
+
+    try:
+        assert persist_entered.wait(timeout=2)
+        assert ad.active_count() == 1
+        record = next(
+            item for item in ad.list_async_delegations()
+            if item["delegation_id"] == dispatched["delegation_id"]
+        )
+        assert record["status"] == "finalizing"
+        assert process_registry.completion_queue.empty()
+
+        allow_persist.set()
+        evt = _drain_for(dispatched["delegation_id"])
+        assert evt is not None
+        assert evt["status"] == "timeout"
+        assert ad.active_count() == 0
+        durable = ad.get_durable_delegation(dispatched["delegation_id"])
+        assert durable["state"] == "timeout"
+        assert durable["delivery_state"] == "pending"
+    finally:
+        allow_persist.set()
+        gate.set()
+
+
+def test_timeout_completion_restores_once_after_process_restart(tmp_path):
+    repo = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+    env = {**os.environ, "HERMES_HOME": str(tmp_path), "PYTHONPATH": repo}
+    producer = r'''
+import json
+import threading
+import time
+from tools import async_delegation as ad
+gate = threading.Event()
+r = ad.dispatch_async_delegation(
+    goal="restart timeout", context=None, toolsets=None, role="leaf", model="m",
+    session_key="owner-session", parent_session_id="durable-parent",
+    runner=lambda: gate.wait(timeout=60), timeout_seconds=.05,
+)
+deadline = time.time() + 5
+while ad.active_count() and time.time() < deadline:
+    time.sleep(.01)
+row = ad.get_durable_delegation(r["delegation_id"])
+print(json.dumps({"delegation_id": r["delegation_id"], "row": row}, sort_keys=True))
+'''
+    first = subprocess.run(
+        [sys.executable, "-c", producer], cwd=repo, env=env,
+        text=True, capture_output=True, timeout=15, check=True,
+    )
+    produced = json.loads(first.stdout.strip().splitlines()[-1])
+    delegation_id = produced["delegation_id"]
+    assert produced["row"]["state"] == "timeout"
+    assert produced["row"]["delivery_state"] == "pending"
+
+    consumer = r'''
+import json
+from tools.process_registry import process_registry
+evt = process_registry.completion_queue.get_nowait()
+print(json.dumps({"event": evt, "remaining": process_registry.completion_queue.qsize()}, sort_keys=True))
+'''
+    second = subprocess.run(
+        [sys.executable, "-c", consumer], cwd=repo, env=env,
+        text=True, capture_output=True, timeout=15, check=True,
+    )
+    restored = json.loads(second.stdout.strip().splitlines()[-1])
+    assert restored["remaining"] == 0
+    assert restored["event"]["delegation_id"] == delegation_id
+    assert restored["event"]["status"] == "timeout"
+    assert restored["event"]["restored"] is True
+
+    acker = f'''
+from tools import async_delegation as ad
+assert ad.mark_completion_delivered({delegation_id!r})
+'''
+    subprocess.run(
+        [sys.executable, "-c", acker], cwd=repo, env=env,
+        text=True, capture_output=True, timeout=15, check=True,
+    )
+    probe = subprocess.run(
+        [sys.executable, "-c", "from tools.process_registry import process_registry; print(process_registry.completion_queue.qsize())"],
+        cwd=repo, env=env, text=True, capture_output=True, timeout=15, check=True,
+    )
+    assert probe.stdout.strip().splitlines()[-1] == "0"
+
+
 def test_completed_records_pruned_to_cap():
     # Run more than the retention cap quickly; ensure list doesn't grow forever.
     for i in range(ad._MAX_RETAINED_COMPLETED + 10):
@@ -624,6 +801,45 @@ def test_delegate_task_background_batch_runs_as_one_unit(monkeypatch):
     assert _drain_one() is None
 
 
+def test_delegate_task_background_passes_child_timeout_to_async_registry(monkeypatch):
+    import json
+    from unittest.mock import MagicMock
+    import tools.delegate_tool as dt
+
+    parent = MagicMock()
+    parent._delegate_depth = 0
+    parent.session_id = "sess"
+    parent._interrupt_requested = False
+    parent._active_children = []
+    parent._active_children_lock = None
+
+    fake_child = MagicMock()
+    fake_child._delegate_role = "leaf"
+    fake_child._subagent_id = "s1"
+
+    creds = {
+        "model": "m", "provider": None, "base_url": None, "api_key": None,
+        "api_mode": None, "command": None, "args": None,
+    }
+    captured = {}
+
+    def fake_dispatch(**kwargs):
+        captured.update(kwargs)
+        return {"status": "dispatched", "delegation_id": "deleg_timeout"}
+
+    monkeypatch.setattr(dt, "_build_child_agent", lambda **kw: fake_child)
+    monkeypatch.setattr(dt, "_resolve_delegation_credentials", lambda *a, **k: creds)
+    monkeypatch.setattr(dt, "_get_child_timeout", lambda: 600.0)
+    monkeypatch.setattr(ad, "dispatch_async_delegation_batch", fake_dispatch)
+
+    out = dt.delegate_task(goal="background timeout", background=True, parent_agent=parent)
+
+    parsed = json.loads(out)
+    assert parsed["status"] == "dispatched"
+    assert parsed["delegation_id"] == "deleg_timeout"
+    assert captured["timeout_seconds"] == 600.0
+
+
 def test_model_dispatch_forces_background():
     """The MODEL-facing dispatch path forces background=True for any top-level
     delegation (single task OR batch), and keeps it off for an orchestrator
@@ -871,5 +1087,3 @@ def test_gateway_cli_origin_event_left_unrouted():
     evt = _make_async_evt(session_key="")
     runner._enrich_async_delegation_routing(evt)
     assert "platform" not in evt
-
-

@@ -5929,11 +5929,10 @@ def _find_stale_dashboard_pids(
     disk is updated, causing a silent frontend/backend mismatch (e.g. new
     auth headers the old backend doesn't recognise → every API call 401s).
 
-    The dashboard has no service manager (systemd / launchd), no PID file,
-    and we can't know the original launch args — so the only sane action
-    after an update is to kill the stale process and let the user restart
-    it.  This helper is just the detection step; see
-    ``_kill_stale_dashboard_processes`` for the kill.
+    The dashboard may be manually started or managed by the optional
+    ``hermes-dashboard.service`` systemd unit.  Managed units are restarted
+    through their owning systemd scope; only manually-started processes use
+    the kill path because we can't know their original launch args.
 
     *exclude_pids* is an optional set of PIDs that must never be returned.
     This is used by the Hermes Desktop Electron app to protect its own
@@ -6189,17 +6188,34 @@ def _restart_managed_dashboard_service(
             timeout=timeout,
         )
 
-    try:
-        listed = _systemctl("list-unit-files", unit, "--no-legend", "--no-pager")
-    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+    # Probe the user manager first: Hermes installs Linux services in the
+    # user's systemd scope by default.  Only fall back to the system manager
+    # when the unit is not present there, preserving root/system deployments.
+    # Crucially, keep the selected scope for *all* probes and the restart — a
+    # user unit must never be restarted through the system manager (or raw-killed).
+    scope: tuple[str, ...] | None = None
+    listed: subprocess.CompletedProcess | None = None
+    for candidate in (("--user",), ()):
+        try:
+            result = _systemctl(
+                *candidate, "list-unit-files", unit, "--no-legend", "--no-pager"
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+            continue
+        if result.returncode != 0:
+            continue
+        unit_rows = (result.stdout or "").splitlines()
+        if any(row.split()[0:1] == [unit] for row in unit_rows if row.split()):
+            scope = candidate
+            listed = result
+            break
+
+    if scope is None or listed is None:
         return False
 
-    if listed.returncode != 0 or unit not in (listed.stdout or ""):
-        return False
-
     try:
-        active = _systemctl("is-active", unit)
-        enabled = _systemctl("is-enabled", unit)
+        active = _systemctl(*scope, "is-active", unit)
+        enabled = _systemctl(*scope, "is-enabled", unit)
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
         return False
 
@@ -6218,8 +6234,16 @@ def _restart_managed_dashboard_service(
     print()
     print(f"⟲ Restarting managed dashboard service ({reason})")
 
+    scope_label = "systemctl --user" if scope else "sudo systemctl"
+    restart = ("systemctl", *scope, "restart", unit)
+    commands = [restart]
+    if not scope:
+        # System units may require privilege escalation; user units must use
+        # the user manager directly and never prompt for sudo.
+        commands.append(("sudo", "-n", "systemctl", "restart", unit))
+
     errors: list[str] = []
-    for command in (("systemctl", "restart", unit), ("sudo", "-n", "systemctl", "restart", unit)):
+    for command in commands:
         try:
             result = subprocess.run(
                 list(command),
@@ -6245,7 +6269,7 @@ def _restart_managed_dashboard_service(
         "  Dashboard is managed by systemd; not raw-killing its PID because "
         "systemd would treat that as a clean stop."
     )
-    print(f"  Restart manually: sudo systemctl restart {unit}")
+    print(f"  Restart manually: {scope_label} restart {unit}")
     return True
 
 

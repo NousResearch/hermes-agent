@@ -615,11 +615,11 @@ function NewTaskDialog({
 
   return (
     <Dialog onOpenChange={open => !open && onClose()} open={Boolean(target)}>
-      <DialogContent className="max-w-md">
+      <DialogContent className="w-[min(42rem,94vw)] max-w-none">
         <DialogHeader>
           <DialogTitle>New task{target ? ` in ${columnMeta(target).label}` : ''}</DialogTitle>
         </DialogHeader>
-        <div className="flex max-h-[60vh] flex-col gap-3 overflow-y-auto pr-0.5">
+        <div className="flex max-h-[min(72vh,44rem)] flex-col gap-3 overflow-y-auto pr-0.5">
           <Input
             autoFocus
             onChange={event => setTitle(event.target.value)}

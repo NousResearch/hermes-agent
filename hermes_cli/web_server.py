@@ -386,6 +386,44 @@ def _require_token(request: Request) -> None:
         raise HTTPException(status_code=401, detail="Unauthorized")
 
 
+def _request_is_authenticated(request: Request) -> bool:
+    """Non-raising sibling of :func:`_require_token`.
+
+    For endpoints on the public allowlist that expose EXTRA detail to a
+    logged-in caller while staying reachable anonymously. Resolves the active
+    auth scheme exactly like ``_require_token`` so the two can't drift.
+
+    Two routes to ``True``, one per deployment shape:
+
+    * **Gated / OAuth mode** (``auth_required`` True): the
+      ``gated_auth_middleware`` (or its ``_attach_optional_session`` helper
+      for public routes opted into optional-session) already verified the
+      cookie and attached ``request.state.session`` — check for it here.
+      This path is authoritative: a request without a verified session is
+      anonymous regardless of any other header.
+
+    * **Loopback / dev mode** (``auth_required`` False): the legacy
+      ``_SESSION_TOKEN`` is injected into the SPA HTML and echoed back.
+      Validate it here. In this mode the server binds only to loopback
+      (localhost / 127.0.0.1 / ::1), so there is no remote attack surface
+      and the token check is sufficient.
+
+    Fails **closed**: if neither mechanism is satisfied the caller is
+    anonymous and the handler should return the safe (non-enriched) payload.
+    The two branches do NOT chain — under the OAuth gate a missing session
+    never falls back to the session token, because the token is deliberately
+    absent in gated deployments (the SPA authenticates with cookies, not
+    tokens). This avoids the degradation path flagged in #67704 where
+    ``auth_required=False`` falls through to a token-only check that could
+    be fragile if the token-check semantics ever weaken.
+    """
+    if getattr(request.app.state, "auth_required", False):
+        # Gated mode — session is the ONLY auth signal.
+        return getattr(request.state, "session", None) is not None
+    # Loopback mode — the session token carried by the local SPA.
+    return _has_valid_session_token(request)
+
+
 # Accepted Host header values for loopback binds. DNS rebinding attacks
 # point a victim browser at an attacker-controlled hostname (evil.test)
 # which resolves to 127.0.0.1 after a TTL flip — bypassing same-origin
@@ -5937,7 +5975,19 @@ async def get_defaults():
 
 
 @app.get("/api/config/schema")
-async def get_schema(profile: Optional[str] = None):
+async def get_schema(request: Request, profile: Optional[str] = None):
+    # This route is on the PUBLIC_API_PATHS allowlist so the SPA can render
+    # the Config page shell before login — the static CONFIG_SCHEMA is
+    # non-sensitive by construction.
+    #
+    # The per-request voice-provider merge is NOT: it reads
+    # ``tts.providers.*`` / ``stt.providers.*`` out of the operator's
+    # config.yaml, and those keys are user data (internal vendor and host
+    # identifiers), not schema defaults. Enrich only for an authenticated
+    # caller; anonymous callers get the plain schema, which is what they
+    # got before the options became config-derived.
+    if not _request_is_authenticated(request):
+        return {"fields": CONFIG_SCHEMA, "category_order": _CATEGORY_ORDER}
     # Voice provider options are merged per-request so user-declared
     # command providers (tts.providers.* / stt.providers.*) added after
     # server start still show up, scoped to the requested profile's config.

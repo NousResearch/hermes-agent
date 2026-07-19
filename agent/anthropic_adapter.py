@@ -534,8 +534,9 @@ def _requires_bearer_auth(base_url: str | None) -> bool:
 
     Some third-party /anthropic endpoints implement Anthropic's Messages API but
     require Authorization: Bearer instead of Anthropic's native x-api-key header.
-    MiniMax's global and China Anthropic-compatible endpoints, and Azure AI
-    Foundry's Anthropic-style endpoint follow this pattern.
+    MiniMax's global and China Anthropic-compatible endpoints, Azure AI
+    Foundry's Anthropic-style endpoint, and Palantir Foundry's LLM proxy
+    follow this pattern.
     """
     normalized = _normalize_base_url_text(base_url)
     if not normalized:
@@ -544,6 +545,11 @@ def _requires_bearer_auth(base_url: str | None) -> bool:
     return (
         normalized.startswith(("https://api.minimax.io/anthropic", "https://api.minimaxi.com/anthropic"))
         or "azure.com" in normalized
+        # Palantir Foundry LLM proxy (<org>.palantirfoundry.com/api/v2/llm/proxy/anthropic)
+        # rejects x-api-key with 401 and requires Authorization: Bearer.
+        # Hostname match (not substring) so e.g. evil.com/palantirfoundry
+        # paths don't trigger Bearer auth.
+        or base_url_host_matches(normalized, "palantirfoundry.com")
     )
 
 
@@ -2270,13 +2276,6 @@ def _manage_thinking_signatures(
     """
     _THINKING_TYPES = frozenset(("thinking", "redacted_thinking"))
     _is_third_party = _is_third_party_anthropic_endpoint(base_url)
-    # Kimi / DeepSeek share a contract: strip signed Anthropic blocks
-    # (neither upstream can validate Anthropic signatures), preserve unsigned
-    # ones synthesised from reasoning_content.  See #13848, #16748.
-    _preserve_unsigned_thinking = (
-        _is_kimi_family_endpoint(base_url, model)
-        or _is_deepseek_anthropic_endpoint(base_url)
-    )
 
     last_assistant_idx = None
     for i in range(len(result) - 1, -1, -1):
@@ -2288,8 +2287,12 @@ def _manage_thinking_signatures(
         if m.get("role") != "assistant" or not isinstance(m.get("content"), list):
             continue
 
-        if _preserve_unsigned_thinking:
-            # Kimi / DeepSeek: strip signed, preserve unsigned.
+        if _is_kimi_family_endpoint(base_url, model):
+            # Kimi does not enforce thinking signatures — replay as-is
+            # (shared cleanup below still strips cache markers + the internal flag).
+            pass
+        elif _is_deepseek_anthropic_endpoint(base_url):
+            # DeepSeek: strip signed, preserve unsigned.
             new_content = []
             for b in m["content"]:
                 if not isinstance(b, dict) or b.get("type") not in _THINKING_TYPES:

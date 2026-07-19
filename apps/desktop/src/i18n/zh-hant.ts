@@ -211,11 +211,13 @@ export const zhHant = defineLocale({
       providerApiKeys: 'API 金鑰',
       gateway: '閘道',
       apiKeys: '工具與金鑰',
+      keybinds: '鍵盤快捷鍵',
       keysTools: '工具',
       keysSettings: '設定',
       mcp: 'MCP',
       archivedChats: '已封存聊天',
       about: '關於',
+      billing: '帳單',
       notifications: '通知'
     },
     notifications: {
@@ -452,7 +454,12 @@ export const zhHant = defineLocale({
         },
         xai: {
           voiceId: 'xAI (Grok) 語音',
-          language: 'xAI 語言'
+          language: 'xAI 語言',
+          speed: '播放速度',
+          autoSpeechTags: '自動語音標籤',
+          optimizeStreamingLatency: '串流延遲最佳化',
+          sampleRate: '取樣率',
+          bitRate: '位元率'
         },
         minimax: {
           model: 'MiniMax TTS 模型',
@@ -592,6 +599,7 @@ export const zhHant = defineLocale({
     config: {
       none: '無',
       noneParen: '(無)',
+      builtinOnly: '僅內建',
       notSet: '未設定',
       commaSeparated: '逗號分隔的值',
       loading: '正在載入 Hermes 設定...',
@@ -774,6 +782,10 @@ export const zhHant = defineLocale({
       noProviderKeys: '沒有可用的提供方 API 金鑰。',
       searchKeys: '搜尋提供方…',
       noKeysMatch: '沒有符合的提供方。',
+      localEndpoint: {
+        title: '本地 / 自訂端點',
+        description: '將 Hermes 指向任意 OpenAI 相容端點（Zyphra、vLLM、llama.cpp、Ollama 等）。'
+      },
       loading: '正在載入提供方...'
     },
     sessions: {
@@ -820,6 +832,8 @@ export const zhHant = defineLocale({
       noProviderOptions: '此工具集沒有提供方選項；啟用後即可使用目前設定。',
       noProviders: '此工具集目前沒有可用提供方。',
       ready: '就緒',
+      needsSignIn: '需要登入',
+      needsSetup: '需要安裝',
       nousIncluded: '包含在 Nous 訂閱中；登入 Nous Portal 即可啟用。',
       noApiKeyRequired: '不需要 API 金鑰。',
       postSetupHint: step => `此後端需要一次性安裝 (${step})。將在此機器上執行，可能需要幾分鐘。`,
@@ -830,7 +844,20 @@ export const zhHant = defineLocale({
       postSetupCompleteMessage: step => `已安裝 ${step}。`,
       postSetupErrorTitle: '設定完成但有錯誤',
       postSetupErrorMessage: step => `請檢查 ${step} 日誌。`,
-      postSetupFailed: step => `執行 ${step} 設定失敗`
+      postSetupFailed: step => `執行 ${step} 設定失敗`,
+      terminalBackend: {
+        sectionTitle: '執行後端',
+        loading: '正在檢查執行後端…',
+        failedLoad: '無法載入終端後端',
+        ready: '就緒',
+        needsSetup: '需要設定',
+        unavailable: '不可用',
+        inUse: '使用中',
+        selectedTitle: '已選擇後端',
+        selectedMessage: backend => `終端命令現在透過 ${backend} 執行。將套用於新工作階段。`,
+        failedSelect: backend => `選擇 ${backend} 失敗`,
+        needsSetupHint: '現在即可選擇此後端——但在完成設定前命令將會失敗。'
+      }
     }
   },
 
@@ -1526,6 +1553,7 @@ export const zhHant = defineLocale({
       finishedUnread: '已完成 — 未讀',
       backgroundRunning: '背景任務執行中',
       handoffOrigin: platform => `從 ${platform} 轉接`,
+      ownedByProfile: profile => `設定檔：${profile}`,
       renamed: '已重新命名',
       renameFailed: '重新命名失敗',
       renameTitle: '重新命名工作階段',
@@ -1833,6 +1861,7 @@ export const zhHant = defineLocale({
     recommended: '建議',
     connected: '已連線',
     featuredPitch: '一個訂閱，300+ 前沿模型 — 執行 Hermes 的建議方式',
+    fireworksPitch: '直接模型 API — Fireworks 託管的前沿模型',
     openRouterPitch: '一個金鑰，數百個模型 — 穩定的預設選擇',
     apiKeyOptions: {
       fireworks: { short: '直接模型 API', description: '直接存取 Fireworks AI 託管的模型。' },
@@ -2026,6 +2055,7 @@ export const zhHant = defineLocale({
       noModel: '無模型',
       switchModel: '切換模型',
       openModelPicker: '開啟模型選擇器',
+      modelPinned: '已由你固定；新對話將使用此模型而非「設定」中的預設模型',
       modelTitle: (provider, model) => `模型 · ${provider}：${model}`,
       providerModelTitle: (provider, model) => `${provider} · ${model}`
     }

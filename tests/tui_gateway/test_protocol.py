@@ -362,7 +362,7 @@ def test_session_resume_returns_hydrated_messages(server, monkeypatch):
                 {"role": "narrator", "content": "skip"},
             ]
 
-    monkeypatch.setattr(server, "_get_db", lambda: _DB())
+    monkeypatch.setattr(server, "_open_session_db", lambda _home=None: _DB())
     monkeypatch.setattr(server, "_make_agent", lambda sid, key, session_id=None, session_db=None, **_kwargs: object())
     monkeypatch.setattr(server, "_init_session", lambda sid, key, agent, history, cols=80, **_kwargs: None)
     monkeypatch.setattr(server, "_session_info", lambda _agent, _session=None: {"model": "test/model"})
@@ -426,7 +426,7 @@ def test_session_resume_defaults_to_deferred_build(server, monkeypatch):
 
     builds: list = []
 
-    monkeypatch.setattr(server, "_get_db", lambda: _DB())
+    monkeypatch.setattr(server, "_open_session_db", lambda _home=None: _DB())
     # The response path must never call _make_agent; route the deferred timer
     # through a recorder so a 50ms fire can't build (or crash) under the test.
     monkeypatch.setattr(
@@ -568,7 +568,7 @@ def test_session_resume_handles_multimodal_list_content(server, monkeypatch):
         def get_messages_as_conversation(self, _sid, include_ancestors=False, repair_alternation=False):
             return [multimodal_user, text_only_assistant]
 
-    monkeypatch.setattr(server, "_get_db", lambda: _DB())
+    monkeypatch.setattr(server, "_open_session_db", lambda _home=None: _DB())
     monkeypatch.setattr(server, "_make_agent", lambda sid, key, session_id=None, session_db=None, **_kwargs: object())
     monkeypatch.setattr(server, "_init_session", lambda sid, key, agent, history, cols=80, **_kwargs: None)
     monkeypatch.setattr(server, "_session_info", lambda _agent, _session=None: {"model": "test/model"})
@@ -629,7 +629,7 @@ def test_session_resume_lazy_registers_watch_session_without_agent(server, monke
     def _boom(*_args, **_kwargs):
         raise AssertionError("lazy resume must not build an agent")
 
-    monkeypatch.setattr(server, "_get_db", lambda: _DB())
+    monkeypatch.setattr(server, "_open_session_db", lambda _home=None: _DB())
     monkeypatch.setattr(server, "_make_agent", _boom)
 
     resp = server.handle_request(
@@ -703,7 +703,7 @@ def test_session_resume_lazy_reports_running_for_inflight_child(server, monkeypa
         def get_messages_as_conversation(self, _sid, include_ancestors=False, repair_alternation=False):
             return [{"role": "user", "content": "delegated goal"}]
 
-    monkeypatch.setattr(server, "_get_db", lambda: _DB())
+    monkeypatch.setattr(server, "_open_session_db", lambda _home=None: _DB())
     monkeypatch.setattr(
         server, "_make_agent", lambda *a, **k: (_ for _ in ()).throw(AssertionError("no build"))
     )
@@ -761,7 +761,7 @@ def test_session_resume_lazy_tolerates_missing_row_for_active_child(server, monk
             # No rows for an unwritten session.
             return []
 
-    monkeypatch.setattr(server, "_get_db", lambda: _DB())
+    monkeypatch.setattr(server, "_open_session_db", lambda _home=None: _DB())
     monkeypatch.setattr(
         server, "_make_agent", lambda *a, **k: (_ for _ in ()).throw(AssertionError("no build"))
     )
@@ -809,7 +809,7 @@ def test_session_resume_missing_row_non_lazy_still_errors(server, monkeypatch):
         def get_session_by_title(self, _title):
             return None
 
-    monkeypatch.setattr(server, "_get_db", lambda: _DB())
+    monkeypatch.setattr(server, "_open_session_db", lambda _home=None: _DB())
 
     # Non-lazy resume, no active child → hard error.
     resp = server.handle_request(
@@ -885,7 +885,7 @@ def test_session_resume_reuses_existing_live_session(server, monkeypatch):
         assert agent_can_finish.wait(timeout=1)
         return _Agent(sid, session_id or key)
 
-    monkeypatch.setattr(server, "_get_db", lambda: _DB())
+    monkeypatch.setattr(server, "_open_session_db", lambda _home=None: _DB())
     monkeypatch.setattr(server, "_make_agent", make_agent)
     monkeypatch.setattr(server, "_SlashWorker", lambda _key, _model: _Worker())
     monkeypatch.setattr(
@@ -991,7 +991,7 @@ def test_session_resume_reuses_live_agent_after_compression_rotation(server, mon
         def resolve_resume_session_id(self, _target):
             return target
 
-    monkeypatch.setattr(server, "_get_db", lambda: _DB())
+    monkeypatch.setattr(server, "_open_session_db", lambda _home=None: _DB())
     monkeypatch.setattr(server, "_emit", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(
         server,
@@ -1092,7 +1092,7 @@ def test_session_resume_live_payload_uses_current_history_with_ancestors(server,
         def close(self):
             pass
 
-    monkeypatch.setattr(server, "_get_db", lambda: _DB())
+    monkeypatch.setattr(server, "_open_session_db", lambda _home=None: _DB())
     monkeypatch.setattr(
         server,
         "_make_agent",
@@ -1183,7 +1183,7 @@ def test_session_activate_rebinds_orphaned_ws_session_to_current_transport(serve
         "transport": old_transport,
     }
     monkeypatch.setattr(server, "current_transport", lambda: new_transport)
-    monkeypatch.setattr(server, "_get_db", lambda: None)
+    monkeypatch.setattr(server, "_open_session_db", lambda _home=None: None)
     monkeypatch.setattr(
         server,
         "_session_info",
@@ -1228,7 +1228,7 @@ def test_session_branch_persists_branched_from_marker(server, monkeypatch):
         def set_session_title(self, _key, _title):
             return None
 
-    monkeypatch.setattr(server, "_get_db", lambda: _DB())
+    monkeypatch.setattr(server, "_open_session_db", lambda _home=None: _DB())
     monkeypatch.setattr(server, "_resolve_model", lambda: "test/model")
     monkeypatch.setattr(server, "_new_session_key", lambda: "20260101_000001_child0")
     monkeypatch.setattr(
@@ -1288,7 +1288,7 @@ def test_make_agent_accepts_list_system_prompt(server, monkeypatch):
     )
     monkeypatch.setattr(server, "_load_cfg", lambda: {"agent": {"system_prompt": ["one", "two"]}})
     monkeypatch.setattr(server, "_resolve_startup_runtime", lambda: ("test/model", "test"))
-    monkeypatch.setattr(server, "_get_db", lambda: None)
+    monkeypatch.setattr(server, "_open_session_db", lambda _home=None: None)
 
     server._make_agent("sid", "session-key", session_id="session-key")
 

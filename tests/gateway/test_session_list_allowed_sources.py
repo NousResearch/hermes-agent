@@ -51,7 +51,7 @@ def test_session_list_surfaces_all_user_facing_sources(monkeypatch):
         {"id": "custom-1", "source": "my-custom-source", "started_at": 3},
     ]
     db = _StubDB(rows)
-    monkeypatch.setattr(server, "_get_db", lambda: db)
+    monkeypatch.setattr(server, "_open_session_db", lambda _home=None: db)
 
     resp = _call(limit=10)
     ids = [s["id"] for s in resp["result"]["sessions"]]
@@ -72,7 +72,7 @@ def test_session_list_surfaces_all_user_facing_sources(monkeypatch):
 def test_session_list_default_limit_is_200(monkeypatch):
     """Default limit should be wide enough for long-running users."""
     db = _StubDB([{"id": "x", "source": "cli", "started_at": 1}])
-    monkeypatch.setattr(server, "_get_db", lambda: db)
+    monkeypatch.setattr(server, "_open_session_db", lambda _home=None: db)
 
     _call()  # no explicit limit
     # fetch_limit = max(limit * 2, 200); limit defaults to 200, so 400.
@@ -81,7 +81,7 @@ def test_session_list_default_limit_is_200(monkeypatch):
 
 def test_session_list_respects_explicit_limit(monkeypatch):
     db = _StubDB([{"id": "x", "source": "cli", "started_at": 1}])
-    monkeypatch.setattr(server, "_get_db", lambda: db)
+    monkeypatch.setattr(server, "_open_session_db", lambda _home=None: db)
 
     _call(limit=10)
     # fetch_limit = max(limit * 2, 200) = 200 when limit is small.
@@ -96,7 +96,7 @@ def test_session_list_preserves_ordering_after_filter(monkeypatch):
         {"id": "also-visible", "source": "webhook", "started_at": 2},
         {"id": "oldest", "source": "discord", "started_at": 1},
     ]
-    monkeypatch.setattr(server, "_get_db", lambda: _StubDB(rows))
+    monkeypatch.setattr(server, "_open_session_db", lambda _home=None: _StubDB(rows))
 
     resp = _call()
     ids = [s["id"] for s in resp["result"]["sessions"]]

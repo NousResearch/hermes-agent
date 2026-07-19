@@ -343,9 +343,11 @@ External UIs can manage Hermes sessions over REST without standing up the dashbo
 | `GET` | `/api/sessions/{id}/messages` | Message history for a session |
 | `POST` | `/api/sessions/{id}/fork` | Branch the session via `SessionDB` lineage (matches CLI `/branch` semantics) |
 | `POST` | `/api/sessions/{id}/chat` | Run one synchronous agent turn |
-| `POST` | `/api/sessions/{id}/chat/stream` | SSE wrapper over a single turn — emits `assistant.delta`, `tool.started`, `tool.completed`, `run.completed` events |
+| `POST` | `/api/sessions/{id}/chat/stream` | SSE wrapper over a single turn — emits `assistant.delta`, `assistant.commentary`, `tool.started`, `tool.completed`, `run.completed` events |
 
 `/v1/capabilities` advertises the full surface via `session_*` feature flags and `endpoints.session_*` entries so external UIs can detect support and fall back safely. Inline images are supported in `chat` and `chat/stream` payloads (multimodal-aware path).
+
+When the active backend is `openai-codex`, Codex emits user-facing progress preambles (`phase="commentary"`) during long, tool-heavy turns. These surface as a distinct **`assistant.commentary`** event (`{message_id, content}`) — separate from `assistant.delta` and never concatenated into the final answer, so clients can show live progress without polluting persisted content. Private reasoning (`phase="analysis"`) stays on the reasoning path and never reaches this event. On the Responses stream (`/v1/responses`) the same commentary appears as a distinct assistant `message` output item carrying `"phase": "commentary"`, kept out of the final answer item. The core `display.show_commentary: false` gate suppresses commentary on both surfaces.
 
 ```bash
 # fork a session and run one turn

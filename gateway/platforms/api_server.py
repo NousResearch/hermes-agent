@@ -3407,6 +3407,47 @@ class APIServerAdapter(BasePlatformAdapter):
                     "logprobs": [],
                 })
 
+            async def _emit_commentary(text: str) -> None:
+                """Emit Codex ``phase="commentary"`` progress as a distinct
+                assistant message output item (#67580).
+
+                Kept as its own ``message`` item, separate from the final
+                answer item — it does not feed ``final_text_parts`` so it is
+                never concatenated into final content. The ``phase`` marker
+                lets clients render it as interim progress and skip it when
+                assembling the final answer. Analysis / reasoning never
+                reaches this path (no CoT leak).
+                """
+                nonlocal output_index
+                item_id = f"msg_{uuid.uuid4().hex[:24]}"
+                idx = output_index
+                output_index += 1
+                content = [{"type": "output_text", "text": text}]
+                item = {
+                    "id": item_id,
+                    "type": "message",
+                    "status": "completed",
+                    "role": "assistant",
+                    "phase": "commentary",
+                    "content": content,
+                }
+                emitted_items.append({
+                    "type": "message",
+                    "role": "assistant",
+                    "phase": "commentary",
+                    "content": content,
+                })
+                await _write_event("response.output_item.added", {
+                    "type": "response.output_item.added",
+                    "output_index": idx,
+                    "item": item,
+                })
+                await _write_event("response.output_item.done", {
+                    "type": "response.output_item.done",
+                    "output_index": idx,
+                    "item": item,
+                })
+
             async def _emit_tool_started(payload: Dict[str, Any]) -> str:
                 """Emit response.output_item.added for a function_call.
 
@@ -3533,6 +3574,8 @@ class APIServerAdapter(BasePlatformAdapter):
                         await _emit_tool_started(payload)
                     elif tag == "__tool_completed__":
                         await _emit_tool_completed(payload)
+                    elif tag == "__commentary__":
+                        await _emit_commentary(payload["text"])
                 elif isinstance(it, str):
                     # Batch text deltas — append to buffer, flush on timer
                     _batch_buf.append(it)
@@ -3952,6 +3995,19 @@ class APIServerAdapter(BasePlatformAdapter):
                     "result": function_result,
                 }))
 
+            def _on_commentary(text, *, already_streamed: bool = False):
+                # Codex ``phase="commentary"`` progress preambles (#67580).
+                # Surface them as a distinct assistant message output item so
+                # Responses clients can render live progress — never merged
+                # into the final answer. ``already_streamed=True`` means the
+                # text already went out via output_text.delta, so skip it to
+                # avoid a duplicate. Analysis / reasoning never reaches this
+                # callback (it stays on the reasoning path), so no CoT leaks.
+                if already_streamed:
+                    return
+                if isinstance(text, str) and text.strip():
+                    _stream_q.put(("__commentary__", {"text": text}))
+
             agent_ref = [None]
             agent_task = asyncio.ensure_future(self._run_agent(
                 user_message=user_message,
@@ -3962,6 +4018,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 tool_progress_callback=_on_tool_progress,
                 tool_start_callback=_on_tool_start,
                 tool_complete_callback=_on_tool_complete,
+                interim_assistant_callback=_on_commentary,
                 agent_ref=agent_ref,
                 gateway_session_key=gateway_session_key,
                 route=route,

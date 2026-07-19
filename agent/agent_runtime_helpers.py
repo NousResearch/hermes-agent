@@ -410,8 +410,13 @@ def note_turn_start(agent, turn_id: str):
     # Cross-agent leg: same session_id in flight under a different agent
     # object means two routing keys resolve to one durable session — the
     # busy guard (keyed by routing key) cannot see this overlap at all.
+    # Persist-disabled agents (background-review forks) deliberately share
+    # the live parent's session_id for prompt-cache warmth but can never
+    # write to the transcript — they must not register here (would warn a
+    # false overlap against the parent's real turn) nor pop the parent's
+    # slot at their persist (note_turn_persisted skips them symmetrically).
     session_id = getattr(agent, "session_id", None)
-    if session_id:
+    if session_id and not getattr(agent, "_persist_disabled", False):
         now = time.time()
         with _INFLIGHT_TURNS_LOCK:
             entry = _INFLIGHT_TURNS_BY_SESSION.get(session_id)
@@ -443,12 +448,17 @@ def note_turn_persisted(agent):
     and the tripwire under-reports instead of double-reporting. A diagnostic
     must never be noisier than the defect it hunts."""
     agent._inflight_turn_id = None
-    session_id = getattr(agent, "_inflight_turn_session_id", None) or getattr(
-        agent, "session_id", None
-    )
-    if session_id:
-        with _INFLIGHT_TURNS_LOCK:
-            _INFLIGHT_TURNS_BY_SESSION.pop(session_id, None)
+    # Symmetric with note_turn_start's cross-agent leg: persist-disabled
+    # forks never registered a session slot, and their persist funnel still
+    # runs — popping here would steal the live parent turn's slot and make
+    # the tripwire under-report the real overlap it exists to catch.
+    if not getattr(agent, "_persist_disabled", False):
+        session_id = getattr(agent, "_inflight_turn_session_id", None) or getattr(
+            agent, "session_id", None
+        )
+        if session_id:
+            with _INFLIGHT_TURNS_LOCK:
+                _INFLIGHT_TURNS_BY_SESSION.pop(session_id, None)
     agent._inflight_turn_session_id = None
 
 

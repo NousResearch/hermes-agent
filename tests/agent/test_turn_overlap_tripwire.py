@@ -144,3 +144,36 @@ def test_crashed_cross_agent_turn_warns_once_then_recovers(caplog):
         note_turn_persisted(agent_b)
         note_turn_start(agent_c, "s1:t3:cccc")   # clean again
     assert len(caplog.records) == 1
+
+
+def test_persist_disabled_fork_neither_registers_nor_warns(caplog):
+    """Background-review forks share the live parent's session_id for
+    prompt-cache warmth but are _persist_disabled — they can never write
+    to the transcript, so they must not trip the cross-agent warning
+    against the parent's real in-flight turn (in either direction)."""
+    parent, fork = _FakeAgent(), _FakeAgent()
+    fork._persist_disabled = True
+    with caplog.at_level(logging.WARNING, logger="agent.agent_runtime_helpers"):
+        note_turn_start(parent, "s1:t1:aaaa")     # real turn in flight
+        assert note_turn_start(fork, "s1:tr:ffff") is None  # fork: silent
+        note_turn_persisted(fork)                 # fork's funnel still runs
+        # Reverse order on the next cycle: fork in flight, then real turn.
+        note_turn_persisted(parent)
+        note_turn_start(fork, "s1:tr:gggg")
+        assert note_turn_start(parent, "s1:t2:bbbb") is None
+    assert not caplog.records
+
+
+def test_persist_disabled_fork_persist_does_not_steal_parent_slot(caplog):
+    """The fork's persist funnel still runs; it must not pop the parent's
+    session slot, or a real cross-agent overlap right after a review fork
+    would go unreported."""
+    parent, fork, intruder = _FakeAgent(), _FakeAgent(), _FakeAgent()
+    fork._persist_disabled = True
+    with caplog.at_level(logging.WARNING, logger="agent.agent_runtime_helpers"):
+        note_turn_start(parent, "s1:t1:aaaa")     # real turn holds the slot
+        note_turn_start(fork, "s1:tr:ffff")
+        note_turn_persisted(fork)                 # must NOT release s1
+        prev = note_turn_start(intruder, "s1:t2:bbbb")
+    assert prev == "s1:t1:aaaa"
+    assert len(caplog.records) == 1

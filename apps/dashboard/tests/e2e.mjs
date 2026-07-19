@@ -1055,6 +1055,16 @@ await page.waitForFunction(() => new URLSearchParams(location.search).get("page"
   null, { timeout: 5000 });
 check("switching pages updates ?page= in the URL", true);
 
+// ---- tablet / landscape: no horizontal overflow --------------------------------
+for (const w of [768, 820, 900]) {
+  await page.setViewportSize({ width: w, height: 1024 });
+  await page.reload({ waitUntil: "networkidle" });
+  await page.waitForSelector(".pagetab", { timeout: 10000 });
+  const ok = await page.evaluate(() =>
+    document.documentElement.scrollWidth <= document.documentElement.clientWidth + 1);
+  check(`tablet ${w}px: no horizontal overflow`, ok);
+}
+
 // ---- mobile: page tabs become a pinned bottom nav -------------------------------
 await page.setViewportSize({ width: 390, height: 844 });
 await page.reload({ waitUntil: "networkidle" });

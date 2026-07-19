@@ -351,6 +351,7 @@ CREATE TABLE IF NOT EXISTS project_finalization_meta (
 CREATE INDEX IF NOT EXISTS idx_pfinal_board_state ON project_finalizations(board_id, state);
 CREATE INDEX IF NOT EXISTS idx_pfinal_root_gen ON project_finalizations(board_id, root_task_id, generation);
 CREATE INDEX IF NOT EXISTS idx_pmembers_root ON project_finalization_members(board_id, root_task_id, generation);
+CREATE INDEX IF NOT EXISTS idx_pmembers_task ON project_finalization_members(task_id, board_id, root_task_id, generation);
 CREATE INDEX IF NOT EXISTS idx_pdelivery_key ON project_delivery_attempts(idempotency_key, attempt_number);
 CREATE INDEX IF NOT EXISTS idx_pfailure_root ON project_failure_envelopes(board_id, root_task_id);
 CREATE INDEX IF NOT EXISTS idx_pcleanup_root ON project_cleanup_journal(board_id, root_task_id);
@@ -887,6 +888,7 @@ _REQUIRED_INDEXES = {
     "idx_pfinal_board_state": ("project_finalizations", ("board_id", "state")),
     "idx_pfinal_root_gen": ("project_finalizations", ("board_id", "root_task_id", "generation")),
     "idx_pmembers_root": ("project_finalization_members", ("board_id", "root_task_id", "generation")),
+    "idx_pmembers_task": ("project_finalization_members", ("task_id", "board_id", "root_task_id", "generation")),
     "idx_pdelivery_key": ("project_delivery_attempts", ("idempotency_key", "attempt_number")),
     "idx_pfailure_root": ("project_failure_envelopes", ("board_id", "root_task_id")),
     "idx_pcleanup_root": ("project_cleanup_journal", ("board_id", "root_task_id")),
@@ -1010,6 +1012,15 @@ def _ensure_required_indexes(conn: sqlite3.Connection) -> None:
             None,
         )
         if current is None:
+            conflicting_table = conn.execute(
+                "SELECT tbl_name FROM sqlite_master WHERE type='index' AND name=?",
+                (index_name,),
+            ).fetchone()
+            if conflicting_table is not None:
+                raise ValueError(
+                    f"incompatible index shape for {index_name}: "
+                    f"expected table {table}, got {conflicting_table['tbl_name']}"
+                )
             conn.execute(statements[index_name])
         elif current["unique"] or _index_columns(conn, index_name) != columns:
             raise ValueError(f"incompatible index shape for {index_name}")

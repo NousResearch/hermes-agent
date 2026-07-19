@@ -455,6 +455,113 @@ def test_missing_required_index_is_recreated_without_rewriting_rows():
         _close_and_unlink(conn, path)
 
 
+def test_member_indexes_have_stable_shapes_and_task_id_lookup_uses_task_leading_index():
+    conn, path = _make_temp_db()
+    try:
+        ensure_project_finalization_schema(conn)
+
+        assert tuple(
+            row["name"] for row in conn.execute("PRAGMA index_info(idx_pmembers_root)")
+        ) == ("board_id", "root_task_id", "generation")
+        assert tuple(
+            row["name"] for row in conn.execute("PRAGMA index_info(idx_pmembers_task)")
+        ) == ("task_id", "board_id", "root_task_id", "generation")
+
+        conn.execute(
+            """
+            INSERT INTO project_finalization_members
+                (board_id, root_task_id, generation, task_id, membership_kind, required, created_at)
+            VALUES ('board', 'root', 1, 'member-task', 'required', 1, 1)
+            """
+        )
+        plan = conn.execute(
+            """
+            EXPLAIN QUERY PLAN
+            SELECT board_id, root_task_id, generation
+              FROM project_finalization_members
+             WHERE task_id = ?
+            """,
+            ("member-task",),
+        ).fetchall()
+        assert any("idx_pmembers_task" in row["detail"] for row in plan)
+
+        before = tuple(
+            row["name"] for row in conn.execute("PRAGMA index_info(idx_pmembers_task)")
+        )
+        ensure_project_finalization_schema(conn)
+        assert tuple(
+            row["name"] for row in conn.execute("PRAGMA index_info(idx_pmembers_task)")
+        ) == before
+        assert tuple(
+            conn.execute(
+                "SELECT board_id, root_task_id, generation, task_id "
+                "FROM project_finalization_members"
+            ).fetchone()
+        ) == ("board", "root", 1, "member-task")
+    finally:
+        _close_and_unlink(conn, path)
+
+
+def test_missing_task_leading_member_index_is_repaired_without_rewriting_rows():
+    conn, path = _make_temp_db()
+    try:
+        ensure_project_finalization_schema(conn)
+        conn.execute(
+            """
+            INSERT INTO project_finalization_members
+                (board_id, root_task_id, generation, task_id, membership_kind, required, created_at)
+            VALUES ('board', 'root', 1, 'member-task', 'required', 1, 1)
+            """
+        )
+        conn.execute("DROP INDEX idx_pmembers_task")
+
+        ensure_project_finalization_schema(conn)
+
+        assert tuple(
+            row["name"] for row in conn.execute("PRAGMA index_info(idx_pmembers_task)")
+        ) == ("task_id", "board_id", "root_task_id", "generation")
+        assert tuple(
+            conn.execute(
+                "SELECT board_id, root_task_id, generation, task_id "
+                "FROM project_finalization_members"
+            ).fetchone()
+        ) == ("board", "root", 1, "member-task")
+        ensure_project_finalization_schema(conn)
+        assert tuple(
+            row["name"] for row in conn.execute("PRAGMA index_info(idx_pmembers_task)")
+        ) == ("task_id", "board_id", "root_task_id", "generation")
+    finally:
+        _close_and_unlink(conn, path)
+
+
+def test_conflicting_task_member_index_name_is_rejected():
+    conn, path = _make_temp_db()
+    try:
+        ensure_project_finalization_schema(conn)
+        conn.execute("DROP INDEX idx_pmembers_task")
+        conn.execute(
+            "CREATE INDEX idx_pmembers_task "
+            "ON project_finalization_members(board_id, task_id, root_task_id, generation)"
+        )
+
+        with pytest.raises(ValueError, match="incompatible index shape for idx_pmembers_task"):
+            ensure_project_finalization_schema(conn)
+    finally:
+        _close_and_unlink(conn, path)
+
+
+def test_same_task_member_index_name_on_wrong_table_is_rejected():
+    conn, path = _make_temp_db()
+    try:
+        conn.execute("CREATE TABLE unrelated (task_id TEXT NOT NULL)")
+        conn.execute("CREATE INDEX idx_pmembers_task ON unrelated(task_id)")
+
+        with pytest.raises(ValueError, match="incompatible index shape for idx_pmembers_task"):
+            ensure_project_finalization_schema(conn)
+    finally:
+        _close_and_unlink(conn, path)
+
+
 def test_drifted_primary_key_shape_is_rejected_before_marker_write():
     conn, path = _make_temp_db()
     try:

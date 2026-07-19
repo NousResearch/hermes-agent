@@ -67,18 +67,32 @@ function onEventsFrame(slug: string, data: unknown): void {
   }
 }
 
-/** Bind the plugin's doors once, at register time. The events socket is pinned
- *  to a board at handshake, so a board switch closes + reopens it. */
-export function bindApi(r: Rest, storage: PluginStorage, socket: Socket): void {
+// A persisted, subscribable atom (the structural slice we need — avoids
+// importing nanostore's type just to describe one).
+interface Persisted<T> {
+  get(): T
+  set(value: T): void
+  listen(cb: (value: T) => void): () => void
+}
+
+/** Bind the plugin's doors at register time and return a disposer the host
+ *  runs on unload/disable — so nothing (store sync, socket) survives a toggle
+ *  or duplicates on re-enable. The events socket is pinned to a board at
+ *  handshake, so a board switch closes + reopens it. */
+export function bindApi(r: Rest, storage: PluginStorage, socket: Socket): () => void {
   rest = r
-  $boardSlug.set(storage.get(BOARD_SLUG_KEY, ''))
-  $boardSlug.listen(slug => storage.set(BOARD_SLUG_KEY, slug))
-  $introDismissed.set(storage.get(INTRO_KEY, false))
-  $introDismissed.listen(dismissed => storage.set(INTRO_KEY, dismissed))
-  $lanesByProfile.set(storage.get(LANES_KEY, false))
-  $lanesByProfile.listen(on => storage.set(LANES_KEY, on))
-  $collapsedLanes.set(storage.get(COLLAPSED_KEY, {}))
-  $collapsedLanes.listen(map => storage.set(COLLAPSED_KEY, map))
+  const unsubs: Array<() => void> = []
+
+  // Hydrate an atom from storage and keep storage in sync with it.
+  const persist = <T>(atom: Persisted<T>, key: string, fallback: T) => {
+    atom.set(storage.get(key, fallback))
+    unsubs.push(atom.listen(value => storage.set(key, value)))
+  }
+
+  persist($boardSlug, BOARD_SLUG_KEY, '')
+  persist($introDismissed, INTRO_KEY, false)
+  persist($lanesByProfile, LANES_KEY, false)
+  persist($collapsedLanes, COLLAPSED_KEY, {})
 
   let close: (() => void) | null = null
 
@@ -88,7 +102,13 @@ export function bindApi(r: Rest, storage: PluginStorage, socket: Socket): void {
   }
 
   open($boardSlug.get())
-  $boardSlug.listen(open)
+  unsubs.push($boardSlug.listen(open))
+
+  return () => {
+    unsubs.forEach(unsub => unsub())
+    close?.()
+    rest = null
+  }
 }
 
 function call<T>(path: string, opts?: PluginRestOptions): Promise<T> {

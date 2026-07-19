@@ -79,7 +79,7 @@ const plugin: HermesPlugin = {
   name: 'Kanban',
   defaultEnabled: false,
   register(ctx) {
-    bindApi(ctx.rest, ctx.storage, ctx.socket)
+    ctx.onDispose(bindApi(ctx.rest, ctx.storage, ctx.socket))
 
     ctx.registerMany([
       {

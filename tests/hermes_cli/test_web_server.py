@@ -3942,6 +3942,27 @@ class TestConfigRoundTrip:
         assert isinstance(config.get("model"), str), \
             f"model should be string, got {type(config.get('model'))}"
 
+    def test_round_trip_preserves_discord_snowflake_exactly(self):
+        """GET → unchanged PUT must not round a JavaScript-unsafe channel ID."""
+        from hermes_cli.config import read_raw_config, save_config
+
+        snowflake = 1495601377412513923
+        save_config({
+            "discord": {
+                "free_response_channels": [snowflake],
+            }
+        })
+
+        web_config = self.client.get("/api/config").json()
+        assert web_config["discord"]["free_response_channels"] == [str(snowflake)]
+
+        response = self.client.put("/api/config", json={"config": web_config})
+        assert response.status_code == 200
+
+        on_disk = read_raw_config()
+        saved = on_disk["discord"]["free_response_channels"][0]
+        assert str(saved) == str(snowflake)
+
     def test_round_trip_preserves_model_subkeys(self):
         """Save and reload should not lose model.provider, model.base_url, etc."""
         from hermes_cli.config import load_config, save_config

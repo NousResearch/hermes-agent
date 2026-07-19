@@ -49,6 +49,24 @@ async def test_status_card_first_send_caches_then_same_key_edits(adapter):
 
 
 @pytest.mark.asyncio
+async def test_status_card_first_creation_uses_metadata_reply_anchor(adapter):
+    adapter.send.return_value = SendResult(success=True, message_id="7001")
+
+    await adapter.send_or_update_status(
+        "555",
+        "run-1",
+        "Starting",
+        metadata={
+            "thread_id": "777",
+            "reply_to_message_id": "42",
+        },
+    )
+
+    assert adapter.send.await_args.kwargs["reply_to"] == "42"
+    assert "reply_to_message_id" not in adapter.send.await_args.kwargs["metadata"]
+
+
+@pytest.mark.asyncio
 async def test_status_card_identity_isolated_by_thread_and_status_key(adapter):
     adapter.send.side_effect = [
         SendResult(success=True, message_id="7001"),
@@ -276,6 +294,21 @@ async def test_repeated_identical_heartbeat_does_not_send_or_edit_again(adapter)
     assert first.message_id == second.message_id == "7001"
     adapter.send.assert_awaited_once()
     adapter.edit_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_status_fingerprint_is_fixed_size_digest(adapter):
+    adapter.send.return_value = SendResult(success=True, message_id="7001")
+    content = "x" * 100_000
+
+    await adapter.send_or_update_status(
+        "555", "run-1", content, metadata={"thread_id": "777"}
+    )
+
+    fingerprint = adapter._status_message_fingerprints[("555", "777", "run-1")]
+    assert len(fingerprint) == 64
+    assert set(fingerprint) <= set("0123456789abcdef")
+    assert content not in fingerprint
 
 
 @pytest.mark.asyncio

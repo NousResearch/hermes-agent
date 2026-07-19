@@ -5126,6 +5126,7 @@ class BasePlatformAdapter(ABC):
                 # metadata stays unmarked and progress bubbles remain
                 # thread-strict.
                 _final_thread_metadata = _mark_notify_metadata(_thread_metadata)
+                _attachment_deliveries = 0
                 _status_key = getattr(event, "_status_key", None)
                 if _status_key:
                     _final_thread_metadata = dict(_final_thread_metadata or {})
@@ -5176,6 +5177,8 @@ class BasePlatformAdapter(ABC):
                         _tts_caption_delivered = bool(
                             telegram_tts_caption and getattr(tts_result, "success", False)
                         )
+                        if getattr(tts_result, "success", False):
+                            _attachment_deliveries += 1
                     finally:
                         try:
                             os.remove(_tts_path)
@@ -5283,12 +5286,14 @@ class BasePlatformAdapter(ABC):
                 if images:
                     logger.info("[%s] Extracted %d image(s) to send as attachments", self.name, len(images))
                     try:
-                        await self.send_multiple_images(
+                        batch_result = await self.send_multiple_images(
                             chat_id=event.source.chat_id,
                             images=images,
                             metadata=_final_thread_metadata,
                             human_delay=human_delay,
                         )
+                        if batch_result is None or getattr(batch_result, "success", False):
+                            _attachment_deliveries += len(images)
                     except Exception as batch_err:
                         logger.warning("[%s] Error batching images: %s", self.name, batch_err, exc_info=True)
 
@@ -5325,12 +5330,14 @@ class BasePlatformAdapter(ABC):
                 if _image_paths:
                     try:
                         _batch = [(f"file://{_quote(p)}", "") for p in _image_paths]
-                        await self.send_multiple_images(
+                        batch_result = await self.send_multiple_images(
                             chat_id=event.source.chat_id,
                             images=_batch,
                             metadata=_final_thread_metadata,
                             human_delay=human_delay,
                         )
+                        if batch_result is None or getattr(batch_result, "success", False):
+                            _attachment_deliveries += len(_batch)
                     except Exception as batch_err:
                         logger.warning("[%s] Error batching images: %s", self.name, batch_err, exc_info=True)
 
@@ -5360,6 +5367,8 @@ class BasePlatformAdapter(ABC):
 
                         if not media_result.success:
                             logger.warning("[%s] Failed to send media (%s): %s", self.name, ext, media_result.error)
+                        else:
+                            _attachment_deliveries += 1
                     except Exception as media_err:
                         logger.warning("[%s] Error sending media: %s", self.name, media_err)
 
@@ -5370,19 +5379,40 @@ class BasePlatformAdapter(ABC):
                     try:
                         ext = Path(file_path).suffix.lower()
                         if ext in _VIDEO_EXTS:
-                            await self.send_video(
+                            file_result = await self.send_video(
                                 chat_id=event.source.chat_id,
                                 video_path=file_path,
                                 metadata=_final_thread_metadata,
                             )
                         else:
-                            await self.send_document(
+                            file_result = await self.send_document(
                                 chat_id=event.source.chat_id,
                                 file_path=file_path,
                                 metadata=_final_thread_metadata,
                             )
+                        if getattr(file_result, "success", False):
+                            _attachment_deliveries += 1
                     except Exception as file_err:
                         logger.error("[%s] Error sending local file %s: %s", self.name, file_path, file_err)
+
+                if _status_key and not text_content and _attachment_deliveries:
+                    # Discord attachment transports do not own the keyed text
+                    # lifecycle. Once at least one no-text attachment lands,
+                    # explicitly replace the retained running card so it cannot
+                    # remain stuck indefinitely.
+                    delivery_adapter = self._final_delivery_adapter(event.source)
+                    attachment_label = (
+                        "Attachment delivered."
+                        if _attachment_deliveries == 1
+                        else "Attachments delivered."
+                    )
+                    terminal_result = await delivery_adapter._send_with_retry(
+                        chat_id=event.source.chat_id,
+                        content=attachment_label,
+                        reply_to=_reply_anchor_for_event(event),
+                        metadata=_final_thread_metadata,
+                    )
+                    _record_delivery(terminal_result)
 
                 # A3 (#29346): if a non-empty response produced nothing
                 # deliverable, fail loudly rather than dropping it in silence.

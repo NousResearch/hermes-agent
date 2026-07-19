@@ -3224,7 +3224,13 @@ class DiscordAdapter(BasePlatformAdapter):
         plain = {
             key: value
             for key, value in metadata.items()
-            if key not in {"operator_card", "status_terminal", "status_key"}
+            if key
+            not in {
+                "operator_card",
+                "status_terminal",
+                "status_key",
+                "reply_to_message_id",
+            }
         }
         return plain or None
 
@@ -3388,8 +3394,12 @@ class DiscordAdapter(BasePlatformAdapter):
         try:
             async with lock:
                 terminal = bool((metadata or {}).get("status_terminal"))
+                reply_anchor = reply_to or (metadata or {}).get(
+                    "reply_to_message_id"
+                )
                 status_metadata: Optional[Dict[str, Any]] = dict(metadata or {})
                 status_metadata.pop("status_key", None)
+                status_metadata.pop("reply_to_message_id", None)
                 if terminal:
                     status_metadata.pop("operator_card", None)
                 elif "operator_card" not in status_metadata:
@@ -3399,13 +3409,16 @@ class DiscordAdapter(BasePlatformAdapter):
                 if not status_metadata:
                     status_metadata = None
 
-                fingerprint = repr(
+                fingerprint_payload = repr(
                     (
                         str(content),
                         terminal,
                         (status_metadata or {}).get("operator_card"),
                     )
                 )
+                fingerprint = hashlib.sha256(
+                    fingerprint_payload.encode("utf-8")
+                ).hexdigest()
                 cached_id = self._status_message_ids.get(key)
                 cached_group = self._status_message_groups.get(
                     key,
@@ -3499,8 +3512,8 @@ class DiscordAdapter(BasePlatformAdapter):
                     "content": content,
                     "metadata": send_metadata,
                 }
-                if reply_to is not None:
-                    send_kwargs["reply_to"] = reply_to
+                if reply_anchor is not None:
+                    send_kwargs["reply_to"] = str(reply_anchor)
                 result = await self.send(
                     **send_kwargs,
                 )
@@ -3520,8 +3533,8 @@ class DiscordAdapter(BasePlatformAdapter):
                         "content": content,
                         "metadata": self._plain_status_metadata(status_metadata),
                     }
-                    if reply_to is not None:
-                        fallback_kwargs["reply_to"] = reply_to
+                    if reply_anchor is not None:
+                        fallback_kwargs["reply_to"] = str(reply_anchor)
                     result = await self.send(**fallback_kwargs)
 
                 if result.success and result.message_id:

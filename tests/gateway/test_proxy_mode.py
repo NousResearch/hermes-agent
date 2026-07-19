@@ -363,6 +363,7 @@ class TestRunAgentViaProxy:
         assert captured["metadata"] == {
             "thread_id": "777",
             "status_key": "task_run:message:42",
+            "reply_to_message_id": "42",
         }
         adapter.send.assert_awaited_once_with(
             "555",
@@ -370,6 +371,7 @@ class TestRunAgentViaProxy:
             metadata={
                 "thread_id": "777",
                 "status_key": "task_run:message:42",
+                "reply_to_message_id": "42",
                 "status_terminal": True,
             },
         )

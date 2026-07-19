@@ -145,6 +145,22 @@ class FakeAgent:
         }
 
 
+class StatusOnlyAgent:
+    def __init__(self, **_kwargs):
+        self.status_callback = None
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        assert self.status_callback is not None
+        self.status_callback("context", "Preparing context")
+        time.sleep(0.1)
+        return {
+            "final_response": "done",
+            "messages": [],
+            "api_calls": 1,
+        }
+
+
 class ThinkingAgent:
     """Agent that emits _thinking scratch text (no tool calls).
 
@@ -746,6 +762,7 @@ async def _run_with_agent(
     chat_type="group",
     thread_id="17585",
     adapter_cls=ProgressCaptureAdapter,
+    event_message_id=None,
 ):
     if config_data:
         import yaml
@@ -791,6 +808,7 @@ async def _run_with_agent(
         source=source,
         session_id=session_id,
         session_key=session_key,
+        event_message_id=event_message_id,
     )
     return adapter, result
 
@@ -826,6 +844,65 @@ async def test_run_agent_rolls_progress_bubble_before_platform_limit(monkeypatch
     assert adapter.oversized_edits == []
     all_bubbles = [call["content"] for call in adapter.sent + adapter.edits]
     assert all(len(text) <= adapter.MAX_MESSAGE_LENGTH for text in all_bubbles)
+
+
+@pytest.mark.asyncio
+async def test_discord_first_progress_card_keeps_inbound_reply_anchor(monkeypatch, tmp_path):
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        FakeAgent,
+        session_id="sess-discord-progress-anchor",
+        config_data={
+            "display": {
+                "tool_progress": "all",
+                "interim_assistant_messages": False,
+            }
+        },
+        platform=Platform.DISCORD,
+        chat_id="555",
+        chat_type="thread",
+        thread_id="777",
+        event_message_id="42",
+    )
+
+    assert result["final_response"] == "done"
+    first_progress = adapter.sent[0]
+    assert first_progress["reply_to"] == "42"
+    assert first_progress["metadata"]["status_key"] == "task_run:message:42"
+    assert first_progress["metadata"]["reply_to_message_id"] == "42"
+
+
+@pytest.mark.asyncio
+async def test_discord_status_and_heartbeat_metadata_keep_inbound_reply_anchor(
+    monkeypatch,
+    tmp_path,
+):
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        StatusOnlyAgent,
+        session_id="sess-discord-status-anchor",
+        config_data={
+            "display": {
+                "tool_progress": "off",
+                "interim_assistant_messages": False,
+            }
+        },
+        platform=Platform.DISCORD,
+        chat_id="555",
+        chat_type="thread",
+        thread_id="777",
+        event_message_id="42",
+    )
+
+    assert result["final_response"] == "done"
+    status = next(call for call in adapter.sent if call["content"] == "Preparing context")
+    assert status["metadata"] == {
+        "thread_id": "777",
+        "status_key": "task_run:message:42",
+        "reply_to_message_id": "42",
+    }
 
 
 @pytest.mark.asyncio

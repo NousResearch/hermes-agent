@@ -412,3 +412,62 @@ async def test_base_final_delivery_carries_terminal_status_identity():
             },
         }
     ]
+
+
+@pytest.mark.asyncio
+async def test_attachment_only_final_explicitly_terminalizes_status_card():
+    adapter = _FinalDeliveryAdapter()
+    adapter.extract_media = lambda _response: ([('/tmp/report.pdf', False)], "")
+    adapter.filter_media_delivery_paths = lambda media: media
+    adapter.send_document = AsyncMock(
+        return_value=SendResult(success=True, message_id="attachment-1")
+    )
+
+    async def handler(event):
+        event._status_key = "task_run:message:42"
+        return "MEDIA:/tmp/report.pdf"
+
+    async def hold_typing(_chat_id, interval=2.0, metadata=None):
+        await asyncio.Event().wait()
+
+    adapter.set_message_handler(handler)
+    adapter._keep_typing = hold_typing
+    event = MessageEvent(
+        text="Send the report",
+        source=SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="555",
+            chat_type="thread",
+            thread_id="777",
+        ),
+        message_id="42",
+    )
+
+    await adapter._process_message_background(
+        event,
+        build_session_key(event.source),
+    )
+
+    adapter.send_document.assert_awaited_once_with(
+        chat_id="555",
+        file_path="/tmp/report.pdf",
+        metadata={
+            "thread_id": "777",
+            "notify": True,
+            "status_key": "task_run:message:42",
+            "status_terminal": True,
+        },
+    )
+    assert adapter.sent == [
+        {
+            "chat_id": "555",
+            "content": "Attachment delivered.",
+            "reply_to": "42",
+            "metadata": {
+                "thread_id": "777",
+                "notify": True,
+                "status_key": "task_run:message:42",
+                "status_terminal": True,
+            },
+        }
+    ]

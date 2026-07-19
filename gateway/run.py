@@ -18545,6 +18545,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if _proxy_status_key:
             _thread_metadata = dict(_thread_metadata or {})
             _thread_metadata["status_key"] = _proxy_status_key
+            if event_message_id:
+                _thread_metadata["reply_to_message_id"] = str(event_message_id)
 
         if _streaming_enabled:
             try:
@@ -19431,9 +19433,23 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if _task_run_status_key:
             _progress_metadata = dict(_progress_metadata or {})
             _progress_metadata["status_key"] = _task_run_status_key
+            if event_message_id:
+                # Progress/status/heartbeat can win the race to create the
+                # retained Discord card. Carry the inbound anchor in shared
+                # metadata so every first-creation seam replies to the user.
+                _progress_metadata["reply_to_message_id"] = str(event_message_id)
         _progress_reply_to = (
             event_message_id
-            if source.platform in (Platform.FEISHU, Platform.MATTERMOST) and source.thread_id and event_message_id
+            if (
+                source.platform == Platform.DISCORD
+                and _task_run_status_key
+                and event_message_id
+            )
+            or (
+                source.platform in (Platform.FEISHU, Platform.MATTERMOST)
+                and source.thread_id
+                and event_message_id
+            )
             else None
         )
 
@@ -19887,6 +19903,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if _task_run_status_key:
             _status_thread_metadata = dict(_status_thread_metadata or {})
             _status_thread_metadata["status_key"] = _task_run_status_key
+            if event_message_id:
+                _status_thread_metadata["reply_to_message_id"] = str(event_message_id)
 
         def _status_callback_sync(event_type: str, message: str) -> None:
             if not _status_adapter or not _run_still_current():

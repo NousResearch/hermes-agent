@@ -174,3 +174,52 @@ def test_service_status_includes_clients(mock_pyright):
         assert any(c["server_id"] == "pyright" for c in info["clients"])
     finally:
         svc.shutdown()
+
+
+def test_service_stale_client_replaced(mock_pyright):
+    """When a cached client becomes stale (is_running=False), the next
+    spawn for the same key must shut down the old client and retain
+    only the replacement."""
+    repo = mock_pyright
+    file_a = repo / "a.py"
+    file_a.write_text("x = 1\n")
+    file_b = repo / "b.py"
+    file_b.write_text("y = 2\n")
+
+    svc = LSPService(
+        enabled=True,
+        wait_mode="document",
+        wait_timeout=3.0,
+        install_strategy="manual",
+    )
+    try:
+        # Spawn the first client normally.
+        svc.get_diagnostics_sync(str(file_a))
+
+        # The client should be alive and tracked.
+        assert len(svc._clients) == 1
+        key = next(iter(svc._clients))
+        stale_client = svc._clients[key]
+        assert stale_client.is_running
+
+        # Simulate a reader-loop death: the LSPClient considers itself
+        # dead but the OS subprocess is still alive.  Setting _state
+        # to "error" makes is_running return False while _proc
+        # remains non-None with returncode=None.
+        stale_client._state = "error"
+        assert not stale_client.is_running
+
+        # Request diagnostics for a different file in the same
+        # workspace — this must trigger stale-client replacement.
+        svc.get_diagnostics_sync(str(file_b))
+
+        # The stale client must have been shut down.
+        assert stale_client._stopping or stale_client._state == "stopped"
+
+        # Only ONE client must exist after replacement.
+        assert len(svc._clients) == 1
+        new_client = svc._clients[key]
+        assert new_client is not stale_client
+        assert new_client.is_running
+    finally:
+        svc.shutdown()

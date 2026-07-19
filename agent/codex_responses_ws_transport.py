@@ -33,6 +33,35 @@ _TERMINAL_EVENT_TYPES = frozenset(
 DEFAULT_CONNECT_TIMEOUT_SECONDS = 15.0
 DEFAULT_RECV_POLL_SECONDS = 1.0
 DEFAULT_IDLE_TIMEOUT_SECONDS = 180.0
+# Mirror the outer API retry budget for transport-level reconnects. Each
+# attempt opens a *new* WebSocket and issues a fresh response.create.
+DEFAULT_WS_MAX_ATTEMPTS = 3
+# Lifecycle frames alone do not commit user-visible/tool-affecting output, so
+# a subsequent transport drop is still safe to retry or fall back from.
+_LIFECYCLE_ONLY_EVENT_TYPES = frozenset(
+    {
+        "response.created",
+        "response.in_progress",
+    }
+)
+_TRANSIENT_WS_FAILURE_MARKERS = (
+    "1011",
+    "1013",
+    "upstream websocket proxy failed",
+    "no available account",
+    "connection dropped",
+    "connection closed",
+    "connection reset",
+    "try again later",
+    "timed out",
+    "timeout",
+    "temporarily",
+    "keepalive",
+    "network",
+    "broken pipe",
+    "eof",
+    "proxy failed",
+)
 
 
 class GenericWsNotStartedError(RuntimeError):
@@ -53,7 +82,13 @@ class GenericWsNotStartedError(RuntimeError):
 
 
 class GenericWsStartedError(RuntimeError):
-    """The request may have reached the server and must never be replayed."""
+    """The request crossed the send boundary.
+
+    ``retryable=True`` means no committed model/tool output was delivered yet,
+    so a *new* attempt (fresh WS / outer API retry / auto→SSE) is safe.
+    ``retryable=False`` means partial output may already have been observed and
+    must not be replayed.
+    """
 
     def __init__(
         self,
@@ -316,6 +351,37 @@ def _recv_frame(websocket: Any, *, poll_timeout: float) -> Any:
         return websocket.recv()
 
 
+def is_output_committed_event(event: Mapping[str, Any] | Any) -> bool:
+    """True when an event may have delivered user/tool-visible content."""
+    if isinstance(event, Mapping):
+        event_type = str(event.get("type") or "")
+    else:
+        event_type = str(getattr(event, "type", "") or "")
+    if not event_type:
+        return False
+    if event_type in _LIFECYCLE_ONLY_EVENT_TYPES:
+        return False
+    if event_type in _TERMINAL_EVENT_TYPES:
+        # Terminal lifecycle alone is not partial output.
+        return False
+    return True
+
+
+def is_transient_ws_failure(exc: BaseException) -> bool:
+    """Heuristic for transport/proxy flakes that are safe to re-attempt."""
+    message = str(exc or "").lower()
+    if not message:
+        return False
+    return any(marker in message for marker in _TRANSIENT_WS_FAILURE_MARKERS)
+
+
+def _classify_started_retryable(*, output_committed: bool, exc: BaseException) -> bool:
+    """After send, only retry when no committed output has been observed."""
+    if output_committed:
+        return False
+    return is_transient_ws_failure(exc)
+
+
 def run_generic_codex_ws_stream(
     *,
     api_kwargs: Mapping[str, Any],
@@ -333,11 +399,15 @@ def run_generic_codex_ws_stream(
     idle_timeout: float | None = None,
     recv_poll_timeout: float = DEFAULT_RECV_POLL_SECONDS,
     register_connection_abort: Callable[[Callable[[str], None]], None] | None = None,
+    max_attempts: int = DEFAULT_WS_MAX_ATTEMPTS,
 ) -> Any:
-    """Send one generic Responses request over WebSocket and collect its events.
+    """Send a generic Responses request over WebSocket and collect its events.
 
     ``collect_events`` owns all Responses event semantics; this module only
     converts the wire frames and enforces the no-replay boundary at ``send``.
+
+    Transport-level retries open a *new* WebSocket for each attempt and only
+    continue when the previous attempt was clean (no committed output).
     """
     del session_id  # Generic providers do not share a session header contract.
     normalized_transport = normalize_responses_transport(transport)
@@ -366,96 +436,148 @@ def run_generic_codex_ws_stream(
     if idle_limit <= 0:
         idle_limit = DEFAULT_IDLE_TIMEOUT_SECONDS
 
-    started = False
-    try:
-        url = resolve_responses_ws_url(base_url, responses_ws_url)
-        connection = _connect_websocket(
-            url,
-            headers=_build_headers(
-                api_kwargs=api_kwargs,
-                client=client,
-                api_key=api_key,
-                headers=headers,
-            ),
-            timeout=connect_timeout,
-        )
-        with connection as websocket:
-            def _abort(_reason: str) -> None:
-                close = getattr(websocket, "close", None)
-                if callable(close):
-                    close()
+    attempts = max(1, int(max_attempts or 1))
+    last_error: BaseException | None = None
 
-            if register_connection_abort is not None:
-                register_connection_abort(_abort)
+    for attempt in range(1, attempts + 1):
+        if interrupted is not None and interrupted():
+            raise InterruptedError("Agent interrupted before Responses WebSocket attempt")
 
-            wire_body = build_ws_wire_body(api_kwargs)
-            payload = json.dumps({"type": "response.create", **wire_body})
-            # Mark started at the send boundary: once send is invoked the frame
-            # may have left the process even if the call later raises.
-            started = True
-            websocket.send(payload)
+        started = False
+        output_committed = False
+        try:
+            url = resolve_responses_ws_url(base_url, responses_ws_url)
+            connection = _connect_websocket(
+                url,
+                headers=_build_headers(
+                    api_kwargs=api_kwargs,
+                    client=client,
+                    api_key=api_key,
+                    headers=headers,
+                ),
+                timeout=connect_timeout,
+            )
+            with connection as websocket:
+                def _abort(_reason: str) -> None:
+                    close = getattr(websocket, "close", None)
+                    if callable(close):
+                        close()
 
-            def _events():
-                last_event_at = time.monotonic()
-                while True:
-                    if interrupted is not None and interrupted():
-                        raise InterruptedError(
-                            "Agent interrupted during Responses WebSocket stream"
-                        )
-                    try:
-                        frame = _recv_frame(websocket, poll_timeout=poll_timeout)
-                    except TimeoutError:
-                        if time.monotonic() - last_event_at >= idle_limit:
-                            raise TimeoutError(
-                                f"Responses WebSocket stream idle for {idle_limit:g}s"
+                if register_connection_abort is not None:
+                    register_connection_abort(_abort)
+
+                wire_body = build_ws_wire_body(api_kwargs)
+                payload = json.dumps({"type": "response.create", **wire_body})
+                # Mark started at the send boundary: once send is invoked the frame
+                # may have left the process even if the call later raises.
+                started = True
+                websocket.send(payload)
+
+                def _events():
+                    nonlocal output_committed
+                    last_event_at = time.monotonic()
+                    while True:
+                        if interrupted is not None and interrupted():
+                            raise InterruptedError(
+                                "Agent interrupted during Responses WebSocket stream"
                             )
-                        continue
-                    except Exception as exc:
-                        # websockets raises TimeoutError subclasses in some versions;
-                        # also tolerate bare timeout-like messages from fakes.
-                        if type(exc).__name__ in {"TimeoutError", "TimeoutException"}:
+                        try:
+                            frame = _recv_frame(websocket, poll_timeout=poll_timeout)
+                        except TimeoutError:
                             if time.monotonic() - last_event_at >= idle_limit:
                                 raise TimeoutError(
                                     f"Responses WebSocket stream idle for {idle_limit:g}s"
-                                ) from exc
+                                )
                             continue
-                        raise
+                        except Exception as exc:
+                            # websockets raises TimeoutError subclasses in some versions;
+                            # also tolerate bare timeout-like messages from fakes.
+                            if type(exc).__name__ in {"TimeoutError", "TimeoutException"}:
+                                if time.monotonic() - last_event_at >= idle_limit:
+                                    raise TimeoutError(
+                                        f"Responses WebSocket stream idle for {idle_limit:g}s"
+                                    ) from exc
+                                continue
+                            raise
 
-                    last_event_at = time.monotonic()
-                    if isinstance(frame, bytes):
-                        frame = frame.decode("utf-8")
-                    event = json.loads(frame)
-                    if not isinstance(event, dict):
-                        continue
-                    event = _normalize_terminal_event(event)
-                    if event.get("type") == "error":
-                        raise GenericWsRejectedError(
-                            _server_error_message(event),
-                            status_code=_server_error_status(event),
-                            body=event,
-                        )
-                    yield _event_namespace(event)
-                    if event.get("type") in _TERMINAL_EVENT_TYPES:
-                        return
+                        last_event_at = time.monotonic()
+                        if isinstance(frame, bytes):
+                            frame = frame.decode("utf-8")
+                        event = json.loads(frame)
+                        if not isinstance(event, dict):
+                            continue
+                        event = _normalize_terminal_event(event)
+                        if event.get("type") == "error":
+                            raise GenericWsRejectedError(
+                                _server_error_message(event),
+                                status_code=_server_error_status(event),
+                                body=event,
+                                retryable=bool(
+                                    _server_error_status(event) in {408, 409, 425, 429}
+                                    or is_transient_ws_failure(
+                                        Exception(_server_error_message(event))
+                                    )
+                                ),
+                            )
+                        if is_output_committed_event(event):
+                            output_committed = True
+                        yield _event_namespace(event)
+                        if event.get("type") in _TERMINAL_EVENT_TYPES:
+                            return
 
-            return collect_events(_events(), None)
-    except (
-        GenericWsNotStartedError,
-        GenericWsStartedError,
-        GenericWsRejectedError,
-        InterruptedError,
-    ):
-        raise
-    except Exception as exc:
-        status_code = getattr(exc, "status_code", None)
-        if not isinstance(status_code, int):
-            status_code = None
-        if started:
-            raise GenericWsStartedError(
-                f"Responses WebSocket stream failed after request start: {exc}",
-                status_code=status_code,
-            ) from exc
-        raise GenericWsNotStartedError(
-            f"Responses WebSocket connection failed: {exc}",
-            status_code=status_code,
-        ) from exc
+                return collect_events(_events(), None)
+        except InterruptedError:
+            raise
+        except (
+            GenericWsNotStartedError,
+            GenericWsStartedError,
+            GenericWsRejectedError,
+        ) as exc:
+            last_error = exc
+            can_retry = bool(getattr(exc, "retryable", False)) and attempt < attempts
+            if can_retry:
+                logger.warning(
+                    "Generic Codex Responses WebSocket attempt %s/%s failed (%s); retrying: %s",
+                    attempt,
+                    attempts,
+                    type(exc).__name__,
+                    exc,
+                )
+                continue
+            raise
+        except Exception as exc:
+            status_code = getattr(exc, "status_code", None)
+            if not isinstance(status_code, int):
+                status_code = None
+            if started:
+                retryable = _classify_started_retryable(
+                    output_committed=output_committed,
+                    exc=exc,
+                )
+                wrapped: BaseException = GenericWsStartedError(
+                    f"Responses WebSocket stream failed after request start: {exc}",
+                    retryable=retryable,
+                    status_code=status_code,
+                )
+            else:
+                wrapped = GenericWsNotStartedError(
+                    f"Responses WebSocket connection failed: {exc}",
+                    status_code=status_code,
+                )
+            wrapped.__cause__ = exc
+            last_error = wrapped
+            can_retry = bool(getattr(wrapped, "retryable", False)) and attempt < attempts
+            if can_retry:
+                logger.warning(
+                    "Generic Codex Responses WebSocket attempt %s/%s failed (%s); retrying: %s",
+                    attempt,
+                    attempts,
+                    type(wrapped).__name__,
+                    wrapped,
+                )
+                continue
+            raise wrapped from exc
+
+    if last_error is not None:
+        raise last_error
+    raise GenericWsNotStartedError("Responses WebSocket transport failed with no attempts")

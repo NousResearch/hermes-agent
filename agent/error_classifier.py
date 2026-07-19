@@ -649,8 +649,11 @@ def classify_api_error(
     # ── 1. Provider-specific patterns (highest priority) ────────────
 
     # Generic custom-provider Responses WebSocket transport errors. Preserve
-    # their replay semantics: NotStarted may retry/fallback, Started must not
-    # be replayed, Rejected is a definitive server rejection.
+    # their replay semantics:
+    # - NotStarted may retry/fallback
+    # - Started is retryable only when the transport marked it so (no committed
+    #   output yet). Partial-output Started errors stay non-retryable.
+    # - Rejected follows its own status/retryable flags.
     if error_type in {
         "GenericWsNotStartedError",
         "GenericWsStartedError",
@@ -672,10 +675,11 @@ def classify_api_error(
                 retryable=bool(getattr(error, "retryable", False)),
                 should_fallback=True,
             )
-        # GenericWsStartedError: request may already be running; do not retry same call.
+        # GenericWsStartedError: honor transport-level retryable flag.
+        started_retryable = bool(getattr(error, "retryable", False))
         return _result(
-            FailoverReason.timeout,
-            retryable=False,
+            FailoverReason.timeout if started_retryable else FailoverReason.server_error,
+            retryable=started_retryable,
             should_fallback=True,
         )
 

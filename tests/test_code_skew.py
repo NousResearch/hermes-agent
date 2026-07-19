@@ -5,11 +5,10 @@ crash; these prove the guard that turns it into a clear "restart the gateway"
 message before a model switch can hit it.
 """
 
-import importlib
-import importlib.abc
-from importlib.machinery import ModuleSpec
+import ast
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -110,6 +109,40 @@ class TestBootstrapBytecodePurge:
 
         assert gateway_bootstrap.purge_stale_gateway_pycache_before_import() is True
         assert not stale_pyc.exists()
+
+    def test_every_supported_launcher_bootstraps_before_gateway_run_import(self):
+        project_root = Path(__file__).parents[1]
+        launchers = (
+            project_root / "cli.py",
+            project_root / "hermes_cli" / "gateway.py",
+            project_root / "scripts" / "hermes-gateway",
+        )
+
+        for launcher in launchers:
+            tree = ast.parse(launcher.read_text(encoding="utf-8"), filename=str(launcher))
+            bootstrap_imports = [
+                node.lineno
+                for node in ast.walk(tree)
+                if isinstance(node, ast.ImportFrom)
+                and node.module == "hermes_cli.gateway_bootstrap"
+            ]
+            purge_calls = [
+                node.lineno
+                for node in ast.walk(tree)
+                if isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id == "purge_stale_gateway_pycache_before_import"
+            ]
+            gateway_run_imports = [
+                node.lineno
+                for node in ast.walk(tree)
+                if isinstance(node, ast.ImportFrom) and node.module == "gateway.run"
+            ]
+
+            assert bootstrap_imports, f"{launcher} must import the pre-import bootstrap"
+            assert purge_calls, f"{launcher} must invoke the pre-import bootstrap"
+            assert gateway_run_imports, f"{launcher} must import gateway.run"
+            assert min(bootstrap_imports) < min(purge_calls) < min(gateway_run_imports)
     def test_guard_falls_back_to_manual_when_restart_fails(self, monkeypatch):
         """If request_restart returns False (e.g. already restarting), the
         guard falls back to the manual restart message."""
@@ -185,60 +218,15 @@ class TestPersistBootFingerprint:
         code_skew._persist_boot_fingerprint(None)
         assert not fp_file.exists()
 
-    def test_direct_module_path_bootstraps_before_gateway_run_import(self, monkeypatch, tmp_path):
-        """Package initialization is the pre-import boundary for ``-m``."""
-        marker = tmp_path / "bootstrap-ran"
-        import gateway
-        from hermes_cli import gateway_bootstrap
-
-        main_module = sys.modules["__main__"]
-        original_main_spec = main_module.__spec__
-        original_run = sys.modules.get("gateway.run")
-        missing = object()
-        original_package_run = gateway.__dict__.get("run", missing)
-        original_purge = gateway.__dict__.get(
-            "purge_stale_gateway_pycache_before_import", missing
-        )
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        monkeypatch.setattr(
-            gateway_bootstrap,
-            "purge_stale_gateway_pycache_before_import",
-            lambda: marker.write_text("ran", encoding="utf-8"),
+    def test_direct_module_execution_has_documented_cli_migration(self):
+        result = subprocess.run(
+            [sys.executable, "-m", "gateway.run"],
+            capture_output=True,
+            cwd=Path(__file__).parents[1],
+            text=True,
+            timeout=30,
         )
 
-        observed_import = []
-
-        class BootstrapProbe(importlib.abc.MetaPathFinder):
-            def find_spec(self, fullname, path=None, target=None):
-                if fullname == "gateway.run":
-                    assert marker.read_text(encoding="utf-8") == "ran"
-                    observed_import.append(fullname)
-                return None
-
-        probe = BootstrapProbe()
-        try:
-            main_module.__spec__ = ModuleSpec("gateway.run", loader=None)
-            importlib.reload(gateway)
-            assert marker.read_text(encoding="utf-8") == "ran"
-
-            sys.modules.pop("gateway.run", None)
-            gateway.__dict__.pop("run", None)
-            sys.meta_path.insert(0, probe)
-            importlib.import_module("gateway.run")
-            assert observed_import == ["gateway.run"]
-        finally:
-            if probe in sys.meta_path:
-                sys.meta_path.remove(probe)
-            main_module.__spec__ = original_main_spec
-            if original_run is None:
-                sys.modules.pop("gateway.run", None)
-            else:
-                sys.modules["gateway.run"] = original_run
-            if original_package_run is missing:
-                gateway.__dict__.pop("run", None)
-            else:
-                setattr(gateway, "run", original_package_run)
-            if original_purge is missing:
-                gateway.__dict__.pop("purge_stale_gateway_pycache_before_import", None)
-            else:
-                gateway.purge_stale_gateway_pycache_before_import = original_purge
+        assert result.returncode == 1
+        assert "Direct module execution is unsupported" in result.stderr
+        assert "hermes gateway run" in result.stderr

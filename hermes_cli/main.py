@@ -278,6 +278,7 @@ import stat
 import subprocess
 from pathlib import Path
 from typing import Optional
+from urllib.parse import urlsplit, urlunsplit
 
 
 from hermes_cli.subcommands._shared import add_accept_hooks_flag as _add_accept_hooks_flag
@@ -6802,12 +6803,23 @@ def _get_origin_url(git_cmd: list[str], cwd: Path) -> Optional[str]:
     return None
 
 
+def _strip_url_credentials(url: str) -> str:
+    """Remove URL userinfo without touching ``@`` outside the authority."""
+    if "://" not in url:
+        return url
+    parsed = urlsplit(url)
+    if "@" not in parsed.netloc:
+        return url
+    credential_free_netloc = parsed.netloc.rsplit("@", 1)[1]
+    return urlunsplit(parsed._replace(netloc=credential_free_netloc))
+
+
 def _is_fork(origin_url: Optional[str]) -> bool:
     """Check if the origin remote points to a fork (not the official repo)."""
     if not origin_url:
         return False
-    # Normalize URL for comparison (strip trailing .git if present)
-    normalized = origin_url.rstrip("/")
+    # Normalize URL for comparison (strip credentials and trailing .git).
+    normalized = _strip_url_credentials(origin_url).rstrip("/")
     if normalized.endswith(".git"):
         normalized = normalized[:-4]
     for official in OFFICIAL_REPO_URLS:
@@ -9916,7 +9928,8 @@ def _cmd_update_impl(args, gateway_mode: bool):
 
     if is_fork:
         print("⚠ Updating from fork:")
-        print(f"  {origin_url}")
+        safe_origin_url = _strip_url_credentials(origin_url) if origin_url else origin_url
+        print(f"  {safe_origin_url}")
         print()
 
     if use_zip_update:

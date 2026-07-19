@@ -192,7 +192,7 @@ class TestFlushAfterCompression:
             ]
 
     def test_abort_after_in_place_compaction_preserves_flush_baseline(self):
-        """An aborted retry must retain both compacted rows and new turns."""
+        """An aborted retry must survive flush, restart, and resume."""
         from agent.conversation_compression import (
             compress_context,
             conversation_history_after_compression,
@@ -232,7 +232,8 @@ class TestFlushAfterCompression:
                 return messages
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            db = SessionDB(db_path=Path(tmpdir) / "test.db")
+            db_path = Path(tmpdir) / "test.db"
+            db = SessionDB(db_path=db_path)
             agent = self._make_agent(db)
             agent.compression_in_place = True
             original = [
@@ -262,7 +263,9 @@ class TestFlushAfterCompression:
             )
             agent._flush_messages_to_session_db(returned, history)
 
-            assert [message["content"] for message in db.get_messages_as_conversation(
+            db.close()
+            resumed_db = SessionDB(db_path=db_path)
+            assert [message["content"] for message in resumed_db.get_messages_as_conversation(
                 agent.session_id
             )] == [
                 "[summary] earlier state",
@@ -270,6 +273,7 @@ class TestFlushAfterCompression:
                 "new request",
                 "new answer",
             ]
+            resumed_db.close()
 
     def test_rotation_child_session_flushes_full_compressed_transcript_with_markers(self):
         """Regression for #57491: live cached-agent markers must not block child flush."""

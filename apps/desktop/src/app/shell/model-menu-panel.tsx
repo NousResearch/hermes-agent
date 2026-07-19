@@ -66,6 +66,7 @@ interface ProviderGroup {
 export function ModelMenuPanel({ gateway, onSelectModel, requestGateway }: ModelMenuPanelProps) {
   const { t } = useI18n()
   const copy = t.shell.modelMenu
+  const effortCopy = t.shell.modelOptions
   const closeMenu = useContext(ModelMenuCloseContext)
   const [search, setSearch] = useState('')
   const [refreshing, setRefreshing] = useState(false)
@@ -265,7 +266,7 @@ export function ModelMenuPanel({ gateway, onSelectModel, requestGateway }: Model
 
                 const meta = [
                   fastControl.kind !== 'none' && fastControl.on ? copy.fast : null,
-                  (caps?.reasoning ?? true) ? reasoningEffortLabel(effEffort) || copy.medium : null
+                  (caps?.reasoning ?? true) ? reasoningEffortLabel(effEffort, effortCopy) || copy.medium : null
                 ]
                   .filter(Boolean)
                   .join(' ')

@@ -11,14 +11,21 @@ const REASONING_LABELS: Record<string, string> = {
   ultra: 'Ultra'
 }
 
-export function reasoningEffortLabel(effort: string): string {
+/** Map a reasoning effort value to a display label. When `labels` is provided
+ *  (e.g. the i18n `t.shell.modelOptions` catalog) it takes precedence over the
+ *  built-in English fallback map, so localized labels (Chinese "中"/"高"/"低")
+ *  are shown instead of the English "Med"/"High"/"Low". */
+export function reasoningEffortLabel(
+  effort: string,
+  labels?: Record<string, string>
+): string {
   const key = normalize(effort)
 
   if (!key) {
     return ''
   }
 
-  return REASONING_LABELS[key] ?? effort
+  return labels?.[key] ?? REASONING_LABELS[key] ?? effort
 }
 
 /** Which model/provider a picker should mark "current". With a live session the
@@ -102,7 +109,7 @@ export function displayModelName(model: string): string {
 /** Status bar trigger label — model name plus the live session state (effort/fast). */
 export function formatModelStatusLabel(
   model: string,
-  options?: { fastMode?: boolean; reasoningEffort?: string }
+  options?: { fastMode?: boolean; reasoningEffort?: string; effortLabels?: Record<string, string> }
 ): string {
   const name = displayModelName(model)
 
@@ -120,7 +127,8 @@ export function formatModelStatusLabel(
 
   // Always surface the effort (empty = Hermes default of medium) so the
   // current reasoning level is visible at a glance, not just when non-default.
-  parts.push(reasoningEffortLabel(options?.reasoningEffort ?? '') || 'Med')
+  // Pass the i18n labels through so localized catalogs (zh/"中") are respected.
+  parts.push(reasoningEffortLabel(options?.reasoningEffort ?? '', options?.effortLabels) || 'Med')
 
   return `${name} · ${parts.join(' ')}`
 }

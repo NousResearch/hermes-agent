@@ -42,6 +42,7 @@ export function ModelPill({
   model: ChatBarState['model']
 }) {
   const copy = useI18n().t.shell.statusbar
+  const modelLabels = useI18n().t.shell.modelOptions
   const currentModel = useStore($currentModel)
   const currentProvider = useStore($currentProvider)
   const fastMode = useStore($currentFastMode)
@@ -65,7 +66,7 @@ export function ModelPill({
   ) : (
     <>
       {currentModel.trim() ? (
-        <span className="truncate">{formatModelStatusLabel(currentModel, { fastMode, reasoningEffort })}</span>
+        <span className="truncate">{formatModelStatusLabel(currentModel, { fastMode, reasoningEffort, effortLabels: modelLabels })}</span>
       ) : (
         <GlyphSpinner className="opacity-50" spinner="braille" />
       )}

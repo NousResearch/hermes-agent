@@ -2823,6 +2823,7 @@ def test_dump_api_request_debug_uses_responses_url(monkeypatch, tmp_path):
 
     payload = json.loads(dump_file.read_text())
     assert payload["request"]["url"] == "http://127.0.0.1:9208/v1/responses"
+    assert payload["request"]["body_format"] == "openai_sdk_create_kwargs"
 
 
 def test_dump_api_request_debug_uses_chat_completions_url(monkeypatch, tmp_path):
@@ -2848,6 +2849,56 @@ def test_dump_api_request_debug_uses_chat_completions_url(monkeypatch, tmp_path)
     payload = json.loads(dump_file.read_text())
     assert payload["request"]["url"] == "http://127.0.0.1:9208/v1/chat/completions"
     assert payload["request"]["body_format"] == "openai_sdk_create_kwargs"
+
+
+@pytest.mark.parametrize(
+    ("api_mode", "provider", "base_url", "expected_format"),
+    [
+        (
+            "anthropic_messages",
+            "anthropic",
+            "https://api.anthropic.com/v1",
+            "anthropic_sdk_create_kwargs",
+        ),
+        (
+            "bedrock_converse",
+            "bedrock",
+            "https://bedrock-runtime.us-east-1.amazonaws.com",
+            "bedrock_converse_kwargs",
+        ),
+        (
+            "chat_completions",
+            "gemini",
+            "https://generativelanguage.googleapis.com/v1beta",
+            "gemini_native_create_kwargs",
+        ),
+    ],
+)
+def test_dump_api_request_debug_labels_non_openai_serializers(
+    monkeypatch,
+    tmp_path,
+    api_mode,
+    provider,
+    base_url,
+    expected_format,
+):
+    """Request dumps must describe the serializer that consumes the kwargs."""
+    import json
+
+    agent = _build_agent(monkeypatch)
+    agent.api_mode = api_mode
+    agent.provider = provider
+    agent.base_url = base_url
+    agent.logs_dir = tmp_path
+
+    dump_file = agent._dump_api_request_debug(
+        {"model": agent.model, "messages": []},
+        reason="preflight",
+    )
+
+    payload = json.loads(dump_file.read_text())
+    assert payload["request"]["body_format"] == expected_format
+    assert payload["request"]["body_format"] != "openai_sdk_create_kwargs"
 
 
 def test_dump_api_request_debug_redacts_request_and_error_secrets(monkeypatch, tmp_path, capsys):

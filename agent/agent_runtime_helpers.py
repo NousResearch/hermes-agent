@@ -1515,6 +1515,32 @@ def extract_reasoning(agent, assistant_message) -> Optional[str]:
 
 
 
+def _request_dump_body_format(agent) -> str:
+    """Describe the serializer that consumes a debug dump's request body."""
+    api_mode = str(getattr(agent, "api_mode", "") or "")
+    provider = str(getattr(agent, "provider", "") or "").strip().lower()
+    base_url = str(getattr(agent, "base_url", "") or "")
+
+    if api_mode == "anthropic_messages":
+        return "anthropic_sdk_create_kwargs"
+    if api_mode == "bedrock_converse":
+        return "bedrock_converse_kwargs"
+
+    if provider == "gemini":
+        from agent.gemini_native_adapter import is_native_gemini_base_url
+
+        if is_native_gemini_base_url(base_url):
+            return "gemini_native_create_kwargs"
+    if provider == "moa":
+        return "moa_client_create_kwargs"
+    if provider == "copilot-acp" or base_url.startswith("acp://"):
+        return "copilot_acp_create_kwargs"
+
+    if api_mode in {"chat_completions", "codex_responses"}:
+        return "openai_sdk_create_kwargs"
+    return "transport_create_kwargs"
+
+
 def dump_api_request_debug(
     agent,
     api_kwargs: Dict[str, Any],
@@ -1547,7 +1573,7 @@ def dump_api_request_debug(
             "request": {
                 "method": "POST",
                 "url": f"{agent.base_url.rstrip('/')}{'/responses' if agent.api_mode == 'codex_responses' else '/chat/completions'}",
-                "body_format": "openai_sdk_create_kwargs",
+                "body_format": _request_dump_body_format(agent),
                 "headers": {
                     "Authorization": f"Bearer {agent._mask_api_key_for_logs(api_key)}",
                     "Content-Type": "application/json",

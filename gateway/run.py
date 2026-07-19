@@ -16399,6 +16399,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     # Each entry is a tuple of (section, key) read from the raw config dict.
     # Add more here as new baked-at-construction config settings are added.
     _CACHE_BUSTING_CONFIG_KEYS: tuple = (
+        # Atomic profile activation increments this only after the complete
+        # model/provider/api_mode tuple lands. Existing sessions therefore
+        # rebuild on the next safe turn; in-flight calls retain their agent.
+        ("model", "routing_generation"),
         ("model", "context_length"),
         ("model", "max_tokens"),
         ("compression", "enabled"),

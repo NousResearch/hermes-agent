@@ -1088,6 +1088,93 @@ def test_run_conversation_codex_plain_text(monkeypatch):
     assert result["messages"][-1]["content"] == "OK"
 
 
+def test_codex_raw_stream_usage_updates_agent_and_session_accounting(monkeypatch, tmp_path):
+    """Raw Responses events must retain exact provider usage through persistence."""
+    from agent.codex_runtime import _consume_codex_event_stream
+    from hermes_state import SessionDB
+
+    response = _consume_codex_event_stream(
+        _FakeCreateStream([
+            SimpleNamespace(
+                type="response.output_item.done",
+                item=SimpleNamespace(
+                    type="message",
+                    role="assistant",
+                    status="completed",
+                    content=[SimpleNamespace(type="output_text", text="OK")],
+                ),
+            ),
+            {
+                "type": "response.completed",
+                "response": {
+                    "id": "resp_usage",
+                    "status": "completed",
+                    "usage": {
+                        "input_tokens": 26,
+                        "input_tokens_details": {
+                            "cached_tokens": 5,
+                            "cache_write_tokens": 2,
+                        },
+                        "output_tokens": 9,
+                        "output_tokens_details": {"reasoning_tokens": 3},
+                        "total_tokens": 35,
+                    },
+                },
+            },
+        ]),
+        model="gpt-5.6-sol",
+    )
+
+    agent = _build_agent(monkeypatch)
+    agent.model = "gpt-5.6-sol"
+    agent.provider = "openai-codex"
+    agent.api_mode = "codex_responses"
+    agent.session_id = "codex-usage"
+    db = SessionDB(tmp_path / "state.db")
+    db.create_session(agent.session_id, "cli", model=agent.model)
+    agent._session_db = db
+    agent._session_db_created = True
+    monkeypatch.setattr(agent, "_interruptible_api_call", lambda api_kwargs: response)
+
+    result = agent.run_conversation("Say OK")
+
+    assert result["completed"] is True
+    assert agent.session_input_tokens == 19
+    assert agent.session_cache_read_tokens == 5
+    assert agent.session_cache_write_tokens == 2
+    assert agent.session_output_tokens == 9
+    assert agent.session_reasoning_tokens == 3
+    assert agent.session_api_calls == 1
+
+    session = db._conn.execute(
+        "SELECT * FROM sessions WHERE id = ?", (agent.session_id,)
+    ).fetchone()
+    assert session["input_tokens"] == 19
+    assert session["cache_read_tokens"] == 5
+    assert session["cache_write_tokens"] == 2
+    assert session["output_tokens"] == 9
+    assert session["reasoning_tokens"] == 3
+    assert session["api_call_count"] == 1
+    assert session["model"] == "gpt-5.6-sol"
+    assert session["billing_provider"] == "openai-codex"
+    assert session["billing_mode"] == "subscription_included"
+
+    usage = db._conn.execute(
+        "SELECT * FROM session_model_usage WHERE session_id = ?",
+        (agent.session_id,),
+    ).fetchone()
+    assert usage is not None
+    assert usage["input_tokens"] == 19
+    assert usage["cache_read_tokens"] == 5
+    assert usage["cache_write_tokens"] == 2
+    assert usage["output_tokens"] == 9
+    assert usage["reasoning_tokens"] == 3
+    assert usage["api_call_count"] == 1
+    assert usage["model"] == "gpt-5.6-sol"
+    assert usage["billing_provider"] == "openai-codex"
+    assert usage["billing_mode"] == "subscription_included"
+
+
 def test_copilot_final_preflight_sanitizes_both_middleware_layers(monkeypatch):
     """The dispatch chokepoint must sanitize after every mutable layer."""
     agent = _build_copilot_agent(monkeypatch)

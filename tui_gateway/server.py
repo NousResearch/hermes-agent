@@ -3320,6 +3320,7 @@ def _apply_model_switch(
                 api_key=result.api_key,
                 base_url=result.base_url,
                 api_mode=result.api_mode,
+                claude_oauth_proxy=result.claude_oauth_proxy,
             )
         except Exception as exc:
             # The in-place swap rolled the agent back to the old working

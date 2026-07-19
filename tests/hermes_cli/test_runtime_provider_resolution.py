@@ -1063,6 +1063,7 @@ def test_named_custom_provider_same_url_uses_matching_key_env_and_api_mode(monke
                     "base_url": "https://gateway.example.com",
                     "key_env": "CLAUDE_KEY",
                     "api_mode": "anthropic_messages",
+                    "claude_oauth_proxy": True,
                     "model": "claude-opus-4-8",
                 },
             ],
@@ -1084,6 +1085,7 @@ def test_named_custom_provider_same_url_uses_matching_key_env_and_api_mode(monke
     assert resolved["base_url"] == "https://gateway.example.com"
     assert resolved["api_key"] == "claude-secret"
     assert resolved["api_mode"] == "anthropic_messages"
+    assert resolved["claude_oauth_proxy"] is True
     assert resolved["requested_provider"] == "custom:claude"
     assert resolved["model"] == "claude-opus-4-8"
 

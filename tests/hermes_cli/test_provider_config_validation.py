@@ -38,6 +38,32 @@ class TestNormalizeCustomProviderEntry:
         assert result["base_url"] == "https://api.example.com/v1"
         assert result["api_key"] == "sk-test-key"
 
+    def test_claude_oauth_proxy_opt_in_is_preserved(self, caplog):
+        """Claude subscription proxies can explicitly request OAuth wire compatibility."""
+        entry = {
+            "base_url": "https://claude-proxy.example.com",
+            "api_mode": "anthropic_messages",
+            "claude_oauth_proxy": True,
+        }
+        with caplog.at_level(logging.WARNING):
+            result = _normalize_custom_provider_entry(entry, provider_key="claude-proxy")
+
+        assert result is not None
+        assert result["claude_oauth_proxy"] is True
+        assert not any("unknown config keys" in r.message.lower() for r in caplog.records)
+
+    @pytest.mark.parametrize("value", [False, "true", 1, None])
+    def test_claude_oauth_proxy_requires_literal_true(self, value):
+        entry = {
+            "base_url": "https://claude-proxy.example.com",
+            "claude_oauth_proxy": value,
+        }
+
+        result = _normalize_custom_provider_entry(entry, provider_key="claude-proxy")
+
+        assert result is not None
+        assert result.get("claude_oauth_proxy", False) is False
+
     def test_camel_case_api_key_mapped(self):
         """camelCase apiKey should be auto-mapped to api_key."""
         entry = {

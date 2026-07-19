@@ -1924,7 +1924,10 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
     return client
 
 
-def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mode=''):
+def switch_model(
+    agent, new_model, new_provider, api_key='', base_url='', api_mode='',
+    claude_oauth_proxy=False,
+):
     """Switch the model/provider in-place for a live agent.
 
     Called by the /model command handlers (CLI and gateway) after
@@ -2114,7 +2117,11 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
                 effective_key, agent._anthropic_base_url,
                 timeout=get_provider_request_timeout(agent.provider, agent.model),
             )
-            agent._is_anthropic_oauth = _is_oauth_token(effective_key) if (_is_native_anthropic and isinstance(effective_key, str)) else False
+            agent._is_anthropic_oauth = bool(claude_oauth_proxy) or (
+                _is_oauth_token(effective_key)
+                if (_is_native_anthropic and isinstance(effective_key, str))
+                else False
+            )
             agent.client = None
             agent._client_kwargs = {}
         else:

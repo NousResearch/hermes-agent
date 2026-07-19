@@ -615,6 +615,12 @@ def _lift_extra_headers(entry: Dict[str, Any], result: Dict[str, Any]) -> None:
         result["extra_headers"] = extra_headers
 
 
+def _lift_claude_oauth_proxy(entry: Dict[str, Any], result: Dict[str, Any]) -> None:
+    """Preserve the explicit Claude subscription-proxy compatibility opt-in."""
+    if entry.get("claude_oauth_proxy") is True:
+        result["claude_oauth_proxy"] = True
+
+
 def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, Any]]:
     requested_norm = _normalize_custom_provider_name(requested_provider or "")
     if not requested_norm:
@@ -685,6 +691,7 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
                     if isinstance(extra_body, dict):
                         result["extra_body"] = dict(extra_body)
                     _lift_extra_headers(entry, result)
+                    _lift_claude_oauth_proxy(entry, result)
                     # The v11→v12 migration writes the API mode under the new
                     # ``transport`` field, but hand-edited configs may still
                     # use the legacy ``api_mode`` spelling.  Accept both —
@@ -715,6 +722,7 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
                         if isinstance(extra_body, dict):
                             result["extra_body"] = dict(extra_body)
                         _lift_extra_headers(entry, result)
+                        _lift_claude_oauth_proxy(entry, result)
                         api_mode = _parse_api_mode(entry.get("api_mode") or entry.get("transport"))
                         if api_mode:
                             result["api_mode"] = api_mode
@@ -763,6 +771,7 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
         if isinstance(extra_body, dict):
             result["extra_body"] = dict(extra_body)
         _lift_extra_headers(entry, result)
+        _lift_claude_oauth_proxy(entry, result)
         api_mode = _parse_api_mode(entry.get("api_mode"))
         if api_mode:
             result["api_mode"] = api_mode
@@ -992,6 +1001,8 @@ def _resolve_named_custom_runtime(
             pool_result["model"] = model_name
         if isinstance(custom_provider.get("max_output_tokens"), int):
             pool_result["max_output_tokens"] = custom_provider["max_output_tokens"]
+        if custom_provider.get("claude_oauth_proxy") is True:
+            pool_result["claude_oauth_proxy"] = True
         request_overrides = _custom_provider_request_overrides(custom_provider)
         if request_overrides:
             pool_result["request_overrides"] = {
@@ -1036,6 +1047,8 @@ def _resolve_named_custom_runtime(
         result["model"] = custom_provider["model"]
     if isinstance(custom_provider.get("max_output_tokens"), int):
         result["max_output_tokens"] = custom_provider["max_output_tokens"]
+    if custom_provider.get("claude_oauth_proxy") is True:
+        result["claude_oauth_proxy"] = True
     # Per-provider extra HTTP headers (proxies, gateways, custom auth).
     # Values may carry credentials — NEVER log them.
     if custom_provider.get("extra_headers"):

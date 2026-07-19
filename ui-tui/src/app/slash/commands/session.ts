@@ -17,6 +17,7 @@ import type { PanelSection } from '../../../types.js'
 import { DEFAULT_INDICATOR_STYLE, INDICATOR_STYLES, type IndicatorStyle } from '../../interfaces.js'
 import { patchOverlayState } from '../../overlayStore.js'
 import { patchUiState } from '../../uiStore.js'
+import { writeActiveSessionFile } from '../../useSessionLifecycle.js'
 import type { SlashCommand } from '../types.js'
 
 const TUI_SESSION_MODEL_RE = new RegExp(`(?:^|\\s)${TUI_SESSION_MODEL_FLAG}(?:\\s|$)`)
@@ -246,11 +247,12 @@ export const sessionCommands: SlashCommand[] = [
 
       ctx.gateway.rpc<SessionBranchResponse>('session.branch', { name: arg, session_id: ctx.sid }).then(
         ctx.guarded<SessionBranchResponse>(r => {
-          if (!r.session_id) {
+          if (!r.session_id || !r.stored_session_id) {
             return
           }
 
           void ctx.session.closeSession(prevSid)
+          writeActiveSessionFile(r.stored_session_id)
           patchUiState({ sid: r.session_id })
           ctx.session.setSessionStartedAt(Date.now())
           ctx.transcript.sys(`branched → ${r.title ?? ''}`)

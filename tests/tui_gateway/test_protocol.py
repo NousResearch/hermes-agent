@@ -1212,6 +1212,7 @@ def test_session_branch_persists_branched_from_marker(server, monkeypatch):
     assert len(create_calls) == 1
     new_key, kwargs = create_calls[0]
     assert new_key == "20260101_000001_child0"
+    assert resp["result"]["stored_session_id"] == new_key
     assert kwargs["parent_session_id"] == parent_key
     # The marker — without it the branch is invisible in /resume and /sessions.
     assert kwargs["model_config"] == {"_branched_from": parent_key}

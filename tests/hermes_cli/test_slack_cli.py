@@ -37,6 +37,18 @@ def _run_console_entrypoint(*argv: str) -> subprocess.CompletedProcess[str]:
     )
 
 
+def test_slack_dispatcher_propagates_manifest_failure(monkeypatch):
+    from hermes_cli import main as main_module
+    from hermes_cli import slack_cli
+
+    monkeypatch.setattr(slack_cli, "slack_manifest_command", lambda _args: 2)
+
+    with pytest.raises(SystemExit) as exc_info:
+        main_module.cmd_slack(argparse.Namespace(slack_command="manifest"))
+
+    assert exc_info.value.code == 2
+
+
 class TestSlackManifestConsoleExitStatus:
     """The packaged CLI must expose manifest validation failures to shells."""
 

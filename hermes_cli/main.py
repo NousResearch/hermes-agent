@@ -4345,7 +4345,10 @@ def cmd_slack(args):
     if sub == "manifest":
         from hermes_cli.slack_cli import slack_manifest_command
 
-        return slack_manifest_command(args)
+        status = slack_manifest_command(args)
+        if status:
+            raise SystemExit(status)
+        return status
 
     print(f"Unknown slack subcommand: {sub}", file=sys.stderr)
     return 1
@@ -15177,9 +15180,7 @@ def main():
 
     # Execute the command
     if hasattr(args, "func"):
-        result = args.func(args)
-        if isinstance(result, int):
-            return result
+        args.func(args)
     else:
         parser.print_help()
 

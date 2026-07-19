@@ -2101,19 +2101,48 @@ except Exception:
         # throws even when the imports succeed.  $LASTEXITCODE is the
         # reliable signal (it's 0 iff the python invocation exited 0,
         # regardless of what was written to stderr).
+        #
+        # Probe the exact managed venv\Scripts\python.exe in a bounded
+        # retry loop so short-lived transient failures (file locks during
+        # concurrent install, antivirus scanning, etc.) can clear before
+        # the gate aborts.  Capture the combined stdout+stderr so the
+        # final error message includes the actual Python traceback rather
+        # than silently replacing it with a wrong-venv assertion (#67637).
+        $maxRetries = 3
+        $importExitCode = 1
+        $importOutput = ""
+        $importAttempt = 0
         $prevEAP = $ErrorActionPreference
         $ErrorActionPreference = "Continue"
-        & $venvPython -c "import dotenv, openai, rich, prompt_toolkit" 2>&1 | Out-Null
-        $importExitCode = $LASTEXITCODE
+        while ($importAttempt -lt $maxRetries -and $importExitCode -ne 0) {
+            $importAttempt++
+            $importOutput = & $venvPython -c "import dotenv, openai, rich, prompt_toolkit" 2>&1 | Out-String
+            $importExitCode = $LASTEXITCODE
+            if ($importExitCode -ne 0 -and $importAttempt -lt $maxRetries) {
+                Write-Warn "Baseline import attempt $importAttempt/$maxRetries failed (exit $importExitCode); retrying..."
+                Start-Sleep -Milliseconds 800
+            }
+        }
         $ErrorActionPreference = $prevEAP
         if ($importExitCode -ne 0) {
             $sibling = "$InstallDir\.venv"
-            $hint = if (Test-Path $sibling) {
-                "Detected sibling .venv\ at $sibling -- uv synced there instead of venv\. Recover with: cd '$InstallDir'; Remove-Item -Recurse -Force venv; Move-Item .venv venv"
+            $siblingPresent = Test-Path $sibling
+            $diagnostic = @(
+                "",
+                "Python interpreter: $venvPython",
+                "Modules probed: dotenv, openai, rich, prompt_toolkit",
+                "Exit code: $importExitCode (after $importAttempt attempt(s))",
+                "Working directory: $InstallDir",
+                "Sibling .venv\ present: $siblingPresent",
+                "Last import output (traceback):",
+                "$importOutput"
+            ) -join "`n"
+            if ($siblingPresent) {
+                $diagnostic += "`nDetected sibling .venv\ at $sibling -- uv synced there instead of venv\. Recover with: cd '$InstallDir'; Remove-Item -Recurse -Force venv; Move-Item .venv venv"
             } else {
-                "Recover with: cd '$InstallDir'; `$env:UV_PROJECT_ENVIRONMENT='$InstallDir\venv'; uv sync --extra all --locked"
+                $diagnostic += "`nRecover with: cd '$InstallDir'; `$env:UV_PROJECT_ENVIRONMENT='$InstallDir\venv'; uv sync --extra all --locked"
             }
-            throw "Baseline imports failed in $InstallDir\venv (dotenv/openai/rich/prompt_toolkit). The install completed but dependencies are not in the venv. $hint"
+            throw "Baseline imports failed in $InstallDir\venv (dotenv/openai/rich/prompt_toolkit).$diagnostic"
         }
         Write-Success "Baseline imports verified in venv"
     }
@@ -2175,17 +2204,22 @@ print(','.join(scripts))
         # even when fastapi/uvicorn are actually installed.
         $prevEAP = $ErrorActionPreference
         $ErrorActionPreference = "Continue"
+        $webImportOutput = ""
         try {
-            & $pythonExe -c "import fastapi, uvicorn" 2>&1 | Out-Null
+            $webImportOutput = & $pythonExe -c "import fastapi, uvicorn" 2>&1 | Out-String
             if ($LASTEXITCODE -eq 0) { $webOk = $true }
         } catch { }
+        $webCompileOutput = ""
         try {
-            & $pythonExe -m py_compile "$InstallDir\hermes_cli\web_server.py" 2>&1 | Out-Null
+            $webCompileOutput = & $pythonExe -m py_compile "$InstallDir\hermes_cli\web_server.py" 2>&1 | Out-String
             if ($LASTEXITCODE -eq 0) { $webServerSyntaxOk = $true }
         } catch { }
         $ErrorActionPreference = $prevEAP
         if (-not $webOk) {
             Write-Warn "fastapi/uvicorn not importable -- `hermes dashboard` will not work."
+            if ($webImportOutput) {
+                Write-Info "Import output: $($webImportOutput.Trim())"
+            }
             Write-Info "Attempting targeted install of [web] extra as last resort..."
             & $UvCmd pip install -e ".[web]"
             if ($LASTEXITCODE -eq 0) {
@@ -2195,7 +2229,11 @@ print(','.join(scripts))
             }
         }
         if (-not $webServerSyntaxOk) {
-            throw "dashboard backend source failed syntax check: hermes_cli/web_server.py"
+            $diag = "dashboard backend source failed syntax check: hermes_cli/web_server.py"
+            if ($webCompileOutput) {
+                $diag += "`nSyntax check output: $($webCompileOutput.Trim())"
+            }
+            throw $diag
         }
     }
     

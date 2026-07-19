@@ -279,7 +279,23 @@ function AssigneeMenu({
 // Mirrors the review pane's commit-message field: one row tall to start
 // (button-height), CSS field-sizing grows it with content, button hugs the
 // bottom edge as it grows.
-function CommentComposer({ onSubmit, pending }: { onSubmit: (body: string) => void; pending: boolean }) {
+//
+// On a RUNNING task the worker polls its comment thread and folds new notes
+// into the live turn (OUT-OF-BAND steer), so a plain note reaches the agent
+// mid-run within a few seconds — no block/unblock dance. `onRequeue` is the
+// heavier option: post the note AND reclaim so the task restarts from scratch
+// with the note in context (use when the current run has gone off the rails).
+function CommentComposer({
+  onRequeue,
+  onSubmit,
+  pending,
+  running
+}: {
+  onRequeue?: (body: string) => void
+  onSubmit: (body: string) => void
+  pending: boolean
+  running?: boolean
+}) {
   const [body, setBody] = useState('')
 
   const submit = () => {
@@ -291,31 +307,53 @@ function CommentComposer({ onSubmit, pending }: { onSubmit: (body: string) => vo
     }
   }
 
+  const requeue = () => {
+    const trimmed = body.trim()
+
+    if (trimmed && !pending && onRequeue) {
+      onRequeue(trimmed)
+      setBody('')
+    }
+  }
+
   return (
-    <div className="relative">
-      <Textarea
-        className="field-sizing-content max-h-40 min-h-0 resize-none pr-[5rem]"
-        onChange={event => setBody(event.target.value)}
-        onKeyDown={event => {
-          if (event.key === 'Enter' && !event.shiftKey) {
-            event.preventDefault()
-            submit()
-          }
-        }}
-        placeholder="Add a comment…"
-        rows={1}
-        size="sm"
-        value={body}
-      />
-      <Button
-        className="absolute top-1 right-1"
-        disabled={!body.trim() || pending}
-        onClick={submit}
-        size="xs"
-        variant="secondary"
-      >
-        Comment
-      </Button>
+    <div className="flex flex-col gap-1.5">
+      <div className="relative">
+        <Textarea
+          className={cn('field-sizing-content max-h-40 min-h-0 resize-none', running ? 'pr-[3.5rem]' : 'pr-[5rem]')}
+          onChange={event => setBody(event.target.value)}
+          onKeyDown={event => {
+            if (event.key === 'Enter' && !event.shiftKey) {
+              event.preventDefault()
+              submit()
+            }
+          }}
+          placeholder={running ? 'Message the running worker…' : 'Add a comment…'}
+          rows={1}
+          size="sm"
+          value={body}
+        />
+        <Button
+          className="absolute top-1 right-1"
+          disabled={!body.trim() || pending}
+          onClick={submit}
+          size="xs"
+          variant="secondary"
+        >
+          {running ? 'Send' : 'Comment'}
+        </Button>
+      </div>
+      {running && onRequeue && (
+        <div className="flex items-center justify-between gap-2">
+          <span className="text-[0.625rem] leading-tight text-(--ui-text-quaternary)">
+            Delivered to the running worker within a few seconds.
+          </span>
+          <Button className="shrink-0" disabled={!body.trim() || pending} onClick={requeue} size="xs" variant="outline">
+            <Codicon name="debug-restart" size="0.7rem" />
+            Requeue with note
+          </Button>
+        </div>
+      )}
     </div>
   )
 }
@@ -434,7 +472,8 @@ function AttachmentsSection({
 // Rough effort estimate via the auxiliary (auto-routed) model. Tokens +
 // complexity, never dollars — providers don't report cost reliably. Gated
 // behind an explicit click + disclaimer since it makes a model call. The
-// control keeps a stable footprint (spinner swaps in place) so nothing jumps.
+// control keeps a stable footprint (spinner swaps in place) so there's no
+// layout jump when it runs.
 function EstimateSection({ id }: { id: string }) {
   const [result, setResult] = useState<null | TaskEstimate>(null)
 
@@ -585,6 +624,21 @@ export function TaskDrawer({
     mutationFn: (body: string) => addComment(id!, body),
     onError: err => host.notify({ kind: 'error', message: errText(err) }),
     onSuccess: invalidate
+  })
+
+  // "Note & requeue" for a running task: post the note, then reclaim so the
+  // dispatcher re-runs it with the note in the worker's context — the one-click
+  // replacement for the block → comment → unblock dance.
+  const requeueMut = useMutation({
+    mutationFn: async (body: string) => {
+      await addComment(id!, body)
+      await reclaimTask(id!)
+    },
+    onError: err => host.notify({ kind: 'error', message: errText(err) }),
+    onSuccess: () => {
+      host.notify({ kind: 'info', message: 'Note posted — worker requeued' })
+      invalidate()
+    }
   })
 
   const uploadMut = useMutation({
@@ -776,7 +830,22 @@ export function TaskDrawer({
               </Section>
             )}
 
-            <Section label={`Comments · ${detail.comments.length}`}>
+            <Section
+              action={
+                <Tip
+                  label={
+                    running
+                      ? 'This task is running. Your note is folded into the worker’s current turn within a few seconds — no block/unblock dance. “Requeue with note” instead restarts the task from scratch with your note in context.'
+                      : 'Comments are added to the task thread. When a worker picks the task up it reads them as part of its context.'
+                  }
+                >
+                  <span className="grid size-5 place-items-center rounded text-(--ui-text-quaternary) hover:text-(--ui-text-secondary)">
+                    <Codicon name="question" size="0.8rem" />
+                  </span>
+                </Tip>
+              }
+              label={`Comments · ${detail.comments.length}`}
+            >
               {detail.comments.length > 0 && (
                 <ul className="flex flex-col gap-2">
                   {detail.comments.map(comment => (
@@ -790,7 +859,12 @@ export function TaskDrawer({
                   ))}
                 </ul>
               )}
-              <CommentComposer onSubmit={body => commentMut.mutate(body)} pending={commentMut.isPending} />
+              <CommentComposer
+                onRequeue={body => requeueMut.mutate(body)}
+                onSubmit={body => commentMut.mutate(body)}
+                pending={commentMut.isPending || requeueMut.isPending}
+                running={running}
+              />
             </Section>
 
             {detail.events.length > 0 && (

@@ -3580,6 +3580,33 @@ def list_comments(conn: sqlite3.Connection, task_id: str) -> list[Comment]:
     ]
 
 
+def list_comments_after(
+    conn: sqlite3.Connection, task_id: str, *, after_id: int = 0
+) -> list[Comment]:
+    """Return comments on ``task_id`` with ``id > after_id`` (ascending).
+
+    Keyed on the monotonic rowid rather than ``created_at`` so a same-second
+    burst can't be skipped. Used by the live worker bridge to fold new
+    operator notes into a running task without a restart (see
+    ``tools.kanban_tools.inject_new_comments_from_env``).
+    """
+    rows = conn.execute(
+        "SELECT id, task_id, author, body, created_at FROM task_comments "
+        "WHERE task_id = ? AND id > ? ORDER BY id ASC",
+        (task_id, int(after_id)),
+    ).fetchall()
+    return [
+        Comment(
+            id=r["id"],
+            task_id=r["task_id"],
+            author=r["author"],
+            body=r["body"],
+            created_at=r["created_at"],
+        )
+        for r in rows
+    ]
+
+
 # ---------------------------------------------------------------------------
 # Attachments
 # ---------------------------------------------------------------------------

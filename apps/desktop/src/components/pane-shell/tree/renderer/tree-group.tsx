@@ -449,6 +449,13 @@ export function TreeGroup({
                     role="tab"
                     style={{ cursor: 'grab' }}
                   >
+                    {chrome.accent ? (
+                      <span
+                        aria-hidden="true"
+                        className="ml-2 -mr-1 size-1 shrink-0 rounded-full"
+                        style={{ backgroundColor: chrome.accent }}
+                      />
+                    ) : null}
                     <PaneTabLabel>{title}</PaneTabLabel>
                   </PaneTab>
                 )

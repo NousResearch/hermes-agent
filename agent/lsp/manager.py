@@ -604,6 +604,38 @@ class LSPService:
             "disabled_servers": sorted(self._disabled_servers),
         }
 
+    def reap_idle(self) -> int:
+        """Kill and remove LSP clients idle longer than ``_idle_timeout``.
+
+        Returns the number of clients reaped. Call this periodically
+        (e.g. from the cron scheduler or gateway health loop) to prevent
+        memory leaks from accumulating gopls, pylsp, tsserver, etc.
+        processes inside the gateway cgroup.
+        """
+        now = time.time()
+        to_reap: List[Tuple[str, str]] = []
+        with self._state_lock:
+            for key, last in self._last_used.items():
+                if now - last > self._idle_timeout:
+                    to_reap.append(key)
+        reaped = 0
+        for key in to_reap:
+            client = self._clients.get(key)
+            if client is not None:
+                try:
+                    self._loop.run(client.shutdown())
+                except Exception:
+                    pass
+                reaped += 1
+            with self._state_lock:
+                self._clients.pop(key, None)
+                self._last_used.pop(key, None)
+                self._spawning.pop(key, None)
+                self._broken.discard(key)
+        if reaped:
+            logger.info("LSP idle reaper: killed %d idle client(s) (timeout=%ds)", reaped, self._idle_timeout)
+        return reaped
+
 
 def _diag_key(d: Dict[str, Any]) -> str:
     """Content equality key used for cross-edit delta filtering.

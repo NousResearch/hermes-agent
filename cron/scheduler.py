@@ -3559,6 +3559,24 @@ def _notify_provider_jobs_changed() -> None:
         logger.debug("on_jobs_changed notify failed: %s", e)
 
 
+def _reap_idle_lsp() -> None:
+    """Reap idle LSP server processes (pylsp, gopls, tsserver, etc.).
+
+    Called at the start of every cron tick to prevent leaked LSP server
+    processes from accumulating in the gateway cgroup and triggering
+    systemd MemoryMax SIGKILLs.
+    """
+    try:
+        from agent.lsp import get_service
+        svc = get_service()
+        if svc is not None and svc.is_active():
+            reaped = svc.reap_idle()
+            if reaped:
+                logger.info("Cron tick: reaped %d idle LSP server(s)", reaped)
+    except Exception:
+        pass
+
+
 def tick(verbose: bool = True, adapters=None, loop=None, sync: bool = True) -> int:
     """
     Check and run all due jobs.
@@ -3592,6 +3610,10 @@ def tick(verbose: bool = True, adapters=None, loop=None, sync: bool = True) -> i
         return 0
 
     try:
+        # Reap idle LSP servers before dispatching jobs to prevent
+        # cgroup memory accumulation from leaked pylsp/gopls/tsserver processes.
+        _reap_idle_lsp()
+
         due_jobs = get_due_jobs()
 
         if verbose and not due_jobs:

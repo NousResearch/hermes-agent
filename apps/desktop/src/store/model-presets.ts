@@ -51,25 +51,25 @@ export function setModelPreset(provider: string, model: string, patch: ModelPres
   persistString(STORAGE_KEY, JSON.stringify(next))
 }
 
-/** Push a model's preset onto the active session (optimistic + gateway).
+/** Apply a model's preset to the composer, then push it to a live session.
  *  `undefined` skips that dimension; values are capability-gated upstream.
- *  No-ops without a session — the gateway's `config.set` reasoning/fast fall
- *  back to persistent (global/profile) config when none matches, so selecting
- *  a model must not reach it (else it rewrites `agent.*`, defaults included). */
+ *  Without a session the local draft still needs the preset, but must not call
+ *  `config.set`: that falls back to persistent profile config when no session
+ *  matches and would rewrite the user's defaults. */
 export async function applyModelPreset(
   { effort, fast }: ModelPreset,
   ctx: { failMessage: string; request: RequestGateway; sessionId: null | string }
 ): Promise<void> {
-  if (!ctx.sessionId) {
-    return
-  }
-
   if (effort !== undefined) {
     setCurrentReasoningEffort(effort)
   }
 
   if (fast !== undefined) {
     setCurrentFastMode(fast)
+  }
+
+  if (!ctx.sessionId) {
+    return
   }
 
   try {

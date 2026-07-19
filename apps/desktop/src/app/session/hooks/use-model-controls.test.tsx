@@ -18,6 +18,16 @@ import { useModelControls } from './use-model-controls'
 const setGlobalModel = vi.fn()
 const notifyError = vi.fn()
 
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void
+
+  const promise = new Promise<T>(done => {
+    resolve = done
+  })
+
+  return { promise, resolve }
+}
+
 vi.mock('@/hermes', () => ({
   getGlobalModelInfo: vi.fn(),
   setGlobalModel: (...args: Parameters<typeof setGlobalModel>) => setGlobalModel(...args)
@@ -246,6 +256,59 @@ describe('useModelControls', () => {
 
     expect($currentModel.get()).toBe('openrouter/glm-4.7')
     expect(getCurrentModelSource()).toBe('manual')
+  })
+
+  it('does not let a stale forced profile refresh overwrite a newer picker choice', async () => {
+    const profileDefault = deferred<Awaited<ReturnType<typeof getGlobalModelInfo>>>()
+    vi.mocked(getGlobalModelInfo).mockReturnValueOnce(profileDefault.promise)
+
+    const { result } = renderHook(() =>
+      useModelControls({
+        queryClient: new QueryClient(),
+        requestGateway: vi.fn()
+      })
+    )
+
+    const pendingRefresh = result.current.refreshCurrentModel(true)
+    expect(getGlobalModelInfo).toHaveBeenCalled()
+
+    await expect(
+      result.current.selectModel({
+        model: 'claude-sonnet-4.6',
+        provider: 'anthropic'
+      })
+    ).resolves.toBe(true)
+
+    profileDefault.resolve({ model: 'gpt-5.5', provider: 'openai-codex' })
+    await pendingRefresh
+
+    expect($currentModel.get()).toBe('claude-sonnet-4.6')
+    expect($currentProvider.get()).toBe('anthropic')
+    expect(getCurrentModelSource()).toBe('manual')
+  })
+
+  it('does not let an older profile refresh overwrite a newer profile', async () => {
+    const profileB = deferred<Awaited<ReturnType<typeof getGlobalModelInfo>>>()
+    const profileC = deferred<Awaited<ReturnType<typeof getGlobalModelInfo>>>()
+    vi.mocked(getGlobalModelInfo).mockReturnValueOnce(profileB.promise).mockReturnValueOnce(profileC.promise)
+
+    const { result } = renderHook(() =>
+      useModelControls({
+        queryClient: new QueryClient(),
+        requestGateway: vi.fn()
+      })
+    )
+
+    const refreshB = result.current.refreshCurrentModel(true)
+    const refreshC = result.current.refreshCurrentModel(true)
+
+    profileC.resolve({ model: 'profile-c-model', provider: 'profile-c-provider' })
+    await refreshC
+    profileB.resolve({ model: 'profile-b-model', provider: 'profile-b-provider' })
+    await refreshB
+
+    expect($currentModel.get()).toBe('profile-c-model')
+    expect($currentProvider.get()).toBe('profile-c-provider')
   })
 
   it('refreshes legacy/default-derived composer state from the profile default', async () => {

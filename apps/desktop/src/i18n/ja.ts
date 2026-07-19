@@ -465,7 +465,12 @@ export const ja = defineLocale({
         },
         xai: {
           voiceId: 'xAI (Grok) 音声',
-          language: 'xAI 言語'
+          language: 'xAI 言語',
+          speed: '再生速度',
+          autoSpeechTags: '自動音声タグ',
+          optimizeStreamingLatency: 'ストリーミング遅延最適化',
+          sampleRate: 'サンプルレート',
+          bitRate: 'ビットレート'
         },
         minimax: {
           model: 'MiniMax TTS モデル',

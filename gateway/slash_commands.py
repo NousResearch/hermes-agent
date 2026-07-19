@@ -164,12 +164,11 @@ class GatewaySlashCommandsMixin:
                     )
         self._evict_cached_agent(session_key)
 
-        # Discard any /queue overflow for this session — /new is a
-        # conversation-boundary operation, queued follow-ups from the
-        # previous conversation must not bleed into the new one.
-        _qe = getattr(self, "_queued_events", None)
-        if _qe is not None:
-            _qe.pop(session_key, None)
+        # Conversation boundary: clear ALL conversation-scoped per-session
+        # state (model/reasoning overrides, one-turn restores, model notes,
+        # last-resolved cache, /queue overflow) + security state in one
+        # funnel call. See _CONVERSATION_SCOPED_STATE in gateway/run.py.
+        self._clear_conversation_scope(session_key, reason="session_reset")
 
         # The old conversation's in-flight async delegations end WITH it
         # (#55578): after the reset rotates the session id, their completions
@@ -204,24 +203,8 @@ class GatewaySlashCommandsMixin:
         # Reset the session
         new_entry = await self.async_session_store.reset_session(session_key)
 
-        # Clear any session-scoped model/reasoning overrides so the next agent
-        # picks up configured defaults instead of previous session switches.
-        self._session_model_overrides.pop(session_key, None)
-        self._set_session_reasoning_override(session_key, None)
-        if hasattr(self, "_pending_model_notes"):
-            self._pending_model_notes.pop(session_key, None)
-
-        # Clear the per-session last-resolved-model cache so the next turn
-        # reads from current config instead of falling back to a stale model
-        # after a config change (#58403).
-        _lrm = getattr(self, "_last_resolved_model", None)
-        if _lrm is not None:
-            _lrm.pop(session_key, None)
-
-        # Clear session-scoped dangerous-command approvals and /yolo state.
-        # /new is a conversation-boundary operation — approval state from the
-        # previous conversation must not survive the reset.
-        self._clear_session_boundary_security_state(session_key)
+        # (Conversation-scoped overrides + security state were already
+        # cleared via _clear_conversation_scope above.)
 
         _old_sid = old_entry.session_id if old_entry else None
 
@@ -3914,28 +3897,13 @@ class GatewaySlashCommandsMixin:
         new_entry = await self.async_session_store.switch_session(session_key, target_id)
         if not new_entry:
             return t("gateway.resume.switch_failed")
-        self._clear_session_boundary_security_state(session_key)
 
-        # Clear session-scoped model/reasoning overrides so the resumed
-        # conversation picks up configured defaults instead of a /model
-        # switch made in the previous session under the same chat
-        # session_key. /resume is a conversation boundary just like /new
-        # (which clears these too); without this, a stale override leaks
-        # across the switch. See #10702.
-        _overrides = getattr(self, "_session_model_overrides", None)
-        if isinstance(_overrides, dict):
-            _overrides.pop(session_key, None)
-        self._set_session_reasoning_override(session_key, None)
-        _pending_notes = getattr(self, "_pending_model_notes", None)
-        if isinstance(_pending_notes, dict):
-            _pending_notes.pop(session_key, None)
-        # Clear per-session model cache too, for the same reason — the
-        # resumed conversation must resolve from current config, not a
-        # stale value cached under this session_key before the switch
-        # (mirrors /new and the compression-exhausted auto-reset, #58403).
-        _lrm = getattr(self, "_last_resolved_model", None)
-        if isinstance(_lrm, dict):
-            _lrm.pop(session_key, None)
+        # Conversation boundary: clear ALL conversation-scoped per-session
+        # state (model/reasoning overrides #10702, one-turn restores, model
+        # notes, last-resolved cache #58403, /queue overflow) + security
+        # state in one funnel call. See _CONVERSATION_SCOPED_STATE in
+        # gateway/run.py.
+        self._clear_conversation_scope(session_key, reason="resume")
 
         # Evict any cached agent for this session so the next message
         # rebuilds with the correct session_id end-to-end — mirrors

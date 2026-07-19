@@ -1603,6 +1603,76 @@ class TestTruncateMessage:
         assert "(1/" in chunks[0]
         assert f"({len(chunks)}/{len(chunks)})" in chunks[-1]
 
+    @staticmethod
+    def _truncate_with_timeout(content, max_length, *, len_fn=None, timeout=3.0):
+        """Run truncate_message on a worker thread; fail if it doesn't return.
+
+        Guards against the regression where a pathologically small max_length
+        made the split loop never consume any input and spin forever.
+        """
+        import threading
+
+        box: dict = {}
+
+        def _run():
+            box["result"] = BasePlatformAdapter.truncate_message(
+                content, max_length, len_fn=len_fn
+            )
+
+        t = threading.Thread(target=_run, daemon=True)
+        t.start()
+        t.join(timeout=timeout)
+        assert not t.is_alive(), (
+            f"truncate_message hung (infinite loop) for max_length={max_length}"
+        )
+        return box["result"]
+
+    def test_pathological_small_max_length_terminates(self):
+        # max_length 0 and 1 previously drove the split loop into an unbounded
+        # hang (headroom -> 0, split_at -> 0, remaining never shrinks). It must
+        # terminate and preserve every character across the chunks.
+        import re
+
+        for max_length in (0, 1, 2):
+            chunks = self._truncate_with_timeout("abcdefghij", max_length)
+            assert chunks, f"no chunks for max_length={max_length}"
+            reassembled = "".join(
+                re.sub(r"\s*\(\d+/\d+\)$", "", c) for c in chunks
+            )
+            for ch in "abcdefghij":
+                assert ch in reassembled, f"char {ch!r} lost at max_length={max_length}"
+
+    def test_pathological_small_max_length_utf16_terminates(self):
+        # Under utf16_len (Telegram), a surrogate-pair emoji is 2 units wide, so
+        # a budget below that maps to zero codepoints — the same stall vector.
+        from gateway.platforms.base import utf16_len
+
+        chunks = self._truncate_with_timeout("😀😀😀😀😀", 1, len_fn=utf16_len)
+        assert chunks
+        assert "😀" in "".join(chunks)
+
+    def test_sub_codepoint_budget_emits_whole_codepoints_without_data_loss(self):
+        """Length contract for a budget too small to fit one codepoint.
+
+        A codepoint is indivisible, so with max_length=1 and utf16_len a 2-unit
+        emoji cannot fit — the loop emits it whole rather than dropping it or
+        spinning. The documented, intentional consequence is that such a chunk
+        EXCEEDS max_length by that one codepoint; in return every codepoint is
+        preserved (no data loss) and the call terminates.
+        """
+        import re
+
+        from gateway.platforms.base import utf16_len
+
+        chunks = self._truncate_with_timeout("😀😀😀", 1, len_fn=utf16_len)
+        assert chunks
+        bodies = [re.sub(r"\s*\(\d+/\d+\)$", "", c) for c in chunks]
+        # No data loss: all three emojis survive across the chunks.
+        assert "".join(bodies).count("😀") == 3
+        # Contract: a chunk carrying a 2-unit emoji necessarily exceeds the
+        # 1-unit budget — assert that explicitly so the behavior is pinned.
+        assert any(utf16_len(b) > 1 for b in bodies)
+
     def test_code_block_first_chunk_closed(self):
         adapter = self._adapter()
         msg = "Before\n```python\n" + "x = 1\n" * 100 + "```\nAfter"

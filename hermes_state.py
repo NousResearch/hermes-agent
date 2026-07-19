@@ -1044,6 +1044,22 @@ class SessionDB:
                     isolation_level=None,
                 )
                 self._conn.row_factory = sqlite3.Row
+                # Probe FTS tables existence (read-only safe: SELECT only, no DDL).
+                # _ensure_fts_schema() does CREATE TABLE — unsafe under mode=ro.
+                # We just check sqlite_master so search_messages() works.
+                try:
+                    row = self._conn.execute(
+                        "SELECT 1 FROM sqlite_master "
+                        "WHERE type='table' AND name='messages_fts'"
+                    ).fetchone()
+                    self._fts_enabled = row is not None
+                    row2 = self._conn.execute(
+                        "SELECT 1 FROM sqlite_master "
+                        "WHERE type='table' AND name='messages_fts_trigram'"
+                    ).fetchone()
+                    self._trigram_available = row2 is not None
+                except sqlite3.OperationalError:
+                    pass  # stay False
                 return
 
             self.db_path.parent.mkdir(parents=True, exist_ok=True)

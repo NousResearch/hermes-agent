@@ -265,39 +265,79 @@ def _list_recent_sessions(db, limit: int, current_session_id: str = None) -> str
             exclude_sources=list(_HIDDEN_SESSION_SOURCES),
             order_by_last_active=True,
         )  # fetch extra so we can skip current
-
-        current_root = _resolve_to_parent(db, current_session_id) if current_session_id else None
-
-        results = []
-        for s in sessions:
-            sid = s.get("id", "")
-            if current_root and (sid == current_root or sid == current_session_id):
-                continue
-            # Skip child / delegation sessions
-            if s.get("parent_session_id"):
-                continue
-            results.append({
-                "session_id": sid,
-                "title": s.get("title") or None,
-                "source": s.get("source", ""),
-                "started_at": s.get("started_at", ""),
-                "last_active": s.get("last_active", ""),
-                "message_count": s.get("message_count", 0),
-                "preview": s.get("preview", ""),
-            })
-            if len(results) >= limit:
-                break
-
-        return json.dumps({
-            "success": True,
-            "mode": "browse",
-            "results": results,
-            "count": len(results),
-            "message": f"Showing {len(results)} most recent sessions. Pass a query= to search, or session_id+around_message_id to scroll.",
-        }, ensure_ascii=False)
     except Exception as e:
-        logging.error("Error listing recent sessions: %s", e, exc_info=True)
-        return tool_error(f"Failed to list recent sessions: {e}", success=False)
+        # External / bare-minimum DBs may lack columns that list_sessions_rich()
+        # expects (e.g. end_reason, model_config, archived). Fall back to a
+        # simple direct query that only touches the core schema columns.
+        logging.debug(
+            "list_sessions_rich() failed, falling back to simple query: %s", e
+        )
+        sessions = _list_sessions_simple(db, limit + 5)
+        current_session_id = None  # cross-DB lineage doesn't apply
+
+    current_root = _resolve_to_parent(db, current_session_id) if current_session_id else None
+
+    results = []
+    for s in sessions:
+        sid = s.get("id", "")
+        if current_root and (sid == current_root or sid == current_session_id):
+            continue
+        # Skip child / delegation sessions
+        if s.get("parent_session_id"):
+            continue
+        results.append({
+            "session_id": sid,
+            "title": s.get("title") or None,
+            "source": s.get("source", ""),
+            "started_at": s.get("started_at", ""),
+            "last_active": s.get("started_at", ""),  # external DBs: started_at ≈ last_active
+            "message_count": s.get("message_count", 0),
+            "preview": s.get("preview", ""),
+        })
+        if len(results) >= limit:
+            break
+
+    return json.dumps({
+        "success": True,
+        "mode": "browse",
+        "results": results,
+        "count": len(results),
+        "message": f"Showing {len(results)} most recent sessions. Pass a query= to search, or session_id+around_message_id to scroll.",
+    }, ensure_ascii=False)
+
+
+def _list_sessions_simple(db, limit: int) -> List[Dict[str, Any]]:
+    """Fallback for external DBs that lack list_sessions_rich() columns.
+
+    Only touches columns in the minimal session schema: id, title, source,
+    started_at, message_count, parent_session_id.
+    """
+    try:
+        conn = db.conn if hasattr(db, "conn") else db._conn
+        # Discover which columns actually exist
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(sessions)").fetchall()]
+        select_cols = ["id", "title", "source", "started_at", "message_count"]
+        available = [c for c in select_cols if c in cols]
+        if "parent_session_id" in cols:
+            available.append("parent_session_id")
+        # First user message as preview
+        if "messages" in [r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        ).fetchall()]:
+            preview_sql = (
+                "(SELECT substr(content, 1, 200) FROM messages m2 "
+                "WHERE m2.session_id = s.id AND m2.role = 'user' "
+                "AND m2.active = 1 ORDER BY m2.id LIMIT 1) AS preview"
+            )
+        else:
+            preview_sql = "NULL AS preview"
+        query = f"SELECT {', '.join(available)}, {preview_sql} FROM sessions s ORDER BY s.started_at DESC LIMIT ?"
+        rows = conn.execute(query, (limit,)).fetchall()
+        col_names = available + ["preview"]
+        return [dict(zip(col_names, row)) for row in rows]
+    except Exception as e:
+        logging.error("_list_sessions_simple failed: %s", e, exc_info=True)
+        return []
 
 
 def _scroll(
@@ -630,6 +670,8 @@ def session_search(
     sort: str = None,
     # Cross-profile (any shape)
     profile: str = None,
+    # External DB path (any shape)
+    db_path: str = None,
 ) -> str:
     """Single-shape tool. Mode inferred from which args are set.
 
@@ -642,13 +684,17 @@ def session_search(
     ``@session:<profile>/<id>`` link). Scroll wins over read/discovery when an
     anchor is set — the agent has asked for a specific slice.
     """
+    try:
+        from hermes_state import SessionDB, format_session_db_unavailable
+    except Exception:
+        logging.debug("SessionDB unavailable for session_search", exc_info=True)
+        return tool_error("Session database is not available", success=False)
+
     if db is None:
         try:
-            from hermes_state import SessionDB
             db = SessionDB()
         except Exception:
-            logging.debug("SessionDB unavailable for session_search", exc_info=True)
-            from hermes_state import format_session_db_unavailable
+            logging.debug("SessionDB() failed for session_search", exc_info=True)
             return tool_error(format_session_db_unavailable(), success=False)
 
     # Normalise a raw `@session:<profile>/<id>` link value passed as session_id.
@@ -662,6 +708,19 @@ def session_search(
             session_id = emb_id
             if emb_profile and (profile is None or not str(profile).strip()):
                 profile = emb_profile
+
+    # External DB path: open a read-only SessionDB at the given path. Same
+    # safety semantics as cross-profile — mode=ro, no write lock, no contention.
+    if db_path is not None and str(db_path).strip():
+        from pathlib import Path as _Path
+        p = _Path(db_path).expanduser().resolve()
+        if not p.exists():
+            return tool_error(f"db_path not found: {p}", success=False)
+        try:
+            db = SessionDB(db_path=p, read_only=True)
+        except Exception as e:
+            return tool_error(f"db_path '{p}': {e}", success=False)
+        current_session_id = None
 
     # Cross-profile read: swap in the named profile's DB (read-only) for every
     # shape below. The current-session-lineage guards no longer apply across
@@ -891,6 +950,17 @@ SESSION_SEARCH_SCHEMA = {
                     "Omit to use the current profile."
                 ),
             },
+            "db_path": {
+                "type": "string",
+                "description": (
+                    "Optional absolute path to an external session DB (SQLite with FTS5, "
+                    "same schema as state.db). Opens read-only — safe against live writers. "
+                    "Use for searching imported conversation corpora (Claude history, "
+                    "project wikis, etc.) alongside the native session DB. When set, "
+                    "replaces the default state.db for this single call. Omit to use "
+                    "the current session's database."
+                ),
+            },
         },
         "required": [],
     },
@@ -913,6 +983,7 @@ registry.register(
         window=args.get("window", 5),
         sort=args.get("sort"),
         profile=args.get("profile"),
+        db_path=args.get("db_path"),
         db=kw.get("db"),
         current_session_id=kw.get("current_session_id"),
     ),

@@ -1278,6 +1278,8 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                     around_message_id=next_args.get("around_message_id"),
                     window=next_args.get("window", 5),
                     sort=next_args.get("sort"),
+                    profile=next_args.get("profile"),
+                    db_path=next_args.get("db_path"),
                     db=session_db,
                     current_session_id=agent.session_id,
                 )
@@ -1577,7 +1579,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
         # executor is the one that has to fire post_tool_call. For
         # registry-dispatched tools the else-branch above invoked
         # handle_function_call, which already fires the hook.
-        from agent.agent_runtime_helpers import agent_runtime_owns_post_tool_hook
+        from agent.agent_runtime_helpers import agent_runtime_owns_post_tool_hook, _apply_transform_tool_result_hook
         _executor_must_emit_post_hook = (
             not _execution_blocked
             and agent_runtime_owns_post_tool_hook(agent, function_name)
@@ -1593,6 +1595,12 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 duration_ms=int(tool_duration * 1000),
                 middleware_trace=list(middleware_trace),
             )
+            # Apply transform_tool_result hooks AFTER post_tool_call
+            # (preserving model_tools.py ordering: post observer → transform)
+            # for all direct-runtime tools that bypass registry dispatch.
+            if _executor_must_emit_post_hook:
+                function_result = _apply_transform_tool_result_hook(
+                    function_name, function_args, function_result, agent)
         if not _execution_blocked:
             function_result = agent._append_guardrail_observation(
                 function_name,

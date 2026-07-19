@@ -28,8 +28,51 @@ import logging
 import re
 import time
 from datetime import datetime
-from pathlib import Path
-from typing import Any, Dict, List, Optional
+import sys
+from typing import Any, Dict, Optional
+
+
+def _apply_transform_tool_result_hook(
+    function_name: str,
+    args: dict,
+    result: Any,
+    agent: Any,
+    *,
+    task_id: str = "",
+    tool_call_id: str = "",
+    turn_id: str = "",
+    api_request_id: str = "",
+    duration_ms: int = 0,
+) -> Any:
+    """Shared transform_tool_result hook for agent-runtime direct-dispatch tools.
+
+    Called AFTER _emit_post_tool_call_hook so the established ordering
+    (post observer → transform) in model_tools.py is preserved.
+    """
+    try:
+        from hermes_cli.plugins import has_hook, invoke_hook
+        if has_hook("transform_tool_result"):
+            hook_results = invoke_hook(
+                "transform_tool_result",
+                tool_name=function_name,
+                args=args,
+                result=result,
+                task_id=task_id or "",
+                session_id=getattr(agent, "session_id", "") or "",
+                tool_call_id=tool_call_id or "",
+                turn_id=turn_id or "",
+                api_request_id=api_request_id or "",
+                duration_ms=duration_ms,
+                status=None,
+                error_type=None,
+                error_message=None,
+            )
+            for hook_result in hook_results:
+                if isinstance(hook_result, str):
+                    return hook_result
+    except Exception:
+        pass
+    return result
 
 from hermes_cli.timeouts import get_provider_request_timeout
 from agent.prompt_builder import format_steer_marker
@@ -2372,20 +2415,30 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
                 from hermes_state import format_session_db_unavailable
                 return _finish_agent_tool(json.dumps({"success": False, "error": format_session_db_unavailable()}), next_args)
             from tools.session_search_tool import session_search as _session_search
-            return _finish_agent_tool(
-                _session_search(
-                    query=next_args.get("query", ""),
-                    role_filter=next_args.get("role_filter"),
-                    limit=next_args.get("limit", 3),
-                    session_id=next_args.get("session_id"),
-                    around_message_id=next_args.get("around_message_id"),
-                    window=next_args.get("window", 5),
-                    sort=next_args.get("sort"),
-                    db=session_db,
-                    current_session_id=agent.session_id,
-                ),
-                next_args,
+            result = _session_search(
+                query=next_args.get("query", ""),
+                role_filter=next_args.get("role_filter"),
+                limit=next_args.get("limit", 3),
+                session_id=next_args.get("session_id"),
+                around_message_id=next_args.get("around_message_id"),
+                window=next_args.get("window", 5),
+                sort=next_args.get("sort"),
+                profile=next_args.get("profile"),
+                db_path=next_args.get("db_path"),
+                db=session_db,
+                current_session_id=agent.session_id,
             )
+            # Fire post_tool_call hook FIRST (established ordering),
+            # then apply transform_tool_result hooks.
+            result = _finish_agent_tool(result, next_args)
+            result = _apply_transform_tool_result_hook(
+                "session_search", next_args, result, agent,
+                task_id=effective_task_id or "",
+                tool_call_id=tool_call_id or "",
+                turn_id=getattr(agent, "_current_turn_id", "") or "",
+                api_request_id=getattr(agent, "_current_api_request_id", "") or "",
+            )
+            return result
     elif function_name == "memory":
         def _execute(next_args: dict) -> Any:
             target = next_args.get("target", "memory")

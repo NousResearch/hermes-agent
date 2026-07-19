@@ -167,6 +167,31 @@ def test_dm_policy_disabled_still_allows_groups():
 # --- New group_policy tests ---
 
 
+def test_same_account_group_payload_still_obeys_allowlist_and_mention_gate():
+    """Bridge-admitted same-account traffic still goes through Python policy gates."""
+    adapter = _make_adapter(
+        dm_policy="disabled",
+        group_policy="allowlist",
+        group_allow_from=["120363001234567890@g.us"],
+        require_mention=True,
+        mention_patterns=[r"^\s*@?hermes\b"],
+    )
+
+    assert adapter._should_process_message(
+        _group_message("hello everyone", fromOwner=False)
+    ) is False
+    assert adapter._should_process_message(
+        _group_message("@hermes status", fromOwner=False)
+    ) is True
+    assert adapter._should_process_message(
+        _group_message("@hermes status", chatId="999999999999@g.us", fromOwner=False)
+    ) is False
+    adapter._group_policy = "disabled"
+    assert adapter._should_process_message(
+        _group_message("@hermes status", fromOwner=False)
+    ) is False
+
+
 # --- Config bridging tests ---
 
 def test_config_bridges_whatsapp_dm_and_group_policy(monkeypatch, tmp_path):

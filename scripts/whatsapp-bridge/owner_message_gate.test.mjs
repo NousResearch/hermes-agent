@@ -1,7 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { classifyOwnerMessageGate } from './owner_message_gate.js';
+import {
+  classifyFromMeGroupGate,
+  classifyOwnerMessageGate,
+} from './owner_message_gate.js';
 
 function makeRecentlySent(ids = []) {
   const set = new Set(ids);
@@ -123,4 +126,44 @@ test('disabled flag fires before allowlist check', () => {
     chatId: '111600547700784@lid',
   });
   assert.deepEqual(decision, { action: 'drop_disabled' });
+});
+
+test('enabled same-account group message is forwarded', () => {
+  const decision = classifyFromMeGroupGate({
+    mode: 'bot',
+    enabled: true,
+    recentlySent: makeRecentlySent(),
+    messageId: 'M-GROUP-1',
+  });
+  assert.deepEqual(decision, { action: 'forward_group' });
+});
+
+test('same-account group message is dropped when disabled', () => {
+  const decision = classifyFromMeGroupGate({
+    mode: 'bot',
+    enabled: false,
+    recentlySent: makeRecentlySent(),
+    messageId: 'M-GROUP-2',
+  });
+  assert.deepEqual(decision, { action: 'drop_disabled' });
+});
+
+test('same-account group outbound echo is dropped even when enabled', () => {
+  const decision = classifyFromMeGroupGate({
+    mode: 'bot',
+    enabled: true,
+    recentlySent: makeRecentlySent(['M-GROUP-ECHO']),
+    messageId: 'M-GROUP-ECHO',
+  });
+  assert.deepEqual(decision, { action: 'drop_echo' });
+});
+
+test('same-account group processing remains unavailable in self-chat mode', () => {
+  const decision = classifyFromMeGroupGate({
+    mode: 'self-chat',
+    enabled: true,
+    recentlySent: makeRecentlySent(),
+    messageId: 'M-GROUP-3',
+  });
+  assert.deepEqual(decision, { action: 'drop_mode' });
 });

@@ -54,3 +54,29 @@ export function classifyOwnerMessageGate({
   }
   return { action: 'forward_owner' };
 }
+
+/**
+ * Classify a fromMe group message before it can enter the inbound queue.
+ *
+ * Same-account group processing is intentionally separate from the owner-DM
+ * path above: group authorization and mention handling belong to the Python
+ * adapter, while this bridge-level gate only enforces the explicit opt-in and
+ * suppresses echoes of messages sent through the bridge itself.
+ */
+export function classifyFromMeGroupGate({
+  mode,
+  enabled,
+  recentlySent,
+  messageId,
+}) {
+  if (mode !== 'bot') {
+    return { action: 'drop_mode' };
+  }
+  if (recentlySent && recentlySent.has(messageId)) {
+    return { action: 'drop_echo' };
+  }
+  if (!enabled) {
+    return { action: 'drop_disabled' };
+  }
+  return { action: 'forward_group' };
+}

@@ -13,7 +13,6 @@ function makeDependencies() {
     },
     cacheKey: vi.fn(() => 'example.com/'),
     fetchWithCurl: vi.fn(async () => ''),
-    fetchWithRenderer: vi.fn(async () => 'Rendered title'),
     inflight: {
       delete: vi.fn(() => true),
       get: vi.fn(() => undefined),
@@ -36,25 +35,32 @@ test('blocked URLs return before cache or network title resolution', async () =>
   assert.equal(deps.cache.get.mock.calls.length, 0)
   assert.equal(deps.inflight.get.mock.calls.length, 0)
   assert.equal(deps.fetchWithCurl.mock.calls.length, 0)
-  assert.equal(deps.fetchWithRenderer.mock.calls.length, 0)
   assert.equal(deps.storeCachedTitle.mock.calls.length, 0)
 })
 
-test('public URLs use the curl result before falling back to the renderer', async () => {
+test('public URLs use only the pinned curl result', async () => {
   const deps = makeDependencies()
+  deps.fetchWithCurl.mockResolvedValue('Curl title')
   const fetchLinkTitle = createLinkTitleFetcher(deps)
   const pending = fetchLinkTitle(' https://example.com ')
 
-  assert.equal(await pending, 'Rendered title')
+  assert.equal(await pending, 'Curl title')
   assert.deepEqual(deps.cacheKey.mock.calls, [['https://example.com/']])
   assert.deepEqual(deps.fetchWithCurl.mock.calls, [['https://example.com/']])
-  assert.deepEqual(deps.fetchWithRenderer.mock.calls, [['https://example.com/']])
-  assert.ok(deps.fetchWithCurl.mock.invocationCallOrder[0] < deps.fetchWithRenderer.mock.invocationCallOrder[0])
-  assert.deepEqual(deps.storeCachedTitle.mock.calls, [['example.com/', 'Rendered title']])
+  assert.deepEqual(deps.storeCachedTitle.mock.calls, [['example.com/', 'Curl title']])
   assert.equal(deps.inflight.set.mock.calls.length, 1)
   assert.equal(deps.inflight.set.mock.calls[0][0], 'example.com/')
   assert.equal(deps.inflight.set.mock.calls[0][1], pending)
   assert.deepEqual(deps.inflight.delete.mock.calls, [['example.com/']])
+})
+
+test('a curl miss returns empty without loading a renderer page', async () => {
+  const deps = makeDependencies()
+  const fetchLinkTitle = createLinkTitleFetcher(deps)
+
+  assert.equal(await fetchLinkTitle('https://example.com/'), '')
+  assert.deepEqual(deps.fetchWithCurl.mock.calls, [['https://example.com/']])
+  assert.deepEqual(deps.storeCachedTitle.mock.calls, [['example.com/', '']])
 })
 
 test('uses the admitted canonical URL instead of the caller representation', async () => {
@@ -67,5 +73,4 @@ test('uses the admitted canonical URL instead of the caller representation', asy
   assert.equal(await fetchLinkTitle('http://example.com\\@127.0.0.1/'), 'Curl title')
   assert.deepEqual(deps.cacheKey.mock.calls, [[canonical]])
   assert.deepEqual(deps.fetchWithCurl.mock.calls, [[canonical]])
-  assert.equal(deps.fetchWithRenderer.mock.calls.length, 0)
 })

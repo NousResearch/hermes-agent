@@ -6,7 +6,6 @@ export interface LinkTitleFetchDependencies {
   }
   cacheKey(value: string): string
   fetchWithCurl(url: string): Promise<string>
-  fetchWithRenderer(url: string): Promise<string>
   inflight: {
     delete(key: string): unknown
     get(key: string): Promise<string> | undefined
@@ -45,15 +44,6 @@ export function createLinkTitleFetcher(deps: LinkTitleFetchDependencies): (rawUr
       .fetchWithCurl(url)
       .catch(() => '')
       .then(value => deps.normalizeTitle((value || '').slice(0, 240)))
-      .then(async value => {
-        if (value) {
-          return value
-        }
-
-        const rendered = await deps.fetchWithRenderer(url).catch(() => '')
-
-        return deps.normalizeTitle((rendered || '').slice(0, 240))
-      })
       .then(clean => {
         deps.storeCachedTitle(key, clean)
         deps.inflight.delete(key)

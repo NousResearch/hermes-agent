@@ -8,11 +8,7 @@ import { promisify } from 'node:util'
 
 import { test, vi } from 'vitest'
 
-import {
-  createLinkTitleCurlFetcher,
-  linkTitleCurlRequestArgs,
-  parseLinkTitleCurlHeaders
-} from './link-title-curl'
+import { createLinkTitleCurlFetcher, linkTitleCurlRequestArgs, parseLinkTitleCurlHeaders } from './link-title-curl'
 import { startLinkTitleSocksGateway } from './link-title-socks'
 
 const execFileAsync = promisify(execFile)

@@ -54,12 +54,7 @@ test('rejects empty, private-only, and mixed DNS answers without caching them', 
   await assert.rejects(resolver.resolve('private.example'), /non-public/i)
   await assert.rejects(resolver.resolve('mixed.example'), /non-public/i)
   assert.deepEqual(await resolver.resolve('mixed.example'), [address(PUBLIC_V4, 4)])
-  assert.deepEqual(lookup.mock.calls, [
-    ['empty.example'],
-    ['private.example'],
-    ['mixed.example'],
-    ['mixed.example']
-  ])
+  assert.deepEqual(lookup.mock.calls, [['empty.example'], ['private.example'], ['mixed.example'], ['mixed.example']])
 })
 
 test('renews an active pin for a full TTL so a near-expiry fetch cannot rebind mid-flight', async () => {
@@ -122,12 +117,7 @@ test('bounds one-shot hostname pins and evicts the least recently used entry', a
   now += 1
   await resolver.resolve('two.example')
 
-  assert.deepEqual(lookup.mock.calls, [
-    ['one.example'],
-    ['two.example'],
-    ['three.example'],
-    ['two.example']
-  ])
+  assert.deepEqual(lookup.mock.calls, [['one.example'], ['two.example'], ['three.example'], ['two.example']])
 })
 
 test('prunes expired one-shot pins before admitting new hostnames', async () => {

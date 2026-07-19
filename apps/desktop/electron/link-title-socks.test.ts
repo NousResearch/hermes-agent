@@ -219,7 +219,10 @@ test('all approved addresses share one absolute connection deadline', async () =
     await once(client, 'close')
 
     assert.equal(createConnection.mock.calls.length, 1)
-    assert.equal(sockets.every(socket => socket.destroyed), true)
+    assert.equal(
+      sockets.every(socket => socket.destroyed),
+      true
+    )
   } finally {
     await gateway.close()
   }
@@ -249,9 +252,7 @@ test('real curl traffic preserves Host and reuses the pinned answer inside the T
     lookup: async () => {
       lookupCount += 1
 
-      return lookupCount === 1
-        ? [{ address: '127.0.0.1', family: 4 }]
-        : [{ address: '10.0.0.1', family: 4 }]
+      return lookupCount === 1 ? [{ address: '127.0.0.1', family: 4 }] : [{ address: '10.0.0.1', family: 4 }]
     },
     now: () => 0,
     ttlMs: 30_000

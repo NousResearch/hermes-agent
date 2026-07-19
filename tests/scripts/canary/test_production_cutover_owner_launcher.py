@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import copy
 import hashlib
 import json
 import os
@@ -1293,6 +1294,10 @@ def test_cloud_transport_commands_are_fixed_to_target_release() -> None:
         REVISION,
         "commit-caddy-cutover",
     )
+    converge = owner.ProductionCutoverTransport._remote_command(
+        REVISION,
+        "converge-cutover",
+    )
     interpreter = (
         "/opt/adventico-ai-platform/hermes-agent-releases/"
         f"hermes-agent-{REVISION[:12]}/.venv/bin/python"
@@ -1304,17 +1309,361 @@ def test_cloud_transport_commands_are_fixed_to_target_release() -> None:
     assert interpreter in apply
     assert interpreter in caddy_prepare
     assert interpreter in caddy_commit
+    assert interpreter in converge
     assert "scripts.canary.production_cutover_initial_collector" in initial
     assert "scripts.canary.production_cutover_public_stager" in stage
     assert "scripts.canary.stage_production_cron_continuity" in cron_stage
     assert "gateway.canonical_writer_production_cutover" in apply
     assert "scripts.canary.owner_gate_caddy_cutover" in caddy_prepare
     assert "scripts.canary.owner_gate_caddy_cutover" in caddy_commit
+    assert "scripts.canary.owner_gate_caddy_cutover" in converge
     assert initial[-3:] == ("initial", "--revision", REVISION)
     assert cron_stage[-3:] == ("stage", "--revision", REVISION)
     assert apply[-1] == "apply-cutover"
     assert caddy_prepare[-1] == "prepare"
     assert caddy_commit[-1] == "commit"
+    assert converge[-1] == "converge"
+
+
+def _durable_workflow_fixture(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    convergence_tamper: bool = False,
+):
+    from tests.scripts.canary import (
+        test_production_cutover_host_authority as workflow,
+    )
+
+    monkeypatch.setattr(
+        owner,
+        "_active_owner_runtime_attestation",
+        lambda revision: _runtime_attestation(revision),
+    )
+    monkeypatch.setattr(
+        workflow.owner_gate_trust,
+        "PINNED_RELEASE_TRUST_PUBLIC_KEY_SHA256",
+        workflow._RELEASE_TRUST_KEY_ID,
+    )
+    monkeypatch.setattr(owner.secrets, "token_bytes", lambda _size: b"n" * 32)
+    monkeypatch.setattr(
+        owner.uuid,
+        "uuid4",
+        lambda: "11111111-1111-4111-8111-111111111111",
+    )
+    monkeypatch.setattr(
+        "scripts.canary.production_cutover_public_stager.time.time",
+        lambda: NOW,
+    )
+    monkeypatch.setattr(
+        "gateway.canonical_writer_production_cutover.time.time",
+        lambda: NOW,
+    )
+    services, initial, host, _host_plan = workflow._workflow_inputs()
+
+    class PasskeyBoundary:
+        def __init__(self) -> None:
+            self.request_id: str | None = None
+            self.proof: dict | None = None
+            self.consume_calls = 0
+
+        def request(self, publication: dict) -> dict:
+            action, self.proof = workflow._workflow_passkey_exchange(
+                publication
+            )
+            self.request_id = action["request_id"]
+            return {
+                "request_id": self.request_id,
+                "action_envelope_sha256": action["envelope_sha256"],
+                "challenge_record_sha256": self.proof[
+                    "challenge_record"
+                ]["challenge_record_sha256"],
+                "expires_at_unix": action["expires_at_unix"],
+                "release_sha": REVISION,
+                "plan_sha256": publication["documents"]["plan"][
+                    "plan_sha256"
+                ],
+                "freeze_publication_sha256": publication[
+                    "publication_sha256"
+                ],
+                "action_payload_sha256": action["action_payload_sha256"],
+                "transaction_id": action["transaction_id"],
+                "approval_url": (
+                    f"{owner.cutover_passkey.protocol.PRODUCTION_ORIGIN}/"
+                    f"approve/{self.request_id}"
+                ),
+                "passkey_only": True,
+                "single_use": True,
+                "control_plane_mutation_performed": True,
+                "source_data_mutation_performed": False,
+                "production_host_mutation_performed": False,
+            }
+
+        def consume(
+            self,
+            *,
+            freeze_publication: dict,
+            request_id: str,
+            consume_attempt_id: str,
+        ) -> dict:
+            self.consume_calls += 1
+            assert request_id == self.request_id
+            assert self.proof is not None
+            return {
+                "request_id": request_id,
+                "consume_attempt_id": consume_attempt_id,
+                "disposition": "authorized_once",
+                "passkey_proof": copy.deepcopy(self.proof),
+                "release_sha": REVISION,
+                "plan_sha256": freeze_publication["documents"]["plan"][
+                    "plan_sha256"
+                ],
+                "single_use": True,
+                "control_plane_mutation_performed": True,
+                "source_data_mutation_performed": False,
+                "production_host_mutation_performed": False,
+            }
+
+    class BridgeBootstrap:
+        def __init__(self) -> None:
+            self.request: dict | None = None
+
+        def prepare(self, document: dict) -> dict:
+            self.request = workflow._bridge_request(document)
+            return self.request
+
+        def consume_and_install(self, document: dict) -> dict:
+            assert self.request is not None
+            return workflow._bridge_receipt(document, self.request)
+
+    class WorkflowTransport(workflow._WorkflowTransport):
+        def invoke(self, revision: str, action: str, **kwargs) -> dict:
+            if action != "converge-cutover":
+                return super().invoke(revision, action, **kwargs)
+            self.calls.append(action)
+            assert self.cutover_plan is not None
+            unsigned = {
+                "schema": owner.CONVERGENCE_SCHEMA,
+                "release_revision": REVISION,
+                "freeze_plan_sha256": self.cutover_plan.value[
+                    "freeze_plan_sha256"
+                ],
+                "cutover_plan_sha256": self.cutover_plan.sha256,
+                "preflight_receipt_sha256": "1" * 64,
+                "caddy_prepare_receipt_sha256": "2" * 64,
+                "maintenance_arm_receipt_sha256": "3" * 64,
+                "cutover_terminal_receipt_sha256": "4" * 64,
+                "caddy_terminal_receipt_sha256": "5" * 64,
+                "caddy_outcome": "private_v2_active",
+                "legacy_service_retirement_receipt_sha256": "6" * 64,
+                "control_plane_mutation_performed": True,
+                "source_data_mutation_performed": True,
+                "production_host_mutation_performed": True,
+                "secret_material_recorded": False,
+                "secret_digest_recorded": False,
+            }
+            if convergence_tamper:
+                unsigned["source_data_mutation_performed"] = False
+            receipt = {
+                **unsigned,
+                "receipt_sha256": hashlib.sha256(
+                    _canonical(unsigned)
+                ).hexdigest(),
+            }
+            self.convergence_receipt = copy.deepcopy(receipt)
+            return receipt
+
+    boundary = PasskeyBoundary()
+    bridge = BridgeBootstrap()
+    prepare_transport = workflow._WorkflowTransport(initial, host, services)
+    transport = WorkflowTransport(initial, host, services)
+    workspace = owner.execute_production_cutover_workflow(
+        release_revision=REVISION,
+        owner_identity=object(),
+        owner_subject_sha256="a" * 64,
+        private_key=Ed25519PrivateKey.generate(),
+        isolated_canary_goal_prerequisite=(
+            _isolated_canary_goal_prerequisite()
+        ),
+        truth_mode="start_new_truth_epoch",
+        passkey_boundary=boundary,
+        prepare_only=True,
+        transport_factory=lambda _identity: prepare_transport,
+        database_recovery_gate_runner=workflow._recovery_gate_runner,
+        now_unix=NOW,
+    )
+    for _expected_state in (
+        "awaiting_bridge_passkey",
+        "awaiting_cutover_passkey",
+        "passkey_claim_recorded",
+        "cutover_staged",
+    ):
+        workspace = owner.resume_prepared_production_cutover_workflow(
+            workspace=workspace,
+            owner_identity=object(),
+            passkey_boundary=boundary,
+            bridge_bootstrap=bridge,
+            transport_factory=lambda _identity: transport,
+            now_unix=NOW,
+        )
+        assert workspace["state"] == _expected_state
+    return workspace, transport, boundary, bridge
+
+
+def test_durable_cutover_workspace_stops_before_convergence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace, transport, boundary, bridge = _durable_workflow_fixture(
+        monkeypatch
+    )
+
+    assert workspace["state"] == "cutover_staged"
+    assert all(
+        isinstance(workspace[name], dict)
+        for name in (
+            "final_tail_receipt",
+            "stopped_collector_receipt",
+            "cron_continuity_stage_receipt",
+            "cutover_plan",
+            "cutover_publication",
+            "cutover_stage_receipt",
+        )
+    )
+    assert transport.calls == [
+        "stage-publication",
+        "capture-final-tail",
+        "collect-stopped",
+        "stage-cron-continuity",
+        "stage-publication",
+    ]
+    assert "phase-b-preflight" not in transport.calls
+    assert "prepare-caddy-cutover" not in transport.calls
+    assert "apply-cutover" not in transport.calls
+    assert "commit-caddy-cutover" not in transport.calls
+
+    receipt = owner.resume_prepared_production_cutover_workflow(
+        workspace=workspace,
+        owner_identity=object(),
+        passkey_boundary=boundary,
+        bridge_bootstrap=bridge,
+        transport_factory=lambda _identity: transport,
+        now_unix=NOW + 3_600,
+    )
+
+    assert transport.calls[-1:] == ["converge-cutover"]
+    assert transport.calls.count("converge-cutover") == 1
+    assert receipt["schema"] == owner.WORKFLOW_RECEIPT_SCHEMA
+    assert receipt["convergence_receipt_sha256"] == (
+        transport.convergence_receipt["receipt_sha256"]
+    )
+    assert receipt["terminal_receipt_sha256"] == "4" * 64
+    assert receipt["legacy_service_retirement_receipt_sha256"] == "6" * 64
+    assert receipt["caddy_outcome"] == "private_v2_active"
+    assert receipt["gates"][-1]["stage"] == "cutover_convergence_accepted"
+    assert boundary.consume_calls == 1
+
+    replayed = owner.resume_prepared_production_cutover_workflow(
+        workspace=workspace,
+        owner_identity=object(),
+        passkey_boundary=boundary,
+        bridge_bootstrap=bridge,
+        transport_factory=lambda _identity: transport,
+        now_unix=NOW + 7_200,
+    )
+
+    assert replayed == receipt
+    assert transport.calls.count("converge-cutover") == 2
+    assert boundary.consume_calls == 1
+
+
+def test_terminal_workflow_receipt_rejects_rebound_retirement_receipt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace, transport, boundary, bridge = _durable_workflow_fixture(
+        monkeypatch
+    )
+    receipt = owner.resume_prepared_production_cutover_workflow(
+        workspace=workspace,
+        owner_identity=object(),
+        passkey_boundary=boundary,
+        bridge_bootstrap=bridge,
+        transport_factory=lambda _identity: transport,
+        now_unix=NOW,
+    )
+    changed = copy.deepcopy(receipt)
+    changed["legacy_service_retirement_receipt_sha256"] = "f" * 64
+    changed["receipt_sha256"] = hashlib.sha256(_canonical({
+        name: item
+        for name, item in changed.items()
+        if name != "receipt_sha256"
+    })).hexdigest()
+
+    with pytest.raises(
+        owner.OwnerCutoverError,
+        match="workflow_receipt_invalid",
+    ):
+        owner._validate_workflow_receipt(
+            changed,
+            release_revision=REVISION,
+            freeze_plan_sha256=workspace["freeze_plan"]["plan_sha256"],
+            freeze_approval_sha256=workspace["freeze_approval"][
+                "approval_sha256"
+            ],
+            cutover_plan_sha256=workspace["cutover_plan"]["plan_sha256"],
+            convergence=transport.convergence_receipt,
+            gates=receipt["gates"],
+        )
+
+
+def test_cutover_staged_tamper_rejects_before_remote_action(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace, transport, boundary, bridge = _durable_workflow_fixture(
+        monkeypatch
+    )
+    changed = copy.deepcopy(workspace)
+    changed["cutover_plan"]["freeze_plan_sha256"] = "f" * 64
+    changed["workspace_sha256"] = hashlib.sha256(_canonical({
+        name: item
+        for name, item in changed.items()
+        if name != "workspace_sha256"
+    })).hexdigest()
+    before = list(transport.calls)
+
+    with pytest.raises(owner.OwnerCutoverError, match="workspace_invalid"):
+        owner.resume_prepared_production_cutover_workflow(
+            workspace=changed,
+            owner_identity=object(),
+            passkey_boundary=boundary,
+            bridge_bootstrap=bridge,
+            transport_factory=lambda _identity: transport,
+            now_unix=NOW,
+        )
+
+    assert transport.calls == before
+
+
+def test_combined_convergence_tamper_fails_closed_after_one_action(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace, transport, boundary, bridge = _durable_workflow_fixture(
+        monkeypatch,
+        convergence_tamper=True,
+    )
+
+    with pytest.raises(
+        owner.OwnerCutoverError,
+        match="convergence_receipt_invalid",
+    ):
+        owner.resume_prepared_production_cutover_workflow(
+            workspace=workspace,
+            owner_identity=object(),
+            passkey_boundary=boundary,
+            bridge_bootstrap=bridge,
+            transport_factory=lambda _identity: transport,
+            now_unix=NOW,
+        )
+
+    assert transport.calls.count("converge-cutover") == 1
 
 
 class _TrustedGcloud:

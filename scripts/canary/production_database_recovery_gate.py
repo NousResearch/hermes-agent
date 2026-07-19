@@ -246,7 +246,7 @@ class _Journal:
                 self.root.resolve(strict=True) != self.root
                 or stat.S_ISLNK(metadata.st_mode)
                 or not stat.S_ISDIR(metadata.st_mode)
-                or metadata.st_uid != os.getuid()
+                or metadata.st_uid != os.getuid()  # windows-footgun: ok — POSIX owner journal
                 or stat.S_IMODE(metadata.st_mode) & 0o077
             ):
                 raise ProductionDatabaseRecoveryError(
@@ -268,7 +268,7 @@ class _Journal:
                 stat.S_ISLNK(before.st_mode)
                 or not stat.S_ISREG(before.st_mode)
                 or before.st_nlink != 1
-                or before.st_uid != os.getuid()
+                or before.st_uid != os.getuid()  # windows-footgun: ok — POSIX owner journal
                 or stat.S_IMODE(before.st_mode) != 0o600
                 or not 0 < before.st_size <= MAX_JSON
             ):

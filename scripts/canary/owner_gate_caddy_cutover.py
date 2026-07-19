@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Fixed, release-bound Caddy bridge and cutover for ``auth.lomliev.com``.
 
-The production entrypoint has exactly four allow-listed phases and accepts no
+The production entrypoint has exactly five allow-listed phases and accepts no
 paths, hosts, upstreams, commands, or configuration bytes from its caller.
 The two bootstrap phases read one canonical, digest-self-bound bridge document
 from standard input.  ``prepare-bridge`` snapshots the exact Caddyfile and
@@ -20,6 +20,11 @@ activation intent and its terminal receipt.  It atomically installs the
 private-v2 candidate, reloads Caddy, and verifies the public readiness
 endpoint.  Any failure after that irreversible boundary converges to a fixed
 503 maintenance route; it never restores the v1 route.
+
+The fixed ``converge`` phase is the crash-resumable production coordinator.
+It makes the verified public 503 maintenance route durable before invoking
+the irreversible writer cutover, permanently retires the exact legacy-v1
+verifier only after that intent exists, and then commits private-v2 ingress.
 """
 
 from __future__ import annotations
@@ -71,6 +76,13 @@ CADDY_COMMIT_STARTED_SCHEMA = "muncho-owner-gate-caddy-commit-started.v1"
 CADDY_POST_INTENT_FLOOR_SCHEMA = (
     "muncho-owner-gate-caddy-post-intent-maintenance-floor.v1"
 )
+LEGACY_RETIREMENT_SCHEMA = (
+    "muncho-owner-gate-legacy-v1-retirement.v1"
+)
+LEGACY_RETIREMENT_INTENT_SCHEMA = (
+    "muncho-owner-gate-legacy-v1-retirement-intent.v1"
+)
+CONVERGENCE_RECEIPT_SCHEMA = "muncho-owner-gate-production-convergence.v1"
 JOURNAL_ENTRY_SCHEMA = "muncho-owner-gate-caddy-cutover-journal-entry.v2"
 AUTHORITY_SCHEMA = "muncho-owner-gate-caddy-cutover-authority.v1"
 
@@ -118,6 +130,13 @@ LEGACY_STEP_UP_UNIT = "muncho-passkey-stepup.service"
 LEGACY_STEP_UP_FRAGMENT = Path(
     "/etc/systemd/system/muncho-passkey-stepup.service"
 )
+
+
+def _running_as_root() -> bool:
+    """Treat a missing POSIX effective-uid API as non-root."""
+
+    getter = getattr(os, "geteuid", None)
+    return bool(callable(getter) and int(getter()) == 0)
 LEGACY_STEP_UP_FRAGMENT_SHA256 = (
     "ab395d191e17c4b94cb19153338fd37a866d109dfec6b55373e3a1e7fb6dabc4"
 )
@@ -185,6 +204,7 @@ _FIXED_ARTIFACT_NAMES = frozenset(
         "approval-bridge.Caddyfile",
         "private-v2.Caddyfile",
         "maintenance.Caddyfile",
+        "legacy-stepup.service",
     }
 )
 _LEGACY_REQUEST_FIELDS = frozenset(
@@ -435,6 +455,87 @@ _CADDY_PREPARED_DEPENDENCY_FIELDS = frozenset(
         "receipt_sha256",
     }
 )
+_MAINTENANCE_ARM_FIELDS = frozenset({
+    "schema",
+    "release_revision",
+    "freeze_plan_sha256",
+    "cutover_plan_sha256",
+    "freeze_approval_sha256",
+    "authority_sha256",
+    "caddy_prepare_receipt_sha256",
+    "legacy_service_active_sha256",
+    "maintenance_caddy_sha256",
+    "active_route_projection_sha256",
+    "public_status",
+    "caddy_validated",
+    "caddy_reloaded",
+    "public_verified",
+    "v1_public_route_closed",
+    "rollback_mode",
+    "production_mutation_performed",
+    "caller_selected_input_accepted",
+    "secret_material_recorded",
+    "secret_digest_recorded",
+    "armed_at_unix",
+    "receipt_sha256",
+})
+_PRE_INTENT_RESTORE_INTENT_FIELDS = frozenset({
+    "schema",
+    "release_revision",
+    "freeze_plan_sha256",
+    "cutover_plan_sha256",
+    "freeze_approval_sha256",
+    "authority_sha256",
+    "caddy_prepare_receipt_sha256",
+    "maintenance_arm_receipt_sha256",
+    "original_caddy_sha256",
+    "maintenance_caddy_sha256",
+    "active_route_projection_sha256",
+    "public_status",
+    "public_verified",
+    "v1_public_route_closed",
+    "exact_original_artifact_available",
+    "forward_apply_invalidated",
+    "recovery_basis",
+    "rollback_terminal_receipt_sha256",
+    "rollback_mode",
+    "production_mutation_performed",
+    "caller_selected_input_accepted",
+    "secret_material_recorded",
+    "secret_digest_recorded",
+    "restore_started_at_unix",
+    "receipt_sha256",
+})
+_PRE_INTENT_RESTORE_FIELDS = frozenset({
+    "schema",
+    "release_revision",
+    "freeze_plan_sha256",
+    "cutover_plan_sha256",
+    "freeze_approval_sha256",
+    "authority_sha256",
+    "caddy_prepare_receipt_sha256",
+    "maintenance_arm_receipt_sha256",
+    "restore_intent_receipt_sha256",
+    "original_caddy_sha256",
+    "active_route_projection_sha256",
+    "exact_original_caddy_restored",
+    "caddy_validated",
+    "caddy_reloaded",
+    "live_readback_verified",
+    "v1_public_route_restored",
+    "gateway_terminal_event",
+    "gateway_terminal_receipt_sha256",
+    "recovery_basis",
+    "legacy_service_active_sha256",
+    "legacy_service_health_sha256",
+    "rollback_mode",
+    "production_mutation_performed",
+    "caller_selected_input_accepted",
+    "secret_material_recorded",
+    "secret_digest_recorded",
+    "restored_at_unix",
+    "receipt_sha256",
+})
 _CADDY_COMMIT_STARTED_FIELDS = frozenset(
     {
         "schema",
@@ -460,6 +561,63 @@ _CADDY_POST_INTENT_FLOOR_FIELDS = frozenset(
         "receipt_sha256",
     }
 )
+_LEGACY_RETIREMENT_FIELDS = frozenset({
+    "schema",
+    "release_revision",
+    "freeze_plan_sha256",
+    "cutover_plan_sha256",
+    "authority_sha256",
+    "maintenance_arm_receipt_sha256",
+    "legacy_terminal_receipt_sha256",
+    "legacy_service_active_before_sha256",
+    "legacy_service_fragment_backup_sha256",
+    "legacy_service_retired_sha256",
+    "unit",
+    "fragment_path",
+    "fragment_masked",
+    "service_inactive",
+    "permanent",
+    "v1_public_route_closed",
+    "rollback_mode",
+    "production_mutation_performed",
+    "caller_selected_input_accepted",
+    "secret_material_recorded",
+    "secret_digest_recorded",
+    "retired_at_unix",
+    "receipt_sha256",
+})
+_LEGACY_RETIREMENT_INTENT_FIELDS = frozenset({
+    "schema",
+    "release_revision",
+    "freeze_plan_sha256",
+    "cutover_plan_sha256",
+    "authority_sha256",
+    "maintenance_arm_receipt_sha256",
+    "legacy_terminal_receipt_sha256",
+    "legacy_service_fragment_backup_sha256",
+    "rollback_mode",
+    "recorded_at_unix",
+    "receipt_sha256",
+})
+_CONVERGENCE_RECEIPT_FIELDS = frozenset({
+    "schema",
+    "release_revision",
+    "freeze_plan_sha256",
+    "cutover_plan_sha256",
+    "preflight_receipt_sha256",
+    "caddy_prepare_receipt_sha256",
+    "maintenance_arm_receipt_sha256",
+    "cutover_terminal_receipt_sha256",
+    "caddy_terminal_receipt_sha256",
+    "caddy_outcome",
+    "legacy_service_retirement_receipt_sha256",
+    "control_plane_mutation_performed",
+    "source_data_mutation_performed",
+    "production_host_mutation_performed",
+    "secret_material_recorded",
+    "secret_digest_recorded",
+    "receipt_sha256",
+})
 _BRIDGE_INTENT_FIELDS = frozenset(
     {
         "bootstrap_input_sha256",
@@ -810,6 +968,20 @@ class LegacyServiceBoundary(Protocol):
     def start_exact(self, expected: Mapping[str, Any]) -> Mapping[str, Any]: ...
 
     def verify_local_v1(self) -> Mapping[str, Any]: ...
+
+
+class LegacyRetirementBoundary(Protocol):
+    def observe_active(self) -> Mapping[str, Any]: ...
+
+    def verify_local_v1(self) -> Mapping[str, Any]: ...
+
+    def snapshot_exact_fragment(
+        self, expected: Mapping[str, Any]
+    ) -> bytes: ...
+
+    def retire_exact(self) -> Mapping[str, Any]: ...
+
+    def observe_retired(self) -> Mapping[str, Any]: ...
 
 
 def _lex_caddyfile(raw: bytes) -> tuple[_Token, ...]:
@@ -1900,7 +2072,7 @@ def _restore_fenced_legacy_grants_root(
 
     descriptor: int | None = None
     try:
-        if os.geteuid() == 0:
+        if _running_as_root():
             descriptor = os.open(
                 grants_root,
                 os.O_RDONLY
@@ -2268,7 +2440,7 @@ def _legacy_grant_consumer_fence(
         # the same kernel-serialized claim protocol, while the deployed fixed
         # runtime additionally fences noncooperative uid-owned readers by
         # removing directory traversal permission.
-        if os.geteuid() != 0:
+        if not _running_as_root():
             yield
             return
         os.fchmod(descriptor, 0)
@@ -2296,7 +2468,7 @@ def _legacy_grant_consumer_fence(
     finally:
         if descriptor is not None:
             try:
-                if os.geteuid() == 0:
+                if _running_as_root():
                     os.fchown(descriptor, expected_uid, expected_gid)
                     os.fchmod(descriptor, 0o700)
                     os.fsync(descriptor)
@@ -3248,6 +3420,9 @@ class ProductionLegacyServiceBoundary:
             ),
             (SYSTEMCTL, "stop", "--", LEGACY_STEP_UP_UNIT),
             (SYSTEMCTL, "start", "--", LEGACY_STEP_UP_UNIT),
+            (SYSTEMCTL, "daemon-reload"),
+            (SYSTEMCTL, "is-enabled", "--", LEGACY_STEP_UP_UNIT),
+            (SYSTEMCTL, "is-active", "--", LEGACY_STEP_UP_UNIT),
         }
         if argv not in allowed:
             raise OwnerGateCaddyCutoverError(
@@ -3285,7 +3460,7 @@ class ProductionLegacyServiceBoundary:
         return stdout
 
     @staticmethod
-    def _fragment_sha256() -> str:
+    def _fragment_bytes() -> bytes:
         descriptor: int | None = None
         try:
             reached = os.lstat(LEGACY_STEP_UP_FRAGMENT)
@@ -3326,7 +3501,7 @@ class ProductionLegacyServiceBoundary:
                 raise OwnerGateCaddyCutoverError(
                     "owner_gate_caddy_legacy_service_identity_invalid"
                 )
-            return LEGACY_STEP_UP_FRAGMENT_SHA256
+            return bytes(raw)
         except OwnerGateCaddyCutoverError:
             raise
         except OSError as exc:
@@ -3336,6 +3511,15 @@ class ProductionLegacyServiceBoundary:
         finally:
             if descriptor is not None:
                 os.close(descriptor)
+
+    @classmethod
+    def _fragment_sha256(cls) -> str:
+        raw = cls._fragment_bytes()
+        if _sha256(raw) != LEGACY_STEP_UP_FRAGMENT_SHA256:
+            raise OwnerGateCaddyCutoverError(
+                "owner_gate_caddy_legacy_service_identity_invalid"
+            )
+        return LEGACY_STEP_UP_FRAGMENT_SHA256
 
     @classmethod
     def _show(cls) -> Mapping[str, str]:
@@ -3534,6 +3718,137 @@ class ProductionLegacyServiceBoundary:
                 "owner_gate_caddy_legacy_service_start_unconfirmed"
             )
         return active
+
+    def snapshot_exact_fragment(
+        self, expected: Mapping[str, Any]
+    ) -> bytes:
+        if self.observe_active() != expected:
+            raise OwnerGateCaddyCutoverError(
+                "owner_gate_caddy_legacy_service_changed"
+            )
+        raw = self._fragment_bytes()
+        if _sha256(raw) != LEGACY_STEP_UP_FRAGMENT_SHA256:
+            raise OwnerGateCaddyCutoverError(
+                "owner_gate_caddy_legacy_service_identity_invalid"
+            )
+        return raw
+
+    @staticmethod
+    def _masked_fragment() -> None:
+        try:
+            reached = os.lstat(LEGACY_STEP_UP_FRAGMENT)
+            target = os.readlink(LEGACY_STEP_UP_FRAGMENT)
+        except OSError as exc:
+            raise OwnerGateCaddyCutoverError(
+                "owner_gate_caddy_legacy_service_retirement_invalid"
+            ) from exc
+        if (
+            not stat.S_ISLNK(reached.st_mode)
+            or reached.st_uid != 0
+            or reached.st_gid != 0
+            or target != "/dev/null"
+        ):
+            raise OwnerGateCaddyCutoverError(
+                "owner_gate_caddy_legacy_service_retirement_invalid"
+            )
+
+    @classmethod
+    def _retired_observation(cls) -> Mapping[str, Any]:
+        cls._masked_fragment()
+        enabled = cls._run(
+            (SYSTEMCTL, "is-enabled", "--", LEGACY_STEP_UP_UNIT),
+            accepted=frozenset({1}),
+        )
+        active = cls._run(
+            (SYSTEMCTL, "is-active", "--", LEGACY_STEP_UP_UNIT),
+            accepted=frozenset({3}),
+        )
+        if enabled != b"masked\n" or active != b"inactive\n":
+            raise OwnerGateCaddyCutoverError(
+                "owner_gate_caddy_legacy_service_retirement_invalid"
+            )
+        unsigned = {
+            "schema": "muncho-caddy-v1-service-retired.v1",
+            "unit": LEGACY_STEP_UP_UNIT,
+            "fragment_path": str(LEGACY_STEP_UP_FRAGMENT),
+            "mask_target": "/dev/null",
+            "unit_file_state": "masked",
+            "active_state": "inactive",
+            "permanent": True,
+        }
+        return {
+            **unsigned,
+            "projection_sha256": _sha256(_canonical(unsigned)),
+        }
+
+    def observe_retired(self) -> Mapping[str, Any]:
+        return self._retired_observation()
+
+    def retire_exact(self) -> Mapping[str, Any]:
+        try:
+            self._masked_fragment()
+        except OwnerGateCaddyCutoverError:
+            pass
+        else:
+            # The on-disk mask may already be visible to ``is-enabled`` while
+            # PID 1 still has the old fragment cached.  Always reload before a
+            # masked fast-path can mint durable retirement evidence.
+            self._run((SYSTEMCTL, "daemon-reload"))
+            return self._retired_observation()
+        try:
+            active = self.observe_active()
+        except OwnerGateCaddyCutoverError:
+            # A process may have died after the durable retirement intent but
+            # before the unit path was masked.  Continue only if the exact
+            # pinned unit remains loaded, enabled, and inactive.
+            self._normalized(active=False)
+        else:
+            self.stop_exact(active)
+        temporary = LEGACY_STEP_UP_FRAGMENT.with_name(
+            f".{LEGACY_STEP_UP_FRAGMENT.name}.muncho-mask-{os.getpid()}"
+        )
+        if os.path.lexists(temporary):
+            raise OwnerGateCaddyCutoverError(
+                "owner_gate_caddy_legacy_service_retirement_invalid"
+            )
+        descriptor: int | None = None
+        try:
+            os.symlink("/dev/null", temporary)
+            reached = os.lstat(temporary)
+            if (
+                not stat.S_ISLNK(reached.st_mode)
+                or reached.st_uid != 0
+                or reached.st_gid != 0
+                or os.readlink(temporary) != "/dev/null"
+            ):
+                raise OwnerGateCaddyCutoverError(
+                    "owner_gate_caddy_legacy_service_retirement_invalid"
+                )
+            os.replace(temporary, LEGACY_STEP_UP_FRAGMENT)
+            descriptor = os.open(
+                LEGACY_STEP_UP_FRAGMENT.parent,
+                os.O_RDONLY
+                | getattr(os, "O_DIRECTORY", 0)
+                | getattr(os, "O_CLOEXEC", 0)
+                | getattr(os, "O_NOFOLLOW", 0),
+            )
+            os.fsync(descriptor)
+            self._run((SYSTEMCTL, "daemon-reload"))
+            return self._retired_observation()
+        except OwnerGateCaddyCutoverError:
+            raise
+        except OSError as exc:
+            raise OwnerGateCaddyCutoverError(
+                "owner_gate_caddy_legacy_service_retirement_invalid"
+            ) from exc
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
+            if os.path.lexists(temporary):
+                try:
+                    os.unlink(temporary)
+                except OSError:
+                    pass
 
     def _verify_local_v1_once(self) -> Mapping[str, Any]:
         connection = http.client.HTTPConnection("127.0.0.1", 8787, timeout=5)
@@ -5561,6 +5876,228 @@ def _publish_caddy_prepared_dependency(
     return observed
 
 
+def validate_maintenance_arm_receipt(
+    value: Any,
+    *,
+    authority: _Authority,
+    prepare_receipt: Mapping[str, Any],
+) -> Mapping[str, Any]:
+    prepared = validate_prepare_receipt(
+        prepare_receipt, plan=authority.plan
+    )
+    raw = _hashed(value, _MAINTENANCE_ARM_FIELDS, "maintenance_arm")
+    if (
+        raw["schema"] != cutover.CADDY_MAINTENANCE_ARM_SCHEMA
+        or raw["release_revision"]
+        != authority.plan.value["release_revision"]
+        or raw["freeze_plan_sha256"] != authority.freeze.sha256
+        or raw["cutover_plan_sha256"] != authority.plan.sha256
+        or raw["freeze_approval_sha256"] != authority.approval_sha256
+        or raw["authority_sha256"] != authority.sha256
+        or raw["caddy_prepare_receipt_sha256"]
+        != prepared["receipt_sha256"]
+        or any(
+            _SHA256.fullmatch(str(raw[field])) is None
+            for field in (
+                "legacy_service_active_sha256",
+                "maintenance_caddy_sha256",
+                "active_route_projection_sha256",
+            )
+        )
+        or raw["public_status"] != 503
+        or raw["caddy_validated"] is not True
+        or raw["caddy_reloaded"] is not True
+        or raw["public_verified"] is not True
+        or raw["v1_public_route_closed"] is not True
+        or raw["rollback_mode"]
+        != "pre_intent_exact_restore_available"
+        or raw["production_mutation_performed"] is not True
+        or raw["caller_selected_input_accepted"] is not False
+        or raw["secret_material_recorded"] is not False
+        or raw["secret_digest_recorded"] is not False
+        or type(raw["armed_at_unix"]) is not int
+        or raw["armed_at_unix"] < prepared["prepared_at_unix"]
+    ):
+        raise OwnerGateCaddyCutoverError(
+            "owner_gate_caddy_maintenance_arm_invalid"
+        )
+    return raw
+
+
+def _publish_maintenance_arm_dependency(
+    authority: _Authority,
+    *,
+    receipt: Mapping[str, Any],
+    journal: cutover.CutoverJournal,
+    now_unix: int,
+) -> Mapping[str, Any]:
+    entries = journal.load(authority.plan.sha256)
+    matches = [
+        entry
+        for entry in entries
+        if entry.value["event"] == "caddy_maintenance_armed"
+    ]
+    if len(matches) > 1:
+        raise OwnerGateCaddyCutoverError(
+            "owner_gate_caddy_maintenance_arm_invalid"
+        )
+    if matches:
+        if matches[0].value["evidence"] != receipt:
+            raise OwnerGateCaddyCutoverError(
+                "owner_gate_caddy_maintenance_arm_invalid"
+            )
+    else:
+        journal.append(
+            authority.plan.sha256,
+            "caddy_maintenance_armed",
+            receipt,
+            now_unix,
+        )
+        entries = journal.load(authority.plan.sha256)
+    try:
+        observed = cutover.require_caddy_maintenance_arm_dependency(
+            entries, authority.plan
+        )
+    except (TypeError, ValueError, cutover.ProductionCutoverError) as exc:
+        raise OwnerGateCaddyCutoverError(
+            "owner_gate_caddy_maintenance_arm_invalid"
+        ) from exc
+    if observed != receipt:
+        raise OwnerGateCaddyCutoverError(
+            "owner_gate_caddy_maintenance_arm_invalid"
+        )
+    return observed
+
+
+def arm_pre_intent_maintenance(
+    authority: _Authority,
+    *,
+    boundary: CaddyBoundary,
+    store: CaddyTransactionStore,
+    legacy_journal: cutover.CutoverJournal,
+    service: LegacyServiceBoundary,
+    now_unix: int,
+) -> Mapping[str, Any]:
+    """Durably close public v1 before any irreversible activation intent."""
+
+    legacy_entries = legacy_journal.load(authority.plan.sha256)
+    if _has_legacy_activation_intent(legacy_entries):
+        raise OwnerGateCaddyCutoverError(
+            "owner_gate_caddy_maintenance_arm_after_intent"
+        )
+    local_entries = store.load(authority.plan.sha256)
+    prepared_entry = _last(local_entries, "prepared")
+    if prepared_entry is None:
+        raise OwnerGateCaddyCutoverError("owner_gate_caddy_prepare_missing")
+    prepared = validate_prepare_receipt(
+        prepared_entry.value["evidence"], plan=authority.plan
+    )
+    configs = _DerivedConfigs(
+        store.read_artifact(authority.plan.sha256, "original.Caddyfile"),
+        store.read_artifact(
+            authority.plan.sha256, "approval-bridge.Caddyfile"
+        ),
+        store.read_artifact(authority.plan.sha256, "private-v2.Caddyfile"),
+        store.read_artifact(authority.plan.sha256, "maintenance.Caddyfile"),
+    )
+    if configs != _derive_configs(
+        configs.original, bridge_request_id=prepared["passkey_request_id"]
+    ):
+        raise OwnerGateCaddyCutoverError(
+            "owner_gate_caddy_artifact_invalid"
+        )
+    local_entries = store.load(authority.plan.sha256)
+    prior = _last(local_entries, "maintenance_armed")
+    legacy_active = service.observe_active()
+    if (
+        not isinstance(legacy_active, Mapping)
+        or _SHA256.fullmatch(
+            str(legacy_active.get("projection_sha256"))
+        )
+        is None
+    ):
+        raise OwnerGateCaddyCutoverError(
+            "owner_gate_caddy_legacy_service_identity_invalid"
+        )
+    boundary.validate_payload(configs.maintenance, mode="maintenance")
+    _replace_transaction_owned(
+        boundary,
+        configs.maintenance,
+        allowed_current_payloads=(
+            configs.original,
+            configs.approval_bridge,
+            configs.maintenance,
+        ),
+    )
+    boundary.reload()
+    projection = boundary.observe(mode="maintenance")
+    public = boundary.verify_public(expected_status=503)
+    _require_public_verification(public, expected_status=503)
+    if _SHA256.fullmatch(str(projection.get("projection_sha256"))) is None:
+        raise OwnerGateCaddyCutoverError(
+            "owner_gate_caddy_maintenance_arm_invalid"
+        )
+    unsigned = {
+        "schema": cutover.CADDY_MAINTENANCE_ARM_SCHEMA,
+        "release_revision": authority.plan.value["release_revision"],
+        "freeze_plan_sha256": authority.freeze.sha256,
+        "cutover_plan_sha256": authority.plan.sha256,
+        "freeze_approval_sha256": authority.approval_sha256,
+        "authority_sha256": authority.sha256,
+        "caddy_prepare_receipt_sha256": prepared["receipt_sha256"],
+        "legacy_service_active_sha256": legacy_active[
+            "projection_sha256"
+        ],
+        "maintenance_caddy_sha256": _sha256(configs.maintenance),
+        "active_route_projection_sha256": projection[
+            "projection_sha256"
+        ],
+        "public_status": 503,
+        "caddy_validated": True,
+        "caddy_reloaded": True,
+        "public_verified": True,
+        "v1_public_route_closed": True,
+        "rollback_mode": "pre_intent_exact_restore_available",
+        "production_mutation_performed": True,
+        "caller_selected_input_accepted": False,
+        "secret_material_recorded": False,
+        "secret_digest_recorded": False,
+        "armed_at_unix": (
+            now_unix
+            if prior is None
+            else prior.value["evidence"]["armed_at_unix"]
+        ),
+    }
+    receipt = validate_maintenance_arm_receipt(
+        {**unsigned, "receipt_sha256": _sha256(_canonical(unsigned))},
+        authority=authority,
+        prepare_receipt=prepared,
+    )
+    if prior is None:
+        store.append(
+            authority.plan.sha256,
+            "maintenance_armed",
+            receipt,
+            receipt["armed_at_unix"],
+        )
+    else:
+        observed = validate_maintenance_arm_receipt(
+            prior.value["evidence"],
+            authority=authority,
+            prepare_receipt=prepared,
+        )
+        if observed != receipt:
+            raise OwnerGateCaddyCutoverError(
+                "owner_gate_caddy_maintenance_arm_invalid"
+            )
+    return _publish_maintenance_arm_dependency(
+        authority,
+        receipt=receipt,
+        journal=legacy_journal,
+        now_unix=receipt["armed_at_unix"],
+    )
+
+
 def _replace_transaction_owned(
     boundary: CaddyBoundary,
     payload: bytes,
@@ -7137,6 +7674,1416 @@ def commit_cutover(
         ) from primary
 
 
+def _validate_pre_intent_restore_intent(
+    value: Any,
+    *,
+    authority: _Authority,
+    prepared: Mapping[str, Any],
+    arm: Mapping[str, Any],
+) -> Mapping[str, Any]:
+    raw = _hashed(
+        value,
+        _PRE_INTENT_RESTORE_INTENT_FIELDS,
+        "pre_intent_restore_intent",
+    )
+    if (
+        raw["schema"] != cutover.CADDY_PRE_INTENT_RESTORE_INTENT_SCHEMA
+        or raw["release_revision"]
+        != authority.plan.value["release_revision"]
+        or raw["freeze_plan_sha256"] != authority.freeze.sha256
+        or raw["cutover_plan_sha256"] != authority.plan.sha256
+        or raw["freeze_approval_sha256"] != authority.approval_sha256
+        or raw["authority_sha256"] != authority.sha256
+        or raw["caddy_prepare_receipt_sha256"]
+        != prepared.get("receipt_sha256")
+        or raw["maintenance_arm_receipt_sha256"]
+        != arm.get("receipt_sha256")
+        or _SHA256.fullmatch(str(raw["original_caddy_sha256"])) is None
+        or raw["maintenance_caddy_sha256"]
+        != arm.get("maintenance_caddy_sha256")
+        or raw["active_route_projection_sha256"]
+        != arm.get("active_route_projection_sha256")
+        or raw["public_status"] != 503
+        or raw["public_verified"] is not True
+        or raw["v1_public_route_closed"] is not True
+        or raw["exact_original_artifact_available"] is not True
+        or raw["forward_apply_invalidated"] is not True
+        or raw["recovery_basis"] not in {"freeze_abort", "cutover_rollback"}
+        or (
+            raw["recovery_basis"] == "freeze_abort"
+            and raw["rollback_terminal_receipt_sha256"] is not None
+        )
+        or (
+            raw["recovery_basis"] == "cutover_rollback"
+            and _SHA256.fullmatch(
+                str(raw["rollback_terminal_receipt_sha256"])
+            )
+            is None
+        )
+        or raw["rollback_mode"] != "pre_intent_exact_bytes"
+        or raw["production_mutation_performed"] is not False
+        or raw["caller_selected_input_accepted"] is not False
+        or raw["secret_material_recorded"] is not False
+        or raw["secret_digest_recorded"] is not False
+        or type(raw["restore_started_at_unix"]) is not int
+        or raw["restore_started_at_unix"] < arm.get("armed_at_unix", 0)
+    ):
+        raise OwnerGateCaddyCutoverError(
+            "owner_gate_caddy_pre_intent_restore_intent_invalid"
+        )
+    return raw
+
+
+def _publish_pre_intent_restore_intent(
+    authority: _Authority,
+    *,
+    prepared: Mapping[str, Any],
+    arm: Mapping[str, Any],
+    original_caddy_sha256: str,
+    maintenance_proof: Mapping[str, Any],
+    recovery_basis: str,
+    rollback_terminal_receipt_sha256: str | None,
+    journal: cutover.CutoverJournal,
+    now_unix: int,
+) -> Mapping[str, Any]:
+    entries = journal.load(authority.plan.sha256)
+    matches = [
+        entry
+        for entry in entries
+        if entry.value["event"] == "caddy_pre_intent_restore_intent"
+    ]
+    if len(matches) > 1:
+        raise OwnerGateCaddyCutoverError(
+            "owner_gate_caddy_pre_intent_restore_intent_invalid"
+        )
+    started_at = (
+        now_unix
+        if not matches
+        else matches[0].value["evidence"].get("restore_started_at_unix")
+    )
+    unsigned = {
+        "schema": cutover.CADDY_PRE_INTENT_RESTORE_INTENT_SCHEMA,
+        "release_revision": authority.plan.value["release_revision"],
+        "freeze_plan_sha256": authority.freeze.sha256,
+        "cutover_plan_sha256": authority.plan.sha256,
+        "freeze_approval_sha256": authority.approval_sha256,
+        "authority_sha256": authority.sha256,
+        "caddy_prepare_receipt_sha256": prepared["receipt_sha256"],
+        "maintenance_arm_receipt_sha256": arm["receipt_sha256"],
+        "original_caddy_sha256": original_caddy_sha256,
+        "maintenance_caddy_sha256": maintenance_proof[
+            "maintenance_caddy_sha256"
+        ],
+        "active_route_projection_sha256": maintenance_proof[
+            "active_route_projection_sha256"
+        ],
+        "public_status": 503,
+        "public_verified": True,
+        "v1_public_route_closed": True,
+        "exact_original_artifact_available": True,
+        "forward_apply_invalidated": True,
+        "recovery_basis": recovery_basis,
+        "rollback_terminal_receipt_sha256": (
+            rollback_terminal_receipt_sha256
+        ),
+        "rollback_mode": "pre_intent_exact_bytes",
+        "production_mutation_performed": False,
+        "caller_selected_input_accepted": False,
+        "secret_material_recorded": False,
+        "secret_digest_recorded": False,
+        "restore_started_at_unix": started_at,
+    }
+    expected = _validate_pre_intent_restore_intent(
+        {**unsigned, "receipt_sha256": _sha256(_canonical(unsigned))},
+        authority=authority,
+        prepared=prepared,
+        arm=arm,
+    )
+    if matches:
+        observed = _validate_pre_intent_restore_intent(
+            matches[0].value["evidence"],
+            authority=authority,
+            prepared=prepared,
+            arm=arm,
+        )
+        if (
+            matches[0].value["recorded_at_unix"]
+            != observed["restore_started_at_unix"]
+            or observed != expected
+        ):
+            raise OwnerGateCaddyCutoverError(
+                "owner_gate_caddy_pre_intent_restore_intent_invalid"
+            )
+        try:
+            gateway_observed = (
+                cutover.require_caddy_pre_intent_restore_intent_dependency(
+                    entries, authority.plan
+                )
+            )
+        except (TypeError, ValueError, cutover.ProductionCutoverError) as exc:
+            raise OwnerGateCaddyCutoverError(
+                "owner_gate_caddy_pre_intent_restore_intent_invalid"
+            ) from exc
+        if gateway_observed != observed:
+            raise OwnerGateCaddyCutoverError(
+                "owner_gate_caddy_pre_intent_restore_intent_invalid"
+            )
+        return observed
+    journal.append(
+        authority.plan.sha256,
+        "caddy_pre_intent_restore_intent",
+        expected,
+        expected["restore_started_at_unix"],
+    )
+    observed_entry = _last(
+        journal.load(authority.plan.sha256),
+        "caddy_pre_intent_restore_intent",
+    )
+    if observed_entry is None:
+        raise OwnerGateCaddyCutoverError(
+            "owner_gate_caddy_pre_intent_restore_intent_invalid"
+        )
+    observed = _validate_pre_intent_restore_intent(
+        observed_entry.value["evidence"],
+        authority=authority,
+        prepared=prepared,
+        arm=arm,
+    )
+    if observed != expected:
+        raise OwnerGateCaddyCutoverError(
+            "owner_gate_caddy_pre_intent_restore_intent_invalid"
+        )
+    try:
+        gateway_observed = (
+            cutover.require_caddy_pre_intent_restore_intent_dependency(
+                journal.load(authority.plan.sha256), authority.plan
+            )
+        )
+    except (TypeError, ValueError, cutover.ProductionCutoverError) as exc:
+        raise OwnerGateCaddyCutoverError(
+            "owner_gate_caddy_pre_intent_restore_intent_invalid"
+        ) from exc
+    if gateway_observed != observed:
+        raise OwnerGateCaddyCutoverError(
+            "owner_gate_caddy_pre_intent_restore_intent_invalid"
+        )
+    return observed
+
+
+def _publish_pre_intent_restore_dependency(
+    authority: _Authority,
+    *,
+    prepared: Mapping[str, Any],
+    arm: Mapping[str, Any],
+    intent: Mapping[str, Any],
+    original_caddy_sha256: str,
+    projection_sha256: str,
+    gateway_terminal_event: str,
+    gateway_terminal_receipt_sha256: str,
+    legacy_service_active_sha256: str,
+    legacy_service_health_sha256: str,
+    journal: cutover.CutoverJournal,
+    now_unix: int,
+) -> Mapping[str, Any]:
+    entries = journal.load(authority.plan.sha256)
+    matches = [
+        entry
+        for entry in entries
+        if entry.value["event"] == "caddy_pre_intent_restored"
+    ]
+    if len(matches) > 1:
+        raise OwnerGateCaddyCutoverError(
+            "owner_gate_caddy_pre_intent_restore_invalid"
+        )
+    restored_at = (
+        now_unix
+        if not matches
+        else matches[0].value["evidence"].get("restored_at_unix")
+    )
+    unsigned = {
+        "schema": cutover.CADDY_PRE_INTENT_RESTORE_SCHEMA,
+        "release_revision": authority.plan.value["release_revision"],
+        "freeze_plan_sha256": authority.freeze.sha256,
+        "cutover_plan_sha256": authority.plan.sha256,
+        "freeze_approval_sha256": authority.approval_sha256,
+        "authority_sha256": authority.sha256,
+        "caddy_prepare_receipt_sha256": prepared["receipt_sha256"],
+        "maintenance_arm_receipt_sha256": arm["receipt_sha256"],
+        "restore_intent_receipt_sha256": intent["receipt_sha256"],
+        "original_caddy_sha256": original_caddy_sha256,
+        "active_route_projection_sha256": projection_sha256,
+        "exact_original_caddy_restored": True,
+        "caddy_validated": True,
+        "caddy_reloaded": True,
+        "live_readback_verified": True,
+        "v1_public_route_restored": True,
+        "gateway_terminal_event": gateway_terminal_event,
+        "gateway_terminal_receipt_sha256": gateway_terminal_receipt_sha256,
+        "recovery_basis": intent["recovery_basis"],
+        "legacy_service_active_sha256": legacy_service_active_sha256,
+        "legacy_service_health_sha256": legacy_service_health_sha256,
+        "rollback_mode": "pre_intent_exact_bytes",
+        "production_mutation_performed": True,
+        "caller_selected_input_accepted": False,
+        "secret_material_recorded": False,
+        "secret_digest_recorded": False,
+        "restored_at_unix": restored_at,
+    }
+    expected = {**unsigned, "receipt_sha256": _sha256(_canonical(unsigned))}
+    if matches:
+        if matches[0].value["evidence"] != expected:
+            raise OwnerGateCaddyCutoverError(
+                "owner_gate_caddy_pre_intent_restore_invalid"
+            )
+    else:
+        journal.append(
+            authority.plan.sha256,
+            "caddy_pre_intent_restored",
+            expected,
+            restored_at,
+        )
+        entries = journal.load(authority.plan.sha256)
+    try:
+        observed = cutover.require_caddy_pre_intent_restore_dependency(
+            entries, authority.plan
+        )
+    except (TypeError, ValueError, cutover.ProductionCutoverError) as exc:
+        raise OwnerGateCaddyCutoverError(
+            "owner_gate_caddy_pre_intent_restore_invalid"
+        ) from exc
+    if observed != expected:
+        raise OwnerGateCaddyCutoverError(
+            "owner_gate_caddy_pre_intent_restore_invalid"
+        )
+    return observed
+
+
+def _restore_pre_intent_caddy(
+    authority: _Authority,
+    *,
+    boundary: CaddyBoundary,
+    store: CaddyTransactionStore,
+    legacy_journal: cutover.CutoverJournal,
+    gateway_terminal_event: str,
+    gateway_terminal: Mapping[str, Any],
+    service: LegacyRetirementBoundary,
+    now_unix: int,
+) -> Mapping[str, Any] | None:
+    """Restore exact captured ingress only while no activation intent exists."""
+
+    legacy_entries = legacy_journal.load(authority.plan.sha256)
+    if _has_legacy_activation_intent(legacy_entries):
+        raise OwnerGateCaddyCutoverError(
+            "owner_gate_caddy_pre_intent_restore_forbidden"
+        )
+    local_entries = store.load(authority.plan.sha256)
+    prepared_entry = _last(local_entries, "prepared")
+    if prepared_entry is None:
+        return None
+    prepared = validate_prepare_receipt(
+        prepared_entry.value["evidence"], plan=authority.plan
+    )
+    configs = _DerivedConfigs(
+        store.read_artifact(authority.plan.sha256, "original.Caddyfile"),
+        store.read_artifact(
+            authority.plan.sha256, "approval-bridge.Caddyfile"
+        ),
+        store.read_artifact(authority.plan.sha256, "private-v2.Caddyfile"),
+        store.read_artifact(authority.plan.sha256, "maintenance.Caddyfile"),
+    )
+    original_caddy_sha256 = _sha256(configs.original)
+    arm_entry = _last(local_entries, "maintenance_armed")
+    arm: Mapping[str, Any] | None = None
+    restore_intent: Mapping[str, Any] | None = None
+    if arm_entry is not None:
+        arm = validate_maintenance_arm_receipt(
+            arm_entry.value["evidence"],
+            authority=authority,
+            prepare_receipt=prepared,
+        )
+        try:
+            restore_intent = (
+                cutover.require_caddy_pre_intent_restore_intent_dependency(
+                    legacy_entries, authority.plan
+                )
+            )
+        except (TypeError, ValueError, cutover.ProductionCutoverError) as exc:
+            raise OwnerGateCaddyCutoverError(
+                "owner_gate_caddy_pre_intent_restore_intent_invalid"
+            ) from exc
+        if restore_intent["maintenance_arm_receipt_sha256"] != arm[
+            "receipt_sha256"
+        ]:
+            raise OwnerGateCaddyCutoverError(
+                "owner_gate_caddy_maintenance_arm_invalid"
+            )
+    if gateway_terminal_event == "freeze_aborted":
+        try:
+            validated_gateway_terminal = cutover._validate_freeze_abort_receipt(
+                gateway_terminal, plan=authority.freeze
+            )
+        except (TypeError, ValueError, cutover.ProductionCutoverError) as exc:
+            raise OwnerGateCaddyCutoverError(
+                "owner_gate_caddy_gateway_terminal_invalid"
+            ) from exc
+        if (
+            validated_gateway_terminal["cutover_plan_sha256"]
+            != authority.plan.sha256
+            or validated_gateway_terminal["caddy_restore_required"]
+            is not (restore_intent is not None)
+            or validated_gateway_terminal[
+                "caddy_restore_intent_receipt_sha256"
+            ]
+            != (
+                None
+                if restore_intent is None
+                else restore_intent["receipt_sha256"]
+            )
+            or (
+                restore_intent is not None
+                and restore_intent["recovery_basis"] != "freeze_abort"
+            )
+        ):
+            raise OwnerGateCaddyCutoverError(
+                "owner_gate_caddy_gateway_terminal_invalid"
+            )
+    elif gateway_terminal_event == "rollback_terminal":
+        rollback_entry = _last(legacy_entries, "rollback_terminal")
+        try:
+            validated_gateway_terminal = cutover._validate_rollback_terminal(
+                gateway_terminal,
+                plan=authority.plan,
+                entries=legacy_entries,
+            )
+        except (TypeError, ValueError, cutover.ProductionCutoverError) as exc:
+            raise OwnerGateCaddyCutoverError(
+                "owner_gate_caddy_gateway_terminal_invalid"
+            ) from exc
+        if (
+            rollback_entry is None
+            or rollback_entry.value["evidence"] != validated_gateway_terminal
+            or restore_intent is None
+            or restore_intent["recovery_basis"] != "cutover_rollback"
+            or restore_intent["rollback_terminal_receipt_sha256"]
+            != validated_gateway_terminal["receipt_sha256"]
+        ):
+            raise OwnerGateCaddyCutoverError(
+                "owner_gate_caddy_gateway_terminal_invalid"
+            )
+    else:
+        raise OwnerGateCaddyCutoverError(
+            "owner_gate_caddy_gateway_terminal_invalid"
+        )
+    active = service.observe_active()
+    health = service.verify_local_v1()
+    if (
+        _SHA256.fullmatch(str(active.get("projection_sha256"))) is None
+        or _SHA256.fullmatch(str(health.get("projection_sha256"))) is None
+        or (
+            arm is not None
+            and active["projection_sha256"]
+            != arm["legacy_service_active_sha256"]
+        )
+    ):
+        raise OwnerGateCaddyCutoverError(
+            "owner_gate_caddy_legacy_service_health_invalid"
+        )
+    boundary.validate_payload(configs.original, mode="legacy")
+    _replace_transaction_owned(
+        boundary,
+        configs.original,
+        allowed_current_payloads=(
+            configs.original,
+            configs.approval_bridge,
+            configs.maintenance,
+        ),
+    )
+    boundary.reload()
+    projection = boundary.observe(mode="legacy")
+    if _SHA256.fullmatch(str(projection.get("projection_sha256"))) is None:
+        raise OwnerGateCaddyCutoverError(
+            "owner_gate_caddy_pre_intent_restore_invalid"
+        )
+    prior = _last(store.load(authority.plan.sha256), "pre_migration_exact_restore")
+    if prior is not None:
+        evidence = prior.value["evidence"]
+        if (
+            evidence.get("authority_sha256") != authority.sha256
+            or evidence.get("v1_route_restored") is not True
+            or evidence.get("rollback_mode")
+            != "pre_migration_exact_bytes"
+        ):
+            raise OwnerGateCaddyCutoverError(
+                "owner_gate_caddy_pre_intent_restore_invalid"
+            )
+        if (
+            evidence.get("prepare_receipt_sha256")
+            != prepared["receipt_sha256"]
+            or evidence.get("active_route_projection_sha256")
+            != projection["projection_sha256"]
+        ):
+            raise OwnerGateCaddyCutoverError(
+                "owner_gate_caddy_pre_intent_restore_invalid"
+            )
+    else:
+        evidence = {
+            "authority_sha256": authority.sha256,
+            "prepare_receipt_sha256": prepared["receipt_sha256"],
+            "active_route_projection_sha256": projection[
+                "projection_sha256"
+            ],
+            "v1_route_restored": True,
+            "rollback_mode": "pre_migration_exact_bytes",
+        }
+        store.append(
+            authority.plan.sha256,
+            "pre_migration_exact_restore",
+            evidence,
+            now_unix,
+        )
+    if arm is None or restore_intent is None:
+        return copy.deepcopy(dict(evidence))
+    return _publish_pre_intent_restore_dependency(
+        authority,
+        prepared=prepared,
+        arm=arm,
+        intent=restore_intent,
+        original_caddy_sha256=original_caddy_sha256,
+        projection_sha256=projection["projection_sha256"],
+        gateway_terminal_event=gateway_terminal_event,
+        gateway_terminal_receipt_sha256=validated_gateway_terminal[
+            "receipt_sha256"
+        ],
+        legacy_service_active_sha256=active["projection_sha256"],
+        legacy_service_health_sha256=health["projection_sha256"],
+        journal=legacy_journal,
+        now_unix=now_unix,
+    )
+
+
+def validate_legacy_retirement_receipt(
+    value: Any,
+    *,
+    authority: _Authority,
+    maintenance_arm_receipt: Mapping[str, Any],
+    legacy_terminal: Mapping[str, Any],
+) -> Mapping[str, Any]:
+    raw = _hashed(value, _LEGACY_RETIREMENT_FIELDS, "legacy_retirement")
+    if (
+        raw["schema"] != LEGACY_RETIREMENT_SCHEMA
+        or raw["release_revision"]
+        != authority.plan.value["release_revision"]
+        or raw["freeze_plan_sha256"] != authority.freeze.sha256
+        or raw["cutover_plan_sha256"] != authority.plan.sha256
+        or raw["authority_sha256"] != authority.sha256
+        or raw["maintenance_arm_receipt_sha256"]
+        != maintenance_arm_receipt.get("receipt_sha256")
+        or raw["legacy_terminal_receipt_sha256"]
+        != legacy_terminal.get("receipt_sha256")
+        or raw["legacy_service_active_before_sha256"]
+        != maintenance_arm_receipt.get("legacy_service_active_sha256")
+        or any(
+            _SHA256.fullmatch(str(raw[field])) is None
+            for field in (
+                "legacy_service_fragment_backup_sha256",
+                "legacy_service_retired_sha256",
+            )
+        )
+        or raw["legacy_service_fragment_backup_sha256"]
+        != LEGACY_STEP_UP_FRAGMENT_SHA256
+        or raw["unit"] != LEGACY_STEP_UP_UNIT
+        or raw["fragment_path"] != str(LEGACY_STEP_UP_FRAGMENT)
+        or raw["fragment_masked"] is not True
+        or raw["service_inactive"] is not True
+        or raw["permanent"] is not True
+        or raw["v1_public_route_closed"] is not True
+        or raw["rollback_mode"] != "forward_only_private_v2_or_maintenance"
+        or raw["production_mutation_performed"] is not True
+        or raw["caller_selected_input_accepted"] is not False
+        or raw["secret_material_recorded"] is not False
+        or raw["secret_digest_recorded"] is not False
+        or type(raw["retired_at_unix"]) is not int
+        or raw["retired_at_unix"] <= 0
+    ):
+        raise OwnerGateCaddyCutoverError(
+            "owner_gate_caddy_legacy_retirement_invalid"
+        )
+    return raw
+
+
+def retire_legacy_service(
+    authority: _Authority,
+    *,
+    boundary: CaddyBoundary,
+    store: CaddyTransactionStore,
+    legacy_journal: cutover.CutoverJournal,
+    service: LegacyRetirementBoundary,
+    now_unix: int,
+) -> Mapping[str, Any]:
+    """Permanently mask exact legacy-v1 only after the durable intent."""
+
+    caddy_entries = store.load(authority.plan.sha256)
+    prepared_entry = _last(caddy_entries, "prepared")
+    arm_entry = _last(caddy_entries, "maintenance_armed")
+    if prepared_entry is None or arm_entry is None:
+        raise OwnerGateCaddyCutoverError(
+            "owner_gate_caddy_legacy_retirement_invalid"
+        )
+    prepared = validate_prepare_receipt(
+        prepared_entry.value["evidence"], plan=authority.plan
+    )
+    arm = validate_maintenance_arm_receipt(
+        arm_entry.value["evidence"],
+        authority=authority,
+        prepare_receipt=prepared,
+    )
+    lineage = _legacy_commit_lineage(authority, journal=legacy_journal)
+    if lineage is None or lineage[1] is None:
+        raise OwnerGateCaddyCutoverError(
+            "owner_gate_caddy_legacy_retirement_before_terminal"
+        )
+    _legacy_intent, legacy_terminal = lineage
+    prior = _last(caddy_entries, "legacy_v1_retired")
+    if prior is not None:
+        receipt = validate_legacy_retirement_receipt(
+            prior.value["evidence"],
+            authority=authority,
+            maintenance_arm_receipt=arm,
+            legacy_terminal=legacy_terminal,
+        )
+        retired = service.observe_retired()
+        if (
+            retired.get("projection_sha256")
+            != receipt["legacy_service_retired_sha256"]
+            or _sha256(
+                store.read_artifact(
+                    authority.plan.sha256, "legacy-stepup.service"
+                )
+            )
+            != receipt["legacy_service_fragment_backup_sha256"]
+        ):
+            raise OwnerGateCaddyCutoverError(
+                "owner_gate_caddy_legacy_retirement_invalid"
+            )
+        return receipt
+    configs = _DerivedConfigs(
+        store.read_artifact(authority.plan.sha256, "original.Caddyfile"),
+        store.read_artifact(
+            authority.plan.sha256, "approval-bridge.Caddyfile"
+        ),
+        store.read_artifact(authority.plan.sha256, "private-v2.Caddyfile"),
+        store.read_artifact(authority.plan.sha256, "maintenance.Caddyfile"),
+    )
+    if boundary.stable_read().raw != configs.maintenance:
+        raise OwnerGateCaddyCutoverError(
+            "owner_gate_caddy_legacy_retirement_without_maintenance"
+        )
+    projection = boundary.observe(mode="maintenance")
+    public = boundary.verify_public(expected_status=503)
+    _require_public_verification(public, expected_status=503)
+    if (
+        projection.get("projection_sha256")
+        != arm["active_route_projection_sha256"]
+    ):
+        raise OwnerGateCaddyCutoverError(
+            "owner_gate_caddy_legacy_retirement_without_maintenance"
+        )
+    intent_entry = _last(caddy_entries, "legacy_retirement_intent")
+    if intent_entry is None:
+        active = service.observe_active()
+        if (
+            not isinstance(active, Mapping)
+            or _SHA256.fullmatch(
+                str(active.get("projection_sha256"))
+            )
+            is None
+        ):
+            raise OwnerGateCaddyCutoverError(
+                "owner_gate_caddy_legacy_service_identity_invalid"
+            )
+        fragment = service.snapshot_exact_fragment(active)
+        if _sha256(fragment) != LEGACY_STEP_UP_FRAGMENT_SHA256:
+            raise OwnerGateCaddyCutoverError(
+                "owner_gate_caddy_legacy_service_identity_invalid"
+            )
+        store.install_artifact(
+            authority.plan.sha256, "legacy-stepup.service", fragment
+        )
+        intent_unsigned = {
+            "schema": LEGACY_RETIREMENT_INTENT_SCHEMA,
+            "release_revision": authority.plan.value["release_revision"],
+            "freeze_plan_sha256": authority.freeze.sha256,
+            "cutover_plan_sha256": authority.plan.sha256,
+            "authority_sha256": authority.sha256,
+            "maintenance_arm_receipt_sha256": arm["receipt_sha256"],
+            "legacy_terminal_receipt_sha256": legacy_terminal[
+                "receipt_sha256"
+            ],
+            "legacy_service_fragment_backup_sha256": _sha256(fragment),
+            "rollback_mode": "forward_only_private_v2_or_maintenance",
+            "recorded_at_unix": now_unix,
+        }
+        intent = {
+            **intent_unsigned,
+            "receipt_sha256": _sha256(_canonical(intent_unsigned)),
+        }
+        store.append(
+            authority.plan.sha256,
+            "legacy_retirement_intent",
+            intent,
+            now_unix,
+        )
+    else:
+        intent = _hashed(
+            intent_entry.value["evidence"],
+            _LEGACY_RETIREMENT_INTENT_FIELDS,
+            "legacy_retirement_intent",
+        )
+        if (
+            intent["schema"] != LEGACY_RETIREMENT_INTENT_SCHEMA
+            or intent["release_revision"]
+            != authority.plan.value["release_revision"]
+            or intent["freeze_plan_sha256"] != authority.freeze.sha256
+            or intent["cutover_plan_sha256"] != authority.plan.sha256
+            or intent["authority_sha256"] != authority.sha256
+            or intent["maintenance_arm_receipt_sha256"]
+            != arm["receipt_sha256"]
+            or intent["legacy_terminal_receipt_sha256"]
+            != legacy_terminal["receipt_sha256"]
+            or intent["legacy_service_fragment_backup_sha256"]
+            != LEGACY_STEP_UP_FRAGMENT_SHA256
+            or intent["rollback_mode"]
+            != "forward_only_private_v2_or_maintenance"
+        ):
+            raise OwnerGateCaddyCutoverError(
+                "owner_gate_caddy_legacy_retirement_invalid"
+            )
+        backup = store.read_artifact(
+            authority.plan.sha256, "legacy-stepup.service"
+        )
+        if _sha256(backup) != LEGACY_STEP_UP_FRAGMENT_SHA256:
+            raise OwnerGateCaddyCutoverError(
+                "owner_gate_caddy_legacy_retirement_invalid"
+            )
+    retired = service.retire_exact()
+    if (
+        not isinstance(retired, Mapping)
+        or _SHA256.fullmatch(
+            str(retired.get("projection_sha256"))
+        )
+        is None
+    ):
+        raise OwnerGateCaddyCutoverError(
+            "owner_gate_caddy_legacy_retirement_invalid"
+        )
+    unsigned = {
+        "schema": LEGACY_RETIREMENT_SCHEMA,
+        "release_revision": authority.plan.value["release_revision"],
+        "freeze_plan_sha256": authority.freeze.sha256,
+        "cutover_plan_sha256": authority.plan.sha256,
+        "authority_sha256": authority.sha256,
+        "maintenance_arm_receipt_sha256": arm["receipt_sha256"],
+        "legacy_terminal_receipt_sha256": legacy_terminal[
+            "receipt_sha256"
+        ],
+        "legacy_service_active_before_sha256": arm[
+            "legacy_service_active_sha256"
+        ],
+        "legacy_service_fragment_backup_sha256": (
+            LEGACY_STEP_UP_FRAGMENT_SHA256
+        ),
+        "legacy_service_retired_sha256": retired["projection_sha256"],
+        "unit": LEGACY_STEP_UP_UNIT,
+        "fragment_path": str(LEGACY_STEP_UP_FRAGMENT),
+        "fragment_masked": True,
+        "service_inactive": True,
+        "permanent": True,
+        "v1_public_route_closed": True,
+        "rollback_mode": "forward_only_private_v2_or_maintenance",
+        "production_mutation_performed": True,
+        "caller_selected_input_accepted": False,
+        "secret_material_recorded": False,
+        "secret_digest_recorded": False,
+        "retired_at_unix": now_unix,
+    }
+    receipt = validate_legacy_retirement_receipt(
+        {**unsigned, "receipt_sha256": _sha256(_canonical(unsigned))},
+        authority=authority,
+        maintenance_arm_receipt=arm,
+        legacy_terminal=legacy_terminal,
+    )
+    store.append(
+        authority.plan.sha256,
+        "legacy_v1_retired",
+        receipt,
+        now_unix,
+    )
+    return receipt
+
+
+def validate_convergence_receipt(
+    value: Any,
+    *,
+    authority: _Authority,
+) -> Mapping[str, Any]:
+    raw = _hashed(value, _CONVERGENCE_RECEIPT_FIELDS, "convergence")
+    if (
+        raw["schema"] != CONVERGENCE_RECEIPT_SCHEMA
+        or raw["release_revision"]
+        != authority.plan.value["release_revision"]
+        or raw["freeze_plan_sha256"] != authority.freeze.sha256
+        or raw["cutover_plan_sha256"] != authority.plan.sha256
+        or any(
+            _SHA256.fullmatch(str(raw[field])) is None
+            for field in (
+                "preflight_receipt_sha256",
+                "caddy_prepare_receipt_sha256",
+                "maintenance_arm_receipt_sha256",
+                "cutover_terminal_receipt_sha256",
+                "caddy_terminal_receipt_sha256",
+                "legacy_service_retirement_receipt_sha256",
+            )
+        )
+        or raw["caddy_outcome"]
+        not in {"private_v2_active", "maintenance_active"}
+        or raw["control_plane_mutation_performed"] is not True
+        or raw["source_data_mutation_performed"] is not True
+        or raw["production_host_mutation_performed"] is not True
+        or raw["secret_material_recorded"] is not False
+        or raw["secret_digest_recorded"] is not False
+    ):
+        raise OwnerGateCaddyCutoverError(
+            "owner_gate_caddy_convergence_receipt_invalid"
+        )
+    return raw
+
+
+def _require_receipt_sha256(
+    value: Any,
+    *,
+    plan_sha256: str,
+    error_code: str,
+) -> Mapping[str, Any]:
+    if (
+        not isinstance(value, Mapping)
+        or value.get("plan_sha256") != plan_sha256
+        or _SHA256.fullmatch(str(value.get("receipt_sha256"))) is None
+    ):
+        raise OwnerGateCaddyCutoverError(error_code)
+    return copy.deepcopy(dict(value))
+
+
+def converge_cutover(
+    authority: _Authority,
+    *,
+    boundary_factory: Callable[[], CaddyBoundary],
+    store_factory: Callable[[], CaddyTransactionStore],
+    legacy_journal_factory: Callable[[], cutover.CutoverJournal],
+    retirement_boundary_factory: Callable[[], LegacyRetirementBoundary],
+    cutover_runner: Callable[[str], Mapping[str, Any]],
+    lock: Callable[[], AbstractContextManager[Any]],
+    now_unix: int,
+) -> Mapping[str, Any]:
+    """Converge the fixed staged cutover across every process crash point."""
+
+    if not all(
+        callable(item)
+        for item in (
+            boundary_factory,
+            store_factory,
+            legacy_journal_factory,
+            retirement_boundary_factory,
+            cutover_runner,
+            lock,
+        )
+    ):
+        raise OwnerGateCaddyCutoverError(
+            "owner_gate_caddy_convergence_boundary_invalid"
+        )
+    preflight: Mapping[str, Any] | None = None
+    prepared: Mapping[str, Any] | None = None
+    arm: Mapping[str, Any] | None = None
+    terminal: Mapping[str, Any] | None = None
+    retirement: Mapping[str, Any] | None = None
+    caddy_terminal: Mapping[str, Any] | None = None
+    legacy_journal = legacy_journal_factory()
+    initial_legacy_entries = legacy_journal.load(authority.plan.sha256)
+    existing_restore_intent = _last(
+        initial_legacy_entries, "caddy_pre_intent_restore_intent"
+    )
+    if existing_restore_intent is not None:
+        try:
+            restore_handoff = (
+                cutover.require_caddy_pre_intent_restore_intent_dependency(
+                    initial_legacy_entries, authority.plan
+                )
+            )
+        except (TypeError, ValueError, cutover.ProductionCutoverError) as exc:
+            raise OwnerGateCaddyCutoverError(
+                "owner_gate_caddy_pre_intent_restore_intent_invalid"
+            ) from exc
+        if restore_handoff["recovery_basis"] == "freeze_abort":
+            gateway_terminal_event = "freeze_aborted"
+            gateway_terminal = cutover_runner("abort-freeze")
+            completed_error = "owner_gate_caddy_pre_intent_aborted"
+        else:
+            rollback_entry = _last(initial_legacy_entries, "rollback_terminal")
+            if rollback_entry is None:
+                raise OwnerGateCaddyCutoverError(
+                    "owner_gate_caddy_gateway_terminal_invalid"
+                )
+            gateway_terminal_event = "rollback_terminal"
+            gateway_terminal = rollback_entry.value["evidence"]
+            completed_error = "owner_gate_caddy_cutover_rolled_back_restored"
+        with lock():
+            _restore_pre_intent_caddy(
+                authority,
+                boundary=boundary_factory(),
+                store=store_factory(),
+                legacy_journal=legacy_journal,
+                gateway_terminal_event=gateway_terminal_event,
+                gateway_terminal=gateway_terminal,
+                service=retirement_boundary_factory(),
+                now_unix=now_unix,
+            )
+        raise OwnerGateCaddyCutoverError(completed_error)
+    initial_freeze_entries = legacy_journal.load(authority.freeze.sha256)
+    freeze_aborts = [
+        entry
+        for entry in initial_freeze_entries
+        if entry.value["event"] == "freeze_aborted"
+    ]
+    if freeze_aborts:
+        if (
+            len(freeze_aborts) != 1
+            or freeze_aborts[0].value["sequence"]
+            != len(initial_freeze_entries) - 1
+        ):
+            raise OwnerGateCaddyCutoverError(
+                "owner_gate_caddy_gateway_terminal_invalid"
+            )
+        try:
+            freeze_abort = cutover._validate_freeze_abort_receipt(
+                freeze_aborts[0].value["evidence"],
+                plan=authority.freeze,
+            )
+        except (TypeError, ValueError, cutover.ProductionCutoverError) as exc:
+            raise OwnerGateCaddyCutoverError(
+                "owner_gate_caddy_gateway_terminal_invalid"
+            ) from exc
+        if freeze_abort["caddy_restore_required"]:
+            raise OwnerGateCaddyCutoverError(
+                "owner_gate_caddy_pre_intent_restore_intent_invalid"
+            )
+        if freeze_abort["cutover_plan_sha256"] not in {
+            None,
+            authority.plan.sha256,
+        }:
+            raise OwnerGateCaddyCutoverError(
+                "owner_gate_caddy_gateway_terminal_invalid"
+            )
+        raise OwnerGateCaddyCutoverError(
+            "owner_gate_caddy_pre_intent_aborted"
+        )
+    try:
+        with lock():
+            boundary = boundary_factory()
+            store = store_factory()
+            initial_entries = store.load(authority.plan.sha256)
+            convergence_entry = _last(
+                initial_entries, "convergence_terminal"
+            )
+            preflight_entry = _last(
+                initial_entries, "preflight_accepted"
+            )
+            if convergence_entry is not None:
+                prior = validate_convergence_receipt(
+                    convergence_entry.value["evidence"],
+                    authority=authority,
+                )
+                prepared_entry = _last(initial_entries, "prepared")
+                arm_entry = _last(initial_entries, "maintenance_armed")
+                if (
+                    prepared_entry is None
+                    or arm_entry is None
+                    or preflight_entry is None
+                ):
+                    raise OwnerGateCaddyCutoverError(
+                        "owner_gate_caddy_convergence_receipt_invalid"
+                    )
+                prepared = validate_prepare_receipt(
+                    prepared_entry.value["evidence"],
+                    plan=authority.plan,
+                )
+                arm = validate_maintenance_arm_receipt(
+                    arm_entry.value["evidence"],
+                    authority=authority,
+                    prepare_receipt=prepared,
+                )
+                preflight = _require_receipt_sha256(
+                    preflight_entry.value["evidence"],
+                    plan_sha256=authority.plan.sha256,
+                    error_code=(
+                        "owner_gate_caddy_preflight_receipt_invalid"
+                    ),
+                )
+                retirement = retire_legacy_service(
+                    authority,
+                    boundary=boundary,
+                    store=store,
+                    legacy_journal=legacy_journal,
+                    service=retirement_boundary_factory(),
+                    now_unix=now_unix,
+                )
+                caddy_terminal = validate_terminal_receipt(
+                    commit_cutover(
+                        authority,
+                        boundary=boundary,
+                        store=store,
+                        legacy_journal=legacy_journal,
+                        now_unix=now_unix,
+                    ),
+                    plan=authority.plan,
+                    prepare_receipt=prepared,
+                )
+                lineage = _legacy_commit_lineage(
+                    authority, journal=legacy_journal
+                )
+                if (
+                    lineage is None
+                    or lineage[1] is None
+                    or prior["preflight_receipt_sha256"]
+                    != preflight["receipt_sha256"]
+                    or prior["caddy_prepare_receipt_sha256"]
+                    != prepared["receipt_sha256"]
+                    or prior["maintenance_arm_receipt_sha256"]
+                    != arm["receipt_sha256"]
+                    or prior["cutover_terminal_receipt_sha256"]
+                    != lineage[1]["receipt_sha256"]
+                    or prior["caddy_terminal_receipt_sha256"]
+                    != caddy_terminal["receipt_sha256"]
+                    or prior["caddy_outcome"] != caddy_terminal["outcome"]
+                    or prior[
+                        "legacy_service_retirement_receipt_sha256"
+                    ]
+                    != retirement["receipt_sha256"]
+                ):
+                    raise OwnerGateCaddyCutoverError(
+                        "owner_gate_caddy_convergence_receipt_invalid"
+                    )
+                return prior
+        if preflight_entry is None:
+            preflight = _require_receipt_sha256(
+                cutover_runner("phase-b-preflight"),
+                plan_sha256=authority.plan.sha256,
+                error_code="owner_gate_caddy_preflight_receipt_invalid",
+            )
+            with lock():
+                store = store_factory()
+                observed = _last(
+                    store.load(authority.plan.sha256),
+                    "preflight_accepted",
+                )
+                if observed is None:
+                    store.append(
+                        authority.plan.sha256,
+                        "preflight_accepted",
+                        preflight,
+                        now_unix,
+                    )
+                elif observed.value["evidence"] != preflight:
+                    raise OwnerGateCaddyCutoverError(
+                        "owner_gate_caddy_preflight_receipt_invalid"
+                    )
+        else:
+            preflight = _require_receipt_sha256(
+                preflight_entry.value["evidence"],
+                plan_sha256=authority.plan.sha256,
+                error_code="owner_gate_caddy_preflight_receipt_invalid",
+            )
+        with lock():
+            boundary = boundary_factory()
+            store = store_factory()
+            caddy_entries = store.load(authority.plan.sha256)
+            prepared_entry = _last(caddy_entries, "prepared")
+            if prepared_entry is None:
+                prepared = prepare_cutover(
+                    authority,
+                    boundary=boundary,
+                    store=store,
+                    legacy_journal=legacy_journal,
+                    now_unix=now_unix,
+                )
+            else:
+                prepared = validate_prepare_receipt(
+                    prepared_entry.value["evidence"],
+                    plan=authority.plan,
+                )
+            legacy_entries = legacy_journal.load(authority.plan.sha256)
+            activation_intent = _has_legacy_activation_intent(
+                legacy_entries
+            )
+            if not activation_intent:
+                arm = arm_pre_intent_maintenance(
+                    authority,
+                    boundary=boundary,
+                    store=store,
+                    legacy_journal=legacy_journal,
+                    service=retirement_boundary_factory(),
+                    now_unix=now_unix,
+                )
+            else:
+                arm_entry = _last(
+                    store.load(authority.plan.sha256),
+                    "maintenance_armed",
+                )
+                if arm_entry is None:
+                    raise OwnerGateCaddyCutoverError(
+                        "owner_gate_caddy_maintenance_arm_invalid"
+                    )
+                arm = validate_maintenance_arm_receipt(
+                    arm_entry.value["evidence"],
+                    authority=authority,
+                    prepare_receipt=prepared,
+                )
+                cutover.require_caddy_maintenance_arm_dependency(
+                    legacy_entries, authority.plan
+                )
+                if _last(caddy_entries, "terminal") is None:
+                    configs = _DerivedConfigs(
+                        store.read_artifact(
+                            authority.plan.sha256, "original.Caddyfile"
+                        ),
+                        store.read_artifact(
+                            authority.plan.sha256,
+                            "approval-bridge.Caddyfile",
+                        ),
+                        store.read_artifact(
+                            authority.plan.sha256,
+                            "private-v2.Caddyfile",
+                        ),
+                        store.read_artifact(
+                            authority.plan.sha256,
+                            "maintenance.Caddyfile",
+                        ),
+                    )
+                    boundary.validate_payload(
+                        configs.maintenance, mode="maintenance"
+                    )
+                    _replace_transaction_owned(
+                        boundary,
+                        configs.maintenance,
+                        allowed_current_payloads=(
+                            configs.original,
+                            configs.approval_bridge,
+                            configs.private_v2,
+                            configs.maintenance,
+                        ),
+                    )
+                    boundary.reload()
+                    boundary.observe(mode="maintenance")
+                    public = boundary.verify_public(expected_status=503)
+                    _require_public_verification(
+                        public, expected_status=503
+                    )
+        terminal = _require_receipt_sha256(
+            cutover_runner("apply-cutover"),
+            plan_sha256=authority.plan.sha256,
+            error_code="owner_gate_caddy_cutover_terminal_invalid",
+        )
+        with lock():
+            boundary = boundary_factory()
+            store = store_factory()
+            configs = _DerivedConfigs(
+                store.read_artifact(
+                    authority.plan.sha256, "original.Caddyfile"
+                ),
+                store.read_artifact(
+                    authority.plan.sha256, "approval-bridge.Caddyfile"
+                ),
+                store.read_artifact(
+                    authority.plan.sha256, "private-v2.Caddyfile"
+                ),
+                store.read_artifact(
+                    authority.plan.sha256, "maintenance.Caddyfile"
+                ),
+            )
+            replay_terminal = _last(
+                store.load(authority.plan.sha256), "terminal"
+            )
+            replay_retirement = _last(
+                store.load(authority.plan.sha256), "legacy_v1_retired"
+            )
+            if (
+                replay_terminal is None or replay_retirement is None
+            ) and boundary.stable_read().raw != configs.maintenance:
+                boundary.validate_payload(
+                    configs.maintenance, mode="maintenance"
+                )
+                _replace_transaction_owned(
+                    boundary,
+                    configs.maintenance,
+                    allowed_current_payloads=(
+                        configs.original,
+                        configs.approval_bridge,
+                        configs.private_v2,
+                        configs.maintenance,
+                    ),
+                )
+                boundary.reload()
+                boundary.observe(mode="maintenance")
+                public = boundary.verify_public(expected_status=503)
+                _require_public_verification(public, expected_status=503)
+            retirement = retire_legacy_service(
+                authority,
+                boundary=boundary,
+                store=store,
+                legacy_journal=legacy_journal,
+                service=retirement_boundary_factory(),
+                now_unix=now_unix,
+            )
+            caddy_terminal = commit_cutover(
+                authority,
+                boundary=boundary,
+                store=store,
+                legacy_journal=legacy_journal,
+                now_unix=now_unix,
+            )
+            caddy_terminal = validate_terminal_receipt(
+                caddy_terminal,
+                plan=authority.plan,
+                prepare_receipt=prepared,
+            )
+            unsigned = {
+                "schema": CONVERGENCE_RECEIPT_SCHEMA,
+                "release_revision": authority.plan.value[
+                    "release_revision"
+                ],
+                "freeze_plan_sha256": authority.freeze.sha256,
+                "cutover_plan_sha256": authority.plan.sha256,
+                "preflight_receipt_sha256": preflight["receipt_sha256"],
+                "caddy_prepare_receipt_sha256": prepared[
+                    "receipt_sha256"
+                ],
+                "maintenance_arm_receipt_sha256": arm[
+                    "receipt_sha256"
+                ],
+                "cutover_terminal_receipt_sha256": terminal[
+                    "receipt_sha256"
+                ],
+                "caddy_terminal_receipt_sha256": caddy_terminal[
+                    "receipt_sha256"
+                ],
+                "caddy_outcome": caddy_terminal["outcome"],
+                "legacy_service_retirement_receipt_sha256": retirement[
+                    "receipt_sha256"
+                ],
+                "control_plane_mutation_performed": True,
+                "source_data_mutation_performed": True,
+                "production_host_mutation_performed": True,
+                "secret_material_recorded": False,
+                "secret_digest_recorded": False,
+            }
+            receipt = validate_convergence_receipt(
+                {
+                    **unsigned,
+                    "receipt_sha256": _sha256(_canonical(unsigned)),
+                },
+                authority=authority,
+            )
+            prior = _last(
+                store.load(authority.plan.sha256),
+                "convergence_terminal",
+            )
+            if prior is None:
+                store.append(
+                    authority.plan.sha256,
+                    "convergence_terminal",
+                    receipt,
+                    now_unix,
+                )
+            elif validate_convergence_receipt(
+                prior.value["evidence"], authority=authority
+            ) != receipt:
+                raise OwnerGateCaddyCutoverError(
+                    "owner_gate_caddy_convergence_receipt_invalid"
+                )
+            return receipt
+    except BaseException as primary:
+        try:
+            legacy_entries = legacy_journal.load(authority.plan.sha256)
+            activation_intent = _has_legacy_activation_intent(
+                legacy_entries
+            )
+        except BaseException as journal_error:
+            raise BaseExceptionGroup(
+                "Convergence failed and activation intent could not be reconciled",
+                [primary, journal_error],
+            ) from None
+        if activation_intent:
+            try:
+                with lock():
+                    _recover_post_intent_maintenance(
+                        authority,
+                        boundary=boundary_factory(),
+                        store=store_factory(),
+                        legacy_entries=legacy_entries,
+                        caddy_entries=store_factory().load(
+                            authority.plan.sha256
+                        ),
+                    )
+            except BaseException as recovery:
+                raise BaseExceptionGroup(
+                    "Convergence failed after intent and maintenance recovery was incomplete",
+                    [primary, recovery],
+                ) from None
+            raise OwnerGateCaddyCutoverError(
+                "owner_gate_caddy_forward_recovery_required"
+            ) from primary
+        apply_intents = [
+            entry
+            for entry in legacy_entries
+            if entry.value["event"] == "passkey_intent"
+        ]
+        rollback_terminal: Mapping[str, Any] | None = None
+        if apply_intents:
+            rollback_entries = [
+                entry
+                for entry in legacy_entries
+                if entry.value["event"] == "rollback_terminal"
+            ]
+            restore_intent_entry = _last(
+                legacy_entries, "caddy_pre_intent_restore_intent"
+            )
+            try:
+                if (
+                    len(apply_intents) != 1
+                    or len(rollback_entries) != 1
+                    or _last(legacy_entries, "terminal") is not None
+                    or (
+                        restore_intent_entry is None
+                        and rollback_entries[0].value["sequence"]
+                        != len(legacy_entries) - 1
+                    )
+                    or (
+                        restore_intent_entry is not None
+                        and restore_intent_entry.value["sequence"]
+                        != rollback_entries[0].value["sequence"] + 1
+                    )
+                ):
+                    raise OwnerGateCaddyCutoverError(
+                        "owner_gate_caddy_rollback_terminal_missing"
+                    )
+                rollback_terminal = cutover._validate_rollback_terminal(
+                    rollback_entries[0].value["evidence"],
+                    plan=authority.plan,
+                    entries=legacy_entries,
+                )
+            except BaseException as rollback_error:
+                try:
+                    with lock():
+                        _recover_post_intent_maintenance(
+                            authority,
+                            boundary=boundary_factory(),
+                            store=store_factory(),
+                            legacy_entries=legacy_entries,
+                            caddy_entries=store_factory().load(
+                                authority.plan.sha256
+                            ),
+                        )
+                except BaseException as recovery:
+                    raise BaseExceptionGroup(
+                        "Convergence failed with incomplete rollback and maintenance recovery was incomplete",
+                        [primary, rollback_error, recovery],
+                    ) from None
+                raise OwnerGateCaddyCutoverError(
+                    "owner_gate_caddy_forward_recovery_required"
+                ) from primary
+        recovery_basis = (
+            "cutover_rollback" if rollback_terminal is not None else "freeze_abort"
+        )
+        recovery_errors: list[BaseException] = []
+        try:
+            with lock():
+                boundary = boundary_factory()
+                store = store_factory()
+                local_entries = store.load(authority.plan.sha256)
+                prepared_entry = _last(local_entries, "prepared")
+                arm_entry = _last(local_entries, "maintenance_armed")
+                if prepared_entry is not None and arm_entry is not None:
+                    prepared = validate_prepare_receipt(
+                        prepared_entry.value["evidence"],
+                        plan=authority.plan,
+                    )
+                    arm = validate_maintenance_arm_receipt(
+                        arm_entry.value["evidence"],
+                        authority=authority,
+                        prepare_receipt=prepared,
+                    )
+                    maintenance_proof = _force_caddy_local_post_intent_maintenance(
+                        authority,
+                        boundary=boundary,
+                        store=store,
+                        caddy_entries=local_entries,
+                    )
+                    _publish_pre_intent_restore_intent(
+                        authority,
+                        prepared=prepared,
+                        arm=arm,
+                        original_caddy_sha256=_sha256(
+                            store.read_artifact(
+                                authority.plan.sha256, "original.Caddyfile"
+                            )
+                        ),
+                        maintenance_proof=maintenance_proof,
+                        recovery_basis=recovery_basis,
+                        rollback_terminal_receipt_sha256=(
+                            None
+                            if rollback_terminal is None
+                            else rollback_terminal["receipt_sha256"]
+                        ),
+                        journal=legacy_journal,
+                        now_unix=now_unix,
+                    )
+        except BaseException as exc:
+            recovery_errors.append(exc)
+        gateway_terminal_event = "rollback_terminal"
+        gateway_terminal = rollback_terminal
+        if rollback_terminal is None:
+            gateway_terminal_event = "freeze_aborted"
+            try:
+                gateway_terminal = cutover_runner("abort-freeze")
+            except BaseException as exc:
+                recovery_errors.append(exc)
+        if gateway_terminal is not None and not recovery_errors:
+            try:
+                with lock():
+                    _restore_pre_intent_caddy(
+                        authority,
+                        boundary=boundary_factory(),
+                        store=store_factory(),
+                        legacy_journal=legacy_journal,
+                        gateway_terminal_event=gateway_terminal_event,
+                        gateway_terminal=gateway_terminal,
+                        service=retirement_boundary_factory(),
+                        now_unix=now_unix,
+                    )
+            except BaseException as exc:
+                recovery_errors.append(exc)
+        if recovery_errors:
+            raise BaseExceptionGroup(
+                "Convergence failed before intent and abort was incomplete",
+                [primary, *recovery_errors],
+            ) from None
+        if rollback_terminal is not None:
+            raise OwnerGateCaddyCutoverError(
+                "owner_gate_caddy_cutover_rolled_back_restored"
+            ) from primary
+        raise OwnerGateCaddyCutoverError(
+            "owner_gate_caddy_pre_intent_aborted"
+        ) from primary
+
+
 def _require_release_runtime(authority: _Authority) -> None:
     cutover._require_production_runtime()
     expected = (
@@ -7188,15 +9135,27 @@ def execute_fixed_staged(
     service_boundary_factory: Callable[[], LegacyServiceBoundary] = (
         ProductionLegacyServiceBoundary
     ),
+    retirement_boundary_factory: Callable[[], LegacyRetirementBoundary] = (
+        ProductionLegacyServiceBoundary
+    ),
     legacy_journal_factory: Callable[[], cutover.CutoverJournal] = (
         cutover.RootCutoverJournal
+    ),
+    cutover_runner: Callable[[str], Mapping[str, Any]] = (
+        cutover.execute_fixed_staged
     ),
     lock: Callable[[], AbstractContextManager[Any]] = activation._host_activation_lock,
     require_release_runtime: bool = True,
 ) -> Mapping[str, Any]:
     """Execute one allow-listed phase from only fixed staged authority."""
 
-    if phase not in {"prepare-bridge", "activate-bridge", "prepare", "commit"}:
+    if phase not in {
+        "prepare-bridge",
+        "activate-bridge",
+        "prepare",
+        "commit",
+        "converge",
+    }:
         raise OwnerGateCaddyCutoverError("owner_gate_caddy_phase_invalid")
     current = int(time.time()) if now_unix is None else now_unix
     if phase in {"prepare-bridge", "activate-bridge"}:
@@ -7242,6 +9201,17 @@ def execute_fixed_staged(
     )
     if require_release_runtime:
         _require_release_runtime(authority)
+    if phase == "converge":
+        return converge_cutover(
+            authority,
+            boundary_factory=boundary_factory,
+            store_factory=store_factory,
+            legacy_journal_factory=legacy_journal_factory,
+            retirement_boundary_factory=retirement_boundary_factory,
+            cutover_runner=cutover_runner,
+            lock=lock,
+            now_unix=current,
+        )
     with lock():
         boundary = boundary_factory()
         store = store_factory()
@@ -7253,6 +9223,14 @@ def execute_fixed_staged(
                 legacy_journal=legacy_journal,
                 now_unix=current,
             )
+        retire_legacy_service(
+            authority,
+            boundary=boundary,
+            store=store,
+            legacy_journal=legacy_journal,
+            service=retirement_boundary_factory(),
+            now_unix=current,
+        )
         return commit_cutover(
             authority,
             boundary=boundary,
@@ -7268,7 +9246,13 @@ def _parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "phase",
-        choices=("prepare-bridge", "activate-bridge", "prepare", "commit"),
+        choices=(
+            "prepare-bridge",
+            "activate-bridge",
+            "prepare",
+            "commit",
+            "converge",
+        ),
     )
     return parser
 
@@ -7342,11 +9326,14 @@ __all__ = [
     "PREPARE_RECEIPT_SCHEMA",
     "TERMINAL_RECEIPT_SCHEMA",
     "activate_bridge_bootstrap",
+    "arm_pre_intent_maintenance",
     "commit_cutover",
+    "converge_cutover",
     "execute_fixed_staged",
     "main",
     "prepare_bridge_bootstrap",
     "prepare_cutover",
+    "retire_legacy_service",
     "validate_bridge_bootstrap_input",
     "validate_bridge_bootstrap_receipt",
     "validate_bridge_bootstrap_request",
@@ -7354,6 +9341,9 @@ __all__ = [
     "validate_bridge_request_receipt",
     "validate_prepare_receipt",
     "validate_maintenance_observation",
+    "validate_maintenance_arm_receipt",
+    "validate_legacy_retirement_receipt",
+    "validate_convergence_receipt",
     "validate_terminal_receipt",
 ]
 

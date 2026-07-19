@@ -50,9 +50,9 @@ COLLECTOR_SCHEMA = "muncho-production-cutover-authority-inputs.v1"
 INITIAL_COLLECTOR_SCHEMA = "muncho-production-cutover-initial-observations.v1"
 STOPPED_COLLECTOR_SCHEMA = "muncho-production-cutover-stopped-services.v1"
 OWNER_WORKSPACE_SCHEMA = "muncho-production-cutover-owner-workspace.v1"
-WORKFLOW_RECEIPT_SCHEMA = "muncho-production-cutover-owner-workflow.v3"
+WORKFLOW_RECEIPT_SCHEMA = "muncho-production-cutover-owner-workflow.v4"
 PREPARED_WORKSPACE_SCHEMA = (
-    "muncho-production-cutover-passkey-workspace.v2"
+    "muncho-production-cutover-passkey-workspace.v3"
 )
 BRIDGE_BOOTSTRAP_INPUT_SCHEMA = (
     "muncho-production-cutover-bridge-bootstrap-input.v2"
@@ -62,6 +62,7 @@ BRIDGE_REQUEST_SCHEMA = (
 )
 BRIDGE_RECEIPT_SCHEMA = "muncho-owner-gate-caddy-approval-bridge.v2"
 CRON_STAGE_NOOP_SCHEMA = "muncho-production-cron-continuity-stage-noop.v1"
+CONVERGENCE_SCHEMA = "muncho-owner-gate-production-convergence.v1"
 MAX_JSON = 16 * 1024 * 1024
 MAX_COLLECTOR_AGE_SECONDS = 900
 MINIMUM_V2_APPROVAL_MARGIN_SECONDS = 30
@@ -235,6 +236,46 @@ _STOPPED_COLLECTOR_FIELDS = frozenset({
     "secret_digest_recorded",
     "receipt_sha256",
 })
+_CONVERGENCE_FIELDS = frozenset({
+    "schema",
+    "release_revision",
+    "freeze_plan_sha256",
+    "cutover_plan_sha256",
+    "preflight_receipt_sha256",
+    "caddy_prepare_receipt_sha256",
+    "maintenance_arm_receipt_sha256",
+    "cutover_terminal_receipt_sha256",
+    "caddy_terminal_receipt_sha256",
+    "caddy_outcome",
+    "legacy_service_retirement_receipt_sha256",
+    "control_plane_mutation_performed",
+    "source_data_mutation_performed",
+    "production_host_mutation_performed",
+    "secret_material_recorded",
+    "secret_digest_recorded",
+    "receipt_sha256",
+})
+_WORKFLOW_RECEIPT_FIELDS = frozenset({
+    "schema",
+    "release_revision",
+    "freeze_plan_sha256",
+    "freeze_approval_sha256",
+    "cutover_plan_sha256",
+    "convergence_receipt_sha256",
+    "terminal_receipt_sha256",
+    "caddy_prepare_receipt_sha256",
+    "caddy_terminal_receipt_sha256",
+    "caddy_outcome",
+    "legacy_service_retirement_receipt_sha256",
+    "gates",
+    "private_key_staged",
+    "control_plane_mutation_performed",
+    "source_data_mutation_performed",
+    "production_host_mutation_performed",
+    "secret_material_recorded",
+    "secret_digest_recorded",
+    "receipt_sha256",
+})
 
 
 class OwnerCutoverError(RuntimeError):
@@ -290,6 +331,7 @@ class ProductionCutoverTransport(canary_transport.IapStoppedReleaseTransport):
         "prepare-caddy-cutover",
         "apply-cutover",
         "commit-caddy-cutover",
+        "converge-cutover",
         "abort-freeze",
     })
 
@@ -675,7 +717,16 @@ class ProductionCutoverTransport(canary_transport.IapStoppedReleaseTransport):
                 "--revision",
                 revision,
             )
-        if action in {"prepare-caddy-cutover", "commit-caddy-cutover"}:
+        if action in {
+            "prepare-caddy-cutover",
+            "commit-caddy-cutover",
+            "converge-cutover",
+        }:
+            phase = {
+                "prepare-caddy-cutover": "prepare",
+                "commit-caddy-cutover": "commit",
+                "converge-cutover": "converge",
+            }[action]
             return (
                 *prefix,
                 interpreter,
@@ -683,7 +734,7 @@ class ProductionCutoverTransport(canary_transport.IapStoppedReleaseTransport):
                 "-I",
                 "-m",
                 "scripts.canary.owner_gate_caddy_cutover",
-                "prepare" if action == "prepare-caddy-cutover" else "commit",
+                phase,
             )
         return (
             *prefix,
@@ -1743,6 +1794,174 @@ def _validate_cron_continuity_stage_receipt(
     return copy.deepcopy(dict(value))
 
 
+def _validate_convergence_receipt(
+    value: Mapping[str, Any],
+    *,
+    plan: cutover.CutoverPlan,
+) -> Mapping[str, Any]:
+    if not isinstance(value, Mapping) or set(value) != _CONVERGENCE_FIELDS:
+        raise OwnerCutoverError("owner_cutover_convergence_receipt_invalid")
+    receipt = copy.deepcopy(dict(value))
+    unsigned = {
+        name: item
+        for name, item in receipt.items()
+        if name != "receipt_sha256"
+    }
+    if (
+        receipt.get("schema") != CONVERGENCE_SCHEMA
+        or receipt.get("release_revision") != plan.value["release_revision"]
+        or receipt.get("freeze_plan_sha256")
+        != plan.value["freeze_plan_sha256"]
+        or receipt.get("cutover_plan_sha256") != plan.sha256
+        or receipt.get("caddy_outcome")
+        not in {"private_v2_active", "maintenance_active"}
+        or any(
+            _SHA256.fullmatch(str(receipt.get(name, ""))) is None
+            for name in (
+                "preflight_receipt_sha256",
+                "caddy_prepare_receipt_sha256",
+                "maintenance_arm_receipt_sha256",
+                "cutover_terminal_receipt_sha256",
+                "caddy_terminal_receipt_sha256",
+                "legacy_service_retirement_receipt_sha256",
+            )
+        )
+        or receipt.get("control_plane_mutation_performed") is not True
+        or receipt.get("source_data_mutation_performed") is not True
+        or receipt.get("production_host_mutation_performed") is not True
+        or receipt.get("secret_material_recorded") is not False
+        or receipt.get("secret_digest_recorded") is not False
+        or receipt.get("receipt_sha256") != _sha(_canonical(unsigned))
+    ):
+        raise OwnerCutoverError("owner_cutover_convergence_receipt_invalid")
+    return receipt
+
+
+def _validate_workflow_receipt(
+    value: Mapping[str, Any],
+    *,
+    release_revision: str,
+    freeze_plan_sha256: str,
+    freeze_approval_sha256: str,
+    cutover_plan_sha256: str,
+    convergence: Mapping[str, Any],
+    gates: Sequence[Mapping[str, Any]],
+) -> Mapping[str, Any]:
+    if not isinstance(value, Mapping) or set(value) != _WORKFLOW_RECEIPT_FIELDS:
+        raise OwnerCutoverError("owner_cutover_workflow_receipt_invalid")
+    receipt = copy.deepcopy(dict(value))
+    unsigned = {
+        name: item
+        for name, item in receipt.items()
+        if name != "receipt_sha256"
+    }
+    expected_gates = copy.deepcopy(list(gates))
+    valid_gates = all(
+        isinstance(item, Mapping)
+        and set(item) == {"sequence", "stage", "evidence_sha256"}
+        and item.get("sequence") == sequence
+        and isinstance(item.get("stage"), str)
+        and bool(item["stage"])
+        and _SHA256.fullmatch(str(item.get("evidence_sha256", "")))
+        is not None
+        for sequence, item in enumerate(expected_gates)
+    )
+    bound_hash_fields = (
+        "convergence_receipt_sha256",
+        "terminal_receipt_sha256",
+        "caddy_prepare_receipt_sha256",
+        "caddy_terminal_receipt_sha256",
+        "legacy_service_retirement_receipt_sha256",
+    )
+    if (
+        receipt.get("schema") != WORKFLOW_RECEIPT_SCHEMA
+        or receipt.get("release_revision") != release_revision
+        or receipt.get("freeze_plan_sha256") != freeze_plan_sha256
+        or receipt.get("freeze_approval_sha256")
+        != freeze_approval_sha256
+        or receipt.get("cutover_plan_sha256") != cutover_plan_sha256
+        or receipt.get("convergence_receipt_sha256")
+        != convergence.get("receipt_sha256")
+        or receipt.get("terminal_receipt_sha256")
+        != convergence.get("cutover_terminal_receipt_sha256")
+        or receipt.get("caddy_prepare_receipt_sha256")
+        != convergence.get("caddy_prepare_receipt_sha256")
+        or receipt.get("caddy_terminal_receipt_sha256")
+        != convergence.get("caddy_terminal_receipt_sha256")
+        or receipt.get("caddy_outcome") != convergence.get("caddy_outcome")
+        or receipt.get("legacy_service_retirement_receipt_sha256")
+        != convergence.get("legacy_service_retirement_receipt_sha256")
+        or any(
+            _SHA256.fullmatch(str(receipt.get(name, ""))) is None
+            for name in bound_hash_fields
+        )
+        or receipt.get("gates") != expected_gates
+        or not valid_gates
+        or not expected_gates
+        or expected_gates[-1].get("stage")
+        != "cutover_convergence_accepted"
+        or expected_gates[-1].get("evidence_sha256")
+        != _sha(_canonical(convergence))
+        or receipt.get("private_key_staged") is not False
+        or receipt.get("control_plane_mutation_performed") is not True
+        or receipt.get("source_data_mutation_performed") is not True
+        or receipt.get("production_host_mutation_performed") is not True
+        or receipt.get("secret_material_recorded") is not False
+        or receipt.get("secret_digest_recorded") is not False
+        or receipt.get("receipt_sha256") != _sha(_canonical(unsigned))
+    ):
+        raise OwnerCutoverError("owner_cutover_workflow_receipt_invalid")
+    return receipt
+
+
+def _build_workflow_receipt(
+    *,
+    release_revision: str,
+    freeze_plan_sha256: str,
+    freeze_approval_sha256: str,
+    cutover_plan_sha256: str,
+    convergence: Mapping[str, Any],
+    gates: Sequence[Mapping[str, Any]],
+) -> Mapping[str, Any]:
+    unsigned = {
+        "schema": WORKFLOW_RECEIPT_SCHEMA,
+        "release_revision": release_revision,
+        "freeze_plan_sha256": freeze_plan_sha256,
+        "freeze_approval_sha256": freeze_approval_sha256,
+        "cutover_plan_sha256": cutover_plan_sha256,
+        "convergence_receipt_sha256": convergence["receipt_sha256"],
+        "terminal_receipt_sha256": convergence[
+            "cutover_terminal_receipt_sha256"
+        ],
+        "caddy_prepare_receipt_sha256": convergence[
+            "caddy_prepare_receipt_sha256"
+        ],
+        "caddy_terminal_receipt_sha256": convergence[
+            "caddy_terminal_receipt_sha256"
+        ],
+        "caddy_outcome": convergence["caddy_outcome"],
+        "legacy_service_retirement_receipt_sha256": convergence[
+            "legacy_service_retirement_receipt_sha256"
+        ],
+        "gates": copy.deepcopy(list(gates)),
+        "private_key_staged": False,
+        "control_plane_mutation_performed": True,
+        "source_data_mutation_performed": True,
+        "production_host_mutation_performed": True,
+        "secret_material_recorded": False,
+        "secret_digest_recorded": False,
+    }
+    return _validate_workflow_receipt(
+        {**unsigned, "receipt_sha256": _sha(_canonical(unsigned))},
+        release_revision=release_revision,
+        freeze_plan_sha256=freeze_plan_sha256,
+        freeze_approval_sha256=freeze_approval_sha256,
+        cutover_plan_sha256=cutover_plan_sha256,
+        convergence=convergence,
+        gates=gates,
+    )
+
+
 def _validate_terminal_receipt(
     value: Mapping[str, Any],
     *,
@@ -2314,6 +2533,12 @@ def execute_production_cutover_workflow(
             "advertised_approval_url": None,
             "passkey_consumption": None,
             "claim_frame": None,
+            "final_tail_receipt": None,
+            "stopped_collector_receipt": None,
+            "cron_continuity_stage_receipt": None,
+            "cutover_plan": None,
+            "cutover_publication": None,
+            "cutover_stage_receipt": None,
             "gates": gates,
             "private_key_staged": False,
             "control_plane_mutation_performed": True,
@@ -2405,29 +2630,11 @@ def execute_production_cutover_workflow(
         )
         cutover_staged = True
         record("cutover_plan_staged", cutover_stage_receipt)
-        preflight = _validate_preflight_receipt(
-            transport.invoke(release_revision, "phase-b-preflight"),
+        convergence = _validate_convergence_receipt(
+            transport.invoke(release_revision, "converge-cutover"),
             plan=cutover_plan,
         )
-        record("phase_b_preflight_accepted", preflight)
-        from scripts.canary import owner_gate_caddy_cutover as caddy_cutover
-
-        caddy_prepare = caddy_cutover.validate_prepare_receipt(
-            transport.invoke(release_revision, "prepare-caddy-cutover"),
-            plan=cutover_plan,
-        )
-        record("caddy_cutover_prepared", caddy_prepare)
-        terminal = _validate_terminal_receipt(
-            transport.invoke(release_revision, "apply-cutover"),
-            plan=cutover_plan,
-        )
-        record("cutover_terminal_accepted", terminal)
-        caddy_terminal = caddy_cutover.validate_terminal_receipt(
-            transport.invoke(release_revision, "commit-caddy-cutover"),
-            plan=cutover_plan,
-            prepare_receipt=caddy_prepare,
-        )
-        record("caddy_cutover_terminal_accepted", caddy_terminal)
+        record("cutover_convergence_accepted", convergence)
     except BaseException as primary:
         if freeze_staged and not cutover_staged:
             try:
@@ -2449,25 +2656,14 @@ def execute_production_cutover_workflow(
                 ) from None
         raise
 
-    unsigned = {
-        "schema": WORKFLOW_RECEIPT_SCHEMA,
-        "release_revision": release_revision,
-        "freeze_plan_sha256": freeze.sha256,
-        "freeze_approval_sha256": freeze_approval["approval_sha256"],
-        "cutover_plan_sha256": cutover_plan.sha256,
-        "terminal_receipt_sha256": terminal["receipt_sha256"],
-        "caddy_prepare_receipt_sha256": caddy_prepare["receipt_sha256"],
-        "caddy_terminal_receipt_sha256": caddy_terminal["receipt_sha256"],
-        "caddy_outcome": caddy_terminal["outcome"],
-        "gates": gates,
-        "private_key_staged": False,
-        "control_plane_mutation_performed": True,
-        "source_data_mutation_performed": True,
-        "production_host_mutation_performed": True,
-        "secret_material_recorded": False,
-        "secret_digest_recorded": False,
-    }
-    return {**unsigned, "receipt_sha256": _sha(_canonical(unsigned))}
+    return _build_workflow_receipt(
+        release_revision=release_revision,
+        freeze_plan_sha256=freeze.sha256,
+        freeze_approval_sha256=freeze_approval["approval_sha256"],
+        cutover_plan_sha256=cutover_plan.sha256,
+        convergence=convergence,
+        gates=gates,
+    )
 
 
 _PREPARED_WORKSPACE_FIELDS = frozenset({
@@ -2485,6 +2681,12 @@ _PREPARED_WORKSPACE_FIELDS = frozenset({
     "advertised_approval_url",
     "passkey_consumption",
     "claim_frame",
+    "final_tail_receipt",
+    "stopped_collector_receipt",
+    "cron_continuity_stage_receipt",
+    "cutover_plan",
+    "cutover_publication",
+    "cutover_stage_receipt",
     "gates",
     "private_key_staged",
     "control_plane_mutation_performed",
@@ -2526,6 +2728,7 @@ def resume_prepared_production_cutover_workflow(
             "awaiting_bridge_passkey",
             "awaiting_cutover_passkey",
             "passkey_claim_recorded",
+            "cutover_staged",
         }
         or workspace.get("workspace_sha256")
         != _sha(_canonical(unsigned_workspace))
@@ -2549,21 +2752,47 @@ def resume_prepared_production_cutover_workflow(
         raise OwnerCutoverError("owner_cutover_workspace_invalid")
     state = str(workspace["state"])
     expected_host_mutation = state != "awaiting_bridge_bootstrap"
+    durable_cutover_fields = (
+        "final_tail_receipt",
+        "stopped_collector_receipt",
+        "cron_continuity_stage_receipt",
+        "cutover_plan",
+        "cutover_publication",
+        "cutover_stage_receipt",
+    )
+    has_recorded_claim = state in {
+        "passkey_claim_recorded",
+        "cutover_staged",
+    }
     if (
         workspace.get("production_host_mutation_performed")
         is not expected_host_mutation
         or (
-            state == "passkey_claim_recorded"
+            has_recorded_claim
             and (
                 not isinstance(workspace.get("passkey_consumption"), Mapping)
                 or not isinstance(workspace.get("claim_frame"), Mapping)
             )
         )
         or (
-            state != "passkey_claim_recorded"
+            not has_recorded_claim
             and (
                 workspace.get("passkey_consumption") is not None
                 or workspace.get("claim_frame") is not None
+            )
+        )
+        or (
+            state == "cutover_staged"
+            and any(
+                not isinstance(workspace.get(name), Mapping)
+                for name in durable_cutover_fields
+            )
+        )
+        or (
+            state != "cutover_staged"
+            and any(
+                workspace.get(name) is not None
+                for name in durable_cutover_fields
             )
         )
     ):
@@ -2772,7 +3001,7 @@ def resume_prepared_production_cutover_workflow(
     if type(consumed_at) is not int or consumed_at <= 0:
         raise OwnerCutoverError("owner_cutover_passkey_proof_invalid")
     try:
-        if state == "passkey_claim_recorded":
+        if state in {"passkey_claim_recorded", "cutover_staged"}:
             claim_frame = copy.deepcopy(dict(workspace["claim_frame"]))
             recorded_publication, recorded_proof = (
                 cutover_passkey.validate_claim_frame_for_recorded_replay(
@@ -2816,6 +3045,82 @@ def resume_prepared_production_cutover_workflow(
             state="passkey_claim_recorded",
             passkey_consumption=copy.deepcopy(dict(consumed)),
             claim_frame=claim_frame,
+        )
+
+    if state == "cutover_staged":
+        try:
+            tail = cutover.FinalTailReceipt.from_mapping(
+                workspace["final_tail_receipt"],
+                plan=freeze,
+            )
+            if tail.value["approval_sha256"] != approval["approval_sha256"]:
+                raise OwnerCutoverError(
+                    "owner_cutover_final_tail_authority_mismatch"
+                )
+            stopped_value = workspace["stopped_collector_receipt"]
+            stopped = validate_stopped_collector_receipt(
+                stopped_value,
+                freeze_plan=freeze.to_mapping(),
+                freeze_approval=approval,
+                now_unix=stopped_value["observed_at_unix"],
+                approval_now_unix=consumed_at,
+            )
+            cron_stage = _validate_cron_continuity_stage_receipt(
+                workspace["cron_continuity_stage_receipt"],
+                freeze_plan=freeze,
+            )
+            durable_plan = cutover.CutoverPlan.from_mapping(
+                workspace["cutover_plan"]
+            )
+            durable_publication = copy.deepcopy(
+                dict(workspace["cutover_publication"])
+            )
+            rebuilt_plan, rebuilt_publication = author_cutover(
+                freeze_plan=freeze.to_mapping(),
+                freeze_approval=approval,
+                final_tail_receipt=tail.to_mapping(),
+                gateway_stopped=stopped["gateway_stopped"],
+                writer_stopped=stopped["writer_stopped"],
+                connector_stopped=stopped["connector_stopped"],
+                now_unix=tail.value["captured_at_unix"],
+                approval_now_unix=consumed_at,
+            )
+            durable_stage = _validate_publication_stage_receipt(
+                workspace["cutover_stage_receipt"],
+                publication=durable_publication,
+                expected_file_count=1,
+            )
+        except (
+            KeyError,
+            OwnerCutoverError,
+            PermissionError,
+            PublicStagingError,
+            TypeError,
+            ValueError,
+        ):
+            raise OwnerCutoverError(
+                "owner_cutover_workspace_invalid"
+            ) from None
+        if (
+            durable_plan.to_mapping() != rebuilt_plan.to_mapping()
+            or durable_publication != rebuilt_publication
+            or durable_stage != workspace["cutover_stage_receipt"]
+            or cron_stage != workspace["cron_continuity_stage_receipt"]
+        ):
+            raise OwnerCutoverError("owner_cutover_workspace_invalid")
+        transport = transport_factory(owner_identity)
+        convergence = _validate_convergence_receipt(
+            transport.invoke(release_revision, "converge-cutover"),
+            plan=durable_plan,
+        )
+        record("cutover_convergence_accepted", convergence)
+        return _build_workflow_receipt(
+            release_revision=release_revision,
+            freeze_plan_sha256=freeze.sha256,
+            freeze_approval_sha256=approval["approval_sha256"],
+            cutover_plan_sha256=durable_plan.sha256,
+            convergence=convergence,
+            gates=gates,
         )
 
     transport = transport_factory(owner_identity)
@@ -2882,29 +3187,15 @@ def resume_prepared_production_cutover_workflow(
         )
         cutover_staged = True
         record("cutover_plan_staged", cutover_stage_receipt)
-        preflight_receipt = _validate_preflight_receipt(
-            transport.invoke(release_revision, "phase-b-preflight"),
-            plan=cutover_plan,
+        return next_workspace(
+            state="cutover_staged",
+            final_tail_receipt=tail.to_mapping(),
+            stopped_collector_receipt=copy.deepcopy(dict(stopped)),
+            cron_continuity_stage_receipt=copy.deepcopy(dict(cron_stage)),
+            cutover_plan=cutover_plan.to_mapping(),
+            cutover_publication=copy.deepcopy(dict(cutover_publication)),
+            cutover_stage_receipt=copy.deepcopy(dict(cutover_stage_receipt)),
         )
-        record("phase_b_preflight_accepted", preflight_receipt)
-        from scripts.canary import owner_gate_caddy_cutover as caddy_cutover
-
-        caddy_prepare = caddy_cutover.validate_prepare_receipt(
-            transport.invoke(release_revision, "prepare-caddy-cutover"),
-            plan=cutover_plan,
-        )
-        record("caddy_cutover_prepared", caddy_prepare)
-        terminal = _validate_terminal_receipt(
-            transport.invoke(release_revision, "apply-cutover"),
-            plan=cutover_plan,
-        )
-        record("cutover_terminal_accepted", terminal)
-        caddy_terminal = caddy_cutover.validate_terminal_receipt(
-            transport.invoke(release_revision, "commit-caddy-cutover"),
-            plan=cutover_plan,
-            prepare_receipt=caddy_prepare,
-        )
-        record("caddy_cutover_terminal_accepted", caddy_terminal)
     except BaseException as primary:
         if freeze_staged and not cutover_staged:
             try:
@@ -2921,25 +3212,6 @@ def resume_prepared_production_cutover_workflow(
                     [primary, abort_error],
                 ) from None
         raise
-    unsigned = {
-        "schema": WORKFLOW_RECEIPT_SCHEMA,
-        "release_revision": release_revision,
-        "freeze_plan_sha256": freeze.sha256,
-        "freeze_approval_sha256": approval["approval_sha256"],
-        "cutover_plan_sha256": cutover_plan.sha256,
-        "terminal_receipt_sha256": terminal["receipt_sha256"],
-        "caddy_prepare_receipt_sha256": caddy_prepare["receipt_sha256"],
-        "caddy_terminal_receipt_sha256": caddy_terminal["receipt_sha256"],
-        "caddy_outcome": caddy_terminal["outcome"],
-        "gates": gates,
-        "private_key_staged": False,
-        "control_plane_mutation_performed": True,
-        "source_data_mutation_performed": True,
-        "production_host_mutation_performed": True,
-        "secret_material_recorded": False,
-        "secret_digest_recorded": False,
-    }
-    return {**unsigned, "receipt_sha256": _sha(_canonical(unsigned))}
 
 
 def _validate_public_output_path(path: Path) -> None:

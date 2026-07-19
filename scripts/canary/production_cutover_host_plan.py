@@ -133,6 +133,16 @@ class HostPlanProducerError(RuntimeError):
     """Stable, secret-free fixed producer failure."""
 
 
+def _effective_identity() -> tuple[int, int] | None:
+    """Return the POSIX effective identity, or fail closed off POSIX."""
+
+    geteuid = getattr(os, "geteuid", None)
+    getegid = getattr(os, "getegid", None)
+    if not callable(geteuid) or not callable(getegid):
+        return None
+    return int(geteuid()), int(getegid())
+
+
 def _canonical(value: Any) -> bytes:
     try:
         raw = json.dumps(
@@ -981,11 +991,11 @@ def stage_fixed_host_artifacts(
         raise HostPlanProducerError("host_plan_revision_invalid")
     fixed_release = _release_root(revision)
     release = fixed_release if release_root is None else release_root
+    identity = _effective_identity()
     if require_root:
         if (
             not sys.platform.startswith("linux")
-            or os.geteuid() != 0
-            or os.getegid() != 0
+            or identity != (0, 0)
             or release != fixed_release
             or filesystem_root != Path("/")
         ):
@@ -996,9 +1006,10 @@ def stage_fixed_host_artifacts(
     else:
         if unit_inputs is None:
             raise HostPlanProducerError("host_plan_test_inputs_required")
+        if identity is None:
+            raise HostPlanProducerError("host_plan_posix_identity_unavailable")
         inputs = package._unit_inputs(unit_inputs, revision=revision)
-        trusted_uid = os.geteuid()
-        trusted_gid = os.getegid()
+        trusted_uid, trusted_gid = identity
     source_root_uid = 0 if require_root else trusted_uid
     source_root_gid = 0 if require_root else trusted_gid
     legacy_policy, target_policy = _validate_reconciliation_intent(
@@ -1528,11 +1539,11 @@ def collect_fixed_host_plan(
         raise HostPlanProducerError("host_plan_revision_invalid")
     fixed_release = _release_root(revision)
     release = fixed_release if release_root is None else release_root
+    identity = _effective_identity()
     if require_root:
         if (
             not sys.platform.startswith("linux")
-            or os.geteuid() != 0
-            or os.getegid() != 0
+            or identity != (0, 0)
             or release != fixed_release
             or filesystem_root != Path("/")
         ):
@@ -1543,9 +1554,10 @@ def collect_fixed_host_plan(
     else:
         if unit_inputs is None:
             raise HostPlanProducerError("host_plan_test_inputs_required")
+        if identity is None:
+            raise HostPlanProducerError("host_plan_posix_identity_unavailable")
         inputs = package._unit_inputs(unit_inputs, revision=revision)
-        trusted_uid = os.geteuid()
-        trusted_gid = os.getegid()
+        trusted_uid, trusted_gid = identity
     source_root_uid = 0 if require_root else trusted_uid
     source_root_gid = 0 if require_root else trusted_gid
     try:

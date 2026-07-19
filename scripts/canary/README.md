@@ -359,11 +359,37 @@ python -m scripts.canary.owner_gate_release_author \
 
 The fixed output is
 `~/.hermes/owner-gate-release-authority/manifests/<release-sha>.trust.unsigned.json`
-at mode `0444`. It can then be passed to the existing
-`owner_gate_trust_author sign` action. The author revalidates the complete
-signed Foundation apply
-journal lineage and package inventory; it does not accept a Foundation apply
-receipt path or an output path.
+at mode `0444`. Sign it only through the same fixed release author, repeating
+the exact inputs used to author it:
+
+```bash
+python -m scripts.canary.owner_gate_release_author \
+  sign-trust \
+  --source-root /absolute/clean/fork-main \
+  --release-revision <final-release-sha> \
+  --wheelhouse-root /absolute/immutable/wheelhouse \
+  --wheelhouse-manifest /absolute/immutable/wheelhouse-manifest.json \
+  --interpreter-sha256 <same-sha256> \
+  --foundation-source-revision <same-foundation-release-sha> \
+  --foundation-source-tree-oid <same-foundation-tree-oid> \
+  --pre-foundation-authority /absolute/immutable/pre-foundation.json \
+  --owner-reauth-receipt /absolute/immutable/owner-reauth.json \
+  --network-evidence /absolute/immutable/network-evidence.json \
+  --foundation-collector-public-key /absolute/immutable/foundation.pub \
+  --project-ancestry-evidence /absolute/immutable/project-ancestry.json \
+  --direct-iam-identity-authority /absolute/immutable/direct-iam.json \
+  --network-collector-public-key /absolute/immutable/final-network.pub \
+  --cloud-collector-public-key /absolute/immutable/final-cloud.pub \
+  --host-collector-public-key /absolute/immutable/final-host.pub \
+  --credential-migration-envelope /absolute/immutable/credential.json
+```
+
+`owner_gate_trust_author` has no `sign` CLI action; its only CLI action is
+`init-key`. `owner_gate_release_author sign-trust` re-authors and compares the
+unsigned manifest before signing, revalidates the complete signed Foundation
+apply journal lineage and package inventory, and writes only the fixed
+`<release-sha>.trust.json` path. It accepts neither a Foundation apply receipt
+path nor an output path.
 
 The first combined inert observation is a separate exact action on the
 release-bound full owner launcher. It does not replay the Foundation operation
@@ -955,3 +981,83 @@ marker-wait and observation-staging actions are not exposed as standalone owner
 CLI choices. Run the explicit `stop`, `retire-secrets`, and stopped-preflight
 actions afterward as terminal verification/idempotent cleanup; a partial live
 result is never promotion evidence.
+
+## Production cutover owner state chain
+
+After every production prerequisite in
+`docs/muncho-production-cutover-artifacts.md` is satisfied, the executable
+owner surface is one `prepare-cutover` followed by five one-state
+`resume-cutover` calls. All paths are absolute, each output is create-only,
+and each resume reads the preceding immutable output and writes a new filename:
+
+```bash
+python -m scripts.canary.production_cutover_owner_launcher \
+  prepare-cutover \
+  --revision <exact-40-character-release-sha> \
+  --isolated-canary-goal-prerequisite \
+    /absolute/owner-only/cutover/isolated-canary-prerequisite.json \
+  --owner-private-key /absolute/owner-only/cutover-owner-ed25519 \
+  --truth-mode start_new_truth_epoch \
+  --output /absolute/owner-only/cutover/00-awaiting-bridge-bootstrap.json
+
+python -m scripts.canary.production_cutover_owner_launcher \
+  resume-cutover --revision <same-exact-release-sha> \
+  --workspace /absolute/owner-only/cutover/00-awaiting-bridge-bootstrap.json \
+  --output /absolute/owner-only/cutover/01-awaiting-bridge-passkey.json
+
+# Review 01 and approve only bridge_request.legacy_approval_url.
+python -m scripts.canary.production_cutover_owner_launcher \
+  resume-cutover --revision <same-exact-release-sha> \
+  --workspace /absolute/owner-only/cutover/01-awaiting-bridge-passkey.json \
+  --output /absolute/owner-only/cutover/02-awaiting-cutover-passkey.json
+
+# Review 02 and approve only advertised_approval_url with the exact v2 passkey.
+python -m scripts.canary.production_cutover_owner_launcher \
+  resume-cutover --revision <same-exact-release-sha> \
+  --workspace /absolute/owner-only/cutover/02-awaiting-cutover-passkey.json \
+  --output /absolute/owner-only/cutover/03-passkey-claim-recorded.json
+
+python -m scripts.canary.production_cutover_owner_launcher \
+  resume-cutover --revision <same-exact-release-sha> \
+  --workspace /absolute/owner-only/cutover/03-passkey-claim-recorded.json \
+  --output /absolute/owner-only/cutover/04-cutover-staged.json
+
+python -m scripts.canary.production_cutover_owner_launcher \
+  resume-cutover --revision <same-exact-release-sha> \
+  --workspace /absolute/owner-only/cutover/04-cutover-staged.json \
+  --output /absolute/owner-only/cutover/05-cutover-terminal.json
+```
+
+The two approvals are distinct and ordered: the legacy passkey authorizes only
+the fixed temporary approval bridge; the v2 passkey authorizes the exact
+release-bound FreezePlan and is consumed into `passkey_claim_recorded`. Never
+reuse an output filename for a different state, input, retry, or release. An
+expired approval starts a fresh `prepare-cutover` chain under fresh filenames;
+old workspaces and journals remain evidence.
+
+The fourth resume durably produces state `cutover_staged`; it binds the final
+tail, stopped services, cron continuity, authored and staged cutover plan, and
+their receipts. The fifth resume is the only route to the fixed idempotent
+internal `converge-cutover` root action and the terminal receipt.
+
+Recovery follows that boundary. Before `cutover_staged`, the fixed internal
+`abort-freeze` may restore only the signed exact legacy/Caddy pre-state; once
+its validated `freeze_aborted` terminal exists, that attempt is closed and a
+fresh `prepare-cutover` and approval chain is required. From
+`cutover_staged` but before a cutover `passkey_intent`, `abort-freeze` is valid
+only through the maintenance-proven Caddy restore handoff; exact Caddy bytes
+are restored only after that gateway abort is terminal. After a cutover
+`passkey_intent` but before `activation_commit_intent`, the cutover transaction
+must first publish its validated `rollback_terminal`; that path does not call
+`abort-freeze`. Either pre-intent recovery may close the approved attempt as
+`freeze_aborted` or `cutover_rolled_back_restored`. Preserve its workspace and
+journals, then start a fresh `prepare-cutover` and approval chain under fresh
+filenames; retrying the same fifth-stage workspace cannot resume forward
+apply. Same-workspace fifth-stage retries are only for incomplete recovery or
+an already forward-only transaction. After `activation_commit_intent`, such
+retries from the preserved `04-cutover-staged.json`, each into a new absolute
+recovery-attempt output, may converge only to
+`private_v2_active` or persistent fixed 503 `maintenance_active`, never v1.
+There is no public owner `recover` or `converge` subcommand; do not invoke the
+sealed `converge-cutover` action directly. The production cutover artifact
+document is the normative detailed recovery matrix and runbook.

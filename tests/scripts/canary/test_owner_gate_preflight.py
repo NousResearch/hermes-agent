@@ -63,16 +63,31 @@ def _production_ingress_envelope(plan, *, iam: bool) -> dict:
         "fresh_through_unix": fresh_through_unix,
         "old_v1": {
             "unit": ingress.OLD_V1_UNIT,
-            "load_state": "masked",
-            "active_state": "inactive",
-            "sub_state": "dead",
-            "unit_file_state": "masked",
-            "fragment_path": ingress.OLD_V1_MASK_TARGET,
+            "load_state": "loaded",
+            "active_state": "active",
+            "sub_state": "running",
+            "unit_file_state": "enabled",
+            "fragment_path": str(ingress.OLD_V1_FRAGMENT_PATH),
+            "fragment_uid": ingress.EXPECTED_ROOT_UID,
+            "fragment_gid": ingress.EXPECTED_ROOT_GID,
+            "fragment_mode": f"{ingress.OLD_V1_FRAGMENT_MODE:04o}",
+            "fragment_size": 512,
+            "fragment_sha256": ingress.OLD_V1_FRAGMENT_SHA256,
+            "stable_nofollow_fragment_verified": True,
             "drop_in_paths": [],
-            "permanent_mask_path": str(ingress.OLD_V1_MASK_PATH),
-            "permanent_mask_target": ingress.OLD_V1_MASK_TARGET,
-            "mask_uid": ingress.EXPECTED_ROOT_UID,
-            "mask_gid": ingress.EXPECTED_ROOT_GID,
+            "main_pid": 4343,
+            "exec_main_pid": 4343,
+            "exec_start_path": ingress.OLD_V1_EXEC_START_ARGV[0],
+            "exec_start_argv": list(ingress.OLD_V1_EXEC_START_ARGV),
+            "service_user": ingress.OLD_V1_USER,
+            "service_group": ingress.OLD_V1_GROUP,
+            "need_daemon_reload": False,
+            "process_cmdline": list(ingress.OLD_V1_PROCESS_CMDLINE),
+            "process_uid": ingress.OLD_V1_UID,
+            "process_gid": ingress.OLD_V1_GID,
+            "process_start_time_ticks": 90,
+            "process_cgroup_unit_verified": True,
+            "active_process_stable": True,
             "trusted_for_v2": False,
         },
         "caddy": {
@@ -100,6 +115,8 @@ def _production_ingress_envelope(plan, *, iam: bool) -> dict:
             "auth_host_route_count": 1,
             "reverse_proxy_handler_count": 1,
             "reverse_proxy_upstream_count": 1,
+            "reverse_proxy_upstreams": [ingress.LEGACY_V1_UPSTREAM],
+            "legacy_v1_upstream_active": True,
             "still_on_current_host": True,
             "private_v2_upstream_active": False,
             "process_executable": "/usr/bin/caddy",
@@ -115,6 +132,8 @@ def _production_ingress_envelope(plan, *, iam: bool) -> dict:
                 "auth_host_route_count": 1,
                 "reverse_proxy_handler_count": 1,
                 "reverse_proxy_upstream_count": 1,
+                "reverse_proxy_upstreams": [ingress.LEGACY_V1_UPSTREAM],
+                "legacy_v1_upstream_active": True,
                 "still_on_current_host": True,
                 "private_v2_upstream_active": False,
             }),
@@ -685,14 +704,18 @@ def test_signed_inert_and_post_iam_preflights_are_distinct() -> None:
     )
     assert inert["schema"] == preflight.PREFLIGHT_SCHEMA
     assert inert["mutation_iam_binding_present"] is False
-    assert inert["old_v1_masked"] is True
+    assert inert["legacy_v1_service_active"] is True
+    assert inert["legacy_v1_trusted_for_v2"] is False
+    assert inert["legacy_v1_caddy_route_active"] is True
     assert inert["caddy_cutover_performed"] is False
     assert inert["rollback_mode"] == "pre_migration_v1_only"
     assert inert["production_ingress_observation_sha256"] == (
         _production_ingress_envelope(plan, iam=False)["envelope_sha256"]
     )
     assert post["schema"] == preflight.POST_IAM_PREFLIGHT_SCHEMA
-    assert post["old_v1_masked"] is True
+    assert post["legacy_v1_service_active"] is True
+    assert post["legacy_v1_trusted_for_v2"] is False
+    assert post["legacy_v1_caddy_route_active"] is True
     assert post["caddy_cutover_performed"] is False
     assert post["rollback_mode"] == "pre_migration_v1_only"
     assert post["production_ingress_observation_sha256"] == (

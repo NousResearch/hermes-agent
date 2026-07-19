@@ -92,6 +92,13 @@ _ROW_FIELDS = frozenset({
     "created_at",
     "last_used_at",
 })
+
+
+def _effective_uid() -> int:
+    """Return the POSIX effective uid, or a non-root sentinel."""
+
+    getter = getattr(os, "geteuid", None)
+    return int(getter()) if callable(getter) else -1
 _OBSERVATION_FIELDS = frozenset({
     "schema",
     "release_revision",
@@ -543,7 +550,7 @@ def collect_observation(
     release_revision: str,
     now_unix: int | None = None,
 ) -> Mapping[str, Any]:
-    if _REVISION.fullmatch(release_revision or "") is None or os.geteuid() != 0:
+    if _REVISION.fullmatch(release_revision or "") is None or _effective_uid() != 0:
         _error("owner_gate_v1_credential_collector_identity_invalid")
     collected = int(time.time()) if now_unix is None else now_unix
     source = _stable_file(

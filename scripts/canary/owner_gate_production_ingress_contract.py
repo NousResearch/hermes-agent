@@ -32,8 +32,31 @@ VM_NAME = "ai-platform-runtime-01"
 INSTANCE_ID = "1094477181810932795"
 
 OLD_V1_UNIT = "muncho-passkey-stepup.service"
-OLD_V1_MASK_PATH = Path("/etc/systemd/system/muncho-passkey-stepup.service")
-OLD_V1_MASK_TARGET = "/dev/null"
+OLD_V1_FRAGMENT_PATH = Path(
+    "/etc/systemd/system/muncho-passkey-stepup.service"
+)
+OLD_V1_FRAGMENT_SHA256 = (
+    "ab395d191e17c4b94cb19153338fd37a866d109dfec6b55373e3a1e7fb6dabc4"
+)
+OLD_V1_FRAGMENT_MODE = 0o644
+OLD_V1_USER = "ai-platform-brain"
+OLD_V1_GROUP = "ai-platform-brain"
+OLD_V1_UID = 999
+OLD_V1_GID = 994
+OLD_V1_EXEC_START_ARGV = (
+    "/opt/adventico-ai-platform/hermes-home/services/passkey-stepup/"
+    "venv/bin/uvicorn",
+    "muncho_passkey_service:app",
+    "--host",
+    "127.0.0.1",
+    "--port",
+    "8787",
+)
+OLD_V1_PROCESS_CMDLINE = (
+    "/opt/adventico-ai-platform/hermes-home/services/passkey-stepup/"
+    "venv/bin/python",
+    *OLD_V1_EXEC_START_ARGV,
+)
 CADDY_UNIT = "caddy.service"
 CADDY_UNIT_FRAGMENT = "/lib/systemd/system/caddy.service"
 CADDY_EXECUTABLE = "/usr/bin/caddy"
@@ -42,6 +65,7 @@ CADDY_ADMIN_PORT = 2019
 PUBLIC_ORIGIN = "https://auth.lomliev.com"
 PUBLIC_HOST = "auth.lomliev.com"
 PRIVATE_V2_UPSTREAM = "10.80.3.2:8080"
+LEGACY_V1_UPSTREAM = "127.0.0.1:7341"
 
 EXPECTED_ROOT_UID = 0
 EXPECTED_ROOT_GID = 0
@@ -49,6 +73,7 @@ CADDYFILE_MODE = 0o644
 FRESHNESS_SECONDS = 900
 MAX_SIGNING_DELAY_SECONDS = 300
 MAX_CADDYFILE_BYTES = 1024 * 1024
+MAX_OLD_V1_FRAGMENT_BYTES = 64 * 1024
 
 _REVISION = re.compile(r"^[0-9a-f]{40}$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
@@ -84,11 +109,26 @@ _OLD_V1_FIELDS = frozenset(
         "sub_state",
         "unit_file_state",
         "fragment_path",
+        "fragment_uid",
+        "fragment_gid",
+        "fragment_mode",
+        "fragment_size",
+        "fragment_sha256",
+        "stable_nofollow_fragment_verified",
         "drop_in_paths",
-        "permanent_mask_path",
-        "permanent_mask_target",
-        "mask_uid",
-        "mask_gid",
+        "main_pid",
+        "exec_main_pid",
+        "exec_start_path",
+        "exec_start_argv",
+        "service_user",
+        "service_group",
+        "need_daemon_reload",
+        "process_cmdline",
+        "process_uid",
+        "process_gid",
+        "process_start_time_ticks",
+        "process_cgroup_unit_verified",
+        "active_process_stable",
         "trusted_for_v2",
     }
 )
@@ -112,6 +152,8 @@ _CADDY_FIELDS = frozenset(
         "auth_host_route_count",
         "reverse_proxy_handler_count",
         "reverse_proxy_upstream_count",
+        "reverse_proxy_upstreams",
+        "legacy_v1_upstream_active",
         "still_on_current_host",
         "private_v2_upstream_active",
         "process_executable",
@@ -256,20 +298,40 @@ def _validate_old_v1(value: Any) -> Mapping[str, Any]:
         _OLD_V1_FIELDS,
         code="owner_gate_production_ingress_old_v1_invalid",
     )
-    if raw != {
-        "unit": OLD_V1_UNIT,
-        "load_state": "masked",
-        "active_state": "inactive",
-        "sub_state": "dead",
-        "unit_file_state": "masked",
-        "fragment_path": OLD_V1_MASK_TARGET,
-        "drop_in_paths": [],
-        "permanent_mask_path": str(OLD_V1_MASK_PATH),
-        "permanent_mask_target": OLD_V1_MASK_TARGET,
-        "mask_uid": EXPECTED_ROOT_UID,
-        "mask_gid": EXPECTED_ROOT_GID,
-        "trusted_for_v2": False,
-    }:
+    if (
+        raw.get("unit") != OLD_V1_UNIT
+        or raw.get("load_state") != "loaded"
+        or raw.get("active_state") != "active"
+        or raw.get("sub_state") != "running"
+        or raw.get("unit_file_state") != "enabled"
+        or raw.get("fragment_path") != str(OLD_V1_FRAGMENT_PATH)
+        or type(raw.get("fragment_uid")) is not int
+        or raw["fragment_uid"] != EXPECTED_ROOT_UID
+        or type(raw.get("fragment_gid")) is not int
+        or raw["fragment_gid"] != EXPECTED_ROOT_GID
+        or raw.get("fragment_mode") != f"{OLD_V1_FRAGMENT_MODE:04o}"
+        or type(raw.get("fragment_size")) is not int
+        or not 0 < raw["fragment_size"] <= MAX_OLD_V1_FRAGMENT_BYTES
+        or raw.get("fragment_sha256") != OLD_V1_FRAGMENT_SHA256
+        or raw.get("stable_nofollow_fragment_verified") is not True
+        or raw.get("drop_in_paths") != []
+        or type(raw.get("main_pid")) is not int
+        or raw["main_pid"] <= 1
+        or raw.get("exec_main_pid") != raw["main_pid"]
+        or raw.get("exec_start_path") != OLD_V1_EXEC_START_ARGV[0]
+        or raw.get("exec_start_argv") != list(OLD_V1_EXEC_START_ARGV)
+        or raw.get("service_user") != OLD_V1_USER
+        or raw.get("service_group") != OLD_V1_GROUP
+        or raw.get("need_daemon_reload") is not False
+        or raw.get("process_cmdline") != list(OLD_V1_PROCESS_CMDLINE)
+        or raw.get("process_uid") != OLD_V1_UID
+        or raw.get("process_gid") != OLD_V1_GID
+        or type(raw.get("process_start_time_ticks")) is not int
+        or raw["process_start_time_ticks"] <= 0
+        or raw.get("process_cgroup_unit_verified") is not True
+        or raw.get("active_process_stable") is not True
+        or raw.get("trusted_for_v2") is not False
+    ):
         _error("owner_gate_production_ingress_old_v1_invalid")
     return raw
 
@@ -294,6 +356,10 @@ def _validate_caddy(value: Any) -> Mapping[str, Any]:
         ),
         "reverse_proxy_upstream_count": raw.get(
             "reverse_proxy_upstream_count"
+        ),
+        "reverse_proxy_upstreams": raw.get("reverse_proxy_upstreams"),
+        "legacy_v1_upstream_active": raw.get(
+            "legacy_v1_upstream_active"
         ),
         "still_on_current_host": raw.get("still_on_current_host"),
         "private_v2_upstream_active": raw.get(
@@ -324,6 +390,8 @@ def _validate_caddy(value: Any) -> Mapping[str, Any]:
         or raw["reverse_proxy_handler_count"] <= 0
         or type(raw.get("reverse_proxy_upstream_count")) is not int
         or raw["reverse_proxy_upstream_count"] <= 0
+        or raw.get("reverse_proxy_upstreams") != [LEGACY_V1_UPSTREAM]
+        or raw.get("legacy_v1_upstream_active") is not True
         or raw.get("still_on_current_host") is not True
         or raw.get("private_v2_upstream_active") is not False
         or raw.get("process_executable") != CADDY_EXECUTABLE

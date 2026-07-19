@@ -16,6 +16,15 @@ from tests.scripts.canary.test_package_production_cutover_artifacts import (
 )
 
 
+def test_effective_identity_fails_closed_without_posix_apis(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delattr(producer.os, "geteuid")
+    monkeypatch.delattr(producer.os, "getegid")
+
+    assert producer._effective_identity() is None
+
+
 def test_every_fixed_target_has_exactly_one_producer_source() -> None:
     partitions = producer.HOST_ARTIFACT_SOURCE_PARTITIONS
 

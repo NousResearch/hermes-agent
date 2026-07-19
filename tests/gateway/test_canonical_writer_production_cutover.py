@@ -997,6 +997,7 @@ def _seed_caddy_dependency(
     plan: cutover.CutoverPlan,
     *,
     recorded_at_unix: int = NOW,
+    arm_maintenance: bool = True,
 ) -> None:
     freeze = cutover.FreezePlan.from_mapping(plan.value["freeze_plan"])
     maintenance = b"fixed-test-maintenance-caddy"
@@ -1027,6 +1028,98 @@ def _seed_caddy_dependency(
             "receipt_sha256": cutover._sha256_json(caddy_unsigned),
         },
         recorded_at_unix,
+    )
+    if arm_maintenance:
+        arm_unsigned = {
+            "schema": cutover.CADDY_MAINTENANCE_ARM_SCHEMA,
+            "release_revision": plan.value["release_revision"],
+            "freeze_plan_sha256": freeze.sha256,
+            "cutover_plan_sha256": plan.sha256,
+            "freeze_approval_sha256": plan.value[
+                "freeze_approval_sha256"
+            ],
+            "authority_sha256": "1" * 64,
+            "caddy_prepare_receipt_sha256": "2" * 64,
+            "legacy_service_active_sha256": "6" * 64,
+            "maintenance_caddy_sha256": hashlib.sha256(
+                maintenance
+            ).hexdigest(),
+            "active_route_projection_sha256": "7" * 64,
+            "public_status": 503,
+            "caddy_validated": True,
+            "caddy_reloaded": True,
+            "public_verified": True,
+            "v1_public_route_closed": True,
+            "rollback_mode": "pre_intent_exact_restore_available",
+            "production_mutation_performed": True,
+            "caller_selected_input_accepted": False,
+            "secret_material_recorded": False,
+            "secret_digest_recorded": False,
+            "armed_at_unix": recorded_at_unix,
+        }
+        journal.append(
+            plan.sha256,
+            "caddy_maintenance_armed",
+            {
+                **arm_unsigned,
+                "receipt_sha256": cutover._sha256_json(arm_unsigned),
+            },
+            recorded_at_unix,
+        )
+
+
+def _seed_caddy_restore_dependency(
+    journal: MemoryJournal,
+    plan: cutover.CutoverPlan,
+    *,
+    recorded_at_unix: int = NOW + 1,
+) -> None:
+    entries = journal.load(plan.sha256)
+    prepared = cutover.require_caddy_prepared_dependency(entries, plan)
+    arm = cutover.require_caddy_maintenance_arm_dependency(entries, plan)
+    freeze = cutover.FreezePlan.from_mapping(plan.value["freeze_plan"])
+    intent_unsigned = {
+        "schema": cutover.CADDY_PRE_INTENT_RESTORE_INTENT_SCHEMA,
+        "release_revision": plan.value["release_revision"],
+        "freeze_plan_sha256": freeze.sha256,
+        "cutover_plan_sha256": plan.sha256,
+        "freeze_approval_sha256": plan.value["freeze_approval_sha256"],
+        "authority_sha256": prepared["authority_sha256"],
+        "caddy_prepare_receipt_sha256": prepared[
+            "caddy_prepare_receipt_sha256"
+        ],
+        "maintenance_arm_receipt_sha256": arm["receipt_sha256"],
+        "original_caddy_sha256": prepared["original_caddy_sha256"],
+        "maintenance_caddy_sha256": prepared["maintenance_caddy_sha256"],
+        "active_route_projection_sha256": arm[
+            "active_route_projection_sha256"
+        ],
+        "public_status": 503,
+        "public_verified": True,
+        "v1_public_route_closed": True,
+        "exact_original_artifact_available": True,
+        "forward_apply_invalidated": True,
+        "recovery_basis": "freeze_abort",
+        "rollback_terminal_receipt_sha256": None,
+        "rollback_mode": "pre_intent_exact_bytes",
+        "production_mutation_performed": False,
+        "caller_selected_input_accepted": False,
+        "secret_material_recorded": False,
+        "secret_digest_recorded": False,
+        "restore_started_at_unix": recorded_at_unix,
+    }
+    intent = {
+        **intent_unsigned,
+        "receipt_sha256": cutover._sha256_json(intent_unsigned),
+    }
+    journal.append(
+        plan.sha256,
+        "caddy_pre_intent_restore_intent",
+        intent,
+        recorded_at_unix,
+    )
+    cutover.require_caddy_pre_intent_restore_intent_dependency(
+        journal.load(plan.sha256), plan
     )
 
 
@@ -2533,6 +2626,29 @@ def test_freeze_rejects_row_floor_regression_after_stopping_gateway() -> None:
     assert entries[-1].value["event"] == "freeze_aborted"
     assert entries[-1].value["evidence"]["database_mutated"] is False
     assert entries[-1].value["evidence"]["host_mutated"] is False
+    calls_after_abort = list(services.calls)
+    events_after_abort = [entry.value for entry in entries]
+
+    with pytest.raises(
+        cutover.ProductionCutoverError,
+        match="freeze_already_aborted",
+    ):
+        cutover.execute_final_tail_capture(
+            plan,
+            approval,
+            cutover.FreezeDependencies(
+                services,
+                Snapshots(_snapshot(101)),
+                journal,
+                nullcontext,
+            ),
+            now_unix=NOW + 1,
+        )
+
+    assert services.calls == calls_after_abort
+    assert [
+        entry.value for entry in journal.load(plan.sha256)
+    ] == events_after_abort
 
 
 def test_expired_unused_claim_cannot_start_freeze_stop() -> None:
@@ -2681,14 +2797,14 @@ def test_explicit_pre_mutation_freeze_abort_recovers_after_process_crash() -> No
         plan,
         approval_value,
         dependencies,
-        cutover_plan_staged=False,
+        cutover_plan=None,
         now_unix=NOW + 3_600,
     )
     retried = cutover.abort_freeze(
         plan,
         approval_value,
         dependencies,
-        cutover_plan_staged=False,
+        cutover_plan=None,
         now_unix=NOW + 3_601,
     )
 
@@ -2703,35 +2819,197 @@ def test_explicit_pre_mutation_freeze_abort_recovers_after_process_crash() -> No
     assert services.calls.count("start_gateway") == 1
 
 
-def test_freeze_abort_rejects_any_staged_cutover_plan() -> None:
+def test_freeze_abort_with_exact_caddy_restore_is_idempotent() -> None:
     private = Ed25519PrivateKey.generate()
     services = Services()
-    plan = _freeze(private, services, initial_rows=100)
+    cutover_plan = _cutover_plan(private, services)
+    plan = cutover.FreezePlan.from_mapping(cutover_plan.value["freeze_plan"])
+    approval_value = _approval(private, cutover_plan)
+    journal = MemoryJournal()
+    _seed_cutover_passkey(journal, cutover_plan, approval_value)
+    _seed_caddy_restore_dependency(journal, cutover_plan)
+    dependencies = cutover.FreezeDependencies(
+        services,
+        Snapshots(cutover_plan.final_snapshot),
+        journal,
+        nullcontext,
+    )
+
+    receipt = cutover.abort_freeze(
+        plan,
+        approval_value,
+        dependencies,
+        cutover_plan=cutover_plan,
+        now_unix=NOW + 1,
+    )
+    replay = cutover.abort_freeze(
+        plan,
+        approval_value,
+        dependencies,
+        cutover_plan=cutover_plan,
+        now_unix=NOW + 2,
+    )
+
+    assert replay == receipt
+    assert receipt["trigger"] == "owner_abort"
+    assert services.calls.count("start_gateway") == 1
+    assert [
+        entry.value["event"] for entry in journal.load(cutover_plan.sha256)
+    ] == [
+        "caddy_prepared",
+        "caddy_maintenance_armed",
+        "caddy_pre_intent_restore_intent",
+    ]
+    assert receipt["cutover_plan_sha256"] == cutover_plan.sha256
+    assert receipt["caddy_restore_required"] is True
+    assert [
+        entry.value["event"] for entry in journal.load(plan.sha256)
+    ].count("freeze_aborted") == 1
+
+
+def test_caddy_restore_handoff_binds_exact_maintenance_projection() -> None:
+    private = Ed25519PrivateKey.generate()
+    services = Services()
+    plan = _cutover_plan(private, services)
     approval_value = _approval(private, plan)
     journal = MemoryJournal()
-    approval = cutover.CutoverApproval.from_mapping(
-        approval_value,
-        plan=plan,
-        now_unix=NOW,
+    _seed_cutover_passkey(journal, plan, approval_value)
+    _seed_caddy_restore_dependency(journal, plan)
+    entries = journal.values[plan.sha256]
+    intent_index = next(
+        index
+        for index, entry in enumerate(entries)
+        if entry.value["event"] == "caddy_pre_intent_restore_intent"
     )
-    cutover._append_authority(journal, plan.sha256, approval, NOW)
+    forged_entry = {
+        name: item
+        for name, item in entries[intent_index].value.items()
+        if name != "entry_sha256"
+    }
+    forged_intent = {
+        name: item
+        for name, item in forged_entry["evidence"].items()
+        if name != "receipt_sha256"
+    }
+    forged_intent["active_route_projection_sha256"] = "f" * 64
+    forged_entry["evidence"] = _hashed(
+        forged_intent, "receipt_sha256"
+    )
+    entries[intent_index] = cutover.JournalEntry.from_mapping(
+        _hashed(forged_entry, "entry_sha256"),
+        plan_sha256=plan.sha256,
+    )
 
     with pytest.raises(
         cutover.ProductionCutoverError,
-        match="cutover_plan_present",
+        match="pre_intent_restore_intent_invalid",
+    ):
+        cutover.require_caddy_pre_intent_restore_intent_dependency(
+            journal.load(plan.sha256), plan
+        )
+
+
+def test_freeze_abort_rejects_armed_caddy_without_exact_restore() -> None:
+    private = Ed25519PrivateKey.generate()
+    services = Services()
+    cutover_plan = _cutover_plan(private, services)
+    plan = cutover.FreezePlan.from_mapping(cutover_plan.value["freeze_plan"])
+    approval_value = _approval(private, cutover_plan)
+    journal = MemoryJournal()
+    _seed_cutover_passkey(journal, cutover_plan, approval_value)
+
+    with pytest.raises(
+        cutover.ProductionCutoverError,
+        match="cutover_journal_not_precommit",
     ):
         cutover.abort_freeze(
             plan,
             approval_value,
             cutover.FreezeDependencies(
                 services,
-                Snapshots(_snapshot(101)),
+                Snapshots(cutover_plan.final_snapshot),
                 journal,
                 nullcontext,
             ),
-            cutover_plan_staged=True,
-            now_unix=NOW,
+            cutover_plan=cutover_plan,
+            now_unix=NOW + 1,
         )
+
+    assert "start_gateway" not in services.calls
+    assert not any(
+        entry.value["event"] == "freeze_aborted"
+        for entry in journal.load(plan.sha256)
+    )
+
+
+def test_freeze_abort_rejects_tampered_staged_cutover_plan() -> None:
+    private = Ed25519PrivateKey.generate()
+    services = Services()
+    cutover_plan = _cutover_plan(private, services)
+    plan = cutover.FreezePlan.from_mapping(cutover_plan.value["freeze_plan"])
+    approval_value = _approval(private, cutover_plan)
+    journal = MemoryJournal()
+    _seed_cutover_passkey(journal, cutover_plan, approval_value)
+    tampered = cutover_plan.to_mapping()
+    tampered["freeze_plan_sha256"] = "f" * 64
+
+    with pytest.raises(
+        cutover.ProductionCutoverError,
+        match="cutover_plan_invalid",
+    ):
+        cutover.abort_freeze(
+            plan,
+            approval_value,
+            cutover.FreezeDependencies(
+                services,
+                Snapshots(cutover_plan.final_snapshot),
+                journal,
+                nullcontext,
+            ),
+            cutover_plan=cutover.CutoverPlan(tampered),
+            now_unix=NOW + 1,
+        )
+
+    assert "start_gateway" not in services.calls
+
+
+@pytest.mark.parametrize(
+    "event",
+    [
+        "database_apply_started",
+        "host_apply_started",
+        "cron_apply_started",
+        "activation_commit_intent",
+    ],
+)
+def test_freeze_abort_rejects_staged_nonprecommit_event(event: str) -> None:
+    private = Ed25519PrivateKey.generate()
+    services = Services()
+    cutover_plan = _cutover_plan(private, services)
+    plan = cutover.FreezePlan.from_mapping(cutover_plan.value["freeze_plan"])
+    approval_value = _approval(private, cutover_plan)
+    journal = MemoryJournal()
+    _seed_cutover_passkey(journal, cutover_plan, approval_value)
+    journal.append(cutover_plan.sha256, event, {}, NOW + 1)
+
+    with pytest.raises(
+        cutover.ProductionCutoverError,
+        match="cutover_journal_not_precommit",
+    ):
+        cutover.abort_freeze(
+            plan,
+            approval_value,
+            cutover.FreezeDependencies(
+                services,
+                Snapshots(cutover_plan.final_snapshot),
+                journal,
+                nullcontext,
+            ),
+            cutover_plan=cutover_plan,
+            now_unix=NOW + 2,
+        )
+
+    assert "start_gateway" not in services.calls
 
 
 @pytest.mark.parametrize(
@@ -2881,7 +3159,7 @@ def test_cutover_apply_without_parent_freeze_intent_fails() -> None:
     assert database.calls == []
     assert [
         entry.value["event"] for entry in journal.load(plan.sha256)
-    ] == ["caddy_prepared"]
+    ] == ["caddy_prepared", "caddy_maintenance_armed"]
 
 
 def test_expired_claim_can_record_apply_intent_from_durable_freeze_terminal() -> None:
@@ -2987,31 +3265,39 @@ def test_cutover_apply_rejects_parent_intent_bound_to_different_claim() -> None:
     assert database.calls == []
     assert [
         entry.value["event"] for entry in journal.load(plan.sha256)
-    ] == ["caddy_prepared"]
+    ] == ["caddy_prepared", "caddy_maintenance_armed"]
 
 
-def test_cutover_apply_rejects_stale_plan_after_abort_following_tail() -> None:
+def test_cutover_apply_rejects_durable_freeze_abort_before_mutation() -> None:
     private = Ed25519PrivateKey.generate()
     services = Services()
     plan = _cutover_plan(private, services)
     approval = _approval(private, plan)
     journal = MemoryJournal()
     _seed_cutover_passkey(journal, plan, approval)
+    _seed_caddy_restore_dependency(journal, plan)
     freeze = cutover.FreezePlan.from_mapping(plan.value["freeze_plan"])
-    journal.append(
-        freeze.sha256,
-        "freeze_aborted",
-        {
-            "database_mutated": False,
-            "host_mutated": False,
-        },
-        NOW + 1,
+    cutover.abort_freeze(
+        freeze,
+        approval,
+        cutover.FreezeDependencies(
+            services,
+            Snapshots(plan.final_snapshot),
+            journal,
+            nullcontext,
+        ),
+        cutover_plan=plan,
+        now_unix=NOW + 1,
     )
     database = Database(plan)
+    service_calls = list(services.calls)
+    cutover_events = [
+        entry.value["event"] for entry in journal.load(plan.sha256)
+    ]
 
     with pytest.raises(
-        PermissionError,
-        match="parent final tail is invalid",
+        cutover.ProductionCutoverError,
+        match="freeze_already_aborted",
     ):
         cutover.execute_cutover(
             plan,
@@ -3029,10 +3315,9 @@ def test_cutover_apply_rejects_stale_plan_after_abort_following_tail() -> None:
         )
 
     assert database.calls == []
+    assert services.calls == service_calls
     remaining = journal.load(plan.sha256)
-    assert [entry.value["event"] for entry in remaining] == [
-        "caddy_prepared"
-    ]
+    assert [entry.value["event"] for entry in remaining] == cutover_events
     assert cutover.require_caddy_prepared_dependency(remaining, plan)[
         "production_mutation_performed"
     ] is False

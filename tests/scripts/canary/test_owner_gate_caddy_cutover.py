@@ -48,6 +48,14 @@ unrelated.example.com {
 """
 
 
+def test_root_detection_fails_closed_without_posix_api(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delattr(caddy.os, "geteuid")
+
+    assert caddy._running_as_root() is False
+
+
 def _authority() -> caddy._Authority:
     plan = _cutover_plan(Ed25519PrivateKey.generate(), Services())
     freeze = cutover.FreezePlan.from_mapping(plan.value["freeze_plan"])
@@ -518,8 +526,10 @@ class RequestBoundary:
 class ServiceBoundary:
     def __init__(self) -> None:
         self.active = True
+        self.retired = False
         self.generation = 1
         self.events: list[str] = []
+        self.fragment = b"[Unit]\nDescription=legacy step-up\n"
 
     @staticmethod
     def _value(state: str, generation: int) -> Mapping[str, Any]:
@@ -555,6 +565,29 @@ class ServiceBoundary:
             **unsigned,
             "projection_sha256": caddy._sha256(caddy._canonical(unsigned)),
         }
+
+    def snapshot_exact_fragment(
+        self, expected: Mapping[str, Any]
+    ) -> bytes:
+        assert expected == self.observe_active()
+        self.events.append("snapshot")
+        return self.fragment
+
+    def observe_retired(self) -> Mapping[str, Any]:
+        assert self.retired and not self.active
+        unsigned = {"state": "retired", "permanent": True}
+        return {
+            **unsigned,
+            "projection_sha256": caddy._sha256(caddy._canonical(unsigned)),
+        }
+
+    def retire_exact(self) -> Mapping[str, Any]:
+        if not self.retired:
+            assert self.active
+            self.events.append("retire")
+            self.active = False
+            self.retired = True
+        return self.observe_retired()
 
 
 def _bridge_intent_evidence(
@@ -899,6 +932,125 @@ def test_prepare_is_no_live_mutation_no_clobber_and_replay_stable(
         "prepare_intent",
         "prepared",
     ]
+
+
+def test_maintenance_arm_closes_public_v1_before_intent_and_replays(
+    tmp_path: Path,
+) -> None:
+    authority = _authority()
+    boundary = Boundary()
+    store = _store(tmp_path)
+    journal = MemoryJournal()
+    service = ServiceBoundary()
+    _seed_bridge(authority, boundary, store)
+    prepared = caddy.prepare_cutover(
+        authority,
+        boundary=boundary,
+        store=store,
+        legacy_journal=journal,
+        now_unix=NOW,
+    )
+
+    first = caddy.arm_pre_intent_maintenance(
+        authority,
+        boundary=boundary,
+        store=store,
+        legacy_journal=journal,
+        service=service,
+        now_unix=NOW + 1,
+    )
+    replay = caddy.arm_pre_intent_maintenance(
+        authority,
+        boundary=boundary,
+        store=store,
+        legacy_journal=journal,
+        service=service,
+        now_unix=NOW + 2,
+    )
+
+    assert replay == first
+    assert boundary.mode() == "maintenance"
+    assert first["caddy_prepare_receipt_sha256"] == prepared["receipt_sha256"]
+    assert first["public_status"] == 503
+    assert first["v1_public_route_closed"] is True
+    assert service.active is True
+    entries = journal.load(authority.plan.sha256)
+    assert [entry.value["event"] for entry in entries] == [
+        "caddy_prepared",
+        "caddy_maintenance_armed",
+    ]
+    assert cutover.require_caddy_maintenance_arm_dependency(
+        entries, authority.plan
+    ) == first
+
+
+def test_legacy_retirement_is_after_terminal_permanent_and_replay_safe(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    authority = _authority()
+    boundary = Boundary()
+    store = _store(tmp_path)
+    journal = MemoryJournal()
+    service = ServiceBoundary()
+    _seed_bridge(authority, boundary, store)
+    caddy.prepare_cutover(
+        authority,
+        boundary=boundary,
+        store=store,
+        legacy_journal=journal,
+        now_unix=NOW,
+    )
+    caddy.arm_pre_intent_maintenance(
+        authority,
+        boundary=boundary,
+        store=store,
+        legacy_journal=journal,
+        service=service,
+        now_unix=NOW + 1,
+    )
+    intent = {"receipt_sha256": "6" * 64}
+    terminal = {"receipt_sha256": "7" * 64}
+    monkeypatch.setattr(
+        caddy,
+        "_legacy_commit_lineage",
+        lambda *_a, **_k: (intent, terminal),
+    )
+    monkeypatch.setattr(
+        caddy,
+        "LEGACY_STEP_UP_FRAGMENT_SHA256",
+        caddy._sha256(service.fragment),
+    )
+
+    first = caddy.retire_legacy_service(
+        authority,
+        boundary=boundary,
+        store=store,
+        legacy_journal=journal,
+        service=service,
+        now_unix=NOW + 2,
+    )
+    replay = caddy.retire_legacy_service(
+        authority,
+        boundary=boundary,
+        store=store,
+        legacy_journal=journal,
+        service=service,
+        now_unix=NOW + 3,
+    )
+
+    assert replay == first
+    assert first["fragment_masked"] is True
+    assert first["service_inactive"] is True
+    assert first["permanent"] is True
+    assert first["legacy_terminal_receipt_sha256"] == terminal[
+        "receipt_sha256"
+    ]
+    assert service.retired is True
+    assert service.events.count("retire") == 1
+    assert store.read_artifact(
+        authority.plan.sha256, "legacy-stepup.service"
+    ) == service.fragment
 
 
 def test_prepare_valid_legacy_intent_reconciles_maintenance_before_replay(
@@ -2864,6 +3016,608 @@ def test_activate_bridge_rejects_non_passkey_grant_before_caddy_write(
     assert service.events == []
 
 
+def _simple_plan_receipt(
+    authority: caddy._Authority, schema: str
+) -> Mapping[str, Any]:
+    unsigned = {
+        "schema": schema,
+        "plan_sha256": authority.plan.sha256,
+    }
+    return {
+        **unsigned,
+        "receipt_sha256": caddy._sha256(caddy._canonical(unsigned)),
+    }
+
+
+def _append_apply_intent_and_rollback_terminal(
+    authority: caddy._Authority,
+    journal: MemoryJournal,
+    *,
+    include_terminal: bool = True,
+    terminal_approval_sha256: str | None = None,
+) -> Mapping[str, Any] | None:
+    journal.append(
+        authority.plan.sha256,
+        "passkey_intent",
+        {
+            "schema": cutover.PASSKEY_INTENT_SCHEMA,
+            "phase": "cutover_apply",
+            "freeze_plan_sha256": authority.freeze.sha256,
+            "freeze_approval_sha256": authority.approval_sha256,
+            "passkey_claim_entry_sha256": authority.claim_entry_sha256,
+            "cutover_plan_sha256": authority.plan.sha256,
+            "parent_freeze_intent_entry_sha256": "a" * 64,
+            "parent_freeze_terminal_entry_sha256": "b" * 64,
+        },
+        NOW + 2,
+    )
+    journal.append(
+        authority.plan.sha256,
+        "authority",
+        {"approval_sha256": authority.approval_sha256},
+        NOW + 2,
+    )
+    if not include_terminal:
+        return None
+    legacy_gateway = copy.deepcopy(
+        authority.plan.value["gateway_legacy_identity"]
+    )
+    legacy_gateway.update(
+        {
+            "active_state": "active",
+            "sub_state": "running",
+            "main_pid": 4321,
+        }
+    )
+    legacy_gateway["observation_sha256"] = cutover._sha256_json(
+        {
+            name: value
+            for name, value in legacy_gateway.items()
+            if name != "observation_sha256"
+        }
+    )
+    unsigned = {
+        "schema": cutover.ROLLBACK_TERMINAL_SCHEMA,
+        "plan_sha256": authority.plan.sha256,
+        "approval_sha256": (
+            authority.approval_sha256
+            if terminal_approval_sha256 is None
+            else terminal_approval_sha256
+        ),
+        "database_restore_required": False,
+        "database_restored": False,
+        "database_rollback_receipt_sha256": None,
+        "host_restore_required": False,
+        "host_restored": False,
+        "host_rollback_receipt_sha256": None,
+        "legacy_gateway": legacy_gateway,
+        "legacy_writer": copy.deepcopy(
+            authority.plan.value["writer_pre_identity"]
+        ),
+        "legacy_connector": copy.deepcopy(
+            authority.plan.value["connector_pre_identity"]
+        ),
+        "legacy_gateway_restarted": True,
+        "direct_discord_disabled": False,
+        "discord_dm_allowed": False,
+        "secret_material_recorded": False,
+        "completed_at_unix": NOW + 2,
+    }
+    terminal = {
+        **unsigned,
+        "receipt_sha256": cutover._sha256_json(unsigned),
+    }
+    journal.append(
+        authority.plan.sha256,
+        "rollback_terminal",
+        terminal,
+        NOW + 2,
+    )
+    return terminal
+
+
+def test_converge_arms_then_applies_retires_commits_and_replays(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    authority = _authority()
+    boundary = Boundary()
+    store = _store(tmp_path)
+    journal = MemoryJournal()
+    service = ServiceBoundary()
+    _seed_bridge(authority, boundary, store)
+    applied = False
+    actions: list[str] = []
+    intent = {"receipt_sha256": "6" * 64}
+    terminal = _simple_plan_receipt(authority, "test-cutover-terminal.v1")
+
+    def runner(action: str) -> Mapping[str, Any]:
+        nonlocal applied
+        actions.append(action)
+        if action == "phase-b-preflight":
+            return _simple_plan_receipt(authority, "test-preflight.v1")
+        if action == "apply-cutover":
+            assert boundary.mode() == (
+                "private_v2" if applied else "maintenance"
+            )
+            assert [
+                entry.value["event"]
+                for entry in journal.load(authority.plan.sha256)
+            ][:2] == ["caddy_prepared", "caddy_maintenance_armed"]
+            if not applied:
+                journal.append(
+                    authority.plan.sha256,
+                    "activation_commit_intent",
+                    intent,
+                    NOW + 2,
+                )
+                journal.append(
+                    authority.plan.sha256,
+                    "terminal",
+                    terminal,
+                    NOW + 2,
+                )
+                applied = True
+            return terminal
+        raise AssertionError(action)
+
+    monkeypatch.setattr(
+        caddy,
+        "_legacy_commit_lineage",
+        lambda *_a, **_k: (intent, terminal) if applied else None,
+    )
+    monkeypatch.setattr(
+        caddy,
+        "LEGACY_STEP_UP_FRAGMENT_SHA256",
+        caddy._sha256(service.fragment),
+    )
+
+    first = caddy.converge_cutover(
+        authority,
+        boundary_factory=lambda: boundary,
+        store_factory=lambda: store,
+        legacy_journal_factory=lambda: journal,
+        retirement_boundary_factory=lambda: service,
+        cutover_runner=runner,
+        lock=nullcontext,
+        now_unix=NOW + 1,
+    )
+    replay = caddy.converge_cutover(
+        authority,
+        boundary_factory=lambda: boundary,
+        store_factory=lambda: store,
+        legacy_journal_factory=lambda: journal,
+        retirement_boundary_factory=lambda: service,
+        cutover_runner=runner,
+        lock=nullcontext,
+        now_unix=NOW + 3,
+    )
+
+    assert replay == first
+    assert first["schema"] == caddy.CONVERGENCE_RECEIPT_SCHEMA
+    assert first["caddy_outcome"] == "private_v2_active"
+    assert boundary.mode() == "private_v2"
+    assert service.retired is True
+    assert service.events.index("retire") > 0
+    assert actions == [
+        "phase-b-preflight",
+        "apply-cutover",
+    ]
+    assert len([
+        entry
+        for entry in store.load(authority.plan.sha256)
+        if entry.value["event"] == "convergence_terminal"
+    ]) == 1
+
+
+def test_converge_failure_before_intent_restores_v1_then_aborts(
+    tmp_path: Path,
+) -> None:
+    authority = _authority()
+    boundary = Boundary()
+    store = _store(tmp_path)
+    journal = MemoryJournal()
+    service = ServiceBoundary()
+    _seed_bridge(authority, boundary, store)
+    actions: list[str] = []
+
+    def runner(action: str) -> Mapping[str, Any]:
+        actions.append(action)
+        if action == "phase-b-preflight":
+            return _simple_plan_receipt(authority, "test-preflight.v1")
+        if action == "apply-cutover":
+            assert boundary.mode() == "maintenance"
+            raise RuntimeError("injected pre-intent apply failure")
+        if action == "abort-freeze":
+            assert boundary.mode() == "maintenance"
+            handoff = next(
+                entry.value["evidence"]
+                for entry in journal.load(authority.plan.sha256)
+                if entry.value["event"]
+                == "caddy_pre_intent_restore_intent"
+            )
+            unsigned = {
+                "schema": cutover.FREEZE_ABORT_SCHEMA,
+                "freeze_plan_sha256": authority.freeze.sha256,
+                "approval_sha256": authority.approval_sha256,
+                "trigger": "owner_abort",
+                "cutover_plan_sha256": authority.plan.sha256,
+                "caddy_restore_intent_receipt_sha256": handoff[
+                    "receipt_sha256"
+                ],
+                "caddy_restore_required": True,
+                "gateway_legacy_restarted": True,
+                "writer_stopped": True,
+                "connector_stopped": True,
+                "database_mutated": False,
+                "host_mutated": False,
+                "secret_material_recorded": False,
+                "completed_at_unix": NOW + 1,
+            }
+            return {
+                **unsigned,
+                "receipt_sha256": cutover._sha256_json(unsigned),
+            }
+        raise AssertionError(action)
+
+    with pytest.raises(
+        caddy.OwnerGateCaddyCutoverError,
+        match="pre_intent_aborted",
+    ):
+        caddy.converge_cutover(
+            authority,
+            boundary_factory=lambda: boundary,
+            store_factory=lambda: store,
+            legacy_journal_factory=lambda: journal,
+            retirement_boundary_factory=lambda: service,
+            cutover_runner=runner,
+            lock=nullcontext,
+            now_unix=NOW + 1,
+        )
+
+    assert actions == [
+        "phase-b-preflight",
+        "apply-cutover",
+        "abort-freeze",
+    ]
+    assert boundary.mode() == "legacy"
+    assert service.active is True
+
+    local_entries = store.load(authority.plan.sha256)
+    prepared = caddy.validate_prepare_receipt(
+        next(
+            entry.value["evidence"]
+            for entry in local_entries
+            if entry.value["event"] == "prepared"
+        ),
+        plan=authority.plan,
+    )
+    arm = caddy.validate_maintenance_arm_receipt(
+        next(
+            entry.value["evidence"]
+            for entry in local_entries
+            if entry.value["event"] == "maintenance_armed"
+        ),
+        authority=authority,
+        prepare_receipt=prepared,
+    )
+    handoff = next(
+        entry.value["evidence"]
+        for entry in journal.load(authority.plan.sha256)
+        if entry.value["event"] == "caddy_pre_intent_restore_intent"
+    )
+    tampered_unsigned = {
+        name: item
+        for name, item in handoff.items()
+        if name != "receipt_sha256"
+    }
+    tampered_unsigned["active_route_projection_sha256"] = "f" * 64
+    with pytest.raises(
+        caddy.OwnerGateCaddyCutoverError,
+        match="pre_intent_restore_intent_invalid",
+    ):
+        caddy._validate_pre_intent_restore_intent(
+            {
+                **tampered_unsigned,
+                "receipt_sha256": caddy._sha256(
+                    caddy._canonical(tampered_unsigned)
+                ),
+            },
+            authority=authority,
+            prepared=prepared,
+            arm=arm,
+        )
+
+
+def test_converge_retry_after_abort_before_prepare_never_arms_caddy(
+    tmp_path: Path,
+) -> None:
+    authority = _authority()
+    boundary = Boundary()
+    store = _store(tmp_path)
+    journal = MemoryJournal()
+    service = ServiceBoundary()
+    _seed_bridge(authority, boundary, store)
+    actions: list[str] = []
+
+    def runner(action: str) -> Mapping[str, Any]:
+        actions.append(action)
+        if action == "phase-b-preflight":
+            raise RuntimeError("injected failure before Caddy prepare")
+        if action == "abort-freeze":
+            unsigned = {
+                "schema": cutover.FREEZE_ABORT_SCHEMA,
+                "freeze_plan_sha256": authority.freeze.sha256,
+                "approval_sha256": authority.approval_sha256,
+                "trigger": "owner_abort",
+                "cutover_plan_sha256": authority.plan.sha256,
+                "caddy_restore_intent_receipt_sha256": None,
+                "caddy_restore_required": False,
+                "gateway_legacy_restarted": True,
+                "writer_stopped": True,
+                "connector_stopped": True,
+                "database_mutated": False,
+                "host_mutated": False,
+                "secret_material_recorded": False,
+                "completed_at_unix": NOW + 1,
+            }
+            receipt = {
+                **unsigned,
+                "receipt_sha256": cutover._sha256_json(unsigned),
+            }
+            journal.append(
+                authority.freeze.sha256,
+                "freeze_aborted",
+                receipt,
+                NOW + 1,
+            )
+            return receipt
+        raise AssertionError(action)
+
+    with pytest.raises(
+        caddy.OwnerGateCaddyCutoverError,
+        match="pre_intent_aborted",
+    ):
+        caddy.converge_cutover(
+            authority,
+            boundary_factory=lambda: boundary,
+            store_factory=lambda: store,
+            legacy_journal_factory=lambda: journal,
+            retirement_boundary_factory=lambda: service,
+            cutover_runner=runner,
+            lock=nullcontext,
+            now_unix=NOW + 1,
+        )
+
+    calls_after_abort = list(boundary.replace_calls)
+    local_entries_after_abort = [
+        entry.value for entry in store.load(authority.plan.sha256)
+    ]
+
+    with pytest.raises(
+        caddy.OwnerGateCaddyCutoverError,
+        match="pre_intent_aborted",
+    ):
+        caddy.converge_cutover(
+            authority,
+            boundary_factory=lambda: boundary,
+            store_factory=lambda: store,
+            legacy_journal_factory=lambda: journal,
+            retirement_boundary_factory=lambda: service,
+            cutover_runner=runner,
+            lock=nullcontext,
+            now_unix=NOW + 2,
+        )
+
+    assert actions == ["phase-b-preflight", "abort-freeze"]
+    assert boundary.replace_calls == calls_after_abort
+    assert [
+        entry.value for entry in store.load(authority.plan.sha256)
+    ] == local_entries_after_abort
+    assert not any(
+        entry.value["event"] in {"prepared", "maintenance_armed"}
+        for entry in store.load(authority.plan.sha256)
+    )
+
+
+def test_converge_valid_apply_rollback_restores_only_after_terminal_and_replays(
+    tmp_path: Path,
+) -> None:
+    authority = _authority()
+    store = _store(tmp_path)
+    journal = MemoryJournal()
+    service = ServiceBoundary()
+    restore_event_snapshots: list[list[str]] = []
+
+    class TerminalOrderedBoundary(Boundary):
+        def replace(
+            self,
+            payload: bytes,
+            *,
+            expected: caddy._StableConfig,
+        ) -> None:
+            if payload == self._configs().original:
+                events = [
+                    entry.value["event"]
+                    for entry in journal.load(authority.plan.sha256)
+                ]
+                assert "rollback_terminal" in events
+                assert "caddy_pre_intent_restore_intent" in events
+                assert events.index("rollback_terminal") < events.index(
+                    "caddy_pre_intent_restore_intent"
+                )
+                restore_event_snapshots.append(events)
+            super().replace(payload, expected=expected)
+
+    boundary = TerminalOrderedBoundary()
+    _seed_bridge(authority, boundary, store)
+    actions: list[str] = []
+
+    def runner(action: str) -> Mapping[str, Any]:
+        actions.append(action)
+        if action == "phase-b-preflight":
+            return _simple_plan_receipt(authority, "test-preflight.v1")
+        if action == "apply-cutover":
+            assert boundary.mode() == "maintenance"
+            terminal = _append_apply_intent_and_rollback_terminal(
+                authority, journal
+            )
+            assert terminal is not None
+            cutover._validate_rollback_terminal(
+                terminal,
+                plan=authority.plan,
+                entries=journal.load(authority.plan.sha256),
+            )
+            raise RuntimeError("injected response after durable rollback")
+        raise AssertionError(action)
+
+    for attempt_at in (NOW + 1, NOW + 3):
+        with pytest.raises(
+            caddy.OwnerGateCaddyCutoverError,
+            match="cutover_rolled_back_restored",
+        ):
+            caddy.converge_cutover(
+                authority,
+                boundary_factory=lambda: boundary,
+                store_factory=lambda: store,
+                legacy_journal_factory=lambda: journal,
+                retirement_boundary_factory=lambda: service,
+                cutover_runner=runner,
+                lock=nullcontext,
+                now_unix=attempt_at,
+            )
+
+    assert actions == ["phase-b-preflight", "apply-cutover"]
+    assert boundary.mode() == "legacy"
+    assert restore_event_snapshots
+    assert service.active is True
+    assert service.retired is False
+    events = [
+        entry.value["event"]
+        for entry in journal.load(authority.plan.sha256)
+    ]
+    assert events[-3:] == [
+        "rollback_terminal",
+        "caddy_pre_intent_restore_intent",
+        "caddy_pre_intent_restored",
+    ]
+    assert "freeze_aborted" not in events
+
+
+@pytest.mark.parametrize("terminal_mode", ["missing", "tampered"])
+def test_converge_incomplete_or_tampered_apply_rollback_keeps_maintenance(
+    terminal_mode: str,
+    tmp_path: Path,
+) -> None:
+    authority = _authority()
+    boundary = Boundary()
+    store = _store(tmp_path)
+    journal = MemoryJournal()
+    service = ServiceBoundary()
+    _seed_bridge(authority, boundary, store)
+    actions: list[str] = []
+
+    def runner(action: str) -> Mapping[str, Any]:
+        actions.append(action)
+        if action == "phase-b-preflight":
+            return _simple_plan_receipt(authority, "test-preflight.v1")
+        if action == "apply-cutover":
+            assert boundary.mode() == "maintenance"
+            _append_apply_intent_and_rollback_terminal(
+                authority,
+                journal,
+                include_terminal=terminal_mode == "tampered",
+                terminal_approval_sha256=(
+                    "f" * 64 if terminal_mode == "tampered" else None
+                ),
+            )
+            raise RuntimeError("injected incomplete rollback response")
+        raise AssertionError(action)
+
+    with pytest.raises(
+        caddy.OwnerGateCaddyCutoverError,
+        match="forward_recovery_required",
+    ):
+        caddy.converge_cutover(
+            authority,
+            boundary_factory=lambda: boundary,
+            store_factory=lambda: store,
+            legacy_journal_factory=lambda: journal,
+            retirement_boundary_factory=lambda: service,
+            cutover_runner=runner,
+            lock=nullcontext,
+            now_unix=NOW + 1,
+        )
+
+    assert actions == ["phase-b-preflight", "apply-cutover"]
+    assert boundary.mode() == "maintenance"
+    assert ORIGINAL not in boundary.replace_calls
+    assert service.active is True
+    assert not any(
+        entry.value["event"]
+        in {
+            "caddy_pre_intent_restore_intent",
+            "caddy_pre_intent_restored",
+            "freeze_aborted",
+        }
+        for entry in journal.load(authority.plan.sha256)
+    )
+
+
+def test_converge_failure_after_intent_never_calls_abort_or_restores_v1(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    authority = _authority()
+    boundary = Boundary()
+    store = _store(tmp_path)
+    journal = MemoryJournal()
+    service = ServiceBoundary()
+    _seed_bridge(authority, boundary, store)
+    actions: list[str] = []
+
+    def runner(action: str) -> Mapping[str, Any]:
+        actions.append(action)
+        if action == "phase-b-preflight":
+            return _simple_plan_receipt(authority, "test-preflight.v1")
+        if action == "apply-cutover":
+            journal.append(
+                authority.plan.sha256,
+                "activation_commit_intent",
+                {"receipt_sha256": "6" * 64},
+                NOW + 2,
+            )
+            raise RuntimeError("injected response loss after intent")
+        raise AssertionError(action)
+
+    recovered: list[str] = []
+    monkeypatch.setattr(
+        caddy,
+        "_recover_post_intent_maintenance",
+        lambda *_a, **_k: recovered.append("maintenance") or {},
+    )
+
+    with pytest.raises(
+        caddy.OwnerGateCaddyCutoverError,
+        match="forward_recovery_required",
+    ):
+        caddy.converge_cutover(
+            authority,
+            boundary_factory=lambda: boundary,
+            store_factory=lambda: store,
+            legacy_journal_factory=lambda: journal,
+            retirement_boundary_factory=lambda: service,
+            cutover_runner=runner,
+            lock=nullcontext,
+            now_unix=NOW + 1,
+        )
+
+    assert actions == ["phase-b-preflight", "apply-cutover"]
+    assert recovered == ["maintenance"]
+    assert boundary.mode() == "maintenance"
+    assert ORIGINAL not in boundary.replace_calls
+
+
 def test_fixed_staged_rejects_any_non_allowlisted_phase() -> None:
     with pytest.raises(caddy.OwnerGateCaddyCutoverError, match="phase_invalid"):
         caddy.execute_fixed_staged(
@@ -2877,14 +3631,20 @@ def test_fixed_staged_rejects_any_non_allowlisted_phase() -> None:
         )
 
 
-def test_parser_exposes_exact_four_fixed_phases() -> None:
+def test_parser_exposes_exact_five_fixed_phases() -> None:
     parser = caddy._parser()
     phase_action = next(
         action
         for action in parser._actions
         if action.dest == "phase"
     )
-    phases = ("prepare-bridge", "activate-bridge", "prepare", "commit")
+    phases = (
+        "prepare-bridge",
+        "activate-bridge",
+        "prepare",
+        "commit",
+        "converge",
+    )
 
     assert tuple(phase_action.choices) == phases
     assert tuple(parser.parse_args([phase]).phase for phase in phases) == phases

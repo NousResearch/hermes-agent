@@ -5,7 +5,8 @@ The same source file has two deliberately separate roles:
 
 * when streamed over the pinned production IAP transport, it runs as root on
   ``ai-platform-runtime-01`` and emits one fixed, secret-free observation of
-  the permanent v1 mask and the effective Caddy route; and
+  the exact active legacy v1 unit/process and effective legacy Caddy route;
+  and
 * on the owner Mac, it validates that observation, binds the exact transport
   authority, and signs the envelope with the fork-pinned owner-gate release
   key under a dedicated signature domain.
@@ -26,6 +27,7 @@ import fnmatch
 import http.client
 import ipaddress
 import os
+import re
 import stat
 import subprocess
 import sys
@@ -49,8 +51,15 @@ INSTANCE_ID = contract.INSTANCE_ID
 REMOTE_PYTHON = "/opt/adventico-ai-platform/hermes-agent/.venv/bin/python"
 
 OLD_V1_UNIT = contract.OLD_V1_UNIT
-OLD_V1_MASK_PATH = contract.OLD_V1_MASK_PATH
-OLD_V1_MASK_TARGET = contract.OLD_V1_MASK_TARGET
+OLD_V1_FRAGMENT_PATH = contract.OLD_V1_FRAGMENT_PATH
+OLD_V1_FRAGMENT_SHA256 = contract.OLD_V1_FRAGMENT_SHA256
+OLD_V1_FRAGMENT_MODE = contract.OLD_V1_FRAGMENT_MODE
+OLD_V1_USER = contract.OLD_V1_USER
+OLD_V1_GROUP = contract.OLD_V1_GROUP
+OLD_V1_UID = contract.OLD_V1_UID
+OLD_V1_GID = contract.OLD_V1_GID
+OLD_V1_EXEC_START_ARGV = contract.OLD_V1_EXEC_START_ARGV
+OLD_V1_PROCESS_CMDLINE = contract.OLD_V1_PROCESS_CMDLINE
 CADDY_UNIT = contract.CADDY_UNIT
 CADDY_UNIT_FRAGMENT = contract.CADDY_UNIT_FRAGMENT
 CADDY_EXECUTABLE = "/usr/bin/caddy"
@@ -58,17 +67,36 @@ CADDYFILE_PATH = contract.CADDYFILE_PATH
 PUBLIC_ORIGIN = contract.PUBLIC_ORIGIN
 PUBLIC_HOST = contract.PUBLIC_HOST
 PRIVATE_V2_UPSTREAM = contract.PRIVATE_V2_UPSTREAM
+LEGACY_V1_UPSTREAM = contract.LEGACY_V1_UPSTREAM
 
 SYSTEMCTL = "/usr/bin/systemctl"
-SYSTEMD_PROPERTIES = (
+OLD_V1_SYSTEMD_PROPERTIES = (
+    "Id",
     "LoadState",
     "ActiveState",
     "SubState",
     "UnitFileState",
     "FragmentPath",
     "DropInPaths",
+    "MainPID",
+    "ExecMainPID",
+    "NeedDaemonReload",
+    "User",
+    "Group",
+    "ExecStart",
 )
-CADDY_SYSTEMD_PROPERTIES = (*SYSTEMD_PROPERTIES, "MainPID", "ExecStart")
+CADDY_SYSTEMD_PROPERTIES = (
+    "LoadState",
+    "ActiveState",
+    "SubState",
+    "UnitFileState",
+    "FragmentPath",
+    "DropInPaths",
+    "MainPID",
+    "ExecStart",
+)
+# Compatibility alias used by the fixed test fixture and remote source tests.
+SYSTEMD_PROPERTIES = OLD_V1_SYSTEMD_PROPERTIES
 CADDY_EXPECTED_ARGV = (
     CADDY_EXECUTABLE,
     "run",
@@ -88,6 +116,7 @@ MAX_SIGNING_DELAY_SECONDS = contract.MAX_SIGNING_DELAY_SECONDS
 COMMAND_TIMEOUT_SECONDS = 30.0
 MAX_SYSTEMCTL_OUTPUT_BYTES = 64 * 1024
 MAX_CADDYFILE_BYTES = contract.MAX_CADDYFILE_BYTES
+MAX_OLD_V1_FRAGMENT_BYTES = contract.MAX_OLD_V1_FRAGMENT_BYTES
 MAX_ADAPTED_OUTPUT_BYTES = 4 * 1024 * 1024
 MAX_PROC_OUTPUT_BYTES = 4 * 1024 * 1024
 MAX_REMOTE_SOURCE_BYTES = 512 * 1024
@@ -199,50 +228,89 @@ def _stable_caddyfile() -> _StableFile:
                 _error("owner_gate_production_ingress_caddyfile_invalid", exc)
 
 
-def _permanent_v1_mask() -> Mapping[str, Any]:
-    path = OLD_V1_MASK_PATH
+def _stable_old_v1_fragment() -> Mapping[str, Any]:
+    path = OLD_V1_FRAGMENT_PATH
     if not path.is_absolute() or ".." in path.parts:
-        _error("owner_gate_production_ingress_v1_mask_invalid")
+        _error("owner_gate_production_ingress_v1_fragment_invalid")
+    descriptor: int | None = None
     try:
         before = path.lstat()
-        target = os.readlink(path)
-        after = path.lstat()
+        descriptor = os.open(
+            path,
+            os.O_RDONLY
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0),
+        )
+        opened = os.fstat(descriptor)
+        if (
+            stat.S_ISLNK(before.st_mode)
+            or not stat.S_ISREG(opened.st_mode)
+            or (before.st_dev, before.st_ino) != (opened.st_dev, opened.st_ino)
+            or opened.st_nlink != 1
+            or opened.st_uid != EXPECTED_ROOT_UID
+            or opened.st_gid != EXPECTED_ROOT_GID
+            or stat.S_IMODE(opened.st_mode) != OLD_V1_FRAGMENT_MODE
+            or not 0 < opened.st_size <= MAX_OLD_V1_FRAGMENT_BYTES
+        ):
+            _error("owner_gate_production_ingress_v1_fragment_invalid")
+        raw = bytearray()
+        while len(raw) < opened.st_size:
+            chunk = os.read(descriptor, opened.st_size - len(raw))
+            if not chunk:
+                _error("owner_gate_production_ingress_v1_fragment_changed")
+            raw.extend(chunk)
+        after = os.fstat(descriptor)
+        final = path.lstat()
+        if (
+            len(raw) != opened.st_size
+            or _sha256(bytes(raw)) != OLD_V1_FRAGMENT_SHA256
+            or (
+                opened.st_mode,
+                opened.st_uid,
+                opened.st_gid,
+                opened.st_dev,
+                opened.st_ino,
+                opened.st_nlink,
+                opened.st_size,
+                opened.st_mtime_ns,
+                opened.st_ctime_ns,
+            ) != (
+                after.st_mode,
+                after.st_uid,
+                after.st_gid,
+                after.st_dev,
+                after.st_ino,
+                after.st_nlink,
+                after.st_size,
+                after.st_mtime_ns,
+                after.st_ctime_ns,
+            )
+            or (final.st_dev, final.st_ino)
+            != (opened.st_dev, opened.st_ino)
+        ):
+            _error("owner_gate_production_ingress_v1_fragment_changed")
+        return {
+            "fragment_path": str(path),
+            "fragment_uid": opened.st_uid,
+            "fragment_gid": opened.st_gid,
+            "fragment_mode": f"{stat.S_IMODE(opened.st_mode):04o}",
+            "fragment_size": opened.st_size,
+            "fragment_sha256": OLD_V1_FRAGMENT_SHA256,
+            "stable_nofollow_fragment_verified": True,
+        }
+    except ProductionIngressObservationError:
+        raise
     except OSError as exc:
-        _error("owner_gate_production_ingress_v1_mask_invalid", exc)
-    if (
-        not stat.S_ISLNK(before.st_mode)
-        or before.st_nlink != 1
-        or before.st_uid != EXPECTED_ROOT_UID
-        or before.st_gid != EXPECTED_ROOT_GID
-        or target != OLD_V1_MASK_TARGET
-        or (
-            before.st_mode,
-            before.st_uid,
-            before.st_gid,
-            before.st_dev,
-            before.st_ino,
-            before.st_nlink,
-            before.st_mtime_ns,
-            before.st_ctime_ns,
-        )
-        != (
-            after.st_mode,
-            after.st_uid,
-            after.st_gid,
-            after.st_dev,
-            after.st_ino,
-            after.st_nlink,
-            after.st_mtime_ns,
-            after.st_ctime_ns,
-        )
-    ):
-        _error("owner_gate_production_ingress_v1_mask_invalid")
-    return {
-        "permanent_mask_path": str(path),
-        "permanent_mask_target": target,
-        "mask_uid": before.st_uid,
-        "mask_gid": before.st_gid,
-    }
+        _error("owner_gate_production_ingress_v1_fragment_invalid", exc)
+    finally:
+        if descriptor is not None:
+            try:
+                os.close(descriptor)
+            except OSError as exc:
+                _error(
+                    "owner_gate_production_ingress_v1_fragment_invalid",
+                    exc,
+                )
 
 
 def _run_command(argv: tuple[str, ...], *, maximum_output_bytes: int) -> bytes:
@@ -288,7 +356,7 @@ def _systemctl_command(unit: str) -> tuple[str, ...]:
     properties = (
         CADDY_SYSTEMD_PROPERTIES
         if unit == CADDY_UNIT
-        else SYSTEMD_PROPERTIES
+        else OLD_V1_SYSTEMD_PROPERTIES
     )
     return (
         SYSTEMCTL,
@@ -320,7 +388,7 @@ def _systemd_projection(unit: str) -> Mapping[str, Any]:
     properties = (
         CADDY_SYSTEMD_PROPERTIES
         if unit == CADDY_UNIT
-        else SYSTEMD_PROPERTIES
+        else OLD_V1_SYSTEMD_PROPERTIES
     )
     if set(values) != set(properties):
         _error("owner_gate_production_ingress_unit_invalid")
@@ -358,23 +426,85 @@ def _systemd_projection(unit: str) -> Mapping[str, Any]:
             _error("owner_gate_production_ingress_caddy_service_unsafe")
         projection["main_pid"] = main_pid
         projection["exec_start_argv"] = list(CADDY_EXPECTED_ARGV)
+    else:
+        try:
+            main_pid = int(values["MainPID"], 10)
+            exec_main_pid = int(values["ExecMainPID"], 10)
+        except ValueError as exc:
+            _error("owner_gate_production_ingress_old_v1_unsafe", exc)
+        expected_command = " ".join(OLD_V1_EXEC_START_ARGV)
+        exec_start = values["ExecStart"]
+        expected_prefix = (
+            f"{{ path={OLD_V1_EXEC_START_ARGV[0]} ; "
+            f"argv[]={expected_command} ; "
+        )
+        if (
+            values["Id"] != OLD_V1_UNIT
+            or values["User"] != OLD_V1_USER
+            or values["Group"] != OLD_V1_GROUP
+            or values["NeedDaemonReload"] != "no"
+            or main_pid <= 1
+            or exec_main_pid != main_pid
+            or len(exec_start) > MAX_SYSTEMCTL_OUTPUT_BYTES
+            or "\x00" in exec_start
+            or not exec_start.startswith(expected_prefix)
+            or not exec_start.endswith(" }")
+            or exec_start.count("path=") != 1
+            or exec_start.count("argv[]=") != 1
+        ):
+            _error("owner_gate_production_ingress_old_v1_unsafe")
+        projection.update(
+            {
+                "main_pid": main_pid,
+                "exec_main_pid": exec_main_pid,
+                "exec_start_path": OLD_V1_EXEC_START_ARGV[0],
+                "exec_start_argv": list(OLD_V1_EXEC_START_ARGV),
+                "service_user": values["User"],
+                "service_group": values["Group"],
+                "need_daemon_reload": values["NeedDaemonReload"] == "yes",
+            }
+        )
     return projection
 
 
 def _old_v1_projection() -> Mapping[str, Any]:
     service = _systemd_projection(OLD_V1_UNIT)
-    mask = _permanent_v1_mask()
-    if service != {
+    expected = {
         "unit": OLD_V1_UNIT,
-        "load_state": "masked",
-        "active_state": "inactive",
-        "sub_state": "dead",
-        "unit_file_state": "masked",
-        "fragment_path": OLD_V1_MASK_TARGET,
+        "load_state": "loaded",
+        "active_state": "active",
+        "sub_state": "running",
+        "unit_file_state": "enabled",
+        "fragment_path": str(OLD_V1_FRAGMENT_PATH),
         "drop_in_paths": [],
-    }:
+        "exec_start_path": OLD_V1_EXEC_START_ARGV[0],
+        "exec_start_argv": list(OLD_V1_EXEC_START_ARGV),
+        "service_user": OLD_V1_USER,
+        "service_group": OLD_V1_GROUP,
+        "need_daemon_reload": False,
+    }
+    if (
+        {name: service.get(name) for name in expected} != expected
+        or type(service.get("main_pid")) is not int
+        or service["main_pid"] <= 1
+        or service.get("exec_main_pid") != service["main_pid"]
+    ):
         _error("owner_gate_production_ingress_old_v1_unsafe")
-    return {**service, **mask, "trusted_for_v2": False}
+    fragment = _stable_old_v1_fragment()
+    process = _old_v1_process_snapshot(service)
+    if process.pid != service["main_pid"]:
+        _error("owner_gate_production_ingress_old_v1_process_unsafe")
+    return {
+        **service,
+        **fragment,
+        "process_cmdline": list(OLD_V1_PROCESS_CMDLINE),
+        "process_uid": process.uid,
+        "process_gid": process.gid,
+        "process_start_time_ticks": process.start_time_ticks,
+        "process_cgroup_unit_verified": True,
+        "active_process_stable": True,
+        "trusted_for_v2": False,
+    }
 
 
 def _caddy_service_projection() -> Mapping[str, Any]:
@@ -396,6 +526,14 @@ def _caddy_service_projection() -> Mapping[str, Any]:
     ):
         _error("owner_gate_production_ingress_caddy_service_unsafe")
     return service
+
+
+@dataclass(frozen=True)
+class _OldV1ProcessSnapshot:
+    pid: int
+    uid: int
+    gid: int
+    start_time_ticks: int
 
 
 @dataclass(frozen=True)
@@ -445,6 +583,116 @@ def _bounded_proc_read(path: Path) -> bytes:
                     "owner_gate_production_ingress_caddy_process_unsafe",
                     exc,
                 )
+
+
+def _bounded_old_v1_proc_read(path: Path) -> bytes:
+    descriptor: int | None = None
+    try:
+        descriptor = os.open(
+            path,
+            os.O_RDONLY
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0),
+        )
+        chunks: list[bytes] = []
+        total = 0
+        while True:
+            chunk = os.read(
+                descriptor,
+                min(64 * 1024, MAX_PROC_OUTPUT_BYTES + 1 - total),
+            )
+            if not chunk:
+                break
+            chunks.append(chunk)
+            total += len(chunk)
+            if total > MAX_PROC_OUTPUT_BYTES:
+                _error("owner_gate_production_ingress_old_v1_process_unsafe")
+        raw = b"".join(chunks)
+        if not raw:
+            _error("owner_gate_production_ingress_old_v1_process_unsafe")
+        return raw
+    except ProductionIngressObservationError:
+        raise
+    except OSError as exc:
+        _error("owner_gate_production_ingress_old_v1_process_unsafe", exc)
+    finally:
+        if descriptor is not None:
+            try:
+                os.close(descriptor)
+            except OSError as exc:
+                _error(
+                    "owner_gate_production_ingress_old_v1_process_unsafe",
+                    exc,
+                )
+
+
+def _old_v1_process_start_time(raw: bytes) -> int:
+    try:
+        text = raw.decode("ascii", errors="strict")
+        close = text.rfind(")")
+        fields = text[close + 2 :].split()
+        start_time = int(fields[19], 10)
+    except (IndexError, UnicodeError, ValueError) as exc:
+        _error("owner_gate_production_ingress_old_v1_process_unsafe", exc)
+    if close <= 0 or start_time <= 0:
+        _error("owner_gate_production_ingress_old_v1_process_unsafe")
+    return start_time
+
+
+def _old_v1_process_snapshot(
+    service: Mapping[str, Any],
+) -> _OldV1ProcessSnapshot:
+    pid = service.get("main_pid")
+    if type(pid) is not int or pid <= 1 or service.get("exec_main_pid") != pid:
+        _error("owner_gate_production_ingress_old_v1_process_unsafe")
+    proc = Path(f"/proc/{pid}")
+    status = _bounded_old_v1_proc_read(proc / "status")
+    cmdline = _bounded_old_v1_proc_read(proc / "cmdline")
+    cgroup = _bounded_old_v1_proc_read(proc / "cgroup")
+    first_start = _old_v1_process_start_time(
+        _bounded_old_v1_proc_read(proc / "stat")
+    )
+    final_start = _old_v1_process_start_time(
+        _bounded_old_v1_proc_read(proc / "stat")
+    )
+    uid_match = re.search(
+        rb"(?m)^Uid:\s+([0-9]+)\s+([0-9]+)\s+([0-9]+)\s+([0-9]+)\s*$",
+        status,
+    )
+    gid_match = re.search(
+        rb"(?m)^Gid:\s+([0-9]+)\s+([0-9]+)\s+([0-9]+)\s+([0-9]+)\s*$",
+        status,
+    )
+    expected_cmdline = b"\x00".join(
+        item.encode("utf-8", errors="strict")
+        for item in OLD_V1_PROCESS_CMDLINE
+    ) + b"\x00"
+    try:
+        cgroup_lines = cgroup.decode("ascii", errors="strict").splitlines()
+    except UnicodeError as exc:
+        _error("owner_gate_production_ingress_old_v1_process_unsafe", exc)
+    cgroup_unit_verified = any(
+        line.rpartition(":")[2].split("/")[-1] == OLD_V1_UNIT
+        for line in cgroup_lines
+        if line and line.count(":") >= 2
+    )
+    if (
+        uid_match is None
+        or {int(item) for item in uid_match.groups()} != {OLD_V1_UID}
+        or gid_match is None
+        or {int(item) for item in gid_match.groups()} != {OLD_V1_GID}
+        or cmdline != expected_cmdline
+        or not cgroup_unit_verified
+        or first_start != final_start
+        or service.get("exec_start_argv") != list(OLD_V1_EXEC_START_ARGV)
+    ):
+        _error("owner_gate_production_ingress_old_v1_process_unsafe")
+    return _OldV1ProcessSnapshot(
+        pid=pid,
+        uid=OLD_V1_UID,
+        gid=OLD_V1_GID,
+        start_time_ticks=first_start,
+    )
 
 
 def _process_start_time(pid: int) -> int:
@@ -1055,10 +1303,10 @@ def _secret_free_caddy_projection(raw: bytes) -> Mapping[str, Any]:
         item.reverse_proxy_handler_count for item in effective
     )
     dials = tuple(dial for item in effective for dial in item.dials)
-    if reverse_proxy_handler_count <= 0 or not dials:
-        _error("owner_gate_production_ingress_caddy_route_unsafe")
     if any(_dial_targets_private_v2(dial) for dial in dials):
         _error("owner_gate_production_ingress_private_v2_already_active")
+    if reverse_proxy_handler_count != 1 or dials != (LEGACY_V1_UPSTREAM,):
+        _error("owner_gate_production_ingress_caddy_route_unsafe")
     still_on_current_host = all(_dial_is_on_current_host(dial) for dial in dials)
     if not still_on_current_host:
         _error("owner_gate_production_ingress_caddy_route_unsafe")
@@ -1066,6 +1314,8 @@ def _secret_free_caddy_projection(raw: bytes) -> Mapping[str, Any]:
         "auth_host_route_count": 1,
         "reverse_proxy_handler_count": reverse_proxy_handler_count,
         "reverse_proxy_upstream_count": len(dials),
+        "reverse_proxy_upstreams": list(dials),
+        "legacy_v1_upstream_active": True,
         "still_on_current_host": still_on_current_host,
         "private_v2_upstream_active": False,
     }

@@ -1053,6 +1053,51 @@ class _WorkflowTransport:
                 "secret_material_recorded": False,
             }
             return _hashed(unsigned, "receipt_sha256")
+        if action == "converge-cutover":
+            assert self.cutover_plan is not None
+            assert self.approval is not None
+            preflight = _db_receipt(
+                self.cutover_plan,
+                "muncho-production-legacy-cutover-preflight.v1",
+                "database_postflight",
+            )
+            self.caddy_prepare = _caddy_prepare(self.cutover_plan)
+            self.legacy_terminal = _terminal(
+                self.cutover_plan,
+                self.approval["approval_sha256"],
+            )
+            caddy_terminal = _caddy_terminal(
+                self.cutover_plan,
+                self.caddy_prepare,
+                self.legacy_terminal,
+            )
+            unsigned = {
+                "schema": owner.CONVERGENCE_SCHEMA,
+                "release_revision": REVISION,
+                "freeze_plan_sha256": self.cutover_plan.value[
+                    "freeze_plan_sha256"
+                ],
+                "cutover_plan_sha256": self.cutover_plan.sha256,
+                "preflight_receipt_sha256": preflight["receipt_sha256"],
+                "caddy_prepare_receipt_sha256": self.caddy_prepare[
+                    "receipt_sha256"
+                ],
+                "maintenance_arm_receipt_sha256": "8" * 64,
+                "cutover_terminal_receipt_sha256": self.legacy_terminal[
+                    "receipt_sha256"
+                ],
+                "caddy_terminal_receipt_sha256": caddy_terminal[
+                    "receipt_sha256"
+                ],
+                "caddy_outcome": caddy_terminal["outcome"],
+                "legacy_service_retirement_receipt_sha256": "9" * 64,
+                "control_plane_mutation_performed": True,
+                "source_data_mutation_performed": True,
+                "production_host_mutation_performed": True,
+                "secret_material_recorded": False,
+                "secret_digest_recorded": False,
+            }
+            return _hashed(unsigned, "receipt_sha256")
         if action == "phase-b-preflight":
             assert self.cutover_plan is not None
             return _db_receipt(
@@ -1087,6 +1132,9 @@ class _WorkflowTransport:
                 "freeze_plan_sha256": self.freeze.sha256,
                 "approval_sha256": self.approval["approval_sha256"],
                 "trigger": "owner_abort",
+                "cutover_plan_sha256": None,
+                "caddy_restore_intent_receipt_sha256": None,
+                "caddy_restore_required": False,
                 "gateway_legacy_restarted": True,
                 "writer_stopped": True,
                 "connector_stopped": True,
@@ -1382,8 +1430,20 @@ def test_prepare_then_resume_consumes_once_before_first_mutation(
     assert boundary.consume_calls == 1
     assert resume_transport.calls == []
 
-    receipt = owner.resume_prepared_production_cutover_workflow(
+    staged_workspace = owner.resume_prepared_production_cutover_workflow(
         workspace=claimed_workspace,
+        owner_identity=object(),
+        passkey_boundary=boundary,
+        bridge_bootstrap=bridge,
+        transport_factory=lambda _identity: resume_transport,
+        now_unix=NOW,
+    )
+
+    assert staged_workspace["state"] == "cutover_staged"
+    assert "converge-cutover" not in resume_transport.calls
+
+    receipt = owner.resume_prepared_production_cutover_workflow(
+        workspace=staged_workspace,
         owner_identity=object(),
         passkey_boundary=boundary,
         bridge_bootstrap=bridge,
@@ -1696,10 +1756,7 @@ def test_workflow_order_is_fixed_and_plan_is_produced_on_host(
         "collect-stopped",
         "stage-cron-continuity",
         "stage-publication",
-        "phase-b-preflight",
-        "prepare-caddy-cutover",
-        "apply-cutover",
-        "commit-caddy-cutover",
+        "converge-cutover",
     ]
     assert receipt["schema"] == owner.WORKFLOW_RECEIPT_SCHEMA
     assert [item["stage"] for item in receipt["gates"]] == [
@@ -1717,10 +1774,7 @@ def test_workflow_order_is_fixed_and_plan_is_produced_on_host(
         "cron_continuity_stage_accepted",
         "cutover_plan_composed",
         "cutover_plan_staged",
-        "phase_b_preflight_accepted",
-        "caddy_cutover_prepared",
-        "cutover_terminal_accepted",
-        "caddy_cutover_terminal_accepted",
+        "cutover_convergence_accepted",
     ]
 
 

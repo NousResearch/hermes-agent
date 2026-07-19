@@ -711,7 +711,7 @@ def _bounded_psql(
     except BaseException:
         if process.poll() is None:
             try:
-                os.killpg(process.pid, signal.SIGKILL)
+                os.killpg(process.pid, signal.SIGKILL)  # windows-footgun: ok — Linux probe process group
             except (OSError, ProcessLookupError):
                 pass
             try:

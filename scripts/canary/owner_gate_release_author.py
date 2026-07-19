@@ -36,7 +36,7 @@ from scripts.canary import owner_gate_trust_author as trust_author
 
 SCHEMA = "muncho-owner-gate-release-authoring-receipt.v1"
 FORK_ORIGIN = "https://github.com/lomliev/hermes-agent.git"
-OWNER_HOME = Path(pwd.getpwuid(os.geteuid()).pw_dir)  # POSIX owner boundary
+OWNER_HOME = Path(pwd.getpwuid(os.geteuid()).pw_dir)  # windows-footgun: ok — POSIX owner boundary
 TRUSTED_ROOT = OWNER_HOME / ".hermes" / "trusted"
 RELEASE_SOURCE_BASE = TRUSTED_ROOT / "owner-gate-release-sources"
 OWNER_CUTOVER_AUTHORITY_ROOT = (
@@ -156,7 +156,7 @@ def _resolved_git_path(source: Path, value: str) -> Path:
 def _verify_owned_git_tree(root: Path) -> None:
     """Reject linked, aliased, or mutable Git administrative storage."""
 
-    expected_uid = os.geteuid()  # POSIX owner boundary
+    expected_uid = os.geteuid()  # windows-footgun: ok — POSIX owner boundary
     try:
         for current, directory_names, file_names in os.walk(
             root,
@@ -211,7 +211,7 @@ def _verify_standalone_git_store(source: Path) -> None:
         stat.S_ISLNK(dot_state.st_mode)
         or not stat.S_ISDIR(dot_state.st_mode)
         or dot_resolved != dot_git
-        or dot_state.st_uid != os.geteuid()
+        or dot_state.st_uid != os.geteuid()  # windows-footgun: ok — POSIX owner boundary
         or stat.S_IMODE(dot_state.st_mode) & 0o022
     ):
         _error("owner_gate_release_author_object_store_invalid")
@@ -271,7 +271,7 @@ def _verify_standalone_git_store(source: Path) -> None:
 def _fsync_tree(path: Path) -> None:
     """Durably flush a private publication tree before its final rename."""
 
-    expected_uid = os.geteuid()
+    expected_uid = os.geteuid()  # windows-footgun: ok — POSIX owner boundary
     visited: set[tuple[int, int]] = set()
 
     def flush_directory(descriptor: int) -> None:
@@ -386,7 +386,7 @@ def _verify_outer_source_files(
             not stat.S_ISREG(state.st_mode)
             or stat.S_ISLNK(state.st_mode)
             or state.st_nlink != 1
-            or state.st_uid != os.geteuid()
+            or state.st_uid != os.geteuid()  # windows-footgun: ok — POSIX owner boundary
         ):
             _error("owner_gate_release_author_source_invalid")
         package._require_worktree_matches_git_blob(
@@ -624,7 +624,7 @@ def _read_immutable(path: Path, *, maximum: int) -> bytes:
         return trust._read_immutable(
             path,
             maximum=maximum,
-            expected_uid=os.geteuid(),
+            expected_uid=os.geteuid(),  # windows-footgun: ok — POSIX owner boundary
             allowed_modes=frozenset({0o400, 0o440, 0o444}),
         )
     except trust.OwnerGateTrustError as exc:

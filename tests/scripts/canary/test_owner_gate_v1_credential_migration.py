@@ -19,6 +19,14 @@ PUBLIC_KEY = b"public-cose-key"
 USER_HANDLE = migration.OWNER_DISCORD_USER_ID.encode("ascii")
 
 
+def test_effective_uid_fails_closed_without_posix_api(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delattr(migration.os, "geteuid")
+
+    assert migration._effective_uid() == -1
+
+
 def _b64url(raw: bytes) -> str:
     return base64.urlsafe_b64encode(raw).rstrip(b"=").decode("ascii")
 

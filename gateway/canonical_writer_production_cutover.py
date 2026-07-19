@@ -205,7 +205,7 @@ _MAX_ARTIFACT = 8 * 1024 * 1024
 _ARTIFACT_TIMEOUT_SECONDS = 900
 _MAX_ACCEPTED_LEGACY_EVENTS = 40_000
 ARTIFACT_REQUEST_SCHEMA = "muncho-production-cutover-artifact-request.v1"
-FREEZE_ABORT_SCHEMA = "muncho-production-freeze-abort-receipt.v1"
+FREEZE_ABORT_SCHEMA = "muncho-production-freeze-abort-receipt.v2"
 STAGED_FREEZE_PLAN_PATH = EVIDENCE_ROOT / "staged" / "freeze-plan.json"
 STAGED_FREEZE_APPROVAL_PATH = EVIDENCE_ROOT / "staged" / "freeze-approval.json"
 STAGED_CUTOVER_PLAN_PATH = EVIDENCE_ROOT / "staged" / "cutover-plan.json"
@@ -3668,12 +3668,16 @@ def _require_or_record_passkey_intent(
             if not isinstance(cutover_plan, CutoverPlan):
                 return False
             try:
-                require_caddy_prepared_dependency(entries, cutover_plan)
+                require_caddy_maintenance_arm_dependency(
+                    entries, cutover_plan
+                )
             except (TypeError, ValueError, ProductionCutoverError):
                 return False
             return (
-                len(entries) == 1
+                len(entries) == 2
                 and entries[0].value["event"] == "caddy_prepared"
+                and entries[1].value["event"]
+                == "caddy_maintenance_armed"
             )
         return valid_freeze_prelude(entries)
 
@@ -5064,6 +5068,8 @@ def _require_same_service_identity(expected: ServiceObservation, current: Servic
 
 _FREEZE_ABORT_FIELDS = frozenset({
     "schema", "freeze_plan_sha256", "approval_sha256", "trigger",
+    "cutover_plan_sha256", "caddy_restore_intent_receipt_sha256",
+    "caddy_restore_required",
     "gateway_legacy_restarted", "writer_stopped", "connector_stopped",
     "database_mutated", "host_mutated", "secret_material_recorded",
     "completed_at_unix", "receipt_sha256",
@@ -5086,6 +5092,31 @@ def _validate_freeze_abort_receipt(
         or raw["freeze_plan_sha256"] != plan.sha256
         or _SHA256.fullmatch(str(raw["approval_sha256"])) is None
         or raw["trigger"] not in {"capture_failure", "owner_abort"}
+        or (
+            raw["cutover_plan_sha256"] is not None
+            and _SHA256.fullmatch(str(raw["cutover_plan_sha256"])) is None
+        )
+        or type(raw["caddy_restore_required"]) is not bool
+        or (
+            raw["caddy_restore_intent_receipt_sha256"] is not None
+            and _SHA256.fullmatch(
+                str(raw["caddy_restore_intent_receipt_sha256"])
+            )
+            is None
+        )
+        or raw["caddy_restore_required"]
+        is not (raw["caddy_restore_intent_receipt_sha256"] is not None)
+        or (
+            raw["caddy_restore_required"]
+            and raw["cutover_plan_sha256"] is None
+        )
+        or (
+            raw["trigger"] == "capture_failure"
+            and (
+                raw["cutover_plan_sha256"] is not None
+                or raw["caddy_restore_required"]
+            )
+        )
         or raw["gateway_legacy_restarted"] is not True
         or raw["writer_stopped"] is not True
         or raw["connector_stopped"] is not True
@@ -5106,14 +5137,25 @@ def _restore_legacy_gateway_after_freeze(
     dependencies: FreezeDependencies,
     entries: list[JournalEntry],
     trigger: str,
+    cutover_plan_sha256: str | None,
+    caddy_restore_intent_receipt_sha256: str | None,
     now_unix: int,
 ) -> Mapping[str, Any]:
     terminal = _last(entries, "freeze_aborted")
     if terminal is not None:
-        return _validate_freeze_abort_receipt(
+        prior = _validate_freeze_abort_receipt(
             terminal.value["evidence"],
             plan=plan,
         )
+        if (
+            prior["cutover_plan_sha256"] != cutover_plan_sha256
+            or prior["caddy_restore_intent_receipt_sha256"]
+            != caddy_restore_intent_receipt_sha256
+        ):
+            raise ProductionCutoverError(
+                "production_freeze_abort_receipt_invalid"
+            )
+        return prior
     gateway_expected = ServiceObservation.from_mapping(plan.value["gateway_before"])
     writer_expected = ServiceObservation.from_mapping(plan.value["writer_before"])
     connector_expected = ServiceObservation.from_mapping(
@@ -5150,6 +5192,13 @@ def _restore_legacy_gateway_after_freeze(
         "freeze_plan_sha256": plan.sha256,
         "approval_sha256": approval.sha256,
         "trigger": trigger,
+        "cutover_plan_sha256": cutover_plan_sha256,
+        "caddy_restore_intent_receipt_sha256": (
+            caddy_restore_intent_receipt_sha256
+        ),
+        "caddy_restore_required": (
+            caddy_restore_intent_receipt_sha256 is not None
+        ),
         "gateway_legacy_restarted": True,
         "writer_stopped": True,
         "connector_stopped": True,
@@ -5171,26 +5220,118 @@ def _restore_legacy_gateway_after_freeze(
     return receipt
 
 
+def _validated_precommit_abort_cutover_plan(
+    freeze_plan: FreezePlan,
+    cutover_plan: CutoverPlan | None,
+) -> CutoverPlan | None:
+    """Return the exact staged child plan accepted for pre-commit abort."""
+
+    if cutover_plan is None:
+        return None
+    if not isinstance(cutover_plan, CutoverPlan):
+        raise ProductionCutoverError(
+            "production_freeze_abort_cutover_plan_invalid"
+        )
+    try:
+        validated = CutoverPlan.from_mapping(cutover_plan.to_mapping())
+        nested_freeze = FreezePlan.from_mapping(
+            validated.value["freeze_plan"]
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ProductionCutoverError(
+            "production_freeze_abort_cutover_plan_invalid"
+        ) from exc
+    if (
+        validated.to_mapping() != cutover_plan.to_mapping()
+        or nested_freeze.sha256 != freeze_plan.sha256
+        or nested_freeze.to_mapping() != freeze_plan.to_mapping()
+        or validated.value["freeze_plan_sha256"] != freeze_plan.sha256
+    ):
+        raise ProductionCutoverError(
+            "production_freeze_abort_cutover_plan_invalid"
+        )
+    return validated
+
+
+def _require_precommit_abort_cutover_journal(
+    journal: CutoverJournal,
+    cutover_plan: CutoverPlan,
+) -> Mapping[str, Any] | None:
+    """Accept prepare-only, or a maintenance-proven freeze-abort handoff."""
+
+    entries = journal.load(cutover_plan.sha256)
+    if not entries:
+        return None
+    events = [entry.value["event"] for entry in entries]
+    if events == ["caddy_prepared"]:
+        try:
+            require_caddy_prepared_dependency(entries, cutover_plan)
+        except (KeyError, TypeError, ValueError, ProductionCutoverError) as exc:
+            raise ProductionCutoverError(
+                "production_freeze_abort_cutover_journal_not_precommit"
+            ) from exc
+        return None
+    try:
+        intent = require_caddy_pre_intent_restore_intent_dependency(
+            entries, cutover_plan
+        )
+    except (KeyError, TypeError, ValueError, ProductionCutoverError) as exc:
+        raise ProductionCutoverError(
+            "production_freeze_abort_cutover_journal_not_precommit"
+        ) from exc
+    if (
+        intent["recovery_basis"] != "freeze_abort"
+        or any(entry.value["event"] == "passkey_intent" for entry in entries)
+        or events
+        not in (
+            [
+                "caddy_prepared",
+                "caddy_maintenance_armed",
+                "caddy_pre_intent_restore_intent",
+            ],
+            [
+                "caddy_prepared",
+                "caddy_maintenance_armed",
+                "caddy_pre_intent_restore_intent",
+                "caddy_pre_intent_restored",
+            ],
+        )
+    ):
+        raise ProductionCutoverError(
+            "production_freeze_abort_cutover_journal_not_precommit"
+        )
+    if events[-1] == "caddy_pre_intent_restored":
+        try:
+            require_caddy_pre_intent_restore_dependency(entries, cutover_plan)
+        except (KeyError, TypeError, ValueError, ProductionCutoverError) as exc:
+            raise ProductionCutoverError(
+                "production_freeze_abort_cutover_journal_not_precommit"
+            ) from exc
+    return intent
+
+
 def abort_freeze(
     plan: FreezePlan,
     approval_value: Mapping[str, Any],
     dependencies: FreezeDependencies,
     *,
-    cutover_plan_staged: bool,
+    cutover_plan: CutoverPlan | None,
     now_unix: int | None = None,
 ) -> Mapping[str, Any]:
     """Restore the exact legacy gateway before any cutover mutation.
 
     The recorded freeze authority is revalidated at the time it entered the
     append-only journal, so recovery remains possible after a short approval
-    lease expires.  A staged cutover plan or any non-freeze journal event
-    blocks this path; forward mutations use the full rollback state machine.
+    lease expires.  An exact staged cutover plan is safe to reconcile only
+    while its own journal is empty or contains only the validated Caddy
+    preparation, or after a journal-bound exact Caddy restore.  If apply intent
+    exists, a fully validated rollback terminal must immediately precede that
+    restore.  Any other state belongs to forward recovery.
     """
 
-    if type(cutover_plan_staged) is not bool or cutover_plan_staged:
-        raise ProductionCutoverError(
-            "production_freeze_abort_cutover_plan_present"
-        )
+    staged_cutover = _validated_precommit_abort_cutover_plan(
+        plan, cutover_plan
+    )
     now = int(time.time()) if now_unix is None else now_unix
     with dependencies.lock():
         entries = dependencies.journal.load(plan.sha256)
@@ -5210,11 +5351,24 @@ def abort_freeze(
             raise ProductionCutoverError(
                 "production_freeze_abort_journal_not_pre_mutation"
             )
+        caddy_restore_intent: Mapping[str, Any] | None = None
+        if staged_cutover is not None:
+            caddy_restore_intent = _require_precommit_abort_cutover_journal(
+                dependencies.journal, staged_cutover
+            )
         approval, claim_entry, claim = _validated_claimed_approval(
             dependencies.journal,
             plan=plan,
             approval_value=approval_value,
         )
+        if (
+            staged_cutover is not None
+            and staged_cutover.value["freeze_approval_sha256"]
+            != approval.sha256
+        ):
+            raise ProductionCutoverError(
+                "production_freeze_abort_cutover_plan_invalid"
+            )
         if _last(entries, "passkey_intent") is not None:
             _require_or_record_passkey_intent(
                 dependencies.journal,
@@ -5233,6 +5387,14 @@ def abort_freeze(
             dependencies=dependencies,
             entries=entries,
             trigger="owner_abort",
+            cutover_plan_sha256=(
+                None if staged_cutover is None else staged_cutover.sha256
+            ),
+            caddy_restore_intent_receipt_sha256=(
+                None
+                if caddy_restore_intent is None
+                else str(caddy_restore_intent["receipt_sha256"])
+            ),
             now_unix=now,
         )
 
@@ -5248,6 +5410,27 @@ def execute_final_tail_capture(
 
     now = int(time.time()) if now_unix is None else now_unix
     with dependencies.lock():
+        entries = dependencies.journal.load(plan.sha256)
+        aborts = [
+            entry
+            for entry in entries
+            if entry.value["event"] == "freeze_aborted"
+        ]
+        if aborts:
+            if (
+                len(aborts) != 1
+                or aborts[0].value["sequence"] != len(entries) - 1
+            ):
+                raise ProductionCutoverError(
+                    "production_freeze_abort_receipt_invalid"
+                )
+            _validate_freeze_abort_receipt(
+                aborts[0].value["evidence"],
+                plan=plan,
+            )
+            raise ProductionCutoverError(
+                "production_freeze_already_aborted"
+            )
         approval, claim_entry, claim = _validated_claimed_approval(
             dependencies.journal,
             plan=plan,
@@ -5345,6 +5528,8 @@ def execute_final_tail_capture(
                     dependencies=dependencies,
                     entries=dependencies.journal.load(plan.sha256),
                     trigger="capture_failure",
+                    cutover_plan_sha256=None,
+                    caddy_restore_intent_receipt_sha256=None,
                     now_unix=now,
                 )
             except BaseException as recovery:
@@ -6513,6 +6698,15 @@ _ACTIVATION_COMMIT_INTENT_FIELDS = frozenset({
 CADDY_PREPARED_DEPENDENCY_SCHEMA = (
     "muncho-production-caddy-prepared-dependency.v1"
 )
+CADDY_MAINTENANCE_ARM_SCHEMA = (
+    "muncho-production-caddy-maintenance-arm.v1"
+)
+CADDY_PRE_INTENT_RESTORE_INTENT_SCHEMA = (
+    "muncho-production-caddy-pre-intent-restore-intent.v1"
+)
+CADDY_PRE_INTENT_RESTORE_SCHEMA = (
+    "muncho-production-caddy-pre-intent-restore.v1"
+)
 _CADDY_PREPARED_DEPENDENCY_FIELDS = frozenset({
     "schema", "release_revision", "freeze_plan_sha256",
     "cutover_plan_sha256", "freeze_approval_sha256", "authority_sha256",
@@ -6522,6 +6716,44 @@ _CADDY_PREPARED_DEPENDENCY_FIELDS = frozenset({
     "production_mutation_performed", "caller_selected_input_accepted",
     "secret_material_recorded", "secret_digest_recorded",
     "prepared_at_unix", "receipt_sha256",
+})
+_CADDY_MAINTENANCE_ARM_FIELDS = frozenset({
+    "schema", "release_revision", "freeze_plan_sha256",
+    "cutover_plan_sha256", "freeze_approval_sha256", "authority_sha256",
+    "caddy_prepare_receipt_sha256", "legacy_service_active_sha256",
+    "maintenance_caddy_sha256", "active_route_projection_sha256",
+    "public_status", "caddy_validated", "caddy_reloaded",
+    "public_verified", "v1_public_route_closed", "rollback_mode",
+    "production_mutation_performed", "caller_selected_input_accepted",
+    "secret_material_recorded", "secret_digest_recorded",
+    "armed_at_unix", "receipt_sha256",
+})
+_CADDY_PRE_INTENT_RESTORE_INTENT_FIELDS = frozenset({
+    "schema", "release_revision", "freeze_plan_sha256",
+    "cutover_plan_sha256", "freeze_approval_sha256", "authority_sha256",
+    "caddy_prepare_receipt_sha256", "maintenance_arm_receipt_sha256",
+    "original_caddy_sha256", "maintenance_caddy_sha256",
+    "active_route_projection_sha256", "public_status", "public_verified",
+    "v1_public_route_closed", "exact_original_artifact_available",
+    "forward_apply_invalidated", "recovery_basis",
+    "rollback_terminal_receipt_sha256", "rollback_mode",
+    "production_mutation_performed", "caller_selected_input_accepted",
+    "secret_material_recorded", "secret_digest_recorded",
+    "restore_started_at_unix", "receipt_sha256",
+})
+_CADDY_PRE_INTENT_RESTORE_FIELDS = frozenset({
+    "schema", "release_revision", "freeze_plan_sha256",
+    "cutover_plan_sha256", "freeze_approval_sha256", "authority_sha256",
+    "caddy_prepare_receipt_sha256", "maintenance_arm_receipt_sha256",
+    "restore_intent_receipt_sha256", "original_caddy_sha256",
+    "active_route_projection_sha256", "exact_original_caddy_restored",
+    "caddy_validated", "caddy_reloaded", "live_readback_verified",
+    "v1_public_route_restored", "gateway_terminal_event",
+    "gateway_terminal_receipt_sha256", "recovery_basis",
+    "legacy_service_active_sha256", "legacy_service_health_sha256",
+    "rollback_mode", "production_mutation_performed",
+    "caller_selected_input_accepted", "secret_material_recorded",
+    "secret_digest_recorded", "restored_at_unix", "receipt_sha256",
 })
 
 
@@ -6586,6 +6818,278 @@ def require_caddy_prepared_dependency(
             "production_caddy_prepared_dependency_invalid"
         )
     return raw
+
+
+def require_caddy_maintenance_arm_dependency(
+    entries: list[JournalEntry],
+    plan: CutoverPlan,
+    *,
+    allow_restore: bool = False,
+) -> Mapping[str, Any]:
+    """Require the exact public-503 floor before irreversible cutover intent."""
+
+    prepared = require_caddy_prepared_dependency(entries, plan)
+    if not allow_restore and any(
+        entry.value["event"]
+        in {
+            "caddy_pre_intent_restore_intent",
+            "caddy_pre_intent_restored",
+        }
+        for entry in entries
+    ):
+        raise ProductionCutoverError(
+            "production_caddy_maintenance_arm_dependency_invalidated"
+        )
+    matches = [
+        entry
+        for entry in entries
+        if entry.value["event"] == "caddy_maintenance_armed"
+    ]
+    if len(matches) != 1 or matches[0].value["sequence"] != 1:
+        raise ProductionCutoverError(
+            "production_caddy_maintenance_arm_dependency_missing"
+        )
+    raw = _hashed(
+        matches[0].value["evidence"],
+        _CADDY_MAINTENANCE_ARM_FIELDS,
+        "receipt_sha256",
+        "Caddy maintenance arm dependency",
+    )
+    freeze = FreezePlan.from_mapping(plan.value["freeze_plan"])
+    if (
+        raw["schema"] != CADDY_MAINTENANCE_ARM_SCHEMA
+        or raw["release_revision"] != plan.value["release_revision"]
+        or raw["freeze_plan_sha256"] != freeze.sha256
+        or raw["cutover_plan_sha256"] != plan.sha256
+        or raw["freeze_approval_sha256"]
+        != plan.value["freeze_approval_sha256"]
+        or raw["caddy_prepare_receipt_sha256"]
+        != prepared["caddy_prepare_receipt_sha256"]
+        or raw["maintenance_caddy_sha256"]
+        != prepared["maintenance_caddy_sha256"]
+        or any(
+            _SHA256.fullmatch(str(raw[field])) is None
+            for field in (
+                "authority_sha256",
+                "legacy_service_active_sha256",
+                "active_route_projection_sha256",
+            )
+        )
+        or raw["authority_sha256"] != prepared["authority_sha256"]
+        or raw["public_status"] != 503
+        or raw["caddy_validated"] is not True
+        or raw["caddy_reloaded"] is not True
+        or raw["public_verified"] is not True
+        or raw["v1_public_route_closed"] is not True
+        or raw["rollback_mode"]
+        != "pre_intent_exact_restore_available"
+        or raw["production_mutation_performed"] is not True
+        or raw["caller_selected_input_accepted"] is not False
+        or raw["secret_material_recorded"] is not False
+        or raw["secret_digest_recorded"] is not False
+        or type(raw["armed_at_unix"]) is not int
+        or raw["armed_at_unix"] < prepared["prepared_at_unix"]
+        or matches[0].value["recorded_at_unix"] != raw["armed_at_unix"]
+    ):
+        raise ProductionCutoverError(
+            "production_caddy_maintenance_arm_dependency_invalid"
+        )
+    return raw
+
+
+def require_caddy_pre_intent_restore_intent_dependency(
+    entries: list[JournalEntry],
+    plan: CutoverPlan,
+) -> Mapping[str, Any]:
+    """Require the maintenance-proven handoff that invalidates forward apply."""
+
+    prepared = require_caddy_prepared_dependency(entries, plan)
+    arm = require_caddy_maintenance_arm_dependency(
+        entries, plan, allow_restore=True
+    )
+    intents = [
+        entry
+        for entry in entries
+        if entry.value["event"] == "caddy_pre_intent_restore_intent"
+    ]
+    if len(intents) != 1 or intents[0].value["sequence"] <= 1:
+        raise ProductionCutoverError(
+            "production_caddy_pre_intent_restore_intent_missing"
+        )
+    intent = _hashed(
+        intents[0].value["evidence"],
+        _CADDY_PRE_INTENT_RESTORE_INTENT_FIELDS,
+        "receipt_sha256",
+        "Caddy pre-intent restore intent",
+    )
+    freeze = FreezePlan.from_mapping(plan.value["freeze_plan"])
+    rollback_entry = _last(entries, "rollback_terminal")
+    expected_basis = "cutover_rollback" if rollback_entry is not None else "freeze_abort"
+    if (
+        intent["schema"] != CADDY_PRE_INTENT_RESTORE_INTENT_SCHEMA
+        or intent["release_revision"] != plan.value["release_revision"]
+        or intent["freeze_plan_sha256"] != freeze.sha256
+        or intent["cutover_plan_sha256"] != plan.sha256
+        or intent["freeze_approval_sha256"]
+        != plan.value["freeze_approval_sha256"]
+        or intent["authority_sha256"] != prepared["authority_sha256"]
+        or intent["caddy_prepare_receipt_sha256"]
+        != prepared["caddy_prepare_receipt_sha256"]
+        or intent["maintenance_arm_receipt_sha256"]
+        != arm["receipt_sha256"]
+        or intent["original_caddy_sha256"]
+        != prepared["original_caddy_sha256"]
+        or intent["maintenance_caddy_sha256"]
+        != prepared["maintenance_caddy_sha256"]
+        or intent["maintenance_caddy_sha256"]
+        != arm["maintenance_caddy_sha256"]
+        or intent["active_route_projection_sha256"]
+        != arm["active_route_projection_sha256"]
+        or intent["public_status"] != 503
+        or intent["public_verified"] is not True
+        or intent["v1_public_route_closed"] is not True
+        or intent["exact_original_artifact_available"] is not True
+        or intent["forward_apply_invalidated"] is not True
+        or intent["recovery_basis"] != expected_basis
+        or intent["rollback_terminal_receipt_sha256"]
+        != (
+            None
+            if rollback_entry is None
+            else rollback_entry.value["evidence"].get("receipt_sha256")
+        )
+        or intent["rollback_mode"] != "pre_intent_exact_bytes"
+        or intent["production_mutation_performed"] is not False
+        or intent["caller_selected_input_accepted"] is not False
+        or intent["secret_material_recorded"] is not False
+        or intent["secret_digest_recorded"] is not False
+        or type(intent["restore_started_at_unix"]) is not int
+        or intent["restore_started_at_unix"] < arm["armed_at_unix"]
+        or intents[0].value["recorded_at_unix"]
+        != intent["restore_started_at_unix"]
+        or (
+            rollback_entry is None
+            and intents[0].value["sequence"] != 2
+        )
+        or (
+            rollback_entry is not None
+            and (
+                rollback_entry.value["sequence"]
+                != intents[0].value["sequence"] - 1
+                or _last(entries, "activation_commit_intent") is not None
+                or _last(entries, "terminal") is not None
+            )
+        )
+    ):
+        raise ProductionCutoverError(
+            "production_caddy_pre_intent_restore_intent_invalid"
+        )
+    if rollback_entry is not None:
+        _validate_rollback_terminal(
+            rollback_entry.value["evidence"], plan=plan, entries=entries
+        )
+    return intent
+
+
+def require_caddy_pre_intent_restore_dependency(
+    entries: list[JournalEntry],
+    plan: CutoverPlan,
+) -> Mapping[str, Any]:
+    """Require exact legacy restoration after its durable gateway terminal."""
+
+    prepared = require_caddy_prepared_dependency(entries, plan)
+    arm = require_caddy_maintenance_arm_dependency(
+        entries, plan, allow_restore=True
+    )
+    intent = require_caddy_pre_intent_restore_intent_dependency(entries, plan)
+    terminals = [
+        entry
+        for entry in entries
+        if entry.value["event"] == "caddy_pre_intent_restored"
+    ]
+    intent_entry = _last(entries, "caddy_pre_intent_restore_intent")
+    if (
+        len(terminals) != 1
+        or intent_entry is None
+        or terminals[0].value["sequence"]
+        != intent_entry.value["sequence"] + 1
+        or terminals[0].value["sequence"] != len(entries) - 1
+    ):
+        raise ProductionCutoverError(
+            "production_caddy_pre_intent_restore_dependency_missing"
+        )
+    restored = _hashed(
+        terminals[0].value["evidence"],
+        _CADDY_PRE_INTENT_RESTORE_FIELDS,
+        "receipt_sha256",
+        "Caddy pre-intent restore dependency",
+    )
+    freeze = FreezePlan.from_mapping(plan.value["freeze_plan"])
+    expected_gateway_event = (
+        "rollback_terminal"
+        if intent["recovery_basis"] == "cutover_rollback"
+        else "freeze_aborted"
+    )
+    if (
+        restored["schema"] != CADDY_PRE_INTENT_RESTORE_SCHEMA
+        or restored["release_revision"] != plan.value["release_revision"]
+        or restored["freeze_plan_sha256"] != freeze.sha256
+        or restored["cutover_plan_sha256"] != plan.sha256
+        or restored["freeze_approval_sha256"]
+        != plan.value["freeze_approval_sha256"]
+        or restored["authority_sha256"] != prepared["authority_sha256"]
+        or restored["caddy_prepare_receipt_sha256"]
+        != prepared["caddy_prepare_receipt_sha256"]
+        or restored["maintenance_arm_receipt_sha256"]
+        != arm["receipt_sha256"]
+        or restored["restore_intent_receipt_sha256"]
+        != intent["receipt_sha256"]
+        or restored["original_caddy_sha256"]
+        != prepared["original_caddy_sha256"]
+        or _SHA256.fullmatch(
+            str(restored["active_route_projection_sha256"])
+        )
+        is None
+        or restored["exact_original_caddy_restored"] is not True
+        or restored["caddy_validated"] is not True
+        or restored["caddy_reloaded"] is not True
+        or restored["live_readback_verified"] is not True
+        or restored["v1_public_route_restored"] is not True
+        or restored["gateway_terminal_event"] != expected_gateway_event
+        or _SHA256.fullmatch(
+            str(restored["gateway_terminal_receipt_sha256"])
+        )
+        is None
+        or restored["recovery_basis"] != intent["recovery_basis"]
+        or any(
+            _SHA256.fullmatch(str(restored[field])) is None
+            for field in (
+                "legacy_service_active_sha256",
+                "legacy_service_health_sha256",
+            )
+        )
+        or restored["rollback_mode"] != "pre_intent_exact_bytes"
+        or restored["production_mutation_performed"] is not True
+        or restored["caller_selected_input_accepted"] is not False
+        or restored["secret_material_recorded"] is not False
+        or restored["secret_digest_recorded"] is not False
+        or type(restored["restored_at_unix"]) is not int
+        or restored["restored_at_unix"] < intent["restore_started_at_unix"]
+        or terminals[0].value["recorded_at_unix"]
+        != restored["restored_at_unix"]
+    ):
+        raise ProductionCutoverError(
+            "production_caddy_pre_intent_restore_dependency_invalid"
+        )
+    rollback_entry = _last(entries, "rollback_terminal")
+    if (
+        rollback_entry is not None
+        and restored["gateway_terminal_receipt_sha256"]
+        != rollback_entry.value["evidence"].get("receipt_sha256")
+    ):
+        raise ProductionCutoverError(
+            "production_caddy_pre_intent_restore_dependency_invalid"
+        )
+    return restored
 
 
 def _require_activation_commit_intent(
@@ -7031,6 +7535,27 @@ def execute_cutover(
     now = int(time.time()) if now_unix is None else now_unix
     freeze = FreezePlan.from_mapping(plan.value["freeze_plan"])
     with dependencies.lock():
+        freeze_abort_entries = [
+            entry
+            for entry in dependencies.journal.load(freeze.sha256)
+            if entry.value["event"] == "freeze_aborted"
+        ]
+        if freeze_abort_entries:
+            if len(freeze_abort_entries) != 1:
+                raise ProductionCutoverError(
+                    "production_freeze_abort_receipt_invalid"
+                )
+            freeze_abort = _validate_freeze_abort_receipt(
+                freeze_abort_entries[0].value["evidence"],
+                plan=freeze,
+            )
+            if freeze_abort["cutover_plan_sha256"] not in {None, plan.sha256}:
+                raise ProductionCutoverError(
+                    "production_freeze_abort_receipt_invalid"
+                )
+            raise ProductionCutoverError(
+                "production_cutover_freeze_already_aborted"
+            )
         approval, claim_entry, claim = _validated_claimed_approval(
             dependencies.journal,
             plan=freeze,
@@ -7040,7 +7565,7 @@ def execute_cutover(
             raise PermissionError(
                 "cutover does not reuse the pre-stop owner approval"
             )
-        require_caddy_prepared_dependency(
+        require_caddy_maintenance_arm_dependency(
             dependencies.journal.load(plan.sha256), plan
         )
         _require_or_record_passkey_intent(
@@ -7891,6 +8416,13 @@ def execute_fixed_staged(command: str) -> Mapping[str, Any]:
         plan = FreezePlan.from_mapping(
             _load_staged_json(STAGED_FREEZE_PLAN_PATH)
         )
+        staged_cutover = (
+            CutoverPlan.from_mapping(
+                _load_staged_json(STAGED_CUTOVER_PLAN_PATH)
+            )
+            if os.path.lexists(STAGED_CUTOVER_PLAN_PATH)
+            else None
+        )
         approval_value = _load_staged_json(STAGED_FREEZE_APPROVAL_PATH)
         require_recorded_passkey_claim(
             journal,
@@ -7906,7 +8438,7 @@ def execute_fixed_staged(command: str) -> Mapping[str, Any]:
                 snapshots=process,
                 journal=journal,
             ),
-            cutover_plan_staged=os.path.lexists(STAGED_CUTOVER_PLAN_PATH),
+            cutover_plan=staged_cutover,
         )
         return receipt
     if command == "phase-b-preflight":

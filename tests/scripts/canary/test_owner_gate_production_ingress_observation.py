@@ -29,12 +29,26 @@ NOW = 1_800_000_000
 def _systemctl_output(unit: str, **changes: str) -> bytes:
     if unit == ingress.OLD_V1_UNIT:
         values = {
-            "LoadState": "masked",
-            "ActiveState": "inactive",
-            "SubState": "dead",
-            "UnitFileState": "masked",
-            "FragmentPath": "/dev/null",
+            "Id": ingress.OLD_V1_UNIT,
+            "LoadState": "loaded",
+            "ActiveState": "active",
+            "SubState": "running",
+            "UnitFileState": "enabled",
+            "FragmentPath": str(ingress.OLD_V1_FRAGMENT_PATH),
             "DropInPaths": "",
+            "MainPID": "4343",
+            "ExecMainPID": "4343",
+            "NeedDaemonReload": "no",
+            "User": ingress.OLD_V1_USER,
+            "Group": ingress.OLD_V1_GROUP,
+            "ExecStart": (
+                "{ path="
+                f"{ingress.OLD_V1_EXEC_START_ARGV[0]} ; argv[]="
+                f"{' '.join(ingress.OLD_V1_EXEC_START_ARGV)} ; "
+                "ignore_errors=no ; start_time=[n/a] ; "
+                "stop_time=[n/a] ; pid=4343 ; code=(null) ; "
+                "status=0/0 }"
+            ),
         }
     elif unit == ingress.CADDY_UNIT:
         values = {
@@ -145,6 +159,20 @@ class _CommandFixture:
         self.adapted_outputs: list[bytes] = [_adapted(), _adapted()]
         self.live_outputs: list[bytes] | None = None
         self.last_adapted: bytes | None = None
+        self.old_process_snapshots: list[ingress._OldV1ProcessSnapshot] = [
+            ingress._OldV1ProcessSnapshot(
+                pid=4343,
+                uid=ingress.OLD_V1_UID,
+                gid=ingress.OLD_V1_GID,
+                start_time_ticks=90,
+            ),
+            ingress._OldV1ProcessSnapshot(
+                pid=4343,
+                uid=ingress.OLD_V1_UID,
+                gid=ingress.OLD_V1_GID,
+                start_time_ticks=90,
+            ),
+        ]
         self.process_snapshots: list[ingress._CaddyProcessSnapshot] = [
             ingress._CaddyProcessSnapshot(
                 pid=4242,
@@ -181,15 +209,17 @@ def production_files(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> _Comman
     caddyfile.parent.mkdir(parents=True)
     caddyfile.write_text("# secret-looking input is never emitted\nTOKEN super-secret-token\n")
     caddyfile.chmod(0o644)
-    mask = tmp_path / "etc/systemd/system/muncho-passkey-stepup.service"
-    mask.parent.mkdir(parents=True)
-    mask.symlink_to("/dev/null")
+    fragment = tmp_path / "etc/systemd/system/muncho-passkey-stepup.service"
+    fragment.parent.mkdir(parents=True)
+    fragment.write_text("[Unit]\nDescription=exact legacy v1 fixture\n")
+    fragment.chmod(0o644)
     fixture_owner = caddyfile.stat()
-    os.lchown(mask, fixture_owner.st_uid, fixture_owner.st_gid)
-    assert (mask.lstat().st_uid, mask.lstat().st_gid) == (
+    os.chown(fragment, fixture_owner.st_uid, fixture_owner.st_gid)
+    assert (fragment.stat().st_uid, fragment.stat().st_gid) == (
         fixture_owner.st_uid,
         fixture_owner.st_gid,
     )
+    fragment_sha256 = hashlib.sha256(fragment.read_bytes()).hexdigest()
 
     monkeypatch.setattr(ingress, "CADDYFILE_PATH", caddyfile)
     monkeypatch.setattr(
@@ -203,11 +233,13 @@ def production_files(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> _Comman
             str(caddyfile),
         ),
     )
-    monkeypatch.setattr(ingress, "OLD_V1_MASK_PATH", mask)
+    monkeypatch.setattr(ingress, "OLD_V1_FRAGMENT_PATH", fragment)
+    monkeypatch.setattr(ingress, "OLD_V1_FRAGMENT_SHA256", fragment_sha256)
     monkeypatch.setattr(ingress, "EXPECTED_ROOT_UID", fixture_owner.st_uid)
     monkeypatch.setattr(ingress, "EXPECTED_ROOT_GID", fixture_owner.st_gid)
     monkeypatch.setattr(contract, "CADDYFILE_PATH", caddyfile)
-    monkeypatch.setattr(contract, "OLD_V1_MASK_PATH", mask)
+    monkeypatch.setattr(contract, "OLD_V1_FRAGMENT_PATH", fragment)
+    monkeypatch.setattr(contract, "OLD_V1_FRAGMENT_SHA256", fragment_sha256)
     monkeypatch.setattr(contract, "EXPECTED_ROOT_UID", fixture_owner.st_uid)
     monkeypatch.setattr(contract, "EXPECTED_ROOT_GID", fixture_owner.st_gid)
     monkeypatch.setattr(ingress.sys, "platform", "linux")
@@ -218,6 +250,11 @@ def production_files(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> _Comman
         ingress,
         "_caddy_process_snapshot",
         lambda _service: commands.process_snapshots.pop(0),
+    )
+    monkeypatch.setattr(
+        ingress,
+        "_old_v1_process_snapshot",
+        lambda _service: commands.old_process_snapshots.pop(0),
     )
 
     def read_live(_process: ingress._CaddyProcessSnapshot) -> bytes:
@@ -355,8 +392,19 @@ def test_collects_exact_safe_projection_without_secret_or_secret_digest(
         "vm": ingress.VM_NAME,
         "instance_id": ingress.INSTANCE_ID,
     }
-    assert report["old_v1"]["unit_file_state"] == "masked"
-    assert report["old_v1"]["permanent_mask_target"] == "/dev/null"
+    assert report["old_v1"]["unit_file_state"] == "enabled"
+    assert report["old_v1"]["active_state"] == "active"
+    assert report["old_v1"]["fragment_sha256"] == (
+        ingress.OLD_V1_FRAGMENT_SHA256
+    )
+    assert report["old_v1"]["process_cmdline"] == list(
+        ingress.OLD_V1_PROCESS_CMDLINE
+    )
+    assert report["old_v1"]["trusted_for_v2"] is False
+    assert report["caddy"]["reverse_proxy_upstreams"] == [
+        ingress.LEGACY_V1_UPSTREAM
+    ]
+    assert report["caddy"]["legacy_v1_upstream_active"] is True
     assert report["caddy"]["private_v2_upstream_active"] is False
     assert report["caddy"]["config_validated"] is True
     assert report["fresh_through_unix"] == NOW + ingress.FRESHNESS_SECONDS
@@ -390,9 +438,14 @@ def test_collects_exact_safe_projection_without_secret_or_secret_digest(
 @pytest.mark.parametrize(
     ("field", "value"),
     (
-        ("ActiveState", "active"),
+        ("ActiveState", "inactive"),
+        ("SubState", "dead"),
         ("UnitFileState", "disabled"),
-        ("LoadState", "loaded"),
+        ("LoadState", "masked"),
+        ("FragmentPath", "/dev/null"),
+        ("User", "root"),
+        ("Group", "root"),
+        ("NeedDaemonReload", "yes"),
         ("DropInPaths", "/run/systemd/system/attacker.conf"),
     ),
 )
@@ -409,18 +462,127 @@ def test_rejects_each_old_v1_unit_drift(
         _collect()
 
 
-def test_rejects_non_permanent_or_wrong_v1_mask(
+def test_rejects_symlinked_v1_fragment(
     production_files: _CommandFixture,
+    tmp_path: Path,
 ) -> None:
     del production_files
-    mask = ingress.OLD_V1_MASK_PATH
-    mask.unlink()
-    mask.symlink_to("/run/transient-mask")
+    fragment = ingress.OLD_V1_FRAGMENT_PATH
+    raw = fragment.read_bytes()
+    fragment.unlink()
+    target = tmp_path / "attacker-unit"
+    target.write_bytes(raw)
+    target.chmod(0o644)
+    fragment.symlink_to(target)
     with pytest.raises(
         ingress.ProductionIngressObservationError,
-        match="owner_gate_production_ingress_v1_mask_invalid",
+        match="owner_gate_production_ingress_v1_fragment_invalid",
     ):
         _collect()
+
+
+def test_rejects_v1_process_change_during_observation(
+    production_files: _CommandFixture,
+) -> None:
+    production_files.old_process_snapshots[1] = ingress._OldV1ProcessSnapshot(
+        pid=4343,
+        uid=ingress.OLD_V1_UID,
+        gid=ingress.OLD_V1_GID,
+        start_time_ticks=91,
+    )
+    with pytest.raises(
+        ingress.ProductionIngressObservationError,
+        match="owner_gate_production_ingress_old_v1_changed",
+    ):
+        _collect()
+
+
+def _legacy_process_service() -> Mapping[str, Any]:
+    return {
+        "main_pid": 4343,
+        "exec_main_pid": 4343,
+        "exec_start_argv": list(ingress.OLD_V1_EXEC_START_ARGV),
+    }
+
+
+def _legacy_process_stat(start_time: int = 90) -> bytes:
+    fields = ["S", *("0" for _ in range(18)), str(start_time)]
+    return f"4343 (legacy v1) {' '.join(fields)}\n".encode()
+
+
+def test_reads_exact_pinned_v1_process_projection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    values = {
+        "status": (
+            f"Name:\tpython\nUid:\t{ingress.OLD_V1_UID}\t"
+            f"{ingress.OLD_V1_UID}\t{ingress.OLD_V1_UID}\t"
+            f"{ingress.OLD_V1_UID}\nGid:\t{ingress.OLD_V1_GID}\t"
+            f"{ingress.OLD_V1_GID}\t{ingress.OLD_V1_GID}\t"
+            f"{ingress.OLD_V1_GID}\n"
+        ).encode(),
+        "cmdline": b"\x00".join(
+            item.encode() for item in ingress.OLD_V1_PROCESS_CMDLINE
+        ) + b"\x00",
+        "cgroup": (
+            f"0::/system.slice/{ingress.OLD_V1_UNIT}\n"
+        ).encode(),
+        "stat": _legacy_process_stat(),
+    }
+    monkeypatch.setattr(
+        ingress,
+        "_bounded_old_v1_proc_read",
+        lambda path: values[path.name],
+    )
+
+    snapshot = ingress._old_v1_process_snapshot(_legacy_process_service())
+
+    assert snapshot == ingress._OldV1ProcessSnapshot(
+        pid=4343,
+        uid=ingress.OLD_V1_UID,
+        gid=ingress.OLD_V1_GID,
+        start_time_ticks=90,
+    )
+
+
+@pytest.mark.parametrize("drift", ("uid", "cmdline", "cgroup", "restart"))
+def test_rejects_each_pinned_v1_process_drift(
+    monkeypatch: pytest.MonkeyPatch,
+    drift: str,
+) -> None:
+    stat_reads = 0
+
+    def read(path: Path) -> bytes:
+        nonlocal stat_reads
+        if path.name == "status":
+            uid = 0 if drift == "uid" else ingress.OLD_V1_UID
+            return (
+                f"Uid:\t{uid}\t{uid}\t{uid}\t{uid}\n"
+                f"Gid:\t{ingress.OLD_V1_GID}\t{ingress.OLD_V1_GID}\t"
+                f"{ingress.OLD_V1_GID}\t{ingress.OLD_V1_GID}\n"
+            ).encode()
+        if path.name == "cmdline":
+            if drift == "cmdline":
+                return b"/tmp/attacker\x00"
+            return b"\x00".join(
+                item.encode() for item in ingress.OLD_V1_PROCESS_CMDLINE
+            ) + b"\x00"
+        if path.name == "cgroup":
+            unit = "attacker.service" if drift == "cgroup" else ingress.OLD_V1_UNIT
+            return f"0::/system.slice/{unit}\n".encode()
+        if path.name == "stat":
+            stat_reads += 1
+            return _legacy_process_stat(
+                91 if drift == "restart" and stat_reads == 2 else 90
+            )
+        raise AssertionError(path)
+
+    monkeypatch.setattr(ingress, "_bounded_old_v1_proc_read", read)
+    with pytest.raises(
+        ingress.ProductionIngressObservationError,
+        match="owner_gate_production_ingress_old_v1_process_unsafe",
+    ):
+        ingress._old_v1_process_snapshot(_legacy_process_service())
 
 
 @pytest.mark.parametrize(
@@ -702,6 +864,7 @@ def test_unrelated_host_route_does_not_enter_public_route_graph(
 @pytest.mark.parametrize(
     "dial",
     (
+        "127.0.0.1:7342",
         "192.0.2.10:7341",
         "localhost:7341",
         "{env.LEGACY_UPSTREAM}:7341",
@@ -723,9 +886,13 @@ def test_still_on_current_host_requires_positive_local_upstream_evidence(
 def test_rejects_two_nonidentical_adapted_documents_even_when_projection_matches(
     production_files: _CommandFixture,
 ) -> None:
+    second = _adapted_value()
+    second["apps"]["tls"] = {
+        "certificates": {"automate": [ingress.PUBLIC_HOST]}
+    }
     production_files.adapted_outputs = [
-        _adapted(dial="127.0.0.1:7341"),
-        _adapted(dial="127.0.0.1:7342"),
+        _adapted(),
+        _adapted_raw(second),
     ]
     with pytest.raises(
         ingress.ProductionIngressObservationError,
@@ -808,6 +975,83 @@ def test_remote_report_validation_rejects_semantic_tamper_and_staleness(
             release_revision=REVISION,
             plan_sha256=PLAN_SHA256,
             now_unix=NOW + ingress.FRESHNESS_SECONDS + 1,
+        )
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("fragment_sha256", "f" * 64),
+        ("process_cmdline", ["/tmp/attacker"]),
+        ("active_process_stable", False),
+    ),
+)
+def test_remote_report_rejects_resigned_v1_identity_drift(
+    production_files: _CommandFixture,
+    field: str,
+    value: Any,
+) -> None:
+    del production_files
+    tampered = copy.deepcopy(_collect())
+    tampered["old_v1"][field] = value
+    unsigned = {
+        key: item for key, item in tampered.items() if key != "report_sha256"
+    }
+    tampered["report_sha256"] = hashlib.sha256(
+        ingress._canonical(unsigned)
+    ).hexdigest()
+
+    with pytest.raises(
+        ingress.ProductionIngressObservationError,
+        match="owner_gate_production_ingress_old_v1_invalid",
+    ):
+        ingress.validate_production_ingress_observation(
+            tampered,
+            phase="inert",
+            release_revision=REVISION,
+            plan_sha256=PLAN_SHA256,
+            now_unix=NOW,
+        )
+
+
+def test_remote_report_rejects_resigned_alternate_local_caddy_route(
+    production_files: _CommandFixture,
+) -> None:
+    del production_files
+    tampered = copy.deepcopy(_collect())
+    tampered["caddy"]["reverse_proxy_upstreams"] = ["127.0.0.1:7342"]
+    route_projection = {
+        name: tampered["caddy"][name]
+        for name in (
+            "auth_host_route_count",
+            "reverse_proxy_handler_count",
+            "reverse_proxy_upstream_count",
+            "reverse_proxy_upstreams",
+            "legacy_v1_upstream_active",
+            "still_on_current_host",
+            "private_v2_upstream_active",
+        )
+    }
+    tampered["caddy"]["live_route_projection_sha256"] = hashlib.sha256(
+        ingress._canonical(route_projection)
+    ).hexdigest()
+    unsigned = {
+        key: item for key, item in tampered.items() if key != "report_sha256"
+    }
+    tampered["report_sha256"] = hashlib.sha256(
+        ingress._canonical(unsigned)
+    ).hexdigest()
+
+    with pytest.raises(
+        ingress.ProductionIngressObservationError,
+        match="owner_gate_production_ingress_caddy_invalid",
+    ):
+        ingress.validate_production_ingress_observation(
+            tampered,
+            phase="inert",
+            release_revision=REVISION,
+            plan_sha256=PLAN_SHA256,
+            now_unix=NOW,
         )
 
 

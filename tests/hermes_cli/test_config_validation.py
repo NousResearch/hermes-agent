@@ -253,6 +253,16 @@ class TestUnknownTopLevelKeys:
         assert _EXTRA_KNOWN_ROOT_KEYS.issubset(_KNOWN_ROOT_KEYS)
         assert _KNOWN_ROOT_KEYS == frozenset(DEFAULT_CONFIG.keys()) | _EXTRA_KNOWN_ROOT_KEYS
 
+    def test_gateway_and_toolset_root_keys_are_accepted_without_unknown_warning(self):
+        """Raw gateway/toolset roots read outside DEFAULT_CONFIG must stay accepted."""
+        issues = validate_config_structure({
+            "model": {"provider": "openrouter"},
+            "group_sessions_per_user": True,
+            "known_plugin_toolsets": {"example": True},
+        })
+        unknown = [i for i in issues if "Unknown top-level config key" in i.message]
+        assert unknown == [], f"Unexpected unknown-key warnings: {[i.message for i in unknown]}"
+
     def test_provider_like_unknown_root_keeps_misplaced_message(self):
         """Preserve existing base_url/api_key root-level guidance (not generic unknown)."""
         issues = validate_config_structure({

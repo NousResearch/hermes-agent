@@ -5518,6 +5518,8 @@ _EXTRA_KNOWN_ROOT_KEYS = {
     "platforms",             # top-level per-platform map merged by gateway/config.py
     "require_mention",       # top-level convenience form honored by the gateway (#3979)
     "unauthorized_dm_behavior",  # top-level form read by gateway/config.py
+    "group_sessions_per_user",  # top-level form read by gateway/config.py
+    "known_plugin_toolsets",  # map written/read by hermes_cli/tools_config.py
     "signal",            # Signal settings bridged to env vars by gateway/config.py
 }
 _KNOWN_ROOT_KEYS = frozenset(DEFAULT_CONFIG.keys()) | _EXTRA_KNOWN_ROOT_KEYS

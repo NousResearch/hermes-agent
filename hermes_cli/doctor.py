@@ -845,7 +845,7 @@ def run_doctor(args):
                     PROVIDER_REGISTRY,
                     resolve_provider as _resolve_auth_provider,
                 )
-                known_providers = set(PROVIDER_REGISTRY.keys()) | {"openrouter", "custom", "auto"}
+                known_providers = set(PROVIDER_REGISTRY.keys()) | {"openrouter", "custom", "auto", "synthetic"}
             except Exception:
                 _resolve_auth_provider = None
                 pass
@@ -941,6 +941,9 @@ def run_doctor(args):
                 "lmstudio",
                 "nous",
                 "nvidia",
+                # Synthetic's OpenAI-compatible gateway accepts upstream vendor/model slugs
+                # like hf:zai-org/GLM-5.2 as native model identifiers.
+                "synthetic",
                 # Fireworks' native model IDs are slash-form
                 # (accounts/fireworks/models/... and .../routers/...), so a "/"
                 # is expected, not an aggregator vendor prefix.

@@ -360,5 +360,17 @@
   "theme.tags.tagsPageTitle": {
     "message": "标签",
     "description": "The title of the tag list page"
+  },
+  "skills.filter.all": {
+    "message": "全部",
+    "description": "Label for the 'all sources' filter pill on the skills page"
+  },
+  "userStories.filter.allCategories": {
+    "message": "全部",
+    "description": "Label for the 'all categories' filter button on the user stories collage"
+  },
+  "userStories.filter.allSources": {
+    "message": "全部来源",
+    "description": "Label for the 'all sources' filter button on the user stories collage"
   }
 }

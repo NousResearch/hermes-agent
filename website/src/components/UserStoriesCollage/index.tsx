@@ -1,4 +1,5 @@
 import React, { useMemo, useState } from 'react';
+import Translate from '@docusaurus/Translate';
 import stories from '@site/src/data/userStories.json';
 import styles from './styles.module.css';
 
@@ -193,7 +194,10 @@ export default function UserStoriesCollage(): JSX.Element {
           className={`${styles.filterBtn} ${activeCategory === 'all' ? styles.filterActive : ''}`}
           onClick={() => setActiveCategory('all')}
         >
-          全部<span className={styles.filterCount}>{allStories.length}</span>
+          <Translate id="userStories.filter.allCategories" description="Label for the 'all categories' filter button on the user stories collage">
+            All
+          </Translate>
+          <span className={styles.filterCount}>{allStories.length}</span>
         </button>
         {Object.entries(CATEGORIES)
           .filter(([key]) => categoryCounts[key])
@@ -224,7 +228,9 @@ export default function UserStoriesCollage(): JSX.Element {
           onClick={() => setActiveSource('all')}
           style={{ fontSize: '0.72rem' }}
         >
-          全部来源
+          <Translate id="userStories.filter.allSources" description="Label for the 'all sources' filter button on the user stories collage">
+            All Sources
+          </Translate>
         </button>
         {Object.entries(SOURCE_LABELS)
           .filter(([key]) => sourceCounts[key])

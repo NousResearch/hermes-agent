@@ -50,9 +50,5 @@
   "link.item.label.Nous Research": {
     "message": "Nous Research",
     "description": "The label of footer link with label=Nous Research linking to https://nousresearch.com"
-  },
-  "copyright": {
-    "message": "Built by <a href=\"https://nousresearch.com\">Nous Research</a> · MIT License · 2026",
-    "description": "The footer copyright"
   }
 }

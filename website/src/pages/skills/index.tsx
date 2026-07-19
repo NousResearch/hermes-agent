@@ -1,5 +1,6 @@
 import React, { useState, useMemo, useCallback, useRef, useEffect } from "react";
 import Layout from "@theme/Layout";
+import Translate from "@docusaurus/Translate";
 import styles from "./styles.module.css";
 
 interface Skill {
@@ -756,7 +757,13 @@ export default function SkillsDashboard() {
                       : undefined
                   }
                 >
-                  {src === "all" ? "全部" : conf?.label || src}
+                  {src === "all" ? (
+                    <Translate id="skills.filter.all" description="Label for the 'all sources' filter pill on the skills page">
+                      All
+                    </Translate>
+                  ) : (
+                    conf?.label || src
+                  )}
                   <span className={styles.srcCount}>{count}</span>
                 </button>
               );

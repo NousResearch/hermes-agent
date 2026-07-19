@@ -3771,9 +3771,29 @@ def _session_info(agent, session: dict | None = None) -> dict:
         yolo = bool(_YOLO_MODE_FROZEN) or session_yolo or approval_mode == "off"
     except Exception:
         yolo = False
+    fallback_activated = bool(
+        mirror.get("fallback_activated", getattr(agent, "_fallback_activated", False))
+    )
+    primary_runtime = getattr(agent, "_primary_runtime", {}) or {}
+    primary_model = (
+        mirror.get("primary_model", primary_runtime.get("model", ""))
+        if fallback_activated
+        else ""
+    )
+    primary_provider = (
+        mirror.get("primary_provider", primary_runtime.get("provider", ""))
+        if fallback_activated
+        else ""
+    )
     info: dict = {
         "model": mirror.get("model", getattr(agent, "model", "")),
         "provider": mirror.get("provider", getattr(agent, "provider", "")),
+        # A fallback can replace the configured primary during this turn. The
+        # dashboard needs the live route, not just config.yaml, to avoid
+        # attributing the visible response to a model that failed.
+        "fallback_activated": fallback_activated,
+        "primary_model": str(primary_model or ""),
+        "primary_provider": str(primary_provider or ""),
         "reasoning_effort": reasoning_effort,
         "service_tier": service_tier,
         "fast": service_tier == "priority",
@@ -9855,6 +9875,26 @@ def _start_notification_poller(sid: str, session: dict) -> threading.Event:
     return stop
 
 
+def _restore_primary_runtime_for_turn(sid: str, session: dict, agent) -> bool:
+    """Restore a prior turn's primary runtime and publish the live identity.
+
+    ``AIAgent.run_conversation`` also restores its primary internally, but the
+    dashboard needs this transition before the first request of a new turn so a
+    previous fallback badge cannot remain visible while the primary is running.
+    """
+    restore = getattr(agent, "_restore_primary_runtime", None)
+    if not callable(restore):
+        return False
+    try:
+        restored = bool(restore())
+    except Exception:
+        logger.debug("TUI primary runtime restore before turn failed", exc_info=True)
+        return False
+    if restored:
+        _emit("session.info", sid, _session_info(agent, session))
+    return restored
+
+
 def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
     with session["history_lock"]:
         history = list(session["history"])
@@ -9898,6 +9938,10 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
             # the sudo.request overlay. (secret capture is a module global, so
             # re-running is a harmless no-op.)
             _wire_callbacks(sid)
+            # Restore the primary before config synchronization and emit the
+            # transition. This keeps the dashboard model badge aligned with the
+            # request that is about to run, not the prior turn's fallback.
+            _restore_primary_runtime_for_turn(sid, session, agent)
             # Skip the config-model sync while a /model --once override is
             # active: the once-model is intentionally not pinned as a session
             # model_override (it must not persist), so without this guard the

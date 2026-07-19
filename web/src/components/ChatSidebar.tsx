@@ -33,6 +33,11 @@ import { ReasoningPicker } from "@/components/ReasoningPicker";
 import { GatewayClient, type ConnectionState } from "@/lib/gatewayClient";
 import { api, buildWsUrl } from "@/lib/api";
 import { titleFromSessionInfoPayload } from "@/lib/chat-title";
+import {
+  runtimeModelFromSessionInfo,
+  selectChatModel,
+  type RuntimeModelInfo,
+} from "@/lib/runtime-model";
 
 import { cn } from "@/lib/utils";
 import { AlertCircle, ChevronDown, RefreshCw } from "lucide-react";
@@ -44,6 +49,9 @@ interface SessionInfo {
   provider?: string;
   credential_warning?: string;
   title?: string;
+  fallback_activated?: boolean;
+  primary_model?: string;
+  primary_provider?: string;
 }
 
 interface RpcEnvelope {
@@ -111,6 +119,9 @@ export function ChatSidebar({
 
   const [state, setState] = useState<ConnectionState>("idle");
   const [info, setInfo] = useState<SessionInfo>({});
+  // Runtime identity is published by the PTY-side chat session. Keep it
+  // separate from the throwaway sidecar's session.info snapshot.
+  const [runtimeModel, setRuntimeModel] = useState<RuntimeModelInfo | null>(null);
   const [modelOpen, setModelOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // The badge shows config.yaml's main model (`model.default`) via
@@ -175,6 +186,7 @@ export function ChatSidebar({
     queueMicrotask(() => {
       if (cancelled) return;
       setInfo({});
+      setRuntimeModel(null);
       setError(null);
     });
     const offState = gw.onState(setState);
@@ -281,6 +293,10 @@ export function ChatSidebar({
         const { type, payload } = frame.params;
 
         if (type === "session.info") {
+          const runtime = runtimeModelFromSessionInfo(payload);
+          if (runtime) {
+            setRuntimeModel(runtime);
+          }
           const title = titleFromSessionInfoPayload(payload);
           if (title !== undefined) {
             onSessionTitleChange?.(title);
@@ -312,8 +328,11 @@ export function ChatSidebar({
 
   // The picker writes config.yaml over REST and reloads — it doesn't ride the
   // sidecar gateway session, so it's available whenever the sidebar is mounted.
-  const modelName = effectiveModel || info.model || "—";
+  const modelName = selectChatModel(effectiveModel || info.model || "", runtimeModel);
   const modelLabel = modelName.split("/").slice(-1)[0] ?? "—";
+  const fallbackLabel = runtimeModel?.primaryModel
+    ? `Fallback from ${runtimeModel.primaryModel}`
+    : "Fallback model active";
   const banner = error ?? info.credential_warning ?? null;
 
   return (
@@ -348,9 +367,16 @@ export function ChatSidebar({
           </Button>
         </div>
 
-        <Badge tone={STATE_TONE[state]} className="shrink-0">
-          {STATE_LABEL[state]}
-        </Badge>
+        <div className="flex shrink-0 items-center gap-1">
+          {runtimeModel?.fallbackActivated && (
+            <Badge tone="warning" title={fallbackLabel}>
+              fallback
+            </Badge>
+          )}
+          <Badge tone={STATE_TONE[state]}>
+            {STATE_LABEL[state]}
+          </Badge>
+        </div>
       </Card>
 
       {supportsReasoning && (

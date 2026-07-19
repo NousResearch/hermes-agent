@@ -3038,6 +3038,16 @@ def run_job(
         reset_secret_source_cache()
         load_hermes_dotenv(hermes_home=_get_hermes_home())
 
+        # Reapply terminal config after .env reload — dotenv uses override
+        # semantics, so stale .env values can replace the terminal backend
+        # and related settings that were bridged at startup (see #67323).
+        try:
+            from hermes_cli.config import apply_terminal_config_to_env
+            apply_terminal_config_to_env()
+        except Exception:
+            logger.debug("terminal config reapply failed after .env reload",
+                         exc_info=True)
+
         delivery_target = _resolve_delivery_target(job)
         if delivery_target:
             _VAR_MAP["HERMES_CRON_AUTO_DELIVER_PLATFORM"].set(delivery_target["platform"])

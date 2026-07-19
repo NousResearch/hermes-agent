@@ -2567,4 +2567,103 @@ def list_picker_providers(
             continue
         filtered.append(p)
 
-    return filtered
+    return _apply_picker_preferences(
+        filtered, current_provider=str(current_provider or "").strip().lower()
+    )
+
+
+def _apply_picker_preferences(
+    rows: List[dict], *, current_provider: str = ""
+) -> List[dict]:
+    """Apply the user's ``model.picker`` config (hide + order) to picker rows.
+
+    Two optional, purely-cosmetic config knobs let a user tailor the
+    interactive ``/model`` dropdown without changing which providers are
+    *usable* (typed ``/model <slug>/...`` and every provider stay reachable
+    regardless):
+
+    ```yaml
+    model:
+      picker:
+        hide:  [openai-api, anthropic]        # slugs to drop from the dropdown
+        order: [anthropic, openai-codex, ...]  # front-anchored display order
+    ```
+
+    - ``hide``: drop matching provider rows (by slug, case-insensitive). An
+      entry may be an exact slug (``openai-api``) or a glob pattern
+      (``claude-apx-*``, ``*-preview``) — a glob collapses a whole noisy
+      provider family (e.g. numbered auto-failover lanes) into one config
+      line. The **currently-active** provider is NEVER hidden — you must
+      always be able to see/switch off what you're on. Unknown slugs /
+      non-matching patterns are ignored.
+    - ``order``: rows whose slug appears here are moved to the front in the
+      given order; every other row keeps its original relative order after
+      them. Unknown slugs in ``order`` are ignored (no empty rows). Rows not
+      listed are NOT hidden — ordering and hiding are independent.
+
+    Missing/malformed config is a no-op (returns ``rows`` unchanged); this
+    never raises into the picker path.
+    """
+    try:
+        from hermes_cli.config import load_config
+
+        picker_cfg = ((load_config().get("model") or {}).get("picker") or {})
+    except Exception:
+        return rows
+    if not isinstance(picker_cfg, dict):
+        return rows
+
+    _cur = str(current_provider or "").strip().lower()
+
+    hide = picker_cfg.get("hide") or []
+    if isinstance(hide, (list, tuple)):
+        # Two kinds of hide entry: an exact slug ("openai-api") or a glob
+        # pattern ("claude-apx-*", "*-preview"). Globs let a user collapse a
+        # whole noisy provider family — e.g. numbered auto-failover lanes —
+        # into one config line instead of listing each slug. An entry is a
+        # pattern iff it contains a glob metacharacter (* ? [); everything
+        # else stays an exact case-insensitive match (the fast common case).
+        import fnmatch
+
+        exact: set[str] = set()
+        patterns: list[str] = []
+        for s in hide:
+            token = str(s).strip().lower()
+            if not token:
+                continue
+            if any(ch in token for ch in "*?["):
+                patterns.append(token)
+            else:
+                exact.add(token)
+
+        if exact or patterns:
+            def _is_hidden(slug: str) -> bool:
+                if slug in exact:
+                    return True
+                return any(fnmatch.fnmatchcase(slug, pat) for pat in patterns)
+
+            rows = [
+                r for r in rows
+                if not _is_hidden(str(r.get("slug", "")).strip().lower())
+                or str(r.get("slug", "")).strip().lower() == _cur  # never hide current
+            ]
+
+    order = picker_cfg.get("order") or []
+    if isinstance(order, (list, tuple)) and order:
+        rank = {
+            str(s).strip().lower(): i
+            for i, s in enumerate(order)
+            if str(s).strip()
+        }
+        # Stable sort: listed slugs by their rank (front), unlisted keep their
+        # original order after them. The fallback sentinel is len(order)+1 —
+        # strictly greater than any real rank index (which is < len(order))
+        # even when `order` contains blank entries filtered out of `rank`.
+        rows = sorted(
+            rows,
+            key=lambda r: rank.get(
+                str(r.get("slug", "")).strip().lower(), len(order) + 1
+            ),
+        )
+
+    return rows

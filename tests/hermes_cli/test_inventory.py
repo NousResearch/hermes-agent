@@ -994,3 +994,63 @@ def test_list_authenticated_providers_refresh_busts_cache():
         assert clear.call_count == 0
         model_switch.list_authenticated_providers(refresh=True)
         assert clear.call_count == 1
+
+
+# ─── apply_picker_prefs (desktop/TUI picker parity) ────────────────────
+
+
+def _pref_rows():
+    def row(slug, name):
+        return {
+            "slug": slug, "name": name, "models": ["m1"], "total_models": 1,
+            "is_current": False, "is_user_defined": False, "source": "built-in",
+        }
+    return [
+        row("openrouter", "OpenRouter"),
+        row("anthropic", "Anthropic"),
+        row("openai-api", "OpenAI API"),
+        row("openai-codex", "OpenAI Codex"),
+    ]
+
+
+def test_apply_picker_prefs_off_by_default_keeps_hidden(monkeypatch):
+    ctx = _empty_ctx(provider="openrouter", model="m1", base_url="")
+    cfg = {"model": {"picker": {"hide": ["anthropic", "openai-api"]}}}
+    with _list_auth_returning(_pref_rows()), \
+         patch("hermes_cli.config.load_config", return_value=cfg):
+        payload = build_models_payload(ctx)  # default apply_picker_prefs=False
+    slugs = [r["slug"] for r in payload["providers"]]
+    assert "anthropic" in slugs
+    assert "openai-api" in slugs
+
+
+def test_apply_picker_prefs_hides_and_orders(monkeypatch):
+    """apply_picker_prefs=True mirrors list_picker_providers: apply the
+    model.picker hide + order config on the desktop payload path too."""
+    ctx = _empty_ctx(provider="openrouter", model="m1", base_url="")
+    cfg = {
+        "model": {
+            "picker": {
+                "hide": ["anthropic", "openai-api"],
+                "order": ["openai-codex", "openrouter"],
+            }
+        }
+    }
+    with _list_auth_returning(_pref_rows()), \
+         patch("hermes_cli.config.load_config", return_value=cfg):
+        payload = build_models_payload(ctx, apply_picker_prefs=True)
+    slugs = [r["slug"] for r in payload["providers"]]
+    assert "anthropic" not in slugs
+    assert "openai-api" not in slugs
+    # ordered per config; unlisted rows (auto-added moa) trail after
+    assert [s for s in slugs if s != "moa"] == ["openai-codex", "openrouter"]
+
+
+def test_apply_picker_prefs_never_hides_current(monkeypatch):
+    ctx = _empty_ctx(provider="anthropic", model="m1", base_url="")
+    cfg = {"model": {"picker": {"hide": ["anthropic"]}}}
+    with _list_auth_returning(_pref_rows()), \
+         patch("hermes_cli.config.load_config", return_value=cfg):
+        payload = build_models_payload(ctx, apply_picker_prefs=True)
+    slugs = [r["slug"] for r in payload["providers"]]
+    assert "anthropic" in slugs  # current provider stays visible

@@ -13,6 +13,7 @@ import {
   DropdownMenuTrigger
 } from '@/components/ui/dropdown-menu'
 import { Popover, PopoverAnchor, PopoverContent } from '@/components/ui/popover'
+import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
 import { PROFILE_SWATCHES } from '@/lib/profile-color'
 import { cn } from '@/lib/utils'
@@ -24,7 +25,7 @@ import {
   openProjectRename,
   revealPath,
   setActiveProject,
-  setProjectAppearance
+  updateProject
 } from '@/store/projects'
 
 import type { SidebarProjectTree } from './workspace-groups'
@@ -110,42 +111,24 @@ export function ProjectMenu({
     }
   }
 
-  // Appearance writes route through the adopt-aware helper: an auto project is
-  // materialized on its first change (its id then changes), so close the picker
-  // when that happens to avoid a second write double-creating from a stale node.
-  const applyAppearance = (patch: { color?: null | string; icon?: null | string }) => {
-    void setProjectAppearance(project, patch).then(adopted => {
-      if (adopted) {
-        setAppearanceOpen(false)
-      }
-    })
-  }
-
-  // Set color / pick an icon — shown for explicit projects and for auto ones
-  // (where selecting adopts the repo as a real project so the look sticks).
-  const appearanceItem = (
-    <DropdownMenuItem onSelect={() => setAppearanceOpen(true)}>
-      <Codicon name="symbol-color" size="0.875rem" />
-      <span>{p.menuAppearance}</span>
-    </DropdownMenuItem>
-  )
-
   const trigger = (
-    <DropdownMenuTrigger asChild>
-      <button
-        aria-label={p.menu}
-        className={cn(
-          'grid size-4 shrink-0 place-items-center rounded-sm bg-transparent text-(--ui-text-quaternary) opacity-0 transition-opacity hover:bg-(--ui-control-hover-background) hover:text-foreground data-[state=open]:opacity-100',
-          // In the project header reveal on the whole header hover; in overview
-          // rows reveal on the row hover.
-          scoped ? 'group-hover/section:opacity-100' : 'group-hover/workspace:opacity-100'
-        )}
-        onClick={event => event.stopPropagation()}
-        type="button"
-      >
-        <Codicon name="kebab-vertical" size="0.75rem" />
-      </button>
-    </DropdownMenuTrigger>
+    <Tip label={p.menu}>
+      <DropdownMenuTrigger asChild>
+        <button
+          aria-label={p.menu}
+          className={cn(
+            'grid size-4 shrink-0 place-items-center rounded-sm bg-transparent text-(--ui-text-quaternary) opacity-0 transition-opacity hover:bg-(--ui-control-hover-background) hover:text-foreground data-[state=open]:opacity-100',
+            // In the project header reveal on the whole header hover; in overview
+            // rows reveal on the row hover.
+            scoped ? 'group-hover/section:opacity-100' : 'group-hover/workspace:opacity-100'
+          )}
+          onClick={event => event.stopPropagation()}
+          type="button"
+        >
+          <Codicon name="kebab-vertical" size="0.75rem" />
+        </button>
+      </DropdownMenuTrigger>
+    </Tip>
   )
 
   return (
@@ -164,23 +147,16 @@ export function ProjectMenu({
           onCloseAutoFocus={event => event.preventDefault()}
           sideOffset={6}
         >
-          {project.isAuto ? (
-            // Inherited (auto) repos can still be themed — the change adopts the
-            // repo as a real project. Rename / add-folder / set-active stay out
-            // until then (they need the materialized record).
-            project.path ? (
-              <>
-                {appearanceItem}
-                <DropdownMenuSeparator />
-              </>
-            ) : null
-          ) : (
+          {!project.isAuto && (
             <>
               <DropdownMenuItem onSelect={() => openProjectRename(target)}>
                 <Codicon name="edit" size="0.875rem" />
                 <span>{p.menuRename}</span>
               </DropdownMenuItem>
-              {appearanceItem}
+              <DropdownMenuItem onSelect={() => setAppearanceOpen(true)}>
+                <Codicon name="symbol-color" size="0.875rem" />
+                <span>{p.menuAppearance}</span>
+              </DropdownMenuItem>
               <DropdownMenuItem onSelect={() => openProjectAddFolder(target)}>
                 <Codicon name="new-folder" size="0.875rem" />
                 <span>{p.menuAddFolder}</span>
@@ -224,7 +200,7 @@ export function ProjectMenu({
         <ColorSwatches
           clearIcon="circle-slash"
           clearLabel={p.noColor}
-          onChange={color => applyAppearance({ color })}
+          onChange={color => void updateProject(project.id, { color })}
           swatches={PROFILE_SWATCHES}
           value={project.color ?? null}
         />
@@ -232,19 +208,20 @@ export function ProjectMenu({
             profile picker's width (icons flex to fill, not fixed-width). */}
         <div className="mt-2 grid grid-cols-6 gap-1.5">
           {ICONS.map(name => (
-            <button
-              aria-label={name}
-              className={cn(
-                'grid aspect-square place-items-center rounded-md text-(--ui-text-tertiary) transition hover:bg-(--ui-control-hover-background)',
-                project.icon === name && 'bg-(--ui-control-active-background) text-foreground'
-              )}
-              key={name}
-              onClick={() => applyAppearance({ icon: project.icon === name ? null : name })}
-              style={project.icon === name && project.color ? { color: project.color } : undefined}
-              type="button"
-            >
-              <Codicon name={name} size="0.8125rem" />
-            </button>
+            <Tip key={name} label={name}>
+              <button
+                aria-label={name}
+                className={cn(
+                  'grid aspect-square place-items-center rounded-md text-(--ui-text-tertiary) transition hover:bg-(--ui-control-hover-background)',
+                  project.icon === name && 'bg-(--ui-control-active-background) text-foreground'
+                )}
+                onClick={() => void updateProject(project.id, { icon: project.icon === name ? null : name })}
+                style={project.icon === name && project.color ? { color: project.color } : undefined}
+                type="button"
+              >
+                <Codicon name={name} size="0.8125rem" />
+              </button>
+            </Tip>
           ))}
         </div>
       </PopoverContent>

@@ -16,7 +16,6 @@ import { coarseElapsed } from '@/lib/time'
 import { cn } from '@/lib/utils'
 import { $backgroundRunningSessionIds } from '@/store/composer-status'
 import { $unreadFinishedSessionIds } from '@/store/session'
-import { $sessionColorById } from '@/store/session-color'
 import { $attentionSessionIds, openSessionTile } from '@/store/session-states'
 import { canOpenSessionWindow, openSessionInNewWindow } from '@/store/windows'
 
@@ -92,9 +91,6 @@ export function SidebarSessionRow({
   const isUnread = useStore($unreadFinishedSessionIds).includes(session.id)
   // True when a terminal(background=true) process is alive in this session.
   const hasBackground = useStore($backgroundRunningSessionIds).includes(session.id)
-  // The session's resolved color (idle dot tint), read from the ONE shared map
-  // the pane tabs also read — an O(1) lookup, never re-derived per render.
-  const projectColor = useStore($sessionColorById)[session.id] ?? null
 
   // Resolve the dot's display state once — the four signals are mutually
   // exclusive by priority, so threading them as booleans through wrappers just
@@ -138,14 +134,16 @@ export function SidebarSessionRow({
               sessionId={session.id}
               title={title}
             >
-              <Button
-                aria-label={r.actionsFor(title)}
-                className="size-5 rounded-[4px] bg-transparent text-transparent transition-colors duration-100 hover:bg-(--ui-control-active-background) hover:text-foreground focus-visible:bg-(--ui-control-active-background) focus-visible:text-foreground focus-visible:ring-0 data-[state=open]:bg-(--ui-control-active-background) data-[state=open]:text-foreground group-hover:text-(--ui-text-tertiary) [&_svg]:size-3.5!"
-                size="icon"
-                variant="ghost"
-              >
-                <Codicon name="kebab-vertical" size="0.875rem" />
-              </Button>
+              <Tip label={r.actionsFor(title)}>
+                <Button
+                  aria-label={r.actionsFor(title)}
+                  className="size-5 rounded-[4px] bg-transparent text-transparent transition-colors duration-100 hover:bg-(--ui-control-active-background) hover:text-foreground focus-visible:bg-(--ui-control-active-background) focus-visible:text-foreground focus-visible:ring-0 data-[state=open]:bg-(--ui-control-active-background) data-[state=open]:text-foreground group-hover:text-(--ui-text-tertiary) [&_svg]:size-3.5!"
+                  size="icon"
+                  variant="ghost"
+                >
+                  <Codicon name="kebab-vertical" size="0.875rem" />
+                </Button>
+              </Tip>
             </SessionActionsMenu>
           </div>
         }
@@ -244,12 +242,11 @@ export function SidebarSessionRow({
                 branchStem={branchStem}
                 className="transition-opacity group-hover/handle:opacity-0 group-focus-within/handle:opacity-0"
                 dotState={dotState}
-                projectColor={projectColor}
               />
             </SidebarRowGrab>
           ) : (
             <SidebarRowLead className={needsInput ? 'overflow-visible' : 'overflow-hidden'}>
-              <SessionRowLeadDot branchStem={branchStem} dotState={dotState} projectColor={projectColor} />
+              <SessionRowLeadDot branchStem={branchStem} dotState={dotState} />
             </SidebarRowLead>
           )}
           {handoffSource && handoffLabel ? (
@@ -279,13 +276,11 @@ type SessionDotState = 'background' | 'idle' | 'needs-input' | 'unread' | 'worki
 function SessionRowLeadDot({
   branchStem,
   dotState = 'idle',
-  className,
-  projectColor
+  className
 }: {
   branchStem?: string
   dotState?: SessionDotState
   className?: string
-  projectColor?: null | string
 }) {
   return (
     <span className={cn('flex items-center gap-0.5', className)}>
@@ -294,7 +289,7 @@ function SessionRowLeadDot({
           {branchStem}
         </span>
       ) : null}
-      <SidebarRowDot dotState={dotState} projectColor={projectColor} />
+      <SidebarRowDot dotState={dotState} />
     </span>
   )
 }
@@ -355,32 +350,9 @@ const DOT_VARIANTS: Record<SessionDotState, DotVariant> = {
   }
 }
 
-function SidebarRowDot({
-  dotState,
-  className,
-  projectColor
-}: {
-  dotState: SessionDotState
-  className?: string
-  projectColor?: null | string
-}) {
+function SidebarRowDot({ dotState, className }: { dotState: SessionDotState; className?: string }) {
   const { t } = useI18n()
   const r = t.sidebar.row
-
-  // An idle session inherits its project's color (a quiet marker matching the
-  // project row's own color dot). The active states (working / needs-input /
-  // background / unread) own the dot and keep their semantic color, so the
-  // inherited tint never competes with an attention cue.
-  if (dotState === 'idle' && projectColor) {
-    return (
-      <span
-        aria-hidden="true"
-        className={cn('size-1 rounded-full', className)}
-        style={{ backgroundColor: projectColor }}
-      />
-    )
-  }
-
   const variant = DOT_VARIANTS[dotState]
 
   return (

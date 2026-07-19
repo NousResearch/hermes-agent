@@ -572,7 +572,11 @@ def _direct_compute_identity(
         code="owner_gate_host_identity_instance_invalid",
     )
     scheduling = {
-        key: scheduling_raw.get(key)
+        key: (
+            scheduling_raw.get(key, "DELETE")
+            if key == "instanceTerminationAction"
+            else scheduling_raw.get(key)
+        )
         for key in EXPECTED_SCHEDULING
     }
     confidential = _mapping(
@@ -658,7 +662,7 @@ def _direct_compute_identity(
         or attached_disk.get("interface") != "SCSI"
         or attached_disk.get("index") != 0
         or attached_disk.get("source") != EXPECTED_BOOT_DISK_SELF_LINK
-        or attached_disk.get("deviceName") != VM_NAME
+        or attached_disk.get("deviceName") != foundation.TARGET_BOOT_DEVICE
         or _positive_int(
             attached_disk.get("diskSizeGb"),
             code="owner_gate_host_identity_instance_invalid",

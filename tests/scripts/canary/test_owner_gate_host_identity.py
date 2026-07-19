@@ -175,7 +175,11 @@ def _responses(**overrides: Any) -> Mapping[str, Any]:
             "creationTimestamp": "2026-07-15T10:00:00+00:00",
             "canIpForward": False,
             "deletionProtection": False,
-            "scheduling": dict(host.EXPECTED_SCHEDULING),
+            "scheduling": {
+                key: value
+                for key, value in host.EXPECTED_SCHEDULING.items()
+                if key != "instanceTerminationAction"
+            },
             "labels": {},
             "labelFingerprint": "label-fingerprint",
             "resourcePolicies": [],
@@ -217,7 +221,7 @@ def _responses(**overrides: Any) -> Mapping[str, Any]:
                 "interface": "SCSI",
                 "index": 0,
                 "source": host.EXPECTED_BOOT_DISK_SELF_LINK,
-                "deviceName": foundation.VM_NAME,
+                "deviceName": foundation.TARGET_BOOT_DEVICE,
                 "diskSizeGb": str(foundation.BOOT_DISK_SIZE_GB),
             }],
         },

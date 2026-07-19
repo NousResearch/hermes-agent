@@ -694,6 +694,16 @@ await page.waitForFunction(() =>
   /\d/.test(document.querySelector(".widget-calc .calc-val")?.textContent || ""), null, { timeout: 5000 });
 check("clinical calc computes eGFR", /\d/.test(await page.locator(".widget-calc .calc-val").innerText()));
 check("clinical calc shows interpretation", (await page.locator(".widget-calc .calc-interp").innerText()).toLowerCase().includes("ckd"));
+// GCS uses labelled selects (E/V/M) → 15
+await page.locator(".widget-calc .calc-picker").selectOption("gcs");
+await page.waitForSelector(".widget-calc .calc-field select", { timeout: 5000 });
+const gcsSel = page.locator(".widget-calc .calc-field select");
+await gcsSel.nth(0).selectOption("4");
+await gcsSel.nth(1).selectOption("5");
+await gcsSel.nth(2).selectOption("6");
+await page.waitForFunction(() =>
+  document.querySelector(".widget-calc .calc-val")?.textContent === "15", null, { timeout: 5000 });
+check("clinical calc computes GCS from labelled selects", true);
 await page.locator(".widget-calc .calc-picker").selectOption("reference");
 await page.waitForSelector(".widget-calc .calc-ref-table tr", { timeout: 5000 });
 check("clinical calc lists SA reference ranges", (await page.locator(".widget-calc .calc-ref-table tr").count()) >= 10);

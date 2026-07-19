@@ -143,6 +143,153 @@ const CALCULATORS = [
       return { value: s, unit: "points", tone, note: `≈ ${risk}%/yr stroke. ${rec}` };
     },
   },
+  {
+    id: "gcs", name: "Glasgow Coma Scale", blurb: "Eye + Verbal + Motor.",
+    inputs: [
+      { key: "e", label: "Eye opening", type: "select", options: [
+        { value: 4, label: "4 — spontaneous" }, { value: 3, label: "3 — to voice" },
+        { value: 2, label: "2 — to pain" }, { value: 1, label: "1 — none" }] },
+      { key: "v", label: "Verbal", type: "select", options: [
+        { value: 5, label: "5 — oriented" }, { value: 4, label: "4 — confused" },
+        { value: 3, label: "3 — inappropriate words" }, { value: 2, label: "2 — sounds" },
+        { value: 1, label: "1 — none" }] },
+      { key: "m", label: "Motor", type: "select", options: [
+        { value: 6, label: "6 — obeys" }, { value: 5, label: "5 — localises" },
+        { value: 4, label: "4 — withdraws" }, { value: 3, label: "3 — flexion" },
+        { value: 2, label: "2 — extension" }, { value: 1, label: "1 — none" }] },
+    ],
+    compute(v) {
+      const e = num(v.e), vb = num(v.v), m = num(v.m);
+      if (e == null || vb == null || m == null) return null;
+      const s = e + vb + m;
+      const sev = s >= 13 ? "minor" : s >= 9 ? "moderate" : "severe";
+      const tone = s >= 13 ? "good" : s >= 9 ? "warn" : "bad";
+      return { value: s, unit: "/15", tone, note: `${sev} (E${e}V${vb}M${m}). ≤8 → consider airway protection.` };
+    },
+  },
+  {
+    id: "curb65", name: "CURB-65 (pneumonia)", blurb: "CAP severity & disposition.",
+    inputs: [
+      { key: "conf", label: "Confusion (new)", type: "check" },
+      { key: "urea", label: "Urea > 7 mmol/L", type: "check" },
+      { key: "rr", label: "Respiratory rate ≥ 30", type: "check" },
+      { key: "bp", label: "SBP < 90 or DBP ≤ 60", type: "check" },
+      { key: "age", label: "Age ≥ 65", type: "check" },
+    ],
+    compute(v) {
+      const s = (v.conf ? 1 : 0) + (v.urea ? 1 : 0) + (v.rr ? 1 : 0) + (v.bp ? 1 : 0) + (v.age ? 1 : 0);
+      const disp = s <= 1 ? "low risk — consider outpatient" : s === 2 ? "admit (short/supervised)"
+        : "severe — assess for ICU";
+      const tone = s <= 1 ? "good" : s === 2 ? "warn" : "bad";
+      return { value: s, unit: "/5", tone, note: disp };
+    },
+  },
+  {
+    id: "qsofa", name: "qSOFA (sepsis)", blurb: "Bedside sepsis risk outside ICU.",
+    inputs: [
+      { key: "rr", label: "Respiratory rate ≥ 22", type: "check" },
+      { key: "ams", label: "Altered mentation (GCS < 15)", type: "check" },
+      { key: "sbp", label: "SBP ≤ 100 mmHg", type: "check" },
+    ],
+    compute(v) {
+      const s = (v.rr ? 1 : 0) + (v.ams ? 1 : 0) + (v.sbp ? 1 : 0);
+      const tone = s >= 2 ? "bad" : "warn";
+      return { value: s, unit: "/3", tone, note: s >= 2
+        ? "≥2: higher risk — escalate assessment / sepsis workup."
+        : "Lower risk; reassess if clinical concern." };
+    },
+  },
+  {
+    id: "wells", name: "Wells score (DVT)", blurb: "Pre-test probability of DVT.",
+    inputs: [
+      { key: "ca", label: "Active cancer", type: "check" },
+      { key: "para", label: "Paralysis / immobilisation of leg", type: "check" },
+      { key: "bed", label: "Bedridden >3d or surgery <12wk", type: "check" },
+      { key: "tender", label: "Localised deep-vein tenderness", type: "check" },
+      { key: "swell", label: "Entire leg swollen", type: "check" },
+      { key: "calf", label: "Calf >3cm larger than other", type: "check" },
+      { key: "oedema", label: "Pitting oedema (symptomatic leg)", type: "check" },
+      { key: "veins", label: "Collateral superficial veins", type: "check" },
+      { key: "prev", label: "Previous documented DVT", type: "check" },
+      { key: "alt", label: "Alternative diagnosis ≥ as likely (−2)", type: "check" },
+    ],
+    compute(v) {
+      let s = 0;
+      ["ca", "para", "bed", "tender", "swell", "calf", "oedema", "veins", "prev"]
+        .forEach((k) => { if (v[k]) s += 1; });
+      if (v.alt) s -= 2;
+      const cat = s >= 2 ? "DVT likely" : "DVT unlikely";
+      const tone = s >= 2 ? "bad" : "good";
+      return { value: s, unit: "points", tone, note: `${cat}. Combine with D-dimer / ultrasound per protocol.` };
+    },
+  },
+  {
+    id: "anion", name: "Anion gap", blurb: "Na − (Cl + HCO₃), albumin-corrected.",
+    inputs: [
+      { key: "na", label: "Sodium", unit: "mmol/L", type: "number" },
+      { key: "cl", label: "Chloride", unit: "mmol/L", type: "number" },
+      { key: "hco3", label: "Bicarbonate", unit: "mmol/L", type: "number" },
+      { key: "alb", label: "Albumin (optional)", unit: "g/L", type: "number" },
+    ],
+    compute(v) {
+      const na = num(v.na), cl = num(v.cl), hco3 = num(v.hco3);
+      if (na == null || cl == null || hco3 == null) return null;
+      const raw = round(na - (cl + hco3), 1);
+      const alb = num(v.alb);
+      const corr = alb != null ? round(raw + 0.25 * (40 - alb), 1) : null;
+      const val = corr != null ? corr : raw;
+      const tone = val > 12 ? "warn" : "good";
+      return { value: val, unit: "mmol/L", tone,
+        note: (corr != null ? `Albumin-corrected (raw ${raw}). ` : "")
+          + "Ref ~8–12. High → HAGMA (lactate, ketones, renal, toxins)." };
+    },
+  },
+  {
+    id: "nacorr", name: "Corrected sodium (hyperglycaemia)", blurb: "+0.3 mmol/L Na per mmol/L glucose > 5.5.",
+    inputs: [
+      { key: "na", label: "Measured sodium", unit: "mmol/L", type: "number" },
+      { key: "glu", label: "Glucose", unit: "mmol/L", type: "number" },
+    ],
+    compute(v) {
+      const na = num(v.na), glu = num(v.glu);
+      if (na == null || glu == null) return null;
+      const c = round(na + 0.3 * (glu - 5.5), 1);
+      const tone = c >= 135 && c <= 145 ? "good" : "warn";
+      return { value: c, unit: "mmol/L", tone, note: "Corrected for glucose-driven dilution. Ref 135–145." };
+    },
+  },
+  {
+    id: "ibw", name: "Ideal body weight (Devine)", blurb: "For weight-based dosing.",
+    inputs: [
+      { key: "sex", label: "Sex", type: "select", options: ["male", "female"] },
+      { key: "ht", label: "Height", unit: "cm", type: "number" },
+    ],
+    compute(v) {
+      const ht = num(v.ht);
+      if (ht == null || !v.sex) return null;
+      const base = v.sex === "female" ? 45.5 : 50;
+      const ibw = Math.max(base + 0.9 * (ht - 152), base);
+      return { value: round(ibw, 1), unit: "kg", tone: "info",
+        note: "Devine IBW. Use adjusted body weight if markedly obese." };
+    },
+  },
+  {
+    id: "pedsdose", name: "Paediatric dose (mg/kg)", blurb: "Weight-based dose → volume.",
+    inputs: [
+      { key: "wt", label: "Weight", unit: "kg", type: "number" },
+      { key: "dose", label: "Dose", unit: "mg/kg", type: "number" },
+      { key: "conc", label: "Concentration (optional)", unit: "mg/mL", type: "number" },
+    ],
+    compute(v) {
+      const wt = num(v.wt), dose = num(v.dose);
+      if (wt == null || dose == null) return null;
+      const mg = round(wt * dose, 1);
+      const conc = num(v.conc);
+      const ml = conc && conc > 0 ? round(mg / conc, 1) : null;
+      return { value: mg, unit: "mg", tone: "info",
+        note: (ml != null ? `≈ ${ml} mL. ` : "") + "Always check the maximum dose and formulation." };
+    },
+  },
 ];
 
 // SA/NHLS-style adult reference ranges (SI units). Verify against your lab.
@@ -155,7 +302,14 @@ const REFERENCE = [
   ["ALT", "10–40", "U/L"], ["CRP", "< 5", "mg/L"],
   ["Haemoglobin (M / F)", "13–17 / 12–15", "g/dL"], ["Platelets", "150–400", "×10⁹/L"],
   ["White cells", "4–11", "×10⁹/L"], ["INR (off warfarin)", "0.8–1.2", ""],
-  ["TSH", "0.27–4.2", "mIU/L"], ["HbA1c (target)", "< 7 (individualise)", "%"],
+  ["INR (on warfarin, target)", "2.0–3.0", ""], ["TSH", "0.27–4.2", "mIU/L"],
+  ["HbA1c (target)", "< 7 (individualise)", "%"],
+  ["Arterial pH", "7.35–7.45", ""], ["pCO₂", "4.7–6.0", "kPa"],
+  ["pO₂", "11–13", "kPa"], ["Bicarbonate (ABG)", "22–26", "mmol/L"],
+  ["Lactate", "0.5–2.2", "mmol/L"],
+  ["LDL (high-risk target)", "< 1.8", "mmol/L"], ["HDL (M / F)", "> 1.0 / > 1.2", "mmol/L"],
+  ["Triglycerides", "< 1.7", "mmol/L"], ["Ferritin (M / F)", "30–400 / 15–150", "µg/L"],
+  ["Vitamin D (25-OH)", "> 50", "nmol/L"],
 ];
 
 export default {
@@ -217,8 +371,11 @@ export default {
             h("span.calc-label", {}, inp.label),
             h("select.select", {
               onchange: (ev) => { values[inp.key] = ev.target.value; persist(); paint(); },
-            }, [h("option", { value: "" }, "—"), ...inp.options.map((o) =>
-              h("option", { value: o, selected: values[inp.key] === o }, o))]));
+            }, [h("option", { value: "" }, "—"), ...inp.options.map((o) => {
+              const val = typeof o === "object" ? String(o.value) : o;
+              const label = typeof o === "object" ? o.label : o;
+              return h("option", { value: val, selected: String(values[inp.key]) === val }, label);
+            })]));
         }
         return h("label.calc-field", {},
           h("span.calc-label", {}, inp.label, inp.unit ? h("span.muted", {}, ` (${inp.unit})`) : null),

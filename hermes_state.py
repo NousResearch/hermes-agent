@@ -4814,6 +4814,37 @@ class SessionDB:
                 tuple(session_ids),
             ).fetchall()
 
+        return self._rows_to_conversation(
+            rows,
+            session_id=session_id,
+            include_ancestors=include_ancestors,
+            repair_alternation=repair_alternation,
+        )
+
+    # Columns every conversation projection decodes. Shared by
+    # get_messages_as_conversation and get_resume_conversations so a single
+    # SELECT can feed both the model-fed and display views.
+    _CONVERSATION_ROW_COLUMNS = (
+        "role, content, tool_call_id, tool_calls, tool_name, effect_disposition, "
+        "finish_reason, reasoning, reasoning_content, reasoning_details, "
+        "codex_reasoning_items, codex_message_items, platform_message_id, observed, timestamp"
+    )
+
+    def _rows_to_conversation(
+        self,
+        rows,
+        *,
+        session_id: str,
+        include_ancestors: bool,
+        repair_alternation: bool,
+    ) -> List[Dict[str, Any]]:
+        """Decode fetched message rows into the OpenAI conversation format.
+
+        Extracted from get_messages_as_conversation so get_resume_conversations
+        can build the model-fed and display views from one SELECT. ``rows`` must
+        already be ordered by ``id`` (insertion order) and filtered to the
+        desired session set / active state by the caller.
+        """
         messages = []
         for row in rows:
             content = self._decode_content(row["content"])
@@ -4901,6 +4932,55 @@ class SessionDB:
                     session_id,
                 )
         return messages
+
+    def get_resume_conversations(
+        self, session_id: str
+    ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+        """Return ``(model_history, display_history)`` for a session resume in ONE SELECT.
+
+        ``session.resume`` needs two projections of the same lineage:
+
+        - ``model_history`` — the tip session's active rows, alternation-repaired
+          (the live-replay working conversation). Equivalent to
+          ``get_messages_as_conversation(session_id, repair_alternation=True)``.
+        - ``display_history`` — the full lineage (ancestors → tip), verbatim, with
+          replayed-user dedup. Equivalent to
+          ``get_messages_as_conversation(session_id, include_ancestors=True)``.
+
+        The display fetch already reads a superset of the model fetch (the tip
+        rows are part of the lineage), so serving both from one lineage SELECT
+        halves the resume's DB work versus two separate calls, with byte-identical
+        output (see test_get_resume_conversations_matches_separate_reads).
+        """
+        session_ids = self._session_lineage_root_to_tip(session_id)
+        with self._lock:
+            placeholders = ",".join("?" for _ in session_ids)
+            rows = self._conn.execute(
+                f"SELECT session_id, {self._CONVERSATION_ROW_COLUMNS} "
+                f"FROM messages WHERE session_id IN ({placeholders}) AND active = 1 "
+                # ORDER BY id (insertion order) — see get_messages_as_conversation
+                # for why timestamp ordering is unsafe.
+                "ORDER BY id",
+                tuple(session_ids),
+            ).fetchall()
+
+        # Tip rows are exactly the model-fed set (get_messages_as_conversation
+        # with session_ids=[session_id]); filtering the lineage fetch preserves
+        # their relative id order.
+        tip_rows = [r for r in rows if r["session_id"] == session_id]
+        model_history = self._rows_to_conversation(
+            tip_rows,
+            session_id=session_id,
+            include_ancestors=False,
+            repair_alternation=True,
+        )
+        display_history = self._rows_to_conversation(
+            rows,
+            session_id=session_id,
+            include_ancestors=True,
+            repair_alternation=False,
+        )
+        return model_history, display_history
 
     def get_conversation_root(self, session_id: str) -> str:
         """Return the ROOT id of *session_id*'s lineage chain.

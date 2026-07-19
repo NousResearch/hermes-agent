@@ -8089,6 +8089,71 @@ async function interceptSessionRequestForRemote(request) {
     return mergeRemoteProfileSessions(searchParams, remoteProfiles)
   }
 
+  // Batched sidebar slices. With no remote profiles the local batched endpoint
+  // (one DB open per profile) serves it directly — take the fast path. When
+  // remotes exist, fan the three slices back out to the per-slice
+  // /api/profiles/sessions path (which already merges remote rows correctly) and
+  // reassemble; local profiles fall back to three primary reads there, but
+  // remote correctness is preserved.
+  if (method === 'GET' && pathname === '/api/profiles/sessions/sidebar') {
+    const remoteProfiles = configuredRemoteProfileNames()
+
+    if (remoteProfiles.length === 0) {
+      return undefined // local fast path → batched endpoint's single DB open
+    }
+
+    const recentsProfile = (searchParams.get('recents_profile') || 'all').trim() || 'all'
+
+    const sliceParams = (limitKey, defaultLimit, extra) => {
+      const sp = new URLSearchParams({
+        limit: searchParams.get(limitKey) || defaultLimit,
+        offset: '0',
+        min_messages: '1',
+        archived: 'exclude',
+        order: 'recent',
+        ...extra
+      })
+
+      return sp
+    }
+
+    const recentsSp = sliceParams('recents_limit', '20', { profile: recentsProfile })
+    const recentsExclude = searchParams.get('recents_exclude')
+
+    if (recentsExclude) {
+      recentsSp.set('exclude_sources', recentsExclude)
+    }
+
+    const cronSp = sliceParams('cron_limit', '50', { profile: 'all', source: 'cron' })
+
+    const messagingSp = sliceParams('messaging_limit', '100', { profile: 'all' })
+    const messagingExclude = searchParams.get('messaging_exclude')
+
+    if (messagingExclude) {
+      messagingSp.set('exclude_sources', messagingExclude)
+    }
+
+    const [recents, cron, messaging] = await Promise.all([
+      fetchProfilesSessionSlice(recentsSp, remoteProfiles),
+      fetchProfilesSessionSlice(cronSp, remoteProfiles),
+      fetchProfilesSessionSlice(messagingSp, remoteProfiles)
+    ])
+
+    return {
+      recents: {
+        sessions: rowsOf(recents),
+        total: Number(recents?.total) || 0,
+        profile_totals: recents?.profile_totals || {}
+      },
+      cron: { sessions: rowsOf(cron) },
+      messaging: {
+        sessions: rowsOf(messaging),
+        total: Number(messaging?.total) || rowsOf(messaging).length
+      },
+      errors: []
+    }
+  }
+
   // Per-session read/mutation. Owner is in ?profile= (reads) or request.profile
   // (mutations). Two remote shapes:
   //  - per-profile override: route to that profile's own remote, sans profile
@@ -8151,6 +8216,30 @@ async function remoteSessionList(profile, searchParams) {
   }
 
   return { ...(data as any), sessions: rowsOf(data) }
+}
+
+// Resolve one /api/profiles/sessions slice with remote profiles spliced in —
+// the same branch logic as the GET /api/profiles/sessions intercept, but always
+// returns data (never `undefined`) so a batched caller can compose slices. A
+// specific local profile reads from the local primary; a remote-override profile
+// reads from its remote; 'all' merges every remote into the primary aggregate.
+async function fetchProfilesSessionSlice(searchParams, remoteProfiles) {
+  const requested = (searchParams.get('profile') || 'all').trim() || 'all'
+
+  if (requested !== 'all') {
+    if (profileHasRemoteOverride(requested)) {
+      return remoteSessionList(requested, searchParams)
+    }
+
+    const primary = await ensureBackend(null)
+
+    return fetchJson(`${primary.baseUrl}/api/profiles/sessions?${searchParams}`, primary.token, {
+      method: 'GET',
+      timeoutMs: DEFAULT_FETCH_TIMEOUT_MS
+    }).catch(() => ({ sessions: [], total: 0, profile_totals: {} }))
+  }
+
+  return mergeRemoteProfileSessions(searchParams, remoteProfiles)
 }
 
 // Unified list: primary's local aggregate, with each remote profile's stale local

@@ -323,6 +323,47 @@ class TestCodexBuildKwargs:
         assert "function_call_output" in item_types
         assert kw.get("include") == []
 
+    def test_azure_foundry_non_tool_follow_up_preserves_reasoning_items(self, transport):
+        """Ordinary (non-tool) Azure Foundry multi-turn continuity is unchanged.
+
+        Reasoning suppression is scoped to the post-tool replay shape
+        (function_call + function_call_output). A plain assistant reasoning
+        turn followed by another user message has no tool continuity, so the
+        encrypted reasoning item must still be replayed for Azure Foundry —
+        the endpoint only rejects the post-tool payload, not this one.
+        """
+        messages = [
+            {"role": "user", "content": "Explain recursion"},
+            {
+                "role": "assistant",
+                "content": "Recursion is when a function calls itself.",
+                "codex_reasoning_items": [
+                    {
+                        "type": "reasoning",
+                        "encrypted_content": "sealed",
+                        "summary": [],
+                    }
+                ],
+            },
+            {"role": "user", "content": "Give an example"},
+        ]
+        kw = transport.build_kwargs(
+            model="gpt-5.4",
+            messages=messages,
+            tools=[],
+            provider="azure-foundry",
+            base_url=(
+                "https://placeholder.services.ai.azure.com/"
+                "api/projects/placeholder/openai/v1"
+            ),
+            replay_encrypted_reasoning=True,
+        )
+        item_types = [item.get("type") for item in kw["input"] if isinstance(item, dict)]
+        assert "reasoning" in item_types
+        assert "function_call" not in item_types
+        assert "function_call_output" not in item_types
+        assert kw.get("include") == ["reasoning.encrypted_content"]
+
     def test_xai_headers(self, transport):
         messages = [{"role": "user", "content": "Hi"}]
         kw = transport.build_kwargs(

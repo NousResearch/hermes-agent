@@ -77,6 +77,29 @@ def _build_copilot_agent(monkeypatch, *, model="gpt-5.4"):
     return agent
 
 
+def _build_azure_foundry_agent(monkeypatch, *, model="gpt-5.4"):
+    _patch_agent_bootstrap(monkeypatch)
+
+    agent = run_agent.AIAgent(
+        model=model,
+        provider="azure-foundry",
+        api_mode="codex_responses",
+        base_url=(
+            "https://placeholder.services.ai.azure.com/"
+            "api/projects/placeholder/openai/v1"
+        ),
+        api_key="foundry-token",
+        quiet_mode=True,
+        max_iterations=4,
+        skip_context_files=True,
+        skip_memory=True,
+    )
+    agent._cleanup_task_resources = lambda task_id: None
+    agent._persist_session = lambda messages, history=None: None
+    agent._save_trajectory = lambda messages, user_message, completed: None
+    return agent
+
+
 def _codex_message_response(text: str):
     return SimpleNamespace(
         output=[
@@ -448,6 +471,80 @@ def test_build_api_kwargs_copilot_responses_omits_reasoning_for_non_reasoning_mo
     assert "reasoning" not in kwargs
     assert "include" not in kwargs
     assert "prompt_cache_key" not in kwargs
+
+
+def _azure_post_tool_messages():
+    return [
+        {"role": "system", "content": "You are Hermes."},
+        {"role": "user", "content": "Create a marker"},
+        {
+            "role": "assistant",
+            "content": "",
+            "codex_reasoning_items": [
+                {"type": "reasoning", "encrypted_content": "sealed", "summary": []}
+            ],
+            "tool_calls": [
+                {
+                    "id": "call_marker",
+                    "type": "function",
+                    "function": {"name": "terminal", "arguments": "{}"},
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "call_marker", "content": "marker written"},
+    ]
+
+
+def test_build_api_kwargs_azure_foundry_post_tool_suppresses_reasoning(monkeypatch):
+    """Live agent path forwards Azure identity fields and scopes suppression.
+
+    Exercises ``chat_completion_helpers.build_api_kwargs`` end-to-end (not the
+    transport in isolation): the agent must forward ``provider``, ``base_url``
+    and ``base_url_hostname`` into ``build_kwargs`` so Azure Foundry detection
+    fires. On the post-tool replay shape, the encrypted reasoning item is
+    dropped while function_call / function_call_output continuity is kept.
+    """
+    agent = _build_azure_foundry_agent(monkeypatch)
+    assert agent._codex_reasoning_replay_enabled is True
+
+    kwargs = agent._build_api_kwargs(_azure_post_tool_messages())
+
+    item_types = [item.get("type") for item in kwargs["input"] if isinstance(item, dict)]
+    assert "reasoning" not in item_types
+    assert "function_call" in item_types
+    assert "function_call_output" in item_types
+    assert kwargs.get("include") == []
+
+
+def test_build_api_kwargs_azure_foundry_non_tool_preserves_reasoning(monkeypatch):
+    """Ordinary (non-tool) Azure Foundry continuity is unchanged via live path.
+
+    Without the post-tool replay shape there is no evidence Foundry rejects
+    the payload, so the encrypted reasoning item must still be replayed even
+    though Azure Foundry identity fields are forwarded by the agent.
+    """
+    agent = _build_azure_foundry_agent(monkeypatch)
+
+    messages = [
+        {"role": "system", "content": "You are Hermes."},
+        {"role": "user", "content": "Explain recursion"},
+        {
+            "role": "assistant",
+            "content": "Recursion is when a function calls itself.",
+            "codex_reasoning_items": [
+                {"type": "reasoning", "encrypted_content": "sealed", "summary": []}
+            ],
+        },
+        {"role": "user", "content": "Give an example"},
+    ]
+
+    kwargs = agent._build_api_kwargs(messages)
+
+    item_types = [item.get("type") for item in kwargs["input"] if isinstance(item, dict)]
+    assert "reasoning" in item_types
+    assert "function_call" not in item_types
+    assert "function_call_output" not in item_types
+    assert kwargs.get("include") == ["reasoning.encrypted_content"]
 
 
 # ---------------------------------------------------------------------------

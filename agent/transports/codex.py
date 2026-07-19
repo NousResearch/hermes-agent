@@ -60,6 +60,37 @@ def _is_azure_foundry_responses(params: Dict[str, Any]) -> bool:
     )
 
 
+def _is_post_tool_replay(messages: Optional[List[Dict[str, Any]]]) -> bool:
+    """Return True when ``messages`` carry prior tool-call/tool-output replay.
+
+    Azure Foundry only rejects the *post-tool follow-up* payload — the shape
+    where a prior assistant ``function_call`` and its ``function_call_output``
+    are replayed alongside an encrypted ``reasoning`` item (HTTP 400
+    invalid_payload). Detecting that shape here keeps reasoning suppression
+    scoped to the failing turn, so ordinary (non-tool) Foundry multi-turn
+    continuity is left unchanged.
+
+    The shape is present when the history contains BOTH an assistant message
+    that issued tool calls (becomes ``function_call``) and its matching tool
+    result message (becomes ``function_call_output``).
+    """
+    if not messages:
+        return False
+    has_tool_call = False
+    has_tool_output = False
+    for msg in messages:
+        if not isinstance(msg, dict):
+            continue
+        role = msg.get("role")
+        if role == "assistant" and msg.get("tool_calls"):
+            has_tool_call = True
+        elif role == "tool" and msg.get("tool_call_id"):
+            has_tool_output = True
+        if has_tool_call and has_tool_output:
+            return True
+    return False
+
+
 class ResponsesApiTransport(ProviderTransport):
     """Transport for api_mode='codex_responses'.
 
@@ -158,12 +189,15 @@ class ResponsesApiTransport(ProviderTransport):
             params.get("replay_encrypted_reasoning", True)
         )
         is_azure_foundry_responses = _is_azure_foundry_responses(params)
-        if is_azure_foundry_responses:
+        if is_azure_foundry_responses and _is_post_tool_replay(payload_messages):
             # Microsoft Foundry accepts the initial Responses function-call
-            # request, but rejects post-tool replay payloads that include
-            # prior encrypted reasoning items with HTTP 400 invalid_payload.
-            # Keep function_call/function_call_output continuity intact and
-            # suppress only encrypted reasoning replay for this endpoint.
+            # request and ordinary (non-tool) multi-turn continuity, but
+            # rejects the post-tool replay payload that includes prior
+            # encrypted reasoning items alongside function_call/
+            # function_call_output with HTTP 400 invalid_payload. Scope the
+            # suppression to that post-tool shape: keep function_call/
+            # function_call_output continuity intact and drop only the
+            # encrypted reasoning replay for this endpoint.
             replay_encrypted_reasoning = False
 
         # Resolve the issuing endpoint for this call. Stashed on the

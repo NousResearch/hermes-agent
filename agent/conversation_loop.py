@@ -4532,7 +4532,17 @@ def run_conversation(
                                     try:
                                         _wrapped = json.loads(tc.function.arguments or "{}")
                                     except Exception:
-                                        _wrapped = {"_raw": tc.function.arguments}
+                                        # ponytail: malformed args — repair first, fall back to {}.
+                                        # Wrapping raw as {"_raw": ...} would break the underlying
+                                        # tool's schema; an empty dict lets the call proceed and
+                                        # the model agent-correct from the tool's error response.
+                                        _repaired = _repair_tool_call_arguments(
+                                            tc.function.arguments or "", _n
+                                        )
+                                        try:
+                                            _wrapped = json.loads(_repaired)
+                                        except Exception:
+                                            _wrapped = {}
                                     tc.function.name = _TCN
                                     tc.function.arguments = json.dumps({
                                         "name": _n,

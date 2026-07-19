@@ -193,6 +193,8 @@ def _resolve_task_scoped_board(board: Optional[str]) -> Optional[str]:
     from hermes_cli import kanban_db as kb
 
     board_slug = kb._normalize_board_slug(board)
+    if board_slug is None:
+        return None
     if not os.environ.get("HERMES_KANBAN_TASK"):
         return board_slug
     env_board = os.environ.get("HERMES_KANBAN_BOARD")

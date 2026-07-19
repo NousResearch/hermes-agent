@@ -1999,6 +1999,18 @@ def test_task_scoped_explicit_board_matches_env_board(scoped_board_env):
     assert d["task"]["status"] == "ready"
 
 
+@pytest.mark.parametrize("board", ["", "  "])
+def test_task_scoped_blank_board_falls_back_to_env_board(scoped_board_env, board):
+    from tools import kanban_tools as kt
+
+    out = kt._handle_show(
+        {"task_id": scoped_board_env["default_seed"], "board": board}
+    )
+    d = json.loads(out)
+    assert d["task"]["id"] == scoped_board_env["default_seed"]
+    assert d["task"]["status"] == "ready"
+
+
 def test_board_param_routes_create_to_alt_board(multi_board_env):
     """kanban_create with ``board="alt"`` must write into the alt board's DB,
     not the default one."""

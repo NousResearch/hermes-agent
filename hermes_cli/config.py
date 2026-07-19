@@ -7894,11 +7894,21 @@ def _env_line_defines_key(line: str, key: str) -> bool:
     (#6659), so the writers must recognise the same shape. Otherwise a
     hand-added ``export`` line is invisible to save (duplicate appended) and
     remove (line survives → the value resurrects on the next load, #40041).
+
+    The same applies to whitespace around the ``=``: ``load_env()`` splits on
+    the first ``=`` and ``.strip()``s the name, so ``KEY = value`` is a live
+    assignment.  Matching on the ``KEY=`` prefix alone missed it, leaving the
+    identical resurrection hole for that form.  Mirror ``load_env()``'s parse
+    instead of prefix-matching so the writers recognise exactly what the
+    reader accepts.
     """
     stripped = line.strip()
+    if not stripped or stripped.startswith("#") or "=" not in stripped:
+        return False
     if stripped.startswith("export "):
-        stripped = stripped[7:].lstrip()
-    return stripped.startswith(f"{key}=")
+        stripped = stripped[7:]
+    name, _, _ = stripped.partition("=")
+    return name.strip() == key
 
 
 def save_env_value(key: str, value: str):

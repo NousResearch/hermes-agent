@@ -83,6 +83,38 @@ INTERRUPT_WAITING_FOR_MODEL_PREFIX = "Operation interrupted: waiting for model r
 _V1_PROBE_RETRY_SECONDS = 60.0
 
 
+def _resolve_v1_probe_verify(base_url: str):
+    """TLS ``verify`` for the ``/v1/models`` heal probe, matching the client.
+
+    The chat client applies per-custom-provider ``ssl_ca_cert``/``ssl_verify``
+    (``apply_custom_provider_tls_to_client_kwargs``); a bare ``requests.get``
+    bypasses that, so an endpoint behind a private CA could 404 and then never
+    self-heal because the verification probe itself fails TLS.
+    """
+    try:
+        from hermes_cli.config import (
+            get_compatible_custom_providers,
+            get_custom_provider_tls_settings,
+            load_config_readonly,
+        )
+
+        tls = get_custom_provider_tls_settings(
+            base_url, get_compatible_custom_providers(load_config_readonly())
+        )
+        if tls.get("ssl_verify") is False:
+            return False
+        if tls.get("ssl_ca_cert"):
+            return tls["ssl_ca_cert"]
+    except Exception:
+        logger.debug("custom-provider TLS resolution skipped for v1 probe", exc_info=True)
+    try:
+        from agent.model_metadata import _resolve_requests_verify
+
+        return _resolve_requests_verify()
+    except Exception:
+        return True
+
+
 def _maybe_apply_v1_suffix_fallback(agent, status_code) -> bool:
     """Self-heal a custom OpenAI-compatible ``base_url`` missing ``/v1``.
 
@@ -128,7 +160,12 @@ def _maybe_apply_v1_suffix_fallback(agent, status_code) -> bool:
         try:
             import requests
 
-            resp = requests.get(v1_base + "/models", headers=headers, timeout=5)
+            resp = requests.get(
+                v1_base + "/models",
+                headers=headers,
+                timeout=5,
+                verify=_resolve_v1_probe_verify(base),
+            )
             payload = resp.json() if resp.ok else None
             if not (isinstance(payload, dict) and isinstance(payload.get("data"), list)):
                 return False

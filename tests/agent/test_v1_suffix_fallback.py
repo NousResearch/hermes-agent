@@ -206,3 +206,55 @@ def test_bearer_header_sent_for_real_key(monkeypatch):
 
     assert _maybe_apply_v1_suffix_fallback(agent, 404) is True
     assert seen["headers"] == {"Authorization": "Bearer sk-secret"}
+
+
+@pytest.mark.parametrize(
+    "tls, expected_verify",
+    [
+        ({"ssl_ca_cert": "/etc/hermes/custom-ca.pem"}, "/etc/hermes/custom-ca.pem"),
+        ({"ssl_verify": False}, False),
+        ({"ssl_verify": False, "ssl_ca_cert": "/etc/ca.pem"}, False),
+    ],
+)
+def test_probe_applies_custom_provider_tls(monkeypatch, tls, expected_verify):
+    """The heal probe must honor the same per-custom-provider ssl_ca_cert /
+    ssl_verify the chat client gets — an endpoint behind a private CA would
+    otherwise 404 and then never self-heal because the probe fails TLS."""
+    seen = {}
+
+    def _capture(url, headers=None, timeout=None, verify=None, **kwargs):
+        seen["verify"] = verify
+        return _models_ok(url, headers=headers, timeout=timeout, **kwargs)
+
+    monkeypatch.setattr("requests.get", _capture)
+    monkeypatch.setattr("hermes_cli.config.load_config_readonly", lambda: {})
+    monkeypatch.setattr("hermes_cli.config.get_compatible_custom_providers", lambda cfg: [])
+    monkeypatch.setattr(
+        "hermes_cli.config.get_custom_provider_tls_settings",
+        lambda base, providers=None, config=None: dict(tls),
+    )
+    agent = _StubAgent()
+
+    assert _maybe_apply_v1_suffix_fallback(agent, 404) is True
+    assert seen["verify"] == expected_verify
+
+
+def test_probe_verify_defaults_when_no_tls_config(monkeypatch):
+    """No matching custom-provider entry — fall back to the shared
+    requests-verify resolution (env CA bundle or certifi default)."""
+    seen = {}
+
+    def _capture(url, headers=None, timeout=None, verify=None, **kwargs):
+        seen["verify"] = verify
+        return _models_ok(url, headers=headers, timeout=timeout, **kwargs)
+
+    monkeypatch.setattr("requests.get", _capture)
+    monkeypatch.setattr("hermes_cli.config.load_config_readonly", lambda: {})
+    monkeypatch.setattr("hermes_cli.config.get_compatible_custom_providers", lambda cfg: [])
+    monkeypatch.setattr(
+        "agent.model_metadata._resolve_requests_verify", lambda: "/env/bundle.pem"
+    )
+    agent = _StubAgent()
+
+    assert _maybe_apply_v1_suffix_fallback(agent, 404) is True
+    assert seen["verify"] == "/env/bundle.pem"

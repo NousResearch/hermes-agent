@@ -4921,34 +4921,45 @@ class DiscordAdapter(BasePlatformAdapter):
 
         Treats the bot as mentioned if it is either present in the resolved
         ``message.mentions`` list OR referenced by its raw ``<@ID>`` / ``<@!ID>``
-        form in the message content. When ``require_mention_roles`` is enabled,
-        a mention of a role this bot holds also counts.
+        form in the message content.
+
+        Role mentions are intentionally NOT handled here — this helper also
+        gates bot-admission paths (``DISCORD_ALLOW_BOTS=mentions`` and
+        multi-agent routing). Role wake-ups for ``require_mention`` go through
+        :meth:`_self_is_addressed_for_require_mention` instead.
         """
         if not self._client or not self._client.user:
             return False
         if self._client.user in getattr(message, "mentions", []):
             return True
-        if str(self._client.user.id) in self._raw_mentioned_user_ids(message):
-            return True
-        return self._discord_require_mention_roles() and self._self_is_role_mentioned(message)
+        return str(self._client.user.id) in self._raw_mentioned_user_ids(message)
 
     def _self_is_raw_mentioned(self, message: Any) -> bool:
-        """Return True only when this bot has an inline mention token.
+        """Return True only when this bot has an inline user-mention token.
 
         Discord reply-pings can add the replied-to bot to ``message.mentions``
         without a literal ``<@bot>`` token in ``message.content``. This helper
         intentionally ignores the resolved mentions list so the bot admission
         gate can distinguish an explicit cross-bot address from a reply chip.
-        When ``require_mention_roles`` is enabled, a raw ``<@&ROLE_ID>`` token
-        for a role this bot holds also counts as an inline address.
+
+        Role tokens (``<@&ROLE_ID>``) never count here — ``DISCORD_BOTS_REQUIRE_INLINE_MENTION``
+        requires a literal ``<@thisbot>`` user mention to avoid bot ping-pong.
         """
         if not self._client or not self._client.user:
             return False
-        if str(self._client.user.id) in self._raw_mentioned_user_ids(message):
+        return str(self._client.user.id) in self._raw_mentioned_user_ids(message)
+
+    def _self_is_addressed_for_require_mention(self, message: Any) -> bool:
+        """Return True when the message satisfies the Discord require_mention gate.
+
+        Direct user @mentions always count. When ``require_mention_roles`` is
+        enabled, a mention of a role this bot holds also counts. Kept separate
+        from :meth:`_self_is_explicitly_mentioned` / :meth:`_self_is_raw_mentioned`
+        so bot-admission and multi-agent guards keep direct-user semantics.
+        """
+        if self._self_is_explicitly_mentioned(message):
             return True
-        return self._discord_require_mention_roles() and bool(
-            self._self_role_ids(message) & self._raw_mentioned_role_ids(message)
-        )
+        return self._discord_require_mention_roles() and self._self_is_role_mentioned(message)
 
     def _discord_bots_require_inline_mention(self) -> bool:
         """Whether another bot must type an inline @mention to trigger us.
@@ -6240,12 +6251,12 @@ class DiscordAdapter(BasePlatformAdapter):
             if snapshot_text_parts and not raw_content:
                 raw_content = "\n".join(snapshot_text_parts)
                 normalized_content = raw_content
-        if self._self_is_explicitly_mentioned(message):
+        if self._self_is_addressed_for_require_mention(message):
             mention_prefix = True
-            if self._client.user:
+            if self._client.user and self._self_is_explicitly_mentioned(message):
                 normalized_content = normalized_content.replace(f"<@{self._client.user.id}>", "").strip()
                 normalized_content = normalized_content.replace(f"<@!{self._client.user.id}>", "").strip()
-            if self._discord_require_mention_roles():
+            if self._discord_require_mention_roles() and self._self_is_role_mentioned(message):
                 mentioned_role_ids = {
                     str(getattr(role, "id"))
                     for role in (getattr(message, "role_mentions", None) or [])
@@ -6301,7 +6312,7 @@ class DiscordAdapter(BasePlatformAdapter):
             )
 
             if require_mention and not is_free_channel and not in_bot_thread:
-                if not self._self_is_explicitly_mentioned(message) and not mention_prefix:
+                if not self._self_is_addressed_for_require_mention(message) and not mention_prefix:
                     return
         # Auto-thread: when enabled, automatically create a thread for every
         # @mention in a text channel so each conversation is isolated (like Slack).

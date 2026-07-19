@@ -109,6 +109,7 @@ def adapter(monkeypatch):
         "DISCORD_REQUIRE_MENTION",
         "DISCORD_REQUIRE_MENTION_ROLES",
         "DISCORD_THREAD_REQUIRE_MENTION",
+        "DISCORD_BOTS_REQUIRE_INLINE_MENTION",
         "DISCORD_FREE_RESPONSE_CHANNELS",
         "DISCORD_AUTO_THREAD",
         "DISCORD_NO_THREAD_CHANNELS",
@@ -506,6 +507,63 @@ async def test_discord_require_mention_roles_via_config_extra(adapter, monkeypat
     adapter.handle_message.assert_awaited_once()
     event = adapter.handle_message.await_args.args[0]
     assert event.text == "hello from config"
+
+
+def _bot_authored_role_ping(adapter):
+    """Build a bot-authored message that only role-pings a role this bot holds."""
+    bot_user = adapter._client.user
+    bot_role = SimpleNamespace(id=555)
+    guild = make_guild_with_bot_roles(bot_user, bot_role.id)
+    channel = FakeTextChannel(channel_id=325)
+    channel.guild = guild
+    other_bot = SimpleNamespace(id=4242, bot=True, display_name="OtherBot", name="OtherBot")
+    message = make_message(
+        channel=channel,
+        content=f"<@&{bot_role.id}> handoff from another bot",
+        role_mentions=[bot_role],
+        guild=guild,
+    )
+    message.author = other_bot
+    return message, bot_role
+
+
+def test_role_ping_does_not_count_as_explicit_or_raw_mention_even_when_enabled(adapter, monkeypatch):
+    """Bot-safety helpers stay direct-user-only when require_mention_roles is on."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION_ROLES", "true")
+    message, _role = _bot_authored_role_ping(adapter)
+
+    assert adapter._self_is_role_mentioned(message) is True
+    assert adapter._self_is_addressed_for_require_mention(message) is True
+    assert adapter._self_is_explicitly_mentioned(message) is False
+    assert adapter._self_is_raw_mentioned(message) is False
+
+
+def test_allow_bots_mentions_rejects_bot_authored_role_ping_even_when_roles_enabled(adapter, monkeypatch):
+    """DISCORD_ALLOW_BOTS=mentions must still require a direct user @mention.
+
+    Mirrors on_message at adapter.py:1134-1136 — a role ping alone must not
+    admit another bot even when DISCORD_REQUIRE_MENTION_ROLES is on.
+    """
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION_ROLES", "true")
+    monkeypatch.setenv("DISCORD_ALLOW_BOTS", "mentions")
+    message, _role = _bot_authored_role_ping(adapter)
+
+    # Production gate: elif allow_bots == "mentions": require explicit user mention
+    assert adapter._self_is_explicitly_mentioned(message) is False
+
+
+def test_bots_require_inline_mention_rejects_bot_authored_role_ping(adapter, monkeypatch):
+    """DISCORD_BOTS_REQUIRE_INLINE_MENTION must still require literal <@thisbot>.
+
+    Mirrors on_message at adapter.py:1137-1141 — a raw <@&role> token must not
+    satisfy the inline-mention guard.
+    """
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION_ROLES", "true")
+    monkeypatch.setenv("DISCORD_BOTS_REQUIRE_INLINE_MENTION", "true")
+    message, _role = _bot_authored_role_ping(adapter)
+
+    assert adapter._discord_bots_require_inline_mention() is True
+    assert adapter._self_is_raw_mentioned(message) is False
 
 
 @pytest.mark.asyncio

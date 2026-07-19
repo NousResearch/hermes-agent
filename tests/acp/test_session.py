@@ -417,6 +417,47 @@ class TestListAndCleanup:
         state.agent.shutdown_memory_provider.assert_called_once_with()
         state.agent.close.assert_called_once_with()
 
+    def test_remove_session_forwards_session_messages_when_present(self):
+        """A no-argument shutdown_memory_provider() call becomes
+        on_session_end([]) in AIAgent.shutdown_memory_provider, losing facts
+        from this session. Forward _session_messages when it's a list,
+        mirroring GatewayRunner._cleanup_agent_resources' guarded forwarding
+        (gateway/run.py)."""
+        calls = []
+        transcript = [{"role": "user", "content": "hi"}, {"role": "assistant", "content": "yo"}]
+
+        class FakeAgent:
+            def __init__(self):
+                self._session_messages = transcript
+
+            def shutdown_memory_provider(self, messages=None):
+                calls.append(messages)
+
+            def close(self):
+                pass
+
+        manager = SessionManager(agent_factory=FakeAgent)
+        state = manager.create_session()
+        manager.remove_session(state.session_id)
+        assert calls == [transcript]
+
+    def test_remove_session_falls_back_to_no_args_when_session_messages_absent(self):
+        """An agent stub with no _session_messages attribute must still get
+        a plain no-argument call — not crash on a missing attribute."""
+        calls = []
+
+        class FakeAgent:
+            def shutdown_memory_provider(self, messages=None):
+                calls.append(messages)
+
+            def close(self):
+                pass
+
+        manager = SessionManager(agent_factory=FakeAgent)
+        state = manager.create_session()
+        manager.remove_session(state.session_id)
+        assert calls == [None]
+
 
 # ---------------------------------------------------------------------------
 # persistence — sessions survive process restarts (via SessionDB)

@@ -254,3 +254,51 @@ async def test_stream_consumer_resends_full_text_when_partial_overflow_prefix_wa
     assert adapter.send.await_args.kwargs["content"] == "**bold** world"
     adapter.delete_message.assert_awaited_once_with("chat-1", "preview-1")
     assert consumer.final_response_sent is True
+
+
+@pytest.mark.asyncio
+async def test_stream_consumer_resends_full_text_after_final_flood_on_raw_preview():
+    """A turn-final flood-control failure leaves a raw streaming preview on
+    screen.  The fallback must not treat that preview as a safe formatted
+    prefix; resend the full final markdown and delete the stale preview.
+    """
+    adapter = MagicMock()
+    adapter.MAX_MESSAGE_LENGTH = 4096
+    adapter.FALLBACK_ON_FINAL_EDIT_FLOOD = True
+    adapter.edit_message = AsyncMock(
+        return_value=SendResult(
+            success=False,
+            message_id="preview-1",
+            error="flood_control: retry after 14 seconds",
+            retry_after=14.0,
+        )
+    )
+    adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="final-1"))
+    adapter.delete_message = AsyncMock(return_value=True)
+
+    consumer = GatewayStreamConsumer(adapter, "chat-1", metadata={"thread_id": "77"})
+    final_text = "Przejrzałem aplikację realnie\n\n**Stan ogólny: dobry MVP.**\n"
+    final_text += "x" * 4500
+    raw_preview = final_text[:3900]
+    consumer._message_id = "preview-1"
+    consumer._last_sent_text = raw_preview
+
+    ok = await consumer._send_or_edit(final_text, finalize=True)
+
+    assert ok is False
+    assert consumer._fallback_final_send is True
+    assert consumer._fallback_lossy_prefix is True
+    assert consumer._fallback_preserve_partial_messages is False
+
+    await consumer._send_fallback_final(final_text)
+
+    sent_chunks = [call.kwargs["content"] for call in adapter.send.await_args_list]
+    assert "".join(sent_chunks) == final_text
+    assert sent_chunks[0].startswith("Przejrzałem aplikację realnie")
+    assert all(
+        call.kwargs["metadata"] == {"thread_id": "77", "notify": True}
+        for call in adapter.send.await_args_list
+    )
+    adapter.delete_message.assert_awaited_once_with("chat-1", "preview-1")
+    assert consumer.final_response_sent is True
+    assert consumer.final_content_delivered is True

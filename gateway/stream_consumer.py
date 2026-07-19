@@ -1873,6 +1873,7 @@ class GatewayStreamConsumer:
                         # limiting, use adaptive backoff: double the edit interval
                         # and retry on the next cycle.  Only permanently disable
                         # edits after _MAX_FLOOD_STRIKES consecutive failures.
+                        immediate_final_fallback = False
                         if self._is_flood_error(result):
                             self._flood_strikes += 1
                             self._current_edit_interval = min(
@@ -1903,7 +1904,6 @@ class GatewayStreamConsumer:
                                 # respects the new interval.
                                 self._last_edit_time = time.monotonic()
                                 return False
-
                             if immediate_final_fallback:
                                 logger.debug(
                                     "Turn-final edit hit flood control; "
@@ -1918,6 +1918,15 @@ class GatewayStreamConsumer:
                             self._flood_strikes,
                         )
                         self._fallback_prefix = self._visible_prefix()
+                        if immediate_final_fallback:
+                            # The visible prefix is a raw streaming preview, not
+                            # a finalized Telegram MarkdownV2/rich chunk.  Do
+                            # not send only the tail: that leaves the first
+                            # visible message unformatted.  Mark it lossy so the
+                            # fallback path resends the full final answer and
+                            # best-effort deletes the stale preview.
+                            self._fallback_lossy_prefix = True
+                            self._fallback_preserve_partial_messages = False
                         self._fallback_final_send = True
                         self._edit_supported = False
                         self._already_sent = True

@@ -598,6 +598,7 @@ class TelegramAdapter(BasePlatformAdapter):
     # Threshold for detecting Telegram client-side message splits.
     # When a chunk is near this limit, a continuation is almost certain.
     _SPLIT_THRESHOLD = 4000
+    FALLBACK_ON_FINAL_EDIT_FLOOD = True
     MEDIA_GROUP_WAIT_SECONDS = 0.8
     _GENERAL_TOPIC_THREAD_ID = "1"
 
@@ -4650,6 +4651,8 @@ class TelegramAdapter(BasePlatformAdapter):
             # if truncate_message returned a single chunk just edit normally.
             chunks = [content]
 
+        lossy_markdown_fallback = False
+
         # Step 1 — edit the existing message with the first chunk.
         first_chunk = chunks[0]
         try:
@@ -4712,7 +4715,6 @@ class TelegramAdapter(BasePlatformAdapter):
         # fallback, mirroring send().
         continuation_ids: list[str] = []
         delivered_chunks = [first_chunk]
-        lossy_markdown_fallback = False
         prev_id = message_id
         thread_id = self._metadata_thread_id(metadata)
         for chunk in chunks[1:]:

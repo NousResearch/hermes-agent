@@ -392,8 +392,9 @@ Rules: max 256 chars, control characters (`\r`, `\n`, `\x00`) are rejected, and 
 The persisted session endpoints (`/api/sessions/{session_id}/chat` and
 `/api/sessions/{session_id}/chat/stream`) use their existing server-backed
 session ID as a transcript-local memory scope when this header is omitted.
-This keeps external memory providers active for first-party TUI and desktop
-sessions. Supplying `X-Hermes-Session-Key` still takes precedence when memory
+This keeps external memory providers active for REST API clients that manage
+transcripts through `/api/sessions` without supplying a separate cross-transcript
+scope. Supplying `X-Hermes-Session-Key` still takes precedence when memory
 should span multiple transcripts or survive a `/new` boundary.
 
 ## System Prompt Handling

@@ -56,6 +56,22 @@ class AccountUsageFetchOutcome:
     failed: bool = False
 
 
+class _OpenRouterRateLimitError(RuntimeError):
+    """Rate-limit failure that still carries a truthful credits snapshot."""
+
+    def __init__(
+        self,
+        response: httpx.Response,
+        partial_snapshot: AccountUsageSnapshot,
+    ):
+        super().__init__(
+            "OpenRouter rate limited the account-usage request "
+            f"({response.status_code})"
+        )
+        self.response = response
+        self.partial_snapshot = partial_snapshot
+
+
 def retry_after_seconds(
     exc: BaseException,
     *,
@@ -852,32 +868,10 @@ def _fetch_anthropic_account_usage() -> Optional[AccountUsageSnapshot]:
     )
 
 
-def _fetch_openrouter_account_usage(base_url: Optional[str], api_key: Optional[str]) -> Optional[AccountUsageSnapshot]:
-    runtime = resolve_runtime_provider(
-        requested="openrouter",
-        explicit_base_url=base_url,
-        explicit_api_key=api_key,
-    )
-    token = str(runtime.get("api_key", "") or "").strip()
-    if not token:
-        return None
-    normalized = str(runtime.get("base_url", "") or "").rstrip("/")
-    credits_url = f"{normalized}/credits"
-    key_url = f"{normalized}/key"
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Accept": "application/json",
-    }
-    with httpx.Client(timeout=10.0) as client:
-        credits_resp = client.get(credits_url, headers=headers)
-        credits_resp.raise_for_status()
-        credits = (credits_resp.json() or {}).get("data") or {}
-        try:
-            key_resp = client.get(key_url, headers=headers)
-            key_resp.raise_for_status()
-            key_data = (key_resp.json() or {}).get("data") or {}
-        except Exception:
-            key_data = {}
+def _build_openrouter_account_usage_snapshot(
+    credits: dict[str, Any],
+    key_data: dict[str, Any],
+) -> AccountUsageSnapshot:
     total_credits = float(credits.get("total_credits") or 0.0)
     total_usage = float(credits.get("total_usage") or 0.0)
     details = [f"Credits balance: ${max(0.0, total_credits - total_usage):.2f}"]
@@ -924,6 +918,44 @@ def _fetch_openrouter_account_usage(base_url: Optional[str], api_key: Optional[s
     )
 
 
+def _fetch_openrouter_account_usage(
+    base_url: Optional[str], api_key: Optional[str]
+) -> Optional[AccountUsageSnapshot]:
+    runtime = resolve_runtime_provider(
+        requested="openrouter",
+        explicit_base_url=base_url,
+        explicit_api_key=api_key,
+    )
+    token = str(runtime.get("api_key", "") or "").strip()
+    if not token:
+        return None
+    normalized = str(runtime.get("base_url", "") or "").rstrip("/")
+    credits_url = f"{normalized}/credits"
+    key_url = f"{normalized}/key"
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/json",
+    }
+    with httpx.Client(timeout=10.0) as client:
+        credits_resp = client.get(credits_url, headers=headers)
+        credits_resp.raise_for_status()
+        credits = (credits_resp.json() or {}).get("data") or {}
+        try:
+            key_resp = client.get(key_url, headers=headers)
+            key_resp.raise_for_status()
+            key_data = (key_resp.json() or {}).get("data") or {}
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 429:
+                raise _OpenRouterRateLimitError(
+                    exc.response,
+                    _build_openrouter_account_usage_snapshot(credits, {}),
+                ) from exc
+            key_data = {}
+        except Exception:
+            key_data = {}
+    return _build_openrouter_account_usage_snapshot(credits, key_data)
+
+
 def fetch_account_usage_outcome(
     provider: Optional[str],
     *,
@@ -947,7 +979,11 @@ def fetch_account_usage_outcome(
             snapshot = None
         return AccountUsageFetchOutcome(snapshot=snapshot)
     except Exception as exc:
+        partial_snapshot = getattr(exc, "partial_snapshot", None)
+        if not isinstance(partial_snapshot, AccountUsageSnapshot):
+            partial_snapshot = None
         return AccountUsageFetchOutcome(
+            snapshot=partial_snapshot,
             retry_after_seconds=retry_after_seconds(exc),
             failed=True,
         )

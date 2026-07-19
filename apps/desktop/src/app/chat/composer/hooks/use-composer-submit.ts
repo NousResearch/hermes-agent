@@ -79,10 +79,22 @@ export function useComposerSubmit({
     const submittedAttachments = attachments ?? []
 
     const restore = () => {
-      loadIntoComposer(text, submittedAttachments)
+      // Only repaint the live composer while the submitting session is still
+      // the active one — the gateway can reject well after the user has
+      // switched away, and painting then would drop the rejected text into
+      // the OTHER session's composer, where the paint-triggered sync stashes
+      // it under the now-active key (#66661). Known trade-off: a stored-key →
+      // runtime-id rotation (a submit that triggers a resume) also fails this
+      // key comparison, so a rejection of THAT submit isn't repainted — the
+      // text still survives in the submitted scope's stash below and is
+      // restored the next time that stored session's key is active, matching
+      // the stash-side semantics #54527 already chose.
+      if (activeQueueSessionKeyRef.current === submittedScope) {
+        loadIntoComposer(text, submittedAttachments)
+      }
+
       // Use the scope captured at dispatch, not whatever session is focused
-      // now — the gateway can reject well after the user has switched away,
-      // and re-stashing into the currently-focused session would overwrite
+      // now — re-stashing into the currently-focused session would overwrite
       // its draft with the rejected text from a different session (#54527).
       stashAt(submittedScope, text, submittedAttachments)
     }

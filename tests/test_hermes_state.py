@@ -1302,6 +1302,69 @@ class TestMessageStorage:
 
         assert [m["content"] for m in conv if m["role"] == "user"] == ["same prompt", "next prompt"]
 
+    def test_get_resume_conversations_matches_separate_reads(self, db):
+        """The one-fetch resume projections must be byte-identical to the two
+        separate get_messages_as_conversation reads they replace — the whole
+        point of the single-SELECT optimization (desktop audit P1). Includes a
+        dangling tool-call tail so repair_alternation drops rows and the model /
+        display lengths diverge (exercises session.resume's prefix computation).
+        """
+        db.create_session("root", "tui")
+        db.append_message("root", role="user", content="first prompt")
+        db.append_message("root", role="assistant", content="first answer")
+        db.create_session("child", "tui", parent_session_id="root")
+        db.append_message("child", role="user", content="second prompt")
+        db.append_message(
+            "child", role="assistant", content="second answer", finish_reason="stop"
+        )
+        # Dangling assistant(tool_calls) tail with no tool response → repair
+        # drops it, so model_history is shorter than display_history.
+        db.append_message(
+            "child",
+            role="assistant",
+            content="",
+            tool_calls=[
+                {"id": "t1", "type": "function", "function": {"name": "x", "arguments": "{}"}}
+            ],
+        )
+
+        model_expected = db.get_messages_as_conversation("child", repair_alternation=True)
+        display_expected = db.get_messages_as_conversation("child", include_ancestors=True)
+
+        model_history, display_history = db.get_resume_conversations("child")
+
+        assert model_history == model_expected
+        assert display_history == display_expected
+        # Sanity: the tail really did diverge the two projections.
+        assert len(display_history) > len(model_history)
+
+    def test_get_resume_conversations_single_session_no_ancestors(self, db):
+        db.create_session("solo", "cli")
+        db.append_message("solo", role="user", content="hi")
+        db.append_message("solo", role="assistant", content="hello")
+
+        model_expected = db.get_messages_as_conversation("solo", repair_alternation=True)
+        display_expected = db.get_messages_as_conversation("solo", include_ancestors=True)
+        model_history, display_history = db.get_resume_conversations("solo")
+
+        assert model_history == model_expected
+        assert display_history == display_expected
+
+    def test_get_resume_conversations_dedupes_replayed_ancestor_user(self, db):
+        db.create_session("root", "tui")
+        db.append_message("root", role="user", content="same prompt")
+        db.append_message("root", role="user", content="same prompt")
+        db.append_message("root", role="assistant", content="answer")
+        db.create_session("child", "tui", parent_session_id="root")
+        db.append_message("child", role="user", content="next prompt")
+
+        model_expected = db.get_messages_as_conversation("child", repair_alternation=True)
+        display_expected = db.get_messages_as_conversation("child", include_ancestors=True)
+        model_history, display_history = db.get_resume_conversations("child")
+
+        assert model_history == model_expected
+        assert display_history == display_expected
+
     def test_finish_reason_stored(self, db):
         db.create_session(session_id="s1", source="cli")
         db.append_message("s1", role="assistant", content="Done", finish_reason="stop")

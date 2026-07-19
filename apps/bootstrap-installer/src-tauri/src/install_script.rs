@@ -70,6 +70,29 @@ fn is_valid_commit(s: &str) -> bool {
     (7..=40).contains(&len) && s.chars().all(|c| c.is_ascii_hexdigit())
 }
 
+/// Resolver cache plan for a pin that already has a local path computed.
+///
+/// Immutable commit pins reuse cache forever. Mutable branch/tag pins always
+/// refresh, and only fall back to a stale cache when the refresh fails.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CachePlan {
+    /// On-disk hit for an immutable pin — skip the network.
+    Reuse,
+    /// Download (or re-download). `stale_ok` means a failed refresh may return
+    /// the existing cache file (mutable pins with a prior download).
+    Fetch { stale_ok: bool },
+}
+
+pub(crate) fn cache_plan(immutable: bool, cached_exists: bool) -> CachePlan {
+    if immutable && cached_exists {
+        CachePlan::Reuse
+    } else {
+        CachePlan::Fetch {
+            stale_ok: !immutable && cached_exists,
+        }
+    }
+}
+
 /// Resolves the install script to use for this run.
 ///
 /// `pin` is the commit-or-branch from either Hermes-Setup's build-time
@@ -100,9 +123,13 @@ pub async fn resolve(
     // 2. (Not implemented) bundled fallback.
 
     // 3. Network. Pin must be a real commit or a branch ref.
-    let commit_or_ref = match (&pin.commit, &pin.branch) {
-        (Some(c), _) if is_valid_commit(c) => c.clone(),
-        (_, Some(b)) if !b.trim().is_empty() => b.clone(),
+    //
+    // Commit SHAs are immutable — permanent cache reuse is safe.
+    // Branch/tag pins are moving refs: always try to refresh so "Retry install"
+    // cannot keep reusing a poisoned install-main.ps1 forever (#67193).
+    let (commit_or_ref, immutable) = match (&pin.commit, &pin.branch) {
+        (Some(c), _) if is_valid_commit(c) => (c.clone(), true),
+        (_, Some(b)) if !b.trim().is_empty() => (b.clone(), false),
         (Some(other), _) => {
             return Err(anyhow!(
                 "install script pin commit `{other}` is not a valid git SHA"
@@ -116,36 +143,60 @@ pub async fn resolve(
     };
 
     let cached = cached_path(kind, &commit_or_ref);
-    if cached.exists() {
-        emit_log(&format!(
-            "[bootstrap] using cached {} for {}",
-            kind.filename(),
-            truncate_ref(&commit_or_ref)
-        ));
-        return Ok(ResolvedScript {
-            path: cached,
-            source: ScriptSource::Cached,
-            commit: pin.commit.clone(),
-            branch: pin.branch.clone(),
-        });
+    match cache_plan(immutable, cached.exists()) {
+        CachePlan::Reuse => {
+            emit_log(&format!(
+                "[bootstrap] using cached {} for {}",
+                kind.filename(),
+                truncate_ref(&commit_or_ref)
+            ));
+            return Ok(ResolvedScript {
+                path: cached,
+                source: ScriptSource::Cached,
+                commit: pin.commit.clone(),
+                branch: pin.branch.clone(),
+            });
+        }
+        CachePlan::Fetch { stale_ok } => {
+            emit_log(&format!(
+                "[bootstrap] downloading {} for {} {} from GitHub",
+                kind.filename(),
+                if immutable {
+                    "commit"
+                } else {
+                    "mutable ref"
+                },
+                truncate_ref(&commit_or_ref)
+            ));
+
+            match download(kind, &commit_or_ref, &cached).await {
+                Ok(()) => {
+                    emit_log(&format!("[bootstrap] cached to {}", cached.display()));
+                    Ok(ResolvedScript {
+                        path: cached,
+                        source: ScriptSource::Downloaded,
+                        commit: pin.commit.clone(),
+                        branch: pin.branch.clone(),
+                    })
+                }
+                Err(err) if stale_ok => {
+                    emit_log(&format!(
+                        "[bootstrap] WARNING: refresh failed for mutable ref {}; using stale cached {} at {}: {err:#}",
+                        truncate_ref(&commit_or_ref),
+                        kind.filename(),
+                        cached.display()
+                    ));
+                    Ok(ResolvedScript {
+                        path: cached,
+                        source: ScriptSource::Cached,
+                        commit: pin.commit.clone(),
+                        branch: pin.branch.clone(),
+                    })
+                }
+                Err(err) => Err(err),
+            }
+        }
     }
-
-    emit_log(&format!(
-        "[bootstrap] downloading {} for {} from GitHub",
-        kind.filename(),
-        truncate_ref(&commit_or_ref)
-    ));
-
-    download(kind, &commit_or_ref, &cached).await?;
-
-    emit_log(&format!("[bootstrap] cached to {}", cached.display()));
-
-    Ok(ResolvedScript {
-        path: cached,
-        source: ScriptSource::Downloaded,
-        commit: pin.commit.clone(),
-        branch: pin.branch.clone(),
-    })
 }
 
 #[derive(Debug, Clone, Default)]
@@ -182,6 +233,33 @@ fn truncate_ref(s: &str) -> &str {
         &s[..12]
     } else {
         s
+    }
+}
+
+/// UTF-8 BOM. Windows PowerShell 5.1 reads a BOM-less `.ps1` using the system
+/// ANSI code page; a leading BOM is what tells it the file is UTF-8. The
+/// `irm | iex` / `[scriptblock]::Create` path strips BOMs on purpose, but the
+/// GUI bootstrap runs the *cached file* via `-File`, so we write the opposite
+/// (#67193).
+const UTF8_BOM: &[u8] = &[0xEF, 0xBB, 0xBF];
+
+/// Prepare bytes for the on-disk bootstrap cache.
+///
+/// `.ps1` files get a UTF-8 BOM (unless one is already present). `.sh` files
+/// are left unchanged — a BOM would break `#!/bin/bash`.
+pub(crate) fn prepare_cached_script_bytes(kind: ScriptKind, bytes: &[u8]) -> Vec<u8> {
+    match kind {
+        ScriptKind::Ps1 => {
+            if bytes.starts_with(UTF8_BOM) {
+                bytes.to_vec()
+            } else {
+                let mut out = Vec::with_capacity(UTF8_BOM.len() + bytes.len());
+                out.extend_from_slice(UTF8_BOM);
+                out.extend_from_slice(bytes);
+                out
+            }
+        }
+        ScriptKind::Sh => bytes.to_vec(),
     }
 }
 
@@ -228,6 +306,7 @@ async fn download(kind: ScriptKind, commit_or_ref: &str, dest_path: &Path) -> Re
         .bytes()
         .await
         .with_context(|| format!("reading body of {url}"))?;
+    let bytes = prepare_cached_script_bytes(kind, &bytes);
 
     let mut file = tokio::fs::File::create(&tmp_path)
         .await

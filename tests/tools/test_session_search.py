@@ -255,6 +255,103 @@ class TestDiscoveryShape:
         assert "s_newest" not in sids
 
 
+# =========================================================================
+# Citation layer (per-result provenance block)
+# =========================================================================
+
+class TestCitation:
+    """Every discovery result should include a 'citation' block with:
+       exact_quote, speaker, decided_at, reply_quote (optional), context_url.
+       Title-match path should also include it.
+    """
+
+    def test_citation_present_on_discovery_result(self, db):
+        _seed_modpack_sessions(db)
+        result = json.loads(session_search(query="modpack", limit=3, db=db))
+        assert result["count"] >= 1
+        for hit in result["results"]:
+            assert "citation" in hit, f"missing citation in hit {hit.get('session_id')}"
+            cit = hit["citation"]
+            assert "exact_quote" in cit
+            assert "speaker" in cit
+            assert "decided_at" in cit
+            assert "context_url" in cit
+
+    def test_exact_quote_matches_anchor_message(self, db):
+        _seed_modpack_sessions(db)
+        result = json.loads(session_search(query="modpack", limit=3, db=db))
+        for hit in result["results"]:
+            anchor_id = hit["match_message_id"]
+            anchor_msg = next(m for m in hit["messages"] if m["id"] == anchor_id)
+            assert hit["citation"]["exact_quote"] == anchor_msg["content"]
+
+    def test_speaker_is_anchor_role(self, db):
+        _seed_modpack_sessions(db)
+        result = json.loads(session_search(query="modpack", limit=3, db=db))
+        for hit in result["results"]:
+            anchor_id = hit["match_message_id"]
+            anchor_msg = next(m for m in hit["messages"] if m["id"] == anchor_id)
+            assert hit["citation"]["speaker"] == anchor_msg["role"]
+
+    def test_reply_quote_for_user_anchor_picks_assistant_reply(self, db):
+        _seed_modpack_sessions(db)
+        result = json.loads(session_search(query="modpack", limit=3, db=db))
+        user_hit = next(
+            (h for h in result["results"]
+             if next((m for m in h["messages"] if m["id"] == h["match_message_id"]), {}).get("role") == "user"),
+            None,
+        )
+        if user_hit is None:
+            pytest.skip("no user-role anchor in seeded data")
+        reply = user_hit["citation"].get("reply_quote")
+        assert reply is not None
+        window_ids_in_order = sorted(
+            (m["id"], m) for m in user_hit["messages"] if m["id"] > user_hit["match_message_id"]
+        )
+        if window_ids_in_order:
+            next_msg = window_ids_in_order[0][1]
+            if next_msg["role"] == "assistant":
+                assert reply == next_msg["content"]
+
+    def test_reply_quote_none_when_no_neighbour(self, db):
+        db.create_session("s_solo", source="cli")
+        db._conn.execute(
+            "UPDATE sessions SET started_at = ?, title = ? WHERE id = ?",
+            (int(time.time()), "Solo Modpack Thought", "s_solo"),
+        )
+        db.append_message("s_solo", role="user", content="I really should build a modpack")
+        db._conn.commit()
+
+        result = json.loads(session_search(query="modpack", db=db))
+        if result["count"] >= 1:
+            hit = next((h for h in result["results"] if h["session_id"] == "s_solo"), None)
+            if hit:
+                assert hit["citation"].get("reply_quote") is None
+
+    def test_context_url_is_pasteable_recipe(self, db):
+        _seed_modpack_sessions(db)
+        result = json.loads(session_search(query="modpack", limit=1, db=db))
+        hit = result["results"][0]
+        ctx = hit["citation"]["context_url"]
+        assert "session_search" in ctx
+        assert hit["session_id"] in ctx
+        assert str(hit["match_message_id"]) in ctx
+
+    def test_citation_present_on_title_match(self, db):
+        db.create_session("s_fingerprint", source="cli")
+        db.set_session_title("s_fingerprint", "fingerprint-login")
+        db.append_message("s_fingerprint", role="user", content="PAM auth setup")
+
+        result = json.loads(session_search(query="fingerprint-login", db=db))
+        assert result["count"] == 1
+        hit = result["results"][0]
+        assert hit["matched_role"] == "session_title"
+        assert "citation" in hit
+        cit = hit["citation"]
+        assert cit["exact_quote"]
+        assert cit["speaker"] == "user"
+
+
 class TestDiscoverySort:
     def test_sort_newest_orders_by_recency(self, db):
         _seed_modpack_sessions(db)

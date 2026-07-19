@@ -33,6 +33,7 @@ from agent.model_metadata import (
     estimate_messages_tokens_rough,
 )
 from agent.redact import redact_sensitive_text
+from agent.turn_context import drop_stale_api_content
 
 logger = logging.getLogger(__name__)
 
@@ -656,8 +657,8 @@ def _strip_historical_media(messages: List[Dict[str, Any]]) -> List[Dict[str, An
         new_msg = msg.copy()
         new_msg["content"] = _strip_images_from_content(content)
         # Content rewritten → the api_content sidecar (exact bytes previously
-        # sent) is stale; replaying it would resend the pre-rewrite bytes.
-        new_msg.pop("api_content", None)
+        # sent) is stale; drop it so replay can't resend the pre-rewrite bytes.
+        drop_stale_api_content(new_msg)
         result.append(new_msg)
         changed = True
 
@@ -3470,7 +3471,7 @@ This compaction should PRIORITISE preserving all information related to the focu
                 # Content rewritten → the api_content sidecar (exact bytes
                 # previously sent) is stale; drop it so replay can't resend
                 # the pre-merge bytes without the summary.
-                msg.pop("api_content", None)
+                drop_stale_api_content(msg)
                 _merge_summary_into_tail = False
             compressed.append(msg)
 

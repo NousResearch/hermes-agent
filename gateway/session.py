@@ -95,6 +95,7 @@ from .whatsapp_identity import (
     normalize_whatsapp_identifier,  # noqa: F401 - re-exported for gateway.session callers
 )
 from utils import atomic_replace
+from agent.turn_context import extract_api_content_sidecar
 
 # Session keys/ids flow into filesystem paths downstream (e.g.
 # ``sessions_dir / f"{session_id}.json"`` in hermes_state, request-dump
@@ -2586,11 +2587,7 @@ class SessionStore:
             # this message (prompt-cache-stable replay). Must survive
             # any gateway-side persistence path or the next turn's
             # replay diverges at this row.
-            api_content=(
-                message.get("api_content")
-                if isinstance(message.get("api_content"), str)
-                else None
-            ),
+            api_content=extract_api_content_sidecar(message),
         )
 
     # Maximum in-memory pending messages per session before dropping the

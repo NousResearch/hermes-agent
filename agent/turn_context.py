@@ -28,7 +28,7 @@ import logging
 import threading
 import uuid
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Mapping, Optional
 
 from agent.conversation_compression import conversation_history_after_compression
 from agent.iteration_budget import IterationBudget
@@ -74,6 +74,51 @@ def compose_user_api_content(
     if not injections:
         return None
     return content + "\n\n" + "\n\n".join(injections)
+
+
+def substitute_api_content(api_msg: Dict[str, Any]) -> Optional[str]:
+    """Pop the ``api_content`` sidecar and substitute it into ``content``.
+
+    Used at every API-bound message-build site (the ``api_messages`` build in
+    ``conversation_loop``, the max-iterations summary in
+    ``chat_completion_helpers``, the chat-completions transport). The sidecar
+    carries the exact bytes previously sent to the API for this message when
+    they differ from the clean stored content; substituting it here keeps the
+    provider prompt-cache prefix byte-stable across turns.
+
+    Returns the popped sidecar string (for callers that need the value for
+    current-turn composition logic) or ``None`` when absent.
+    """
+    sidecar = api_msg.pop("api_content", None)
+    if (
+        isinstance(sidecar, str)
+        and sidecar
+        and api_msg.get("role") in ("user", "assistant")
+    ):
+        api_msg["content"] = sidecar
+    return sidecar
+
+
+def drop_stale_api_content(msg: Dict[str, Any]) -> None:
+    """Drop the ``api_content`` sidecar from a message whose content was rewritten.
+
+    Called from every content-rewrite path (historical image strip,
+    merge-summary-into-tail, consecutive-user repair merge, stale-confirmation
+    redaction). Replaying the pre-rewrite sidecar would resend exactly what
+    the rewrite removed, so it must be dropped — the cost is one cache
+    boundary miss, never wrong content.
+    """
+    msg.pop("api_content", None)
+
+
+def extract_api_content_sidecar(msg: Mapping[str, Any]) -> Optional[str]:
+    """Extract the ``api_content`` sidecar from a message dict for persistence.
+
+    Shared by the gateway/branch forwarding sites that copy the sidecar into a
+    new row. Returns the string sidecar or ``None`` when absent/non-string.
+    """
+    v = msg.get("api_content")
+    return v if isinstance(v, str) else None
 
 
 def reanchor_current_turn_user_idx(messages: List[Any], user_message: Any) -> int:
@@ -466,6 +511,14 @@ def build_turn_context(
             agent.session_id or "none",
             exc_info=True,
         )
+    finally:
+        # Clear the staged CLI input eagerly (as the pre-refactor code did)
+        # so a crash in preflight compression — which runs between this row
+        # create and the late crash-persist below — doesn't leave a stale
+        # _pending_cli_user_message that the next turn would mistake for a
+        # fresh staged input.
+        if not isinstance(pending_cli_message, dict) or pending_cli_message.get("_db_persisted"):
+            agent._pending_cli_user_message = None
 
     # ── Preflight context compression ──
     # Gate the (expensive) full token estimate behind a cheap pre-check.

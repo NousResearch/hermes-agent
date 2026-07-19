@@ -30,6 +30,7 @@ from hermes_cli.timeouts import get_provider_request_timeout, get_provider_stale
 from hermes_constants import PARTIAL_STREAM_STUB_ID, FINISH_REASON_LENGTH
 from agent.error_classifier import FailoverReason
 from agent.errors import EmptyStreamError
+from agent.turn_context import substitute_api_content
 from agent.gemini_native_adapter import is_native_gemini_base_url
 from agent.model_metadata import is_local_endpoint
 from agent.message_content import flatten_message_text
@@ -1937,13 +1938,7 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
             # here, diverging the summary request's prefix at the EARLIEST
             # sidecar-carrying message and re-prefilling the whole transcript
             # at exactly the moment the context is largest.
-            _sidecar = api_msg.pop("api_content", None)
-            if (
-                isinstance(_sidecar, str)
-                and _sidecar
-                and api_msg.get("role") in ("user", "assistant")
-            ):
-                api_msg["content"] = _sidecar
+            substitute_api_content(api_msg)
             for internal_key in [k for k in api_msg if isinstance(k, str) and k.startswith("_")]:
                 api_msg.pop(internal_key, None)
             if _needs_sanitize:

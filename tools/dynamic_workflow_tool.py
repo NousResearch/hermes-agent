@@ -2,12 +2,11 @@
 """Dynamic workflow tool.
 
 This is a thin coordinator over Hermes' existing async delegation primitive.
-The model owns the workflow shape: it creates or extends dependent worker
-steps, records completed worker outputs, and decides what follow-on work to
-add. The tool owns the mechanics that are easy to get wrong: dependency
-validation, readiness, state, background dispatch through
-``delegate_task(background=true)``, and cancellation of dispatched async
-delegations.
+The model owns the graph: it creates or extends a DAG, records completed
+worker outputs, and decides what follow-on nodes to add. The tool owns the
+mechanics that are easy to get wrong: DAG validation, readiness, state,
+background dispatch through ``delegate_task(background=true)``, and cancellation
+of dispatched async delegations.
 """
 
 from __future__ import annotations
@@ -99,11 +98,6 @@ def _normalise_role(value: Any) -> str:
     return role
 
 
-def _slug_id(value: str, *, fallback: str) -> str:
-    slug = re.sub(r"[^A-Za-z0-9_.:-]+", "-", value.strip().lower()).strip("-")
-    return (slug or fallback)[:96]
-
-
 def _normalise_nodes(raw_nodes: Any) -> Tuple[List[Dict[str, Any]], List[str]]:
     issues: List[str] = []
     if raw_nodes is None:
@@ -141,36 +135,19 @@ def _normalise_nodes(raw_nodes: Any) -> Tuple[List[Dict[str, Any]], List[str]]:
             issues.append(f"node {node_id} cannot depend on itself")
             continue
 
-        toolsets, toolsets_issue = _as_string_list(raw.get("toolsets"), field=f"nodes[{index}].toolsets")
-        if toolsets_issue:
-            issues.append(toolsets_issue)
-            continue
-
-        phase_title = _cap_text(raw.get("phase_title") or raw.get("phase"))
-        phase_id = ""
-        if raw.get("phase_id"):
-            phase_id, phase_issue = _normalise_id(
-                raw.get("phase_id"),
-                field=f"nodes[{index}].phase_id",
-                pattern=_NODE_ID_RE,
+        if raw.get("toolsets") is not None:
+            issues.append(
+                f"nodes[{index}].toolsets is not supported; workflow workers "
+                "inherit the parent's delegated tool capabilities"
             )
-            if phase_issue:
-                issues.append(phase_issue)
-                continue
-            assert phase_id is not None
-        elif phase_title:
-            phase_id = _slug_id(phase_title, fallback=f"phase-{index + 1}")
+            continue
 
         nodes.append(
             {
                 "node_id": node_id,
-                "title": _cap_text(raw.get("title") or raw.get("task_title") or goal),
-                "phase_id": phase_id or None,
-                "phase_title": phase_title or None,
                 "goal": goal,
                 "context": _cap_text(raw.get("context")),
                 "depends_on": depends_on,
-                "toolsets": toolsets or None,
                 "role": _normalise_role(raw.get("role")),
                 "status": "pending",
                 "delegation_id": None,
@@ -252,6 +229,40 @@ def _node_status_from_async(status: Any) -> Optional[str]:
     return None
 
 
+def _apply_async_record(node: Dict[str, Any], record: Dict[str, Any]) -> bool:
+    """Apply one terminal async-delegation record to its workflow node."""
+    delegation_id = str(record.get("delegation_id") or "").strip()
+    if (
+        not delegation_id
+        or node.get("delegation_id") != delegation_id
+    ):
+        return False
+    next_status = _node_status_from_async(record.get("status"))
+    if not next_status:
+        return False
+
+    node["status"] = next_status
+    node["summary"] = _cap_text(record.get("summary"))
+    node["error"] = _cap_text(record.get("error")) if record.get("error") else None
+    node["completed_at"] = record.get("completed_at") or _now()
+    for key in (
+        "duration_seconds",
+        "api_calls",
+        "input_tokens",
+        "output_tokens",
+        "reasoning_tokens",
+        "cost_usd",
+        "exit_reason",
+        "model",
+    ):
+        if key in record and record.get(key) is not None:
+            node[key] = record.get(key)
+    node["async_completion_reconciled"] = True
+    node["updated_at"] = _now()
+    _reconciled_async_delegations.add(delegation_id)
+    return True
+
+
 def _reconcile_async_delegations(workflow: Dict[str, Any]) -> List[str]:
     """Refresh dispatched workflow nodes from retained async delegation records."""
     dispatched = {
@@ -276,31 +287,8 @@ def _reconcile_async_delegations(workflow: Dict[str, Any]) -> List[str]:
         node = dispatched.get(delegation_id)
         if not node:
             continue
-        next_status = _node_status_from_async(record.get("status"))
-        if not next_status:
-            continue
-
-        node["status"] = next_status
-        node["summary"] = _cap_text(record.get("summary"))
-        node["error"] = _cap_text(record.get("error")) if record.get("error") else None
-        node["completed_at"] = record.get("completed_at") or _now()
-        for key in (
-            "duration_seconds",
-            "api_calls",
-            "input_tokens",
-            "output_tokens",
-            "reasoning_tokens",
-            "cost_usd",
-            "exit_reason",
-            "model",
-        ):
-            if key in record and record.get(key) is not None:
-                node[key] = record.get(key)
-        node["async_completion_reconciled"] = True
-        node["updated_at"] = _now()
-        if delegation_id:
-            _reconciled_async_delegations.add(str(delegation_id))
-        updated.append(node["node_id"])
+        if _apply_async_record(node, record):
+            updated.append(node["node_id"])
 
     if updated:
         workflow["updated_at"] = _now()
@@ -403,10 +391,6 @@ def _worker_context(workflow: Dict[str, Any], node: Dict[str, Any]) -> str:
         f"node_id: {node['node_id']}",
         f"objective: {workflow['objective']}",
     ]
-    if node.get("phase_title") or node.get("phase_id"):
-        lines.append(f"phase: {node.get('phase_title') or node.get('phase_id')}")
-    if node.get("title"):
-        lines.append(f"task_title: {node['title']}")
     if workflow.get("context"):
         lines.extend(["", "Workflow context:", workflow["context"]])
     if node.get("context"):
@@ -447,23 +431,23 @@ def _dispatch_ready(workflow: Dict[str, Any], parent_agent: Any, max_dispatch: i
         node = workflow["nodes"][node_id]
         from tools import delegate_tool
 
+        def _on_complete(record: Dict[str, Any], *, _node_id: str = node_id) -> None:
+            with _workflows_lock:
+                key = (workflow["scope"], workflow["workflow_id"])
+                current = _workflows.get(key)
+                if current is not workflow:
+                    return
+                current_node = current["nodes"].get(_node_id)
+                if current_node and _apply_async_record(current_node, record):
+                    current["updated_at"] = _now()
+
         raw = delegate_tool.delegate_task(
             goal=node["goal"],
             context=_worker_context(workflow, node),
-            toolsets=node.get("toolsets"),
             role=node.get("role") or "leaf",
             background=True,
             parent_agent=parent_agent,
-            _observability_context={
-                "workflow_id": workflow["workflow_id"],
-                "workflow_node_id": node_id,
-                "workflow_phase_id": node.get("phase_id") or "",
-                "workflow_phase_title": node.get("phase_title") or "",
-                "workflow_task_title": node.get("title") or node["goal"],
-                "workflow_objective": workflow["objective"],
-                "task_prompt": node["goal"],
-                "task_context": node.get("context") or "",
-            },
+            _completion_callback=_on_complete,
         )
         try:
             parsed = json.loads(raw)
@@ -471,17 +455,11 @@ def _dispatch_ready(workflow: Dict[str, Any], parent_agent: Any, max_dispatch: i
             parsed = {"error": raw}
 
         if parsed.get("status") == "dispatched" and parsed.get("delegation_id"):
-            optional_ids = {
-                key: parsed[key]
-                for key in ("subagent_id", "child_session_id")
-                if parsed.get(key)
-            }
             node["status"] = "dispatched"
             node["delegation_id"] = parsed["delegation_id"]
-            node.update(optional_ids)
             node["dispatched_at"] = _now()
             node["updated_at"] = _now()
-            dispatched.append({"node_id": node_id, "delegation_id": parsed["delegation_id"], **optional_ids})
+            dispatched.append({"node_id": node_id, "delegation_id": parsed["delegation_id"]})
         else:
             errors.append({"node_id": node_id, "error": parsed.get("error") or parsed})
 
@@ -673,7 +651,7 @@ def _reset_for_tests() -> None:
 DYNAMIC_WORKFLOW_SCHEMA = {
     "name": "dynamic_workflow",
     "description": (
-        "Create and run model-authored dynamic workflows using Hermes async "
+        "Create and run model-authored DAG workflows using Hermes async "
         "delegation for ready worker nodes."
     ),
     "parameters": {
@@ -699,36 +677,19 @@ DYNAMIC_WORKFLOW_SCHEMA = {
             "nodes": {
                 "type": "array",
                 "description": (
-                    "Worker nodes to create or add. Add new nodes after recording "
+                    "DAG nodes to create or add. Add new nodes after recording "
                     "phase outputs when the next steps depend on what workers found."
                 ),
                 "items": {
                     "type": "object",
                     "properties": {
                         "node_id": {"type": "string", "description": "Stable node id unique within the workflow."},
-                        "title": {
-                            "type": "string",
-                            "description": "Short reader-facing task title for workflow monitors.",
-                        },
-                        "phase_id": {
-                            "type": "string",
-                            "description": "Stable phase id used to group related workflow tasks in monitors.",
-                        },
-                        "phase_title": {
-                            "type": "string",
-                            "description": "Reader-facing phase label, e.g. Investigate, Build, Verify.",
-                        },
                         "goal": {"type": "string", "description": "Self-contained worker goal."},
                         "context": {"type": "string", "description": "Node-specific context."},
                         "depends_on": {
                             "type": "array",
                             "items": {"type": "string"},
                             "description": "Node ids that must complete before this node is ready.",
-                        },
-                        "toolsets": {
-                            "type": "array",
-                            "items": {"type": "string"},
-                            "description": "Toolsets to enable for this node's delegated worker.",
                         },
                         "role": {
                             "type": "string",

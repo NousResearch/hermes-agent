@@ -447,6 +447,7 @@ def dispatch_async_delegation(
     runner: Callable[[], Dict[str, Any]],
     origin_ui_session_id: str = "",
     interrupt_fn: Optional[Callable[[], None]] = None,
+    completion_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
     max_async_children: int = _DEFAULT_MAX_ASYNC_CHILDREN,
 ) -> Dict[str, Any]:
     """Spawn ``runner`` on the daemon executor and return a handle immediately.
@@ -472,6 +473,10 @@ def dispatch_async_delegation(
     interrupt_fn
         Optional callable to signal the child to stop (used on shutdown /
         explicit cancel).
+    completion_callback
+        Optional internal callback invoked with the finalized record before
+        retention pruning. Used by owners that need authoritative lifecycle
+        state without polling the bounded recent-record list.
     max_async_children
         Concurrency cap. When at capacity the dispatch is REJECTED (the caller
         should fall back to sync or tell the user) rather than queued, so a
@@ -499,6 +504,7 @@ def dispatch_async_delegation(
         "dispatched_at": dispatched_at,
         "completed_at": None,
         "interrupt_fn": interrupt_fn,
+        "completion_callback": completion_callback,
     }
     # Capacity check and record insert under ONE lock hold — checking
     # active_count() separately would let two concurrent dispatches (e.g.
@@ -573,9 +579,38 @@ def _finalize(delegation_id: str, result: Dict[str, Any], status: str) -> None:
         # gap after status flips but before SQLite is committed.
         record["status"] = "finalizing"
         record["completed_at"] = time.time()
+        record["summary"] = result.get("summary")
+        record["error"] = result.get("error")
+        record["api_calls"] = result.get("api_calls", 0)
+        record["duration_seconds"] = result.get(
+            "duration_seconds",
+            round(
+                record["completed_at"]
+                - (record.get("dispatched_at") or record["completed_at"]),
+                2,
+            ),
+        )
+        for key in (
+            "input_tokens",
+            "output_tokens",
+            "reasoning_tokens",
+            "cost_usd",
+            "exit_reason",
+            "model",
+        ):
+            if key in result and result.get(key) is not None:
+                record[key] = result.get(key)
         record["interrupt_fn"] = None  # drop the closure; child is done
+        completion_callback = record.get("completion_callback")
+        record["completion_callback"] = None
         event_record = dict(record)
+        event_record["status"] = status
 
+    if callable(completion_callback):
+        try:
+            completion_callback(event_record)
+        except Exception:
+            logger.exception("Async delegation %s completion callback failed", delegation_id)
     _push_completion_event(event_record, result, status)
     with _records_lock:
         record = _records.get(delegation_id)
@@ -654,6 +689,7 @@ def dispatch_async_delegation_batch(
     runner: Callable[[], Dict[str, Any]],
     origin_ui_session_id: str = "",
     interrupt_fn: Optional[Callable[[], None]] = None,
+    completion_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
     max_async_children: int = _DEFAULT_MAX_ASYNC_CHILDREN,
 ) -> Dict[str, Any]:
     """Dispatch a WHOLE fan-out batch as ONE background unit.
@@ -698,6 +734,7 @@ def dispatch_async_delegation_batch(
         "dispatched_at": dispatched_at,
         "completed_at": None,
         "interrupt_fn": interrupt_fn,
+        "completion_callback": completion_callback,
         "is_batch": True,
     }
     with _records_lock:
@@ -774,7 +811,26 @@ def _finalize_batch(
         record["status"] = "finalizing"
         record["completed_at"] = time.time()
         record["interrupt_fn"] = None
+        completion_callback = record.get("completion_callback")
+        record["completion_callback"] = None
         event_record = dict(record)
+
+    callback_record = dict(event_record)
+    callback_record.update(
+        {
+            "status": status,
+            "results": combined.get("results") or [],
+            "error": combined.get("error"),
+            "duration_seconds": combined.get("total_duration_seconds"),
+        }
+    )
+    if len(callback_record["results"]) == 1:
+        callback_record.update(callback_record["results"][0])
+    if callable(completion_callback):
+        try:
+            completion_callback(callback_record)
+        except Exception:
+            logger.exception("Async delegation batch %s completion callback failed", delegation_id)
 
     try:
         from tools.process_registry import process_registry
@@ -834,7 +890,11 @@ def list_async_delegations() -> List[Dict[str, Any]]:
     """
     with _records_lock:
         return [
-            {k: v for k, v in r.items() if k != "interrupt_fn"}
+            {
+                k: v
+                for k, v in r.items()
+                if k not in {"interrupt_fn", "completion_callback"}
+            }
             for r in _records.values()
         ]
 

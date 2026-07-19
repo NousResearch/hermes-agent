@@ -208,12 +208,12 @@ def test_default_config_and_child_prompt_are_byte_stable() -> None:
     from tools.delegate_context import DelegationContextPolicy, load_delegation_context_policy
     from tools.delegate_tool import _build_child_system_prompt
 
-    raw_delegation = DEFAULT_CONFIG.get("delegation") or {}
+    raw_delegation = DEFAULT_CONFIG["delegation"]
     assert load_delegation_context_policy(raw_delegation) == DelegationContextPolicy()
 
-    assert raw_delegation.get("context_mode") == "explicit"
-    assert raw_delegation.get("context_recent_turns") == 3
-    assert raw_delegation.get("context_max_chars") == 12000
+    assert raw_delegation["context_mode"] == "explicit"
+    assert raw_delegation["context_recent_turns"] == 3
+    assert raw_delegation["context_max_chars"] == 12000
     expected = (
         "You are a focused subagent working on a specific delegated task.\n\n"
         "YOUR TASK:\nGOAL\n\nCONTEXT:\nCTX\n\nWORKSPACE PATH:\n/tmp/work\n"
@@ -233,19 +233,23 @@ def test_default_config_and_child_prompt_are_byte_stable() -> None:
 def test_context_policy_is_not_exposed_in_model_tool_schema() -> None:
     from tools.delegate_tool import DELEGATE_TASK_SCHEMA
     from tools.delegate_context import DelegationContextPolicy
+    from typing import Dict, cast
 
     policy_fields = {
         "context_mode",
         "context_recent_turns",
         "context_max_chars",
     }
-    properties: dict = dict(DELEGATE_TASK_SCHEMA.get("parameters", {}).get("properties", {}))
+    parameters = DELEGATE_TASK_SCHEMA.get("parameters", {})
+    assert isinstance(parameters, dict)
+    raw_properties = parameters.get("properties", {})
+    properties = dict(cast(Dict[str, object], raw_properties))
     task_properties: dict = {}
-    tasks_schema = properties.get("tasks")
-    if isinstance(tasks_schema, dict):
-        items_schema = tasks_schema.get("items")
-        if isinstance(items_schema, dict):
-            task_properties = dict(items_schema.get("properties", {}))
+    raw_tasks = properties.get("tasks")
+    if isinstance(raw_tasks, dict) and isinstance(raw_tasks.get("items"), dict):
+        task_properties = dict(
+            cast(Dict[str, object], raw_tasks["items"].get("properties", {}))
+        )
 
     assert policy_fields.isdisjoint(properties)
     assert policy_fields.isdisjoint(task_properties)

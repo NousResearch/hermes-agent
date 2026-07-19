@@ -204,6 +204,10 @@ interface PostSetupRunnerProps {
   toolset: string
   /** The provider's post_setup hook key (e.g. "camofox", "ddgs"). */
   postSetupKey: string
+  /** True when the server reports the install side-effect already satisfied
+   *  (provider status === 'ready') — renders the resting "Installed" state
+   *  with a low-key re-run affordance instead of the primary CTA. */
+  installed?: boolean
   /** Refresh the parent config after the install finishes (a backend may now
    *  report itself configured). */
   onComplete?: () => void
@@ -214,8 +218,13 @@ interface PostSetupRunnerProps {
  * `/api/tools/toolsets/{name}/post-setup` spawn-action and tails the resulting
  * log inline — the GUI equivalent of the install step `hermes tools` runs
  * after you pick a backend that needs extra dependencies.
+ *
+ * Idempotent UX: when the backend's readiness status says the install is
+ * already satisfied, the primary "Run setup" CTA is replaced by an
+ * "Installed" pill plus a small "Re-run setup" text button, so clicking
+ * around the panel doesn't look like it keeps reinstalling.
  */
-function PostSetupRunner({ toolset, postSetupKey, onComplete }: PostSetupRunnerProps) {
+function PostSetupRunner({ toolset, postSetupKey, installed = false, onComplete }: PostSetupRunnerProps) {
   const { t } = useI18n()
   const copy = t.settings.toolsets
   const [running, setRunning] = useState(false)
@@ -297,12 +306,27 @@ function PostSetupRunner({ toolset, postSetupKey, onComplete }: PostSetupRunnerP
     <div className="grid gap-2 rounded-lg bg-background/55 p-2.5">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="min-w-0">
-          <p className="text-[0.72rem] text-muted-foreground">{copy.postSetupHint(postSetupKey)}</p>
+          <p className="text-[0.72rem] text-muted-foreground">
+            {installed ? copy.postSetupInstalledHint : copy.postSetupHint(postSetupKey)}
+          </p>
         </div>
-        <Button disabled={running} onClick={() => void run()} size="sm">
-          {running ? <Loader2 className="size-3.5 animate-spin" /> : <Terminal className="size-3.5" />}
-          {running ? copy.postSetupRunning : copy.postSetupRun}
-        </Button>
+        {installed ? (
+          <span className="flex items-center gap-2">
+            <Pill tone="primary">
+              <Check className="size-3" />
+              {copy.postSetupInstalled}
+            </Pill>
+            <Button disabled={running} onClick={() => void run()} size="sm" variant="text">
+              {running ? <Loader2 className="size-3.5 animate-spin" /> : <Terminal className="size-3.5" />}
+              {running ? copy.postSetupRunning : copy.postSetupRerun}
+            </Button>
+          </span>
+        ) : (
+          <Button disabled={running} onClick={() => void run()} size="sm">
+            {running ? <Loader2 className="size-3.5 animate-spin" /> : <Terminal className="size-3.5" />}
+            {running ? copy.postSetupRunning : copy.postSetupRun}
+          </Button>
+        )}
       </div>
 
       {status && (status.lines.length > 0 || status.running) && (
@@ -610,6 +634,7 @@ export function ToolsetConfigPanel({ toolset, onConfiguredChange }: ToolsetConfi
                 )}
                 {provider.post_setup && (
                   <PostSetupRunner
+                    installed={provider.status === 'ready'}
                     onComplete={() => void refresh()}
                     postSetupKey={provider.post_setup}
                     toolset={toolset}

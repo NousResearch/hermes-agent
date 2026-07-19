@@ -506,4 +506,103 @@ describe('ToolsetConfigPanel', () => {
       await waitFor(() => expect(screen.getByText('Ready')).toBeTruthy())
     })
   })
+
+  describe('post-setup installed state', () => {
+    it('renders Installed + Re-run setup instead of the primary CTA when the server says ready', async () => {
+      // Regression (Windows 11 Capabilities journey): "Run setup" rendered
+      // unconditionally, so an already-installed backend still showed the
+      // primary install CTA and clicking it re-ran the whole npm/Chromium
+      // install. status === 'ready' must flip to a resting Installed state.
+      getToolsetConfig.mockResolvedValue(
+        config({
+          name: 'browser',
+          active_provider: 'Local Browser',
+          providers: [
+            {
+              name: 'Local Browser',
+              badge: 'free',
+              tag: 'Headless Chromium, no API key needed',
+              env_vars: [],
+              post_setup: 'agent_browser',
+              requires_nous_auth: false,
+              is_active: true,
+              status: 'ready'
+            }
+          ]
+        })
+      )
+
+      const { ToolsetConfigPanel } = await import('./toolset-config-panel')
+      render(<ToolsetConfigPanel onConfiguredChange={vi.fn()} toolset="browser" />)
+
+      await screen.findByText('Local Browser')
+      expect(screen.getByText('Installed')).toBeTruthy()
+      expect(screen.getByRole('button', { name: /Re-run setup/ })).toBeTruthy()
+      expect(screen.queryByRole('button', { name: /^Run setup$/ })).toBeNull()
+    })
+
+    it('still runs the hook from the Re-run setup affordance', async () => {
+      getToolsetConfig.mockResolvedValue(
+        config({
+          name: 'browser',
+          active_provider: 'Local Browser',
+          providers: [
+            {
+              name: 'Local Browser',
+              badge: 'free',
+              tag: 'Headless Chromium, no API key needed',
+              env_vars: [],
+              post_setup: 'agent_browser',
+              requires_nous_auth: false,
+              is_active: true,
+              status: 'ready'
+            }
+          ]
+        })
+      )
+      runToolsetPostSetup.mockResolvedValue({ ok: true, pid: 4321, name: 'tools-post-setup', key: 'agent_browser' })
+      getActionStatus.mockResolvedValue({
+        exit_code: 0,
+        lines: ['agent-browser already installed, nothing to do'],
+        name: 'tools-post-setup',
+        pid: 4321,
+        running: false
+      })
+
+      const { ToolsetConfigPanel } = await import('./toolset-config-panel')
+      render(<ToolsetConfigPanel onConfiguredChange={vi.fn()} toolset="browser" />)
+
+      fireEvent.click(await screen.findByRole('button', { name: /Re-run setup/ }))
+
+      await waitFor(() => expect(runToolsetPostSetup).toHaveBeenCalledWith('browser', 'agent_browser'))
+    })
+
+    it('keeps the primary Run setup CTA when the server says needs_setup', async () => {
+      getToolsetConfig.mockResolvedValue(
+        config({
+          name: 'browser',
+          active_provider: 'Local Browser',
+          providers: [
+            {
+              name: 'Local Browser',
+              badge: 'free',
+              tag: 'Headless Chromium, no API key needed',
+              env_vars: [],
+              post_setup: 'agent_browser',
+              requires_nous_auth: false,
+              is_active: true,
+              status: 'needs_setup'
+            }
+          ]
+        })
+      )
+
+      const { ToolsetConfigPanel } = await import('./toolset-config-panel')
+      render(<ToolsetConfigPanel onConfiguredChange={vi.fn()} toolset="browser" />)
+
+      await screen.findByText('Local Browser')
+      expect(screen.getByRole('button', { name: /Run setup/ })).toBeTruthy()
+      expect(screen.queryByText('Installed')).toBeNull()
+    })
+  })
 })

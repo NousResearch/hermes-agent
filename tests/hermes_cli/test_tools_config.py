@@ -2092,3 +2092,53 @@ def test_post_setup_no_window_flags_streaming_keeps_interactive_console(monkeypa
     # GUI-spawn case: stdout is a log pipe, no console to stream to — hide.
     monkeypatch.setattr(_sys, "stdout", _Pipe())
     assert _post_setup_no_window_flags(streams_to_console=True) == 0x08000000
+
+
+# ── Post-setup readiness predicates for the browser rows ─────────────────────
+#
+# The GUI's "Run setup" idempotence rides on provider_readiness_status
+# reporting ready/needs_setup honestly. agent_browser (local browser) must
+# track the FULL local install (CLI + Chromium), the cloud-provider hook
+# ("browserbase") only the CLI, and camofox its npm package.
+
+
+def test_provider_readiness_agent_browser_tracks_local_install(monkeypatch):
+    provider = {"name": "Local Browser", "env_vars": [], "post_setup": "agent_browser"}
+
+    monkeypatch.setattr(
+        "hermes_cli.nous_subscription._local_browser_runnable", lambda: False
+    )
+    assert provider_readiness_status(provider, {}) == "needs_setup"
+
+    monkeypatch.setattr(
+        "hermes_cli.nous_subscription._local_browser_runnable", lambda: True
+    )
+    assert provider_readiness_status(provider, {}) == "ready"
+
+
+def test_provider_readiness_cloud_browser_hook_tracks_cli_only(monkeypatch):
+    # Cloud rows (post_setup: "browserbase") host their own Chromium — the
+    # agent-browser CLI being present is the whole install contract.
+    provider = {"name": "Browserbase", "env_vars": [], "post_setup": "browserbase"}
+
+    monkeypatch.setattr(
+        "hermes_cli.nous_subscription._has_agent_browser", lambda: False
+    )
+    assert provider_readiness_status(provider, {}) == "needs_setup"
+
+    monkeypatch.setattr(
+        "hermes_cli.nous_subscription._has_agent_browser", lambda: True
+    )
+    assert provider_readiness_status(provider, {}) == "ready"
+
+
+def test_provider_readiness_camofox_tracks_node_modules(monkeypatch, tmp_path):
+    from hermes_cli import tools_config
+
+    provider = {"name": "Camofox", "env_vars": [], "post_setup": "camofox"}
+
+    monkeypatch.setattr(tools_config, "PROJECT_ROOT", tmp_path)
+    assert provider_readiness_status(provider, {}) == "needs_setup"
+
+    (tmp_path / "node_modules" / "@askjo" / "camofox-browser").mkdir(parents=True)
+    assert provider_readiness_status(provider, {}) == "ready"

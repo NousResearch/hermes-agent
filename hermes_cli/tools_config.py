@@ -1244,7 +1244,11 @@ def _run_post_setup(post_setup_key: str):
                 _print_warning(f"    npm install failed - run manually: cd {display_hermes_home()}/hermes-agent && npm install --workspaces=false")
                 if result.stderr:
                     _print_info(f"      {result.stderr.strip()[:200]}")
-        elif not node_modules.exists():
+        elif node_modules.exists():
+            # Distinct message for the re-run case so the GUI action log tells
+            # the truth ("nothing to do") instead of implying a fresh install.
+            _print_success("    agent-browser already installed, nothing to do")
+        else:
             _print_warning("    Node.js not found - browser tools require: npm install (in hermes-agent directory)")
             return
 
@@ -1271,7 +1275,7 @@ def _run_post_setup(post_setup_key: str):
             return
 
         if _chromium_installed():
-            _print_success("    Chromium browser already installed")
+            _print_success("    Chromium browser already installed, nothing to do")
             return
 
         if _running_in_docker():
@@ -1335,7 +1339,9 @@ def _run_post_setup(post_setup_key: str):
     elif post_setup_key == "camofox":
         camofox_dir = PROJECT_ROOT / "node_modules" / "@askjo" / "camofox-browser"
         _npm_bin = shutil.which("npm")
-        if not camofox_dir.exists() and _npm_bin:
+        if camofox_dir.exists():
+            _print_success("    Camofox already installed, nothing to do")
+        elif _npm_bin:
             _print_info("    Installing Camofox browser server...")
             import subprocess
             # Absolute npm path so .cmd shim executes on Windows.
@@ -2667,9 +2673,20 @@ def _module_installed(module_name: str) -> bool:
 
 
 def _agent_browser_installed() -> bool:
-    from hermes_cli.nous_subscription import _has_agent_browser
+    """True when everything ``_run_post_setup("agent_browser")`` installs is
+    present: the agent-browser CLI *and* the Chromium build it drives (or the
+    Lightpanda engine, which needs no Chromium). Mirrors the hook so "Run
+    setup" flips to an installed state only when re-running it would be a
+    no-op."""
+    from hermes_cli.nous_subscription import _local_browser_runnable
 
-    return _has_agent_browser()
+    return _local_browser_runnable()
+
+
+def _camofox_installed() -> bool:
+    """True when the Camofox npm package ``_run_post_setup("camofox")``
+    installs is already in node_modules."""
+    return (PROJECT_ROOT / "node_modules" / "@askjo" / "camofox-browser").exists()
 
 
 # post_setup_key -> predicate(): True when the install side-effect is already
@@ -2683,9 +2700,21 @@ _POST_SETUP_READY: dict = {
     "piper": lambda: _module_installed("piper"),
     "ddgs": lambda: _module_installed("ddgs"),
     "langfuse": lambda: _module_installed("langfuse"),
-    "agent_browser": _agent_browser_installed,
+    "agent_browser": lambda: _agent_browser_installed(),
+    "browserbase": lambda: _cloud_agent_browser_installed(),
+    "camofox": lambda: _camofox_installed(),
     "cua_driver": lambda: bool(shutil.which(_cua_driver_cmd())),
 }
+
+
+def _cloud_agent_browser_installed() -> bool:
+    """Installed-check for the ``browserbase`` hook (cloud provider rows).
+
+    Cloud providers host their own Chromium, so their hook only installs the
+    agent-browser npm package — presence of the CLI is the whole contract."""
+    from hermes_cli.nous_subscription import _has_agent_browser
+
+    return _has_agent_browser()
 
 
 def provider_readiness_status(

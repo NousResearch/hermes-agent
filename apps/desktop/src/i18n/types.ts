@@ -714,7 +714,10 @@ export interface Translations {
       nousIncluded: string
       noApiKeyRequired: string
       postSetupHint: (step: string) => string
+      postSetupInstalledHint: string
       postSetupRun: string
+      postSetupRerun: string
+      postSetupInstalled: string
       postSetupRunning: string
       postSetupStarting: string
       postSetupCompleteTitle: string

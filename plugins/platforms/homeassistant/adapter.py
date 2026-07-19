@@ -38,6 +38,28 @@ from gateway.platforms.base import (
 
 logger = logging.getLogger(__name__)
 
+# Bounds every WS/session teardown await (ws.close()/session.close()) so a
+# wedged CLOSE-WAIT socket can't block the reconnect ladder or disconnect()
+# forever. Refs: NousResearch/hermes-agent#67470
+_DRAIN_TIMEOUT = 5.0
+# Bounds each receive_json() in the auth handshake ladder so a server that
+# accepts the socket but never responds can't freeze _ws_connect() forever.
+# Refs: NousResearch/hermes-agent#67470
+_HANDSHAKE_TIMEOUT = 30.0
+# Cause-agnostic watchdog (#67470, mirrors the Telegram adapter's wedged-
+# recovery watchdog, commit c2cb37532): if _listen_loop stops making progress
+# -- wedged on an await no local bound covers -- for this long while the
+# adapter is still "running", nothing else notices and the gateway goes
+# silently deaf. The watchdog force-cancels and respawns it.
+_LISTEN_STUCK_TIMEOUT = 300.0
+# How often the watchdog checks _last_progress against _LISTEN_STUCK_TIMEOUT.
+_WATCHDOG_INTERVAL = 60.0
+# After the watchdog's HA-protocol ping, how long to wait for the pong to
+# surface as reader progress before declaring the listener wedged. The pong
+# arrives through _read_events' async-for (single-reader invariant), so the
+# watchdog observes it indirectly via _last_progress.
+_PING_GRACE = 10.0
+
 
 def check_ha_requirements() -> bool:
     """Check if Home Assistant runtime dependencies are available."""
@@ -72,7 +94,12 @@ class HomeAssistantAdapter(BasePlatformAdapter):
         self._ws: Optional["aiohttp.ClientWebSocketResponse"] = None
         self._rest_session: Optional["aiohttp.ClientSession"] = None
         self._listen_task: Optional[asyncio.Task] = None
+        self._watchdog_task: Optional[asyncio.Task] = None
         self._msg_id: int = 0
+        # Monotonic timestamp bumped by _listen_loop/_read_events on every
+        # iteration or received event; the watchdog compares against this to
+        # detect a wedged listener (#67470).
+        self._last_progress: float = time.monotonic()
 
         # Configuration from extra
         extra = config.extra or {}
@@ -129,8 +156,10 @@ class HomeAssistantAdapter(BasePlatformAdapter):
                     self.name,
                 )
 
-            # Start background listener
+            # Start background listener + its cause-agnostic watchdog (#67470)
+            self._last_progress = time.monotonic()
             self._listen_task = asyncio.create_task(self._listen_loop())
+            self._watchdog_task = asyncio.create_task(self._watchdog_loop())
             self._running = True
             logger.info("[%s] Connected to %s", self.name, self._hass_url)
             return True
@@ -144,71 +173,163 @@ class HomeAssistantAdapter(BasePlatformAdapter):
         ws_url = self._hass_url.replace("https://", "wss://").replace("http://", "ws://")
         ws_url = f"{ws_url}/api/websocket"
 
-        self._session = aiohttp.ClientSession(
-            timeout=aiohttp.ClientTimeout(total=30)
-        )
-        self._ws = await self._session.ws_connect(ws_url, heartbeat=30, timeout=30)
+        # Build into a local first (#67470). The previous code assigned
+        # self._session before attempting ws_connect(); if ws_connect()
+        # raised, that session was left dangling — referenced by self._session
+        # but never connected — until the next reconnect loop's cleanup
+        # happened to close it. Only wire self._session/self._ws up once the
+        # socket is actually usable, and close the local on failure.
+        session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30))
+        try:
+            ws = await session.ws_connect(ws_url, heartbeat=30, timeout=30)
+        except Exception:
+            await self._bounded_close(session, "WS session")
+            raise
 
-        # Step 1: Receive auth_required
-        msg = await self._ws.receive_json()
-        if msg.get("type") != "auth_required":
-            logger.error("Expected auth_required, got: %s", msg.get("type"))
+        self._session = session
+        self._ws = ws
+
+        try:
+            # Step 1: Receive auth_required
+            msg = await asyncio.wait_for(self._ws.receive_json(), timeout=_HANDSHAKE_TIMEOUT)
+            if msg.get("type") != "auth_required":
+                logger.error("[%s] Expected auth_required, got: %s", self.name, msg.get("type"))
+                await self._cleanup_ws()
+                return False
+
+            # Step 2: Send auth
+            await asyncio.wait_for(
+                self._ws.send_json({
+                    "type": "auth",
+                    "access_token": self._hass_token,
+                }),
+                timeout=_HANDSHAKE_TIMEOUT,
+            )
+
+            # Step 3: Wait for auth_ok
+            msg = await asyncio.wait_for(self._ws.receive_json(), timeout=_HANDSHAKE_TIMEOUT)
+            if msg.get("type") != "auth_ok":
+                logger.error("[%s] Auth failed: %s", self.name, msg)
+                await self._cleanup_ws()
+                return False
+
+            # Step 4: Subscribe to state_changed events
+            sub_id = self._next_id()
+            await asyncio.wait_for(
+                self._ws.send_json({
+                    "id": sub_id,
+                    "type": "subscribe_events",
+                    "event_type": "state_changed",
+                }),
+                timeout=_HANDSHAKE_TIMEOUT,
+            )
+
+            # Verify subscription acknowledgement
+            msg = await asyncio.wait_for(self._ws.receive_json(), timeout=_HANDSHAKE_TIMEOUT)
+            if not msg.get("success"):
+                logger.error("[%s] Failed to subscribe to events: %s", self.name, msg)
+                await self._cleanup_ws()
+                return False
+        except asyncio.TimeoutError:
+            # A server that accepts the socket but never responds must not
+            # freeze the handshake ladder forever (#67470).
+            logger.error(
+                "[%s] HA WebSocket auth handshake timed out after %.0fs",
+                self.name, _HANDSHAKE_TIMEOUT,
+            )
             await self._cleanup_ws()
             return False
-
-        # Step 2: Send auth
-        await self._ws.send_json({
-            "type": "auth",
-            "access_token": self._hass_token,
-        })
-
-        # Step 3: Wait for auth_ok
-        msg = await self._ws.receive_json()
-        if msg.get("type") != "auth_ok":
-            logger.error("Auth failed: %s", msg)
+        except asyncio.CancelledError:
+            # Cancelled mid-handshake (disconnect / watchdog respawn): don't
+            # leave the half-authenticated connection dangling.
             await self._cleanup_ws()
-            return False
-
-        # Step 4: Subscribe to state_changed events
-        sub_id = self._next_id()
-        await self._ws.send_json({
-            "id": sub_id,
-            "type": "subscribe_events",
-            "event_type": "state_changed",
-        })
-
-        # Verify subscription acknowledgement
-        msg = await self._ws.receive_json()
-        if not msg.get("success"):
-            logger.error("Failed to subscribe to events: %s", msg)
+            raise
+        except Exception as e:
+            # Any other handshake failure (send/receive raising a client
+            # error, malformed frame, ...) must also tear the connection down
+            # here rather than leaking it to a later loop pass (#67470).
+            logger.error("[%s] HA WebSocket handshake failed: %s", self.name, e)
             await self._cleanup_ws()
             return False
 
         return True
 
+    async def _bounded_close(self, closeable: Any, label: str) -> None:
+        """Await ``closeable.close()`` bounded by ``_DRAIN_TIMEOUT``.
+
+        A wedged CLOSE-WAIT socket can make ``close()`` hang forever, which
+        would otherwise stall the reconnect ladder or ``disconnect()``
+        indefinitely. Timeout and any other close-time error are swallowed —
+        teardown is best-effort by design. Refs: NousResearch/hermes-agent#67470
+        """
+        try:
+            await asyncio.wait_for(closeable.close(), timeout=_DRAIN_TIMEOUT)
+        except asyncio.TimeoutError:
+            logger.warning(
+                "[%s] %s close timed out after %.0fs; abandoning it",
+                self.name, label, _DRAIN_TIMEOUT,
+            )
+        except Exception as e:
+            logger.debug("[%s] %s close failed (non-fatal): %s", self.name, label, e)
+
+    async def _cancel_task_bounded(self, task: Optional["asyncio.Task"], label: str) -> None:
+        """Cancel *task* and await it, bounded by ``_DRAIN_TIMEOUT``.
+
+        A truly wedged task can ignore cancellation (blocked in an
+        uncancellable await); an unbounded ``await task`` there would hang
+        the watchdog or ``disconnect()`` — the very stall this fix removes.
+        On timeout the zombie is logged and abandoned: staying deaf is worse
+        than leaking one stuck task (#67470).
+        """
+        if task is None:
+            return
+        task.cancel()
+        # asyncio.wait (not wait_for): wait_for's timeout path cancels the
+        # future and then AWAITS that cancellation completing, so a task that
+        # swallows CancelledError would hang it — the very stall being fixed.
+        # asyncio.wait just observes with a deadline and never raises.
+        done, pending = await asyncio.wait({task}, timeout=_DRAIN_TIMEOUT)
+        if pending:
+            logger.error(
+                "[%s] %s did not exit within %.0fs of cancellation; "
+                "abandoning it",
+                self.name, label, _DRAIN_TIMEOUT,
+            )
+            return
+        for finished in done:
+            try:
+                finished.result()
+            except asyncio.CancelledError:
+                pass
+            except Exception as e:
+                logger.debug(
+                    "[%s] %s raised on cancel (non-fatal): %s",
+                    self.name, label, e,
+                )
+
     async def _cleanup_ws(self) -> None:
-        """Close WebSocket and session."""
-        if self._ws and not self._ws.closed:
-            await self._ws.close()
-        self._ws = None
-        if self._session and not self._session.closed:
-            await self._session.close()
-        self._session = None
+        """Close WebSocket and session, each bounded by ``_DRAIN_TIMEOUT`` so
+        one wedged close can't skip the other resource's teardown (#67470)."""
+        ws, self._ws = self._ws, None
+        if ws is not None and not ws.closed:
+            await self._bounded_close(ws, "WebSocket")
+        session, self._session = self._session, None
+        if session is not None and not session.closed:
+            await self._bounded_close(session, "WS session")
 
     async def disconnect(self) -> None:
         """Disconnect from Home Assistant."""
         self._running = False
-        if self._listen_task:
-            self._listen_task.cancel()
-            try:
-                await self._listen_task
-            except asyncio.CancelledError:
-                pass
-            self._listen_task = None
+        # Watchdog first so it can't respawn the listener mid-teardown; both
+        # awaits are bounded so a wedged task can't hang shutdown (#67470).
+        await self._cancel_task_bounded(self._watchdog_task, "watchdog task")
+        self._watchdog_task = None
+        await self._cancel_task_bounded(self._listen_task, "listen task")
+        self._listen_task = None
 
         await self._cleanup_ws()
         if self._rest_session and not self._rest_session.closed:
-            await self._rest_session.close()
+            await self._bounded_close(self._rest_session, "REST session")
         self._rest_session = None
         logger.info("[%s] Disconnected", self.name)
 
@@ -221,6 +342,11 @@ class HomeAssistantAdapter(BasePlatformAdapter):
         backoff_idx = 0
 
         while self._running:
+            # Progress heartbeat for the watchdog (#67470): each pass through
+            # the outer loop counts as forward motion even before any event
+            # arrives, so a connect that never yields a message still shows
+            # up as "alive" rather than immediately tripping the watchdog.
+            self._last_progress = time.monotonic()
             try:
                 await self._read_events()
             except asyncio.CancelledError:
@@ -246,11 +372,91 @@ class HomeAssistantAdapter(BasePlatformAdapter):
             except Exception as e:
                 logger.warning("[%s] Reconnection failed: %s", self.name, e)
 
+    async def _watchdog_loop(self) -> None:
+        """Cause-agnostic watchdog over ``_listen_loop`` (#67470).
+
+        ``_listen_loop`` can wedge on an await with no local bound (e.g. a
+        hung aiohttp internals call) and never re-enter its own
+        except/reconnect branch. Nothing else observes that stall — the
+        process stays alive but the gateway goes silently deaf. Mirrors the
+        Telegram adapter's wedged-recovery watchdog: an independent task
+        periodically checks ``_last_progress`` and force-recovers when it
+        goes stale.
+        """
+        while self._running:
+            try:
+                await asyncio.sleep(_WATCHDOG_INTERVAL)
+            except asyncio.CancelledError:
+                return
+
+            if not self._running:
+                return
+
+            stalled_for = time.monotonic() - self._last_progress
+            if stalled_for <= _LISTEN_STUCK_TIMEOUT:
+                continue
+
+            # Quiet ≠ wedged: aiohttp answers heartbeat PINGs internally, so
+            # a healthy HA with no state changes produces no frames for
+            # _read_events and looks stalled by progress alone. Probe at the
+            # HA protocol layer: send a `ping`; the `pong` comes back as a
+            # normal frame, so the (healthy) reader bumps _last_progress and
+            # we skip the respawn. A wedged socket/reader can't answer.
+            if await self._listener_alive_after_ping():
+                continue
+
+            logger.error(
+                "[%s] Listen loop wedged for %.0fs with no progress "
+                "(HA ping probe unanswered); cancelling and respawning it",
+                self.name, stalled_for,
+            )
+
+            await self._cancel_task_bounded(self._listen_task, "wedged listen task")
+
+            await self._cleanup_ws()
+
+            if not self._running:
+                return
+
+            self._last_progress = time.monotonic()
+            self._listen_task = asyncio.create_task(self._listen_loop())
+
+    async def _listener_alive_after_ping(self) -> bool:
+        """Send an HA-protocol ping and report whether the reader saw a reply.
+
+        Keeps the single-reader invariant: this never reads the socket — the
+        pong arrives through ``_read_events``'s ``async for``, which bumps
+        ``_last_progress``. Returns True when progress advanced within
+        ``_PING_GRACE`` (listener demonstrably alive), False otherwise
+        (#67470 review follow-up).
+        """
+        ws = self._ws
+        if ws is None or ws.closed:
+            return False
+        probe_start = time.monotonic()
+        try:
+            await asyncio.wait_for(
+                ws.send_json({"id": self._next_id(), "type": "ping"}),
+                timeout=_DRAIN_TIMEOUT,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            return False  # can't even send — treat as wedged
+        try:
+            await asyncio.sleep(_PING_GRACE)
+        except asyncio.CancelledError:
+            raise
+        return self._last_progress >= probe_start
+
     async def _read_events(self) -> None:
         """Read events from WebSocket until disconnected."""
         if self._ws is None or self._ws.closed:
             return
         async for ws_msg in self._ws:
+            # Any received frame is progress for the watchdog (#67470), not
+            # just ones that parse into a state_changed event.
+            self._last_progress = time.monotonic()
             if ws_msg.type == aiohttp.WSMsgType.TEXT:
                 try:
                     data = json.loads(ws_msg.data)

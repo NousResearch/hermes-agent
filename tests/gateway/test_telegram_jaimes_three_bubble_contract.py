@@ -1,7 +1,9 @@
 import asyncio
 import inspect
 import json
-from unittest.mock import patch
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -236,3 +238,189 @@ def test_gateway_stops_typing_before_final_delivery():
     stop_at = source.index("await _stop_typing_task()", response_branch)
     send_at = source.index("result = await self._send_with_retry", response_branch)
     assert stop_at < send_at
+
+
+def test_active_card_ignores_blank_zombie_and_normalizes_chat_prefix(tmp_path):
+    state_path = tmp_path / ".openclaw" / "telegram" / "jaimes_fast_ack_state.json"
+    state_path.parent.mkdir(parents=True)
+    state_path.write_text(json.dumps({"active_cards": {
+        "zombie": {
+            "status": "active",
+            "key": "zombie",
+            "ack_message_id": "",
+            "objective": "",
+            "telegram_chat_id": "-1001",
+            "telegram_thread_id": "17",
+            "started_at": "2099-01-01T00:00:00Z",
+        },
+        "bound": {
+            "status": "active",
+            "key": "bound",
+            "ack_message_id": "44",
+            "objective": "Verify exact final delivery",
+            "telegram_chat_id": "telegram:-1001",
+            "telegram_thread_id": "17",
+            "started_at": "2026-07-18T20:00:00Z",
+        },
+    }}), encoding="utf-8")
+
+    with patch.object(telegram_adapter._Path, "home", return_value=tmp_path):
+        card = _adapter()._jaimes_topic17_active_card(
+            "-1001", "17", {"notify": True}
+        )
+    assert card and card["key"] == "bound"
+
+
+def test_unbound_final_preserves_verified_why_in_private_formatter_payload(tmp_path):
+    script = (
+        tmp_path / ".openclaw" / "workspace" / "mission-control" / "scripts"
+        / "jaimes_telegram_fast_ack.py"
+    )
+    script.parent.mkdir(parents=True)
+    script.write_text(
+        "import json,sys\n"
+        "payload=json.load(sys.stdin)\n"
+        "assert payload['model']=='openai-codex/gpt-5.6-sol'\n"
+        "assert payload['route']=='JAIMES verified execution'\n"
+        "assert payload['why']=='300/300 checks passed'\n"
+        "print('<pre>canonical final</pre>')\n",
+        encoding="utf-8",
+    )
+    content = (
+        "Model: openai-codex/gpt-5.6-sol | Route: JAIMES verified execution "
+        "| Why: 300/300 checks passed\nComplete: Yes"
+    )
+
+    with patch.object(telegram_adapter._Path, "home", return_value=tmp_path):
+        rendered = asyncio.run(_adapter()._jaimes_canonical_final_before_send(
+            "-1001", content, "17", {"notify": True}
+        ))
+    assert rendered == "```\ncanonical final\n```"
+
+
+def test_unbound_final_only_uses_literal_objective_label(tmp_path):
+    script = (
+        tmp_path / ".openclaw" / "workspace" / "mission-control" / "scripts"
+        / "jaimes_telegram_fast_ack.py"
+    )
+    script.parent.mkdir(parents=True)
+    script.write_text(
+        "import json,sys\n"
+        "payload=json.load(sys.stdin)\n"
+        "expected=('Assess the current agent workflow' "
+        "if '\\nObjective: Assess the current agent workflow' in payload['text'] "
+        "else 'Complete the current Telegram task')\n"
+        "assert payload['objective']==expected\n"
+        "assert payload['objective'] not in {'Yes','No'}\n"
+        "print('<pre>canonical final</pre>')\n",
+        encoding="utf-8",
+    )
+    adapter = _adapter()
+    contents = (
+        "Model: test | Route: test | Why: verified\nObjective Complete: Yes",
+        "Model: test | Route: test | Why: verified\nObjective Complete: No",
+        (
+            "Model: test | Route: test | Why: verified\n"
+            "Objective: Assess the current agent workflow"
+        ),
+    )
+
+    with patch.object(telegram_adapter._Path, "home", return_value=tmp_path):
+        rendered = [
+            asyncio.run(adapter._jaimes_canonical_final_before_send(
+                "-1001", content, "17", {"notify": True}
+            ))
+            for content in contents
+        ]
+    assert rendered == ["```\ncanonical final\n```"] * 3
+
+
+def test_post_delivery_command_persists_exact_adapter_message_id(tmp_path):
+    state_path = tmp_path / ".openclaw" / "telegram" / "jaimes_fast_ack_state.json"
+    script = (
+        tmp_path / ".openclaw" / "workspace" / "mission-control" / "scripts"
+        / "jaimes_work_card.py"
+    )
+    state_path.parent.mkdir(parents=True)
+    script.parent.mkdir(parents=True)
+    script.write_text("# test\n", encoding="utf-8")
+    state_path.write_text(json.dumps({"active_cards": {
+        "bound": {
+            "status": "active",
+            "key": "bound",
+            "ack_message_id": "44",
+            "objective": "Verify exact final delivery",
+            "telegram_chat_id": "-1001",
+            "telegram_thread_id": "17",
+            "started_at": "2026-07-18T20:00:00Z",
+        }
+    }}), encoding="utf-8")
+    content = (
+        "Model: openai-codex/gpt-5.6-sol | Route: JAIMES verified execution "
+        "| Why: verified\nComplete: Yes"
+    )
+
+    with patch.object(telegram_adapter._Path, "home", return_value=tmp_path):
+        command = _adapter()._jaimes_post_final_card_command(
+            "-1001", content, "17", {"notify": True}, "3914"
+        )
+    assert command is not None
+    assert command[2] == "done"
+    assert command[command.index("--final-message-id") + 1] == "3914"
+    assert command[
+        command.index("--final-delivery-verified-by") + 1
+    ] == "hermes-adapter-success"
+    assert "--blocker" not in command
+    assert "--next" not in command
+
+
+def test_topic17_final_skips_rich_and_closes_with_exact_ptb_message_id():
+    adapter = _adapter()
+
+    class FakeBot:
+        async def send_message(self, **_kwargs):
+            return SimpleNamespace(message_id=777)
+
+    adapter._bot = FakeBot()
+    adapter.platform = type("Platform", (), {"value": "telegram"})()
+    adapter._send_path_degraded = False
+    adapter._reply_to_mode = "off"
+    adapter._metadata_thread_id = lambda _metadata: "17"
+    adapter._metadata_reply_to_message_id = lambda _metadata: None
+    adapter._message_thread_id_for_send = lambda thread_id: thread_id
+    adapter._is_private_dm_topic_send = lambda *_args, **_kwargs: False
+    adapter._should_thread_reply = lambda *_args, **_kwargs: False
+    adapter._thread_kwargs_for_send = lambda *_args, **_kwargs: {
+        "message_thread_id": 17
+    }
+    adapter._link_preview_kwargs = lambda: {}
+    adapter._notification_kwargs = lambda _metadata: {}
+    adapter._should_attempt_rich = lambda *_args, **_kwargs: True
+    adapter._try_send_rich = AsyncMock(
+        side_effect=AssertionError("Topic 17 final must not use rich delivery")
+    )
+    adapter._jaimes_canonical_final_before_send = AsyncMock(
+        return_value="```\ncanonical final\n```"
+    )
+    adapter._jaimes_finalize_card_before_final = AsyncMock()
+    adapter._jaimes_complete_card_after_final = AsyncMock()
+    adapter.format_message = lambda content: content
+    adapter.truncate_message = lambda content, *_args, **_kwargs: [content]
+
+    result = asyncio.run(adapter.send(
+        "-1001",
+        "Model: test | Route: test | Why: test\nComplete: Yes",
+        metadata={"notify": True, "message_thread_id": "17"},
+    ))
+
+    assert result.success is True
+    assert result.message_id == "777"
+    adapter._try_send_rich.assert_not_awaited()
+    adapter._jaimes_complete_card_after_final.assert_awaited_once()
+    assert adapter._jaimes_complete_card_after_final.await_args.args[-1] == "777"
+
+
+def test_topic17_contract_does_not_add_a_task_header():
+    source = Path(telegram_adapter.__file__).read_text(encoding="utf-8")
+    assert "--header-message-id" not in source
+    assert "JAIMES_TELEGRAM_TASK_HEADERS" not in source

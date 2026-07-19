@@ -4081,7 +4081,7 @@ class TelegramAdapter(BasePlatformAdapter):
         thread_id: Optional[str],
         metadata: Optional[Dict[str, Any]],
     ) -> Optional[Dict[str, Any]]:
-        """Resolve the newest active Topic 17 card for this exact chat."""
+        """Resolve the newest visible Topic 17 card for this exact chat."""
         if str(thread_id or "") != "17" or not (metadata or {}).get("notify"):
             return None
         state_path = _Path.home() / ".openclaw" / "telegram" / "jaimes_fast_ack_state.json"
@@ -4090,14 +4090,29 @@ class TelegramAdapter(BasePlatformAdapter):
         try:
             state = json.loads(state_path.read_text(encoding="utf-8"))
             candidates = []
+            def _state_chat_id(value: object) -> str:
+                raw = str(value or "").strip()
+                if raw.startswith("telegram:"):
+                    raw = raw.split(":", 1)[1]
+                return str(normalize_telegram_chat_id(raw))
+
+            expected_chat = _state_chat_id(chat_id)
             for card in ((state.get("active_cards") or {}).values() if isinstance(state, dict) else []):
                 if not isinstance(card, dict) or card.get("status") != "active":
                     continue
-                if str(card.get("telegram_chat_id") or "") != str(chat_id):
+                try:
+                    card_chat = _state_chat_id(card.get("telegram_chat_id"))
+                except Exception:
+                    continue
+                if card_chat != expected_chat:
                     continue
                 if str(card.get("telegram_thread_id") or "") != str(thread_id):
                     continue
-                if card.get("key") and card.get("ack_message_id"):
+                if (
+                    card.get("key")
+                    and str(card.get("ack_message_id") or "").isdigit()
+                    and str(card.get("objective") or "").strip()
+                ):
                     candidates.append(card)
             if not candidates:
                 return None
@@ -4122,14 +4137,25 @@ class TelegramAdapter(BasePlatformAdapter):
             raise RuntimeError("JAIMES final validation unavailable")
         card = self._jaimes_topic17_active_card(chat_id, thread_id, metadata) or {}
         header = re.search(
-            r"(?im)^Model:\s*([^|\n]+)\s*\|\s*Route:\s*([^|\n]+)",
+            r"(?im)^\s*(?:🤖\s*)?Model:\s*([^|\n]+)\s*\|\s*"
+            r"Route:\s*([^|\n]+)(?:\s*\|\s*Why:\s*([^\n]+))?",
             content or "",
         )
+        objective_match = re.search(
+            r"(?im)^\s*(?:🎯\s*)?Objective:\s*([^\n]+)",
+            content or "",
+        )
+        parsed_why = header.group(3).strip() if header and header.group(3) else ""
         payload = {
             "text": content,
-            "objective": str(card.get("objective") or "Complete the current Telegram task"),
+            "objective": str(
+                card.get("objective")
+                or (objective_match.group(1).strip() if objective_match else "")
+                or "Complete the current Telegram task"
+            ),
             "model": str(card.get("model") or (header.group(1).strip() if header else "unverified")),
             "route": str(card.get("route") or (header.group(2).strip() if header else "unverified")),
+            "why": str(card.get("why") or parsed_why or "unverified"),
             "work_id": str(card.get("work_id") or ""),
             "run_id": str(card.get("ledger_run_id") or ""),
             "task_started_at": str(card.get("task_started_at") or card.get("started_at") or ""),
@@ -4214,8 +4240,6 @@ class TelegramAdapter(BasePlatformAdapter):
         command[now_index] = "Final summary delivered"
         command.extend([
             "--done", "Final summary delivered",
-            "--blocker", "None",
-            "--next", "See the final summary for findings and next steps.",
             "--no-final-summary",
             "--final-message-id", str(final_message_id),
             "--final-delivery-verified-by", "hermes-adapter-success",
@@ -4313,7 +4337,15 @@ class TelegramAdapter(BasePlatformAdapter):
             # through to the legacy MarkdownV2 path on permanent/capability
             # errors or DM-topic routing skips; returns directly on success or
             # on a transient failure (which must NOT be legacy-resent).
-            if jaimes_reply_markup is None and self._should_attempt_rich(content, metadata=metadata):
+            # Topic 17 finals are a fixed-width canonical code block. Keep
+            # them on PTB's send_message path, whose concrete message_id is
+            # required to persist the terminal delivery receipt. A rich send
+            # may succeed without returning a persistable id.
+            if (
+                not jaimes_final
+                and jaimes_reply_markup is None
+                and self._should_attempt_rich(content, metadata=metadata)
+            ):
                 rich_result = await self._try_send_rich(chat_id, content, reply_to, metadata)
                 if rich_result is not None:
                     if rich_result.success:

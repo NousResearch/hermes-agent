@@ -124,6 +124,7 @@ def test_pip_auto_update_accepts_a_fresh_new_distribution_version(tmp_path, monk
     from hermes_cli import backup
     from hermes_cli import main as hm
 
+    update_calls = []
     monkeypatch.setattr(
         hm,
         "_get_update_check_result",
@@ -138,7 +139,7 @@ def test_pip_auto_update_accepts_a_fresh_new_distribution_version(tmp_path, monk
         "create_pre_update_backup",
         lambda: hermes_home / "backups" / "pre-update.zip",
     )
-    monkeypatch.setattr(hm, "cmd_update", lambda _args: None)
+    monkeypatch.setattr(hm, "cmd_update", lambda args: update_calls.append(args))
     restart_calls = []
     monkeypatch.setattr(hm, "cmd_gateway", lambda args: restart_calls.append(args))
     monkeypatch.setattr(update_auto, "_verify_health", lambda *_args: (True, "ok"))
@@ -162,6 +163,7 @@ def test_pip_auto_update_accepts_a_fresh_new_distribution_version(tmp_path, monk
     update_auto.cmd_auto_run_now(_args())
 
     assert metadata_calls == ["hermes-agent", "hermes-agent"]
+    assert update_calls[0]._expected_version == "2.0.0"
     assert restart_calls == []
     assert _read_status(hermes_home)["status"] == update_auto.STATUS_SUCCESS
 

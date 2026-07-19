@@ -94,6 +94,20 @@ class ProfileGatewayProcess:
     pid: int
 
 
+@dataclass(frozen=True)
+class S6DispatchResult:
+    """Outcome of an s6 ``--all`` lifecycle dispatch."""
+
+    dispatched: bool
+    attempted: int
+    succeeded: int
+    failed_profiles: tuple[str, ...] = ()
+
+    @property
+    def ok(self) -> bool:
+        return self.dispatched and not self.failed_profiles
+
+
 def _get_service_pids() -> set:
     """Return PIDs currently managed by systemd or launchd gateway services.
 
@@ -6614,12 +6628,15 @@ def _dispatch_via_service_manager_if_s6(
     return True
 
 
-def _dispatch_all_via_service_manager_if_s6(action: str) -> bool:
+def _dispatch_all_via_service_manager_if_s6(
+    action: str,
+) -> bool | S6DispatchResult:
     """Inside a container with s6, dispatch ``--all`` lifecycle to every
     registered profile gateway.
 
-    Returns True iff dispatched (caller should ``return``); False
-    otherwise — caller continues with the host-side code path.
+    Returns an :class:`S6DispatchResult` when dispatched (the caller must
+    inspect failures before returning), or False when the host-side path
+    should continue.
 
     Without this, ``hermes gateway stop --all`` and ``... restart --all``
     fall through to ``kill_gateway_processes(all_profiles=True)``, which
@@ -6644,14 +6661,22 @@ def _dispatch_all_via_service_manager_if_s6(action: str) -> bool:
     if action not in ("stop", "restart"):
         return False
     mgr = get_service_manager()
-    profiles = [
-        profile
-        for profile in mgr.list_profile_gateways()
-        if mgr.is_running(f"gateway-{profile}")
-    ]
+    registered_profiles = mgr.list_profile_gateways()
+    if action == "stop":
+        # stop sends want-down and must include services that are currently
+        # down or in crash backoff; otherwise s6 can bring them up again.
+        profiles = registered_profiles
+    else:
+        # restart must preserve an operator's explicit stop state.
+        profiles = [
+            profile
+            for profile in registered_profiles
+            if mgr.is_running(f"gateway-{profile}")
+        ]
     if not profiles:
-        print("✗ No running profile gateways under s6")
-        return True
+        description = "running" if action == "restart" else "registered"
+        print(f"✗ No {description} profile gateways under s6")
+        return S6DispatchResult(dispatched=True, attempted=0, succeeded=0)
     fn = mgr.stop if action == "stop" else mgr.restart
     errors: list[tuple[str, Exception]] = []
     for profile in profiles:
@@ -6666,7 +6691,12 @@ def _dispatch_all_via_service_manager_if_s6(action: str) -> bool:
         print(f"✓ {verb.capitalize()} {succeeded} profile gateway(s) under s6")
     for profile, exc in errors:
         print(f"✗ Could not {action} gateway-{profile}: {exc}")
-    return True
+    return S6DispatchResult(
+        dispatched=True,
+        attempted=len(profiles),
+        succeeded=succeeded,
+        failed_profiles=tuple(profile for profile, _exc in errors),
+    )
 
 
 
@@ -7065,8 +7095,12 @@ def _gateway_command_inner(args):
         # manager. ``--all`` iterates every registered profile gateway
         # through s6 (otherwise it would fall through to ``pkill``,
         # which s6-supervise observes as a crash and immediately restarts).
-        if stop_all and _dispatch_all_via_service_manager_if_s6("stop"):
-            return
+        if stop_all:
+            dispatch_result = _dispatch_all_via_service_manager_if_s6("stop")
+            if dispatch_result is not False:
+                if isinstance(dispatch_result, S6DispatchResult) and not dispatch_result.ok:
+                    sys.exit(1)
+                return
         if not stop_all and _dispatch_via_service_manager_if_s6("stop"):
             return
 
@@ -7162,8 +7196,12 @@ def _gateway_command_inner(args):
         # iterates every registered profile gateway through s6; without
         # this it would fall through to ``pkill``, which s6-supervise
         # would observe as a crash and immediately restart anyway.
-        if restart_all and _dispatch_all_via_service_manager_if_s6("restart"):
-            return
+        if restart_all:
+            dispatch_result = _dispatch_all_via_service_manager_if_s6("restart")
+            if dispatch_result is not False:
+                if isinstance(dispatch_result, S6DispatchResult) and not dispatch_result.ok:
+                    sys.exit(1)
+                return
         if not restart_all and _dispatch_via_service_manager_if_s6("restart"):
             return
 

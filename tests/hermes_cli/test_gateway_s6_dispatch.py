@@ -124,15 +124,22 @@ def test_dispatch_defaults_profile_to_default(
 class _ListingRecorder(_CallRecorder):
     """_CallRecorder that also exposes a profile list."""
 
-    def __init__(self, profiles: list[str]) -> None:
+    def __init__(
+        self,
+        profiles: list[str],
+        running_profiles: list[str] | None = None,
+    ) -> None:
         super().__init__()
         self._profiles = profiles
+        self._running_profiles = set(
+            profiles if running_profiles is None else running_profiles
+        )
 
     def list_profile_gateways(self) -> list[str]:
         return list(self._profiles)
 
     def is_running(self, name: str) -> bool:
-        return name.removeprefix("gateway-") in self._profiles
+        return name.removeprefix("gateway-") in self._running_profiles
 
 
 def test_dispatch_all_returns_false_on_host(
@@ -161,7 +168,8 @@ def test_dispatch_all_iterates_every_profile_on_stop(
     monkeypatch.setattr(
         "hermes_cli.service_manager.get_service_manager", lambda: rec,
     )
-    assert gw._dispatch_all_via_service_manager_if_s6("stop") is True
+    result = gw._dispatch_all_via_service_manager_if_s6("stop")
+    assert result.dispatched is True
     assert rec.calls == [
         ("stop", "gateway-coder"),
         ("stop", "gateway-writer"),
@@ -169,6 +177,29 @@ def test_dispatch_all_iterates_every_profile_on_stop(
     ]
     out = capsys.readouterr().out
     assert "Stopped 3 profile gateway(s)" in out
+
+
+def test_dispatch_all_stop_includes_registered_transient_down_profiles(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """stop --all must send want-down even to services not up right now."""
+    from hermes_cli import gateway as gw
+
+    rec = _ListingRecorder(["running", "crashloop"], running_profiles=["running"])
+    monkeypatch.setattr(
+        "hermes_cli.service_manager.detect_service_manager", lambda: "s6",
+    )
+    monkeypatch.setattr(
+        "hermes_cli.service_manager.get_service_manager", lambda: rec,
+    )
+
+    result = gw._dispatch_all_via_service_manager_if_s6("stop")
+
+    assert result.dispatched is True
+    assert rec.calls == [
+        ("stop", "gateway-running"),
+        ("stop", "gateway-crashloop"),
+    ]
 
 
 def test_dispatch_all_iterates_every_profile_on_restart(
@@ -183,13 +214,34 @@ def test_dispatch_all_iterates_every_profile_on_restart(
     monkeypatch.setattr(
         "hermes_cli.service_manager.get_service_manager", lambda: rec,
     )
-    assert gw._dispatch_all_via_service_manager_if_s6("restart") is True
+    result = gw._dispatch_all_via_service_manager_if_s6("restart")
+    assert result.dispatched is True
     assert rec.calls == [
         ("restart", "gateway-coder"),
         ("restart", "gateway-writer"),
     ]
     out = capsys.readouterr().out
     assert "Restarted 2 profile gateway(s)" in out
+
+
+def test_dispatch_all_restart_targets_running_profiles_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """restart --all must not resurrect a profile already stopped by hand."""
+    from hermes_cli import gateway as gw
+
+    rec = _ListingRecorder(["running", "stopped"], running_profiles=["running"])
+    monkeypatch.setattr(
+        "hermes_cli.service_manager.detect_service_manager", lambda: "s6",
+    )
+    monkeypatch.setattr(
+        "hermes_cli.service_manager.get_service_manager", lambda: rec,
+    )
+
+    result = gw._dispatch_all_via_service_manager_if_s6("restart")
+
+    assert result.dispatched is True
+    assert rec.calls == [("restart", "gateway-running")]
 
 
 def test_dispatch_all_handles_partial_failure(
@@ -213,7 +265,9 @@ def test_dispatch_all_handles_partial_failure(
     monkeypatch.setattr(
         "hermes_cli.service_manager.get_service_manager", lambda: rec,
     )
-    assert gw._dispatch_all_via_service_manager_if_s6("stop") is True
+    result = gw._dispatch_all_via_service_manager_if_s6("stop")
+    assert result.dispatched is True
+    assert result.failed_profiles == ("writer",)
     # The two successful ones were called; writer raised before recording.
     assert ("stop", "gateway-coder") in rec.calls
     assert ("stop", "gateway-assistant") in rec.calls
@@ -224,7 +278,41 @@ def test_dispatch_all_handles_partial_failure(
     assert "supervise FIFO permission denied" in out
 
 
-def test_dispatch_all_empty_list_reports_and_returns_true(
+def test_dispatch_all_restart_reports_partial_failure_and_attempts_all_profiles(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture,
+) -> None:
+    from hermes_cli import gateway as gw
+
+    class _FailOnWriter(_ListingRecorder):
+        def restart(self, name: str) -> None:
+            if name == "gateway-writer":
+                raise RuntimeError("restart FIFO unavailable")
+            super().restart(name)
+
+    rec = _FailOnWriter(["coder", "writer", "assistant"])
+    monkeypatch.setattr(
+        "hermes_cli.service_manager.detect_service_manager", lambda: "s6",
+    )
+    monkeypatch.setattr(
+        "hermes_cli.service_manager.get_service_manager", lambda: rec,
+    )
+
+    result = gw._dispatch_all_via_service_manager_if_s6("restart")
+
+    assert result.dispatched is True
+    assert result.failed_profiles == ("writer",)
+    assert rec.calls == [
+        ("restart", "gateway-coder"),
+        ("restart", "gateway-assistant"),
+    ]
+    out = capsys.readouterr().out
+    assert "Restarted 2 profile gateway(s)" in out
+    assert "Could not restart gateway-writer" in out
+    assert "restart FIFO unavailable" in out
+
+
+def test_dispatch_all_empty_list_reports_and_returns_dispatched_result(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture,
 ) -> None:
@@ -240,9 +328,10 @@ def test_dispatch_all_empty_list_reports_and_returns_true(
     monkeypatch.setattr(
         "hermes_cli.service_manager.get_service_manager", lambda: rec,
     )
-    assert gw._dispatch_all_via_service_manager_if_s6("stop") is True
+    result = gw._dispatch_all_via_service_manager_if_s6("stop")
+    assert result.dispatched is True
     assert rec.calls == []
-    assert "No running profile gateways" in capsys.readouterr().out
+    assert "No registered profile gateways" in capsys.readouterr().out
 
 
 def test_dispatch_all_unknown_action_returns_false(

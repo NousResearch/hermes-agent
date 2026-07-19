@@ -1228,7 +1228,7 @@ def test_session_branch_persists_branched_from_marker(server, monkeypatch):
         def set_session_title(self, _key, _title):
             return None
 
-    monkeypatch.setattr(server, "_open_session_db", lambda _home=None: _DB())
+    monkeypatch.setattr(server, "_get_db", lambda: _DB())
     monkeypatch.setattr(server, "_resolve_model", lambda: "test/model")
     monkeypatch.setattr(server, "_new_session_key", lambda: "20260101_000001_child0")
     monkeypatch.setattr(

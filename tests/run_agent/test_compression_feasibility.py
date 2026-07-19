@@ -95,7 +95,12 @@ def test_auto_corrects_threshold_when_aux_context_below_threshold(mock_get_clien
     assert "config.yaml" in messages[0]
     assert "auxiliary:" in messages[0]
     assert "compression:" in messages[0]
-    assert "threshold:" in messages[0]
+    # 200K main is under the 512K small-context limit and 80K/200K = 40% sits
+    # below the 75% floor — a `threshold:` suggestion would be raised back to
+    # 75% and ignored (#67422), so the message must not offer one and must
+    # explain the floor instead.
+    assert "threshold:" not in messages[0]
+    assert "75%" in messages[0]
     # Warning stored for gateway replay
     assert agent._compression_warning is not None
     # Threshold on the live compressor was actually lowered to aux_context.
@@ -514,3 +519,48 @@ def test_run_conversation_clears_warning_after_replay(mock_get_client, mock_ctx_
         agent._compression_warning = None
 
     assert len(callback_events) == 0
+
+
+# ── #67422: threshold suggestion must survive the small-context floor ────────
+
+
+@patch("agent.model_metadata.get_model_context_length", return_value=80_000)
+@patch("agent.auxiliary_client.get_text_auxiliary_client")
+def test_threshold_suggestion_kept_when_at_or_above_floor(mock_get_client, mock_ctx_len):
+    """Small-context main, but aux/main = 80% >= the 75% floor — the
+    `threshold:` suggestion is still viable and must be offered."""
+    agent = _make_agent(main_context=100_000, threshold_percent=0.85)
+    # threshold = 85,000 — aux has 80,000 (above 64K floor, below threshold)
+    mock_client = MagicMock()
+    mock_client.base_url = "https://openrouter.ai/api/v1"
+    mock_client.api_key = "sk-aux"
+    mock_get_client.return_value = (mock_client, "google/gemini-3-flash-preview")
+
+    messages = []
+    agent._emit_status = lambda msg: messages.append(msg)
+
+    agent._check_compression_model_feasibility()
+
+    assert len(messages) == 1
+    assert "threshold: 0.80" in messages[0]
+
+
+@patch("agent.model_metadata.get_model_context_length", return_value=300_000)
+@patch("agent.auxiliary_client.get_text_auxiliary_client")
+def test_threshold_suggestion_kept_for_large_context_main(mock_get_client, mock_ctx_len):
+    """Main window >= 512K has no floor — any suggestion is honored, so the
+    `threshold:` option stays even below 75%."""
+    agent = _make_agent(main_context=1_000_000, threshold_percent=0.50)
+    # threshold = 500,000 — aux has 300,000
+    mock_client = MagicMock()
+    mock_client.base_url = "https://openrouter.ai/api/v1"
+    mock_client.api_key = "sk-aux"
+    mock_get_client.return_value = (mock_client, "google/gemini-3-flash-preview")
+
+    messages = []
+    agent._emit_status = lambda msg: messages.append(msg)
+
+    agent._check_compression_model_feasibility()
+
+    assert len(messages) == 1
+    assert "threshold: 0.30" in messages[0]

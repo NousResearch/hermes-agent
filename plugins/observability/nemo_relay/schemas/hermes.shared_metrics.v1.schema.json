@@ -1,0 +1,153 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:hermes-agent:schema:shared-metrics:v1",
+  "title": "Hermes Shared Metrics Package v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "package_id",
+    "install_id",
+    "period_start",
+    "period_end",
+    "generated_at",
+    "resource",
+    "metrics"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "hermes.shared_metrics.v1"
+    },
+    "package_id": {
+      "$ref": "#/$defs/uuid"
+    },
+    "install_id": {
+      "$ref": "#/$defs/uuid"
+    },
+    "period_start": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "period_end": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "generated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "resource": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "hermes_version"
+      ],
+      "properties": {
+        "hermes_version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        }
+      }
+    },
+    "metrics": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/model_call_counter"
+      }
+    }
+  },
+  "$defs": {
+    "uuid": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "model_call_counter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "type",
+        "dimensions",
+        "value"
+      ],
+      "properties": {
+        "name": {
+          "const": "hermes.model_call.count"
+        },
+        "type": {
+          "const": "counter"
+        },
+        "dimensions": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "call_role",
+            "locality",
+            "model_family",
+            "outcome",
+            "provider_family"
+          ],
+          "properties": {
+            "call_role": {
+              "const": "primary"
+            },
+            "locality": {
+              "enum": [
+                "local",
+                "remote",
+                "unknown"
+              ]
+            },
+            "model_family": {
+              "enum": [
+                "claude",
+                "deepseek",
+                "gemini",
+                "gemma",
+                "glm",
+                "gpt",
+                "grok",
+                "kimi",
+                "llama",
+                "minimax",
+                "mimo",
+                "mistral",
+                "nemotron",
+                "nova",
+                "o1",
+                "o3",
+                "o4",
+                "qwen",
+                "step",
+                "trinity",
+                "unknown"
+              ]
+            },
+            "outcome": {
+              "enum": [
+                "cancelled",
+                "failed",
+                "success"
+              ]
+            },
+            "provider_family": {
+              "enum": [
+                "aggregator",
+                "custom",
+                "direct",
+                "local",
+                "unknown"
+              ]
+            }
+          }
+        },
+        "value": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    }
+  }
+}

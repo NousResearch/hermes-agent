@@ -959,6 +959,33 @@ class TestClassifyApiError:
         result = classify_api_error(e, provider="openai-compatible")
         assert result.reason == FailoverReason.llama_cpp_grammar_pattern
 
+    def test_llama_cpp_grammar_error_without_status_code(self):
+        """The streaming path carries no status_code — still a grammar failure.
+
+        On a non-streaming request the OpenAI SDK raises BadRequestError with
+        status_code=400. On a *streaming* request LM Studio's identical error
+        surfaces as a bare APIError whose status_code is None. Gating the
+        predicate on ``status_code == 400`` therefore missed every streamed
+        request: the recovery branch never ran, the tool schemas were never
+        stripped, and the turn fell through to the fallback model instead of
+        staying on the local model.
+        """
+        e = MockAPIError(
+            'Engine protocol predict request returned 400: '
+            '{"error":{"code":400,"message":"Failed to initialize samplers: '
+            'failed to parse grammar","type":"invalid_request_error"}}',
+            status_code=None,
+        )
+        result = classify_api_error(e, provider="openai-compatible")
+        assert result.reason == FailoverReason.llama_cpp_grammar_pattern
+        assert result.retryable is True
+
+    def test_unrelated_error_without_status_code_is_not_grammar(self):
+        """Relaxing the status gate must not swallow unrelated errors."""
+        e = MockAPIError("connection reset by peer", status_code=None)
+        result = classify_api_error(e, provider="openai-compatible")
+        assert result.reason != FailoverReason.llama_cpp_grammar_pattern
+
     def test_llama_cpp_grammar_requires_400(self):
         """A 500 with the same phrase isn't the llama.cpp grammar case."""
         e = MockAPIError("error parsing grammar", status_code=500)

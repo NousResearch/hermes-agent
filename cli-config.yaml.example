@@ -1366,6 +1366,17 @@ display:
 
 
 # =============================================================================
+# Telemetry
+# =============================================================================
+# Shared metrics are disabled by default. When enabled, the current Phase 1
+# integration writes only allowlisted aggregate counters and immutable JSON
+# packages under $HERMES_HOME/telemetry/shared_metrics; it does not upload them.
+telemetry:
+  shared_metrics:
+    enabled: false
+
+
+# =============================================================================
 # Update Behavior
 # =============================================================================
 updates:

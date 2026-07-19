@@ -571,6 +571,7 @@ Used by the bundled LINE platform plugin (`plugins/platforms/line/`). See [Messa
 | `LINE_BUTTON_LABEL` | Postback button label (default: `Get answer`). |
 | `LINE_DELIVERED_TEXT` | Reply when an already-delivered postback is tapped again (default: `Already replied ✅`). |
 | `LINE_INTERRUPTED_TEXT` | Reply when a `/stop`-orphaned postback button is tapped (default: `Run was interrupted before completion.`). |
+| `LINE_SMART_MODALITY` | Opt-in reply modality routing: text turns get text replies, voice turns get voice replies (text suppressed), photo turns inherit the sender's last text/voice modality (default: `false`). Successful audio delivery requires `LINE_PUBLIC_URL`. |
 
 ### ntfy (push notifications)
 

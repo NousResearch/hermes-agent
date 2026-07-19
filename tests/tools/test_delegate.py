@@ -333,6 +333,58 @@ class TestDelegateTask(unittest.TestCase):
         mock_run.assert_called_once()
 
     @patch("tools.delegate_tool._run_single_child")
+    @patch("tools.delegate_tool._build_child_agent")
+    def test_single_task_threads_live_parent_messages_to_child_builder(
+        self, mock_build, mock_run
+    ):
+        mock_build.return_value = MagicMock()
+        mock_run.return_value = {
+            "task_index": 0,
+            "status": "completed",
+            "summary": "Done",
+            "api_calls": 1,
+            "duration_seconds": 0.1,
+        }
+        parent = _make_mock_parent()
+        messages = [{"role": "user", "content": "live parent turn"}]
+
+        delegate_task(
+            goal="Use live context",
+            parent_agent=parent,
+            parent_messages=messages,
+            background=False,
+        )
+
+        self.assertIs(mock_build.call_args.kwargs["parent_messages"], messages)
+
+    @patch("tools.delegate_tool._run_single_child")
+    @patch("tools.delegate_tool._build_child_agent")
+    def test_batch_threads_same_live_parent_messages_to_every_child_builder(
+        self, mock_build, mock_run
+    ):
+        mock_build.side_effect = [MagicMock(), MagicMock()]
+        mock_run.return_value = {
+            "task_index": 0,
+            "status": "completed",
+            "summary": "Done",
+            "api_calls": 1,
+            "duration_seconds": 0.1,
+        }
+        parent = _make_mock_parent()
+        messages = [{"role": "user", "content": "shared live parent turn"}]
+
+        delegate_task(
+            tasks=[{"goal": "A"}, {"goal": "B"}],
+            parent_agent=parent,
+            parent_messages=messages,
+            background=False,
+        )
+
+        self.assertEqual(mock_build.call_count, 2)
+        for call in mock_build.call_args_list:
+            self.assertIs(call.kwargs["parent_messages"], messages)
+
+    @patch("tools.delegate_tool._run_single_child")
     def test_batch_mode(self, mock_run):
         mock_run.side_effect = [
             {"task_index": 0, "status": "completed", "summary": "Result A", "api_calls": 2, "duration_seconds": 3.0},

@@ -2320,6 +2320,11 @@ DEFAULT_CONFIG = {
         # extras" without silently stripping MCP tools the parent already has.
         # Set to false for strict intersection.
         "inherit_mcp_toolsets": True,
+        # Parent history is never copied by default. Operators may opt in to a
+        # bounded projection of recent textual user/assistant message entries.
+        "context_mode": "explicit",
+        "context_recent_turns": 3,
+        "context_max_chars": 12000,
         "max_iterations": 50,  # per-subagent iteration cap (each subagent gets its own budget,
                                # independent of the parent's max_iterations)
         # Subagent summaries return to the parent's context verbatim. A batch

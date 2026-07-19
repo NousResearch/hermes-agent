@@ -12095,6 +12095,13 @@ def cmd_dashboard(args):
     # build gate, and start_server.
     _headless_backend = getattr(args, "headless_backend", False)
 
+    # Prevent Desktop's inherited env vars from hijacking the dashboard
+    # frontend:
+    #   - HERMES_WEB_DIST → Desktop SPA (blank/white page, PR #52947)
+    #   - HERMES_SERVE_HEADLESS = "1" → SPA disabled, "headless backend" error
+    os.environ.pop("HERMES_WEB_DIST", None)
+    os.environ.pop("HERMES_SERVE_HEADLESS", None)
+
     # ── Unified profile launch routing ────────────────────────────────
     # The dashboard is a MACHINE management surface: it can read/write any
     # profile via the per-request ?profile= scoping. Running one dashboard

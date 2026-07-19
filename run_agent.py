@@ -616,7 +616,7 @@ class AIAgent:
                 model=self.model,
                 model_config=self._session_init_model_config,
                 system_prompt=self._cached_system_prompt,
-                user_id=None,
+                user_id=getattr(self, "_user_id", None),
                 parent_session_id=self._parent_session_id,
                 cwd=_launch_cwd_for_session(source),
                 profile_name=_profile_for_session,
@@ -5572,16 +5572,6 @@ class AIAgent:
             return content
 
         summary = _multimodal_text_summary(result)
-        if tool_name == "computer_use":
-            return json.dumps({
-                "error": (
-                    "computer_use returned screenshot/image content, but the active "
-                    "model/provider does not support image input. Switch to a "
-                    "vision-capable model for desktop computer use, or use browser "
-                    "tools for browser tasks."
-                ),
-                "text_summary": summary,
-            })
 
         logger.warning(
             "Tool %s returned image content for non-vision model %s/%s; "

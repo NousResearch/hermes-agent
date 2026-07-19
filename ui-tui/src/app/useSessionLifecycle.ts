@@ -13,6 +13,7 @@ import type {
   SessionCloseResponse,
   SessionCreateResponse,
   SessionInflightTurn,
+  SessionPendingPrompt,
   SessionResumeResponse,
   SessionTitleResponse,
   SetupStatusResponse
@@ -66,6 +67,41 @@ export const hydrateLiveSessionInflight = (inflight?: null | SessionInflightTurn
   }
 
   turnController.hydrateStreamingText(assistant)
+}
+
+export const restorePendingPrompt = (prompt?: SessionPendingPrompt) => {
+  if (!prompt) {
+    return false
+  }
+
+  switch (prompt.event) {
+    case 'clarify.request':
+      patchOverlayState({
+        clarify: {
+          choices: prompt.payload.choices,
+          question: prompt.payload.question,
+          requestId: prompt.payload.request_id
+        }
+      })
+      patchUiState({ status: 'waiting for input…' })
+      return true
+    case 'sudo.request':
+      patchOverlayState({ sudo: { requestId: prompt.payload.request_id } })
+      patchUiState({ status: 'sudo password needed' })
+      return true
+    case 'secret.request':
+      patchOverlayState({
+        secret: {
+          envVar: prompt.payload.env_var,
+          prompt: prompt.payload.prompt,
+          requestId: prompt.payload.request_id
+        }
+      })
+      patchUiState({ status: 'secret input needed' })
+      return true
+  }
+
+  return false
 }
 
 export const signalFreshSessionBoundary = (
@@ -339,6 +375,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
             status: statusFromLiveSession(r.status, running),
             usage: usageFrom(info)
           })
+          restorePendingPrompt(r.pending_prompt)
           hydrateLiveSessionInflight(r.inflight)
           cancelResumeScrollRef.current?.()
           cancelResumeScrollRef.current = scheduleResumeScrollToBottom(scrollRef)
@@ -393,6 +430,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
               status: statusFromLiveSession(r.status, running),
               usage: usageFrom(info)
             })
+            restorePendingPrompt(r.pending_prompt)
             hydrateLiveSessionInflight(r.inflight)
             cancelResumeScrollRef.current?.()
             cancelResumeScrollRef.current = scheduleResumeScrollToBottom(scrollRef)

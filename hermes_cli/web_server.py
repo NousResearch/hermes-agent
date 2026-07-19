@@ -12181,6 +12181,106 @@ class MemoryReset(BaseModel):
     target: str = "all"
 
 
+
+# ── Extended credential-pool management (PR #66972) ━━━━━━━━━━━━━━━━━━━━━━━━
+# Security validators — use shared module if available (PR #66970),
+# otherwise inline fallback.
+try:
+    from hermes_cli.credential_security import (
+        validate_base_url_safe as _validate_pool_base_url,
+        validate_provider_name as _validate_pool_provider,
+        validate_pool_strategy,
+        SUPPORTED_POOL_STRATEGIES,
+    )
+except ImportError:
+    _BLOCKED_HOSTS = frozenset({"169.254.169.254", "metadata.google.internal", "metadata", "fd00:ec2::254"})
+    import urllib.parse as _pool_urlparse
+    def _validate_pool_base_url(url: str) -> str:
+        if not url or not url.strip(): return url
+        url = url.strip()
+        if "\x00" in url: raise ValueError("Null byte in URL")
+        p = _pool_urlparse.urlparse(url)
+        if (p.scheme or "").lower() not in ("http", "https", ""): raise ValueError(f"Blocked scheme: {p.scheme}")
+        h = (p.hostname or "").lower()
+        if h in _BLOCKED_HOSTS: raise ValueError(f"Blocked host: {h}")
+        if h.startswith("169.254."): raise ValueError(f"Link-local: {h}")
+        return url
+    def _validate_pool_provider(provider: str) -> str:
+        if not provider or not provider.strip(): raise HTTPException(status_code=400, detail="Provider name required")
+        provider = provider.strip().lower()
+        if "/" in provider or chr(92) in provider or ".." in provider or chr(0) in provider: raise HTTPException(status_code=400, detail="Invalid provider name")
+        safe = set("abcdefghijklmnopqrstuvwxyz0123456789-_")
+        if any(c not in safe for c in provider): raise HTTPException(status_code=400, detail="Invalid provider name")
+        return provider
+    SUPPORTED_POOL_STRATEGIES = frozenset({"fill_first", "round_robin", "least_used", "random"})
+    def validate_pool_strategy(s): 
+        s = (s or "").strip().lower()
+        if s not in SUPPORTED_POOL_STRATEGIES: raise ValueError(f"Unknown strategy: {s}")
+        return s
+
+
+@app.put("/api/credentials/pool/{provider}/strategy")
+async def set_pool_strategy(provider: str, body: Dict[str, Any]):
+    """Change the rotation strategy for a provider's credential pool."""
+    _provider = _validate_pool_provider(provider)
+    try:
+        strategy = validate_pool_strategy(body.get("strategy", ""))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    try:
+        pool = load_pool(_provider)
+        pool.strategy = strategy
+        save_pool(_provider, pool)
+        return {"ok": True, "provider": _provider, "strategy": strategy}
+    except Exception:
+        _log.exception("PUT /api/credentials/pool/%s/strategy failed", _provider)
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@app.post("/api/credentials/pool/{provider}/{entry_id}/reset")
+async def reset_pool_entry(provider: str, entry_id: str):
+    """Reset the cooldown/exhaustion status of a single pool entry."""
+    _provider = _validate_pool_provider(provider)
+    try:
+        pool = load_pool(_provider)
+        resolved = pool.resolve_target(entry_id)
+        if resolved is None:
+            raise HTTPException(status_code=404, detail=f"Entry {entry_id} not found")
+        resolved.status = STATUS_OK
+        resolved.last_error = None
+        resolved.last_error_code = None
+        resolved.last_error_reset_at = None
+        save_pool(_provider, pool)
+        return {"ok": True, "entry_id": entry_id, "status": "ok"}
+    except HTTPException:
+        raise
+    except Exception:
+        _log.exception("POST /api/credentials/pool/%s/%s/reset failed", _provider, entry_id)
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@app.get("/api/credentials/pool/{provider}/health")
+async def get_pool_health(provider: str):
+    """Return a health summary for a provider's credential pool."""
+    _provider = _validate_pool_provider(provider)
+    try:
+        pool = load_pool(_provider)
+        entries = list(pool.entries())
+        total = len(entries)
+        available = sum(1 for e in entries if getattr(e, "status", "ok") == STATUS_OK)
+        exhausted = total - available
+        strategy = getattr(pool, "strategy", "fill_first")
+        return {
+            "total": total,
+            "available": available,
+            "exhausted": exhausted,
+            "strategy": strategy,
+            "provider": _provider,
+        }
+    except Exception:
+        _log.exception("GET /api/credentials/pool/%s/health failed", _provider)
+        raise HTTPException(status_code=500, detail="Internal server error")
+
 @app.get("/api/memory")
 async def get_memory_status():
     cfg = load_config()

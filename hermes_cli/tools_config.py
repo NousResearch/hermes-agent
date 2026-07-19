@@ -1267,6 +1267,7 @@ def _run_post_setup(post_setup_key: str):
             # Import lazily so the tools_config UI doesn't pull in the full
             # browser_tool module at import time.
             from tools.browser_tool import (
+                _browsers_path_env_overrides,
                 _chromium_installed,
                 _running_in_docker,
             )
@@ -1311,11 +1312,17 @@ def _run_post_setup(post_setup_key: str):
             if local_ab.exists()
             else [npx_bin, "-y", "agent-browser", "install", "--with-deps"]
         )
+        # Honour browser.browsers_path so the ~170MB download lands where the
+        # runtime will later look for it (_chromium_search_roots consults the
+        # same key). Without this the wizard writes to Playwright's default
+        # cache on the system drive while browser_tool searches elsewhere.
+        install_env = {**os.environ, **_browsers_path_env_overrides()}
         try:
             result = subprocess.run(
                 install_cmd,
                 capture_output=True, text=True, cwd=str(PROJECT_ROOT), timeout=600,
                 creationflags=_post_setup_no_window_flags(),
+                env=install_env,
             )
             if result.returncode == 0:
                 _print_success("    Chromium installed")

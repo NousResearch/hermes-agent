@@ -219,6 +219,14 @@ The browser tool uses `agent-browser` (a Node helper) to drive Chromium. On Wind
 - The installer puts `agent-browser` on PATH via npm.
 - `shutil.which("agent-browser", path=...)` picks up the `.cmd` shim automatically — `CreateProcessW` can't execute an extensionless shebang, so Hermes always resolves to the `.CMD` wrapper. Don't manually invoke the shebang script; always go through the `.cmd`.
 - Playwright Chromium is auto-installed on first run (`npx playwright install chromium`). If installation fails, `hermes doctor` surfaces it with a fix-it hint.
+- Chromium, the headless shell, and ffmpeg total roughly 500 MB and land in `%LOCALAPPDATA%\ms-playwright\` on the system drive by default. If C: is tight, move them:
+
+  ```yaml
+  browser:
+    browsers_path: "D:/ms-playwright"
+  ```
+
+  See [Browser Binary Location](./features/browser.md#browser-binary-location). The setting covers both the download and browser startup, and it persists across updates. For the very first install (`install.ps1` runs `npx playwright install chromium` before you have a `config.yaml`), set the standard Playwright variable in the same shell before running the installer: `$env:PLAYWRIGHT_BROWSERS_PATH = "D:\ms-playwright"`. Put the same directory in `browser.browsers_path` afterwards so it also applies at runtime.
 
 ## Running Hermes on Windows — practical notes
 

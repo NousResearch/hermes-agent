@@ -631,6 +631,31 @@ browser:
 
 When enabled, recording starts automatically on the first `browser_navigate` and saves to `~/.hermes/browser_recordings/` when the session closes. Works in both local and cloud (Browserbase) modes. Recordings older than 72 hours are automatically cleaned up.
 
+## Browser Binary Location
+
+Local mode drives a Playwright-managed Chromium build. Playwright downloads it, plus a headless shell and ffmpeg, into a fixed per-platform cache:
+
+| Platform | Default location | Approximate size |
+|----------|------------------|------------------|
+| Windows | `%LOCALAPPDATA%\ms-playwright\` | ~500 MB |
+| Linux | `~/.cache/ms-playwright/` | ~500 MB |
+| macOS | `~/Library/Caches/ms-playwright/` | ~500 MB |
+
+On a machine with a small system drive that is a lot of space in a place you may not want it. Point it somewhere else:
+
+```yaml
+browser:
+  browsers_path: "D:/ms-playwright"  # default: "" (Playwright's per-platform cache)
+```
+
+The setting applies both when Hermes downloads the browser and when it launches it, and it survives Hermes updates because it lives in `config.yaml`. `~` is expanded; anything else is passed through as written, so Windows drive-letter paths work.
+
+If the standard Playwright environment variable `PLAYWRIGHT_BROWSERS_PATH` is already set, it wins and the config key is ignored. That keeps the Docker image (which bakes Chromium into `/opt/hermes/.playwright`) and any shell-level override working unchanged.
+
+:::note
+Changing `browsers_path` after Chromium is already installed does not move the existing download. Hermes will fetch a fresh copy into the new directory on next use; delete the old cache directory yourself to reclaim the space.
+:::
+
 ## Headed Mode (Visible Browser Window)
 
 By default, the local browser runs headless. Enable headed mode to get a visible Chromium window you can watch and interact with:

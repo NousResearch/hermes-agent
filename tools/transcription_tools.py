@@ -29,6 +29,7 @@ Usage::
 
 import logging
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -1895,8 +1896,12 @@ def _extract_transcript_text(transcription: Any) -> str:
     if text is None:
         text = str(transcription).strip()
 
-    marker = "<asr_text>"
-    if text.lstrip().lower().startswith("language") and marker in text:
-        text = text.split(marker, 1)[1].strip()
+    match = re.match(
+        r"\s*language\s+[\w.-]+(?:\s*<audio_language>[^<]*</audio_language>)?\s*<asr_text>\s*(?P<text>.*)",
+        text,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    if match:
+        text = match.group("text").strip()
 
     return text

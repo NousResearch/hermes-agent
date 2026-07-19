@@ -1562,6 +1562,15 @@ class TestExtractTranscriptText:
 
         assert result == "The user literally said <asr_text> while reading markup."
 
+    def test_keeps_language_sentence_with_marker_literal(self):
+        from tools.transcription_tools import _extract_transcript_text
+
+        result = _extract_transcript_text(
+            "Language teachers may say <asr_text> when discussing markup.",
+        )
+
+        assert result == "Language teachers may say <asr_text> when discussing markup."
+
 
 # Shell safety — shlex.split on auto-detected templates
 # ============================================================================

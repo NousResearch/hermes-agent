@@ -83,6 +83,12 @@ The ONLY import surface is `@hermes/plugin-sdk` (plus `react` /
   (renders below Artifacts, lights up at the route) — and/or a
   `PALETTE_AREA` command calling `host.navigate('/my-page')`.
 - `ctx.storage.get/set/remove` — persistence namespaced to your plugin.
+- `ctx.i18n.register({ en, ja, ... })` — ship your OWN locale bundles, scoped
+  to your plugin (never edit core `en.ts`). Values are literal strings or
+  interpolator functions; nested trees are addressed by dot-path. Read them
+  reactively in components with `usePluginI18n(id)` returning `t('key', ...args)`
+  (re-renders on a locale switch), or via `ctx.i18n.t` in handlers/stores.
+  Resolution follows the app's active locale, then your `en`, then the raw key.
 - Data: `useQuery`/`useMutation`/`useQueryClient`/`queryClient` (the app's ONE
   React Query client — cache, dedupe, `refetchInterval`, invalidate like core;
   never hand-roll a poll loop), plus `atom`/`computed` for plugin-local state.

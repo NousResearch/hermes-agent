@@ -383,6 +383,22 @@ class TestRenameSkill:
         assert 'name: "new-skill"' in content
         assert "name: old-skill" not in content
 
+    def test_rename_rolls_back_when_cron_reference_rewrite_fails(self, tmp_path):
+        with _skill_dir(tmp_path):
+            _create_skill("old-skill", _skill_content("old-skill"))
+            with patch(
+                "cron.jobs.rewrite_skill_refs",
+                side_effect=OSError("jobs.json write failed"),
+            ):
+                result = _rename_skill("old-skill", "new-skill")
+
+        assert result["success"] is False
+        assert "jobs.json write failed" in result["error"]
+        assert not (tmp_path / "new-skill").exists()
+        old_skill_md = tmp_path / "old-skill" / "SKILL.md"
+        assert old_skill_md.exists()
+        assert "name: old-skill" in old_skill_md.read_text()
+
     def test_rename_rejects_existing_target_and_preserves_source(self, tmp_path):
         with _skill_dir(tmp_path):
             _create_skill("old-skill", _skill_content("old-skill"))

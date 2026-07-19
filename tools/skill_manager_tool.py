@@ -420,17 +420,9 @@ def _rewrite_cron_skill_refs_after_rename(
     if old_frontmatter_name and old_frontmatter_name != old_name:
         consolidated[old_frontmatter_name] = new_name
 
-    try:
-        from cron.jobs import rewrite_skill_refs
+    from cron.jobs import rewrite_skill_refs
 
-        rewrite_skill_refs(consolidated=consolidated, pruned=[])
-    except Exception as exc:
-        logger.warning(
-            "Failed to rewrite cron skill references after renaming %s to %s: %s",
-            old_name,
-            new_name,
-            exc,
-        )
+    rewrite_skill_refs(consolidated=consolidated, pruned=[])
 
 
 def _pinned_guard(name: str) -> Optional[str]:
@@ -1294,6 +1286,17 @@ def _rename_skill(name: str, new_name: str) -> Dict[str, Any]:
             _move_skill_dir(target_dir, skill_dir)
             moved = False
             return {"success": False, "error": scan_error}
+
+        # Cron references are part of the rename transaction.  Returning
+        # success with stale refs would make scheduled jobs silently run
+        # without the skill they were configured to load.  Keep this inside
+        # the rollback boundary so a failed jobs.json save restores both the
+        # directory name and the original frontmatter.
+        _rewrite_cron_skill_refs_after_rename(
+            name,
+            new_name,
+            old_frontmatter_name,
+        )
     except Exception as exc:
         if moved:
             try:
@@ -1303,8 +1306,6 @@ def _rename_skill(name: str, new_name: str) -> Dict[str, Any]:
             except Exception:
                 logger.error("Failed to roll back skill rename %s -> %s", name, new_name, exc_info=True)
         return {"success": False, "error": f"Failed to rename skill '{name}' to '{new_name}': {exc}"}
-
-    _rewrite_cron_skill_refs_after_rename(name, new_name, old_frontmatter_name)
 
     return {
         "success": True,

@@ -7414,11 +7414,57 @@ class TestDeleteSessionEndpoint:
             db.close()
 
     def test_delete_existing_session(self):
+        from hermes_constants import get_hermes_home
+
         self._seed(["real_one"])
+        sessions_dir = get_hermes_home() / "sessions"
+        sessions_dir.mkdir(parents=True, exist_ok=True)
+        (sessions_dir / "session_real_one.json").write_text(
+            '{"messages":[{"content":"secret-token"}]}',
+            encoding="utf-8",
+        )
+        (sessions_dir / "real_one.jsonl").write_text("{}\n", encoding="utf-8")
+        (sessions_dir / "request_dump_real_one_001.json").write_text("{}", encoding="utf-8")
+
         resp = self.auth_client.delete("/api/sessions/real_one")
         assert resp.status_code == 200
         assert resp.json().get("ok") is True
         assert not self._exists("real_one")
+        assert not (sessions_dir / "session_real_one.json").exists()
+        assert not (sessions_dir / "real_one.jsonl").exists()
+        assert not (sessions_dir / "request_dump_real_one_001.json").exists()
+
+    def test_delete_named_profile_session_and_transcript(self):
+        from hermes_cli import profiles as profiles_mod
+        from hermes_state import SessionDB
+
+        profile_home = profiles_mod.get_profile_dir("worker")
+        sessions_dir = profile_home / "sessions"
+        sessions_dir.mkdir(parents=True, exist_ok=True)
+        db_path = profile_home / "state.db"
+
+        db = SessionDB(db_path=db_path)
+        try:
+            db.create_session(session_id="named_one", source="cli")
+        finally:
+            db.close()
+
+        transcript = sessions_dir / "session_named_one.json"
+        transcript.write_text(
+            '{"messages":[{"content":"secret-token"}]}',
+            encoding="utf-8",
+        )
+
+        resp = self.auth_client.delete("/api/sessions/named_one?profile=worker")
+        assert resp.status_code == 200
+        assert resp.json().get("ok") is True
+
+        db = SessionDB(db_path=db_path)
+        try:
+            assert db.get_session("named_one") is None
+        finally:
+            db.close()
+        assert not transcript.exists()
 
     def test_delete_absent_session_is_idempotent(self):
         # PREMISE / regression: deleting a row that no longer exists must NOT

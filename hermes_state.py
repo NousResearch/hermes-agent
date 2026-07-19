@@ -6413,15 +6413,19 @@ class SessionDB:
     def _remove_session_files(sessions_dir: Optional[Path], session_id: str) -> None:
         """Remove on-disk transcript files for a session.
 
-        Cleans up ``{session_id}.json``, ``{session_id}.jsonl``, and any
-        ``request_dump_{session_id}_*.json`` files left by the gateway.
+        Cleans up ``session_{session_id}.json``, ``{session_id}.json``,
+        ``{session_id}.jsonl``, and any ``request_dump_{session_id}_*.json``
+        files left by the gateway.
         Silently skips files that don't exist and swallows OSError so a
         filesystem hiccup never blocks a DB operation.
         """
         if sessions_dir is None:
             return
-        for suffix in (".json", ".jsonl"):
-            p = sessions_dir / f"{session_id}{suffix}"
+        for p in (
+            sessions_dir / f"session_{session_id}.json",
+            sessions_dir / f"{session_id}.json",
+            sessions_dir / f"{session_id}.jsonl",
+        ):
             try:
                 p.unlink(missing_ok=True)
             except OSError:

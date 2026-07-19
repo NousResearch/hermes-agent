@@ -2896,11 +2896,13 @@ class TestBulkDeleteSessions:
         bulk-delete CLI / web flows don't leak files."""
         db.create_session(session_id="s1", source="cli")
         db.create_session(session_id="s2", source="cli")
+        (tmp_path / "session_s1.json").write_text("{}")
         (tmp_path / "s1.jsonl").write_text("")
         (tmp_path / "s2.json").write_text("{}")
 
         deleted = db.delete_sessions(["s1", "s2"], sessions_dir=tmp_path)
         assert deleted == 2
+        assert not (tmp_path / "session_s1.json").exists()
         assert not (tmp_path / "s1.jsonl").exists()
         assert not (tmp_path / "s2.json").exists()
 

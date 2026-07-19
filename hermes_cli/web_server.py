@@ -10611,6 +10611,14 @@ def _open_session_db_for_profile(profile: Optional[str]):
     return SessionDB(db_path=Path(home) / "state.db")
 
 
+def _sessions_dir_for_profile(profile: Optional[str]) -> Path:
+    """Return the on-disk transcript directory for a profile-scoped session."""
+    if not profile:
+        return get_hermes_home() / "sessions"
+    _name, home = _cron_profile_home(profile)
+    return Path(home) / "sessions"
+
+
 @app.get("/api/sessions/{session_id}")
 async def get_session_detail(session_id: str, profile: Optional[str] = None):
     db = _open_session_db_for_profile(profile)
@@ -10704,7 +10712,7 @@ async def delete_session_endpoint(session_id: str, profile: Optional[str] = None
             sid = db.resolve_session_id(session_id)
             if not sid:
                 return {"ok": True, "already_absent": True}
-            db.delete_session(sid)
+            db.delete_session(sid, sessions_dir=_sessions_dir_for_profile(profile))
             return {"ok": True}
         finally:
             db.close()

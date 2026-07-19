@@ -2802,6 +2802,78 @@ def _redact_browser_output(value: Any) -> Any:
 # Browser Tool Functions
 # ============================================================================
 
+def _available_memory_mb(meminfo_path: str = "/proc/meminfo") -> Optional[int]:
+    """Best-effort MemAvailable (MB) from /proc/meminfo.
+
+    Returns None when unavailable (non-Linux hosts or any read error) so
+    callers fail open and browser behavior stays unchanged.
+    """
+    try:
+        with open(meminfo_path, "r", encoding="utf-8") as meminfo:
+            for line in meminfo:
+                if line.startswith("MemAvailable:"):
+                    return int(line.split()[1]) // 1024
+    except Exception:
+        return None
+    return None
+
+
+def _get_min_available_mb() -> int:
+    """Return ``browser.min_available_mb`` from config.yaml (0 = disabled).
+
+    Read on demand rather than cached: it is only consulted on a cold
+    browser start, and reading each time lets config edits take effect
+    without a gateway restart (read_raw_config is mtime-memoised).
+    """
+    try:
+        from hermes_cli.config import read_raw_config
+        cfg = read_raw_config()
+        val = cfg_get(cfg, "browser", "min_available_mb")
+        if val is not None:
+            return max(int(val), 0)
+    except Exception as e:
+        logger.debug("Could not read browser.min_available_mb from config: %s", e)
+    return 0
+
+
+def _cold_start_lowmem_error(nav_session_key: str, effective_task_id: str) -> Optional[str]:
+    """Return a refusal message when a COLD browser start should be blocked.
+
+    A cold start spawns Chromium, which needs roughly 300 to 400 MB. On a
+    small host (for example a 1 GB single-box VPS) that spike can OOM-kill
+    the gateway mid-task. When ``browser.min_available_mb`` is set above 0
+    and available memory is below it, refuse only the cold start and steer
+    the agent to the lighter fetch tools. Reusing an already-open session is
+    always allowed, and everything fails open (None) on any error.
+    """
+    try:
+        min_avail_mb = _get_min_available_mb()
+        if min_avail_mb <= 0:
+            return None
+        is_cold_start = (
+            nav_session_key not in _active_sessions
+            and effective_task_id not in _active_sessions
+        )
+        if not is_cold_start:
+            return None
+        avail_mb = _available_memory_mb()
+        if avail_mb is None or avail_mb >= min_avail_mb:
+            return None
+        logger.warning(
+            "browser_navigate: refusing cold browser start, %sMB free < %sMB "
+            "browser.min_available_mb",
+            avail_mb, min_avail_mb,
+        )
+        return (
+            f"Browser unavailable: only {avail_mb}MB RAM free (below the "
+            f"{min_avail_mb}MB browser.min_available_mb floor for launching "
+            f"Chromium safely on this host). Use web_extract to read this "
+            f"page's content, or web_search, instead of the browser."
+        )
+    except Exception:
+        return None
+
+
 def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
     """
     Navigate to a URL in the browser.
@@ -2907,6 +2979,14 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
             url,
             type(_get_cloud_provider()).__name__ if _get_cloud_provider() else "none",
         )
+
+    # Low-memory guard (``browser.min_available_mb`` in config.yaml, 0 =
+    # disabled): refuse a cold Chromium start on a memory-starved host so
+    # the launch spike cannot OOM-kill the gateway; session reuse is never
+    # blocked and any read error fails open.
+    _lowmem_error = _cold_start_lowmem_error(nav_session_key, effective_task_id)
+    if _lowmem_error is not None:
+        return json.dumps({"success": False, "error": _lowmem_error})
 
     # Get session info to check if this is a new session
     # (will create one with features logged if not exists)

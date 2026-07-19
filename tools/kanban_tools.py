@@ -351,6 +351,7 @@ def _task_summary_dict(kb, conn, task) -> dict[str, Any]:
         "created_at": task.created_at,
         "started_at": task.started_at,
         "completed_at": task.completed_at,
+        "completion_outcome": task.completion_outcome,
         "current_run_id": task.current_run_id,
         "model_override": task.model_override,
         "parents": parents,
@@ -396,6 +397,7 @@ def _handle_show(args: dict, **kw) -> str:
                     "started_at": t.started_at,
                     "completed_at": t.completed_at,
                     "result": t.result,
+                    "completion_outcome": t.completion_outcome,
                     "current_run_id": t.current_run_id,
                     "model_override": t.model_override,
                 }
@@ -514,6 +516,7 @@ def _handle_complete(args: dict, **kw) -> str:
     summary = args.get("summary")
     metadata = args.get("metadata")
     result = args.get("result")
+    outcome = args.get("outcome")
     if summary:
         summary = redact_sensitive_text(str(summary), force=True)
     if result:
@@ -627,7 +630,7 @@ def _handle_complete(args: dict, **kw) -> str:
                 ok = kb.complete_task(
                     conn, tid,
                     result=result, summary=summary, metadata=metadata,
-                    created_cards=created_cards,
+                    outcome=outcome, created_cards=created_cards,
                     expected_run_id=_worker_run_id(tid),
                 )
             except kb.ArtifactPreservationError as artifact_err:
@@ -1074,6 +1077,7 @@ def _handle_create(args: dict, **kw) -> str:
         )
     body = args.get("body")
     parents = args.get("parents") or []
+    parent_outcomes = args.get("parent_outcomes") or None
     tenant = args.get("tenant") or os.environ.get("HERMES_TENANT")
     # Stamp the originating session id when the agent loop runs under
     # ACP (which sets HERMES_SESSION_ID before invoking tools). NULL on
@@ -1097,6 +1101,9 @@ def _handle_create(args: dict, **kw) -> str:
     if bool_error:
         return tool_error(bool_error)
     idempotency_key = args.get("idempotency_key")
+    implementation_claim_key = args.get("implementation_claim_key")
+    output_root = args.get("output_root")
+    review_input_fingerprint = args.get("review_input_fingerprint")
     max_runtime_seconds = args.get("max_runtime_seconds")
     initial_status = args.get("initial_status") or "running"
     skills = args.get("skills")
@@ -1140,6 +1147,7 @@ def _handle_create(args: dict, **kw) -> str:
                 body=body,
                 assignee=str(assignee),
                 parents=tuple(parents),
+                parent_outcomes=parent_outcomes,
                 tenant=tenant,
                 priority=int(priority) if priority is not None else 0,
                 workspace_kind=str(workspace_kind),
@@ -1147,6 +1155,9 @@ def _handle_create(args: dict, **kw) -> str:
                 project_id=project_id,
                 triage=triage,
                 idempotency_key=idempotency_key,
+                implementation_claim_key=implementation_claim_key,
+                output_root=output_root,
+                review_input_fingerprint=review_input_fingerprint,
                 max_runtime_seconds=(
                     int(max_runtime_seconds)
                     if max_runtime_seconds is not None else None
@@ -1314,8 +1325,15 @@ def _handle_link(args: dict, **kw) -> str:
     try:
         kb, conn = _connect(board=board)
         try:
-            kb.link_tasks(conn, parent_id=parent_id, child_id=child_id)
-            return _ok(parent_id=parent_id, child_id=child_id)
+            if "when_outcomes" in args:
+                kb.link_tasks(
+                    conn, parent_id=parent_id, child_id=child_id,
+                    when_outcomes=args["when_outcomes"],
+                )
+            else:
+                kb.link_tasks(conn, parent_id=parent_id, child_id=child_id)
+            return _ok(parent_id=parent_id, child_id=child_id,
+                       when_outcomes=args.get("when_outcomes"))
         finally:
             conn.close()
     except ValueError as e:
@@ -1471,6 +1489,15 @@ KANBAN_COMPLETE_SCHEMA = {
                     "task.result). Use ``summary`` instead when "
                     "possible; this exists for compatibility with "
                     "callers that still set --result on the CLI."
+                ),
+            },
+            "outcome": {
+                "type": "string",
+                "description": (
+                    "Optional structured completion outcome. Conditional child "
+                    "links promote only when this value matches their configured "
+                    "when_outcomes. Use 'review_required' when completed work "
+                    "should unlock a separate reviewer task."
                 ),
             },
             "created_cards": {
@@ -1757,6 +1784,17 @@ KANBAN_CREATE_SCHEMA = {
                     "synthesizer task."
                 ),
             },
+            "parent_outcomes": {
+                "type": "object",
+                "additionalProperties": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                },
+                "description": (
+                    "Optional map from a parent id in parents to accepted "
+                    "completion outcomes."
+                ),
+            },
             "tenant": {
                 "type": "string",
                 "description": (
@@ -1810,6 +1848,27 @@ KANBAN_CREATE_SCHEMA = {
                     "If a non-archived task with this key already "
                     "exists, return that task's id instead of creating "
                     "a duplicate. Useful for retry-safe automation."
+                ),
+            },
+            "implementation_claim_key": {
+                "type": "string",
+                "description": (
+                    "Stable project-goal/round/workstream claim key. Only one "
+                    "matching implementation worker may run at a time."
+                ),
+            },
+            "output_root": {
+                "type": "string",
+                "description": (
+                    "Optional writable output root. A running task with the "
+                    "same canonical root blocks a second worker."
+                ),
+            },
+            "review_input_fingerprint": {
+                "type": "string",
+                "description": (
+                    "Artifact fingerprint for Review/QA input. An unchanged "
+                    "fingerprint remains waiting instead of spawning again."
                 ),
             },
             "max_runtime_seconds": {
@@ -1898,13 +1957,21 @@ KANBAN_LINK_SCHEMA = {
     "description": (
         "Add a parent→child dependency edge after both tasks already "
         "exist. The child won't promote to 'ready' until all parents "
-        "are 'done'. Cycles and self-links are rejected."
+        "are satisfied. Cycles and self-links are rejected."
     ),
     "parameters": {
         "type": "object",
         "properties": {
             "parent_id": {"type": "string", "description": "Parent task id."},
             "child_id":  {"type": "string", "description": "Child task id."},
+            "when_outcomes": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "Optional accepted parent completion outcomes. Omit for "
+                    "the backward-compatible any-done dependency."
+                ),
+            },
             "board": _board_schema_prop(),
         },
         "required": ["parent_id", "child_id"],

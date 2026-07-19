@@ -21,6 +21,7 @@ import os
 import shlex
 import sys
 import time
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Optional
 
@@ -75,6 +76,7 @@ def _task_to_dict(t: kb.Task) -> dict[str, Any]:
         "started_at": t.started_at,
         "completed_at": t.completed_at,
         "result": t.result,
+        "completion_outcome": t.completion_outcome,
         "skills": list(t.skills) if t.skills else [],
         "max_retries": t.max_retries,
         "session_id": t.session_id,
@@ -226,6 +228,26 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
 
     # --- init ---
     sub.add_parser("init", help="Create kanban.db if missing (idempotent)")
+
+    # --- project-loop (explicit opt-in; ordinary cards remain single-round) ---
+    p_project_loop = sub.add_parser(
+        "project-loop",
+        help="Configure or inspect a bounded project-goal continuation loop",
+    )
+    project_loop_sub = p_project_loop.add_subparsers(dest="project_loop_action")
+    pl_configure = project_loop_sub.add_parser(
+        "configure", help="Persist a goal and bind its current Verify card"
+    )
+    pl_configure.add_argument("project_key")
+    pl_configure.add_argument("--goal", required=True)
+    pl_configure.add_argument("--accept", action="append", required=True)
+    pl_configure.add_argument("--verify-task", required=True)
+    pl_configure.add_argument("--max-rounds", type=int, required=True)
+    pl_configure.add_argument("--max-tasks", type=int, required=True)
+    pl_configure.add_argument("--json", action="store_true")
+    pl_show = project_loop_sub.add_parser("show", help="Show persisted loop state")
+    pl_show.add_argument("project_key")
+    pl_show.add_argument("--json", action="store_true")
 
     # --- boards (new in v2: multi-project support) ---
     p_boards = sub.add_parser(
@@ -500,6 +522,10 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_link = sub.add_parser("link", help="Add a parent->child dependency")
     p_link.add_argument("parent_id")
     p_link.add_argument("child_id")
+    p_link.add_argument(
+        "--when-outcome", action="append", default=None,
+        help="Only satisfy this dependency when the parent completes with this outcome (repeatable)",
+    )
     p_unlink = sub.add_parser("unlink", help="Remove a parent->child dependency")
     p_unlink.add_argument("parent_id")
     p_unlink.add_argument("child_id")
@@ -550,6 +576,10 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_complete.add_argument("--metadata", default=None,
                             help='JSON dict of structured facts (e.g. \'{"changed_files": [...], '
                                  '"tests_run": 12}\'). Stored on the closing run.')
+    p_complete.add_argument(
+        "--outcome", default=None,
+        help="Structured completion outcome used by conditional child links",
+    )
 
     p_edit = sub.add_parser(
         "edit",
@@ -587,6 +617,24 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
             "triage to break unblock loops. Omit for a generic block."
         ),
     )
+
+    p_block.add_argument("--pattern-key", default=None,
+                         help="Stable same-cause key for repeated-pattern coordination")
+    p_block.add_argument("--root-fix", default=None,
+                         help="Existing root-fix task id for this pattern")
+    p_block.add_argument("--high-risk", action="store_true",
+                         help="Escalate this pattern on its first sighting")
+
+    p_repair = sub.add_parser("repair", help="Create or merge a bounded Review/QA repair card")
+    p_repair.add_argument("finding_set_key")
+    p_repair.add_argument("title")
+    p_repair.add_argument("findings", nargs="+")
+    p_repair.add_argument("--assignee", default=None)
+    p_repair.add_argument("--workspace", default="scratch")
+
+    p_review_input = sub.add_parser("review-input", help="Publish changed input and queue review")
+    p_review_input.add_argument("task_id")
+    p_review_input.add_argument("fingerprint")
 
     p_schedule = sub.add_parser("schedule", help="Park one or more tasks in Scheduled (waiting on time, not human input)")
     p_schedule.add_argument("task_id")
@@ -958,6 +1006,7 @@ def kanban_command(args: argparse.Namespace) -> int:
 
         handlers = {
             "init":     _cmd_init,
+            "project-loop": _cmd_project_loop,
             "create":   _cmd_create,
             "swarm":    _cmd_swarm,
             "list":     _cmd_list,
@@ -978,6 +1027,8 @@ def kanban_command(args: argparse.Namespace) -> int:
             "complete": _cmd_complete,
             "edit":     _cmd_edit,
             "block":    _cmd_block,
+            "repair":   _cmd_repair,
+            "review-input": _cmd_review_input,
             "schedule": _cmd_schedule,
             "unblock":  _cmd_unblock,
             "promote":  _cmd_promote,
@@ -1256,6 +1307,43 @@ def _parse_duration(val) -> Optional[int]:
             raise ValueError(f"malformed duration {val!r}") from exc
         return int(n * units[s[-1]])
     raise ValueError(f"malformed duration {val!r} (expected 30s, 5m, 2h, 1d, or a number)")
+
+
+def _cmd_project_loop(args: argparse.Namespace) -> int:
+    action = getattr(args, "project_loop_action", None)
+    if action not in {"configure", "show"}:
+        raise ValueError("project-loop requires 'configure' or 'show'")
+    with kb.connect_closing() as conn:
+        if action == "configure":
+            state = kb.configure_project_loop(
+                conn,
+                project_key=args.project_key,
+                goal=args.goal,
+                acceptance_criteria=args.accept,
+                verify_task_id=args.verify_task,
+                max_rounds=args.max_rounds,
+                max_tasks=args.max_tasks,
+            )
+        else:
+            state = kb.get_project_loop(conn, args.project_key)
+            if state is None:
+                raise ValueError(f"unknown project loop: {args.project_key}")
+        payload = asdict(state)
+        if args.json:
+            print(json.dumps(payload, ensure_ascii=False))
+        else:
+            print(
+                f"{state.project_key}: {state.status} "
+                f"rounds={state.rounds_used}/{state.max_rounds} "
+                f"tasks={state.tasks_created}/{state.max_tasks}"
+            )
+            print(f"Goal: {state.goal}")
+            for criterion in state.acceptance_criteria:
+                print(f"  - {criterion}")
+            print(f"Current Verify: {state.current_verify_task_id}")
+            if state.stop_reason:
+                print(f"Stop reason: {state.stop_reason}")
+    return 0
 
 
 def _cmd_init(args: argparse.Namespace) -> int:
@@ -1822,7 +1910,14 @@ def _cmd_diagnostics(args: argparse.Namespace) -> int:
 
 def _cmd_link(args: argparse.Namespace) -> int:
     with kb.connect_closing() as conn:
-        kb.link_tasks(conn, args.parent_id, args.child_id)
+        when_outcomes = getattr(args, "when_outcome", None)
+        if when_outcomes is None:
+            kb.link_tasks(conn, args.parent_id, args.child_id)
+        else:
+            kb.link_tasks(
+                conn, args.parent_id, args.child_id,
+                when_outcomes=when_outcomes,
+            )
     print(f"Linked {args.parent_id} -> {args.child_id}")
     return 0
 
@@ -1973,14 +2068,16 @@ def _cmd_complete(args: argparse.Namespace) -> int:
         return 1
     summary = getattr(args, "summary", None)
     raw_meta = getattr(args, "metadata", None)
+    outcome = getattr(args, "outcome", None)
     # Guard: structured handoff fields are per-run, so they'd be
     # copy-pasted identically across N runs — almost always a footgun.
     # Refuse instead of silently doing the wrong thing.
-    if len(ids) > 1 and (summary or raw_meta):
+    if len(ids) > 1 and (summary or raw_meta or outcome):
         print(
-            "kanban: --summary / --metadata are per-task and can't be used "
-            "with multiple ids (would apply the same handoff to every task). "
-            "Complete tasks one at a time, or drop the flags for the bulk close.",
+            "kanban: --summary / --metadata / --outcome are per-task and can't "
+            "be used with multiple ids (would apply the same handoff to every "
+            "task). Complete tasks one at a time, or drop the flags for the "
+            "bulk close.",
             file=sys.stderr,
         )
         return 2
@@ -2001,6 +2098,7 @@ def _cmd_complete(args: argparse.Namespace) -> int:
                 result=args.result,
                 summary=summary,
                 metadata=metadata,
+                outcome=outcome,
                 expected_run_id=_worker_run_id_for(tid),
             ):
                 failed.append(tid)
@@ -2054,6 +2152,9 @@ def _cmd_block(args: argparse.Namespace) -> int:
                 reason=reason,
                 kind=kind,
                 expected_run_id=_worker_run_id_for(tid),
+                pattern_key=getattr(args, "pattern_key", None),
+                root_fix_task_id=getattr(args, "root_fix", None),
+                pattern_high_risk=bool(getattr(args, "high_risk", False)),
             ):
                 failed.append(tid)
                 print(f"cannot block {tid}", file=sys.stderr)
@@ -2073,6 +2174,30 @@ def _cmd_block(args: argparse.Namespace) -> int:
                 else:
                     print(f"Blocked {tid}{suffix}")
     return 0 if not failed else 1
+
+
+def _cmd_repair(args: argparse.Namespace) -> int:
+    ws_kind, ws_path = _parse_workspace_flag(args.workspace)
+    with kb.connect_closing() as conn:
+        tid = kb.create_or_merge_bounded_repair(
+            conn, finding_set_key=args.finding_set_key, title=args.title,
+            findings=args.findings, assignee=args.assignee,
+            created_by=_profile_author(), workspace_kind=ws_kind,
+            workspace_path=ws_path,
+        )
+    print(f"Repair {tid}")
+    return 0
+
+
+def _cmd_review_input(args: argparse.Namespace) -> int:
+    with kb.connect_closing() as conn:
+        if not kb.update_review_input_fingerprint(
+            conn, args.task_id, args.fingerprint, queue_review=True,
+        ):
+            print(f"cannot queue review for {args.task_id}", file=sys.stderr)
+            return 1
+    print(f"Review queued {args.task_id}")
+    return 0
 
 
 def _cmd_schedule(args: argparse.Namespace) -> int:

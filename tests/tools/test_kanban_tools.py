@@ -1279,6 +1279,25 @@ def test_link_happy_path(worker_env):
     assert d["ok"] is True
 
 
+def test_link_omitted_outcomes_preserves_existing_condition(worker_env):
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="decision", assignee="x")
+        child = kb.create_task(conn, title="rework", assignee="x")
+        kb.link_tasks(
+            conn, parent, child, when_outcomes=["bounded_rework"]
+        )
+
+    out = kt._handle_link({"parent_id": parent, "child_id": child})
+    assert json.loads(out)["ok"] is True
+    with kb.connect() as conn:
+        assert kb.unsatisfied_parent_dependencies(conn, child)[0][
+            "when_outcomes"
+        ] == ["bounded_rework"]
+
+
 def test_link_rejects_self_reference(worker_env):
     from tools import kanban_tools as kt
     out = kt._handle_link({"parent_id": worker_env, "child_id": worker_env})

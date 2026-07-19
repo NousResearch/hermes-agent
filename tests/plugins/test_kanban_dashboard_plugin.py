@@ -733,6 +733,25 @@ def test_add_link_and_delete_link(client):
     assert r.json()["ok"] is True
 
 
+def test_add_link_legacy_payload_preserves_existing_condition(client):
+    a = client.post("/api/plugins/kanban/tasks", json={"title": "a"}).json()["task"]
+    b = client.post("/api/plugins/kanban/tasks", json={"title": "b"}).json()["task"]
+    with kb.connect() as conn:
+        kb.link_tasks(
+            conn, a["id"], b["id"], when_outcomes=["bounded_rework"]
+        )
+
+    r = client.post(
+        "/api/plugins/kanban/links",
+        json={"parent_id": a["id"], "child_id": b["id"]},
+    )
+    assert r.status_code == 200
+    with kb.connect() as conn:
+        assert kb.unsatisfied_parent_dependencies(conn, b["id"])[0][
+            "when_outcomes"
+        ] == ["bounded_rework"]
+
+
 def test_add_link_cycle_rejected(client):
     a = client.post("/api/plugins/kanban/tasks", json={"title": "a"}).json()["task"]
     b = client.post("/api/plugins/kanban/tasks", json={"title": "b"}).json()["task"]

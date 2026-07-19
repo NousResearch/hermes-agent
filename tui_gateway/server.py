@@ -5115,6 +5115,7 @@ def _init_session(
     cwd: str | None = None,
     session_db=None,
     source: str | None = None,
+    resumed_session: bool = False,
 ):
     now = time.time()
     with _sessions_lock:
@@ -5127,6 +5128,7 @@ def _init_session(
             "inflight_turn": None,
             "created_at": now,
             "last_active": now,
+            "resumed_session": resumed_session,
             "running": False,
             "attached_images": [],
             "image_counter": 0,
@@ -5783,6 +5785,7 @@ def _(rid, params: dict) -> dict:
             "created_at": now,
             "edit_snapshots": {},
             "explicit_cwd": explicit_cwd,
+            "fresh_session": True,
             "history": history,
             "history_lock": threading.Lock(),
             "history_version": 0,
@@ -6049,6 +6052,7 @@ def _deferred_session_record(
         "pending_title": None,
         "profile_home": str(profile_home) if profile_home is not None else None,
         "resume_runtime_overrides": resume_runtime_overrides,
+        "resumed_session": True,
         "resume_session_id": session_key,
         "running": False,
         "session_key": session_key,
@@ -6077,6 +6081,55 @@ def _claim_or_reuse_live(
             _sessions[sid] = record
             _register_session_cwd(_sessions[sid])
     return None
+
+
+def _live_session_has_resumable_history(session: dict) -> bool:
+    """Return whether an existing live session is safe to reattach.
+
+    A running turn may still have an empty committed history while its first
+    user message lives in ``inflight_turn``. Otherwise, an empty history on a
+    persisted session id is a fail-closed durability condition: reconnecting it
+    would let the next prompt create a second conversation under that id.
+    """
+    lock = session.get("history_lock")
+    if lock is not None:
+        with lock:
+            history = session.get("history") or []
+            in_flight = session.get("inflight_turn")
+            queued = session.get("queued_prompt")
+            running = session.get("running")
+    else:
+        history = session.get("history") or []
+        in_flight = session.get("inflight_turn")
+        queued = session.get("queued_prompt")
+        running = session.get("running")
+    return bool(
+        history or in_flight or queued or running or session.get("fresh_session")
+    )
+
+
+def _empty_resumed_session_id(session: dict) -> str | None:
+    """Return the durable id when a resumed runtime has no usable history."""
+    if not session.get("resumed_session"):
+        return None
+    if _live_session_has_resumable_history(session):
+        return None
+    session_id = str(session.get("session_key") or "")
+    return session_id or None
+
+
+def _empty_resume_error(rid, session_id: str) -> dict:
+    """Refuse to reuse a durable id when no active transcript can be restored."""
+    logger.error(
+        "Refusing empty session resume to protect durable identity: session=%s",
+        session_id,
+    )
+    return _err(
+        rid,
+        4091,
+        "refusing to resume a durable session with an empty transcript; "
+        "start a new session instead",
+    )
 
 
 def _schedule_agent_build(sid: str, delay: float = 0.05) -> None:
@@ -6180,10 +6233,17 @@ def _(rid, params: dict) -> dict:
             payload["status"] = "streaming"
         return payload
 
-    # Fast path: if the session is already live, reuse it under the lock.
+    # Fast path: if the session is already live, reuse it under the lock. A
+    # non-running empty record is not a valid reconnect target: attaching it
+    # would reuse the durable id for a second, unrelated conversation.
     with _session_resume_lock:
         live = _find_live_session_by_key(target)
         if live is not None:
+            if (
+                not is_truthy_value(params.get("lazy", False))
+                and not _live_session_has_resumable_history(live[1])
+            ):
+                return _empty_resume_error(rid, target)
             return _ok(rid, _reuse_live_payload(*live))
 
     # Lazy/watch resume: register the live session WITHOUT building an agent.
@@ -6273,13 +6333,17 @@ def _(rid, params: dict) -> dict:
         # the deferred build wires the remaining per-session callbacks.
         _enable_gateway_prompts()
         try:
-            db.reopen_session(target)
             # One lineage SELECT feeds both projections (#67142-adjacent perf,
             # from the desktop audit): the model-fed copy is alternation-repaired
             # (raw_history → sanitize_replay_history → the resumed session's
             # working conversation) and the display copy stays verbatim —
             # inspection/export must show what is actually stored.
             raw_history, display_history = db.get_resume_conversations(target)
+            if not raw_history:
+                if lease is not None:
+                    lease.release()
+                return _empty_resume_error(rid, target)
+            db.reopen_session(target)
         except Exception as e:
             if lease is not None:
                 lease.release()
@@ -6351,11 +6415,15 @@ def _(rid, params: dict) -> dict:
         set_hermes_home_override(str(profile_home)) if profile_home is not None else None
     )
     try:
-        db.reopen_session(target)
         # One lineage SELECT feeds both projections (see the interactive resume
         # above): the model-fed copy is alternation-repaired for LIVE REPLAY, the
         # display copy stays verbatim.
         raw_history, display_history = db.get_resume_conversations(target)
+        if not raw_history:
+            if lease is not None:
+                lease.release()
+            return _empty_resume_error(rid, target)
+        db.reopen_session(target)
         # The display transcript keeps every row so the user still sees their
         # full history.  The model-fed history is sanitized: a session whose
         # last turn died mid-tool-loop persists a dangling assistant(tool_calls)
@@ -6433,6 +6501,7 @@ def _(rid, params: dict) -> dict:
                     cwd=profile_resume_cwd,
                     session_db=db,
                     source=source,
+                    resumed_session=True,
                 )
             finally:
                 if init_home_token is not None:
@@ -6689,14 +6758,31 @@ def _(rid, params: dict) -> dict:
         return err
     assert session is not None
 
+    # Desktop reconnects a warm runtime through session.activate rather than
+    # session.resume. Apply the same durable-identity guard to runtimes whose
+    # provenance is an actual resume; a brand-new, never-submitted chat is
+    # legitimately empty.
+    active_lazy_child = bool(
+        session.get("lazy")
+        and _child_run_active(str(session.get("session_key") or ""))
+    )
+    if not active_lazy_child and (
+        empty_resumed_id := _empty_resumed_session_id(session)
+    ):
+        return _empty_resume_error(rid, empty_resumed_id)
+
+    payload = _live_session_payload(
+        sid,
+        session,
+        touch=True,
+        transport=current_transport() or _stdio_transport,
+    )
+    if active_lazy_child:
+        payload["running"] = True
+        payload["status"] = "streaming"
     return _ok(
         rid,
-        _live_session_payload(
-            sid,
-            session,
-            touch=True,
-            transport=current_transport() or _stdio_transport,
-        ),
+        payload,
     )
 
 
@@ -9342,6 +9428,17 @@ def _(rid, params: dict) -> dict:
     session, err = _sess_nowait(params, rid)
     if err:
         return err
+    assert session is not None
+    # ``session.activate`` is the normal Desktop reconnect gate, but transport
+    # races or older clients can still submit directly to the cached runtime.
+    # Enforce the durability invariant at the mutation boundary as well. Fresh
+    # session.create records are explicitly exempt until their first real turn.
+    if not (
+        session.get("lazy")
+        and _child_run_active(str(session.get("session_key") or ""))
+    ):
+        if empty_resumed_id := _empty_resumed_session_id(session):
+            return _empty_resume_error(rid, empty_resumed_id)
     isolation_cfg = _load_dashboard_process_isolation_config()
     turn_isolation = _session_uses_compute_host(session, isolation_cfg)
     # Re-bind to the current client transport for this request. This keeps

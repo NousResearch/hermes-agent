@@ -75,6 +75,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
                cli_only=True),
     CommandDef("history", "Show conversation history", "Session",
                cli_only=True),
+    CommandDef("release-notes", "Show release notes for a GitHub Release (picker, or --latest)",
+               "Session", cli_only=True, args_hint="[--latest]"),
     CommandDef("save", "Save the current conversation", "Session",
                cli_only=True),
     CommandDef("retry", "Retry the last message (resend to agent)", "Session"),

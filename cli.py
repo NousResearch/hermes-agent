@@ -8920,6 +8920,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             # See issue #8688 (cmux). Ctrl+L is bound to the same helper.
             self._force_full_redraw()
             _cprint(f"  {_DIM}✓ UI redrawn{_RST}")
+        elif canonical == "release-notes":
+            # /release-notes [--latest] — show GitHub Release notes (issue #64133)
+            from hermes_cli.subcommands.release_notes import cmd_release_notes
+            cmd_release_notes(
+                type("_Args", (), {"latest": "--latest" in (cmd_original or "")})()
+            )
         elif canonical == "clear":
             if self._confirm_destructive_slash(
                 "clear",

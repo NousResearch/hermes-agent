@@ -2347,6 +2347,413 @@ def test_dispatch_worktree_task_rerun_reuses_existing_linked_worktree_and_branch
 
 
 # ---------------------------------------------------------------------------
+# Worktree default-base safety (regression)
+# ---------------------------------------------------------------------------
+
+
+def _git_resolve_commit(repo: Path, ref: str) -> str:
+    """Return the full SHA for *ref* in *repo*."""
+    return subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", ref],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+
+def test_worktree_new_branch_bases_on_fetched_remote_default_not_stale_head(
+    kanban_home, tmp_path, monkeypatch
+):
+    """A worktree task created when the canonical checkout is on a stale
+    feature branch MUST base the new worktree branch on the *fetched* remote
+    default (e.g. ``origin/main``), not on the checkout's current ``HEAD``.
+
+    The test advances upstream main **after** the clone so ``origin/main`` in
+    the canonical repo is stale.  The test does NOT fetch explicitly —
+    ``_git_resolve_default_base`` must fetch internally so Kanban sees the
+    newer upstream main.
+
+    Regression: ``_ensure_git_worktree`` used bare ``HEAD`` as the starting
+    point for ``git worktree add -b``.
+    """
+    monkeypatch.setenv("GIT_GUARD_BYPASS", "1")
+
+    # -- 1. Create upstream repo (local file remote) with first commit on main --
+    upstream = tmp_path / "upstream"
+    upstream.mkdir()
+    subprocess.run(
+        ["git", "init", "-b", "main", str(upstream)],
+        check=True, capture_output=True, text=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(upstream), "config", "user.email", "kanban@example.com"],
+        check=True, capture_output=True, text=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(upstream), "config", "user.name", "Kanban Test"],
+        check=True, capture_output=True, text=True,
+    )
+    (upstream / "base.txt").write_text("base\n", encoding="utf-8")
+    subprocess.run(
+        ["git", "-C", str(upstream), "add", "base.txt"],
+        check=True, capture_output=True, text=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(upstream), "commit", "-m", "first commit on main"],
+        check=True, capture_output=True, text=True,
+    )
+    first_sha = _git_resolve_commit(upstream, "HEAD")
+
+    # -- 2. Clone: this is the canonical checkout the board points at --
+    repo = tmp_path / "repo"
+    subprocess.run(
+        ["git", "clone", str(upstream), str(repo)],
+        check=True, capture_output=True, text=True,
+    )
+
+    # -- 3. Advance upstream main with a SECOND commit AFTER clone --
+    (upstream / "advanced.txt").write_text("advanced\n", encoding="utf-8")
+    subprocess.run(
+        ["git", "-C", str(upstream), "add", "advanced.txt"],
+        check=True, capture_output=True, text=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(upstream), "commit", "-m", "second (advanced) commit on main"],
+        check=True, capture_output=True, text=True,
+    )
+    advanced_sha = _git_resolve_commit(upstream, "HEAD")
+    assert advanced_sha != first_sha, "sanity: advanced sha must differ from first"
+
+    # The canonical repo is now ONE commit behind — origin/main points at
+    # first_sha.  Do NOT fetch here; Kanban must fetch internally.
+    assert _git_resolve_commit(repo, "refs/remotes/origin/main") == first_sha, (
+        "canonical origin/main must be stale (first_sha)"
+    )
+
+    # -- 4. Checkout a stale feature branch in the canonical repo --
+    subprocess.run(
+        ["git", "-C", str(repo), "checkout", "-b", "stale/feature"],
+        check=True, capture_output=True, text=True,
+    )
+    (repo / "stale.txt").write_text("stale\n", encoding="utf-8")
+    subprocess.run(
+        ["git", "-C", str(repo), "add", "stale.txt"],
+        check=True, capture_output=True, text=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(repo), "commit", "-m", "stale feature commit"],
+        check=True, capture_output=True, text=True,
+    )
+    stale_sha = _git_resolve_commit(repo, "HEAD")
+    assert stale_sha not in (first_sha, advanced_sha), "stale branch must be unique"
+
+    # -- 5. Record canonical checkout state BEFORE Kanban --
+    canonical_branch_before = subprocess.run(
+        ["git", "-C", str(repo), "branch", "--show-current"],
+        check=True, capture_output=True, text=True,
+    ).stdout.strip()
+    canonical_head_before = _git_resolve_commit(repo, "HEAD")
+    assert canonical_branch_before == "stale/feature"
+    assert canonical_head_before == stale_sha
+
+    # -- 6. Create a worktree task anchored on the canonical checkout --
+    kb.create_board("default-base-board", default_workdir=str(repo))
+    with kb.connect(board="default-base-board") as conn:
+        tid = kb.create_task(
+            conn,
+            title="should-start-from-advanced-main",
+            workspace_kind="worktree",
+            board="default-base-board",
+        )
+        task = kb.get_task(conn, tid)
+        assert task is not None
+        ws = kb.resolve_workspace(task, board="default-base-board")
+
+    # -- 7. Assert: worktree branch starts from the FETCHED advanced upstream --
+    worktree_sha = _git_resolve_commit(ws, "HEAD")
+    assert worktree_sha == advanced_sha, (
+        f"Worktree HEAD {worktree_sha[:8]} != advanced upstream {advanced_sha[:8]}. "
+        f"Kanban either used the stale pre-fetch origin/main ({first_sha[:8]}) "
+        f"or the checkout HEAD ({stale_sha[:8]})."
+    )
+    # Merge-base: worktree HEAD should be exactly advanced_sha (not an ancestor).
+    merge_base = subprocess.run(
+        ["git", "-C", str(ws), "merge-base", "HEAD", str(advanced_sha)],
+        check=True, capture_output=True, text=True,
+    ).stdout.strip()
+    assert merge_base == advanced_sha, "worktree HEAD must be advanced_sha"
+
+    # -- 8. Assert canonical checkout branch and HEAD remain UNCHANGED --
+    canonical_branch_after = subprocess.run(
+        ["git", "-C", str(repo), "branch", "--show-current"],
+        check=True, capture_output=True, text=True,
+    ).stdout.strip()
+    canonical_head_after = _git_resolve_commit(repo, "HEAD")
+    assert canonical_branch_after == canonical_branch_before, (
+        f"Canonical branch changed: {canonical_branch_before} → {canonical_branch_after}"
+    )
+    assert canonical_head_after == canonical_head_before, (
+        f"Canonical HEAD changed: {canonical_head_before[:8]} → {canonical_head_after[:8]}"
+    )
+
+
+def test_worktree_uses_ls_remote_symref_not_cached_origin_head(
+    kanban_home, tmp_path, monkeypatch
+):
+    """When a remote changes its default branch (e.g. master → main)
+    after clone, ``_git_resolve_default_base`` MUST consult the live
+    remote HEAD via ``git ls-remote --symref <remote> HEAD`` rather
+    than trusting the **cached** ``refs/remotes/origin/HEAD``.
+
+    The cached symref is set at clone time and ``git fetch`` does NOT
+    update it.  If the remote default changed while the local clone
+    still has the old branch, trusting the cached symref would resolve
+    the *wrong* branch.
+
+    Setup:
+    1. Create upstream with ``master`` as default (HEAD → master).
+    2. Clone → cached symref points to ``origin/master``.
+    3. Switch upstream default to ``main`` (create main, set HEAD,
+       keep master branch present so the old ref still resolves).
+    4. Create a commit on upstream ``main`` so the new default has
+       a unique SHA.
+    5. Current (buggy) code trusts the cached symref → ``origin/master``.
+    6. Fixed code runs ``ls-remote --symref`` → ``origin/main``.
+    """
+    monkeypatch.setenv("GIT_GUARD_BYPASS", "1")
+
+    # -- 1. Create upstream with master as default branch --
+    upstream = tmp_path / "upstream"
+    upstream.mkdir()
+    subprocess.run(
+        ["git", "init", "-b", "master", str(upstream)],
+        check=True, capture_output=True, text=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(upstream), "config", "user.email", "kanban@example.com"],
+        check=True, capture_output=True, text=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(upstream), "config", "user.name", "Kanban Test"],
+        check=True, capture_output=True, text=True,
+    )
+    (upstream / "master.txt").write_text("master-file\n", encoding="utf-8")
+    subprocess.run(
+        ["git", "-C", str(upstream), "add", "master.txt"],
+        check=True, capture_output=True, text=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(upstream), "commit", "-m", "commit on master"],
+        check=True, capture_output=True, text=True,
+    )
+    master_sha = _git_resolve_commit(upstream, "HEAD")
+
+    # Confirm upstream HEAD is master.
+    head_ref = subprocess.run(
+        ["git", "-C", str(upstream), "symbolic-ref", "HEAD"],
+        check=True, capture_output=True, text=True,
+    ).stdout.strip()
+    assert head_ref == "refs/heads/master"
+
+    # -- 2. Clone (cached symref → origin/master) --
+    repo = tmp_path / "repo"
+    subprocess.run(
+        ["git", "clone", str(upstream), str(repo)],
+        check=True, capture_output=True, text=True,
+    )
+    # Prove the cached symref points to origin/master.
+    cached_symref = subprocess.run(
+        ["git", "-C", str(repo), "symbolic-ref", "refs/remotes/origin/HEAD"],
+        check=True, capture_output=True, text=True,
+    ).stdout.strip()
+    assert cached_symref == "refs/remotes/origin/master", (
+        f"cached symref should be origin/master, got {cached_symref}"
+    )
+
+    # -- 3. Switch upstream default branch from master → main --
+    # Create main branch from master's tip.
+    subprocess.run(
+        ["git", "-C", str(upstream), "branch", "main", "master"],
+        check=True, capture_output=True, text=True,
+    )
+    # Point HEAD to main.
+    subprocess.run(
+        ["git", "-C", str(upstream), "symbolic-ref", "HEAD", "refs/heads/main"],
+        check=True, capture_output=True, text=True,
+    )
+    # Confirm upstream HEAD is now main.
+    head_ref_after = subprocess.run(
+        ["git", "-C", str(upstream), "symbolic-ref", "HEAD"],
+        check=True, capture_output=True, text=True,
+    ).stdout.strip()
+    assert head_ref_after == "refs/heads/main"
+    # master branch still exists on upstream.
+    subprocess.run(
+        ["git", "-C", str(upstream), "rev-parse", "--verify", "refs/heads/master"],
+        check=True, capture_output=True, text=True,
+    )
+
+    # -- 4. Create a commit on upstream main so its SHA is unique --
+    subprocess.run(
+        ["git", "-C", str(upstream), "checkout", "main"],
+        check=True, capture_output=True, text=True,
+    )
+    (upstream / "main.txt").write_text("main-unique\n", encoding="utf-8")
+    subprocess.run(
+        ["git", "-C", str(upstream), "add", "main.txt"],
+        check=True, capture_output=True, text=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(upstream), "commit", "-m", "commit on new default main"],
+        check=True, capture_output=True, text=True,
+    )
+    main_sha = _git_resolve_commit(upstream, "HEAD")
+    assert main_sha != master_sha, "main sha must differ from master"
+
+    # Prove `git ls-remote --symref` reports main.
+    ls_remote = subprocess.run(
+        ["git", "ls-remote", "--symref", str(upstream), "HEAD"],
+        check=True, capture_output=True, text=True,
+    ).stdout
+    assert "ref: refs/heads/main" in ls_remote, (
+        f"ls-remote should report main: {ls_remote[:200]}"
+    )
+
+    # The cached symref is still origin/master (fetch does not update it).
+    # Prove that even after a fetch, the cached symref is STALE.
+    subprocess.run(
+        ["git", "-C", str(repo), "fetch", "origin"],
+        check=True, capture_output=True, text=True,
+    )
+    cached_after_fetch = subprocess.run(
+        ["git", "-C", str(repo), "symbolic-ref", "refs/remotes/origin/HEAD"],
+        check=True, capture_output=True, text=True,
+    ).stdout.strip()
+    assert cached_after_fetch == "refs/remotes/origin/master", (
+        "fetch does NOT update cached refs/remotes/origin/HEAD — "
+        f"it is still {cached_after_fetch}"
+    )
+
+    # -- 5. Create worktree task via Kanban --
+    kb.create_board("symref-board", default_workdir=str(repo))
+    with kb.connect(board="symref-board") as conn:
+        tid = kb.create_task(
+            conn,
+            title="should-base-on-main-not-master",
+            workspace_kind="worktree",
+            board="symref-board",
+        )
+        task = kb.get_task(conn, tid)
+        assert task is not None
+        ws = kb.resolve_workspace(task, board="symref-board")
+
+    # -- 6. Assert: worktree bases on origin/main (the live remote default) --
+    worktree_sha = _git_resolve_commit(ws, "HEAD")
+    assert worktree_sha == main_sha, (
+        f"Worktree HEAD {worktree_sha[:8]} should be main ({main_sha[:8]}), "
+        f"not master ({master_sha[:8]}). The resolver must use "
+        f"git ls-remote --symref, not the cached symref."
+    )
+
+
+def test_worktree_fail_closed_on_unusable_remote(
+    kanban_home, tmp_path, monkeypatch
+):
+    """When a remote is configured but unreachable (broken path), Kanban
+    MUST raise a RuntimeError and MUST NOT create a task branch/worktree."""
+    monkeypatch.setenv("GIT_GUARD_BYPASS", "1")
+
+    # -- 1. Create a repo with one commit --
+    repo = tmp_path / "repo"
+    _init_git_repo(repo)
+
+    # -- 2. Add a remote that points to a NON-EXISTENT path --
+    nonexistent = tmp_path / "nonexistent-remote"
+    subprocess.run(
+        ["git", "-C", str(repo), "remote", "add", "broken", str(nonexistent)],
+        check=True, capture_output=True, text=True,
+    )
+
+    # Sanity: remote exists but fetch will fail.
+    remotes = subprocess.run(
+        ["git", "-C", str(repo), "remote"],
+        check=True, capture_output=True, text=True,
+    ).stdout.strip().splitlines()
+    assert "broken" in remotes
+    fetch_probe = subprocess.run(
+        ["git", "-C", str(repo), "fetch", "broken"],
+        capture_output=True, text=True, check=False,
+    )
+    assert fetch_probe.returncode != 0, "sanity: fetch to broken remote must fail"
+
+    # -- 3. Attempt worktree creation via resolve_workspace — MUST fail closed --
+    # Use resolve_workspace directly (not dispatch_once which catches Exception)
+    # so the RuntimeError propagates unfiltered.
+    kb.create_board("broken-remote-board", default_workdir=str(repo))
+    with kb.connect(board="broken-remote-board") as conn:
+        tid = kb.create_task(
+            conn,
+            title="should-fail",
+            workspace_kind="worktree",
+            board="broken-remote-board",
+        )
+        task = kb.get_task(conn, tid)
+        assert task is not None
+        with pytest.raises(RuntimeError, match="Failed to fetch remote"):
+            kb.resolve_workspace(task, board="broken-remote-board")
+
+    # -- 4. No branch was created --
+    branches = subprocess.run(
+        ["git", "-C", str(repo), "branch", "--list"],
+        check=True, capture_output=True, text=True,
+    ).stdout
+    assert f"wt/{tid}" not in branches, "branch must not exist after fail-closed"
+
+
+def test_worktree_local_only_repo_uses_head_fallback(
+    kanban_home, tmp_path, monkeypatch
+):
+    """A repo with NO remotes may legitimately fall back to HEAD as the
+    worktree base branch."""
+    monkeypatch.setenv("GIT_GUARD_BYPASS", "1")
+
+    repo = tmp_path / "repo"
+    _init_git_repo(repo)
+    # _init_git_repo leaves only a main branch with one commit.
+    head_sha = _git_resolve_commit(repo, "HEAD")
+
+    # Confirm no remotes exist.
+    remotes = subprocess.run(
+        ["git", "-C", str(repo), "remote"],
+        check=True, capture_output=True, text=True,
+    ).stdout.strip()
+    assert remotes == "", "local-only repo must have no remotes"
+
+    kb.create_board("local-only-board", default_workdir=str(repo))
+    with kb.connect(board="local-only-board") as conn:
+        tid = kb.create_task(
+            conn,
+            title="local-only",
+            workspace_kind="worktree",
+            board="local-only-board",
+        )
+        task = kb.get_task(conn, tid)
+        assert task is not None
+        ws = kb.resolve_workspace(task, board="local-only-board")
+
+    # The worktree branch should be based on the existing HEAD.
+    worktree_sha = _git_resolve_commit(ws, "HEAD")
+    merge_base = subprocess.run(
+        ["git", "-C", str(ws), "merge-base", "HEAD", str(head_sha)],
+        check=True, capture_output=True, text=True,
+    ).stdout.strip()
+    assert worktree_sha == head_sha, (
+        f"Local-only worktree HEAD {worktree_sha[:8]} != repo HEAD {head_sha[:8]}"
+    )
+    assert merge_base == head_sha
+
+
+# ---------------------------------------------------------------------------
 # Scratch cleanup containment (#28818)
 # ---------------------------------------------------------------------------
 

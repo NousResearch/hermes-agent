@@ -67,6 +67,7 @@ import {
 } from './connection-config'
 import { adoptServedDashboardToken } from './dashboard-token'
 import { loadOrCreateInstallationId, sshOwnershipId } from './desktop-installation'
+import { extractHermesDeepLink, type HermesDeepLinkPayload, parseHermesDeepLink } from './deep-link'
 import {
   buildPosixCleanupScript,
   buildWindowsCleanupScript,
@@ -10237,40 +10238,23 @@ ipcMain.handle('hermes:vscode-theme:search', async (_event, query) => searchMark
 // Win/Linux running-app 'second-instance' (argv), Win/Linux cold-start argv.
 // ---------------------------------------------------------------------------
 const HERMES_PROTOCOL = 'hermes'
-let _pendingDeepLink = null
+let _pendingDeepLink: HermesDeepLinkPayload | null = null
 let _rendererReadyForDeepLink = false
 
-function _extractDeepLink(argv) {
-  if (!Array.isArray(argv)) {
-    return null
+function handleDeepLink(url) {
+  const payload = parseHermesDeepLink(url)
+
+  if (!payload) {
+    rememberLog('[deeplink] ignoring malformed or unsupported url')
+
+    return
   }
 
-  return argv.find(a => typeof a === 'string' && a.startsWith(`${HERMES_PROTOCOL}://`)) || null
+  deliverDeepLink(payload)
 }
 
-function handleDeepLink(url) {
-  if (!url || typeof url !== 'string') {
-    return
-  }
-
-  let parsed
-
-  try {
-    parsed = new URL(url)
-  } catch {
-    rememberLog(`[deeplink] ignoring malformed url: ${url}`)
-
-    return
-  }
-
-  // hermes://blueprint/<key>?slot=val  -> host="blueprint", path="/<key>"
-  const kind = parsed.hostname || ''
-  const name = decodeURIComponent((parsed.pathname || '').replace(/^\//, ''))
-  const params = {}
-  parsed.searchParams.forEach((v, k) => {
-    params[k] = v
-  })
-  const payload = { kind, name, params }
+function deliverDeepLink(payload: HermesDeepLinkPayload) {
+  const { kind, name } = payload
 
   if (!_rendererReadyForDeepLink || !mainWindow || mainWindow.isDestroyed()) {
     _pendingDeepLink = payload
@@ -10299,10 +10283,7 @@ ipcMain.handle('hermes:deep-link-ready', () => {
   if (_pendingDeepLink) {
     const queued = _pendingDeepLink
     _pendingDeepLink = null
-    handleDeepLink(
-      `${HERMES_PROTOCOL}://${queued.kind}/${encodeURIComponent(queued.name)}` +
-        (Object.keys(queued.params).length ? '?' + new URLSearchParams(queued.params).toString() : '')
-    )
+    deliverDeepLink(queued)
   }
 
   return { ok: true }
@@ -10331,7 +10312,7 @@ if (!_gotSingleInstanceLock) {
   app.quit()
 } else {
   app.on('second-instance', (_event, argv) => {
-    const url = _extractDeepLink(argv)
+    const url = extractHermesDeepLink(argv)
 
     if (url) {
       handleDeepLink(url)
@@ -10382,7 +10363,7 @@ app.whenReady().then(() => {
   createWindow()
 
   // Win/Linux cold start: the launching hermes:// URL is in our own argv.
-  const _coldStartLink = _extractDeepLink(process.argv)
+  const _coldStartLink = extractHermesDeepLink(process.argv)
 
   if (_coldStartLink) {
     handleDeepLink(_coldStartLink)

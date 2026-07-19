@@ -2338,6 +2338,34 @@ class GatewayStreamConsumer:
             ):
                 return True  # too small / unchanged — accumulate more
 
+            # B2 — timeout-inversion race fix. For a finalize frame, mark
+            # delivery OPTIMISTICALLY, before send_stream_frame blocks on the
+            # ack. The finalize frame's bytes are written to the wire by an
+            # independent control-worker task *before* the ack wait begins, and
+            # for WeCom a frame on the wire is already rendered by the client
+            # (the same premise the ack-timeout-as-success path already relies
+            # on). Setting the flag here means a gateway join-cancel during the
+            # ack wait — the timeout inversion between run.py's stream_task join
+            # and adapter._REPLY_ACK_TIMEOUT — can no longer strand
+            # final_content_delivered=False while WeCom has already shown the
+            # message, which is what produced the duplicate normal send
+            # (see tests/gateway/test_wecom_double_send.py and
+            # docs/rca-wecom-stream-final-ack-timeout-duplicate.md).
+            #
+            # A DEFINITIVE dispatch failure (ok is False below: stream never
+            # opened, 846608 expired, errcode 6000, or the call raised) rolls
+            # the mark back so the edit/send fallback still delivers exactly
+            # once. Residual window: if the consumer is cancelled between this
+            # optimistic mark and the control worker actually writing the bytes
+            # (queue latency, sub-ms in practice), the message could be
+            # suppressed without being sent — far rarer than the guaranteed
+            # duplicate this replaces, and the send-path idempotency guard
+            # cannot help there (nothing was sent). Accepted trade-off.
+            _optimistic_finalize = bool(finalize)
+            if _optimistic_finalize:
+                self._final_response_sent = True
+                self._final_content_delivered = True
+
             ok = False
             try:
                 ok = await self.adapter.send_stream_frame(
@@ -2361,6 +2389,12 @@ class GatewayStreamConsumer:
                     self._final_response_sent = True
                     self._final_content_delivered = True
                 return True
+
+            # Dispatch failed definitively — roll back the optimistic finalize
+            # mark so the edit/send fallback below delivers the content once.
+            if _optimistic_finalize:
+                self._final_response_sent = False
+                self._final_content_delivered = False
 
             # Native streaming refused / failed — switch off so this and
             # subsequent frames take the edit/send fallback path below.

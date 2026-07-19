@@ -187,7 +187,23 @@ export const zh: Translations = {
     openStarmap: '打开记忆图谱',
     openKeybinds: '键盘快捷键',
     layoutEditor: '布局编辑器',
-    layoutEditorTitle: '布局编辑器 — ⌘ 点击重置布局'
+    layoutEditorTitle: '布局编辑器 — ⌘ 点击重置布局',
+    gatewayModeMenuTitle: '网关连接',
+    gatewayModeLocal: '本地',
+    gatewayModeLocalHint: '本机私有后端',
+    gatewayModeRemote: '远程',
+    gatewayModeRemoteHint: '已保存的远程 Hermes 后端',
+    gatewayModeCloud: '云端',
+    gatewayModeCloudHint: 'Hermes Cloud 智能体',
+    gatewayModeOpenSettings: '网关设置…',
+    gatewaySwitchLocalMessage: '正在重连本地 Hermes 网关…',
+    gatewaySwitchRemoteMessage: '正在重连远程 Hermes 网关…',
+    gatewaySwitchCloudMessage: '正在重连 Hermes Cloud…',
+    gatewaySwitchNeedsSetupTitle: '远程网关未就绪',
+    gatewaySwitchNeedsSetupMessage: '请先在 设置 → 网关 中配置并登录。',
+    gatewaySwitchNeedsCloudTitle: '云端网关未就绪',
+    gatewaySwitchNeedsCloudMessage: '请先在 设置 → 网关 中登录并选择智能体。',
+    gatewaySwitchFailed: '无法切换网关'
   },
 
   keybinds: {

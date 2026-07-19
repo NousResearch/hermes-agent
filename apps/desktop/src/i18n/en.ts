@@ -192,7 +192,23 @@ export const en: Translations = {
     openStarmap: 'Open memory graph',
     openKeybinds: 'Keyboard shortcuts',
     layoutEditor: 'Layout editor',
-    layoutEditorTitle: 'Layout editor — ⌘-click resets the layout'
+    layoutEditorTitle: 'Layout editor — ⌘-click resets the layout',
+    gatewayModeMenuTitle: 'Gateway connection',
+    gatewayModeLocal: 'Local',
+    gatewayModeLocalHint: 'Private backend on this machine',
+    gatewayModeRemote: 'Remote',
+    gatewayModeRemoteHint: 'Saved remote Hermes backend',
+    gatewayModeCloud: 'Cloud',
+    gatewayModeCloudHint: 'Hermes Cloud agent',
+    gatewayModeOpenSettings: 'Gateway settings…',
+    gatewaySwitchLocalMessage: 'Reconnecting to the local Hermes gateway…',
+    gatewaySwitchRemoteMessage: 'Reconnecting to the remote Hermes gateway…',
+    gatewaySwitchCloudMessage: 'Reconnecting to Hermes Cloud…',
+    gatewaySwitchNeedsSetupTitle: 'Remote gateway not ready',
+    gatewaySwitchNeedsSetupMessage: 'Configure and sign in under Settings → Gateway first.',
+    gatewaySwitchNeedsCloudTitle: 'Cloud gateway not ready',
+    gatewaySwitchNeedsCloudMessage: 'Sign in and pick an agent under Settings → Gateway first.',
+    gatewaySwitchFailed: 'Could not switch gateway'
   },
 
   keybinds: {

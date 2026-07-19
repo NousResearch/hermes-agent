@@ -66,8 +66,8 @@ import {
   tokenPreview
 } from './connection-config'
 import { adoptServedDashboardToken } from './dashboard-token'
-import { loadOrCreateInstallationId, sshOwnershipId } from './desktop-installation'
 import { extractHermesDeepLink, type HermesDeepLinkPayload, parseHermesDeepLink } from './deep-link'
+import { loadOrCreateInstallationId, sshOwnershipId } from './desktop-installation'
 import {
   buildPosixCleanupScript,
   buildWindowsCleanupScript,

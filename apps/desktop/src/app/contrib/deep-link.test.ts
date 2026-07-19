@@ -46,6 +46,16 @@ const profile = (name: string, isDefault = false) => ({
   skill_count: 0
 })
 
+function deferred<T>() {
+  let resolve!: (value: T) => void
+
+  const promise = new Promise<T>(done => {
+    resolve = done
+  })
+
+  return { promise, resolve }
+}
+
 beforeEach(() => {
   vi.clearAllMocks()
 })
@@ -79,6 +89,31 @@ describe('handleDesktopDeepLink', () => {
     expect(requestComposerInsert).not.toHaveBeenCalled()
     expect(requestComposerSubmit).not.toHaveBeenCalled()
     expect(notify).not.toHaveBeenCalled()
+  })
+
+  it('does not let a slower earlier profile link replace a newer link', async () => {
+    const earlierRefresh = deferred<ReturnType<typeof profile>[]>()
+    const newerRefresh = deferred<ReturnType<typeof profile>[]>()
+    refreshProfiles
+      .mockImplementationOnce(() => earlierRefresh.promise)
+      .mockImplementationOnce(() => newerRefresh.promise)
+
+    const earlierLink = handleDesktopDeepLink({ kind: 'profile', name: 'research', params: { new: '1' } })
+    const newerLink = handleDesktopDeepLink({ kind: 'profile', name: 'work', params: { new: '1' } })
+
+    newerRefresh.resolve([profile('default', true), profile('work')])
+    await newerLink
+
+    expect(newSessionInProfile).toHaveBeenCalledTimes(1)
+    expect(newSessionInProfile).toHaveBeenCalledWith('work')
+
+    earlierRefresh.resolve([profile('default', true), profile('research')])
+    await earlierLink
+
+    expect(newSessionInProfile).toHaveBeenCalledTimes(1)
+    expect(requestComposerFocus).toHaveBeenCalledTimes(1)
+    expect(notify).not.toHaveBeenCalled()
+    expect(notifyError).not.toHaveBeenCalled()
   })
 
   it('shows a durable error and leaves the current chat untouched when the profile is missing', async () => {

@@ -11,6 +11,7 @@ interface DesktopDeepLinkPayload {
 }
 
 const PROFILE_NAME_RE = /^(?:default|[a-z0-9][a-z0-9_-]{0,63})$/
+let latestDeliveryGeneration = 0
 
 export async function handleDesktopDeepLink(payload: DesktopDeepLinkPayload | null | undefined): Promise<void> {
   if (!payload?.name) {
@@ -18,6 +19,8 @@ export async function handleDesktopDeepLink(payload: DesktopDeepLinkPayload | nu
   }
 
   if (payload.kind === 'blueprint') {
+    latestDeliveryGeneration += 1
+
     const slots = Object.entries(payload.params || {})
       .map(([key, value]) => {
         const stringValue = /\s/.test(value) ? `"${value.replace(/"/g, '\\"')}"` : value
@@ -37,13 +40,22 @@ export async function handleDesktopDeepLink(payload: DesktopDeepLinkPayload | nu
     return
   }
 
+  const deliveryGeneration = ++latestDeliveryGeneration
   let profiles
 
   try {
     profiles = await refreshProfiles()
   } catch (error) {
-    notifyError(error, translateNow('desktop.setProfileFailed'))
+    if (deliveryGeneration === latestDeliveryGeneration) {
+      notifyError(error, translateNow('desktop.setProfileFailed'))
+    }
 
+    return
+  }
+
+  // Profile discovery is asynchronous. A newer external link owns the user's
+  // navigation intent, so a stale lookup must not replace its draft or error.
+  if (deliveryGeneration !== latestDeliveryGeneration) {
     return
   }
 

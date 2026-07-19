@@ -17323,6 +17323,7 @@ def _discover_dashboard_plugins() -> list:
                     "tab": tab_info,
                     "slots": slots,
                     "entry": data.get("entry", "dist/index.js"),
+                    "scripts": data.get("scripts", []),
                     "css": data.get("css"),
                     "has_api": bool(safe_api),
                     "source": source,

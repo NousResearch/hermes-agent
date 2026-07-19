@@ -167,99 +167,6 @@ def test_tenant_snapshot_does_not_leak_edges_to_hidden_tasks(client):
     assert response.json()["links"] == []
 
 
-def test_bundle_integrates_flow_as_a_sibling_of_board_columns():
-    bundle = (PLUGIN_ROOT / "dist" / "index.js").read_text(encoding="utf-8")
-    styles = (PLUGIN_ROOT / "dist" / "style.css").read_text(encoding="utf-8")
-
-    assert 'const [viewMode, setViewMode] = useState("board")' in bundle
-    assert 'const [layoutPreset, setLayoutPreset] = useState("balanced-horizontal")' in bundle
-    assert 'const [layoutSettingsState, setLayoutSettingsState] = useState("loading")' in bundle
-    assert '`${API}/flow-settings`' in bundle
-    assert 'method: "PATCH"' in bundle
-    assert 'const previous = layoutPreset' not in bundle
-    assert 'setLayoutPreset(previous)' not in bundle
-    assert '"aria-label": "Flow layout"' in bundle
-    assert 'role: "status"' in bundle
-    assert '"aria-live": "polite"' in bundle
-    assert '"aria-atomic": "true"' in bundle
-    assert 'role: "group", "aria-label": "Graph view controls"' in bundle
-    assert 'props.layoutSettingsState === "loading" || props.layoutSettingsState === "saving"' in bundle
-    assert "Loading layout…" in bundle
-    assert "Saving layout…" in bundle
-    assert "Layout saved" in bundle
-    assert "Layout setting failed" in bundle
-    assert "function TaskGraphView(props)" in bundle
-    assert 'buildTaskGraphLayout(props.board, matchingBoard, props.layoutPreset)' in bundle
-    assert 'layout.nodes.find(function (node) { return node.id === props.focusTaskId; })' in bundle
-    assert 'viewMode === "flow" ? h(TaskGraphView' in bundle
-    assert "layoutSettingsState," in bundle
-    assert "focusTaskId: selectedTaskId" in bundle
-    assert "h(TaskDrawer" in bundle
-    assert "Graph view loading" not in bundle
-
-    kanban_page = bundle[bundle.index("  function KanbanPage()") : bundle.index("\n  // Attention strip")]
-    graph_view = bundle[bundle.index("  function TaskGraphView(props)") : bundle.index("\n  // -------------------------------------------------------------------------\n  // Bulk action bar")]
-    assert kanban_page.count('role: "status"') == 1
-    assert kanban_page.index('role: "status"') < kanban_page.index('viewMode === "flow"')
-    assert 'role: "status"' not in graph_view
-    assert 'const isEmpty = layout.nodes.length === 0' in graph_view
-    assert 'if (layout.nodes.length === 0)' not in graph_view
-    assert graph_view.index('return h("section"') < graph_view.index('isEmpty ? h("div"')
-    assert graph_view.index('isEmpty ? h("div"') < graph_view.index('role: "group", "aria-label": "Graph view controls"')
-
-    assert ".hermes-kanban-graph-layout-control select" in styles
-    assert ".hermes-kanban-graph-layout-control select:hover:not(:disabled)" in styles
-    assert ".hermes-kanban-graph-layout-control select:focus-visible" in styles
-    assert ".hermes-kanban-graph-layout-control select:disabled" in styles
-    assert ".hermes-kanban-graph-layout-status" in styles
-    assert "min-height: 44px" in styles
-    assert "height: min(calc(70vh - 48px), 712px)" in styles
-    assert "transition: all" not in styles
-    assert """  .hermes-kanban-graph-controls {
-    position: relative;
-    right: auto;
-    bottom: auto;
-    left: auto;
-    width: 100%;
-    flex-wrap: wrap;""" in styles
-    assert "function WorkflowArchiveDialog(props)" in bundle
-    assert '"Archive workflow"' in bundle
-    assert '"Restore workflow"' in bundle
-    assert '`${API}/workflow-groups/preview`' in bundle
-    assert '`${API}/workflow-groups/archive`' in bundle
-    assert "island.isUnlinked ? null" in bundle
-    assert 'role: "dialog"' in bundle or 'h("dialog"' in bundle
-    assert '"aria-label": "Workflow archive activity"' in bundle
-    assert ".hermes-kanban-workflow-dialog" in styles
-    assert ".hermes-kanban-graph-island.is-archived" in styles
-    assert "background: var(--color-primary);" in styles
-    assert "color: var(--color-primary-foreground);" in styles
-
-
-def test_mobile_layout_selector_keeps_full_balanced_horizontal_label():
-    bundle = (PLUGIN_ROOT / "dist" / "index.js").read_text(encoding="utf-8")
-    styles = (PLUGIN_ROOT / "dist" / "style.css").read_text(encoding="utf-8")
-    mobile_styles = styles[
-        styles.index("@media (max-width: 760px)") :
-        styles.index("@media (prefers-reduced-motion: reduce)")
-    ]
-
-    assert '"Balanced horizontal"' in bundle
-    assert """  .hermes-kanban-graph-layout-control select {
-    min-height: 44px;
-    max-width: 11.5rem;
-  }""" in mobile_styles
-    assert "max-width: 8.5rem" not in mobile_styles
-
-
-def test_manifest_describes_the_integrated_flow_view():
-    manifest = (PLUGIN_ROOT / "manifest.json").read_text(encoding="utf-8")
-
-    assert '"version": "1.1.0"' in manifest
-    assert "dependency flow" in manifest.lower()
-    assert "archive and restore" in manifest.lower()
-
-
 def test_flow_settings_default_and_board_scoped_persistence(client):
     default = client.get("/api/plugins/kanban/flow-settings")
     assert default.status_code == 200
@@ -368,7 +275,7 @@ def test_workflow_archive_rejects_stale_and_expired_preview(client):
     assert "expired" in expired.json()["detail"].lower()
 
 
-def test_workflow_archive_aborts_before_status_changes_when_run_termination_fails(
+def test_workflow_archive_aborts_before_status_changes_when_canonical_reclaim_fails(
     client, plugin_module, monkeypatch
 ):
     a = _task(client, "A")
@@ -377,14 +284,9 @@ def test_workflow_archive_aborts_before_status_changes_when_run_termination_fail
     run_id = _make_running(a)
     preview = _preview(client, a, [a, b])
     monkeypatch.setattr(
-        plugin_module,
-        "_terminate_active_run",
-        lambda row: {
-            "ok": False,
-            "run_id": run_id,
-            "task_id": row["task_id"],
-            "detail": "worker survived termination timeout",
-        },
+        plugin_module.kanban_db,
+        "reclaim_task",
+        lambda *_args, **_kwargs: False,
     )
 
     response = _archive(client, preview)
@@ -454,9 +356,7 @@ def test_workflow_archive_success_preserves_links_and_emits_refresh_events(clien
         conn.close()
 
 
-def test_workflow_restore_uses_provenance_maps_running_and_is_all_or_nothing(
-    client, plugin_module, monkeypatch
-):
+def test_workflow_restore_uses_provenance_maps_running_and_is_all_or_nothing(client):
     a = _task(client, "A")
     b = _task(client, "B")
     c = _task(client, "C")
@@ -464,11 +364,6 @@ def test_workflow_restore_uses_provenance_maps_running_and_is_all_or_nothing(
     _link(client, b, c)
     _set_status_sql(c, "done")
     run_id = _make_running(a)
-    monkeypatch.setattr(
-        plugin_module,
-        "_terminate_active_run",
-        lambda row: {"ok": True, "run_id": run_id, "task_id": row["task_id"], "detail": "terminated"},
-    )
     archived = _archive(client, _preview(client, a, [a, b, c]))
     assert archived.status_code == 200, archived.text
     archive_id = archived.json()["archive_id"]

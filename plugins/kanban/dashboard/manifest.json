@@ -9,6 +9,7 @@
     "position": "after:skills"
   },
   "entry": "dist/index.js",
+  "scripts": ["flow_helpers.js"],
   "css": "dist/style.css",
   "api": "plugin_api.py"
 }

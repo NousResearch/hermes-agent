@@ -1,21 +1,6 @@
 const assert = require("node:assert/strict");
-const fs = require("node:fs");
-const path = require("node:path");
 const test = require("node:test");
-const vm = require("node:vm");
-
-function loadLayoutApi() {
-  const bundlePath = path.join(__dirname, "..", "dashboard", "dist", "index.js");
-  const bundle = fs.readFileSync(bundlePath, "utf8");
-  const start = bundle.indexOf("  const GRAPH_NODE_W");
-  const end = bundle.indexOf("\n  function GraphTaskNode", start);
-  assert.ok(start >= 0 && end > start, "layout source region must be discoverable");
-  const source = bundle.slice(start, end);
-  return vm.runInNewContext(
-    `(function () { ${source}; return { buildTaskGraphLayout }; })()`,
-    { Map, Set, Math, Object, Array },
-  );
-}
+const api = require("../dashboard/flow_helpers.js");
 
 function task(id, priority = 0) {
   return { id, title: id, status: "todo", priority };
@@ -54,8 +39,6 @@ function edgeEndpoints(edge) {
   const values = edge.d.match(/-?\d+(?:\.\d+)?/g).map(Number);
   return { start: values.slice(0, 2), end: values.slice(-2) };
 }
-
-const api = loadLayoutApi();
 
 const PRESETS = ["balanced-horizontal", "balanced-vertical", "compact"];
 const LAYOUT_FIXTURES = [

@@ -20,6 +20,8 @@ export interface PluginManifest {
   /** Declared for discovery; actual slots use registerSlot in the plugin bundle. */
   slots?: string[];
   entry: string;
+  /** Classic scripts loaded synchronously before the plugin entry. */
+  scripts?: string[];
   css?: string | null;
   has_api: boolean;
   /**

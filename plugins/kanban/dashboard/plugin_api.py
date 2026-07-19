@@ -537,34 +537,37 @@ def archive_workflow_group(
                 status_code=409,
                 detail="workflow has multiple active runs for one task; resolve run state before archiving",
             )
-        active_signature = _active_run_signature(active_runs)
-
         for run in active_runs:
-            result = _terminate_active_run(run)
-            if not result.get("ok"):
-                earlier = " Earlier workflow runs were terminated; task statuses are unchanged." if terminated else ""
+            if not kanban_db.reclaim_task(
+                conn,
+                run["task_id"],
+                reason="workflow archived from Flow view",
+            ):
+                earlier = " Earlier workflow runs were reclaimed; task statuses are unchanged." if terminated else ""
                 raise HTTPException(
                     status_code=409,
                     detail=(
-                        f"run termination failed for task {result.get('task_id')} "
-                        f"run {result.get('run_id')}: {result.get('detail')}.{earlier}"
+                        f"canonical reclaim failed for task {run['task_id']} "
+                        f"run {run['run_id']}.{earlier}"
                     ),
                 )
-            terminated.append(result)
+            terminated.append(run)
 
         archive_id = "wa_" + secrets.token_hex(12)
         try:
             with kanban_db.write_txn(conn):
                 current_tasks, current_links = _workflow_component(conn, payload.seed_task_id)
-                if _workflow_state_fingerprint(current_tasks, current_links) != token["fingerprint"]:
+                if _workflow_scope_fingerprint(
+                    [row["id"] for row in current_tasks], current_links,
+                ) != scope_fingerprint:
                     raise HTTPException(
                         status_code=409,
-                        detail="workflow changed while workers were terminating; statuses were not archived",
+                        detail="workflow scope changed while workers were reclaiming; statuses were not archived",
                     )
-                if _active_run_signature(_active_workflow_runs(conn, current_tasks)) != active_signature:
+                if _active_workflow_runs(conn, current_tasks):
                     raise HTTPException(
                         status_code=409,
-                        detail="active run scope changed while workers were terminating; statuses were not archived",
+                        detail="workflow has active runs after reclaim; statuses were not archived",
                     )
                 conn.execute(
                     "INSERT INTO workflow_archives "
@@ -586,18 +589,6 @@ def archive_workflow_group(
                         "INSERT INTO workflow_archive_tasks "
                         "(archive_id, task_id, previous_status) VALUES (?, ?, ?)",
                         (archive_id, task_id, original_statuses[task_id]),
-                    )
-                for run in active_runs:
-                    kanban_db._end_run(
-                        conn,
-                        run["task_id"],
-                        outcome="reclaimed",
-                        status="reclaimed",
-                        error="workflow archived from Flow view",
-                        metadata=next(
-                            (item.get("termination") for item in terminated if item.get("run_id") == run.get("run_id")),
-                            None,
-                        ),
                     )
                 for row in current_tasks:
                     task_id = row["id"]

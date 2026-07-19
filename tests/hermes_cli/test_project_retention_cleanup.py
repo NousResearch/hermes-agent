@@ -175,11 +175,20 @@ def test_generation_or_hash_mismatch_is_refused_without_mutation(tmp_path):
     assert _mutation_snapshot(conn) == before
 
 
-def test_timezone_aware_retention_duration_is_required_when_unscheduled(tmp_path):
+def test_unscheduled_cleanup_derives_durable_retention_days_cutoff(tmp_path):
     conn, root, child, unrelated = _finalized(tmp_path)
     conn.execute("UPDATE project_finalizations SET cleanup_after=NULL WHERE root_task_id=?", (root,))
+    finalization = conn.execute(
+        "SELECT finalized_at, retention_days FROM project_finalizations WHERE root_task_id=?",
+        (root,),
+    ).fetchone()
     plan = plan_project_cleanup(conn, board_id="board", root_task_id=root, now=NOW)
-    assert any(reason.startswith("invalid_retention:") for reason in plan.refusal_reasons)
+    expected = datetime.fromtimestamp(
+        finalization["finalized_at"],
+        tz=timezone.utc,
+    ) + timedelta(days=finalization["retention_days"])
+    assert plan.retention_cutoff == expected.isoformat()
+    assert "retention_not_expired" in plan.refusal_reasons
     # Injected duration produces a deterministic cutoff and allows the test to
     # exercise the configured policy without a hard-coded production default.
     plan = plan_project_cleanup(

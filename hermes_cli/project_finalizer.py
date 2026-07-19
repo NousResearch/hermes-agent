@@ -254,6 +254,27 @@ def _evaluate_snapshot(snapshot: dict[str, Any]) -> ProjectEvaluation:
         evidence_references=evidence,
     )
 
+    verdict = finalization.checker_verdict
+    if finalization.admission_key is not None and verdict is not None and (
+        finalization.checker_candidate_snapshot_version
+        != snapshot["candidate_snapshot_version"]
+        or finalization.checker_candidate_id
+        != snapshot["candidate_snapshot_version"]
+    ):
+        # A verdict authorizes exactly one immutable implementation candidate.
+        # This backstop catches rows mutated by an older process or unsupported
+        # direct SQL; current public mutation APIs also freeze admitted PASS
+        # candidates across the asynchronous delivery window.
+        return ProjectEvaluation(
+            **common,
+            evaluation_state="WAITING",
+            terminal_outcome=None,
+            repair_eligible=False,
+            finalization_eligible=False,
+            blocker=None,
+            failure_reason="checker_required",
+        )
+
     durable_outcome = finalization.terminal_outcome
     if durable_outcome == "FAILED" or failed:
         return ProjectEvaluation(
@@ -333,7 +354,6 @@ def _evaluate_snapshot(snapshot: dict[str, Any]) -> ProjectEvaluation:
             failure_reason="checker_required",
         )
 
-    verdict = finalization.checker_verdict
     if verdict == "FAIL_TERMINAL":
         return ProjectEvaluation(
             **common,

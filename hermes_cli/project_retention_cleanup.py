@@ -139,8 +139,19 @@ def _cutoff(finalization: Any, *, retention_duration: timedelta | None) -> datet
         if result.tzinfo is None or result.utcoffset() is None:
             raise ValueError("cleanup_after must be timezone-aware")
         return result
+    if retention_duration is None:
+        retention_days = _value(finalization, "retention_days")
+        if (
+            isinstance(retention_days, bool)
+            or not isinstance(retention_days, int)
+            or retention_days < 0
+        ):
+            raise ValueError(
+                "retention_days is required when cleanup_after is absent"
+            )
+        retention_duration = timedelta(days=retention_days)
     if not isinstance(retention_duration, timedelta):
-        raise ValueError("retention_duration is required when cleanup_after is absent")
+        raise ValueError("retention_duration must be a timedelta")
     if retention_duration.total_seconds() < 0:
         raise ValueError("retention_duration must not be negative")
     finalized_at = _value(finalization, "finalized_at")

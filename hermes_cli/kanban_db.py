@@ -195,6 +195,53 @@ class TaskContractError(ValueError):
     """Raised when a task-contract payload fails structural validation."""
 
 
+class ProjectCandidateFrozenError(ValueError):
+    """Raised when an admitted PASS has frozen a required candidate."""
+
+    def __init__(self, task_id: str):
+        self.task_id = task_id
+        super().__init__(
+            "project candidate mutation blocked: an admitted checker PASS is "
+            "awaiting immutable finalization"
+        )
+
+
+def _require_project_candidate_mutable(
+    conn: sqlite3.Connection,
+    task_id: str,
+) -> None:
+    """Fence public mutations while an admitted PASS awaits finalization.
+
+    Older/unmigrated boards do not have these tables or v2 columns and retain
+    their legacy behavior.  The durable evaluator remains the backstop for
+    stale rows created by an older process or unsupported direct SQL.
+    """
+
+    try:
+        frozen = conn.execute(
+            """
+            SELECT 1
+              FROM project_finalization_members AS m
+              JOIN project_finalizations AS f
+                ON f.board_id = m.board_id
+               AND f.root_task_id = m.root_task_id
+               AND f.generation = m.generation
+             WHERE m.task_id = ?
+               AND m.membership_kind IN ('required', 'repair')
+               AND m.required = 1
+               AND f.admission_key IS NOT NULL
+               AND f.checker_verdict = 'PASS'
+               AND f.terminal_outcome IS NULL
+             LIMIT 1
+            """,
+            (task_id,),
+        ).fetchone()
+    except sqlite3.OperationalError:
+        return
+    if frozen is not None:
+        raise ProjectCandidateFrozenError(task_id)
+
+
 @dataclass(frozen=True)
 class AdmissionRejection:
     """One deterministic admission rejection reason."""
@@ -1345,6 +1392,7 @@ def set_task_contract(
     normalized = normalize_task_contract(contract)
     blob = json.dumps(normalized, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
     with write_txn(conn):
+        _require_project_candidate_mutable(conn, task_id)
         cur = conn.execute(
             "UPDATE tasks SET contract = ? WHERE id = ?",
             (blob, task_id),
@@ -3675,6 +3723,7 @@ def assign_task(conn: sqlite3.Connection, task_id: str, profile: Optional[str]) 
                 "Wait for completion or reclaim the stale lock first."
             )
         if row["assignee"] != profile:
+            _require_project_candidate_mutable(conn, task_id)
             # The retry guard is scoped to the task/profile combination. A
             # human reassigning the task is an explicit recovery action, so the
             # new profile should not inherit the previous profile's streak.
@@ -5818,6 +5867,7 @@ def edit_completed_task_result(
     """Backfill the user-visible result for an already completed task."""
     handoff_summary = summary if summary is not None else result
     with write_txn(conn):
+        _require_project_candidate_mutable(conn, task_id)
         row = conn.execute(
             "SELECT status FROM tasks WHERE id = ?", (task_id,),
         ).fetchone()
@@ -6624,6 +6674,7 @@ def decompose_triage_task(
 
 def archive_task(conn: sqlite3.Connection, task_id: str) -> bool:
     with write_txn(conn):
+        _require_project_candidate_mutable(conn, task_id)
         cur = conn.execute(
             "UPDATE tasks SET status = 'archived', "
             "    claim_lock = NULL, claim_expires = NULL, worker_pid = NULL "
@@ -6685,6 +6736,7 @@ def delete_task(conn: sqlite3.Connection, task_id: str) -> bool:
     if the task was not found.
     """
     with write_txn(conn):
+        _require_project_candidate_mutable(conn, task_id)
         cur = conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
         if cur.rowcount != 1:
             return False
@@ -6986,6 +7038,7 @@ def set_workspace_path(
     conn: sqlite3.Connection, task_id: str, path: Path | str
 ) -> None:
     with write_txn(conn):
+        _require_project_candidate_mutable(conn, task_id)
         conn.execute(
             "UPDATE tasks SET workspace_path = ? WHERE id = ?",
             (str(path), task_id),
@@ -6996,6 +7049,7 @@ def set_branch_name(
     conn: sqlite3.Connection, task_id: str, branch_name: str
 ) -> None:
     with write_txn(conn):
+        _require_project_candidate_mutable(conn, task_id)
         conn.execute(
             "UPDATE tasks SET branch_name = ? WHERE id = ?",
             (str(branch_name), task_id),

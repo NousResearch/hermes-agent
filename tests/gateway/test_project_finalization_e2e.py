@@ -130,10 +130,23 @@ def test_admitted_project_passes_checker_delivers_once_and_replays_safely(
     )
 
     delivery_calls: list[tuple[str, str, str | None, str]] = []
+    delivery_race_fences: list[str] = []
 
     async def accepted_delivery(
         platform: str, chat_id: str, thread_id: str | None, message: str
     ) -> dict[str, str]:
+        # The provider call is an async race window. Public candidate mutation
+        # must remain fenced from durable PASS through accepted delivery.
+        with pytest.raises(kb.ProjectCandidateFrozenError):
+            kb.assign_task(conn, root, CHECKER_PROFILE)
+        delivery_race_fences.append("assign")
+        with pytest.raises(kb.ProjectCandidateFrozenError):
+            kb.edit_completed_task_result(
+                conn,
+                implementation,
+                result="mutation attempted during provider delivery",
+            )
+        delivery_race_fences.append("result")
         delivery_calls.append((platform, chat_id, thread_id, message))
         return {"provider_message_id": "telegram-message-1"}
 
@@ -211,6 +224,58 @@ def test_admitted_project_passes_checker_delivers_once_and_replays_safely(
         ]
     ) == 1
 
+    # A current process rejects supported mutations once PASS freezes the
+    # candidate. These calls must not change authority before finalization.
+    with pytest.raises(kb.ProjectCandidateFrozenError):
+        kb.assign_task(conn, root, CHECKER_PROFILE)
+    with pytest.raises(kb.ProjectCandidateFrozenError):
+        kb.edit_completed_task_result(
+            conn,
+            implementation,
+            result="changed after checker approval",
+        )
+
+    # Simulate a stale row written by an older process that lacked the public
+    # mutation fence. The evaluator must invalidate the old PASS, rotate one
+    # checker onto the changed candidate, and publish/deliver nothing.
+    conn.execute(
+        "UPDATE tasks SET assignee='builder-terra' WHERE id=?",
+        (root,),
+    )
+    stale_pass_tick = asyncio.run(service.tick(board_id=BOARD))
+    stale_aggregate = get_project_finalization(
+        conn, board_id=BOARD, root_task_id=root, generation=1
+    )
+    assert stale_pass_tick.checkers_reconciled == 1
+    assert stale_pass_tick.delivered == stale_pass_tick.terminalized == 0
+    assert delivery_calls == []
+    assert stale_aggregate.checker_verdict is None
+    assert stale_aggregate.final_report_path is None
+    replacement_checker_id = stale_aggregate.final_checker_task_id
+    assert replacement_checker_id != checker_id
+
+    replacement_claim = kb.claim_task(
+        conn,
+        replacement_checker_id,
+        claimer="e2e-replacement-checker",
+    )
+    assert replacement_claim is not None
+    assert replacement_claim.current_run_id is not None
+    replacement_verdict = runtime.submit_project_checker_verdict(
+        conn,
+        board_id=BOARD,
+        task_id=replacement_checker_id,
+        run_id=replacement_claim.current_run_id,
+        worker_profile=CHECKER_PROFILE,
+        verdict="PASS",
+        reason="changed candidate received a fresh independent review",
+        evidence=evidence,
+        summary="replacement checker passed the changed candidate",
+        now=212,
+    )
+    assert replacement_verdict.completed is True
+    checker_id = replacement_checker_id
+
     finalized = asyncio.run(service.tick(board_id=BOARD))
     assert finalized.delivered == 1
     assert finalized.terminalized == 1
@@ -221,6 +286,7 @@ def test_admitted_project_passes_checker_delivers_once_and_replays_safely(
     assert terminal.terminal_outcome == "COMPLETE"
     assert terminal.checker_verdict == "PASS"
     assert len(delivery_calls) == 1
+    assert delivery_race_fences == ["assign", "result"]
     assert delivery_calls[0][:3] == ("telegram", CHAT_ID, THREAD_ID)
 
     terminal_replay = asyncio.run(service.tick(board_id=BOARD))
@@ -249,7 +315,7 @@ def test_admitted_project_passes_checker_delivers_once_and_replays_safely(
         event.kind == "project_checker_registered"
         for task in kb.list_tasks(conn, include_archived=True)
         for event in kb.list_events(conn, task.id)
-    ) == 1
+    ) == 2
 
 
 def test_repairable_verdict_rotates_authority_and_fresh_checker_can_pass(

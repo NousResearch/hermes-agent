@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -10,6 +11,7 @@ import pytest
 from gateway.project_finalization import ProjectFinalizationService
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_usage_ledger as usage_ledger
+from hermes_cli import project_commands
 from hermes_cli.project_delivery_ledger import (
     create_delivery_attempt,
     get_latest_delivery_attempt,
@@ -110,6 +112,41 @@ def test_pass_gates_artifacts_accepted_delivery_terminalization_and_cleanup_sche
     assert project.final_report_path and project.manifest_path and project.cleanup_after
     assert attempt.provider_message_id == "m-1"
     assert len(receipts) == 1
+
+
+def test_cleanup_disabled_terminal_project_has_read_only_retention_preview(board):
+    root, _, _ = _setup(board, complete_checker=True, verdict="PASS")
+    service, _ = _service(cleanup=False)
+    assert _run(service).terminalized == 1
+    project = get_project_finalization(
+        board,
+        board_id="default",
+        root_task_id=root,
+        generation=1,
+    )
+    assert project.cleanup_after is None
+    finalized_at = datetime.fromtimestamp(project.finalized_at, tz=timezone.utc)
+    cutoff = finalized_at + timedelta(days=project.retention_days)
+    before = board.total_changes
+
+    early = project_commands.project_cleanup_preview(
+        board,
+        board_id="default",
+        root_task_id=root,
+        now=cutoff - timedelta(seconds=1),
+    )
+    boundary = project_commands.project_cleanup_preview(
+        board,
+        board_id="default",
+        root_task_id=root,
+        now=cutoff,
+    )
+
+    assert early["retention_cutoff"] == cutoff.isoformat()
+    assert early["refusal_reasons"] == ["retention_not_expired"]
+    assert boundary["eligible"] is True
+    assert boundary["refusal_reasons"] == []
+    assert board.total_changes == before
 
 
 def test_terminal_provider_payload_uses_durable_contract_and_excludes_private_data(board):

@@ -9,11 +9,12 @@ direct imports): `run.py`, mixins, routers, platforms, and their transitive
 | **WIRED** | Reachable from production gateway code |
 | **removed** | Truly unwired parallel paths deleted in the 清屎山 pass |
 
-## WIRED (18)
+## WIRED (19)
 
 | Module | Notes |
 |--------|--------|
 | `agent_turn_start_runtime_service` | Promoted bootstrap from `_handle_message_with_agent` |
+| `agent_turn_preflight_runtime_service` | Post-bootstrap pre-agent: hygiene + notes + message stage |
 | `auto_vision_runtime_service` | `run.py` |
 | `busy_followup_runtime_service` | `run.py` |
 | `direct_shortcut_runtime_service` | turn-start + busy path |

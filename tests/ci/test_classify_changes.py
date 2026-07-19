@@ -68,6 +68,10 @@ CASES = {
         ["ops/muncho/owner-gate/runtime-wheel-lock.json"],
         _lanes(python=True, owner_gate=True),
     ),
+    "production owner runtime → owner_gate": (
+        ["gateway/production_owner_runtime.py"],
+        _lanes(python=True, scan=True, owner_gate=True),
+    ),
     "canary source → owner_gate": (
         ["scripts/canary/passkey_v2_webauthn.py"],
         _lanes(python=True, scan=True, owner_gate=True),

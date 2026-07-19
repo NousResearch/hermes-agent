@@ -1243,6 +1243,26 @@ extra_body:
 
 The `hermes model` → Custom Endpoint wizard now prompts for `api_mode` explicitly and persists your answer to `config.yaml`. URL-based auto-detection (e.g. `/anthropic` paths → `anthropic_messages`) still happens as a fallback when the field is left blank.
 
+**Optional Responses WebSocket transport for named custom providers.** When a named custom provider uses `api_mode: codex_responses`, you can opt into WebSocket streaming with `responses_transport`:
+
+```yaml
+custom_providers:
+  - name: sub2api-codex
+    base_url: http://relay.example.com/v1
+    key_env: RELAY_API_KEY
+    api_mode: codex_responses
+    responses_transport: auto   # sse | websocket | auto
+    # responses_ws_url: wss://relay.example.com/v1/responses  # optional override
+```
+
+Rules:
+
+- Default remains **SSE** (`responses.create(stream=True)`).
+- Scope is **named custom providers only**. Official ChatGPT Codex (`provider=openai-codex` on `chatgpt.com`) is intentionally out of scope.
+- `auto` tries WebSocket first, and falls back to SSE **only if the request never started** (handshake/connect failure). After `response.create` is sent, Hermes will not SSE-replay the same turn.
+- Explicit `websocket` hard-fails on pre-start errors — use `auto` when you want safe fallback.
+- If `responses_ws_url` is omitted, Hermes derives it from `base_url` (`https`→`wss`, append `/responses` when missing).
+
 **Native vision for custom-provider models.** If your custom endpoint serves a vision-capable model that isn't in models.dev, set `model.supports_vision: true` so Hermes routes attached images natively (as `image_url` parts) instead of pre-processing them through `vision_analyze`. Single knob — no need to also set `agent.image_input_mode: native`.
 
 ```yaml

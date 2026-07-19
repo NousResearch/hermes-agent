@@ -1211,6 +1211,7 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
         GenericWsNotStartedError,
         GenericWsRejectedError,
         GenericWsStartedError,
+        build_generic_ws_identity,
         is_generic_codex_ws_eligible,
         normalize_responses_transport,
         run_generic_codex_ws_stream,
@@ -1220,11 +1221,15 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
         getattr(agent, "responses_transport", "sse")
     )
     transport_provider = getattr(agent, "responses_transport_provider", None) or agent.provider
-    ws_identity = (
-        getattr(agent, "session_id", None),
-        transport_provider,
-        str(getattr(agent, "base_url", "") or "").rstrip("/"),
-        api_kwargs.get("model") or getattr(agent, "model", None),
+    responses_ws_url = getattr(agent, "responses_ws_url", None)
+    model_name = api_kwargs.get("model") or getattr(agent, "model", None)
+    ws_identity = build_generic_ws_identity(
+        session_id=getattr(agent, "session_id", None),
+        transport_provider=transport_provider,
+        base_url=getattr(agent, "base_url", None),
+        model=model_name,
+        responses_ws_url=responses_ws_url,
+        transport=transport,
     )
     ws_eligible = transport in {"websocket", "auto"} and is_generic_codex_ws_eligible(
         provider=transport_provider,
@@ -1274,7 +1279,7 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                 headers=getattr(agent, "_client_kwargs", {}).get("default_headers"),
                 provider=transport_provider,
                 base_url=agent.base_url,
-                responses_ws_url=getattr(agent, "responses_ws_url", None),
+                responses_ws_url=responses_ws_url,
                 session_id=getattr(agent, "session_id", None),
                 transport=transport,
                 collect_events=lambda events, _unused_client: _consume_codex_event_stream(
@@ -1296,10 +1301,17 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                 ),
                 interrupted=_interrupt_or_superseded_ws,
                 timeout=timeout,
+                idle_timeout=max(float(timeout), 180.0),
                 register_connection_abort=_register_connection_abort,
             )
-        except GenericWsNotStartedError:
+        except GenericWsNotStartedError as exc:
             if transport != "auto":
+                # Explicit websocket mode hard-fails (no silent SSE fallback).
+                logger.warning(
+                    "Generic Codex Responses WebSocket failed before request start "
+                    "with responses_transport=websocket (no SSE fallback): %s",
+                    exc,
+                )
                 raise
             agent._generic_ws_auto_disabled_for = ws_identity
             logger.debug(
@@ -1307,7 +1319,21 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                 "using SSE for this runtime (model=%s).",
                 api_kwargs.get("model", "unknown"),
             )
-        except (GenericWsStartedError, GenericWsRejectedError):
+        except GenericWsRejectedError as exc:
+            # Explicit server rejection after start: never replay via SSE.
+            logger.warning(
+                "Generic Codex Responses WebSocket rejected by server "
+                "(status=%s): %s",
+                getattr(exc, "status_code", None),
+                exc,
+            )
+            raise
+        except GenericWsStartedError as exc:
+            logger.warning(
+                "Generic Codex Responses WebSocket failed after request start "
+                "(no SSE replay): %s",
+                exc,
+            )
             raise
         finally:
             if getattr(agent, "_active_request_abort", None) is registered_abort["callback"]:

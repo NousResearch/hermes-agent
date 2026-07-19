@@ -140,6 +140,15 @@ class CLIAgentSetupMixin:
         self.responses_transport = resolved_responses_transport
         self.responses_ws_url = resolved_responses_ws_url
         self.responses_transport_provider = resolved_responses_transport_provider
+        # Transport/provider/base/ws_url changes invalidate sticky auto-SSE disable.
+        if routing_changed or credentials_changed:
+            self._generic_ws_auto_disabled_for = None
+            agent = getattr(self, "agent", None)
+            if agent is not None:
+                try:
+                    agent._generic_ws_auto_disabled_for = None
+                except Exception:
+                    pass
         self._credential_pool = resolved_credential_pool
         self._provider_source = runtime.get("source")
         self.api_key = api_key

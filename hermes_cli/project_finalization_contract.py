@@ -47,10 +47,12 @@ NOTIFICATION_POLICIES: tuple[str, ...] = ("project_summary", "verbose", "silent"
 
 MEMBERSHIP_KINDS: tuple[str, ...] = ("required", "support", "repair", "checker")
 
-SCHEMA_VERSION = "3"
-MIGRATION_MARKER = "hermes-orch-finish-001-g4-r9-v3"
-_PREVIOUS_SCHEMA_VERSION = "2"
-_PREVIOUS_MIGRATION_MARKER = "hermes-orch-finish-001-g3-v2"
+SCHEMA_VERSION = "4"
+MIGRATION_MARKER = "hermes-orch-finish-001-g4-r9-v4"
+_PREVIOUS_SCHEMA_VERSION = "3"
+_PREVIOUS_MIGRATION_MARKER = "hermes-orch-finish-001-g4-r9-v3"
+_OLDER_SCHEMA_VERSION = "2"
+_OLDER_MIGRATION_MARKER = "hermes-orch-finish-001-g3-v2"
 _LEGACY_SCHEMA_VERSION = "1"
 _LEGACY_MIGRATION_MARKER = "hof002-v1"
 
@@ -1084,6 +1086,7 @@ def _validate_migration_metadata(conn: sqlite3.Connection) -> None:
         return
     if (version, migration) in {
         (_LEGACY_SCHEMA_VERSION, _LEGACY_MIGRATION_MARKER),
+        (_OLDER_SCHEMA_VERSION, _OLDER_MIGRATION_MARKER),
         (_PREVIOUS_SCHEMA_VERSION, _PREVIOUS_MIGRATION_MARKER),
         (SCHEMA_VERSION, MIGRATION_MARKER),
     }:
@@ -1094,7 +1097,12 @@ def _validate_migration_metadata(conn: sqlite3.Connection) -> None:
         raise ValueError(f"unsupported schema version: {version!r}") from exc
     if parsed_version is not None and parsed_version > int(SCHEMA_VERSION):
         raise ValueError("unsupported future schema version")
-    if version not in {_LEGACY_SCHEMA_VERSION, _PREVIOUS_SCHEMA_VERSION, SCHEMA_VERSION}:
+    if version not in {
+        _LEGACY_SCHEMA_VERSION,
+        _OLDER_SCHEMA_VERSION,
+        _PREVIOUS_SCHEMA_VERSION,
+        SCHEMA_VERSION,
+    }:
         raise ValueError(f"unsupported schema version: {version!r}")
     raise ValueError(f"unsupported migration marker: {migration!r}")
 

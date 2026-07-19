@@ -129,8 +129,8 @@ def test_migration_is_idempotent_and_marker_queryable():
         ensure_project_finalization_schema(conn)
         marker1 = get_project_finalization_migration_marker(conn)
         ver1 = get_project_finalization_schema_version(conn)
-        assert marker1 == "hermes-orch-finish-001-g4-r9-v3"
-        assert ver1 == "3"
+        assert marker1 == "hermes-orch-finish-001-g4-r9-v4"
+        assert ver1 == "4"
 
         # repeated call
         ensure_project_finalization_schema(conn)
@@ -139,7 +139,7 @@ def test_migration_is_idempotent_and_marker_queryable():
 
         # meta table has rows
         rows = list(conn.execute("SELECT key, value FROM project_finalization_meta"))
-        assert ("migration", "hermes-orch-finish-001-g4-r9-v3") in [(r[0], r[1]) for r in rows]
+        assert ("migration", "hermes-orch-finish-001-g4-r9-v4") in [(r[0], r[1]) for r in rows]
     finally:
         _close_and_unlink(conn, path)
 
@@ -236,8 +236,8 @@ def test_v2_to_v3_route_authority_migration_is_additive_and_marked():
             "board_id", "root_task_id", "generation", "platform", "chat_id",
             "thread_id", "route_identity", "created_at",
         } <= columns
-        assert get_project_finalization_schema_version(conn) == "3"
-        assert get_project_finalization_migration_marker(conn) == "hermes-orch-finish-001-g4-r9-v3"
+        assert get_project_finalization_schema_version(conn) == "4"
+        assert get_project_finalization_migration_marker(conn) == "hermes-orch-finish-001-g4-r9-v4"
         route = conn.execute(
             """
             SELECT generation, chat_id, thread_id, route_identity, created_at
@@ -260,6 +260,31 @@ def test_v2_to_v3_route_authority_migration_is_additive_and_marked():
         )
         assert len(copier_rows) == 1
         assert copier_rows[0]["chat_id"] == "-100-v2-route"
+    finally:
+        _close_and_unlink(conn, path)
+
+
+def test_v3_metadata_is_accepted_and_resealed_as_v4():
+    conn, path = _make_temp_db()
+    try:
+        ensure_project_finalization_schema(conn)
+        conn.execute("UPDATE project_finalization_meta SET value='3' WHERE key='version'")
+        conn.execute(
+            "UPDATE project_finalization_meta SET value='hermes-orch-finish-001-g4-r9-v3' "
+            "WHERE key='migration'"
+        )
+        conn.execute("DROP INDEX idx_pevidence_candidate")
+
+        ensure_project_finalization_schema(conn)
+
+        assert get_project_finalization_schema_version(conn) == "4"
+        assert get_project_finalization_migration_marker(conn) == "hermes-orch-finish-001-g4-r9-v4"
+        index_columns = tuple(
+            row["name"] for row in conn.execute("PRAGMA index_info(idx_pevidence_candidate)")
+        )
+        assert index_columns == (
+            "board_id", "root_task_id", "generation", "candidate_snapshot_version"
+        )
     finally:
         _close_and_unlink(conn, path)
 
@@ -343,7 +368,7 @@ def test_empty_compatible_partial_table_is_additively_repaired():
         columns = {row["name"] for row in conn.execute("PRAGMA table_info(project_finalizations)")}
         assert {"checker_verdict", "repair_generation", "version"} <= columns
         assert conn.execute("SELECT COUNT(*) FROM project_finalizations").fetchone()[0] == 0
-        assert get_project_finalization_migration_marker(conn) == "hermes-orch-finish-001-g4-r9-v3"
+        assert get_project_finalization_migration_marker(conn) == "hermes-orch-finish-001-g4-r9-v4"
     finally:
         _close_and_unlink(conn, path)
 
@@ -399,8 +424,8 @@ def test_populated_v1_schema_migrates_additively_and_preserves_finalization_row(
         assert row["root_task_id"] == "root"
         assert row["created_at"] == 11
         assert row["admission_key"] is None
-        assert get_project_finalization_schema_version(conn) == "3"
-        assert get_project_finalization_migration_marker(conn) == "hermes-orch-finish-001-g4-r9-v3"
+        assert get_project_finalization_schema_version(conn) == "4"
+        assert get_project_finalization_migration_marker(conn) == "hermes-orch-finish-001-g4-r9-v4"
     finally:
         _close_and_unlink(conn, path)
 
@@ -611,13 +636,13 @@ def test_future_schema_version_is_rejected_without_changing_marker():
     conn, path = _make_temp_db()
     try:
         ensure_project_finalization_schema(conn)
-        conn.execute("UPDATE project_finalization_meta SET value='4' WHERE key='version'")
+        conn.execute("UPDATE project_finalization_meta SET value='5' WHERE key='version'")
 
         with pytest.raises(ValueError, match="unsupported future schema version"):
             ensure_project_finalization_schema(conn)
 
-        assert get_project_finalization_schema_version(conn) == "4"
-        assert get_project_finalization_migration_marker(conn) == "hermes-orch-finish-001-g4-r9-v3"
+        assert get_project_finalization_schema_version(conn) == "5"
+        assert get_project_finalization_migration_marker(conn) == "hermes-orch-finish-001-g4-r9-v4"
     finally:
         _close_and_unlink(conn, path)
 

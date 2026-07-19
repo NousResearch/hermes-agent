@@ -343,6 +343,7 @@ def admit_existing_project(
     required_task_ids: Sequence[str],
     checker_profile: str,
     repair_profile: str | None = None,
+    sealed_evidence_required: bool = False,
     notification_policy: str = "project_summary",
     retention_days: int = 3,
     repair_budget: int = 1,
@@ -373,7 +374,12 @@ def admit_existing_project(
         repair_profile if repair_profile is not None else DEFAULT_REPAIR_PROFILE
     )
     validate_profile_name(canonical_repair_profile)
-    sealed_evidence_required = repair_profile is not None
+    if not isinstance(sealed_evidence_required, bool):
+        raise ValueError("sealed_evidence_required must be a boolean")
+    if canonical_repair_profile != DEFAULT_REPAIR_PROFILE:
+        raise ValueError(
+            f"repair worker profile must remain {DEFAULT_REPAIR_PROFILE}"
+        )
     validate_notification_policy(notification_policy)
     if notification_policy != "project_summary":
         raise ValueError("production admission requires notification_policy='project_summary'")
@@ -599,6 +605,7 @@ def admit_existing_project(
                 "required_task_ids": list(required_ids),
                 "checker_profile": canonical_profile,
                 "repair_worker_profile": canonical_repair_profile,
+                "sealed_evidence_required": bool(sealed_evidence_required),
                 "notification_route_identity": route_identity,
                 "notification_policy": notification_policy,
                 "retention_days": retention_days,
@@ -862,11 +869,11 @@ def register_project_checker(
             ):
                 return AtomicCheckerRegistration(REGISTRATION_STALE_SNAPSHOT)
             if project_row["sealed_evidence_required"]:
-                _validate_sealed_evidence(
+                _ensure_sealed_evidence_from_attachments(
                     conn,
                     project_row,
-                    (),
                     candidate_snapshot_version=action.candidate_snapshot_version,
+                    now=current_time,
                 )
 
         existing = _task_for_identity(conn, action.idempotency_key)
@@ -1174,6 +1181,231 @@ def record_project_checker_evidence(
     return len(normalized)
 
 
+def _attachment_identity_path(
+    project_row: sqlite3.Row,
+    task_row: sqlite3.Row,
+    attachment: Any,
+) -> tuple[Path, str]:
+    """Resolve one supported task attachment to a bounded identity and file."""
+    filename = str(attachment.filename or "")
+    if not filename or Path(filename).name != filename:
+        raise ValueError("sealed evidence invalid: path_escape")
+    stored = Path(str(attachment.stored_path or "")).resolve()
+    try:
+        attachment_dir = kb.task_attachments_dir(
+            str(task_row["id"]), board=project_row["board_id"]
+        ).resolve()
+        stored.relative_to(attachment_dir)
+    except (OSError, ValueError):
+        raise ValueError("sealed evidence invalid: path_escape")
+    if stored.name != filename:
+        raise ValueError("sealed evidence invalid: attachment_name_mismatch")
+    if not stored.is_file() or stored.stat().st_size == 0:
+        raise ValueError("sealed evidence invalid: file_missing_or_empty")
+    if int(attachment.size or 0) != stored.stat().st_size:
+        raise ValueError("sealed evidence invalid: attachment_size_mismatch")
+    return stored, filename
+
+
+def _canonical_evidence_manifest(records: Mapping[str, str]) -> tuple[list[str], str]:
+    file_set = sorted(records)
+    canonical = json.dumps(
+        [{"path": path, "sha256": records[path]} for path in file_set],
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return file_set, hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _evidence_from_attachments(
+    conn: sqlite3.Connection,
+    project_row: sqlite3.Row,
+    *,
+    candidate_snapshot_version: str,
+) -> tuple[dict[str, object], ...]:
+    """Build canonical sealed evidence from the supported attachment store."""
+    required_rows = conn.execute(
+        """
+        SELECT t.id, t.status, t.workspace_path
+          FROM project_finalization_members AS m
+          JOIN tasks AS t ON t.id = m.task_id
+         WHERE m.board_id=? AND m.root_task_id=? AND m.generation=?
+           AND m.required=1 AND m.membership_kind IN ('required', 'repair')
+         ORDER BY t.id
+        """,
+        (project_row["board_id"], project_row["root_task_id"], project_row["generation"]),
+    ).fetchall()
+    if not required_rows:
+        raise ValueError("sealed evidence invalid: required_members_missing")
+    records: list[dict[str, object]] = []
+    digests: dict[str, str] = {}
+    seen_tasks: set[str] = set()
+    for task_row in required_rows:
+        if task_row["status"] != "done":
+            raise ValueError("sealed evidence invalid: task_incomplete")
+        attachments = kb.list_attachments(conn, task_row["id"])
+        if not attachments:
+            raise ValueError("sealed evidence invalid: attachment_missing")
+        for attachment in attachments:
+            stored, relative = _attachment_identity_path(project_row, task_row, attachment)
+            digest = hashlib.sha256(stored.read_bytes()).hexdigest()
+            prior = digests.get(relative)
+            if prior is not None and prior != digest:
+                raise ValueError("sealed evidence invalid: duplicate_path_conflict")
+            digests[relative] = digest
+            seen_tasks.add(task_row["id"])
+            records.append(
+                {
+                    "kind": "file",
+                    "reference": relative,
+                    "summary": "sealed task attachment",
+                    "task_id": task_row["id"],
+                    "path": relative,
+                    "sha256": digest,
+                    "candidate_snapshot_version": candidate_snapshot_version,
+                }
+            )
+    expected_tasks = {row["id"] for row in required_rows}
+    if seen_tasks != expected_tasks:
+        raise ValueError("sealed evidence invalid: required_member_evidence_missing")
+    file_set, manifest_sha256 = _canonical_evidence_manifest(digests)
+    for item in records:
+        item["file_set"] = file_set
+        item["manifest_sha256"] = manifest_sha256
+    return tuple(records)
+
+
+def _persist_normalized_project_checker_evidence(
+    conn: sqlite3.Connection,
+    *,
+    board_id: str,
+    root_task_id: str,
+    generation: int,
+    candidate_snapshot_version: str,
+    evidence: Sequence[Mapping[str, object]],
+    now: int,
+) -> None:
+    for item in evidence:
+        conn.execute(
+            """
+            INSERT INTO project_checker_evidence
+                (board_id, root_task_id, generation, candidate_snapshot_version,
+                 task_id, path, sha256, file_set_json, manifest_sha256, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(board_id, root_task_id, generation, candidate_snapshot_version, task_id, path)
+            DO UPDATE SET sha256=excluded.sha256, file_set_json=excluded.file_set_json,
+                          manifest_sha256=excluded.manifest_sha256
+            """,
+            (
+                board_id, root_task_id, generation, candidate_snapshot_version,
+                str(item["task_id"]), str(item["path"]), str(item["sha256"]),
+                json.dumps(item.get("file_set"), sort_keys=True, separators=(",", ":"))
+                if item.get("file_set") is not None else None,
+                item.get("manifest_sha256"),
+                now,
+            ),
+        )
+
+
+def _ensure_sealed_evidence_from_attachments(
+    conn: sqlite3.Connection,
+    project_row: sqlite3.Row,
+    *,
+    candidate_snapshot_version: str,
+    now: int,
+) -> None:
+    """Seal supported task attachments before checker authority is created."""
+    # Never treat a previously supplied evidence row as the canonical seal.
+    # Checker registration owns this one candidate-scoped manifest, derived
+    # from the normal task-attachment store in the surrounding transaction.
+    generated = _evidence_from_attachments(
+        conn, project_row, candidate_snapshot_version=candidate_snapshot_version
+    )
+    conn.execute(
+        """
+        DELETE FROM project_checker_evidence
+         WHERE board_id=? AND root_task_id=? AND generation=?
+           AND candidate_snapshot_version=?
+        """,
+        (
+            project_row["board_id"], project_row["root_task_id"],
+            project_row["generation"], candidate_snapshot_version,
+        ),
+    )
+    _persist_normalized_project_checker_evidence(
+        conn,
+        board_id=project_row["board_id"],
+        root_task_id=project_row["root_task_id"],
+        generation=int(project_row["generation"]),
+        candidate_snapshot_version=candidate_snapshot_version,
+        evidence=generated,
+        now=now,
+    )
+    _validate_sealed_evidence(
+        conn,
+        project_row,
+        (),
+        candidate_snapshot_version=candidate_snapshot_version,
+    )
+
+
+def _validate_submitted_sealed_evidence(
+    conn: sqlite3.Connection,
+    project_row: sqlite3.Row,
+    evidence: Sequence[Mapping[str, object]],
+    *,
+    candidate_snapshot_version: str,
+) -> None:
+    """Require verdict evidence to match the registration-time sealed set."""
+    stored = conn.execute(
+        """
+        SELECT task_id, path, sha256, file_set_json, manifest_sha256
+          FROM project_checker_evidence
+         WHERE board_id=? AND root_task_id=? AND generation=?
+           AND candidate_snapshot_version=?
+         ORDER BY task_id, path
+        """,
+        (
+            project_row["board_id"], project_row["root_task_id"],
+            project_row["generation"], candidate_snapshot_version,
+        ),
+    ).fetchall()
+    if not stored:
+        raise ValueError("sealed evidence invalid: evidence_missing")
+
+    def base_identity(item: Mapping[str, object]) -> tuple[object, ...]:
+        return (item.get("task_id"), item.get("path"), item.get("sha256"))
+
+    def manifest_identity(item: Mapping[str, object]) -> tuple[object, ...]:
+        file_set = item.get("file_set")
+        normalized_set = tuple(sorted(file_set)) if isinstance(file_set, (list, tuple)) else None
+        return (normalized_set, item.get("manifest_sha256"))
+
+    persisted_by_base = {
+        base_identity(
+            {
+                "task_id": row["task_id"], "path": row["path"],
+                "sha256": row["sha256"],
+            }
+        ): manifest_identity(
+            {
+                "file_set": json.loads(row["file_set_json"]) if row["file_set_json"] else None,
+                "manifest_sha256": row["manifest_sha256"],
+            }
+        )
+        for row in stored
+    }
+    submitted_by_base = {
+        base_identity(item): manifest_identity(item) for item in evidence
+    }
+    if set(submitted_by_base) != set(persisted_by_base):
+        raise ValueError("sealed evidence invalid: manifest_mismatch")
+    for base, submitted_manifest in submitted_by_base.items():
+        persisted_manifest = persisted_by_base[base]
+        if submitted_manifest != (None, None) and submitted_manifest != persisted_manifest:
+            raise ValueError("sealed evidence invalid: manifest_mismatch")
+
+
 def _validate_sealed_evidence(
     conn: sqlite3.Connection,
     project_row: sqlite3.Row,
@@ -1251,38 +1483,24 @@ def _validate_sealed_evidence(
         relative = Path(raw_path)
         if relative.is_absolute() or ".." in relative.parts:
             raise ValueError("sealed evidence invalid: path_escape")
-        workspace = Path(str(row["workspace_path"] or "")).resolve()
-        target = (workspace / relative).resolve()
-        try:
-            target.relative_to(workspace)
-        except ValueError:
-            raise ValueError("sealed evidence invalid: path_escape")
-        if not target.is_file() or target.stat().st_size == 0:
-            raise ValueError("sealed evidence invalid: file_missing_or_empty")
+        matching_attachment = None
+        target: Path | None = None
+        for attachment in kb.list_attachments(conn, task_id):
+            try:
+                candidate_target, candidate_relative = _attachment_identity_path(
+                    project_row, row, attachment
+                )
+            except ValueError:
+                continue
+            if candidate_relative == relative.as_posix():
+                matching_attachment = attachment
+                target = candidate_target
+                break
+        if matching_attachment is None or target is None:
+            raise ValueError("sealed evidence invalid: attachment_missing")
         actual = hashlib.sha256(target.read_bytes()).hexdigest()
         if actual != digest:
             raise ValueError("sealed evidence invalid: hash_mismatch")
-        attachment = conn.execute(
-            """
-            SELECT stored_path, filename, size FROM task_attachments
-             WHERE task_id=?
-             ORDER BY id
-            """,
-            (task_id,),
-        ).fetchall()
-        matching_attachment = next(
-            (
-                row
-                for row in attachment
-                if Path(str(row["stored_path"])).resolve() == target
-                and row["filename"] == relative.name
-            ),
-            None,
-        )
-        if matching_attachment is None:
-            raise ValueError("sealed evidence invalid: attachment_missing")
-        if int(matching_attachment["size"] or 0) != target.stat().st_size:
-            raise ValueError("sealed evidence invalid: attachment_size_mismatch")
         seen_tasks.add(task_id)
         relative_path = relative.as_posix()
         prior_digest = file_records.get(relative_path)
@@ -1472,14 +1690,11 @@ def submit_project_checker_verdict(
         ):
             raise ValueError("checker candidate is stale")
         if project_row["sealed_evidence_required"]:
-            record_project_checker_evidence(
+            _validate_submitted_sealed_evidence(
                 conn,
-                board_id=board_id,
-                root_task_id=project_row["root_task_id"],
-                generation=int(project_row["generation"]),
+                project_row,
+                normalized_evidence,
                 candidate_snapshot_version=project_row["checker_candidate_snapshot_version"],
-                evidence=normalized_evidence,
-                now=current_time,
             )
             _validate_sealed_evidence(
                 conn,

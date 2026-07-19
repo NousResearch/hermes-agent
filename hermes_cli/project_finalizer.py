@@ -11,6 +11,7 @@ from dataclasses import dataclass
 import hashlib
 import json
 import sqlite3
+from pathlib import Path
 from typing import Any, Iterable, Optional
 
 from hermes_cli.project_finalization_contract import (
@@ -138,8 +139,6 @@ def _read_snapshot(
             )
         )
 
-    # Full canonical rows make the digest a real snapshot identity, rather
-    # than a proxy based on the project-finalization schema version.
     rows = {
         "tasks": _rows(conn.execute("SELECT * FROM tasks ORDER BY id")),
         "task_links": _rows(
@@ -148,6 +147,42 @@ def _read_snapshot(
         "task_runs": _rows(conn.execute("SELECT * FROM task_runs ORDER BY task_id, id")),
         "task_events": _rows(conn.execute("SELECT * FROM task_events ORDER BY task_id, id")),
     }
+    member_task_ids = {
+        item.task_id for item in members if item.membership_kind in {"required", "repair"}
+    }
+    attachment_rows: list[dict[str, Any]] = []
+    tables = {
+        row["name"] for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        )
+    }
+    if "task_attachments" in tables and member_task_ids:
+        placeholders = ",".join("?" for _ in member_task_ids)
+        for row in conn.execute(
+            f"""
+            SELECT id, task_id, filename, size, stored_path
+              FROM task_attachments
+             WHERE task_id IN ({placeholders})
+             ORDER BY task_id, id
+            """,
+            tuple(sorted(member_task_ids)),
+        ):
+            stored_path = Path(str(row["stored_path"] or ""))
+            digest = None
+            try:
+                if stored_path.is_file():
+                    digest = hashlib.sha256(stored_path.read_bytes()).hexdigest()
+            except OSError:
+                digest = None
+            attachment_rows.append(
+                {
+                    "id": row["id"],
+                    "task_id": row["task_id"],
+                    "filename": row["filename"],
+                    "size": row["size"],
+                    "sha256": digest,
+                }
+            )
     snapshot = {
         "board_id": board_id,
         "root_task_id": root_task_id,
@@ -157,6 +192,7 @@ def _read_snapshot(
         "requested_finalization": _as_dict(requested),
         "finalizations": [_as_dict(item) for item in finalizations],
         "members": [_as_dict(item) for item in members],
+        "attachments": attachment_rows,
         **rows,
     }
     snapshot["snapshot_version"] = _snapshot_version(snapshot)
@@ -668,6 +704,17 @@ def _candidate_snapshot_version(snapshot: dict[str, Any]) -> str:
         and not str(row["kind"]).startswith("notify_")
     ]
     events.sort(key=lambda item: (item["task_id"], item["id"]))
+    attachments = [
+        {
+            "id": row["id"],
+            "task_id": row["task_id"],
+            "filename": row["filename"],
+            "size": row["size"],
+            "sha256": row["sha256"],
+        }
+        for row in snapshot.get("attachments", ())
+    ]
+    attachments.sort(key=lambda item: (item["task_id"], item["id"]))
 
     candidate = {
         "board_id": snapshot["board_id"],
@@ -677,5 +724,6 @@ def _candidate_snapshot_version(snapshot: dict[str, Any]) -> str:
         "tasks": tasks,
         "task_runs": runs,
         "task_events": events,
+        "attachments": attachments,
     }
     return _snapshot_version(candidate)

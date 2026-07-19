@@ -737,6 +737,7 @@ def project_admit(
         required_task_ids=required,
         checker_profile=checker_profile,
         repair_profile="builder-gptluna",
+        sealed_evidence_required=True,
         repair_budget=repair_budget,
         retention_days=retention_days,
         notification_policy=notification_policy,

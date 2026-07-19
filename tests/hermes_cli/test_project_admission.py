@@ -152,7 +152,7 @@ def _evidence() -> list[dict[str, str]]:
     return [{"kind": "test", "reference": "tests/g3", "summary": "focused authority test passed"}]
 
 
-def _sealed_checker_setup(board):
+def _sealed_checker_setup(board, *, attach: bool = True):
     workspace = Path.home() / "sealed-workspace"
     workspace.mkdir()
     root = _task(board, "sealed root", workspace_path=str(workspace))
@@ -165,10 +165,11 @@ def _sealed_checker_setup(board):
         root_task_id=root,
         required_task_ids=(implementation,),
         checker_profile="checker-profile",
-        repair_profile=DEFAULT_REPAIR_PROFILE,
+        sealed_evidence_required=True,
         now=100,
     )
     assert admitted.finalization.sealed_evidence_required is True
+    assert admitted.finalization.repair_worker_profile == DEFAULT_REPAIR_PROFILE
     board.execute(
         "UPDATE tasks SET status='ready' WHERE id IN (?, ?)",
         (root, implementation),
@@ -176,18 +177,21 @@ def _sealed_checker_setup(board):
     assert kb.complete_task(board, root, result="root complete")
     kb.recompute_ready(board)
     assert kb.complete_task(board, implementation, result="implementation complete")
-    root_path = workspace / "root.txt"
-    implementation_path = workspace / "implementation.txt"
-    root_path.write_text("root evidence", encoding="utf-8")
-    implementation_path.write_text("implementation evidence", encoding="utf-8")
-    kb.add_attachment(board, root, filename=root_path.name, stored_path=str(root_path), size=root_path.stat().st_size)
-    kb.add_attachment(
-        board,
-        implementation,
-        filename=implementation_path.name,
-        stored_path=str(implementation_path),
-        size=implementation_path.stat().st_size,
-    )
+    root_path = kb.task_attachments_dir(root, board="board-a") / "root.txt"
+    implementation_path = kb.task_attachments_dir(implementation, board="board-a") / "implementation.txt"
+    if attach:
+        root_path.parent.mkdir(parents=True)
+        implementation_path.parent.mkdir(parents=True)
+        root_path.write_text("root evidence", encoding="utf-8")
+        implementation_path.write_text("implementation evidence", encoding="utf-8")
+        kb.add_attachment(board, root, filename=root_path.name, stored_path=str(root_path), size=root_path.stat().st_size)
+        kb.add_attachment(
+            board,
+            implementation,
+            filename=implementation_path.name,
+            stored_path=str(implementation_path),
+            size=implementation_path.stat().st_size,
+        )
     finalization = get_project_finalization(board, board_id="board-a", root_task_id=root)
     assert finalization is not None
     assert acquire_finalization_lock(
@@ -247,10 +251,13 @@ def _sealed_evidence(root, implementation, root_path, implementation_path, candi
 
 def test_sealed_evidence_fails_closed_before_checker_creation_and_accepts_current_candidate(board):
     root, implementation, root_path, implementation_path, evaluation, action, token = _sealed_checker_setup(board)
-    with pytest.raises(ValueError, match="evidence_missing"):
-        register_project_checker(board, action, token, now=101)
-
     candidate = evaluation.candidate_snapshot_version
+    registered = register_project_checker(board, action, token, now=101)
+    assert registered.checker_task_id
+    assert board.execute(
+        "SELECT COUNT(*) FROM project_checker_evidence WHERE root_task_id=?",
+        (root,),
+    ).fetchone()[0] == 2
     valid_root_hash = hashlib.sha256(root_path.read_bytes()).hexdigest()
     invalid_cases = (
         (
@@ -290,7 +297,20 @@ def test_sealed_evidence_fails_closed_before_checker_creation_and_accepts_curren
                 now=101,
             )
 
-    assert board.execute("SELECT COUNT(*) FROM tasks WHERE idempotency_key=?", (action.idempotency_key,)).fetchone()[0] == 0
+    assert board.execute("SELECT COUNT(*) FROM tasks WHERE idempotency_key=?", (action.idempotency_key,)).fetchone()[0] == 1
+    evidence = _sealed_evidence(root, implementation, root_path, implementation_path, candidate)
+    for item in evidence:
+        item["file_set"] = [root_path.name]
+    with pytest.raises(ValueError, match="manifest_mismatch"):
+        record_project_checker_evidence(
+            board,
+            board_id="board-a",
+            root_task_id=root,
+            generation=1,
+            candidate_snapshot_version=candidate,
+            evidence=evidence,
+            now=101,
+        )
     evidence = _sealed_evidence(root, implementation, root_path, implementation_path, candidate)
     assert record_project_checker_evidence(
         board,
@@ -310,6 +330,57 @@ def test_sealed_evidence_fails_closed_before_checker_creation_and_accepts_curren
     )
     registered = register_project_checker(board, action, token, now=101)
     assert registered.checker_task_id
+
+
+def test_sealed_checker_blocks_attachment_outside_its_task_directory(board):
+    root, _, root_path, _, _, action, token = _sealed_checker_setup(board)
+    board.execute(
+        "UPDATE task_attachments SET stored_path=? WHERE task_id=?",
+        (str(root_path.parent.parent / root_path.name), root),
+    )
+    blocked = register_project_checker(board, action, token, now=101)
+    assert blocked.checker_task_id is None
+    assert board.execute(
+        "SELECT COUNT(*) FROM tasks WHERE idempotency_key=?", (action.idempotency_key,)
+    ).fetchone()[0] == 0
+
+
+def test_sealed_checker_registration_derives_evidence_only_from_required_attachments(board):
+    root, _, _, _, _, action, token = _sealed_checker_setup(board, attach=False)
+    with pytest.raises(ValueError, match="attachment_missing"):
+        register_project_checker(board, action, token, now=101)
+    assert board.execute(
+        "SELECT COUNT(*) FROM tasks WHERE idempotency_key=?", (action.idempotency_key,)
+    ).fetchone()[0] == 0
+    assert board.execute(
+        "SELECT COUNT(*) FROM project_checker_evidence WHERE root_task_id=?", (root,)
+    ).fetchone()[0] == 0
+
+
+def test_sealed_attachment_mutation_makes_checker_candidate_stale(board):
+    root, implementation, root_path, implementation_path, evaluation, action, token = _sealed_checker_setup(board)
+    registered = register_project_checker(board, action, token, now=101)
+    claimed = kb.claim_task(board, registered.checker_task_id, claimer="checker")
+    assert claimed is not None and claimed.current_run_id is not None
+    root_path.write_text("mutated evidence", encoding="utf-8")
+    changed = evaluate_project(
+        board, board_id="board-a", root_task_id=root, generation=1, evaluation_time=102
+    )
+    assert changed.candidate_snapshot_version != evaluation.candidate_snapshot_version
+    with pytest.raises(ValueError, match="candidate is stale"):
+        submit_project_checker_verdict(
+            board,
+            board_id="board-a",
+            task_id=registered.checker_task_id,
+            run_id=int(claimed.current_run_id),
+            worker_profile="checker-profile",
+            verdict="PASS",
+            reason="stale evidence",
+            evidence=_sealed_evidence(
+                root, implementation, root_path, implementation_path,
+                evaluation.candidate_snapshot_version,
+            ),
+        )
 
 
 def test_admission_is_atomic_private_and_has_no_checker_member(board):
@@ -361,7 +432,7 @@ def test_admission_persists_builder_repair_authority_and_replay_is_stable(board)
     assert replay.admission_key == created.admission_key
     assert replay.finalization.repair_worker_profile == DEFAULT_REPAIR_PROFILE
 
-    with pytest.raises(ValueError, match="repair worker authority"):
+    with pytest.raises(ValueError, match="repair worker profile"):
         admit_existing_project(
             board,
             board_id="board-a",

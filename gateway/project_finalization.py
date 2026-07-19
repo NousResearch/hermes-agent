@@ -251,16 +251,20 @@ class ProjectFinalizationService:
         if not self._owns_lock(current, now):
             return result.plus(skipped=1)
         if current.admission_key is not None and current.sealed_evidence_required:
-            try:
-                validate_project_checker_evidence(
-                    conn,
-                    board_id=current.board_id,
-                    root_task_id=current.root_task_id,
-                    generation=current.generation,
-                    candidate_snapshot_version=evaluation.candidate_snapshot_version,
-                )
-            except ValueError as exc:
-                return result.plus(skipped=1, failure=str(exc))
+            # A mutation changes the candidate digest. Do not validate old
+            # evidence against the new candidate; registration must rotate the
+            # stale checker and derive a fresh attachment manifest.
+            if current.checker_candidate_snapshot_version == evaluation.candidate_snapshot_version:
+                try:
+                    validate_project_checker_evidence(
+                        conn,
+                        board_id=current.board_id,
+                        root_task_id=current.root_task_id,
+                        generation=current.generation,
+                        candidate_snapshot_version=evaluation.candidate_snapshot_version,
+                    )
+                except ValueError as exc:
+                    return result.plus(skipped=1, failure=str(exc))
         # A pending authoritative checker already owns this candidate. Its
         # completion/verdict is the only event that may advance finalization;
         # do not mint a new identity merely because evaluator time changed.
@@ -276,7 +280,14 @@ class ProjectFinalizationService:
         )
         if checker_is_authoritative:
             checker_task = kb.get_task(conn, current.final_checker_task_id)
-            if checker_task is not None and checker_task.status != "done":
+            if (
+                checker_task is not None
+                and checker_task.status != "done"
+                and (
+                    not current.sealed_evidence_required
+                    or current.checker_candidate_snapshot_version == evaluation.candidate_snapshot_version
+                )
+            ):
                 return result.plus(skipped=1)
         destination = self._destination(conn, current)
         project = self._identity(current)

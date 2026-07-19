@@ -721,6 +721,7 @@ def classify_api_error(
         and (
             "error parsing grammar" in error_msg
             or "json-schema-to-grammar" in error_msg
+            or "failed to parse grammar" in error_msg
             or (
                 "unable to generate parser" in error_msg
                 and "template" in error_msg

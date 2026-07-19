@@ -2540,6 +2540,12 @@ export const en: Translations = {
     yoloSystem: active => `YOLO ${active ? 'on' : 'off'} for this session`,
     yoloTitle: 'YOLO',
     yoloToggleFailed: 'Could not toggle YOLO',
+    reasoning: {
+      status: (level, display, values) => `Reasoning effort: ${level} · display: ${display}. Use /reasoning <${values}>.`,
+      effortSet: level => `Reasoning effort set to ${level} for this session`,
+      displaySet: value => `Reasoning display: ${value}`,
+      failed: 'Could not update reasoning'
+    },
     profileStatus: current =>
       `Profile: ${current}. Use /profile <name> or the "New session" picker to start a chat in another profile.`,
     unknownProfile: 'Unknown profile',

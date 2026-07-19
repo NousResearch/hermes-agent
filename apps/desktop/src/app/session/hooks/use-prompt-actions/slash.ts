@@ -12,6 +12,7 @@ import {
   isDesktopSlashCommand,
   resolveDesktopCommand
 } from '@/lib/desktop-slash-commands'
+import { isReasoningEffort, REASONING_COMMAND_HELP } from '@/lib/reasoning-effort'
 import { setSessionYolo } from '@/lib/yolo-session'
 import { openCommandPalettePage } from '@/store/command-palette'
 import { setComposerDraft } from '@/store/composer'
@@ -23,6 +24,7 @@ import {
   $connection,
   $sessions,
   $yoloActive,
+  setCurrentReasoningEffort,
   setModelPickerOpen,
   setSessionPickerOpen,
   setSessions,
@@ -320,6 +322,50 @@ export function useSlashCommand(deps: SlashCommandDeps) {
             notify({ kind: 'success', message: copy.newChatsProfile(match.name) })
           } catch (err) {
             notifyError(err, copy.setProfileFailed)
+          }
+        },
+        // /reasoning shows or sets the session's reasoning effort / thinking
+        // display via the gateway's session-scoped `config.get/set reasoning`
+        // (the same RPC the model-edit submenu uses). Levels update the
+        // composer's effort store so the pill reflects the change immediately.
+        reasoning: async ctx => {
+          const resolved = await withSlashOutput(ctx)
+
+          if (!resolved) {
+            return
+          }
+
+          const { render, sessionId } = resolved
+          const arg = ctx.arg.trim().toLowerCase()
+
+          try {
+            if (!arg) {
+              const current = await requestGateway<{ display?: string; value?: string }>('config.get', {
+                key: 'reasoning',
+                session_id: sessionId
+              })
+
+              render(copy.reasoning.status(current.value || 'medium', current.display || 'show', REASONING_COMMAND_HELP))
+
+              return
+            }
+
+            const applied = await requestGateway<{ value?: string }>('config.set', {
+              key: 'reasoning',
+              session_id: sessionId,
+              value: arg
+            })
+
+            const value = applied.value || arg
+
+            if (isReasoningEffort(value)) {
+              setCurrentReasoningEffort(value)
+              render(copy.reasoning.effortSet(value))
+            } else {
+              render(copy.reasoning.displaySet(value))
+            }
+          } catch (err) {
+            render(`${copy.reasoning.failed}: ${err instanceof Error ? err.message : String(err)}`)
           }
         },
         skin: async ({ arg, command, recordInput, sessionHint }) => {

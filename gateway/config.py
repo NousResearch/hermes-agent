@@ -857,14 +857,21 @@ class GatewayConfig:
         )
 
     def get_connected_platforms(self) -> List[Platform]:
-        """Return list of platforms that are enabled and configured."""
+        """Return list of platforms that are enabled and configured.
+
+        Sorted by platform value so the rendered "Connected Platforms" list
+        (and the home-channel blocks derived from it) is byte-stable across
+        gateway restarts and mid-process platform registration — dict
+        insertion order is not a stable contract and a reorder busts the
+        prompt cache without any semantic change.
+        """
         connected = []
         for platform, config in self.platforms.items():
             if not config.enabled:
                 continue
             if self._is_platform_connected(platform, config):
                 connected.append(platform)
-        return connected
+        return sorted(connected, key=lambda p: str(p.value))
 
     def _is_platform_connected(self, platform: Platform, config: PlatformConfig) -> bool:
         """Check whether a single platform is sufficiently configured."""

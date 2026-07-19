@@ -150,6 +150,10 @@ pub async fn resolve(
                 kind.filename(),
                 truncate_ref(&commit_or_ref)
             ));
+            // Immutable pins are cached forever, so a .ps1 cached by a
+            // pre-BOM-fix installer would keep the #67193 encoding bug on
+            // every retry. Upgrade it in place before handing it out.
+            upgrade_cached_script(kind, &cached, emit_log);
             return Ok(ResolvedScript {
                 path: cached,
                 source: ScriptSource::Cached,
@@ -186,6 +190,8 @@ pub async fn resolve(
                         kind.filename(),
                         cached.display()
                     ));
+                    // Stale cache can predate the BOM fix too — upgrade it.
+                    upgrade_cached_script(kind, &cached, emit_log);
                     Ok(ResolvedScript {
                         path: cached,
                         source: ScriptSource::Cached,
@@ -263,8 +269,59 @@ pub(crate) fn prepare_cached_script_bytes(kind: ScriptKind, bytes: &[u8]) -> Vec
     }
 }
 
+/// Upgrade a cached script written by a pre-BOM-fix installer in place.
+///
+/// `prepare_cached_script_bytes` only runs inside `download()`, but immutable
+/// commit pins (and the stale-fallback path) reuse the on-disk file without
+/// re-downloading — so a BOM-less `.ps1` cached before the #67193 fix would
+/// keep reproducing the ANSI-codepage parse failure on every retry. Rewrites
+/// through the same atomic tmp+rename shape as `download()`. Best-effort: a
+/// failed upgrade logs a warning and keeps the original file (which is no
+/// worse than the pre-existing behavior).
+fn upgrade_cached_script(kind: ScriptKind, cached: &Path, emit_log: &impl Fn(&str)) {
+    if !matches!(kind, ScriptKind::Ps1) {
+        return;
+    }
+    let bytes = match std::fs::read(cached) {
+        Ok(b) => b,
+        Err(err) => {
+            emit_log(&format!(
+                "[bootstrap] WARNING: could not read cached script {} for BOM check: {err}",
+                cached.display()
+            ));
+            return;
+        }
+    };
+    if bytes.starts_with(UTF8_BOM) {
+        return;
+    }
+    let upgraded = prepare_cached_script_bytes(kind, &bytes);
+    let tmp = cached.with_extension("ps1.tmp");
+    let result = std::fs::write(&tmp, &upgraded).and_then(|()| std::fs::rename(&tmp, cached));
+    match result {
+        Ok(()) => emit_log(&format!(
+            "[bootstrap] upgraded cached {} with UTF-8 BOM (#67193)",
+            cached.display()
+        )),
+        Err(err) => {
+            let _ = std::fs::remove_file(&tmp);
+            emit_log(&format!(
+                "[bootstrap] WARNING: could not upgrade cached {} with UTF-8 BOM: {err}",
+                cached.display()
+            ));
+        }
+    }
+}
+
 /// Downloads to `dest_path` via reqwest with rustls. Atomically renames
 /// `dest_path.tmp` → `dest_path` so partial writes don't poison the cache.
+///
+/// The client carries explicit timeouts: mutable branch pins call this on
+/// EVERY run (#67193 cache-refresh fix), and the stale-cache fallback in
+/// `resolve()` only fires when this returns `Err`. Without a timeout, a
+/// black-holed connection (captive portal, hung proxy, silently dropped
+/// packets) never errors — the whole bootstrap would hang here instead of
+/// falling back to the cached script.
 async fn download(kind: ScriptKind, commit_or_ref: &str, dest_path: &Path) -> Result<()> {
     let url = format!(
         "https://raw.githubusercontent.com/NousResearch/hermes-agent/{}/scripts/{}",
@@ -286,7 +343,11 @@ async fn download(kind: ScriptKind, commit_or_ref: &str, dest_path: &Path) -> Re
         format!("{ext}.tmp")
     });
 
-    let response = reqwest::Client::new()
+    let response = reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(10))
+        .timeout(std::time::Duration::from_secs(60))
+        .build()
+        .context("building download client")?
         .get(&url)
         .header("User-Agent", "hermes-setup/0.0.1")
         .send()
@@ -402,5 +463,40 @@ mod tests {
             cache_plan(/*immutable=*/ true, /*cached_exists=*/ false),
             CachePlan::Fetch { stale_ok: false }
         );
+    }
+
+    #[test]
+    fn upgrade_cached_script_adds_bom_to_legacy_ps1() {
+        // A .ps1 cached by a pre-#67193 installer has no BOM; the Reuse path
+        // must upgrade it in place instead of serving the broken bytes forever.
+        let dir = std::env::temp_dir().join(format!("hermes-bom-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let cached = dir.join("install-abc1234.ps1");
+        std::fs::write(&cached, b"Write-Host legacy\n").unwrap();
+
+        upgrade_cached_script(ScriptKind::Ps1, &cached, &|_| {});
+        let bytes = std::fs::read(&cached).unwrap();
+        assert!(bytes.starts_with(UTF8_BOM), "legacy cache must gain a BOM");
+        assert_eq!(&bytes[UTF8_BOM.len()..], b"Write-Host legacy\n");
+
+        // Idempotent: a second pass must not double the BOM.
+        upgrade_cached_script(ScriptKind::Ps1, &cached, &|_| {});
+        let again = std::fs::read(&cached).unwrap();
+        assert_eq!(again, bytes);
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn upgrade_cached_script_leaves_sh_untouched() {
+        let dir = std::env::temp_dir().join(format!("hermes-bom-sh-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let cached = dir.join("install-main.sh");
+        std::fs::write(&cached, b"#!/bin/bash\n").unwrap();
+
+        upgrade_cached_script(ScriptKind::Sh, &cached, &|_| {});
+        assert_eq!(std::fs::read(&cached).unwrap(), b"#!/bin/bash\n");
+
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

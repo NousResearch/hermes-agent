@@ -4,8 +4,10 @@ import { $sidebarAgentsGrouped } from '@/store/layout'
 
 import {
   $activeProjectId,
+  $projectColorIndex,
   $projectScope,
   $projectsRpcAvailable,
+  $projectTree,
   $worktreeRefreshToken,
   ALL_PROJECTS,
   createProject,
@@ -13,6 +15,7 @@ import {
   exitProjectScope,
   openProjectCreate,
   pickProjectFolder,
+  projectColorForCwd,
   refreshProjects,
   refreshWorktrees
 } from './projects'
@@ -192,5 +195,88 @@ describe('projects RPC capability', () => {
     expect(notify).toHaveBeenCalledWith(
       expect.objectContaining({ kind: 'warning', message: 'sidebar.projects.staleBackend' })
     )
+  })
+})
+
+describe('project color for session rows', () => {
+  const tree = (nodes: unknown[]) => $projectTree.set(nodes as never)
+
+  const project = (id: string, color: null | string, paths: { root?: string; lanes?: string[] }, archived = false) => ({
+    archived,
+    color,
+    icon: null,
+    id,
+    label: id,
+    path: paths.root ?? null,
+    repos: (paths.lanes ?? []).length
+      ? [
+          {
+            groups: (paths.lanes ?? []).map(lane => ({ id: lane, label: lane, path: lane, sessions: [] })),
+            id: `${id}-repo`,
+            label: `${id}-repo`,
+            path: paths.root ?? null,
+            sessionCount: 0
+          }
+        ]
+      : [],
+    sessionCount: 0
+  })
+
+  beforeEach(() => {
+    tree([])
+  })
+
+  it('resolves a session cwd to its owning project color', () => {
+    tree([project('work', '#4a9eff', { root: '/Users/s/work' })])
+
+    expect(projectColorForCwd($projectColorIndex.get(), '/Users/s/work/api')).toBe('#4a9eff')
+    expect(projectColorForCwd($projectColorIndex.get(), '/Users/s/personal/blog')).toBeNull()
+  })
+
+  it('prefers the longest matching prefix when projects nest', () => {
+    tree([
+      project('umbrella', '#111111', { root: '/Users/s/work' }),
+      project('inner', '#222222', { root: '/Users/s/work/special' })
+    ])
+
+    const index = $projectColorIndex.get()
+
+    expect(projectColorForCwd(index, '/Users/s/work/special/thing')).toBe('#222222')
+    expect(projectColorForCwd(index, '/Users/s/work/other')).toBe('#111111')
+  })
+
+  it('matches worktree lanes that live outside the repo root', () => {
+    tree([project('app', '#7bc86c', { lanes: ['/Users/s/app-worktrees/feature-x'], root: '/Users/s/app' })])
+
+    expect(projectColorForCwd($projectColorIndex.get(), '/Users/s/app-worktrees/feature-x/src')).toBe('#7bc86c')
+  })
+
+  it('skips colorless and archived projects', () => {
+    tree([
+      project('plain', null, { root: '/Users/s/plain' }),
+      project('gone', '#333333', { root: '/Users/s/gone' }, true)
+    ])
+
+    const index = $projectColorIndex.get()
+
+    expect(index).toHaveLength(0)
+    expect(projectColorForCwd(index, '/Users/s/plain/x')).toBeNull()
+    expect(projectColorForCwd(index, '/Users/s/gone/x')).toBeNull()
+  })
+
+  it('never matches a sibling directory that shares the prefix string', () => {
+    tree([project('work', '#4a9eff', { root: '/Users/s/work' })])
+
+    // `/Users/s/work-adjacent` starts with the same characters but is not
+    // under `/Users/s/work` — segment-aware matching must reject it.
+    expect(projectColorForCwd($projectColorIndex.get(), '/Users/s/work-adjacent/x')).toBeNull()
+  })
+
+  it('handles empty cwd without matching anything', () => {
+    tree([project('work', '#4a9eff', { root: '/Users/s/work' })])
+
+    expect(projectColorForCwd($projectColorIndex.get(), '')).toBeNull()
+    expect(projectColorForCwd($projectColorIndex.get(), null)).toBeNull()
+    expect(projectColorForCwd($projectColorIndex.get(), undefined)).toBeNull()
   })
 })

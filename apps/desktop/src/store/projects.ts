@@ -1,4 +1,4 @@
-import { atom } from 'nanostores'
+import { atom, computed } from 'nanostores'
 
 import { liveSessionProjectId, type SidebarProjectTree } from '@/app/chat/sidebar/projects/workspace-groups'
 import type { HermesGitBaseBranch, HermesGitBranch } from '@/global'
@@ -178,6 +178,67 @@ export function projectIdForCwd(cwd: string): null | string {
   }
 
   return best
+}
+
+// ── Project colors on session rows ───────────────────────────────────────────
+// cwd → owning project's user-set color, for tinting a session's idle dot.
+// Same longest-prefix walk as projectIdForCwd, but resolving to the color in
+// one pass (project id → color would walk the tree twice), and keyed by the
+// tree atom so rows re-tint when a color is edited or the tree refreshes.
+//
+// VISUAL-ONLY, and deliberately weaker than status: the tint applies to the
+// IDLE dot alone. Working/needs-input/unread/background states keep their
+// semantic colors — "this session needs you" must never lose to "this session
+// is blue" (see #50718 for the adjacent attention-signal work).
+
+function buildCwdColorIndex(tree: SidebarProjectTree[]): Array<{ color: string; len: number; path: string }> {
+  const index: Array<{ color: string; len: number; path: string }> = []
+
+  for (const project of tree) {
+    const color = (project.color || '').trim()
+
+    if (!color || project.archived) {
+      continue
+    }
+
+    const paths = [project.path, ...project.repos.flatMap(repo => [repo.path, ...repo.groups.map(group => group.path)])]
+
+    for (const path of paths) {
+      const p = (path || '').trim()
+
+      if (p) {
+        index.push({ color, len: p.length, path: p })
+      }
+    }
+  }
+
+  // Longest prefix first, so the first hit wins the lookup below.
+  return index.sort((a, b) => b.len - a.len)
+}
+
+/** Sorted (longest-first) path→color index derived from the live tree. */
+export const $projectColorIndex = computed($projectTree, buildCwdColorIndex)
+
+/** The owning project's color for a session cwd, else null. Pure lookup —
+ *  callers pass `$projectColorIndex` through `useStore` so rows subscribe to
+ *  one derived atom instead of the whole tree. */
+export function projectColorForCwd(
+  index: ReadonlyArray<{ color: string; len: number; path: string }>,
+  cwd: null | string | undefined
+): null | string {
+  const target = (cwd || '').trim()
+
+  if (!target) {
+    return null
+  }
+
+  for (const entry of index) {
+    if (underPath(entry.path, target)) {
+      return entry.color
+    }
+  }
+
+  return null
 }
 
 // The active session's agent relocated itself (created/entered another repo or

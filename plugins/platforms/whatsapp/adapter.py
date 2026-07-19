@@ -334,6 +334,33 @@ def _file_content_hash(path: Path) -> str:
         return ""
 
 
+_BRIDGE_RUNTIME_ENV_KEYS = (
+    "WHATSAPP_DEBUG",
+    "WHATSAPP_FORWARD_OWNER_MESSAGES",
+    "WHATSAPP_PROCESS_FROM_ME_GROUPS",
+    "WHATSAPP_DM_POLICY",
+    "WHATSAPP_ALLOWED_USERS",
+    "WHATSAPP_REPLY_PREFIX",
+    "WHATSAPP_MAX_MESSAGE_LENGTH",
+    "WHATSAPP_CHUNK_DELAY_MS",
+    "WHATSAPP_SEND_TIMEOUT_MS",
+    "HERMES_IMAGE_CACHE_DIR",
+    "HERMES_AUDIO_CACHE_DIR",
+    "HERMES_DOCUMENT_CACHE_DIR",
+)
+
+
+def _bridge_runtime_config_hash(
+    *, mode: str, port: int, session_path: Path, env: dict
+) -> str:
+    """Fingerprint process-start settings that affect bridge behavior."""
+    import hashlib
+
+    parts = [f"mode={mode}", f"port={port}", f"session={session_path}"]
+    parts.extend(f"{key}={env.get(key, '<unset>')}" for key in _BRIDGE_RUNTIME_ENV_KEYS)
+    return hashlib.sha256("\0".join(parts).encode()).hexdigest()[:16]
+
+
 def check_whatsapp_requirements() -> bool:
     """
     Check if WhatsApp dependencies are available.
@@ -568,6 +595,28 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
 
             # Ensure session directory exists
             self._session_path.mkdir(parents=True, exist_ok=True)
+            # Build the exact subprocess environment before the reuse check.
+            # The runtime hash makes every process-start setting part of the
+            # stale-bridge handshake without exposing those values in /health.
+            whatsapp_mode = os.getenv("WHATSAPP_MODE", "self-chat")
+            bridge_env = with_hermes_node_path()
+            if self._reply_prefix is not None:
+                bridge_env["WHATSAPP_REPLY_PREFIX"] = self._reply_prefix
+            from gateway.platforms.base import (
+                get_audio_cache_dir as _get_audio_dir,
+                get_document_cache_dir as _get_doc_dir,
+                get_image_cache_dir as _get_img_dir,
+            )
+            bridge_env["HERMES_IMAGE_CACHE_DIR"] = str(_get_img_dir())
+            bridge_env["HERMES_AUDIO_CACHE_DIR"] = str(_get_audio_dir())
+            bridge_env["HERMES_DOCUMENT_CACHE_DIR"] = str(_get_doc_dir())
+            expected_runtime_hash = _bridge_runtime_config_hash(
+                mode=whatsapp_mode,
+                port=self._bridge_port,
+                session_path=self._session_path,
+                env=bridge_env,
+            )
+            bridge_env["HERMES_BRIDGE_RUNTIME_HASH"] = expected_runtime_hash
             
             # Check if bridge is already running and connected
             import aiohttp
@@ -592,7 +641,16 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                                 # treated as stale by definition.
                                 running_hash = data.get("scriptHash", "")
                                 disk_hash = _file_content_hash(bridge_path)
-                                if running_hash and disk_hash and running_hash == disk_hash:
+                                running_runtime_hash = data.get(
+                                    "runtimeConfigHash", ""
+                                )
+                                if (
+                                    running_hash
+                                    and disk_hash
+                                    and running_hash == disk_hash
+                                    and running_runtime_hash
+                                    == expected_runtime_hash
+                                ):
                                     print(f"[{self.name}] Using existing bridge (status: {bridge_status})")
                                     self._mark_connected()
                                     self._bridge_process = None  # Not managed by us
@@ -601,7 +659,10 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                                     return True
                                 print(
                                     f"[{self.name}] Running bridge is stale "
-                                    f"(running={running_hash or 'unversioned'}, disk={disk_hash}), restarting"
+                                    f"(running_hash={running_hash or 'unversioned'}, "
+                                    f"disk_hash={disk_hash}, "
+                                    f"running_runtime={running_runtime_hash or 'unversioned'}, "
+                                    f"expected_runtime={expected_runtime_hash}), restarting"
                                 )
                             else:
                                 print(f"[{self.name}] Bridge found but not connected (status: {bridge_status}), restarting")
@@ -616,30 +677,9 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             # Start the bridge process in its own process group.
             # Route output to a log file so QR codes, errors, and reconnection
             # messages are preserved for troubleshooting.
-            whatsapp_mode = os.getenv("WHATSAPP_MODE", "self-chat")
             self._bridge_log = self._session_path.parent / "bridge.log"
             bridge_log_fh = open(self._bridge_log, "a", encoding="utf-8")
             self._bridge_log_fh = bridge_log_fh
-
-            # Build bridge subprocess environment.
-            # Pass WHATSAPP_REPLY_PREFIX from config.yaml so the Node bridge
-            # can use it without the user needing to set a separate env var.
-            # with_hermes_node_path() copies os.environ when called with no arg.
-            bridge_env = with_hermes_node_path()
-            if self._reply_prefix is not None:
-                bridge_env["WHATSAPP_REPLY_PREFIX"] = self._reply_prefix
-            # Pass the profile-aware cache directories so the bridge writes
-            # media where the Python side reads it.  Without these the bridge
-            # hardcodes ~/.hermes/{image,audio,document}_cache, which diverges
-            # under HERMES_HOME overrides, profiles, and the new cache/ layout.
-            from gateway.platforms.base import (
-                get_audio_cache_dir as _get_audio_dir,
-                get_document_cache_dir as _get_doc_dir,
-                get_image_cache_dir as _get_img_dir,
-            )
-            bridge_env["HERMES_IMAGE_CACHE_DIR"] = str(_get_img_dir())
-            bridge_env["HERMES_AUDIO_CACHE_DIR"] = str(_get_audio_dir())
-            bridge_env["HERMES_DOCUMENT_CACHE_DIR"] = str(_get_doc_dir())
 
             self._bridge_process = subprocess.Popen(
                 [

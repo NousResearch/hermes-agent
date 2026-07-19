@@ -7,10 +7,11 @@ long-lived bridge process therefore survived gateway restarts AND
 ``hermes update``, serving pre-update bridge.js behavior forever (e.g.
 no inbound media download → images/voice notes arrive as placeholders).
 
-The fix: bridge.js reports a hash of its own source in ``/health``
-(``scriptHash``); the adapter compares it against the bridge.js on disk
-and restarts the bridge on mismatch.  Bridges that predate the handshake
-report no hash and are treated as stale by definition.
+The fix: bridge.js reports hashes for its own source and process-start
+configuration in ``/health`` (``scriptHash`` and ``runtimeConfigHash``); the
+adapter compares them against the current bridge.js and gateway configuration.
+A mismatch restarts the bridge. Bridges that predate either handshake report
+no hash and are treated as stale by definition.
 
 Also covers the npm dependency-refresh stamp: deps are reinstalled when
 package.json changes, not only when node_modules is missing.
@@ -139,9 +140,52 @@ class TestFileContentHash:
         assert _file_content_hash(f) == expected
 
 
+class TestBridgeRuntimeConfigHash:
+    def test_covers_every_process_start_setting(self, tmp_path):
+        from plugins.platforms.whatsapp.adapter import (
+            _BRIDGE_RUNTIME_ENV_KEYS,
+            _bridge_runtime_config_hash,
+        )
+
+        assert _BRIDGE_RUNTIME_ENV_KEYS == (
+            "WHATSAPP_DEBUG",
+            "WHATSAPP_FORWARD_OWNER_MESSAGES",
+            "WHATSAPP_PROCESS_FROM_ME_GROUPS",
+            "WHATSAPP_DM_POLICY",
+            "WHATSAPP_ALLOWED_USERS",
+            "WHATSAPP_REPLY_PREFIX",
+            "WHATSAPP_MAX_MESSAGE_LENGTH",
+            "WHATSAPP_CHUNK_DELAY_MS",
+            "WHATSAPP_SEND_TIMEOUT_MS",
+            "HERMES_IMAGE_CACHE_DIR",
+            "HERMES_AUDIO_CACHE_DIR",
+            "HERMES_DOCUMENT_CACHE_DIR",
+        )
+        baseline = _bridge_runtime_config_hash(
+            mode="bot", port=3001, session_path=tmp_path / "session", env={}
+        )
+        assert len(baseline) == 16
+        for key in _BRIDGE_RUNTIME_ENV_KEYS:
+            assert _bridge_runtime_config_hash(
+                mode="bot",
+                port=3001,
+                session_path=tmp_path / "session",
+                env={key: "changed"},
+            ) != baseline
+        assert _bridge_runtime_config_hash(
+            mode="self-chat", port=3001, session_path=tmp_path / "session", env={}
+        ) != baseline
+        assert _bridge_runtime_config_hash(
+            mode="bot", port=3002, session_path=tmp_path / "session", env={}
+        ) != baseline
+        assert _bridge_runtime_config_hash(
+            mode="bot", port=3001, session_path=tmp_path / "other", env={}
+        ) != baseline
+
+
 class TestStaleBridgeHandshake:
     @pytest.mark.asyncio
-    async def test_reuses_bridge_when_hash_matches(self, tmp_path):
+    async def test_reuses_bridge_when_hash_matches(self, tmp_path, monkeypatch):
         from plugins.platforms.whatsapp.adapter import _file_content_hash
 
         bridge_dir = _setup_bridge_dir(tmp_path)
@@ -151,9 +195,18 @@ class TestStaleBridgeHandshake:
             session_path=tmp_path / "session",
         )
         disk_hash = _file_content_hash(bridge_dir / "bridge.js")
-        mock_client = _mock_health({"status": "connected", "scriptHash": disk_hash})
+        monkeypatch.setenv("WHATSAPP_MODE", "self-chat")
+        monkeypatch.delenv("WHATSAPP_PROCESS_FROM_ME_GROUPS", raising=False)
+        mock_client = _mock_health(
+            {
+                "status": "connected",
+                "scriptHash": disk_hash,
+                "runtimeConfigHash": "runtime-ok",
+            }
+        )
 
         with patch("plugins.platforms.whatsapp.adapter.check_whatsapp_requirements", return_value=True), \
+             patch("plugins.platforms.whatsapp.adapter._bridge_runtime_config_hash", return_value="runtime-ok"), \
              patch("aiohttp.ClientSession", mock_client), \
              patch("plugins.platforms.whatsapp.adapter.asyncio.create_task") as mock_task, \
              patch("subprocess.Popen") as mock_popen, \
@@ -164,6 +217,42 @@ class TestStaleBridgeHandshake:
         assert result is True
         mock_popen.assert_not_called()  # reused, never spawned
         mock_task.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_restarts_bridge_on_runtime_config_mismatch(self, tmp_path):
+        from plugins.platforms.whatsapp.adapter import _file_content_hash
+
+        bridge_dir = _setup_bridge_dir(tmp_path)
+        _fresh_node_modules(bridge_dir)
+        adapter = _make_adapter(
+            bridge_script=str(bridge_dir / "bridge.js"),
+            session_path=tmp_path / "session",
+        )
+        disk_hash = _file_content_hash(bridge_dir / "bridge.js")
+        mock_client = _mock_health(
+            {
+                "status": "connected",
+                "scriptHash": disk_hash,
+                "runtimeConfigHash": "stale-runtime",
+            }
+        )
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = 1
+        mock_proc.returncode = 1
+
+        with patch("plugins.platforms.whatsapp.adapter.check_whatsapp_requirements", return_value=True), \
+             patch("plugins.platforms.whatsapp.adapter._bridge_runtime_config_hash", return_value="expected-runtime"), \
+             patch("aiohttp.ClientSession", mock_client), \
+             patch("plugins.platforms.whatsapp.adapter.asyncio.sleep", new_callable=AsyncMock), \
+             patch("plugins.platforms.whatsapp.adapter._kill_stale_bridge_by_pidfile"), \
+             patch("plugins.platforms.whatsapp.adapter._kill_port_process") as mock_kill_port, \
+             patch("subprocess.Popen", return_value=mock_proc) as mock_popen, \
+             patch.object(adapter, "_acquire_platform_lock", return_value=True, create=True):
+            result = await adapter.connect()
+
+        assert result is False
+        mock_popen.assert_called_once()
+        mock_kill_port.assert_called_once_with(adapter._bridge_port)
 
     @pytest.mark.asyncio
     async def test_restarts_bridge_on_hash_mismatch(self, tmp_path):

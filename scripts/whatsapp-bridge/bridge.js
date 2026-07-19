@@ -1101,6 +1101,7 @@ app.get('/health', (req, res) => {
     queueLength: messageQueue.length,
     uptime: process.uptime(),
     scriptHash: SCRIPT_HASH,
+    runtimeConfigHash: process.env.HERMES_BRIDGE_RUNTIME_HASH || '',
   });
 });
 

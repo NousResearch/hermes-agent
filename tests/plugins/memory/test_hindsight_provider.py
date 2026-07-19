@@ -874,6 +874,48 @@ class TestPrefetch:
         assert p._prefetch_result == "- User prefers concise answers."
 
 
+    def test_queue_prefetch_preserves_useful_text_around_model_switch_artifact(self, provider_with_config):
+        p = provider_with_config(auto_retain_filter_enabled=True)
+        p._client.arecall = AsyncMock(
+            return_value=SimpleNamespace(
+                results=[
+                    SimpleNamespace(
+                        text=(
+                            "[Note: model was just switched from gpt-5.4 to gpt-5.5.]\n"
+                            "User prefers concise answers."
+                        )
+                    ),
+                ]
+            )
+        )
+
+        p.queue_prefetch("preferences")
+        if p._prefetch_thread:
+            p._prefetch_thread.join(timeout=5.0)
+
+        assert p._prefetch_result == "- User prefers concise answers."
+
+    def test_queue_prefetch_does_not_drop_natural_language_phrase(self, provider_with_config):
+        p = provider_with_config(auto_retain_filter_enabled=True)
+        p._client.arecall = AsyncMock(
+            return_value=SimpleNamespace(
+                results=[
+                    SimpleNamespace(
+                        text="We documented why the model was just switched during the outage."
+                    ),
+                ]
+            )
+        )
+
+        p.queue_prefetch("outage notes")
+        if p._prefetch_thread:
+            p._prefetch_thread.join(timeout=5.0)
+
+        assert p._prefetch_result == (
+            "- We documented why the model was just switched during the outage."
+        )
+
+
 # ---------------------------------------------------------------------------
 # sync_turn tests
 # ---------------------------------------------------------------------------

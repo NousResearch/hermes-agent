@@ -74,8 +74,8 @@ _DEFAULT_AUTO_RETAIN_SKIP_PATTERNS = [
     r"(?is)^\s*CONTEXT COMPACTION\s+—\s+REFERENCE ONLY\b.*$",
 ]
 _DEFAULT_RECALL_SKIP_PATTERNS = [
-    r"(?is)\bmodel was just switched\b",
-    r"(?is)\bCONTEXT COMPACTION\s+—\s+REFERENCE ONLY\b",
+    r"(?is)^\s*\[?Note:\s*model was just switched\b[^\n]*\]?\s*$",
+    r"(?is)^\s*\[?CONTEXT COMPACTION\s+—\s+REFERENCE ONLY\b.*$",
 ]
 _PROVIDER_DEFAULT_MODELS = {
     "openai": "gpt-4o-mini",
@@ -1408,8 +1408,11 @@ class HindsightMemoryProvider(MemoryProvider):
         texts: list[str] = []
         for result in results or []:
             text = str(getattr(result, "text", "") or "")
-            if text and not self._recall_text_is_noise(text):
-                texts.append(text)
+            if not text:
+                continue
+            sanitized = _strip_patterns(text, self._auto_retain_strip_patterns)
+            if sanitized and not self._recall_text_is_noise(sanitized):
+                texts.append(sanitized)
         return texts
 
     def initialize(self, session_id: str, **kwargs) -> None:

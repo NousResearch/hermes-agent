@@ -281,6 +281,49 @@ async def test_send_operator_card_creates_forum_thread_with_embed(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_send_operator_card_forum_chunks_preserve_maximum_length_url(monkeypatch):
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+    thread_channel = SimpleNamespace(
+        id=889,
+        send=AsyncMock(return_value=SimpleNamespace(id=7004)),
+    )
+    thread = SimpleNamespace(
+        id=889,
+        message=SimpleNamespace(id=7003),
+        thread=thread_channel,
+    )
+    forum_channel = _discord_mod.ForumChannel()
+    forum_channel.id = 999
+    forum_channel.create_thread = AsyncMock(return_value=thread)
+    adapter._client = SimpleNamespace(
+        get_channel=lambda _chat_id: forum_channel,
+        fetch_channel=AsyncMock(),
+    )
+    monkeypatch.setattr(_discord_mod, "Embed", _FakeEmbed)
+
+    payload = _operator_card_payload()
+    payload["fields"] = [
+        {"label": f"Field {index}", "value": str(index) * 1024}
+        for index in range(3)
+    ]
+    url_prefix = "https://example.com/"
+    trailing_url = url_prefix + "u" * (2048 - len(url_prefix))
+    payload["links"] = [{"label": "Trailing link", "url": trailing_url}]
+
+    result = await adapter.send(
+        "999",
+        "ignored",
+        metadata={"operator_card": payload},
+    )
+
+    assert result.success is True
+    sent_chunks = [forum_channel.create_thread.await_args.kwargs["content"]]
+    sent_chunks.extend(call.kwargs["content"] for call in thread_channel.send.await_args_list)
+    assert all(len(chunk) <= adapter.MAX_MESSAGE_LENGTH for chunk in sent_chunks)
+    assert trailing_url in "".join(sent_chunks)
+
+
+@pytest.mark.asyncio
 async def test_send_rejects_invalid_operator_card_without_platform_write():
     adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
     channel = SimpleNamespace(send=AsyncMock())
@@ -366,7 +409,8 @@ async def test_send_chunks_full_operator_card_fallback_without_losing_trailing_l
         {"label": f"Field {index}", "value": str(index) * 1024}
         for index in range(3)
     ]
-    trailing_url = "https://example.com/operator-card-tail"
+    url_prefix = "https://example.com/"
+    trailing_url = url_prefix + "u" * (2048 - len(url_prefix))
     payload["links"] = [{"label": "Trailing link", "url": trailing_url}]
 
     result = await adapter.send(

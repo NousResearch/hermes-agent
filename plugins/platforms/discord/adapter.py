@@ -141,6 +141,31 @@ def _truncate_discord_component_text(text: str, limit: int) -> str:
     return _prefix_within_utf16_limit(str(text or ""), max(0, limit))
 
 
+def _chunk_discord_lossless_text(text: str, limit: int) -> list[str]:
+    """Split text on Discord's UTF-16 budget without changing its content.
+
+    Operator-card fallbacks are evidence-bearing data.  Generic message
+    chunking adds page indicators and trims boundary whitespace, which can
+    corrupt a long URL.  These chunks intentionally omit presentation markers
+    so joining them reproduces the exact validated fallback.
+    """
+    text = str(text or "")
+    limit = max(1, int(limit))
+    if utf16_len(text) <= limit:
+        return [text]
+
+    chunks: list[str] = []
+    remaining = text
+    while utf16_len(remaining) > limit:
+        chunk = _prefix_within_utf16_limit(remaining, limit)
+        if not chunk:  # Defensive only: Discord's real limit is 2,000 units.
+            chunk = remaining[0]
+        chunks.append(chunk)
+        remaining = remaining[len(chunk):]
+    chunks.append(remaining)
+    return chunks
+
+
 def _abort_discord_websocket_transport(websocket: Any) -> bool:
     """Abort the active aiohttp transport after a bounded close times out."""
     socket = getattr(websocket, "socket", None)
@@ -2978,6 +3003,7 @@ class DiscordAdapter(BasePlatformAdapter):
                     content,
                     embed=operator_card_embed,
                     thread_name=operator_card_thread_name,
+                    preserve_content=operator_card is not None,
                 )
                 await asyncio.to_thread(
                     self._record_discord_response,
@@ -2990,7 +3016,11 @@ class DiscordAdapter(BasePlatformAdapter):
 
             # Format and split message if needed
             formatted = self.format_message(content)
-            chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
+            chunks = (
+                _chunk_discord_lossless_text(formatted, self.MAX_MESSAGE_LENGTH)
+                if operator_card is not None
+                else self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
+            )
 
             message_ids = []
             reference = None
@@ -3084,6 +3114,7 @@ class DiscordAdapter(BasePlatformAdapter):
         *,
         embed: Any = None,
         thread_name: Optional[str] = None,
+        preserve_content: bool = False,
     ) -> SendResult:
         """Create a thread post in a forum channel with the message as starter content.
 
@@ -3097,7 +3128,11 @@ class DiscordAdapter(BasePlatformAdapter):
         # module — no cross-module import needed.
 
         formatted = self.format_message(content)
-        chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
+        chunks = (
+            _chunk_discord_lossless_text(formatted, self.MAX_MESSAGE_LENGTH)
+            if preserve_content
+            else self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
+        )
 
         thread_name = thread_name or _derive_forum_thread_name(content)
 

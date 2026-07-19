@@ -2262,3 +2262,54 @@ def test_save_config_managed_read_only_home_returns_before_lock(
     assert not (home / "config.lock").exists()
     assert "managed" in capsys.readouterr().err.lower()
 
+
+@pytest.mark.skipif(not hasattr(os, "fork"), reason="requires POSIX fork")
+def test_save_config_forked_child_reacquires_file_lock(tmp_path, monkeypatch):
+    import multiprocessing
+
+    import hermes_cli.config as config_mod
+
+    home = tmp_path / "fork-home"
+    home.mkdir()
+    (home / "config.yaml").write_text("base:\n  keep: true\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    config_mod._LOAD_CONFIG_CACHE.clear()
+    config_mod._RAW_CONFIG_CACHE.clear()
+
+    ctx = multiprocessing.get_context("fork")
+    started = ctx.Event()
+    completed = ctx.Event()
+
+    def child_save():
+        started.set()
+        config_mod.save_config(
+            {"writer_b": {"value": 1}},
+            merge_existing=True,
+        )
+        completed.set()
+
+    process = None
+    try:
+        with config_mod._config_file_lock(home / "config.yaml"):
+            process = ctx.Process(target=child_save)
+            process.start()
+            assert started.wait(timeout=2)
+            assert not completed.wait(timeout=0.3)
+            config_mod.save_config(
+                {"writer_a": {"value": 1}},
+                merge_existing=True,
+            )
+
+        assert completed.wait(timeout=5)
+        process.join(timeout=5)
+        assert process.exitcode == 0
+    finally:
+        if process is not None and process.is_alive():
+            process.terminate()
+            process.join(timeout=5)
+
+    saved = config_mod.read_raw_config()
+    assert saved["base"]["keep"] is True
+    assert saved["writer_a"]["value"] == 1
+    assert saved["writer_b"]["value"] == 1
+

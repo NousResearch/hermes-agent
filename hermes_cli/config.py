@@ -269,24 +269,54 @@ _RAW_CONFIG_CACHE: Dict[str, Tuple[int, int, Dict[str, Any]]] = {}
 # dicts above.
 _CONFIG_LOCK = threading.RLock()
 _CONFIG_FILE_LOCK_HOLDERS: Dict[str, threading.local] = {}
+_CONFIG_ACTIVE_LOCK_FILES: Set[Any] = set()
 _CONFIG_FILE_LOCK_HOLDERS_GUARD = threading.Lock()
 _CONFIG_FILE_LOCK_TIMEOUT_SECONDS = 10.0
 
 
-def _config_lock_holder(config_path: Path) -> threading.local:
+def _config_lock_key(config_path: Path) -> str:
     try:
-        key = str(config_path.resolve(strict=False))
+        return str(config_path.resolve(strict=False))
     except Exception:
-        key = str(config_path)
+        return str(config_path)
+
+
+def _config_lock_holder(config_path: Path) -> threading.local:
+    key = _config_lock_key(config_path)
     with _CONFIG_FILE_LOCK_HOLDERS_GUARD:
         return _CONFIG_FILE_LOCK_HOLDERS.setdefault(key, threading.local())
+
+
+def _reset_config_file_locks_after_fork() -> None:
+    """Close inherited lock descriptors and reset child-local ownership."""
+    # Do not acquire the guard here: it may have been held by a vanished thread
+    # at fork time. The child is single-threaded until this callback returns.
+    for lock_file in tuple(_CONFIG_ACTIVE_LOCK_FILES):
+        try:
+            lock_file.close()
+        except (OSError, ValueError):
+            pass
+    _CONFIG_ACTIVE_LOCK_FILES.clear()
+    child_pid = os.getpid()
+    for holder in tuple(_CONFIG_FILE_LOCK_HOLDERS.values()):
+        holder.depth = 0
+        holder.owner_pid = child_pid
+        holder.lock_file = None
+
+
+if hasattr(os, "register_at_fork"):
+    os.register_at_fork(after_in_child=_reset_config_file_locks_after_fork)
 
 
 @contextmanager
 def _config_file_lock(config_path: Path):
     """Serialize config read/merge/write transactions across processes."""
     holder = _config_lock_holder(config_path)
-    if getattr(holder, "depth", 0) > 0:
+    current_pid = os.getpid()
+    if (
+        getattr(holder, "depth", 0) > 0
+        and getattr(holder, "owner_pid", None) == current_pid
+    ):
         holder.depth += 1
         try:
             yield
@@ -294,50 +324,78 @@ def _config_file_lock(config_path: Path):
             holder.depth -= 1
         return
 
+    # Defensive fallback for platforms without register_at_fork or lock state
+    # inherited before this module registered its callback.
+    inherited_lock_file = getattr(holder, "lock_file", None)
+    if getattr(holder, "owner_pid", current_pid) != current_pid:
+        if inherited_lock_file is not None:
+            try:
+                inherited_lock_file.close()
+            except (OSError, ValueError):
+                pass
+        holder.depth = 0
+        holder.owner_pid = current_pid
+        holder.lock_file = None
+
     lock_path = config_path.with_suffix(".lock")
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     if fcntl is None and msvcrt is None:
         holder.depth = 1
+        holder.owner_pid = current_pid
         try:
             yield
         finally:
             holder.depth = 0
+            holder.lock_file = None
         return
 
     if msvcrt and (not lock_path.exists() or lock_path.stat().st_size == 0):
         lock_path.write_text(" ", encoding="utf-8")
 
     with lock_path.open("r+" if msvcrt else "a+", encoding="utf-8") as lock_file:
-        deadline = time.monotonic() + _CONFIG_FILE_LOCK_TIMEOUT_SECONDS
-        while True:
-            try:
-                if fcntl:
-                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-                else:
-                    lock_file.seek(0)
-                    msvcrt.locking(lock_file.fileno(), msvcrt.LK_NBLCK, 1)
-                break
-            except (BlockingIOError, OSError, PermissionError):
-                if time.monotonic() >= deadline:
-                    raise TimeoutError("Timed out waiting for config file lock")
-                time.sleep(0.05)
-
-        holder.depth = 1
+        # Register before acquisition so an unrelated thread forking during the
+        # lock attempt can close every inherited descriptor in the child.
+        with _CONFIG_FILE_LOCK_HOLDERS_GUARD:
+            _CONFIG_ACTIVE_LOCK_FILES.add(lock_file)
         try:
-            yield
+            deadline = time.monotonic() + _CONFIG_FILE_LOCK_TIMEOUT_SECONDS
+            while True:
+                try:
+                    if fcntl:
+                        fcntl.flock(
+                            lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB
+                        )
+                    else:
+                        lock_file.seek(0)
+                        msvcrt.locking(lock_file.fileno(), msvcrt.LK_NBLCK, 1)
+                    break
+                except (BlockingIOError, OSError, PermissionError):
+                    if time.monotonic() >= deadline:
+                        raise TimeoutError("Timed out waiting for config file lock")
+                    time.sleep(0.05)
+
+            holder.depth = 1
+            holder.owner_pid = current_pid
+            holder.lock_file = lock_file
+            try:
+                yield
+            finally:
+                holder.depth = 0
+                holder.lock_file = None
+                if fcntl:
+                    try:
+                        fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+                    except (OSError, IOError, ValueError):
+                        pass
+                elif msvcrt:
+                    try:
+                        lock_file.seek(0)
+                        msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
+                    except (OSError, IOError, ValueError):
+                        pass
         finally:
-            holder.depth = 0
-            if fcntl:
-                try:
-                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
-                except (OSError, IOError):
-                    pass
-            elif msvcrt:
-                try:
-                    lock_file.seek(0)
-                    msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
-                except (OSError, IOError):
-                    pass
+            with _CONFIG_FILE_LOCK_HOLDERS_GUARD:
+                _CONFIG_ACTIVE_LOCK_FILES.discard(lock_file)
 
 
 # Env var names written to .env that aren't in OPTIONAL_ENV_VARS

@@ -1060,6 +1060,9 @@ CANONICAL_PROVIDERS: list[ProviderEntry] = [
     ProviderEntry("openai-codex",   "OpenAI Codex",             "OpenAI Codex (Codex CLI via ChatGPT subscription or API key)"),
     ProviderEntry("openai-api",     "OpenAI API",               "OpenAI API (api.openai.com, API key)"),
     ProviderEntry("alibaba",        "Qwen Cloud",               "Qwen Cloud / DashScope (Qwen + multi-provider)"),
+    ProviderEntry("alibaba-cn",     "Qwen Cloud (China)",       "Qwen Cloud / DashScope China (Domestic direct API)"),
+    ProviderEntry("alibaba-coding-plan", "Alibaba Cloud (Coding Plan)", "Alibaba Coding Plan (coding-intl.dashscope.aliyuncs.com)"),
+    ProviderEntry("alibaba-coding-plan-cn", "Alibaba Cloud (Coding Plan, China)", "Alibaba Coding Plan China (coding.dashscope.aliyuncs.com)"),
     ProviderEntry("xai-oauth",      "xAI Grok OAuth (SuperGrok / Premium+)", "xAI Grok OAuth (SuperGrok / Premium+ subscription)"),
     ProviderEntry("xiaomi",         "Xiaomi MiMo",              "Xiaomi MiMo (MiMo-V2.5 and V2 models: pro, omni, flash)"),
     ProviderEntry("tencent-tokenhub", "Tencent TokenHub",       "Tencent TokenHub (Hy3 Preview via tokenhub.tencentmaas.com)"),
@@ -1137,6 +1140,8 @@ _PROVIDER_LABELS["custom"] = "Custom endpoint"  # special case: not a named prov
 # ---------------------------------------------------------------------------
 PROVIDER_GROUPS: dict[str, tuple[str, str, list[str]]] = {
     "kimi":     ("Kimi / Moonshot", "Coding Plan, Moonshot global & China endpoints", ["kimi-coding", "kimi-coding-cn"]),
+    "alibaba":  ("Qwen / DashScope", "Qwen Cloud global & China endpoints", ["alibaba", "alibaba-cn"]),
+    "alibaba-coding": ("Alibaba Coding Plan", "Coding Plan global & China endpoints", ["alibaba-coding-plan", "alibaba-coding-plan-cn"]),
     "minimax":  ("MiniMax",         "Global, OAuth Coding Plan & China endpoints",     ["minimax", "minimax-oauth", "minimax-cn"]),
     "xai":      ("xAI Grok",        "Direct API or SuperGrok / Premium+ OAuth",        ["xai", "xai-oauth"]),
     "google":   ("Google Gemini",   "Google AI Studio (API key)",                     ["gemini"]),
@@ -1265,6 +1270,9 @@ _PROVIDER_ALIASES = {
     "aliyun": "alibaba",
     "qwen": "alibaba",
     "alibaba-cloud": "alibaba",
+    "qwen-cn": "alibaba-cn",
+    "dashscope": "alibaba",
+    "dashscope-cn": "alibaba-cn",
     "qwen-portal": "qwen-oauth",
     "hf": "huggingface",
     "hugging-face": "huggingface",

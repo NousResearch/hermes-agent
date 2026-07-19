@@ -98,6 +98,13 @@ def test_author_publishes_fixed_private_artifacts_and_replays(
     assert os.stat(source).st_mode & 0o777 == 0o400
     assert os.stat(envelope).st_mode & 0o777 == 0o400
     assert os.stat(receipt).st_mode & 0o777 == 0o444
+    source_raw = source.read_bytes()
+    envelope_raw = envelope.read_bytes()
+    receipt_raw = receipt.read_bytes()
+    assert source_raw == migration._canonical(_source()) + b"\n"
+    assert envelope_raw == migration._canonical(_envelope())
+    assert receipt_raw.endswith(b"\n")
+    assert not receipt_raw.endswith(b"\n\n")
     assert first["source_receipt_path"] == str(source)
     assert first["migration_envelope_path"] == str(envelope)
     assert first["private_key_material_recorded"] is False

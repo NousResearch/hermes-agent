@@ -4,6 +4,7 @@ import copy
 import hashlib
 import inspect
 from dataclasses import replace
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Mapping, cast
 
@@ -61,6 +62,39 @@ def test_public_collection_apis_require_full_ingress_envelope() -> None:
         parameters = inspect.signature(function).parameters
         assert "production_ingress_observation" in parameters
         assert "production_ingress_observation_sha256" not in parameters
+
+
+@pytest.mark.parametrize("role", ["network", "cloud", "host"])
+def test_public_signer_snapshot_accepts_every_observation_role(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    role: str,
+) -> None:
+    public_path = tmp_path / f"{role}.pub"
+    public_path.write_bytes(b"k" * 32)
+    public_path.chmod(0o400)
+    monkeypatch.setattr(
+        author.signer_author,
+        "_require_authority_directories",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        author.signer_author,
+        "_public_path",
+        lambda *_args, **_kwargs: public_path,
+    )
+
+    snapshot = author._public_signer_snapshot(REVISION, role=role)
+
+    assert snapshot.public_raw == b"k" * 32
+
+
+def test_public_signer_snapshot_rejects_unknown_role() -> None:
+    with pytest.raises(
+        author.OwnerGateCloudObservationAuthorError,
+        match="^owner_gate_cloud_observation_signer_invalid$",
+    ):
+        author._public_signer_snapshot(REVISION, role="release")
 
 
 def _signed_ingress_envelope(

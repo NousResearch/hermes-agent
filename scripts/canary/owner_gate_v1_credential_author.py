@@ -113,8 +113,14 @@ def _read_mapping(path: Path, *, mode: int) -> Mapping[str, Any]:
     return dict(value)
 
 
-def _publish(path: Path, value: Mapping[str, Any], *, mode: int) -> bytes:
-    raw = _encode(value)
+def _publish(
+    path: Path,
+    value: Mapping[str, Any],
+    *,
+    mode: int,
+    newline_framed: bool = True,
+) -> bytes:
+    raw = _encode(value) if newline_framed else migration._canonical(value)
     try:
         release_author._publish_exclusive(
             path,
@@ -158,7 +164,7 @@ def _validate_author_receipt(
     unsigned = {key: item for key, item in value.items() if key != "receipt_sha256"}
     try:
         source_value = json.loads(source_raw[:-1].decode("ascii"))
-        envelope_value = json.loads(envelope_raw[:-1].decode("ascii"))
+        envelope_value = json.loads(envelope_raw.decode("ascii"))
     except (UnicodeError, ValueError, json.JSONDecodeError) as exc:
         _error("owner_gate_v1_credential_author_receipt_invalid", exc)
     if (
@@ -226,7 +232,12 @@ def author_live_migration(release_revision: str) -> Mapping[str, Any]:
             host_private_key=private,
         )
     source_raw = _publish(source_path, source, mode=0o400)
-    envelope_raw = _publish(envelope_path, envelope, mode=0o400)
+    envelope_raw = _publish(
+        envelope_path,
+        envelope,
+        mode=0o400,
+        newline_framed=False,
+    )
     unsigned = {
         "schema": AUTHOR_RECEIPT_SCHEMA,
         "release_revision": release_revision,

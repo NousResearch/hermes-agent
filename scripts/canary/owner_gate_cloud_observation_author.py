@@ -2029,7 +2029,7 @@ def _public_signer_snapshot(
     *,
     role: str,
 ) -> _PublicSignerSnapshot:
-    if role not in {"cloud", "host"}:
+    if role not in {"network", "cloud", "host"}:
         _error("owner_gate_cloud_observation_signer_invalid")
     try:
         signer_author._require_authority_directories(release_revision, create=False)

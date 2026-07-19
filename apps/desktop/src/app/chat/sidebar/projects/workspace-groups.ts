@@ -396,6 +396,26 @@ export function liveSessionProjectId(session: SessionInfo, explicitProjects: Pro
   return projectId || repoRoot
 }
 
+/**
+ * The color a session inherits from its owning project — the explicit project
+ * whose folder is the longest prefix of the session's cwd/repo-root, when that
+ * project carries a user-set color. Auto-promoted repo projects have no color
+ * unless the user set one, so a session only tints when it belongs to a colored
+ * project (inheritance is opt-in by coloring the project). Reuses
+ * {@link liveSessionProjectId} so the color follows the SAME membership the
+ * sidebar groups by; returns null for cwd-less / kanban / out-of-tree rows and
+ * for sessions under an uncolored (or auto) project.
+ */
+export function sessionProjectColor(session: SessionInfo, projects: ProjectInfo[]): null | string {
+  const projectId = liveSessionProjectId(session, projects)
+
+  if (!projectId) {
+    return null
+  }
+
+  return projects.find(project => project.id === projectId)?.color ?? null
+}
+
 const upsertSession = (rows: SessionInfo[], session: SessionInfo): SessionInfo[] =>
   [session, ...rows.filter(row => row.id !== session.id)].sort((a, b) => b.started_at - a.started_at)
 

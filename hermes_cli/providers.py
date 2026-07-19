@@ -214,7 +214,8 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
     "mistral": HermesOverlay(
         transport="openai_chat",
         base_url_override="https://api.mistral.ai/v1",
-        extra_env_vars=("MISTRAL_API_KEY",),
+        base_url_env_var="MISTRAL_BASE_URL",
+        extra_env_vars=("MISTRAL_API_KEY", "MISTRAL_BASE_URL"),
     ),
 }
 

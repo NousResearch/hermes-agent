@@ -190,6 +190,11 @@ class TestDiscoveryShape:
         assert result["count"] == 0
 
     def test_query_can_match_session_title_without_message_hit(self, db):
+        """A query that matches only a session title (not message content) is found
+        via LIKE-based title search in search_messages().  The match is returned
+        through the normal discovery pipeline with anchored views and bookends.
+        matched_role reflects the actual matched message role, not a synthetic
+        "session_title"."""
         db.create_session("s_fingerprint", source="cli")
         db.set_session_title("s_fingerprint", "fingerprint-login")
         db.append_message("s_fingerprint", role="user", content="Let's configure PAM for biometric auth")
@@ -202,10 +207,29 @@ class TestDiscoveryShape:
         hit = result["results"][0]
         assert hit["session_id"] == "s_fingerprint"
         assert hit["title"] == "fingerprint-login"
-        assert hit["matched_role"] == "session_title"
-        assert "Session title matched" in hit["snippet"]
+        # matched_role comes from the most recent message, not a synthetic label
+        assert hit["matched_role"] in ("user", "assistant")
+
+    def test_title_like_substring_match(self, db):
+        """Partial title terms match via LIKE (substring), not just exact title match."""
+        db.create_session("s_sub", source="cli")
+        db.set_session_title("s_sub", "Building the Modpack Server")
+        db.append_message("s_sub", role="user", content="Let's start the modpack build.")
+        db.append_message("s_sub", role="assistant", content="Checking dependencies for modpack.")
+
+        # "Modpack" appears in the title but not via FTS5 of messages?  Actually
+        # it also appears in message content.  Search for just "Server" which
+        # is in the title only.
+        result = json.loads(session_search(query="Server", db=db))
+
+        assert result["success"] is True
+        assert result["count"] >= 1
+        hit = result["results"][0]
+        assert hit["session_id"] == "s_sub"
+        assert "Server" in (hit.get("title") or "")
 
     def test_title_query_strips_common_model_quoting(self, db):
+        """Backtick-quoted titles still match via LIKE after non-word-char stripping."""
         db.create_session("s_fingerprint", source="cli")
         db.set_session_title("s_fingerprint", "fingerprint-login")
         db.append_message("s_fingerprint", role="user", content="PAM auth setup")
@@ -214,7 +238,8 @@ class TestDiscoveryShape:
 
         assert result["success"] is True
         assert result["results"][0]["session_id"] == "s_fingerprint"
-        assert result["results"][0]["matched_role"] == "session_title"
+        # matched_role is the actual message role, not "session_title"
+        assert result["results"][0]["matched_role"] in ("user", "assistant")
 
     def test_title_match_respects_current_session_filter(self, db):
         db.create_session("s_current", source="cli")

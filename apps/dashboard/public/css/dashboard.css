@@ -220,6 +220,7 @@ a { color: inherit; }
 
 .search-form {
   flex: 1;
+  min-width: 0;   /* allow the bar to shrink so header controls never overflow */
   display: flex;
   gap: 0;
   max-width: 720px;
@@ -356,6 +357,14 @@ a { color: inherit; }
   .size-m, .size-l { grid-column: span 6; }
   .size-xl { grid-column: span 12; }
 }
+/* Tablets / landscape phones: let the search bar take its own row so the brand
+   and action buttons aren't cramped (single-row header only has room on wider
+   desktops). Below 760px the mobile block below handles the rest. */
+@media (max-width: 900px) and (min-width: 761px) {
+  .topbar { flex-wrap: wrap; }
+  .search-form { order: 3; min-width: 100%; margin: 2px auto 0; }
+}
+
 @media (max-width: 760px) {
   .grid { padding: 12px; gap: 10px; }
   .size-s, .size-m, .size-l, .size-xl { grid-column: span 12; }

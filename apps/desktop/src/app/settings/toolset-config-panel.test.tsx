@@ -421,7 +421,13 @@ describe('ToolsetConfigPanel', () => {
               badge: 'paid',
               tag: 'Most natural voices',
               env_vars: [
-                { key: 'ELEVENLABS_API_KEY', prompt: 'ElevenLabs API key', url: 'https://x', default: null, is_set: false }
+                {
+                  key: 'ELEVENLABS_API_KEY',
+                  prompt: 'ElevenLabs API key',
+                  url: 'https://x',
+                  default: null,
+                  is_set: false
+                }
               ],
               post_setup: null,
               requires_nous_auth: false,
@@ -466,7 +472,13 @@ describe('ToolsetConfigPanel', () => {
               badge: 'paid',
               tag: 'Most natural voices',
               env_vars: [
-                { key: 'ELEVENLABS_API_KEY', prompt: 'ElevenLabs API key', url: 'https://x', default: null, is_set: false }
+                {
+                  key: 'ELEVENLABS_API_KEY',
+                  prompt: 'ElevenLabs API key',
+                  url: 'https://x',
+                  default: null,
+                  is_set: false
+                }
               ],
               post_setup: null,
               requires_nous_auth: false,

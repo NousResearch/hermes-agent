@@ -6956,8 +6956,7 @@ async function startHermes() {
     await waitForUpdateToFinish()
 
     const prewarmed = await resolveWatchdogPrewarmedBackend({
-      hermesRoot:
-        process.env.HERMES_DESKTOP_HERMES_ROOT && path.resolve(process.env.HERMES_DESKTOP_HERMES_ROOT)
+      hermesRoot: process.env.HERMES_DESKTOP_HERMES_ROOT && path.resolve(process.env.HERMES_DESKTOP_HERMES_ROOT)
     })
 
     if (prewarmed) {

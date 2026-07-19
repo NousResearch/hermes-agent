@@ -9,7 +9,7 @@ from typing import Any
 from agent.relay_runtime import RUNTIME_INSTANCE_KEY
 
 from .shared_metrics import SharedMetricsStore
-from .shared_metrics_contract import model_call_dimensions, task_counter
+from .shared_metrics_contract import MODEL_CALL_METRIC, model_call_dimensions, task_counter
 
 logger = logging.getLogger(__name__)
 
@@ -44,7 +44,7 @@ class SharedMetricsSubscriber:
             ):
                 return
         dimensions = model_call_dimensions(event)
-        metric_name = "hermes.model_call.count"
+        metric_name = MODEL_CALL_METRIC
         if dimensions is None:
             task_metric = task_counter(event)
             if task_metric is None:

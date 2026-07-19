@@ -5,11 +5,14 @@ from __future__ import annotations
 import asyncio
 import inspect
 import json
+import logging
 from collections.abc import Callable, Iterator
 from types import SimpleNamespace
 from typing import Any
 
 from agent import relay_runtime
+
+logger = logging.getLogger(__name__)
 
 
 _PROVIDER_MESSAGE_EXTENSION_KEYS = frozenset(
@@ -27,7 +30,7 @@ def execute(
     metadata: dict[str, Any] | None = None,
 ) -> Any:
     """Run one non-streaming physical provider attempt through Relay."""
-    runtime, session, parent = _execution_context(session_id)
+    runtime, session, parent = relay_runtime.resolve_execution_context(session_id)
     if runtime is None or session is None:
         return callback(request)
     logical = _logical_parent(runtime, session, parent, metadata)
@@ -95,7 +98,7 @@ async def execute_async(
     metadata: dict[str, Any] | None = None,
 ) -> Any:
     """Run one asynchronous physical provider attempt through Relay."""
-    runtime, session, parent = _execution_context(session_id)
+    runtime, session, parent = relay_runtime.resolve_execution_context(session_id)
     if runtime is None or session is None:
         return await callback(request)
     logical = _logical_parent(runtime, session, parent, metadata)
@@ -159,7 +162,7 @@ def execute_current(
     metadata: dict[str, Any] | None = None,
 ) -> Any:
     """Run a provider attempt under the inherited Hermes turn when present."""
-    turn = relay_runtime.current_turn()
+    turn = relay_runtime.active_turn()
     if turn is None:
         return callback(request)
     return execute(
@@ -181,7 +184,7 @@ async def execute_current_async(
     metadata: dict[str, Any] | None = None,
 ) -> Any:
     """Run an async provider attempt under the inherited turn when present."""
-    turn = relay_runtime.current_turn()
+    turn = relay_runtime.active_turn()
     if turn is None:
         return await callback(request)
     return await execute_async(
@@ -204,7 +207,7 @@ def stream_current(
     metadata: dict[str, Any] | None = None,
 ) -> Any:
     """Run a provider stream under the inherited Hermes turn when present."""
-    turn = relay_runtime.current_turn()
+    turn = relay_runtime.active_turn()
     if turn is None:
         return stream_factory(request)
     return stream(
@@ -281,7 +284,7 @@ class ManagedLlmStream(Iterator[Any]):
         self._relay_observes_chunks = False
         self._raw_chunks: list[tuple[Any, Any]] = []
 
-        runtime, session, parent = _execution_context(session_id)
+        runtime, session, parent = relay_runtime.resolve_execution_context(session_id)
         if runtime is None or session is None:
             raw_stream = stream_factory(request)
             if completed_response_predicate is not None and completed_response_predicate(
@@ -540,50 +543,38 @@ class AnthropicStreamAccumulator:
         return _namespace(merged)
 
 
-def _execution_context(
-    session_id: str,
-) -> tuple[relay_runtime.RelayRuntime | None, Any, Any]:
-    turn = relay_runtime.current_turn()
-    if turn is not None and isinstance(turn.lease.host, relay_runtime.RelayRuntime):
-        return turn.lease.host, turn.lease.session, turn.handle
-    runtime = relay_runtime.get_runtime()
-    if runtime is None:
-        return None, None, None
-    session = runtime.get_session(session_id)
-    if session is None:
-        session = runtime.ensure_session({"session_id": session_id})
-    return runtime, session, None if session is None else session.handle
-
-
 def _logical_parent(
     runtime: relay_runtime.RelayRuntime,
     session: Any,
     parent: Any,
     metadata: dict[str, Any] | None,
 ) -> tuple[relay_runtime.RelayTurnContext, Any, str] | None:
-    turn = relay_runtime.current_turn()
+    turn = relay_runtime.active_turn(session.session_id)
     request_id = str((metadata or {}).get("api_request_id") or "")
     if turn is None or not request_id or turn.lease.host is not runtime:
         return None
-    with turn.logical_llm_lock:
-        handle = turn.logical_llm_calls.get(request_id)
-        if handle is None:
-            handle = runtime.run_in_session(
-                session,
-                runtime.relay.scope.push,
-                relay_runtime.LOGICAL_LLM_SCOPE,
-                runtime.relay.ScopeType.Function,
-                handle=parent,
-                input={},
-                metadata={
-                    relay_runtime.RUNTIME_SCHEMA_KEY: relay_runtime.RUNTIME_SCHEMA_VERSION,
-                    relay_runtime.RUNTIME_INSTANCE_KEY: runtime.runtime_id,
-                    "hermes.call_role": str(
-                        (metadata or {}).get("call_role") or "primary"
-                    ),
-                },
-            )
-            turn.logical_llm_calls[request_id] = handle
+    with turn.finalize_lock:
+        if turn.closed:
+            return None
+        with turn.logical_llm_lock:
+            handle = turn.logical_llm_calls.get(request_id)
+            if handle is None:
+                handle = runtime.run_in_session(
+                    session,
+                    runtime.relay.scope.push,
+                    relay_runtime.LOGICAL_LLM_SCOPE,
+                    runtime.relay.ScopeType.Function,
+                    handle=parent,
+                    input={},
+                    metadata={
+                        relay_runtime.RUNTIME_SCHEMA_KEY: relay_runtime.RUNTIME_SCHEMA_VERSION,
+                        relay_runtime.RUNTIME_INSTANCE_KEY: runtime.runtime_id,
+                        "hermes.call_role": str(
+                            (metadata or {}).get("call_role") or "primary"
+                        ),
+                    },
+                )
+                turn.logical_llm_calls[request_id] = handle
     return turn, handle, request_id
 
 
@@ -598,22 +589,34 @@ def _complete_logical(
     lease = turn.lease
     if not isinstance(lease.host, relay_runtime.RelayRuntime):
         return
-    with turn.logical_llm_lock:
-        if turn.logical_llm_calls.get(request_id) is not handle:
+    with turn.finalize_lock:
+        with turn.logical_llm_lock:
+            if turn.logical_llm_calls.get(request_id) is not handle:
+                return
+        if lease.session is None:
             return
-        turn.logical_llm_calls.pop(request_id, None)
-    if lease.session is None:
-        return
-    lease.host.run_in_session(
-        lease.session,
-        lease.host.relay.scope.pop,
-        handle,
-        output={"outcome": outcome},
-        metadata={
-            relay_runtime.RUNTIME_SCHEMA_KEY: relay_runtime.RUNTIME_SCHEMA_VERSION,
-            relay_runtime.RUNTIME_INSTANCE_KEY: lease.host.runtime_id,
-        },
-    )
+        try:
+            lease.host.run_in_session(
+                lease.session,
+                lease.host.relay.scope.pop,
+                handle,
+                output={"outcome": outcome},
+                metadata={
+                    relay_runtime.RUNTIME_SCHEMA_KEY: relay_runtime.RUNTIME_SCHEMA_VERSION,
+                    relay_runtime.RUNTIME_INSTANCE_KEY: lease.host.runtime_id,
+                },
+            )
+        except Exception:
+            # The provider result is authoritative. Retain the handle so turn
+            # finalization can retry cleanup without changing that result.
+            logger.warning(
+                "Hermes Relay logical LLM finalization failed",
+                exc_info=True,
+            )
+            return
+        with turn.logical_llm_lock:
+            if turn.logical_llm_calls.get(request_id) is handle:
+                turn.logical_llm_calls.pop(request_id, None)
 
 
 def _provider_request(

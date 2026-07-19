@@ -1361,6 +1361,7 @@ def run_conversation(
                             base_url=agent.base_url,
                             api_mode=agent.api_mode,
                             api_call_count=api_call_count,
+                            retry_count=retry_count,
                             request_messages=list(request_messages)
                             if isinstance(request_messages, list)
                             else [],

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextvars
 from types import SimpleNamespace
 
 import pytest
@@ -178,6 +179,38 @@ def test_non_stream_preserves_raw_provider_response_identity(relay_turn):
     assert result is raw_response
 
 
+def test_non_stream_result_survives_logical_scope_close_failure(
+    relay_turn, monkeypatch
+):
+    relay, turn = relay_turn
+    original_pop = relay.scope.pop
+    pop_calls = 0
+
+    def fail_first_pop(*args, **kwargs):
+        nonlocal pop_calls
+        pop_calls += 1
+        if pop_calls == 1:
+            raise RuntimeError("simulated logical scope close failure")
+        return original_pop(*args, **kwargs)
+
+    monkeypatch.setattr(relay.scope, "pop", fail_first_pop)
+    raw_response = SimpleNamespace(model="test-model", content="raw")
+
+    result = relay_llm.execute(
+        {"model": "test-model", "messages": []},
+        lambda _request: raw_response,
+        session_id="session-1",
+        name="test-provider",
+        model_name="test-model",
+        metadata={"api_mode": "custom", "api_request_id": "request-close"},
+    )
+
+    assert result is raw_response
+    assert "request-close" in turn.logical_llm_calls
+    relay_runtime.SESSION_COORDINATOR.end_turn(turn, outcome="success")
+    assert turn.logical_llm_calls == {}
+
+
 @pytest.mark.asyncio
 async def test_async_non_stream_preserves_raw_provider_response_identity(relay_turn):
     _relay, _turn = relay_turn
@@ -202,6 +235,31 @@ def test_current_attempt_bypasses_relay_without_an_active_turn(monkeypatch):
     request = {"model": "test-model", "messages": []}
 
     result = relay_llm.execute_current(
+        request,
+        lambda value: value,
+        name="test-provider",
+        model_name="test-model",
+    )
+
+    assert result is request
+
+
+def test_current_attempt_bypasses_a_closed_turn_from_a_copied_context(
+    relay_turn,
+    monkeypatch,
+):
+    _relay, turn = relay_turn
+    stale_context = contextvars.copy_context()
+    relay_runtime.SESSION_COORDINATOR.end_turn(turn, outcome="success")
+    request = {"model": "test-model", "messages": []}
+
+    def fail_execute(*_args, **_kwargs):
+        raise AssertionError("a closed turn must not manage later provider work")
+
+    monkeypatch.setattr(relay_llm, "execute", fail_execute)
+
+    result = stale_context.run(
+        relay_llm.execute_current,
         request,
         lambda value: value,
         name="test-provider",

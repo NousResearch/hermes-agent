@@ -125,7 +125,7 @@ class RelayRuntime:
             return None
         parent = self.ensure_session({"session_id": parent_session_id})
         parent_handle = None if parent is None else parent.handle
-        turn = current_turn()
+        turn = active_turn(parent_session_id)
         if (
             turn is not None
             and not turn.closed
@@ -432,6 +432,10 @@ class RelayTurnContext:
         default_factory=threading.RLock,
         repr=False,
     )
+    finalize_lock: threading.RLock = field(
+        default_factory=threading.RLock,
+        repr=False,
+    )
     _token: contextvars.Token[RelayTurnContext | None] | None = field(
         default=None,
         repr=False,
@@ -573,55 +577,90 @@ class RelaySessionCoordinator:
         *,
         outcome: str,
     ) -> None:
-        if turn.closed:
+        with turn.finalize_lock:
+            if turn.closed:
+                self._reset_turn_context(turn)
+                return
+            turn.closed = True
+            try:
+                lease = turn.lease
+                if isinstance(lease.host, RelayRuntime) and lease.session is not None:
+                    self._finish_logical_calls(turn, outcome=outcome)
+                    if turn.handle is not None:
+                        try:
+                            lease.host.run_in_session(
+                                lease.session,
+                                lease.host.relay.scope.pop,
+                                turn.handle,
+                                output={"outcome": outcome},
+                                metadata={
+                                    RUNTIME_SCHEMA_KEY: RUNTIME_SCHEMA_VERSION,
+                                    RUNTIME_INSTANCE_KEY: lease.host.runtime_id,
+                                },
+                            )
+                        except Exception:
+                            logger.warning(
+                                "Hermes Relay turn finalization failed", exc_info=True
+                            )
+            finally:
+                self._reset_turn_context(turn)
+
+    def finish_logical_calls(
+        self,
+        turn: RelayTurnContext,
+        *,
+        outcome: str,
+    ) -> None:
+        """Close logical LLM children before sibling task aggregation scopes."""
+        with turn.finalize_lock:
+            if turn.closed:
+                return
+            self._finish_logical_calls(turn, outcome=outcome)
+
+    @staticmethod
+    def _finish_logical_calls(
+        turn: RelayTurnContext,
+        *,
+        outcome: str,
+    ) -> None:
+        lease = turn.lease
+        if not isinstance(lease.host, RelayRuntime) or lease.session is None:
             return
-        turn.closed = True
-        try:
-            lease = turn.lease
-            if (
-                turn.handle is not None
-                and isinstance(lease.host, RelayRuntime)
-                and lease.session is not None
-            ):
+        with turn.logical_llm_lock:
+            logical_calls = list(turn.logical_llm_calls.items())
+            turn.logical_llm_calls.clear()
+        for request_id, logical_handle in logical_calls:
+            try:
+                lease.host.run_in_session(
+                    lease.session,
+                    lease.host.relay.scope.pop,
+                    logical_handle,
+                    output={"outcome": outcome},
+                    metadata={
+                        RUNTIME_SCHEMA_KEY: RUNTIME_SCHEMA_VERSION,
+                        RUNTIME_INSTANCE_KEY: lease.host.runtime_id,
+                    },
+                )
+            except Exception:
                 with turn.logical_llm_lock:
-                    logical_calls = list(turn.logical_llm_calls.items())
-                    turn.logical_llm_calls.clear()
-                for _request_id, logical_handle in logical_calls:
-                    try:
-                        lease.host.run_in_session(
-                            lease.session,
-                            lease.host.relay.scope.pop,
-                            logical_handle,
-                            output={"outcome": outcome},
-                            metadata={
-                                RUNTIME_SCHEMA_KEY: RUNTIME_SCHEMA_VERSION,
-                                RUNTIME_INSTANCE_KEY: lease.host.runtime_id,
-                            },
-                        )
-                    except Exception:
-                        logger.warning(
-                            "Hermes Relay logical LLM finalization failed",
-                            exc_info=True,
-                        )
-                try:
-                    lease.host.run_in_session(
-                        lease.session,
-                        lease.host.relay.scope.pop,
-                        turn.handle,
-                        output={"outcome": outcome},
-                        metadata={
-                            RUNTIME_SCHEMA_KEY: RUNTIME_SCHEMA_VERSION,
-                            RUNTIME_INSTANCE_KEY: lease.host.runtime_id,
-                        },
-                    )
-                except Exception:
-                    logger.warning(
-                        "Hermes Relay turn finalization failed", exc_info=True
-                    )
-        finally:
-            if turn._token is not None:
-                _CURRENT_TURN.reset(turn._token)
-                turn._token = None
+                    turn.logical_llm_calls.setdefault(request_id, logical_handle)
+                logger.warning(
+                    "Hermes Relay logical LLM finalization failed",
+                    exc_info=True,
+                )
+
+    @staticmethod
+    def _reset_turn_context(turn: RelayTurnContext) -> None:
+        """Reset the originating ContextVar token when called in that context."""
+        if turn._token is None:
+            return
+        try:
+            _CURRENT_TURN.reset(turn._token)
+        except ValueError:
+            # A copied async/thread context may own terminal cleanup. Keep the
+            # token so the originating context can clear its stale reference.
+            return
+        turn._token = None
 
     @staticmethod
     def release_conversation(lease: ConversationLease) -> None:
@@ -648,6 +687,44 @@ SESSION_COORDINATOR = RelaySessionCoordinator()
 def current_turn() -> RelayTurnContext | None:
     """Return the turn context inherited by current async and thread work."""
     return _CURRENT_TURN.get()
+
+
+def active_turn(session_id: str | None = None) -> RelayTurnContext | None:
+    """Return a live turn only when it belongs to the active profile/session."""
+    turn = current_turn()
+    if turn is None or turn.closed or turn.lease.released:
+        return None
+    if turn.lease.profile_key != current_profile_key():
+        return None
+    if session_id is not None and turn.lease.session_id != session_id:
+        return None
+    if isinstance(turn.lease.host, RelayRuntime):
+        if turn.lease.session is None:
+            return None
+        if turn.lease.host.get_session(turn.lease.session_id) is not turn.lease.session:
+            return None
+    return turn
+
+
+def resolve_execution_context(
+    session_id: str,
+) -> tuple[RelayRuntime | None, RelaySession | None, Any]:
+    """Resolve one active turn/session parent for managed Relay execution."""
+    turn = active_turn(session_id)
+    if (
+        turn is not None
+        and isinstance(turn.lease.host, RelayRuntime)
+        and turn.lease.session is not None
+    ):
+        session = turn.lease.session
+        return turn.lease.host, session, turn.handle or session.handle
+    runtime = get_runtime()
+    if runtime is None:
+        return None, None, None
+    session = runtime.get_session(session_id)
+    if session is None:
+        session = runtime.ensure_session({"session_id": session_id})
+    return runtime, session, None if session is None else session.handle
 
 
 def emit_mark(

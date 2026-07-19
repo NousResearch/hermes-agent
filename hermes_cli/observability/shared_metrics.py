@@ -15,16 +15,14 @@ from hermes_cli.sqlite_util import write_txn
 from hermes_constants import get_hermes_home
 from utils import atomic_json_write
 
+from .shared_metrics_contract import (
+    COUNTER_METRICS,
+    MODEL_CALL_METRIC,
+    counter_dimensions_are_valid,
+)
+
 
 _PACKAGE_SCHEMA_VERSION = "hermes.shared_metrics.v1"
-_MODEL_CALL_METRIC = "hermes.model_call.count"
-_TASK_STARTED_METRIC = "hermes.task_run.started"
-_TASK_FINISHED_METRIC = "hermes.task_run.finished"
-_COUNTER_METRICS = frozenset({
-    _MODEL_CALL_METRIC,
-    _TASK_FINISHED_METRIC,
-    _TASK_STARTED_METRIC,
-})
 _STORE_SCHEMA_VERSION = "1"
 _BUSY_TIMEOUT_MS = 250
 
@@ -50,6 +48,7 @@ class SharedMetricsStore:
         self.outbox_directory = outbox_directory or root / "outbox"
         self._ensure_private_directory(self.database_path.parent)
         self._ensure_private_directory(self.outbox_directory)
+        self._ensure_private_file(self.database_path)
         self._ensure_schema()
 
     def record_model_call(
@@ -58,7 +57,7 @@ class SharedMetricsStore:
         hermes_version: str,
     ) -> None:
         """Increment the terminal model-call counter for the current UTC day."""
-        self.record_counter(_MODEL_CALL_METRIC, dimensions, hermes_version)
+        self.record_counter(MODEL_CALL_METRIC, dimensions, hermes_version)
 
     def record_counter(
         self,
@@ -67,8 +66,10 @@ class SharedMetricsStore:
         hermes_version: str,
     ) -> None:
         """Increment one allowlisted counter for the current UTC day."""
-        if metric_name not in _COUNTER_METRICS:
+        if metric_name not in COUNTER_METRICS:
             raise ValueError(f"Unsupported shared metric: {metric_name}")
+        if not counter_dimensions_are_valid(metric_name, dimensions):
+            raise ValueError(f"Unsupported dimensions for shared metric: {metric_name}")
         dimensions_json = json.dumps(
             dimensions,
             sort_keys=True,
@@ -145,10 +146,6 @@ class SharedMetricsStore:
             timeout=_BUSY_TIMEOUT_MS / 1000,
         )
         try:
-            try:
-                self.database_path.chmod(0o600)
-            except OSError:
-                pass
             connection.row_factory = sqlite3.Row
             connection.execute(f"PRAGMA busy_timeout={_BUSY_TIMEOUT_MS}")
             with connection:
@@ -161,6 +158,14 @@ class SharedMetricsStore:
         path.mkdir(parents=True, exist_ok=True, mode=0o700)
         try:
             path.chmod(0o700)
+        except OSError:
+            pass
+
+    @staticmethod
+    def _ensure_private_file(path: Path) -> None:
+        path.touch(mode=0o600, exist_ok=True)
+        try:
+            path.chmod(0o600)
         except OSError:
             pass
 
@@ -307,15 +312,7 @@ class SharedMetricsStore:
             "period_end": _isoformat(period_end),
             "generated_at": _isoformat(now),
             "resource": {"hermes_version": period_row["hermes_version"]},
-            "metrics": [
-                {
-                    "name": row["metric_name"],
-                    "type": "counter",
-                    "dimensions": json.loads(row["dimensions_json"]),
-                    "value": row["value"] - row["packaged_value"],
-                }
-                for row in rows
-            ],
+            "metrics": [self._package_metric(row) for row in rows],
         }
         payload_json = json.dumps(
             payload,
@@ -358,6 +355,21 @@ class SharedMetricsStore:
                 ),
             )
         return payload
+
+    @staticmethod
+    def _package_metric(row: sqlite3.Row) -> dict[str, Any]:
+        metric_name = str(row["metric_name"])
+        dimensions = json.loads(row["dimensions_json"])
+        if not isinstance(dimensions, dict) or not counter_dimensions_are_valid(
+            metric_name, dimensions
+        ):
+            raise ValueError(f"Unsupported dimensions for shared metric: {metric_name}")
+        return {
+            "name": metric_name,
+            "type": "counter",
+            "dimensions": dimensions,
+            "value": row["value"] - row["packaged_value"],
+        }
 
     def _export_pending_packages(self) -> list[Path]:
         with self._connection() as connection:

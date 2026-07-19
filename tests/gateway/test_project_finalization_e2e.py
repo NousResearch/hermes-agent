@@ -236,7 +236,14 @@ def test_admitted_project_passes_checker_delivers_once_and_replays_safely(
     assert aggregate is not None
     checker_id = aggregate.final_checker_task_id
     assert checker_id.startswith("t_")
-    assert kb.get_task(conn, checker_id).assignee == CHECKER_PROFILE
+    checker_task = kb.get_task(conn, checker_id)
+    assert checker_task is not None
+    assert checker_task.assignee == CHECKER_PROFILE
+    # The checker is an independent worker, but it must inspect the same
+    # controlled source boundary as the admitted project root.  A scratch
+    # workspace here would make required project commands non-runnable.
+    assert checker_task.workspace_kind == "dir"
+    assert checker_task.workspace_path == str(workspace)
     assert aggregate.checker_profile == CHECKER_PROFILE
     # An admitted row cannot bypass freeze/artifact/delivery sequencing with
     # raw SQL, even before a terminal candidate has been frozen.

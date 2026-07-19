@@ -687,6 +687,7 @@ export interface ProfileCreatePayload {
 export interface ProfileInfo {
   has_env: boolean
   is_default: boolean
+  is_remote?: boolean
   model: null | string
   name: string
   path: string

@@ -33,18 +33,14 @@ interface SessionStateCacheOptions {
 }
 
 function syncRuntimeMetadataToView(state: ClientSessionState) {
-  // Only adopt model/provider when the runtime actually carries one. A
-  // session that hasn't resolved a model yet (state.model === '') must not
-  // clobber the composer's current selection, or the backend falls back to
-  // the profile default (e.g. gemma-imatrix) on send.
-  if (state.model) {
-    setCurrentModel(state.model)
-  }
-
-  if (state.provider) {
-    setCurrentProvider(state.provider)
-  }
-
+  // A focused session with no model clears the composer (the focused-session
+  // cache contract). The empty-model preservation that prevents the backend
+  // falling back to the profile default on send lives in the session.info
+  // gateway event handler, which is the path that fires on a profile switch —
+  // not here, where an explicit user focus on a session legitimately adopts
+  // that session's (possibly empty) model.
+  setCurrentModel(state.model ?? '')
+  setCurrentProvider(state.provider ?? '')
   setCurrentReasoningEffort(state.reasoningEffort ?? '')
   setCurrentServiceTier(state.serviceTier ?? '')
   setCurrentFastMode(state.fast ?? false)

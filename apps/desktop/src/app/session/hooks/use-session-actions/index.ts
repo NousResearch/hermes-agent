@@ -1395,6 +1395,11 @@ export function useSessionActions({
       const session = $sessions.get().find(s => sessionMatchesStoredId(s, storedSessionId))
       const previousPinned = $pinnedSessionIds.get()
       const wasSelected = selectedStoredSessionId === storedSessionId
+      // Close the source runtimes (selected + tiled) before relocating, mirroring
+      // the delete path: a live source runtime must not outlive its durable row,
+      // or it keeps running against a session that now lives under another profile.
+      const closingRuntimeId = wasSelected ? activeSessionId : null
+      const tiledRuntimeId = runtimeIdByStoredSessionIdRef.current.get(storedSessionId)
 
       // Optimistically remove from this profile's sidebar; the session now lives
       // under the target profile and will surface there on its next refresh.
@@ -1407,11 +1412,20 @@ export function useSessionActions({
         startFreshSessionDraft(true)
       }
 
+      // Tear down runtimes before awaiting so the route effect can't resume the
+      // relocated session via the stale /<sid> URL.
       try {
+        if (closingRuntimeId) {
+          await requestGateway('session.close', { session_id: closingRuntimeId }).catch(() => undefined)
+        }
+
+        if (tiledRuntimeId) {
+          await requestGateway('session.close', { session_id: tiledRuntimeId }).catch(() => undefined)
+        }
+
         await moveSessionToProfileApi(storedSessionId, targetProfile, session?.profile)
         setSessions(prev => prev.filter(s => !sessionMatchesStoredId(s, storedSessionId)))
         $pinnedSessionIds.set($pinnedSessionIds.get().filter(id => id !== storedSessionId))
-        const tiledRuntimeId = runtimeIdByStoredSessionIdRef.current.get(storedSessionId)
         closeSessionTile(storedSessionId)
 
         if (tiledRuntimeId) {
@@ -1434,6 +1448,7 @@ export function useSessionActions({
     },
     [
       copy,
+      requestGateway,
       runtimeIdByStoredSessionIdRef,
       selectedStoredSessionId,
       sessionStateByRuntimeIdRef,

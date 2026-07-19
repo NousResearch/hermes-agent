@@ -1,9 +1,9 @@
 import { act, cleanup, render, waitFor } from '@testing-library/react'
 import type { MutableRefObject } from 'react'
 import { useEffect } from 'react'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { getSession, getSessionMessages, type SessionInfo } from '@/hermes'
+import { getSession, getSessionMessages, moveSessionToProfile, type SessionInfo } from '@/hermes'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { clearSessionDraft, stashSessionDraft, takeSessionDraft } from '@/store/composer'
 import { $activeGatewayProfile, $newChatProfile, ensureGatewayProfile } from '@/store/profile'
@@ -31,7 +31,8 @@ import {
   setNewChatWorkspaceTarget,
   setResumeFailedSessionId,
   setSelectedStoredSessionId,
-  setSessions
+  setSessions,
+  $sessions
 } from '@/store/session'
 import { $sessionTiles } from '@/store/session-states'
 
@@ -46,6 +47,7 @@ vi.mock('@/hermes', async importOriginal => ({
   getSession: vi.fn(),
   getSessionMessages: vi.fn(),
   listAllProfileSessions: vi.fn(),
+  moveSessionToProfile: vi.fn(),
   setApiRequestProfile: vi.fn(),
   setSessionArchived: vi.fn()
 }))
@@ -1463,5 +1465,125 @@ describe('createBackendSessionForSend workspace target', () => {
     )
 
     expect(params).toMatchObject({ cwd: '/clicked-workspace' })
+  })
+})
+
+describe('moveSessionToProfile', () => {
+  function moveHarness(opts: {
+    requestGateway?: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
+    selectedStoredSessionId?: string | null
+    activeSessionId?: string | null
+    runtimeIdByStored?: Map<string, string>
+  } = {}) {
+    const ref = <T,>(value: T): MutableRefObject<T> => ({ current: value })
+    const requestGateway =
+      opts.requestGateway ??
+      (vi.fn(async () => ({} as never)))
+
+    let handle: ReturnType<typeof useSessionActions> | null = null
+
+    function MoveHarness({
+      onReady
+    }: {
+      onReady: (h: ReturnType<typeof useSessionActions>) => void
+    }) {
+      const actions = useSessionActions({
+        activeSessionId: opts.activeSessionId ?? null,
+        activeSessionIdRef: ref<string | null>(opts.activeSessionId ?? null),
+        busyRef: ref(false),
+        creatingSessionRef: ref(false),
+        ensureSessionState: () => ({}) as ClientSessionState,
+        getRouteToken: () => 'token',
+        navigate: vi.fn() as never,
+        requestGateway,
+        resetViewSync: vi.fn(),
+        runtimeIdByStoredSessionIdRef: ref(opts.runtimeIdByStored ?? new Map<string, string>()),
+        selectedStoredSessionId: opts.selectedStoredSessionId ?? null,
+        selectedStoredSessionIdRef: ref<string | null>(opts.selectedStoredSessionId ?? null),
+        sessionStateByRuntimeIdRef: ref(new Map<string, ClientSessionState>()),
+        syncSessionStateToView: vi.fn(),
+        updateSessionState: () => ({}) as ClientSessionState
+      })
+
+      useEffect(() => {
+        onReady(actions)
+      }, [actions, onReady])
+
+      return null
+    }
+
+    render(<MoveHarness onReady={h => (handle = h)} />)
+
+    return {
+      get handle() {
+        return handle!
+      },
+      requestGateway
+    }
+  }
+
+  beforeEach(() => {
+    setSessions([])
+    vi.mocked(moveSessionToProfile).mockReset()
+  })
+
+  it('closes the selected + tiled runtimes, removes the row, and notifies on success', async () => {
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'session.close') {
+        return {} as never
+      }
+
+      return {} as never
+    })
+    vi.mocked(moveSessionToProfile).mockResolvedValue({
+      ok: true,
+      moved_to_profile: 'coder'
+    } as never)
+
+    const sid = 'stored-move-1'
+    const tiledRuntime = 'rt-tiled-1'
+    setSessions([storedSession({ id: sid })])
+
+    const { handle } = moveHarness({
+      requestGateway,
+      selectedStoredSessionId: sid,
+      activeSessionId: 'rt-selected-1',
+      runtimeIdByStored: new Map([[sid, tiledRuntime]])
+    })
+
+    await act(async () => {
+      await handle.moveSessionToProfile(sid, 'coder')
+    })
+
+    // Both source runtimes are torn down before the relocation.
+    const closed = (requestGateway.mock.calls as unknown as Array<[string, { session_id: string }?]>)
+      .filter(c => c[0] === 'session.close')
+      .map(c => c[1] as { session_id: string })
+    expect(closed).toContainEqual({ session_id: 'rt-selected-1' })
+    expect(closed).toContainEqual({ session_id: tiledRuntime })
+
+    // The backend move was invoked with the source profile for routing.
+    expect(moveSessionToProfile).toHaveBeenCalledWith(sid, 'coder', undefined)
+
+    // Sidebar row is gone after a successful move.
+    expect($sessions.get().some(s => s.id === sid)).toBe(false)
+    expect(requestGateway).toHaveBeenCalled()
+  })
+
+  it('rolls the sidebar row back and surfaces an error when the move fails', async () => {
+    vi.mocked(moveSessionToProfile).mockRejectedValue(new Error('boom'))
+
+    const sid = 'stored-move-2'
+    setSessions([storedSession({ id: sid })])
+
+    const { handle } = moveHarness({ selectedStoredSessionId: sid })
+
+    await act(async () => {
+      await handle.moveSessionToProfile(sid, 'coder')
+    })
+
+    // On failure the source row is restored to the sidebar.
+    expect($sessions.get().some(s => s.id === sid)).toBe(true)
+    expect(moveSessionToProfile).toHaveBeenCalledWith(sid, 'coder', undefined)
   })
 })

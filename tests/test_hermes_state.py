@@ -7481,3 +7481,36 @@ class TestMoveSessionToProfile:
         assert target_db.get_session("ghost") is None
         source_db.close()
         target_db.close()
+
+    def test_collision_keeps_both_copies(self, tmp_path):
+        """A session id already present in the target profile is a collision:
+        the move must refuse (False) without clobbering the target's existing
+        row or deleting the source."""
+        from hermes_state import SessionDB
+
+        source_db = SessionDB(db_path=tmp_path / "source.db")
+        self._seed(source_db, sid="dup")
+        # Pre-existing distinct session under the same id in the target.
+        target_db = SessionDB(db_path=tmp_path / "target.db")
+        target_db.create_session(
+            session_id="dup", source="cli", model="existing-target-model",
+        )
+        target_db.append_message("dup", role="user", content="target original")
+
+        moved = source_db.move_session_to_profile(
+            "dup", "coder", tmp_path / "target.db",
+        )
+        assert moved is False
+
+        # Target keeps its original row untouched.
+        target_session = target_db.get_session("dup")
+        assert target_session is not None
+        assert target_session["model"] == "existing-target-model"
+        assert [m["content"] for m in target_db.get_messages("dup")] == ["target original"]
+
+        # Source row + messages survive the refused move.
+        assert source_db.get_session("dup") is not None
+        assert source_db.get_messages("dup") != []
+
+        source_db.close()
+        target_db.close()

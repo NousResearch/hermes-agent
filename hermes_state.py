@@ -8718,6 +8718,18 @@ class SessionDB:
         if not session:
             return False
 
+        # Collision guard: if the target already owns this session id, refuse
+        # rather than INSERT OR REPLACE (which would clobber the target's
+        # existing row) and then delete the source — that would lose the
+        # target's copy with no way to recover. The caller surfaces this as a
+        # "move failed" so the source stays put.
+        target = SessionDB(db_path=target_db_path)
+        try:
+            if target.get_session(session_id):
+                return False
+        finally:
+            target.close()
+
         messages = self.get_messages(session_id, include_inactive=True)
 
         def _copy(conn):

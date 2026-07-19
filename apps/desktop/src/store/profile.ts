@@ -40,9 +40,44 @@ export function setActiveProfile(name: string): void {
 
 export async function refreshProfiles(): Promise<ProfileInfo[]> {
   const { profiles } = await getProfiles()
-  $profiles.set(profiles)
+  // Mark profiles whose backend is a remote override (per-profile remote or a
+  // global remote/cloud mode). Session move across profiles only relocates the
+  // durable row on the SAME local backend, so remote destinations are excluded
+  // from the move target list.
+  let remoteNames: Set<string> | null = null
 
-  return profiles
+  try {
+    const config = await window.hermesDesktop?.getConnectionConfig?.(null)
+
+    if (config && config.mode !== 'local') {
+      // Global remote/cloud mode: every profile lives on the remote backend.
+      remoteNames = new Set(profiles.map(p => p.name))
+    } else if (window.hermesDesktop?.getConnectionConfig) {
+      const overrides = await Promise.all(
+        profiles.map(async p => {
+          try {
+            const pc = await window.hermesDesktop.getConnectionConfig(p.name)
+
+            return pc && pc.mode !== 'local' ? p.name : null
+          } catch {
+            return null
+          }
+        })
+      )
+
+      remoteNames = new Set(overrides.filter((n): n is string => Boolean(n)))
+    }
+  } catch {
+    remoteNames = null
+  }
+
+  const decorated = remoteNames
+    ? profiles.map(p => ({ ...p, is_remote: remoteNames!.has(p.name) }))
+    : profiles
+
+  $profiles.set(decorated)
+
+  return decorated
 }
 
 // ── Rail order ─────────────────────────────────────────────────────────────

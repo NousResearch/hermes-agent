@@ -1226,6 +1226,7 @@ export function ChatSidebar({
                 onArchiveSession={onArchiveSession}
                 onBranchSession={onBranchSession}
                 onDeleteSession={onDeleteSession}
+                onMoveSessionToProfile={onMoveSessionToProfile}
                 onResumeSession={onResumeSession}
                 onToggle={() => undefined}
                 onTogglePin={pinSession}
@@ -1248,6 +1249,7 @@ export function ChatSidebar({
                 onArchiveSession={onArchiveSession}
                 onBranchSession={onBranchSession}
                 onDeleteSession={onDeleteSession}
+                onMoveSessionToProfile={onMoveSessionToProfile}
                 onReorderSessions={reorderPinned}
                 onResumeSession={onResumeSession}
                 onToggle={() => setSidebarPinsOpen(!pinsOpen)}
@@ -1396,6 +1398,7 @@ export function ChatSidebar({
                 onArchiveSession={onArchiveSession}
                 onBranchSession={onBranchSession}
                 onDeleteSession={onDeleteSession}
+                onMoveSessionToProfile={onMoveSessionToProfile}
                 onEnterProject={onEnterProject}
                 onNewSessionInWorkspace={showAllProfiles ? undefined : onNewSessionInWorkspace}
                 onReorderProjects={showAllProfiles ? undefined : reorderProjects}

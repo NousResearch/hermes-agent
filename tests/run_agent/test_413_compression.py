@@ -1048,3 +1048,149 @@ class TestOverflowWithCompactionDisabled:
         mock_compress.assert_called_once()
         assert result["completed"] is True
         assert result.get("compaction_disabled") is not True
+
+
+# ---------------------------------------------------------------------------
+# Output-cap retry burst scoping (strict-endpoint overflow fix)
+# ---------------------------------------------------------------------------
+
+
+def _make_output_cap_error(available_tokens=5_536, max_tokens=8_192,
+                           context_window=65_536):
+    """Strict-endpoint 400: input fits, input + max_tokens > window.
+
+    Canonical parseable wording (classified as context_overflow AND parsed by
+    parse_available_output_tokens_from_error).
+    """
+    input_tokens = context_window - max_tokens + (max_tokens - available_tokens)
+    err = Exception(
+        f"Error code: 400 - max_tokens: {max_tokens} > "
+        f"context_window: {context_window} - input_tokens: {input_tokens} "
+        f"= available_tokens: {available_tokens}"
+    )
+    err.status_code = 400
+    return err
+
+
+class TestOutputCapRetryBurstScoping:
+    """The overflow-spiral guard's counter is scoped to one failing retry
+    burst — a server-accepted response resets it — while consecutive failures
+    within a burst still escalate to input compression."""
+
+    def _prefill(self):
+        return [
+            {"role": "user", "content": "previous question"},
+            {"role": "assistant", "content": "previous answer"},
+        ]
+
+    def test_success_resets_burst_so_later_overflow_gets_cap_retry(self, agent):
+        """overflow → reduce → success → tool loop → unrelated overflow.
+
+        The second overflow must start a FRESH burst (single cap-reduction
+        retry, no forced input compression).  Before the reset fix, the
+        counter carried across the successful response and the second
+        overflow was misclassified as a non-converging burst (count=2),
+        forcing unnecessary compression.
+        """
+        from agent.model_metadata import OUTPUT_CAP_RETRY_SAFETY_MARGIN
+
+        tc = SimpleNamespace(
+            id="tc1", type="function",
+            function=SimpleNamespace(name="web_search", arguments='{"query":"q"}'),
+        )
+        tool_resp = _mock_response(content=None, finish_reason="stop", tool_calls=[tc])
+        ok_resp = _mock_response(content="All done", finish_reason="stop")
+
+        responses = [
+            _make_output_cap_error(),   # call 1: overflow (burst A, count=1)
+            tool_resp,                  # call 2: reduced-cap retry SUCCEEDS, tool call
+            _make_output_cap_error(),   # call 3: unrelated overflow (fresh burst B)
+            ok_resp,                    # call 4: reduced-cap retry succeeds
+        ]
+        sent_max_tokens = []
+
+        def _create(**kwargs):
+            sent_max_tokens.append(kwargs.get("max_tokens"))
+            item = responses.pop(0)
+            if isinstance(item, Exception):
+                raise item
+            return item
+
+        agent.client.chat.completions.create.side_effect = _create
+
+        with (
+            patch("run_agent.handle_function_call", return_value="tool output"),
+            patch.object(agent, "_compress_context") as mock_compress,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            mock_compress.return_value = (
+                [{"role": "user", "content": "hello"}], "compressed",
+            )
+            result = agent.run_conversation("hello", conversation_history=self._prefill())
+
+        # Both overflows must be handled by the cheap cap-reduction retry;
+        # input compression must never be forced by burst misclassification.
+        mock_compress.assert_not_called()
+        assert result["completed"] is True
+        assert result["final_response"] == "All done"
+        assert len(sent_max_tokens) == 4
+
+        reduced = 5_536 - OUTPUT_CAP_RETRY_SAFETY_MARGIN
+        # Retries after each overflow carry the reduced one-shot cap...
+        assert sent_max_tokens[1] == reduced
+        assert sent_max_tokens[3] == reduced
+        # ...and the request AFTER the successful response returns to the
+        # normal cap (the reduction is consumed by its one retry, and the
+        # burst counter is reset — nothing carries into the tool loop).
+        assert sent_max_tokens[2] == sent_max_tokens[0]
+        assert sent_max_tokens[2] != reduced
+
+    def test_consecutive_overflows_still_escalate_to_compression(self, agent):
+        """Within ONE failing burst, a second parseable overflow means the
+        reduction did not converge: the prompt itself overflows.  The guard
+        must stop shrinking the output cap and route to input compression
+        (the 8192 → 450 → ... spiral fix), with the spiralled cap reset.
+        """
+        from agent.model_metadata import OUTPUT_CAP_RETRY_SAFETY_MARGIN
+
+        ok_resp = _mock_response(content="Recovered", finish_reason="stop")
+        responses = [
+            _make_output_cap_error(),   # count=1 → cap reduction retry
+            _make_output_cap_error(),   # count=2 → escalate to compression
+            ok_resp,                    # post-compression retry succeeds
+        ]
+        sent_max_tokens = []
+
+        def _create(**kwargs):
+            sent_max_tokens.append(kwargs.get("max_tokens"))
+            item = responses.pop(0)
+            if isinstance(item, Exception):
+                raise item
+            return item
+
+        agent.client.chat.completions.create.side_effect = _create
+
+        with (
+            patch.object(agent, "_compress_context") as mock_compress,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            mock_compress.return_value = (
+                [{"role": "user", "content": "hello"}], "compressed",
+            )
+            result = agent.run_conversation("hello", conversation_history=self._prefill())
+
+        # The non-converging burst routed into real input compression...
+        mock_compress.assert_called_once()
+        assert result["completed"] is True
+        assert result["final_response"] == "Recovered"
+        assert len(sent_max_tokens) == 3
+
+        reduced = 5_536 - OUTPUT_CAP_RETRY_SAFETY_MARGIN
+        # ...the first retry used the reduced cap, and the post-escalation
+        # retry dropped the spiralled ephemeral cap (back to the normal one).
+        assert sent_max_tokens[1] == reduced
+        assert sent_max_tokens[2] == sent_max_tokens[0]

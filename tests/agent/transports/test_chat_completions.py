@@ -1191,3 +1191,73 @@ class TestChatCompletionsGeminiNativeExtraBodyStrip:
         )
         eb = kw.get("extra_body")
         assert eb and "tags" in eb
+
+
+class TestCustomProfileWindowClamp:
+    """The custom profile's default max_tokens is clamped to the request load.
+
+    The profile ships default_max_tokens=65536 to defeat Ollama's tiny
+    num_predict default, but a default equal to the whole context window
+    reserves no room for the prompt on strict OpenAI-compatible servers
+    (vLLM 400s when input + max_tokens > window).  The transport clamps the
+    DEFAULT (never an explicit user/ephemeral value) to
+    context_length - estimated_input - max(512, estimated_input // 25).
+    """
+
+    def _kwargs(self, transport, **extra):
+        from providers import get_provider_profile
+        profile = get_provider_profile("custom")
+        assert profile is not None, "custom provider profile must be registered"
+        msgs = [{"role": "user", "content": "Hi"}]
+        return transport.build_kwargs(
+            model="qwen3", messages=msgs,
+            provider_profile=profile,
+            max_tokens_param_fn=lambda v: {"max_tokens": v},
+            **extra,
+        )
+
+    def test_default_clamped_so_input_plus_output_fit_window(self, transport):
+        est = 49_153
+        kw = self._kwargs(
+            transport, context_length=65_536, estimated_input_tokens=est,
+        )
+        reserve = max(512, est // 25)
+        assert kw["max_tokens"] == 65_536 - est - reserve
+        assert est + kw["max_tokens"] < 65_536
+
+    def test_whole_window_default_always_leaves_prompt_room(self, transport):
+        """Even a small prompt must shrink the whole-window default."""
+        kw = self._kwargs(
+            transport, context_length=65_536, estimated_input_tokens=1_000,
+        )
+        assert kw["max_tokens"] == 65_536 - 1_000 - 512  # floor reserve
+
+    def test_unknown_context_length_keeps_profile_default(self, transport):
+        """No window info → no clamp (Ollama num_predict guard preserved)."""
+        kw = self._kwargs(transport)
+        assert kw["max_tokens"] == 65_536
+
+    def test_user_max_tokens_never_clamped(self, transport):
+        """An explicit user cap is authoritative — the clamp only fixes the
+        profile DEFAULT."""
+        kw = self._kwargs(
+            transport, context_length=65_536, estimated_input_tokens=49_153,
+            max_tokens=60_000,
+        )
+        assert kw["max_tokens"] == 60_000
+
+    def test_ephemeral_cap_never_clamped(self, transport):
+        """The one-shot overflow-retry cap must pass through untouched."""
+        kw = self._kwargs(
+            transport, context_length=65_536, estimated_input_tokens=49_153,
+            ephemeral_max_output_tokens=5_024,
+        )
+        assert kw["max_tokens"] == 5_024
+
+    def test_prompt_filling_window_omits_max_tokens(self, transport):
+        """No positive output budget left → omit max_tokens entirely rather
+        than send a nonsensical value."""
+        kw = self._kwargs(
+            transport, context_length=65_536, estimated_input_tokens=65_536,
+        )
+        assert "max_tokens" not in kw

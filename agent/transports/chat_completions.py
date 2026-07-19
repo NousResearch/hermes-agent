@@ -566,6 +566,39 @@ class ChatCompletionsTransport(ProviderTransport):
         # they front several backends with different completion-token limits
         # (e.g. opencode-go: mimo-v2.5-pro = 131072).
         profile_max = profile.get_max_tokens(model)
+        if (
+            profile.name == "custom"
+            and profile_max
+            and user_max is None
+            and ephemeral is None
+        ):
+            # The custom profile's default exists to prevent Ollama's tiny
+            # server-side num_predict default, but a default equal to the whole
+            # context window is invalid for OpenAI-compatible servers like vLLM:
+            # it reserves the entire window for output and leaves no room for
+            # the prompt/tools. Adjust centrally from the actual request load;
+            # the local-first router must not carry arbitrary token caps.
+            try:
+                context_length = int(params.get("context_length") or 0)
+                estimated_input = int(params.get("estimated_input_tokens") or 0)
+            except (TypeError, ValueError):
+                context_length = 0
+                estimated_input = 0
+            if context_length > 0:
+                # Whenever the profile's output cap wouldn't fit alongside the
+                # prompt, clamp it so input+output stays inside the window on the
+                # FIRST try. ``estimated_input`` is a cheap chars/4 approximation;
+                # the server counts the fully-rendered prompt (chat template,
+                # special tokens, tool scaffolding) and has been observed ~2%
+                # higher, so reserve ~4% (floor 512) to absorb that undershoot. A
+                # strict endpoint (vLLM) otherwise 400s on the overflow and spirals
+                # through the retry+compression path. Covers BOTH the whole-window
+                # default (profile_max == ctx) and a moderate cap that still
+                # overflows a large prompt (e.g. 16384 output + 49153 input > ctx).
+                _reserve = max(512, estimated_input // 25)
+                available_output = context_length - estimated_input - _reserve
+                if profile_max >= available_output:
+                    profile_max = available_output if available_output > 0 else None
 
         if ephemeral is not None and max_tokens_fn:
             api_kwargs.update(max_tokens_fn(ephemeral))

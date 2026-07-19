@@ -5785,12 +5785,18 @@ class TestRunConversation:
         assert result["completed"] is True
 
         # Verify the local estimate is actually the lower bound.
-        from agent.model_metadata import estimate_request_tokens_rough
+        from agent.model_metadata import (
+            OUTPUT_CAP_RETRY_SAFETY_MARGIN,
+            estimate_request_tokens_rough,
+        )
         estimated_request = estimate_request_tokens_rough(
             first_call["messages"], tools=agent.tools or None,
         )
         local_available = 200_000 - estimated_request
-        expected_cap = max(1, min(50_000, local_available) - 64)
+        # Margin is the shared retry-safety constant (512, not 64): input can
+        # GROW between retries (~500 tokens observed on truncated-tool-call
+        # replays), so a tiny margin fails once more before converging.
+        expected_cap = max(1, min(50_000, local_available) - OUTPUT_CAP_RETRY_SAFETY_MARGIN)
         assert local_available < 50_000
         assert second_call["max_tokens"] == expected_cap
         assert agent.context_compressor.context_length == 200_000

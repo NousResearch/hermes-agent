@@ -76,16 +76,34 @@ The agent calls `x_search` with these arguments:
 | `to_date` | string | Optional `YYYY-MM-DD` end date. |
 | `enable_image_understanding` | boolean | Ask xAI to analyze images attached to matching posts. |
 | `enable_video_understanding` | boolean | Ask xAI to analyze videos attached to matching posts. |
+| `output_schema` | object | Optional JSON Schema for strict structured output. The parsed result is returned in `structured_output`, while `answer` keeps the raw JSON string. |
+| `instructions` | string | Optional system-level instructions for response style. Ignored when `previous_response_id` is also set. |
+| `previous_response_id` | string | Optional `response_id` from a stored response to continue. When set, the new response is stored automatically. |
+| `store` | boolean | Whether xAI should retain the response for a later chained call. Defaults to `false`. |
 
 The tool returns JSON with:
 
 - `answer` — synthesized text response from Grok
+- `response_id` — response identifier returned by xAI; pass it as `previous_response_id` to continue from a stored response
+- `structured_output` — parsed JSON matching `output_schema`, or `null` when no schema was requested or the response could not be parsed
 - `citations` — citations returned by the Responses API top-level field
 - `inline_citations` — `url_citation` annotations extracted from the message body (each with `url`, `title`, `start_index`, `end_index`)
 - `degraded` — `true` when any narrowing filter (`allowed_x_handles`, `excluded_x_handles`, `from_date`, `to_date`) was set AND both citation channels came back empty. In that case the `answer` was synthesized from the model's own knowledge rather than the X index, so treat it as unsourced. `false` otherwise (including the "no filters set" case — a broad unsourced answer is just an answer, not a filter miss)
 - `degraded_reason` — short string naming which filters were active, or `null` when `degraded` is `false`
 - `credential_source` — `"xai-oauth"` if OAuth resolved, `"xai"` if API key resolved
 - `model`, `query`, `provider`, `tool`, `success`
+
+### Structured output and response chaining
+
+To request structured output, pass a JSON Schema in `output_schema`. xAI is asked to follow it in strict mode. The raw JSON string remains available in `answer`, and the parsed value is returned in `structured_output`.
+
+Response chaining requires the first response to be stored:
+
+1. Make the initial call with `store=true`.
+2. Read its returned `response_id`.
+3. Pass that ID as `previous_response_id` on the follow-up call.
+
+Calls with `previous_response_id` are stored automatically, so their returned `response_id` can continue the chain. `instructions` and `previous_response_id` are mutually exclusive in the xAI Responses API; if both are provided, `previous_response_id` takes precedence and `instructions` is ignored.
 
 ### Date validation
 

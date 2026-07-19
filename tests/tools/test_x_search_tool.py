@@ -723,3 +723,189 @@ def test_x_search_not_degraded_when_no_filters_active(monkeypatch):
     assert result["degraded"] is False
     assert result["degraded_reason"] is None
 
+
+# ---------------------------------------------------------------------------
+# Structured output, instructions, and response chaining — salvaged behavior
+# from grok-mcp-server's x_search tool.
+# ---------------------------------------------------------------------------
+
+def _capture_post(monkeypatch, payload):
+    captured = {}
+
+    def _fake_post(url, headers=None, json=None, timeout=None):
+        captured["json"] = json
+        return _FakeResponse(payload)
+
+    monkeypatch.setattr("requests.post", _fake_post)
+    return captured
+
+
+def test_x_search_attaches_output_schema_text_format(monkeypatch):
+    """``output_schema`` expands to ``text.format.json_schema`` with strict mode."""
+    from tools.x_search_tool import x_search_tool
+
+    monkeypatch.setenv("XAI_API_KEY", "xai-test-key")
+    schema = {
+        "type": "object",
+        "properties": {"sentiment": {"type": "string"}},
+        "required": ["sentiment"],
+        "additionalProperties": False,
+    }
+    captured = _capture_post(
+        monkeypatch,
+        {"id": "resp_abc", "output_text": '{"sentiment": "positive"}'},
+    )
+
+    result = json.loads(x_search_tool(query="reactions to xai", output_schema=schema))
+
+    text_block = captured["json"]["text"]["format"]
+    assert text_block["type"] == "json_schema"
+    assert text_block["name"] == "output"
+    assert text_block["strict"] is True
+    assert text_block["schema"] == schema
+    assert result["success"] is True
+    assert result["structured_output"] == {"sentiment": "positive"}
+    assert result["answer"] == '{"sentiment": "positive"}'
+
+
+def test_x_search_includes_instructions_top_level(monkeypatch):
+    """``instructions`` lands at the top level of the request body."""
+    from tools.x_search_tool import x_search_tool
+
+    monkeypatch.setenv("XAI_API_KEY", "xai-test-key")
+    captured = _capture_post(monkeypatch, {"output_text": "ok"})
+
+    json.loads(x_search_tool(query="xai news", instructions="Respond in Japanese"))
+
+    assert captured["json"]["instructions"] == "Respond in Japanese"
+
+
+def test_x_search_includes_previous_response_id_and_stores(monkeypatch):
+    """``previous_response_id`` lands top-level AND auto-enables ``store``."""
+    from tools.x_search_tool import x_search_tool
+
+    monkeypatch.setenv("XAI_API_KEY", "xai-test-key")
+    captured = _capture_post(monkeypatch, {"output_text": "follow-up"})
+
+    json.loads(
+        x_search_tool(query="drill down on the first hit", previous_response_id="resp_seed")
+    )
+
+    assert captured["json"]["previous_response_id"] == "resp_seed"
+    assert captured["json"]["store"] is True
+
+
+def test_x_search_drops_instructions_when_previous_response_id_set(monkeypatch):
+    """When both are set, instructions is dropped (xAI API treats them as exclusive)."""
+    from tools.x_search_tool import x_search_tool
+
+    monkeypatch.setenv("XAI_API_KEY", "xai-test-key")
+    captured = _capture_post(monkeypatch, {"output_text": "follow-up"})
+
+    json.loads(
+        x_search_tool(
+            query="continue",
+            instructions="should be ignored",
+            previous_response_id="resp_seed",
+        )
+    )
+
+    assert "instructions" not in captured["json"]
+    assert captured["json"]["previous_response_id"] == "resp_seed"
+
+
+def test_x_search_defaults_store_to_false(monkeypatch):
+    """Without ``store`` or ``previous_response_id`` the request stays unstored."""
+    from tools.x_search_tool import x_search_tool
+
+    monkeypatch.setenv("XAI_API_KEY", "xai-test-key")
+    captured = _capture_post(monkeypatch, {"output_text": "ok"})
+
+    json.loads(x_search_tool(query="anything"))
+
+    assert captured["json"]["store"] is False
+
+
+def test_x_search_honors_explicit_store_true(monkeypatch):
+    """Seed call for chaining: caller sets ``store=True`` to make response_id reusable."""
+    from tools.x_search_tool import x_search_tool
+
+    monkeypatch.setenv("XAI_API_KEY", "xai-test-key")
+    captured = _capture_post(monkeypatch, {"id": "resp_seed", "output_text": "seed"})
+
+    result = json.loads(x_search_tool(query="seed", store=True))
+
+    assert captured["json"]["store"] is True
+    assert result["response_id"] == "resp_seed"
+
+
+def test_x_search_returns_response_id_in_success_payload(monkeypatch):
+    """``response_id`` is surfaced from ``data['id']`` on success."""
+    from tools.x_search_tool import x_search_tool
+
+    monkeypatch.setenv("XAI_API_KEY", "xai-test-key")
+    _capture_post(monkeypatch, {"id": "resp_xyz", "output_text": "ok"})
+
+    result = json.loads(x_search_tool(query="anything"))
+
+    assert result["success"] is True
+    assert result["response_id"] == "resp_xyz"
+
+
+def test_x_search_structured_output_none_when_no_schema(monkeypatch):
+    """``structured_output`` is None when ``output_schema`` is not provided."""
+    from tools.x_search_tool import x_search_tool
+
+    monkeypatch.setenv("XAI_API_KEY", "xai-test-key")
+    _capture_post(monkeypatch, {"output_text": "human-readable answer"})
+
+    result = json.loads(x_search_tool(query="anything"))
+
+    assert result["success"] is True
+    assert result["structured_output"] is None
+
+
+def test_x_search_structured_output_none_on_parse_failure(monkeypatch):
+    """Invalid JSON keeps ``success=True`` and ``structured_output=None``."""
+    from tools.x_search_tool import x_search_tool
+
+    monkeypatch.setenv("XAI_API_KEY", "xai-test-key")
+    _capture_post(monkeypatch, {"output_text": "not valid json {{{"})
+
+    result = json.loads(
+        x_search_tool(
+            query="anything",
+            output_schema={"type": "object", "additionalProperties": False},
+        )
+    )
+
+    assert result["success"] is True
+    assert result["structured_output"] is None
+    assert result["answer"] == "not valid json {{{"
+
+
+def test_x_search_rejects_non_object_output_schema(monkeypatch):
+    """``output_schema`` must be a JSON object; other JSON types produce a tool error."""
+    from tools.x_search_tool import x_search_tool
+
+    monkeypatch.setenv("XAI_API_KEY", "xai-test-key")
+
+    result = json.loads(x_search_tool(query="anything", output_schema=["bad"]))
+
+    assert "output_schema must be a JSON object" in result["error"]
+
+
+def test_x_search_omits_empty_instructions_and_previous_response_id(monkeypatch):
+    """Empty/whitespace strings stay out of the payload."""
+    from tools.x_search_tool import x_search_tool
+
+    monkeypatch.setenv("XAI_API_KEY", "xai-test-key")
+    captured = _capture_post(monkeypatch, {"output_text": "ok"})
+
+    json.loads(
+        x_search_tool(query="anything", instructions="   ", previous_response_id="  ")
+    )
+
+    assert "instructions" not in captured["json"]
+    assert "previous_response_id" not in captured["json"]
+    assert captured["json"]["store"] is False

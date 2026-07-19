@@ -602,6 +602,30 @@ class CredentialPool:
         """True if at least one entry is not currently in exhaustion cooldown."""
         return bool(self._available_entries())
 
+    def next_available_at(self) -> Optional[float]:
+        """Earliest epoch time (seconds) any entry re-enters rotation.
+
+        Returns ``None`` when at least one entry is available right now, or
+        when no exhausted entry carries a usable recovery time (empty pool,
+        or only ``STATUS_DEAD`` entries, which never re-enter via TTL).
+        Callers must treat ``None`` as "no wait information", not
+        "unavailable".
+
+        Like :meth:`has_available`, expired cooldowns are left uncleared
+        (``clear_expired=False``); the only writes are the same
+        re-auth/token sync paths ``has_available`` already performs.
+        """
+        if self._available_entries():
+            return None
+        candidates: List[float] = []
+        for entry in self._entries:
+            if entry.last_status != STATUS_EXHAUSTED:
+                continue
+            until = _exhausted_until(entry)
+            if until is not None:
+                candidates.append(until)
+        return min(candidates) if candidates else None
+
     def entries(self) -> List[PooledCredential]:
         return list(self._entries)
 

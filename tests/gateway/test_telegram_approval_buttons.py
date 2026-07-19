@@ -21,8 +21,26 @@ if _repo not in sys.path:
 # ---------------------------------------------------------------------------
 def _ensure_telegram_mock():
     """Wire up the minimal mocks required to import TelegramAdapter."""
-    if "telegram" in sys.modules and hasattr(sys.modules["telegram"], "__file__"):
+    existing = sys.modules.get("telegram")
+    if existing is not None and hasattr(existing, "__file__"):
         return
+    # Prefer real python-telegram-bot when installed; do not let a MagicMock
+    # leak shadow it and poison adapter.ChatType for later tests.
+    if existing is not None and not hasattr(existing, "__file__"):
+        for name in (
+            "telegram",
+            "telegram.ext",
+            "telegram.constants",
+            "telegram.request",
+            "telegram.error",
+        ):
+            sys.modules.pop(name, None)
+    try:
+        import telegram as _real_telegram  # noqa: F401
+        if hasattr(sys.modules.get("telegram"), "__file__"):
+            return
+    except Exception:
+        pass
 
     mod = MagicMock()
     mod.ext.ContextTypes.DEFAULT_TYPE = type(None)
@@ -40,8 +58,8 @@ def _ensure_telegram_mock():
     mod.error.BadRequest = type("BadRequest", (Exception,), {})
 
     for name in ("telegram", "telegram.ext", "telegram.constants", "telegram.request"):
-        sys.modules.setdefault(name, mod)
-    sys.modules.setdefault("telegram.error", mod.error)
+        sys.modules[name] = mod
+    sys.modules["telegram.error"] = mod.error
 
 
 _ensure_telegram_mock()

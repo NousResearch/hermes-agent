@@ -517,9 +517,13 @@ async def test_legacy_send_error_redacts_bot_token_without_traceback(monkeypatch
     assert result.success is False
     assert result.error is not None
     assert token not in result.error
-    assert "bot123456789:***/sendMessage" in result.error
+    # PTB 22.x normalizes exception text (scheme casing + lower path); only
+    # the redacted bot-token form is load-bearing for this security check.
+    assert "bot123456789:***" in result.error
+    assert "sendmessage" in result.error.lower()
     assert token not in caplog.text
-    assert "bot123456789:***/sendMessage" in caplog.text
+    assert "bot123456789:***" in caplog.text
+    assert "sendmessage" in caplog.text.lower()
     adapter._bot.do_api_request.assert_not_called()
 
 
@@ -889,9 +893,12 @@ async def test_legacy_edit_error_logs_redacted_bot_token_without_traceback(monke
     assert result.success is False
     assert result.error is not None
     assert token not in result.error
-    assert "bot123456789:***/editMessageText" in result.error
+    # PTB 22.x normalizes exception text; assert redacted token + endpoint.
+    assert "bot123456789:***" in result.error
+    assert "editmessagetext" in result.error.lower()
     assert token not in caplog.text
-    assert "bot123456789:***/editMessageText" in caplog.text
+    assert "bot123456789:***" in caplog.text
+    assert "editmessagetext" in caplog.text.lower()
 
 
 @pytest.mark.asyncio

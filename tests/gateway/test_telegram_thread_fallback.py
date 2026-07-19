@@ -114,6 +114,18 @@ def _inject_fake_telegram(monkeypatch):
     monkeypatch.setitem(sys.modules, "telegram.constants", _fake_telegram_constants)
     monkeypatch.setitem(sys.modules, "telegram.ext", _fake_telegram_ext)
     monkeypatch.setitem(sys.modules, "telegram.request", _fake_telegram_request)
+    # Rebind adapter aliases so a prior MagicMock pollution of module-level
+    # ChatType/ParseMode cannot leak across test files (order-dependent
+    # chat_type="dm" failures).
+    import plugins.platforms.telegram.adapter as telegram_mod
+
+    monkeypatch.setattr(
+        telegram_mod, "ChatType", _fake_telegram_constants.ChatType, raising=False
+    )
+    monkeypatch.setattr(
+        telegram_mod, "ParseMode", _fake_telegram_constants.ParseMode, raising=False
+    )
+
 
 
 def _make_adapter():

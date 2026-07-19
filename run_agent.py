@@ -1242,6 +1242,21 @@ class AIAgent:
             url = getattr(self, "_base_url_lower", "") or ""
         return "openai.azure.com" in url
 
+    def _is_azure_foundry_url(self, base_url: str = None) -> bool:
+        """Return True when a base URL targets Azure AI Foundry/OpenAI.
+
+        Uses hostname-aware matching so a relay/proxy URL with Azure domains
+        appearing only in its path does not get false-positive detection.
+        """
+        if base_url is not None:
+            url = str(base_url)
+        else:
+            url = getattr(self, "_base_url_lower", "") or ""
+        return (
+            base_url_host_matches(url or "", "services.ai.azure.com")
+            or base_url_host_matches(url or "", "openai.azure.com")
+        )
+
     def _is_github_copilot_url(self, base_url: str = None) -> bool:
         """Return True when a base URL targets GitHub Copilot's OpenAI-compatible API."""
         if base_url is not None:

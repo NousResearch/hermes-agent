@@ -1287,6 +1287,7 @@ def run_conversation(
                         api_kwargs,
                         allow_stream=False,
                         is_github_responses=agent._is_copilot_url(),
+                        is_azure_foundry=agent._is_azure_foundry_url(),
                     )
                 # Copilot x-initiator: the first API call of a user turn is
                 # marked "user" so Copilot bills a premium request; tool-loop
@@ -1439,6 +1440,7 @@ def run_conversation(
                             next_api_kwargs,
                             allow_stream=False,
                             is_github_responses=agent._is_copilot_url(),
+                            is_azure_foundry=agent._is_azure_foundry_url(),
                         )
                     if _use_streaming:
                         return agent._interruptible_streaming_api_call(

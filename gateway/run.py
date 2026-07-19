@@ -17209,7 +17209,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         "honcho.runtime_peer_prefix",
         "honcho.user_peer_aliases",
     )
-    _HONCHO_CACHE_BUSTING_MEMO: dict[tuple[str, int | None], dict[str, Any]] = {}
+    _HONCHO_CACHE_BUSTING_MEMO: dict[tuple[str, int | None, int | None], dict[str, Any]] = {}
 
     @classmethod
     def _empty_honcho_cache_busting_config(cls) -> dict[str, Any]:
@@ -17222,11 +17222,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             from plugins.memory.honcho.client import HonchoClientConfig, resolve_config_path
 
             path = resolve_config_path()
+            # Key on (mtime_ns, size), not mtime alone: filesystem timestamps
+            # come from the kernel's coarse clock, so an edit landing within
+            # the same tick as the previous one (observed on WSL2) leaves
+            # st_mtime_ns unchanged and a pure-mtime memo would serve the
+            # stale parse. Size catches those same-tick rewrites.
             try:
-                mtime_ns = path.stat().st_mtime_ns
+                _st = path.stat()
+                mtime_ns: int | None = _st.st_mtime_ns
+                size: int | None = _st.st_size
             except OSError:
                 mtime_ns = None
-            memo_key = (str(path), mtime_ns)
+                size = None
+            memo_key = (str(path), mtime_ns, size)
             cached = cls._HONCHO_CACHE_BUSTING_MEMO.get(memo_key)
             if cached is not None:
                 return dict(cached)

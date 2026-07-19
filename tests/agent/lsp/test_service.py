@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from agent.lsp.manager import LSPService
+from agent.lsp.manager import DEFAULT_IDLE_TIMEOUT, LSPService
 from agent.lsp.servers import (
     SERVERS,
     ServerContext,
@@ -22,6 +22,28 @@ from agent.lsp.servers import (
 
 
 MOCK_SERVER = str(Path(__file__).parent / "_mock_lsp_server.py")
+
+
+def _service(**kwargs):
+    defaults = {
+        "enabled": True,
+        "wait_mode": "document",
+        "wait_timeout": 2.0,
+        "install_strategy": "manual",
+    }
+    defaults.update(kwargs)
+    return LSPService(**defaults)
+
+
+class FakeClient:
+    def __init__(self, server_id: str = "pyright", workspace_root: str = "/tmp/workspace"):
+        self.shutdown_called = False
+        self.server_id = server_id
+        self.workspace_root = workspace_root
+        self.is_running = True
+
+    async def shutdown(self):
+        self.shutdown_called = True
 
 
 def _install_mock_server(monkeypatch, script: str = "errors", server_id: str = "pyright"):
@@ -174,3 +196,89 @@ def test_service_status_includes_clients(mock_pyright):
         assert any(c["server_id"] == "pyright" for c in info["clients"])
     finally:
         svc.shutdown()
+
+
+def test_reap_idle_clients_shuts_down_stale_client(monkeypatch):
+    svc = _service(idle_timeout=10)
+    client = FakeClient()
+    key = (client.server_id, client.workspace_root)
+    svc._clients[key] = client
+    svc._last_used[key] = 100.0
+    monkeypatch.setattr("agent.lsp.manager.time.time", lambda: 111.0)
+
+    try:
+        svc._reap_idle_clients()
+
+        assert client.shutdown_called is True
+        assert key not in svc._clients
+        assert key not in svc._last_used
+    finally:
+        svc.shutdown()
+
+
+def test_reap_idle_clients_keeps_recent_client(monkeypatch):
+    svc = _service(idle_timeout=10)
+    client = FakeClient()
+    key = (client.server_id, client.workspace_root)
+    svc._clients[key] = client
+    svc._last_used[key] = 105.0
+    monkeypatch.setattr("agent.lsp.manager.time.time", lambda: 111.0)
+
+    try:
+        svc._reap_idle_clients()
+
+        assert client.shutdown_called is False
+        assert svc._clients[key] is client
+        assert svc._last_used[key] == 105.0
+    finally:
+        svc.shutdown()
+
+
+def test_reap_idle_clients_disabled_when_timeout_nonpositive(monkeypatch):
+    svc = _service(idle_timeout=0)
+    client = FakeClient()
+    key = (client.server_id, client.workspace_root)
+    svc._clients[key] = client
+    svc._last_used[key] = 1.0
+    monkeypatch.setattr("agent.lsp.manager.time.time", lambda: 999.0)
+
+    try:
+        svc._reap_idle_clients()
+
+        assert client.shutdown_called is False
+        assert svc._clients[key] is client
+    finally:
+        svc.shutdown()
+
+
+def test_get_or_spawn_sweeps_before_reuse(monkeypatch, mock_pyright):
+    repo = mock_pyright
+    f = repo / "x.py"
+    f.write_text("")
+    svc = _service()
+    called = False
+
+    async def fake_reap():
+        nonlocal called
+        called = True
+
+    monkeypatch.setattr(svc, "_reap_idle_clients_async", fake_reap)
+
+    try:
+        svc.get_diagnostics_sync(str(f))
+        assert called is True
+    finally:
+        svc.shutdown()
+
+
+def test_create_from_config_reads_idle_timeout(monkeypatch):
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"lsp": {"enabled": False, "idle_timeout": 42}},
+    )
+
+    svc = LSPService.create_from_config()
+
+    assert svc is not None
+    assert svc._idle_timeout == 42.0
+    assert svc._idle_timeout != DEFAULT_IDLE_TIMEOUT

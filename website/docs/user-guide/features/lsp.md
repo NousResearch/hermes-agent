@@ -158,6 +158,10 @@ lsp:
   #   manual  — only use binaries already on PATH
   install_strategy: auto
 
+  # How long an unused language-server client stays alive. Set to 0
+  # to disable idle reaping.
+  idle_timeout: 600
+
   # Per-server overrides (all optional).
   servers:
     pyright:
@@ -209,9 +213,10 @@ budget is `wait_timeout` seconds — typically the server responds in
 tens of milliseconds for pyright/tsserver and a few seconds for
 rust-analyzer mid-indexing.
 
-Servers are kept alive for the life of the Hermes process. There's
-no idle-timeout reaper — the cost of restarting the server's index
-on every write would be far higher than holding the daemon.
+Long-running Hermes processes keep one language server per workspace while it is active.
+Idle language servers are shut down after `lsp.idle_timeout` seconds, defaulting
+to 600 seconds, and are respawned automatically on the next relevant file
+operation. Set the timeout to `0` to disable idle reaping.
 
 ## Disabling
 

@@ -3446,8 +3446,11 @@ def check_all_command_guards(command: str, env_type: str,
                 "pattern_keys": all_keys,
                 "description": redact_sensitive_text(combined_desc),
                 # Smart DENY overrides are one-operation decisions, so the UI
-                # must not offer a permanent scope.
+                # must not offer a permanent scope. Tirith warnings are already
+                # enforced at the persistence layer — "always" degrades to
+                # session (see the choice handler below).
                 "allow_permanent": not has_tirith and not smart_denied_for_owner,
+                "allow_session": not smart_denied_for_owner,
             }
             if smart_denied_for_owner:
                 approval_data["smart_denied"] = True

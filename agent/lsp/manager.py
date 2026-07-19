@@ -485,6 +485,13 @@ class LSPService:
         return list(client.diagnostics_for(file_path))
 
     async def _get_or_spawn(self, file_path: str) -> Optional[LSPClient]:
+        # Reap clients that have outlived the configured idle window before
+        # allocating another process and three more stdio pipes.  The timeout
+        # existed from the original service design but was previously never
+        # enforced, allowing a long-running gateway to retain one LSP tree per
+        # historical workspace until it exhausted launchd's file limit.
+        await self._reap_idle_clients()
+
         srv = find_server_for_file(file_path)
         if srv is None:
             return None
@@ -565,6 +572,31 @@ class LSPService:
         finally:
             with self._state_lock:
                 self._spawning.pop(key, None)
+
+    async def _reap_idle_clients(self) -> None:
+        """Shut down clients unused for longer than ``_idle_timeout``.
+
+        Client selection and removal are atomic under ``_state_lock`` so a
+        concurrent request cannot acquire a client after it has been chosen
+        for shutdown.  Process shutdown runs outside the lock because language
+        servers may take up to their grace timeout to exit.
+        """
+        cutoff = time.time() - self._idle_timeout
+        stale: List[LSPClient] = []
+        with self._state_lock:
+            for key, client in list(self._clients.items()):
+                if key in self._spawning:
+                    continue
+                if self._last_used.get(key, 0.0) > cutoff:
+                    continue
+                self._clients.pop(key, None)
+                self._last_used.pop(key, None)
+                stale.append(client)
+        if stale:
+            await asyncio.gather(
+                *(client.shutdown() for client in stale),
+                return_exceptions=True,
+            )
 
     async def _shutdown_async(self) -> None:
         with self._state_lock:

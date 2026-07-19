@@ -65,6 +65,13 @@ from hermes_cli.colors import Colors, color
 
 logger = logging.getLogger(__name__)
 
+# The macOS launchd default soft limit is commonly only 256 file descriptors.
+# A long-running gateway owns messaging sockets, cron subprocess pipes, and
+# optional language-server children, so that default can cause unrelated cron
+# launches to fail with EMFILE even while the system-wide limit is healthy.
+LAUNCHD_GATEWAY_SOFT_NOFILE_LIMIT = 4096
+LAUNCHD_GATEWAY_HARD_NOFILE_LIMIT = 8192
+
 # =============================================================================
 # Process Management (for manual gateway runs)
 # =============================================================================
@@ -4020,6 +4027,18 @@ def generate_launchd_plist() -> str:
         <string>{venv_dir}</string>
         <key>HERMES_HOME</key>
         <string>{hermes_home}</string>
+    </dict>
+
+    <key>SoftResourceLimits</key>
+    <dict>
+        <key>NumberOfFiles</key>
+        <integer>{LAUNCHD_GATEWAY_SOFT_NOFILE_LIMIT}</integer>
+    </dict>
+
+    <key>HardResourceLimits</key>
+    <dict>
+        <key>NumberOfFiles</key>
+        <integer>{LAUNCHD_GATEWAY_HARD_NOFILE_LIMIT}</integer>
     </dict>
 
     <key>LimitLoadToSessionType</key>

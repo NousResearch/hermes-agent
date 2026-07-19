@@ -7,11 +7,15 @@ on.
 """
 from __future__ import annotations
 
+import asyncio
 import sys
+import time
 from pathlib import Path
+from typing import cast
 
 import pytest
 
+from agent.lsp.client import LSPClient
 from agent.lsp.manager import LSPService
 from agent.lsp.servers import (
     SERVERS,
@@ -88,6 +92,54 @@ def test_service_returns_empty_when_disabled(tmp_path):
     f.write_text("")
     assert svc.get_diagnostics_sync(str(f)) == []
     svc.shutdown()
+
+
+def test_reap_idle_clients_shuts_down_only_stale_nonspawning_clients():
+    class FakeClient:
+        def __init__(self):
+            self.shutdown_called = False
+
+        async def shutdown(self):
+            self.shutdown_called = True
+
+    svc = LSPService(
+        enabled=False,
+        wait_mode="document",
+        wait_timeout=2.0,
+        install_strategy="manual",
+        idle_timeout=600,
+    )
+    stale_key = ("pyright", "/repo/stale")
+    active_key = ("pyright", "/repo/active")
+    spawning_key = ("pyright", "/repo/spawning")
+    stale = FakeClient()
+    active = FakeClient()
+    spawning = FakeClient()
+    now = time.time()
+    svc._clients = {
+        stale_key: cast(LSPClient, stale),
+        active_key: cast(LSPClient, active),
+        spawning_key: cast(LSPClient, spawning),
+    }
+    svc._last_used = {
+        stale_key: now - 601,
+        active_key: now,
+        spawning_key: now - 601,
+    }
+
+    async def exercise_reaper():
+        svc._spawning[spawning_key] = asyncio.get_running_loop().create_future()
+        await svc._reap_idle_clients()
+
+    asyncio.run(exercise_reaper())
+
+    assert stale.shutdown_called is True
+    assert stale_key not in svc._clients
+    assert stale_key not in svc._last_used
+    assert active.shutdown_called is False
+    assert active_key in svc._clients
+    assert spawning.shutdown_called is False
+    assert spawning_key in svc._clients
 
 
 def test_service_skips_files_outside_workspace(tmp_path):

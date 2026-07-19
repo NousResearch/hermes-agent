@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
-import test from 'node:test'
+
+import { test } from 'vitest'
 
 import {
   createBoundedLinkTitleQueue,
@@ -39,6 +40,11 @@ test('rejects private, link-local, multicast, and malformed link-title targets',
   await assert.rejects(() => resolvePublicLinkTitleTarget('http://127.0.0.1/admin'))
   await assert.rejects(() => resolvePublicLinkTitleTarget('http://169.254.169.254/latest/meta-data'))
   await assert.rejects(() => resolvePublicLinkTitleTarget('http://224.0.0.1/'))
+  await assert.rejects(() =>
+    resolvePublicLinkTitleTarget('https://site-local.example/', {
+      lookup: async () => [{ address: 'fec0::1', family: 6 }]
+    })
+  )
   await assert.rejects(() => resolvePublicLinkTitleTarget('file:///etc/passwd'))
 
   assert.equal(linkTitleTargetIsPublic('https://example.com'), true)
@@ -73,9 +79,11 @@ test('pins every DNS answer for a public target and rejects mixed answers', asyn
 test('pins each public redirect hop and preserves a public page title response', async () => {
   const calls: string[][] = []
   const lookups: string[] = []
+
   const title = await fetchPinnedLinkTitle('https://first.example/start', {
     lookup: async hostname => {
       lookups.push(hostname)
+
       return hostname === 'first.example' ? [{ address: '1.1.1.1', family: 4 }] : [{ address: '8.8.8.8', family: 4 }]
     },
     spawnCurl: fakeCurl(
@@ -100,6 +108,7 @@ test('pins each public redirect hop and preserves a public page title response',
 
 test('rejects a redirect to a private target before a second curl child starts', async () => {
   const calls: string[][] = []
+
   const title = await fetchPinnedLinkTitle('https://public.example/start', {
     lookup: async () => [{ address: '1.1.1.1', family: 4 }],
     spawnCurl: fakeCurl(['HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1/admin\r\n\r\n'], calls),
@@ -113,9 +122,11 @@ test('rejects a redirect to a private target before a second curl child starts',
 test('caps the complete title-resolution pipeline while allowing queued work to drain', async () => {
   const started: string[] = []
   let finishFirst: ((title: string) => void) | undefined
+
   const queue = createBoundedLinkTitleQueue(
     rawUrl => {
       started.push(rawUrl)
+
       return new Promise(resolve => {
         finishFirst = resolve
       })

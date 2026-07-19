@@ -127,6 +127,7 @@ function isPublicIpv6(value: string): boolean {
     normalized.startsWith('fc') ||
     normalized.startsWith('fd') ||
     /^fe[89ab]/.test(normalized) ||
+    /^fe[c-f]/.test(normalized) ||
     normalized.startsWith('ff') ||
     normalized.startsWith('2001:db8:')
   )
@@ -267,6 +268,7 @@ function invokeCurl(args: string[], spawnCurl: CurlSpawner): Promise<Buffer> {
       if (bytes >= TITLE_BYTE_BUDGET) {
         return
       }
+
       const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
       const remaining = TITLE_BYTE_BUDGET - bytes
       const next = buffer.length > remaining ? buffer.subarray(0, remaining) : buffer
@@ -330,6 +332,7 @@ export async function fetchPinnedLinkTitle(rawUrl: string, options: LinkTitleFet
       } catch {
         return ''
       }
+
       continue
     }
 

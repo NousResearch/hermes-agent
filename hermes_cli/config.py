@@ -2283,6 +2283,14 @@ DEFAULT_CONFIG = {
                            # "codex_responses", or "anthropic_messages". Empty = auto-detect
                            # from URL (e.g. /anthropic suffix → anthropic_messages). Set this
                            # explicitly for non-standard endpoints the heuristic can't detect.
+        # Operator-configured server-side toolset narrowing for ALL delegated
+        # children: intersected with the parent's toolsets, blocked tools always
+        # stripped, MCP toolsets kept unless inherit_mcp_toolsets is false. Empty
+        # (default) = children inherit the parent's full toolsets (historical
+        # behavior). Advertised live in GET /v1/capabilities as
+        # safe_delegation_isolation / delegation_mcp_isolation. Operator-only —
+        # the model has no toolsets argument.
+        "child_toolsets": [],
         # When delegate_task narrows child toolsets explicitly, preserve any
         # MCP toolsets the parent already has enabled. On by default so
         # narrowing (e.g. toolsets=["web","browser"]) expresses "I want these

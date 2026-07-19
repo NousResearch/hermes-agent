@@ -551,16 +551,25 @@ def delegation_isolation_state() -> Dict[str, bool]:
     safe_delegation_isolation — server-side child-toolset narrowing is active
     (delegation.child_toolsets configured): children run with a restricted,
     server-enforced toolset instead of inheriting everything the parent holds.
-    delegation_mcp_isolation — additionally, narrowed children do not keep the
-    parent's MCP toolsets (delegation.inherit_mcp_toolsets: false).
+    delegation_mcp_isolation — additionally, narrowed children hold no MCP
+    toolset: automatic MCP inheritance is off (delegation.inherit_mcp_toolsets:
+    false) AND the operator's own child_toolsets list names no MCP toolset. An
+    explicitly selected MCP toolset (mcp- prefix or a registered alias) survives
+    the intersection in _build_child_agent, so the child would still hold it —
+    the flag stays false there rather than over-claim isolation.
 
     Orchestrators use these to decide whether permitting delegate_task is safe
     for untrusted-content workloads; keep them truthful to live config.
     """
-    narrowed = bool(_get_child_toolsets())
+    child = _get_child_toolsets()
+    narrowed = bool(child)
     return {
         "safe_delegation_isolation": narrowed,
-        "delegation_mcp_isolation": narrowed and not _get_inherit_mcp_toolsets(),
+        "delegation_mcp_isolation": (
+            narrowed
+            and not _get_inherit_mcp_toolsets()
+            and not any(_is_mcp_toolset_name(t) for t in (child or []))
+        ),
     }
 
 

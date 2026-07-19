@@ -3243,6 +3243,39 @@ class TestDelegationIsolationState(unittest.TestCase):
                 },
             )
 
+    def test_explicit_mcp_selection_does_not_claim_mcp_isolation(self):
+        """An MCP toolset named directly in child_toolsets survives the
+        intersection in _build_child_agent, so the child keeps it even with
+        inherit_mcp_toolsets: false. delegation_mcp_isolation must stay False
+        rather than over-claim — for both the mcp- prefix and registered
+        aliases that resolve to an mcp- toolset. safe_delegation_isolation stays
+        True: narrowing is still in effect."""
+        # (1) canonical mcp- prefix
+        cfg = {"child_toolsets": ["file", "mcp-github"], "inherit_mcp_toolsets": False}
+        with patch("tools.delegate_tool._load_config", return_value=cfg):
+            self.assertEqual(
+                delegation_isolation_state(),
+                {
+                    "safe_delegation_isolation": True,
+                    "delegation_mcp_isolation": False,
+                },
+            )
+        # (2) alias resolving to an mcp- toolset
+        cfg = {"child_toolsets": ["file", "gh"], "inherit_mcp_toolsets": False}
+        with patch(
+            "tools.delegate_tool._load_config", return_value=cfg
+        ), patch(
+            "tools.registry.registry.get_toolset_alias_target",
+            side_effect=lambda n: "mcp-github" if n == "gh" else None,
+        ):
+            self.assertEqual(
+                delegation_isolation_state(),
+                {
+                    "safe_delegation_isolation": True,
+                    "delegation_mcp_isolation": False,
+                },
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

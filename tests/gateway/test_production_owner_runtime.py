@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import copy
+import importlib
 import json
+import sys
 from pathlib import Path
+from types import ModuleType
 
 import pytest
 
@@ -78,6 +81,98 @@ def test_active_runtime_gate_returns_a_copy_and_rejects_ambient_claims(
         match="not_active",
     ):
         runtime.require_active_owner_runtime(REVISION)
+
+
+def test_m_entrypoint_binds_one_canonical_active_runtime(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    gateway_package = importlib.import_module("gateway")
+    monkeypatch.setattr(runtime, "__name__", "__main__")
+    monkeypatch.setitem(sys.modules, "__main__", runtime)
+    monkeypatch.delitem(
+        sys.modules,
+        runtime.CANONICAL_MODULE_NAME,
+        raising=False,
+    )
+    monkeypatch.delattr(
+        gateway_package,
+        "production_owner_runtime",
+        raising=False,
+    )
+    monkeypatch.setattr(runtime, "_ACTIVE_ATTESTATION", None)
+
+    runtime._bind_canonical_module_identity()
+    runtime._set_active_attestation(_attestation())
+
+    canonical = importlib.import_module(runtime.CANONICAL_MODULE_NAME)
+    assert canonical is runtime
+    assert gateway_package.production_owner_runtime is runtime
+    assert canonical.require_active_owner_runtime(REVISION) == _attestation()
+
+
+def test_m_entrypoint_rejects_a_conflicting_canonical_module(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(runtime, "__name__", "__main__")
+    monkeypatch.setitem(sys.modules, "__main__", runtime)
+    monkeypatch.setitem(
+        sys.modules,
+        runtime.CANONICAL_MODULE_NAME,
+        ModuleType(runtime.CANONICAL_MODULE_NAME),
+    )
+
+    with pytest.raises(
+        runtime.ProductionOwnerRuntimeError,
+        match="module_identity_conflict",
+    ):
+        runtime._bind_canonical_module_identity()
+
+
+def test_m_entrypoint_rejects_a_noncanonical_execution_spec(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    gateway_package = importlib.import_module("gateway")
+    monkeypatch.setattr(runtime, "__name__", "__main__")
+    monkeypatch.setattr(runtime, "__spec__", None)
+    monkeypatch.setitem(sys.modules, "__main__", runtime)
+    monkeypatch.delitem(
+        sys.modules,
+        runtime.CANONICAL_MODULE_NAME,
+        raising=False,
+    )
+    monkeypatch.delattr(
+        gateway_package,
+        "production_owner_runtime",
+        raising=False,
+    )
+
+    with pytest.raises(
+        runtime.ProductionOwnerRuntimeError,
+        match="module_identity_conflict",
+    ):
+        runtime._bind_canonical_module_identity()
+
+
+def test_main_binds_module_identity_before_runtime_verification(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    calls: list[str] = []
+    monkeypatch.setattr(
+        runtime,
+        "_bind_canonical_module_identity",
+        lambda: calls.append("bind"),
+    )
+    monkeypatch.setattr(
+        runtime,
+        "verify_runtime",
+        lambda _revision: calls.append("verify") or _attestation(),
+    )
+
+    assert runtime.main(("--revision", REVISION, "attest")) == 0
+
+    assert calls == ["bind", "verify"]
+    assert json.loads(capsys.readouterr().out) == _attestation()
 
 
 def test_tree_manifest_rejects_any_writable_release_entry(tmp_path: Path) -> None:

@@ -252,6 +252,76 @@ class _FoundationChainProjection:
             _error("owner_gate_host_identity_foundation_chain_invalid")
 
 
+@dataclass(frozen=True)
+class _CollectionAuthorization:
+    """Fresh signed owner authorization for this exact live collection."""
+
+    receipt: Mapping[str, Any]
+    receipt_sha256: str
+    issued_at_unix: int
+    expires_at_unix: int
+    runtime_release_revision: str
+    runtime_identity_sha256: str
+
+    def validate(self) -> None:
+        if (
+            not isinstance(self.receipt, Mapping)
+            or _SHA256.fullmatch(self.receipt_sha256 or "") is None
+            or type(self.issued_at_unix) is not int
+            or type(self.expires_at_unix) is not int
+            or self.issued_at_unix <= 0
+            or self.expires_at_unix <= self.issued_at_unix
+            or _REVISION.fullmatch(self.runtime_release_revision or "") is None
+            or _SHA256.fullmatch(self.runtime_identity_sha256 or "") is None
+        ):
+            _error("owner_gate_host_identity_collection_reauth_invalid")
+
+
+def _validate_collection_authorization(
+    receipt: Mapping[str, Any],
+    *,
+    public_key: Ed25519PublicKey,
+    now_unix: int | None,
+) -> _CollectionAuthorization:
+    """Validate one self-contained fresh reauth receipt for host collection."""
+
+    from scripts.canary import owner_gate_owner_reauth as owner_reauth
+
+    if not isinstance(receipt, Mapping) or not isinstance(
+        public_key,
+        Ed25519PublicKey,
+    ):
+        _error("owner_gate_host_identity_collection_reauth_invalid")
+    try:
+        checked = owner_reauth.validate_owner_reauth_receipt(
+            receipt,
+            public_key=public_key,
+            now_unix=now_unix,
+        )
+        runtime = checked["trusted_runtime_identity"]
+        authorization = _CollectionAuthorization(
+            receipt=dict(checked),
+            receipt_sha256=str(
+                checked["owner_reauthentication_receipt_sha256"]
+            ),
+            issued_at_unix=int(checked["issued_at_unix"]),
+            expires_at_unix=int(checked["expires_at_unix"]),
+            runtime_release_revision=str(runtime["release_revision"]),
+            runtime_identity_sha256=str(
+                runtime["sealed_runtime_identity_sha256"]
+            ),
+        )
+        authorization.validate()
+        return authorization
+    except (
+        KeyError,
+        TypeError,
+        ValueError,
+        owner_reauth.OwnerGateOwnerReauthError,
+    ) as exc:
+        _error("owner_gate_host_identity_collection_reauth_invalid", exc)
+
+
 def _projection_from_validated_chains(
     *,
     foundation_chain: Any,
@@ -1372,6 +1442,7 @@ def _stable_iap_host_key(
 def _author_receipt(
     *,
     chain: _FoundationChainProjection,
+    collection_authorization: _CollectionAuthorization,
     identity: _DirectComputeIdentity,
     host_key_base64: str,
     direct_observed_before_unix: int,
@@ -1382,6 +1453,7 @@ def _author_receipt(
     owner_signer: launcher._PhaseBOwnerExternalSigner,
 ) -> Mapping[str, Any]:
     chain.validate()
+    collection_authorization.validate()
     if type(owner_signer) is not launcher._PhaseBOwnerExternalSigner:
         _error("owner_gate_host_identity_owner_signer_invalid")
     if (
@@ -1389,12 +1461,16 @@ def _author_receipt(
         or type(host_key_observed_at_unix) is not int
         or type(direct_observed_after_unix) is not int
         or direct_observed_before_unix <= 0
+        or direct_observed_before_unix
+        < collection_authorization.issued_at_unix
         or not direct_observed_before_unix
         <= host_key_observed_at_unix
         <= direct_observed_after_unix
         or direct_observed_after_unix - direct_observed_before_unix > 300
         or direct_observed_after_unix
-        > chain.owner_reauthentication_expires_at_unix
+        > collection_authorization.expires_at_unix
+        or sealed_runtime_identity_sha256
+        != collection_authorization.runtime_identity_sha256
         or _SHA256.fullmatch(sealed_runtime_identity_sha256 or "") is None
         or not isinstance(toolchain_identity, Mapping)
         or set(toolchain_identity)
@@ -1450,6 +1526,21 @@ def _author_receipt(
         "owner_reauthentication_expires_at_unix": (
             chain.owner_reauthentication_expires_at_unix
         ),
+        "collection_owner_reauthentication_receipt": dict(
+            collection_authorization.receipt
+        ),
+        "collection_owner_reauthentication_receipt_sha256": (
+            collection_authorization.receipt_sha256
+        ),
+        "collection_owner_reauthentication_expires_at_unix": (
+            collection_authorization.expires_at_unix
+        ),
+        "collection_runtime_release_revision": (
+            collection_authorization.runtime_release_revision
+        ),
+        "collection_runtime_identity_sha256": (
+            collection_authorization.runtime_identity_sha256
+        ),
         **toolchain,
         "first_contact_toolchain_sha256": _sha256_json(toolchain),
         "owner_public_key_id": authority.key_id,
@@ -1470,6 +1561,7 @@ def _author_receipt(
 def _collect_with_capabilities(
     *,
     chain: _FoundationChainProjection,
+    collection_authorization: _CollectionAuthorization,
     runtime: launcher.TrustedGcloudExecutable,
     configuration: launcher.PinnedGcloudConfiguration,
     owner_identity: launcher.GcloudOwnerAccessToken,
@@ -1482,6 +1574,7 @@ def _collect_with_capabilities(
     """Private test seam after every live capability has been exactly bound."""
 
     chain.validate()
+    collection_authorization.validate()
     if (
         type(runtime) is not launcher.TrustedGcloudExecutable
         or type(configuration) is not launcher.PinnedGcloudConfiguration
@@ -1496,15 +1589,22 @@ def _collect_with_capabilities(
     ):
         _error("owner_gate_host_identity_capability_invalid")
     now = int(clock())
-    if now <= 0 or now > chain.owner_reauthentication_expires_at_unix:
+    if (
+        now < collection_authorization.issued_at_unix
+        or now > collection_authorization.expires_at_unix
+    ):
         _error("owner_gate_host_identity_owner_reauth_expired")
     runtime_before = runtime.sealed_runtime_identity(
-        expected_release_sha=chain.foundation_source_revision,
+        expected_release_sha=(
+            collection_authorization.runtime_release_revision
+        ),
     )
     if (
         not isinstance(runtime_before, Mapping)
         or _SHA256.fullmatch(str(runtime_before.get("identity_sha256", "")))
         is None
+        or runtime_before.get("identity_sha256")
+        != collection_authorization.runtime_identity_sha256
     ):
         _error("owner_gate_host_identity_runtime_invalid")
     toolchain_before = ssh.identity()
@@ -1545,6 +1645,7 @@ def _collect_with_capabilities(
             _error("owner_gate_host_identity_compute_changed")
         return _author_receipt(
             chain=chain,
+            collection_authorization=collection_authorization,
             identity=after,
             host_key_base64=host_key,
             direct_observed_before_unix=before_unix,
@@ -1564,7 +1665,9 @@ def _collect_with_capabilities(
             (
                 "runtime",
                 lambda: runtime.sealed_runtime_identity(
-                    expected_release_sha=chain.foundation_source_revision,
+                    expected_release_sha=(
+                        collection_authorization.runtime_release_revision
+                    ),
                 ),
             ),
             ("configuration", configuration.assert_stable),
@@ -1636,10 +1739,15 @@ def canonical_receipt_bytes(
 def _host_publication_chain(
     chain: _FoundationChainProjection,
     *,
+    collection_runtime_release_revision: str,
     owner_public_key_id: str,
 ) -> Mapping[str, Any]:
     chain.validate()
-    if _SHA256.fullmatch(owner_public_key_id or "") is None:
+    if (
+        _SHA256.fullmatch(owner_public_key_id or "") is None
+        or _REVISION.fullmatch(collection_runtime_release_revision or "")
+        is None
+    ):
         _error("owner_gate_host_identity_owner_signer_invalid")
     return {
         "foundation_source_revision": chain.foundation_source_revision,
@@ -1667,6 +1775,9 @@ def _host_publication_chain(
         "subnetwork_numeric_id": chain.subnetwork_numeric_id,
         "boot_disk_numeric_id": chain.boot_disk_numeric_id,
         "boot_image_numeric_id": chain.boot_image_numeric_id,
+        "collection_runtime_release_revision": (
+            collection_runtime_release_revision
+        ),
         "owner_public_key_id": owner_public_key_id,
     }
 
@@ -1675,6 +1786,8 @@ def _decode_candidate_receipt(
     raw: bytes,
     *,
     chain: _FoundationChainProjection,
+    collection_runtime_release_revision: str,
+    release_public_key: Ed25519PublicKey,
     owner_signer: launcher._PhaseBOwnerExternalSigner,
 ) -> Mapping[str, Any]:
     if (
@@ -1700,6 +1813,11 @@ def _decode_candidate_receipt(
     before = value.get("direct_observed_before_unix")
     host_observed = value.get("host_key_observed_at_unix")
     after = value.get("direct_observed_after_unix")
+    collection_authorization = _validate_collection_authorization(
+        value.get("collection_owner_reauthentication_receipt"),
+        public_key=release_public_key,
+        now_unix=None,
+    )
     exact = {
         "foundation_source_revision": chain.foundation_source_revision,
         "foundation_source_tree_oid": chain.foundation_source_tree_oid,
@@ -1750,16 +1868,29 @@ def _decode_candidate_receipt(
     }
     if (
         any(value.get(name) != expected for name, expected in exact.items())
+        or collection_authorization.runtime_release_revision
+        != collection_runtime_release_revision
+        or value.get("collection_owner_reauthentication_receipt_sha256")
+        != collection_authorization.receipt_sha256
+        or value.get("collection_owner_reauthentication_expires_at_unix")
+        != collection_authorization.expires_at_unix
+        or value.get("collection_runtime_release_revision")
+        != collection_authorization.runtime_release_revision
+        or value.get("collection_runtime_identity_sha256")
+        != collection_authorization.runtime_identity_sha256
+        or value.get("sealed_runtime_identity_sha256")
+        != collection_authorization.runtime_identity_sha256
         or any(type(item) is not int or item <= 0 for item in (before, host_observed, after))
         or not before <= host_observed <= after
         or after - before > 300
-        or after > chain.owner_reauthentication_expires_at_unix
+        or before < collection_authorization.issued_at_unix
+        or after > collection_authorization.expires_at_unix
     ):
         _error("owner_gate_host_identity_receipt_chain_mismatch")
     return dict(value)
 
 
-def collect_and_publish_owner_gate_host_identity_v2(
+def collect_and_publish_owner_gate_host_identity_v3(
     *,
     pre_foundation_authority_raw: bytes,
     owner_reauthentication_receipt_raw: bytes,
@@ -1769,8 +1900,9 @@ def collect_and_publish_owner_gate_host_identity_v2(
     release_public_key: Ed25519PublicKey,
     network_collector_public_key: Ed25519PublicKey,
     project_ancestry_collector_public_key: Ed25519PublicKey,
+    collection_runtime_release_revision: str,
 ) -> Mapping[str, Any]:
-    """Live boundary: revalidate raw A artifacts, collect, sign, publish once."""
+    """Live boundary with fresh collection reauth over historical A lineage."""
 
     from scripts.canary import owner_gate_foundation_apply as foundation_apply
 
@@ -1791,10 +1923,11 @@ def collect_and_publish_owner_gate_host_identity_v2(
             project_ancestry_collector_public_key,
             Ed25519PublicKey,
         )
+        or _REVISION.fullmatch(collection_runtime_release_revision or "")
+        is None
     ):
         _error("owner_gate_host_identity_foundation_chain_invalid")
     now_unix = int(time.time())
-    recovery_only = False
     try:
         foundation_a = foundation_apply.decode_validated_foundation_a_chain(
             pre_foundation_authority_raw=pre_foundation_authority_raw,
@@ -1857,7 +1990,6 @@ def collect_and_publish_owner_gate_host_identity_v2(
             if isinstance(fresh_error, OwnerGateHostIdentityError):
                 raise fresh_error
             _error("owner_gate_host_identity_foundation_chain_invalid", fresh_error)
-        recovery_only = True
     owner_signer = launcher._PhaseBOwnerExternalSigner()
     owner_authority = owner_signer.inspect()
 
@@ -1865,6 +1997,10 @@ def collect_and_publish_owner_gate_host_identity_v2(
         receipt = _decode_candidate_receipt(
             raw,
             chain=chain,
+            collection_runtime_release_revision=(
+                collection_runtime_release_revision
+            ),
+            release_public_key=release_public_key,
             owner_signer=owner_signer,
         )
         return source_publication._ValidatedArtifact(
@@ -1873,10 +2009,32 @@ def collect_and_publish_owner_gate_host_identity_v2(
         )
 
     def collect() -> bytes:
-        runtime = launcher.TrustedGcloudExecutable(
-            release_sha=chain.foundation_source_revision,
+        from scripts.canary import owner_gate_author_and_apply as author_apply
+
+        capabilities = author_apply._ProductionCapabilities(
+            collection_runtime_release_revision
         )
-        configuration = launcher.PinnedGcloudConfiguration()
+        release_private_key = capabilities.release_private_key()
+        if (
+            release_private_key.public_key().public_bytes_raw()
+            != release_public_key.public_bytes_raw()
+        ):
+            _error("owner_gate_host_identity_collection_reauth_invalid")
+        fresh_reauth = capabilities.owner_reauthentication(
+            release_private_key
+        )
+        collection_authorization = _validate_collection_authorization(
+            fresh_reauth,
+            public_key=release_public_key,
+            now_unix=int(time.time()),
+        )
+        if (
+            collection_authorization.runtime_release_revision
+            != collection_runtime_release_revision
+        ):
+            _error("owner_gate_host_identity_collection_reauth_invalid")
+        runtime = capabilities.executable
+        configuration = capabilities.configuration
         owner_identity = launcher.GcloudOwnerAccessToken(
             gcloud_executable=runtime,
             gcloud_configuration=configuration,
@@ -1884,6 +2042,7 @@ def collect_and_publish_owner_gate_host_identity_v2(
         ssh = TrustedOwnerGateSshExecutable()
         receipt = _collect_with_capabilities(
             chain=chain,
+            collection_authorization=collection_authorization,
             runtime=runtime,
             configuration=configuration,
             owner_identity=owner_identity,
@@ -1896,16 +2055,19 @@ def collect_and_publish_owner_gate_host_identity_v2(
         return canonical_receipt_bytes(receipt, owner_signer=owner_signer)
 
     try:
-        result = source_publication._run_host_identity(
+        result = source_publication._run_host_identity_v3(
             owner_home=Path(launcher._canonical_owner_home()),
             chain=_host_publication_chain(
                 chain,
+                collection_runtime_release_revision=(
+                    collection_runtime_release_revision
+                ),
                 owner_public_key_id=owner_authority.key_id,
             ),
             maximum=launcher.PinnedOwnerGateHostIdentityReceipt._MAX_BYTES,
             validator=validate,
             collector=collect,
-            _recovery_only=recovery_only,
+            _recovery_only=False,
         )
     except source_publication._SourceArtifactPublicationError as exc:
         _error("owner_gate_host_identity_publication_failed", exc)
@@ -1980,6 +2142,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         required=True,
     )
     parser.add_argument("--direct-iam-authority", type=Path, required=True)
+    parser.add_argument(
+        "--collection-release-revision",
+        required=True,
+    )
     arguments = parser.parse_args(argv)
 
     try:
@@ -1995,7 +2161,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     ancestry_public_key = _load_owner_collector_public_key(
         arguments.project_ancestry_collector_public_key
     )
-    result = collect_and_publish_owner_gate_host_identity_v2(
+    result = collect_and_publish_owner_gate_host_identity_v3(
         pre_foundation_authority_raw=_read_owner_input(
             arguments.pre_foundation_authority,
             maximum=MAX_OWNER_INPUT_BYTES,
@@ -2019,6 +2185,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         release_public_key=release_public_key,
         network_collector_public_key=network_public_key,
         project_ancestry_collector_public_key=ancestry_public_key,
+        collection_runtime_release_revision=(
+            arguments.collection_release_revision
+        ),
     )
     publication = result.get("publication") if isinstance(result, Mapping) else None
     expected_output = str(
@@ -2036,7 +2205,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     ):
         _error("owner_gate_host_identity_publication_invalid")
     summary = {
-        "schema": "muncho-owner-gate-iap-host-identity-publication.v2",
+        "schema": "muncho-owner-gate-iap-host-identity-publication.v3",
         "receipt_published": True,
         **dict(publication),
     }
@@ -2048,7 +2217,7 @@ __all__ = [
     "OwnerGateHostIdentityError",
     "TrustedOwnerGateSshExecutable",
     "canonical_receipt_bytes",
-    "collect_and_publish_owner_gate_host_identity_v2",
+    "collect_and_publish_owner_gate_host_identity_v3",
     "main",
 ]
 

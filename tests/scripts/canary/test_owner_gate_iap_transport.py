@@ -18,6 +18,8 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from scripts.canary import full_canary_owner_launcher as launcher
+from scripts.canary import owner_gate_owner_reauth as owner_reauth
+from scripts.canary import owner_gate_trust as owner_trust
 
 
 RELEASE = "a" * 40
@@ -34,6 +36,68 @@ HOST_KEY_BASE64 = base64.b64encode(
 HOST_KEY_LINE = (
     f"compute.{OWNER_GATE_INSTANCE_ID} ssh-ed25519 {HOST_KEY_BASE64}"
 )
+_COLLECTION_REVISION = "b" * 40
+_COLLECTION_REAUTH_KEY = Ed25519PrivateKey.generate()
+_COLLECTION_REAUTH_KEY_ID = hashlib.sha256(
+    _COLLECTION_REAUTH_KEY.public_key().public_bytes_raw()
+).hexdigest()
+
+
+@pytest.fixture(autouse=True)
+def _pin_collection_reauthentication(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        owner_trust,
+        "PINNED_RELEASE_TRUST_PUBLIC_KEY_SHA256",
+        _COLLECTION_REAUTH_KEY_ID,
+    )
+
+
+def _collection_reauthentication_receipt() -> Mapping[str, Any]:
+    body = {
+        "schema": owner_reauth.RECEIPT_SCHEMA,
+        "purpose": owner_reauth.RECEIPT_PURPOSE,
+        "trusted_runtime_identity": {
+            "release_revision": _COLLECTION_REVISION,
+            "sealed_runtime_identity_sha256": "9" * 64,
+            "command_prefix_sha256": "1" * 64,
+            "python_executable_sha256": "2" * 64,
+            "gcloud_module_sha256": "3" * 64,
+            "sdk_root": (
+                "/sealed/google-cloud-sdk-"
+                f"{owner_reauth.GCLOUD_SDK_VERSION}"
+            ),
+            "sdk_python_config_identity_sha256": "4" * 64,
+            "closed_environment_sha256": "5" * 64,
+            "configuration": owner_reauth.GCLOUD_CONFIGURATION,
+            "account": owner_reauth.OWNER_ACCOUNT,
+            "project": launcher.PROJECT,
+            "zone": launcher.ZONE,
+        },
+        "interactive_reauthentication": {
+            "method": "gcloud_auth_login_force_interactive",
+            "started_at_unix": 88,
+            "completed_at_unix": 89,
+            "command_sha256": "6" * 64,
+            "interactive_tty_verified": True,
+            "access_token_requested": False,
+            "credential_material_captured": False,
+        },
+        "authenticated_probe": {
+            "command_sha256": "7" * 64,
+            "output_sha256": "8" * 64,
+            "project_id": launcher.PROJECT,
+            "project_number": launcher.OWNER_GATE_PROJECT_NUMBER,
+        },
+        "issued_at_unix": 90,
+        "expires_at_unix": 200,
+        "signer_key_id": _COLLECTION_REAUTH_KEY_ID,
+    }
+    return owner_reauth._sign_owner_reauth_receipt(
+        body,
+        private_key=_COLLECTION_REAUTH_KEY,
+    )
 
 
 def _owner_gate_frame(
@@ -317,6 +381,7 @@ def _write_host_identity_receipt(
     corrupt_signature: bool = False,
 ) -> str:
     authority = signer.inspect()
+    collection_reauthentication = _collection_reauthentication_receipt()
     direct_identity = {
         "project": launcher.PROJECT,
         "project_number": launcher.OWNER_GATE_PROJECT_NUMBER,
@@ -440,6 +505,17 @@ def _write_host_identity_receipt(
         "host_key_observed_at_unix": 101,
         "direct_observed_after_unix": 102,
         "owner_reauthentication_expires_at_unix": 200,
+        "collection_owner_reauthentication_receipt": (
+            collection_reauthentication
+        ),
+        "collection_owner_reauthentication_receipt_sha256": (
+            collection_reauthentication[
+                "owner_reauthentication_receipt_sha256"
+            ]
+        ),
+        "collection_owner_reauthentication_expires_at_unix": 200,
+        "collection_runtime_release_revision": _COLLECTION_REVISION,
+        "collection_runtime_identity_sha256": "9" * 64,
         **toolchain,
         "first_contact_toolchain_sha256": hashlib.sha256(
             launcher._canonical_bytes(toolchain)
@@ -760,6 +836,9 @@ def test_signed_pinned_owner_gate_identity_binds_numeric_id_and_host_key(
         expected_receipt_sha256=digest,
         pinning_source_revision=RELEASE,
         owner_signer=signer,
+        collection_reauthentication_public_key=(
+            _COLLECTION_REAUTH_KEY.public_key()
+        ),
     )
 
     snapshot = receipt.snapshot()
@@ -806,6 +885,9 @@ def test_signed_owner_gate_identity_rejects_wrong_target_or_key(
             expected_receipt_sha256=digest,
             pinning_source_revision=RELEASE,
             owner_signer=signer,
+            collection_reauthentication_public_key=(
+                _COLLECTION_REAUTH_KEY.public_key()
+            ),
         )
 
 
@@ -823,6 +905,9 @@ def test_owner_gate_identity_rejects_wrong_pin_and_signature(tmp_path: Path) -> 
             expected_receipt_sha256="0" * 64,
             pinning_source_revision=RELEASE,
             owner_signer=signer,
+            collection_reauthentication_public_key=(
+                _COLLECTION_REAUTH_KEY.public_key()
+            ),
         )
 
     digest = _write_host_identity_receipt(
@@ -840,6 +925,9 @@ def test_owner_gate_identity_rejects_wrong_pin_and_signature(tmp_path: Path) -> 
             expected_receipt_sha256=digest,
             pinning_source_revision=RELEASE,
             owner_signer=signer,
+            collection_reauthentication_public_key=(
+                _COLLECTION_REAUTH_KEY.public_key()
+            ),
         )
 
 

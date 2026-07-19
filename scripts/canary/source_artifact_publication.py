@@ -25,11 +25,15 @@ from typing import Any, Callable, Mapping, NoReturn
 _JOURNAL_DIRECTORY = ".source-artifact-transactions"
 _DIRECT_KIND = "direct-iam-v1"
 _HOST_KIND = "owner-gate-host-v2"
+_HOST_V3_KIND = "owner-gate-host-v3"
 _DIRECT_RELATIVE = Path(
     ".hermes/trusted/owner-gate-direct-iam-identity-authority-v1.json"
 )
 _HOST_RELATIVE = Path(
     ".hermes/trusted/owner-gate-iap-host-identity-v2.json"
+)
+_HOST_V3_RELATIVE = Path(
+    ".hermes/trusted/owner-gate-iap-host-identity-v3.json"
 )
 _DIRECT_MODE = 0o400
 _HOST_MODE = 0o600
@@ -379,8 +383,11 @@ def _validate_journal_inventory(journal_root: Path, kind_root: Path) -> None:
     except OSError as exc:
         _error("source_artifact_publication_inventory_invalid", exc)
     if (
-        len(purposes) > 2
-        or any(name not in {_DIRECT_KIND, _HOST_KIND} for name in purposes)
+        len(purposes) > 3
+        or any(
+            name not in {_DIRECT_KIND, _HOST_KIND, _HOST_V3_KIND}
+            for name in purposes
+        )
         or len(transactions) > 128
         or any(_TRANSACTION_ID.fullmatch(name) is None for name in transactions)
     ):
@@ -524,11 +531,12 @@ def _run(
     recovery_only: bool,
 ) -> _PublicationResult:
     if (
-        kind not in {_DIRECT_KIND, _HOST_KIND}
+        kind not in {_DIRECT_KIND, _HOST_KIND, _HOST_V3_KIND}
         or not isinstance(owner_home, Path)
         or not owner_home.is_absolute()
         or os.path.realpath(owner_home) != str(owner_home)
-        or relative not in {_DIRECT_RELATIVE, _HOST_RELATIVE}
+        or relative
+        not in {_DIRECT_RELATIVE, _HOST_RELATIVE, _HOST_V3_RELATIVE}
         or artifact_mode not in {_DIRECT_MODE, _HOST_MODE}
         or type(maximum) is not int
         or not 0 < maximum <= 16 * 1024 * 1024
@@ -540,7 +548,13 @@ def _run(
         or type(recovery_only) is not bool
     ):
         _error("source_artifact_publication_contract_invalid")
-    expected_relative = _DIRECT_RELATIVE if kind == _DIRECT_KIND else _HOST_RELATIVE
+    expected_relative = (
+        _DIRECT_RELATIVE
+        if kind == _DIRECT_KIND
+        else _HOST_V3_RELATIVE
+        if kind == _HOST_V3_KIND
+        else _HOST_RELATIVE
+    )
     expected_mode = _DIRECT_MODE if kind == _DIRECT_KIND else _HOST_MODE
     if relative != expected_relative or artifact_mode != expected_mode:
         _error("source_artifact_publication_contract_invalid")
@@ -848,6 +862,30 @@ def _run_host_identity(
         kind=_HOST_KIND,
         owner_home=owner_home,
         relative=_HOST_RELATIVE,
+        artifact_mode=_HOST_MODE,
+        maximum=maximum,
+        chain=chain,
+        validator=validator,
+        collector=collector,
+        checkpoint=_checkpoint,
+        recovery_only=_recovery_only,
+    )
+
+
+def _run_host_identity_v3(
+    *,
+    owner_home: Path,
+    chain: Mapping[str, Any],
+    maximum: int,
+    validator: _Validator,
+    collector: _Collector,
+    _checkpoint: _Checkpoint | None = None,
+    _recovery_only: bool = False,
+) -> _PublicationResult:
+    return _run(
+        kind=_HOST_V3_KIND,
+        owner_home=owner_home,
+        relative=_HOST_V3_RELATIVE,
         artifact_mode=_HOST_MODE,
         maximum=maximum,
         chain=chain,

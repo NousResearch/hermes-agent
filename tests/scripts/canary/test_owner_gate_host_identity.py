@@ -19,6 +19,8 @@ from scripts.canary import full_canary_owner_launcher as launcher
 from scripts.canary import owner_gate_foundation as foundation
 from scripts.canary import owner_gate_foundation_journal as foundation_journal
 from scripts.canary import owner_gate_host_identity as host
+from scripts.canary import owner_gate_owner_reauth as owner_reauth
+from scripts.canary import owner_gate_trust as owner_trust
 from scripts.canary import source_artifact_publication as source_publication
 
 
@@ -47,6 +49,72 @@ SECOND_HOST_KEY = base64.b64encode(
     + struct.pack(">I", 32)
     + b"J" * 32
 ).decode("ascii")
+_COLLECTION_REAUTH_KEY = Ed25519PrivateKey.generate()
+_COLLECTION_REAUTH_KEY_ID = hashlib.sha256(
+    _COLLECTION_REAUTH_KEY.public_key().public_bytes_raw()
+).hexdigest()
+
+
+def _collection_reauth_receipt() -> Mapping[str, Any]:
+    body = {
+        "schema": owner_reauth.RECEIPT_SCHEMA,
+        "purpose": owner_reauth.RECEIPT_PURPOSE,
+        "trusted_runtime_identity": {
+            "release_revision": FOUNDATION_REVISION,
+            "sealed_runtime_identity_sha256": "9" * 64,
+            "command_prefix_sha256": "1" * 64,
+            "python_executable_sha256": "2" * 64,
+            "gcloud_module_sha256": "3" * 64,
+            "sdk_root": (
+                "/sealed/google-cloud-sdk-"
+                f"{owner_reauth.GCLOUD_SDK_VERSION}"
+            ),
+            "sdk_python_config_identity_sha256": "4" * 64,
+            "closed_environment_sha256": "5" * 64,
+            "configuration": owner_reauth.GCLOUD_CONFIGURATION,
+            "account": owner_reauth.OWNER_ACCOUNT,
+            "project": foundation.PROJECT,
+            "zone": foundation.ZONE,
+        },
+        "interactive_reauthentication": {
+            "method": "gcloud_auth_login_force_interactive",
+            "started_at_unix": 88,
+            "completed_at_unix": 89,
+            "command_sha256": "6" * 64,
+            "interactive_tty_verified": True,
+            "access_token_requested": False,
+            "credential_material_captured": False,
+        },
+        "authenticated_probe": {
+            "command_sha256": "7" * 64,
+            "output_sha256": "8" * 64,
+            "project_id": foundation.PROJECT,
+            "project_number": launcher.OWNER_GATE_PROJECT_NUMBER,
+        },
+        "issued_at_unix": 90,
+        "expires_at_unix": 200,
+        "signer_key_id": _COLLECTION_REAUTH_KEY_ID,
+    }
+    return owner_reauth._sign_owner_reauth_receipt(
+        body,
+        private_key=_COLLECTION_REAUTH_KEY,
+    )
+
+
+@pytest.fixture
+def collection_authorization(
+    monkeypatch: pytest.MonkeyPatch,
+) -> host._CollectionAuthorization:
+    monkeypatch.setattr(
+        owner_trust,
+        "PINNED_RELEASE_TRUST_PUBLIC_KEY_SHA256",
+        _COLLECTION_REAUTH_KEY_ID,
+    )
+    return host._validate_collection_authorization(
+        _collection_reauth_receipt(),
+        public_key=_COLLECTION_REAUTH_KEY.public_key(),
+        now_unix=100,
+    )
 
 
 def _foundation_journal_for_test(
@@ -689,13 +757,15 @@ def test_exact_capability_boundaries_reject_subclasses(
     assert type(runtime) is launcher.TrustedGcloudExecutable
 
 
-def test_v2_owner_receipt_requires_distinct_pinning_revision(
+def test_v3_owner_receipt_requires_distinct_pinning_revision(
     tmp_path: Path,
+    collection_authorization: host._CollectionAuthorization,
 ) -> None:
     signer, _key = _owner_signer(tmp_path)
     identity = host._direct_compute_identity(_responses(), chain=_chain())
     receipt = host._author_receipt(
         chain=_chain(),
+        collection_authorization=collection_authorization,
         identity=identity,
         host_key_base64=HOST_KEY,
         direct_observed_before_unix=100,
@@ -710,7 +780,7 @@ def test_v2_owner_receipt_requires_distinct_pinning_revision(
         },
         owner_signer=signer,
     )
-    path = tmp_path / "owner-gate-host-identity-v2.json"
+    path = tmp_path / "owner-gate-host-identity-v3.json"
     path.write_bytes(
         host.canonical_receipt_bytes(receipt, owner_signer=signer)
     )
@@ -721,6 +791,9 @@ def test_v2_owner_receipt_requires_distinct_pinning_revision(
         expected_receipt_sha256=receipt["receipt_sha256"],
         pinning_source_revision=PINNING_REVISION,
         owner_signer=signer,
+        collection_reauthentication_public_key=(
+            _COLLECTION_REAUTH_KEY.public_key()
+        ),
     )
     assert pinned.snapshot().vm_numeric_id == INSTANCE_ID
 
@@ -733,16 +806,21 @@ def test_v2_owner_receipt_requires_distinct_pinning_revision(
             expected_receipt_sha256=receipt["receipt_sha256"],
             pinning_source_revision=FOUNDATION_REVISION,
             owner_signer=signer,
+            collection_reauthentication_public_key=(
+                _COLLECTION_REAUTH_KEY.public_key()
+            ),
         )
 
 
 def test_candidate_receipt_is_canonical_chain_bound_and_verified(
     tmp_path: Path,
+    collection_authorization: host._CollectionAuthorization,
 ) -> None:
     signer, _key = _owner_signer(tmp_path)
     identity = host._direct_compute_identity(_responses(), chain=_chain())
     receipt = host._author_receipt(
         chain=_chain(),
+        collection_authorization=collection_authorization,
         identity=identity,
         host_key_base64=HOST_KEY,
         direct_observed_before_unix=100,
@@ -761,6 +839,8 @@ def test_candidate_receipt_is_canonical_chain_bound_and_verified(
     assert host._decode_candidate_receipt(
         expected,
         chain=_chain(),
+        collection_runtime_release_revision=FOUNDATION_REVISION,
+        release_public_key=_COLLECTION_REAUTH_KEY.public_key(),
         owner_signer=signer,
     ) == receipt
 
@@ -779,6 +859,8 @@ def test_candidate_receipt_is_canonical_chain_bound_and_verified(
         host._decode_candidate_receipt(
             expected,
             chain=mismatched,
+            collection_runtime_release_revision=FOUNDATION_REVISION,
+            release_public_key=_COLLECTION_REAUTH_KEY.public_key(),
             owner_signer=signer,
         )
     assert "publish_canonical_receipt_exclusive" not in host.__all__
@@ -789,12 +871,14 @@ def test_candidate_receipt_is_canonical_chain_bound_and_verified(
 def test_signed_host_candidate_or_final_replays_without_recollection(
     tmp_path: Path,
     checkpoint: str,
+    collection_authorization: host._CollectionAuthorization,
 ) -> None:
     signer, _key = _owner_signer(tmp_path)
     chain = _chain()
     identity = host._direct_compute_identity(_responses(), chain=chain)
     receipt = host._author_receipt(
         chain=chain,
+        collection_authorization=collection_authorization,
         identity=identity,
         host_key_base64=HOST_KEY,
         direct_observed_before_unix=100,
@@ -821,6 +905,8 @@ def test_signed_host_candidate_or_final_replays_without_recollection(
         decoded = host._decode_candidate_receipt(
             value,
             chain=chain,
+            collection_runtime_release_revision=FOUNDATION_REVISION,
+            release_public_key=_COLLECTION_REAUTH_KEY.public_key(),
             owner_signer=signer,
         )
         return source_publication._ValidatedArtifact(
@@ -837,10 +923,11 @@ def test_signed_host_candidate_or_final_replays_without_recollection(
 
     publication_chain = host._host_publication_chain(
         chain,
+        collection_runtime_release_revision=FOUNDATION_REVISION,
         owner_public_key_id=owner_key_id,
     )
     with pytest.raises(StopSeed):
-        source_publication._run_host_identity(
+        source_publication._run_host_identity_v3(
             owner_home=owner_home,
             chain=publication_chain,
             maximum=launcher.PinnedOwnerGateHostIdentityReceipt._MAX_BYTES,
@@ -848,7 +935,7 @@ def test_signed_host_candidate_or_final_replays_without_recollection(
             collector=lambda: raw,
             _checkpoint=stop,
         )
-    replay = source_publication._run_host_identity(
+    replay = source_publication._run_host_identity_v3(
         owner_home=owner_home,
         chain=publication_chain,
         maximum=launcher.PinnedOwnerGateHostIdentityReceipt._MAX_BYTES,
@@ -861,7 +948,7 @@ def test_signed_host_candidate_or_final_replays_without_recollection(
     assert replay.value == receipt
     assert replay.value["signature_sshsig"] == receipt["signature_sshsig"]
     assert replay.value["direct_observed_before_unix"] == 100
-    final = owner_home / source_publication._HOST_RELATIVE
+    final = owner_home / source_publication._HOST_V3_RELATIVE
     assert final.read_bytes() == raw
     assert stat_mode(final) == 0o600
     assert final.stat().st_nlink == 1
@@ -1107,6 +1194,7 @@ def test_default_compute_request_rejects_redirect_type_length_and_oversize(
 
 def test_malicious_owner_token_subclass_is_rejected_before_io(
     monkeypatch: pytest.MonkeyPatch,
+    collection_authorization: host._CollectionAuthorization,
 ) -> None:
     runtime, configuration, ssh = _exact_capabilities(monkeypatch)
 
@@ -1119,6 +1207,7 @@ def test_malicious_owner_token_subclass_is_rejected_before_io(
     ):
         host._collect_with_capabilities(
             chain=_chain(),
+            collection_authorization=collection_authorization,
             runtime=runtime,
             configuration=configuration,
             owner_identity=object.__new__(TokenSubclass),
@@ -1133,6 +1222,7 @@ def test_malicious_owner_token_subclass_is_rejected_before_io(
 def test_token_is_wiped_and_all_capabilities_rechecked_on_compute_failure(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    collection_authorization: host._CollectionAuthorization,
 ) -> None:
     runtime, configuration, ssh = _exact_capabilities(monkeypatch)
     owner = object.__new__(launcher.GcloudOwnerAccessToken)
@@ -1201,6 +1291,7 @@ def test_token_is_wiped_and_all_capabilities_rechecked_on_compute_failure(
     with pytest.raises(host.OwnerGateHostIdentityError):
         host._collect_with_capabilities(
             chain=_chain(),
+            collection_authorization=collection_authorization,
             runtime=runtime,
             configuration=configuration,
             owner_identity=owner,
@@ -1271,6 +1362,7 @@ def _owner_cli_inputs(
     argv.extend(
         ("--project-ancestry-collector-public-key", str(collector_path))
     )
+    argv.extend(("--collection-release-revision", FOUNDATION_REVISION))
     return argv, artifacts
 
 
@@ -1286,7 +1378,7 @@ def test_host_identity_public_boundary_loads_apply_only_from_fixed_journal(
     from tests.scripts.canary import test_owner_gate_pre_foundation as fixture
 
     parameters = inspect.signature(
-        host.collect_and_publish_owner_gate_host_identity_v2
+        host.collect_and_publish_owner_gate_host_identity_v3
     ).parameters
     assert "foundation_apply_receipt_raw" not in parameters
     assert "foundation_apply_receipt_path" not in parameters
@@ -1336,7 +1428,7 @@ def test_host_identity_public_boundary_loads_apply_only_from_fixed_journal(
     )
 
     with pytest.raises(StopAfterFixedLoader):
-        host.collect_and_publish_owner_gate_host_identity_v2(
+        host.collect_and_publish_owner_gate_host_identity_v3(
             pre_foundation_authority_raw=chain.pre_foundation_authority_raw,
             owner_reauthentication_receipt_raw=(
                 chain.owner_reauthentication_receipt_raw
@@ -1349,6 +1441,7 @@ def test_host_identity_public_boundary_loads_apply_only_from_fixed_journal(
             project_ancestry_collector_public_key=(
                 chain.ancestry_collector_public_key
             ),
+            collection_runtime_release_revision=FOUNDATION_REVISION,
         )
 
     loaded = seen["foundation_chain"]
@@ -1418,6 +1511,9 @@ def test_owner_only_cli_reads_immutable_inputs_and_prints_only_publication(
         assert kwargs["network_collector_public_key"].public_bytes_raw() == (
             collector_key.public_key().public_bytes_raw()
         )
+        assert kwargs["collection_runtime_release_revision"] == (
+            FOUNDATION_REVISION
+        )
         return {
             "receipt": {"must_not_be_printed": "secret-marker"},
             "publication": {
@@ -1429,7 +1525,7 @@ def test_owner_only_cli_reads_immutable_inputs_and_prints_only_publication(
 
     monkeypatch.setattr(
         host,
-        "collect_and_publish_owner_gate_host_identity_v2",
+        "collect_and_publish_owner_gate_host_identity_v3",
         collect,
     )
 
@@ -1437,7 +1533,7 @@ def test_owner_only_cli_reads_immutable_inputs_and_prints_only_publication(
     assert called is True
     report = json.loads(capsys.readouterr().out)
     assert report == {
-        "schema": "muncho-owner-gate-iap-host-identity-publication.v2",
+        "schema": "muncho-owner-gate-iap-host-identity-publication.v3",
         "receipt_published": True,
         "path": expected_output,
         "receipt_sha256": "1" * 64,
@@ -1478,7 +1574,7 @@ def test_owner_only_cli_rejects_mutable_or_aliased_artifact_before_collection(
         authority_path.symlink_to(real_path)
     monkeypatch.setattr(
         host,
-        "collect_and_publish_owner_gate_host_identity_v2",
+        "collect_and_publish_owner_gate_host_identity_v3",
         lambda **_kwargs: pytest.fail("collection must not start"),
     )
 

@@ -269,13 +269,13 @@ PHASE_B_OWNER_PUBLIC_KEY_FINGERPRINT = (
     "SHA256:7Ea5WNys9ui7FL/p0FlOnL1ZLr6NPFuewekwqRw/rdw"
 )
 OWNER_GATE_HOST_IDENTITY_RECEIPT_SCHEMA = (
-    "muncho-owner-gate-iap-host-identity-receipt.v2"
+    "muncho-owner-gate-iap-host-identity-receipt.v3"
 )
 OWNER_GATE_HOST_IDENTITY_SSHSIG_NAMESPACE = (
-    "muncho-owner-gate-iap-host-identity-v2"
+    "muncho-owner-gate-iap-host-identity-v3"
 )
 OWNER_GATE_HOST_IDENTITY_RECEIPT_RELATIVE = (
-    ".hermes/trusted/owner-gate-iap-host-identity-v2.json"
+    ".hermes/trusted/owner-gate-iap-host-identity-v3.json"
 )
 OWNER_GATE_PROJECT_NUMBER = "39589465056"
 OWNER_GATE_SERVICE_ACCOUNT_EMAIL = (
@@ -3514,7 +3514,7 @@ class StableOwnerGateHostIdentity(Protocol):
 
 
 class PinnedOwnerGateHostIdentityReceipt:
-    """Verify the v2 first-contact chain, VM identity, and SSH host key.
+    """Verify the v3 first-contact chain, VM identity, and SSH host key.
 
     This class has no collector and makes no Cloud call.  Production remains
     deliberately unavailable while ``OWNER_GATE_HOST_IDENTITY_RECEIPT_SHA256``
@@ -3584,6 +3584,11 @@ class PinnedOwnerGateHostIdentityReceipt:
         "host_key_observed_at_unix",
         "direct_observed_after_unix",
         "owner_reauthentication_expires_at_unix",
+        "collection_owner_reauthentication_receipt",
+        "collection_owner_reauthentication_receipt_sha256",
+        "collection_owner_reauthentication_expires_at_unix",
+        "collection_runtime_release_revision",
+        "collection_runtime_identity_sha256",
         "sealed_runtime_identity_sha256",
         "ssh_executable_sha256",
         "ssh_version",
@@ -3604,6 +3609,7 @@ class PinnedOwnerGateHostIdentityReceipt:
         ),
         pinning_source_revision: str | None = None,
         owner_signer: _PhaseBOwnerExternalSigner | None = None,
+        collection_reauthentication_public_key: Any = None,
     ) -> None:
         if (
             not isinstance(expected_receipt_sha256, str)
@@ -3633,6 +3639,9 @@ class PinnedOwnerGateHostIdentityReceipt:
         self._expected_receipt_sha256 = expected_receipt_sha256
         self._pinning_source_revision = pinning_source_revision
         self._owner_signer = owner_signer or _PhaseBOwnerExternalSigner()
+        self._collection_reauthentication_public_key = (
+            collection_reauthentication_public_key
+        )
         if not isinstance(self._owner_signer, _PhaseBOwnerExternalSigner):
             raise OwnerLauncherError("owner_gate_iap_identity_receipt_invalid")
         self._fingerprint, self._authority, self._value = self._capture()
@@ -3659,6 +3668,59 @@ class PinnedOwnerGateHostIdentityReceipt:
             != struct.pack(">I", 32)
         ):
             raise OwnerLauncherError("owner_gate_iap_identity_receipt_invalid")
+
+    def _validate_collection_reauthentication(
+        self,
+        value: Any,
+    ) -> Mapping[str, Any]:
+        """Verify the embedded fresh reauth without treating it as live."""
+
+        try:
+            from cryptography.hazmat.primitives.asymmetric.ed25519 import (
+                Ed25519PublicKey,
+            )
+            from scripts.canary import owner_gate_owner_reauth as owner_reauth
+            from scripts.canary import owner_gate_trust as release_trust
+
+            public_key = self._collection_reauthentication_public_key
+            if public_key is None:
+                public_path = os.path.join(
+                    _canonical_owner_home(),
+                    ".hermes/owner-gate-release-authority/"
+                    "release-trust-signing.pub",
+                )
+                _identity, public_raw = _read_pinned_regular_file(
+                    public_path,
+                    maximum=32,
+                    unavailable_code="owner_gate_iap_identity_receipt_invalid",
+                    invalid_code="owner_gate_iap_identity_receipt_invalid",
+                    changed_code="owner_gate_iap_identity_receipt_changed",
+                    allowed_owners=frozenset({os.getuid()}),  # windows-footgun: ok
+                )
+                if (
+                    len(public_raw) != 32
+                    or _sha256(public_raw)
+                    != release_trust.PINNED_RELEASE_TRUST_PUBLIC_KEY_SHA256
+                ):
+                    raise OwnerLauncherError(
+                        "owner_gate_iap_identity_receipt_invalid"
+                    )
+                public_key = Ed25519PublicKey.from_public_bytes(public_raw)
+            if not isinstance(public_key, Ed25519PublicKey):
+                raise OwnerLauncherError(
+                    "owner_gate_iap_identity_receipt_invalid"
+                )
+            return owner_reauth.validate_owner_reauth_receipt(
+                value,
+                public_key=public_key,
+                now_unix=None,
+            )
+        except OwnerLauncherError:
+            raise
+        except Exception:
+            raise OwnerLauncherError(
+                "owner_gate_iap_identity_receipt_invalid"
+            ) from None
 
     def _capture(
         self,
@@ -3717,6 +3779,14 @@ class PinnedOwnerGateHostIdentityReceipt:
         reauth_expires = receipt.get(
             "owner_reauthentication_expires_at_unix"
         )
+        collection_reauth = self._validate_collection_reauthentication(
+            receipt.get("collection_owner_reauthentication_receipt")
+        )
+        collection_runtime = collection_reauth.get(
+            "trusted_runtime_identity"
+        )
+        collection_issued = collection_reauth.get("issued_at_unix")
+        collection_expires = collection_reauth.get("expires_at_unix")
         expected_vm_self_link = (
             "https://www.googleapis.com/compute/v1/projects/"
             f"{PROJECT}/zones/{ZONE}/instances/muncho-owner-gate-01"
@@ -3801,6 +3871,8 @@ class PinnedOwnerGateHostIdentityReceipt:
                 _SHA256.fullmatch(str(receipt.get(name, ""))) is None
                 for name in (
                     "owner_reauthentication_receipt_sha256",
+                    "collection_owner_reauthentication_receipt_sha256",
+                    "collection_runtime_identity_sha256",
                     "pre_foundation_authority_sha256",
                     "foundation_apply_receipt_sha256",
                     "direct_iam_authority_sha256",
@@ -3923,6 +3995,19 @@ class PinnedOwnerGateHostIdentityReceipt:
             or not isinstance(encoded, str)
             or receipt.get("collection_method")
             != OWNER_GATE_HOST_IDENTITY_COLLECTION_METHOD
+            or not isinstance(collection_runtime, Mapping)
+            or receipt.get("collection_owner_reauthentication_receipt_sha256")
+            != collection_reauth.get(
+                "owner_reauthentication_receipt_sha256"
+            )
+            or receipt.get("collection_owner_reauthentication_expires_at_unix")
+            != collection_expires
+            or receipt.get("collection_runtime_release_revision")
+            != collection_runtime.get("release_revision")
+            or receipt.get("collection_runtime_identity_sha256")
+            != collection_runtime.get("sealed_runtime_identity_sha256")
+            or receipt.get("collection_runtime_release_revision")
+            == self._pinning_source_revision
             or receipt.get("direct_identity_sha256")
             != _sha256(_canonical_bytes(direct_identity))
             or any(
@@ -3932,11 +4017,14 @@ class PinnedOwnerGateHostIdentityReceipt:
                     host_key_unix,
                     after_unix,
                     reauth_expires,
+                    collection_issued,
+                    collection_expires,
                 )
             )
             or not before_unix <= host_key_unix <= after_unix
             or after_unix - before_unix > 300
-            or after_unix > reauth_expires
+            or before_unix < collection_issued
+            or after_unix > collection_expires
             or any(
                 _SHA256.fullmatch(str(receipt.get(name, ""))) is None
                 for name in (
@@ -3957,6 +4045,8 @@ class PinnedOwnerGateHostIdentityReceipt:
             )
             or receipt.get("first_contact_toolchain_sha256")
             != _sha256(_canonical_bytes(toolchain))
+            or receipt.get("sealed_runtime_identity_sha256")
+            != receipt.get("collection_runtime_identity_sha256")
             or receipt.get("owner_public_key_id") != authority.key_id
             or not isinstance(digest, str)
             or digest != _sha256(_canonical_bytes(unsigned))

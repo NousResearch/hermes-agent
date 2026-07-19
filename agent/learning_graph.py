@@ -217,6 +217,39 @@ def _memory_cards() -> list[dict[str, Any]]:
                     "body": chunk[:1200],
                 }
             )
+
+    # Holographic memory: surface rows from the `facts` table in memory_store.db
+    # so the journey graph reflects everything Hermes has learned, not just the
+    # prose files. Distinct `source: "facts"` keeps them separate from
+    # `memory:profile:N` / `memory:memory:N` IDs.
+    db_path = get_hermes_home() / "memory_store.db"
+    if db_path.exists():
+        try:
+            import sqlite3
+
+            with sqlite3.connect(str(db_path)) as db:
+                for fact_id, content, created_at, category, tags in db.execute(
+                    "SELECT fact_id, content, created_at, category, tags "
+                    "FROM facts ORDER BY created_at"
+                ):
+                    text = (content or "").strip()
+                    if not text:
+                        continue
+                    first = text.splitlines()[0].strip().lstrip("# ").strip() or "(empty)"
+                    cards.append(
+                        {
+                            "source": "facts",
+                            "timestamp": _to_int_ts(created_at),
+                            "title": f"[{category or 'general'}] {(first[:70] + '…') if len(first) > 70 else first}",
+                            "body": text[:1200],
+                            "fact_id": fact_id,
+                            "tags": tags,
+                        }
+                    )
+        except Exception:
+            # Never break /journey because the holographic store is unavailable
+            pass
+
     return cards
 
 

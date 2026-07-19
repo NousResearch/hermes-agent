@@ -37,6 +37,7 @@ from toolsets import TOOLSETS
 # not natively known (named custom providers, third-party aggregators, etc.).
 # Must match hermes_cli.runtime_provider.RUNTIME_PROVIDER_TYPE_CUSTOM.
 _RUNTIME_PROVIDER_CUSTOM = "custom"
+from tools.child_isolation import ChildErrorType, ChildResult
 from tools import file_state
 from tools.terminal_tool import set_approval_callback as _set_subagent_approval_cb
 from utils import base_url_hostname, is_truthy_value
@@ -2093,17 +2094,23 @@ def _run_single_child(
             else:
                 _err = str(_timeout_exc)
 
-            return {
-                "task_index": task_index,
-                "status": "timeout" if is_timeout else "error",
-                "summary": None,
-                "error": _err,
-                "exit_reason": "timeout" if is_timeout else "error",
-                "api_calls": child_api_calls,
-                "duration_seconds": duration,
-                "_child_role": getattr(child, "_delegate_role", None),
-                "diagnostic_path": diagnostic_path,
-            }
+            return ChildResult(
+                success=False,
+                task_index=task_index,
+                status="timeout" if is_timeout else "error",
+                error=_err,
+                error_type=(
+                    ChildErrorType.TIMEOUT.value if is_timeout
+                    else ChildErrorType.CRASH.value
+                ),
+                api_calls=child_api_calls,
+                duration_seconds=duration,
+                child_role=getattr(child, "_delegate_role", None),
+                result={
+                    "exit_reason": "timeout" if is_timeout else "error",
+                    "diagnostic_path": diagnostic_path,
+                },
+            ).to_dict()
         finally:
             # Shut down executor without waiting — if the child thread
             # is stuck on blocking I/O, wait=True would hang forever.
@@ -2337,15 +2344,16 @@ def _run_single_child(
                 )
             except Exception as e:
                 logger.debug("Progress callback failure relay failed: %s", e)
-        return {
-            "task_index": task_index,
-            "status": "error",
-            "summary": None,
-            "error": str(exc),
-            "api_calls": 0,
-            "duration_seconds": duration,
-            "_child_role": getattr(child, "_delegate_role", None),
-        }
+        return ChildResult(
+            success=False,
+            task_index=task_index,
+            status="error",
+            error=str(exc),
+            error_type=ChildErrorType.CRASH.value,
+            api_calls=0,
+            duration_seconds=duration,
+            child_role=getattr(child, "_delegate_role", None),
+        ).to_dict()
 
     finally:
         # Stop the heartbeat thread so it doesn't keep touching parent activity
@@ -2839,30 +2847,48 @@ def delegate_task(
 
         total_duration = round(time.monotonic() - overall_start, 2)
 
+        # Fire subagent_stop hooks once per child, serialised on the parent thread.
+        # This keeps Python-plugin and shell-hook callbacks off of the worker threads
+        # that ran the children, so hook authors don't need to reason about
+        # concurrent invocation.  Role was captured into the entry dict in
+        # _run_single_child (or the fabricated-entry branches above) before the
+        # child was closed.
+        _parent_session_id = getattr(parent_agent, "session_id", None)
+        try:
+            from hermes_cli.plugins import invoke_hook as _invoke_hook
+        except Exception:
+            _invoke_hook = None
+        # Aggregate child spend here so the parent's footer/UI reflect the true
+        # cost of a subagent-heavy turn.  Port of Kilo-Org/kilocode#9448.  Each
+        # child's cost was captured in _run_single_child before its AIAgent was
+        # closed; we fold them into the parent in one pass alongside the
+        # subagent_stop hook loop so we don't walk `results` twice.
+        _children_cost_total = 0.0
+        for entry in results:
+            child_role = entry.pop("_child_role", None) or entry.pop("child_role", None)
+            child_cost = entry.pop("_child_cost_usd", 0.0)
+            try:
+                if child_cost:
+                    _children_cost_total += float(child_cost)
+            except (TypeError, ValueError):
+                pass
+            if _invoke_hook is None:
+                continue
+            try:
+                _invoke_hook(
+                    "subagent_stop",
+                    parent_session_id=_parent_session_id,
+                    child_role=child_role,
+                )
+            except Exception:
+                logger.debug("subagent_stop hook failed", exc_info=True)
+
         return {
             "results": results,
             "total_duration_seconds": total_duration,
         }
 
     # ----- Background dispatch: run the WHOLE batch as one async unit -----
-    # When background is true, the entire fan-out runs on the daemon executor
-    # via a single async delegation. _execute_and_aggregate() joins on every
-    # child and produces ONE consolidated results block, which re-enters the
-    # conversation as a single message when ALL children finish. The chat is
-    # not blocked in the meantime. This is the contract: dispatch N subagents,
-    # keep chatting, get the combined summaries back together at the end.
-    if background:
-        from tools.async_delegation import dispatch_async_delegation_batch
-        from tools.approval import get_current_session_key
-
-        # Stateless request/response sessions (the API server / WebUI path)
-        # cannot route a detached subagent result back to the agent after the
-        # turn ends — there is no persistent channel and the adapter's send()
-        # is a no-op, so a background dispatch would silently never re-enter the
-        # conversation (issue #10760). Fall back to SYNCHRONOUS execution: the
-        # work still runs and its result returns in this same response, which is
-        # strictly better than a handle that never resolves. Mirrors the
-        # pool-at-capacity inline fallback below.
         try:
             from gateway.session_context import async_delivery_supported
             _async_ok = async_delivery_supported()

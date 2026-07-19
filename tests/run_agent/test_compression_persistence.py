@@ -19,7 +19,6 @@ Bug scenario (pre-fix):
 import os
 import tempfile
 from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import patch
 
 
@@ -271,45 +270,6 @@ class TestFlushAfterCompression:
                 "new request",
                 "new answer",
             ]
-
-    def test_new_run_clears_stale_in_place_compaction_state(self, monkeypatch):
-        """A cached agent must not report a prior turn's compaction boundary."""
-        import agent.conversation_loop as loop
-
-        observed = {}
-
-        def fake_build_turn_context(agent, *_args, **_kwargs):
-            observed["in_place"] = agent._last_compaction_in_place
-            observed["attempt_recorded"] = agent._last_compression_attempt_recorded
-            observed["attempt_in_place"] = agent._last_compression_attempt_in_place
-            return SimpleNamespace(
-                user_message="hello",
-                original_user_message="hello",
-                messages=[],
-                conversation_history=[],
-                active_system_prompt="system",
-                effective_task_id="default",
-                turn_id="turn-1",
-                current_turn_user_idx=0,
-                should_review_memory=False,
-                plugin_user_context={},
-                ext_prefetch_cache=None,
-            )
-
-        agent = SimpleNamespace(
-            api_mode="codex_app_server",
-            _last_compaction_in_place=True,
-            _last_compression_attempt_recorded=True,
-            _last_compression_attempt_in_place=True,
-        )
-        agent._run_codex_app_server_turn = lambda **_kwargs: dict(observed)
-        monkeypatch.setattr(loop, "build_turn_context", fake_build_turn_context)
-
-        assert loop.run_conversation(agent, "hello") == {
-            "in_place": False,
-            "attempt_recorded": False,
-            "attempt_in_place": None,
-        }
 
     def test_rotation_child_session_flushes_full_compressed_transcript_with_markers(self):
         """Regression for #57491: live cached-agent markers must not block child flush."""

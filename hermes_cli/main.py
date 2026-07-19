@@ -1427,9 +1427,34 @@ def _npm_lock_dep_names(pkg: dict) -> set[str]:
     return names
 
 
-def _npm_lock_node_modules_path(package_name: str) -> str:
-    """Return package-lock ``packages`` key for an installed dependency name."""
-    return f"node_modules/{package_name}"
+def _npm_lock_resolve_dep_path(
+    packages: dict,
+    *,
+    declaring_path: str,
+    package_name: str,
+) -> str | None:
+    """Resolve a dependency using npm's local-to-ancestor lookup order."""
+    current = declaring_path.rstrip("/")
+    while True:
+        # Node skips an ancestor that is itself named node_modules; appending
+        # another node_modules there would produce an invalid lookup path.
+        if current != "node_modules" and not current.endswith("/node_modules"):
+            candidate = (
+                f"{current}/node_modules/{package_name}"
+                if current
+                else f"node_modules/{package_name}"
+            )
+            if candidate in packages:
+                return candidate
+
+        if not current:
+            return None
+        current = current.rsplit("/", 1)[0] if "/" in current else ""
+
+
+def _npm_lock_is_installed_package(package_path: str) -> bool:
+    """Return whether a lockfile key represents an installed package."""
+    return package_path.startswith("node_modules/") or "/node_modules/" in package_path
 
 
 def _npm_lock_workspace_subset(
@@ -1469,7 +1494,7 @@ def _npm_lock_workspace_subset(
         if not isinstance(pkg, dict):
             continue
         traversed.add(name)
-        if name.startswith("node_modules/"):
+        if _npm_lock_is_installed_package(name):
             selected.add(name)
 
         resolved = pkg.get("resolved")
@@ -1477,8 +1502,12 @@ def _npm_lock_workspace_subset(
             queue.append(resolved)
 
         for dep_name in _npm_lock_dep_names(pkg):
-            dep_path = _npm_lock_node_modules_path(dep_name)
-            if dep_path in packages and dep_path not in selected:
+            dep_path = _npm_lock_resolve_dep_path(
+                packages,
+                declaring_path=name,
+                package_name=dep_name,
+            )
+            if dep_path is not None and dep_path not in selected:
                 queue.append(dep_path)
 
     return {name: packages[name] for name in selected}

@@ -155,6 +155,92 @@ def test_workspace_install_detects_missing_tui_dependency(
     assert main_mod._tui_need_npm_install(tui_dir) is True
 
 
+def _write_duplicate_root_and_workspace_dependencies(
+    root: Path,
+    *,
+    hidden_packages: dict,
+) -> Path:
+    """Write a workspace lock with distinct root and TUI-local dependency trees."""
+    tui_dir = root / "ui-tui"
+    tui_dir.mkdir()
+    (tui_dir / "package.json").write_text("{}")
+    _touch_ink(root)
+    (root / "package-lock.json").write_text(
+        json.dumps(
+            {
+                "packages": {
+                    "ui-tui": {
+                        "name": "hermes-tui",
+                        "devDependencies": {"@types/node": "^22.20.0"},
+                    },
+                    "node_modules/hermes-tui": {
+                        "resolved": "ui-tui",
+                        "link": True,
+                    },
+                    "node_modules/@types/node": {
+                        "version": "24.13.2",
+                        "dependencies": {"undici-types": "~7.18.0"},
+                    },
+                    "node_modules/undici-types": {"version": "7.18.0"},
+                    "ui-tui/node_modules/@types/node": {
+                        "version": "22.20.0",
+                        "dependencies": {"undici-types": "~6.21.0"},
+                    },
+                    "ui-tui/node_modules/undici-types": {"version": "6.21.0"},
+                }
+            }
+        )
+    )
+    (root / "node_modules" / ".package-lock.json").write_text(
+        json.dumps({"packages": hidden_packages})
+    )
+    return tui_dir
+
+
+def test_workspace_install_prefers_local_dependency_over_root_duplicate(
+    tmp_path: Path, main_mod
+) -> None:
+    """A fresh workspace-local dependency must not be replaced by the root copy."""
+    tui_dir = _write_duplicate_root_and_workspace_dependencies(
+        tmp_path,
+        hidden_packages={
+            "node_modules/hermes-tui": {
+                "resolved": "ui-tui",
+                "link": True,
+            },
+            "ui-tui/node_modules/@types/node": {
+                "version": "22.20.0",
+                "dependencies": {"undici-types": "~6.21.0"},
+            },
+            "ui-tui/node_modules/undici-types": {"version": "6.21.0"},
+        },
+    )
+
+    assert main_mod._tui_need_npm_install(tui_dir) is False
+
+
+def test_workspace_install_detects_missing_local_dependency_despite_root_copy(
+    tmp_path: Path, main_mod
+) -> None:
+    """A root duplicate must not hide a missing workspace-local dependency."""
+    tui_dir = _write_duplicate_root_and_workspace_dependencies(
+        tmp_path,
+        hidden_packages={
+            "node_modules/hermes-tui": {
+                "resolved": "ui-tui",
+                "link": True,
+            },
+            "node_modules/@types/node": {
+                "version": "24.13.2",
+                "dependencies": {"undici-types": "~7.18.0"},
+            },
+            "node_modules/undici-types": {"version": "7.18.0"},
+        },
+    )
+
+    assert main_mod._tui_need_npm_install(tui_dir) is True
+
+
 def test_no_install_when_only_optional_peer_package_missing_from_hidden_lock(tmp_path: Path, main_mod) -> None:
     _touch_ink(tmp_path)
     (tmp_path / "package-lock.json").write_text(

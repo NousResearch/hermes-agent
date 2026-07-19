@@ -69,7 +69,7 @@ def _fake_venv_python(tmp_path, *, windows: bool = False):
 
 def test_venv_health_reports_missing_imports(tmp_path):
     """Probe output lines are surfaced as the unhealthy detail."""
-    _fake_venv_python(tmp_path)
+    _fake_venv_python(tmp_path, windows=cli_main._is_windows())
 
     fake = SimpleNamespace(
         returncode=0,
@@ -97,7 +97,7 @@ def test_venv_health_healthy_when_probe_clean(tmp_path):
 
 def test_venv_health_broken_interpreter_is_unhealthy(tmp_path):
     """Nonzero exit with no module list = interpreter itself is broken."""
-    _fake_venv_python(tmp_path)
+    _fake_venv_python(tmp_path, windows=cli_main._is_windows())
     fake = SimpleNamespace(returncode=1, stdout="", stderr="Fatal Python error: init failed\n")
     with patch.object(cli_main, "PROJECT_ROOT", tmp_path), patch.object(
         cli_main.subprocess, "run", return_value=fake
@@ -295,13 +295,16 @@ def _update_args(**overrides):
     return SimpleNamespace(**defaults)
 
 
-def _run_update_until_guard(args):
+def _run_update_until_guard(args, *, detect_side_effect=None):
     """Drive _cmd_update_impl just far enough to hit the venv-holder guard.
 
     Everything before the guard is stubbed; the guard firing is observed via
     SystemExit(2). The first statement AFTER the guard is
     ``git_dir = PROJECT_ROOT / ".git"`` — a PROJECT_ROOT sentinel whose
-    ``__truediv__`` raises marks 'guard passed'."""
+    ``__truediv__`` raises marks 'guard passed'.
+
+    Returns ``(outcome, mocks)`` so tests can assert on the terminate helper.
+    """
 
     class _PastGuard(Exception):
         pass
@@ -310,6 +313,14 @@ def _run_update_until_guard(args):
         def __truediv__(self, _other):
             raise _PastGuard
 
+    detect = MagicMock()
+    if detect_side_effect is not None:
+        detect.side_effect = detect_side_effect
+    else:
+        detect.return_value = [(101, "python.exe", "python.exe -m hermes_cli.main serve")]
+    terminate = MagicMock()
+    mocks = SimpleNamespace(detect=detect, terminate=terminate)
+
     with patch.object(cli_main, "_is_windows", return_value=True), patch.object(
         cli_main, "_venv_scripts_dir", return_value=None
     ), patch.object(cli_main, "_run_pre_update_backup"), patch.object(
@@ -317,19 +328,19 @@ def _run_update_until_guard(args):
     ), patch.object(
         cli_main, "_resume_windows_gateways_after_update"
     ), patch.object(
-        cli_main,
-        "_detect_venv_python_processes",
-        return_value=[(101, "python.exe", "python.exe -m hermes_cli.main serve")],
+        cli_main, "_detect_venv_python_processes", detect
+    ), patch.object(
+        cli_main, "_terminate_venv_python_holders", terminate
     ), patch.object(
         cli_main, "PROJECT_ROOT", _RootSentinel()
     ):
         try:
             cli_main._cmd_update_impl(args, gateway_mode=False)
         except _PastGuard:
-            return "past_guard"
+            return "past_guard", mocks
         except SystemExit as exc:
-            return f"exit_{exc.code}"
-    return "returned"
+            return f"exit_{exc.code}", mocks
+    return "returned", mocks
 
 
 @pytest.mark.parametrize(
@@ -342,5 +353,69 @@ def _run_update_until_guard(args):
     ],
 )
 def test_venv_holder_guard_force_semantics(force, force_venv, expected, capsys):
-    result = _run_update_until_guard(_update_args(force=force, force_venv=force_venv))
+    result, _mocks = _run_update_until_guard(_update_args(force=force, force_venv=force_venv))
     assert result == expected, capsys.readouterr().out
+
+
+# ---------------------------------------------------------------------------
+# --yes unattended quiesce of stray venv holders
+# ---------------------------------------------------------------------------
+
+
+def test_venv_holder_guard_yes_terminates_strays_and_proceeds(capsys):
+    """Unattended (--yes) update clears stray holders instead of dead-ending."""
+    holders = [(101, "pythonw.exe", "pythonw.exe -m hermes_cli.main cron run abc123")]
+    result, mocks = _run_update_until_guard(
+        _update_args(yes=True),
+        detect_side_effect=[holders, []],  # cleared after terminate
+    )
+    assert result == "past_guard", capsys.readouterr().out
+    mocks.terminate.assert_called_once_with(holders)
+
+
+def test_venv_holder_guard_yes_still_refuses_when_holders_persist(capsys):
+    """Holders that survive termination (e.g. a respawned desktop backend)
+    must still trip the refusal — the re-scan is authoritative."""
+    result, mocks = _run_update_until_guard(_update_args(yes=True))
+    assert result == "exit_2", capsys.readouterr().out
+    mocks.terminate.assert_called_once()
+
+
+def test_venv_holder_guard_interactive_never_terminates(capsys):
+    """Interactive runs keep the plain refusal — no killing behind the user's back."""
+    result, mocks = _run_update_until_guard(_update_args(yes=False))
+    assert result == "exit_2", capsys.readouterr().out
+    mocks.terminate.assert_not_called()
+
+
+def test_terminate_venv_holders_terminates_then_kills_survivors():
+    """Graceful terminate first; force-kill only the processes still alive."""
+    calls = []
+
+    class _FakeProc:
+        def __init__(self, pid):
+            self.pid = pid
+
+        def terminate(self):
+            calls.append(("terminate", self.pid))
+
+        def kill(self):
+            calls.append(("kill", self.pid))
+
+    procs = {pid: _FakeProc(pid) for pid in (101, 102)}
+    fake_psutil = types.SimpleNamespace(
+        Process=lambda pid: procs[pid],
+        NoSuchProcess=Exception,
+        # first wait: 101 gone, 102 alive; second wait: everything gone
+        wait_procs=lambda ps, timeout=None: (ps[:1], ps[1:]),
+    )
+    with patch.dict(sys.modules, {"psutil": fake_psutil}):
+        cli_main._terminate_venv_python_holders(
+            [(101, "pythonw.exe", "cmd one"), (102, "pythonw.exe", "cmd two")],
+            grace_timeout=0,
+        )
+
+    assert ("terminate", 101) in calls
+    assert ("terminate", 102) in calls
+    assert ("kill", 102) in calls
+    assert ("kill", 101) not in calls

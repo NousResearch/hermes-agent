@@ -9266,12 +9266,14 @@ def _detect_venv_python_processes(
     dependency sync mid-update dies with access-denied and strands the venv
     half-updated (ryanc's brotlicffi/_sodium.pyd incidents, July 2026).
 
-    Killing them from here is pointless — the Desktop app supervises its
-    backend and respawns it within seconds — so the caller should refuse and
-    tell the user to close the app instead. Returns ``(pid, name, cmdline)``
-    tuples; empty off-Windows / without psutil / when nothing matches. The
-    calling process and its ancestors are always excluded (a CLI ``hermes
-    update`` itself runs from the venv python). Never raises.
+    Interactive callers should refuse and tell the user to close the app —
+    while the Desktop app runs it supervises its backend and respawns it
+    within seconds. Unattended callers (``--yes``) instead clear strays via
+    ``_terminate_venv_python_holders`` once gateways are paused, then re-scan
+    with this function. Returns ``(pid, name, cmdline)`` tuples; empty
+    off-Windows / without psutil / when nothing matches. The calling process
+    and its ancestors are always excluded (a CLI ``hermes update`` itself
+    runs from the venv python). Never raises.
     """
     if not _is_windows():
         return []
@@ -9367,7 +9369,54 @@ def _format_venv_python_holders_message(matches: list[tuple[int, str, str]]) -> 
     )
     lines.append("    hermes update")
     lines.append("  (or use `hermes update --force-venv` to proceed anyway at your own risk)")
+    lines.append(
+        "  Unattended runs (`hermes update --yes`) terminate stray holders automatically."
+    )
     return "\n".join(lines)
+
+
+def _terminate_venv_python_holders(
+    matches: list[tuple[int, str, str]],
+    *,
+    grace_timeout: float = 20.0,
+) -> None:
+    """Best-effort graceful stop of processes holding the venv interpreter.
+
+    Only called on unattended updates (``--yes``): by that point the Windows
+    gateways are paused, and with them the in-gateway cron ticker — so
+    nothing spawns replacements for the stray/transient holders that remain
+    (cron job runs, abandoned CLI sessions). Terminate, wait up to
+    ``grace_timeout`` for exit, then force-kill survivors. The caller
+    re-scans afterwards and still refuses if anything is left (e.g. a
+    supervised Desktop backend that respawned). Never raises.
+    """
+    try:
+        import psutil
+    except Exception:
+        return
+
+    procs = []
+    for pid, name, cmdline in matches:
+        try:
+            proc = psutil.Process(pid)
+            proc.terminate()
+            procs.append(proc)
+            print(f"  → Terminating venv holder PID {pid} ({name}): {cmdline[:110]}")
+        except psutil.NoSuchProcess:
+            continue
+        except Exception as exc:
+            logger.debug("Could not terminate venv holder %s: %s", pid, exc)
+    if not procs:
+        return
+    _, alive = psutil.wait_procs(procs, timeout=grace_timeout)
+    for proc in alive:
+        try:
+            proc.kill()
+            print(f"  → Force-killed venv holder PID {proc.pid}")
+        except Exception as exc:
+            logger.debug("Could not kill venv holder %s: %s", proc.pid, exc)
+    if alive:
+        psutil.wait_procs(alive, timeout=5)
 
 
 def _pause_windows_gateways_for_update() -> dict | None:
@@ -9854,6 +9903,18 @@ def _cmd_update_impl(args, gateway_mode: bool):
     # --force-venv is the explicit escape hatch.
     if _is_windows() and not getattr(args, "force_venv", False):
         _venv_holders = _detect_venv_python_processes()
+        if _venv_holders and getattr(args, "yes", False):
+            # Unattended run (the desktop bootstrap updater passes --yes):
+            # gateways — and with them the in-gateway cron ticker — are
+            # already paused, so the remaining holders are stray/transient
+            # processes (cron job runs, abandoned CLI sessions) that nothing
+            # respawns. Dead-ending the whole update on them means an
+            # unattended update can never converge; terminate them instead,
+            # then re-scan. Anything that reappears (a supervised desktop
+            # backend) still trips the refusal below.
+            print("→ Clearing stray Hermes venv process(es) before the dependency sync…")
+            _terminate_venv_python_holders(_venv_holders)
+            _venv_holders = _detect_venv_python_processes()
         if _venv_holders:
             print(_format_venv_python_holders_message(_venv_holders))
             _resume_windows_gateways_after_update(_windows_gateway_resume)

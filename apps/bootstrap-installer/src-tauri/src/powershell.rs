@@ -447,4 +447,56 @@ info line
             "unexpected powershell path: {normalized}"
         );
     }
+
+    #[test]
+    fn decode_console_bytes_keeps_valid_utf8() {
+        assert_eq!(decode_console_bytes("café — ok".as_bytes()), "café — ok");
+    }
+
+    #[test]
+    fn decode_console_bytes_preserves_cp1252_portuguese_error() {
+        // "Não foi fornecido o terminador..." as Windows PowerShell 5.1 emits
+        // under CP1252 (0xE3 = ã). BufReader::lines() previously failed here
+        // with "stream did not contain valid UTF-8" and the UI only showed "No".
+        let bytes: &[u8] = b"N\xE3o foi fornecido o terminador";
+        assert_eq!(decode_console_bytes(bytes), "Não foi fornecido o terminador");
+    }
+
+    #[test]
+    fn decode_console_bytes_maps_cp1252_only_punctuation() {
+        // 0x91/0x92 are curly quotes in Windows-1252, but C1 controls under
+        // Latin-1 (`b as char`). This locks the real CP1252 fallback.
+        let bytes: &[u8] = b"say \x91hi\x92";
+        assert_eq!(decode_console_bytes(bytes), "say \u{2018}hi\u{2019}");
+        assert_ne!(
+            decode_console_bytes(bytes),
+            bytes.iter().map(|&b| b as char).collect::<String>(),
+            "Latin-1 byte mapping must not be used for the 0x80..=0x9F range"
+        );
+    }
+
+    #[tokio::test]
+    async fn read_decoded_line_survives_non_utf8_and_crlf() {
+        let data: &[u8] = b"N\xE3o erro\r\nnext\n";
+        let mut reader = BufReader::new(data);
+        let mut buf = Vec::new();
+        assert_eq!(
+            read_decoded_line(&mut reader, &mut buf)
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("Não erro")
+        );
+        assert_eq!(
+            read_decoded_line(&mut reader, &mut buf)
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("next")
+        );
+        assert!(read_decoded_line(&mut reader, &mut buf)
+            .await
+            .unwrap()
+            .is_none());
+    }
 }

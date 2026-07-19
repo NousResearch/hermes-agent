@@ -2531,8 +2531,17 @@ def test_ws_orphan_reap_spares_detached_session_with_running_async_delegation(mo
         assert len(timers) == 1
 
         with ad._records_lock:
-            ad._records["deleg_bg"]["status"] = "completed"
+            ad._records["deleg_bg"]["status"] = "finalizing"
             ad._records["deleg_bg"]["interrupt_fn"] = None
+
+        timers.pop(0).fn()
+
+        assert closed == []
+        assert "bg-sid" in server._sessions
+        assert len(timers) == 1
+
+        with ad._records_lock:
+            ad._records["deleg_bg"]["status"] = "completed"
 
         timers.pop(0).fn()
 

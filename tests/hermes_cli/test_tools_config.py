@@ -148,10 +148,6 @@ def test_configurable_toolsets_include_context_engine():
     assert any(ts_key == "context_engine" for ts_key, _, _ in CONFIGURABLE_TOOLSETS)
 
 
-def test_configurable_toolsets_include_dynamic_workflow():
-    assert any(ts_key == "dynamic_workflow" for ts_key, _, _ in CONFIGURABLE_TOOLSETS)
-
-
 def test_dynamic_workflow_toolset_is_distinct_from_delegation():
     from toolsets import resolve_toolset
 

@@ -108,10 +108,10 @@ def test_workflows_are_scoped_to_parent_session():
     assert [wf["objective"] for wf in status_b["workflows"]] == ["Session B workflow"]
 
 
-def test_workflow_stays_retrievable_when_compression_rotates_session_id():
+def test_gateway_workflow_scope_survives_session_id_rotation():
     parent = SimpleNamespace(
         session_id="before-compression",
-        _gateway_session_key=None,
+        _gateway_session_key="agent:main:telegram:dm:42",
     )
     _call(
         {
@@ -134,13 +134,20 @@ def test_workflow_stays_retrievable_when_compression_rotates_session_id():
     )
 
     parent.session_id = "after-compression"
-    dwt.migrate_workflow_scope(parent, "before-compression")
     status = _call(
         {"action": "status", "workflow_id": "wf_compression"},
         parent_agent=parent,
     )
 
     assert status["workflow"]["nodes"][0]["summary"] == "Terminal output"
+    other = _call(
+        {"action": "status", "workflow_id": "wf_compression"},
+        parent_agent=SimpleNamespace(
+            session_id="after-compression",
+            _gateway_session_key="agent:main:telegram:dm:43",
+        ),
+    )
+    assert other["error"] == "unknown workflow_id: wf_compression"
 
 
 def test_dispatch_ready_uses_delegate_task_background(monkeypatch):

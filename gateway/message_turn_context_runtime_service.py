@@ -20,25 +20,30 @@ from gateway.message_preprocessing_runtime_service import (
     prepend_shared_thread_sender,
 )
 from gateway.onboarding_runtime_service import (
-    append_first_message_onboarding_note,
+    FIRST_MESSAGE_ONBOARDING_NOTE,
     build_home_channel_prompt,
     home_channel_env_var_name,
     should_prompt_for_home_channel,
 )
 from gateway.session import build_session_context_prompt
 from gateway.shared_group_history_runtime_service import prepare_history_for_agent
-from gateway.agent_prelude_runtime_service import append_discord_voice_channel_context
 from gateway.session_hygiene_runtime_service import maybe_auto_compress_session_history
 
 
 @dataclass(slots=True)
 class GatewayPreparedMessageTurnContext:
-    """Prepared context/history state before message-text enrichment."""
+    """Prepared context/history state before message-text enrichment.
+
+    ``context_prompt`` is the **stable** session context only.
+    Volatile must-deliver notes ride ``turn_sidecar_notes`` (api_content
+    sidecar contract) — never append them into ``context_prompt``.
+    """
 
     context_prompt: str
     history: list[dict[str, Any]]
     history_for_agent: list[dict[str, Any]]
     auto_background_response: str | None = None
+    turn_sidecar_notes: list[str] | None = None
 
 
 def load_gateway_privacy_redact_pii(config_path: Path) -> bool:
@@ -54,28 +59,39 @@ def load_gateway_privacy_redact_pii(config_path: Path) -> bool:
         return False
 
 
+def build_gateway_auto_reset_context_note(*, session_entry: Any) -> str | None:
+    """Return the auto-reset system note for sidecar delivery, or None."""
+
+    if not getattr(session_entry, "was_auto_reset", False):
+        return None
+
+    reset_reason = getattr(session_entry, "auto_reset_reason", None) or "idle"
+    if reset_reason == "daily":
+        return (
+            "[System note: The user's session was automatically reset by the daily schedule. "
+            "This is a fresh conversation with no prior context.]"
+        )
+    return (
+        "[System note: The user's previous session expired due to inactivity. "
+        "This is a fresh conversation with no prior context.]"
+    )
+
+
 def prepend_gateway_auto_reset_context_note(
     context_prompt: str,
     *,
     session_entry: Any,
 ) -> str:
-    """Prepend the auto-reset system note used for fresh post-expiry sessions."""
+    """Deprecated prompt-prepend helper — prefer sidecar via ``build_gateway_auto_reset_context_note``.
 
-    if not getattr(session_entry, "was_auto_reset", False):
+    Kept for older unit tests; production and ``prepare_gateway_message_turn_context``
+    use the sidecar list instead of mutating ``context_prompt``.
+    """
+
+    note = build_gateway_auto_reset_context_note(session_entry=session_entry)
+    if not note:
         return context_prompt
-
-    reset_reason = getattr(session_entry, "auto_reset_reason", None) or "idle"
-    if reset_reason == "daily":
-        context_note = (
-            "[System note: The user's session was automatically reset by the daily schedule. "
-            "This is a fresh conversation with no prior context.]"
-        )
-    else:
-        context_note = (
-            "[System note: The user's previous session expired due to inactivity. "
-            "This is a fresh conversation with no prior context.]"
-        )
-    return f"{context_note}\n\n{context_prompt}"
+    return f"{note}\n\n{context_prompt}"
 
 
 async def maybe_send_gateway_auto_reset_notice(
@@ -203,17 +219,21 @@ async def prepare_gateway_message_turn_context(
     runtime_agent_kwargs_loader: Callable[[], dict[str, Any]] | None = None,
     build_session_context_prompt_fn: Callable[..., str] = build_session_context_prompt,
 ) -> GatewayPreparedMessageTurnContext:
-    """Prepare context prompt, history, and auto-background routing for one turn."""
+    """Prepare context prompt, history, and auto-background routing for one turn.
+
+    Volatile must-deliver notes are collected into ``turn_sidecar_notes`` and
+    must not be folded into the stable ``context_prompt`` (sidecar-only contract).
+    """
 
     redact_pii = load_gateway_privacy_redact_pii(config_path)
     context_prompt = build_session_context_prompt_fn(context, redact_pii=redact_pii)
+    turn_sidecar_notes: list[str] = []
     if explicit_group_reply_note:
-        context_prompt = f"{context_prompt}\n\n{explicit_group_reply_note}"
+        turn_sidecar_notes.append(explicit_group_reply_note)
 
-    context_prompt = prepend_gateway_auto_reset_context_note(
-        context_prompt,
-        session_entry=session_entry,
-    )
+    auto_reset_note = build_gateway_auto_reset_context_note(session_entry=session_entry)
+    if auto_reset_note:
+        turn_sidecar_notes.append(auto_reset_note)
     await maybe_send_gateway_auto_reset_notice(
         runner=runner,
         source=source,
@@ -293,6 +313,7 @@ async def prepare_gateway_message_turn_context(
                 task_id,
                 worker_name=str(background_dispatch.get("worker_name") or ""),
             ),
+            turn_sidecar_notes=list(turn_sidecar_notes),
         )
 
     history = await maybe_auto_compress_session_history(
@@ -304,11 +325,11 @@ async def prepare_gateway_message_turn_context(
         logger=logger,
     )
 
-    context_prompt = append_first_message_onboarding_note(
-        context_prompt,
-        history=history,
-        has_any_sessions=runner.session_store.has_any_sessions(),
-    )
+    # First-message onboarding: sidecar only (do not mutate context_prompt).
+    if not history and not runner.session_store.has_any_sessions():
+        note = (FIRST_MESSAGE_ONBOARDING_NOTE or "").strip()
+        if note:
+            turn_sidecar_notes.append(note)
 
     env_key = home_channel_env_var_name(source.platform)
     if should_prompt_for_home_channel(
@@ -326,15 +347,14 @@ async def prepare_gateway_message_turn_context(
     if source.platform == Platform.DISCORD:
         adapter = runner.adapters.get(Platform.DISCORD)
         guild_id = runner._get_guild_id(event)
-        context_prompt = append_discord_voice_channel_context(
-            context_prompt,
-            platform=source.platform,
-            guild_id=guild_id,
-            adapter=adapter,
-        )
+        if guild_id and adapter and hasattr(adapter, "get_voice_channel_context"):
+            voice_context = adapter.get_voice_channel_context(guild_id)
+            if voice_context:
+                turn_sidecar_notes.append(voice_context)
 
     return GatewayPreparedMessageTurnContext(
         context_prompt=context_prompt,
         history=history,
         history_for_agent=history_for_agent,
+        turn_sidecar_notes=list(turn_sidecar_notes),
     )

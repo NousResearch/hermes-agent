@@ -1,3 +1,12 @@
+"""DEAD path: not imported by gateway/run.py — contract-only unit tests.
+
+See gateway/RUNTIME_SERVICES.md. Marked dead_runtime_service so suites can
+optionally filter with ``-m "not dead_runtime_service"``; default still runs.
+"""
+import pytest
+
+pytestmark = pytest.mark.dead_runtime_service
+
 from gateway.config import Platform
 from gateway.onboarding_runtime_service import (
     FIRST_MESSAGE_ONBOARDING_NOTE,

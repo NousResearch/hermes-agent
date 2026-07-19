@@ -1,4 +1,10 @@
-"""Unit tests for gateway sync-turn runtime helpers."""
+"""DEAD path: not imported by gateway/run.py — contract-only unit tests.
+
+Unit tests for gateway sync-turn runtime helpers.
+"""
+import pytest
+
+pytestmark = pytest.mark.dead_runtime_service
 
 import threading
 from types import SimpleNamespace

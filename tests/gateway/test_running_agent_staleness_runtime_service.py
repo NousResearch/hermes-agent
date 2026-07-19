@@ -1,6 +1,12 @@
-"""Tests for gateway stale-running-agent eviction helpers."""
+"""DEAD path: not imported by gateway/run.py — contract-only unit tests.
 
+Tests for gateway stale-running-agent eviction helpers.
+"""
 from __future__ import annotations
+import pytest
+
+pytestmark = pytest.mark.dead_runtime_service
+
 
 from unittest.mock import MagicMock
 

@@ -1,6 +1,11 @@
+"""DEAD path: not imported by gateway/run.py — contract-only unit tests.
+See gateway/RUNTIME_SERVICES.md.
+"""
 from types import SimpleNamespace
 
 import pytest
+
+pytestmark = pytest.mark.dead_runtime_service
 
 from gateway.context_reference_runtime_service import (
     expand_gateway_context_references,

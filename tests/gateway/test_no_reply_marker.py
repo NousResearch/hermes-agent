@@ -90,7 +90,7 @@ async def test_no_reply_marker_suppresses_outbound_message_but_still_persists_se
 
 
 @pytest.mark.asyncio
-async def test_explicit_qq_group_trigger_injects_reply_required_note_into_context_prompt():
+async def test_explicit_qq_group_trigger_stages_reply_required_note_on_turn_sidecar():
     platform = getattr(Platform, "QQ_NAPCAT")
     runner = _make_runner(platform)
     runner._run_agent = AsyncMock(
@@ -102,6 +102,14 @@ async def test_explicit_qq_group_trigger_injects_reply_required_note_into_contex
             "last_prompt_tokens": 0,
         }
     )
+    staged: list[str] = []
+    _orig_set = runner._set_pending_turn_sidecar_notes
+
+    def _capture_stage(session_key, notes):  # noqa: ANN001
+        staged.extend(list(notes or []))
+        return _orig_set(session_key, notes)
+
+    runner._set_pending_turn_sidecar_notes = _capture_stage  # type: ignore[method-assign]
     event = MessageEvent(
         text="ok",
         source=SessionSource(
@@ -124,14 +132,14 @@ async def test_explicit_qq_group_trigger_injects_reply_required_note_into_contex
     assert result == "收到，你继续说。"
     # Volatile group-reply note rides the per-turn sidecar (api_content), not
     # the pinned session context prompt — so turn1→turn2 system bytes stay stable.
-    session_key = runner.session_store.get_or_create_session.return_value.session_key
-    notes = "\n\n".join(
-        getattr(runner, "_pending_turn_sidecar_notes", {}).get(session_key, [])
-    )
+    notes = "\n\n".join(staged)
     assert "explicitly addressed you" in notes
     assert "Do not return [[NO_REPLY]]" in notes
     assert "empty response" in notes
     assert "bot_mention" in notes
+    # Handler exit must not leave staged notes for the next turn (leak fix).
+    session_key = runner.session_store.get_or_create_session.return_value.session_key
+    assert not getattr(runner, "_pending_turn_sidecar_notes", {}).get(session_key)
     context_prompt = runner._run_agent.await_args.kwargs["context_prompt"]
     assert "explicitly addressed you" not in context_prompt
 
@@ -245,6 +253,14 @@ async def test_generic_explicit_group_metadata_gets_visible_fallback_outside_qq(
             "last_prompt_tokens": 0,
         }
     )
+    staged: list[str] = []
+    _orig_set = runner._set_pending_turn_sidecar_notes
+
+    def _capture_stage(session_key, notes):  # noqa: ANN001
+        staged.extend(list(notes or []))
+        return _orig_set(session_key, notes)
+
+    runner._set_pending_turn_sidecar_notes = _capture_stage  # type: ignore[method-assign]
     event = MessageEvent(
         text="在吗",
         source=SessionSource(
@@ -265,12 +281,11 @@ async def test_generic_explicit_group_metadata_gets_visible_fallback_outside_qq(
     result = await runner._handle_message(event)
 
     assert result == "刚才这轮没吐出正文，但消息我收到了。你再发一遍，或者我继续接着干。"
-    session_key = runner.session_store.get_or_create_session.return_value.session_key
-    notes = "\n\n".join(
-        getattr(runner, "_pending_turn_sidecar_notes", {}).get(session_key, [])
-    )
+    notes = "\n\n".join(staged)
     assert "explicitly addressed you" in notes
     assert "reply_to_bot" in notes
+    session_key = runner.session_store.get_or_create_session.return_value.session_key
+    assert not getattr(runner, "_pending_turn_sidecar_notes", {}).get(session_key)
     context_prompt = runner._run_agent.await_args.kwargs["context_prompt"]
     assert "explicitly addressed you" not in context_prompt
 

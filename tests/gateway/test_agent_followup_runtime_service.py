@@ -1,9 +1,14 @@
-"""Unit tests for gateway follow-up runtime helpers."""
+"""DEAD path: not imported by gateway/run.py — contract-only unit tests.
+
+Unit tests for gateway follow-up runtime helpers.
+"""
 
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+
+pytestmark = pytest.mark.dead_runtime_service
 
 from gateway.agent_followup_runtime_service import (
     clear_gateway_pending_interrupt,
@@ -14,7 +19,6 @@ from gateway.agent_followup_runtime_service import (
 )
 from gateway.config import Platform
 from gateway.session import SessionSource
-
 
 def test_extract_gateway_pending_followup_uses_interrupt_message_when_queue_is_empty():
     adapter = SimpleNamespace()
@@ -32,7 +36,6 @@ def test_extract_gateway_pending_followup_uses_interrupt_message_when_queue_is_e
     assert followup.text == "继续说"
     assert followup.was_interrupted is True
 
-
 def test_extract_gateway_pending_followup_discards_command_text():
     adapter = SimpleNamespace()
     logger = MagicMock()
@@ -48,7 +51,6 @@ def test_extract_gateway_pending_followup_discards_command_text():
 
     assert followup is None
 
-
 def test_clear_gateway_pending_interrupt_clears_active_session_flag():
     interrupt_event = MagicMock()
     adapter = SimpleNamespace(_active_sessions={"session-1": interrupt_event})
@@ -59,7 +61,6 @@ def test_clear_gateway_pending_interrupt_clears_active_session_flag():
     )
 
     interrupt_event.clear.assert_called_once_with()
-
 
 def test_queue_gateway_pending_followup_for_later_builds_text_event():
     queued = {}
@@ -104,7 +105,6 @@ def test_queue_gateway_pending_followup_for_later_builds_text_event():
     assert queued["event"].reply_to_text == "上一条"
     assert queued["event"].media_urls == ["/tmp/test.png"]
 
-
 @pytest.mark.asyncio
 async def test_deliver_gateway_first_response_before_followup_skips_streamed_or_suppressed():
     adapter = SimpleNamespace(send=AsyncMock())
@@ -133,7 +133,6 @@ async def test_deliver_gateway_first_response_before_followup_skips_streamed_or_
     )
 
     adapter.send.assert_not_awaited()
-
 
 @pytest.mark.asyncio
 async def test_deliver_gateway_first_response_before_followup_sends_visible_text():
@@ -165,7 +164,6 @@ async def test_deliver_gateway_first_response_before_followup_sends_visible_text
         ["sent-1"],
     )
 
-
 @pytest.mark.asyncio
 async def test_deliver_gateway_first_response_before_followup_uses_empty_fallback_without_reopening_context():
     fallback_event = SimpleNamespace(metadata={"explicit_addressed": True})
@@ -194,7 +192,6 @@ async def test_deliver_gateway_first_response_before_followup_uses_empty_fallbac
     adapter._record_successful_response_context.assert_not_called()
     assert fallback_event.metadata["skip_successful_response_context"] is True
 
-
 @pytest.mark.asyncio
 async def test_process_gateway_pending_followup_returns_none_when_nothing_pending():
     result = await process_gateway_pending_followup(
@@ -216,7 +213,6 @@ async def test_process_gateway_pending_followup_returns_none_when_nothing_pendin
     )
 
     assert result is None
-
 
 @pytest.mark.asyncio
 async def test_process_gateway_pending_followup_queues_when_depth_cap_reached(monkeypatch):
@@ -260,7 +256,6 @@ async def test_process_gateway_pending_followup_queues_when_depth_cap_reached(mo
     clear_mock.assert_called_once()
     queue_mock.assert_called_once()
     recurse_mock.assert_not_awaited()
-
 
 @pytest.mark.asyncio
 async def test_process_gateway_pending_followup_delivers_and_recurses(monkeypatch):

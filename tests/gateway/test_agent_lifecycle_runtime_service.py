@@ -1,4 +1,7 @@
-"""Unit tests for gateway agent lifecycle runtime helpers."""
+"""DEAD path: not imported by gateway/run.py — contract-only unit tests.
+
+Unit tests for gateway agent lifecycle runtime helpers.
+"""
 
 import asyncio
 import time
@@ -7,6 +10,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
+pytestmark = pytest.mark.dead_runtime_service
+
 from gateway.agent_lifecycle_runtime_service import (
     GatewayAgentRuntimeTasks,
     cleanup_gateway_agent_runtime_tasks,
@@ -14,7 +19,6 @@ from gateway.agent_lifecycle_runtime_service import (
     resolve_gateway_effective_model_state,
     wait_for_gateway_agent_result,
 )
-
 
 class _FakeActivityAgent:
     def __init__(
@@ -38,7 +42,6 @@ class _FakeActivityAgent:
     def get_activity_summary(self):
         return dict(self._activity)
 
-
 @pytest.mark.asyncio
 async def test_wait_for_gateway_agent_result_returns_executor_response(monkeypatch):
     monkeypatch.setenv("HERMES_AGENT_TIMEOUT", "10")
@@ -56,7 +59,6 @@ async def test_wait_for_gateway_agent_result_returns_executor_response(monkeypat
 
     assert result["final_response"] == "done"
     agent.interrupt.assert_not_called()
-
 
 @pytest.mark.asyncio
 async def test_wait_for_gateway_agent_result_builds_timeout_response(monkeypatch):
@@ -87,7 +89,6 @@ async def test_wait_for_gateway_agent_result_builds_timeout_response(monkeypatch
     assert result["api_calls"] == 3
     agent.interrupt.assert_called_once_with("Execution timed out (inactivity)")
 
-
 @pytest.mark.asyncio
 async def test_cleanup_gateway_agent_runtime_tasks_clears_tracking():
     async def _sleep_forever():
@@ -117,7 +118,6 @@ async def test_cleanup_gateway_agent_runtime_tasks_clears_tracking():
     assert tasks.interrupt_monitor_task.cancelled()
     assert tasks.long_running_notify_task.cancelled()
 
-
 def test_mark_gateway_streaming_delivery_state_sets_already_sent():
     response = {"final_response": "done"}
 
@@ -127,7 +127,6 @@ def test_mark_gateway_streaming_delivery_state_sets_already_sent():
     )
 
     assert marked["already_sent"] is True
-
 
 def test_resolve_gateway_effective_model_state_tracks_fallback_and_eviction():
     agent = SimpleNamespace(model="gpt-fallback", provider="custom")
@@ -143,7 +142,6 @@ def test_resolve_gateway_effective_model_state_tracks_fallback_and_eviction():
     assert state.effective_model == "gpt-fallback"
     assert state.effective_provider == "custom"
     assert state.should_evict_cached_agent is True
-
 
 def test_resolve_gateway_effective_model_state_clears_when_primary_model_used():
     agent = SimpleNamespace(model="gpt-primary", provider="custom")

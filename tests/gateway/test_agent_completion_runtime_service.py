@@ -1,7 +1,12 @@
+"""DEAD path: not imported by gateway/run.py — contract-only unit tests.
+See gateway/RUNTIME_SERVICES.md.
+"""
 from types import SimpleNamespace
 from unittest.mock import ANY, AsyncMock, MagicMock
 
 import pytest
+
+pytestmark = pytest.mark.dead_runtime_service
 
 from gateway.agent_completion_runtime_service import (
     build_gateway_agent_end_payload,

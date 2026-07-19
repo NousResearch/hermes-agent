@@ -1,3 +1,5 @@
+"""Production-path unit tests for direct_shortcut_runtime_service (WIRED)."""
+
 from __future__ import annotations
 
 from datetime import datetime

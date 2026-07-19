@@ -1,4 +1,7 @@
-"""Unit tests for gateway progress runtime helpers."""
+"""DEAD path: not imported by gateway/run.py — contract-only unit tests.
+
+Unit tests for gateway progress runtime helpers.
+"""
 
 import asyncio
 import queue
@@ -7,13 +10,14 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+pytestmark = pytest.mark.dead_runtime_service
+
 from gateway.agent_progress_runtime_service import (
     build_gateway_progress_runtime,
 )
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter, SendResult
 from gateway.session import SessionSource
-
 
 class _Adapter(BasePlatformAdapter):
     def __init__(self, platform: Platform):
@@ -55,7 +59,6 @@ class _Adapter(BasePlatformAdapter):
     async def get_chat_info(self, chat_id: str):
         return {"id": chat_id}
 
-
 @pytest.mark.asyncio
 async def test_build_gateway_progress_runtime_uses_slack_event_message_id_for_dm_threading():
     adapter = _Adapter(Platform.SLACK)
@@ -79,7 +82,6 @@ async def test_build_gateway_progress_runtime_uses_slack_event_message_id_for_dm
     assert runtime.tool_progress_enabled is True
     assert runtime.thread_metadata == {"thread_id": "171234.001"}
 
-
 @pytest.mark.asyncio
 async def test_build_gateway_progress_runtime_ignores_telegram_dm_event_message_id():
     adapter = _Adapter(Platform.TELEGRAM)
@@ -101,7 +103,6 @@ async def test_build_gateway_progress_runtime_ignores_telegram_dm_event_message_
     )
 
     assert runtime.thread_metadata is None
-
 
 @pytest.mark.asyncio
 async def test_progress_runtime_step_callback_normalizes_tool_names():
@@ -156,7 +157,6 @@ async def test_progress_runtime_step_callback_normalizes_tool_names():
         )
     ]
 
-
 @pytest.mark.asyncio
 async def test_progress_runtime_status_callback_honors_filter():
     adapter = _Adapter(Platform.QQ_NAPCAT)
@@ -188,7 +188,6 @@ async def test_progress_runtime_status_callback_honors_filter():
             "metadata": None,
         }
     ]
-
 
 @pytest.mark.asyncio
 async def test_progress_runtime_sender_collapses_duplicate_messages():

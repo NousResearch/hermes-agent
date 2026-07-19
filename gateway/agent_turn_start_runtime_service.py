@@ -17,7 +17,11 @@ from gateway.session import build_session_context
 
 @dataclass(slots=True)
 class GatewayPreparedAgentTurnStart:
-    """Prepared gateway turn state after session/context bootstrap."""
+    """Prepared gateway turn state after session/context bootstrap.
+
+    ``context_prompt`` is stable session context only; must-deliver notes are
+    in ``turn_sidecar_notes`` (sidecar-only contract).
+    """
 
     session_entry: Any
     session_key: str
@@ -26,6 +30,7 @@ class GatewayPreparedAgentTurnStart:
     history_for_agent: list[dict[str, Any]]
     context_prompt: str
     immediate_response: str | None = None
+    turn_sidecar_notes: list[str] | None = None
 
 
 async def prepare_gateway_agent_turn_start(
@@ -96,6 +101,7 @@ async def prepare_gateway_agent_turn_start(
             history_for_agent=[],
             context_prompt="",
             immediate_response=direct_shortcut_response,
+            turn_sidecar_notes=[],
         )
 
     prepared_turn_context = await prepare_message_turn_context_fn(
@@ -125,4 +131,5 @@ async def prepare_gateway_agent_turn_start(
         history_for_agent=prepared_turn_context.history_for_agent,
         context_prompt=prepared_turn_context.context_prompt,
         immediate_response=immediate_response,
+        turn_sidecar_notes=list(getattr(prepared_turn_context, "turn_sidecar_notes", None) or []),
     )

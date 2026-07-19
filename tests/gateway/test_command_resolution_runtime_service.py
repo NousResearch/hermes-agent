@@ -1,5 +1,7 @@
-"""Tests for gateway non-built-in slash command resolution helpers."""
+"""DEAD path: not imported by gateway/run.py — contract-only unit tests.
 
+Tests for gateway non-built-in slash command resolution helpers.
+"""
 from __future__ import annotations
 
 from types import SimpleNamespace
@@ -7,10 +9,11 @@ from unittest.mock import MagicMock
 
 import pytest
 
+pytestmark = pytest.mark.dead_runtime_service
+
 from gateway.command_resolution_runtime_service import (
     resolve_gateway_non_builtin_command,
 )
-
 
 def _make_event(command: str, args: str = "") -> MagicMock:
     event = MagicMock()
@@ -18,10 +21,8 @@ def _make_event(command: str, args: str = "") -> MagicMock:
     event.text = f"/{command} {args}".strip()
     return event
 
-
 def _make_source(platform: str = "telegram") -> SimpleNamespace:
     return SimpleNamespace(platform=SimpleNamespace(value=platform))
-
 
 @pytest.mark.asyncio
 async def test_plugin_command_with_empty_result_is_still_handled(monkeypatch):
@@ -43,7 +44,6 @@ async def test_plugin_command_with_empty_result_is_still_handled(monkeypatch):
 
     assert result.handled is True
     assert result.response is None
-
 
 @pytest.mark.asyncio
 async def test_skill_command_rewrites_event_text_and_falls_through(monkeypatch):
@@ -83,7 +83,6 @@ async def test_skill_command_rewrites_event_text_and_falls_through(monkeypatch):
     assert result.handled is False
     assert event.text == "INVOKE SKILL"
 
-
 @pytest.mark.asyncio
 async def test_disabled_skill_returns_platform_guidance(monkeypatch):
     monkeypatch.setattr(
@@ -116,7 +115,6 @@ async def test_disabled_skill_returns_platform_guidance(monkeypatch):
 
     assert result.handled is True
     assert "disabled for telegram" in str(result.response)
-
 
 @pytest.mark.asyncio
 async def test_unknown_slash_command_returns_guidance(monkeypatch):

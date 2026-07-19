@@ -1930,6 +1930,11 @@ from gateway.empty_response_fallback import (
     explicit_group_reply_context_note as _explicit_group_reply_context_note,
     qq_busy_followup_ack as _qq_busy_followup_ack,
 )
+from gateway.turn_sidecar import (
+    consume_pending_turn_sidecar_notes as _consume_pending_turn_sidecar_notes,
+    join_turn_sidecar_notes as _join_turn_sidecar_notes,
+    set_pending_turn_sidecar_notes as _set_pending_turn_sidecar_notes,
+)
 from gateway.group_runtime_platform_specs import (
     build_group_archive_runtime_platform_specs,
     build_group_monitoring_runtime_platform_specs,
@@ -14054,6 +14059,18 @@ class GatewayRunner(
                 "Try again or use /reset to start a fresh session."
             )
         finally:
+            # Drop any staged must-deliver notes that were never consumed
+            # (exception / early return / proxy path that only discards).
+            # Consume is idempotent: the happy path already popped them when
+            # assigning agent._gateway_turn_context_notes.
+            if session_key:
+                leftover = self._consume_pending_turn_sidecar_notes(session_key)
+                if leftover:
+                    logger.debug(
+                        "Cleared %d unconsumed turn sidecar note(s) for session %s",
+                        len(leftover),
+                        session_key,
+                    )
             # Restore session context variables to their pre-handler state
             self._clear_session_env(_session_env_tokens)
 
@@ -18619,18 +18636,44 @@ class GatewayRunner(
                             cached[0], cached[1], _live, _snapshot_sid,
                         )
 
-    @staticmethod
-    def _should_evict_cached_agent_after_turn(agent, configured_model: str) -> bool:
+    def _should_evict_cached_agent_after_turn(
+        self,
+        agent,
+        configured_model: str,
+        *,
+        session_key: Optional[str] = None,
+    ) -> bool:
         """Return True when a post-turn cached agent should be discarded.
 
-        Keep the agent when it is still on the configured primary model, or
-        when a pinned fallback is intentionally sticky for the rest of the
-        session. Evict unpinned fallback agents so the next turn can try the
-        primary again.
+        Keep the agent when:
+        - it is still on the configured primary model (after provider normalize),
+        - the model matches an intentional /model session override, or
+        - a pinned fallback is intentionally sticky for the rest of the session.
+
+        Evict unpinned fallback agents so the next turn can try the primary again.
         """
         if agent is None or not hasattr(agent, "model"):
             return False
-        if agent.model == configured_model:
+
+        cfg_model = configured_model
+        # Normalize the same way AIAgent.__init__ does so vendor-prefixed
+        # config (e.g. "deepseek/deepseek-v4-pro") matches the stripped agent
+        # model on native providers. Aggregators keep the vendor/model slug.
+        try:
+            from hermes_cli.model_normalize import (
+                _AGGREGATOR_PROVIDERS,
+                normalize_model_for_provider,
+            )
+            agent_provider = getattr(agent, "provider", "") or ""
+            if agent_provider and agent_provider not in _AGGREGATOR_PROVIDERS:
+                cfg_model = normalize_model_for_provider(cfg_model, agent_provider)
+        except Exception:
+            pass
+
+        if agent.model == cfg_model:
+            return False
+
+        if session_key and self._is_intentional_model_switch(session_key, agent.model):
             return False
 
         has_pinned_fallback = getattr(agent, "_has_pinned_fallback", None)
@@ -18645,20 +18688,13 @@ class GatewayRunner(
 
     def _set_pending_turn_sidecar_notes(self, session_key: str, notes: List[str]) -> None:
         """Stage per-turn must-deliver notes for the next agent run (one-shot)."""
-        if not session_key or not notes:
-            return
-        if not hasattr(self, "_pending_turn_sidecar_notes"):
+        if not hasattr(self, "_pending_turn_sidecar_notes") or self._pending_turn_sidecar_notes is None:
             self._pending_turn_sidecar_notes = {}
-        self._pending_turn_sidecar_notes[session_key] = list(notes)
+        _set_pending_turn_sidecar_notes(self._pending_turn_sidecar_notes, session_key, notes)
 
     def _consume_pending_turn_sidecar_notes(self, session_key: str) -> List[str]:
-        if not session_key:
-            return []
-        notes = getattr(self, "_pending_turn_sidecar_notes", None)
-        if not isinstance(notes, dict):
-            return []
-        staged = notes.pop(session_key, None)
-        return list(staged) if isinstance(staged, list) else []
+        store = getattr(self, "_pending_turn_sidecar_notes", None)
+        return _consume_pending_turn_sidecar_notes(store, session_key)
 
     def _voice_channel_sidecar_note(self, event, source: SessionSource, session_key: str) -> Optional[str]:
         """Return a ``[Voice channel now: ...]`` note when VC state changed.
@@ -19184,6 +19220,20 @@ class GatewayRunner(
         agent runs on the host with full access to local files, memory,
         skills, and a unified session store.
         """
+        # Proxy never builds a local AIAgent, so it never hits the
+        # run_sync consume that assigns agent._gateway_turn_context_notes.
+        # Drop staged notes here to prevent them leaking into the next
+        # non-proxy turn for the same session.  The remote proxy does not
+        # currently accept must-deliver api_content sidecars.
+        if session_key:
+            _proxy_dropped = self._consume_pending_turn_sidecar_notes(session_key)
+            if _proxy_dropped:
+                logger.debug(
+                    "Proxy path discarded %d staged turn sidecar note(s) for session %s",
+                    len(_proxy_dropped),
+                    session_key,
+                )
+
         try:
             from aiohttp import ClientSession as _AioClientSession, ClientTimeout
         except ImportError:
@@ -21142,7 +21192,7 @@ class GatewayRunner(
             # _handle_message_with_agent (auto-reset note, first-contact
             # intro, voice-channel change).  Assigned unconditionally so a
             # reused cached agent never replays a stale note.
-            agent._gateway_turn_context_notes = "\n\n".join(
+            agent._gateway_turn_context_notes = _join_turn_sidecar_notes(
                 self._consume_pending_turn_sidecar_notes(session_key)
             )
 
@@ -22388,30 +22438,16 @@ class GatewayRunner(
             _agent = agent_holder[0]
             _result_for_fb = result_holder[0]
             _run_failed = _result_for_fb.get("failed") if _result_for_fb else False
-            if _agent is not None and hasattr(_agent, 'model') and not _run_failed:
-                _cfg_model = _resolve_gateway_model()
-                # Normalize _cfg_model the same way AIAgent.__init__ does, so a
-                # vendor-prefixed config value (e.g. "deepseek/deepseek-v4-pro")
-                # matches the agent's stripped model ("deepseek-v4-pro") on
-                # native providers. Without this, _agent.model != _cfg_model is
-                # always true for vendor-prefixed config and the cached agent is
-                # evicted on every successful turn — destroying prompt caching.
-                # Aggregators (openrouter, etc.) keep the vendor/model slug, so
-                # they're left untouched.
-                try:
-                    from hermes_cli.model_normalize import (
-                        _AGGREGATOR_PROVIDERS,
-                        normalize_model_for_provider,
-                    )
-                    _agent_provider = getattr(_agent, 'provider', '') or ''
-                    if _agent_provider and _agent_provider not in _AGGREGATOR_PROVIDERS:
-                        _cfg_model = normalize_model_for_provider(_cfg_model, _agent_provider)
-                except Exception:
-                    pass
-                if _agent.model != _cfg_model and not self._is_intentional_model_switch(session_key, _agent.model):
-                    # Fallback activated on a successful run — evict cached
-                    # agent so the next message retries the primary model.
-                    self._evict_cached_agent(session_key)
+            # Skip eviction when the run failed — see #7130 (fallback →
+            # eviction → MCP reinit loop).  Decision is unified in
+            # _should_evict_cached_agent_after_turn (normalize + intentional
+            # switch + pinned fallback).
+            if not _run_failed and self._should_evict_cached_agent_after_turn(
+                _agent,
+                _resolve_gateway_model(),
+                session_key=session_key,
+            ):
+                self._evict_cached_agent(session_key)
 
             # Check if we were interrupted OR have a queued message (/queue).
             result = result_holder[0]

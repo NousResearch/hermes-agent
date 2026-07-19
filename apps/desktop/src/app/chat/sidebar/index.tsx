@@ -62,7 +62,14 @@ import {
   toggleSidebarMessagingOpen,
   unpinSession
 } from '@/store/layout'
-import { $newChatProfile, $profiles, $profileScope, ALL_PROFILES, normalizeProfileKey } from '@/store/profile'
+import {
+  $activeGatewayProfile,
+  $newChatProfile,
+  $profiles,
+  $profileScope,
+  ALL_PROFILES,
+  normalizeProfileKey
+} from '@/store/profile'
 import {
   $activeProjectId,
   $projects,
@@ -79,6 +86,7 @@ import {
   refreshProjects,
   refreshProjectTree,
   refreshWorktrees,
+  removedSessionIdsForProfile,
   scanAndRecordRepos
 } from '@/store/projects'
 import { openRouteTile } from '@/store/route-tiles'
@@ -93,10 +101,12 @@ import {
   $sessions,
   $sessionsLoading,
   $sessionsTotal,
+  $workingSessionIds,
   sessionPinId,
   setCurrentCwd
 } from '@/store/session'
-import { $focusedStoredSessionId, $workingSessionIds, type SplitDir } from '@/store/session-states'
+import { $sessionActivityKeys } from '@/store/session-activity'
+import { $focusedStoredSessionId, type SplitDir } from '@/store/session-states'
 
 import {
   type AppView,
@@ -227,9 +237,9 @@ interface ChatSidebarProps extends React.ComponentProps<typeof Sidebar> {
   onLoadMoreSessions: () => Promise<void> | void
   onLoadMoreProfileSessions?: (profile: string) => Promise<void> | void
   onLoadMoreMessaging?: (platform: string) => Promise<void> | void
-  onResumeSession: (sessionId: string) => void
-  onDeleteSession: (sessionId: string) => void
-  onArchiveSession: (sessionId: string) => void
+  onResumeSession: (sessionId: string, profile?: string) => void
+  onDeleteSession: (sessionId: string, profile?: string) => void
+  onArchiveSession: (sessionId: string, profile?: string) => void
   onBranchSession: (sessionId: string) => void
   onNewSessionInWorkspace: (path: null | string) => void
   /** Create a brand-new session and open it as a tile on `dir`. */
@@ -301,7 +311,9 @@ export function ChatSidebar({
   const sessionsLoading = useStore($sessionsLoading)
   const sessionsTotal = useStore($sessionsTotal)
   const sessionProfileTotals = useStore($sessionProfileTotals)
+  const sessionActivityKeys = useStore($sessionActivityKeys)
   const workingSessionIds = useStore($workingSessionIds)
+  const activeGatewayProfile = normalizeProfileKey(useStore($activeGatewayProfile))
   const profiles = useStore($profiles)
   const profileScope = useStore($profileScope)
   // Only surface the profile switcher when more than one profile exists, so
@@ -319,7 +331,13 @@ export function ChatSidebar({
   const projects = useStore($projects)
   const projectTree = useStore($projectTree)
   const projectTreeLoading = useStore($projectTreeLoading)
-  const removedSessionIds = useStore($removedSessionIds)
+  const removedSessionScopeKeys = useStore($removedSessionIds)
+
+  const removedSessionIds = useMemo(
+    () => removedSessionIdsForProfile(activeGatewayProfile, removedSessionScopeKeys),
+    [activeGatewayProfile, removedSessionScopeKeys]
+  )
+
   const reposScanning = useStore($reposScanning)
   const activeProjectId = useStore($activeProjectId)
   const projectScope = useStore($projectScope)
@@ -393,7 +411,7 @@ export function ChatSidebar({
     [visibleSessions]
   )
 
-  const workingSessionIdSet = useMemo(() => new Set(workingSessionIds), [workingSessionIds])
+  const workingSessionScopeKeySet = useMemo(() => new Set(sessionActivityKeys), [sessionActivityKeys])
 
   // Index sessions by both their live id and their lineage-root id so a pin
   // stored as the pre-compression root resolves to the live continuation tip.
@@ -1209,6 +1227,7 @@ export function ChatSidebar({
             {trimmedQuery && (
               <SidebarSessionsSection
                 activeSessionId={activeSidebarSessionId}
+                activeSessionProfile={activeGatewayProfile}
                 contentClassName={cn('flex min-h-0 flex-1 flex-col gap-px pb-1.75', SCROLL_Y)}
                 emptyState={
                   searchPending ? (
@@ -1232,13 +1251,14 @@ export function ChatSidebar({
                 rootClassName="min-h-32 flex-1 overflow-hidden p-0"
                 sessions={searchResults}
                 showProfileTags={showAllProfiles}
-                workingSessionIdSet={workingSessionIdSet}
+                workingSessionScopeKeySet={workingSessionScopeKeySet}
               />
             )}
 
             {!trimmedQuery && (
               <SidebarSessionsSection
                 activeSessionId={activeSidebarSessionId}
+                activeSessionProfile={activeGatewayProfile}
                 contentClassName={cn('flex max-h-44 flex-col gap-px rounded-lg pb-2 pt-1', GROUP_BODY)}
                 dndSensors={dndSensors}
                 emptyState={<SidebarPinnedEmptyState />}
@@ -1255,8 +1275,8 @@ export function ChatSidebar({
                 rootClassName="shrink-0 p-0 pb-1"
                 sessions={pinnedSessions}
                 showProfileTags={showAllProfiles}
-                sortable={pinnedSessions.length > 1}
-                workingSessionIdSet={workingSessionIdSet}
+                sortable={!showAllProfiles && pinnedSessions.length > 1}
+                workingSessionScopeKeySet={workingSessionScopeKeySet}
               />
             )}
 
@@ -1264,6 +1284,7 @@ export function ChatSidebar({
               <SidebarSessionsSection
                 activeProjectId={activeProjectId}
                 activeSessionId={activeSidebarSessionId}
+                activeSessionProfile={activeGatewayProfile}
                 collapsible={!inProject}
                 contentClassName={cn(
                   'flex min-h-0 flex-1 flex-col pb-1.75',
@@ -1411,7 +1432,7 @@ export function ChatSidebar({
                 )}
                 sessions={displayAgentSessions}
                 sortable={!showAllProfiles && agentSessions.length > 1}
-                workingSessionIdSet={workingSessionIdSet}
+                workingSessionScopeKeySet={workingSessionScopeKeySet}
               />
             )}
 
@@ -1427,6 +1448,7 @@ export function ChatSidebar({
                 return (
                   <SidebarSessionsSection
                     activeSessionId={activeSidebarSessionId}
+                    activeSessionProfile={activeGatewayProfile}
                     contentClassName={cn('flex max-h-56 flex-col gap-px pb-1.75', GROUP_BODY)}
                     emptyState={null}
                     footer={
@@ -1457,7 +1479,7 @@ export function ChatSidebar({
                     pinned={false}
                     rootClassName="shrink-0 p-0"
                     sessions={shownSessions}
-                    workingSessionIdSet={workingSessionIdSet}
+                    workingSessionScopeKeySet={workingSessionScopeKeySet}
                   />
                 )
               })}

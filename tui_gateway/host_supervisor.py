@@ -265,6 +265,44 @@ class HostSupervisor:
         self.start()
         self._send_frame({"type": "interrupt", "sid": sid, "request_id": request_id or uuid.uuid4().hex})
 
+    def delegation_state(self, profile: str | None = None, *, timeout: float = 5.0) -> dict:
+        response = self._request_host(
+            {"type": "delegation.status", "profile": profile}, timeout=timeout
+        )
+        if response.get("type") != "delegation.status.ack":
+            raise RuntimeError(str(response.get("message") or "compute-host delegation status failed"))
+        active = response.get("active")
+        return {
+            "active": [dict(item) for item in active if isinstance(item, dict)] if isinstance(active, list) else [],
+            "paused": bool(response.get("paused")),
+        }
+
+    def delegation_status(self, profile: str | None = None, *, timeout: float = 5.0) -> list[dict]:
+        return self.delegation_state(profile, timeout=timeout)["active"]
+
+    def set_delegation_paused(self, paused: bool, *, timeout: float = 5.0) -> bool:
+        response = self._request_host(
+            {"type": "delegation.pause", "paused": bool(paused)}, timeout=timeout
+        )
+        if response.get("type") != "delegation.pause.ack":
+            raise RuntimeError(str(response.get("message") or "compute-host delegation pause failed"))
+        return bool(response.get("paused"))
+
+    def interrupt_subagent(
+        self, subagent_id: str, profile: str | None = None, *, timeout: float = 5.0
+    ) -> bool:
+        response = self._request_host(
+            {
+                "type": "subagent.interrupt",
+                "profile": profile,
+                "subagent_id": subagent_id,
+            },
+            timeout=timeout,
+        )
+        if response.get("type") != "subagent.interrupt.ack":
+            raise RuntimeError(str(response.get("message") or "compute-host subagent interrupt failed"))
+        return bool(response.get("found"))
+
     def reload_mcp(self, sid: str, *, request_id: str | None = None) -> dict:
         return self.control(
             sid,
@@ -300,6 +338,22 @@ class HostSupervisor:
         if not wait or q is None:
             return {"status": "sent", "request_id": request_id}
         try:
+            return q.get(timeout=timeout)
+        finally:
+            with self._lock:
+                self._pending_controls.pop(request_id, None)
+
+    def _request_host(self, frame: dict[str, Any], *, timeout: float) -> dict:
+        """Send a non-turn host request and wait for its request-id ack."""
+        self.start()
+        request_id = str(frame.get("request_id") or uuid.uuid4().hex)
+        payload = dict(frame)
+        payload["request_id"] = request_id
+        q: queue.Queue[dict] = queue.Queue(maxsize=1)
+        with self._lock:
+            self._pending_controls[request_id] = q
+        try:
+            self._send_frame(payload)
             return q.get(timeout=timeout)
         finally:
             with self._lock:
@@ -420,7 +474,19 @@ class HostSupervisor:
         if ftype in {"turn.end", "turn.error"}:
             self._complete_turn(frame)
             return
-        if ftype in {"control.ack", "control.error", "interrupt.ack", "reload_mcp.ack", "shutdown.ack"}:
+        if ftype in {
+            "control.ack",
+            "control.error",
+            "delegation.status.ack",
+            "delegation.status.error",
+            "delegation.pause.ack",
+            "delegation.pause.error",
+            "interrupt.ack",
+            "reload_mcp.ack",
+            "shutdown.ack",
+            "subagent.interrupt.ack",
+            "subagent.interrupt.error",
+        }:
             request_id = str(frame.get("request_id") or "")
             with self._lock:
                 q = self._pending_controls.get(request_id)

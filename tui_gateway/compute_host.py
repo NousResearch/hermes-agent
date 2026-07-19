@@ -193,6 +193,12 @@ class ComputeHost:
             self._handle_turn_start(frame)
         elif kind == "interrupt":
             self._handle_interrupt(frame)
+        elif kind == "delegation.status":
+            self._handle_delegation_status(frame)
+        elif kind == "delegation.pause":
+            self._handle_delegation_pause(frame)
+        elif kind == "subagent.interrupt":
+            self._handle_subagent_interrupt(frame)
         elif kind == "reload_mcp":
             self._handle_reload_mcp(frame)
         elif kind == "control":
@@ -282,6 +288,83 @@ class ComputeHost:
             self.emit({"type": "interrupt.ack", "sid": sid, "request_id": frame.get("request_id"), "applied": True, "applied_ns": now_ns()})
         except Exception as exc:
             self.emit({"type": "interrupt.ack", "sid": sid, "request_id": frame.get("request_id"), "applied": False, "message": str(exc)})
+
+    def _handle_delegation_status(self, frame: dict[str, Any]) -> None:
+        request_id = frame.get("request_id")
+        profile = frame.get("profile")
+        try:
+            from tools.delegate_tool import is_spawn_paused, list_active_subagents
+
+            active = list_active_subagents(profile if isinstance(profile, str) else None)
+            self.emit(
+                {
+                    "type": "delegation.status.ack",
+                    "request_id": request_id,
+                    "active": active,
+                    "paused": is_spawn_paused(),
+                }
+            )
+        except Exception as exc:
+            self.emit(
+                {
+                    "type": "delegation.status.error",
+                    "request_id": request_id,
+                    "message": str(exc),
+                }
+            )
+
+    def _handle_delegation_pause(self, frame: dict[str, Any]) -> None:
+        request_id = frame.get("request_id")
+        paused = bool(frame.get("paused", True))
+        try:
+            from tools.delegate_tool import set_spawn_paused
+
+            self.emit(
+                {
+                    "type": "delegation.pause.ack",
+                    "request_id": request_id,
+                    "paused": set_spawn_paused(paused),
+                }
+            )
+        except Exception as exc:
+            self.emit(
+                {
+                    "type": "delegation.pause.error",
+                    "request_id": request_id,
+                    "message": str(exc),
+                }
+            )
+
+    def _handle_subagent_interrupt(self, frame: dict[str, Any]) -> None:
+        request_id = frame.get("request_id")
+        subagent_id = str(frame.get("subagent_id") or "").strip()
+        profile = frame.get("profile")
+        try:
+            from tools.delegate_tool import interrupt_subagent
+
+            found = bool(
+                subagent_id
+                and interrupt_subagent(
+                    subagent_id, profile if isinstance(profile, str) else None
+                )
+            )
+            self.emit(
+                {
+                    "type": "subagent.interrupt.ack",
+                    "request_id": request_id,
+                    "subagent_id": subagent_id,
+                    "found": found,
+                }
+            )
+        except Exception as exc:
+            self.emit(
+                {
+                    "type": "subagent.interrupt.error",
+                    "request_id": request_id,
+                    "subagent_id": subagent_id,
+                    "message": str(exc),
+                }
+            )
 
     def _run_spike_turn(self, session: HostSession, frame: dict[str, Any]) -> None:
         request_id = frame.get("request_id") or uuid.uuid4().hex

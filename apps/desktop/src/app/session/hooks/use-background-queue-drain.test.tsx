@@ -2,9 +2,9 @@ import { act, cleanup, render, waitFor } from '@testing-library/react'
 import type { MutableRefObject } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { createClientSessionState } from '@/lib/chat-runtime'
 import { $queuedPromptsBySession, enqueueQueuedPrompt, getQueuedPrompts } from '@/store/composer-queue'
-import { clearAllSessionStates, publishSessionState } from '@/store/session-states'
+import { sessionScopeKey, setSessionWorking, setWorkingSessionIds } from '@/store/session'
+import { clearAllSessionStates } from '@/store/session-states'
 
 import { useBackgroundQueueDrain } from './use-background-queue-drain'
 import type { SubmitTextOptions } from './use-prompt-actions/utils'
@@ -34,6 +34,7 @@ describe('useBackgroundQueueDrain', () => {
   beforeEach(() => {
     vi.useRealTimers()
     clearAllSessionStates()
+    setWorkingSessionIds([])
   })
 
   afterEach(() => {
@@ -42,10 +43,14 @@ describe('useBackgroundQueueDrain', () => {
     vi.useRealTimers()
     $queuedPromptsBySession.set({})
     clearAllSessionStates()
+    setWorkingSessionIds([])
   })
 
   it('drains an idle queued prompt for a non-selected background session', async () => {
-    const runtimeMap = { current: new Map([['stored-session-a', 'rt-session-a']]) }
+    const runtimeMap = {
+      current: new Map([[sessionScopeKey('default', 'stored-session-a'), 'rt-session-a']])
+    }
+
     const submitText = vi.fn(async () => true)
 
     enqueueQueuedPrompt('stored-session-a', { text: 'continue in the background', attachments: [] })
@@ -86,7 +91,7 @@ describe('useBackgroundQueueDrain', () => {
 
     enqueueQueuedPrompt('stored-session-a', { text: 'wait for current turn', attachments: [] })
     // Mark the session as working (busy) so the drain should skip it
-    publishSessionState('rt-session-a', { ...createClientSessionState('stored-session-a'), busy: true })
+    setSessionWorking('stored-session-a', true, 'default')
 
     render(<Harness runtimeMap={runtimeMap} submitText={submitText} />)
 

@@ -27,6 +27,7 @@ export const $gateway = atom<HermesGateway | null>(null)
 
 interface RegistryConfig {
   onEvent: (event: GatewayEvent) => void
+  onOpen?: (gateway: HermesGateway, profile: string) => Promise<void> | void
 }
 
 let config: RegistryConfig | null = null
@@ -42,6 +43,10 @@ let primaryProfile = 'default'
 export function setPrimaryGateway(gateway: HermesGateway | null, profile = 'default'): void {
   primaryGateway = gateway
   primaryProfile = normKey(profile)
+}
+
+export function primaryGatewayProfile(): string {
+  return primaryProfile
 }
 
 // ── Secondary (pool) backends ──────────────────────────────────────────────
@@ -171,6 +176,7 @@ function createSecondary(profile: string): Secondary {
     if (state === 'open') {
       entry.reconnectAttempt = 0
       clearTimer(entry)
+      void config?.onOpen?.(gateway, profile)
     } else if ((state === 'closed' || state === 'error') && entry.wantOpen) {
       scheduleReconnect(entry)
     }

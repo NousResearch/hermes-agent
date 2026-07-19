@@ -15,8 +15,8 @@ import { handoffOriginSource, sessionSourceLabel } from '@/lib/session-source'
 import { coarseElapsed } from '@/lib/time'
 import { cn } from '@/lib/utils'
 import { $backgroundRunningSessionIds } from '@/store/composer-status'
-import { $unreadFinishedSessionIds } from '@/store/session'
-import { $attentionSessionIds, openSessionTile } from '@/store/session-states'
+import { $attentionSessionIds, $unreadFinishedSessionIds, sessionHasUnread, sessionNeedsInput } from '@/store/session'
+import { openSessionTile } from '@/store/session-states'
 import { canOpenSessionWindow, openSessionInNewWindow } from '@/store/windows'
 
 import { SidebarRowBody, SidebarRowGrab, SidebarRowLabel, SidebarRowLead, SidebarRowShell } from './chrome'
@@ -85,10 +85,12 @@ export function SidebarSessionRow({
   const handoffSource = handoffOriginSource(session.handoff_state, session.handoff_platform)
   const handoffLabel = handoffSource ? (sessionSourceLabel(handoffSource) ?? handoffSource) : null
   // True when a clarify prompt in this session is waiting on the user.
-  const needsInput = useStore($attentionSessionIds).includes(session.id)
+  useStore($attentionSessionIds)
+  const needsInput = sessionNeedsInput(session.id, session.profile)
   // True when the session's most recent turn finished in the background (while
   // the user was viewing a different session) and hasn't been opened since.
-  const isUnread = useStore($unreadFinishedSessionIds).includes(session.id)
+  useStore($unreadFinishedSessionIds)
+  const isUnread = sessionHasUnread(session.id, session.profile)
   // True when a terminal(background=true) process is alive in this session.
   const hasBackground = useStore($backgroundRunningSessionIds).includes(session.id)
 
@@ -97,12 +99,12 @@ export function SidebarSessionRow({
   // to collapse them at the leaf is backwards.
   const dotState: SessionDotState = needsInput
     ? 'needs-input'
-    : isWorking
-      ? 'working'
-      : hasBackground
-        ? 'background'
-        : isUnread
-          ? 'unread'
+    : isUnread
+      ? 'unread'
+      : isWorking
+        ? 'working'
+        : hasBackground
+          ? 'background'
           : 'idle'
 
   return (
@@ -189,7 +191,7 @@ export function SidebarSessionRow({
               event.preventDefault()
               event.stopPropagation()
               triggerHaptic('selection')
-              openSessionTile(session.id, 'center')
+              openSessionTile(session.id, 'center', undefined, undefined, session.profile)
             }
           }}
           onClick={event => {
@@ -200,7 +202,7 @@ export function SidebarSessionRow({
               event.preventDefault()
               event.stopPropagation()
               triggerHaptic('selection')
-              void openSessionInNewWindow(session.id)
+              void openSessionInNewWindow(session.id, { profile: session.profile })
 
               return
             }
@@ -210,7 +212,7 @@ export function SidebarSessionRow({
               event.preventDefault()
               event.stopPropagation()
               triggerHaptic('selection')
-              openSessionTile(session.id, 'center')
+              openSessionTile(session.id, 'center', undefined, undefined, session.profile)
 
               return
             }
@@ -309,7 +311,8 @@ const DOT_BASE = 'relative size-1.5 rounded-full'
 // the two pulsing dots. The `before:bg-*` color is written inline per variant
 // (NOT interpolated here): Tailwind only generates utilities it can see as
 // complete static strings, so a `before:bg-${color}` template never emits.
-const PING = "before:absolute before:inset-0 before:animate-ping before:rounded-full before:content-['']"
+const PING =
+  "before:absolute before:inset-0 before:animate-ping before:rounded-full before:content-[''] motion-reduce:before:animate-none"
 
 const DOT_VARIANTS: Record<SessionDotState, DotVariant> = {
   // Amber steady — a clarify/approval is blocking the turn. Steady (not

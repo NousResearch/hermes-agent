@@ -43,6 +43,7 @@ import threading
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 from hermes_constants import get_hermes_home
@@ -80,12 +81,12 @@ _MAX_DURABLE_PENDING = 1000
 _DB_LOCK = threading.Lock()
 
 
-def _db_path():
-    return get_hermes_home() / "state.db"
+def _db_path(hermes_home: Optional[Path] = None):
+    return (hermes_home or get_hermes_home()) / "state.db"
 
 
-def _connect() -> sqlite3.Connection:
-    path = _db_path()
+def _connect(hermes_home: Optional[Path] = None) -> sqlite3.Connection:
+    path = _db_path(hermes_home)
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path, timeout=10)
     conn.execute("PRAGMA journal_mode=WAL")
@@ -133,7 +134,17 @@ def _persist_dispatch(record: Dict[str, Any]) -> None:
         owner_started_at = None
     task_payload = {
         key: record.get(key)
-        for key in ("goal", "goals", "context", "toolsets", "role", "model", "is_batch")
+        for key in (
+            "goal",
+            "goals",
+            "context",
+            "toolsets",
+            "role",
+            "model",
+            "is_batch",
+            "profile",
+            "subagent_ids",
+        )
         if key in record
     }
     with _DB_LOCK, _connect() as conn:
@@ -248,6 +259,8 @@ def recover_abandoned_delegations() -> int:
                 "goals": task.get("goals"), "context": task.get("context"),
                 "toolsets": task.get("toolsets"), "role": task.get("role"),
                 "model": task.get("model"), "is_batch": bool(task.get("is_batch")),
+                "profile": task.get("profile", "default"),
+                "subagent_ids": task.get("subagent_ids") or [],
                 "status": "unknown", "summary": None,
                 "error": "Delegation owner exited before recording a terminal result; outcome unknown.",
                 "dispatched_at": dispatched_at, "completed_at": now,
@@ -302,10 +315,14 @@ def mark_completion_delivered(delegation_id: str) -> bool:
         return cur.rowcount == 1
 
 
-def claim_completion_delivery(delegation_id: str, claim_id: str) -> bool:
+def claim_completion_delivery(
+    delegation_id: str,
+    claim_id: str,
+    hermes_home: Optional[Path] = None,
+) -> bool:
     """Claim one pending completion across competing consumers/processes."""
     now = time.time()
-    with _DB_LOCK, _connect() as conn:
+    with _DB_LOCK, _connect(hermes_home) as conn:
         row = conn.execute(
             "SELECT delivery_state FROM async_delegations WHERE delegation_id=?",
             (delegation_id,),
@@ -322,7 +339,11 @@ def claim_completion_delivery(delegation_id: str, claim_id: str) -> bool:
         return cur.rowcount == 1
 
 
-def claim_event_delivery(evt: Dict[str, Any], consumer: str) -> Optional[str]:
+def claim_event_delivery(
+    evt: Dict[str, Any],
+    consumer: str,
+    hermes_home: Optional[Path] = None,
+) -> Optional[str]:
     """Claim a durable delegation event; non-durable events need no token."""
     if evt.get("type") != "async_delegation":
         return ""
@@ -330,12 +351,16 @@ def claim_event_delivery(evt: Dict[str, Any], consumer: str) -> Optional[str]:
     if not delegation_id:
         return ""
     claim_id = f"{consumer}:{__import__('os').getpid()}:{uuid.uuid4().hex}"
-    return claim_id if claim_completion_delivery(delegation_id, claim_id) else None
+    return claim_id if claim_completion_delivery(delegation_id, claim_id, hermes_home) else None
 
 
-def release_completion_delivery(delegation_id: str, claim_id: str) -> bool:
+def release_completion_delivery(
+    delegation_id: str,
+    claim_id: str,
+    hermes_home: Optional[Path] = None,
+) -> bool:
     """Release a failed delivery claim so another consumer may retry."""
-    with _DB_LOCK, _connect() as conn:
+    with _DB_LOCK, _connect(hermes_home) as conn:
         cur = conn.execute(
             """UPDATE async_delegations SET delivery_claim=NULL,
                       delivery_claimed_at=NULL, updated_at=?
@@ -346,10 +371,31 @@ def release_completion_delivery(delegation_id: str, claim_id: str) -> bool:
         return cur.rowcount == 1
 
 
-def complete_completion_delivery(delegation_id: str, claim_id: str) -> bool:
+def renew_completion_delivery(
+    delegation_id: str,
+    claim_id: str,
+    hermes_home: Optional[Path] = None,
+) -> bool:
+    """Keep an accepted delivery claim live while durable acknowledgement retries."""
+    now = time.time()
+    with _DB_LOCK, _connect(hermes_home) as conn:
+        cur = conn.execute(
+            """UPDATE async_delegations SET delivery_claimed_at=?, updated_at=?
+               WHERE delegation_id=? AND delivery_state='pending'
+                 AND delivery_claim=?""",
+            (now, now, delegation_id, claim_id),
+        )
+        return cur.rowcount == 1
+
+
+def complete_completion_delivery(
+    delegation_id: str,
+    claim_id: str,
+    hermes_home: Optional[Path] = None,
+) -> bool:
     """Acknowledge acceptance for the consumer holding this claim."""
     now = time.time()
-    with _DB_LOCK, _connect() as conn:
+    with _DB_LOCK, _connect(hermes_home) as conn:
         cur = conn.execute(
             """UPDATE async_delegations SET delivery_state='delivered',
                       delivered_at=?, updated_at=?, delivery_claim=NULL,
@@ -361,14 +407,33 @@ def complete_completion_delivery(delegation_id: str, claim_id: str) -> bool:
         return cur.rowcount == 1
 
 
-def complete_event_delivery(evt: Dict[str, Any], claim_id: str) -> None:
-    if claim_id and evt.get("type") == "async_delegation":
-        complete_completion_delivery(str(evt.get("delegation_id") or ""), claim_id)
+def complete_event_delivery(
+    evt: Dict[str, Any],
+    claim_id: str,
+    hermes_home: Optional[Path] = None,
+) -> bool:
+    if not claim_id or evt.get("type") != "async_delegation":
+        return True
+    return complete_completion_delivery(str(evt.get("delegation_id") or ""), claim_id, hermes_home)
 
 
-def release_event_delivery(evt: Dict[str, Any], claim_id: str) -> None:
+def renew_event_delivery(
+    evt: Dict[str, Any],
+    claim_id: str,
+    hermes_home: Optional[Path] = None,
+) -> bool:
+    if not claim_id or evt.get("type") != "async_delegation":
+        return True
+    return renew_completion_delivery(str(evt.get("delegation_id") or ""), claim_id, hermes_home)
+
+
+def release_event_delivery(
+    evt: Dict[str, Any],
+    claim_id: str,
+    hermes_home: Optional[Path] = None,
+) -> None:
     if claim_id and evt.get("type") == "async_delegation":
-        release_completion_delivery(str(evt.get("delegation_id") or ""), claim_id)
+        release_completion_delivery(str(evt.get("delegation_id") or ""), claim_id, hermes_home)
 
 
 def get_durable_delegation(delegation_id: str) -> Optional[Dict[str, Any]]:
@@ -655,6 +720,8 @@ def dispatch_async_delegation_batch(
     origin_ui_session_id: str = "",
     interrupt_fn: Optional[Callable[[], None]] = None,
     max_async_children: int = _DEFAULT_MAX_ASYNC_CHILDREN,
+    profile: str = "",
+    subagent_ids: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
     """Dispatch a WHOLE fan-out batch as ONE background unit.
 
@@ -694,7 +761,10 @@ def dispatch_async_delegation_batch(
         "session_key": session_key,
         "origin_ui_session_id": origin_ui_session_id,
         "parent_session_id": parent_session_id,
+        "profile": profile or "default",
+        "subagent_ids": [str(value) for value in (subagent_ids or []) if value],
         "status": "running",
+        "delivery_pending": True,
         "dispatched_at": dispatched_at,
         "completed_at": None,
         "interrupt_fn": interrupt_fn,
@@ -794,6 +864,8 @@ def _finalize_batch(
         "session_key": event_record.get("session_key", ""),
         "origin_ui_session_id": event_record.get("origin_ui_session_id", ""),
         "parent_session_id": event_record.get("parent_session_id"),
+        "profile": event_record.get("profile", "default"),
+        "subagent_ids": event_record.get("subagent_ids") or [],
         "goal": event_record.get("goal", ""),
         "goals": event_record.get("goals"),
         "context": event_record.get("context"),
@@ -837,6 +909,38 @@ def list_async_delegations() -> List[Dict[str, Any]]:
             {k: v for k, v in r.items() if k != "interrupt_fn"}
             for r in _records.values()
         ]
+
+
+def list_pending_async_delivery_handoffs(hermes_home: Optional[Path] = None) -> List[Dict[str, Any]]:
+    """Return durable, unclaimed completions whose renderer handoff is pending."""
+    with _DB_LOCK, _connect(hermes_home) as conn:
+        rows = conn.execute(
+            """SELECT event_json FROM async_delegations
+               WHERE state NOT IN ('running','finalizing')
+                 AND delivery_state='pending' AND delivery_claim IS NULL
+                 AND event_json IS NOT NULL
+               ORDER BY completed_at, delegation_id"""
+        ).fetchall()
+
+    handoffs = []
+    for (payload,) in rows:
+        try:
+            event = json.loads(payload)
+        except (TypeError, ValueError):
+            continue
+        if isinstance(event, dict) and event.get("subagent_ids"):
+            handoffs.append(event)
+    return handoffs
+
+
+def mark_async_delegation_delivery_started(delegation_id: str) -> bool:
+    """Retire reconnect handoff retention after its exact delivery turn starts."""
+    with _records_lock:
+        record = _records.get(str(delegation_id or ""))
+        if record is None:
+            return False
+        record["delivery_pending"] = False
+        return True
 
 
 def interrupt_all(reason: str = "shutdown") -> int:

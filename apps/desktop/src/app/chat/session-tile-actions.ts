@@ -26,7 +26,7 @@ import { clearPreviewArtifacts } from '@/store/preview-status'
 import { clearAllPrompts } from '@/store/prompts'
 import { $connection } from '@/store/session'
 import { $sessionStates, sessionTileDelegate } from '@/store/session-states'
-import { clearSessionSubagents } from '@/store/subagents'
+import { preserveDetachedSessionSubagents } from '@/store/subagents'
 import { clearSessionTodos } from '@/store/todos'
 
 import { uploadComposerAttachment } from '../session/hooks/use-prompt-actions'
@@ -193,6 +193,7 @@ export function useSessionTileActions({ runtimeId, scope, storedSessionId }: Ses
 
   const cancelRun = useCallback(async () => {
     const sessionId = runtimeIdRef.current
+    const sessionProfile = readState()?.profile
 
     update(state => ({
       ...state,
@@ -206,7 +207,7 @@ export function useSessionTileActions({ runtimeId, scope, storedSessionId }: Ses
     }))
 
     clearSessionTodos(sessionId)
-    clearSessionSubagents(sessionId)
+    preserveDetachedSessionSubagents(sessionId, sessionProfile)
     resetSessionBackground(sessionId)
     clearAllPrompts(sessionId)
     clearClarifyRequest(undefined, sessionId)
@@ -216,7 +217,7 @@ export function useSessionTileActions({ runtimeId, scope, storedSessionId }: Ses
     } catch (err) {
       notifyError(err, copy.stopFailed)
     }
-  }, [copy.stopFailed, requestGateway, update])
+  }, [copy.stopFailed, readState, requestGateway, update])
 
   const steerPrompt = useCallback(
     async (rawText: string): Promise<boolean> => {

@@ -28,6 +28,7 @@ import {
   $currentCwd,
   $currentModel,
   $currentProvider,
+  createSessionCompletionToken,
   sessionMatchesStoredId,
   setCurrentBranch,
   setCurrentCwd,
@@ -42,7 +43,15 @@ import {
   setTurnStartedAt,
   setYoloActive
 } from '@/store/session'
-import { clearSessionSubagents, pruneDelegateFallbackSubagents, upsertSubagent } from '@/store/subagents'
+import type { SessionCompletionToken } from '@/store/session-sync'
+import {
+  consumeSessionSubagentHandoffs,
+  hasDetachedSessionSubagents,
+  pruneDelegateFallbackSubagents,
+  pruneSettledSessionSubagents,
+  subagentSessionScopeKey,
+  upsertSubagent
+} from '@/store/subagents'
 import { clearActiveSessionTodos } from '@/store/todos'
 import { recordToolDiff } from '@/store/tool-diffs'
 import { reportInstallMethodWarning } from '@/store/updates'
@@ -66,6 +75,16 @@ const COMPACTION_RESUME_EVENT_TYPES = new Set([
   'tool.complete'
 ])
 
+function completionTokenFromPayload(payload: GatewayEventPayload | undefined): null | SessionCompletionToken {
+  const row = payload as undefined | Record<string, unknown>
+  const id = row?.completion_id
+  const generation = row?.completion_generation
+
+  return typeof id === 'string' && typeof generation === 'number' && Number.isFinite(generation)
+    ? createSessionCompletionToken(id, generation)
+    : null
+}
+
 interface GatewayEventDeps {
   activeSessionIdRef: MutableRefObject<string | null>
   compactedTurnRef: MutableRefObject<Set<string>>
@@ -73,13 +92,25 @@ interface GatewayEventDeps {
   nativeSubagentSessionsRef: MutableRefObject<Set<string>>
   appendAssistantDelta: (sessionId: string, delta: string) => void
   appendReasoningDelta: (sessionId: string, delta: string, replace?: boolean) => void
-  completeAssistantMessage: (sessionId: string, text: string) => void
-  failAssistantMessage: (sessionId: string, errorMessage: string) => void
+  completeAssistantMessage: (
+    sessionId: string,
+    text: string,
+    completion?: null | SessionCompletionToken,
+    sourceProfile?: string
+  ) => void
+  failAssistantMessage: (
+    sessionId: string,
+    errorMessage: string,
+    completion?: null | SessionCompletionToken,
+    sourceProfile?: string
+  ) => void
   flushQueuedDeltas: (sessionId?: string) => void
   queryClient: QueryClient
   refreshHermesConfig: () => Promise<void>
   sessionInterrupted: (sessionId: string) => boolean
   sessionStateByRuntimeIdRef: MutableRefObject<Map<string, ClientSessionState>>
+  ownerSessionIdForRuntime: (sessionId: string, profile?: string) => string | undefined
+  onDetachedSubagentComplete: (ownerSessionId: string, subagentId: string, sourceProfile?: string) => void
   updateSessionState: (
     sessionId: string,
     updater: (state: ClientSessionState) => ClientSessionState,
@@ -89,7 +120,8 @@ interface GatewayEventDeps {
     sessionId: string,
     payload: GatewayEventPayload | undefined,
     phase: 'running' | 'complete',
-    sourceEventType?: string
+    sourceEventType?: string,
+    sourceProfile?: string
   ) => void
 }
 
@@ -109,6 +141,8 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
     refreshHermesConfig,
     sessionInterrupted,
     sessionStateByRuntimeIdRef,
+    ownerSessionIdForRuntime,
+    onDetachedSubagentComplete,
     updateSessionState,
     upsertToolCall
   } = deps
@@ -362,14 +396,11 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         }
 
         flushQueuedDeltas(sessionId)
-        clearSessionSubagents(sessionId)
         setSessionCompacting(sessionId, false)
         compactedTurnRef.current.delete(sessionId)
-        nativeSubagentSessionsRef.current.delete(sessionId)
 
-        if (isActiveEvent) {
-          triggerHaptic('streamStart')
-        }
+        const completion =
+          completionTokenFromPayload(payload) ?? createSessionCompletionToken(`legacy-start:${sessionId}:${Date.now()}`)
 
         updateSessionState(sessionId, state => {
           // If the user clicked Stop (cancelRun set interrupted=true), don't
@@ -385,6 +416,8 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
 
           return {
             ...state,
+            activeCompletion: completion,
+            profile: event.profile ?? state.profile,
             busy: true,
             awaitingResponse: true,
             sawAssistantPayload: false,
@@ -393,8 +426,36 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
           }
         })
 
+        // Establish foreground activity before retiring a detached completion's
+        // handoff lease. Secondary-gateway retention observes both stores
+        // synchronously, so the reverse order can close the socket between the
+        // parent message.start and its first delta.
+        const reviewersStillRunning = pruneSettledSessionSubagents(sessionId, false, event.profile)
+
+        if (!reviewersStillRunning) {
+          nativeSubagentSessionsRef.current.delete(subagentSessionScopeKey(event.profile, sessionId))
+        }
+
+        if (isActiveEvent) {
+          triggerHaptic('streamStart')
+        }
+
         if (isActiveEvent) {
           setTurnStartedAt(Date.now())
+        }
+      } else if (event.type === 'delegation.delivery') {
+        if (sessionId) {
+          const delivery = payload as Record<string, unknown> | undefined
+
+          const subagentIds = Array.isArray(delivery?.subagent_ids)
+            ? delivery.subagent_ids.filter((value): value is string => typeof value === 'string' && value.length > 0)
+            : []
+
+          consumeSessionSubagentHandoffs(sessionId, subagentIds, event.profile)
+
+          if (!hasDetachedSessionSubagents(sessionId, event.profile)) {
+            nativeSubagentSessionsRef.current.delete(subagentSessionScopeKey(event.profile, sessionId))
+          }
         }
       } else if (event.type === 'message.delta') {
         if (sessionId) {
@@ -472,7 +533,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         playCompletionSound()
 
         const finalText = coerceGatewayText(payload?.text) || coerceGatewayText(payload?.rendered)
-        completeAssistantMessage(sessionId, finalText)
+        completeAssistantMessage(sessionId, finalText, completionTokenFromPayload(payload), event.profile)
 
         if (isActiveEvent) {
           setTurnStartedAt(null)
@@ -519,7 +580,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         }
 
         flushQueuedDeltas(sessionId)
-        upsertToolCall(sessionId, toTodoPayload(payload) ?? payload, 'running', event.type)
+        upsertToolCall(sessionId, toTodoPayload(payload) ?? payload, 'running', event.type, event.profile)
 
         if (isActiveEvent) {
           setPetActivity({ reasoning: false, toolRunning: true })
@@ -527,7 +588,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
       } else if (event.type === 'tool.complete') {
         if (sessionId) {
           flushQueuedDeltas(sessionId)
-          upsertToolCall(sessionId, toTodoPayload(payload) ?? payload, 'complete', event.type)
+          upsertToolCall(sessionId, toTodoPayload(payload) ?? payload, 'complete', event.type, event.profile)
 
           if (isActiveEvent) {
             setPetActivity({ toolRunning: false })
@@ -557,18 +618,32 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
           notifyWorkspaceChanged()
         }
       } else if (SUBAGENT_EVENT_TYPES.has(event.type)) {
-        if (sessionId && payload && !sessionInterrupted(sessionId)) {
-          if (!nativeSubagentSessionsRef.current.has(sessionId)) {
-            pruneDelegateFallbackSubagents(sessionId)
+        if (
+          sessionId &&
+          payload &&
+          (!sessionInterrupted(sessionId) || hasDetachedSessionSubagents(sessionId, event.profile))
+        ) {
+          const scopedSessionId = subagentSessionScopeKey(event.profile, sessionId)
+          const detached = hasDetachedSessionSubagents(sessionId, event.profile)
+
+          if (!nativeSubagentSessionsRef.current.has(scopedSessionId)) {
+            pruneDelegateFallbackSubagents(sessionId, event.profile)
           }
 
-          nativeSubagentSessionsRef.current.add(sessionId)
-          upsertSubagent(
+          nativeSubagentSessionsRef.current.add(scopedSessionId)
+
+          const subagent = upsertSubagent(
             sessionId,
-            payload as Record<string, unknown>,
+            { ...(payload as Record<string, unknown>), ...(detached ? { detached: true } : {}) },
             event.type === 'subagent.spawn_requested' || event.type === 'subagent.start',
-            event.type
+            event.type,
+            ownerSessionIdForRuntime(sessionId, event.profile),
+            event.profile
           )
+
+          if (event.type === 'subagent.complete' && subagent?.detached && subagent.ownerSessionId) {
+            onDetachedSubagentComplete(subagent.ownerSessionId, subagent.id, event.profile)
+          }
         }
       } else if (event.type === 'clarify.request') {
         // Surface the clarify tool's overlay. The Python side is blocked on
@@ -791,7 +866,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
 
         if (sessionId) {
           flushQueuedDeltas(sessionId)
-          failAssistantMessage(sessionId, errorMessage)
+          failAssistantMessage(sessionId, errorMessage, completionTokenFromPayload(payload), event.profile)
         }
 
         if (isActiveEvent) {
@@ -813,6 +888,8 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
       scheduleConfigRefresh,
       sessionInterrupted,
       sessionStateByRuntimeIdRef,
+      ownerSessionIdForRuntime,
+      onDetachedSubagentComplete,
       updateSessionState,
       upsertToolCall
     ]

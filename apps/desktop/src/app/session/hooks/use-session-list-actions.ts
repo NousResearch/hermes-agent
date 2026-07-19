@@ -16,6 +16,8 @@ import {
   $selectedStoredSessionId,
   $sessions,
   CRON_SECTION_LIMIT,
+  getAttentionSessionScopeKeys,
+  getUnreadSessionScopeKeys,
   mergeSessionPage,
   MESSAGING_SECTION_LIMIT,
   setCronSessions,
@@ -27,7 +29,8 @@ import {
   setSessionsLoading,
   setSessionsTotal
 } from '@/store/session'
-import { $workingSessionIds, getRecentlySettledSessionIds } from '@/store/session-states'
+import { $sessionActivityKeys, sessionIdFromActivityKey } from '@/store/session-activity'
+import { getRecentlySettledSessionIds } from '@/store/session-states'
 
 // The recents list is local-only: cron rows have their own section, and each
 // messaging platform (telegram, discord, …) is fetched separately into its own
@@ -40,14 +43,22 @@ const SIDEBAR_EXCLUDED_SOURCES = ['cron', 'subagent', 'tool', ...MESSAGING_SESSI
 const MESSAGING_EXCLUDED_SOURCES = ['cron', ...LOCAL_SESSION_SOURCE_IDS]
 
 // Rows a session refresh must preserve even if the aggregator omits them:
-// in-flight first turns (message_count 0), pinned rows aged off the page, the
-// actively-viewed chat (its "working" flag clears a beat before the aggregator
-// sees the persisted row), and sessions whose turn just settled (same race, but
-// for a chat the user has already navigated away from). Pass `scope` to only
-// keep the active row when it belongs to the profile being paged.
+// in-flight/needs-input turns (message_count 0), unread terminal results, pinned rows
+// aged off the page, the actively-viewed chat (its "working" flag clears a beat
+// before the aggregator sees the persisted row), and sessions whose turn just
+// settled (same race, but for a chat the user has already navigated away from).
+// Pass `scope` to only keep the active row when it belongs to the profile being
+// paged.
 function sessionsToKeep(scope?: string): Set<string> {
+  const activityIds = $sessionActivityKeys
+    .get()
+    .filter(key => !scope || key.startsWith(`${scope}\u0000`))
+    .map(sessionIdFromActivityKey)
+
   const keep = new Set<string>([
-    ...$workingSessionIds.get(),
+    ...getAttentionSessionScopeKeys(),
+    ...activityIds,
+    ...getUnreadSessionScopeKeys(),
     ...$pinnedSessionIds.get(),
     ...getRecentlySettledSessionIds()
   ])

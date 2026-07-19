@@ -40,6 +40,7 @@ import { triggerHaptic } from '@/lib/haptics'
 import { exportSession } from '@/lib/session-export'
 import { activeGateway } from '@/store/gateway'
 import { notify, notifyError } from '@/store/notifications'
+import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
 import { $activeSessionId, $selectedStoredSessionId, setSessions } from '@/store/session'
 import { $sessionTiles, openSessionTile } from '@/store/session-states'
 import { canOpenSessionWindow, openSessionInNewWindow } from '@/store/windows'
@@ -67,7 +68,10 @@ export async function renameSessionPreferringRpc(
   title: string,
   profile?: string
 ): Promise<{ title?: string }> {
-  const isActiveRow = storedSessionId === $selectedStoredSessionId.get()
+  const isActiveRow =
+    storedSessionId === $selectedStoredSessionId.get() &&
+    normalizeProfileKey(profile) === normalizeProfileKey($activeGatewayProfile.get())
+
   const runtimeId = isActiveRow ? $activeSessionId.get() : null
   const gateway = activeGateway()
 
@@ -153,10 +157,14 @@ function useSessionActions({
   const [renameOpen, setRenameOpen] = useState(false)
   const tiles = useStore($sessionTiles)
   const selectedStoredSessionId = useStore($selectedStoredSessionId)
+  const activeGatewayProfile = normalizeProfileKey(useStore($activeGatewayProfile))
+  const sessionProfile = normalizeProfileKey(profile)
 
   // Already showing as a tab somewhere (a tile, or loaded in main — main IS
   // a tab): offering "Open in new tab" again is noise.
-  const alreadyTabbed = sessionId === selectedStoredSessionId || tiles.some(tile => tile.storedSessionId === sessionId)
+  const alreadyTabbed =
+    activeGatewayProfile === sessionProfile &&
+    (sessionId === selectedStoredSessionId || tiles.some(tile => tile.storedSessionId === sessionId))
 
   const spec = (partial: Omit<ItemSpec, 'onSelect'> & { onSelect: () => void }): ItemSpec => partial
 
@@ -173,7 +181,7 @@ function useSessionActions({
               triggerHaptic('selection')
               // Stack into the MAIN zone as a tab (center dock; the strip
               // sticky-shows on gain) — the door to the tab bar.
-              openSessionTile(sessionId, 'center')
+              openSessionTile(sessionId, 'center', undefined, undefined, sessionProfile)
             }
           })
         ]
@@ -186,7 +194,7 @@ function useSessionActions({
             label: r.newWindow,
             onSelect: () => {
               triggerHaptic('selection')
-              void openSessionInNewWindow(sessionId)
+              void openSessionInNewWindow(sessionId, { profile: sessionProfile })
             }
           })
         ]

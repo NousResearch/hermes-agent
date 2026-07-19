@@ -158,6 +158,23 @@ class TestBuildChildProgressCallback:
         assert parent_cb.call_args.args[0] == "subagent.thinking"
         assert parent_cb.call_args.args[2] == "some reasoning text"
 
+    def test_background_provenance_rides_on_every_native_event(self):
+        parent = MagicMock()
+        parent._delegate_spinner = None
+        parent_cb = MagicMock()
+        parent.tool_progress_callback = parent_cb
+
+        cb = _build_child_progress_callback(
+            0, "background review", parent, detached=True
+        )
+        cb("subagent.start")
+        cb("subagent.complete", status="completed")
+
+        assert [call.kwargs["detached"] for call in parent_cb.call_args_list] == [
+            True,
+            True,
+        ]
+
     def test_parallel_callbacks_independent(self):
         """Each child's callback batches tool names independently."""
         parent = MagicMock()

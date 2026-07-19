@@ -23,6 +23,7 @@ import {
 import { ReorderableList, useSortableBindings } from './reorderable-list'
 import { SidebarSessionSkeletons } from './section-states'
 import { SidebarSessionRow } from './session-row'
+import { isSidebarSessionSelected, isSidebarSessionWorking, sidebarSessionScopeKey } from './session-row-state'
 import { VirtualSessionList } from './virtual-session-list'
 
 export const VIRTUALIZE_THRESHOLD = 25
@@ -85,10 +86,11 @@ interface SidebarSessionsSectionProps {
   onToggle: () => void
   sessions: SessionInfo[]
   activeSessionId: null | string
-  workingSessionIdSet: Set<string>
-  onResumeSession: (sessionId: string) => void
-  onDeleteSession: (sessionId: string) => void
-  onArchiveSession: (sessionId: string) => void
+  activeSessionProfile: null | string
+  workingSessionScopeKeySet: Set<string>
+  onResumeSession: (sessionId: string, profile?: string) => void
+  onDeleteSession: (sessionId: string, profile?: string) => void
+  onArchiveSession: (sessionId: string, profile?: string) => void
   onBranchSession?: (sessionId: string, profile?: string) => void
   onTogglePin: (sessionId: string) => void
   onNewSessionInWorkspace?: (path: null | string) => void
@@ -147,7 +149,8 @@ export function SidebarSessionsSection({
   onToggle,
   sessions,
   activeSessionId,
-  workingSessionIdSet,
+  activeSessionProfile,
+  workingSessionScopeKeySet,
   onResumeSession,
   onDeleteSession,
   onArchiveSession,
@@ -200,22 +203,22 @@ export function SidebarSessionsSection({
     const rowProps = {
       branchStem,
       isPinned: pinned,
-      isSelected: session.id === activeSessionId,
-      isWorking: workingSessionIdSet.has(session.id),
-      onArchive: () => onArchiveSession(session.id),
+      isSelected: isSidebarSessionSelected(session, activeSessionId, activeSessionProfile),
+      isWorking: isSidebarSessionWorking(session, workingSessionScopeKeySet),
+      onArchive: () => onArchiveSession(session.id, session.profile),
       onBranch: onBranchSession ? () => onBranchSession(session.id, session.profile) : undefined,
-      onDelete: () => onDeleteSession(session.id),
+      onDelete: () => onDeleteSession(session.id, session.profile),
       onPin: () => onTogglePin(sessionPinId(session)),
-      onResume: () => onResumeSession(session.id),
+      onResume: () => onResumeSession(session.id, session.profile),
       reorderable: draggable && !branchStem,
       session,
       showProfile: showProfileTags
     }
 
     return draggable && !branchStem ? (
-      <SortableSidebarSessionRow key={session.id} {...rowProps} />
+      <SortableSidebarSessionRow key={sidebarSessionScopeKey(session)} {...rowProps} />
     ) : (
-      <SidebarSessionRow key={session.id} {...rowProps} />
+      <SidebarSessionRow key={sidebarSessionScopeKey(session)} {...rowProps} />
     )
   }
 
@@ -309,6 +312,7 @@ export function SidebarSessionsSection({
     const virtual = (
       <VirtualSessionList
         activeSessionId={activeSessionId}
+        activeSessionProfile={activeSessionProfile}
         className={contentClassName}
         entries={displayEntries}
         onArchiveSession={onArchiveSession}
@@ -319,7 +323,7 @@ export function SidebarSessionsSection({
         pinned={pinned}
         showProfileTags={showProfileTags}
         sortable={sessionsDraggable}
-        workingSessionIdSet={workingSessionIdSet}
+        workingSessionScopeKeySet={workingSessionScopeKeySet}
       />
     )
 

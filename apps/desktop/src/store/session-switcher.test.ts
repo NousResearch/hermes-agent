@@ -2,7 +2,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { SessionInfo } from '@/types/hermes'
 
-import { $selectedStoredSessionId, $sessions } from './session'
+import { $activeGatewayProfile } from './profile'
+import { $selectedStoredSessionId, $sessions, consumeRequestedSessionResumeProfile } from './session'
 import {
   $switcherIndex,
   $switcherOpen,
@@ -16,10 +17,10 @@ import {
   SWITCHER_REVEAL_MS
 } from './session-switcher'
 
-const session = (id: string): SessionInfo => ({ id }) as SessionInfo
+const session = (id: string, profile = 'default'): SessionInfo => ({ id, profile }) as SessionInfo
 
 const seed = (ids: string[], selected: null | string) => {
-  $sessions.set(ids.map(session))
+  $sessions.set(ids.map(id => session(id)))
   $selectedStoredSessionId.set(selected)
 }
 
@@ -36,6 +37,7 @@ beforeEach(() => {
   closeSwitcher()
   $switcherSessions.set([])
   $switcherIndex.set(0)
+  $activeGatewayProfile.set('default')
 })
 
 afterEach(() => {
@@ -56,6 +58,24 @@ describe('openOrAdvanceSwitcher', () => {
     expect(tabTap()).toBe('b')
     expect($switcherOpen.get()).toBe(false)
     expect(commitOnCtrlUp()).toBeNull()
+  })
+
+  it('preserves the target profile when raw session ids collide', () => {
+    $sessions.set([session('same', 'alpha'), session('same', 'beta')])
+    $selectedStoredSessionId.set('same')
+    $activeGatewayProfile.set('alpha')
+
+    expect(tabTap()).toBe('same')
+    expect(consumeRequestedSessionResumeProfile('same')).toBe('beta')
+  })
+
+  it('starts from the selected profile row when raw session ids collide', () => {
+    $sessions.set([session('same', 'alpha'), session('same', 'beta')])
+    $selectedStoredSessionId.set('same')
+    $activeGatewayProfile.set('beta')
+
+    expect(tabTap()).toBe('same')
+    expect(consumeRequestedSessionResumeProfile('same')).toBe('alpha')
   })
 
   it('does not open the HUD when Ctrl stays down but Tab was released quickly', () => {

@@ -1,8 +1,18 @@
 import { act, cleanup, render } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import type { HermesConnection } from '@/global'
 import { $desktopBoot } from '@/store/boot'
-import { $gatewayState } from '@/store/session'
+import { $activeGatewayProfile } from '@/store/profile'
+import {
+  $connection,
+  $gatewayState,
+  $workingSessionIds,
+  $workingSessionProfiles,
+  setSessionWorking
+} from '@/store/session'
+import { $sessionActivityKeys, sessionActivityKey } from '@/store/session-activity'
+import { $subagentsBySession, upsertSubagent } from '@/store/subagents'
 
 import { useGatewayBoot } from './use-gateway-boot'
 
@@ -28,6 +38,10 @@ class FakeWebSocket {
   // errors (a dead remote). Mirrors a VPS going away after the first connect.
   static mode: 'open' | 'fail' = 'open'
   static instances: FakeWebSocket[] = []
+  static delegationActive: unknown[] = []
+  static activeSessions: unknown[] = []
+  static activeSessionsByProfile: Record<string, unknown[]> = {}
+  static requestedMethods: string[] = []
 
   readyState = 0
   private listeners: Record<string, Set<Listener>> = {}
@@ -61,6 +75,35 @@ class FakeWebSocket {
     this.emit('close', {})
   }
 
+  send(raw: string) {
+    const frame = JSON.parse(raw) as { id?: number | string; method?: string }
+
+    if (frame.method) {
+      FakeWebSocket.requestedMethods.push(frame.method)
+    }
+
+    if (frame.method === 'delegation.status') {
+      setTimeout(() => {
+        this.emit('message', {
+          data: JSON.stringify({ id: frame.id, result: { active: FakeWebSocket.delegationActive } })
+        })
+      }, 0)
+    } else if (frame.method === 'session.active_list') {
+      const profile = new URL(this.url).searchParams.get('profile')
+      const sessions = (profile && FakeWebSocket.activeSessionsByProfile[profile]) ?? FakeWebSocket.activeSessions
+
+      queueMicrotask(() => {
+        this.emit('message', {
+          data: JSON.stringify({ id: frame.id, result: { sessions } })
+        })
+      })
+    }
+  }
+
+  pushEvent(event: { payload?: unknown; session_id?: string; type: string }) {
+    this.emit('message', { data: JSON.stringify({ method: 'event', params: event }) })
+  }
+
   // Force-drop an open socket, as a sleeping laptop / restarted remote would.
   drop() {
     this.readyState = FakeWebSocket.CLOSED
@@ -74,18 +117,26 @@ class FakeWebSocket {
   }
 }
 
-function fakeDesktop() {
-  const conn = {
+function connectionFor(profile = 'default'): HermesConnection {
+  return {
     authMode: 'token' as const,
-    baseUrl: 'https://vps.example.com',
-    profile: 'default',
+    baseUrl: `https://${profile}.example.com`,
+    isFullscreen: false,
+    logs: [],
+    nativeOverlayWidth: 0,
+    profile,
     token: 't',
-    wsUrl: 'wss://vps.example.com/api/ws?token=t'
+    windowButtonPosition: null,
+    wsUrl: `wss://${profile}.example.com/api/ws?profile=${profile}&token=t`
   }
+}
+
+function fakeDesktop() {
+  const conn = connectionFor()
 
   return {
-    getConnection: vi.fn(async () => conn),
-    getGatewayWsUrl: vi.fn(async () => conn.wsUrl),
+    getConnection: vi.fn(async (_profile?: null | string) => conn),
+    getGatewayWsUrl: vi.fn(async (profile?: null | string) => connectionFor(profile ?? 'default').wsUrl),
     getBootProgress: vi.fn(async () => ({
       error: null,
       fakeMode: false,
@@ -105,9 +156,11 @@ function fakeDesktop() {
   }
 }
 
+const capturedEvents: Array<{ profile?: string; session_id?: string; type: string }> = []
+
 function Harness() {
   useGatewayBoot({
-    handleGatewayEvent: () => undefined,
+    handleGatewayEvent: event => capturedEvents.push(event),
     onConnectionReady: () => undefined,
     onGatewayReady: () => undefined,
     refreshHermesConfig: async () => undefined,
@@ -123,9 +176,19 @@ beforeEach(() => {
   vi.useFakeTimers()
   FakeWebSocket.mode = 'open'
   FakeWebSocket.instances = []
+  FakeWebSocket.delegationActive = []
+  FakeWebSocket.activeSessions = []
+  FakeWebSocket.activeSessionsByProfile = {}
+  FakeWebSocket.requestedMethods = []
+  capturedEvents.length = 0
   ;(globalThis as { WebSocket: unknown }).WebSocket = FakeWebSocket
   ;(window as { hermesDesktop?: unknown }).hermesDesktop = fakeDesktop()
   $gatewayState.set('idle')
+  $activeGatewayProfile.set('default')
+  $connection.set(null)
+  $workingSessionIds.set([])
+  $workingSessionProfiles.set({})
+  $subagentsBySession.set({})
   $desktopBoot.set({
     error: null,
     fakeMode: false,
@@ -162,6 +225,99 @@ async function advanceBackoff() {
 }
 
 describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => {
+  it('tags primary events with the named profile adopted before the socket opens', async () => {
+    const desktop = fakeDesktop()
+    desktop.profile.get = vi.fn(async () => ({ profile: 'work' }))
+    ;(window as { hermesDesktop?: unknown }).hermesDesktop = desktop
+
+    render(<Harness />)
+    await flushAsync()
+
+    act(() => {
+      FakeWebSocket.instances[0].pushEvent({ session_id: 'runtime-work', type: 'subagent.start' })
+    })
+
+    expect(capturedEvents.at(-1)).toMatchObject({ profile: 'work', session_id: 'runtime-work' })
+  })
+
+  it('restores a live working indicator from the gateway snapshot after reconnect', async () => {
+    const desktop = fakeDesktop()
+    desktop.profile.get = vi.fn(async () => ({ profile: 'work' }))
+    ;(window as { hermesDesktop?: unknown }).hermesDesktop = desktop
+    FakeWebSocket.activeSessions = [
+      { id: 'runtime-work', session_key: 'stored-work', status: 'working' },
+      { id: 'runtime-starting', session_key: 'stored-starting', status: 'starting' },
+      { id: 'runtime-waiting', session_key: 'stored-waiting', status: 'waiting' },
+      { id: 'runtime-idle', session_key: 'stored-idle', status: 'idle' }
+    ]
+
+    render(<Harness />)
+    await flushAsync()
+
+    expect(FakeWebSocket.requestedMethods).toContain('session.active_list')
+    expect($sessionActivityKeys.get()).toContain(sessionActivityKey('work', 'stored-work'))
+    expect($sessionActivityKeys.get()).toContain(sessionActivityKey('work', 'stored-starting'))
+    expect($sessionActivityKeys.get()).not.toContain(sessionActivityKey('work', 'stored-waiting'))
+    expect($sessionActivityKeys.get()).not.toContain(sessionActivityKey('work', 'stored-idle'))
+  })
+
+  it('reconnects the primary through its owning profile after another profile becomes active', async () => {
+    const desktop = fakeDesktop()
+
+    desktop.profile.get = vi.fn(async () => ({ profile: 'alpha' }))
+    desktop.getConnection = vi.fn(async (profile?: null | string) => connectionFor(profile ?? 'alpha'))
+    FakeWebSocket.activeSessionsByProfile = { alpha: [], beta: [] }
+    ;(window as { hermesDesktop?: unknown }).hermesDesktop = desktop
+
+    render(<Harness />)
+    await flushAsync()
+
+    act(() => {
+      $activeGatewayProfile.set('beta')
+      $connection.set(connectionFor('beta'))
+    })
+    FakeWebSocket.activeSessionsByProfile.alpha = [
+      { id: 'runtime-alpha', session_key: 'stored-alpha', status: 'working' }
+    ]
+    FakeWebSocket.activeSessionsByProfile.beta = [{ id: 'runtime-beta', session_key: 'stored-beta', status: 'working' }]
+
+    act(() => FakeWebSocket.instances[0].drop())
+    await advanceBackoff()
+
+    expect(desktop.getConnection).toHaveBeenLastCalledWith('alpha')
+    expect(FakeWebSocket.instances.at(-1)?.url).toContain('profile=alpha')
+    expect($connection.get()?.profile).toBe('beta')
+    expect($sessionActivityKeys.get()).toContain(sessionActivityKey('alpha', 'stored-alpha'))
+    expect($sessionActivityKeys.get()).not.toContain(sessionActivityKey('alpha', 'stored-beta'))
+  })
+
+  it('keeps existing working activity when a reconnect snapshot contains a malformed row', async () => {
+    setSessionWorking('existing', true, 'default')
+    FakeWebSocket.activeSessions = [{}]
+
+    render(<Harness />)
+    await flushAsync()
+
+    expect($sessionActivityKeys.get()).toContain(sessionActivityKey('default', 'existing'))
+  })
+
+  it('keeps existing activity when a reconnect snapshot contains a malformed row', async () => {
+    upsertSubagent(
+      'runtime-default',
+      { detached: true, goal: 'live review', status: 'running', subagent_id: 'live' },
+      true,
+      'subagent.start',
+      'owner-default',
+      'default'
+    )
+    FakeWebSocket.delegationActive = [{}]
+
+    render(<Harness />)
+    await flushAsync()
+
+    expect($subagentsBySession.get()['runtime-default']).toMatchObject([{ id: 'live', profile: 'default' }])
+  })
+
   it('INITIAL boot against a dead VPS: getConnection hangs (waitForHermes) → app sits in the connecting combo, then fails', async () => {
     // The report's actual path: a fresh launch pointed at an unreachable VPS.
     // startHermes()'s remote branch awaits waitForHermes() for 45s before it

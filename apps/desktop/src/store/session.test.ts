@@ -9,12 +9,23 @@ import {
   $connection,
   $currentCwd,
   $selectedStoredSessionId,
+  $sessions,
   $unreadFinishedSessionIds,
+  $workingSessionIds,
+  $workingSessionProfiles,
   applyConfiguredDefaultProjectDir,
+  clearSessionLineageAliases,
   mergeSessionPage,
+  reconcileProfileWorkingSessions,
+  sessionLineageIds,
+  sessionLineageRootId,
   sessionPinId,
+  sessionScopeKey,
+  sessionWorkingSnapshotRevision,
   setCurrentCwd,
   setSelectedStoredSessionId,
+  setSessionUnread,
+  setSessionWorking,
   workspaceCwdForNewSession
 } from './session'
 import {
@@ -186,6 +197,22 @@ describe('mergeSessionPage', () => {
 
     expect(merged.map(s => s.id)).toEqual(['b', 'a-new'])
   })
+
+  it('keeps colliding raw ids isolated by profile while merging a profile page', () => {
+    const previous = [
+      session({ id: 'same', profile: 'alpha', title: 'Alpha old' }),
+      session({ id: 'same', profile: 'beta', title: 'Beta' })
+    ]
+
+    const incoming = [session({ id: 'same', message_count: 4, profile: 'alpha', title: 'Alpha fresh' })]
+
+    const merged = mergeSessionPage(previous, incoming, [sessionScopeKey('beta', 'same')])
+
+    expect(merged.map(row => [row.profile, row.id, row.title])).toEqual([
+      ['beta', 'same', 'Beta'],
+      ['alpha', 'same', 'Alpha fresh']
+    ])
+  })
 })
 
 describe('workspaceCwdForNewSession', () => {
@@ -313,6 +340,107 @@ describe('getRecentlySettledSessionIds', () => {
   })
 })
 
+describe('compression lineage aliases', () => {
+  beforeEach(() => {
+    clearSessionLineageAliases()
+    $sessions.set([])
+  })
+
+  afterEach(() => {
+    clearSessionLineageAliases()
+    $sessions.set([])
+  })
+
+  it('keeps intermediate compression tips aliased to the original root', () => {
+    $sessions.set([
+      session({ _lineage_root_id: 'root', id: 'tip-1' }),
+      session({ _lineage_root_id: 'tip-1', id: 'tip-2' })
+    ])
+
+    expect(sessionLineageIds('tip-2')).toEqual(expect.arrayContaining(['root', 'tip-1', 'tip-2']))
+    expect(sessionLineageRootId('tip-2')).toBe('root')
+  })
+})
+
+describe('working session snapshot reconciliation', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+    $workingSessionIds.set([])
+    $workingSessionProfiles.set({})
+  })
+
+  afterEach(() => {
+    vi.clearAllTimers()
+    vi.useRealTimers()
+    $workingSessionIds.set([])
+    $workingSessionProfiles.set({})
+  })
+
+  it('adds reconnect activity without pruning local or colliding profile state', () => {
+    setSessionWorking('same', true, 'alpha')
+    setSessionWorking('same', true, 'beta')
+    setSessionWorking('stale-alpha', true, 'alpha')
+
+    expect(reconcileProfileWorkingSessions('alpha', ['same', 'fresh-alpha'])).toBe(true)
+    expect($workingSessionIds.get()).toEqual(['same', 'stale-alpha', 'fresh-alpha'])
+    expect($workingSessionProfiles.get()['fresh-alpha']).toEqual(['alpha'])
+    expect(new Set($workingSessionProfiles.get().same)).toEqual(new Set(['alpha', 'beta']))
+  })
+
+  it('merges snapshot rows without dropping existing or newer live activity', () => {
+    setSessionWorking('already-live', true, 'work')
+    const revision = sessionWorkingSnapshotRevision()
+
+    setSessionWorking('started-after-request', true, 'work')
+
+    expect(reconcileProfileWorkingSessions('work', ['snapshot-active'], revision)).toBe(true)
+    expect($workingSessionIds.get()).toEqual(['already-live', 'started-after-request', 'snapshot-active'])
+  })
+
+  it('keeps a local working assertion and its watchdog when an idle snapshot arrives', () => {
+    setSessionWorking('local-working', true, 'alpha')
+    const revision = sessionWorkingSnapshotRevision()
+
+    expect(reconcileProfileWorkingSessions('alpha', [], revision)).toBe(true)
+    expect($workingSessionIds.get()).toContain('local-working')
+
+    vi.advanceTimersByTime(8 * 60 * 1000)
+    expect($workingSessionIds.get()).not.toContain('local-working')
+  })
+
+  it('expires colliding working scopes independently', () => {
+    setSessionWorking('shared', true, 'alpha')
+    vi.advanceTimersByTime(60 * 1000)
+    setSessionWorking('shared', true, 'beta')
+
+    vi.advanceTimersByTime(7 * 60 * 1000)
+    expect($workingSessionIds.get()).toContain('shared')
+    expect($workingSessionProfiles.get().shared).toEqual(['beta'])
+
+    vi.advanceTimersByTime(60 * 1000)
+    expect($workingSessionIds.get()).not.toContain('shared')
+  })
+
+  it('does not resurrect a session that finished after the snapshot request started', () => {
+    setSessionWorking('finished-after-request', true, 'work')
+    const revision = sessionWorkingSnapshotRevision()
+
+    setSessionWorking('finished-after-request', false, 'work')
+
+    expect(reconcileProfileWorkingSessions('work', ['finished-after-request'], revision)).toBe(true)
+    expect($workingSessionIds.get()).not.toContain('finished-after-request')
+  })
+
+  it('does not resurrect an idle session after a newer terminal no-op', () => {
+    const revision = sessionWorkingSnapshotRevision()
+
+    setSessionWorking('already-idle', false, 'work')
+
+    expect(reconcileProfileWorkingSessions('work', ['already-idle'], revision)).toBe(true)
+    expect($workingSessionIds.get()).not.toContain('already-idle')
+  })
+})
+
 describe('unread finished sessions', () => {
   beforeEach(() => {
     clearAllSessionStates()
@@ -326,16 +454,13 @@ describe('unread finished sessions', () => {
     $selectedStoredSessionId.set(null)
   })
 
-  it('marks a session unread when its turn finishes in the background', () => {
-    $selectedStoredSessionId.set('other-session')
-
+  it('does not infer unread from a working transition without transcript visibility context', () => {
+    setSelectedStoredSessionId(() => 'other-session')
     const working = makeState({ busy: true, storedSessionId: 's1' })
     publishSessionState('rt1', working)
-
     const idle = { ...working, busy: false }
     publishSessionState('rt1', idle)
-
-    expect($unreadFinishedSessionIds.get()).toEqual(['s1'])
+    expect($unreadFinishedSessionIds.get()).toEqual([])
   })
 
   it('does NOT mark unread when the finishing session is the active one', () => {
@@ -359,18 +484,15 @@ describe('unread finished sessions', () => {
     expect($unreadFinishedSessionIds.get()).toEqual([])
   })
 
-  it('clears unread when the user opens the session', () => {
-    $selectedStoredSessionId.set('other')
-
-    const working = makeState({ busy: true, storedSessionId: 's1' })
-    publishSessionState('rt1', working)
-
-    const idle = { ...working, busy: false }
-    publishSessionState('rt1', idle)
-
+  it('preserves unread on selection until the transcript is visibly acknowledged', () => {
+    setSelectedStoredSessionId(() => 'other')
+    setSessionUnread('s1', true)
     expect($unreadFinishedSessionIds.get()).toEqual(['s1'])
 
-    setSelectedStoredSessionId('s1')
+    setSelectedStoredSessionId(() => 's1')
+    expect($unreadFinishedSessionIds.get()).toEqual(['s1'])
+
+    setSessionUnread('s1', false)
     expect($unreadFinishedSessionIds.get()).toEqual([])
   })
 })

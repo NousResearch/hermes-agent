@@ -1,6 +1,7 @@
 import type { QueryClient } from '@tanstack/react-query'
 import { type MutableRefObject, useCallback, useEffect, useRef } from 'react'
 
+import type { AppView } from '@/app/routes'
 import { translateNow } from '@/i18n'
 import {
   appendAssistantTextPart,
@@ -21,8 +22,10 @@ import {
 } from '@/lib/generated-images'
 import { parseTodos } from '@/lib/todos'
 import { dispatchNativeNotification } from '@/store/native-notifications'
-import { broadcastSessionsChanged } from '@/store/session-sync'
-import { upsertSubagent } from '@/store/subagents'
+import { normalizeProfileKey } from '@/store/profile'
+import { $sessions, createSessionCompletionToken, recordSessionCompletion, sessionLineageRootId } from '@/store/session'
+import { broadcastSessionsChanged, type SessionCompletionToken } from '@/store/session-sync'
+import { markSessionSubagentsDetached, subagentSessionScopeKey, upsertSubagent } from '@/store/subagents'
 import { setSessionTodos } from '@/store/todos'
 
 import type { ClientSessionState } from '../../../types'
@@ -32,10 +35,12 @@ import { completionErrorText, delegateTaskPayloads, STREAM_DELTA_FLUSH_MS } from
 
 interface MessageStreamOptions {
   activeSessionIdRef: MutableRefObject<string | null>
+  currentView?: AppView
   hydrateFromStoredSession: (
     attempts?: number,
     storedSessionId?: string | null,
-    runtimeSessionId?: string | null
+    runtimeSessionId?: string | null,
+    profile?: null | string
   ) => Promise<void>
   queryClient: QueryClient
   refreshHermesConfig: () => Promise<void>
@@ -62,6 +67,29 @@ export function useMessageStream({
   sessionStateByRuntimeIdRef,
   updateSessionState
 }: MessageStreamOptions) {
+  const ownerSessionIdForRuntime = useCallback(
+    (sessionId: string, profile?: string) => {
+      const storedSessionId = sessionStateByRuntimeIdRef.current.get(sessionId)?.storedSessionId ?? undefined
+
+      if (!storedSessionId) {
+        return undefined
+      }
+
+      const profileKey = normalizeProfileKey(profile)
+
+      const stored = $sessions
+        .get()
+        .find(
+          session =>
+            normalizeProfileKey(session.profile) === profileKey &&
+            (session.id === storedSessionId || session._lineage_root_id === storedSessionId)
+        )
+
+      return stored?._lineage_root_id ?? sessionLineageRootId(storedSessionId)
+    },
+    [sessionStateByRuntimeIdRef]
+  )
+
   const sessionInterrupted = useCallback(
     (sessionId: string) => sessionStateByRuntimeIdRef.current.get(sessionId)?.interrupted ?? false,
     [sessionStateByRuntimeIdRef]
@@ -329,7 +357,8 @@ export function useMessageStream({
       sessionId: string,
       payload: GatewayEventPayload | undefined,
       phase: 'running' | 'complete',
-      sourceEventType?: string
+      sourceEventType?: string,
+      sourceProfile?: string
     ) => {
       // Text deltas flush on a timer but tool events apply now; flush first so
       // a tool part can't jump ahead of the text that preceded it.
@@ -349,13 +378,15 @@ export function useMessageStream({
         }
       }
 
-      if (!nativeSubagentSessionsRef.current.has(sessionId)) {
+      if (!nativeSubagentSessionsRef.current.has(subagentSessionScopeKey(sourceProfile, sessionId))) {
         for (const subagentPayload of delegateTaskPayloads(payload, phase, sourceEventType)) {
           upsertSubagent(
             sessionId,
             subagentPayload,
             true,
-            phase === 'complete' ? 'delegate.complete' : 'delegate.running'
+            phase === 'complete' ? 'delegate.complete' : 'delegate.running',
+            ownerSessionIdForRuntime(sessionId, sourceProfile),
+            sourceProfile
           )
         }
       }
@@ -367,12 +398,13 @@ export function useMessageStream({
         { pending: m => phase !== 'complete' || (m.pending ?? false) }
       )
     },
-    [flushQueuedDeltas, mutateStream, sessionInterrupted]
+    [flushQueuedDeltas, mutateStream, ownerSessionIdForRuntime, sessionInterrupted]
   )
 
   const completeAssistantMessage = useCallback(
-    (sessionId: string, text: string) => {
+    (sessionId: string, text: string, completion?: null | SessionCompletionToken, sourceProfile?: string) => {
       let shouldHydrate = false
+      let renderedCompletion = completion ?? null
 
       const completedState = updateSessionState(sessionId, state => {
         // Late completion from an already-cancelled turn: cancelRun has
@@ -391,6 +423,11 @@ export function useMessageStream({
           }
         }
 
+        if (state.activeCompletion && (!completion || state.activeCompletion.id === completion.id)) {
+          renderedCompletion = state.activeCompletion
+        }
+
+        renderedCompletion ??= createSessionCompletionToken(`legacy-turn:${sessionId}:${Date.now()}`)
         const streamId = state.streamId
         const finalText = renderMediaTags(text).trim()
         const completionError = completionErrorText(finalText)
@@ -474,15 +511,31 @@ export function useMessageStream({
 
         return {
           ...state,
+          activeCompletion: null,
           messages: nextMessages,
           streamId: null,
           pendingBranchGroup: null,
           awaitingResponse: false,
           busy: false,
           needsInput: false,
+          renderedCompletion,
           turnStartedAt: null
         }
       })
+
+      // A terminal result in another chat/profile (or while the window is
+      // unfocused) remains actionable until that transcript is actually seen.
+      // Store the durable id so the profile rail can join it to $sessions even
+      // though gateway events themselves are keyed by runtime id.
+      if (!completedState.interrupted) {
+        markSessionSubagentsDetached(sessionId, sourceProfile)
+        recordSessionCompletion(
+          completedState.storedSessionId,
+          completedState.renderedCompletion!,
+          true,
+          sourceProfile ?? completedState.profile
+        )
+      }
 
       scheduleSessionsRefresh()
 
@@ -491,7 +544,12 @@ export function useMessageStream({
       }
 
       if (shouldHydrate) {
-        void hydrateFromStoredSession(3, completedState.storedSessionId, sessionId)
+        void hydrateFromStoredSession(
+          3,
+          completedState.storedSessionId,
+          sessionId,
+          sourceProfile ?? completedState.profile
+        )
       }
 
       dispatchNativeNotification({
@@ -505,8 +563,15 @@ export function useMessageStream({
   )
 
   const failAssistantMessage = useCallback(
-    (sessionId: string, errorMessage: string) => {
-      updateSessionState(sessionId, state => {
+    (sessionId: string, errorMessage: string, completion?: null | SessionCompletionToken, sourceProfile?: string) => {
+      let renderedCompletion = completion ?? null
+
+      const failedState = updateSessionState(sessionId, state => {
+        if (state.activeCompletion && (!completion || state.activeCompletion.id === completion.id)) {
+          renderedCompletion = state.activeCompletion
+        }
+
+        renderedCompletion ??= createSessionCompletionToken(`legacy-error:${sessionId}:${Date.now()}`)
         const streamId = state.streamId ?? `assistant-error-${Date.now()}`
         const groupId = state.pendingBranchGroup ?? undefined
         const prev = state.messages
@@ -536,6 +601,7 @@ export function useMessageStream({
 
         return {
           ...state,
+          activeCompletion: null,
           messages: nextMessages,
           streamId: null,
           pendingBranchGroup: null,
@@ -543,11 +609,32 @@ export function useMessageStream({
           awaitingResponse: false,
           busy: false,
           needsInput: false,
+          renderedCompletion,
           turnStartedAt: null
         }
       })
+
+      if (!failedState.interrupted) {
+        recordSessionCompletion(
+          failedState.storedSessionId,
+          failedState.renderedCompletion!,
+          true,
+          sourceProfile ?? failedState.profile
+        )
+      }
     },
     [updateSessionState]
+  )
+
+  const onDetachedSubagentComplete = useCallback(
+    (ownerSessionId: string, subagentId: string, sourceProfile?: string) =>
+      recordSessionCompletion(
+        ownerSessionId,
+        createSessionCompletionToken(`subagent:${subagentId}`),
+        true,
+        sourceProfile
+      ),
+    []
   )
 
   const handleGatewayEvent = useGatewayEventHandler({
@@ -557,6 +644,7 @@ export function useMessageStream({
     compactedTurnRef,
     lastCwdInfoSessionRef,
     nativeSubagentSessionsRef,
+    onDetachedSubagentComplete,
     completeAssistantMessage,
     failAssistantMessage,
     flushQueuedDeltas,
@@ -564,6 +652,7 @@ export function useMessageStream({
     refreshHermesConfig,
     sessionInterrupted,
     sessionStateByRuntimeIdRef,
+    ownerSessionIdForRuntime,
     updateSessionState,
     upsertToolCall
   })

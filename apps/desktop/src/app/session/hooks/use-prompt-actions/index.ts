@@ -31,7 +31,7 @@ import {
   setMessages,
   setTurnStartedAt
 } from '@/store/session'
-import { clearSessionSubagents } from '@/store/subagents'
+import { preserveDetachedSessionSubagents } from '@/store/subagents'
 import { clearSessionTodos } from '@/store/todos'
 
 import type {
@@ -524,6 +524,7 @@ export function usePromptActions({
     // The ref is updated via useEffect on every activeSessionId change, so it
     // always reflects the current session — same pattern submitText uses.
     const sessionId = activeSessionIdRef.current
+    let sessionProfile: string | undefined
 
     const releaseBusy = () => {
       setMutableRef(busyRef, false)
@@ -541,6 +542,7 @@ export function usePromptActions({
     }
 
     updateSessionState(sessionId, state => {
+      sessionProfile = state.profile
       const streamId = state.streamId
       const messages = finalizeInterruptedMessages(state.messages, streamId)
 
@@ -558,7 +560,7 @@ export function usePromptActions({
     })
 
     clearSessionTodos(sessionId)
-    clearSessionSubagents(sessionId)
+    preserveDetachedSessionSubagents(sessionId, sessionProfile)
     resetSessionBackground(sessionId)
     // Stop ends the turn, so the gateway is no longer blocked on any prompt it
     // raised. Drop this session's pending clarify / approval / sudo / secret so

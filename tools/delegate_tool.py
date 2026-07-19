@@ -180,7 +180,7 @@ def _unregister_subagent(subagent_id: str) -> None:
         _active_subagents.pop(subagent_id, None)
 
 
-def interrupt_subagent(subagent_id: str) -> bool:
+def interrupt_subagent(subagent_id: str, profile: Optional[str] = None) -> bool:
     """Request that a single running subagent stop at its next iteration boundary.
 
     Does not hard-kill the worker thread (Python can't); sets the child's
@@ -191,6 +191,8 @@ def interrupt_subagent(subagent_id: str) -> bool:
     with _active_subagents_lock:
         record = _active_subagents.get(subagent_id)
     if not record:
+        return False
+    if profile is not None and str(record.get("profile") or "default") != str(profile or "default"):
         return False
     agent = record.get("agent")
     if agent is None:
@@ -203,7 +205,7 @@ def interrupt_subagent(subagent_id: str) -> bool:
     return True
 
 
-def list_active_subagents() -> List[Dict[str, Any]]:
+def list_active_subagents(profile: Optional[str] = None) -> List[Dict[str, Any]]:
     """Snapshot of the currently running subagent tree.
 
     Each record: {subagent_id, parent_id, depth, goal, model, started_at,
@@ -213,6 +215,7 @@ def list_active_subagents() -> List[Dict[str, Any]]:
         return [
             {k: v for k, v in r.items() if k != "agent"}
             for r in _active_subagents.values()
+            if profile is None or str(r.get("profile") or "default") == str(profile or "default")
         ]
 
 
@@ -835,6 +838,7 @@ def _build_child_progress_callback(
     model: Optional[str] = None,
     toolsets: Optional[List[str]] = None,
     session_ref: Optional[Dict[str, Any]] = None,
+    detached: bool = False,
 ) -> Optional[callable]:
     """Build a callback that relays child agent tool calls to the parent display.
 
@@ -865,12 +869,15 @@ def _build_child_progress_callback(
     _BATCH_SIZE = 5
     _batch: List[str] = []
     _tool_count = [0]  # per-subagent running counter (list for closure mutation)
+    _detached_state = [bool(detached)]
+    _delegation_state = [""]
 
     def _identity_kwargs() -> Dict[str, Any]:
         kw: Dict[str, Any] = {
             "task_index": task_index,
             "task_count": task_count,
             "goal": goal_label,
+            "detached": _detached_state[0],
         }
         if subagent_id is not None:
             kw["subagent_id"] = subagent_id
@@ -882,6 +889,8 @@ def _build_child_progress_callback(
             kw["model"] = model
         if toolsets is not None:
             kw["toolsets"] = list(toolsets)
+        if _delegation_state[0]:
+            kw["delegation_id"] = _delegation_state[0]
         # The child's own session id — filled into the shared ref once the
         # child agent exists (the callback is built first), so every relayed
         # event lets UIs open/inspect the subagent's session directly.
@@ -1022,6 +1031,8 @@ def _build_child_progress_callback(
             _batch.clear()
 
     _callback._flush = _flush
+    _callback._set_detached = lambda value: _detached_state.__setitem__(0, bool(value))
+    _callback._set_delegation_id = lambda value: _delegation_state.__setitem__(0, str(value or ""))
     return _callback
 
 
@@ -1086,6 +1097,7 @@ def _build_child_agent(
     # 'leaf' (default) cannot; 'orchestrator' retains the delegation
     # toolset subject to depth/kill-switch bounds applied below.
     role: str = "leaf",
+    detached: bool = False,
 ):
     """
     Build a child AIAgent on the main thread (thread-safe construction).
@@ -1219,6 +1231,7 @@ def _build_child_agent(
         model=effective_model_for_cb,
         toolsets=child_toolsets,
         session_ref=child_session_ref,
+        detached=detached,
     )
 
     # Each subagent gets its own iteration budget capped at max_iterations
@@ -1417,6 +1430,13 @@ def _build_child_agent(
     child._parent_subagent_id = parent_subagent_id
     child._subagent_goal = goal
     child._parent_turn_id = getattr(parent_agent, "_current_turn_id", "") or ""
+    child._delegate_detached = bool(detached)
+    try:
+        from gateway.session_context import get_session_env
+
+        child._delegate_profile = get_session_env("HERMES_SESSION_PROFILE", "") or "default"
+    except Exception:
+        child._delegate_profile = "default"
     # Stable sidebar marker: delegate subagent sessions must stay out of
     # session pickers even when a parent delete orphans them (parent_session_id
     # → NULL). Mirrors /branch's ``_branched_from`` pattern — see
@@ -1922,7 +1942,10 @@ def _run_single_child(
                 "subagent_id": _subagent_id,
                 "parent_id": _parent_sid if isinstance(_parent_sid, str) else None,
                 "depth": _tui_depth,
+                "detached": bool(getattr(child, "_delegate_detached", False)),
+                "profile": str(getattr(child, "_delegate_profile", "") or "default"),
                 "goal": goal,
+                "owner_session_id": getattr(parent_agent, "session_id", None),
                 "model": (
                     getattr(child, "model", None)
                     if isinstance(getattr(child, "model", None), str)
@@ -2591,6 +2614,7 @@ def delegate_task(
                 override_acp_command=creds.get("command"),
                 override_acp_args=creds.get("args"),
                 role=effective_role,
+                detached=bool(background),
             )
             # Override with correct parent tool names (before child construction mutated global)
             child._delegate_saved_tool_names = _parent_tool_names
@@ -2855,6 +2879,40 @@ def delegate_task(
         from tools.async_delegation import dispatch_async_delegation_batch
         from tools.approval import get_current_session_key
 
+        _child_agents = [c for (_, _, c) in children]
+
+        def _set_async_ownership(accepted: bool, delegation_id: str = "") -> None:
+            """Move children between parent-turn and async-registry ownership."""
+            _ac_lock = getattr(parent_agent, "_active_children_lock", None)
+            for _child in _child_agents:
+                _child._delegate_detached = accepted
+                _progress = getattr(_child, "tool_progress_callback", None)
+                _set_detached = getattr(_progress, "_set_detached", None)
+                _set_delegation_id = getattr(_progress, "_set_delegation_id", None)
+                if callable(_set_detached):
+                    _set_detached(accepted)
+                if callable(_set_delegation_id):
+                    _set_delegation_id(delegation_id if accepted else "")
+
+                if not hasattr(parent_agent, "_active_children"):
+                    continue
+                if _ac_lock:
+                    with _ac_lock:
+                        if accepted:
+                            try:
+                                parent_agent._active_children.remove(_child)
+                            except ValueError:
+                                pass
+                        elif _child not in parent_agent._active_children:
+                            parent_agent._active_children.append(_child)
+                elif accepted:
+                    try:
+                        parent_agent._active_children.remove(_child)
+                    except ValueError:
+                        pass
+                elif _child not in parent_agent._active_children:
+                    parent_agent._active_children.append(_child)
+
         # Stateless request/response sessions (the API server / WebUI path)
         # cannot route a detached subagent result back to the agent after the
         # turn ends — there is no persistent channel and the adapter's send()
@@ -2873,6 +2931,7 @@ def delegate_task(
                 "delegate_task: async delivery unsupported on this session "
                 "(stateless HTTP API); running the batch synchronously instead."
             )
+            _set_async_ownership(False)
             _sync_result = _execute_and_aggregate()
             if isinstance(_sync_result, dict):
                 _sync_result["note"] = (
@@ -2919,22 +2978,6 @@ def delegate_task(
             if _agent_session_id:
                 _session_key = _agent_session_id
         _parent_session_id = getattr(parent_agent, "session_id", None)
-        _child_agents = [c for (_, _, c) in children]
-
-        # Detach every child from the parent's interrupt-propagation list — the
-        # batch's lifecycle is owned by the async registry now, not the parent
-        # turn. _build_child_agent attached them (correct for sync runs).
-        if hasattr(parent_agent, "_active_children"):
-            _ac_lock = getattr(parent_agent, "_active_children_lock", None)
-            for _c in _child_agents:
-                try:
-                    if _ac_lock:
-                        with _ac_lock:
-                            parent_agent._active_children.remove(_c)
-                    else:
-                        parent_agent._active_children.remove(_c)
-                except ValueError:
-                    pass
 
         def _batch_runner():
             return _execute_and_aggregate()
@@ -2964,9 +3007,12 @@ def delegate_task(
             runner=_batch_runner,
             interrupt_fn=_batch_interrupt,
             max_async_children=_get_max_async_children(),
+            profile=str(getattr(_child_agents[0], "_delegate_profile", "") or "default"),
+            subagent_ids=[str(getattr(child, "_subagent_id", "")) for child in _child_agents],
         )
 
         if dispatch.get("status") == "dispatched":
+            _set_async_ownership(True, str(dispatch["delegation_id"]))
             n = len(_goals)
             note = (
                 "Subagent is running in the background. You and the user can "
@@ -2998,6 +3044,7 @@ def delegate_task(
             "batch synchronously instead.",
             dispatch.get("error", "rejected"),
         )
+        _set_async_ownership(False)
         _cap_result = _execute_and_aggregate()
         if isinstance(_cap_result, dict):
             _cap_result["note"] = (

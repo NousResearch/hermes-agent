@@ -8,6 +8,7 @@ import { $activeGatewayProfile, $profiles, normalizeProfileKey } from '@/store/p
 import {
   $currentCwd,
   $sessions,
+  consumeRequestedSessionResumeProfile,
   sessionMatchesStoredId,
   setCurrentBranch,
   setCurrentCwd,
@@ -391,15 +392,23 @@ export function upsertOptimisticSession(
     tool_call_count: 0
   }
 
-  setSessions(prev => [session, ...prev.filter(s => s.id !== id)])
+  setSessions(prev => [session, ...prev.filter(s => !(s.id === id && normalizeProfileKey(s.profile) === profileKey))])
 }
 
-export function patchSessionWorkspace(sessionId: string, cwd: string | undefined) {
+export function patchSessionWorkspace(sessionId: string, cwd: string | undefined, profile?: null | string) {
   if (!cwd) {
     return
   }
 
-  setSessions(prev => prev.map(session => (session.id === sessionId ? { ...session, cwd } : session)))
+  const normalizedProfile = normalizeProfileKey(profile)
+
+  setSessions(prev =>
+    prev.map(session =>
+      session.id === sessionId && normalizeProfileKey(session.profile) === normalizedProfile
+        ? { ...session, cwd }
+        : session
+    )
+  )
 }
 
 export function sessionShouldHaveTranscript(session: SessionInfo | undefined): boolean {
@@ -408,10 +417,15 @@ export function sessionShouldHaveTranscript(session: SessionInfo | undefined): b
 
 function upsertResolvedSession(session: SessionInfo, storedSessionId: string) {
   const lineage = session._lineage_root_id ?? session.id
+  const profile = normalizeProfileKey(session.profile)
 
   setSessions(prev => [
     session,
     ...prev.filter(existing => {
+      if (normalizeProfileKey(existing.profile) !== profile) {
+        return true
+      }
+
       if (sessionMatchesStoredId(existing, storedSessionId)) {
         return false
       }
@@ -422,30 +436,38 @@ function upsertResolvedSession(session: SessionInfo, storedSessionId: string) {
 }
 
 export async function resolveStoredSession(storedSessionId: string): Promise<SessionInfo | undefined> {
-  const cached = $sessions.get().find(session => sessionMatchesStoredId(session, storedSessionId))
+  const requestedProfile = consumeRequestedSessionResumeProfile(storedSessionId)
+  const activeKey = normalizeProfileKey(requestedProfile ?? $activeGatewayProfile.get())
+
+  const cached = $sessions
+    .get()
+    .find(
+      session => normalizeProfileKey(session.profile) === activeKey && sessionMatchesStoredId(session, storedSessionId)
+    )
 
   if (cached) {
     return cached
   }
 
-  // Direct by-id on the live backend — one row lookup, no list scan. Covers
-  // single-profile users and any id on the active profile (e.g. an old session
-  // past the sidebar's recent window). 404 just means it's not on this profile.
+  // Direct by-id on the exact requested backend — one row lookup, no list scan.
+  // An explicit switcher/sidebar target must never fall back to whichever
+  // profile happens to be active after its cached row disappears.
   try {
-    const session = await getSession(storedSessionId)
+    const session = await getSession(storedSessionId, requestedProfile ? activeKey : undefined)
 
     upsertResolvedSession(session, storedSessionId)
 
     return session
   } catch {
-    // Not on the active profile — fall through to the cross-profile probe.
+    if (requestedProfile) {
+      return undefined
+    }
+    // No explicit owner: fall through to the cross-profile discovery probe.
   }
 
   // Multi-profile only: probe each other profile by id (still one cheap lookup
   // each) rather than pulling every profile's recent sessions. The first hit
   // carries its owning `profile`, which routes the resume to the right backend.
-  const activeKey = normalizeProfileKey($activeGatewayProfile.get())
-
   const otherProfiles = $profiles
     .get()
     .map(profile => normalizeProfileKey(profile.name))

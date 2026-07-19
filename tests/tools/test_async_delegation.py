@@ -143,6 +143,46 @@ def test_completion_event_lands_on_shared_queue_with_session_key():
     assert evt["delegation_id"] == res["delegation_id"]
 
 
+def test_batch_completion_retains_profile_and_exact_child_ids_until_delivery():
+    dispatched = ad.dispatch_async_delegation_batch(
+        goals=["a", "b"],
+        context=None,
+        toolsets=None,
+        role="leaf",
+        model="m",
+        session_key="owner",
+        parent_session_id="parent",
+        profile="alpha",
+        subagent_ids=["child-a", "child-b"],
+        runner=lambda: {"status": "completed", "summary": "done"},
+    )
+
+    evt = _drain_for(dispatched["delegation_id"])
+    assert evt is not None
+    assert evt["profile"] == "alpha"
+    assert evt["subagent_ids"] == ["child-a", "child-b"]
+
+    assert ad.list_pending_async_delivery_handoffs() == [
+        {**evt}
+    ]
+    assert ad.claim_completion_delivery(dispatched["delegation_id"], "consumer")
+    assert ad.list_pending_async_delivery_handoffs() == []
+    assert ad.release_completion_delivery(dispatched["delegation_id"], "consumer")
+
+    record = next(
+        item
+        for item in ad.list_async_delegations()
+        if item["delegation_id"] == dispatched["delegation_id"]
+    )
+    assert record["delivery_pending"] is True
+    assert ad.mark_async_delegation_delivery_started(dispatched["delegation_id"])
+    assert next(
+        item
+        for item in ad.list_async_delegations()
+        if item["delegation_id"] == dispatched["delegation_id"]
+    )["delivery_pending"] is False
+
+
 def test_rich_reinjection_block_is_self_contained():
     def runner():
         return {"status": "completed", "summary": "The answer is 42.",
@@ -414,9 +454,44 @@ def test_durable_delivery_claim_is_exclusive_and_retryable(tmp_path, monkeypatch
     assert not ad.claim_completion_delivery("deleg_claim", "consumer-b")
     assert ad.release_completion_delivery("deleg_claim", "consumer-a")
     assert ad.claim_completion_delivery("deleg_claim", "consumer-b")
+    assert ad.renew_completion_delivery("deleg_claim", "consumer-b")
     assert ad.complete_completion_delivery("deleg_claim", "consumer-b")
     assert not ad.claim_completion_delivery("deleg_claim", "consumer-c")
     assert ad.get_durable_delegation("deleg_claim")["delivery_state"] == "delivered"
+
+
+def test_pending_handoffs_are_read_from_explicit_profile_home(tmp_path):
+    alpha_home = tmp_path / "alpha"
+    beta_home = tmp_path / "beta"
+    now = time.time()
+
+    with ad._DB_LOCK, ad._connect(alpha_home) as conn:
+        conn.execute(
+            """INSERT INTO async_delegations
+               (delegation_id, origin_session, state, dispatched_at, updated_at,
+                event_json, result_json, delivery_state, task_json)
+               VALUES (?, ?, 'completed', ?, ?, ?, ?, 'pending', ?)""",
+            (
+                "deleg_alpha",
+                "owner-alpha",
+                now,
+                now,
+                json.dumps(
+                    {
+                        "delegation_id": "deleg_alpha",
+                        "profile": "alpha",
+                        "subagent_ids": ["child-alpha"],
+                    }
+                ),
+                json.dumps({"status": "completed", "summary": "alpha"}),
+                json.dumps({"profile": "alpha", "subagent_ids": ["child-alpha"]}),
+            ),
+        )
+
+    assert [
+        row["delegation_id"] for row in ad.list_pending_async_delivery_handoffs(alpha_home)
+    ] == ["deleg_alpha"]
+    assert ad.list_pending_async_delivery_handoffs(beta_home) == []
 
 
 # ---------------------------------------------------------------------------
@@ -723,6 +798,7 @@ def test_delegate_task_background_detaches_child_from_parent(monkeypatch):
     fake_child._subagent_id = "s1"
 
     gate = threading.Event()
+    build_args = {}
 
     def slow_child(task_index, goal, child=None, parent_agent=None, **kw):
         gate.wait(timeout=60)
@@ -731,6 +807,7 @@ def test_delegate_task_background_detaches_child_from_parent(monkeypatch):
     def build_and_register(**kw):
         # Mirror what the real _build_child_agent does: register the child
         # for interrupt propagation.
+        build_args.update(kw)
         parent._active_children.append(fake_child)
         return fake_child
 
@@ -745,10 +822,54 @@ def test_delegate_task_background_detaches_child_from_parent(monkeypatch):
 
     import json
     assert json.loads(out)["status"] == "dispatched"
+    assert build_args["detached"] is True
     # Child detached immediately at dispatch, while it is still running.
     assert fake_child not in parent._active_children
     gate.set()
     assert _drain_one() is not None
+
+
+def test_background_dispatch_rejection_reattaches_child_before_sync_fallback(monkeypatch):
+    from unittest.mock import MagicMock
+    import tools.delegate_tool as dt
+
+    parent = MagicMock()
+    parent._delegate_depth = 0
+    parent.session_id = "sess"
+    parent._active_children = []
+    parent._active_children_lock = threading.Lock()
+    child = MagicMock()
+    child._delegate_role = "leaf"
+    child._subagent_id = "fallback-child"
+    observed = {}
+
+    def build_and_register(**_kwargs):
+        child._delegate_detached = True
+        parent._active_children.append(child)
+        return child
+
+    def run_sync(*_args, **_kwargs):
+        observed["detached"] = child._delegate_detached
+        observed["attached"] = child in parent._active_children
+        return {"status": "completed", "summary": "fallback done", "task_index": 0}
+
+    creds = {
+        "model": "m", "provider": None, "base_url": None, "api_key": None,
+        "api_mode": None, "command": None, "args": None,
+    }
+    monkeypatch.setattr(dt, "_build_child_agent", build_and_register)
+    monkeypatch.setattr(dt, "_run_single_child", run_sync)
+    monkeypatch.setattr(dt, "_resolve_delegation_credentials", lambda *a, **k: creds)
+    monkeypatch.setattr(
+        ad,
+        "dispatch_async_delegation_batch",
+        lambda **_kwargs: {"status": "rejected", "error": "capacity"},
+    )
+
+    result = json.loads(dt.delegate_task(goal="fallback", background=True, parent_agent=parent))
+
+    assert result["results"][0]["status"] == "completed"
+    assert observed == {"attached": True, "detached": False}
 
 
 def test_concurrent_dispatch_respects_capacity():

@@ -83,6 +83,12 @@ test('buildSessionWindowUrl adds the watch flag for spectator windows, before th
   assert.equal(url, 'http://localhost:5173/?win=secondary&watch=1#/abc')
 })
 
+test('buildSessionWindowUrl carries the owning profile before the hash', () => {
+  const url = buildSessionWindowUrl('shared', { devServer: 'http://localhost:5173', profile: 'beta profile' })
+
+  assert.equal(url, 'http://localhost:5173/?win=secondary&profile=beta%20profile#/shared')
+})
+
 test('buildSessionWindowUrl routes new-session windows to the draft (#/)', () => {
   const url = buildSessionWindowUrl(null, { devServer: 'http://localhost:5173', newSession: true })
 

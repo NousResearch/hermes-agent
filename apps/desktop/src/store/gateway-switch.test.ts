@@ -8,13 +8,20 @@ import {
   $sessions,
   $sessionsLoading,
   $sessionsTotal,
+  $unreadFinishedSessionIds,
+  $workingSessionProfiles,
+  sessionNeedsInput,
   setCronSessions,
   setFreshDraftReady,
   setMessagingSessions,
+  setSessionAttention,
   setSessions,
   setSessionsLoading,
-  setSessionsTotal
+  setSessionsTotal,
+  setSessionUnread,
+  setSessionWorking
 } from '@/store/session'
+import { $subagentsBySession, upsertSubagent } from '@/store/subagents'
 
 import { $gatewaySwitching, wipeSessionListsForGatewaySwitch } from './gateway-switch'
 
@@ -31,6 +38,10 @@ describe('wipeSessionListsForGatewaySwitch', () => {
     setMessagingSessions([{ id: 'm1', title: 'tg', profile: 'default' } as never])
     setSessionsLoading(false)
     setFreshDraftReady(false)
+    setSessionUnread('unread-old', true)
+    setSessionWorking('s1', true, 'default')
+    setSessionAttention('s1', true, 'default')
+    upsertSubagent('runtime-old', { goal: 'old review', status: 'running', subagent_id: 'review-old' })
     $sessionsLimit.set(SIDEBAR_SESSIONS_PAGE_SIZE * 3)
   })
 
@@ -39,6 +50,10 @@ describe('wipeSessionListsForGatewaySwitch', () => {
     setSessions([])
     setCronSessions([])
     setMessagingSessions([])
+    setSessionWorking('s1', false, 'default')
+    setSessionAttention('s1', false, 'default')
+    $unreadFinishedSessionIds.set([])
+    $subagentsBySession.set({})
     setSessionsLoading(true)
     $gatewaySwitching.set(false)
   })
@@ -53,5 +68,9 @@ describe('wipeSessionListsForGatewaySwitch', () => {
     expect($sessionsLoading.get()).toBe(true)
     expect($sessionsLimit.get()).toBe(SIDEBAR_SESSIONS_PAGE_SIZE)
     expect($freshDraftReady.get()).toBe(true)
+    expect($unreadFinishedSessionIds.get()).toEqual([])
+    expect($workingSessionProfiles.get()).toEqual({})
+    expect(sessionNeedsInput('s1', 'default')).toBe(false)
+    expect($subagentsBySession.get()).toEqual({})
   })
 })

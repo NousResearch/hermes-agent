@@ -3,6 +3,7 @@ import type { MutableRefObject } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { ChatMessage } from '@/lib/chat-messages'
+import { $activeGatewayProfile } from '@/store/profile'
 import {
   $activeSessionStoredIdRotation,
   $currentFastMode,
@@ -12,6 +13,7 @@ import {
   $currentServiceTier,
   $messages,
   $turnStartedAt,
+  sessionScopeKey,
   setActiveSessionId,
   setActiveSessionStoredIdRotation,
   setCurrentFastMode,
@@ -57,8 +59,10 @@ describe('useSessionStateCache — stored-id rotation provenance', () => {
       previousStoredSessionId: 'stored-A',
       runtimeSessionId: 'runtime-A'
     })
-    expect(cache.runtimeIdByStoredSessionIdRef.current.has('stored-A')).toBe(false)
-    expect(cache.runtimeIdByStoredSessionIdRef.current.get('stored-A-next')).toBe('runtime-A')
+    expect(cache.runtimeIdByStoredSessionIdRef.current.has(sessionScopeKey('default', 'stored-A'))).toBe(false)
+    expect(cache.runtimeIdByStoredSessionIdRef.current.get(sessionScopeKey('default', 'stored-A-next'))).toBe(
+      'runtime-A'
+    )
   })
 
   it('does not publish a foreground-navigation event for a background runtime rotation', () => {
@@ -75,8 +79,10 @@ describe('useSessionStateCache — stored-id rotation provenance', () => {
     })
 
     expect($activeSessionStoredIdRotation.get()).toBeNull()
-    expect(cache.runtimeIdByStoredSessionIdRef.current.has('stored-A')).toBe(false)
-    expect(cache.runtimeIdByStoredSessionIdRef.current.get('stored-A-next')).toBe('runtime-A')
+    expect(cache.runtimeIdByStoredSessionIdRef.current.has(sessionScopeKey('default', 'stored-A'))).toBe(false)
+    expect(cache.runtimeIdByStoredSessionIdRef.current.get(sessionScopeKey('default', 'stored-A-next'))).toBe(
+      'runtime-A'
+    )
   })
 })
 
@@ -86,6 +92,7 @@ function Harness({ activeSessionId, onReady, selectedStoredSessionId }: HarnessP
   const cache = useSessionStateCache({
     activeSessionId,
     busyRef,
+    currentView: 'chat',
     selectedStoredSessionId,
     setAwaitingResponse: () => undefined,
     setBusy: () => undefined,
@@ -118,6 +125,7 @@ describe('useSessionStateCache — per-session turn timer', () => {
     setCurrentReasoningEffort('')
     setCurrentServiceTier('')
     setCurrentFastMode(false)
+    $activeGatewayProfile.set('default')
   })
 
   afterEach(() => {
@@ -129,6 +137,7 @@ describe('useSessionStateCache — per-session turn timer', () => {
     setCurrentReasoningEffort('')
     setCurrentServiceTier('')
     setCurrentFastMode(false)
+    $activeGatewayProfile.set('default')
   })
 
   it("keeps a background session's running turn clock and never mirrors it to the view", () => {
@@ -283,6 +292,7 @@ function ViewHarness({ activeSessionId, onReady }: ViewHarnessProps) {
   const cache = useSessionStateCache({
     activeSessionId,
     busyRef,
+    currentView: 'chat',
     selectedStoredSessionId: null,
     setAwaitingResponse: () => undefined,
     setBusy: () => undefined,
@@ -384,7 +394,22 @@ describe('useSessionStateCache — cross-thread error isolation', () => {
 
     // Simulate a recycled/cross-wired map entry. The reverse state ownership
     // check must reject it instead of allowing a submit into stored-B.
-    cache.runtimeIdByStoredSessionIdRef.current.set('stored-A', 'runtime-B')
+    cache.runtimeIdByStoredSessionIdRef.current.set(sessionScopeKey('default', 'stored-A'), 'runtime-B')
     expect(cache.getRuntimeIdForStoredSession('stored-A')).toBeNull()
+  })
+
+  it('keeps identical stored ids isolated by profile', () => {
+    let cache!: Cache
+    render(<Harness activeSessionId={null} onReady={value => (cache = value)} selectedStoredSessionId={null} />)
+
+    act(() => {
+      cache.updateSessionState('runtime-alpha', state => ({ ...state, profile: 'alpha' }), 'shared')
+      cache.updateSessionState('runtime-beta', state => ({ ...state, profile: 'beta' }), 'shared')
+    })
+
+    expect(cache.getRuntimeIdForStoredSession('shared', 'alpha')).toBe('runtime-alpha')
+    expect(cache.getRuntimeIdForStoredSession('shared', 'beta')).toBe('runtime-beta')
+    expect(cache.runtimeIdByStoredSessionIdRef.current.get(sessionScopeKey('alpha', 'shared'))).toBe('runtime-alpha')
+    expect(cache.runtimeIdByStoredSessionIdRef.current.get(sessionScopeKey('beta', 'shared'))).toBe('runtime-beta')
   })
 })

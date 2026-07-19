@@ -50,7 +50,6 @@ import {
   CRON_ROUTE,
   MESSAGING_ROUTE,
   PROFILES_ROUTE,
-  sessionRoute,
   SETTINGS_ROUTE,
   SKILLS_ROUTE
 } from '../routes'
@@ -64,6 +63,8 @@ export interface KeybindRuntimeDeps {
   openNewSessionTab: () => void
   /** Pin/unpin the active session. */
   toggleSelectedPin: () => void
+  /** Resume a recent session and keep its profile-scoped target identity. */
+  resumeSession: (sessionId: string) => void
 }
 
 type HandlerMap = Record<string, () => void>
@@ -93,7 +94,7 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
 
   const goToSession = (sessionId: null | string) => {
     if (sessionId) {
-      navigate(sessionRoute(sessionId))
+      deps.resumeSession(sessionId)
     }
   }
 

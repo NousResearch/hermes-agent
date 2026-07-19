@@ -7,6 +7,19 @@ import type { ChatMessage } from '@/lib/chat-messages'
 import { persistBoolean, persistString, storedBoolean, storedString } from '@/lib/storage'
 import type { SessionInfo, UsageStats } from '@/types/hermes'
 
+import {
+  broadcastSessionUnreadChanged,
+  broadcastSessionUnreadReset,
+  broadcastSessionUnreadSnapshot,
+  compareSessionUnreadVersions,
+  nextSessionUnreadVersion,
+  onSessionUnreadSync,
+  requestSessionUnreadSnapshot,
+  type SessionCompletionToken,
+  type SessionUnreadEntry,
+  type SessionUnreadVersion
+} from './session-sync'
+
 type Updater<T> = T | ((current: T) => T)
 export type ComposerModelSource = '' | 'default' | 'manual'
 
@@ -143,6 +156,81 @@ export const sessionMatchesStoredId = (
   storedSessionId: string
 ): boolean => session.id === storedSessionId || session._lineage_root_id === storedSessionId
 
+const SESSION_SCOPE_SEPARATOR = '\u0000'
+
+export const normalizeSessionProfile = (profile: null | string | undefined): string => profile?.trim() || 'default'
+
+export const sessionScopeKey = (profile: null | string | undefined, sessionId: string): string =>
+  `${normalizeSessionProfile(profile)}${SESSION_SCOPE_SEPARATOR}${sessionId}`
+
+export const sessionIdFromScopeKey = (key: string): string => key.slice(key.indexOf(SESSION_SCOPE_SEPARATOR) + 1)
+
+export const sessionProfileFromScopeKey = (key: string): string => {
+  const separator = key.indexOf(SESSION_SCOPE_SEPARATOR)
+
+  return separator < 0 ? 'default' : normalizeSessionProfile(key.slice(0, separator))
+}
+
+let requestedSessionResumeTarget: null | { profile: string; sessionId: string } = null
+
+export function requestSessionResumeProfile(sessionId: string, profile: null | string | undefined): void {
+  requestedSessionResumeTarget = { profile: normalizeSessionProfile(profile), sessionId }
+}
+
+export function consumeRequestedSessionResumeProfile(sessionId: string): string | undefined {
+  const target = requestedSessionResumeTarget
+  requestedSessionResumeTarget = null
+
+  return target?.sessionId === sessionId ? target.profile : undefined
+}
+
+export function peekRequestedSessionResumeProfile(sessionId: string): string | undefined {
+  return requestedSessionResumeTarget?.sessionId === sessionId ? requestedSessionResumeTarget.profile : undefined
+}
+
+export function clearRequestedSessionResumeProfile(): void {
+  requestedSessionResumeTarget = null
+}
+
+const lineageRootByAlias = new Map<string, string>()
+const lineageAliasesByRoot = new Map<string, Set<string>>()
+
+function rememberSessionLineage(session: Pick<SessionInfo, '_lineage_root_id' | 'id' | 'profile'>): void {
+  const profile = normalizeSessionProfile(session.profile)
+  const declaredRoot = session._lineage_root_id
+
+  const root =
+    (declaredRoot ? lineageRootByAlias.get(sessionScopeKey(profile, declaredRoot)) : undefined) ??
+    lineageRootByAlias.get(sessionScopeKey(profile, session.id)) ??
+    declaredRoot ??
+    session.id
+
+  const rootKey = sessionScopeKey(profile, root)
+  const aliases = lineageAliasesByRoot.get(rootKey) ?? new Set<string>()
+
+  aliases.add(root)
+  aliases.add(session.id)
+
+  if (declaredRoot) {
+    aliases.add(declaredRoot)
+  }
+
+  lineageAliasesByRoot.set(rootKey, aliases)
+  aliases.forEach(alias => lineageRootByAlias.set(sessionScopeKey(profile, alias), root))
+  migrateUnreadAliases(profile, root, aliases)
+}
+
+export function clearSessionLineageAliases(): void {
+  lineageRootByAlias.clear()
+  lineageAliasesByRoot.clear()
+}
+
+export function sessionLineageRootId(sessionId: string, profile?: null | string): string {
+  $sessions.get().forEach(rememberSessionLineage)
+
+  return lineageRootByAlias.get(sessionScopeKey(profile, sessionId)) ?? sessionId
+}
+
 /** Merge a fresh server session page into the in-memory list, keeping any
  *  row the server omitted that we still want visible — both still-"working"
  *  sessions and pinned sessions.
@@ -171,6 +259,8 @@ export function mergeSessionPage(
   incoming: SessionInfo[],
   keepIds: Iterable<string>
 ): SessionInfo[] {
+  previous.forEach(rememberSessionLineage)
+  incoming.forEach(rememberSessionLineage)
   const keep = keepIds instanceof Set ? keepIds : new Set(keepIds)
 
   // Carry a known title onto a row that arrives title-less, so a freshly
@@ -178,14 +268,14 @@ export function mergeSessionPage(
   // flashing its raw message preview in the gap between persist and the async
   // auto-titler. A real clear sets the local title null first, so this never
   // masks one.
-  const prevById = new Map(previous.map(session => [session.id, session]))
+  const prevById = new Map(previous.map(session => [sessionScopeKey(session.profile, session.id), session]))
 
   const merged = incoming.map(session => {
     if (session.title?.trim()) {
       return session
     }
 
-    const carried = prevById.get(session.id)?.title?.trim()
+    const carried = prevById.get(sessionScopeKey(session.profile, session.id))?.title?.trim()
 
     return carried ? { ...session, title: carried } : session
   })
@@ -194,19 +284,24 @@ export function mergeSessionPage(
     return merged
   }
 
-  const incomingIds = new Set(merged.map(session => session.id))
+  const incomingIds = new Set(merged.map(session => sessionScopeKey(session.profile, session.id)))
 
   // Deduplicate by compression lineage: when auto-compression rotates the tip
   // id (old #4 → new #5), the incoming page carries the new tip but the
   // previous list still holds the old one.  Without lineage-level dedup both
   // rows survive as separate sidebar entries (fixes #43483).
-  const incomingLineageKeys = new Set(merged.map(session => session._lineage_root_id ?? session.id))
+  const incomingLineageKeys = new Set(
+    merged.map(session => sessionScopeKey(session.profile, session._lineage_root_id ?? session.id))
+  )
 
   const survivors = previous.filter(
     session =>
-      !incomingIds.has(session.id) &&
-      !incomingLineageKeys.has(session._lineage_root_id ?? session.id) &&
-      (keep.has(session.id) || (session._lineage_root_id != null && keep.has(session._lineage_root_id)))
+      !incomingIds.has(sessionScopeKey(session.profile, session.id)) &&
+      !incomingLineageKeys.has(sessionScopeKey(session.profile, session._lineage_root_id ?? session.id)) &&
+      (keep.has(sessionScopeKey(session.profile, session.id)) ||
+        (session._lineage_root_id != null && keep.has(sessionScopeKey(session.profile, session._lineage_root_id))) ||
+        keep.has(session.id) ||
+        (session._lineage_root_id != null && keep.has(session._lineage_root_id)))
   )
 
   return survivors.length ? [...survivors, ...merged] : merged
@@ -215,6 +310,17 @@ export function mergeSessionPage(
 export const $connection = atom<HermesConnection | null>(null)
 export const $gatewayState = atom('idle')
 export const $sessions = atom<SessionInfo[]>([])
+
+/** All durable ids currently known to represent one compression lineage. */
+export function sessionLineageIds(sessionId: string, profile?: null | string): string[] {
+  $sessions.get().forEach(rememberSessionLineage)
+  const profileKey = normalizeSessionProfile(profile)
+  const root = lineageRootByAlias.get(sessionScopeKey(profileKey, sessionId)) ?? sessionId
+  const aliases = lineageAliasesByRoot.get(sessionScopeKey(profileKey, root)) ?? new Set([root])
+
+  return [...new Set([sessionId, root, ...aliases])]
+}
+
 export const $sessionsTotal = atom<number>(0)
 // Cron-job sessions (source === 'cron') are fetched as their own list so the
 // scheduler's always-newest sessions never crowd recents out of the page
@@ -245,6 +351,14 @@ export const $messagingTruncated = atom<boolean>(false)
 // one. Empty for single-profile users (fall back to $sessionsTotal).
 export const $sessionProfileTotals = atom<Record<string, number>>({})
 export const $sessionsLoading = atom(true)
+export const $workingSessionIds = atom<string[]>([])
+export const UNKNOWN_SESSION_PROFILE_SCOPE = '\u0001unknown'
+export const $workingSessionProfiles = atom<Record<string, string[]>>({})
+let workingSessionMutationRevision = 0
+const workingSessionScopeRevisions = new Map<string, number>()
+const workingSessionUnscopedRevisions = new Map<string, number>()
+const SESSION_WORKING_WATCHDOG_TIMEOUT_MS = 8 * 60 * 1000
+const workingSessionWatchdogs = new Map<string, ReturnType<typeof setTimeout>>()
 export const $activeSessionId = atom<string | null>(null)
 export const $selectedStoredSessionId = atom<string | null>(null)
 export interface ActiveSessionStoredIdRotation {
@@ -320,7 +434,15 @@ export const $sessionPickerOpen = atom(false)
 
 export const setConnection = (next: Updater<HermesConnection | null>) => updateAtom($connection, next)
 export const setGatewayState = (next: Updater<string>) => updateAtom($gatewayState, next)
-export const setSessions = (next: Updater<SessionInfo[]>) => updateAtom($sessions, next)
+
+export const setSessions = (next: Updater<SessionInfo[]>) => {
+  const resolved =
+    typeof next === 'function' ? (next as (current: SessionInfo[]) => SessionInfo[])($sessions.get()) : next
+
+  resolved.forEach(rememberSessionLineage)
+  $sessions.set(resolved)
+}
+
 export const setSessionsTotal = (next: Updater<number>) => updateAtom($sessionsTotal, next)
 export const setCronSessions = (next: Updater<SessionInfo[]>) => updateAtom($cronSessions, next)
 export const setMessagingSessions = (next: Updater<SessionInfo[]>) => updateAtom($messagingSessions, next)
@@ -330,22 +452,640 @@ export const setMessagingTruncated = (next: Updater<boolean>) => updateAtom($mes
 export const setSessionProfileTotals = (next: Updater<Record<string, number>>) =>
   updateAtom($sessionProfileTotals, next)
 export const setSessionsLoading = (next: Updater<boolean>) => updateAtom($sessionsLoading, next)
+
+export const setWorkingSessionIds = (next: Updater<string[]>) => {
+  const resolved =
+    typeof next === 'function' ? (next as (current: string[]) => string[])($workingSessionIds.get()) : next
+
+  const retained = new Set(resolved)
+  const currentProfiles = $workingSessionProfiles.get()
+
+  const nextProfiles = Object.fromEntries(
+    Object.entries(currentProfiles).filter(([sessionId]) => retained.has(sessionId))
+  )
+
+  $workingSessionProfiles.set(nextProfiles)
+  $workingSessionIds.set(resolved)
+}
+
 export const setActiveSessionId = (next: Updater<string | null>) => updateAtom($activeSessionId, next)
 export const setActiveSessionStoredIdRotation = (next: Updater<ActiveSessionStoredIdRotation | null>) =>
   updateAtom($activeSessionStoredIdRotation, next)
 
 // Transient: a background session finished and the user hasn't opened it since.
-// Written by session-states.ts (handleTransition), cleared here on session open.
+// Written by terminal message producers and cleared once the transcript is
+// visibly acknowledged.
 export const $unreadFinishedSessionIds = atom<string[]>([])
+let publishingUnreadEntries = false
+const unreadEntries = new Map<string, SessionUnreadEntry>()
 
-export const setSelectedStoredSessionId = (next: Updater<string | null>) => {
-  updateAtom($selectedStoredSessionId, next)
-  // Opening a session clears its unread state — the user is now looking at it.
-  const id = $selectedStoredSessionId.get()
+export const setUnreadFinishedSessionIds = (next: Updater<string[]>) => {
+  const resolved =
+    typeof next === 'function' ? (next as (current: string[]) => string[])($unreadFinishedSessionIds.get()) : next
 
-  if (id && $unreadFinishedSessionIds.get().includes(id)) {
-    $unreadFinishedSessionIds.set($unreadFinishedSessionIds.get().filter(x => x !== id))
+  const retained = new Set(resolved)
+
+  for (const key of unreadEntries.keys()) {
+    if (!retained.has(sessionIdFromScopeKey(key))) {
+      unreadEntries.delete(key)
+    }
   }
+
+  $unreadFinishedSessionIds.set(resolved)
+}
+
+$unreadFinishedSessionIds.listen(ids => {
+  if (publishingUnreadEntries) {
+    return
+  }
+
+  const retained = new Set(ids)
+
+  for (const key of unreadEntries.keys()) {
+    if (!retained.has(sessionIdFromScopeKey(key))) {
+      unreadEntries.delete(key)
+    }
+  }
+})
+let unreadResetVersion: null | SessionUnreadVersion = null
+let fallbackCompletionGeneration = Date.now() * 1_000
+
+const INITIAL_UNREAD_EPOCH: SessionUnreadVersion = { revision: 0, source: '' }
+
+function currentUnreadEpoch(): SessionUnreadVersion {
+  return unreadResetVersion ?? INITIAL_UNREAD_EPOCH
+}
+
+export function createSessionCompletionToken(
+  id: string,
+  generation: number = ++fallbackCompletionGeneration
+): SessionCompletionToken {
+  return { epoch: { ...currentUnreadEpoch() }, generation, id }
+}
+
+export const setSelectedStoredSessionId = (next: Updater<string | null>) => updateAtom($selectedStoredSessionId, next)
+
+// Stored session ids with a blocking prompt (clarify / approval / sudo /
+// secret) waiting on the user.
+// Separate from $workingSessionIds: a session can be "working" (turn running)
+// AND need input. The sidebar row reads this for a persistent indicator that,
+// unlike a toast, survives window blur / alt-tab.
+export const $attentionSessionIds = atom<string[]>([])
+const attentionSessionScopes = new Set<string>()
+
+export const setAttentionSessionIds = (next: Updater<string[]>) => {
+  const resolved =
+    typeof next === 'function' ? (next as (current: string[]) => string[])($attentionSessionIds.get()) : next
+
+  const retained = new Set(resolved)
+
+  for (const scope of attentionSessionScopes) {
+    if (!retained.has(sessionIdFromScopeKey(scope))) {
+      attentionSessionScopes.delete(scope)
+    }
+  }
+
+  $attentionSessionIds.set(resolved)
+}
+
+$attentionSessionIds.listen(ids => {
+  const retained = new Set(ids)
+
+  for (const scope of attentionSessionScopes) {
+    if (!retained.has(sessionIdFromScopeKey(scope))) {
+      attentionSessionScopes.delete(scope)
+    }
+  }
+})
+
+export const getAttentionSessionScopeKeys = (): string[] => {
+  const scoped = [...attentionSessionScopes]
+
+  for (const sessionId of $attentionSessionIds.get()) {
+    if (scoped.some(scope => sessionIdFromScopeKey(scope) === sessionId)) {
+      continue
+    }
+
+    for (const session of $sessions.get()) {
+      if (sessionMatchesStoredId(session, sessionId)) {
+        scoped.push(sessionScopeKey(session.profile, sessionId))
+      }
+    }
+  }
+
+  return [...new Set(scoped)]
+}
+
+export function sessionNeedsInput(sessionId: string, profile?: null | string): boolean {
+  const root = sessionLineageRootId(sessionId, profile)
+  const key = sessionScopeKey(profile, root)
+
+  if (attentionSessionScopes.has(key)) {
+    return true
+  }
+
+  return (
+    $attentionSessionIds.get().includes(root) &&
+    ![...attentionSessionScopes].some(scope => sessionIdFromScopeKey(scope) === root)
+  )
+}
+
+export function setSessionAttention(
+  sessionId: string | null | undefined,
+  needsInput: boolean,
+  profile?: null | string
+) {
+  if (!sessionId) {
+    return
+  }
+
+  const root = sessionLineageRootId(sessionId, profile)
+  const key = sessionScopeKey(profile, root)
+
+  if (needsInput) {
+    attentionSessionScopes.add(key)
+  } else if (profile === undefined) {
+    for (const scope of attentionSessionScopes) {
+      if (sessionIdFromScopeKey(scope) === root) {
+        attentionSessionScopes.delete(scope)
+      }
+    }
+  } else {
+    attentionSessionScopes.delete(key)
+  }
+
+  const activeIds = [...new Set([...attentionSessionScopes].map(sessionIdFromScopeKey))]
+  setAttentionSessionIds(activeIds)
+}
+
+function compareSessionCompletionTokens(left: SessionCompletionToken, right: SessionCompletionToken): number {
+  const epoch = compareSessionUnreadVersions(left.epoch, right.epoch)
+
+  if (epoch !== 0) {
+    return epoch
+  }
+
+  if (left.generation !== right.generation) {
+    return left.generation - right.generation
+  }
+
+  return left.id.localeCompare(right.id)
+}
+
+function publishSessionUnreadEntries(): void {
+  const unread = [
+    ...new Set([...unreadEntries.values()].filter(entry => !entry.acknowledged).map(entry => entry.sessionId))
+  ]
+
+  // Publish even when raw ids are value-identical: profile ownership can have
+  // changed underneath a cloned session id and scoped consumers must rerun.
+  publishingUnreadEntries = true
+
+  try {
+    $unreadFinishedSessionIds.set(unread)
+  } finally {
+    publishingUnreadEntries = false
+  }
+}
+
+function applySessionUnreadReset(version: SessionUnreadVersion): boolean {
+  if (unreadResetVersion && compareSessionUnreadVersions(version, unreadResetVersion) <= 0) {
+    return false
+  }
+
+  unreadResetVersion = version
+
+  for (const [key, entry] of unreadEntries) {
+    if (compareSessionUnreadVersions(entry.completion.epoch, version) < 0) {
+      unreadEntries.delete(key)
+    }
+  }
+
+  publishSessionUnreadEntries()
+
+  return true
+}
+
+function mergeExactSessionCompletion(previous: SessionUnreadEntry, incoming: SessionUnreadEntry): SessionUnreadEntry {
+  const completion =
+    compareSessionCompletionTokens(incoming.completion, previous.completion) > 0
+      ? incoming.completion
+      : previous.completion
+
+  return {
+    acknowledged: previous.acknowledged || incoming.acknowledged,
+    completion,
+    profile: incoming.profile,
+    sessionId: incoming.sessionId
+  }
+}
+
+function applySessionUnreadEntry(incoming: SessionUnreadEntry): boolean {
+  const profile = normalizeSessionProfile(incoming.profile)
+  const sessionId = sessionLineageRootId(incoming.sessionId, profile)
+  const key = sessionScopeKey(profile, sessionId)
+  const entry = { ...incoming, profile, sessionId }
+  const epoch = compareSessionUnreadVersions(entry.completion.epoch, currentUnreadEpoch())
+
+  if (epoch < 0) {
+    return false
+  }
+
+  if (epoch > 0) {
+    applySessionUnreadReset(entry.completion.epoch)
+  }
+
+  const previous = unreadEntries.get(key)
+  let next: SessionUnreadEntry = entry
+
+  if (previous) {
+    if (previous.completion.id === entry.completion.id) {
+      next = mergeExactSessionCompletion(previous, entry)
+    } else if (compareSessionCompletionTokens(entry.completion, previous.completion) <= 0) {
+      return false
+    }
+  }
+
+  if (
+    previous &&
+    previous.acknowledged === next.acknowledged &&
+    previous.completion.id === next.completion.id &&
+    compareSessionCompletionTokens(previous.completion, next.completion) === 0
+  ) {
+    return false
+  }
+
+  unreadEntries.set(key, next)
+  publishSessionUnreadEntries()
+
+  return true
+}
+
+function migrateUnreadAliases(profile: string, root: string, aliases: ReadonlySet<string>): void {
+  const rootKey = sessionScopeKey(profile, root)
+  let merged = unreadEntries.get(rootKey)
+  let changed = false
+
+  for (const alias of aliases) {
+    if (alias === root) {
+      continue
+    }
+
+    const aliasKey = sessionScopeKey(profile, alias)
+    const entry = unreadEntries.get(aliasKey)
+
+    if (!entry) {
+      continue
+    }
+
+    unreadEntries.delete(aliasKey)
+    changed = true
+    const rooted = { ...entry, sessionId: root }
+
+    if (!merged || compareSessionCompletionTokens(rooted.completion, merged.completion) > 0) {
+      merged = rooted
+    } else if (merged.completion.id === rooted.completion.id) {
+      merged = mergeExactSessionCompletion(merged, rooted)
+    }
+  }
+
+  if (merged) {
+    unreadEntries.set(rootKey, merged)
+  }
+
+  if (changed) {
+    publishSessionUnreadEntries()
+  }
+}
+
+onSessionUnreadSync({
+  onChange: applySessionUnreadEntry,
+  onLegacyChange: (sessionId, unread, version) => {
+    if (unread) {
+      applySessionUnreadEntry({
+        acknowledged: false,
+        completion: {
+          epoch: { ...version },
+          generation: version.revision,
+          id: `legacy:${version.source}:${version.revision}`
+        },
+        profile: 'default',
+        sessionId
+      })
+    }
+    // Legacy `unread:false` carries no completion identity. Applying it to the
+    // current ledger can acknowledge C2 after that old window only saw C1.
+  },
+  onReset: applySessionUnreadReset,
+  onSnapshot: (entries, reset) => {
+    if (reset) {
+      applySessionUnreadReset(reset)
+    }
+
+    entries.forEach(applySessionUnreadEntry)
+  },
+  onSnapshotRequest: source => {
+    broadcastSessionUnreadSnapshot(source, [...unreadEntries.values()], unreadResetVersion)
+  }
+})
+requestSessionUnreadSnapshot()
+
+export function setSessionUnread(sessionId: string | null | undefined, unread: boolean, profile?: null | string) {
+  if (!sessionId) {
+    return
+  }
+
+  const canonical = sessionLineageRootId(sessionId, profile)
+
+  if (unread) {
+    if (sessionHasUnread(canonical, profile)) {
+      return
+    }
+
+    recordSessionCompletion(
+      canonical,
+      createSessionCompletionToken(`legacy-local:${++fallbackCompletionGeneration}`),
+      true,
+      profile
+    )
+
+    return
+  }
+
+  acknowledgeSessionCompletion(canonical, undefined, profile)
+}
+
+export function recordSessionCompletion(
+  sessionId: string | null | undefined,
+  completion: SessionCompletionToken,
+  unread: boolean,
+  profile?: null | string
+): void {
+  if (!sessionId) {
+    return
+  }
+
+  const entry: SessionUnreadEntry = {
+    acknowledged: !unread,
+    completion,
+    profile: normalizeSessionProfile(profile),
+    sessionId: sessionLineageRootId(sessionId, profile)
+  }
+
+  if (applySessionUnreadEntry(entry)) {
+    broadcastSessionUnreadChanged(entry)
+  }
+}
+
+export function acknowledgeSessionCompletion(
+  sessionId: string | null | undefined,
+  completion?: null | SessionCompletionToken,
+  profile?: null | string
+): void {
+  if (!sessionId) {
+    return
+  }
+
+  const normalizedProfile = normalizeSessionProfile(profile)
+  const canonical = sessionLineageRootId(sessionId, normalizedProfile)
+  const current = unreadEntries.get(sessionScopeKey(normalizedProfile, canonical))
+  const target = completion ?? current?.completion
+
+  if (!target) {
+    return
+  }
+
+  const entry: SessionUnreadEntry = {
+    acknowledged: true,
+    completion: target,
+    profile: normalizedProfile,
+    sessionId: canonical
+  }
+
+  if (applySessionUnreadEntry(entry)) {
+    broadcastSessionUnreadChanged(entry)
+  }
+}
+
+export function getSessionCompletionToken(
+  sessionId: string | null | undefined,
+  profile?: null | string
+): null | SessionCompletionToken {
+  if (!sessionId) {
+    return null
+  }
+
+  const normalizedProfile = normalizeSessionProfile(profile)
+  const root = sessionLineageRootId(sessionId, normalizedProfile)
+
+  return unreadEntries.get(sessionScopeKey(normalizedProfile, root))?.completion ?? null
+}
+
+export const getUnreadSessionScopeKeys = (): string[] => {
+  const scoped = [...unreadEntries.entries()].filter(([, entry]) => !entry.acknowledged).map(([key]) => key)
+
+  for (const sessionId of $unreadFinishedSessionIds.get()) {
+    if (scoped.some(scope => sessionIdFromScopeKey(scope) === sessionId)) {
+      continue
+    }
+
+    for (const session of $sessions.get()) {
+      if (sessionMatchesStoredId(session, sessionId)) {
+        scoped.push(sessionScopeKey(session.profile, sessionId))
+      }
+    }
+  }
+
+  return [...new Set(scoped)]
+}
+
+export function sessionHasUnread(sessionId: string, profile?: null | string): boolean {
+  const normalizedProfile = normalizeSessionProfile(profile)
+  const root = sessionLineageRootId(sessionId, normalizedProfile)
+  const exact = unreadEntries.get(sessionScopeKey(normalizedProfile, root))
+
+  if (exact) {
+    return exact.acknowledged === false
+  }
+
+  return (
+    $unreadFinishedSessionIds.get().includes(root) &&
+    ![...unreadEntries.values()].some(entry => entry.sessionId === root)
+  )
+}
+
+export interface SessionRenderedCompletion {
+  completion: SessionCompletionToken
+  profile: string
+}
+
+export function getSessionRenderedCompletion(
+  sessionId: string,
+  profile?: null | string
+): null | SessionRenderedCompletion {
+  const normalizedProfile = normalizeSessionProfile(profile)
+  const root = sessionLineageRootId(sessionId, normalizedProfile)
+  const entry = unreadEntries.get(sessionScopeKey(normalizedProfile, root))
+
+  if (!entry || entry.acknowledged) {
+    return null
+  }
+
+  return {
+    completion: entry.completion,
+    profile: normalizedProfile
+  }
+}
+
+export function clearAllSessionUnread(): void {
+  const version = nextSessionUnreadVersion()
+
+  applySessionUnreadReset(version)
+  broadcastSessionUnreadReset(version)
+}
+
+export interface SessionWorkingSnapshotRevision {
+  sequence: number
+}
+
+function recordSessionWorkingMutation(
+  sessionId: string,
+  profile: null | string | undefined,
+  previousScopes: readonly string[] = []
+): void {
+  workingSessionMutationRevision += 1
+
+  if (profile === undefined) {
+    workingSessionUnscopedRevisions.set(sessionId, workingSessionMutationRevision)
+
+    for (const scope of previousScopes) {
+      workingSessionScopeRevisions.set(sessionScopeKey(scope, sessionId), workingSessionMutationRevision)
+    }
+
+    return
+  }
+
+  workingSessionScopeRevisions.set(sessionScopeKey(profile, sessionId), workingSessionMutationRevision)
+}
+
+/** Capture the working ledger revision immediately before requesting an
+ * authoritative gateway snapshot. A live event that lands while the request is
+ * in flight changes this token, so the older response cannot overwrite it. */
+export function sessionWorkingSnapshotRevision(): SessionWorkingSnapshotRevision {
+  return { sequence: workingSessionMutationRevision }
+}
+
+function sessionWorkingChangedAfter(
+  sessionId: string,
+  profile: null | string | undefined,
+  revision: SessionWorkingSnapshotRevision | undefined
+): boolean {
+  if (!revision) {
+    return false
+  }
+
+  return (
+    (workingSessionUnscopedRevisions.get(sessionId) ?? 0) > revision.sequence ||
+    (workingSessionScopeRevisions.get(sessionScopeKey(profile, sessionId)) ?? 0) > revision.sequence
+  )
+}
+
+/** Merge one gateway profile from session.active_list without clearing local
+ * state. A missing terminal event is healed by the watchdog; pruning here would
+ * disarm that recovery while leaving the runtime cache busy. Per-session
+ * revisions keep a delayed active snapshot behind newer lifecycle events. */
+export function reconcileProfileWorkingSessions(
+  profile: null | string | undefined,
+  workingSessionIds: readonly string[],
+  expectedRevision?: SessionWorkingSnapshotRevision
+): boolean {
+  const normalized = normalizeSessionProfile(profile)
+  const activeIds = [...new Set(workingSessionIds.map(id => id.trim()).filter(Boolean))]
+
+  for (const sessionId of activeIds) {
+    if (!sessionWorkingChangedAfter(sessionId, normalized, expectedRevision)) {
+      setSessionWorking(sessionId, true, normalized)
+    }
+  }
+
+  return true
+}
+
+function clearSessionWorkingWatchdog(sessionId: string, scope: string): void {
+  const key = sessionScopeKey(scope, sessionId)
+  const existing = workingSessionWatchdogs.get(key)
+
+  if (existing) {
+    clearTimeout(existing)
+    workingSessionWatchdogs.delete(key)
+  }
+}
+
+/** Snapshot-only activity has no runtime `$sessionStates` entry to own its
+ * liveness timer. Keep a narrow profile-scoped watchdog for this UI mirror;
+ * runtime-backed turns still use the authoritative watchdog in session-states. */
+function armSessionWorkingWatchdog(sessionId: string, profile: null | string | undefined, scope: string): void {
+  clearSessionWorkingWatchdog(sessionId, scope)
+
+  const key = sessionScopeKey(scope, sessionId)
+
+  const timer = setTimeout(() => {
+    workingSessionWatchdogs.delete(key)
+
+    if (($workingSessionProfiles.get()[sessionId] ?? []).includes(scope)) {
+      setSessionWorking(sessionId, false, profile)
+    }
+  }, SESSION_WORKING_WATCHDOG_TIMEOUT_MS)
+
+  workingSessionWatchdogs.set(key, timer)
+}
+
+export function setSessionWorking(sessionId: string | null | undefined, working: boolean, profile?: null | string) {
+  if (!sessionId) {
+    return
+  }
+
+  const currentProfiles = $workingSessionProfiles.get()
+  const previousScopes = currentProfiles[sessionId] ?? []
+  const scope = profile === undefined ? UNKNOWN_SESSION_PROFILE_SCOPE : profile?.trim() || 'default'
+
+  const nextScopes = working
+    ? [...new Set([...previousScopes, scope])]
+    : profile === undefined
+      ? []
+      : previousScopes.filter(candidate => candidate !== scope)
+
+  if (working) {
+    armSessionWorkingWatchdog(sessionId, profile, scope)
+  } else if (profile === undefined) {
+    for (const previousScope of previousScopes) {
+      clearSessionWorkingWatchdog(sessionId, previousScope)
+    }
+
+    clearSessionWorkingWatchdog(sessionId, UNKNOWN_SESSION_PROFILE_SCOPE)
+  } else {
+    clearSessionWorkingWatchdog(sessionId, scope)
+  }
+
+  $workingSessionProfiles.set(
+    nextScopes.length
+      ? { ...currentProfiles, [sessionId]: nextScopes }
+      : Object.fromEntries(Object.entries(currentProfiles).filter(([id]) => id !== sessionId))
+  )
+  setWorkingSessionIds(current => {
+    const present = current.includes(sessionId)
+
+    // A lifecycle event can be meaningful even when membership is unchanged
+    // (e.g. a new turn reasserts true while an old turn's idle snapshot is in
+    // flight). Record every assertion so stale snapshots cannot win that race.
+    recordSessionWorkingMutation(sessionId, profile, previousScopes)
+
+    if (nextScopes.length > 0) {
+      return present ? current : [...current, sessionId]
+    }
+
+    return present ? current.filter(id => id !== sessionId) : current
+  })
 }
 
 export const setMessages = (next: Updater<ChatMessage[]>) => updateAtom($messages, next)

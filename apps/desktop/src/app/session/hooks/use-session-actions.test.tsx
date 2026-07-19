@@ -3,8 +3,10 @@ import type { MutableRefObject } from 'react'
 import { useEffect } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { getSessionMessages, type SessionInfo } from '@/hermes'
+import { deleteSession, getSession, getSessionMessages, type SessionInfo, setSessionArchived } from '@/hermes'
 import { createClientSessionState } from '@/lib/chat-runtime'
+import { $queuedPromptsBySession } from '@/store/composer-queue'
+import { $pinnedSessionIds } from '@/store/layout'
 import { $activeGatewayProfile, $newChatProfile } from '@/store/profile'
 import { $projectScope, $projectTree, ALL_PROJECTS } from '@/store/projects'
 import {
@@ -15,6 +17,11 @@ import {
   $newChatWorkspaceTarget,
   $resumeFailedSessionId,
   $selectedStoredSessionId,
+  $sessions,
+  clearAllSessionUnread,
+  requestSessionResumeProfile,
+  sessionHasUnread,
+  sessionScopeKey,
   setActiveSessionId,
   setActiveSessionStoredIdRotation,
   setCurrentCwd,
@@ -22,17 +29,20 @@ import {
   setNewChatWorkspaceTarget,
   setResumeFailedSessionId,
   setSelectedStoredSessionId,
-  setSessions
+  setSessions,
+  setSessionUnread
 } from '@/store/session'
 
 import { sessionRoute } from '../../routes'
 import type { ClientSessionState } from '../../types'
 
 import { useSessionActions } from './use-session-actions'
+import { resolveStoredSession } from './use-session-actions/utils'
 
 vi.mock('@/hermes', async importOriginal => ({
   ...(await importOriginal<Record<string, unknown>>()),
   deleteSession: vi.fn(),
+  getSession: vi.fn(),
   getSessionMessages: vi.fn(),
   listAllProfileSessions: vi.fn(),
   setApiRequestProfile: vi.fn(),
@@ -40,9 +50,64 @@ vi.mock('@/hermes', async importOriginal => ({
 }))
 
 const RUNTIME_SESSION_ID = 'rt-new-001'
+
+describe('resolveStoredSession profile ownership', () => {
+  afterEach(() => {
+    setSessions([])
+    $activeGatewayProfile.set('default')
+    vi.mocked(getSession).mockReset()
+  })
+
+  it('chooses the active profile when cached rows collide on raw id', async () => {
+    setSessions([
+      storedSession({ id: 'same', profile: 'alpha', title: 'Alpha' }),
+      storedSession({ id: 'same', profile: 'beta', title: 'Beta' })
+    ])
+    $activeGatewayProfile.set('beta')
+
+    await expect(resolveStoredSession('same')).resolves.toMatchObject({ profile: 'beta', title: 'Beta' })
+    expect(getSession).not.toHaveBeenCalled()
+  })
+
+  it('honors an explicit switcher profile when cached rows collide on raw id', async () => {
+    setSessions([
+      storedSession({ id: 'same', profile: 'alpha', title: 'Alpha' }),
+      storedSession({ id: 'same', profile: 'beta', title: 'Beta' })
+    ])
+    $activeGatewayProfile.set('alpha')
+    requestSessionResumeProfile('same', 'beta')
+
+    await expect(resolveStoredSession('same')).resolves.toMatchObject({ profile: 'beta', title: 'Beta' })
+    expect(getSession).not.toHaveBeenCalled()
+  })
+
+  it('queries the explicit profile when its cached row disappears before selection', async () => {
+    setSessions([storedSession({ id: 'same', profile: 'alpha', title: 'Alpha' })])
+    $activeGatewayProfile.set('alpha')
+    requestSessionResumeProfile('same', 'beta')
+    vi.mocked(getSession).mockImplementation(async (_sessionId, profile) =>
+      storedSession({ id: 'same', profile: profile ?? 'alpha', title: profile === 'beta' ? 'Beta' : 'Alpha' })
+    )
+
+    await expect(resolveStoredSession('same')).resolves.toMatchObject({ profile: 'beta', title: 'Beta' })
+    expect(getSession).toHaveBeenCalledTimes(1)
+    expect(getSession).toHaveBeenCalledWith('same', 'beta')
+  })
+
+  it('does not fall back to another profile when an explicit target is missing', async () => {
+    $activeGatewayProfile.set('alpha')
+    requestSessionResumeProfile('same', 'beta')
+    vi.mocked(getSession).mockRejectedValue(new Error('not found'))
+
+    await expect(resolveStoredSession('same')).resolves.toBeUndefined()
+    expect(getSession).toHaveBeenCalledTimes(1)
+    expect(getSession).toHaveBeenCalledWith('same', 'beta')
+  })
+})
+
 type HarnessHandle = Pick<
   ReturnType<typeof useSessionActions>,
-  'createBackendSessionForSend' | 'startFreshSessionDraft'
+  'archiveSession' | 'createBackendSessionForSend' | 'removeSession' | 'startFreshSessionDraft'
 >
 
 function storedSession(overrides: Partial<SessionInfo> = {}): SessionInfo {
@@ -256,6 +321,69 @@ describe('active stored-session id rotation routing', () => {
     await waitFor(() => expect(selectedStoredSessionIdRef.current).toBe('stored-A-next'))
     expect($selectedStoredSessionId.get()).toBe('stored-A-next')
     expect(navigate).not.toHaveBeenCalled()
+  })
+})
+
+describe('stored session mutations preserve profile ownership', () => {
+  afterEach(() => {
+    cleanup()
+    clearAllSessionUnread()
+    setSessions([])
+    $pinnedSessionIds.set([])
+    $queuedPromptsBySession.set({})
+    $activeGatewayProfile.set('default')
+    vi.mocked(deleteSession).mockReset()
+    vi.mocked(setSessionArchived).mockReset()
+  })
+
+  async function mountActions(): Promise<HarnessHandle> {
+    let handle: HarnessHandle | null = null
+    render(<Harness onReady={next => (handle = next)} requestGateway={vi.fn(async () => ({}) as never)} />)
+    await waitFor(() => expect(handle).not.toBeNull())
+
+    return handle!
+  }
+
+  function seedCollision(): void {
+    setSessions([
+      storedSession({ id: 'same', profile: 'alpha', title: 'Alpha' }),
+      storedSession({ id: 'same', profile: 'beta', title: 'Beta' })
+    ])
+    setSessionUnread('same', true, 'alpha')
+    setSessionUnread('same', true, 'beta')
+    $pinnedSessionIds.set(['same'])
+    $queuedPromptsBySession.set({
+      same: [{ attachments: [], id: 'queued-alpha', queuedAt: 1, text: 'keep me' }]
+    })
+    $activeGatewayProfile.set('alpha')
+  }
+
+  it('deletes only the requested profile row and unread entry', async () => {
+    seedCollision()
+    const handle = await mountActions()
+
+    await act(async () => handle.removeSession('same', 'beta'))
+
+    expect(vi.mocked(deleteSession)).toHaveBeenCalledWith('same', 'beta')
+    expect($sessions.get().map(session => session.profile)).toEqual(['alpha'])
+    expect(sessionHasUnread('same', 'alpha')).toBe(true)
+    expect(sessionHasUnread('same', 'beta')).toBe(false)
+    expect($pinnedSessionIds.get()).toEqual(['same'])
+    expect($queuedPromptsBySession.get().same?.[0]?.id).toBe('queued-alpha')
+  })
+
+  it('archives only the requested profile row and unread entry', async () => {
+    seedCollision()
+    const handle = await mountActions()
+
+    await act(async () => handle.archiveSession('same', 'beta'))
+
+    expect(vi.mocked(setSessionArchived)).toHaveBeenCalledWith('same', true, 'beta')
+    expect($sessions.get().map(session => session.profile)).toEqual(['alpha'])
+    expect(sessionHasUnread('same', 'alpha')).toBe(true)
+    expect(sessionHasUnread('same', 'beta')).toBe(false)
+    expect($pinnedSessionIds.get()).toEqual(['same'])
+    expect($queuedPromptsBySession.get().same?.[0]?.id).toBe('queued-alpha')
   })
 })
 
@@ -728,7 +856,7 @@ describe('resumeSession failure recovery', () => {
 
   it('does not reuse an empty cached runtime view for a stored session with history', async () => {
     const runtimeIdByStoredSessionIdRef = {
-      current: new Map([['stored-1', 'runtime-stale']])
+      current: new Map([[sessionScopeKey('default', 'stored-1'), 'runtime-stale']])
     } satisfies MutableRefObject<Map<string, string>>
 
     const sessionStateByRuntimeIdRef = {
@@ -782,7 +910,7 @@ describe('resumeSession failure recovery', () => {
     })
 
     expect(requestGateway).not.toHaveBeenCalledWith('session.usage', { session_id: 'runtime-stale' })
-    expect(runtimeIdByStoredSessionIdRef.current.has('stored-1')).toBe(false)
+    expect(runtimeIdByStoredSessionIdRef.current.has(sessionScopeKey('default', 'stored-1'))).toBe(false)
     expect(sessionStateByRuntimeIdRef.current.has('runtime-stale')).toBe(false)
     expect($activeSessionId.get()).toBe('runtime-1')
     expect($messages.get().length).toBe(1)
@@ -878,6 +1006,7 @@ describe('resumeSession warm-cache mapping integrity', () => {
     setResumeFailedSessionId(null)
     setMessages([])
     setSessions([])
+    $activeGatewayProfile.set('default')
     vi.restoreAllMocks()
   })
 
@@ -887,7 +1016,7 @@ describe('resumeSession warm-cache mapping integrity', () => {
     // exact "open chat A, chat B loads" corruption a reaped/respawned pooled
     // backend can leave behind.
     const runtimeIdByStoredSessionIdRef: MutableRefObject<Map<string, string>> = {
-      current: new Map([['stored-A', 'rt-recycled']])
+      current: new Map([[sessionScopeKey('default', 'stored-A'), 'rt-recycled']])
     }
 
     const sessionStateByRuntimeIdRef: MutableRefObject<Map<string, ClientSessionState>> = {
@@ -922,9 +1051,53 @@ describe('resumeSession warm-cache mapping integrity', () => {
     expect(resumeCalls.length).toBe(1)
     expect(resumeCalls[0][1]).toMatchObject({ session_id: 'stored-A' })
 
-    // The corrupt mapping was purged so it can't mis-resolve again.
-    expect(runtimeIdByStoredSessionIdRef.current.has('stored-A')).toBe(false)
-    expect(sessionStateByRuntimeIdRef.current.has('rt-recycled')).toBe(false)
+    // The corrupt mapping was purged so it can't mis-resolve again. The runtime
+    // state still legitimately belongs to stored-B and must not be destroyed.
+    expect(runtimeIdByStoredSessionIdRef.current.has(sessionScopeKey('default', 'stored-A'))).toBe(false)
+    expect(sessionStateByRuntimeIdRef.current.has('rt-recycled')).toBe(true)
+  })
+
+  it('does not relabel another profile warm runtime when raw ids collide', async () => {
+    const runtimeIdByStoredSessionIdRef: MutableRefObject<Map<string, string>> = {
+      current: new Map([[sessionScopeKey('beta', 'shared'), 'rt-alpha']])
+    }
+
+    const alphaState = createClientSessionState('shared', [], 'alpha')
+
+    const sessionStateByRuntimeIdRef: MutableRefObject<Map<string, ClientSessionState>> = {
+      current: new Map([['rt-alpha', alphaState]])
+    }
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'session.resume') {
+        return { session_id: 'rt-beta-fresh', resumed: params?.session_id, messages: [], info: {} } as never
+      }
+
+      return {} as never
+    })
+
+    $activeGatewayProfile.set('alpha')
+    setSessions([storedSession({ id: 'shared', message_count: 0, profile: 'beta' })])
+    requestSessionResumeProfile('shared', 'beta')
+
+    let resume: ((storedSessionId: string, replaceRoute?: boolean) => Promise<unknown>) | null = null
+    render(
+      <ResumeHarness
+        onReady={value => (resume = value)}
+        requestGateway={requestGateway}
+        runtimeIdByStoredSessionIdRef={runtimeIdByStoredSessionIdRef}
+        sessionStateByRuntimeIdRef={sessionStateByRuntimeIdRef}
+      />
+    )
+    await waitFor(() => expect(resume).not.toBeNull())
+    await resume!('shared', true)
+
+    expect(requestGateway).toHaveBeenCalledWith(
+      'session.resume',
+      expect.objectContaining({ profile: 'beta', session_id: 'shared' })
+    )
+    expect(runtimeIdByStoredSessionIdRef.current.has(sessionScopeKey('beta', 'shared'))).toBe(false)
+    expect(sessionStateByRuntimeIdRef.current.get('rt-alpha')).toBe(alphaState)
   })
 
   it('honours a warm cache entry whose stored id matches and refreshes its persisted transcript', async () => {
@@ -932,7 +1105,7 @@ describe('resumeSession warm-cache mapping integrity', () => {
     // it and never reach session.resume. session.activate refreshes the live
     // projection and, critically, rebinds its event transport after reconnect.
     const runtimeIdByStoredSessionIdRef: MutableRefObject<Map<string, string>> = {
-      current: new Map([['stored-A', 'rt-A']])
+      current: new Map([[sessionScopeKey('default', 'stored-A'), 'rt-A']])
     }
 
     const sessionStateByRuntimeIdRef: MutableRefObject<Map<string, ClientSessionState>> = {
@@ -976,12 +1149,12 @@ describe('resumeSession warm-cache mapping integrity', () => {
     expect(methods).toContain('session.activate')
     expect(methods).not.toContain('session.resume')
     expect(getSessionMessages).toHaveBeenCalledWith('stored-A', undefined)
-    expect(runtimeIdByStoredSessionIdRef.current.get('stored-A')).toBe('rt-A')
+    expect(runtimeIdByStoredSessionIdRef.current.get(sessionScopeKey('default', 'stored-A'))).toBe('rt-A')
   })
 
   it('repairs an idle warm cache from a divergent equal-length persisted transcript', async () => {
     const runtimeIdByStoredSessionIdRef: MutableRefObject<Map<string, string>> = {
-      current: new Map([['stored-A', 'rt-A']])
+      current: new Map([[sessionScopeKey('default', 'stored-A'), 'rt-A']])
     }
 
     const state = clientState('stored-A')
@@ -1056,7 +1229,7 @@ describe('resumeSession warm-cache mapping integrity', () => {
 
   it('keeps a warm runtime and optimistic turn on a transient activation timeout', async () => {
     const runtimeIdByStoredSessionIdRef: MutableRefObject<Map<string, string>> = {
-      current: new Map([['stored-A', 'rt-A']])
+      current: new Map([[sessionScopeKey('default', 'stored-A'), 'rt-A']])
     }
 
     const state = clientState('stored-A')
@@ -1093,7 +1266,7 @@ describe('resumeSession warm-cache mapping integrity', () => {
     await resume!('stored-A', true)
 
     expect(requestGateway.mock.calls.map(([method]) => method)).not.toContain('session.resume')
-    expect(runtimeIdByStoredSessionIdRef.current.get('stored-A')).toBe('rt-A')
+    expect(runtimeIdByStoredSessionIdRef.current.get(sessionScopeKey('default', 'stored-A'))).toBe('rt-A')
     expect(sessionStateByRuntimeIdRef.current.get('rt-A')?.messages[0]?.id).toBe('user-optimistic')
   })
 })

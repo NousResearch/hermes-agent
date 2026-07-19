@@ -55,6 +55,16 @@ describe('delegateTaskPayloads', () => {
     expect(spec).toMatchObject({ event_type: 'subagent.start', goal: 'do it', status: 'running' })
   })
 
+  it('carries background provenance from the delegate arguments', () => {
+    const [spec] = delegateTaskPayloads(
+      payload({ name: 'delegate_task', tool_id: 't1', args: { background: true, goal: 'do it' } }),
+      'running',
+      'tool.start'
+    )
+
+    expect(spec).toMatchObject({ detached: true, event_type: 'subagent.start' })
+  })
+
   it('maps completion (with error) to a failed subagent.complete', () => {
     const [spec] = delegateTaskPayloads(
       payload({ name: 'delegate_task', error: 'boom', result: { summary: 'failed run' } }),

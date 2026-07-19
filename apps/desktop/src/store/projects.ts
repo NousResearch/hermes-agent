@@ -10,8 +10,16 @@ import { persistentAtom } from '@/lib/persisted'
 import { activeGateway, ensureActiveGatewayOpen } from '@/store/gateway'
 import { setSidebarAgentsGrouped } from '@/store/layout'
 import { notify } from '@/store/notifications'
-import { requestFreshSession } from '@/store/profile'
-import { $selectedStoredSessionId, $sessions, sessionMatchesStoredId, workspaceCwdForNewSession } from '@/store/session'
+import { $activeGatewayProfile, normalizeProfileKey, requestFreshSession } from '@/store/profile'
+import {
+  $selectedStoredSessionId,
+  $sessions,
+  sessionIdFromScopeKey,
+  sessionMatchesStoredId,
+  sessionProfileFromScopeKey,
+  sessionScopeKey,
+  workspaceCwdForNewSession
+} from '@/store/session'
 import type { ProjectInfo, ProjectsPayload } from '@/types/hermes'
 
 // First-class, per-profile Projects (named, multi-folder workspaces). State is
@@ -54,15 +62,16 @@ function projectsStaleBackendError(): Error {
 // refresh once the server snapshot has caught up.
 export const $removedSessionIds = atom<Set<string>>(new Set())
 
-export function tombstoneSessions(ids: Array<null | string | undefined>): void {
+export function tombstoneSessions(ids: Array<null | string | undefined>, profile?: null | string): void {
   const next = new Set($removedSessionIds.get())
   const before = next.size
+  const normalizedProfile = normalizeProfileKey(profile ?? $activeGatewayProfile.get())
 
   for (const id of ids) {
     const trimmed = id?.trim()
 
     if (trimmed) {
-      next.add(trimmed)
+      next.add(sessionScopeKey(normalizedProfile, trimmed))
     }
   }
 
@@ -71,7 +80,7 @@ export function tombstoneSessions(ids: Array<null | string | undefined>): void {
   }
 }
 
-export function untombstoneSessions(ids: Array<null | string | undefined>): void {
+export function untombstoneSessions(ids: Array<null | string | undefined>, profile?: null | string): void {
   const current = $removedSessionIds.get()
 
   if (!current.size) {
@@ -79,18 +88,32 @@ export function untombstoneSessions(ids: Array<null | string | undefined>): void
   }
 
   const next = new Set(current)
+  const normalizedProfile = normalizeProfileKey(profile ?? $activeGatewayProfile.get())
 
   for (const id of ids) {
     const trimmed = id?.trim()
 
     if (trimmed) {
-      next.delete(trimmed)
+      next.delete(sessionScopeKey(normalizedProfile, trimmed))
     }
   }
 
   if (next.size !== current.size) {
     $removedSessionIds.set(next)
   }
+}
+
+export function removedSessionIdsForProfile(
+  profile?: null | string,
+  removedSessionScopeKeys: ReadonlySet<string> = $removedSessionIds.get()
+): Set<string> {
+  const normalizedProfile = normalizeProfileKey(profile ?? $activeGatewayProfile.get())
+
+  return new Set(
+    [...removedSessionScopeKeys]
+      .filter(key => sessionProfileFromScopeKey(key) === normalizedProfile)
+      .map(sessionIdFromScopeKey)
+  )
 }
 
 // True while the disk scan is in flight (drives the "finding repos" hint).
@@ -293,6 +316,7 @@ interface ProjectTreePayload {
 // cached tree intact so the sidebar doesn't flicker.
 export async function refreshProjectTree(): Promise<void> {
   $projectTreeLoading.set(true)
+  const profile = normalizeProfileKey($activeGatewayProfile.get())
 
   try {
     const res = await gatewayRequest<ProjectTreePayload>('projects.tree', { preview_limit: 3 })
@@ -309,7 +333,11 @@ export async function refreshProjectTree(): Promise<void> {
     const tombstones = $removedSessionIds.get()
 
     if (tombstones.size) {
-      const pending = new Set([...tombstones].filter(id => scoped.has(id)))
+      const pending = new Set(
+        [...tombstones].filter(
+          key => sessionProfileFromScopeKey(key) !== profile || scoped.has(sessionIdFromScopeKey(key))
+        )
+      )
 
       if (pending.size !== tombstones.size) {
         $removedSessionIds.set(pending)

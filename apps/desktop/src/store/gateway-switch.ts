@@ -3,8 +3,10 @@ import { atom } from 'nanostores'
 import { invalidateProfileScopedQueries } from '@/lib/query-client'
 import { resetSessionsLimit } from '@/store/layout'
 import {
-  $unreadFinishedSessionIds,
+  clearAllSessionUnread,
+  clearSessionLineageAliases,
   setActiveSessionId,
+  setAttentionSessionIds,
   setCronSessions,
   setFreshDraftReady,
   setMessages,
@@ -15,9 +17,11 @@ import {
   setSessionProfileTotals,
   setSessions,
   setSessionsLoading,
-  setSessionsTotal
+  setSessionsTotal,
+  setWorkingSessionIds
 } from '@/store/session'
 import { clearAllSessionStates } from '@/store/session-states'
+import { clearAllSubagents } from '@/store/subagents'
 
 // True while a soft gateway-mode apply is mid-flight (wipe → re-dial). Lets the
 // boot hook suppress the backend-exit toast and keeps the cold-boot CONNECTING
@@ -44,11 +48,15 @@ export function wipeSessionListsForGatewaySwitch(): void {
   setMessagingSessions([])
   setMessagingPlatformTotals({})
   setMessagingTruncated(false)
-  // Clearing $sessionStates automatically clears $workingSessionIds and
-  // $attentionSessionIds (they're computed from it). $unreadFinishedSessionIds
-  // is separate (transient, not computable) so wipe it explicitly.
+  // Clear both the runtime-derived state and the profile-scoped mirrors fed by
+  // reconnect snapshots. Unread is separate revisioned cross-window state, so
+  // reset it through its owning API.
   clearAllSessionStates()
-  $unreadFinishedSessionIds.set([])
+  setWorkingSessionIds([])
+  setAttentionSessionIds([])
+  clearAllSessionUnread()
+  clearSessionLineageAliases()
+  clearAllSubagents()
   setSessionsLoading(true)
   resetSessionsLimit()
 

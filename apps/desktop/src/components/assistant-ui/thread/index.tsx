@@ -30,8 +30,10 @@ export const Thread: FC<{
   onCancel?: () => Promise<void> | void
   onDismissError?: (messageId: string) => void
   onRestoreToMessage?: (messageId: string, target?: RestoreMessageTarget) => Promise<void> | void
+  profile?: null | string
   sessionId?: string | null
   sessionKey?: string | null
+  transcriptVisible?: boolean
 }> = ({
   clampToComposer = false,
   cwd = null,
@@ -42,8 +44,10 @@ export const Thread: FC<{
   onCancel,
   onDismissError,
   onRestoreToMessage,
+  profile,
   sessionId = null,
-  sessionKey
+  sessionKey,
+  transcriptVisible = true
 }) => {
   const { t } = useI18n()
   const copy = t.assistant.thread
@@ -101,7 +105,9 @@ export const Thread: FC<{
         components={messageComponents}
         emptyPlaceholder={emptyPlaceholder}
         loadingIndicator={loading === 'response' ? <ResponseLoadingIndicator /> : <BackgroundResumeNotice />}
+        profile={profile}
         sessionKey={sessionKey}
+        transcriptVisible={transcriptVisible && loading !== 'session'}
       />
       {loading === 'session' && <CenteredThreadSpinner />}
       <ThreadTimeline />

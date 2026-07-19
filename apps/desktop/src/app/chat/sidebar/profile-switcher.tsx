@@ -19,7 +19,7 @@ import {
 } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
 import { useStore } from '@nanostores/react'
-import { useEffect, useRef, useState } from 'react'
+import { type CSSProperties, useEffect, useId, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 
 import { CodeEditor } from '@/components/chat/code-editor'
@@ -32,7 +32,7 @@ import { Popover, PopoverAnchor, PopoverContent } from '@/components/ui/popover'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Tip, Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
 import { getProfileSoul, updateProfileSoul } from '@/hermes'
-import { useI18n } from '@/i18n'
+import { type Translations, useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { PROFILE_SWATCHES, profileColorSoft, resolveProfileColor } from '@/lib/profile-color'
 import {
@@ -59,6 +59,14 @@ import {
   setShowAllProfiles,
   sortByProfileOrder
 } from '@/store/profile'
+import {
+  $attentionSessionIds,
+  $sessions,
+  $unreadFinishedSessionIds,
+  getAttentionSessionScopeKeys,
+  getUnreadSessionScopeKeys
+} from '@/store/session'
+import { $sessionActivityKeys } from '@/store/session-activity'
 import type { ProfileInfo } from '@/types/hermes'
 
 import { CreateProfileDialog } from '../../profiles/create-profile-dialog'
@@ -66,6 +74,7 @@ import { DeleteProfileDialog } from '../../profiles/delete-profile-dialog'
 import { RenameProfileDialog } from '../../profiles/rename-profile-dialog'
 import { PROFILES_ROUTE } from '../../routes'
 
+import { deriveProfileActivityByProfile, type ProfileActivity, profileActivityPriority } from './profile-activity'
 import { useProfilePrewarm } from './use-profile-prewarm'
 
 const RAIL_GAP = 4 // px — matches gap-1 between squares.
@@ -80,6 +89,76 @@ const PROFILE_DROPDOWN_THRESHOLD = 13
 // reorder primitive (lib/reorder.ts) so every reorder strip feels identical.
 const RAIL_TRANSITION = REORDER_RAIL_TRANSITION
 const DRAG_TRANSITION = REORDER_DRAG_TRANSITION_CSS
+
+function profileActivityText(p: Translations['profiles'], activity: ProfileActivity): null | string {
+  if (activity === 'needs-input') {
+    return p.activityNeedsInput
+  }
+
+  if (activity === 'working') {
+    return p.activityRunning
+  }
+
+  return activity === 'unread' ? p.activityUnread : null
+}
+
+function profileActivityLabel(
+  p: Translations['profiles'],
+  profileName: string,
+  activity: ProfileActivity
+): null | string {
+  const activityText = profileActivityText(p, activity)
+
+  return activityText ? p.profileActivity(profileName, activityText) : null
+}
+
+function ProfileActivityBorder({ activity, hue }: { activity: ProfileActivity; hue: string }) {
+  if (activity === 'idle') {
+    return null
+  }
+
+  const signalHue = activity === 'needs-input' ? 'var(--color-amber-500)' : hue
+  const duration = activity === 'needs-input' ? '1.7s' : activity === 'unread' ? '3.27s' : '2.23s'
+
+  const style = {
+    '--arc-c0': `color-mix(in srgb, ${signalHue} 0%, transparent)`,
+    '--arc-c1': signalHue,
+    '--arc-c2': `color-mix(in srgb, ${signalHue} 55%, var(--ui-text-primary))`,
+    '--arc-duration': duration,
+    '--arc-inset': '0px',
+    '--arc-width': '0.09375rem'
+  } as CSSProperties
+
+  return (
+    <>
+      <span
+        aria-hidden="true"
+        className={cn('arc-border', activity === 'unread' && 'arc-reverse')}
+        data-profile-activity-border={activity}
+        style={style}
+      />
+      {activity !== 'working' && (
+        <span
+          aria-hidden="true"
+          className={cn(
+            'pointer-events-none absolute right-0.5 top-0.5 z-2 size-1.5',
+            activity === 'needs-input' ? 'quest-glow rounded-full' : 'rotate-45 rounded-[1px]'
+          )}
+          data-profile-activity-pip={activity}
+          style={{ backgroundColor: signalHue }}
+        />
+      )}
+      {activity === 'working' && (
+        <span
+          aria-hidden="true"
+          className="pointer-events-none absolute right-0.5 top-0.5 z-2 hidden size-1.5 rounded-full border bg-transparent motion-reduce:block"
+          data-profile-activity-static="working"
+          style={{ borderColor: signalHue }}
+        />
+      )}
+    </>
+  )
+}
 
 // The rail is a single horizontal strip of fixed cells. Pin drags to the x-axis
 // (no cross-axis scrollbar), snap to whole cells so a square steps slot-to-slot
@@ -112,6 +191,21 @@ export function ProfileRail() {
   const gatewayProfile = useStore($activeGatewayProfile)
   const order = useStore($profileOrder)
   const colors = useStore($profileColors)
+  const sessions = useStore($sessions)
+  const workingSessionIds = useStore($sessionActivityKeys)
+  useStore($attentionSessionIds)
+  useStore($unreadFinishedSessionIds)
+
+  const activityByProfile = deriveProfileActivityByProfile({
+    attentionSessionIds: getAttentionSessionScopeKeys(),
+    sessions,
+    unreadSessionIds: getUnreadSessionScopeKeys(),
+    workingSessionIds
+  })
+
+  const activityForProfile = (name: null | string | undefined): ProfileActivity =>
+    activityByProfile[normalizeProfileKey(name)] ?? 'idle'
+
   const navigate = useNavigate()
 
   const [createOpen, setCreateOpen] = useState(false)
@@ -223,7 +317,7 @@ export function ProfileRail() {
   }, [createRequest])
 
   return (
-    <div aria-label="Profiles" className="flex items-center gap-0.5" data-slot="profile-rail" role="tablist">
+    <div aria-label={p.title} className="flex items-center gap-0.5" data-slot="profile-rail" role="group">
       {/* One button toggles default ↔ all: home face when scoped to a profile,
           layers face when showing everything. Pinned left like Manage is right.
           Hidden until a second profile exists. */}
@@ -233,6 +327,8 @@ export function ProfileRail() {
           // profile) → return to default. So leaving a profile never lands on all.
           <ProfilePill
             active={isAll || onDefault}
+            activity={activityForProfile(defaultProfile.name)}
+            activityProfile={defaultProfile.name}
             glyph={isAll ? 'layers' : 'home'}
             label={onDefault ? p.showAllProfiles : p.switchToProfile(defaultProfile.name)}
             onSelect={() => (onDefault ? setShowAllProfiles(true) : selectProfile(defaultProfile.name))}
@@ -245,6 +341,8 @@ export function ProfileRail() {
       {!multiProfile && defaultProfile && (
         <ProfilePill
           active
+          activity={activityForProfile(defaultProfile.name)}
+          activityProfile={defaultProfile.name}
           glyph="home"
           label={defaultProfile.name}
           onSelect={() => selectProfile(defaultProfile.name)}
@@ -258,6 +356,7 @@ export function ProfileRail() {
         <div className="flex min-w-0 flex-1 items-center gap-1">
           <ProfileDropdown
             activeKey={isAll ? null : activeKey}
+            activityByProfile={activityByProfile}
             colors={colors}
             onSelect={selectProfile}
             profiles={named}
@@ -285,6 +384,7 @@ export function ProfileRail() {
                   {named.map(profile => (
                     <ProfileSquare
                       active={!isAll && normalizeProfileKey(profile.name) === activeKey}
+                      activity={activityForProfile(profile.name)}
                       color={resolveProfileColor(profile.name, colors)}
                       key={profile.name}
                       label={profile.name}
@@ -439,33 +539,89 @@ function AddProfileButton({ label, onClick }: { label: string; onClick: () => vo
 // falls back to the placeholder since the left toggle pill carries that state.
 function ProfileDropdown({
   activeKey,
+  activityByProfile,
   colors,
   onSelect,
   profiles
 }: {
   activeKey: null | string
+  activityByProfile: Record<string, ProfileActivity>
   colors: Record<string, string>
   onSelect: (name: string) => void
   profiles: ProfileInfo[]
 }) {
   const { t } = useI18n()
   const p = t.profiles
+  const activityDescriptionId = useId()
 
-  const value = activeKey ? (profiles.find(profile => normalizeProfileKey(profile.name) === activeKey)?.name ?? '') : ''
+  const activeProfile = activeKey
+    ? profiles.find(profile => normalizeProfileKey(profile.name) === activeKey)
+    : undefined
+
+  const value = activeProfile?.name ?? ''
+  const activeActivity = activeProfile ? (activityByProfile[normalizeProfileKey(activeProfile.name)] ?? 'idle') : 'idle'
+
+  const strongestSignal = profiles.reduce<{ activity: ProfileActivity; profile: ProfileInfo } | null>(
+    (best, profile) => {
+      const activity = activityByProfile[normalizeProfileKey(profile.name)] ?? 'idle'
+
+      if (activity === 'idle') {
+        return best
+      }
+
+      if (!best || profileActivityPriority(activity) > profileActivityPriority(best.activity)) {
+        return { activity, profile }
+      }
+
+      return best
+    },
+    activeProfile && activeActivity !== 'idle' ? { activity: activeActivity, profile: activeProfile } : null
+  )
+
+  const triggerActivity = strongestSignal?.activity ?? 'idle'
+  const triggerSignalProfile = strongestSignal?.profile
+
+  const triggerHue = triggerSignalProfile
+    ? (resolveProfileColor(triggerSignalProfile.name, colors) ?? 'var(--ui-accent)')
+    : 'var(--ui-accent)'
+
+  const activityDescription = triggerSignalProfile
+    ? (profileActivityLabel(p, triggerSignalProfile.name, triggerActivity) ?? triggerSignalProfile.name)
+    : null
 
   return (
     <Select onValueChange={name => name && onSelect(name)} value={value}>
-      <SelectTrigger aria-label={p.title} className="min-w-0 flex-1" size="xs">
+      <SelectTrigger
+        aria-describedby={activityDescription ? activityDescriptionId : undefined}
+        aria-label={p.title}
+        className="relative min-w-0 flex-1 overflow-visible"
+        data-profile-activity={triggerActivity === 'idle' ? undefined : triggerActivity}
+        size="xs"
+      >
         <SelectValue placeholder={p.title} />
+        <ProfileActivityBorder activity={triggerActivity} hue={triggerHue} />
       </SelectTrigger>
+      {activityDescription && (
+        <span className="sr-only" id={activityDescriptionId}>
+          {activityDescription}
+        </span>
+      )}
       <SelectContent collisionPadding={{ bottom: 44, left: 8, right: 8, top: 8 }} side="top">
-        {profiles.map(profile => (
-          <ProfileDropdownItem
-            color={resolveProfileColor(profile.name, colors)}
-            key={profile.name}
-            name={profile.name}
-          />
-        ))}
+        {profiles.map(profile => {
+          const color = resolveProfileColor(profile.name, colors)
+          const activity = activityByProfile[normalizeProfileKey(profile.name)] ?? 'idle'
+          const activityLabel = profileActivityLabel(p, profile.name, activity)
+
+          return (
+            <ProfileDropdownItem
+              activity={activity}
+              activityLabel={activityLabel}
+              color={color}
+              key={profile.name}
+              name={profile.name}
+            />
+          )
+        })}
       </SelectContent>
     </Select>
   )
@@ -473,21 +629,39 @@ function ProfileDropdown({
 
 // One dropdown row per profile — its own component so each row can own a
 // hover-intent prewarm timer (see useProfilePrewarm).
-function ProfileDropdownItem({ color, name }: { color: null | string; name: string }) {
+function ProfileDropdownItem({
+  activity,
+  activityLabel,
+  color,
+  name
+}: {
+  activity: ProfileActivity
+  activityLabel: null | string
+  color: null | string
+  name: string
+}) {
   const hue = color ?? 'var(--ui-text-quaternary)'
+  const hasActivity = activity !== 'idle'
   const { cancelPrewarm, startPrewarm } = useProfilePrewarm(name)
 
   return (
-    <SelectItem onPointerEnter={startPrewarm} onPointerLeave={cancelPrewarm} value={name}>
+    <SelectItem
+      aria-label={activityLabel ?? name}
+      onPointerEnter={startPrewarm}
+      onPointerLeave={cancelPrewarm}
+      value={name}
+    >
       <span className="flex min-w-0 items-center gap-1.5">
         <span
           aria-hidden="true"
-          className="grid size-4 shrink-0 place-items-center rounded-[3px] text-[0.5rem] font-semibold uppercase leading-none"
-          style={{ backgroundColor: profileColorSoft(hue, 22), color: color ?? undefined }}
+          className="relative grid size-4 shrink-0 place-items-center overflow-visible rounded-[3px] text-[0.5rem] font-semibold uppercase leading-none"
+          data-profile-activity={hasActivity ? activity : undefined}
+          style={{ backgroundColor: profileColorSoft(hue, hasActivity ? 34 : 22), color: color ?? undefined }}
         >
           {name.replace(/[^a-z0-9]/gi, '').charAt(0) || '?'}
+          <ProfileActivityBorder activity={activity} hue={hue} />
         </span>
-        <span className="truncate">{name}</span>
+        <span className={cn('truncate', hasActivity && 'font-medium text-foreground')}>{name}</span>
       </span>
     </SelectItem>
   )
@@ -495,28 +669,37 @@ function ProfileDropdownItem({ color, name }: { color: null | string; name: stri
 
 interface ProfilePillProps {
   active: boolean
+  activity?: ProfileActivity
+  activityProfile?: string
   // home / All / Manage are glyph action buttons (navigation, not identity).
   glyph: string
   label: string
   onSelect: () => void
 }
 
-function ProfilePill({ active, glyph, label, onSelect }: ProfilePillProps) {
+function ProfilePill({ active, activity = 'idle', activityProfile, glyph, label, onSelect }: ProfilePillProps) {
+  const { t } = useI18n()
+  const activityText = activityProfile ? profileActivityText(t.profiles, activity) : null
+  const accessibleLabel = activityText ? `${label} · ${activityText}` : label
+  const hasActivity = activity !== 'idle'
+
   return (
-    <Tip label={label}>
+    <Tip label={accessibleLabel}>
       <Button
-        aria-label={label}
+        aria-label={accessibleLabel}
         aria-pressed={active}
         className={cn(
-          'bg-transparent text-(--ui-text-tertiary) hover:bg-(--ui-control-hover-background) hover:text-foreground',
-          active && 'bg-(--ui-control-active-background) text-foreground'
+          'relative overflow-visible bg-transparent text-(--ui-text-tertiary) hover:bg-(--ui-control-hover-background) hover:text-foreground',
+          (active || hasActivity) && 'bg-(--ui-control-active-background) text-foreground'
         )}
+        data-profile-activity={hasActivity ? activity : undefined}
         onClick={onSelect}
         size="icon-xs"
         type="button"
         variant="ghost"
       >
         <Codicon name={glyph} size="0.875rem" />
+        <ProfileActivityBorder activity={activity} hue="var(--ui-accent)" />
       </Button>
     </Tip>
   )
@@ -524,6 +707,7 @@ function ProfilePill({ active, glyph, label, onSelect }: ProfilePillProps) {
 
 interface ProfileSquareProps {
   active: boolean
+  activity: ProfileActivity
   color: null | string
   label: string
   onSelect: () => void
@@ -546,6 +730,7 @@ const LONG_PRESS_MS = 450
 // dnd listeners, hover tip, and right-click menu.
 function ProfileSquare({
   active,
+  activity,
   color,
   label,
   onDelete,
@@ -557,6 +742,9 @@ function ProfileSquare({
   const { t } = useI18n()
   const p = t.profiles
   const hue = color ?? 'var(--ui-text-quaternary)'
+  const hasActivity = activity !== 'idle'
+  const activityLabel = profileActivityLabel(p, label, activity)
+  const accessibleLabel = activityLabel ?? label
   const [pickerOpen, setPickerOpen] = useState(false)
   const pressTimer = useRef<null | number>(null)
   const suppressClick = useRef(false)
@@ -605,13 +793,14 @@ function ProfileSquare({
                 <TooltipTrigger asChild>
                   <button
                     className={cn(
-                      'grid size-5 shrink-0 cursor-grab touch-none select-none place-items-center rounded-[3px] text-[0.5625rem] font-semibold uppercase leading-none transition-opacity hover:opacity-100',
-                      active ? 'opacity-100' : 'opacity-55',
+                      'relative grid size-5 shrink-0 cursor-grab touch-none select-none place-items-center overflow-visible rounded-[3px] text-[0.5625rem] font-semibold uppercase leading-none transition-opacity hover:opacity-100',
+                      active || hasActivity ? 'opacity-100' : 'opacity-55',
                       isDragging && 'z-10 cursor-grabbing opacity-100'
                     )}
+                    data-profile-activity={hasActivity ? activity : undefined}
                     ref={setNodeRef}
                     style={{
-                      backgroundColor: profileColorSoft(hue, active ? 30 : 22),
+                      backgroundColor: profileColorSoft(hue, hasActivity ? 34 : active ? 30 : 22),
                       boxShadow: [ring, lift].filter(Boolean).join(', ') || undefined,
                       color: color ?? undefined,
                       // Glide the dragged square between snapped cells with a little
@@ -622,7 +811,7 @@ function ProfileSquare({
                     type="button"
                     {...attributes}
                     {...listeners}
-                    aria-label={label}
+                    aria-label={accessibleLabel}
                     aria-pressed={active}
                     // Hold-to-recolor rides alongside the dnd pointer listener (call
                     // it first so drag tracking still arms), then a timer opens the
@@ -660,11 +849,12 @@ function ProfileSquare({
                     onPointerUp={clearPress}
                   >
                     {label.replace(/[^a-z0-9]/gi, '').charAt(0) || '?'}
+                    <ProfileActivityBorder activity={activity} hue={hue} />
                   </button>
                 </TooltipTrigger>
               </ContextMenuTrigger>
             </PopoverAnchor>
-            <TooltipContent>{label}</TooltipContent>
+            <TooltipContent>{accessibleLabel}</TooltipContent>
           </Tooltip>
         </TooltipProvider>
 

@@ -13,14 +13,14 @@
 // (e.g. a notification for a session this window never opened), in which case
 // the normal resume/REST lookup handles it.
 export function storedSessionIdForNotification(
-  id: string,
+  notificationSessionId: string,
   runtimeIdByStoredSessionId: ReadonlyMap<string, string>
 ): string {
-  for (const [storedId, runtimeId] of runtimeIdByStoredSessionId) {
-    if (runtimeId === id) {
-      return storedId
+  for (const [runtimeMapKey, runtimeId] of runtimeIdByStoredSessionId) {
+    if (runtimeId === notificationSessionId) {
+      return runtimeMapKey.slice(runtimeMapKey.indexOf('\u0000') + 1)
     }
   }
 
-  return id
+  return notificationSessionId
 }

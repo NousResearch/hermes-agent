@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { $activeGatewayProfile } from '@/store/profile'
 import { $activeSessionId, $selectedStoredSessionId } from '@/store/session'
 
 import { renameSessionPreferringRpc } from './session-actions-menu'
@@ -36,6 +37,7 @@ afterEach(() => {
   activeGateway.mockReturnValue({ request })
   $activeSessionId.set(null)
   $selectedStoredSessionId.set(null)
+  $activeGatewayProfile.set('default')
 })
 
 describe('renameSessionPreferringRpc', () => {
@@ -53,6 +55,7 @@ describe('renameSessionPreferringRpc', () => {
   it('falls back to REST when the RPC fails (e.g. socket mid-reconnect)', async () => {
     $selectedStoredSessionId.set(STORED_ID)
     $activeSessionId.set(RUNTIME_ID)
+    $activeGatewayProfile.set('work')
     request.mockRejectedValueOnce(new Error('not connected'))
 
     const result = await renameSessionPreferringRpc(STORED_ID, 'My branch', 'work')

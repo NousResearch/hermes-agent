@@ -34,16 +34,20 @@ const EMPTY_THINKING_PLACEHOLDER_RE =
 
 export function createClientSessionState(
   storedSessionId: string | null = null,
-  messages: ChatMessage[] = []
+  messages: ChatMessage[] = [],
+  profile?: string
 ): ClientSessionState {
   return {
+    activeCompletion: null,
     storedSessionId,
+    profile,
     messages,
     branch: '',
     cwd: '',
     model: '',
     provider: '',
     reasoningEffort: '',
+    renderedCompletion: null,
     serviceTier: '',
     fast: false,
     yolo: false,

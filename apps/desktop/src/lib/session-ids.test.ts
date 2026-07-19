@@ -12,6 +12,12 @@ describe('storedSessionIdForNotification', () => {
     expect(storedSessionIdForNotification('runtime-123', map)).toBe('stored-abc')
   })
 
+  it('decodes a profile-scoped runtime map key', () => {
+    const map = new Map([['beta\u0000stored-abc', 'runtime-123']])
+
+    expect(storedSessionIdForNotification('runtime-123', map)).toBe('stored-abc')
+  })
+
   it('returns the id unchanged when no mapping is known', () => {
     // A notification for a session this window never opened may already carry a
     // stored id; let the resume/REST lookup handle it as-is.

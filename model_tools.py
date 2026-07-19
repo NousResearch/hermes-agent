@@ -598,29 +598,48 @@ def _resolve_active_context_length() -> int:
         # under-reports the window and flips tool-search on earlier than the
         # user's real context warrants.
         #
-        # The lookup is deliberately config-only: get_custom_provider_context_length
-        # reads the already-loaded config, and resolve_runtime_provider resolves
-        # credentials without touching the network (~10ms). We must NOT pass
-        # base_url into get_model_context_length below to obtain the same value,
-        # because that enables its endpoint probes — on an unreachable endpoint
-        # (a local server that happens to be off) those cost ~25s at every CLI
-        # startup, which is exactly the regression #46620 guarded against.
+        # The lookup must stay strictly config-only, on two axes:
+        #
+        #  * We must NOT pass base_url into get_model_context_length below to
+        #    obtain the same value, because that enables its endpoint probes —
+        #    on an unreachable endpoint (a local server that happens to be off)
+        #    those cost ~25s at every CLI startup, exactly the regression
+        #    #46620 guarded against.
+        #  * We must NOT resolve runtime *credentials* to learn the base URL.
+        #    resolve_runtime_provider() is not I/O-free for every provider: its
+        #    Vertex branch calls get_vertex_config(), which mints/refreshes an
+        #    OAuth token (agent/vertex_adapter._refresh_credentials) whenever the
+        #    cached credential is missing or within 5 minutes of expiry. That
+        #    would put a token refresh on the tool-search assembly path.
+        #
+        # _get_named_custom_provider() is the config-only half of that
+        # resolution: it reads the loaded config (plus key_env lookups) and
+        # never performs network I/O. tools/cronjob_tools.py uses it the same
+        # way. An explicit model.base_url wins, matching the "bare custom"
+        # trust path used elsewhere.
         if config_ctx is None:
             try:
                 from hermes_cli.config import get_custom_provider_context_length
-                from hermes_cli.runtime_provider import resolve_runtime_provider
 
-                runtime = resolve_runtime_provider(
-                    requested=model_cfg.get("provider") or None,
-                    target_model=model_id,
-                )
-                cp_ctx = get_custom_provider_context_length(
-                    model=model_id,
-                    base_url=(runtime or {}).get("base_url") or "",
-                    custom_providers=cfg.get("custom_providers"),
-                )
-                if isinstance(cp_ctx, int) and cp_ctx > 0:
-                    return cp_ctx
+                base_url = str(model_cfg.get("base_url") or "").strip()
+                if not base_url:
+                    provider_name = str(model_cfg.get("provider") or "").strip()
+                    if provider_name:
+                        from hermes_cli.runtime_provider import (
+                            _get_named_custom_provider,
+                        )
+
+                        entry = _get_named_custom_provider(provider_name)
+                        base_url = str((entry or {}).get("base_url") or "").strip()
+
+                if base_url:
+                    cp_ctx = get_custom_provider_context_length(
+                        model=model_id,
+                        base_url=base_url,
+                        custom_providers=cfg.get("custom_providers"),
+                    )
+                    if isinstance(cp_ctx, int) and cp_ctx > 0:
+                        return cp_ctx
             except Exception:
                 logger.debug(
                     "custom_providers context-length lookup failed for the "

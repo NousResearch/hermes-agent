@@ -567,16 +567,32 @@ class TestActiveContextLengthResolution:
     }
 
     def _patch(self, monkeypatch, config, *, probe_result=131072):
-        """Point the resolver at ``config`` and record registry-fallback calls."""
+        """Point the resolver at ``config`` and record registry-fallback calls.
+
+        Note what is deliberately NOT stubbed: ``_get_named_custom_provider``
+        runs for real against ``config`` (it is config-only), and
+        ``resolve_runtime_provider`` is replaced by a tripwire rather than a
+        working double — see ``test_does_not_resolve_runtime_credentials``.
+        """
         import hermes_cli.config as cfg_mod
         import hermes_cli.runtime_provider as rp_mod
         import agent.model_metadata as meta_mod
 
+        # model_tools imports load_config from hermes_cli.config at call time;
+        # runtime_provider bound it at import time — patch both bindings so the
+        # real _get_named_custom_provider sees this config.
         monkeypatch.setattr(cfg_mod, "load_config", lambda *a, **k: config)
-        monkeypatch.setattr(
-            rp_mod, "resolve_runtime_provider",
-            lambda **k: {"base_url": "http://192.168.1.157:1234/v1"},
-        )
+        monkeypatch.setattr(rp_mod, "load_config", lambda *a, **k: config)
+
+        def _no_credential_resolution(**kwargs):
+            raise AssertionError(
+                "resolve_runtime_provider() must not be called from the "
+                "tool-search context gate: its Vertex branch refreshes OAuth "
+                "credentials (agent/vertex_adapter._refresh_credentials), "
+                "putting network I/O on the CLI startup path."
+            )
+
+        monkeypatch.setattr(rp_mod, "resolve_runtime_provider", _no_credential_resolution)
         calls: List[Dict[str, Any]] = []
 
         def _fake_get(model, **kwargs):
@@ -639,3 +655,61 @@ class TestActiveContextLengthResolution:
 
         self._patch(monkeypatch, {"model": {}})
         assert _resolve_active_context_length() == 0
+
+    def test_does_not_resolve_runtime_credentials(self, monkeypatch):
+        """The gate must never call resolve_runtime_provider().
+
+        It is not I/O-free for every provider: the Vertex branch
+        (hermes_cli/runtime_provider.py) calls get_vertex_config(), which
+        refreshes an OAuth token via agent/vertex_adapter._refresh_credentials
+        when the cached credential is missing or within 5 minutes of expiry.
+        Using it to learn a base URL would put a network round-trip on the
+        tool-search assembly path — the same class of startup regression as
+        the endpoint probes #46620 guards against.
+
+        _patch() installs resolve_runtime_provider as a tripwire that raises,
+        so any regression surfaces here (and in every other test in this class)
+        rather than silently costing users a token refresh at startup.
+        """
+        import hermes_cli.runtime_provider as rp_mod
+        from model_tools import _resolve_active_context_length
+
+        called: List[str] = []
+        real_named_lookup = rp_mod._get_named_custom_provider
+
+        def _tracking_named_lookup(requested_provider):
+            called.append(requested_provider)
+            return real_named_lookup(requested_provider)
+
+        self._patch(monkeypatch, self.CONFIG)
+        monkeypatch.setattr(
+            rp_mod, "_get_named_custom_provider", _tracking_named_lookup
+        )
+
+        # Resolves via the config-only path; the tripwire never fires.
+        assert _resolve_active_context_length() == 262144
+        assert called == ["custom:bigrickpc-lm-studio"], (
+            "base URL must come from the config-only named-provider lookup"
+        )
+
+    def test_explicit_model_base_url_skips_provider_lookup(self, monkeypatch):
+        """An explicit model.base_url is used directly (bare-custom trust path)."""
+        import hermes_cli.runtime_provider as rp_mod
+        from model_tools import _resolve_active_context_length
+
+        config = {
+            "model": {
+                "default": "qwen3.6-35b-a3b@q4_k_s",
+                "base_url": "http://192.168.1.157:1234/v1",
+            },
+            "custom_providers": self.CONFIG["custom_providers"],
+        }
+        self._patch(monkeypatch, config)
+
+        def _unexpected(requested_provider):
+            raise AssertionError(
+                "explicit model.base_url should not need a provider lookup"
+            )
+
+        monkeypatch.setattr(rp_mod, "_get_named_custom_provider", _unexpected)
+        assert _resolve_active_context_length() == 262144

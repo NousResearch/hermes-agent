@@ -313,7 +313,12 @@ export function BootFailureOverlay() {
         </div>
 
         <div className="grid gap-4 p-5 pt-0">
-          <div className="rounded-2xl border border-destructive/30 bg-destructive/10 px-4 py-3 text-xs text-destructive">
+          {/* Runtime/gateway errors stay in English; `dir="auto"` keeps their
+              punctuation from jumping to the wrong end under an RTL locale. */}
+          <div
+            className="rounded-2xl border border-destructive/30 bg-destructive/10 px-4 py-3 text-xs text-destructive"
+            dir="auto"
+          >
             {boot.error}
           </div>
 

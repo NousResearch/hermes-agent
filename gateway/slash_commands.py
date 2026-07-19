@@ -31,6 +31,7 @@ from typing import Any, Optional, Union
 
 from agent.account_usage import fetch_account_usage, render_account_usage_lines
 from agent.i18n import t
+from agent.turn_context import extract_api_content_sidecar
 from gateway.config import HomeChannel, Platform, PlatformConfig
 from gateway.platforms.base import EphemeralReply, MessageEvent, MessageType
 from gateway.session import (
@@ -4107,11 +4108,7 @@ class GatewaySlashCommandsMixin:
                     # Keep the api_content sidecar so the branch's first turn
                     # replays the parent's exact wire bytes (warm provider
                     # prompt cache) instead of a full cold prefill.
-                    api_content=(
-                        msg.get("api_content")
-                        if isinstance(msg.get("api_content"), str)
-                        else None
-                    ),
+                    api_content=extract_api_content_sidecar(msg),
                 )
             except Exception:
                 pass  # Best-effort copy

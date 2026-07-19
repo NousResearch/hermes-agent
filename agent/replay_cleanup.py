@@ -22,6 +22,7 @@ from typing import Any, Dict, List
 
 from agent.tool_dispatch_helpers import make_tool_result_message
 from agent.tool_result_classification import tool_may_have_side_effect
+from agent.turn_context import drop_stale_api_content
 
 logger = logging.getLogger(__name__)
 
@@ -315,7 +316,7 @@ def strip_stale_dangerous_confirmations(
                 # previously sent — i.e. the dangerous confirmation this
                 # redaction exists to expire. Replaying it verbatim would
                 # undo the redaction on the wire.
-                redacted.pop("api_content", None)
+                drop_stale_api_content(redacted)
                 cleaned.append(redacted)
                 continue
         cleaned.append(msg)

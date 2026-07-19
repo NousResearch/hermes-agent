@@ -9,6 +9,7 @@ import os
 import platform
 import subprocess
 import sys
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -114,6 +115,54 @@ class TestFindBashUnchanged:
         # over bash the way _find_shell does.
         assert isinstance(result, str)
         assert len(result) > 0
+
+
+class TestBashStartsStdinSafety:
+    """ACP/TUI hosts hang if the bash probe inherits the JSON-RPC stdin pipe."""
+
+    def test_bash_starts_detaches_stdin(self, tmp_path, monkeypatch):
+        import tools.environments.local as local_mod
+
+        bash = tmp_path / "bash"
+        bash.write_text("", encoding="utf-8")
+        bash.chmod(0o755)
+        local_mod._bash_starts_cache.clear()
+        captured: dict = {}
+
+        def _fake_run(*args, **kwargs):
+            captured.update(kwargs)
+            return subprocess.CompletedProcess(args[0], 0, stdout="", stderr="")
+
+        monkeypatch.setattr(local_mod.subprocess, "run", _fake_run)
+        assert local_mod._bash_starts(str(bash)) is True
+        assert captured.get("stdin") is subprocess.DEVNULL
+
+    def test_bash_starts_returns_under_piped_stdin(self, tmp_path):
+        """Regression: piped stdin must not stall the Windows/Git-Bash probe."""
+        import shutil
+
+        bash = shutil.which("bash")
+        if not bash:
+            pytest.skip("bash not available")
+
+        helper = (
+            "import sys\n"
+            "from tools.environments.local import _bash_starts, _bash_starts_cache\n"
+            "_bash_starts_cache.clear()\n"
+            f"print(_bash_starts({bash!r}))\n"
+        )
+        repo_root = str(Path(__file__).resolve().parents[2])
+        proc = subprocess.run(
+            [sys.executable, "-c", helper],
+            input="",  # keep stdin as a pipe (empty)
+            capture_output=True,
+            text=True,
+            timeout=20,
+            cwd=repo_root,
+            env={**os.environ, "PYTHONPATH": repo_root},
+        )
+        assert proc.returncode == 0, proc.stderr
+        assert proc.stdout.strip() == "True"
 
 
 class TestFindBashSkipsBrokenCustomPath:

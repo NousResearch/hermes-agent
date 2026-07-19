@@ -804,11 +804,13 @@ def _bash_starts(bash: str) -> bool:
         return cached
 
     try:
+        # ACP/TUI JSON-RPC stdin must not be inherited by this probe.
         result = subprocess.run(
             [bash, "--noprofile", "--norc", "-c", _BASH_EXTERNAL_PROGRAM_PROBE],
             capture_output=True,
             text=True,
             timeout=15,
+            stdin=subprocess.DEVNULL,
             creationflags=windows_hide_flags() if _IS_WINDOWS else 0,
         )
         ok = result.returncode == 0

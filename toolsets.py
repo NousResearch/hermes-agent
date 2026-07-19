@@ -65,6 +65,16 @@ _HERMES_CORE_TOOLS = [
     "execute_code", "delegate_task",
     # Cronjob management
     "cronjob",
+    # Tesla vehicle control
+    "tesla",
+    # Tapo smart home control
+    "tapo",
+    # LG TV control
+    "lgtv",
+    # Rheem water heater control
+    "rheem",
+    # Sonos speaker control
+    "sonos",
     # Home Assistant smart home control (gated on HASS_TOKEN via check_fn)
     "ha_list_entities", "ha_get_state", "ha_list_services", "ha_call_service",
     # Kanban multi-agent coordination — only in schema when the agent is
@@ -321,6 +331,37 @@ TOOLSETS = {
             "spotify_playback", "spotify_devices", "spotify_queue", "spotify_search",
             "spotify_playlists", "spotify_albums", "spotify_library",
         ],
+        "includes": []
+    },
+
+
+    "tesla": {
+        "description": "Tesla vehicle control — status, lock/unlock, climate, charging, horn, flash lights",
+        "tools": ["tesla"],
+        "includes": []
+    },
+
+    "tapo": {
+        "description": "TP-Link Tapo smart switch/plug control — on/off/toggle/status for home lights and devices",
+        "tools": ["tapo"],
+        "includes": []
+    },
+
+    "lgtv": {
+        "description": "LG webOS TV control — power, volume, input switching, app launching",
+        "tools": ["lgtv"],
+        "includes": []
+    },
+
+    "sonos": {
+        "description": "Sonos speaker control — playback, volume, favorites",
+        "tools": ["sonos"],
+        "includes": []
+    },
+
+    "rheem": {
+        "description": "Rheem water heater control — temperature, mode, vacation, status",
+        "tools": ["rheem"],
         "includes": []
     },
 

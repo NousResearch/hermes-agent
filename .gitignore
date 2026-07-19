@@ -144,3 +144,6 @@ apps/desktop/demo/
 # PR body is the archive. See the hermes-agent-dev skill's
 # pr-infographic-workflow reference (storage rule + lapse #8 / #COMMIT-1).
 infographic/
+
+# Smart home config files (contain IPs, MACs, device-specific info)
+# These live in ~/.hermes/smart_home/*.yaml at runtime

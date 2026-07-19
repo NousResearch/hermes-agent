@@ -4266,6 +4266,139 @@ def get_profiles_sessions(
     }
 
 
+@app.get("/api/profiles/sessions/sidebar")
+def get_profiles_sessions_sidebar(
+    recents_profile: str = "all",
+    recents_limit: int = 20,
+    recents_exclude: str = None,
+    cron_limit: int = 50,
+    messaging_limit: int = 100,
+    messaging_exclude: str = None,
+):
+    """Batched sidebar session slices — one profile-DB open per refresh.
+
+    The desktop sidebar needs three source-scoped windows per refresh: recents
+    (local chats, scoped to the active profile), cron sessions (all profiles),
+    and messaging-platform sessions (all profiles). Served as three separate
+    ``/api/profiles/sessions`` calls they reopened every profile's ``state.db``
+    three times and re-counted each refresh. This opens each DB once and runs
+    the three filtered queries together, returning the three windows in one
+    payload. Read-only and process-light, same row projection and 300s active
+    heuristic as ``/api/profiles/sessions``.
+
+    The caller passes the source taxonomy (``recents_exclude`` /
+    ``messaging_exclude`` CSV, ``source=cron`` is implicit) so this stays
+    taxonomy-agnostic like the per-slice endpoint. All three slices use
+    ``min_messages=1`` / ``archived=exclude`` / recency order, matching the
+    desktop's per-slice calls.
+    """
+    from hermes_state import SessionDB
+    from hermes_cli import profiles as profiles_mod
+
+    # cron + messaging are cross-profile; recents is scoped to recents_profile.
+    # Scan every profile once regardless (each DB opened a single time).
+    try:
+        infos = profiles_mod.list_profiles()
+        targets: List[Tuple[str, Path]] = [(info.name, info.path) for info in infos]
+    except Exception:
+        _log.exception("GET /api/profiles/sessions/sidebar: list_profiles failed")
+        targets = []
+    if not targets:
+        targets.append(("default", profiles_mod.get_profile_dir("default")))
+
+    recents_scope = (recents_profile or "all").strip() or "all"
+    recents_exclude_list = [s for s in (recents_exclude or "").split(",") if s.strip()]
+    messaging_exclude_list = [s for s in (messaging_exclude or "").split(",") if s.strip()]
+
+    recents_cap = min(max(recents_limit, 1), 500)
+    cron_cap = min(max(cron_limit, 1), 500)
+    messaging_cap = min(max(messaging_limit, 1), 500)
+
+    recents_rows: List[Dict[str, Any]] = []
+    cron_rows: List[Dict[str, Any]] = []
+    messaging_rows: List[Dict[str, Any]] = []
+    recents_total = 0
+    recents_profile_totals: Dict[str, int] = {}
+    errors: List[Dict[str, str]] = []
+    now = time.time()
+
+    def _tag(rows: List[Dict[str, Any]], name: str) -> List[Dict[str, Any]]:
+        for s in rows:
+            s["profile"] = name
+            s["is_default_profile"] = name == "default"
+            s["is_active"] = (
+                s.get("ended_at") is None
+                and (now - s.get("last_active", s.get("started_at", 0))) < 300
+            )
+            s["archived"] = bool(s.get("archived"))
+        return rows
+
+    def _slice(db, *, source=None, exclude=None, cap):
+        return db.list_sessions_rich(
+            source=source,
+            exclude_sources=exclude or None,
+            limit=cap,
+            offset=0,
+            min_message_count=1,
+            include_archived=False,
+            archived_only=False,
+            order_by_last_active=True,
+            compact_rows=True,
+        )
+
+    for name, home in targets:
+        db_path = Path(home) / "state.db"
+        if not db_path.exists():
+            continue
+        try:
+            db = SessionDB(db_path=db_path, read_only=True)
+        except Exception as exc:
+            errors.append({"profile": name, "error": str(exc)})
+            continue
+        try:
+            if recents_scope == "all" or name == recents_scope:
+                recents_rows.extend(
+                    _tag(_slice(db, exclude=recents_exclude_list, cap=recents_cap), name)
+                )
+                rtotal = db.session_count(
+                    exclude_sources=recents_exclude_list or None,
+                    min_message_count=1,
+                    include_archived=False,
+                    archived_only=False,
+                    exclude_children=True,
+                )
+                recents_total += rtotal
+                recents_profile_totals[name] = rtotal
+            cron_rows.extend(_tag(_slice(db, source="cron", cap=cron_cap), name))
+            messaging_rows.extend(
+                _tag(_slice(db, exclude=messaging_exclude_list, cap=messaging_cap), name)
+            )
+        except Exception as exc:
+            errors.append({"profile": name, "error": str(exc)})
+        finally:
+            db.close()
+
+    def _window(rows: List[Dict[str, Any]], cap: int) -> List[Dict[str, Any]]:
+        rows.sort(key=lambda s: s.get("last_active") or s.get("started_at") or 0, reverse=True)
+        win = rows[:cap]
+        _strip_session_list_rows(win)
+        return win
+
+    return {
+        "recents": {
+            "sessions": _window(recents_rows, recents_cap),
+            "total": recents_total,
+            "profile_totals": recents_profile_totals,
+        },
+        "cron": {"sessions": _window(cron_rows, cron_cap)},
+        "messaging": {
+            "sessions": _window(messaging_rows, messaging_cap),
+            "total": len(messaging_rows),
+        },
+        "errors": errors,
+    }
+
+
 @app.get("/api/sessions/search")
 async def search_sessions(q: str = "", limit: int = 20, profile: Optional[str] = None):
     """Search sessions by ID plus full-text message content using FTS5.

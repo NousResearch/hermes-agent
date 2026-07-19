@@ -629,6 +629,7 @@ function ConfirmScreen({ onClose, onPatch, overlay, t }: ScreenProps) {
 
   const rows: MenuRowSpec[] = primary ? [primary, { label: 'Back', run: back }] : [{ label: 'Back', run: back }]
   const sel = useMenu(rows, back)
+
   // Chip contrasts an immediate charge vs a period-end schedule at a glance.
   const chip =
     effect === 'charge_now'

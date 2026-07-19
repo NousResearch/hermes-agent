@@ -1473,6 +1473,52 @@ class TestWebServerEndpoints:
         resp = self.client.get("/api/profiles/sessions?archived=bogus")
         assert resp.status_code == 400
 
+    def test_profiles_sessions_sidebar_batches_three_slices(self):
+        """The batched sidebar endpoint returns recents/cron/messaging in one
+        pass, each source-scoped by the caller-supplied excludes, so the desktop
+        stops reopening every profile DB three times per refresh."""
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            for sid, src in (
+                ("sb-desktop", "desktop"),
+                ("sb-cron", "cron"),
+                ("sb-telegram", "telegram"),
+            ):
+                db.create_session(session_id=sid, source=src)
+                db.append_message(session_id=sid, role="user", content="hi")
+        finally:
+            db.close()
+
+        resp = self.client.get(
+            "/api/profiles/sessions/sidebar"
+            "?recents_profile=all&recents_limit=20&recents_exclude=cron,telegram"
+            "&cron_limit=50&messaging_limit=100"
+            "&messaging_exclude=cron,cli,codex,desktop,gateway,local,tui"
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+
+        recents_ids = {s["id"] for s in data["recents"]["sessions"]}
+        cron_ids = {s["id"] for s in data["cron"]["sessions"]}
+        messaging_ids = {s["id"] for s in data["messaging"]["sessions"]}
+
+        # Each session lands only in its own slice.
+        assert "sb-desktop" in recents_ids
+        assert "sb-desktop" not in cron_ids and "sb-desktop" not in messaging_ids
+        assert "sb-cron" in cron_ids
+        assert "sb-cron" not in recents_ids and "sb-cron" not in messaging_ids
+        assert "sb-telegram" in messaging_ids
+        assert "sb-telegram" not in recents_ids and "sb-telegram" not in cron_ids
+
+        # Rows carry profile tagging like /api/profiles/sessions.
+        row = next(s for s in data["recents"]["sessions"] if s["id"] == "sb-desktop")
+        assert row["profile"] == "default"
+        assert row["is_default_profile"] is True
+        assert isinstance(data.get("errors"), list)
+        assert data["recents"]["total"] >= 1
+
     def test_sessions_endpoint_reads_requested_profile(self):
         """The machine dashboard's global profile switcher must retarget
         the Sessions page, not just config/skills/model pages."""

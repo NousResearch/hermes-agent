@@ -59,6 +59,70 @@ from tools.computer_use.backend import (
 logger = logging.getLogger(__name__)
 
 
+def _action_result_from(
+    name: str,
+    ok: bool,
+    message: str,
+    meta: Dict[str, Any],
+    structured: Dict[str, Any],
+    *,
+    requested_delivery: Optional[str] = None,
+) -> ActionResult:
+    """Build an ActionResult, lifting cua-driver's structured verdict.
+
+    All structured fields are additive: a driver that omits
+    ``structuredContent`` (or any individual field) leaves the corresponding
+    ActionResult attribute ``None``, so callers and tests see unchanged
+    behavior on old drivers. See the action response shape in
+    cua-driver's mcp-tool-notes and NousResearch/hermes-agent#67052.
+    """
+    sc = structured if isinstance(structured, dict) else {}
+
+    def _pick(key: str) -> Any:
+        # structuredContent is canonical; fall back to a flattened meta copy.
+        if key in sc:
+            return sc.get(key)
+        return meta.get(key)
+
+    verified = _pick("verified")
+    if not isinstance(verified, bool):
+        verified = None
+    effect = _pick("effect")
+    if not isinstance(effect, str):
+        effect = None
+    escalation = _pick("escalation")
+    if not isinstance(escalation, dict):
+        escalation = None
+    path = _pick("path")
+    if not isinstance(path, str):
+        path = None
+    degraded = _pick("degraded")
+    if not isinstance(degraded, bool):
+        degraded = None
+    # Refusal/limitation code — drivers spell it "code" or "reason_code".
+    code = _pick("code") or _pick("reason_code")
+    if not isinstance(code, str):
+        code = None
+    # Echo the delivery mode the caller actually requested (the driver's
+    # `path` records the rung that ran; this records what we asked for).
+    delivery_mode = requested_delivery if isinstance(requested_delivery, str) else None
+
+    return ActionResult(
+        ok=ok,
+        action=name,
+        message=message,
+        meta=meta,
+        verified=verified,
+        effect=effect,
+        escalation=escalation,
+        path=path,
+        degraded=degraded,
+        delivery_mode=delivery_mode,
+        code=code,
+    )
+
+
+
 # ---------------------------------------------------------------------------
 # Update checking
 # ---------------------------------------------------------------------------
@@ -661,6 +725,16 @@ class _CuaDriverSession:
             # outer context-manager exits AFTER this block, so set to
             # None here is fine: stop() has already flipped _started.
             self._session = None
+            # Reset _started so a session that dies for ANY reason (MCP
+            # connection drop, driver crash, unexpected coro exit) is
+            # re-enterable: the next start()/call sees _started False and
+            # rebuilds the session instead of hanging forever on a dead one
+            # via _require_started(). On the normal stop() path this is a
+            # harmless idempotent no-op (stop() already set it False). A
+            # plain bool write is atomic in CPython, so this is safe from
+            # the bridge-loop thread without taking self._lock (which stop()
+            # may hold while awaiting this coro's future). See #55048 Bug 1.
+            self._started = False
 
     async def _populate_capabilities(self, session: Any) -> None:
         """Surface 4: cache per-tool capability sets + capability_version
@@ -996,7 +1070,24 @@ class _CuaDriverSession:
                 except OSError:
                     pass
 
+    # Lifecycle handshake calls issued BY start()/stop() themselves — these
+    # must not trigger the auto-restart guard below, or start() would recurse
+    # into start() when the session-start hasn't flipped _started yet.
+    _LIFECYCLE_CALLS = frozenset({"start_session", "end_session"})
+
     def call_tool(self, name: str, args: Dict[str, Any], timeout: float = 30.0) -> Dict[str, Any]:
+        # A prior session may have died (MCP drop / driver crash): its
+        # lifecycle coro reset _started to False in its finally (#55048
+        # Bug 1). Re-enter start() so we rebuild the session instead of
+        # calling _require_started() straight into a "not started" raise or
+        # a None session. start() is idempotent when already started. Skip
+        # this for the start_session/end_session handshake, which start()/
+        # stop() drive directly while _started is still in flux.
+        if not self._started and name not in self._LIFECYCLE_CALLS:
+            logger.warning(
+                "cua-driver session not active on %s; (re)starting before call", name
+            )
+            self.start()
         self._require_started()
         # The cua-driver daemon proxy returns POSIX EAGAIN ("Resource
         # temporarily unavailable") for heavier calls like get_window_state when
@@ -1766,6 +1857,48 @@ class CuaDriverBackend(ComputerUseBackend):
         )
 
     # ── Pointer ────────────────────────────────────────────────────
+    def _apply_delivery(
+        self,
+        action: str,
+        args: Dict[str, Any],
+        delivery_mode: Optional[str],
+        bring_to_front: bool,
+    ) -> Optional[ActionResult]:
+        """Attach delivery_mode to an input-action args dict.
+
+        Background is the default and never needs a flag. Foreground is only
+        sent when the driver advertises support for it; on an older driver
+        that lacks the capability we refuse with a structured
+        ``foreground_unsupported`` result instead of silently downgrading to
+        background (which would land the input somewhere the model didn't
+        expect). Returns an ActionResult to short-circuit on refusal, or None
+        to proceed. See NousResearch/hermes-agent#67052 phase B.
+        """
+        if not delivery_mode or delivery_mode == "background":
+            return None
+        if delivery_mode != "foreground":
+            return ActionResult(
+                ok=False, action=action, code="bad_delivery_mode",
+                message=f"unknown delivery_mode {delivery_mode!r} — use background|foreground.",
+            )
+        # Foreground requested. Only send it if the driver understands it.
+        if not self._session.supports_capability(
+            "input.delivery_mode", tool=action
+        ):
+            return ActionResult(
+                ok=False, action=action, code="foreground_unsupported",
+                delivery_mode="foreground",
+                message=(
+                    "This cua-driver build does not support foreground "
+                    "delivery (no `input.delivery_mode` capability). Update "
+                    "cua-driver to escalate to the foreground rung."
+                ),
+            )
+        args["delivery_mode"] = "foreground"
+        if bring_to_front:
+            args["bring_to_front"] = True
+        return None
+
     def click(
         self,
         *,
@@ -1775,6 +1908,8 @@ class CuaDriverBackend(ComputerUseBackend):
         button: str = "left",
         click_count: int = 1,
         modifiers: Optional[List[str]] = None,
+        delivery_mode: Optional[str] = None,
+        bring_to_front: bool = False,
     ) -> ActionResult:
         pid = self._active_pid
         if pid is None:
@@ -1815,6 +1950,9 @@ class CuaDriverBackend(ComputerUseBackend):
         if modifiers:
             args["modifier"] = modifiers
 
+        refusal = self._apply_delivery(tool, args, delivery_mode, bring_to_front)
+        if refusal is not None:
+            return refusal
         return self._action(tool, args)
 
     def drag(
@@ -1826,6 +1964,8 @@ class CuaDriverBackend(ComputerUseBackend):
         to_xy: Optional[Tuple[int, int]] = None,
         button: str = "left",
         modifiers: Optional[List[str]] = None,
+        delivery_mode: Optional[str] = None,
+        bring_to_front: bool = False,
     ) -> ActionResult:
         pid = self._active_pid
         if pid is None:
@@ -1849,6 +1989,9 @@ class CuaDriverBackend(ComputerUseBackend):
         else:
             return ActionResult(ok=False, action="drag",
                                 message="drag requires from_element/to_element or from_coordinate/to_coordinate.")
+        refusal = self._apply_delivery("drag", args, delivery_mode, bring_to_front)
+        if refusal is not None:
+            return refusal
         return self._action("drag", args)
 
     def scroll(
@@ -1860,6 +2003,8 @@ class CuaDriverBackend(ComputerUseBackend):
         x: Optional[int] = None,
         y: Optional[int] = None,
         modifiers: Optional[List[str]] = None,
+        delivery_mode: Optional[str] = None,
+        bring_to_front: bool = False,
     ) -> ActionResult:
         pid = self._active_pid
         if pid is None:
@@ -1889,18 +2034,27 @@ class CuaDriverBackend(ComputerUseBackend):
                 args["x"] = x
                 args["y"] = y
             args["window_id"] = self._active_window_id
+        refusal = self._apply_delivery("scroll", args, delivery_mode, bring_to_front)
+        if refusal is not None:
+            return refusal
         return self._action("scroll", args)
 
     # ── Keyboard ───────────────────────────────────────────────────
-    def type_text(self, text: str) -> ActionResult:
+    def type_text(self, text: str, *, delivery_mode: Optional[str] = None,
+                  bring_to_front: bool = False) -> ActionResult:
         pid = self._active_pid
         window_id = self._active_window_id
         if pid is None or window_id is None:
             return ActionResult(ok=False, action="type_text",
                                 message="No active window — call capture() first.")
-        return self._action("type_text", {"pid": pid, "window_id": window_id, "text": text})
+        args: Dict[str, Any] = {"pid": pid, "window_id": window_id, "text": text}
+        refusal = self._apply_delivery("type_text", args, delivery_mode, bring_to_front)
+        if refusal is not None:
+            return refusal
+        return self._action("type_text", args)
 
-    def key(self, keys: str) -> ActionResult:
+    def key(self, keys: str, *, delivery_mode: Optional[str] = None,
+            bring_to_front: bool = False) -> ActionResult:
         pid = self._active_pid
         window_id = self._active_window_id
         if pid is None or window_id is None:
@@ -1914,11 +2068,18 @@ class CuaDriverBackend(ComputerUseBackend):
 
         if modifiers:
             # hotkey requires at least one modifier + one key.
-            return self._action("hotkey", {"pid": pid, "window_id": window_id,
-                                           "keys": modifiers + [key_name]})
+            args: Dict[str, Any] = {"pid": pid, "window_id": window_id,
+                                    "keys": modifiers + [key_name]}
+            refusal = self._apply_delivery("hotkey", args, delivery_mode, bring_to_front)
+            if refusal is not None:
+                return refusal
+            return self._action("hotkey", args)
         else:
-            return self._action("press_key", {"pid": pid, "window_id": window_id,
-                                              "key": key_name})
+            args = {"pid": pid, "window_id": window_id, "key": key_name}
+            refusal = self._apply_delivery("press_key", args, delivery_mode, bring_to_front)
+            if refusal is not None:
+                return refusal
+            return self._action("press_key", args)
 
     # ── Value setter ────────────────────────────────────────────────
     def set_value(self, value: str, element: Optional[int] = None) -> ActionResult:
@@ -2325,11 +2486,22 @@ class CuaDriverBackend(ComputerUseBackend):
             logger.exception("cua-driver %s call failed", name)
             return ActionResult(ok=False, action=name, message=f"cua-driver error: {e}")
         ok = not out["isError"]
-        message = ""
         data = out["data"]
+        structured = out.get("structuredContent") or {}
+        message = ""
         if isinstance(data, dict):
             message = str(data.get("message", ""))
         elif isinstance(data, str):
             message = data
-        return ActionResult(ok=ok, action=name, message=message,
-                            meta=data if isinstance(data, dict) else {})
+        if not message and isinstance(structured, dict):
+            message = str(structured.get("message", ""))
+        # Merge data + structuredContent into meta for debugging, structured
+        # winning on key overlap (it is the canonical verdict surface).
+        meta: Dict[str, Any] = {}
+        if isinstance(data, dict):
+            meta.update(data)
+        if isinstance(structured, dict):
+            meta.update(structured)
+        return _action_result_from(name, ok, message, meta, structured,
+                                   requested_delivery=args.get("delivery_mode"))
+

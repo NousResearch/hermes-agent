@@ -749,23 +749,48 @@ def _attach_worker(sid: str, session: dict, worker) -> None:
     worker.close()
 
 
-def _close_session_by_id(sid: str, *, end_reason: str = "tui_close") -> bool:
-    """Single idempotent teardown for one session: pop it under the sessions
-    lock, then finalize, unregister notify, close agent + slash worker via the
-    shared ``_teardown_session`` path. Returns True iff it closed a live
-    session. The ``_finalized`` / worker ``_closed`` guards make concurrent or
-    repeat calls (e.g. session.close racing the WS-orphan reaper) harmless."""
+def _pop_session_by_id(sid: str) -> dict | None:
+    """Atomically detach one live session from the registry.
+
+    Detaching is the ownership claim for teardown: once the record is no
+    longer in ``_sessions``, a concurrent close/reaper becomes a no-op.  Keep
+    this operation separate from ``_teardown_session`` because finalization can
+    flush SQLite state, invoke plugins, commit memory, interrupt delegations,
+    and close agents/workers.  None of that slow external work belongs under
+    the global ``_session_resume_lock``.
+    """
     with _sessions_lock:
         session = _sessions.pop(sid, None)
     if session is None:
-        return False
+        return None
     # The session is already out of _sessions here, so downstream teardown
     # (e.g. _finalize_session's per-session async-delegation interrupt) can't
     # recover its live id by scanning the dict — stamp it on the record.
     session["_sid"] = sid
+    return session
+
+
+def _teardown_popped_session(
+    session: dict | None, *, end_reason: str = "tui_close"
+) -> bool:
+    """Finish a close after the caller has atomically detached the session."""
+    if session is None:
+        return False
     _teardown_session(session, end_reason=end_reason)
     return True
 
+
+def _close_session_by_id(sid: str, *, end_reason: str = "tui_close") -> bool:
+    """Single idempotent teardown funnel for callers needing no resume race.
+
+    Resume-sensitive callers first pop under ``_session_resume_lock`` and then
+    call ``_teardown_popped_session`` after releasing it.  Other reapers can use
+    this convenience wrapper directly.  The pop remains the single atomic
+    ownership claim, so concurrent/repeat close attempts stay harmless.
+    """
+    return _teardown_popped_session(
+        _pop_session_by_id(sid), end_reason=end_reason
+    )
 
 
 def _ws_session_is_orphaned(session: dict | None) -> bool:
@@ -795,9 +820,10 @@ def _schedule_ws_orphan_reap(sid: str) -> None:
     def _reap() -> None:
         # Serialize the orphan re-check against session.resume (which re-binds a
         # live transport under _session_resume_lock and would make this session
-        # non-orphaned). The actual pop + teardown then goes through the shared
-        # _close_session_by_id funnel so the dict mutation happens under
-        # _sessions_lock — consistent with every other _sessions mutator
+        # non-orphaned). Claim teardown by popping under both lifecycle locks,
+        # then release the global resume lock before the slow finalization work.
+        # The dict mutation still happens under _sessions_lock — consistent
+        # with every other _sessions mutator
         # (#39591: _reap previously popped under _session_resume_lock, giving no
         # mutual exclusion against _init_session / _close_session_by_id, which
         # guard with _sessions_lock). _sessions_lock is an RLock and the global
@@ -805,7 +831,8 @@ def _schedule_ws_orphan_reap(sid: str) -> None:
         with _session_resume_lock:
             if not _ws_session_is_orphaned(_sessions.get(sid)):
                 return
-            _close_session_by_id(sid, end_reason="ws_orphan_reap")
+            session = _pop_session_by_id(sid)
+        _teardown_popped_session(session, end_reason="ws_orphan_reap")
 
     timer = threading.Timer(_WS_ORPHAN_REAP_GRACE_S, _reap)
     timer.daemon = True
@@ -3106,6 +3133,42 @@ def _persist_model_switch(result) -> None:
         save_config_value("model.base_url", None)
 
 
+def _snapshot_agent_model_runtime(agent) -> dict:
+    """Capture the current agent model runtime for a one-turn restore."""
+    return {
+        "model": getattr(agent, "model", ""),
+        "provider": getattr(agent, "provider", ""),
+        "api_key": getattr(agent, "api_key", ""),
+        "base_url": getattr(agent, "base_url", ""),
+        "api_mode": getattr(agent, "api_mode", ""),
+        "primary_runtime": copy.deepcopy(getattr(agent, "_primary_runtime", None)),
+    }
+
+
+def _restore_agent_model_runtime(agent, snapshot: dict | None) -> None:
+    """Restore an agent model runtime captured before a one-turn override."""
+    if not snapshot or agent is None:
+        return
+    primary = snapshot.get("primary_runtime")
+    if primary and hasattr(agent, "_restore_primary_runtime"):
+        try:
+            agent._primary_runtime = copy.deepcopy(primary)
+            agent._fallback_activated = True
+            agent._rate_limited_until = 0
+            if agent._restore_primary_runtime():
+                return
+        except Exception:
+            logger.debug("TUI one-turn model restore via primary runtime failed", exc_info=True)
+    if hasattr(agent, "switch_model"):
+        agent.switch_model(
+            new_model=snapshot.get("model", ""),
+            new_provider=snapshot.get("provider", ""),
+            api_key=snapshot.get("api_key", ""),
+            base_url=snapshot.get("base_url", ""),
+            api_mode=snapshot.get("api_mode", ""),
+        )
+
+
 def _apply_model_switch(
     sid: str,
     session: dict,
@@ -3113,34 +3176,44 @@ def _apply_model_switch(
     *,
     confirm_expensive_model: bool = False,
     pin_session_override: bool = True,
-    parsed_flags: tuple[str, str, bool, bool, bool] | None = None,
+    parsed_flags: Any | None = None,
     persist_override: bool | None = None,
 ) -> dict:
     from hermes_cli.model_switch import (
-        parse_model_flags,
+        parse_model_flags_detailed,
         resolve_persist_behavior,
         switch_model,
     )
     from hermes_cli.runtime_provider import resolve_runtime_provider
 
     if parsed_flags is None:
-        parsed_flags = parse_model_flags(raw_input)
-    (
-        model_input,
-        explicit_provider,
-        is_global_flag,
-        _force_refresh,
-        is_session,
-    ) = parsed_flags
+        parsed_flags = parse_model_flags_detailed(raw_input)
+    if hasattr(parsed_flags, "model_input"):
+        model_input = parsed_flags.model_input
+        explicit_provider = parsed_flags.explicit_provider
+        is_global_flag = parsed_flags.is_global
+        is_session = parsed_flags.is_session
+        one_turn = parsed_flags.is_once
+    else:
+        model_input, explicit_provider, is_global_flag, _force_refresh, is_session = parsed_flags
+        one_turn = False
+    if is_global_flag and one_turn:
+        raise ValueError("/model --once cannot be combined with --global")
     persist_global = (
         persist_override
         if persist_override is not None
-        else resolve_persist_behavior(is_global_flag, is_session)
+        else resolve_persist_behavior(
+            is_global_flag,
+            is_session,
+            is_once=one_turn,
+        )
     )
     if not model_input:
         raise ValueError("model value required")
 
     agent = session.get("agent")
+    if one_turn and not agent:
+        raise ValueError("/model --once requires a live session")
     if agent:
         current_provider = getattr(agent, "provider", "") or ""
         current_model = getattr(agent, "model", "") or ""
@@ -3170,6 +3243,7 @@ def _apply_model_switch(
     # endpoints (e.g. "ollama-launch") and validate against saved model lists.
     user_provs = None
     custom_provs = None
+    cfg = None
     try:
         from hermes_cli.config import get_compatible_custom_providers, load_config
 
@@ -3192,6 +3266,8 @@ def _apply_model_switch(
     )
     if not result.success:
         raise ValueError(result.error_message or "model switch failed")
+
+    restore_snapshot = _snapshot_agent_model_runtime(agent) if (one_turn and agent) else None
 
     if agent:
         try:
@@ -3265,6 +3341,10 @@ def _apply_model_switch(
             session, model=result.new_model, provider=result.target_provider
         )
         _emit("session.info", sid, _session_info(agent, session))
+        if one_turn:
+            session["one_turn_model_restore"] = restore_snapshot
+        else:
+            session.pop("one_turn_model_restore", None)
 
     # Record the switch as a PER-SESSION override so a later rebuild of THIS
     # session (e.g. /new via _reset_session_agent, or resume) re-derives the
@@ -3279,7 +3359,7 @@ def _apply_model_switch(
     # contamination bug). agent.switch_model() above already mutated the right
     # agent in place; the override dict makes that choice survive a rebuild
     # without touching shared process state.
-    if pin_session_override and isinstance(session, dict):
+    if pin_session_override and isinstance(session, dict) and not one_turn:
         session["model_override"] = {
             "model": result.new_model,
             "provider": result.target_provider,
@@ -3293,6 +3373,7 @@ def _apply_model_switch(
         "value": result.new_model,
         "warning": result.warning_message or "",
         "confirm_required": False,
+        "scope": "once" if one_turn else ("global" if persist_global else "session"),
     }
 
 
@@ -3618,6 +3699,35 @@ def _session_usage_snapshot(session: dict | None) -> dict:
     return dict(mirror_usage) if isinstance(mirror_usage, dict) else {}
 
 
+def _project_info_for_cwd(cwd: str) -> dict | None:
+    """Return the first-class Project owning ``cwd`` for UI status surfaces.
+
+    Backed by the per-profile projects.db (the same store the desktop's project
+    tree caches), so the TUI status label, the desktop status bar, and ``/status``
+    all name the session's workspace identically. Only explicit, named projects
+    resolve here — an auto-discovered repo root has no projects.db row, so it
+    falls back to the cwd leaf on every surface.
+    """
+    if not str(cwd or "").strip():
+        return None
+    try:
+        from hermes_cli import projects_db as pdb
+
+        with pdb.connect_closing() as conn:
+            project = pdb.project_for_path(conn, cwd)
+        if project is None:
+            return None
+        return {
+            "id": project.id,
+            "slug": project.slug,
+            "name": project.name,
+            "primary_path": project.primary_path,
+        }
+    except Exception:
+        logger.debug("failed to resolve project for cwd", exc_info=True)
+        return None
+
+
 def _session_info(agent, session: dict | None = None) -> dict:
     if session is None:
         for candidate in _sessions.values():
@@ -3673,6 +3783,7 @@ def _session_info(agent, session: dict | None = None) -> dict:
         "skills": dict(mirror.get("skills") or {}) if isinstance(mirror.get("skills"), dict) else {},
         "cwd": cwd,
         "branch": _git_branch_for_cwd(cwd),
+        "project": _project_info_for_cwd(cwd),
         "personality": str(personality or ""),
         "running": bool((session or {}).get("running")),
         "title": _session_live_title(session or {}, session_key) if session_key else "",
@@ -4276,7 +4387,12 @@ def _apply_project_workspace(task_id: str, path: str, _name: str = "") -> None:
         info = (
             _session_info(agent, session)
             if agent is not None
-            else {"cwd": resolved, "branch": _git_branch_for_cwd(resolved), "lazy": True}
+            else {
+                "cwd": resolved,
+                "branch": _git_branch_for_cwd(resolved),
+                "project": _project_info_for_cwd(resolved),
+                "lazy": True,
+            }
         )
         _emit("session.info", sid, info)
     except Exception:
@@ -5441,7 +5557,44 @@ def _enqueue_prompt(session: dict, text: Any, transport: Any) -> None:
     session["queued_prompt"] = {"text": text, "transport": transport}
 
 
-def _handle_busy_submit(rid, sid: str, session: dict, text: Any, transport: Any) -> dict:
+def _interrupt_busy_session(sid: str, session: dict, agent: Any) -> None:
+    """Interrupt a busy turn without blocking the RPC reader or session lock.
+
+    Some providers cannot apply ``interrupt()`` until a synchronous tool or
+    network call returns. Running that call inline used to leave
+    ``prompt.submit`` holding ``history_lock`` for the whole wait, which in turn
+    blocked ``session.resume`` and delayed the queued prompt itself. Keep at
+    most one interrupt worker per session so repeated steering cannot leak an
+    unbounded number of blocked threads.
+    """
+    use_agent = agent is not None and hasattr(agent, "interrupt")
+    use_compute_host = not use_agent and _session_uses_compute_host(session)
+    if not use_agent and not use_compute_host:
+        return
+
+    with session["history_lock"]:
+        if session.get("_busy_interrupt_pending"):
+            return
+        session["_busy_interrupt_pending"] = True
+
+    def interrupt() -> None:
+        try:
+            if use_agent:
+                agent.interrupt()
+            else:
+                _get_compute_host_supervisor().interrupt(sid)
+        except Exception:
+            pass
+        finally:
+            with session["history_lock"]:
+                session["_busy_interrupt_pending"] = False
+
+    threading.Thread(target=interrupt, daemon=True, name=f"busy-interrupt-{sid}").start()
+
+
+def _handle_busy_submit(
+    rid, sid: str, session: dict, text: Any, transport: Any
+) -> dict | None:
     """Apply the ``display.busy_input_mode`` policy to a prompt that lands while
     a turn is in flight, instead of rejecting it with ``session busy``.
 
@@ -5458,25 +5611,30 @@ def _handle_busy_submit(rid, sid: str, session: dict, text: Any, transport: Any)
     """
     mode = _load_busy_input_mode()
     agent = session.get("agent")
+    with session["history_lock"]:
+        if not session.get("running"):
+            # The turn ended between prompt.submit's first busy check and this
+            # helper. Let the caller retry and claim the now-idle session.
+            return None
     if mode == "steer" and agent is not None and hasattr(agent, "steer"):
         try:
             if agent.steer(text):
-                session["last_active"] = time.time()
+                with session["history_lock"]:
+                    session["last_active"] = time.time()
                 return _ok(rid, {"status": "steered"})
         except Exception:
             pass  # fall through to queue
-    if mode != "queue" and agent is not None and hasattr(agent, "interrupt"):
-        try:
-            agent.interrupt()
-        except Exception:
-            pass
-    elif mode != "queue" and _session_uses_compute_host(session):
-        try:
-            _get_compute_host_supervisor().interrupt(sid)
-        except Exception:
-            pass
-    _enqueue_prompt(session, text, transport)
-    session["last_active"] = time.time()
+    # Queue before asking the live turn to stop. In particular, never call a
+    # provider or compute-host method while holding history_lock: an interrupt
+    # can wait behind the very operation it is trying to cancel.
+    with session["history_lock"]:
+        if not session.get("running"):
+            return None
+        _enqueue_prompt(session, text, transport)
+        session["last_active"] = time.time()
+
+    if mode != "queue":
+        _interrupt_busy_session(sid, session, agent)
     return _ok(rid, {"status": "queued"})
 
 
@@ -5531,6 +5689,21 @@ def _inflight_snapshot(session: dict) -> dict | None:
         "streaming": streaming,
         "user": user,
     }
+
+
+def _queued_prompt_snapshot(session: dict) -> dict | None:
+    """Return the accepted next-turn prompt without its transport handle.
+
+    A busy ``prompt.submit`` lives only in ``session["queued_prompt"]`` until
+    the current turn winds down. Desktop may reconnect or restart during that
+    window, so the live-session projection must carry the user-visible text;
+    otherwise the accepted prompt disappears until it finally drains.
+    """
+    queued = session.get("queued_prompt")
+    if not isinstance(queued, dict):
+        return None
+    user = _inflight_text(queued.get("text"))
+    return {"user": user} if user else None
 
 
 # ── Methods: session ─────────────────────────────────────────────────
@@ -5674,6 +5847,7 @@ def _(rid, params: dict) -> dict:
                 "skills": {},
                 "cwd": _sessions[sid]["cwd"],
                 "branch": _git_branch_for_cwd(_sessions[sid]["cwd"]),
+                "project": _project_info_for_cwd(_sessions[sid]["cwd"]),
                 "lazy": True,
                 "desktop_contract": DESKTOP_BACKEND_CONTRACT,
                 "profile_name": _current_profile_name(),
@@ -5820,6 +5994,7 @@ def _lazy_resume_info(cwd: str, *, model: str = "", provider: str = "") -> dict:
     info = {
         "cwd": cwd,
         "branch": _git_branch_for_cwd(cwd),
+        "project": _project_info_for_cwd(cwd),
         "model": model or _resolve_model(),
         "tools": {},
         "skills": {},
@@ -6099,12 +6274,12 @@ def _(rid, params: dict) -> dict:
         _enable_gateway_prompts()
         try:
             db.reopen_session(target)
-            # repair_alternation on the model-fed copy only: this resume feeds
-            # LIVE REPLAY (raw_history → sanitize_replay_history → the resumed
-            # session's working conversation). display_history stays verbatim —
+            # One lineage SELECT feeds both projections (#67142-adjacent perf,
+            # from the desktop audit): the model-fed copy is alternation-repaired
+            # (raw_history → sanitize_replay_history → the resumed session's
+            # working conversation) and the display copy stays verbatim —
             # inspection/export must show what is actually stored.
-            raw_history = db.get_messages_as_conversation(target, repair_alternation=True)
-            display_history = db.get_messages_as_conversation(target, include_ancestors=True)
+            raw_history, display_history = db.get_resume_conversations(target)
         except Exception as e:
             if lease is not None:
                 lease.release()
@@ -6177,12 +6352,10 @@ def _(rid, params: dict) -> dict:
     )
     try:
         db.reopen_session(target)
-        # repair_alternation on the model-fed copy only (see the interactive
-        # resume above): this loads LIVE REPLAY history; display stays verbatim.
-        raw_history = db.get_messages_as_conversation(target, repair_alternation=True)
-        display_history = db.get_messages_as_conversation(
-            target, include_ancestors=True
-        )
+        # One lineage SELECT feeds both projections (see the interactive resume
+        # above): the model-fed copy is alternation-repaired for LIVE REPLAY, the
+        # display copy stays verbatim.
+        raw_history, display_history = db.get_resume_conversations(target)
         # The display transcript keeps every row so the user still sees their
         # full history.  The model-fed history is sanitized: a session whose
         # last turn died mid-tool-loop persists a dangling assistant(tool_calls)
@@ -6316,6 +6489,7 @@ def _(rid, params: dict) -> dict:
     info = _session_info(agent, session) if agent is not None else {
         "cwd": cwd,
         "branch": _git_branch_for_cwd(cwd),
+        "project": _project_info_for_cwd(cwd),
         "lazy": True,
     }
     _emit("session.info", params.get("session_id", ""), info)
@@ -6369,8 +6543,12 @@ def _session_live_item(sid: str, session: dict, current_sid: str = "") -> dict:
     history = list(session.get("history") or [])
     status = _session_live_status(sid, session)
     inflight = _inflight_snapshot(session)
+    queued = _queued_prompt_snapshot(session)
     preview = _message_preview(history)
-    if inflight:
+    if queued:
+        preview = queued.get("user") or preview
+        preview = " ".join(str(preview).split())[:160]
+    elif inflight:
         preview = inflight.get("assistant") or inflight.get("user") or preview
         preview = " ".join(str(preview).split())[:160]
     now = time.time()
@@ -6411,8 +6589,10 @@ def _fallback_session_info(session: dict) -> dict:
     agent = session.get("agent")
     if agent is not None:
         return _session_info(agent)
+    cwd = _default_session_cwd()
     return {
-        "cwd": _default_session_cwd(),
+        "cwd": cwd,
+        "project": _project_info_for_cwd(cwd),
         "lazy": True,
         "model": _resolve_model(),
         "skills": {},
@@ -6439,6 +6619,7 @@ def _live_session_payload(
             session.get("history") or []
         )
         inflight = _inflight_snapshot(session)
+        queued = _queued_prompt_snapshot(session)
         running = bool(session.get("running"))
     payload = {
         "info": _fallback_session_info(session),
@@ -6452,6 +6633,8 @@ def _live_session_payload(
     }
     if inflight:
         payload["inflight"] = inflight
+    if queued:
+        payload["queued"] = queued
     return payload
 
 
@@ -8475,12 +8658,15 @@ def _(rid, params: dict) -> dict:
     usage = _session_usage_snapshot(session)
     provider = getattr(agent, "provider", None) or mirror.get("provider") or "unknown"
     model = getattr(agent, "model", None) or mirror.get("model") or "(unknown)"
+    project = _project_info_for_cwd(_display_session_cwd(session))
     lines = [
         "Hermes TUI Status",
         "",
         f"Session ID: {key}",
         f"Path: {display_hermes_home()}",
     ]
+    if project:
+        lines.append(f"Project: {project['name']}")
     title = (meta.get("title") or "").strip()
     if title:
         lines.append(f"Title: {title}")
@@ -8725,13 +8911,13 @@ def _(rid, params: dict) -> dict:
 @method("session.close")
 def _(rid, params: dict) -> dict:
     sid = params.get("session_id", "")
-    # Serialize against the WS-orphan reaper (which also pops under
-    # _session_resume_lock) so a disconnect-reap and an explicit close can't
-    # both tear the same session down. _close_session_by_id is the single
-    # idempotent teardown path (pop + _teardown_session) and returns False
-    # when the session is already gone.
+    # Serialize only the ownership claim against session.resume / the orphan
+    # reaper. Finalization may run arbitrary plugin/agent cleanup and must not
+    # keep every unrelated session.resume waiting behind it.
     with _session_resume_lock:
-        return _ok(rid, {"closed": _close_session_by_id(sid, end_reason="tui_close")})
+        session = _pop_session_by_id(sid)
+    closed = _teardown_popped_session(session, end_reason="tui_close")
+    return _ok(rid, {"closed": closed})
 
 
 @method("session.branch")
@@ -9163,13 +9349,25 @@ def _(rid, params: dict) -> dict:
     # or fallback moved the session transport to stdio.
     if (t := current_transport()) is not None:
         session["transport"] = t
+    while True:
+        busy_transport = None
+        with session["history_lock"]:
+            if session.get("running"):
+                # Don't reject a mid-turn prompt — queue it (and, by default,
+                # interrupt the live turn) so it runs as the next turn. The
+                # provider interrupt itself must happen after this lock is
+                # released: a non-interruptible tool may keep it waiting.
+                busy_transport = t or session.get("transport")
+            else:
+                break
+        busy_response = _handle_busy_submit(rid, sid, session, text, busy_transport)
+        if busy_response is not None:
+            return busy_response
+        # The old turn finished between the two lock acquisitions. Retry the
+        # claim so this prompt starts normally instead of being stranded in a
+        # queue whose drain already ran.
+
     with session["history_lock"]:
-        if session.get("running"):
-            # Don't reject a mid-turn prompt — queue it (and, by default,
-            # interrupt the live turn) so it runs as the next turn. See
-            # _handle_busy_submit for why the old "session busy" rejection
-            # dropped messages when teardown outlived the client's retry window.
-            return _handle_busy_submit(rid, sid, session, text, t or session.get("transport"))
         # A watch session's run lives in the PARENT turn, so its own running
         # flag is False — without this, typing mid-run builds a second agent
         # racing the in-flight child on the same stored session (interleaved
@@ -9678,6 +9876,7 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
         session_tokens = []
         home_token = None  # per-turn HERMES_HOME override for a resumed remote profile
         goal_followup = None  # set by the post-turn goal hook below
+        one_turn_restore = session.pop("one_turn_model_restore", None)
         try:
             from tools.approval import (
                 reset_current_session_key,
@@ -9699,7 +9898,15 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
             # the sudo.request overlay. (secret capture is a module global, so
             # re-running is a harmless no-op.)
             _wire_callbacks(sid)
-            _sync_agent_model_with_config(sid, session)
+            # Skip the config-model sync while a /model --once override is
+            # active: the once-model is intentionally not pinned as a session
+            # model_override (it must not persist), so without this guard the
+            # sync would see "agent model != config model" and clobber the
+            # once-override back to the config model before the turn runs
+            # (#29923 review defect). Any config.yaml change is adopted on
+            # the NEXT turn, after the finally-restore below.
+            if not one_turn_restore:
+                _sync_agent_model_with_config(sid, session)
             cwd = _session_cwd(session)
             _register_session_cwd(session)
             cols = session.get("cols", 80)
@@ -10087,6 +10294,14 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
             )
             _emit("error", sid, {"message": str(e)})
         finally:
+            if one_turn_restore:
+                try:
+                    _restore_agent_model_runtime(agent, one_turn_restore)
+                    _restart_slash_worker(sid, session)
+                    _persist_live_session_runtime(session)
+                    _persist_live_session_system_prompt(session)
+                except Exception:
+                    logger.debug("TUI one-turn model restore failed", exc_info=True)
             try:
                 if approval_token is not None:
                     reset_current_session_key(approval_token)
@@ -11051,10 +11266,10 @@ def _(rid, params: dict) -> dict:
                         4009,
                         "session busy — /interrupt the current turn before switching models",
                     )
-                from hermes_cli.model_switch import parse_model_flags
+                from hermes_cli.model_switch import parse_model_flags_detailed
 
-                parsed_flags = parse_model_flags(value)
-                _model_input, explicit_provider, _persist_global, _force_refresh, _is_session = parsed_flags
+                parsed_flags = parse_model_flags_detailed(value)
+                explicit_provider = parsed_flags.explicit_provider
                 if session.get("agent") is None and not explicit_provider.strip():
                     session_id = params.get("session_id", "")
                     _start_agent_build(session_id, session)
@@ -11089,6 +11304,7 @@ def _(rid, params: dict) -> dict:
                     "warning": result["warning"],
                     "confirm_required": result.get("confirm_required", False),
                     "confirm_message": result.get("confirm_message", ""),
+                    "scope": result.get("scope", "session"),
                 },
             )
         except Exception as e:

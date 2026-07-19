@@ -33,6 +33,7 @@ from agent.model_metadata import (
     estimate_messages_tokens_rough,
 )
 from agent.redact import redact_sensitive_text
+from agent.turn_context import drop_stale_api_content
 
 logger = logging.getLogger(__name__)
 
@@ -298,6 +299,7 @@ _FALLBACK_TURN_MAX_CHARS = 700
 _AUTO_FOCUS_MAX_TURNS = 3
 _AUTO_FOCUS_TURN_MAX_CHARS = 260
 _AUTO_FOCUS_MAX_CHARS = 700
+_ACTIVE_TASK_MAX_CHARS = 1400
 # Keep a short run of recent messages verbatim even when the token budget is
 # already exhausted.  The public ``protect_last_n`` default is intentionally
 # high for small/light tails, but using all 20 as a hard floor here would bring
@@ -321,6 +323,9 @@ _PATH_MENTION_RE = re.compile(r"(?:/|~/?|[A-Za-z]:\\)[^\s`'\")\]}<>]+")
 # the summary, the downstream model may re-emit it as an active directive on
 # the next turn, triggering bogus attachment sends (#14665).
 _MEDIA_DIRECTIVE_RE = re.compile(r"MEDIA:\S+")
+_HISTORICAL_TASK_SECTION_RE = re.compile(
+    rf"(?ms)^{re.escape(HISTORICAL_TASK_HEADING)}\s*\n.*?(?=^## |\Z)"
+)
 
 
 def _dedupe_append(items: list[str], value: str, *, limit: int) -> None:
@@ -655,6 +660,9 @@ def _strip_historical_media(messages: List[Dict[str, Any]]) -> List[Dict[str, An
             continue
         new_msg = msg.copy()
         new_msg["content"] = _strip_images_from_content(content)
+        # Content rewritten → the api_content sidecar (exact bytes previously
+        # sent) is stale; drop it so replay can't resend the pre-rewrite bytes.
+        drop_stale_api_content(new_msg)
         result.append(new_msg)
         changed = True
 
@@ -2142,9 +2150,9 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
         _template_sections = f"""{HISTORICAL_TASK_HEADING}
 [THE SINGLE MOST IMPORTANT FIELD. Capture the user's most recent unfulfilled
 input verbatim — the exact words they used. This includes:
-- Explicit task assignments ("refactor the auth module")
-- Questions awaiting an answer ("waarom staat X op Y?", "wat zijn de volgende stappen?")
-- Decisions awaiting input ("optie A of B?")
+- Explicit task assignments ("<specific user task>")
+- Questions awaiting an answer ("<specific user question>")
+- Decisions awaiting input ("<option A or B?>")
 - Ongoing discussions where the assistant owes the next substantive reply
 A conversation where the user just asked a question IS an active task — the
 task is "answer that question with full context". Do NOT write "None" merely
@@ -2152,15 +2160,15 @@ because the user did not issue an imperative command; reserve "None" for the
 rare case where the last exchange was fully resolved and the user said
 something like "thanks, that's all".
 If multiple items are outstanding, list only the ones NOT yet completed.
-Continuation should pick up exactly here. Examples:
-"User asked: 'Now refactor the auth module to use JWT instead of sessions'"
-"User asked: 'Waarom stond provider ineens op openrouter?' — needs investigation + answer"
-"User chose option A; awaiting implementation of step 2"
+This historical snapshot must identify the latest unresolved user input precisely. Examples:
+"User asked: '<exact latest user request>'"
+"User asked: '<exact latest user question>' — needs investigation + answer"
+"User chose <option>; awaiting implementation of <specific next step>"
 If the user's most recent message was a reverse signal (stop, undo, roll
 back, never mind, just verify, change of topic) that supersedes earlier
 work, write the reverse signal verbatim and DO NOT carry forward the
-cancelled task. Example: "User asked: 'Stop the i18n refactor and just
-verify the current diff' — earlier i18n in-flight work is cancelled."
+cancelled task. Example: "User asked: '<exact reverse signal>' — earlier
+in-flight work is cancelled."
 If no outstanding task exists, write "None."]
 
 ## Goal
@@ -2322,6 +2330,7 @@ This compaction should PRIORITISE preserving all information related to the focu
             # Redact the summary output as well — the summarizer LLM may
             # ignore prompt instructions and echo back secrets verbatim.
             summary = redact_sensitive_text(content.strip())
+            summary = self._ground_historical_task_snapshot(summary, turns_to_summarize)
             # Store for iterative updates on next compaction
             self._previous_summary = summary
             self._clear_compression_failure_cooldown()
@@ -2592,6 +2601,69 @@ This compaction should PRIORITISE preserving all information related to the focu
         if len(focus) > _AUTO_FOCUS_MAX_CHARS:
             focus = focus[: _AUTO_FOCUS_MAX_CHARS - 1].rstrip() + "…"
         return focus
+
+    @classmethod
+    def _latest_user_task_snapshot(
+        cls,
+        messages: List[Dict[str, Any]],
+    ) -> Optional[str]:
+        """Return a deterministic task-snapshot line from the newest real user turn.
+
+        The LLM summarizer is allowed to compress prose, but it must not invent
+        the "what is the active task?" anchor from a prompt example or stale
+        prior summary.  This helper extracts the anchor locally from the exact
+        compacted turns so the summary can be grounded before it becomes live
+        context.
+        """
+        # Reuse the runtime's real-user predicate so the deterministic
+        # snapshot can never anchor on user-role scaffolding (todo
+        # snapshots, truncation notices, background-process reports) —
+        # the exact class of turn this grounding exists to bypass.
+        from agent.conversation_compression import _is_real_user_message
+
+        for msg in reversed(messages):
+            if msg.get("role") != "user":
+                continue
+            if not _is_real_user_message(msg):
+                continue
+            content = msg.get("content")
+            text = redact_sensitive_text(_content_text_for_contains(content).strip())
+            if not text:
+                continue
+            text = re.sub(r"\s+", " ", text)
+            if len(text) > _ACTIVE_TASK_MAX_CHARS:
+                text = text[: _ACTIVE_TASK_MAX_CHARS - 15].rstrip() + " ...[truncated]"
+            return (
+                f"User asked (deterministic, from compacted turns): {text!r}\n"
+                "Historical only; newer protected-tail messages after this summary win."
+            )
+        return None
+
+    @classmethod
+    def _ground_historical_task_snapshot(
+        cls,
+        summary: str,
+        messages: List[Dict[str, Any]],
+    ) -> str:
+        """Force the task snapshot section to match a real user turn when possible."""
+        snapshot = cls._latest_user_task_snapshot(messages)
+        if not snapshot:
+            return summary
+
+        body = cls._strip_summary_prefix(summary)
+        # Keep the section terminated with a blank line: re.sub consumes the
+        # section's trailing newlines, and without restoring them the next
+        # "## " heading is glued onto the snapshot line — corrupting the
+        # markdown and making the heading invisible to this same regex on the
+        # next iterative compaction (which would then delete every following
+        # section via the \Z branch).
+        replacement = f"{HISTORICAL_TASK_HEADING}\n{snapshot}\n\n"
+        if _HISTORICAL_TASK_SECTION_RE.search(body):
+            grounded = _HISTORICAL_TASK_SECTION_RE.sub(
+                lambda _m: replacement, body, count=1
+            )
+            return grounded.strip()
+        return f"{replacement}{body}".strip()
 
     @classmethod
     def _find_latest_context_summary(
@@ -3464,6 +3536,10 @@ This compaction should PRIORITISE preserving all information related to the focu
                 # Mark the merged message so frontends can identify it as
                 # containing a compression summary prefix.
                 msg[COMPRESSED_SUMMARY_METADATA_KEY] = True
+                # Content rewritten → the api_content sidecar (exact bytes
+                # previously sent) is stale; drop it so replay can't resend
+                # the pre-merge bytes without the summary.
+                drop_stale_api_content(msg)
                 _merge_summary_into_tail = False
             compressed.append(msg)
 

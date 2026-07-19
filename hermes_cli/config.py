@@ -1165,6 +1165,13 @@ DEFAULT_CONFIG = {
         # default is 1800s) plus runtime slack.  Set to 0 to disable the
         # gate and restore pre-fix behaviour (always inject).
         "gateway_auto_continue_freshness": 3600,
+        # Stale-stream ceiling for local providers (Ollama, oMLX, llama-cpp) in
+        # seconds. When the base stale timeout is at its default (180s) and a
+        # local endpoint is detected, this finite ceiling replaces the former
+        # infinite disable so a wedged local server eventually trips the
+        # detector instead of hanging forever. The env var
+        # ``HERMES_LOCAL_STREAM_STALE_TIMEOUT`` overrides for escape-hatch use.
+        "local_stream_stale_timeout": 900,
         # How user-attached images are presented to the main model on each turn.
         #   "auto"   — attach natively when the active model reports
         #              supports_vision=True AND the user hasn't explicitly
@@ -1297,6 +1304,7 @@ DEFAULT_CONFIG = {
         "inactivity_timeout": 120,
         "command_timeout": 30,  # Timeout for browser commands in seconds (screenshot, navigate, etc.)
         "record_sessions": False,  # Auto-record browser sessions as WebM videos
+        "headed": False,  # Local mode: launch Chromium with a visible window (also skips per-turn cleanup so the window persists between turns; idle reaper still applies)
         "allow_private_urls": False,  # Allow navigating to private/internal IPs (localhost, 192.168.x.x, etc.)
         # Browser engine for local mode.  Passed as ``--engine <value>`` to
         # agent-browser v0.25.3+.
@@ -2524,7 +2532,22 @@ DEFAULT_CONFIG = {
         "bots_require_inline_mention": False,  # Multi-bot rooms: if True, another bot must type @thisbot in its message to trigger a reply; a Discord reply/quote alone won't. Prevents two bots auto-replying to each other forever. Does not affect humans.
         "history_backfill": True,         # If True, prepend recent channel scrollback when bot is triggered (recovers messages missed while require_mention gated them out)
         "history_backfill_limit": 50,     # Max number of recent messages to scan when assembling the backfill block
+        "missed_message_backfill": {
+            "enabled": False,             # Replay missed Discord messages after reconnect/startup
+            "channels": "",               # Comma-separated channel IDs; empty uses free_response_channels
+            "window_seconds": 21600,      # Only inspect messages from the last 6 hours
+            "limit": 100,                 # Global cap on messages scanned per reconnect
+            "max_dispatches": 10,         # Cap on recovered messages dispatched per reconnect
+        },
         "reactions": True,             # Add 👀/✅/❌ reactions to messages during processing
+        # Discord Gateway transport health. These settings inspect the active
+        # WebSocket's ready/open/heartbeat state; they never use Discord REST as
+        # proof that Gateway events are still arriving. Set any value to 0 to
+        # disable this compatibility-safe probe during a rollback.
+        "websocket_liveness_interval_seconds": 15,
+        "websocket_liveness_failure_threshold": 2,
+        "websocket_heartbeat_ack_max_age_seconds": 60,
+        "websocket_max_latency_seconds": 30,
         "channel_prompts": {},         # Per-channel ephemeral system prompts (forum parents apply to child threads)
         # Opt-in DM role-based auth (#12136). By default, DISCORD_ALLOWED_ROLES
         # authorizes only guild messages in the role's own guild — DMs require
@@ -2986,6 +3009,19 @@ DEFAULT_CONFIG = {
         "restart_loop_guard": {
             "max_restarts": 3,
             "window_seconds": 60,
+        },
+
+        # Portable respawn-storm circuit breaker (complements
+        # ``restart_loop_guard`` above). Counts gateway (re)starts in a sliding
+        # window and, when too many land, sleeps an exponential backoff before
+        # booting so a crash-looping supervisor (launchd KeepAlive, systemd
+        # Restart=always) can't hammer the process into a respawn storm.
+        # ``max_starts <= 0`` disables the breaker. The env vars
+        # ``HERMES_GATEWAY_MAX_STARTS`` / ``HERMES_GATEWAY_START_WINDOW_S``
+        # override these defaults for escape-hatch use.
+        "respawn_storm": {
+            "max_starts": 5,
+            "window_seconds": 120,
         },
 
         # Inject a human-readable timestamp prefix (e.g.
@@ -7793,11 +7829,16 @@ def _quote_env_value(value: str) -> str:
     """Quote .env values containing characters with special dotenv meaning."""
     if value == "":
         return value
+    # Internal whitespace (space/tab/etc.) must be quoted so shell `set -a; . file`
+    # word-splits don't break paths like macOS "Application Support". Leading/
+    # trailing whitespace is already covered by the strip check; any() covers
+    # internal runs that strip() would leave alone.
     needs_quoting = (
         "#" in value
         or '"' in value
         or "'" in value
         or value != value.strip()
+        or any(c.isspace() for c in value)
     )
     if not needs_quoting:
         return value

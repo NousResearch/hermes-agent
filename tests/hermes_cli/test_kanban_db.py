@@ -1170,6 +1170,125 @@ def test_complete_records_result(kanban_home):
     assert task.completed_at is not None
 
 
+def test_complete_from_triage_preserves_history_and_links(kanban_home):
+    """Stale triage cards must be completable without promote-first.
+
+    Operator/board recovery path: a card escalated or parked in triage
+    still has attempt history + dependency edges that must survive the
+    terminal transition.
+    """
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="parent", assignee="worker")
+        child = kb.create_task(
+            conn, title="stale triage child", assignee="worker", parents=[parent],
+        )
+        # Prior attempt history on the parent before it is parked in triage.
+        assert kb.claim_task(conn, parent)
+        run_before = kb.latest_run(conn, parent)
+        assert run_before is not None and run_before.ended_at is None
+        assert kb.block_task(conn, parent, reason="loop-1", kind="needs_input")
+        assert kb.unblock_task(conn, parent)
+        assert kb.claim_task(conn, parent)
+        assert kb.block_task(conn, parent, reason="loop-2", kind="needs_input")
+        assert kb.get_task(conn, parent).status == "triage"
+
+        prior_runs = list(kb.list_runs(conn, parent))
+        prior_events = list(kb.list_events(conn, parent))
+        assert len(prior_runs) >= 2
+        assert any(e.kind == "block_loop_detected" for e in prior_events)
+
+        ok = kb.complete_task(
+            conn, parent,
+            summary="superseded duplicate — close stale triage card",
+            result="closed-as-duplicate",
+        )
+        assert ok is True
+        task = kb.get_task(conn, parent)
+        assert task.status == "done"
+        assert task.result == "closed-as-duplicate"
+        assert task.completed_at is not None
+        assert task.claim_lock is None
+
+        # History retained.
+        runs_after = list(kb.list_runs(conn, parent))
+        events_after = list(kb.list_events(conn, parent))
+        assert len(runs_after) >= len(prior_runs)
+        assert any(e.kind == "completed" for e in events_after)
+        assert any(e.kind == "block_loop_detected" for e in events_after)
+
+        # Dependency edge preserved; child may promote once parent is done.
+        links = conn.execute(
+            "SELECT parent_id, child_id FROM task_links WHERE parent_id = ?",
+            (parent,),
+        ).fetchall()
+        assert [(r["parent_id"], r["child_id"]) for r in links] == [(parent, child)]
+        child_task = kb.get_task(conn, child)
+        assert child_task.status in ("todo", "ready")
+
+
+def test_archive_from_triage_preserves_history_and_links(kanban_home):
+    """Archive is the soft-terminal path for abandoned triage cards."""
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="triage-parent", triage=True)
+        child = kb.create_task(
+            conn, title="dep-child", assignee="worker", parents=[parent],
+        )
+        assert kb.get_task(conn, parent).status == "triage"
+        kb.add_comment(conn, parent, "ops", "stale — archive me")
+        assert kb.archive_task(conn, parent) is True
+        task = kb.get_task(conn, parent)
+        assert task.status == "archived"
+        assert task.claim_lock is None
+        events = list(kb.list_events(conn, parent))
+        assert any(e.kind == "archived" for e in events)
+        comments = list(kb.list_comments(conn, parent))
+        assert any("stale" in c.body for c in comments)
+        links = conn.execute(
+            "SELECT child_id FROM task_links WHERE parent_id = ?",
+            (parent,),
+        ).fetchall()
+        assert [r["child_id"] for r in links] == [child]
+        # Archived parents satisfy dependents the same way done does.
+        child_task = kb.get_task(conn, child)
+        assert child_task.status in ("todo", "ready")
+
+
+def test_block_from_triage_lands_in_blocked_without_loop_tick(kanban_home):
+    """Operator can re-park a triage card as blocked; loop counter resets."""
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="escalated", assignee="worker")
+        assert kb.claim_task(conn, tid)
+        assert kb.block_task(conn, tid, reason="r1", kind="capability")
+        assert kb.unblock_task(conn, tid)
+        assert kb.claim_task(conn, tid)
+        assert kb.block_task(conn, tid, reason="r2", kind="capability")
+        task = kb.get_task(conn, tid)
+        assert task.status == "triage"
+        assert task.block_recurrences >= kb.BLOCK_RECURRENCE_LIMIT
+
+        assert kb.block_task(
+            conn, tid, reason="operator hold after triage", kind="needs_input",
+        ) is True
+        task = kb.get_task(conn, tid)
+        assert task.status == "blocked"
+        assert task.block_kind == "needs_input"
+        # Fresh count — must not immediately re-escalate to triage.
+        assert task.block_recurrences == 1
+        events = list(kb.list_events(conn, tid))
+        assert any(e.kind == "blocked" for e in events)
+        assert any(e.kind == "block_loop_detected" for e in events)
+
+
+def test_complete_rejects_already_terminal(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="once")
+        assert kb.complete_task(conn, tid, summary="first")
+        assert kb.complete_task(conn, tid, summary="second") is False
+        assert kb.archive_task(conn, tid)
+        assert kb.complete_task(conn, tid, summary="third") is False
+        assert kb.get_task(conn, tid).status == "archived"
+
+
 def test_block_then_unblock(kanban_home):
     with kb.connect() as conn:
         t = kb.create_task(conn, title="x", assignee="a")

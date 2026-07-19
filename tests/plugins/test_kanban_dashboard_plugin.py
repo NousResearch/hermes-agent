@@ -819,6 +819,77 @@ def test_patch_status_triage_works(client):
     assert r.json()["task"]["status"] == "todo"
 
 
+def test_patch_terminal_transitions_from_triage(client):
+    """Board API must complete / block / archive stale triage cards.
+
+    Regression for operator recovery of superseded triage rows that
+    previously 409'd because complete/block only accepted work-pool
+    statuses.
+    """
+    # --- complete ---
+    t = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "stale-complete", "triage": True},
+    ).json()["task"]
+    assert t["status"] == "triage"
+    r = client.patch(
+        f"/api/plugins/kanban/tasks/{t['id']}",
+        json={"status": "done", "summary": "closed as duplicate", "result": "dup"},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["task"]["status"] == "done"
+
+    # History + handoff preserved via detail endpoint.
+    detail = client.get(f"/api/plugins/kanban/tasks/{t['id']}").json()
+    assert detail["task"]["status"] == "done"
+    assert any(e.get("kind") == "completed" for e in detail.get("events", []))
+
+    # --- archive ---
+    t2 = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "stale-archive", "triage": True},
+    ).json()["task"]
+    r = client.patch(
+        f"/api/plugins/kanban/tasks/{t2['id']}",
+        json={"status": "archived"},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["task"]["status"] == "archived"
+
+    # --- block ---
+    t3 = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "stale-block", "triage": True},
+    ).json()["task"]
+    r = client.patch(
+        f"/api/plugins/kanban/tasks/{t3['id']}",
+        json={"status": "blocked", "block_reason": "needs human disposition"},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["task"]["status"] == "blocked"
+
+    # Dependencies survive archive of a triage parent.
+    parent = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "triage-parent", "triage": True},
+    ).json()["task"]
+    child = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "child", "parents": [parent["id"]]},
+    ).json()["task"]
+    r = client.patch(
+        f"/api/plugins/kanban/tasks/{parent['id']}",
+        json={"status": "archived"},
+    )
+    assert r.status_code == 200, r.text
+    detail = client.get(f"/api/plugins/kanban/tasks/{parent['id']}").json()
+    child_ids = detail.get("links", {}).get("children", [])
+    assert child["id"] in child_ids
+    child_detail = client.get(f"/api/plugins/kanban/tasks/{child['id']}").json()
+    assert child_detail["task"]["status"] in ("todo", "ready")
+    assert parent["id"] in child_detail.get("links", {}).get("parents", [])
+
+
 # ---------------------------------------------------------------------------
 # Progress rollup (done children / total children)
 # ---------------------------------------------------------------------------

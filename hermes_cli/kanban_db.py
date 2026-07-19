@@ -102,6 +102,22 @@ _log = logging.getLogger(__name__)
 VALID_STATUSES = {"triage", "todo", "scheduled", "ready", "running", "blocked", "review", "done", "archived"}
 VALID_INITIAL_STATUSES = {"running", "blocked"}
 
+# Operator/worker may close a card to ``done`` from any non-terminal lane.
+# Parked columns (triage/todo/scheduled/review) must be completable so stale
+# cards can leave the board without first being promoted into the work pool —
+# the board API and CLI both route through :func:`complete_task`.
+COMPLETABLE_STATUSES = frozenset({
+    "triage", "todo", "scheduled", "ready", "running", "blocked", "review",
+})
+
+# Operator/worker may block a card from any non-terminal, non-blocked lane.
+# Includes triage so block-loop escalations and abandoned drafts can still be
+# parked as human blockers (or dependency-waited into ``todo``) without a
+# forced promote-then-block dance.
+BLOCKABLE_STATUSES = frozenset({
+    "triage", "todo", "scheduled", "ready", "running", "review",
+})
+
 # Typed block reasons. Distinguishes the two fundamentally different things a
 # worker (or human) means by "blocked", so each can be routed differently
 # instead of all landing in one undifferentiated ``blocked`` bucket that a cron
@@ -4091,6 +4107,11 @@ class ArtifactPreservationError(RuntimeError):
     """Raised when a declared scratch deliverable cannot be preserved."""
 
 
+def _sql_status_in(statuses: frozenset) -> str:
+    """Render an ``IN (...)`` list from internal status constants only."""
+    return ", ".join(f"'{s}'" for s in sorted(statuses))
+
+
 def complete_task(
     conn: sqlite3.Connection,
     task_id: str,
@@ -4101,11 +4122,12 @@ def complete_task(
     created_cards: Optional[Iterable[str]] = None,
     expected_run_id: Optional[int] = None,
 ) -> bool:
-    """Transition ``running|ready -> done`` and record ``result``.
+    """Transition a non-terminal task → ``done`` and record ``result``.
 
-    Accepts a task that is merely ``ready`` too, so a manual CLI
-    completion (``hermes kanban complete <id>``) works without requiring
-    a claim/start/complete sequence.
+    Accepts any status in :data:`COMPLETABLE_STATUSES` (work-pool lanes plus
+    parked ``triage``/``todo``/``scheduled``/``review`` and ``blocked``) so a
+    manual CLI/dashboard completion works without requiring a
+    claim/start/complete sequence or a promote-out-of-triage first.
 
     ``summary`` and ``metadata`` are stored on the closing run (if any)
     and surfaced to downstream children via :func:`build_worker_context`.
@@ -4161,10 +4183,11 @@ def complete_task(
     metadata = _merge_completion_prose_artifacts(
         conn, task_id, metadata, summary=summary, result=result,
     )
+    completable_in = _sql_status_in(COMPLETABLE_STATUSES)
     with write_txn(conn):
         if expected_run_id is None:
             cur = conn.execute(
-                """
+                f"""
                 UPDATE tasks
                    SET status       = 'done',
                        result       = ?,
@@ -4175,13 +4198,13 @@ def complete_task(
                        block_kind   = NULL,
                        block_recurrences = 0
                  WHERE id = ?
-                   AND status IN ('running', 'ready', 'blocked')
+                   AND status IN ({completable_in})
                 """,
                 (result, now, task_id),
             )
         else:
             cur = conn.execute(
-                """
+                f"""
                 UPDATE tasks
                    SET status       = 'done',
                        result       = ?,
@@ -4192,7 +4215,7 @@ def complete_task(
                        block_kind   = NULL,
                        block_recurrences = 0
                  WHERE id = ?
-                   AND status IN ('running', 'ready', 'blocked')
+                   AND status IN ({completable_in})
                    AND current_run_id = ?
                 """,
                 (result, now, task_id, int(expected_run_id)),
@@ -4881,7 +4904,10 @@ def block_task(
     kind: Optional[str] = None,
     expected_run_id: Optional[int] = None,
 ) -> bool:
-    """Transition ``running``/``ready`` → ``blocked`` (or route elsewhere).
+    """Transition a blockable task → ``blocked`` (or route elsewhere).
+
+    Source statuses are :data:`BLOCKABLE_STATUSES` (work-pool ``running``/
+    ``ready`` plus parked ``triage``/``todo``/``scheduled``/``review``).
 
     ``kind`` (one of :data:`VALID_BLOCK_KINDS`, or ``None`` for a legacy
     un-typed block) drives routing instead of every block landing in one
@@ -4895,11 +4921,14 @@ def block_task(
 
     * ``needs_input`` / ``capability`` / ``None`` — "truly blocked" (Dale's
       "Type 1"). Lands in ``blocked`` for a human. BUT: each time such a task
-      is re-blocked for the SAME kind after having been unblocked, the
-      unblock-loop counter (``block_recurrences``) increments. When it reaches
+      is re-blocked for the SAME kind after having been unblocked *from the
+      work pool* (``running``/``ready``), the unblock-loop counter
+      (``block_recurrences``) increments. When it reaches
       :data:`BLOCK_RECURRENCE_LIMIT`, the task is routed to ``triage`` instead
       of ``blocked`` — breaking the cron-unblock ↔ worker-re-block loop and
-      forcing a human-in-the-loop triage decision.
+      forcing a human-in-the-loop triage decision. Blocks that start from a
+      parked lane (already-triaged stale cards, todo drafts, etc.) do not
+      tick the loop counter — they land in ``blocked`` with a fresh count.
 
     * ``transient`` — treated like a generic block for routing, but a worker
       can use it to signal "this might clear on its own"; it still participates
@@ -4914,6 +4943,7 @@ def block_task(
         )
     routed_to = "blocked"
     recurrences = 0
+    blockable_in = _sql_status_in(BLOCKABLE_STATUSES)
     with write_txn(conn):
         cur_row = conn.execute(
             "SELECT status, block_kind, block_recurrences FROM tasks WHERE id = ?",
@@ -4921,6 +4951,7 @@ def block_task(
         ).fetchone()
         if cur_row is None:
             return False
+        prev_status = cur_row["status"]
         prev_kind = cur_row["block_kind"] if "block_kind" in cur_row.keys() else None
         prev_recurrences = (
             int(cur_row["block_recurrences"])
@@ -4935,7 +4966,7 @@ def block_task(
         # a dependency-wait as something to "unblock".
         if kind == "dependency":
             cur = conn.execute(
-                """
+                f"""
                 UPDATE tasks
                    SET status        = 'todo',
                        claim_lock    = NULL,
@@ -4943,7 +4974,7 @@ def block_task(
                        worker_pid    = NULL,
                        block_kind    = ?
                  WHERE id = ?
-                   AND status IN ('running', 'ready')
+                   AND status IN ({blockable_in})
                 """ + ("" if expected_run_id is None else " AND current_run_id = ?"),
                 (kind, task_id) if expected_run_id is None
                 else (kind, task_id, int(expected_run_id)),
@@ -4975,20 +5006,26 @@ def block_task(
             )
             return True
 
-        # Truly-blocked kinds. Increment the unblock-loop counter when this is a
-        # re-block for the SAME reason after a prior unblock. block_task only
-        # fires from running/ready (i.e. AFTER an unblock returned the task to
-        # the work pool), so a stored block_kind that matches the incoming kind
-        # means: blocked → unblocked → about-to-re-block for the same cause.
-        # An un-typed (None) block compares as "same" to a prior un-typed block.
-        same_cause = prev_kind == kind
-        recurrences = prev_recurrences + 1 if same_cause else 1
+        # Truly-blocked kinds. Unblock-loop counting only applies when the
+        # task is re-entering block from the work pool (running/ready) —
+        # i.e. AFTER an unblock returned it to dispatch. Operator blocks
+        # from parked lanes (triage/todo/scheduled/review) start a fresh
+        # human block without ticking the loop breaker.
+        if prev_status in ("running", "ready"):
+            same_cause = prev_kind == kind
+            recurrences = prev_recurrences + 1 if same_cause else 1
+        else:
+            same_cause = False
+            recurrences = 1
 
-        if recurrences >= BLOCK_RECURRENCE_LIMIT:
+        if (
+            prev_status in ("running", "ready")
+            and recurrences >= BLOCK_RECURRENCE_LIMIT
+        ):
             # Loop detected — stop letting the unblocker spin this task. Route
             # to triage for a human-in-the-loop decision instead of blocked.
             cur = conn.execute(
-                """
+                f"""
                 UPDATE tasks
                    SET status        = 'triage',
                        claim_lock    = NULL,
@@ -4997,7 +5034,7 @@ def block_task(
                        block_kind    = ?,
                        block_recurrences = ?
                  WHERE id = ?
-                   AND status IN ('running', 'ready')
+                   AND status IN ({blockable_in})
                 """ + ("" if expected_run_id is None else " AND current_run_id = ?"),
                 (kind, recurrences, task_id) if expected_run_id is None
                 else (kind, recurrences, task_id, int(expected_run_id)),
@@ -5027,7 +5064,7 @@ def block_task(
         else:
             if expected_run_id is None:
                 cur = conn.execute(
-                    """
+                    f"""
                     UPDATE tasks
                        SET status        = 'blocked',
                            claim_lock    = NULL,
@@ -5036,13 +5073,13 @@ def block_task(
                            block_kind    = ?,
                            block_recurrences = ?
                      WHERE id = ?
-                       AND status IN ('running', 'ready')
+                       AND status IN ({blockable_in})
                     """,
                     (kind, recurrences, task_id),
                 )
             else:
                 cur = conn.execute(
-                    """
+                    f"""
                     UPDATE tasks
                        SET status        = 'blocked',
                            claim_lock    = NULL,
@@ -5051,7 +5088,7 @@ def block_task(
                            block_kind    = ?,
                            block_recurrences = ?
                      WHERE id = ?
-                       AND status IN ('running', 'ready')
+                       AND status IN ({blockable_in})
                        AND current_run_id = ?
                     """,
                     (kind, recurrences, task_id, int(expected_run_id)),

@@ -175,6 +175,13 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
 
       let startingRouteToken = getRouteToken()
 
+      // Stored id the optimistic message (and error bubble) is keyed under.
+      // Tracks targetStoredSessionId until the dead-draft recovery in the
+      // prompt.submit catch below re-homes the send to a freshly minted chat —
+      // keying the new runtime under the dead stored id would cross-wire the
+      // session-state cache.
+      let optimisticStoredSessionId = targetStoredSessionId
+
       const sessionContextDrifted = (): boolean =>
         targetStartedInCurrentView &&
         (selectedStoredSessionIdRef.current !== startingStoredSessionId || getRouteToken() !== startingRouteToken)
@@ -239,7 +246,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
             // (what made drained-after-interrupt sends go silent).
             interrupted: false
           }),
-          targetStoredSessionId
+          optimisticStoredSessionId
         )
 
       // After sync rewrites refs, refresh the optimistic message in place so the
@@ -251,7 +258,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
             ...state,
             messages: state.messages.map(message => (message.id === optimisticId ? buildUserMessage() : message))
           }),
-          targetStoredSessionId
+          optimisticStoredSessionId
         )
 
       const dropOptimistic = (sid: null | string) => {
@@ -272,7 +279,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
             awaitingResponse: false,
             pendingBranchGroup: null
           }),
-          targetStoredSessionId
+          optimisticStoredSessionId
         )
       }
 
@@ -468,10 +475,23 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
             // backend loop (#55578 symptom d) rejects the submit even though
             // the stored session is fine — resume + retry instead of erroring
             // out and losing the session binding.
-            const resumed = await requestGateway<{ session_id: string }>('session.resume', {
-              session_id: recoverStoredSessionId,
-              source: 'desktop'
-            })
+            // The resume can itself fail: the gateway persists a chat's DB row
+            // only on its first successful prompt.submit, so a fresh chat whose
+            // live session died before that has no row and the resume 4007s the
+            // same "session not found". Catch it so the dead-draft fallback
+            // below can recover instead of surfacing the raw error and losing
+            // the user's text.
+            let resumed: { session_id: string } | null = null
+            let resumeErr: unknown = null
+
+            try {
+              resumed = await requestGateway<{ session_id: string }>('session.resume', {
+                session_id: recoverStoredSessionId,
+                source: 'desktop'
+              })
+            } catch (err) {
+              resumeErr = err
+            }
 
             if (sessionContextDrifted()) {
               return abortForSessionSwitch(sessionId)
@@ -487,6 +507,76 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
               await withSessionBusyRetry(() =>
                 requestGateway('prompt.submit', { session_id: recoveredId, text }, PROMPT_SUBMIT_REQUEST_TIMEOUT_MS)
               )
+            } else if (
+              targetIsCurrentView() &&
+              isSessionNotFoundError(firstErr) &&
+              resumeErr !== null &&
+              isSessionNotFoundError(resumeErr)
+            ) {
+              // Live session AND stored row both report "session not found":
+              // this chat never got past its first submit, so there is nothing
+              // to resume anywhere — mint a fresh backend session and land the
+              // message there. Scoped tightly: a timed-out firstErr may have
+              // actually reached the backend (re-sending elsewhere would
+              // double-send), a non-404 resume failure (transport blip) must
+              // not split a real stored chat in two (#55578 symptom b), and a
+              // background drain must never re-home the user's view — all of
+              // those keep the surface-the-error behavior below.
+              let createdId: null | string = null
+
+              try {
+                createdId = await createBackendSessionForSend(visibleText)
+              } catch {
+                createdId = null
+              }
+
+              if (!createdId) {
+                // Null means the user switched sessions mid-create (it closes
+                // the orphan itself) — abort silently; a create failure keeps
+                // the original error.
+                if (sessionContextDrifted()) {
+                  return abortForSessionSwitch(sessionId)
+                }
+
+                submitErr = firstErr
+              } else if (activeSessionIdRef.current !== createdId) {
+                // Same re-home race as the primary create path above: every
+                // switch path re-nulls or retargets the active ref
+                // synchronously, so a mismatch means the user moved on.
+                return abortForSessionSwitch(sessionId)
+              } else {
+                const fallbackId = createdId
+
+                // Move the optimistic message from the dead chat into the one
+                // the create re-homed to, and re-pin the drift baseline there.
+                dropOptimistic(sessionId)
+                optimisticStoredSessionId = selectedStoredSessionIdRef.current
+                startingStoredSessionId = selectedStoredSessionIdRef.current
+                startingRouteToken = getRouteToken()
+                sessionId = fallbackId
+                seedOptimistic(fallbackId)
+
+                // Attachments were staged into the dead session — re-sync them
+                // against the fresh one so @file:/image refs resolve there.
+                const resyncedAttachments = await syncAttachmentsForSubmit(fallbackId, syncedAttachments, {
+                  updateComposerAttachments: usingComposerAttachments
+                })
+
+                if (sessionContextDrifted()) {
+                  return abortForSessionSwitch(fallbackId)
+                }
+
+                attachmentRefs = resyncedAttachments.map(optimisticAttachmentRef).filter((r): r is string => Boolean(r))
+                rewriteOptimistic(fallbackId)
+
+                await withSessionBusyRetry(() =>
+                  requestGateway(
+                    'prompt.submit',
+                    { session_id: fallbackId, text: buildContextText(resyncedAttachments) },
+                    PROMPT_SUBMIT_REQUEST_TIMEOUT_MS
+                  )
+                )
+              }
             } else {
               submitErr = firstErr
             }
@@ -539,7 +629,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
             pendingBranchGroup: null,
             sawAssistantPayload: true
           }),
-          targetStoredSessionId
+          optimisticStoredSessionId
         )
 
         if (targetIsCurrentView() && isProviderSetupError(err)) {

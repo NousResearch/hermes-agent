@@ -291,7 +291,7 @@ def test_checker_verdict_rejects_wrong_profile_run_and_stale_candidate(board):
         submit_project_checker_verdict(board, worker_profile="checker-profile", **kwargs)
 
 
-def test_checker_verdict_crash_after_durable_commit_retries_once(board):
+def test_checker_verdict_crash_after_durable_commit_retries_after_reclaim(board):
     _, _, checker, run_id = _checker_ready(board)
     kwargs = dict(
         board_id="board-a", task_id=checker, run_id=run_id, worker_profile="checker-profile",
@@ -304,9 +304,34 @@ def test_checker_verdict_crash_after_durable_commit_retries_once(board):
             **kwargs,
         )
     assert kb.get_task(board, checker).status == "running"
-    retry = submit_project_checker_verdict(board, **kwargs)
+    assert kb.block_task(
+        board,
+        checker,
+        reason="worker process ended after durable verdict commit",
+        kind="transient",
+        expected_run_id=run_id,
+    )
+    assert kb.unblock_task(
+        board,
+        checker,
+        actor="restart-reconciler",
+        reason="resume immutable checker verdict",
+    )
+    reclaimed = kb.claim_task(board, checker, claimer="replacement-checker")
+    assert reclaimed is not None and reclaimed.current_run_id is not None
+    replacement_run_id = int(reclaimed.current_run_id)
+    assert replacement_run_id != run_id
+
+    retry = submit_project_checker_verdict(
+        board,
+        **{**kwargs, "run_id": replacement_run_id},
+    )
     assert retry.disposition == "already_recorded"
     assert retry.completed is True
     assert board.execute(
         "SELECT COUNT(*) FROM task_events WHERE task_id=? AND kind='project_checker_verdict_recorded'", (checker,)
     ).fetchone()[0] == 1
+    assert board.execute(
+        "SELECT run_id FROM task_events WHERE task_id=? AND kind='project_checker_verdict_recorded'",
+        (checker,),
+    ).fetchone()["run_id"] == run_id

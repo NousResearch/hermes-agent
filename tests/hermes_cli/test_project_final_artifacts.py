@@ -240,3 +240,41 @@ def test_failed_atomic_publication_leaves_no_partial_final_set(tmp_path, monkeyp
         write_project_final_artifacts(snapshot, hermes_home=tmp_path / "home")
 
     assert not any((root / filename).exists() for filename in artifacts.ARTIFACT_FILENAMES)
+
+
+@pytest.mark.parametrize("published_count", (1, 2))
+def test_hard_crash_partial_matching_set_is_completed_on_restart(
+    tmp_path, published_count
+):
+    snapshot = _snapshot(tmp_path)
+    home = tmp_path / "home"
+    report, manifest, usage, root = artifacts.build_project_artifacts(
+        snapshot,
+        hermes_home=home,
+    )
+    root.mkdir(parents=True)
+    expected = dict(zip(artifacts.ARTIFACT_FILENAMES, (report, manifest, usage)))
+    for filename in artifacts.ARTIFACT_FILENAMES[:published_count]:
+        (root / filename).write_bytes(expected[filename])
+
+    recovered = write_project_final_artifacts(snapshot, hermes_home=home)
+
+    assert all(
+        (root / filename).read_bytes() == data
+        for filename, data in expected.items()
+    )
+    assert recovered.report_sha256 == hashlib.sha256(report).hexdigest()
+
+
+def test_hard_crash_partial_conflicting_set_stays_fail_closed(tmp_path):
+    snapshot = _snapshot(tmp_path)
+    home = tmp_path / "home"
+    _, _, _, root = artifacts.build_project_artifacts(snapshot, hermes_home=home)
+    root.mkdir(parents=True)
+    (root / "final-report.md").write_bytes(b"not the authoritative report")
+
+    with pytest.raises(ValueError, match="conflicting immutable"):
+        write_project_final_artifacts(snapshot, hermes_home=home)
+
+    assert not (root / "manifest.json").exists()
+    assert not (root / "usage-summary.json").exists()

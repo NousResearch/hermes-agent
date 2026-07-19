@@ -2,15 +2,20 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
 
 import pytest
 
 from gateway.project_finalization import ProjectFinalizationService
 from hermes_cli import kanban_db as kb
+from hermes_cli import kanban_usage_ledger as usage_ledger
 from hermes_cli.project_delivery_ledger import (
+    create_delivery_attempt,
     get_latest_delivery_attempt,
     list_delivery_attempts,
+    mark_delivery_attempt_attempting,
+    mark_delivery_attempt_rejected,
 )
 from hermes_cli.project_finalization_contract import (
     acquire_finalization_lock,
@@ -299,11 +304,25 @@ def test_failed_required_task_delivers_distinct_failed_payload(board):
         "last_failure_error='worker crashed' WHERE id=?",
         (root,),
     )
-    board.execute(
+    run_id = board.execute(
         "INSERT INTO task_runs "
         "(task_id, status, started_at, ended_at, outcome, error) "
         "VALUES (?, 'gave_up', 1, 2, 'gave_up', 'worker crashed')",
         (root,),
+    ).lastrowid
+    usage_ledger.record_run_usage(
+        board,
+        board="default",
+        task_id=root,
+        run_id=run_id,
+        call_kind="primary",
+        api_call_index=0,
+        provider="test-provider",
+        model="test-model",
+        input_tokens=10,
+        output_tokens=5,
+        token_source="provider_authoritative",
+        profile="builder-gptterra",
     )
     service, receipts = _service()
 
@@ -325,6 +344,13 @@ def test_failed_required_task_delivers_distinct_failed_payload(board):
             "Artifacts: final-report.md, manifest.json, usage-summary.json",
         )
     )
+    manifest = json.loads(Path(project.manifest_path).read_text(encoding="utf-8"))
+    usage = json.loads(Path(manifest["usage_summary_path"]).read_text(encoding="utf-8"))
+    assert manifest["checker_verdict"] is None
+    assert manifest["repair_tasks"] == []
+    assert {item["task_id"] for item in manifest["required_tasks"]} == {root}
+    assert usage["usage_status"] == "partial"
+    assert usage["total_input_tokens"] == 10
 
 
 def test_ambiguous_receipt_is_persisted_without_blind_resend(board):
@@ -360,6 +386,72 @@ def test_rejected_delivery_schedules_retry_without_terminalizing(board):
     assert attempt.delivery_state == "retry_scheduled"
     assert attempt.next_retry_at == 130
     assert get_project_finalization(board, board_id="default", root_task_id=root, generation=1).terminal_outcome is None
+
+
+def test_restart_recovers_durable_rejected_delivery_before_retry(board):
+    root, _, _ = _setup(board, complete_checker=True, verdict="PASS")
+    identity = dict(
+        board_id="default",
+        root_task_id=root,
+        generation=1,
+        platform="telegram",
+        destination_reference="-100-test",
+        message_kind="project_complete",
+    )
+    created = create_delivery_attempt(
+        board,
+        thread_reference="4",
+        attempt_number=1,
+        **identity,
+    )
+    mark_delivery_attempt_attempting(
+        board,
+        attempt_number=created.attempt_number,
+        now=100,
+        **identity,
+    )
+    mark_delivery_attempt_rejected(
+        board,
+        attempt_number=created.attempt_number,
+        redacted_error="provider refused before process exit",
+        now=100,
+        **identity,
+    )
+    clock = {"now": 100}
+    calls = []
+
+    async def accepted(*_):
+        calls.append(clock["now"])
+        return {"provider_message_id": "m-recovered"}
+
+    def tick_from_restart():
+        return _run(
+            ProjectFinalizationService(
+                kb.connect,
+                owner="test-owner",
+                now=lambda: clock["now"],
+                deliver=accepted,
+                enabled=True,
+                canary_scope=("*",),
+            )
+        )
+
+    scheduled = tick_from_restart()
+    durable = get_latest_delivery_attempt(board, **identity)
+    assert scheduled.delivered == scheduled.terminalized == 0
+    assert durable.delivery_state == "retry_scheduled"
+    assert durable.next_retry_at == 130
+    assert calls == []
+
+    clock["now"] = 130
+    completed = tick_from_restart()
+    attempts = list_delivery_attempts(board, **identity)
+    assert completed.delivered == completed.terminalized == 1
+    assert [attempt.delivery_state for attempt in attempts] == [
+        "retry_scheduled",
+        "accepted",
+    ]
+    assert calls == [130]
 
 
 def test_rejected_delivery_retries_are_bounded_and_persist_permanent_failure(board):

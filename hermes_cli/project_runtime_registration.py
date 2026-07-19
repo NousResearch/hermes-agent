@@ -1000,11 +1000,25 @@ def submit_project_checker_verdict(
         if prior_events:
             if (
                 len(prior_events) != 1
-                or int(prior_events[0]["run_id"] or 0) != run_id
                 or json.loads(prior_events[0]["payload"]) != payload
                 or project_row["checker_verdict"] != verdict
             ):
                 raise ValueError("checker verdict conflicts with durable submission")
+            run_row = conn.execute(
+                "SELECT task_id, profile, ended_at FROM task_runs WHERE id = ?",
+                (run_id,),
+            ).fetchone()
+            if (
+                run_row is None
+                or run_row["task_id"] != task_id
+                or run_row["profile"] != canonical_profile
+            ):
+                raise ValueError("checker run does not belong to this authority")
+            if task_row["status"] != "done" and (
+                int(task_row["current_run_id"] or 0) != run_id
+                or run_row["ended_at"] is not None
+            ):
+                raise ValueError("checker run is not current")
             disposition = "already_recorded"
         else:
             if project_row["checker_verdict"] is not None:

@@ -213,11 +213,12 @@ def _validate_snapshot(snapshot: ProjectFinalizationSnapshot) -> None:
     if snapshot.terminal_outcome is None:
         raise ValueError("terminal_outcome is required")
     validate_terminal_outcome(snapshot.terminal_outcome)
-    if snapshot.checker_verdict is None:
-        raise ValueError("checker_verdict is required")
-    validate_checker_verdict(snapshot.checker_verdict)
-    if not snapshot.checker_task_id:
-        raise ValueError("checker_task_id is required")
+    if snapshot.checker_verdict is not None:
+        validate_checker_verdict(snapshot.checker_verdict)
+        if not snapshot.checker_task_id:
+            raise ValueError("checker_task_id is required when a verdict is recorded")
+    if snapshot.terminal_outcome == "COMPLETE" and snapshot.checker_verdict != "PASS":
+        raise ValueError("COMPLETE artifacts require an authoritative PASS verdict")
     if snapshot.created_at is None or snapshot.created_at == "":
         raise ValueError("created_at is required")
     evidence = snapshot.evidence
@@ -393,14 +394,18 @@ def write_project_final_artifacts(snapshot: ProjectFinalizationSnapshot, *, herm
     report, manifest, usage, root = build_project_artifacts(snapshot, hermes_home=hermes_home)
     root.mkdir(parents=True, exist_ok=True)
     paths = [root / name for name in ARTIFACT_FILENAMES]
+    data_by_path = dict(zip(paths, (report, manifest, usage)))
     existing = [path for path in paths if path.exists()]
-    if existing:
-        if len(existing) != len(paths) or any(path.read_bytes() != data for path, data in zip(paths, (report, manifest, usage))):
-            raise ValueError("conflicting or partial immutable artifact set already exists")
+    if any(path.read_bytes() != data_by_path[path] for path in existing):
+        raise ValueError("conflicting immutable artifact set already exists")
+    if len(existing) == len(paths):
         return _result(root, report, manifest, usage)
     replaced: list[Path] = []
     try:
-        for path, data in zip(paths, (report, manifest, usage)):
+        for path in paths:
+            if path in existing:
+                continue
+            data = data_by_path[path]
             _atomic_write(path, data)
             replaced.append(path)
     except Exception:

@@ -38,6 +38,7 @@ from hermes_cli.project_failure_envelope import record_failure_envelope
 from hermes_cli.project_final_artifacts import (
     ProjectFinalArtifacts,
     ProjectFinalizationSnapshot,
+    aggregate_snapshot_usage,
     publish_project_final_artifacts,
 )
 from hermes_cli.project_finalization_contract import (
@@ -318,6 +319,25 @@ class ProjectFinalizationService:
             if latest.delivery_state == DELIVERY_RETRY_SCHEDULED and (latest.next_retry_at or 0) > now:
                 return DELIVERY_RETRY_SCHEDULED
             if latest.delivery_state == DELIVERY_REJECTED:
+                transition_kwargs = {
+                    key: value for key, value in kwargs.items()
+                    if key != "thread_reference"
+                }
+                if latest.attempt_number >= MAX_DELIVERY_ATTEMPTS:
+                    mark_delivery_attempt_permanent_failure(
+                        conn,
+                        attempt_number=latest.attempt_number,
+                        redacted_error="delivery attempts exhausted",
+                        now=now,
+                        **transition_kwargs,
+                    )
+                    return DELIVERY_PERMANENT_FAILURE
+                mark_delivery_attempt_retry_scheduled(
+                    conn,
+                    attempt_number=latest.attempt_number,
+                    now=now,
+                    **transition_kwargs,
+                )
                 return DELIVERY_RETRY_SCHEDULED
         if latest is not None and latest.delivery_state == DELIVERY_RETRY_SCHEDULED:
             attempt = create_next_delivery_attempt(conn, delivery_state="pending", **kwargs)
@@ -346,10 +366,122 @@ class ProjectFinalizationService:
     def _artifact_snapshot(self, conn: sqlite3.Connection, current: Any, evaluation: ProjectEvaluation, outcome: str) -> ProjectFinalizationSnapshot:
         root = kb.get_task(conn, current.root_task_id)
         members = list_project_members(conn, board_id=current.board_id, root_task_id=current.root_task_id, generation=current.generation)
-        required = [{"task_id": member.task_id, "membership_kind": member.membership_kind} for member in members if member.required]
-        supports = [{"task_id": member.task_id, "membership_kind": member.membership_kind} for member in members if not member.required]
-        evidence = [{"path": f"kanban:{current.board_id}:{current.root_task_id}:{current.generation}", "sha256": hashlib.sha256((current.board_id + current.root_task_id + str(current.generation)).encode()).hexdigest()}]
-        return ProjectFinalizationSnapshot(board_id=current.board_id, root_task_id=current.root_task_id, generation=current.generation, goal=getattr(root, "title", "") or "project finalization", title=getattr(root, "title", "") or "project finalization", terminal_outcome=outcome, terminal_evaluation={"state": evaluation.evaluation_state, "reason": evaluation.failure_reason}, required_tasks=required, support_tasks=supports, repair_tasks=[], checker_task_id=evaluation.checker_task_id or current.final_checker_task_id, checker_verdict=evaluation.checker_verdict or "FAIL_TERMINAL", evidence=evidence, what_done=list(evaluation.successful_task_ids), what_verified=list(evaluation.successful_task_ids), blockers=[evaluation.blocker] if evaluation.blocker else [], next_step="review finalization artifacts", delivery={"status": "pending"}, cleanup={"status": "not_scheduled"}, limitations=["gateway lifecycle does not execute cleanup"], usage={"usage_status": "unknown"}, created_at=current.created_at)
+        member_items = [
+            {
+                "task_id": member.task_id,
+                "membership_kind": member.membership_kind,
+                "required": member.required,
+            }
+            for member in members
+        ]
+        repairs = [item for item in member_items if item["membership_kind"] == "repair"]
+        repair_ids = {item["task_id"] for item in repairs}
+        checker_id = evaluation.checker_task_id or current.final_checker_task_id
+        checker_task = kb.get_task(conn, checker_id) if checker_id else None
+        checker_ids = {
+            item["task_id"] for item in member_items
+            if item["membership_kind"] == "checker"
+        }
+        if checker_id:
+            checker_ids.add(checker_id)
+        required = [item for item in member_items if item["membership_kind"] == "required"]
+        supports = [item for item in member_items if item["membership_kind"] == "support"]
+        if current.admission_key is None:
+            known_required = {item["task_id"] for item in required}
+            known_support = {item["task_id"] for item in supports}
+            required.extend(
+                {"task_id": task_id, "membership_kind": "required", "required": True}
+                for task_id in evaluation.required_task_ids
+                if task_id not in checker_ids | repair_ids | known_required
+            )
+            supports.extend(
+                {"task_id": task_id, "membership_kind": "support", "required": False}
+                for task_id in evaluation.optional_task_ids
+                if task_id not in checker_ids | repair_ids | known_support
+            )
+        topology_ids = {
+            current.root_task_id,
+            *(item["task_id"] for item in required),
+            *(item["task_id"] for item in supports),
+            *(item["task_id"] for item in repairs),
+        }
+        if checker_task is not None:
+            topology_ids.add(checker_task.id)
+        runs = []
+        for task_id in sorted(topology_ids):
+            for run in kb.list_runs(conn, task_id):
+                runs.append(
+                    {
+                        "task_id": run.task_id,
+                        "run_id": run.id,
+                        "profile": run.profile,
+                        "status": run.status,
+                        "outcome": run.outcome,
+                        "started_at": run.started_at,
+                        "ended_at": run.ended_at,
+                    }
+                )
+        snapshot_digest = evaluation.candidate_snapshot_version.removeprefix("sha256:")
+        if len(snapshot_digest) != 64:
+            snapshot_digest = hashlib.sha256(
+                evaluation.candidate_snapshot_version.encode()
+            ).hexdigest()
+        evidence = [
+            {
+                "path": f"kanban-snapshot:{current.board_id}:{current.root_task_id}:{current.generation}",
+                "sha256": snapshot_digest,
+            }
+        ]
+        snapshot = ProjectFinalizationSnapshot(
+            board_id=current.board_id,
+            root_task_id=current.root_task_id,
+            generation=current.generation,
+            goal=getattr(root, "title", "") or "project finalization",
+            title=getattr(root, "title", "") or "project finalization",
+            terminal_outcome=outcome,
+            terminal_evaluation={
+                "state": evaluation.evaluation_state,
+                "reason": evaluation.failure_reason,
+                "candidate_snapshot_version": evaluation.candidate_snapshot_version,
+            },
+            required_tasks=required,
+            support_tasks=supports,
+            repair_tasks=repairs,
+            checker_task_id=checker_task.id if checker_task is not None else None,
+            checker_verdict=current.checker_verdict,
+            checker_identity={
+                "authority": current.final_checker_task_id,
+                "profile": current.checker_profile,
+                "candidate_snapshot_version": current.checker_candidate_snapshot_version,
+                "candidate_id": current.checker_candidate_id,
+                "registered": checker_task is not None,
+            },
+            runs=runs,
+            evidence=evidence,
+            what_done=list(evaluation.successful_task_ids),
+            what_verified=(
+                [checker_task.id] if checker_task is not None and current.checker_verdict else []
+            ),
+            what_failed=list(evaluation.failed_task_ids),
+            current_state={
+                "evaluation_state": evaluation.evaluation_state,
+                "terminal_outcome": outcome,
+                "unfinished_task_ids": list(evaluation.unfinished_task_ids),
+            },
+            blockers=[evaluation.blocker] if evaluation.blocker else [],
+            next_step=(
+                "No project work remains; retain the immutable artifacts."
+                if outcome == "COMPLETE"
+                else "Resolve the durable blocker recorded in this report."
+            ),
+            delivery={"status": "pending"},
+            cleanup={"status": "not_scheduled"},
+            limitations=["gateway lifecycle does not execute cleanup"],
+            created_at=current.created_at,
+        )
+        return ProjectFinalizationSnapshot(
+            **{**snapshot.__dict__, "usage": aggregate_snapshot_usage(conn, snapshot)}
+        )
 
 
 async def reconcile_project_finalizations(service: ProjectFinalizationService, *, board_id: str | None = None) -> ProjectFinalizationTickResult:

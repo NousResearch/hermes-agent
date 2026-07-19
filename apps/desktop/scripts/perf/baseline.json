@@ -1,9 +1,9 @@
 {
   "_meta": {
-    "note": "Median of 5 runs, darwin-arm64, `npm run perf -- cold-start stream keystroke transcript --spawn --prod` — a PRODUCTION renderer (minified React), so these are representative shipped numbers, not dev-inflated. Re-baseline per device with the same command + `--update-baseline`. Tolerances are loose to absorb cross-machine variance; cold-start especially varies with disk/OS state.",
+    "note": "Median of 5 runs, darwin-arm64, `--spawn --prod` (PRODUCTION minified renderer, real boot — no fake-boot). Representative shipped numbers, not dev-inflated. cold-start uses a fresh unique-port spawn per run and its marks are process-spawn wall clock (spawn_to_*) or renderer nav-relative (dom_*). Re-baseline per device with `--update-baseline`; tolerances are loose for cross-machine/disk variance.",
     "platform": "darwin-arm64",
     "node": "v24.11.0",
-    "updated": "2026-07-19T21:38:19.701Z"
+    "updated": "2026-07-19T22:59:21.605Z"
   },
   "scenarios": {
     "stream": {
@@ -49,9 +49,11 @@
         "tolAbs": 150
       },
       "metrics": {
-        "spawn_to_cdp_ms": 326,
-        "spawn_to_driver_ms": 1647,
-        "fcp_ms": 500
+        "spawn_to_cdp_ms": 1098,
+        "spawn_to_driver_ms": 1482,
+        "dom_interactive_ms": 794,
+        "dom_content_loaded_ms": 1057,
+        "nav_to_read_ms": 1209
       }
     }
   }

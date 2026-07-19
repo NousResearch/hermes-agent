@@ -152,9 +152,13 @@ async function main() {
     const perRun = []
 
     for (let i = 0; i < runs; i++) {
-      const inst = await startIsolatedInstance({ port, devPort, prod, coldStart: true })
-      const t = inst.timings
-      perRun.push({ spawn_to_cdp_ms: t.spawn_to_cdp_ms, spawn_to_driver_ms: t.spawn_to_driver_ms, fcp_ms: t.fcp_ms })
+      // Unique debug + dev port per run: a just-killed instance can keep :9222
+      // held for a beat, and reusing it makes the next CDP.connect attach to the
+      // dying instance (garbage timings). Stepping the port sidesteps the race.
+      const inst = await startIsolatedInstance({ port: port + i, devPort: devPort + i, prod, coldStart: true })
+      // Forward every numeric boot mark; only the baseline keys are gated, the
+      // rest (dom_interactive, main_script_kb, …) are reported for composition.
+      perRun.push(Object.fromEntries(Object.entries(inst.timings).filter(([, v]) => typeof v === 'number')))
       inst.teardown()
     }
 

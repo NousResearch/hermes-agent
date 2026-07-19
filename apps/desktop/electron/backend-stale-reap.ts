@@ -221,33 +221,61 @@ function listWindowsBackendPids(profile: string): number[] {
       { stdio: ['ignore', 'pipe', 'ignore'], encoding: 'utf8', windowsHide: true },
     )
   } catch {
-    try {
-      // Best-effort fallback. Don't bother parsing the row structure here;
-      // tasklist doesn't reliably emit CommandLine as a column on Win11.
-      csv = execFileSync('tasklist', ['/v', '/fo', 'csv'], {
-        stdio: ['ignore', 'pipe', 'ignore'],
-        encoding: 'utf8',
-        windowsHide: true,
-      })
-    } catch {
-      return []
-    }
+    // wmic is deprecated on Win11 24H2+ and frequently missing or
+    // permission-denied in restricted environments. We deliberately do NOT
+    // fall back to `tasklist /v /fo csv`: tasklist does NOT expose the
+    // full command line on recent Windows builds, so pretending we can
+    // parse it would just emit false positives (every visible process
+    // gets killed). Fail closed — return empty — until a `Get-CimInstance`
+    // or `ps`-shim enumerator is wired up.
+    return []
   }
-  const profileToken = `--profile ${profile} `
-  const profileQuoted = `--profile=${profile}`
-  // Match either `--profile NAME serve` or `--profile=NAME ... serve ...`.
-  // The serve token must also appear in the same line; this protects against
-  // false positives like a `hermes -m hermes_cli.main ... --profile worker
-  // dashboard --no-open` invocation that isn't a backend.
+  // Profile match must be EXACT, not substring-prefix, so reaping `work`
+  // never matches `--profile=worker`. Accepts both `--profile NAME`
+  // (followed by space) and `--profile=NAME` (followed by end-of-string,
+  // whitespace, or quote). Profile token is lowercased to match `lc`.
+  const profileLower = profile.toLowerCase()
   const isBackendLine = (cmdline: string): boolean => {
     const lc = cmdline.toLowerCase()
     if (!lc.includes('serve')) {
       return false
     }
-    return (
-      lc.includes(profileToken.toLowerCase()) ||
-      lc.includes(profileQuoted.toLowerCase())
-    )
+    // `--profile NAME` form: needs a non-name boundary after NAME
+    // (whitespace, quote, or end-of-string).
+    const spacedIdx = lc.indexOf('--profile ')
+    if (spacedIdx !== -1) {
+      const after = spacedIdx + '--profile '.length
+      const candidate = lc.slice(after, after + profileLower.length)
+      if (candidate === profileLower) {
+        const trailing = lc.slice(after + profileLower.length)
+        if (
+          trailing === '' ||
+          trailing.startsWith(' ') ||
+          trailing.startsWith('\t') ||
+          trailing.startsWith('"') ||
+          trailing.startsWith("'")
+        ) {
+          return true
+        }
+      }
+    }
+    // `--profile=NAME` form: similar non-name boundary.
+    const equalsTag = `--profile=${profileLower}`
+    const equalsIdx = lc.indexOf(equalsTag)
+    if (equalsIdx !== -1) {
+      const after = equalsIdx + equalsTag.length
+      const trailing = lc.slice(after)
+      if (
+        trailing === '' ||
+        trailing.startsWith(' ') ||
+        trailing.startsWith('\t') ||
+        trailing.startsWith('"') ||
+        trailing.startsWith("'")
+      ) {
+        return true
+      }
+    }
+    return false
   }
   for (const line of csv.split(/\r?\n/)) {
     if (!line.trim()) {
@@ -277,8 +305,13 @@ function listWindowsBackendPids(profile: string): number[] {
  */
 function listPosixBackendPids(profile: string): number[] {
   const isMac = process.platform === 'darwin'
+  // Enumerate ALL processes; findStaleBackendPids filters out `process.pid`
+  // (the desktop itself) and any other ancestor PIDs. The previous incarnation
+  // passed `-p <pid>` to limit `ps` output to the desktop process — which
+  // also dropped every other PID, defeating the macOS enumerator entirely.
+  // See PR #67408 review (teknium1 hermes-sweeper, 2026-07-19).
   const psArgs = isMac
-    ? ['-axo', 'pid=,command=', '-p', String(process.pid)]
+    ? ['-axo', 'pid=,command=']
     : ['-eo', 'pid,args', '--no-headers']
   let out = ''
   try {
@@ -291,8 +324,7 @@ function listPosixBackendPids(profile: string): number[] {
     return []
   }
   const matches: number[] = []
-  const profileToken = `--profile ${profile} `
-  const profileEqual = `--profile=${profile}`
+  const profileLower = profile.toLowerCase()
   for (const line of out.split(/\r?\n/)) {
     const trimmed = line.replace(/^\s+/, '')
     if (!trimmed) {
@@ -310,11 +342,41 @@ function listPosixBackendPids(profile: string): number[] {
     if (!rest.includes('serve')) {
       continue
     }
-    if (
-      rest.includes(profileToken) ||
-      rest.includes(profileEqual)
-    ) {
-      matches.push(pid)
+    // Exact-match profile detection (--profile NAME serves NAME,
+    // --profile=NAME likewise). Substring prefix match would let
+    // profile=`work` reap profile=`worker`; see sweeper review.
+    const spacedIdx = rest.indexOf('--profile ')
+    if (spacedIdx !== -1) {
+      const after = spacedIdx + '--profile '.length
+      const candidate = rest.slice(after, after + profileLower.length)
+      if (candidate === profileLower) {
+        const trailing = rest.slice(after + profileLower.length)
+        if (
+          trailing === '' ||
+          trailing.startsWith(' ') ||
+          trailing.startsWith('\t') ||
+          trailing.startsWith('"') ||
+          trailing.startsWith("'")
+        ) {
+          matches.push(pid)
+          continue
+        }
+      }
+    }
+    const equalsTag = `--profile=${profileLower}`
+    const equalsIdx = rest.indexOf(equalsTag)
+    if (equalsIdx !== -1) {
+      const after = equalsIdx + equalsTag.length
+      const trailing = rest.slice(after)
+      if (
+        trailing === '' ||
+        trailing.startsWith(' ') ||
+        trailing.startsWith('\t') ||
+        trailing.startsWith('"') ||
+        trailing.startsWith("'")
+      ) {
+        matches.push(pid)
+      }
     }
   }
   return matches

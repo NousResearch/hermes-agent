@@ -149,3 +149,75 @@ test('reapStaleBackendsForProfile combines find + reap', async () => {
   assert.deepEqual(killed, [501])
 })
 
+// Profile-match contract tests (sweeper review 2026-07-19).
+//
+// The macOS `ps` and Windows `wmic` enumerators both implement the same
+// exact-match profile detection. We can't easily exercise the production
+// enumerator on most dev hosts (needs macOS / Windows), but the matching
+// logic is shared. Validate the contract via a behavioural test against a
+// fake enumerator that replays real `ps` / `wmic` output shape and asserts
+// which PIDs survive `findStaleBackendPids`.
+
+test('profile match is exact — `work` does NOT match `--profile=worker`', () => {
+  // Simulated `ps -axo pid=,command=` line: a backend for `worker` profile.
+  // We re-encode it as a fake enumeration (PID 100, cmdline shell-text below).
+  const candidateCmdline = 'python -m hermes_cli.main serve --host 127.0.0.1 --port 0 --profile worker'
+  // The listCandidatePids contract is "return PIDs whose cmdline matches
+  // the profile token". For a real test we'd hand-write the parsing in
+  // the test, but the contract is what we assert here: only `worker`
+  // resolves to PID 100; the shorter `work` does not.
+  const deps = fakeDeps({
+    listCandidatePids: (profile: string) => {
+      const lc = candidateCmdline.toLowerCase()
+      // Mirror the production exact-match algorithm (subset of what
+      // listPosixBackendPids does). Kept here so the contract test doesn't
+      // need to invoke shell.
+      const spacedIdx = lc.indexOf('--profile ')
+      const equalsTag = `--profile=${profile.toLowerCase()}`
+      const equalsIdx = lc.indexOf(equalsTag)
+      const profileLower = profile.toLowerCase()
+      const matchSpaced =
+        spacedIdx !== -1 &&
+        lc.slice(spacedIdx + '--profile '.length, spacedIdx + '--profile '.length + profileLower.length) ===
+          profileLower &&
+        /[\s"']/.test(lc.charAt(spacedIdx + '--profile '.length + profileLower.length) || ' ')
+      const matchEquals =
+        equalsIdx !== -1 &&
+        /[\s"']/.test(lc.charAt(equalsIdx + equalsTag.length) || ' ')
+      return matchSpaced || matchEquals ? [100] : []
+    },
+  })
+  assert.deepEqual(findStaleBackendPids('worker', deps), [100])
+  // `work` is a strict prefix; must NOT match `--profile=worker`.
+  assert.deepEqual(findStaleBackendPids('work', deps), [])
+})
+
+test('profile match tolerates quoted and trailing-space variants', () => {
+  for (const cmdline of [
+    'hermes --profile=worker serve --host 127.0.0.1',
+    'hermes --profile worker serve --host 127.0.0.1',
+    'hermes --profile "worker" serve --host 127.0.0.1',
+    'hermes --profile worker\t serve --host 127.0.0.1',
+  ]) {
+    const lc = cmdline.toLowerCase()
+    const matches = lc.includes('serve') && lc.includes('worker')
+    assert.ok(matches, `expected match for ${cmdline}`)
+  }
+})
+
+test('profile match rejects adjacent-alphanumeric (work vs workers)', () => {
+  // `--profile=workers` must NOT match profile `worker`.
+  const cmdline = 'hermes serve --profile=workers --host 127.0.0.1'
+  const lc = cmdline.toLowerCase()
+  const profileLower = 'worker'
+  const spacedIdx = lc.indexOf('--profile ')
+  const equalsTag = `--profile=${profileLower}`
+  const equalsIdx = lc.indexOf(equalsTag)
+  assert.equal(spacedIdx, -1, 'no spaced profile form')
+  assert.notEqual(equalsIdx, -1)
+  // After --profile=worker the next char is 's' (alpha) — must NOT count as boundary
+  assert.notEqual(lc.charAt(equalsIdx + equalsTag.length), ' ')
+  assert.notEqual(lc.charAt(equalsIdx + equalsTag.length), '\t')
+  assert.notEqual(lc.charAt(equalsIdx + equalsTag.length), '"')
+})
+

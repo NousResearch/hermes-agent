@@ -7021,11 +7021,23 @@ async function startHermes() {
     // #67026: reap any stale hermes serve --profile <this profile> processes
     // left over from a previous desktop session. Without this the desktop
     // accumulates orphan backends (in-memory pool + fire-and-forget quit).
-    const primaryProfile = activeProfile ?? 'default'
-    const primarySurvivors = await reapStaleBackendsForProfile(primaryProfile)
-    if (primarySurvivors.length) {
+    //
+    // The legacy launch (no `activeProfile`) intentionally launches the child
+    // WITHOUT a `--profile` flag — we can't safely reap by profile because
+    // the spawn itself doesn't filter, and any profile-agnostic reap would
+    // be too aggressive across named profiles. Skip the reap in that path
+    // and log a one-shot warning; users can manually `pkill -f 'hermes serve'`
+    // for the rare legacy case.
+    if (activeProfile) {
+      const primarySurvivors = await reapStaleBackendsForProfile(activeProfile)
+      if (primarySurvivors.length) {
+        rememberLog(
+          `Reaped ${primarySurvivors.length} stale primary-backend PIDs for profile "${activeProfile}" before spawn (survivors=${primarySurvivors.join(',')})`,
+        )
+      }
+    } else {
       rememberLog(
-        `Reaped ${primarySurvivors.length} stale primary-backend PIDs for profile "${primaryProfile}" before spawn (survivors=${primarySurvivors.join(',')})`,
+        '[#67026] Legacy primary launch (no --profile): skipping stale-backend reap to avoid cross-profile kills',
       )
     }
 

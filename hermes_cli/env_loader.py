@@ -61,7 +61,7 @@ def get_secret_source(env_var: str) -> str | None:
 
 
 def reset_secret_source_cache() -> None:
-    """Forget which HERMES_HOME paths have already had external secrets applied.
+    """Forget previously applied secret-source labels and home-path caches.
 
     The first call to ``_apply_external_secret_sources(home_path)`` in a
     process pulls from Bitwarden (or other configured backend), records the
@@ -71,6 +71,7 @@ def reset_secret_source_cache() -> None:
     that want to refresh after a config change.
     """
     _APPLIED_HOMES.clear()
+    _SECRET_SOURCES.clear()
 
 
 def format_secret_source_suffix(env_var: str) -> str:

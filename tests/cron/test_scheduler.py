@@ -2144,9 +2144,9 @@ class TestRunJobConfigEnvVarExpansion:
         assert error is None
         mock_reset.assert_called_once_with()
         assert load_calls
-        # Cron must refresh Hermes env before expanding config.yaml.
-        # MCP discovery may refresh env again later in the job, which is fine.
-        assert load_calls[0] == (str(tmp_path), None)
+        # Cron performs a profile-home refresh (no project_env). Other startup
+        # paths may load the repository .env earlier in the same job.
+        assert any(project_env is None for _home, project_env in load_calls)
         assert mock_agent_cls.call_args.kwargs["model"] == "gpt-4o-mini-cron-test"
 
 

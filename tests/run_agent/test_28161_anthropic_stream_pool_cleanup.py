@@ -135,8 +135,13 @@ class TestAnthropicStreamPoolCleanup:
             return _good_stream_cm()
 
         agent._anthropic_client.messages.stream.side_effect = _stream_side_effect
-        # close() on the mock Anthropic client unblocks the inner thread.
-        agent._anthropic_client.close.side_effect = unblock.set
+        # #67142: the stranger-thread stale detector now ABORTS the Anthropic
+        # sockets rather than calling close(); the abort is what unblocks the
+        # worker, and the worker performs the close()+rebuild from its own
+        # thread. Route the unblock through the abort path accordingly.
+        agent._abort_anthropic_client = MagicMock(
+            side_effect=lambda *a, **k: unblock.set()
+        )
 
         with patch.object(agent, "_rebuild_anthropic_client") as mock_rebuild:
             with patch.object(
@@ -145,6 +150,9 @@ class TestAnthropicStreamPoolCleanup:
                 agent._interruptible_streaming_api_call({})
 
         mock_replace.assert_not_called()
-        # close() and rebuild called at least once by the stale detector.
+        # The stale detector aborts from the stranger thread; the worker still
+        # closes+rebuilds the Anthropic client from its own thread (no OpenAI
+        # primary replace, no 15-minute hang — #28161 behavior preserved).
+        agent._abort_anthropic_client.assert_called()
         agent._anthropic_client.close.assert_called()
         assert mock_rebuild.call_count >= 1

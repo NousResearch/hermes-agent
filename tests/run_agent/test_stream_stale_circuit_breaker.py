@@ -116,7 +116,9 @@ class TestStreamStaleCircuitBreaker:
 
         # Every attempt blocks, trips the stale detector, and fails.
         agent._anthropic_client.messages.stream.side_effect = _stream_side_effect
-        agent._anthropic_client.close.side_effect = unblock.set
+        # #67142: the stranger-thread stale detector now ABORTS the Anthropic
+        # sockets (never ``close()``); the abort is what unblocks the worker.
+        agent._abort_anthropic_client = MagicMock(side_effect=lambda *a, **k: unblock.set())
 
         with pytest.raises(Exception):
             agent._interruptible_streaming_api_call({})

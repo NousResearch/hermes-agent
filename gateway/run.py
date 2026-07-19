@@ -1919,6 +1919,7 @@ from gateway.session import (
     build_session_key,
     is_shared_multi_user_session,
     neutralize_untrusted_inline_text,
+    split_key_namespace,
 )
 from gateway.delivery import DeliveryRouter, looks_like_telegram_private_chat_id
 from gateway.turn_lease import SessionTurnLeaseRegistry
@@ -2721,12 +2722,19 @@ def _parse_session_key(session_key: str) -> "dict | None":
     thread_id, so we leave ``thread_id`` out to avoid mis-routing.
     """
     parts = session_key.split(":")
-    if len(parts) >= 5 and parts[0] == "agent" and parts[1] == "main":
+    # Accept the default namespace with or without a multi-account suffix
+    # (``agent:main`` / ``agent:main@support``, #8287) — the positional
+    # layout after the namespace slot is identical. Named-profile keys stay
+    # excluded, as before.
+    _ns, _account = split_key_namespace(parts[1]) if len(parts) > 1 else ("", None)
+    if len(parts) >= 5 and parts[0] == "agent" and _ns == "main":
         result = {
             "platform": parts[2],
             "chat_type": parts[3],
             "chat_id": parts[4],
         }
+        if _account:
+            result["account"] = _account
         if len(parts) > 5 and parts[3] in {"dm", "thread"}:
             result["thread_id"] = parts[5]
         return result

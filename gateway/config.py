@@ -11,6 +11,7 @@ Handles loading and validating configuration for:
 import logging
 import os
 import json
+import re
 from pathlib import Path
 from dataclasses import asdict, dataclass, field, is_dataclass
 from typing import Dict, List, Optional, Any, Callable
@@ -654,8 +655,20 @@ class PlatformConfig:
             _norm_accounts: Dict[str, Any] = {}
             for _acct_name, _acct_block in _accounts.items():
                 _acct_key = str(_acct_name).strip().lower()
-                if _acct_key:
-                    _norm_accounts[_acct_key] = _coerce_dict(_acct_block)
+                if not _acct_key:
+                    continue
+                # Account names become a session-key namespace suffix
+                # (``agent:main@<account>``), so the charset is restricted:
+                # ``:`` would break key splitting, ``@`` the suffix parse.
+                if not re.fullmatch(r"[a-z0-9][a-z0-9_-]*", _acct_key):
+                    logger.warning(
+                        "Ignoring platform account %r: names must match "
+                        "[a-z0-9][a-z0-9_-]* (they become session-key "
+                        "namespace suffixes)",
+                        _acct_name,
+                    )
+                    continue
+                _norm_accounts[_acct_key] = _coerce_dict(_acct_block)
             if _norm_accounts:
                 extra["accounts"] = _norm_accounts
 
@@ -1681,6 +1694,14 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
         _acct_name = _env_name[len(_tg_account_prefix):].strip().lower()
         _acct_token = getenv(_env_name)
         if not _acct_name or not _acct_token:
+            continue
+        # Same charset rule as the YAML block: names become session-key
+        # namespace suffixes.
+        if not re.fullmatch(r"[a-z0-9][a-z0-9_-]*", _acct_name):
+            logger.warning(
+                "Ignoring %s: account names must match [a-z0-9][a-z0-9_-]*",
+                _env_name,
+            )
             continue
         _tg_cfg = _enable_from_env(Platform.TELEGRAM)
         _tg_accounts = _tg_cfg.extra.setdefault("accounts", {})

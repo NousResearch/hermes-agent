@@ -183,6 +183,14 @@ class SessionSource:
     # namespacing and the per-turn config/credential scope.
     profile: Optional[str] = None
 
+    # Bot account this inbound message arrived on (#8287). A gateway can run
+    # multiple bot accounts on one platform (TELEGRAM_BOT_TOKEN_<ACCOUNT>);
+    # the receiving adapter stamps its account name here so session keys,
+    # busy guards, and outbound delivery all route per account. None => the
+    # platform's default account — byte-identical behavior to a single-bot
+    # gateway.
+    account: Optional[str] = None
+
     # Discord auto-thread metadata.  Newly auto-created Discord threads start
     # with a fast placeholder title from the raw message, then the gateway can
     # rename them after the first agent turn using the generated session title.
@@ -264,6 +272,8 @@ class SessionSource:
             d["message_id"] = self.message_id
         if self.profile:
             d["profile"] = self.profile
+        if self.account:
+            d["account"] = self.account
         if self.auto_thread_created:
             d["auto_thread_created"] = True
         if self.auto_thread_initial_name:
@@ -289,6 +299,7 @@ class SessionSource:
             parent_chat_id=data.get("parent_chat_id"),
             message_id=data.get("message_id"),
             profile=data.get("profile"),
+            account=data.get("account"),
             auto_thread_created=bool(data.get("auto_thread_created", False)),
             auto_thread_initial_name=data.get("auto_thread_initial_name"),
         )
@@ -881,7 +892,9 @@ def is_shared_multi_user_session(
     return not group_sessions_per_user
 
 
-def _session_key_namespace(profile: Optional[str]) -> str:
+def _session_key_namespace(
+    profile: Optional[str], account: Optional[str] = None
+) -> str:
     """Return the ``agent:<ns>`` namespace prefix for a session key.
 
     The historical key format is ``agent:main:<platform>:<chat_type>:...`` where
@@ -895,10 +908,36 @@ def _session_key_namespace(profile: Optional[str]) -> str:
     - named profile ``coder`` → ``agent:coder`` — keeps the same positional
       layout, just a different namespace, so two profiles serving the same
       platform/chat never collide.
+
+    Multi-account gateways (#8287) reuse the slot the same way: a non-default
+    bot account is appended as ``@<account>`` (``agent:main@support``,
+    ``agent:coder@support``), so the same chat reached through two bots yields
+    two sessions while every positional parser keeps its layout. ``:`` stays
+    the only separator, and account names are charset-restricted at config
+    parse time so ``@`` cannot appear inside a name. Readers that map the
+    namespace back to a profile must strip the suffix via
+    :func:`split_key_namespace`.
     """
     if not profile or profile == "default":
-        return "agent:main"
-    return f"agent:{profile}"
+        ns = "agent:main"
+    else:
+        ns = f"agent:{profile}"
+    if account and account != "default":
+        return f"{ns}@{account}"
+    return ns
+
+
+def split_key_namespace(namespace: str) -> tuple[str, Optional[str]]:
+    """Split a session-key namespace component into ``(profile_ns, account)``.
+
+    ``main`` → ``("main", None)``; ``main@support`` → ``("main", "support")``.
+    The account suffix was introduced for multi-account gateways (#8287);
+    every reader that compares or maps the namespace (profile resolution,
+    key parsers) must strip it through here rather than assuming the raw
+    slot equals a profile name.
+    """
+    base, sep, account = (namespace or "").partition("@")
+    return base, (account or None) if sep else None
 
 
 def build_session_key(
@@ -935,7 +974,13 @@ def build_session_key(
         shared session per chat.
       - Without identifiers, messages fall back to one session per platform/chat_type.
     """
-    ns = _session_key_namespace(profile)
+    # Account comes from the SOURCE, not a caller parameter: which bot
+    # received the message is intrinsic to the event, and reading it here
+    # guarantees the adapter-level guard and the session store derive the
+    # same key for the same event (per-key guards diverging is the #64934
+    # bug class). ``getattr`` guards bare test fixtures (AGENTS.md pitfall).
+    account = getattr(source, "account", None)
+    ns = _session_key_namespace(profile, account)
     platform = source.platform.value
     if source.chat_type == "dm":
         dm_chat_id = source.chat_id
@@ -1382,7 +1427,10 @@ class SessionStore:
         parts = str(session_key).split(":")
         if len(parts) < 2 or parts[0] != "agent":
             return None
-        namespace = parts[1] or "main"
+        # Strip a multi-account suffix (agent:main@support) — the account is
+        # not a profile and must not be resolved as one (#8287).
+        namespace, _account = split_key_namespace(parts[1] or "main")
+        namespace = namespace or "main"
         return "default" if namespace == "main" else namespace
 
     @staticmethod

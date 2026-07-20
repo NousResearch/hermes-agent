@@ -38,6 +38,35 @@ logger = logging.getLogger(__name__)
 # advisory (#33924) is logged once per name, not on every tool recompute.
 _WARNED_DISABLED_BUNDLES: set = set()
 
+# MCP tool budget tracking: LRU timestamps for MCP tool calls.
+# Keyed by tool name, value is monotonic time of last use.
+_mcp_tool_last_used: Dict[str, float] = {}
+_mcp_tool_last_used_lock = threading.Lock()
+
+
+def _resolve_mcp_tool_budget() -> int:
+    """Read the MCP tool budget from config. 0 = unlimited."""
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config() or {}
+        return int(cfg.get("mcp_tool_budget", 0))
+    except Exception:
+        return 0
+
+
+def _get_mcp_tool_last_used(tool_name: str) -> float:
+    """Return the last-used timestamp for an MCP tool (0 if never used)."""
+    with _mcp_tool_last_used_lock:
+        return _mcp_tool_last_used.get(tool_name, 0.0)
+
+
+def _mark_mcp_tool_used(tool_name: str) -> None:
+    """Record that an MCP tool was just used (for LRU eviction)."""
+    if not tool_name.startswith("mcp__"):
+        return
+    with _mcp_tool_last_used_lock:
+        _mcp_tool_last_used[tool_name] = time.monotonic()
+
 
 # =============================================================================
 # Async Bridging  (single source of truth -- used by registry.dispatch too)
@@ -449,6 +478,38 @@ def _compute_tool_definitions(
     # other tools by name — otherwise the model sees tools mentioned in
     # descriptions that don't actually exist, and hallucinates calls to them.
     available_tool_names = {t["function"]["name"] for t in filtered_tools}
+
+    # Apply MCP tool budget: if configured, cap the number of MCP tool
+    # schemas in the prompt. Meta-tools (mcp_list_servers, mcp_load_server)
+    # are always included. When the budget is exceeded, tools from
+    # least-recently-used servers are dropped first.
+    _mcp_tool_budget = _resolve_mcp_tool_budget()
+    if _mcp_tool_budget > 0:
+        mcp_tools = [
+            t for t in filtered_tools
+            if t.get("function", {}).get("name", "").startswith("mcp__")
+            and t.get("function", {}).get("name", "") not in ("mcp_list_servers", "mcp_load_server")
+        ]
+        if len(mcp_tools) > _mcp_tool_budget:
+            # Keep meta-tools, drop excess MCP tools
+            non_mcp_tools = [
+                t for t in filtered_tools
+                if not t.get("function", {}).get("name", "").startswith("mcp__")
+                or t.get("function", {}).get("name", "") in ("mcp_list_servers", "mcp_load_server")
+            ]
+            # Sort MCP tools by LRU: keep the most recently used ones
+            mcp_tools.sort(
+                key=lambda t: _get_mcp_tool_last_used(t.get("function", {}).get("name", "")),
+                reverse=True,
+            )
+            filtered_tools = non_mcp_tools + mcp_tools[:_mcp_tool_budget]
+            # Recompute available_tool_names
+            available_tool_names = {t["function"]["name"] for t in filtered_tools}
+            logger.debug(
+                "MCP tool budget: capped %d MCP tools to %d (dropped %d)",
+                len(mcp_tools), _mcp_tool_budget,
+                len(mcp_tools) - _mcp_tool_budget,
+            )
 
     # Rebuild execute_code schema to only list sandbox tools that are actually
     # available.  Without this, the model sees "web_search is available in
@@ -1289,6 +1350,9 @@ def handle_function_call(
                 turn_id=turn_id or "",
                 api_request_id=api_request_id or "",
             )
+
+            # Track MCP tool usage for LRU eviction
+            _mark_mcp_tool_used(function_name)
         finally:
             if _approval_tokens is not None and reset_current_observability_context is not None:
                 try:

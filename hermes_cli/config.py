@@ -1423,6 +1423,12 @@ DEFAULT_CONFIG = {
         "auto_reload_on_config_change": True,
     },
 
+    # MCP tool schema budget: max MCP tool schemas to inject into the
+    # LLM system prompt. When the total MCP tools exceed this budget,
+    # least-recently-used servers' tools are dropped. 0 = unlimited
+    # (current default, backward compatible).
+    "mcp_tool_budget": 0,
+
     # Tool-output truncation thresholds. When terminal output or a
     # single read_file page exceeds these limits, Hermes truncates the
     # payload sent to the model (keeping head + tail for terminal,

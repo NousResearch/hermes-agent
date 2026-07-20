@@ -330,6 +330,16 @@ _DEFAULT_CONNECT_TIMEOUT = 60    # seconds for initial connection per server
 _MAX_RECONNECT_RETRIES = 5
 _MAX_INITIAL_CONNECT_RETRIES = 3 # retries for the very first connection attempt
 _MAX_BACKOFF_SECONDS = 60
+
+# Connection strategies for MCP servers
+CONNECT_STRATEGY_STARTUP = "startup"    # connect at startup (current default)
+CONNECT_STRATEGY_LAZY = "lazy"          # register schemas, defer subprocess spawn
+CONNECT_STRATEGY_ON_DEMAND = "on_demand"  # invisible until explicitly loaded
+_VALID_CONNECT_STRATEGIES = frozenset({
+    CONNECT_STRATEGY_STARTUP,
+    CONNECT_STRATEGY_LAZY,
+    CONNECT_STRATEGY_ON_DEMAND,
+})
 # While parked (reconnect budget exhausted, tools deregistered) the run task
 # wakes on this cadence and attempts one revival probe. Without it a parked
 # server is unrevivable: its tools are out of the registry, so no tool call
@@ -417,6 +427,126 @@ def _env_ref_name(ref: str) -> str:
     if ref.startswith("env:"):
         ref = ref[len("env:"):].strip()
     return ref
+
+
+# ---------------------------------------------------------------------------
+# Lazy / on-demand server tracking
+# ---------------------------------------------------------------------------
+
+# Servers configured with connect_strategy='lazy' — their tool schemas are
+# registered at startup but the subprocess/HTTP session is deferred until
+# the first tool call.
+_lazy_servers: Dict[str, dict] = {}
+_lazy_servers_lock = threading.Lock()
+
+# Servers configured with connect_strategy='on_demand' — invisible until
+# explicitly loaded via mcp_load_server or /mcp load.
+_on_demand_servers: Dict[str, dict] = {}
+_on_demand_servers_lock = threading.Lock()
+
+# Per-session tool visibility: tracks which on_demand servers have been
+# loaded in the current session. Keyed by server name.
+_session_loaded_servers: set = set()
+_session_loaded_servers_lock = threading.Lock()
+
+
+def _get_connect_strategy(config: dict) -> str:
+    """Return the connection strategy for a server config.
+
+    Defaults to 'startup' for backward compatibility.
+    """
+    strategy = config.get("connect_strategy", CONNECT_STRATEGY_STARTUP)
+    if strategy not in _VALID_CONNECT_STRATEGIES:
+        logger.debug(
+            "Unknown connect_strategy '%s' for MCP server, falling back to 'startup'",
+            strategy,
+        )
+        return CONNECT_STRATEGY_STARTUP
+    return strategy
+
+
+def _is_lazy_server(name: str) -> bool:
+    """Check if a server is registered as lazy (not yet connected)."""
+    with _lazy_servers_lock:
+        return name in _lazy_servers
+
+
+def _is_on_demand_server(name: str) -> bool:
+    """Check if a server is registered as on_demand (not yet loaded)."""
+    with _on_demand_servers_lock:
+        return name in _on_demand_servers
+
+
+def _is_server_loaded_in_session(name: str) -> bool:
+    """Check if an on_demand server has been loaded in the current session."""
+    with _session_loaded_servers_lock:
+        return name in _session_loaded_servers
+
+
+def _mark_server_loaded_in_session(name: str) -> None:
+    """Mark an on_demand server as loaded in the current session."""
+    with _session_loaded_servers_lock:
+        _session_loaded_servers.add(name)
+
+
+def _clear_session_loaded_servers() -> None:
+    """Clear the per-session loaded server set (called on /new or session reset)."""
+    with _session_loaded_servers_lock:
+        _session_loaded_servers.clear()
+
+
+def _remove_session_loaded_server(name: str) -> None:
+    """Remove a single server from the per-session loaded set."""
+    with _session_loaded_servers_lock:
+        _session_loaded_servers.discard(name)
+
+
+def _activate_lazy_server(name: str) -> bool:
+    """Force-connect a lazy server on first tool call.
+
+    Returns True if the server is now connected, False on failure.
+    """
+    with _lazy_servers_lock:
+        cfg = _lazy_servers.get(name)
+        if not cfg:
+            return False
+
+    _ensure_mcp_loop()
+    try:
+        _run_on_mcp_loop(
+            _discover_and_register_server(name, cfg),
+            timeout=cfg.get("connect_timeout", _DEFAULT_CONNECT_TIMEOUT),
+        )
+        # Only remove from lazy tracking on success
+        with _lazy_servers_lock:
+            _lazy_servers.pop(name, None)
+        return True
+    except Exception as exc:
+        logger.warning("Failed to activate lazy MCP server '%s': %s", name, exc)
+        return False
+
+
+def _activate_on_demand_server(name: str) -> bool:
+    """Force-connect an on_demand server.
+
+    Returns True if the server is now connected, False on failure.
+    """
+    with _on_demand_servers_lock:
+        cfg = _on_demand_servers.get(name)
+        if not cfg:
+            return False
+
+    _ensure_mcp_loop()
+    try:
+        _run_on_mcp_loop(
+            _discover_and_register_server(name, cfg),
+            timeout=cfg.get("connect_timeout", _DEFAULT_CONNECT_TIMEOUT),
+        )
+        _mark_server_loaded_in_session(name)
+        return True
+    except Exception as exc:
+        logger.warning("Failed to activate on_demand MCP server '%s': %s", name, exc)
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -4581,9 +4711,20 @@ def _make_get_prompt_handler(server_name: str, tool_timeout: float):
 
 
 def _make_check_fn(server_name: str):
-    """Return a check function that verifies the MCP connection is alive."""
+    """Return a check function that verifies the MCP connection is alive.
+
+    For lazy servers, returns True so the stub activate tool is visible.
+    For on_demand servers, returns True only if the server has been loaded
+    in the current session.
+    """
 
     def _check() -> bool:
+        # Lazy servers are always "available" (their stub activate tool is visible)
+        if _is_lazy_server(server_name):
+            return True
+        # On-demand servers are only available if loaded in this session
+        if _is_on_demand_server(server_name):
+            return _is_server_loaded_in_session(server_name)
         with _lock:
             server = _servers.get(server_name)
         return (
@@ -5018,6 +5159,61 @@ def _existing_tool_names() -> List[str]:
     return names
 
 
+def _register_lazy_server_stubs(name: str, config: dict) -> None:
+    """Register stub tools for a lazy MCP server.
+
+    Since we can't know the server's tool schemas without connecting,
+    we register a single ``mcp_activate_{name}`` tool that the LLM can
+    call to trigger the connection. After activation, the real tools
+    are registered and the stub is replaced.
+    """
+    from tools.registry import registry
+
+    toolset_name = f"mcp-{name}"
+    safe_name = sanitize_mcp_name_component(name)
+
+    # Register the activate tool
+    activate_tool_name = f"mcp__activate_{safe_name}"
+    schema = {
+        "name": activate_tool_name,
+        "description": f"Activate the '{name}' MCP server (currently lazy — not yet connected). "
+                       f"Call this tool to connect and make its tools available.",
+        "parameters": {
+            "type": "object",
+            "properties": {},
+        },
+    }
+
+    def _activate_handler(args: dict, **kwargs) -> str:
+        if _activate_lazy_server(name):
+            return json.dumps({
+                "result": f"MCP server '{name}' activated successfully. "
+                          f"Its tools are now available — please retry your request.",
+            }, ensure_ascii=False)
+        return json.dumps({
+            "error": f"Failed to activate MCP server '{name}'. "
+                     f"Check that the server is running and accessible.",
+        }, ensure_ascii=False)
+
+    registry.register(
+        name=activate_tool_name,
+        toolset=toolset_name,
+        schema=schema,
+        handler=_activate_handler,
+        check_fn=lambda: True,
+        is_async=False,
+        description=schema["description"],
+    )
+
+    # Register toolset alias so the platform resolver can find this server's tools
+    registry.register_toolset_alias(name, toolset_name)
+
+    logger.debug(
+        "MCP lazy server '%s': registered stub tool '%s'",
+        name, activate_tool_name,
+    )
+
+
 def _register_server_tools(name: str, server: MCPServerTask, config: dict) -> List[str]:
     """Register tools from an already-connected server into the registry.
 
@@ -5288,6 +5484,11 @@ def discover_mcp_tools() -> List[str]:
     Idempotent for already-connected servers. If some servers failed on a
     previous call, only the missing ones are retried.
 
+    Servers with ``connect_strategy: lazy`` have their tool schemas registered
+    at startup but the subprocess/HTTP session is deferred until the first
+    tool call. Servers with ``connect_strategy: on_demand`` are invisible
+    until explicitly loaded via ``mcp_load_server`` or ``/mcp load``.
+
     Returns:
         List of all registered MCP tool names.
     """
@@ -5300,30 +5501,52 @@ def discover_mcp_tools() -> List[str]:
         logger.debug("No MCP servers configured")
         return []
 
-    with _lock:
-        new_server_names = [
-            name
-            for name, cfg in servers.items()
-            if name not in _servers and _parse_boolish(cfg.get("enabled", True), default=True)
-        ]
+    # Split servers by connection strategy
+    startup_servers = {}
+    lazy_servers = {}
+    on_demand_servers = {}
 
-    tool_names = register_mcp_servers(servers)
-    if not new_server_names:
-        return tool_names
+    for name, cfg in servers.items():
+        if not _parse_boolish(cfg.get("enabled", True), default=True):
+            continue
+        strategy = _get_connect_strategy(cfg)
+        if strategy == CONNECT_STRATEGY_LAZY:
+            lazy_servers[name] = cfg
+        elif strategy == CONNECT_STRATEGY_ON_DEMAND:
+            on_demand_servers[name] = cfg
+        else:
+            startup_servers[name] = cfg
 
-    with _lock:
-        connected_server_names = [name for name in new_server_names if name in _servers]
-        new_tool_count = sum(
-            len(getattr(_servers[name], "_registered_tool_names", []))
-            for name in connected_server_names
+    # Store lazy and on_demand servers for later activation
+    with _lazy_servers_lock:
+        _lazy_servers.clear()
+        _lazy_servers.update(lazy_servers)
+    with _on_demand_servers_lock:
+        _on_demand_servers.clear()
+        _on_demand_servers.update(on_demand_servers)
+
+    # Register lazy server tools with stub handlers (so LLM can see them)
+    for name, cfg in lazy_servers.items():
+        _register_lazy_server_stubs(name, cfg)
+
+    # Only connect startup-strategy servers
+    if startup_servers:
+        tool_names = register_mcp_servers(startup_servers)
+    else:
+        tool_names = _existing_tool_names()
+
+    if lazy_servers:
+        logger.info(
+            "  MCP: %d server(s) configured as 'lazy' (connect on first use): %s",
+            len(lazy_servers),
+            ", ".join(sorted(lazy_servers.keys())),
         )
-
-    failed_count = len(new_server_names) - len(connected_server_names)
-    if new_tool_count or failed_count:
-        summary = f"  MCP: {new_tool_count} tool(s) from {len(connected_server_names)} server(s)"
-        if failed_count:
-            summary += f" ({failed_count} failed)"
-        logger.info(summary)
+    if on_demand_servers:
+        logger.info(
+            "  MCP: %d server(s) configured as 'on_demand' (load via /mcp load): %s",
+            len(on_demand_servers),
+            ", ".join(sorted(on_demand_servers.keys())),
+        )
 
     return tool_names
 
@@ -5911,3 +6134,166 @@ def _stop_mcp_loop(*, only_if_idle: bool = False) -> bool:
         # since the loop is gone and no session can still be in flight.
         _kill_orphaned_mcp_children(include_active=True)
     return True
+
+
+# ---------------------------------------------------------------------------
+# Meta-tools for agent-driven MCP server discovery and loading
+# ---------------------------------------------------------------------------
+
+def _register_mcp_meta_tools() -> None:
+    """Register ``mcp_list_servers`` and ``mcp_load_server`` meta-tools.
+
+    These tools are always available so the LLM can discover and activate
+    MCP servers on its own, even when all server tools are evicted by
+    the tool budget or configured as on_demand.
+    """
+    from tools.registry import registry
+
+    # mcp_list_servers — show all configured servers
+    list_schema = {
+        "name": "mcp_list_servers",
+        "description": "List all configured MCP servers with their status, "
+                       "tool counts, connection strategy, and whether tools "
+                       "are currently active. Use this to discover what "
+                       "servers are available.",
+        "parameters": {
+            "type": "object",
+            "properties": {},
+        },
+    }
+
+    def _list_handler(args: dict, **kwargs) -> str:
+        servers = _load_mcp_config()
+        if not servers:
+            return json.dumps({"servers": []}, ensure_ascii=False)
+
+        result = []
+        for name, cfg in sorted(servers.items()):
+            enabled = _parse_boolish(cfg.get("enabled", True), default=True)
+            if not enabled:
+                continue
+
+            strategy = _get_connect_strategy(cfg)
+            transport = "http" if "url" in cfg else "stdio"
+
+            with _lock:
+                server = _servers.get(name)
+                connected = server is not None and server.session is not None
+                tool_count = len(getattr(server, "_registered_tool_names", [])) if server else 0
+
+            is_lazy = _is_lazy_server(name)
+            is_ondemand = _is_on_demand_server(name)
+            loaded = _is_server_loaded_in_session(name) if is_ondemand else True
+
+            entry = {
+                "name": name,
+                "transport": transport,
+                "strategy": strategy,
+                "connected": connected or is_lazy,
+                "tools_active": connected or (is_lazy and not is_ondemand) or loaded,
+                "tool_count": tool_count,
+            }
+            result.append(entry)
+
+        return json.dumps({"servers": result}, ensure_ascii=False)
+
+    registry.register(
+        name="mcp_list_servers",
+        toolset="skills",
+        schema=list_schema,
+        handler=_list_handler,
+        check_fn=lambda: True,
+        is_async=False,
+        description=list_schema["description"],
+    )
+
+    # mcp_load_server — activate a lazy or on_demand server
+    load_schema = {
+        "name": "mcp_load_server",
+        "description": "Activate a lazy or on_demand MCP server. "
+                       "After activation, the server's tools become "
+                       "available for use. Use mcp_list_servers first "
+                       "to discover which servers are available.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "Name of the MCP server to activate",
+                },
+            },
+            "required": ["name"],
+        },
+    }
+
+    def _load_handler(args: dict, **kwargs) -> str:
+        server_name = args.get("name", "")
+        if not server_name:
+            return json.dumps({
+                "error": "Server name is required",
+            }, ensure_ascii=False)
+
+        servers = _load_mcp_config()
+        if server_name not in servers:
+            return json.dumps({
+                "error": f"MCP server '{server_name}' is not configured. "
+                         f"Use mcp_list_servers to see available servers.",
+            }, ensure_ascii=False)
+
+        cfg = servers[server_name]
+        strategy = _get_connect_strategy(cfg)
+
+        if strategy == CONNECT_STRATEGY_STARTUP:
+            # Already connected at startup — check if it's actually connected
+            with _lock:
+                server = _servers.get(server_name)
+                if server and server.session:
+                    return json.dumps({
+                        "result": f"MCP server '{server_name}' is already connected and active.",
+                    }, ensure_ascii=False)
+            return json.dumps({
+                "error": f"MCP server '{server_name}' is configured as 'startup' "
+                         f"but is not currently connected. Try /reload-mcp.",
+            }, ensure_ascii=False)
+
+        if strategy == CONNECT_STRATEGY_LAZY:
+            if _activate_lazy_server(server_name):
+                return json.dumps({
+                    "result": f"MCP server '{server_name}' activated successfully. "
+                              f"Its tools are now available.",
+                }, ensure_ascii=False)
+            return json.dumps({
+                "error": f"Failed to activate MCP server '{server_name}'. "
+                         f"Check that the server is running and accessible.",
+            }, ensure_ascii=False)
+
+        if strategy == CONNECT_STRATEGY_ON_DEMAND:
+            if _activate_on_demand_server(server_name):
+                return json.dumps({
+                    "result": f"MCP server '{server_name}' loaded and activated. "
+                              f"Its tools are now available.",
+                }, ensure_ascii=False)
+            return json.dumps({
+                "error": f"Failed to load MCP server '{server_name}'. "
+                         f"Check that the server is running and accessible.",
+            }, ensure_ascii=False)
+
+        return json.dumps({
+            "error": f"Unknown strategy '{strategy}' for server '{server_name}'",
+        }, ensure_ascii=False)
+
+    registry.register(
+        name="mcp_load_server",
+        toolset="skills",
+        schema=load_schema,
+        handler=_load_handler,
+        check_fn=lambda: True,
+        is_async=False,
+        description=load_schema["description"],
+    )
+
+    logger.debug("Registered MCP meta-tools: mcp_list_servers, mcp_load_server")
+
+
+# Register meta-tools at module import time
+_register_mcp_meta_tools()

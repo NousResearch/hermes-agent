@@ -102,6 +102,15 @@ def _build_browser_env() -> dict:
     for _key in _BROWSER_PASSTHROUGH_KEYS:
         if _key in os.environ:
             env[_key] = os.environ[_key]
+    # A long-lived root systemd user manager exposes a session bus even on a
+    # headless Linux server. Chromium then asks that bus to activate desktop
+    # portals and notification daemons, which cannot open a display and flood
+    # the journal with failed user units. Keep real graphical sessions intact,
+    # but isolate headless browser workers from the unrelated desktop bus.
+    if sys.platform.startswith("linux") and not (
+        env.get("DISPLAY") or env.get("WAYLAND_DISPLAY")
+    ):
+        env["DBUS_SESSION_BUS_ADDRESS"] = "unix:path=/dev/null"
     return env
 
 try:

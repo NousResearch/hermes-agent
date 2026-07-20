@@ -1188,8 +1188,12 @@ def load_gateway_config() -> GatewayConfig:
 
             # Map config.yaml keys → GatewayConfig.from_dict() schema.
             # Each key overwrites whatever gateway.json may have set.
+            # Precedence contract: key-presence at the TOP LEVEL wins; the
+            # nested gateway.* form is consulted only when the top-level key
+            # is absent (not merely falsy/mistyped), so a present-but-empty
+            # top-level value is never silently replaced by the nested one.
             sr = yaml_cfg.get("session_reset")
-            if not (sr and isinstance(sr, dict)) and isinstance(gateway_section, dict):
+            if "session_reset" not in yaml_cfg and isinstance(gateway_section, dict):
                 sr = gateway_section.get("session_reset")
             if sr and isinstance(sr, dict):
                 gw_data["default_reset_policy"] = sr
@@ -1208,7 +1212,7 @@ def load_gateway_config() -> GatewayConfig:
                     )
 
             stt_cfg = yaml_cfg.get("stt")
-            if not isinstance(stt_cfg, dict) and isinstance(gateway_section, dict):
+            if "stt" not in yaml_cfg and isinstance(gateway_section, dict):
                 stt_cfg = gateway_section.get("stt")
             if isinstance(stt_cfg, dict):
                 gw_data["stt"] = stt_cfg

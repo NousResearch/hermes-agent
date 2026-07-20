@@ -827,6 +827,48 @@ class TestLoadGatewayConfig:
 
         assert config.always_log_local is True
 
+    def test_present_empty_top_level_session_reset_blocks_nested_fallback(self, tmp_path, monkeypatch):
+        """Key-presence precedence: a present (even empty) top-level
+        session_reset must NOT be replaced by gateway.session_reset —
+        the fallback fires only when the top-level key is absent."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "session_reset: {}\n"
+            "gateway:\n"
+            "  session_reset:\n"
+            "    mode: idle\n"
+            "    idle_minutes: 30\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        # The nested value must not leak through the present top-level key.
+        assert config.default_reset_policy.mode != "idle"
+
+    def test_present_top_level_stt_blocks_nested_fallback(self, tmp_path, monkeypatch):
+        """Key-presence precedence for stt: a present top-level stt (even
+        mistyped/non-dict) must not be replaced by gateway.stt."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "stt: {}\n"
+            "gateway:\n"
+            "  stt:\n"
+            "    enabled: false\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        # gateway.stt.enabled=false must NOT win over the present top-level stt.
+        assert config.stt_enabled is True
+
     def test_relay_platform_enabled_from_env_url(self, tmp_path, monkeypatch):
         """GATEWAY_RELAY_URL must enable Platform.RELAY in config.platforms so
         start_gateway()'s connect loop actually dials the connector. Registering

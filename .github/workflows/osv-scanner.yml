@@ -49,14 +49,16 @@ jobs:
       - name: 'Run scanner'
         uses: google/osv-scanner-action/osv-scanner-action@9a498708959aeaef5ef730655706c5a1df1edbc2 # v2.3.8
         with:
-          # Scan explicit lockfiles rather than recursing, so we only look at
-          # the three sources of truth and skip vendored / test / worktree dirs.
+          # Scan only the five tracked lockfiles, skipping vendored, test, and
+          # worktree directories.
           scan-args: |-
             --output=results.json
             --format=json
             --lockfile=uv.lock
             --lockfile=package-lock.json
             --lockfile=website/package-lock.json
+            --lockfile=scripts/whatsapp-bridge/package-lock.json
+            --lockfile=plugins/platforms/photon/sidecar/package-lock.json
         continue-on-error: true
 
       - name: 'Run osv-scanner-reporter'

@@ -2104,6 +2104,20 @@ def _format_async_delegation(evt: dict) -> str:
                 header += f", api_calls={r['api_calls']}"
             if r.get("duration_seconds") is not None:
                 header += f", {r['duration_seconds']}s"
+            if r.get("lane"):
+                header += f", lane={r['lane']}"
+            if r.get("requested_provider") or r.get("actual_provider"):
+                header += (
+                    f", requested_provider={r.get('requested_provider') or '?'}"
+                    f", actual_provider={r.get('actual_provider') or '?'}"
+                )
+            if r.get("requested_model") or r.get("actual_model"):
+                header += (
+                    f", requested_model={r.get('requested_model') or '?'}"
+                    f", actual_model={r.get('actual_model') or '?'}"
+                )
+            if r.get("fallback_used") is not None:
+                header += f", fallback_used={bool(r.get('fallback_used'))}"
             header += ") ---"
             lines.append(header)
             if r_status in ("completed", "success") and r_summary:
@@ -2146,6 +2160,16 @@ def _format_async_delegation(evt: dict) -> str:
     if toolsets:
         lines.append(f"Toolsets: {', '.join(toolsets)}")
     lines.append(f"Role: {role}   Model: {model}")
+    if evt.get("lane"):
+        lines.append(
+            "Lane: "
+            f"{evt.get('lane')}   Requested: "
+            f"{evt.get('requested_provider') or '?'}/"
+            f"{evt.get('requested_model') or '?'}   Actual: "
+            f"{evt.get('actual_provider') or '?'}/"
+            f"{evt.get('actual_model') or '?'}   "
+            f"Fallback used: {bool(evt.get('fallback_used'))}"
+        )
     lines.append(f"Status: {status}   API calls: {api_calls}   Duration: {duration}s")
     lines.append("--- RESULT ---")
     if status in ("completed", "success") and summary:

@@ -616,6 +616,18 @@ _HEARTBEAT_STALE_CYCLES_IDLE = 15  # 15 * 30s = 450s idle between turns → stal
 _HEARTBEAT_STALE_CYCLES_IN_TOOL = 40  # 40 * 30s = 1200s stuck on same tool → stale
 DEFAULT_TOOLSETS = ["terminal", "file", "web"]
 
+_LANE_ALLOWED_KEYS = frozenset(
+    {
+        "provider",
+        "model",
+        "toolsets",
+        "max_iterations",
+        "reasoning_effort",
+        "inherit_parent_mcp",
+        "inherit_fallback",
+    }
+)
+
 
 # ---------------------------------------------------------------------------
 # Delegation progress event types
@@ -803,6 +815,132 @@ def _blocked_toolsets_for_role(role: str) -> List[str]:
         if defn.get("tools")
         and set(defn.get("tools", ())).issubset(blocked_names)
     )
+
+
+def _resolve_delegation_lane(lane: Optional[str]) -> Optional[Dict[str, Any]]:
+    """Return a normalized, metadata-safe lane policy from delegation.lanes.
+
+    Lanes are named config entries selected by the model via the single
+    ``lane`` string. Lane endpoints and credentials remain in named provider
+    configuration; raw provider/model/base_url/api_key overrides are never
+    accepted from the tool call. Unknown-lane errors intentionally list only
+    configured lane names, not their provider/model/endpoints.
+    """
+    if lane is None or str(lane).strip() == "":
+        return None
+    lane_name = str(lane).strip()
+    cfg = _load_config()
+    lanes = cfg.get("lanes") or {}
+    if not isinstance(lanes, dict):
+        raise ValueError("delegation.lanes must be a mapping of lane names to lane policies.")
+    raw = lanes.get(lane_name)
+    if raw is None:
+        available = ", ".join(sorted(str(k) for k in lanes.keys())) or "(none)"
+        raise ValueError(
+            f"Unknown delegation lane '{lane_name}'. Configured lanes: {available}."
+        )
+    if not isinstance(raw, dict):
+        raise ValueError(f"Delegation lane '{lane_name}' must be a mapping.")
+
+    unknown = sorted(str(k) for k in raw.keys() if k not in _LANE_ALLOWED_KEYS)
+    credential_keys = {"api_key", "key", "token", "secret"}
+    if any(k in credential_keys or k.endswith("_key") for k in unknown):
+        raise ValueError(
+            f"Delegation lane '{lane_name}' contains credential-shaped fields; "
+            "store credentials in provider configuration, not lane config."
+        )
+    if unknown:
+        raise ValueError(
+            f"Delegation lane '{lane_name}' contains unsupported field(s): "
+            + ", ".join(unknown)
+        )
+
+    normalized: Dict[str, Any] = {"name": lane_name}
+    for key in ("provider", "model", "reasoning_effort"):
+        value = raw.get(key)
+        if value is not None and str(value).strip():
+            normalized[key] = str(value).strip()
+    toolsets = raw.get("toolsets", [])
+    if toolsets is None:
+        toolsets = []
+    if not isinstance(toolsets, list) or not all(isinstance(t, str) and t.strip() for t in toolsets):
+        raise ValueError(f"Delegation lane '{lane_name}' toolsets must be a list of names.")
+    normalized["toolsets"] = [str(t).strip() for t in toolsets]
+
+    if "max_iterations" in raw and raw.get("max_iterations") is not None:
+        try:
+            max_iterations = int(raw["max_iterations"])
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"Delegation lane '{lane_name}' max_iterations must be an integer."
+            ) from exc
+        if max_iterations < 1:
+            raise ValueError(
+                f"Delegation lane '{lane_name}' max_iterations must be at least 1."
+            )
+        normalized["max_iterations"] = max_iterations
+
+    normalized.setdefault("provider", None)
+    normalized.setdefault("model", None)
+    normalized["inherit_parent_mcp"] = is_truthy_value(
+        raw.get("inherit_parent_mcp"), default=False
+    )
+    normalized["inherit_fallback"] = is_truthy_value(
+        raw.get("inherit_fallback"), default=False
+    )
+    return normalized
+
+
+def _lane_toolsets_for_child(
+    requested_toolsets: Optional[List[str]],
+    lane: Dict[str, Any],
+    expanded_parent_toolsets: set[str],
+    parent_toolsets: set[str],
+) -> List[str]:
+    allowed = list(lane.get("toolsets") or [])
+    allowed_set = set(allowed)
+    requested = list(requested_toolsets) if requested_toolsets is not None else allowed
+    narrowed = [
+        t for t in requested
+        if t in allowed_set and t in expanded_parent_toolsets
+    ]
+    if lane.get("inherit_parent_mcp"):
+        for toolset_name in sorted(parent_toolsets):
+            if (
+                toolset_name in allowed_set
+                and _is_mcp_toolset_name(toolset_name)
+                and toolset_name not in narrowed
+            ):
+                narrowed.append(toolset_name)
+    return _strip_blocked_tools(narrowed)
+
+
+def _lane_result_metadata(child: Any) -> Dict[str, Any]:
+    lane_name = getattr(child, "_delegate_lane", None)
+    if not lane_name:
+        return {}
+    requested_provider = getattr(child, "_delegate_requested_provider", None)
+    requested_model = getattr(child, "_delegate_requested_model", None)
+    actual_provider = (
+        getattr(child, "provider", None)
+        or getattr(child, "_delegate_actual_provider", None)
+    )
+    actual_model = (
+        getattr(child, "model", None)
+        or getattr(child, "_delegate_actual_model", None)
+    )
+    fallback_used = bool(
+        getattr(child, "_delegate_fallback_used", False)
+        or getattr(child, "_fallback_activated", False)
+    )
+    return {
+        "lane": lane_name,
+        "requested_provider": requested_provider,
+        "requested_model": requested_model,
+        "actual_provider": actual_provider,
+        "actual_model": actual_model,
+        "fallback_used": fallback_used,
+    }
 
 
 def _emit_parent_console(parent_agent, line: str) -> None:
@@ -1082,6 +1220,7 @@ def _build_child_agent(
     # ACP transport overrides from trusted delegation config.
     override_acp_command: Optional[str] = None,
     override_acp_args: Optional[List[str]] = None,
+    lane: Optional[Dict[str, Any]] = None,
     # Per-call role controlling whether the child can further delegate.
     # 'leaf' (default) cannot; 'orchestrator' retains the delegation
     # toolset subject to depth/kill-switch bounds applied below.
@@ -1140,11 +1279,15 @@ def _build_child_agent(
     else:
         parent_toolsets = set(DEFAULT_TOOLSETS)
 
-    if toolsets:
+    expanded_parent = _expand_parent_toolsets(parent_toolsets)
+    if lane is not None:
+        child_toolsets = _lane_toolsets_for_child(
+            toolsets, lane, expanded_parent, parent_toolsets
+        )
+    elif toolsets:
         # Intersect with parent — subagent must not gain tools the parent lacks.
         # Expand composite toolsets (e.g. hermes-cli) so that individual
         # toolset names (e.g. web, terminal) are recognised during intersection.
-        expanded_parent = _expand_parent_toolsets(parent_toolsets)
         child_toolsets = [t for t in toolsets if t in expanded_parent]
         if _get_inherit_mcp_toolsets():
             child_toolsets = _preserve_parent_mcp_toolsets(
@@ -1157,6 +1300,16 @@ def _build_child_agent(
         child_toolsets = _strip_blocked_tools(sorted(parent_toolsets))
     else:
         child_toolsets = _strip_blocked_tools(DEFAULT_TOOLSETS)
+
+    # Orchestrator role is authority. A configured lane is a hard ceiling, so a
+    # lane that does not allow delegation downgrades the child to a leaf rather
+    # than re-adding a blocked toolset and emitting a false spawning prompt.
+    if (
+        lane is not None
+        and effective_role == "orchestrator"
+        and "delegation" not in set(lane.get("toolsets") or [])
+    ):
+        effective_role = "leaf"
 
     # Blocked tools also live inside mixed platform bundles (hermes-cli,
     # hermes-telegram, etc.) that _strip_blocked_tools must keep because they
@@ -1180,10 +1333,8 @@ def _build_child_agent(
         )
     )
 
-    # Orchestrators retain the 'delegation' toolset that _strip_blocked_tools
-    # removed.  The re-add is unconditional on parent-toolset membership because
-    # orchestrator capability is granted by role, not inherited — see the
-    # test_intersection_preserves_delegation_bound test for the design rationale.
+    # Legacy/no-lane orchestrators retain the delegation toolset. Lane-routed
+    # orchestrators receive it only when the operator included it in the lane.
     if effective_role == "orchestrator" and "delegation" not in child_toolsets:
         child_toolsets.append("delegation")
 
@@ -1302,7 +1453,11 @@ def _build_child_agent(
         # Keep the raw value — ``str(x or "")`` would coerce a YAML boolean
         # False (``reasoning_effort: false``) to "" and inherit the parent
         # instead of disabling thinking for children.
-        delegation_effort = delegation_cfg.get("reasoning_effort")
+        delegation_effort = (
+            lane.get("reasoning_effort")
+            if lane is not None and "reasoning_effort" in lane
+            else delegation_cfg.get("reasoning_effort")
+        )
         if delegation_effort or delegation_effort is False:
             from hermes_constants import parse_reasoning_effort
 
@@ -1322,6 +1477,8 @@ def _build_child_agent(
     # agent does.  _fallback_chain is a list accepted by AIAgent's
     # fallback_model parameter (which handles both list and dict forms).
     parent_fallback = getattr(parent_agent, "_fallback_chain", None) or None
+    if lane is not None and not lane.get("inherit_fallback", False):
+        parent_fallback = None
 
     # Inherit the parent's OpenRouter provider-preference filters by default
     # (so subagents routed to the same provider honour the same routing
@@ -1416,6 +1573,16 @@ def _build_child_agent(
     child._subagent_id = subagent_id
     child._parent_subagent_id = parent_subagent_id
     child._subagent_goal = goal
+    child._delegate_lane = lane.get("name") if lane is not None else None
+    child._delegate_requested_provider = (
+        lane.get("provider") if lane is not None else override_provider
+    )
+    child._delegate_requested_model = (
+        lane.get("model") if lane is not None else model
+    )
+    child._delegate_actual_provider = effective_provider
+    child._delegate_actual_model = effective_model
+    child._delegate_fallback_used = False
     child._parent_turn_id = getattr(parent_agent, "_current_turn_id", "") or ""
     # Stable sidebar marker: delegate subagent sessions must stay out of
     # session pickers even when a parent delete orphans them (parent_session_id
@@ -2103,6 +2270,7 @@ def _run_single_child(
                 "duration_seconds": duration,
                 "_child_role": getattr(child, "_delegate_role", None),
                 "diagnostic_path": diagnostic_path,
+                **_lane_result_metadata(child),
             }
         finally:
             # Shut down executor without waiting — if the child thread
@@ -2223,6 +2391,7 @@ def _run_single_child(
                 )
                 else 0.0
             ),
+            **_lane_result_metadata(child),
         }
         if status == "failed":
             entry["error"] = result.get("error", "Subagent did not produce a response.")
@@ -2345,6 +2514,7 @@ def _run_single_child(
             "api_calls": 0,
             "duration_seconds": duration,
             "_child_role": getattr(child, "_delegate_role", None),
+            **_lane_result_metadata(child),
         }
 
     finally:
@@ -2427,8 +2597,10 @@ def delegate_task(
     goal: Optional[str] = None,
     context: Optional[str] = None,
     tasks: Optional[List[Dict[str, Any]]] = None,
+    toolsets: Optional[List[str]] = None,
     max_iterations: Optional[int] = None,
     role: Optional[str] = None,
+    lane: Optional[str] = None,
     background: Optional[bool] = None,
     parent_agent=None,
 ) -> str:
@@ -2503,13 +2675,8 @@ def delegate_task(
         )
     effective_max_iter = default_max_iter
 
-    # Resolve delegation credentials (provider:model pair).
-    # When delegation.provider is configured, this resolves the full credential
-    # bundle (base_url, api_key, api_mode) via the same runtime provider system
-    # used by CLI/gateway startup.  When unconfigured, returns None values so
-    # children inherit from the parent.
     try:
-        creds = _resolve_delegation_credentials(cfg, parent_agent)
+        top_lane = _resolve_delegation_lane(lane)
     except ValueError as exc:
         return tool_error(str(exc))
 
@@ -2532,7 +2699,15 @@ def delegate_task(
             )
         task_list = tasks
     elif goal and isinstance(goal, str) and goal.strip():
-        task_list = [{"goal": goal, "context": context, "role": top_role}]
+        task_list = [
+            {
+                "goal": goal,
+                "context": context,
+                "role": top_role,
+                "toolsets": toolsets,
+                "lane": lane,
+            }
+        ]
     else:
         return tool_error("Provide either 'goal' (single task) or 'tasks' (batch).")
 
@@ -2586,15 +2761,27 @@ def delegate_task(
             # Per-task role beats top-level; normalise again so unknown
             # per-task values warn and degrade to leaf uniformly.
             effective_role = _normalize_role(t.get("role") or top_role)
+            try:
+                task_lane = (
+                    _resolve_delegation_lane(t.get("lane"))
+                    if t.get("lane") is not None
+                    else top_lane
+                )
+                creds = _resolve_delegation_credentials(cfg, parent_agent, task_lane)
+            except ValueError as exc:
+                return tool_error(str(exc))
+            task_max_iter = (
+                task_lane.get("max_iterations")
+                if task_lane is not None and task_lane.get("max_iterations") is not None
+                else effective_max_iter
+            )
             child = _build_child_agent(
                 task_index=i,
                 goal=t["goal"],
                 context=t.get("context"),
-                # Subagents always inherit the parent's toolsets; the model
-                # cannot choose or narrow them (no model-facing toolsets arg).
-                toolsets=None,
+                toolsets=t.get("toolsets"),
                 model=creds["model"],
-                max_iterations=effective_max_iter,
+                max_iterations=task_max_iter,
                 task_count=n_tasks,
                 parent_agent=parent_agent,
                 override_provider=creds["provider"],
@@ -2605,6 +2792,7 @@ def delegate_task(
                 override_max_tokens=creds.get("max_output_tokens"),
                 override_acp_command=creds.get("command"),
                 override_acp_args=creds.get("args"),
+                lane=task_lane,
                 role=effective_role,
             )
             # Override with correct parent tool names (before child construction mutated global)
@@ -2999,6 +3187,15 @@ def delegate_task(
                     pass
 
         _goals = [t["goal"] for t in task_list]
+        _dispatch_lanes: List[Optional[str]] = []
+        for _, _, child in children:
+            _lane_name = getattr(child, "_delegate_lane", None)
+            _dispatch_lanes.append(_lane_name if isinstance(_lane_name, str) else None)
+        _dispatch_model = None
+        if len(children) == 1:
+            _candidate_model = getattr(children[0][2], "model", None)
+            _dispatch_model = _candidate_model if isinstance(_candidate_model, str) else None
+
         dispatch = dispatch_async_delegation_batch(
             goals=_goals,
             context=context,
@@ -3006,7 +3203,7 @@ def delegate_task(
             # parent's toolsets (no model-facing toolsets arg).
             toolsets=None,
             role=top_role,
-            model=creds["model"],
+            model=_dispatch_model,
             session_key=_session_key,
             origin_ui_session_id=_origin_ui_session_id,
             parent_session_id=_parent_session_id,
@@ -3016,6 +3213,7 @@ def delegate_task(
             # Reuse the live-transcript directory's id (when created) so the
             # returned delegation_id matches cache/delegation/live/<id>/.
             delegation_id=live_deleg_id,
+            lanes=_dispatch_lanes,
         )
 
         if dispatch.get("status") == "dispatched":
@@ -3158,7 +3356,9 @@ def _resolve_child_credential_pool(
     return None
 
 
-def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
+def _resolve_delegation_credentials(
+    cfg: dict, parent_agent, lane: Optional[Dict[str, Any]] = None
+) -> dict:
     """Resolve credentials for subagent delegation.
 
     If ``delegation.base_url`` is configured, subagents use that direct
@@ -3179,11 +3379,14 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
 
     Raises ValueError with a user-friendly message on credential failure.
     """
-    configured_model = str(cfg.get("model") or "").strip() or None
-    configured_provider = str(cfg.get("provider") or "").strip() or None
-    configured_base_url = str(cfg.get("base_url") or "").strip() or None
-    configured_api_key = str(cfg.get("api_key") or "").strip() or None
-    configured_api_mode = str(cfg.get("api_mode") or "").strip().lower() or None
+    source = lane if lane is not None else cfg
+    configured_model = str(source.get("model") or "").strip() or None
+    configured_provider = str(source.get("provider") or "").strip() or None
+    configured_base_url = str(source.get("base_url") or "").strip() or None
+    configured_api_key = (
+        None if lane is not None else str(cfg.get("api_key") or "").strip() or None
+    )
+    configured_api_mode = str(source.get("api_mode") or "").strip().lower() or None
 
     # Native-SDK providers (Bedrock, Vertex, Google GenAI) speak their own
     # wire protocol — they cannot be reached via OpenAI chat_completions against
@@ -3434,7 +3637,10 @@ def _build_top_level_description() -> str:
         f"Orchestrators are bounded by max_spawn_depth={max_depth} for this "
         f"user and can be disabled globally via "
         "delegation.orchestrator_enabled=false.\n"
-        "- Subagent model is NOT selectable per call: children inherit the parent model (plus its fallback chain) unless you pin all subagents to a model via delegation.provider / delegation.model in config.yaml.\n"
+        "- Subagent model is not selected with raw provider/model fields. Without "
+        "a lane, children inherit the parent model and configured delegation "
+        "defaults. A configured lane may select an operator-approved provider, "
+        "model, toolset ceiling, and fallback policy.\n"
         "- Each subagent gets its own terminal session (separate working directory and state).\n"
         "- Results are always returned as an array, one entry per task."
     )
@@ -3548,6 +3754,14 @@ DELEGATE_TASK_SCHEMA = {
                     "specific you are, the better the subagent performs."
                 ),
             },
+            "lane": {
+                "type": "string",
+                "description": (
+                    "Optional configured delegation lane name. Lanes are "
+                    "operator-defined policies; raw provider/model/API "
+                    "endpoint overrides are not accepted here."
+                ),
+            },
             "tasks": {
                 "type": "array",
                 "items": {
@@ -3562,6 +3776,10 @@ DELEGATE_TASK_SCHEMA = {
                             "type": "string",
                             "enum": ["leaf", "orchestrator"],
                             "description": "Per-task role override. See top-level 'role' for semantics.",
+                        },
+                        "lane": {
+                            "type": "string",
+                            "description": "Optional per-task configured delegation lane name.",
                         },
                     },
                     "required": ["goal"],
@@ -3615,7 +3833,14 @@ def _model_background_value(args: dict, parent_agent=None) -> bool:
     return not is_subagent
 
 
-_MODEL_HIDDEN_TASK_FIELDS = {"acp_command", "acp_args"}
+_MODEL_HIDDEN_TASK_FIELDS = {
+    "acp_command",
+    "acp_args",
+    "model",
+    "provider",
+    "base_url",
+    "api_key",
+}
 
 
 def _strip_model_hidden_task_fields(tasks: Any) -> Any:
@@ -3645,6 +3870,7 @@ registry.register(
         goal=args.get("goal"),
         context=args.get("context"),
         tasks=_strip_model_hidden_task_fields(args.get("tasks")),
+        lane=args.get("lane"),
         max_iterations=args.get("max_iterations"),
         role=args.get("role"),
         background=_model_background_value(args, kw.get("parent_agent")),

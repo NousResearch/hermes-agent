@@ -121,6 +121,7 @@ models-dev-upstream/
 .mcp.json
 opencode.json
 config/mcporter.json
+.aho/
 
 hermes_cli/tui_dist/*
 hermes_cli/scripts/

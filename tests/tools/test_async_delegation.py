@@ -143,6 +143,74 @@ def test_completion_event_lands_on_shared_queue_with_session_key():
     assert evt["delegation_id"] == res["delegation_id"]
 
 
+def test_completion_event_preserves_lane_metadata():
+    def runner():
+        return {
+            "status": "completed",
+            "summary": "lane result",
+            "api_calls": 1,
+            "duration_seconds": 0.1,
+            "model": "actual-model",
+            "lane": "fusion_architect",
+            "requested_provider": "custom:aegis",
+            "requested_model": "requested-model",
+            "actual_provider": "custom",
+            "actual_model": "actual-model",
+            "fallback_used": False,
+        }
+
+    res = ad.dispatch_async_delegation(
+        goal="lane work", context=None, toolsets=None, role="leaf",
+        model="requested-model", session_key="", runner=runner,
+        max_async_children=3,
+    )
+    assert res["status"] == "dispatched"
+
+    evt = _drain_for(res["delegation_id"])
+    assert evt is not None
+    assert evt["lane"] == "fusion_architect"
+    assert evt["requested_provider"] == "custom:aegis"
+    assert evt["requested_model"] == "requested-model"
+    assert evt["actual_provider"] == "custom"
+    assert evt["actual_model"] == "actual-model"
+    assert evt["fallback_used"] is False
+
+
+def test_batch_reinjection_includes_lane_provider_and_model_provenance():
+    evt = {
+        "type": "async_delegation",
+        "delegation_id": "deleg_lane_batch",
+        "goal": "two lane tasks",
+        "goals": ["architect", "builder"],
+        "status": "completed",
+        "is_batch": True,
+        "results": [
+            {
+                "task_index": 0,
+                "status": "completed",
+                "summary": "result",
+                "lane": "fusion_architect",
+                "requested_provider": "custom:aegis",
+                "requested_model": "requested-model",
+                "actual_provider": "custom:aegis",
+                "actual_model": "actual-model",
+                "fallback_used": False,
+            }
+        ],
+        "total_duration_seconds": 1.0,
+    }
+
+    text = format_process_notification(evt)
+
+    assert text is not None
+    assert "lane=fusion_architect" in text
+    assert "requested_provider=custom:aegis" in text
+    assert "requested_model=requested-model" in text
+    assert "actual_provider=custom:aegis" in text
+    assert "actual_model=actual-model" in text
+    assert "fallback_used=False" in text
+
+
 def test_rich_reinjection_block_is_self_contained():
     def runner():
         return {"status": "completed", "summary": "The answer is 42.",
@@ -380,6 +448,8 @@ def test_recover_marks_abandoned_running_record_unknown(tmp_path, monkeypatch):
         "origin_ui_session_id": "",
         "parent_session_id": None,
         "dispatched_at": 1.0,
+        "is_batch": True,
+        "lanes": ["fusion_architect", "fusion_builder"],
     }
     ad._persist_dispatch(record)
     with ad._DB_LOCK, ad._connect() as conn:
@@ -394,7 +464,9 @@ def test_recover_marks_abandoned_running_record_unknown(tmp_path, monkeypatch):
     assert durable["delivery_state"] == "pending"
     restored = queue.Queue()
     assert ad.restore_undelivered_completions(restored) == 1
-    assert restored.get_nowait()["status"] == "unknown"
+    restored_event = restored.get_nowait()
+    assert restored_event["status"] == "unknown"
+    assert restored_event["lanes"] == ["fusion_architect", "fusion_builder"]
 
 
 def test_durable_delivery_claim_is_exclusive_and_retryable(tmp_path, monkeypatch):
@@ -871,5 +943,4 @@ def test_gateway_cli_origin_event_left_unrouted():
     evt = _make_async_evt(session_key="")
     runner._enrich_async_delegation_routing(evt)
     assert "platform" not in evt
-
 

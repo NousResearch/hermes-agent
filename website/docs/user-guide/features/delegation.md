@@ -153,11 +153,65 @@ delegation:
 
 If omitted, subagents use the same model as the parent.
 
-## Inherited Tool Access
+## Delegation Lanes
 
-`delegate_task` does not accept a model-facing `toolsets` parameter. Each subagent inherits the parent's enabled toolsets so the model cannot grant a child capabilities that the parent does not have. Configure the parent's tools before starting the conversation if delegated work needs additional capabilities.
+Configured lanes let an operator expose named delegation policies without
+letting the model choose raw provider, model, endpoint, or credential fields.
+The `delegate_task` schema accepts only the lane name:
 
-Certain tools are blocked for subagents even when the parent has them:
+```python
+delegate_task(
+    goal="Compare the API surface and summarize risks",
+    context="Repository path: /home/user/project",
+    lane="read_only_reviewer"
+)
+```
+
+Batch tasks may use different lanes:
+
+```python
+delegate_task(tasks=[
+    {"goal": "Review architecture tradeoffs", "lane": "fusion_architect"},
+    {"goal": "Review implementation risks", "lane": "fusion_builder"}
+])
+```
+
+Lane definitions live under `delegation.lanes`:
+
+```yaml
+delegation:
+  lanes:
+    read_only_reviewer:
+      provider: custom:aegis
+      model: aegis-reviewer
+      toolsets: [read_only_file]
+      inherit_parent_mcp: false
+      inherit_fallback: false
+```
+
+Lane `toolsets` are an upper bound. If internal callers request narrower
+toolsets, Hermes intersects that request with the lane and parent authority.
+Lane-routed children default to `inherit_parent_mcp: false` and
+`inherit_fallback: false`; opt in only when that widening is deliberate. Lane
+config must not contain endpoint URLs, API modes, API keys, or other
+credential-shaped fields; those belong in named provider configuration.
+
+## Toolset Selection Tips
+
+Subagents inherit the parent's enabled toolsets by default, minus toolsets that
+are always blocked for children. To impose a narrower policy, use configured
+delegation lanes. The generic `read_only_file` toolset contains only
+`read_file` and `search_files`.
+
+| Toolset Pattern | Use Case |
+|----------------|----------|
+| `["terminal", "file"]` | Code work, debugging, file editing, builds |
+| `["web"]` | Research, fact-checking, documentation lookup |
+| `["terminal", "file", "web"]` | Full-stack tasks (default) |
+| `["read_only_file"]` | Read-only file analysis or code review without writes |
+| `["terminal"]` | System administration, process management |
+
+Certain toolsets are blocked for subagents regardless of what you specify:
 - `delegation` — blocked for leaf subagents (the default). Retained for `role="orchestrator"` children, bounded by `max_spawn_depth` — see [Depth Limit and Nested Orchestration](#depth-limit-and-nested-orchestration) below.
 - `clarify` — subagents cannot interact with the user
 - `memory` — no writes to shared persistent memory

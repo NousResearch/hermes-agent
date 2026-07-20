@@ -13821,15 +13821,16 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     daemon=True,
                 ).start()
             else:
-                # Guard: don't START recording during agent run or interactive prompts
-                if cli_ref._agent_running:
+                # Allow disarming continuous mode even when the agent is
+                # running or transcribing — otherwise the user is stuck in
+                # an auto-restart loop until /voice off (#67545).
+                if cli_ref._agent_running or cli_ref._voice_processing:
+                    with cli_ref._voice_lock:
+                        cli_ref._voice_continuous = False
+                    event.app.invalidate()
                     return
+                # Guard: don't START recording during interactive prompts
                 if cli_ref._clarify_state or cli_ref._sudo_state or cli_ref._approval_state or cli_ref._slash_confirm_state:
-                    return
-                # Guard: don't start while a previous stop/transcribe cycle is
-                # still running — recorder.stop() holds AudioRecorder._lock and
-                # start() would block the event-loop thread waiting for it.
-                if cli_ref._voice_processing:
                     return
 
                 # Interrupt TTS if playing, so user can start talking.

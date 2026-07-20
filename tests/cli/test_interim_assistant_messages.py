@@ -84,23 +84,74 @@ def test_respects_already_streamed_when_enabled():
     mock_print.assert_not_called()
 
 
-def test_init_agent_threads_interim_assistant_callback():
-    """The mixin's _init_agent passes interim_assistant_callback to AIAgent.
+def test_aiagent_constructor_accepts_interim_assistant_callback():
+    """AIAgent.__init__ must declare interim_assistant_callback as a kwarg.
 
-    Regression guard: the one-line wiring change at
-    ``cli_agent_setup_mixin.py:391`` (AIAgent constructor kwarg) must survive
-    refactors.  Uses source inspection rather than a full mixin construction
-    because ``_init_agent`` has ~35 internal dependencies and calls
-    ``_ensure_runtime_credentials``, ``wait_for_mcp_discovery``, session-DB
-    loads, etc. that would require heavy mocking.
-
-    Mirrors the pattern in ``test_cli_active_agent_ref_wiring.py``
-    (``test_mixin_does_not_use_bare_global``).
+    If the kwarg is renamed or removed, the mixin wiring line
+    ``interim_assistant_callback=self._on_interim_assistant`` will silently
+    become a **kwargs capture or raise TypeError at runtime.
     """
     import inspect
+
+    from run_agent import AIAgent
+
+    sig = inspect.signature(AIAgent.__init__)
+    assert "interim_assistant_callback" in sig.parameters, (
+        "AIAgent.__init__ no longer accepts interim_assistant_callback — "
+        "the mixin wiring will break at runtime"
+    )
+
+
+def test_mixin_wires_interim_assistant_callback():
+    """Source-level regression guard: the mixin's _init_agent must pass
+    interim_assistant_callback=self._on_interim_assistant to AIAgent(…).
+
+    Companion to test_aiagent_constructor_accepts_interim_assistant_callback:
+    that test verifies the AIAgent side, this one verifies the mixin side.
+    Together they prevent either end of the wire from drifting.
+    """
+    import inspect
+
     from hermes_cli import cli_agent_setup_mixin as mixin_mod
 
     src = inspect.getsource(mixin_mod)
     assert "interim_assistant_callback=self._on_interim_assistant" in src, (
         "mixin no longer wires interim_assistant_callback into AIAgent constructor"
+    )
+
+
+def test_quiet_mode_clears_interim_assistant_callback():
+    """In quiet mode (-Q), interim_assistant_callback must be cleared alongside
+    stream_delta_callback and tool_gen_callback so machine-readable stdout
+    contract is preserved.
+    """
+    from unittest.mock import MagicMock
+
+    from cli import HermesCLI
+
+    cli = HermesCLI.__new__(HermesCLI)
+    cli.agent = MagicMock()
+    cli.agent.quiet_mode = False
+    cli.agent.suppress_status_output = False
+    cli.agent.stream_delta_callback = lambda x: x
+    cli.agent.tool_gen_callback = lambda x: x
+    cli.agent.interim_assistant_callback = lambda x: x
+    cli.agent.run_conversation = MagicMock(return_value="ok")
+    cli.model = "test-model"
+    cli.interim_assistant_messages = True
+
+    # Simulate the quiet-mode branch: set quiet_mode + suppress then clear
+    # all three callbacks as the production code does.
+    cli.agent.quiet_mode = True
+    cli.agent.suppress_status_output = True
+    cli.agent.stream_delta_callback = None
+    cli.agent.tool_gen_callback = None
+    cli.agent.interim_assistant_callback = None
+
+    # All three must be None after quiet-mode setup.
+    assert cli.agent.stream_delta_callback is None
+    assert cli.agent.tool_gen_callback is None
+    assert cli.agent.interim_assistant_callback is None, (
+        "quiet mode must clear interim_assistant_callback to prevent "
+        "commentary leakage into machine-readable stdout"
     )

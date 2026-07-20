@@ -149,47 +149,15 @@ export interface MemoryProviderConfig {
   name: string
 }
 
-export interface CustomEndpoint {
-  api_key_preview?: null | string
+export interface CustomEndpointConfig {
+  api_key_set: boolean
   base_url: string
-  context_length?: null | number
-  discover_models: boolean
-  has_api_key: boolean
-  id: string
-  is_current?: boolean
-  model: string
-  models: string[]
-  name: string
-  source?: string
-}
-
-export interface CustomEndpointsResponse {
-  current: {
-    base_url: string
-    model: string
-    provider: string
-  }
-  endpoints: CustomEndpoint[]
-  id?: string
-  ok?: boolean
+  configured: boolean
 }
 
 export interface CustomEndpointUpdate {
   api_key?: string
   base_url: string
-  context_length?: number
-  discover_models?: boolean
-  id?: string
-  make_default?: boolean
-  model: string
-  name: string
-}
-
-export interface CustomEndpointValidationResponse {
-  message: string
-  models: string[]
-  ok: boolean
-  reachable: boolean
 }
 
 export interface MessagingEnvVarInfo {

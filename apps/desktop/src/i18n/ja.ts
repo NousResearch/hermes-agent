@@ -215,7 +215,6 @@ export const ja = defineLocale({
       providers: 'プロバイダー',
       providerAccounts: 'アカウント',
       providerApiKeys: 'API キー',
-      providerCustomEndpoints: 'カスタムエンドポイント',
       gateway: 'ゲートウェイ',
       apiKeys: 'ツールとキー',
       keybinds: 'キーボードショートカット',
@@ -808,9 +807,18 @@ export const ja = defineLocale({
       noProviderKeys: '利用可能なプロバイダー API キーがありません。',
       searchKeys: 'プロバイダーを検索…',
       noKeysMatch: '一致するプロバイダーがありません。',
-      localEndpoint: {
-        title: 'ローカル / カスタムエンドポイント',
-        description: 'OpenAI 互換のエンドポイント（Zyphra、vLLM、llama.cpp、Ollama など）を指定します。'
+            customEndpoint: {
+        title: 'カスタムエンドポイント',
+        description: 'OpenAI または Anthropic 互換エンドポイント。モデルは 設定 → モデル で自動検出されます。',
+        baseUrlLabel: 'カスタムエンドポイントのベース URL',
+        pasteApiKey: 'API Key を貼り付け',
+        removeApiKey: 'API Key を削除',
+        removeConfirm: 'カスタムエンドポイントの API Key を削除しますか？',
+        saved: 'カスタムエンドポイントが config.yaml に保存されました。',
+        apiKeyRemoved: 'API Key が削除されました。',
+        failedLoad: 'カスタムエンドポイントを読み込めません',
+        failedSave: 'カスタムエンドポイントを保存できません',
+        failedRemove: 'API Key を削除できません'
       },
       loading: 'プロバイダーを読み込み中...'
     },

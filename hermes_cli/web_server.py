@@ -1046,14 +1046,8 @@ class MemoryProviderSetupRequest(BaseModel):
 
 
 class CustomEndpointUpdate(BaseModel):
-    id: str = ""
-    name: str
     base_url: str
-    model: str
     api_key: Optional[str] = None
-    context_length: Optional[int] = None
-    discover_models: bool = True
-    make_default: bool = False
 
 
 class MessagingPlatformUpdate(BaseModel):
@@ -6945,241 +6939,86 @@ def _parse_model_ids(resp: "Any") -> List[str]:
     return ids
 
 
-def _custom_endpoint_id(raw: str, fallback: str = "custom") -> str:
-    slug = re.sub(r"[^A-Za-z0-9_-]+", "-", (raw or "").strip()).strip("-_").lower()
-    return slug or fallback
-
-
-def _models_from_custom_endpoint_entry(entry: Dict[str, Any]) -> List[str]:
-    models: List[str] = []
-    raw_models = entry.get("models")
-    if isinstance(raw_models, dict):
-        models.extend(str(model).strip() for model in raw_models.keys())
-    elif isinstance(raw_models, list):
-        models.extend(str(model).strip() for model in raw_models)
-
-    default_model = str(entry.get("model") or entry.get("default_model") or "").strip()
-    if default_model:
-        models.insert(0, default_model)
-
-    seen: set[str] = set()
-    return [model for model in models if model and not (model in seen or seen.add(model))]
+def _custom_endpoint_entry(cfg: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Return the API Keys card's single custom-provider entry, if configured."""
+    providers = cfg.get("custom_providers")
+    if not isinstance(providers, list):
+        return None
+    for entry in providers:
+        if isinstance(entry, dict) and entry.get("managed_by") == "desktop-api-keys":
+            return entry
+    return None
 
 
 def _custom_endpoint_response(cfg: Dict[str, Any]) -> Dict[str, Any]:
-    model_cfg = cfg.get("model", {}) if isinstance(cfg.get("model"), dict) else {}
-    current_provider = str(model_cfg.get("provider", "") or "")
-    current_model = str(model_cfg.get("default", model_cfg.get("name", "")) or "")
-    current_base_url = str(model_cfg.get("base_url", "") or "")
-
-    endpoints: List[Dict[str, Any]] = []
-    providers = cfg.get("providers")
-    if isinstance(providers, dict):
-        for provider_id, raw_entry in providers.items():
-            if not isinstance(raw_entry, dict):
-                continue
-            base_url = str(raw_entry.get("base_url") or raw_entry.get("url") or raw_entry.get("api") or "").strip()
-            if not base_url:
-                continue
-            endpoint_id = str(provider_id)
-            models = _models_from_custom_endpoint_entry(raw_entry)
-            endpoint_model = str(raw_entry.get("model") or raw_entry.get("default_model") or (models[0] if models else ""))
-            endpoints.append({
-                "id": endpoint_id,
-                "name": str(raw_entry.get("name") or endpoint_id),
-                "base_url": base_url,
-                "model": endpoint_model,
-                "models": models,
-                "context_length": raw_entry.get("context_length"),
-                "discover_models": bool(raw_entry.get("discover_models", True)),
-                "has_api_key": bool(str(raw_entry.get("api_key", "") or "").strip()),
-                "api_key_preview": redact_key(str(raw_entry.get("api_key", "") or "")) if raw_entry.get("api_key") else None,
-                "is_current": endpoint_id == current_provider,
-                "source": "providers",
-            })
-
-    if current_provider.lower() == "custom" and current_base_url and not any(e["id"] == "custom" for e in endpoints):
-        endpoints.insert(0, {
-            "id": "custom",
-            "name": "Custom",
-            "base_url": current_base_url,
-            "model": current_model,
-            "models": [current_model] if current_model else [],
-            "context_length": model_cfg.get("context_length"),
-            "discover_models": True,
-            "has_api_key": bool(str(model_cfg.get("api_key", "") or "").strip()),
-            "api_key_preview": redact_key(str(model_cfg.get("api_key", "") or "")) if model_cfg.get("api_key") else None,
-            "is_current": True,
-            "source": "direct-config",
-        })
-
+    entry = _custom_endpoint_entry(cfg) or {}
     return {
-        "endpoints": endpoints,
-        "current": {
-            "provider": current_provider,
-            "model": current_model,
-            "base_url": current_base_url,
-        },
+        "api_key_set": bool(str(entry.get("api_key") or "").strip()),
+        "base_url": str(entry.get("base_url") or ""),
+        "configured": bool(entry),
     }
 
 
-def _write_custom_endpoint(cfg: Dict[str, Any], body: CustomEndpointUpdate) -> Tuple[str, Dict[str, Any]]:
-    endpoint_id = _custom_endpoint_id(body.id or body.name)
-    name = (body.name or "").strip()
+def _write_custom_endpoint(cfg: Dict[str, Any], body: CustomEndpointUpdate) -> Dict[str, Any]:
     base_url = (body.base_url or "").strip().rstrip("/")
-    model = (body.model or "").strip()
-
-    if not name:
-        raise HTTPException(status_code=400, detail="name required")
     if not base_url:
         raise HTTPException(status_code=400, detail="base_url required")
     parsed = urllib.parse.urlparse(base_url)
     if not parsed.scheme or not parsed.netloc:
         raise HTTPException(status_code=400, detail="base_url must include scheme and host")
-    if not model:
-        raise HTTPException(status_code=400, detail="model required")
+    # Auto-detect api_mode from URL
+    from hermes_cli.runtime_provider import _detect_api_mode_for_url
+    detected = _detect_api_mode_for_url(base_url)
+    api_mode = detected if detected in {"openai", "anthropic_messages"} else "openai"
 
-    providers = cfg.get("providers")
-    if not isinstance(providers, dict):
-        providers = {}
-    existing = providers.get(endpoint_id)
-    if not isinstance(existing, dict):
-        existing = {}
+    providers = cfg.get("custom_providers")
+    if not isinstance(providers, list):
+        providers = []
+    entry = _custom_endpoint_entry(cfg)
+    if entry is None:
+        entry = {"managed_by": "desktop-api-keys"}
+        providers.append(entry)
 
-    entry: Dict[str, Any] = {
-        "name": name,
+    entry.update({
+        "name": "Custom Endpoint",
         "base_url": base_url,
-        "model": model,
-        "models": {model: {}},
-        "discover_models": bool(body.discover_models),
-    }
-    if body.context_length and body.context_length > 0:
-        entry["context_length"] = int(body.context_length)
-        entry["models"][model]["context_length"] = int(body.context_length)
-    if body.api_key is not None and body.api_key.strip():
-        entry["api_key"] = body.api_key.strip()
-    elif isinstance(existing.get("api_key"), str) and existing.get("api_key"):
-        entry["api_key"] = existing["api_key"]
+        "api_mode": api_mode,
+        # A non-empty key is the opt-in signal for picker live discovery.
+        # Keep this enabled for keyless local OpenAI-compatible servers too.
+        "discover_models": True,
+        "managed_by": "desktop-api-keys",
+    })
+    if body.api_key is not None:
+        if body.api_key.strip():
+            entry["api_key"] = body.api_key.strip()
+        else:
+            entry.pop("api_key", None)
 
-    providers[endpoint_id] = entry
-    cfg["providers"] = providers
-
-    if body.make_default:
-        cfg["model"] = _apply_main_model_assignment(
-            cfg.get("model", {}), endpoint_id, model, base_url
-        )
-        if entry.get("api_key") and isinstance(cfg["model"], dict):
-            cfg["model"]["api_key"] = entry["api_key"]
-
-    return endpoint_id, entry
+    cfg["custom_providers"] = providers
+    return entry
 
 
-@app.get("/api/providers/custom-endpoints")
-def list_custom_endpoints():
-    """Return configured OpenAI-compatible custom endpoints for Desktop."""
-    try:
+@app.get("/api/providers/custom-endpoint")
+def get_custom_endpoint(profile: Optional[str] = None):
+    """Read the active profile's API Keys custom endpoint from config.yaml."""
+    with _profile_scope(profile):
         return _custom_endpoint_response(load_config())
-    except Exception:
-        _log.exception("GET /api/providers/custom-endpoints failed")
-        raise HTTPException(status_code=500, detail="Failed to list custom endpoints")
 
 
-@app.post("/api/providers/custom-endpoints")
-def upsert_custom_endpoint(body: CustomEndpointUpdate):
-    """Create or update a v12+ ``providers`` custom endpoint entry."""
+@app.put("/api/providers/custom-endpoint")
+def save_custom_endpoint(body: CustomEndpointUpdate, profile: Optional[str] = None):
+    """Persist the active profile's API Keys endpoint to custom_providers."""
     try:
-        cfg = load_config()
-        endpoint_id, _entry = _write_custom_endpoint(cfg, body)
-        save_config(cfg)
-        response = _custom_endpoint_response(cfg)
-        response["ok"] = True
-        response["id"] = endpoint_id
-        return response
+        with _profile_scope(profile):
+            cfg = load_config()
+            _write_custom_endpoint(cfg, body)
+            save_config(cfg)
+            return {"ok": True, **_custom_endpoint_response(cfg)}
     except HTTPException:
         raise
     except Exception:
-        _log.exception("POST /api/providers/custom-endpoints failed")
+        _log.exception("PUT /api/providers/custom-endpoint failed")
         raise HTTPException(status_code=500, detail="Failed to save custom endpoint")
-
-
-@app.post("/api/providers/custom-endpoints/{endpoint_id}/activate")
-def activate_custom_endpoint(endpoint_id: str):
-    """Set a configured custom endpoint as the default model provider."""
-    try:
-        cfg = load_config()
-        provider_key = _custom_endpoint_id(endpoint_id)
-        providers = cfg.get("providers")
-        entry = providers.get(provider_key) if isinstance(providers, dict) else None
-        if not isinstance(entry, dict):
-            raise HTTPException(status_code=404, detail="custom endpoint not found")
-
-        models = _models_from_custom_endpoint_entry(entry)
-        model = str(entry.get("model") or (models[0] if models else "")).strip()
-        base_url = str(entry.get("base_url") or "").strip()
-        if not model or not base_url:
-            raise HTTPException(status_code=400, detail="custom endpoint is incomplete")
-
-        model_cfg = _apply_main_model_assignment(cfg.get("model", {}), provider_key, model, base_url)
-        if entry.get("api_key"):
-            model_cfg["api_key"] = entry["api_key"]
-        cfg["model"] = model_cfg
-        save_config(cfg)
-        return {"ok": True, "provider": provider_key, "model": model}
-    except HTTPException:
-        raise
-    except Exception:
-        _log.exception("POST /api/providers/custom-endpoints/%s/activate failed", endpoint_id)
-        raise HTTPException(status_code=500, detail="Failed to activate custom endpoint")
-
-
-@app.delete("/api/providers/custom-endpoints/{endpoint_id}")
-def delete_custom_endpoint(endpoint_id: str):
-    """Remove a configured custom endpoint from ``providers``."""
-    try:
-        cfg = load_config()
-        provider_key = _custom_endpoint_id(endpoint_id)
-        providers = cfg.get("providers")
-        if not isinstance(providers, dict) or provider_key not in providers:
-            raise HTTPException(status_code=404, detail="custom endpoint not found")
-        providers.pop(provider_key, None)
-        cfg["providers"] = providers
-        save_config(cfg)
-        response = _custom_endpoint_response(cfg)
-        response["ok"] = True
-        return response
-    except HTTPException:
-        raise
-    except Exception:
-        _log.exception("DELETE /api/providers/custom-endpoints/%s failed", endpoint_id)
-        raise HTTPException(status_code=500, detail="Failed to delete custom endpoint")
-
-
-@app.post("/api/providers/custom-endpoints/validate")
-async def validate_custom_endpoint(body: CustomEndpointUpdate):
-    """Probe a custom endpoint by calling its OpenAI-compatible /models URL."""
-    import httpx
-
-    base_url = (body.base_url or "").strip().rstrip("/")
-    if not base_url:
-        return {"ok": False, "reachable": True, "message": "Enter an endpoint URL first.", "models": []}
-
-    url = base_url + "/models"
-    headers = {"Accept": "application/json"}
-    if body.api_key and body.api_key.strip():
-        headers["Authorization"] = f"Bearer {body.api_key.strip()}"
-
-    try:
-        with httpx.Client(timeout=httpx.Timeout(8.0)) as client:
-            resp = client.get(url, headers=headers)
-    except Exception:
-        return {"ok": False, "reachable": False, "message": f"Could not reach {url}.", "models": []}
-
-    if resp.status_code in (401, 403):
-        return {"ok": False, "reachable": True, "message": "The endpoint rejected the API key.", "models": []}
-    if not resp.is_success:
-        return {"ok": False, "reachable": True, "message": f"Endpoint returned HTTP {resp.status_code}.", "models": []}
-
-    return {"ok": True, "reachable": True, "message": "", "models": _parse_model_ids(resp)}
 
 
 @app.post("/api/providers/validate")

@@ -305,7 +305,6 @@ export const zh: Translations = {
       providers: '提供方',
       providerAccounts: '账号',
       providerApiKeys: 'API 密钥',
-      providerCustomEndpoints: '自定义端点',
       gateway: '网关',
       apiKeys: '工具与密钥',
       keybinds: '键盘快捷键',
@@ -962,9 +961,18 @@ export const zh: Translations = {
       noProviderKeys: '没有可用的提供方 API 密钥。',
       searchKeys: '搜索提供方…',
       noKeysMatch: '没有匹配的提供方。',
-      localEndpoint: {
-        title: '本地 / 自定义端点',
-        description: '将 Hermes 指向任意 OpenAI 兼容端点（Zyphra、vLLM、llama.cpp、Ollama 等）。'
+      customEndpoint: {
+        title: '自定义端点',
+        description: 'OpenAI 或 Anthropic 兼容端点。模型会在 设置 → 模型 中自动发现。',
+        baseUrlLabel: '自定义端点基础 URL',
+        pasteApiKey: '粘贴 API Key',
+        removeApiKey: '移除 API Key',
+        removeConfirm: '确定移除自定义端点的 API Key？',
+        saved: '自定义端点已保存到 config.yaml。',
+        apiKeyRemoved: 'API Key 已移除。',
+        failedLoad: '无法加载自定义端点',
+        failedSave: '无法保存自定义端点',
+        failedRemove: '无法移除 API Key'
       },
       loading: '正在加载提供方...'
     },

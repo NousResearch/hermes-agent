@@ -8943,3 +8943,71 @@ class TestDesktopCronTicker:
 
         with self._client():
             assert not called.wait(0.5), "ticker must not run outside the desktop app"
+
+
+
+class TestDesktopCustomEndpointApi:
+    @pytest.fixture(autouse=True)
+    def _client(self, _isolate_hermes_home):
+        from starlette.testclient import TestClient
+        from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
+
+        self.client = TestClient(app)
+        self.client.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
+
+    def test_saves_key_and_url_to_custom_providers(self):
+        from hermes_cli.config import load_config
+
+        response = self.client.put(
+            "/api/providers/custom-endpoint",
+            json={"base_url": "https://example.test/v1", "api_key": "test-key"},
+        )
+
+        assert response.status_code == 200
+        assert response.json()["api_key_set"] is True
+        entry = load_config()["custom_providers"][0]
+        assert entry["managed_by"] == "desktop-api-keys"
+        assert entry["api_key"] == "test-key"
+        assert entry["discover_models"] is True
+
+    def test_url_only_save_preserves_existing_key(self):
+        from hermes_cli.config import load_config
+
+        first = self.client.put(
+            "/api/providers/custom-endpoint",
+            json={"base_url": "https://old.example/v1", "api_key": "existing-key"},
+        )
+        assert first.status_code == 200
+        second = self.client.put(
+            "/api/providers/custom-endpoint",
+            json={"base_url": "https://new.example/v1"},
+        )
+
+        assert second.status_code == 200
+        entry = load_config()["custom_providers"][0]
+        assert entry["base_url"] == "https://new.example/v1"
+        assert entry["api_key"] == "existing-key"
+
+    def test_explicit_empty_key_removes_existing_key(self):
+        from hermes_cli.config import load_config
+
+        self.client.put(
+            "/api/providers/custom-endpoint",
+            json={"base_url": "https://example.test/v1", "api_key": "existing-key"},
+        )
+        response = self.client.put(
+            "/api/providers/custom-endpoint",
+            json={"base_url": "https://example.test/v1", "api_key": ""},
+        )
+
+        assert response.status_code == 200
+        assert response.json()["api_key_set"] is False
+        assert "api_key" not in load_config()["custom_providers"][0]
+
+    def test_rejects_unknown_profile(self):
+        response = self.client.put(
+            "/api/providers/custom-endpoint?profile=missing-profile",
+            json={"base_url": "https://profile.example/v1", "api_key": "profile-key"},
+        )
+
+        assert response.status_code == 404

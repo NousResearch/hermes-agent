@@ -1684,7 +1684,11 @@ def test_launch_tui_worktree_validates_relative_python_against_final_cwd(
     relative_python = Path(".review-venv") / "bin" / Path(sys.executable).name
     python_path = worktree / relative_python
     python_path.parent.mkdir(parents=True)
-    os.link(sys.executable, python_path)
+    # copy2, not os.link: tmp_path may sit on a different filesystem than
+    # the venv (tmpfs /tmp vs disk home) where hard links raise EXDEV.
+    import shutil
+
+    shutil.copy2(sys.executable, python_path)
     captured = {}
 
     monkeypatch.setenv("HERMES_CWD", str(parent_cwd))

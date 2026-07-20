@@ -223,9 +223,41 @@ def _get_model_and_provider(config: dict) -> tuple[str, str]:
     return model, provider
 
 
+# Fallback-provider entry fields whose VALUES are secrets. Env-var *names*
+# (``key_env`` / ``api_key_env``) are intentionally excluded — they name a
+# variable, not a secret, and are safe to show.
+_FALLBACK_SECRET_KEYS = frozenset(
+    {"api_key", "apikey", "key", "token", "secret", "password"}
+)
+
+
+def _mask_fallback_secrets(fallbacks):
+    """Copy the fallback-provider list with inline credential values masked.
+
+    ``hermes dump`` output is copy-pasted into public bug reports and uploaded
+    verbatim by ``hermes debug share``, so an inline ``api_key`` must never
+    appear in full. Values are masked through :func:`_redact` (head/tail only),
+    matching how the dump shows every other key. Non-dict entries and non-string
+    values pass through unchanged.
+    """
+    if not isinstance(fallbacks, list):
+        return fallbacks
+    masked = []
+    for entry in fallbacks:
+        if not isinstance(entry, dict):
+            masked.append(entry)
+            continue
+        safe = dict(entry)
+        for field, value in safe.items():
+            if field.lower() in _FALLBACK_SECRET_KEYS and isinstance(value, str) and value:
+                safe[field] = _redact(value)
+        masked.append(safe)
+    return masked
+
+
 def _config_overrides(config: dict) -> dict[str, str]:
     """Find non-default config values worth reporting.
-    
+
     Returns a flat dict of dotpath -> value for interesting overrides.
     """
     from hermes_cli.config import DEFAULT_CONFIG
@@ -266,10 +298,11 @@ def _config_overrides(config: dict) -> dict[str, str]:
     if user_toolsets != default_toolsets:
         overrides["toolsets"] = str(user_toolsets)
 
-    # Fallback providers
+    # Fallback providers — mask inline credentials before serializing; this
+    # block is uploaded verbatim by ``hermes debug share``.
     fallbacks = config.get("fallback_providers", [])
     if fallbacks:
-        overrides["fallback_providers"] = str(fallbacks)
+        overrides["fallback_providers"] = str(_mask_fallback_secrets(fallbacks))
 
     return overrides
 

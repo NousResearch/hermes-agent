@@ -3422,7 +3422,7 @@ class SlackAdapter(BasePlatformAdapter):
                 current_ts=ts,
                 team_id=team_id,
             )
-            if thread_context:
+            if thread_context and not (original_text or "").startswith("/"):
                 text = thread_context + text
 
         # Determine message type

@@ -1333,6 +1333,42 @@ class TestBangPrefixCommands:
         assert msg_event.source.thread_id == "1111111111.000001"
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("command", ["!new", "!compress"])
+    async def test_bang_command_in_new_thread_skips_thread_context(self, adapter, command):
+        """Thread context must not hide a bang-normalized gateway command."""
+        thread_context = "[Prior thread context]\n"
+        event = self._make_event(command, thread_ts="1111111111.000001")
+
+        with patch.object(
+            adapter,
+            "_fetch_thread_context",
+            new=AsyncMock(return_value=thread_context),
+        ):
+            await adapter._handle_slack_message(event)
+
+        msg_event = adapter.handle_message.call_args.args[0]
+        assert msg_event.text == "/" + command[1:]
+        assert msg_event.message_type == MessageType.COMMAND
+        assert msg_event.get_command() == command[1:]
+
+    @pytest.mark.asyncio
+    async def test_plain_text_in_new_thread_keeps_thread_context(self, adapter):
+        """Thread context remains prepended for ordinary thread messages."""
+        thread_context = "[Prior thread context]\n"
+        event = self._make_event("please summarize", thread_ts="1111111111.000001")
+
+        with patch.object(
+            adapter,
+            "_fetch_thread_context",
+            new=AsyncMock(return_value=thread_context),
+        ):
+            await adapter._handle_slack_message(event)
+
+        msg_event = adapter.handle_message.call_args.args[0]
+        assert msg_event.text == thread_context + "please summarize"
+        assert msg_event.message_type == MessageType.TEXT
+
+    @pytest.mark.asyncio
     async def test_bang_unknown_token_passes_through_unchanged(self, adapter):
         """``!nice work`` is just a casual message — must NOT be rewritten."""
         await adapter._handle_slack_message(self._make_event("!nice work"))

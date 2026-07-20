@@ -787,6 +787,47 @@ class MarketsWatchlistTests(unittest.TestCase):
         self.assertTrue(any(g["home"]["abbr"] == "RSA" or g["away"]["abbr"] == "RSA"
                             for g in boks))
 
+    def test_scores_soccer_combat_racket_leagues(self):
+        for league in ("laliga", "seriea", "bundesliga", "ligue1", "ucl", "psl",
+                       "mma", "atp", "wta"):
+            d = self.api.scores({"league": [league]})
+            self.assertEqual(d["league"], league)
+            self.assertTrue(d["games"])
+            g = d["games"][0]
+            self.assertIn("abbr", g["home"])
+            self.assertIn("abbr", g["away"])
+        psl = self.api.scores({"league": ["psl"]})["games"]
+        self.assertTrue(any("Sundowns" in g["home"]["name"] or "Sundowns" in g["away"]["name"]
+                            for g in psl))
+
+    def test_racing_sample_and_normalizer(self):
+        for series in ("f1", "motogp", "nascar", "indycar"):
+            d = self.api.racing({"series": [series]})
+            self.assertEqual(d["series"], series)
+            self.assertTrue(d["races"])
+        f1 = self.api.racing({"series": ["f1"]})
+        finished = [r for r in f1["races"] if r["state"] == "post"]
+        self.assertTrue(finished and finished[0]["winner"])
+        self.assertTrue(len(finished[0]["top"]) >= 1)
+        with self.assertRaises(server.ApiError):
+            self.api.racing({"series": ["motocross"]})
+
+    def test_racing_live_normalizer_from_fixture(self):
+        import unittest.mock as mock
+        payload = json.dumps({"events": [{
+            "id": "1", "shortName": "Kyalami GP",
+            "status": {"type": {"state": "post", "shortDetail": "Final"}},
+            "competitions": [{
+                "venue": {"fullName": "Kyalami Circuit"},
+                "competitors": [
+                    {"order": 2, "athlete": {"displayName": "L. Norris"}},
+                    {"order": 1, "athlete": {"displayName": "M. Verstappen"}},
+                ]}]}]}).encode()
+        with mock.patch.object(server, "fetch_url", return_value=payload):
+            out = server.live_racing("f1")
+        self.assertEqual(out["races"][0]["winner"], "M. Verstappen")
+        self.assertEqual(out["races"][0]["top"][0], "M. Verstappen")
+
     def test_scores_unknown_league_rejected(self):
         with self.assertRaises(server.ApiError):
             self.api.scores({"league": ["quidditch"]})

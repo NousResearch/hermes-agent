@@ -8,8 +8,11 @@ import { viewerLink } from "../viewer.js";
 
 const LEAGUES = [
   ["nba", "NBA"], ["nfl", "NFL"], ["mlb", "MLB"], ["nhl", "NHL"],
-  ["epl", "EPL"], ["mls", "MLS"],
+  ["epl", "EPL"], ["laliga", "La Liga"], ["seriea", "Serie A"],
+  ["bundesliga", "Bundesliga"], ["ligue1", "Ligue 1"], ["ucl", "UCL"],
+  ["psl", "PSL"], ["mls", "MLS"],
   ["urc", "URC"], ["rugbyc", "Rugby C'ship"], ["cricket", "Cricket"],
+  ["mma", "MMA"], ["atp", "Tennis ATP"], ["wta", "Tennis WTA"],
 ];
 
 const followedTeams = (store) => store.state.sports?.teams || [];

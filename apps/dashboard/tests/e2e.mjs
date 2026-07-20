@@ -121,7 +121,7 @@ const WIDGET_PAGES = {
   Main: ["glance", "clock", "worldstate", "agent", "weather", "launcher", "tasks", "calendar", "notes", "focus", "system"],
   Markets: ["markets", "stocks", "commodities"],
   Feeds: ["news", "reading", "socials", "gaming", "podcasts"],
-  Sports: ["scores"],
+  Sports: ["scores", "racing"],
   Intel: ["worldclock", "quakes", "fx", "convert", "air", "marine", "space", "alerts", "flights"],
   Health: ["medbot", "pubmed", "trials", "drug", "calc", "meded"],
   "AI Lab": ["codelab", "ailearn", "snippets", "repos", "papers", "ainews", "aidaily"],
@@ -619,6 +619,13 @@ await page.waitForFunction(() =>
   null, { timeout: 5000 });
 await page.waitForSelector(".widget-scores .score-game");
 check("rugby URC board renders", (await page.locator(".widget-scores .score-game").count()) >= 1);
+// tennis (individual-sport board — no home/away flags)
+await page.locator(".widget-scores .tab", { hasText: "Tennis ATP" }).click();
+await page.waitForFunction(() =>
+  document.querySelector('.widget-scores .tab[aria-selected="true"]')?.textContent === "Tennis ATP",
+  null, { timeout: 5000 });
+await page.waitForSelector(".widget-scores .score-game");
+check("tennis ATP board renders", (await page.locator(".widget-scores .score-game").count()) >= 1);
 // back to NBA for the standings detail check (rugby standings vary)
 await page.locator(".widget-scores .tab", { hasText: "NBA" }).click();
 await page.waitForFunction(() =>
@@ -645,6 +652,18 @@ await page.waitForFunction(() =>
   /Added/.test(document.querySelector(".widget-scores .myteam-cal")?.textContent || ""),
   null, { timeout: 5000 });
 check("add-to-calendar marks the fixture added", true);
+
+// ---- motorsport (ESPN racing) ----------------------------------------------------
+await gotoWidget("racing");
+await page.waitForSelector(".widget-racing .race-card", { timeout: 5000 });
+check("motorsport lists races", (await page.locator(".widget-racing .race-card").count()) >= 1);
+check("motorsport shows a podium", (await page.locator(".widget-racing .race-podium").count()) >= 1);
+await page.locator(".widget-racing .tab", { hasText: "MotoGP" }).click();
+await page.waitForFunction(() =>
+  document.querySelector('.widget-racing .tab[aria-selected="true"]')?.textContent === "MotoGP",
+  null, { timeout: 5000 });
+await page.waitForSelector(".widget-racing .race-card");
+check("motorsport series switch works", (await page.locator(".widget-racing .race-card").count()) >= 1);
 
 // ---- air quality + pollen --------------------------------------------------------
 await gotoWidget("air");

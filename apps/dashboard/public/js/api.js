@@ -154,6 +154,7 @@ export const api = {
   cryptoGlobal: () => getJSON("/api/crypto/global"),
   cryptoTrending: () => getJSON("/api/crypto/trending"),
   scores: (league) => getJSON("/api/scores", { league }),
+  racing: (series) => getJSON("/api/racing", { series }),
   standings: (league) => getJSON("/api/standings", { league }),
   teamSchedule: (league, team) => getJSON("/api/team-schedule", { league, team }),
   teamNews: (team) => getJSON("/api/team-news", { team }),

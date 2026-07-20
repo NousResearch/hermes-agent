@@ -946,14 +946,32 @@ SPORT_LEAGUES = {
     "urc": ("rugby", "270557"),        # United Rugby Championship (SA franchises)
     "rugbyc": ("rugby", "242041"),     # The Rugby Championship (Springboks)
     "cricket": ("cricket", "8048"),    # International cricket fixtures
+    # Soccer — European top flights, Champions League and the SA PSL.
+    "laliga": ("soccer", "esp.1"),
+    "seriea": ("soccer", "ita.1"),
+    "bundesliga": ("soccer", "ger.1"),
+    "ligue1": ("soccer", "fra.1"),
+    "ucl": ("soccer", "uefa.champions"),
+    "psl": ("soccer", "rsa.1"),        # DStv Premiership (South Africa)
+    # Combat & racket — two-competitor events (athletes, not teams).
+    "mma": ("mma", "ufc"),
+    "atp": ("tennis", "atp"),
+    "wta": ("tennis", "wta"),
 }
+# Leagues whose competitors are individual athletes (no home/away flags).
+_INDIVIDUAL_LEAGUES = {"mma", "atp", "wta"}
 
 
 def _norm_competitor(c: dict) -> dict:
     team = c.get("team") or {}
+    athlete = c.get("athlete") or {}
+    name = (team.get("displayName") or team.get("name")
+            or athlete.get("displayName") or athlete.get("shortName") or "")
+    abbr = (team.get("abbreviation") or team.get("shortDisplayName")
+            or athlete.get("shortName") or name or "?")
     return {
-        "abbr": team.get("abbreviation") or team.get("shortDisplayName") or "?",
-        "name": team.get("displayName") or team.get("name") or "",
+        "abbr": abbr,
+        "name": name,
         "score": c.get("score"),
         "home": c.get("homeAway") == "home",
         "winner": c.get("winner"),
@@ -972,6 +990,9 @@ def live_scores(league: str) -> dict:
             competitors = [_norm_competitor(c) for c in comp.get("competitors", [])]
             home = next((c for c in competitors if c["home"]), None)
             away = next((c for c in competitors if not c["home"]), None)
+            # Individual sports (MMA/tennis) carry no home/away flags — order them.
+            if (not home or not away) and len(competitors) >= 2:
+                away, home = competitors[0], competitors[1]
             if not home or not away:
                 continue
             games.append({
@@ -1061,6 +1082,24 @@ def sample_scores(league: str) -> dict:
                    ("AUS", "Australia", "0", "ARG", "Argentina", "0", "pre", "Sat 15:00")],
         "cricket": [("RSA", "South Africa", "287/6", "IND", "India", "—", "in", "Day 2 · Innings 1"),
                     ("SA20", "Sunrisers EC", "0", "MICT", "MI Cape Town", "0", "pre", "18:00")],
+        "laliga": [("RMA", "Real Madrid", "2", "BAR", "Barcelona", "2", "in", "68'"),
+                   ("ATM", "Atlético", "0", "SEV", "Sevilla", "0", "pre", "Sun 21:00")],
+        "seriea": [("INT", "Inter", "1", "JUV", "Juventus", "0", "post", "FT"),
+                   ("MIL", "AC Milan", "0", "NAP", "Napoli", "0", "pre", "Sat 20:45")],
+        "bundesliga": [("BAY", "Bayern", "3", "BVB", "Dortmund", "1", "in", "77'"),
+                       ("RBL", "RB Leipzig", "0", "B04", "Leverkusen", "0", "pre", "Sat 18:30")],
+        "ligue1": [("PSG", "Paris SG", "2", "OM", "Marseille", "1", "post", "FT"),
+                   ("MON", "Monaco", "0", "LYO", "Lyon", "0", "pre", "Sun 20:45")],
+        "ucl": [("MCI", "Man City", "2", "RMA", "Real Madrid", "2", "in", "72'"),
+                ("ARS", "Arsenal", "0", "BAY", "Bayern", "0", "pre", "Wed 22:00")],
+        "psl": [("SUN", "Mamelodi Sundowns", "2", "KAI", "Kaizer Chiefs", "0", "post", "FT"),
+                ("ORL", "Orlando Pirates", "0", "STE", "Stellenbosch", "0", "pre", "Sat 15:30")],
+        "mma": [("MAK", "Makhachev", None, "TSA", "Tsarukyan", None, "pre", "Main Event · Sat"),
+                ("ADE", "Adesanya", None, "DDP", "du Plessis", None, "pre", "Title · Sat")],
+        "atp": [("ALC", "Alcaraz", "2", "SIN", "Sinner", "1", "in", "Set 4"),
+                ("DJO", "Djokovic", None, "ZVE", "Zverev", None, "pre", "QF · Tomorrow")],
+        "wta": [("SWI", "Świątek", "2", "SAB", "Sabalenka", "0", "post", "Final"),
+                ("GAU", "Gauff", None, "RYB", "Rybakina", None, "pre", "SF · Tomorrow")],
     }
     rows = demo.get(league, demo["nba"])
     games = []
@@ -1075,6 +1114,83 @@ def sample_scores(league: str) -> dict:
                      "winner": state == "post" and as_ > hs},
         })
     return {"source": "sample", "league": league, "games": games}
+
+
+# ---------------------------------------------------------------------------
+# Motorsport — ESPN racing scoreboards (F1, MotoGP, NASCAR, IndyCar). Each
+# event is a race weekend; we surface name, circuit, status and top finishers.
+# ---------------------------------------------------------------------------
+RACING_TTL = 5 * 60
+RACING_SERIES = {
+    "f1": ("racing", "f1", "Formula 1"),
+    "motogp": ("racing", "motogp", "MotoGP"),
+    "nascar": ("racing", "nascar-premier", "NASCAR Cup"),
+    "indycar": ("racing", "irl", "IndyCar"),
+}
+
+
+def live_racing(series: str) -> dict:
+    sport, lg, label = RACING_SERIES[series]
+    url = f"https://site.api.espn.com/apis/site/v2/sports/{sport}/{lg}/scoreboard"
+    raw = json.loads(fetch_url(url))
+    races = []
+    for event in raw.get("events", []):
+        try:
+            comp = (event.get("competitions") or [{}])[0]
+            status = (event.get("status") or {}).get("type") or {}
+            competitors = comp.get("competitors", [])
+            ordered = sorted(competitors, key=lambda c: c.get("order") or 999)
+            top = []
+            for c in ordered[:3]:
+                ath = c.get("athlete") or {}
+                top.append(ath.get("displayName") or ath.get("shortName")
+                           or (c.get("team") or {}).get("displayName") or "—")
+            circuit = ((comp.get("venue") or {}).get("fullName")
+                       or (event.get("circuit") or {}).get("fullName") or "")
+            races.append({
+                "id": event.get("id"),
+                "name": event.get("shortName") or event.get("name") or label,
+                "circuit": circuit,
+                "state": status.get("state", "pre"),
+                "status": status.get("shortDetail") or status.get("detail") or "",
+                "start": event.get("date"),
+                "winner": top[0] if (status.get("state") == "post" and top) else None,
+                "top": top,
+            })
+        except Exception:
+            continue
+    return {"source": "live", "series": series, "label": label, "races": races}
+
+
+def sample_racing(series: str) -> dict:
+    now = datetime.now(timezone.utc)
+    label = RACING_SERIES.get(series, ("", "", "Motorsport"))[2]
+    demo = {
+        "f1": [("Kyalami GP", "Kyalami Circuit, Johannesburg", "post",
+                ["M. Verstappen", "L. Norris", "C. Leclerc"]),
+               ("Monaco GP", "Circuit de Monaco", "pre", [])],
+        "motogp": [("Grand Prix of South Africa", "Phakisa Freeway", "post",
+                    ["F. Bagnaia", "J. Martín", "M. Márquez"]),
+                   ("Qatar GP", "Lusail Circuit", "pre", [])],
+        "nascar": [("Cup Series 400", "Daytona International", "post",
+                    ["K. Larson", "D. Hamlin", "C. Bell"]),
+                   ("Next Race", "Talladega Superspeedway", "pre", [])],
+        "indycar": [("Grand Prix", "Streets of Long Beach", "post",
+                     ["A. Palou", "S. Dixon", "W. Power"]),
+                    ("Next Race", "Indianapolis Motor Speedway", "pre", [])],
+    }
+    rows = demo.get(series, demo["f1"])
+    races = []
+    for i, (name, circuit, state, top) in enumerate(rows):
+        races.append({
+            "id": f"{series}-{i}", "name": name, "circuit": circuit,
+            "state": state,
+            "status": "Finished" if state == "post" else "Upcoming",
+            "start": (now + timedelta(days=i * 7)).isoformat(),
+            "winner": top[0] if (state == "post" and top) else None,
+            "top": top,
+        })
+    return {"source": "sample", "series": series, "label": label, "races": races}
 
 
 # ---------------------------------------------------------------------------
@@ -2511,6 +2627,7 @@ SOURCES: dict[str, dict] = {
     "gaming:deals": {"ttl": GAMING_TTL, "live": live_steam_deals, "sample": sample_steam_deals},
     "standings": {"ttl": STANDINGS_TTL, "live": live_standings, "sample": sample_standings},
     "scores": {"ttl": SCORES_TTL, "live": live_scores, "sample": sample_scores},
+    "racing": {"ttl": RACING_TTL, "live": live_racing, "sample": sample_racing},
     "teamsched": {"ttl": TEAM_SCHEDULE_TTL,
                   "live": live_team_schedule, "sample": sample_team_schedule},
     "teamnews": {"ttl": TEAM_NEWS_TTL, "live": live_team_news, "sample": sample_team_news},
@@ -3062,6 +3179,12 @@ class Api:
             raise ApiError(400, f"unknown league {league!r}; valid: {list(SPORT_LEAGUES)}")
         return self.fetch_source("scores", league)
 
+    def racing(self, params: dict) -> dict:
+        series = params.get("series", ["f1"])[0].lower()
+        if series not in RACING_SERIES:
+            raise ApiError(400, f"unknown series {series!r}; valid: {list(RACING_SERIES)}")
+        return self.fetch_source("racing", series)
+
     def crypto_global(self, params: dict) -> dict:
         return self.fetch_source("crypto:global")
 
@@ -3492,6 +3615,7 @@ class HubHandler(BaseHTTPRequestHandler):
         "/api/crypto/global": "crypto_global",
         "/api/crypto/trending": "crypto_trending",
         "/api/scores": "scores",
+        "/api/racing": "racing",
         "/api/standings": "standings",
         "/api/team-schedule": "team_schedule",
         "/api/team-news": "team_news",

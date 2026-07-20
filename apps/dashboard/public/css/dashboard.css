@@ -978,6 +978,20 @@ a { color: inherit; }
 .score-final { color: var(--muted); }
 .score-pre { color: var(--ink-2); }
 
+/* motorsport */
+.race-list { display: flex; flex-direction: column; gap: 8px; margin-top: 8px; }
+.race-card { border: 1px solid var(--hairline); border-radius: 5px; padding: 9px 11px; }
+.race-card-live { border-color: color-mix(in srgb, var(--status-critical) 40%, transparent); }
+.race-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.race-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.race-circuit { margin-top: 2px; }
+.race-status { margin-top: 2px; }
+.race-podium { list-style: none; margin: 7px 0 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+.race-pos { display: flex; align-items: baseline; gap: 8px; font-size: 13px; }
+.race-medal { flex: 0 0 auto; }
+.race-driver { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.race-pos.p1 .race-driver { font-weight: 600; }
+
 /* follow star + My Teams view */
 .score-follow { font-size: 13px; line-height: 1; padding: 0 2px; color: var(--muted); flex: 0 0 auto; }
 .score-follow.score-followed { color: var(--accent); }

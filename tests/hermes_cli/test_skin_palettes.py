@@ -117,37 +117,28 @@ def contrast(a: str, b: str) -> float:
     return (hi + 0.05) / (lo + 0.05)
 
 
+# Light-authored built-ins (everything else is dark-authored). Paired
+# palettes are OPTIONAL, hand-authored refinements: cross-polarity rendering
+# is handled by the TUI's display shim (xterm-style hue-preserving contrast
+# lift), which reproduces exactly what minimumContrastRatio hosts display —
+# the look the maintainers standardized on. Generated paired palettes are
+# explicitly NOT wanted; only ship one when a human tuned it.
+LIGHT_AUTHORED = frozenset({"daylight", "warm-lightmode"})
+
+
 def _palettes():
     """Yield (skin, palette_name, palette, is_light) for every built-in."""
     for name, skin in _BUILTIN_SKINS.items():
-        colors = skin.get("colors", {})
-        light = skin.get("light_colors", {})
-        dark = skin.get("dark_colors", {})
+        yield name, "colors", skin.get("colors", {}), name in LIGHT_AUTHORED
 
-        # `colors` polarity is declared by which paired block the skin ships.
-        colors_are_light = bool(dark) and not light
-        yield name, "colors", colors, colors_are_light
-
-        if light:
-            yield name, "light_colors", light, True
-        if dark:
-            yield name, "dark_colors", dark, False
+        if skin.get("light_colors"):
+            yield name, "light_colors", skin["light_colors"], True
+        if skin.get("dark_colors"):
+            yield name, "dark_colors", skin["dark_colors"], False
 
 
 ALL_PALETTES = list(_palettes())
 PALETTE_IDS = [f"{skin}:{block}" for skin, block, _, _ in ALL_PALETTES]
-
-
-def test_every_builtin_ships_a_paired_palette():
-    for name, skin in _BUILTIN_SKINS.items():
-        assert skin.get("light_colors") or skin.get("dark_colors"), (
-            f"skin {name!r} has no paired palette: dark-authored skins need "
-            f"light_colors, light-authored skins need dark_colors"
-        )
-        assert not (skin.get("light_colors") and skin.get("dark_colors")), (
-            f"skin {name!r} declares both paired blocks; `colors` polarity "
-            f"would be ambiguous"
-        )
 
 
 @pytest.mark.parametrize(("skin", "block", "palette", "is_light"), ALL_PALETTES, ids=PALETTE_IDS)

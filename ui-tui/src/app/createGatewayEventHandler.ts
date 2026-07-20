@@ -1,3 +1,5 @@
+import { execFile } from 'child_process'
+
 import { onTerminalBackground } from '@hermes/ink'
 
 import { STARTUP_IMAGE, STARTUP_QUERY } from '../config/env.js'
@@ -16,7 +18,8 @@ import { openExternalUrl } from '../lib/openExternalUrl.js'
 import { rpcErrorMessage } from '../lib/rpc.js'
 import { topLevelSubagents } from '../lib/subagentTree.js'
 import { formatAbandonedClarify, formatToolCall, stripAnsi } from '../lib/text.js'
-import { defaultThemeForCurrentBackground, detectLightMode, fromSkin } from '../theme.js'
+import { writeBootTheme } from '../lib/themeBoot.js'
+import { defaultThemeForCurrentBackground, detectLightMode, fromSkin, type Theme } from '../theme.js'
 import type { Msg, SubagentProgress, SubagentStatus } from '../types.js'
 
 import { applyDelegationStatus, getDelegationState } from './delegationStore.js'
@@ -45,15 +48,22 @@ const themeForSkin = (s: GatewaySkin) => {
   return fromSkin(colors, s.branding ?? {}, s.banner_logo ?? '', s.banner_hero ?? '', s.tool_prefix ?? '', s.help_header ?? '')
 }
 
+// Patch the live theme AND persist it for the next launch's first frame
+// (flash-free boot — see lib/themeBoot.ts).
+const commitTheme = (theme: Theme) => {
+  patchUiState({ theme })
+  writeBootTheme(theme, process.env.HERMES_TUI_BACKGROUND)
+}
+
 const applySkin = (s: GatewaySkin) => {
   lastSkin = s
-  patchUiState({ theme: themeForSkin(s) })
+  commitTheme(themeForSkin(s))
 }
 
 /** Re-derive the theme from current detection signals (env overrides, cached
  *  OSC-11 answer) — used by /theme, config sync, and the OSC listener. */
 export function reapplyTheme(): void {
-  patchUiState({ theme: lastSkin ? themeForSkin(lastSkin) : defaultThemeForCurrentBackground() })
+  commitTheme(lastSkin ? themeForSkin(lastSkin) : defaultThemeForCurrentBackground())
 }
 
 /**
@@ -109,20 +119,55 @@ export function syncThemeToTerminalBackground(): void {
 
   themeBackgroundSyncStarted = true
 
+  let resolved = false
+
   onTerminalBackground(hex => {
     // xterm.js hosts (VS Code / Cursor) answer OSC 11 with #000000 when the
     // editor theme sets no explicit terminal background — the renderer's
     // unset DEFAULT, not the painted color (observed: pure black reported on
     // a white terminal). A real vscode dark theme reports its actual surface
     // (#1e1e1e etc.), so exactly-#000000 from a vscode host carries no
-    // signal: skip the cache and leave detection to env/config overrides.
+    // signal: skip the cache and fall through to the OS-appearance inference.
     if (hex === '#000000' && (process.env.TERM_PROGRAM ?? '') === 'vscode') {
       return
     }
 
+    resolved = true
     process.env.HERMES_TUI_BACKGROUND = hex
     reapplyTheme()
   })
+
+  // Last-resort inference when the probe never answers (or answered with the
+  // untrusted default): on macOS, editor themes overwhelmingly track the
+  // system appearance, so `AppleInterfaceStyle` is a strong prior. Runs only
+  // when no explicit signal exists (env pins/COLORFGBG all beat the cache
+  // slot this writes), after giving the probe a beat to answer.
+  setTimeout(() => {
+    if (
+      resolved ||
+      process.platform !== 'darwin' ||
+      process.env.HERMES_TUI_BACKGROUND ||
+      process.env.HERMES_TUI_THEME ||
+      process.env.HERMES_TUI_LIGHT ||
+      process.env.COLORFGBG
+    ) {
+      return
+    }
+
+    execFile('defaults', ['read', '-g', 'AppleInterfaceStyle'], (error, stdout) => {
+      if (resolved || process.env.HERMES_TUI_BACKGROUND || process.env.HERMES_TUI_THEME) {
+        return
+      }
+
+      // `defaults read` exits non-zero when the key is absent — which MEANS
+      // light mode; "Dark" means dark. Cache as an inferred background so
+      // every later signal (config pin, real OSC answer) still outranks it.
+      const dark = !error && stdout.trim() === 'Dark'
+
+      process.env.HERMES_TUI_BACKGROUND = dark ? '#1e1e1e' : '#ffffff'
+      reapplyTheme()
+    })
+  }, 1500).unref?.()
 }
 
 const dropBgTask = (taskId: string) =>

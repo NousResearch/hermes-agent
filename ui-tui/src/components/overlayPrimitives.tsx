@@ -3,6 +3,7 @@ import { Text, useInput } from '@hermes/ink'
 import { type ReactNode, useState } from 'react'
 
 import type { UsageModelData } from '../gatewayTypes.js'
+import { liftForContrast } from '../lib/color.js'
 import type { Theme } from '../theme.js'
 
 export interface MenuRowSpec {
@@ -60,7 +61,16 @@ export function useMenu(rows: MenuRowSpec[], onEscape: () => void, onKey?: (ch: 
  * correct on any terminal background. Callers own layout; this owns color.
  */
 export function listRowStyle(t: Theme, active: boolean): { backgroundColor?: string; color?: string } {
-  return active ? { backgroundColor: t.color.completionCurrentBg, color: t.color.text } : {}
+  if (!active) {
+    return {}
+  }
+
+  const backgroundColor = t.color.completionCurrentBg
+
+  // The chip guarantees its own ink: a cross-polarity theme (dark palette on
+  // a light terminal) pairs pale text with a light chip, so lift the ink
+  // against the ACTUAL chip fill with the xterm algorithm.
+  return { backgroundColor, color: liftForContrast(t.color.text, backgroundColor, 4.5) }
 }
 
 /** A numbered menu row with the ▸ cursor (mirrors ClarifyPrompt). Active rows

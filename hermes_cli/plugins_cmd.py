@@ -686,8 +686,57 @@ def cmd_remove(name: str) -> None:
         console.print(f"[red]Error:[/red] {e}")
         sys.exit(1)
 
+    _remove_plugin_config_state(name, target, plugins_dir)
     shutil.rmtree(target)
     _display_removed(name, plugins_dir)
+
+
+def _remove_plugin_config_state(
+    name: str,
+    target: Path,
+    plugins_dir: Path,
+) -> None:
+    """Remove every config alias for an installed plugin in one atomic save."""
+    from hermes_cli.config import load_config, save_config
+
+    aliases = {name.strip("/"), target.name}
+    try:
+        relative = target.resolve().relative_to(plugins_dir.resolve())
+        prefix = "/".join(relative.parts[:-1])
+        manifest_info = _read_manifest_info(target, prefix)
+    except (OSError, TypeError, ValueError):
+        manifest_info = None
+    if manifest_info is not None:
+        manifest_name, _version, _description, canonical_key = manifest_info
+        if isinstance(manifest_name, str) and manifest_name:
+            aliases.add(manifest_name)
+        if isinstance(canonical_key, str) and canonical_key:
+            aliases.add(canonical_key)
+
+    config = load_config()
+    plugins_cfg = config.get("plugins")
+    if not isinstance(plugins_cfg, dict):
+        return
+
+    changed = False
+    for state_name in ("enabled", "disabled"):
+        state = plugins_cfg.get(state_name)
+        if not isinstance(state, list):
+            continue
+        cleaned = [plugin_id for plugin_id in state if plugin_id not in aliases]
+        if cleaned != state:
+            plugins_cfg[state_name] = cleaned
+            changed = True
+
+    entries = plugins_cfg.get("entries")
+    if isinstance(entries, dict):
+        for alias in aliases:
+            if alias in entries:
+                del entries[alias]
+                changed = True
+
+    if changed:
+        save_config(config)
 
 
 def _get_disabled_set() -> set:
@@ -1985,7 +2034,7 @@ def _git_pull_plugin_dir(target: Path) -> tuple[bool, str]:
 
 
 def dashboard_remove_user_plugin(name: str) -> dict[str, Any]:
-    """Delete a plugin tree under ``~/.hermes/plugins/`` only."""
+    """Remove a user plugin tree and its persisted activation state."""
     plugins_dir = _plugins_dir()
     for n, _ver, _d, src, _path, _key in _discover_all_plugins():
         if n == name and src == "bundled":
@@ -1997,6 +2046,11 @@ def dashboard_remove_user_plugin(name: str) -> dict[str, Any]:
             "ok": False,
             "error": f"Plugin '{name}' was not found under {plugins_dir}.",
         }
+
+    try:
+        _remove_plugin_config_state(name, target, plugins_dir)
+    except (OSError, RuntimeError) as exc:
+        return {"ok": False, "error": f"Could not update plugin config: {exc}"}
 
     shutil.rmtree(target)
     return {"ok": True, "name": name}

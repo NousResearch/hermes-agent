@@ -331,6 +331,7 @@ class TestSecondaryProfileFatalRecovery:
                 await asyncio.Event().wait()
             except asyncio.CancelledError:
                 await runner._safe_adapter_disconnect(partial, Platform.DISCORD)
+                await asyncio.sleep(0.1)
                 raise
 
         task = asyncio.create_task(reconnect())

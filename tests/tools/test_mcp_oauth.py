@@ -1163,7 +1163,7 @@ def test_configure_callback_port_explicit_overrides_cached_client_port(tmp_path,
     assert cfg["_resolved_port"] == 54321
 
 
-def test_build_oauth_auth_preserves_server_url_path():
+def test_build_oauth_auth_preserves_server_url_path(tmp_path, monkeypatch):
     """server_url with path is forwarded to OAuthClientProvider unmodified.
 
     Regression for #16015: previously ``_parse_base_url`` stripped the path,

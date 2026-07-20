@@ -29,7 +29,7 @@ describe('resolveWatchdogPrewarmedBackend', () => {
   })
 
   test('returns null when manifest is missing', async () => {
-    assert.equal(await resolveWatchdogPrewarmedBackend(), null)
+    assert.equal(await resolveWatchdogPrewarmedBackend({ platform: 'win32' }), null)
   })
 
   test('returns connection when manifest probes healthy', async () => {
@@ -51,7 +51,10 @@ describe('resolveWatchdogPrewarmedBackend', () => {
       vi.fn(async () => ({ ok: true }))
     )
 
-    const got = await resolveWatchdogPrewarmedBackend({ hermesRoot: 'C:\\repo' })
+    const got = await resolveWatchdogPrewarmedBackend({
+      hermesRoot: 'C:\\repo',
+      platform: 'win32'
+    })
 
     assert.ok(got)
     assert.equal(got?.baseUrl, 'http://127.0.0.1:54321')
@@ -77,6 +80,6 @@ describe('resolveWatchdogPrewarmedBackend', () => {
       vi.fn(async () => ({ ok: true }))
     )
 
-    assert.equal(await resolveWatchdogPrewarmedBackend({ hermesRoot: 'C:\\repo' }), null)
+    assert.equal(await resolveWatchdogPrewarmedBackend({ hermesRoot: 'C:\\repo', platform: 'win32' }), null)
   })
 })

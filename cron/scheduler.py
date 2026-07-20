@@ -40,7 +40,12 @@ from typing import Any, List, Optional
 # the module) fail with ModuleNotFoundError for hermes_time et al.
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from hermes_constants import get_hermes_home
+from hermes_constants import (
+    get_default_hermes_root,
+    get_hermes_home,
+    reset_hermes_home_override,
+    set_hermes_home_override,
+)
 from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_cli.config import load_config, _expand_env_vars
 from hermes_cli.fallback_config import get_fallback_chain
@@ -497,6 +502,10 @@ class _ReadWriteLock:
 # Serializes the per-job TERMINAL_CWD override against every other concurrently
 # running cron job.  See _ReadWriteLock and run_job for the usage contract.
 _terminal_cwd_lock = _ReadWriteLock()
+_profile_home_lock = _ReadWriteLock()
+_profile_home_guard_depth = contextvars.ContextVar(
+    "cron_profile_home_guard_depth", default=0
+)
 
 
 def _get_parallel_pool(max_workers: Optional[int]) -> concurrent.futures.ThreadPoolExecutor:
@@ -605,7 +614,66 @@ def _job_needs_sequential_tick(job: dict) -> bool:
     if (job.get("workdir") or "").strip():
         return True
     profile = str(job.get("profile") or "").strip()
-    return bool(profile) and profile.lower() != "default"
+    return bool(profile)
+
+
+def _execution_home_for_job(job: dict | None) -> Path:
+    profile = str((job or {}).get("profile") or "").strip()
+    if not profile:
+        return _get_hermes_home()
+    if profile.lower() == "default":
+        return get_default_hermes_root()
+
+    from hermes_cli.profiles import (
+        get_profile_dir,
+        normalize_profile_name,
+        profile_exists,
+        validate_profile_name,
+    )
+
+    canonical_profile = normalize_profile_name(profile)
+    validate_profile_name(canonical_profile)
+    if not profile_exists(canonical_profile):
+        raise ValueError(f"Cron profile {canonical_profile!r} does not exist")
+
+    profiles_root = (get_default_hermes_root() / "profiles").resolve()
+    profile_home = get_profile_dir(canonical_profile).resolve()
+    try:
+        profile_home.relative_to(profiles_root)
+    except ValueError as exc:
+        raise ValueError(
+            f"Cron profile {canonical_profile!r} resolves outside the profiles root"
+        ) from exc
+    return profile_home
+
+
+@contextlib.contextmanager
+def _cron_profile_guard(job: dict):
+    """Exclude named-profile global overrides from every other cron run."""
+    depth = _profile_home_guard_depth.get()
+    if depth:
+        token = _profile_home_guard_depth.set(depth + 1)
+        try:
+            yield
+        finally:
+            _profile_home_guard_depth.reset(token)
+        return
+
+    profile = str(job.get("profile") or "").strip()
+    holds_write = bool(profile)
+    if holds_write:
+        _profile_home_lock.acquire_write()
+    else:
+        _profile_home_lock.acquire_read()
+    token = _profile_home_guard_depth.set(1)
+    try:
+        yield
+    finally:
+        _profile_home_guard_depth.reset(token)
+        if holds_write:
+            _profile_home_lock.release_write()
+        else:
+            _profile_home_lock.release_read()
 
 
 @contextlib.contextmanager
@@ -614,35 +682,27 @@ def _cron_profile_context(job: dict):
     global _hermes_home
 
     profile_name = str(job.get("profile") or "").strip()
-    if not profile_name or profile_name.lower() == "default":
+    if not profile_name:
         yield
         return
 
     try:
-        from hermes_cli import profiles as profiles_mod
+        from hermes_cli.profiles import normalize_profile_name
 
-        canon = profiles_mod.normalize_profile_name(profile_name)
-        if not profiles_mod.profile_exists(canon):
-            logger.warning(
-                "Job '%s': profile %r missing — running in current HERMES_HOME",
-                job.get("id"),
-                profile_name,
-            )
-            yield
-            return
-        home = profiles_mod.get_profile_dir(canon)
+        canon = normalize_profile_name(profile_name)
+        home = _execution_home_for_job(job)
     except ValueError as exc:
-        logger.warning(
-            "Job '%s': invalid profile %r (%s) — running in current HERMES_HOME",
+        logger.error(
+            "Job '%s': refusing invalid or missing profile %r (%s)",
             job.get("id"),
             profile_name,
             exc,
         )
-        yield
-        return
+        raise
 
     prior_home = _hermes_home
     prior_env = os.environ.get("HERMES_HOME")
+    home_override_token = set_hermes_home_override(home)
     _hermes_home = home
     os.environ["HERMES_HOME"] = str(home)
     logger.info(
@@ -659,6 +719,7 @@ def _cron_profile_context(job: dict):
             os.environ.pop("HERMES_HOME", None)
         else:
             os.environ["HERMES_HOME"] = prior_env
+        reset_hermes_home_override(home_override_token)
 
 
 def _resolve_origin(job: dict) -> Optional[dict]:
@@ -2172,7 +2233,20 @@ def _windows_cron_python_invocation(python_exe: str) -> tuple[str, dict[str, str
     return str(interpreter), env_overlay
 
 
-def _run_job_script(script_path: str) -> tuple[bool, str]:
+def _scripts_dir_for_job(job: dict | None) -> Path:
+    """Resolve the scripts directory for a cron job.
+
+    A named profile selects its validated profile home, explicit ``default``
+    selects the canonical default root, and a missing profile follows the
+    scheduler's active home. Named resolution is derived from the immutable
+    job field rather than mutable process-global profile context.
+    """
+    scripts_dir = _execution_home_for_job(job) / "scripts"
+    scripts_dir.mkdir(parents=True, exist_ok=True)
+    return scripts_dir
+
+
+def _run_job_script(script_path: str, job: dict | None = None) -> tuple[bool, str]:
     """Execute a cron job's data-collection script and capture its output.
 
     Scripts must reside within the job's scripts directory (see
@@ -2203,7 +2277,10 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
         (success, output) — on failure *output* contains the error message so the
         LLM can report the problem to the user.
     """
-    scripts_dir = _scripts_dir_for_job(job)
+    try:
+        scripts_dir = _scripts_dir_for_job(job)
+    except (OSError, ValueError) as exc:
+        return False, f"Blocked: invalid cron script profile ({exc})"
     scripts_dir_resolved = scripts_dir.resolve()
 
     raw = Path(script_path).expanduser()
@@ -2328,7 +2405,7 @@ def _run_job_script_with_claim_heartbeat(
         and schedule.get("kind") == "once"
         and owner
     ):
-        return _run_job_script(script_path)
+        return _run_job_script(script_path, job=job)
 
     job_id = str(job.get("id") or "")
     stop = threading.Event()
@@ -2359,10 +2436,10 @@ def _run_job_script_with_claim_heartbeat(
             job_id,
             exc_info=True,
         )
-        return _run_job_script(script_path)
+        return _run_job_script(script_path, job=job)
 
     try:
-        return _run_job_script(script_path)
+        return _run_job_script(script_path, job=job)
     finally:
         stop.set()
         # Event.wait() wakes immediately.  Keep completion bounded if the
@@ -2736,10 +2813,15 @@ def run_job(
     Returns:
         Tuple of (success, full_output_doc, final_response, error_message)
     """
-    with _cron_profile_context(job):
-        return _run_job_unscoped(
-            job, defer_agent_teardown=defer_agent_teardown
-        )
+    with _cron_profile_guard(job):
+        from cron import jobs as cron_jobs
+
+        owner_home = cron_jobs._current_cron_store().cron_dir.parent
+        with cron_jobs.use_cron_store(owner_home):
+            with _cron_profile_context(job):
+                return _run_job_unscoped(
+                    job, defer_agent_teardown=defer_agent_teardown
+                )
 
 
 def _run_job_unscoped(
@@ -3796,6 +3878,19 @@ def _teardown_cron_agent(agent, job_id: str) -> None:
 
 
 def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -> bool:
+    with _cron_profile_guard(job):
+        from cron import jobs as cron_jobs
+
+        owner_home = cron_jobs._current_cron_store().cron_dir.parent
+        with cron_jobs.use_cron_store(owner_home):
+            return _run_one_job_guarded(
+                job, adapters=adapters, loop=loop, verbose=verbose
+            )
+
+
+def _run_one_job_guarded(
+    job: dict, *, adapters=None, loop=None, verbose: bool = False
+) -> bool:
     """Run ONE due job end-to-end: execute → save output → deliver → mark.
 
     This is the shared firing body extracted from ``tick``'s per-job closure so
@@ -3851,7 +3946,7 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
         )
 
         _scope_token = set_secret_scope(
-            build_profile_secret_scope(_get_hermes_home())
+            build_profile_secret_scope(_execution_home_for_job(job))
         )
         # Defer the cron agent's async-resource teardown until AFTER delivery.
         # run_job normally closes the agent (and reaps stale async clients) in
@@ -4069,14 +4164,12 @@ def tick(
             body."""
             return run_one_job(job, adapters=adapters, loop=loop, verbose=verbose)
 
-        # Partition due jobs: those with a per-job workdir mutate
-        # os.environ["TERMINAL_CWD"] inside run_job, which is process-global, so
-        # they queue on the single-thread sequential pool to run one at a time.
-        # That alone only keeps workdir jobs from overlapping EACH OTHER;
-        # run_job's _terminal_cwd_lock is what additionally stops a concurrently
-        # firing workdir-less parallel-pool job from observing the override.
-        sequential_jobs = [j for j in due_jobs if (j.get("workdir") or "").strip()]
-        parallel_jobs = [j for j in due_jobs if not (j.get("workdir") or "").strip()]
+        # Partition jobs that mutate process-global runtime state onto the
+        # single-thread pool. The reader/writer locks inside run_job additionally
+        # exclude these jobs from ordinary parallel jobs while an override is
+        # active, without serializing ordinary jobs against each other.
+        sequential_jobs = [j for j in due_jobs if _job_needs_sequential_tick(j)]
+        parallel_jobs = [j for j in due_jobs if not _job_needs_sequential_tick(j)]
 
         _results: list = []
         _all_futures: list = []

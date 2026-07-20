@@ -68,6 +68,7 @@ _AGENT_CACHE_MAX_SIZE = 128
 _AGENT_CACHE_IDLE_TTL_SECS = 3600.0  # evict agents idle for >1h
 _PLATFORM_CONNECT_TIMEOUT_SECS_DEFAULT = 30.0
 _ADAPTER_DISCONNECT_TIMEOUT_SECS_DEFAULT = 5.0
+_SECONDARY_RECONNECT_CANCEL_GRACE_SECS = 1.0
 _GATEWAY_PROXY_SSE_BUFFER_MAX_CHARS = 16 * 1024 * 1024
 _TELEGRAM_COMMAND_MENTION_RE = re.compile(r"(?<![\w:/])/([A-Za-z0-9][A-Za-z0-9_-]*)")
 
@@ -8703,9 +8704,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         A reconnect can be waiting in adapter setup while shutdown begins. It
         must not republish an adapter after the secondary registry is drained.
-        Waiting is bounded by the same adapter-cleanup budget; if a task does
-        not finish in time, the stopped runner state still prevents it from
-        installing an adapter when it eventually resumes.
+        Waiting includes a bounded scheduling grace after the adapter-cleanup
+        budget; if a task does not finish in time, the stopped runner state
+        still prevents it from installing an adapter when it eventually resumes.
         """
         pending = self._profile_failed_platforms
         if not isinstance(pending, dict):
@@ -8722,7 +8723,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             task.cancel()
         timeout = self._adapter_disconnect_timeout_secs()
         if tasks and timeout > 0:
-            _done, unfinished = await asyncio.wait(tasks, timeout=timeout)
+            _done, unfinished = await asyncio.wait(
+                tasks,
+                timeout=timeout + _SECONDARY_RECONNECT_CANCEL_GRACE_SECS,
+            )
             if unfinished:
                 logger.warning(
                     "Timed out waiting for %d secondary profile reconnect task(s) during shutdown",

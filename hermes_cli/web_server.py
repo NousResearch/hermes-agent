@@ -589,7 +589,9 @@ async def auth_middleware(request: Request, call_next):
     # and is skipped here so the gate's session attachment isn't overridden.
     if getattr(request.app.state, "auth_required", False):
         return await call_next(request)
-    path = request.url.path
+    from hermes_cli.dashboard_auth.middleware import _request_path
+
+    path = _request_path(request)
     is_mcp_oauth_callback = path.startswith("/api/mcp/oauth/callback/")
     if path.startswith("/api/") and path not in _PUBLIC_API_PATHS and not is_mcp_oauth_callback:
         if not _has_valid_session_token(request) and not _has_valid_query_token(request, path):

@@ -50,10 +50,11 @@ async function probePublicStatus(baseUrl: string, timeoutMs: number) {
 async function resolveWatchdogPrewarmedBackend(
   options: {
     hermesRoot?: string | null
+    platform?: NodeJS.Platform
     timeoutMs?: number
   } = {}
 ): Promise<WatchdogPrewarmedBackend | null> {
-  if (process.platform !== 'win32') {
+  if ((options.platform ?? process.platform) !== 'win32') {
     return null
   }
 

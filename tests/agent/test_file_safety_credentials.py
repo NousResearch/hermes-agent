@@ -447,6 +447,7 @@ def test_read_file_tool_blocks_user_credential_store(
     import json
 
     import tools.file_tools as ft
+    import tools.terminal_tool as terminal_tool
 
     credentials = _create(fake_user_home, Path(".aws") / "credentials")
     credentials.write_text(
@@ -455,7 +456,7 @@ def test_read_file_tool_blocks_user_credential_store(
     )
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(
-        ft, "_get_live_tracking_cwd", lambda task_id="default": None
+        terminal_tool, "_session_cwd", {}
     )
     monkeypatch.setattr(
         ft,
@@ -477,13 +478,14 @@ def test_read_file_tool_blocks_relative_user_credential_store(
     import json
 
     import tools.file_tools as ft
+    import tools.terminal_tool as terminal_tool
 
     credentials = _create(fake_user_home, Path(".ssh") / "id_rsa")
     credentials.write_text("SSH_PRIVATE_KEY_MARKER", encoding="utf-8")
     monkeypatch.setenv("TERMINAL_CWD", str(fake_user_home))
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(
-        ft, "_get_live_tracking_cwd", lambda task_id="default": None
+        terminal_tool, "_session_cwd", {}
     )
     monkeypatch.setattr(
         ft,

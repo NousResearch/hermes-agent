@@ -316,43 +316,120 @@ class TestRunJobScript:
         parsed = json.loads(output)
         assert parsed["new_prs"][0]["number"] == 42
 
-    def test_default_job_uses_default_scripts_dir_when_profile_home_active(
+    def test_explicit_default_job_uses_default_scripts_dir_when_profile_home_active(
         self, tmp_path, monkeypatch
     ):
-        """Unprofiled jobs should not inherit another profile's HERMES_HOME."""
         default_home = tmp_path / "default-home"
         profile_home = tmp_path / "profile-home"
         (default_home / "scripts").mkdir(parents=True)
         (profile_home / "scripts").mkdir(parents=True)
         monkeypatch.setenv("HERMES_HOME", str(profile_home))
 
-        from hermes_cli import profiles
+        from cron import scheduler
 
-        monkeypatch.setattr(profiles, "_get_default_hermes_home", lambda: default_home)
-
-        from cron.scheduler import _run_job_script
+        monkeypatch.setattr(scheduler, "get_default_hermes_root", lambda: default_home)
 
         script = default_home / "scripts" / "default_only.py"
         script.write_text('print("default scripts")\n')
 
-        success, output = _run_job_script("default_only.py", job={})
+        success, output = scheduler._run_job_script(
+            "default_only.py", job={"profile": "default"}
+        )
         assert success is True
         assert output == "default scripts"
 
+    def test_job_without_profile_uses_active_scripts_dir(self, tmp_path, monkeypatch):
+        profile_home = tmp_path / "profile-home"
+        (profile_home / "scripts").mkdir(parents=True)
+
+        from cron import scheduler
+
+        monkeypatch.setattr(scheduler, "_hermes_home", profile_home)
+        script = profile_home / "scripts" / "active_profile.py"
+        script.write_text('print("active profile")\n')
+
+        success, output = scheduler._run_job_script("active_profile.py", job={})
+
+        assert success is True
+        assert output == "active profile"
+
     def test_profile_job_uses_profile_scripts_dir(self, tmp_path, monkeypatch):
         """Profile-pinned jobs should resolve scripts under the active profile home."""
-        profile_home = tmp_path / "profile-home"
+        default_home = tmp_path / "default-home"
+        profile_home = default_home / "profiles" / "secretary"
         (profile_home / "scripts").mkdir(parents=True)
         monkeypatch.setenv("HERMES_HOME", str(profile_home))
 
-        from cron.scheduler import _run_job_script
+        from cron import scheduler
+        from hermes_cli import profiles
+
+        monkeypatch.setattr(scheduler, "get_default_hermes_root", lambda: default_home)
+        monkeypatch.setattr(profiles, "_get_default_hermes_home", lambda: default_home)
 
         script = profile_home / "scripts" / "profile_only.py"
         script.write_text('print("profile scripts")\n')
 
-        success, output = _run_job_script("profile_only.py", job={"profile": "secretary"})
+        success, output = scheduler._run_job_script(
+            "profile_only.py", job={"profile": "secretary"}
+        )
         assert success is True
         assert output == "profile scripts"
+
+    def test_profile_no_agent_run_job_uses_profile_scripts_dir(
+        self, tmp_path, monkeypatch
+    ):
+        default_home = tmp_path / "default-home"
+        profile_home = default_home / "profiles" / "secretary"
+        (default_home / "scripts").mkdir(parents=True)
+        (profile_home / "scripts").mkdir(parents=True)
+
+        from hermes_cli import profiles
+
+        monkeypatch.setattr(profiles, "normalize_profile_name", lambda name: name)
+        monkeypatch.setattr(profiles, "profile_exists", lambda name: True)
+        monkeypatch.setattr(profiles, "get_profile_dir", lambda name: profile_home)
+
+        from cron import scheduler
+
+        monkeypatch.setattr(scheduler, "get_default_hermes_root", lambda: default_home)
+
+        script = profile_home / "scripts" / "profile_no_agent.py"
+        script.write_text('print("profile no-agent")\n')
+        job = {
+            "id": "profile-no-agent",
+            "name": "profile no-agent",
+            "schedule": {"kind": "interval", "seconds": 60},
+            "script": script.name,
+            "no_agent": True,
+            "profile": "secretary",
+        }
+
+        success, _, final_response, error = scheduler.run_job(job)
+
+        assert success is True
+        assert final_response == "profile no-agent"
+        assert error is None
+
+    @pytest.mark.parametrize("profile", ["../escaped", "missing"])
+    def test_invalid_or_missing_named_profile_is_blocked_without_creating_dirs(
+        self, tmp_path, monkeypatch, profile
+    ):
+        default_home = tmp_path / "default-home"
+        default_home.mkdir()
+
+        from cron import scheduler
+        from hermes_cli import profiles
+
+        monkeypatch.setattr(scheduler, "get_default_hermes_root", lambda: default_home)
+        monkeypatch.setattr(profiles, "_get_default_hermes_home", lambda: default_home)
+
+        success, output = scheduler._run_job_script(
+            "probe.py", job={"profile": profile}
+        )
+
+        assert success is False
+        assert "blocked" in output.lower()
+        assert not (tmp_path / "escaped").exists()
 
 
 class TestBuildJobPromptWithScript:

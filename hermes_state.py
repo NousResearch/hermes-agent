@@ -3961,13 +3961,10 @@ class SessionDB:
                 if s.get("end_reason") != "compression":
                     projected.append(s)
                     continue
-                # Don't project tip data onto archived roots — archived sessions
-                # should stay hidden regardless of whether their tip is archived.
-                # Also don't project when archived_only mode is active, since
-                # the tip should appear as its own entry in that view.
-                if s.get("archived") or archived_only:
-                    projected.append(s)
-                    continue
+                # Don't project tip data onto archived roots when the tip is NOT
+                # archived — archived sessions should stay hidden. But when the
+                # tip IS also archived, project the root to the tip so the user
+                # sees the conversation as a single entry in the archived view.
                 tip_id = self.get_compression_tip(s["id"])
                 if tip_id == s["id"]:
                     projected.append(s)
@@ -3976,12 +3973,9 @@ class SessionDB:
                 if not tip_row:
                     projected.append(s)
                     continue
-                # Don't project tip data onto archived roots — if the tip is
-                # archived, the tip should appear as its own entry in the
-                # archived view, not as a projection of the root.
-                if tip_row.get("archived"):
-                    # Skip the root entirely when both root and tip are archived.
-                    # The tip will appear as its own entry when we iterate to it.
+                if s.get("archived") and not tip_row.get("archived"):
+                    # Root is archived, tip is not — keep the root hidden
+                    # and let the tip appear as its own entry.
                     continue
                 # Preserve the root's started_at for stable sort order, but
                 # surface the tip's identity and activity data.

@@ -291,6 +291,11 @@ export const zhHant = defineLocale({
       uiScaleTitle: '介面縮放',
       uiScaleDesc: (percent: number) =>
         `縮放整個應用程式的文字與介面。也可使用 Cmd/Ctrl 加 +、- 或 0 調整。目前：${percent}%`,
+      sessionDensityTitle: '工作階段列表密度',
+      sessionDensityDesc: '選擇側邊欄工作階段標題下方顯示的資訊量。',
+      sessionDensityCompact: '緊湊',
+      sessionDensityComfortable: '舒適',
+      sessionDensityDetailed: '詳細',
       translucencyTitle: '視窗透明',
       translucencyDesc: '讓整個視窗透出桌面。僅支援 macOS 與 Windows。',
       backdropTitle: '聊天背景',

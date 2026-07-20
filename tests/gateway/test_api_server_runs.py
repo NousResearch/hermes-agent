@@ -282,6 +282,26 @@ class TestStartRun:
         assert adapter._run_streams == {}
         assert adapter._run_statuses == {}
 
+    @pytest.mark.asyncio
+    async def test_start_rejects_unbounded_image_detail_before_allocating_run(self, adapter):
+        app = _create_runs_app(adapter)
+        payload = {
+            "input": [{
+                "type": "input_image",
+                "image_url": {
+                    "url": "data:image/png;base64,AAAA",
+                    "detail": "operator supplied unrestricted detail text",
+                },
+            }]
+        }
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post("/v1/runs", json=payload)
+            body = await resp.json()
+        assert resp.status == 400
+        assert body["error"]["code"] == "run_image_detail_unsupported"
+        assert adapter._run_streams == {}
+        assert adapter._run_statuses == {}
+
 
 # ---------------------------------------------------------------------------
 # GET /v1/runs/{run_id} — poll run status

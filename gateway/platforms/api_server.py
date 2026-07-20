@@ -426,6 +426,11 @@ def _normalize_run_input(raw_input: Any) -> Any:
             )
         image_ref = part.get("image_url")
         url_value = image_ref.get("url") if isinstance(image_ref, dict) else None
+        detail = image_ref.get("detail") if isinstance(image_ref, dict) else None
+        if detail not in (None, "low", "high", "auto"):
+            raise ValueError(
+                "run_image_detail_unsupported:Runs image detail must be low, high, or auto"
+            )
         match = _RUN_INLINE_IMAGE_DATA_URL_RE.fullmatch(str(url_value or ""))
         if not match:
             raise ValueError(

@@ -172,6 +172,36 @@ def test_fetch_account_usage_xai_oauth_billing(monkeypatch):
     assert "On-demand: 40 of 50 remaining" in snapshot.details
 
 
+def test_fetch_account_usage_xai_oauth_closes_client_on_request_error(monkeypatch):
+    monkeypatch.setattr(
+        "tools.xai_http.resolve_xai_http_credentials",
+        lambda: {"provider": "xai-oauth", "api_key": "oauth-token"},
+        raising=False,
+    )
+    exited = False
+
+    class _FailingClient:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            nonlocal exited
+            exited = True
+            return False
+
+        def get(self, url, headers=None):
+            raise RuntimeError("request failed")
+
+    def client_factory(**kwargs):
+        assert kwargs == {"timeout": 15.0, "follow_redirects": False}
+        return _FailingClient()
+
+    monkeypatch.setattr("agent.account_usage.httpx.Client", client_factory)
+
+    assert fetch_account_usage("xai-oauth") is None
+    assert exited is True
+
+
 def test_fetch_account_usage_xai_oauth_never_uses_api_key(monkeypatch):
     monkeypatch.setattr(
         "tools.xai_http.resolve_xai_http_credentials",

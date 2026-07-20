@@ -26,7 +26,7 @@ Behavioral settings live in `$HERMES_HOME/mem0.json` (set them via `hermes memor
 | Key | Default | Description |
 |-----|---------|-------------|
 | `mode` | `platform` | `platform` (Mem0 Cloud) or `oss` (self-managed, in-process) |
-| `host` | — | Self-hosted Mem0 server URL (the Docker dashboard). When set, connects over HTTP with `X-API-Key`. Don't combine with `mode: oss` |
+| `host` | — | Mem0-compatible server URL (self-hosted or a managed compatible service such as Volcengine Mem0). When set, connects over HTTP with `Authorization: Token`. Don't combine with `mode: oss` |
 | `user_id` | `hermes-user` | User identifier on Mem0 |
 | `agent_id` | `hermes` | Agent identifier |
 | `rerank` | `false` | Rerank search results for relevance (platform mode only) |
@@ -35,6 +35,7 @@ The plugin has three connection modes:
 
 - **Platform** — Mem0's hosted cloud (`api.mem0.ai`). Set `MEM0_API_KEY`. (default)
 - **Self-hosted dashboard** — a Mem0 server you run yourself via Docker. Set `host`. See below.
+- **Managed compatible service** — a hosted Mem0-compatible API (e.g. Volcengine Mem0). Set `host` to the project's connection address.
 - **OSS** — run Mem0 in-process with your own LLM + vector store. Set `mode: oss`. See below.
 
 ## Self-Hosted Dashboard (Server) Mode
@@ -62,7 +63,9 @@ Connect the plugin to a standalone Mem0 server you run yourself — the Docker-s
    ```
 3. Start a fresh Hermes session and call `mem0_search` — it connects to your server.
 
-The plugin authenticates with `X-API-Key` and uses the server's `/search` and `/memories` routes. `api_key` is optional — omit it only for servers running with `AUTH_DISABLED`.
+The plugin authenticates with `Authorization: Token <api_key>` and uses the canonical v1 routes (`/v1/memories/`, `/v1/memories/search/`). `api_key` is optional — omit it only for servers running with auth disabled.
+
+This mode also works for **managed Mem0-compatible services** that expose the v1 API — for example Volcengine Mem0: set `host` to the project connection address from Volcengine Console → Mem0 project → 连接管理, and `api_key` to the project API key. (mem0ai 2.x's SDK uses `/v3/` routes that compatible services may not serve; this backend stays on the stable v1 contract.)
 
 > Setting `host` routes to the self-hosted server automatically. Don't set `mode: oss` — OSS takes precedence and ignores `host`.
 

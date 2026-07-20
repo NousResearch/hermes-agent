@@ -236,7 +236,7 @@ httpx = pytest.importorskip("httpx")
 
 
 class _StubServer:
-    """Records requests and serves the real self-hosted server's response shapes."""
+    """Records requests and serves the Mem0 v1 API's response shapes."""
 
     def __init__(self, rows=10):
         self.requests = []
@@ -245,15 +245,15 @@ class _StubServer:
     def handler(self, request):
         self.requests.append(request)
         path, method = request.url.path, request.method
-        if path == "/search" and method == "POST":
+        if path == "/v1/memories/search/" and method == "POST":
             return httpx.Response(200, json={"results": [{"id": "m1", "memory": "tea", "score": 0.9}]})
-        if path == "/memories" and method == "GET":
+        if path == "/v1/memories/" and method == "GET":
             top_k = int(request.url.params.get("top_k", len(self._rows)))
             return httpx.Response(200, json={"results": self._rows[:top_k]})
-        if path == "/memories" and method == "POST":
+        if path == "/v1/memories/" and method == "POST":
             return httpx.Response(200, json={"results": [{"id": "new", "memory": "stored", "event": "ADD"}]})
-        if path.startswith("/memories/") and method in ("PUT", "DELETE"):
-            if path.endswith("/missing"):  # server 404s unknown ids
+        if path.startswith("/v1/memories/") and method in ("PUT", "DELETE"):
+            if path.endswith("/missing/"):  # server 404s unknown ids
                 return httpx.Response(404, json={"detail": "Memory not found"})
             verb = "updated" if method == "PUT" else "Memory deleted successfully"
             return httpx.Response(200, json={"message": verb})
@@ -274,10 +274,10 @@ def _backend(server, api_key="adminkey", host="http://sh:8888"):
 class TestSelfHostedBackend:
     # --- constructor / auth setup (the crux of the bug) -------------------
 
-    def test_init_uses_x_api_key_not_token_auth(self):
+    def test_init_uses_token_auth(self):
         b = SelfHostedBackend("adminkey", "http://sh:8888")
-        assert b._client.headers["x-api-key"] == "adminkey"
-        assert "authorization" not in b._client.headers  # NOT the cloud 'Token' scheme
+        assert b._client.headers["authorization"] == "Token adminkey"
+        assert "x-api-key" not in b._client.headers
 
     def test_init_strips_trailing_slash(self):
         b = SelfHostedBackend("k", "http://sh:8888/")
@@ -285,7 +285,7 @@ class TestSelfHostedBackend:
 
     def test_init_omits_api_key_header_when_blank(self):
         b = SelfHostedBackend("", "http://sh:8888")  # AUTH_DISABLED server
-        assert "x-api-key" not in b._client.headers
+        assert "authorization" not in b._client.headers
 
     # --- search ----------------------------------------------------------
 
@@ -293,18 +293,18 @@ class TestSelfHostedBackend:
         s = _StubServer()
         results = _backend(s).search("drink", filters={"user_id": "u1"}, top_k=5)
         req = s.requests[-1]
-        assert (req.method, req.url.path) == ("POST", "/search")
+        assert (req.method, req.url.path) == ("POST", "/v1/memories/search/")
         import json
         body = json.loads(req.content)
         assert body == {"query": "drink", "top_k": 5, "filters": {"user_id": "u1"}}
         assert results == [{"id": "m1", "memory": "tea", "score": 0.9}]
 
-    def test_search_sends_x_api_key_header(self):
+    def test_search_sends_token_auth_header(self):
         s = _StubServer()
         _backend(s).search("q", filters={"user_id": "u1"})
         req = s.requests[-1]
-        assert req.headers["x-api-key"] == "adminkey"
-        assert "authorization" not in req.headers
+        assert req.headers["authorization"] == "Token adminkey"
+        assert "x-api-key" not in req.headers
 
     # --- add / update / delete ------------------------------------------
 
@@ -313,18 +313,27 @@ class TestSelfHostedBackend:
         msgs = [{"role": "user", "content": "likes tea"}]
         result = _backend(s).add(msgs, user_id="u1", agent_id="hermes", infer=False, metadata={"channel": "cli"})
         req = s.requests[-1]
-        assert (req.method, req.url.path) == ("POST", "/memories")
+        assert (req.method, req.url.path) == ("POST", "/v1/memories/")
         import json
         body = json.loads(req.content)
         assert body == {"messages": msgs, "user_id": "u1", "agent_id": "hermes",
-                        "infer": False, "metadata": {"channel": "cli"}}
+                        "infer": False, "async_mode": False, "metadata": {"channel": "cli"}}
         assert result["results"][0]["id"] == "new"
+
+    def test_add_infer_true_omits_async_mode(self):
+        s = _StubServer()
+        _backend(s).add([{"role": "user", "content": "x"}], user_id="u1",
+                        agent_id="hermes", infer=True)
+        import json
+        body = json.loads(s.requests[-1].content)
+        assert body["infer"] is True
+        assert "async_mode" not in body
 
     def test_update_puts_text_to_memory_id(self):
         s = _StubServer()
         result = _backend(s).update("abc", "new text")
         req = s.requests[-1]
-        assert (req.method, req.url.path) == ("PUT", "/memories/abc")
+        assert (req.method, req.url.path) == ("PUT", "/v1/memories/abc/")
         import json
         assert json.loads(req.content) == {"text": "new text"}
         assert result == {"result": "Memory updated.", "memory_id": "abc"}
@@ -333,7 +342,7 @@ class TestSelfHostedBackend:
         s = _StubServer()
         result = _backend(s).delete("abc")
         req = s.requests[-1]
-        assert (req.method, req.url.path) == ("DELETE", "/memories/abc")
+        assert (req.method, req.url.path) == ("DELETE", "/v1/memories/abc/")
         assert result == {"result": "Memory deleted.", "memory_id": "abc"}
 
     # --- error propagation (feeds the plugin's circuit breaker) ----------

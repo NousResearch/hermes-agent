@@ -67,8 +67,9 @@ describe('composer task history', () => {
     expect(screen.getByText('Live task')).toBeTruthy()
     const historyButton = screen.getByRole('button', { name: 'Task history' })
     expect(historyButton.getAttribute('aria-expanded')).toBe('false')
-    const controlledId = historyButton.getAttribute('aria-controls') ?? ''
-    expect(controlledId).toBeTruthy()
+    // Collapsed: the body is unmounted, so aria-controls must not dangle at a
+    // missing id.
+    expect(historyButton.getAttribute('aria-controls')).toBeNull()
 
     act(() => vi.advanceTimersByTime(4_000))
 
@@ -76,8 +77,12 @@ describe('composer task history', () => {
     expect(screen.getByRole('button', { name: 'Task history' })).toBeTruthy()
 
     fireEvent.click(screen.getByRole('button', { name: 'Task history' }))
+    const expandedButton = screen.getByRole('button', { name: 'Task history' })
     expect(screen.getByText('Historical task')).toBeTruthy()
-    expect(screen.getByRole('button', { name: 'Task history' }).getAttribute('aria-expanded')).toBe('true')
+    expect(expandedButton.getAttribute('aria-expanded')).toBe('true')
+    // Expanded: aria-controls now points at the mounted region.
+    const controlledId = expandedButton.getAttribute('aria-controls') ?? ''
+    expect(controlledId).toBeTruthy()
     expect(view.container.querySelector(`[id="${controlledId}"]`)).toBeTruthy()
   })
 

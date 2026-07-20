@@ -133,7 +133,7 @@ describe('useSessionTileActions task-history rollback', () => {
 
   const expectOriginalHistory = () => {
     expect(stateRef.current.messages).toEqual(originalMessages)
-    expect($todoHistoryBySession.get()[RUNTIME_ID]?.map(snapshot => snapshot.id)).toEqual(['a2', 'a1'])
+    expect($todoHistoryBySession.get()[RUNTIME_ID]?.map(snapshot => snapshot.id)).toEqual(['a2:call-a2', 'a1:call-a1'])
   }
 
   it('restores both transcript and task history when tile reload fails', async () => {

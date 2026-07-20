@@ -27,7 +27,9 @@ export function StatusSection({ accessory, children, defaultCollapsed = true, ic
     <div>
       <div className="flex items-center gap-1 pr-1">
         <button
-          aria-controls={contentId}
+          // Only reference the region while it's mounted — the body is unmounted
+          // when collapsed, so pointing aria-controls at a missing id is invalid.
+          aria-controls={collapsed ? undefined : contentId}
           aria-expanded={!collapsed}
           className="flex min-w-0 flex-1 items-center gap-1.5 px-2 py-1 text-left text-xs font-normal text-muted-foreground/92 transition-colors hover:text-foreground/90"
           onClick={() => setCollapsed(open => !open)}

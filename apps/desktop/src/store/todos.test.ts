@@ -34,8 +34,48 @@ describe('persistent task history hydration', () => {
     ])
 
     expect($todoHistoryBySession.get().s1).toEqual([
-      { id: 'turn-2', state: 'unfinished', timestamp: 20, todos: [todo('b', 'in_progress')] },
-      { id: 'turn-1', state: 'completed', timestamp: 10, todos: [todo('a', 'completed')] }
+      { id: 'turn-2:call-turn-2', state: 'unfinished', timestamp: 20, todos: [todo('b', 'in_progress')] },
+      { id: 'turn-1:call-turn-1', state: 'completed', timestamp: 10, todos: [todo('a', 'completed')] }
+    ])
+  })
+
+  it('gives a single-candidate snapshot a stable message-and-tool-call id', () => {
+    rebuildSessionTodoHistory('s1', [todoMessage('turn-1', [todo('a', 'completed')], 10)])
+
+    // Stable regardless of how many plans the turn carried — never the bare
+    // message id, which would flip once a second plan appeared.
+    expect($todoHistoryBySession.get().s1[0]?.id).toBe('turn-1:call-turn-1')
+  })
+
+  it('keeps an errored turn plan in history, coherent with a later transcript rebuild', () => {
+    setSessionTodos('s1', [todo('a', 'in_progress')], 'turn-1')
+
+    // The error handler commits the live turn (rather than dropping it).
+    finalizeSessionTodoSnapshot('s1', 'turn-1', 20)
+
+    const immediate = $todoHistoryBySession.get().s1
+    expect(immediate).toHaveLength(1)
+    expect(immediate[0]).toMatchObject({ state: 'unfinished', todos: [todo('a', 'in_progress')] })
+
+    // Resume rebuilds from the persisted transcript, which retained the todo.
+    // The same plan and state survive, so history is coherent before and after.
+    rebuildSessionTodoHistory('s1', [todoMessage('turn-1', [todo('a', 'in_progress')], 20)])
+
+    const afterResume = $todoHistoryBySession.get().s1
+    expect(afterResume).toHaveLength(1)
+    expect(afterResume[0]).toMatchObject({ state: 'unfinished', todos: [todo('a', 'in_progress')] })
+  })
+
+  it('commits a stopped turn before clearing its live list', () => {
+    setSessionTodos('s1', [todo('a', 'in_progress')], 'turn-a')
+
+    // cancelRun order: finalize the plan, then clear the live list.
+    finalizeSessionTodoSnapshot('s1', 'turn-a', 20)
+    clearSessionTodos('s1')
+
+    expect($todosBySession.get().s1).toBeUndefined()
+    expect($todoHistoryBySession.get().s1).toEqual([
+      { id: 'turn-a', state: 'unfinished', timestamp: 20, todos: [todo('a', 'in_progress')] }
     ])
   })
 
@@ -73,7 +113,7 @@ describe('persistent task history hydration', () => {
     setSessionTodos('s1', [todo('appended', 'in_progress')], 'replacement')
     finalizeSessionTodoSnapshot('s1', 'replacement', 40)
 
-    expect($todoHistoryBySession.get().s1.map(snapshot => snapshot.id)).toEqual(['replacement', 'keep'])
+    expect($todoHistoryBySession.get().s1.map(snapshot => snapshot.id)).toEqual(['replacement', 'keep:call-keep'])
   })
 
   it('supports edit + tail replacement and rewind', () => {
@@ -85,10 +125,13 @@ describe('persistent task history hydration', () => {
       todoMessage('keep', [todo('keep', 'completed')], 10),
       todoMessage('replacement', [todo('replacement', 'in_progress')], 40)
     ])
-    expect($todoHistoryBySession.get().s1.map(snapshot => snapshot.id)).toEqual(['replacement', 'keep'])
+    expect($todoHistoryBySession.get().s1.map(snapshot => snapshot.id)).toEqual([
+      'replacement:call-replacement',
+      'keep:call-keep'
+    ])
 
     rebuildSessionTodoHistory('s1', [todoMessage('keep', [todo('keep', 'completed')], 10)])
-    expect($todoHistoryBySession.get().s1.map(snapshot => snapshot.id)).toEqual(['keep'])
+    expect($todoHistoryBySession.get().s1.map(snapshot => snapshot.id)).toEqual(['keep:call-keep'])
   })
 
   it('isolates runtime sessions even when message ids and message references collide', () => {
@@ -105,7 +148,12 @@ describe('persistent task history hydration', () => {
 
     expect($todoHistoryBySession.get()['runtime-a'][0]?.todos[0]?.content).toBe('changed only in A')
     expect($todoHistoryBySession.get()['runtime-b']).toEqual([
-      { id: 'same-message-id', state: 'completed', timestamp: 10, todos: [todo('same-todo-id', 'completed')] }
+      {
+        id: 'same-message-id:call-same-message-id',
+        state: 'completed',
+        timestamp: 10,
+        todos: [todo('same-todo-id', 'completed')]
+      }
     ])
   })
 
@@ -120,9 +168,11 @@ describe('persistent task history hydration', () => {
     expect($todosBySession.get()).toEqual({})
   })
 
-  it('retires authoritative todo ownership when stop clears the visual list', () => {
+  it('does not resurrect history from a stale finalize after the live list was cleared', () => {
     setSessionTodos('s1', [todo('a', 'in_progress')], 'turn-a')
 
+    // clearSessionTodos retires ownership, so a late/duplicate finalize that
+    // races in afterwards cannot commit a second (stale) snapshot.
     clearSessionTodos('s1')
     finalizeSessionTodoSnapshot('s1', 'turn-a', 20)
 

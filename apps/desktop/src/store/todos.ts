@@ -94,7 +94,18 @@ interface LiveTodoTurn {
 
 const liveTodoTurns = new Map<string, LiveTodoTurn>()
 
-export function finalizeSessionTodoSnapshot(sid: string, id: string, timestamp = Math.floor(Date.now() / 1_000)) {
+export function finalizeSessionTodoSnapshot(
+  sid: string,
+  id: string | null | undefined,
+  timestamp = Math.floor(Date.now() / 1_000)
+) {
+  // No turn owner to match (e.g. the session never streamed a `todo` this turn):
+  // nothing authoritative to commit. Early-return so callers don't need a
+  // synthetic fallback id that could never match a real owner anyway.
+  if (!id) {
+    return
+  }
+
   const live = liveTodoTurns.get(sid)
 
   if (!live || live.ownerId !== id) {
@@ -198,14 +209,6 @@ export function clearSessionTodos(sid: string) {
   cancelScheduledClear(sid)
   liveTodoTurns.delete(sid)
   dismissSessionTodos(sid)
-}
-
-export function releaseSessionTodoTurn(sid: string, ownerId: string | null | undefined) {
-  const live = liveTodoTurns.get(sid)
-
-  if (live && live.ownerId === ownerId) {
-    liveTodoTurns.delete(sid)
-  }
 }
 
 // Drop a still-active todo list (any pending/in_progress item) — used at turn

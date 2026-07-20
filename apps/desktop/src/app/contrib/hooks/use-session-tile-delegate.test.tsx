@@ -171,7 +171,7 @@ describe('useSessionTileDelegate task-history hydration', () => {
     await waitFor(() => expect(sessionTileDelegate()).not.toBeNull())
     await act(async () => sessionTileDelegate()!.resumeTile('stored-tile-a'))
 
-    expect($todoHistoryBySession.get()['runtime-tile-a']?.[0]?.id).toBe('runtime-newer')
+    expect($todoHistoryBySession.get()['runtime-tile-a']?.[0]?.id).toBe('runtime-newer:runtime-todo')
     expect($todoHistoryBySession.get()['stored-tile-a']).toBeUndefined()
   })
 })

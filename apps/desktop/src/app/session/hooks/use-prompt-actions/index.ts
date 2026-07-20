@@ -32,7 +32,7 @@ import {
   setTurnStartedAt
 } from '@/store/session'
 import { clearSessionSubagents } from '@/store/subagents'
-import { clearSessionTodos, rebuildSessionTodoHistory } from '@/store/todos'
+import { clearSessionTodos, finalizeSessionTodoSnapshot, rebuildSessionTodoHistory } from '@/store/todos'
 
 import type {
   ClientSessionState,
@@ -540,8 +540,11 @@ export function usePromptActions({
       return
     }
 
+    let stoppedTurnStreamId: null | string = null
+
     updateSessionState(sessionId, state => {
       const streamId = state.streamId
+      stoppedTurnStreamId = streamId
       const messages = finalizeInterruptedMessages(state.messages, streamId)
 
       return {
@@ -557,6 +560,10 @@ export function usePromptActions({
       }
     })
 
+    // A stopped turn still produced its plan — commit it to history (same as a
+    // completed or errored turn) before dropping the live list, so it stays
+    // reachable and matches what a later transcript rebuild reconstructs.
+    finalizeSessionTodoSnapshot(sessionId, stoppedTurnStreamId)
     clearSessionTodos(sessionId)
     clearSessionSubagents(sessionId)
     resetSessionBackground(sessionId)

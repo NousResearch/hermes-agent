@@ -163,7 +163,11 @@ export function todoHistoryFromTranscript(messages: readonly TodoHistoryMessage[
       seen.add(signature)
       const messageId = message.id || `assistant-turn-${index}`
       snapshots.push({
-        id: candidates.length > 1 ? `${messageId}:${candidate.id}` : messageId,
+        // Always `messageId:toolCallId`. Suffixing only when a turn happened to
+        // carry multiple plans made the same snapshot's id flip between
+        // `messageId` and `messageId:toolCallId` across rebuilds (a later turn
+        // could add or collapse candidates), needlessly remounting the row.
+        id: `${messageId}:${candidate.id}`,
         state: candidate.todos.some(todo => todo.status === 'pending' || todo.status === 'in_progress')
           ? 'unfinished'
           : 'completed',

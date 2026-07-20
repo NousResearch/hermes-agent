@@ -173,7 +173,7 @@ describe('useMessageStream turn-end todo cleanup', () => {
     expect($todosBySession.get()[SID]).toBeUndefined()
   })
 
-  it('retires a finished todo turn on error without cancelling its visual linger', async () => {
+  it('commits a finished todo turn to history on error while keeping its visual linger', async () => {
     await mountStream()
     act(() =>
       handleEvent!({
@@ -184,10 +184,15 @@ describe('useMessageStream turn-end todo cleanup', () => {
     )
 
     act(() => handleEvent!({ payload: { message: 'boom' }, session_id: SID, type: 'error' }))
-    expect($todosBySession.get()[SID]).toEqual([todo('a', 'completed')])
 
+    // Finished list still lingers visually, but the plan is now in history so it
+    // stays reachable and matches what a later transcript rebuild reconstructs.
+    expect($todosBySession.get()[SID]).toEqual([todo('a', 'completed')])
+    expect($todoHistoryBySession.get()[SID]).toMatchObject([{ state: 'completed', todos: [todo('a', 'completed')] }])
+
+    // The error already consumed turn ownership, so a trailing complete is a no-op.
     complete()
 
-    expect($todoHistoryBySession.get()[SID]).toBeUndefined()
+    expect($todoHistoryBySession.get()[SID]).toMatchObject([{ state: 'completed', todos: [todo('a', 'completed')] }])
   })
 })

@@ -832,7 +832,10 @@ describe('usePromptActions reload task-history rollback', () => {
     await handle!.reloadFromMessage('a1')
 
     expect(lastState.messages).toEqual(messages)
-    expect($todoHistoryBySession.get()[RUNTIME_SESSION_ID]?.map(snapshot => snapshot.id)).toEqual(['a2', 'a1'])
+    expect($todoHistoryBySession.get()[RUNTIME_SESSION_ID]?.map(snapshot => snapshot.id)).toEqual([
+      'a2:call-a2',
+      'a1:call-a1'
+    ])
   })
 })
 

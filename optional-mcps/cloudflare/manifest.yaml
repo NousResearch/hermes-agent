@@ -3,24 +3,31 @@
 manifest_version: 1
 
 name: cloudflare
-description: Manage your Cloudflare account via the official API MCP.
+description: Full Cloudflare API access via the official remote MCP.
 source: https://developers.cloudflare.com/agents/model-context-protocol/cloudflare/servers-for-cloudflare/
 
 # Cloudflare's official API MCP server (github.com/cloudflare/mcp) is a
 # managed remote server — nothing to install locally. It fronts the entire
-# Cloudflare API (2,500+ endpoints: DNS, Workers, R2, KV, D1, Zero Trust,
-# WAF, Pages, Queues, ...) through just TWO tools, search() and execute(),
-# using the search-and-execute Code Mode pattern: the model searches a typed
-# representation of the OpenAPI spec, then writes JavaScript against the
-# Cloudflare API client, which runs in an isolated Dynamic Worker sandbox on
-# Cloudflare's side. Cloudflare's published numbers: ~1,000 tokens of tool
-# schema regardless of endpoint count, vs ~1,170,000 tokens if every
-# endpoint were a native MCP tool. That tiny fixed footprint is why this
-# entry is safe to leave enabled — it costs about as much context as one
-# ordinary tool.
+# Cloudflare API: DNS, Workers, R2, KV, D1, Zero Trust, WAF, Pages, Queues,
+# and everything else in the OpenAPI spec.
+#
+# We pin `?codemode=false` deliberately. The server's default mode fronts
+# the API through its own search()/execute() indirection ("Code Mode"),
+# where the model must query a spec index and then write JavaScript that
+# runs in a provider-side sandbox. Hermes already has progressive tool
+# disclosure (tool_search) — stacking a second, server-side search layer
+# on top of it would mean two search hops before any real call, and our
+# tool_search would only ever see 2 opaque meta-tools instead of the real
+# surface. With codemode=false the server registers each API endpoint as
+# its own tool (~3,300 as of July 2026) with a real JSON Schema derived
+# from the endpoint's path/query/body parameters. Hermes's tool_search
+# then defers the whole surface behind its bridge tools and searches the
+# FULL catalog with complete schemas — one disclosure layer, ours, with
+# total information. Calls go straight to the Cloudflare API; no sandbox
+# indirection.
 transport:
   type: http
-  url: https://mcp.cloudflare.com/mcp
+  url: https://mcp.cloudflare.com/mcp?codemode=false
 
 auth:
   type: oauth
@@ -31,9 +38,12 @@ auth:
   # scope exactly which account permissions the agent gets.
 
 # Tool selection at install time:
-# The server intentionally exposes a minimal surface (search/execute-style
-# Code Mode tools), so there is nothing to prune. Leave default_enabled
-# unset — the install-time probe pre-checks whatever the server advertises.
+# The surface is ~3,300 endpoint tools — far too many for a manual
+# checklist, and exactly the case tool_search handles automatically.
+# Leave default_enabled unset: no include filter is written and the full
+# surface stays available behind tool_search's deferral gate. Users who
+# want a hard subset can still write tools.include/exclude in config.yaml
+# by hand (e.g. exclude the server's `docs` documentation-search tool).
 
 post_install: |
   On first connection, Hermes opens a browser to authorize with Cloudflare.
@@ -41,15 +51,25 @@ post_install: |
   what you want the agent to touch. After auth, restart your Hermes session
   so the Cloudflare tools are loaded.
 
+  This entry exposes each Cloudflare API endpoint as an individual tool
+  (~3,300). Hermes's tool_search automatically defers them behind its
+  bridge tools, so your context is not flooded — the agent discovers the
+  right endpoint on demand with full schemas.
+
   Headless / CI alternative: instead of OAuth, create a Cloudflare API token
   at https://dash.cloudflare.com/profile/api-tokens and configure the server
   with a bearer header in ~/.hermes/config.yaml:
 
     mcp_servers:
       cloudflare:
-        url: https://mcp.cloudflare.com/mcp
+        url: "https://mcp.cloudflare.com/mcp?codemode=false"
         headers:
           Authorization: "Bearer ${CLOUDFLARE_API_TOKEN}"
+
+  Prefer the provider-side Code Mode surface instead (2 search/execute
+  meta-tools, ~1k-token schema, sandboxed JS composition)? Drop the
+  `?codemode=false` from the url. Not recommended together with Hermes
+  tool_search — you'd be stacking two tool-discovery layers.
 
   Cloudflare also runs product-specific MCP servers (same OAuth flow, add
   manually via `hermes mcp add <name> --url <url>` if you want a narrower

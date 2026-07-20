@@ -1304,6 +1304,94 @@ class TestBedrockContextProbe:
                 "anthropic.claude-opus-4-6", region="eu-central-1") == 1_000_000
 
 
+class TestBedrockProbeCachePersistence:
+    """Only a probe-derived window may be persisted.
+
+    ``get_bedrock_context_length()`` silently falls back to the static table
+    and returns a plain int, so its caller cannot tell a probed window from a
+    table guess. Persisting on "a region was resolved" therefore cached the
+    TABLE value whenever the probe merely failed — no credentials yet, a
+    throttle, a network blip — and because the cache is consulted first, a
+    later successful probe could never win. On a model the table under-reports
+    that pins the window permanently and silently.
+    """
+
+    # Table under-reports this one: it matches the older 'claude-opus-4'
+    # entry at 200K while the real window is 1M — the exact shape the probe
+    # feature exists to fix.
+    MODEL = "anthropic.claude-opus-4-9-20260601-v1:0"
+
+    @contextmanager
+    def _probe(self, result):
+        import agent.bedrock_adapter as bedrock_adapter
+        import agent.model_metadata as model_metadata
+
+        with patch.object(
+            bedrock_adapter, "probe_bedrock_context_length", return_value=result
+        ), patch.object(
+            model_metadata, "probe_bedrock_context_length", return_value=result,
+            create=True,
+        ), patch.object(
+            bedrock_adapter, "resolve_bedrock_region", return_value="us-east-1"
+        ):
+            yield
+
+    def test_failed_probe_is_not_cached(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        from agent.model_metadata import (
+            get_cached_context_length,
+            get_model_context_length,
+        )
+
+        with self._probe(None):
+            ctx = get_model_context_length(self.MODEL, provider="bedrock")
+
+        # Returning the table value is right; persisting it is not.
+        assert ctx == 200_000
+        assert get_cached_context_length(self.MODEL, "bedrock://") is None
+
+    def test_probe_still_wins_after_an_earlier_failure(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        from agent.model_metadata import get_model_context_length
+
+        with self._probe(None):
+            get_model_context_length(self.MODEL, provider="bedrock")
+        with self._probe(1_000_000):
+            ctx = get_model_context_length(self.MODEL, provider="bedrock")
+
+        assert ctx == 1_000_000, "a transient probe failure capped the window forever"
+
+    def test_successful_probe_is_cached_once(self, tmp_path, monkeypatch):
+        """The caching benefit must survive the fix — one probe, not one per turn."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        import agent.bedrock_adapter as bedrock_adapter
+        import agent.model_metadata as model_metadata
+        from agent.model_metadata import get_model_context_length
+
+        calls = []
+
+        def _counting_probe(model_id, region):
+            calls.append(model_id)
+            return 1_000_000
+
+        with patch.object(
+            bedrock_adapter, "probe_bedrock_context_length", side_effect=_counting_probe
+        ), patch.object(
+            model_metadata, "probe_bedrock_context_length",
+            side_effect=_counting_probe, create=True,
+        ), patch.object(
+            bedrock_adapter, "resolve_bedrock_region", return_value="us-east-1"
+        ):
+            results = [
+                get_model_context_length(self.MODEL, provider="bedrock")
+                for _ in range(4)
+            ]
+
+        assert results == [1_000_000] * 4
+        assert len(calls) == 1
+
+
+
 # ---------------------------------------------------------------------------
 # Tool-calling capability detection
 # ---------------------------------------------------------------------------

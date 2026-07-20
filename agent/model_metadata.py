@@ -2293,6 +2293,7 @@ def get_model_context_length(
         try:
             from agent.bedrock_adapter import (
                 get_bedrock_context_length,
+                probe_bedrock_context_length,
                 resolve_bedrock_region,
             )
         except ImportError:
@@ -2320,13 +2321,27 @@ def get_model_context_length(
                     region = resolve_bedrock_region()
                 except Exception:
                     region = ""
-            ctx = get_bedrock_context_length(model, region=region, probe=bool(region))
-            if ctx and region:
-                # Only persist probe-derived values (region present); a pure
-                # table fallback shouldn't poison the cache against a later
-                # successful probe.
-                save_context_length(model, cache_key_url, ctx)
-            return ctx
+            # Probe directly rather than through get_bedrock_context_length():
+            # that helper silently falls back to the static table and returns a
+            # plain int, so a caller can't tell a probed window from a table
+            # guess. Persisting on `region` alone therefore cached the TABLE
+            # value whenever the probe merely failed (no creds yet, throttle,
+            # network blip) — and since the cache is consulted first, the probe
+            # could never win afterwards. On a model the table under-reports
+            # (a new opus-4-9 matching the older opus-4 entry) that pins the
+            # window at 200K against a real 1M, permanently and silently.
+            probed = None
+            if region:
+                try:
+                    probed = probe_bedrock_context_length(model, region)
+                except Exception:
+                    probed = None
+            if probed:
+                save_context_length(model, cache_key_url, probed)
+                return probed
+            # Table fallback: correct to return, never durable — a later
+            # successful probe has to be able to beat it.
+            return get_bedrock_context_length(model, probe=False)
 
     if provider == "novita" or (base_url and base_url_host_matches(base_url, "api.novita.ai")):
         ctx = _resolve_endpoint_context_length(model, base_url or "https://api.novita.ai/openai/v1", api_key=api_key)

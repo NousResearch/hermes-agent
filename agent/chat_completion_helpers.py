@@ -381,7 +381,6 @@ def _bedrock_reasoning_stale_floor(model_id: object) -> "float | None":
 # older attempt cannot mark the current attempt as terminal. Exception types,
 # error strings and traceback module names are never used as the source of
 # this fact.
-PROVIDER_PHASE_NOT_STARTED = "not_started"
 PROVIDER_PHASE_IN_FLIGHT = "in_flight"
 PROVIDER_PHASE_TERMINAL_RECEIVED = "terminal_received"
 

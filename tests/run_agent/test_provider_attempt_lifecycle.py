@@ -65,9 +65,9 @@ def _agent(fake):
     return agent
 
 
-def _response(text="ok"):
+def _response(text="ok", finish_reason="stop"):
     msg = SimpleNamespace(content=text, tool_calls=None)
-    choice = SimpleNamespace(message=msg, finish_reason="stop")
+    choice = SimpleNamespace(message=msg, finish_reason=finish_reason)
     return SimpleNamespace(choices=[choice], model="test/model", usage=None)
 
 
@@ -339,3 +339,155 @@ def test_aux_anthropic_create_marks_only_detached_token():
     # The callback marked a DETACHED token; the loop's token is untouched.
     assert old_token.phase == cch.PROVIDER_PHASE_IN_FLIGHT
     assert agent._provider_attempt is old_token
+
+
+# ── merge-order independence: continuation / MoA / visible-text ─────────────
+
+def test_legal_length_continuation_uses_fresh_attempt_token():
+    """A legal finish_reason='length' continuation must start a NEW attempt
+    token rather than being choked by the previous attempt's terminal.
+
+    Sequence: response 1 is truncated (finish_reason='length'); response 2
+    completes it (finish_reason='stop'). Assert the full token contract:
+    the first attempt's token IS terminal (its response legitimately
+    completed), the continuation gets a DIFFERENT fresh token that did not
+    inherit terminal state, mutating the old token afterwards cannot
+    contaminate the new one, and the whole flow is continuation — not
+    retry, not fallback, not local_post_response_error.
+    """
+    tokens = []
+
+    real_new = cch._new_provider_attempt
+    def spy_new(agent):
+        tok = real_new(agent)
+        tokens.append(tok)
+        return tok
+
+    replies = [
+        _response("partial", finish_reason="length"),
+        _response("finished", finish_reason="stop"),
+    ]
+    create = MagicMock(side_effect=list(replies))
+
+    agent = _agent(MagicMock())
+    agent._disable_streaming = True
+    agent.client = MagicMock()
+    agent.client.chat.completions.create = create
+
+    with ExitStack() as st:
+        st.enter_context(patch("run_agent.jittered_backoff", return_value=0))
+        st.enter_context(patch("agent.conversation_loop.jittered_backoff", return_value=0))
+        st.enter_context(patch("agent.conversation_loop.time.sleep"))
+        st.enter_context(patch.object(agent, "_save_trajectory"))
+        st.enter_context(patch.object(agent, "_persist_session"))
+        st.enter_context(patch.object(agent, "_cleanup_task_resources"))
+        st.enter_context(patch.object(agent, "_create_request_openai_client", lambda *a, **k: agent.client))
+        st.enter_context(patch.object(cch, "_new_provider_attempt", spy_new))
+        result = agent.run_conversation("continuation probe")
+
+    assert create.call_count == 2
+    assert len(tokens) == 2
+    # First attempt legitimately reached terminal (its response DID return).
+    assert tokens[0].terminal_received
+    # The continuation is a DIFFERENT token object, not the same one reused.
+    assert tokens[1] is not tokens[0]
+    # The second token did not inherit the first's terminal state — it went
+    # through its own in_flight -> terminal lifecycle.
+    assert tokens[1].terminal_received
+    # Late writes to the OLD token cannot pollute the continuation's token:
+    # they are separate objects with separate phase state.
+    tokens[0].mark("in_flight")
+    assert tokens[1].terminal_received
+    # Legal continuation completed: no local_post_response_error anywhere.
+    assert result["completed"] is True
+    assert result["failed"] is False
+    assert result.get("turn_exit_reason") != LOCAL_REASON
+    # Baseline concatenation semantics: truncated fragment is prepended to
+    # the continuation text.
+    assert result["final_response"] == "partialfinished"
+
+
+def test_moa_post_terminal_local_failure_does_not_rerun_facade():
+    """MoA: once the facade's create() returns (all underlying fan-out calls
+    completed), a later Hermes-local failure must NOT re-execute the facade.
+
+    The failure is injected strictly AFTER the provider work — during local
+    usage accounting (consume_reference_usage) — never as a subcall/network
+    failure. Assert: the facade ran exactly once, no fallback, no
+    continuation, turn_exit_reason == local_post_response_error,
+    failed == True.
+    """
+    facade_create = MagicMock(return_value=_response("moa answer"))
+    agent = _agent(MagicMock())
+    agent.provider = "moa"
+    agent._disable_streaming = True
+    agent.client = MagicMock()
+    agent.client.chat.completions.create = facade_create
+
+    with ExitStack() as st:
+        st.enter_context(patch("run_agent.jittered_backoff", return_value=0))
+        st.enter_context(patch.object(agent, "_save_trajectory"))
+        st.enter_context(patch.object(agent, "_persist_session"))
+        st.enter_context(patch.object(agent, "_cleanup_task_resources"))
+        # MoA aggregation into the final assistant message fails AFTER the
+        # facade returned — strictly post-terminal Hermes-local processing
+        # (this is the failure that drives the turn outcome).
+        st.enter_context(patch.object(
+            agent, "_build_assistant_message",
+            side_effect=RuntimeError("moa local aggregation failure"),
+        ))
+        # The MoA usage-accounting call would also throw if reached — it is
+        # patched here to PROVE the facade is not invoked a second time to
+        # recover from post-terminal local work.
+        st.enter_context(patch.object(
+            agent.client,
+            "consume_reference_usage",
+            side_effect=RuntimeError("moa local usage accounting failure"),
+            create=True,
+        ))
+        result = agent.run_conversation("moa probe")
+
+    assert facade_create.call_count == 1
+    assert result["failed"] is True
+    assert result["completed"] is False
+    assert result["turn_exit_reason"] == LOCAL_REASON
+
+
+def test_post_terminal_local_error_after_visible_partial_text():
+    """Partial text already shown to the user + terminal received + later
+    local failure: the shown text must be preserved, a clear local-failure
+    message appended, and NO retry / fallback / continuation / length stub.
+    """
+    deltas = []
+    fake = _FakeStreamClient(lambda _n: iter([
+        _chunk("visible-part"),
+        _chunk("-tail", finish="stop", usage=SimpleNamespace(
+            prompt_tokens=1, completion_tokens=1, total_tokens=2)),
+    ]))
+    agent = _agent(fake)
+    agent.stream_delta_callback = lambda text: deltas.append(text)
+
+    with ExitStack() as st:
+        st.enter_context(patch("run_agent.jittered_backoff", return_value=0))
+        st.enter_context(patch.object(agent, "_save_trajectory"))
+        st.enter_context(patch.object(agent, "_persist_session"))
+        st.enter_context(patch.object(agent, "_cleanup_task_resources"))
+        st.enter_context(patch.object(agent, "_create_request_openai_client", lambda *a, **k: fake))
+        # Local failure strictly after the terminal frame: final assistant
+        # message materialization throws.
+        st.enter_context(patch.object(
+            agent, "_build_assistant_message",
+            side_effect=RuntimeError("post-terminal materialization failure"),
+        ))
+        result = agent.run_conversation("visible partial probe")
+
+    # One wire call only — no retry, no continuation, no length stub.
+    assert fake.calls == 1
+    # The text the user already saw is intact.
+    assert "".join(deltas) == "visible-part-tail"
+    # The turn surfaces an explicit local-processing failure message.
+    assert result["failed"] is True
+    assert result["completed"] is False
+    assert result["turn_exit_reason"] == LOCAL_REASON
+    assert result["final_response"]
+    assert "error" in result["final_response"].lower()

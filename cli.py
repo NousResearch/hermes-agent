@@ -13163,16 +13163,15 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         from prompt_toolkit.keys import Keys as _IgnoreKeys
 
         # Backspace fix for Windows Terminal + PowerShell-hosted prompt_toolkit.
-        # In that setup the DEL byte (0x7f) decodes to Keys.ControlH but the
-        # default ControlH->backward-delete-char binding does not fire, so
-        # Backspace appears dead in the Hermes CLI prompt while working
-        # everywhere else. Binding c-h explicitly on Hermes' own KeyBindings
-        # (which take precedence over prompt_toolkit defaults) restores it.
-        # Guarded to only delete when there is an editable buffer with text
-        # before the cursor, so it never swallows a real Ctrl+H chord in a
-        # read-only/empty context. See keystroke_diagnostic.py output showing
-        # c-h data='\x7f'.
-        @kb.add('c-h')
+        # prompt_toolkit's basic_bindings registers a no-op stub @handle("c-h")
+        # (line 12) BEFORE the real backward-delete-char handler (line 117).
+        # Since Keys.Backspace == Keys.ControlH, "backspace" and "c-h" are the
+        # same key — the stub swallows the keystroke before the delete handler
+        # can fire. Hermes' own KeyBindings take precedence over basic_bindings
+        # in the merge order, so this explicit binding (with eager=True to
+        # guarantee it fires first) restores backspace. Confirmed via
+        # keystroke_diagnostic.py: c-h data='\x7f'.
+        @kb.add('c-h', eager=True)
         def handle_backspace_control_h(event):
             buf = event.current_buffer
             if buf is None:

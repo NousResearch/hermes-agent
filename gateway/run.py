@@ -14698,6 +14698,25 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             pr = self._provider_routing
             max_iterations = _current_max_iterations()
+            # APPLY_USER_TIER_PHASE1 background path (#20744)
+            try:
+                from gateway.user_tier import apply_user_tier_to_agent_kwargs
+                _plat_cfg_bg = None
+                try:
+                    _plat_cfg_bg = (getattr(self, "config", None).platforms or {}).get(
+                        source.platform
+                    ) if getattr(self, "config", None) else None
+                except Exception:
+                    _plat_cfg_bg = None
+                enabled_toolsets, max_iterations, _tier_bg = apply_user_tier_to_agent_kwargs(
+                    source=source,
+                    enabled_toolsets=enabled_toolsets,
+                    max_iterations=max_iterations,
+                    user_config=user_config,
+                    platform_config=_plat_cfg_bg,
+                )
+            except Exception as _tier_bg_exc:
+                logger.debug("user_tier background resolve skipped: %s", _tier_bg_exc)
             reasoning_config = self._resolve_session_reasoning_config(
                 source=source, model=model
             )
@@ -18885,6 +18904,28 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         enabled_toolsets = sorted(_get_platform_tools(user_config, platform_key))
         agent_cfg_local = user_config.get("agent") or {}
         disabled_toolsets = agent_cfg_local.get("disabled_toolsets") or None
+        # APPLY_USER_TIER_PHASE1: clamp non-admin tool schema + optional max_iterations (#20744)
+        try:
+            from gateway.user_tier import apply_user_tier_to_agent_kwargs
+            _plat_cfg = None
+            try:
+                _plat_cfg = (getattr(self, "config", None).platforms or {}).get(
+                    source.platform
+                ) if getattr(self, "config", None) else None
+            except Exception:
+                _plat_cfg = None
+            enabled_toolsets, _tier_max_iters, _tier_dec = apply_user_tier_to_agent_kwargs(
+                source=source,
+                enabled_toolsets=enabled_toolsets,
+                max_iterations=_current_max_iterations(),
+                user_config=user_config,
+                platform_config=_plat_cfg,
+            )
+            # Stash for later max_iterations assignment in this function
+            user_config.setdefault("_hermes_user_tier_max_iterations", _tier_dec.max_iterations)
+            user_config.setdefault("_hermes_user_tier_is_admin", _tier_dec.is_admin)
+        except Exception as _tier_exc:
+            logger.debug("user_tier resolve skipped: %s", _tier_exc)
 
         display_config = user_config.get("display", {})
         if not isinstance(display_config, dict):
@@ -19890,7 +19931,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if cfg_channel_prompt:
                 combined_ephemeral = (combined_ephemeral + "\n\n" + cfg_channel_prompt).strip()
 
-            max_iterations = _current_max_iterations()
+            max_iterations = user_config.get("_hermes_user_tier_max_iterations") or _current_max_iterations()
+            try:
+                max_iterations = int(max_iterations)
+            except (TypeError, ValueError):
+                max_iterations = _current_max_iterations()
 
             try:
                 model, runtime_kwargs = self._resolve_session_agent_runtime(

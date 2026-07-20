@@ -1405,6 +1405,14 @@ def load_gateway_config() -> GatewayConfig:
                     bridged["group_allow_admin_from"] = platform_cfg["group_allow_admin_from"]
                 if "group_user_allowed_commands" in platform_cfg:
                     bridged["group_user_allowed_commands"] = platform_cfg["group_user_allowed_commands"]
+                if "user_toolsets" in platform_cfg:
+                    bridged["user_toolsets"] = platform_cfg["user_toolsets"]
+                if "user_tools" in platform_cfg:
+                    bridged["user_tools"] = platform_cfg["user_tools"]
+                if "user_max_iterations" in platform_cfg:
+                    bridged["user_max_iterations"] = platform_cfg["user_max_iterations"]
+                if "user_limits" in platform_cfg:
+                    bridged["user_limits"] = platform_cfg["user_limits"]
                 if plat in {Platform.DISCORD, Platform.SLACK} and "channel_skill_bindings" in platform_cfg:
                     bridged["channel_skill_bindings"] = platform_cfg["channel_skill_bindings"]
                 if "channel_prompts" in platform_cfg:

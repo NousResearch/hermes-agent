@@ -325,6 +325,44 @@ class TestRunEvents:
                 assert "run.completed" in body
                 assert "Hello!" in body
 
+    @pytest.mark.asyncio
+    async def test_events_stream_uses_structured_reasoning_callback(self, adapter):
+        """Run events should expose model reasoning, not assistant prose previews."""
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                mock_agent = MagicMock()
+
+                def _run_conversation(**_kwargs):
+                    callbacks = mock_create.call_args.kwargs
+                    callbacks["reasoning_callback"]("structured ")
+                    callbacks["reasoning_callback"]("reasoning")
+                    callbacks["tool_progress_callback"](
+                        "reasoning.available",
+                        tool_name="_thinking",
+                        preview="legacy assistant prose",
+                    )
+                    return {"final_response": "done"}
+
+                mock_agent.run_conversation.side_effect = _run_conversation
+                mock_agent.session_prompt_tokens = 0
+                mock_agent.session_completion_tokens = 0
+                mock_agent.session_total_tokens = 0
+                mock_create.return_value = mock_agent
+
+                resp = await cli.post("/v1/runs", json={"input": "hello"})
+                assert resp.status == 202
+                run_id = (await resp.json())["run_id"]
+
+                events_resp = await cli.get(f"/v1/runs/{run_id}/events")
+                assert events_resp.status == 200
+                body = await events_resp.text()
+
+                assert "reasoning.available" in body
+                assert '"delta": "reasoning"' in body
+                assert '"text": "structured reasoning"' in body
+                assert "legacy assistant prose" not in body
+
 
 
     @pytest.mark.asyncio

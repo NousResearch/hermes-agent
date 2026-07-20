@@ -132,15 +132,18 @@ async def test_run_agent_binds_api_session_context_for_tool_env(adapter, monkeyp
             return {"final_response": "ok"}
 
     def fake_create_agent(**kwargs):
+        observed["reasoning_callback"] = kwargs["reasoning_callback"]
         return FakeAgent(kwargs["session_id"])
 
     monkeypatch.setattr(adapter, "_create_agent", fake_create_agent)
+    reasoning_callback = lambda delta: None
 
     result, usage = await adapter._run_agent(
         user_message="hello",
         conversation_history=[],
         session_id="request-session",
         gateway_session_key="request-key",
+        reasoning_callback=reasoning_callback,
     )
 
     assert result["session_id"] == "request-session"
@@ -151,6 +154,7 @@ async def test_run_agent_binds_api_session_context_for_tool_env(adapter, monkeyp
         "context_platform": "api_server",
         "context_session_key": "request-key",
         "child_session_id": "request-session",
+        "reasoning_callback": reasoning_callback,
     }
 
 
@@ -1834,7 +1838,13 @@ async def test_session_chat_stream_emits_lifecycle_events_and_keepalive_safe_sha
     async def fake_run(**kwargs):
         kwargs["stream_delta_callback"]("Hello")
         kwargs["stream_delta_callback"](" world")
-        kwargs["tool_progress_callback"]("reasoning.available", tool_name="_thinking", preview="thinking")
+        kwargs["reasoning_callback"]("thinking")
+        # Legacy prose-derived progress must not be projected as reasoning.
+        kwargs["tool_progress_callback"](
+            "reasoning.available",
+            tool_name="_thinking",
+            preview="Hello world",
+        )
         return {"final_response": "Hello world", "session_id": session_id}, {"total_tokens": 2}
 
     app = _create_session_app(adapter)
@@ -1850,6 +1860,8 @@ async def test_session_chat_stream_emits_lifecycle_events_and_keepalive_safe_sha
     assert "event: assistant.delta" in body
     assert "Hello world" in body
     assert "event: tool.progress" in body
+    assert '"delta": "thinking"' in body
+    assert '"delta": "Hello world"' not in body
     assert "event: assistant.completed" in body
     assert "event: run.completed" in body
     assert "event: done" in body

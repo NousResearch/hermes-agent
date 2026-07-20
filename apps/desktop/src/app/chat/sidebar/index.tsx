@@ -25,6 +25,7 @@ import { TipKeybindLabel } from '@/components/ui/tooltip'
 import { useContributions } from '@/contrib/react/use-contributions'
 import { searchSessions, type SessionInfo, type SessionSearchResult } from '@/hermes'
 import { useI18n } from '@/i18n'
+import { useSidebarSwipe } from './use-sidebar-swipe'
 import { comboTokens } from '@/lib/keybinds/combo'
 import { profileColor } from '@/lib/profile-color'
 import { sessionMatchesSearch } from '@/lib/session-search'
@@ -340,6 +341,10 @@ export function ChatSidebar({
   const [messagingVisible, setMessagingVisible] = useState<Record<string, number>>({})
   const searchInputRef = useRef<HTMLInputElement>(null)
   const trimmedQuery = searchQuery.trim()
+
+  // Two-finger horizontal swipe on the sidebar → cycle profiles.
+  const sidebarRef = useRef<HTMLDivElement>(null)
+  useSidebarSwipe(sidebarRef)
 
   // Hotkey (session.focusSearch) → focus the field once it's mounted.
   useEffect(() => {
@@ -1095,6 +1100,7 @@ export function ChatSidebar({
       collapsible="none"
     >
       <SidebarContent className="gap-0 overflow-hidden bg-transparent px-2.5">
+        <div ref={sidebarRef} className="flex min-h-0 flex-1 flex-col">
         <SidebarGroup className="shrink-0 p-0 pb-2 pt-[calc(var(--titlebar-height)+0.375rem)]">
           <SidebarGroupContent>
             <SidebarMenu className="gap-px">
@@ -1480,6 +1486,7 @@ export function ChatSidebar({
 
         <div className="shrink-0 px-0.5 pb-1 pt-0.5">
           <ProfileRail />
+        </div>
         </div>
       </SidebarContent>
       <ProjectDialog />

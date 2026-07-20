@@ -589,6 +589,64 @@ def _resolve_active_context_length() -> int:
         # CLI startup.  See issue #46620.
         raw_ctx = model_cfg.get("context_length")
         config_ctx = raw_ctx if isinstance(raw_ctx, int) and raw_ctx > 0 else None
+
+        # Honor per-model `custom_providers[].models.<id>.context_length` too.
+        # Every other consumer of that override (AIAgent startup, /model switch,
+        # resolve_display_context_length, /info) already does — see #15779 — but
+        # this gate did not, so a user who pinned e.g. 262144 for an LM Studio
+        # model still gated tool-search on the generic registry default. That
+        # under-reports the window and flips tool-search on earlier than the
+        # user's real context warrants.
+        #
+        # The lookup must stay strictly config-only, on two axes:
+        #
+        #  * We must NOT pass base_url into get_model_context_length below to
+        #    obtain the same value, because that enables its endpoint probes —
+        #    on an unreachable endpoint (a local server that happens to be off)
+        #    those cost ~25s at every CLI startup, exactly the regression
+        #    #46620 guarded against.
+        #  * We must NOT resolve runtime *credentials* to learn the base URL.
+        #    resolve_runtime_provider() is not I/O-free for every provider: its
+        #    Vertex branch calls get_vertex_config(), which mints/refreshes an
+        #    OAuth token (agent/vertex_adapter._refresh_credentials) whenever the
+        #    cached credential is missing or within 5 minutes of expiry. That
+        #    would put a token refresh on the tool-search assembly path.
+        #
+        # _get_named_custom_provider() is the config-only half of that
+        # resolution: it reads the loaded config (plus key_env lookups) and
+        # never performs network I/O. tools/cronjob_tools.py uses it the same
+        # way. An explicit model.base_url wins, matching the "bare custom"
+        # trust path used elsewhere.
+        if config_ctx is None:
+            try:
+                from hermes_cli.config import get_custom_provider_context_length
+
+                base_url = str(model_cfg.get("base_url") or "").strip()
+                if not base_url:
+                    provider_name = str(model_cfg.get("provider") or "").strip()
+                    if provider_name:
+                        from hermes_cli.runtime_provider import (
+                            _get_named_custom_provider,
+                        )
+
+                        entry = _get_named_custom_provider(provider_name)
+                        base_url = str((entry or {}).get("base_url") or "").strip()
+
+                if base_url:
+                    cp_ctx = get_custom_provider_context_length(
+                        model=model_id,
+                        base_url=base_url,
+                        custom_providers=cfg.get("custom_providers"),
+                    )
+                    if isinstance(cp_ctx, int) and cp_ctx > 0:
+                        return cp_ctx
+            except Exception:
+                logger.debug(
+                    "custom_providers context-length lookup failed for the "
+                    "tool-search gate; falling back to registry resolution",
+                    exc_info=True,
+                )
+
         return int(get_model_context_length(model_id, config_context_length=config_ctx) or 0)
     except Exception as e:
         logger.debug("Could not resolve active context length: %s", e)

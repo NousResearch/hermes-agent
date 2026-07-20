@@ -14,7 +14,10 @@ Hermes has three hook systems that run custom code at key lifecycle points:
 | **[Plugin hooks](#plugin-hooks)** | `ctx.register_hook()` in a [plugin](/user-guide/features/plugins) | CLI + Gateway | Tool interception, metrics, guardrails |
 | **[Shell hooks](#shell-hooks)** | `hooks:` block in `~/.hermes/config.yaml` pointing at shell scripts | CLI + Gateway | Drop-in scripts for blocking, auto-formatting, context injection |
 
-All three systems are non-blocking — errors in any hook are caught and logged, never crashing the agent.
+Gateway hooks, shell hooks, and ordinary plugin observer hooks are
+best-effort: errors are caught and logged. The exceptional
+`kanban_task_pre_claim` plugin hook is a synchronous policy gate; its errors
+fail the candidate closed without crashing the dispatcher.
 
 ## Gateway Event Hooks
 
@@ -370,8 +373,11 @@ def register(ctx):
 **General rules for all hooks:**
 
 - Callbacks receive **keyword arguments**. Always accept `**kwargs` for forward compatibility — new parameters may be added in future versions without breaking your plugin.
-- If a callback **crashes**, it's logged and skipped. Other hooks and the agent continue normally. A misbehaving plugin can never break the agent.
-- Two hooks' return values affect behavior: [`pre_tool_call`](#pre_tool_call) can **block** the tool, and [`pre_llm_call`](#pre_llm_call) can **inject context** into the LLM call. All other hooks are fire-and-forget observers.
+- Observer callback crashes are logged and skipped. The synchronous
+  [`kanban_task_pre_claim`](#kanban_task_pre_claim) gate instead surfaces
+  callback errors to the dispatcher so it can fail the candidate closed.
+- Several policy/transform hooks have documented return contracts. Hooks whose
+  return value is listed as `ignored` remain fire-and-forget observers.
 - Observer callbacks receive `telemetry_schema_version` automatically. When present, `turn_id`, `api_request_id`, `task_id`, `session_id`, and `api_call_count` are separate correlation fields. Treat `api_request_id` as an opaque identifier; do not parse its string format.
 
 ### Quick reference
@@ -395,6 +401,45 @@ def register(ctx):
 | [`transform_tool_result`](#transform_tool_result) | After any tool returns, before the result is handed back to the model | `str` to replace the result, `None` to leave unchanged |
 | [`transform_terminal_output`](#transform_terminal_output) | Inside the `terminal` tool, before truncation/ANSI-strip/redact | `str` to replace the raw output, `None` to leave unchanged |
 | [`transform_llm_output`](#transform_llm_output) | After the tool-calling loop completes, before the final response is delivered | `str` to replace the response text, `None`/empty to leave unchanged |
+| [`kanban_task_pre_claim`](#kanban_task_pre_claim) | Dispatcher has an eligible ready/review candidate, before claim or workspace resolution | `allow`, `defer`, `block`, or `complete` decision dict |
+
+---
+
+### `kanban_task_pre_claim`
+
+This is the exceptional behavior-changing, synchronous plugin hook. It runs
+only in the **dispatcher process**, under the board-scoped dispatch lock,
+after a ready or review task passes normal eligibility checks and before the
+task is claimed, its workspace is resolved, or a worker is spawned.
+
+```python
+def gate(task_id, board, assignee, source_status, task, dry_run, **kwargs):
+    if maintenance_window():
+        return {"action": "defer", "reason": "maintenance window"}
+    return {"action": "allow"}
+
+def register(ctx):
+    ctx.register_hook("kanban_task_pre_claim", gate)
+```
+
+Callbacks receive a plain dataclass snapshot in `task`; no SQLite connection
+is exposed. Return exactly one of these strict shapes (extra fields are
+rejected):
+
+```python
+{"action": "allow"}
+{"action": "defer"}  # optional nonblank "reason"
+{"action": "block", "reason": "...", "kind": "needs_input"}
+{"action": "complete", "summary": "...", "evidence": {"check": "..."}}
+```
+
+Block `kind` must be `dependency`, `needs_input`, `capability`, or `transient`.
+Malformed, conflicting, or raising callbacks fail closed and feed the normal
+kanban consecutive-failure breaker. Dry runs invoke the hook with
+`dry_run=True` and report the decision without mutating task/run/event state or
+resolving a workspace. Keep callbacks fast: synchronous execution deliberately
+holds the dispatch lock so two dispatcher processes cannot race the policy and
+claim.
 
 ---
 
@@ -510,7 +555,8 @@ def register(ctx):
 
 ### `pre_llm_call`
 
-Fires **once per turn**, before the tool-calling loop begins. This is the **only hook whose return value is used** — it can inject context into the current turn's user message.
+Fires **once per turn**, before the tool-calling loop begins. This is the hook
+whose return value injects context into the current turn's user message.
 
 **Callback signature:**
 

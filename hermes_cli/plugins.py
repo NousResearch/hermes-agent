@@ -212,6 +212,9 @@ VALID_HOOKS: Set[str] = {
     "kanban_task_claimed",
     "kanban_task_completed",
     "kanban_task_blocked",
+    # Exceptional synchronous dispatcher policy hook. Unlike lifecycle
+    # observers, callback failures must propagate so dispatch fails closed.
+    "kanban_task_pre_claim",
 }
 
 ENTRY_POINTS_GROUP = "hermes_agent.plugins"
@@ -1926,6 +1929,17 @@ class PluginManager:
                 )
         return results
 
+    def invoke_hook_strict(self, hook_name: str, **kwargs: Any) -> List[Any]:
+        """Call callbacks without swallowing exceptions.
+
+        Reserved for behavior-changing gates whose caller must fail closed.
+        Observer hooks continue to use :meth:`invoke_hook`.
+        """
+        results: List[Any] = []
+        for callback in self._hooks.get(hook_name, []):
+            results.append(callback(**kwargs))
+        return results
+
     def has_hook(self, hook_name: str) -> bool:
         """Return True when at least one callback is registered for a hook."""
         return bool(self._hooks.get(hook_name))
@@ -2052,6 +2066,11 @@ def invoke_hook(hook_name: str, **kwargs: Any) -> List[Any]:
     Returns a list of non-``None`` return values from plugin callbacks.
     """
     return get_plugin_manager().invoke_hook(hook_name, **kwargs)
+
+
+def invoke_hook_strict(hook_name: str, **kwargs: Any) -> List[Any]:
+    """Invoke a behavior-changing hook and surface callback exceptions."""
+    return get_plugin_manager().invoke_hook_strict(hook_name, **kwargs)
 
 
 def invoke_middleware(kind: str, **kwargs: Any) -> List[Any]:

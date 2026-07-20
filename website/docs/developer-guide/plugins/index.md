@@ -610,16 +610,46 @@ Each hook is documented in full on the **[Event Hooks reference](/user-guide/fea
 | `kanban_task_claimed` | A kanban task is claimed (dispatcher process, before the worker spawns) | `task_id: str, board: str \| None, assignee: str \| None, run_id: int \| None, profile_name: str` | ignored |
 | `kanban_task_completed` | A kanban task completes (worker process) | `task_id, board, assignee, run_id, profile_name, summary: str \| None` | ignored |
 | `kanban_task_blocked` | A kanban task is blocked (worker process) | `task_id, board, assignee, run_id, profile_name, reason: str \| None` | ignored |
+| `kanban_task_pre_claim` | Eligible ready/review candidate, under the board dispatch lock and before claim/workspace/spawn (dispatcher process only) | `task_id, board, assignee, source_status, task: dict, dry_run: bool` | strict `allow` / `defer` / `block` / `complete` decision |
 
-Most hooks are fire-and-forget observers — their return values are ignored. The exception is `pre_llm_call`, which can inject context into the conversation.
+Most hooks are fire-and-forget observers — their return values are ignored and
+callback errors are logged and skipped. Behavior-changing hooks have explicit
+contracts; `pre_llm_call` can inject context, while
+`kanban_task_pre_claim` is the exceptional synchronous dispatcher policy gate.
 
-All callbacks should accept `**kwargs` for forward compatibility. If a hook callback crashes, it's logged and skipped. Other hooks and the agent continue normally.
+All callbacks should accept `**kwargs` for forward compatibility. Observer
+callback failures do not affect the agent. A `kanban_task_pre_claim` failure is
+instead surfaced to the dispatcher, recorded as `kanban_pre_claim_error`, and
+fails that candidate closed through the normal kanban failure breaker.
 
 The kanban lifecycle hooks fire **after** the board DB change commits, so a callback always sees durable state and can never hold the SQLite write lock. Because kanban workers run as separate `hermes -p <profile> chat -q` subprocesses, `kanban_task_claimed` fires in the **dispatcher** process while `kanban_task_completed` / `kanban_task_blocked` fire in the **worker** process — hook in the dispatcher to observe every transition centrally, or in the worker for per-task in-session context.
 
+`kanban_task_pre_claim` is not a lifecycle observer. It runs synchronously in
+the dispatcher under the board-scoped dispatch lock, after ordinary candidate
+guards but before claim and workspace resolution. It receives a plain
+`dataclasses.asdict(Task)` snapshot and never a SQLite connection. Return only
+one of these exact schemas (unknown fields are errors):
+
+```python
+{"action": "allow"}
+{"action": "defer"}  # may include a nonblank reason
+{"action": "block", "reason": "...", "kind": "capability"}
+{"action": "complete", "summary": "...", "evidence": {"verified": True}}
+```
+
+`block.kind` must be one of the canonical kanban block kinds. Multiple
+non-allow callbacks must return exactly the same normalized decision;
+otherwise dispatch fails closed. Dry runs pass `dry_run=True`, report the
+decision, and perform no disposition, failure, workspace, or spawn side
+effects.
+
 ### `pre_llm_call` context injection
 
-This is the only hook whose return value matters. When a `pre_llm_call` callback returns a dict with a `"context"` key (or a plain string), Hermes injects that text into the **current turn's user message**. This is the mechanism for memory plugins, RAG integrations, guardrails, and any plugin that needs to provide the model with additional context.
+This is the hook whose return value injects conversation context. When a
+`pre_llm_call` callback returns a dict with a `"context"` key (or a plain
+string), Hermes injects that text into the **current turn's user message**.
+This is the mechanism for memory plugins, RAG integrations, guardrails, and
+any plugin that needs to provide the model with additional context.
 
 #### Return format
 

@@ -85,7 +85,7 @@ import threading
 import logging
 import time
 from contextvars import ContextVar, Token
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
@@ -4100,6 +4100,8 @@ def complete_task(
     metadata: Optional[dict] = None,
     created_cards: Optional[Iterable[str]] = None,
     expected_run_id: Optional[int] = None,
+    expected_status: Optional[str] = None,
+    event_evidence: Optional[dict] = None,
 ) -> bool:
     """Transition ``running|ready -> done`` and record ``result``.
 
@@ -4162,41 +4164,31 @@ def complete_task(
         conn, task_id, metadata, summary=summary, result=result,
     )
     with write_txn(conn):
-        if expected_run_id is None:
-            cur = conn.execute(
-                """
-                UPDATE tasks
-                   SET status       = 'done',
-                       result       = ?,
-                       completed_at = ?,
-                       claim_lock   = NULL,
-                       claim_expires= NULL,
-                       worker_pid   = NULL,
-                       block_kind   = NULL,
-                       block_recurrences = 0
-                 WHERE id = ?
-                   AND status IN ('running', 'ready', 'blocked')
-                """,
-                (result, now, task_id),
-            )
-        else:
-            cur = conn.execute(
-                """
-                UPDATE tasks
-                   SET status       = 'done',
-                       result       = ?,
-                       completed_at = ?,
-                       claim_lock   = NULL,
-                       claim_expires= NULL,
-                       worker_pid   = NULL,
-                       block_kind   = NULL,
-                       block_recurrences = 0
-                 WHERE id = ?
-                   AND status IN ('running', 'ready', 'blocked')
-                   AND current_run_id = ?
-                """,
-                (result, now, task_id, int(expected_run_id)),
-            )
+        status_clause = (
+            "status = ?" if expected_status is not None
+            else "status IN ('running', 'ready', 'blocked')"
+        )
+        run_clause = "" if expected_run_id is None else " AND current_run_id = ?"
+        params: list[Any] = [result, now, task_id]
+        if expected_status is not None:
+            params.append(expected_status)
+        if expected_run_id is not None:
+            params.append(int(expected_run_id))
+        cur = conn.execute(
+            f"""
+            UPDATE tasks
+               SET status       = 'done',
+                   result       = ?,
+                   completed_at = ?,
+                   claim_lock   = NULL,
+                   claim_expires= NULL,
+                   worker_pid   = NULL,
+                   block_kind   = NULL,
+                   block_recurrences = 0
+             WHERE id = ? AND {status_clause}{run_clause}
+            """,
+            params,
+        )
         if cur.rowcount != 1:
             return False
         if isinstance(metadata, dict):
@@ -4254,6 +4246,8 @@ def complete_task(
                 ]
                 if cleaned_artifacts:
                     completed_payload["artifacts"] = cleaned_artifacts
+        if event_evidence is not None:
+            completed_payload["evidence"] = event_evidence
         _append_event(
             conn, task_id, "completed",
             completed_payload,
@@ -4880,6 +4874,7 @@ def block_task(
     reason: Optional[str] = None,
     kind: Optional[str] = None,
     expected_run_id: Optional[int] = None,
+    expected_status: Optional[str] = None,
 ) -> bool:
     """Transition ``running``/``ready`` → ``blocked`` (or route elsewhere).
 
@@ -4914,6 +4909,19 @@ def block_task(
         )
     routed_to = "blocked"
     recurrences = 0
+    status_predicate = (
+        "status = ?" if expected_status is not None
+        else "status IN ('running', 'ready')"
+    )
+    run_predicate = "" if expected_run_id is None else " AND current_run_id = ?"
+
+    def _cas_params(*values: Any) -> tuple[Any, ...]:
+        return (
+            tuple(values)
+            + ((expected_status,) if expected_status is not None else ())
+            + ((int(expected_run_id),) if expected_run_id is not None else ())
+        )
+
     with write_txn(conn):
         cur_row = conn.execute(
             "SELECT status, block_kind, block_recurrences FROM tasks WHERE id = ?",
@@ -4935,7 +4943,7 @@ def block_task(
         # a dependency-wait as something to "unblock".
         if kind == "dependency":
             cur = conn.execute(
-                """
+                f"""
                 UPDATE tasks
                    SET status        = 'todo',
                        claim_lock    = NULL,
@@ -4943,10 +4951,9 @@ def block_task(
                        worker_pid    = NULL,
                        block_kind    = ?
                  WHERE id = ?
-                   AND status IN ('running', 'ready')
-                """ + ("" if expected_run_id is None else " AND current_run_id = ?"),
-                (kind, task_id) if expected_run_id is None
-                else (kind, task_id, int(expected_run_id)),
+                   AND {status_predicate}{run_predicate}
+                """,
+                _cas_params(kind, task_id),
             )
             if cur.rowcount != 1:
                 return False
@@ -4988,7 +4995,7 @@ def block_task(
             # Loop detected — stop letting the unblocker spin this task. Route
             # to triage for a human-in-the-loop decision instead of blocked.
             cur = conn.execute(
-                """
+                f"""
                 UPDATE tasks
                    SET status        = 'triage',
                        claim_lock    = NULL,
@@ -4997,10 +5004,9 @@ def block_task(
                        block_kind    = ?,
                        block_recurrences = ?
                  WHERE id = ?
-                   AND status IN ('running', 'ready')
-                """ + ("" if expected_run_id is None else " AND current_run_id = ?"),
-                (kind, recurrences, task_id) if expected_run_id is None
-                else (kind, recurrences, task_id, int(expected_run_id)),
+                   AND {status_predicate}{run_predicate}
+                """,
+                _cas_params(kind, recurrences, task_id),
             )
             if cur.rowcount != 1:
                 return False
@@ -5025,37 +5031,19 @@ def block_task(
             )
             routed_to = "triage"
         else:
-            if expected_run_id is None:
-                cur = conn.execute(
-                    """
-                    UPDATE tasks
-                       SET status        = 'blocked',
-                           claim_lock    = NULL,
-                           claim_expires = NULL,
-                           worker_pid    = NULL,
-                           block_kind    = ?,
-                           block_recurrences = ?
-                     WHERE id = ?
-                       AND status IN ('running', 'ready')
-                    """,
-                    (kind, recurrences, task_id),
-                )
-            else:
-                cur = conn.execute(
-                    """
-                    UPDATE tasks
-                       SET status        = 'blocked',
-                           claim_lock    = NULL,
-                           claim_expires = NULL,
-                           worker_pid    = NULL,
-                           block_kind    = ?,
-                           block_recurrences = ?
-                     WHERE id = ?
-                       AND status IN ('running', 'ready')
-                       AND current_run_id = ?
-                    """,
-                    (kind, recurrences, task_id, int(expected_run_id)),
-                )
+            cur = conn.execute(
+                f"""
+                UPDATE tasks
+                   SET status        = 'blocked',
+                       claim_lock    = NULL,
+                       claim_expires = NULL,
+                       worker_pid    = NULL,
+                       block_kind    = ?,
+                       block_recurrences = ?
+                 WHERE id = ? AND {status_predicate}{run_predicate}
+                """,
+                _cas_params(kind, recurrences, task_id),
+            )
             if cur.rowcount != 1:
                 return False
             run_id = _end_run(
@@ -6057,6 +6045,10 @@ class DispatchResult:
     """Task ids reclaimed because their worker PID disappeared."""
     auto_blocked: list[str] = field(default_factory=list)
     """Task ids auto-blocked by the spawn-failure circuit breaker."""
+    pre_claim_dispositions: list[tuple[str, str]] = field(default_factory=list)
+    """Pre-claim policy outcomes as ``(task_id, action)`` pairs."""
+    pre_claim_errors: list[tuple[str, str]] = field(default_factory=list)
+    """Fail-closed pre-claim faults as ``(task_id, error)`` pairs."""
     timed_out: list[str] = field(default_factory=list)
     """Task ids whose workers exceeded ``max_runtime_seconds``."""
     stale: list[str] = field(default_factory=list)
@@ -6079,6 +6071,152 @@ class DispatchResult:
     DB writes this tick — the lock holder is making progress on the same
     board. This is the steady-state signal that a single-writer guard is
     actively preventing two dispatchers from racing on ``kanban.db``."""
+
+
+def _normalize_pre_claim_decisions(results: list[Any]) -> dict[str, Any]:
+    """Validate hook returns and combine them into one fail-closed decision."""
+    normalized: list[dict[str, Any]] = []
+    schemas = {
+        "allow": ({"action"}, {"action"}),
+        "defer": ({"action"}, {"action", "reason"}),
+        "block": ({"action", "reason", "kind"}, {"action", "reason", "kind"}),
+        "complete": (
+            {"action", "summary", "evidence"},
+            {"action", "summary", "evidence"},
+        ),
+    }
+    for raw in results:
+        if not isinstance(raw, dict) or not isinstance(raw.get("action"), str):
+            raise ValueError("pre-claim callback must return a decision dict")
+        action = raw["action"].strip().lower()
+        if action not in schemas:
+            raise ValueError(f"unknown pre-claim action: {raw['action']!r}")
+        required, allowed = schemas[action]
+        keys = set(raw)
+        if not required.issubset(keys) or not keys.issubset(allowed):
+            raise ValueError(f"invalid fields for pre-claim action {action!r}")
+        decision = dict(raw)
+        decision["action"] = action
+        for key in ("reason", "summary"):
+            if key in decision:
+                value = decision[key]
+                if not isinstance(value, str) or not value.strip():
+                    raise ValueError(f"pre-claim {action} requires nonblank {key}")
+                decision[key] = value.strip()
+        if action == "block" and decision["kind"] not in VALID_BLOCK_KINDS:
+            raise ValueError("pre-claim block has invalid kind")
+        if action == "complete":
+            evidence = decision["evidence"]
+            if not isinstance(evidence, dict) or not evidence:
+                raise ValueError("pre-claim complete requires non-empty evidence")
+            try:
+                json.dumps(evidence)
+            except (TypeError, ValueError) as exc:
+                raise ValueError("pre-claim complete evidence must be JSON-serializable") from exc
+        normalized.append(decision)
+
+    non_allow = [decision for decision in normalized if decision["action"] != "allow"]
+    if not non_allow:
+        return {"action": "allow"}
+    if any(decision != non_allow[0] for decision in non_allow[1:]):
+        raise ValueError("conflicting non-allow pre-claim decisions")
+    return non_allow[0]
+
+
+def _evaluate_pre_claim(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    assignee: str,
+    source_status: str,
+    board: Optional[str],
+    dry_run: bool,
+    failure_limit: int,
+    result: DispatchResult,
+) -> bool:
+    """Run and apply the shared ready/review gate; return True to skip claim."""
+    task = get_task(conn, task_id)
+    if task is None or task.status != source_status:
+        return True
+    try:
+        from hermes_cli.plugins import invoke_hook_strict
+
+        hook_results = invoke_hook_strict(
+            "kanban_task_pre_claim",
+            task_id=task_id,
+            board=board or get_current_board(),
+            assignee=assignee,
+            source_status=source_status,
+            task=asdict(task),
+            dry_run=dry_run,
+        )
+        decision = _normalize_pre_claim_decisions(hook_results)
+    except Exception as exc:
+        error = str(exc) or type(exc).__name__
+        result.pre_claim_errors.append((task_id, error))
+        if not dry_run and _record_task_failure(
+            conn,
+            task_id,
+            error,
+            outcome="kanban_pre_claim_error",
+            failure_limit=failure_limit,
+            expected_status=source_status,
+            synthesize_run=True,
+            event_kind="kanban_pre_claim_error",
+            event_payload_extra={"source_status": source_status},
+        ):
+            result.auto_blocked.append(task_id)
+        return True
+
+    action = decision["action"]
+    if action == "allow":
+        if hook_results:
+            result.pre_claim_dispositions.append((task_id, action))
+        return False
+    if dry_run:
+        result.pre_claim_dispositions.append((task_id, action))
+        return True
+
+    # The callback ran outside a SQLite transaction and may have changed the
+    # task through another connection. Never overwrite that newer state.
+    current = get_task(conn, task_id)
+    if current is None or current.status != source_status:
+        return True
+    if action == "defer":
+        with write_txn(conn):
+            cur = conn.execute(
+                "UPDATE tasks SET status=status WHERE id=? AND status=?",
+                (task_id, source_status),
+            )
+            applied = cur.rowcount == 1
+            if applied:
+                _append_event(
+                    conn,
+                    task_id,
+                    "kanban_pre_claim_deferred",
+                    {"reason": decision.get("reason"), "source_status": source_status},
+                )
+    elif action == "block":
+        applied = block_task(
+            conn,
+            task_id,
+            reason=decision["reason"],
+            kind=decision["kind"],
+            expected_status=source_status,
+        )
+    else:
+        evidence = decision["evidence"]
+        applied = complete_task(
+            conn,
+            task_id,
+            summary=decision["summary"],
+            metadata={"evidence": evidence},
+            expected_status=source_status,
+            event_evidence=evidence,
+        )
+    if applied:
+        result.pre_claim_dispositions.append((task_id, action))
+    return True
 
 
 # Bounded registry of recently-reaped worker child exits, populated by the
@@ -7030,6 +7168,9 @@ def _record_task_failure(
     release_claim: bool = False,
     end_run: bool = False,
     event_payload_extra: Optional[dict] = None,
+    expected_status: Optional[str] = None,
+    synthesize_run: bool = False,
+    event_kind: Optional[str] = None,
 ) -> bool:
     """Record a non-success outcome (spawn_failed / crashed / timed_out)
     and maybe trip the circuit breaker.
@@ -7054,6 +7195,10 @@ def _record_task_failure(
       run with the appropriate outcome. This just increments the
       counter; if the breaker trips, the task is re-transitioned
       ``ready → blocked`` and a ``gave_up`` event is emitted.
+
+    * ``expected_status=..., synthesize_run=True`` — pre-claim gate path.
+      The counter update is status-CAS guarded and every fault gets a closed
+      synthetic run plus ``event_kind`` audit event without creating a claim.
 
     ``event_payload_extra`` merges into the ``gave_up`` event payload
     when the breaker trips, so callers can include outcome-specific
@@ -7086,6 +7231,8 @@ def _record_task_failure(
             return False
         failures = int(row["consecutive_failures"]) + 1
         cur_status = row["status"]
+        if expected_status is not None and cur_status != expected_status:
+            return False
 
         # Per-task override wins over both caller-supplied and default
         # thresholds. None (the common case) falls through.
@@ -7101,7 +7248,16 @@ def _record_task_failure(
 
         if force_trip or failures >= effective_limit:
             # Trip the breaker.
-            if release_claim:
+            if expected_status is not None:
+                cur = conn.execute(
+                    "UPDATE tasks SET status = 'blocked', "
+                    "consecutive_failures = ?, last_failure_error = ? "
+                    "WHERE id = ? AND status = ?",
+                    (failures, error[:500], task_id, expected_status),
+                )
+                if cur.rowcount != 1:
+                    return False
+            elif release_claim:
                 # Spawn path: still running, also clear claim state.
                 conn.execute(
                     "UPDATE tasks SET status = 'blocked', claim_lock = NULL, "
@@ -7120,8 +7276,25 @@ def _record_task_failure(
                     "WHERE id = ? AND status IN ('ready', 'running')",
                     (failures, error[:500], task_id),
                 )
+            payload = {
+                "failures": failures,
+                "effective_limit": effective_limit,
+                "limit_source": limit_source,
+                "error": error[:500],
+                "trigger_outcome": outcome,
+            }
+            if event_payload_extra:
+                payload.update(event_payload_extra)
             run_id = None
-            if end_run:
+            if synthesize_run:
+                run_id = _synthesize_ended_run(
+                    conn, task_id, outcome=outcome, error=error[:500],
+                    metadata=payload,
+                )
+                _append_event(
+                    conn, task_id, event_kind or outcome, payload, run_id=run_id,
+                )
+            elif end_run:
                 # Only the spawn path has an open run to close.
                 run_id = _end_run(
                     conn, task_id,
@@ -7134,22 +7307,21 @@ def _record_task_failure(
                         "limit_source": limit_source,
                     },
                 )
-            payload = {
-                "failures": failures,
-                "effective_limit": effective_limit,
-                "limit_source": limit_source,
-                "error": error[:500],
-                "trigger_outcome": outcome,
-            }
-            if event_payload_extra:
-                payload.update(event_payload_extra)
             _append_event(
                 conn, task_id, "gave_up", payload, run_id=run_id,
             )
             blocked = True
         else:
             # Below threshold.
-            if release_claim:
+            if expected_status is not None:
+                cur = conn.execute(
+                    "UPDATE tasks SET consecutive_failures = ?, "
+                    "last_failure_error = ? WHERE id = ? AND status = ?",
+                    (failures, error[:500], task_id, expected_status),
+                )
+                if cur.rowcount != 1:
+                    return False
+            elif release_claim:
                 # Spawn path: transition running → ready + clear claim.
                 conn.execute(
                     "UPDATE tasks SET status = 'ready', claim_lock = NULL, "
@@ -7166,7 +7338,24 @@ def _record_task_failure(
                     "last_failure_error = ? WHERE id = ?",
                     (failures, error[:500], task_id),
                 )
-            if end_run:
+            if synthesize_run:
+                payload = {
+                    "error": error[:500],
+                    "failures": failures,
+                    "effective_limit": effective_limit,
+                    "limit_source": limit_source,
+                    "trigger_outcome": outcome,
+                }
+                if event_payload_extra:
+                    payload.update(event_payload_extra)
+                run_id = _synthesize_ended_run(
+                    conn, task_id, outcome=outcome, error=error[:500],
+                    metadata=payload,
+                )
+                _append_event(
+                    conn, task_id, event_kind or outcome, payload, run_id=run_id,
+                )
+            elif end_run:
                 # Spawn path: close the open run with outcome.
                 run_id = _end_run(
                     conn, task_id,
@@ -7748,6 +7937,17 @@ def _dispatch_once_locked(
                         {"reason": guard_reason},
                     )
             continue
+        if _evaluate_pre_claim(
+            conn,
+            row["id"],
+            assignee=row_assignee,
+            source_status="ready",
+            board=board,
+            dry_run=dry_run,
+            failure_limit=failure_limit,
+            result=result,
+        ):
+            continue
         if dry_run:
             result.spawned.append((row["id"], row_assignee, ""))
             # Increment per-profile counter even in dry_run so the cap
@@ -7847,6 +8047,17 @@ def _dispatch_once_locked(
             profile_exists = None  # type: ignore[assignment]
         if profile_exists is not None and not profile_exists(row["assignee"]):
             result.skipped_nonspawnable.append(row["id"])
+            continue
+        if _evaluate_pre_claim(
+            conn,
+            row["id"],
+            assignee=row["assignee"],
+            source_status="review",
+            board=board,
+            dry_run=dry_run,
+            failure_limit=failure_limit,
+            result=result,
+        ):
             continue
         if dry_run:
             result.spawned.append((row["id"], row["assignee"], ""))

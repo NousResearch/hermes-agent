@@ -592,3 +592,272 @@ class TestContentFilterStallActivatesFallback:
             "_try_activate_fallback — it should fall through to continuation."
         )
         assert result["completed"] is True
+
+
+class TestEmptyPartialStreamStubNotPersisted:
+    """Regression for the session-poisoning bug hit with moonshotai/kimi-k3
+    via OpenRouter (2026-07-20): a stream dropped mid-``write_file`` tool
+    call before ANY text was delivered.  The partial-stream-stub carries
+    ``content=""`` and ``tool_calls=None``, so the loop's truncation path
+    took the "no tool calls" branch and appended
+    ``{"role": "assistant", "content": ""}`` to history before the
+    continuation user-message.  Moonshot rejects empty assistant content
+    ("the message at position N with role 'assistant' must not be empty")
+    with HTTP 400 on the very next replay — and since the message is
+    persisted, EVERY subsequent turn re-fails: session unrecoverable.
+
+    Fix layer 1 (conversation_loop): an empty partial-stream stub must not
+    be appended as an interim assistant message — only the continuation
+    user-message is.
+    """
+
+    def test_empty_stub_only_appends_continuation_user_message(self, loop_agent):
+        from tests.run_agent.test_run_agent import _mock_response, _mock_assistant_msg
+
+        # First API call: empty partial-stream stub — stream died mid
+        # tool-call args with zero text delivered.
+        empty_stub = SimpleNamespace(
+            id=PARTIAL_STREAM_STUB_ID,
+            model="test/model",
+            choices=[SimpleNamespace(
+                index=0,
+                message=_mock_assistant_msg(content=""),
+                finish_reason=FINISH_REASON_LENGTH,
+            )],
+            usage=None,
+            _dropped_tool_names=["write_file"],
+        )
+        # Second API call: the model answers normally after the nudge.
+        recovery = _mock_response(content="Done — wrote it in chunks.",
+                                  finish_reason="stop")
+
+        loop_agent.client.chat.completions.create.side_effect = [
+            empty_stub, recovery,
+        ]
+
+        with (
+            patch.object(loop_agent, "_persist_session"),
+            patch.object(loop_agent, "_save_trajectory"),
+            patch.object(loop_agent, "_cleanup_task_resources"),
+        ):
+            result = loop_agent.run_conversation("make me a webpage")
+
+        assert loop_agent.client.chat.completions.create.call_count == 2
+
+        # Inspect the history replayed on the SECOND call: there must be NO
+        # empty-content assistant message anywhere — that is the exact shape
+        # Moonshot 400s on.
+        second_call_kwargs = loop_agent.client.chat.completions.create.call_args_list[1]
+        msgs = second_call_kwargs.kwargs.get("messages") or second_call_kwargs.args[0].get("messages")
+        empty_assistants = [
+            m for m in msgs
+            if m.get("role") == "assistant" and not m.get("content")
+        ]
+        assert empty_assistants == [], (
+            "Empty partial-stream stub must not be persisted as an "
+            "empty-content assistant message — strict providers (Moonshot/"
+            "Kimi) reject the replay with HTTP 400 and poison the session."
+        )
+
+        # The continuation nudge is still appended as a user message, and
+        # it's the chunking variant (dropped tool call), not the length lie.
+        last_user = next(
+            (m for m in reversed(msgs) if m.get("role") == "user"), None,
+        )
+        assert last_user is not None
+        assert "too large" in (last_user.get("content") or "")
+        assert "output length limit" not in (last_user.get("content") or "")
+
+        assert result["completed"] is True
+
+    def test_non_empty_partial_stub_still_persisted(self, loop_agent):
+        """Guard against over-correction: a stub that DID deliver partial
+        text must still be appended so the continuation stitches correctly
+        (existing behavior from #32086)."""
+        from tests.run_agent.test_run_agent import _mock_response, _mock_assistant_msg
+
+        partial_stub = SimpleNamespace(
+            id=PARTIAL_STREAM_STUB_ID,
+            model="test/model",
+            choices=[SimpleNamespace(
+                index=0,
+                message=_mock_assistant_msg(content="The first half of "),
+                finish_reason=FINISH_REASON_LENGTH,
+            )],
+            usage=None,
+        )
+        continuation = _mock_response(
+            content="the answer is forty-two.", finish_reason="stop",
+        )
+
+        loop_agent.client.chat.completions.create.side_effect = [
+            partial_stub, continuation,
+        ]
+
+        with (
+            patch.object(loop_agent, "_persist_session"),
+            patch.object(loop_agent, "_save_trajectory"),
+            patch.object(loop_agent, "_cleanup_task_resources"),
+        ):
+            result = loop_agent.run_conversation("ask me something")
+
+        second_call_kwargs = loop_agent.client.chat.completions.create.call_args_list[1]
+        msgs = second_call_kwargs.kwargs.get("messages") or second_call_kwargs.args[0].get("messages")
+        partial_assistants = [
+            m for m in msgs
+            if m.get("role") == "assistant" and "first half" in (m.get("content") or "")
+        ]
+        assert partial_assistants, (
+            "A partial-stream stub WITH text must still be persisted so the "
+            "continuation can stitch the halves."
+        )
+        assert "first half of" in result["final_response"]
+        assert "forty-two" in result["final_response"]
+
+
+class TestBuildAssistantMessageEmptyContentPad:
+    """Regression layer 2 (chat_completion_helpers.build_assistant_message):
+    never serialize a textless assistant turn with ``content: ""`` — pad to
+    a single space, the same trick as the reasoning_content pad (#15250).
+    Tool-call turns are exempt (``content: ""`` + ``tool_calls`` is accepted
+    everywhere)."""
+
+    def _agent_for_builder(self):
+        from run_agent import AIAgent
+        with (
+            patch("run_agent.get_tool_definitions", return_value=[]),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+        ):
+            a = AIAgent(
+                api_key="test-key-1234567890",
+                base_url="https://openrouter.ai/api/v1",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+        return a
+
+    def test_empty_content_padded_to_space(self):
+        from agent.chat_completion_helpers import build_assistant_message
+        from tests.run_agent.test_run_agent import _mock_assistant_msg
+
+        agent = self._agent_for_builder()
+        msg = build_assistant_message(agent, _mock_assistant_msg(content=""), "stop")
+        assert msg["content"] == " ", (
+            "Textless assistant turn must be padded to a single space — "
+            "Moonshot/Kimi reject empty assistant content with HTTP 400."
+        )
+
+    def test_none_content_padded_to_space(self):
+        from agent.chat_completion_helpers import build_assistant_message
+        from tests.run_agent.test_run_agent import _mock_assistant_msg
+
+        agent = self._agent_for_builder()
+        msg = build_assistant_message(agent, _mock_assistant_msg(content=None), "stop")
+        assert msg["content"] == " "
+
+    def test_tool_call_turn_content_left_empty(self):
+        from agent.chat_completion_helpers import build_assistant_message
+        from tests.run_agent.test_run_agent import _mock_assistant_msg, _mock_tool_call
+
+        agent = self._agent_for_builder()
+        msg = build_assistant_message(
+            agent,
+            _mock_assistant_msg(content="", tool_calls=[_mock_tool_call()]),
+            "tool_calls",
+        )
+        assert msg["content"] == "", (
+            "Tool-call turns are exempt from the pad: content:'' alongside "
+            "tool_calls is accepted by every provider."
+        )
+        assert msg["tool_calls"]
+
+    def test_non_empty_content_unchanged(self):
+        from agent.chat_completion_helpers import build_assistant_message
+        from tests.run_agent.test_run_agent import _mock_assistant_msg
+
+        agent = self._agent_for_builder()
+        msg = build_assistant_message(agent, _mock_assistant_msg(content="hi"), "stop")
+        assert msg["content"] == "hi"
+
+
+class TestSendTimeEmptyAssistantPad:
+    """Durable repair for ALREADY-poisoned persisted sessions: a partial
+    -stream-stub row written by an older build (content:'' ,
+    finish_reason:'length') is rebuilt to content:'' on every reload —
+    ``_rows_to_conversation`` strips whitespace, so a DB-side pad cannot
+    survive.  The send-time pad in conversation_loop's api_messages loop
+    must therefore repair the empty textless assistant turn at the
+    serialization boundary, so a RESUMED poisoned session replays
+    cleanly against strict providers (Moonshot/Kimi HTTP 400 "message ...
+    with role 'assistant' must not be empty")."""
+
+    def _run_one_turn_with_history(self, loop_agent, history):
+        from tests.run_agent.test_run_agent import _mock_response
+        loop_agent.client.chat.completions.create.return_value = _mock_response(
+            content="ok", finish_reason="stop",
+        )
+        with (
+            patch.object(loop_agent, "_persist_session"),
+            patch.object(loop_agent, "_save_trajectory"),
+            patch.object(loop_agent, "_cleanup_task_resources"),
+        ):
+            loop_agent.run_conversation(
+                "continue", conversation_history=history,
+            )
+        kwargs = loop_agent.client.chat.completions.create.call_args_list[0]
+        return kwargs.kwargs.get("messages") or kwargs.args[0].get("messages")
+
+    def test_poisoned_resumed_history_padded_on_send(self, loop_agent):
+        # Byte-shape of a persisted poisoned session:
+        # user -> assistant('' , finish_reason='length', NO tool_calls) -> user.
+        poisoned = [
+            {"role": "user", "content": "make me a webpage"},
+            {"role": "assistant", "content": "", "finish_reason": "length"},
+            {"role": "user", "content": "please proceed"},
+        ]
+        sent = self._run_one_turn_with_history(loop_agent, poisoned)
+        empties = [
+            m for m in sent
+            if m.get("role") == "assistant"
+            and not m.get("tool_calls")
+            and m.get("content") == ""
+        ]
+        assert empties == [], (
+            "A resumed session carrying a persisted empty partial-stream "
+            "stub must be repaired at the send boundary — strict providers "
+            "reject the replay with HTTP 400 otherwise."
+        )
+        stub = next(
+            (m for m in sent if m.get("role") == "assistant"
+             and not m.get("tool_calls")),
+            None,
+        )
+        assert stub is not None and stub["content"] == " "
+
+    def test_tool_call_turn_not_padded_on_send(self, loop_agent):
+        history = [
+            {"role": "user", "content": "search something"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [{
+                    "id": "call_1", "type": "function",
+                    "function": {"name": "web_search", "arguments": "{}"},
+                }],
+            },
+            {"role": "tool", "tool_call_id": "call_1", "content": "result"},
+            {"role": "user", "content": "and now?"},
+        ]
+        sent = self._run_one_turn_with_history(loop_agent, history)
+        tc_turn = next(
+            (m for m in sent if m.get("role") == "assistant" and m.get("tool_calls")),
+            None,
+        )
+        assert tc_turn is not None
+        assert tc_turn["content"] == "", (
+            "Tool-call turns are exempt from the pad: content:'' alongside "
+            "tool_calls is accepted by every provider and normalizing it "
+            "would alter prompt-cache keys."
+        )

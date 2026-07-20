@@ -1552,12 +1552,35 @@ class TestGracefulFallback:
 # ---------------------------------------------------------------------------
 
 class TestShutdown:
+    def test_final_shutdown_prevents_late_loop_restart(self):
+        """One-shot teardown must not let stale discovery recreate the loop."""
+        import tools.mcp_tool as mcp_mod
+
+        mcp_mod._servers.clear()
+        mcp_mod._mcp_final_shutdown = False
+        try:
+            mcp_mod.shutdown_mcp_servers(final=True)
+
+            assert mcp_mod._ensure_mcp_loop() is False
+            assert mcp_mod.register_mcp_servers(
+                {"late": {"command": "late-discovery"}}
+            ) == []
+            assert mcp_mod._mcp_loop is None
+            assert not mcp_mod._server_connecting
+        finally:
+            mcp_mod._mcp_final_shutdown = False
+
     def test_no_servers_safe(self):
         """shutdown_mcp_servers with no servers does nothing."""
+        import tools.mcp_tool as mcp_mod
         from tools.mcp_tool import shutdown_mcp_servers, _servers
 
         _servers.clear()
         shutdown_mcp_servers()  # Should not raise
+        try:
+            assert mcp_mod._ensure_mcp_loop() is True
+        finally:
+            mcp_mod._stop_mcp_loop()
 
     def test_shutdown_clears_servers(self):
         """shutdown_mcp_servers calls shutdown() on each server and clears dict."""

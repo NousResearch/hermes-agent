@@ -207,7 +207,7 @@ def test_explicit_registration_skips_dangerous_entry_before_connect(monkeypatch)
     import tools.mcp_tool as mcp_tool
 
     monkeypatch.setattr(mcp_tool, "_MCP_AVAILABLE", True)
-    monkeypatch.setattr(mcp_tool, "_ensure_mcp_loop", lambda: None)
+    monkeypatch.setattr(mcp_tool, "_ensure_mcp_loop", lambda: True)
 
     connected = []
 

@@ -3651,6 +3651,7 @@ _mcp_tool_server_names: Dict[str, str] = {}
 # Dedicated event loop running in a background daemon thread.
 _mcp_loop: Optional[asyncio.AbstractEventLoop] = None
 _mcp_thread: Optional[threading.Thread] = None
+_mcp_final_shutdown = False
 
 # Protects _mcp_loop, _mcp_thread, _servers, MCP connection status maps,
 # _parallel_safe_servers, _mcp_tool_server_names, and _stdio_pids.
@@ -3775,12 +3776,14 @@ def _mcp_loop_exception_handler(loop, context):
     loop.default_exception_handler(context)
 
 
-def _ensure_mcp_loop():
+def _ensure_mcp_loop() -> bool:
     """Start the background event loop thread if not already running."""
     global _mcp_loop, _mcp_thread
     with _lock:
+        if _mcp_final_shutdown:
+            return False
         if _mcp_loop is not None and _mcp_loop.is_running():
-            return
+            return True
         _mcp_loop = asyncio.new_event_loop()
         _mcp_loop.set_exception_handler(_mcp_loop_exception_handler)
         _mcp_thread = threading.Thread(
@@ -3789,6 +3792,7 @@ def _ensure_mcp_loop():
             daemon=True,
         )
         _mcp_thread.start()
+        return True
 
 
 def _wrap_with_home_override(coro: "Coroutine") -> "Coroutine":
@@ -5186,6 +5190,8 @@ def register_mcp_servers(servers: Dict[str, dict]) -> List[str]:
     # Only attempt servers that aren't already connected and are enabled
     # (enabled: false skips the server entirely without removing its config)
     with _lock:
+        if _mcp_final_shutdown:
+            return []
         new_servers = {
             k: v
             for k, v in servers.items()
@@ -5218,7 +5224,10 @@ def register_mcp_servers(servers: Dict[str, dict]) -> List[str]:
         return _existing_tool_names()
 
     # Start the background event loop for MCP connections
-    _ensure_mcp_loop()
+    if not _ensure_mcp_loop():
+        with _lock:
+            _server_connecting.difference_update(new_servers)
+        return []
 
     async def _discover_one(name: str, cfg: dict) -> List[str]:
         """Connect to a single server and return its registered tool names."""
@@ -5704,14 +5713,20 @@ def _reinject_post_build_tools(agent, tools_list: list, name_set: set) -> set:
     return staged_engine_names
 
 
-def shutdown_mcp_servers():
+def shutdown_mcp_servers(*, final: bool = False):
     """Close all MCP server connections and stop the background loop.
 
     Each server Task is signalled to exit its ``async with`` block so that
     the anyio cancel-scope cleanup happens in the same Task that opened it.
     All servers are shut down in parallel via ``asyncio.gather``.
+
+    ``final=True`` also prevents late background discovery from recreating the
+    loop during one-shot process teardown. Normal shutdown remains restartable.
     """
+    global _mcp_final_shutdown
     with _lock:
+        if final:
+            _mcp_final_shutdown = True
         servers_snapshot = list(_servers.values())
 
     # Fast path: nothing to shut down.

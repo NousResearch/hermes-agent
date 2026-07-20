@@ -890,7 +890,10 @@ def test_run_and_exit_oneshot_cleans_global_runtime_before_hard_exit(
     monkeypatch.setitem(
         sys.modules,
         "tools.mcp_tool",
-        _mod("tools.mcp_tool", shutdown_mcp_servers=lambda: events.append("mcp")),
+        _mod(
+            "tools.mcp_tool",
+            shutdown_mcp_servers=lambda *, final=False: events.append(f"mcp:{final}"),
+        ),
     )
     monkeypatch.setitem(
         sys.modules,
@@ -903,7 +906,9 @@ def test_run_and_exit_oneshot_cleans_global_runtime_before_hard_exit(
 
     main_mod._run_and_exit_oneshot("hello")
 
-    assert events == ["run", "terminal", "delegation", "browser", "mcp", "aux", "exit:0"]
+    assert events == [
+        "run", "terminal", "delegation", "browser", "mcp:True", "aux", "exit:0",
+    ]
 
 
 def test_run_and_exit_oneshot_still_exits_when_global_cleanup_raises(
@@ -911,7 +916,7 @@ def test_run_and_exit_oneshot_still_exits_when_global_cleanup_raises(
 ):
     events = []
 
-    def _raise_mcp():
+    def _raise_mcp(*, final=False):
         raise RuntimeError("mcp boom")
 
     monkeypatch.setitem(

@@ -83,9 +83,10 @@ function Stop-DesktopWatchdogStack {
     }
     Remove-Item (Join-Path $HermesHome "logs\desktop-backend-watchdog.lock") -Force -ErrorAction SilentlyContinue
     Get-Process -Name Hermes -ErrorAction SilentlyContinue | ForEach-Object {
-        & taskkill.exe /PID $_.Id /T /F 2>$null | Out-Null
+        cmd /c "taskkill /PID $($_.Id) /T /F >nul 2>&1" | Out-Null
     }
-    & taskkill.exe /IM Hermes.exe /T /F 2>$null | Out-Null
+    # Exit 128 = process not found; must not trip $ErrorActionPreference=Stop
+    cmd /c "taskkill /IM Hermes.exe /T /F >nul 2>&1" | Out-Null
     Start-Sleep -Seconds 2
 }
 
@@ -191,5 +192,18 @@ Write-Step "Health checks"
 & $PythonExe -m hermes_cli.main gateway status
 & $PythonExe -m hermes_cli.main harness status
 Invoke-RestMethod http://127.0.0.1:8787/health -TimeoutSec 10 | Out-Null
-(Invoke-WebRequest http://127.0.0.1:9120/ -UseBasicParsing -TimeoutSec 10).StatusCode | Out-Null
+# Dashboard can lag behind Start-Process; retry instead of failing the whole stack.
+$dashOk = $false
+foreach ($i in 1..12) {
+    try {
+        $code = (Invoke-WebRequest http://127.0.0.1:9120/ -UseBasicParsing -TimeoutSec 5).StatusCode
+        if ($code -ge 200 -and $code -lt 500) { $dashOk = $true; break }
+    } catch {
+        Write-Step ("Waiting for dashboard :9120 (attempt $i/12)")
+        Start-Sleep -Seconds 5
+    }
+}
+if (-not $dashOk) {
+    Write-Warning "Dashboard :9120 not ready after retries; gateway/llama/watchdog may still be healthy"
+}
 Write-Step "Hermes stack restart complete"

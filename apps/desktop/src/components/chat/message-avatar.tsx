@@ -8,7 +8,7 @@ import { cn } from '@/lib/utils'
 // Constants
 // ---------------------------------------------------------------------------
 
-const AVATAR_SIZE = 28 // px — matches the design system's control size
+const AVATAR_SIZE = 48 // px — large enough for facial detail, small enough not to dominate
 
 const FALLBACK_COLORS: Record<AvatarRole, { bg: string; fg: string }> = {
   assistant: { bg: '#00796B', fg: '#FFFFFF' },

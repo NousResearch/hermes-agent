@@ -601,6 +601,17 @@ memory:
 # When a reset triggers, the agent gets one turn to save important memories and
 # skills before the context is wiped. Persistent memory carries across sessions.
 #
+# state.db (session/message store) tuning.
+state:
+  # The trigram FTS5 index powers CJK and substring/fuzzy message search, but it
+  # over-indexes every 3-character window and can grow to be the largest object
+  # in state.db (multiple GB on long-lived gateways). Set true to skip it:
+  # normal word/token search still works at full quality via the standard FTS
+  # index; only CJK/substring queries fall back to LIKE. Default false preserves
+  # current behavior. When set true on an already-bloated database the trigram
+  # index is dropped on next start; run VACUUM to return the freed pages to the OS.
+  disable_fts_trigram: false
+
 session_reset:
   mode: both           # "both", "idle", "daily", or "none"
   idle_minutes: 1440   # Inactivity timeout in minutes (default: 1440 = 24 hours)

@@ -888,12 +888,30 @@ def _resolve_connection_settings(provider_config: Optional[dict] = None) -> dict
     user_env = _env_value("OPENVIKING_USER")
     agent_env = _env_value("OPENVIKING_AGENT")
 
+    # Non-secret fields fall back to config.yaml (e.g. the Dashboard writes
+    # ``memory.openviking.endpoint`` there) before the built-in default, so the
+    # full chain is env -> ovcli -> config.yaml -> default. The secret api_key is
+    # sourced from the environment (synced from .env), never from config.yaml.
     return {
-        "endpoint": _first_nonempty(endpoint_env, ovcli_values.get("endpoint"), default=_DEFAULT_ENDPOINT),
+        "endpoint": _first_nonempty(
+            endpoint_env,
+            ovcli_values.get("endpoint"),
+            _clean_config_value(provider_config.get("endpoint")),
+            default=_DEFAULT_ENDPOINT,
+        ),
         "api_key": api_key_env if api_key_env is not None else ovcli_values.get("api_key", ""),
-        "account": account_env if account_env is not None else ovcli_values.get("account", ""),
-        "user": user_env if user_env is not None else ovcli_values.get("user", ""),
-        "agent": _first_nonempty(agent_env, ovcli_values.get("agent"), default=_DEFAULT_AGENT),
+        "account": account_env if account_env is not None else _first_nonempty(
+            ovcli_values.get("account"), _clean_config_value(provider_config.get("account"))
+        ),
+        "user": user_env if user_env is not None else _first_nonempty(
+            ovcli_values.get("user"), _clean_config_value(provider_config.get("user"))
+        ),
+        "agent": _first_nonempty(
+            agent_env,
+            ovcli_values.get("agent"),
+            _clean_config_value(provider_config.get("agent")),
+            default=_DEFAULT_AGENT,
+        ),
     }
 
 
@@ -1834,6 +1852,10 @@ class OpenVikingMemoryProvider(MemoryProvider):
         if os.environ.get("OPENVIKING_ENDPOINT"):
             return True
         provider_config = _load_hermes_openviking_config()
+        # A non-secret endpoint saved to config.yaml (e.g. via the Dashboard)
+        # counts as configured even without an env var or ovcli config.
+        if _clean_config_value(provider_config.get("endpoint")):
+            return True
         if not provider_config.get("use_ovcli_config"):
             return False
         try:

@@ -45,6 +45,7 @@ from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_cli.config import load_config, _expand_env_vars
 from hermes_cli.fallback_config import get_fallback_chain
 from hermes_time import now as _hermes_now
+from cron.scheduled_events import dispatch_due_scheduled_events
 
 logger = logging.getLogger(__name__)
 
@@ -3940,11 +3941,14 @@ def tick(
             logger.debug("Cron dispatch paused while gateway drains existing work")
             return 0
 
+        scheduled_event_count = dispatch_due_scheduled_events(adapters=adapters, loop=loop)
         due_jobs = get_due_jobs()
 
         if verbose and not due_jobs:
             logger.info("%s - No jobs due", _hermes_now().strftime('%H:%M:%S'))
-            return 0
+            return scheduled_event_count
+        if not due_jobs:
+            return scheduled_event_count
 
         if verbose:
             logger.info("%s - %s job(s) due", _hermes_now().strftime('%H:%M:%S'), len(due_jobs))
@@ -4104,7 +4108,7 @@ def tick(
                     logger.error("Cron job future failed: %s", exc)
                     _results.append(False)
             _sweep_mcp_orphans()
-            return sum(_results)
+            return scheduled_event_count + sum(_results)
 
         # Async (gateway ticker) mode: don't block.  Sweep orphans via a
         # done-callback fired after the LAST dispatched job completes, so the
@@ -4129,7 +4133,7 @@ def tick(
             # Nothing dispatched (all skipped / no due jobs) — sweep inline.
             _sweep_mcp_orphans()
 
-        return sum(_results)
+        return scheduled_event_count + sum(_results)
     finally:
         if fcntl:
             try:

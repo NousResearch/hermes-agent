@@ -160,6 +160,14 @@ VALID_HOOKS: Set[str] = {
     # Structured host delivery outcome for scheduled jobs. Internal job
     # metadata stays outside model-visible text and is returned here.
     "cron_delivery",
+    # Durable host-neutral one-shot deadline. Payload contains typed identity
+    # and timing metadata only; prompts and plugin domain types are forbidden.
+    "scheduled_event_due",
+    # Typed receipt for content returned from scheduled_event_due. Correlates
+    # only opaque host/plugin identities; user content is never echoed here.
+    "scheduled_outreach_delivery",
+    # Availability transition for the durable scheduled-event contract.
+    "scheduled_event_capability",
     # Verification-loop gate. Fired once per turn when the agent has edited code
     # and is about to verify/finish (after the verify-on-stop guard). A callback
     # may keep the agent going — run a check, defer it, tidy the diff — instead
@@ -391,6 +399,12 @@ class PluginContext:
                 "text_only": True,
                 "attach_to_session": True,
             },
+            "scheduled_events": {
+                "available": True,
+                "durable": True,
+                "cancel": True,
+                "dedupe": True,
+            },
             "activity": {
                 "observation": self.activity_observation_port.available,
             },
@@ -402,6 +416,39 @@ class PluginContext:
                 "location": available("get_location", "location"),
             },
         }
+
+    def _scheduled_events(self) -> Any:
+        from cron.scheduled_events import ScheduledEventStore
+
+        return ScheduledEventStore(getattr(self, "_scheduled_event_store_path", None))
+
+    def upsert_scheduled_event(
+        self,
+        *,
+        event_id: str,
+        subject_id: str,
+        due_at: str,
+        event_type: str,
+        correlation_id: str = "",
+    ) -> Dict[str, Any]:
+        """Create or replace one durable host-neutral deadline."""
+        return self._scheduled_events().upsert(
+            event_id=event_id,
+            subject_id=subject_id,
+            due_at=due_at,
+            event_type=event_type,
+            correlation_id=correlation_id,
+        )
+
+    def cancel_scheduled_event(self, event_id: str) -> bool:
+        """Cancel a pending deadline by stable identity."""
+        return self._scheduled_events().cancel(event_id)
+
+    def scheduled_event_snapshot(
+        self, subject_id: str | None = None
+    ) -> List[Dict[str, Any]]:
+        """Return the durable scheduled-event snapshot for recovery."""
+        return self._scheduled_events().snapshot(subject_id)
 
     def get_host_observations(self) -> Dict[str, Any]:
         """Return minimum, non-secret device context available to plugins."""

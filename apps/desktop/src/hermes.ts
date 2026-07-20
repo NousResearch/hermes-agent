@@ -97,6 +97,24 @@ export function audioSpeakRequestTimeoutMs(text: string): number {
   return Math.min(AUDIO_SPEAK_MAX_REQUEST_TIMEOUT_MS, estimated)
 }
 
+export const AUDIO_TRANSCRIBE_MIN_REQUEST_TIMEOUT_MS = 180_000
+export const AUDIO_TRANSCRIBE_MAX_REQUEST_TIMEOUT_MS = 600_000
+// The transcribe payload is the base64 audio data URL itself, so its string
+// length tracks clip size. ~0.1ms/char keeps short clips at the floor while
+// letting multi-minute recordings scale toward the cap (a base64 char is
+// ~0.75 bytes, so at 128kbps ≈ 21k chars/s of audio this budgets ~2s of
+// timeout per 1s of audio before the cap clamps it).
+const AUDIO_TRANSCRIBE_TIMEOUT_MS_PER_CHAR = 0.1
+
+export function audioTranscribeRequestTimeoutMs(dataUrl: string): number {
+  const estimated = Math.max(
+    AUDIO_TRANSCRIBE_MIN_REQUEST_TIMEOUT_MS,
+    Math.ceil(String(dataUrl || '').length * AUDIO_TRANSCRIBE_TIMEOUT_MS_PER_CHAR)
+  )
+
+  return Math.min(AUDIO_TRANSCRIBE_MAX_REQUEST_TIMEOUT_MS, estimated)
+}
+
 export type {
   ActionResponse,
   ActionStatusResponse,
@@ -1358,7 +1376,11 @@ export function transcribeAudio(dataUrl: string, mimeType?: string): Promise<Aud
     body: {
       data_url: dataUrl,
       mime_type: mimeType
-    }
+    },
+    // Transcription blocks until provider STT, file handling, and response
+    // encoding finish. Remote providers and long clips regularly exceed the
+    // default 15s Electron backend timeout.
+    timeoutMs: audioTranscribeRequestTimeoutMs(dataUrl)
   })
 }
 

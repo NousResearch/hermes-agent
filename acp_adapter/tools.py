@@ -95,8 +95,10 @@ def build_tool_title(tool_name: str, args: Dict[str, Any]) -> str:
     """Build a human-readable title for a tool call."""
     if tool_name == "terminal":
         cmd = args.get("command", "")
-        if len(cmd) > 80:
-            cmd = cmd[:77] + "..."
+        from acp_adapter.truncation import get_title_max_chars
+        _title_limit = get_title_max_chars()
+        if len(cmd) > _title_limit:
+            cmd = cmd[:_title_limit - 3] + "..."
         return f"terminal: {cmd}"
     if tool_name == "read_file":
         return f"read: {args.get('path', '?')}"
@@ -248,7 +250,10 @@ def _tool_result_failed(result: Optional[str], tool_name: str | None = None) -> 
     return False
 
 
-def _truncate_text(text: str, limit: int = 5000) -> str:
+def _truncate_text(text: str, limit: Optional[int] = None) -> str:
+    if limit is None:
+        from acp_adapter.truncation import get_tool_output_max_chars
+        limit = get_tool_output_max_chars()
     if len(text) <= limit:
         return text
     return text[: max(0, limit - 100)] + f"\n... ({len(text)} chars total, truncated)"
@@ -1008,8 +1013,10 @@ def _build_tool_complete_content(
 ) -> List[Any]:
     """Build structured ACP completion content, falling back to plain text."""
     display_result = result or ""
-    if len(display_result) > 5000:
-        display_result = display_result[:4900] + f"\n... ({len(result)} chars total, truncated)"
+    from acp_adapter.truncation import get_tool_output_max_chars
+    _output_limit = get_tool_output_max_chars()
+    if len(display_result) > _output_limit:
+        display_result = display_result[:_output_limit - 100] + f"\n... ({len(result)} chars total, truncated)"
 
     if tool_name == "skill_manage":
         try:

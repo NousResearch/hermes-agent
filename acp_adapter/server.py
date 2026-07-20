@@ -1994,7 +1994,9 @@ class HermesACPAgent(acp.Agent):
         if state.is_running and hasattr(state.agent, "steer"):
             try:
                 if state.agent.steer(steer_text):
-                    preview = steer_text[:80] + ("..." if len(steer_text) > 80 else "")
+                    from acp_adapter.truncation import get_title_max_chars
+                    _steer_limit = get_title_max_chars()
+                    preview = steer_text[:_steer_limit] + ("..." if len(steer_text) > _steer_limit else "")
                     return f"⏩ Steer queued for the active turn: {preview}"
             except Exception as exc:
                 logger.warning("ACP steer failed for session %s: %s", state.session_id, exc)

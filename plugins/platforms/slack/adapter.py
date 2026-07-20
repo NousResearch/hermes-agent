@@ -1492,13 +1492,18 @@ class SlackAdapter(BasePlatformAdapter):
             # text chunks and block segments couldn't be paired coherently).
             # The ``text`` field is always kept as the notification/
             # accessibility fallback.
-            progress_blocks = self._maybe_progress_blocks(content, metadata)
-            if progress_blocks and len(chunks) == 1:
-                segments = [progress_blocks]
+            # Canary gate: when rich_blocks_channels is set, only those
+            # channels render blocks; every other channel stays plain text.
+            if self._rich_blocks_enabled(chat_id):
+                progress_blocks = self._maybe_progress_blocks(content, metadata)
+                if progress_blocks and len(chunks) == 1:
+                    segments = [progress_blocks]
+                else:
+                    segments = (
+                        self._maybe_block_segments(content) if len(chunks) == 1 else None
+                    )
             else:
-                segments = (
-                    self._maybe_block_segments(content) if len(chunks) == 1 else None
-                )
+                segments = None
 
             if segments:
                 # (fallback text, blocks) per outgoing message. A single
@@ -1626,13 +1631,16 @@ class SlackAdapter(BasePlatformAdapter):
             # runs — the consumer's edit debounce keeps the render cost
             # bounded). Feedback buttons only ever belong on the final
             # frame. ``text`` is kept as the fallback either way.
-            progress_blocks = self._maybe_progress_blocks(content, metadata)
-            if progress_blocks:
-                update_kwargs["blocks"] = progress_blocks
-            elif finalize or self._rich_blocks_streaming_enabled():
-                blocks = self._maybe_blocks(content, with_feedback=finalize)
-                if blocks:
-                    update_kwargs["blocks"] = blocks
+            # Canary gate: only channels in rich_blocks_channels (when set)
+            # render blocks; every other channel keeps its plain-text edit.
+            if self._rich_blocks_enabled(chat_id):
+                progress_blocks = self._maybe_progress_blocks(content, metadata)
+                if progress_blocks:
+                    update_kwargs["blocks"] = progress_blocks
+                elif finalize or self._rich_blocks_streaming_enabled():
+                    blocks = self._maybe_blocks(content, with_feedback=finalize)
+                    if blocks:
+                        update_kwargs["blocks"] = blocks
             client = self._get_client(
                 chat_id, team_id=self._metadata_team_id(metadata)
             )
@@ -2104,7 +2112,7 @@ class SlackAdapter(BasePlatformAdapter):
 
     # ----- Markdown → mrkdwn conversion -----
 
-    def _rich_blocks_enabled(self) -> bool:
+    def _rich_blocks_enabled(self, chat_id: Optional[str] = None) -> bool:
         """Whether to render outbound agent messages as Slack Block Kit blocks.
 
         Opt-in via ``platforms.slack.extra.rich_blocks`` (config.yaml). Default
@@ -2113,11 +2121,39 @@ class SlackAdapter(BasePlatformAdapter):
         (headers, dividers, true nested lists via ``rich_text``, and native
         Block Kit ``table`` blocks with per-column alignment); over-limit
         tables fall back to aligned monospace.
+
+        Canary scoping: when ``rich_blocks_channels`` is non-empty, only those
+        channel IDs render blocks (everyone else stays plain text). ``chat_id``
+        is ``None`` on internal helper calls; the ``send``/``edit_message``
+        entry points pass it and enforce membership there, so gating happens
+        once at the top rather than in every helper.
         """
         raw = self.config.extra.get("rich_blocks")
         if raw is None:
             return False
-        return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+        if str(raw).strip().lower() not in {"1", "true", "yes", "on"}:
+            return False
+        channels = self._rich_blocks_channels()
+        if channels and chat_id is not None:
+            return chat_id in channels
+        return True
+
+    def _rich_blocks_channels(self) -> set:
+        """Channel-ID allowlist for rich Block Kit rendering (canary rollout).
+
+        Reads ``platforms.slack.extra.rich_blocks_channels`` (a YAML list or a
+        comma-separated string) or ``SLACK_RICH_BLOCKS_CHANNELS``. Empty means
+        no restriction — every channel renders blocks (backward compatible).
+        Mirrors the parsing of :meth:`_slack_allowed_channels`.
+        """
+        raw = self.config.extra.get("rich_blocks_channels")
+        if raw is None:
+            raw = os.getenv("SLACK_RICH_BLOCKS_CHANNELS", "")
+        if isinstance(raw, list):
+            return {str(part).strip() for part in raw if str(part).strip()}
+        if isinstance(raw, str) and raw.strip():
+            return {part.strip() for part in raw.split(",") if part.strip()}
+        return set()
 
     def _rich_blocks_streaming_enabled(self) -> bool:
         """Whether intermediate streaming edits also render Block Kit.

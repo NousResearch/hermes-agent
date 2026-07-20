@@ -31,6 +31,50 @@ def _make_adapter(extra=None):
 RICH_MD = "# Title\n\n- a\n  - nested\n\n---\n\nbody text"
 
 
+class TestRichBlocksCanary:
+    """rich_blocks_channels scopes rich rendering to selected channels."""
+
+    @pytest.mark.asyncio
+    async def test_listed_channel_gets_blocks(self):
+        adapter, client = _make_adapter(
+            {"rich_blocks": True, "rich_blocks_channels": ["C1"]}
+        )
+        await adapter.send("C1", RICH_MD)
+        assert client.chat_postMessage.await_args.kwargs.get("blocks")
+
+    @pytest.mark.asyncio
+    async def test_unlisted_channel_stays_plain_text(self):
+        adapter, client = _make_adapter(
+            {"rich_blocks": True, "rich_blocks_channels": ["C1"]}
+        )
+        await adapter.send("C2", RICH_MD)
+        kwargs = client.chat_postMessage.await_args.kwargs
+        assert "blocks" not in kwargs
+        assert kwargs["text"]  # message content survives as plain text
+
+    @pytest.mark.asyncio
+    async def test_csv_form_parsed(self):
+        adapter, client = _make_adapter(
+            {"rich_blocks": True, "rich_blocks_channels": "C1, C3"}
+        )
+        await adapter.send("C3", RICH_MD)
+        assert client.chat_postMessage.await_args.kwargs.get("blocks")
+
+    @pytest.mark.asyncio
+    async def test_empty_list_renders_everywhere(self):
+        adapter, client = _make_adapter({"rich_blocks": True})
+        await adapter.send("C2", RICH_MD)
+        assert client.chat_postMessage.await_args.kwargs.get("blocks")
+
+    @pytest.mark.asyncio
+    async def test_edit_gated_by_channel(self):
+        adapter, client = _make_adapter(
+            {"rich_blocks": True, "rich_blocks_channels": ["C1"]}
+        )
+        await adapter.edit_message("C2", "111.222", RICH_MD, finalize=True)
+        assert "blocks" not in client.chat_update.await_args.kwargs
+
+
 class TestSendMessageBlocks:
     @pytest.mark.asyncio
     async def test_disabled_by_default_no_blocks(self):

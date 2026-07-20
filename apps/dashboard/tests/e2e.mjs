@@ -124,6 +124,7 @@ const WIDGET_PAGES = {
   Sports: ["scores"],
   Intel: ["worldclock", "quakes", "fx", "convert", "air", "space", "alerts", "flights"],
   Health: ["medbot", "pubmed", "trials", "drug", "calc", "meded"],
+  "AI Lab": ["codelab", "ailearn", "snippets"],
 };
 const pageOf = (type) => Object.keys(WIDGET_PAGES).find((p) => WIDGET_PAGES[p].includes(type)) || "Main";
 const gotoPage = async (name) => {
@@ -719,6 +720,27 @@ check("OSCE 'Practice' launches a MedBot station",
 await page.locator(".widget-meded .meded-modes .tab", { hasText: "Study" }).click();
 await page.waitForSelector(".widget-meded .meded-card", { timeout: 5000 });
 check("med ed study cards render", (await page.locator(".widget-meded .meded-card").count()) >= 4);
+
+// ---- AI Lab: code runner + resources + prompt library ---------------------------
+await gotoWidget("codelab");
+await page.waitForSelector(".widget-codelab .cl-editor", { timeout: 5000 });
+await page.evaluate(() => {
+  const t = document.querySelector(".widget-codelab .cl-editor");
+  t.value = "function solution(nums,target){const m=new Map();for(let i=0;i<nums.length;i++){if(m.has(target-nums[i]))return [m.get(target-nums[i]),i];m.set(nums[i],i);}}";
+  t.dispatchEvent(new Event("input", { bubbles: true }));
+});
+await page.locator(".widget-codelab .cl-actions .btn-primary").click();
+await page.waitForSelector(".widget-codelab .cl-summary.cl-pass", { timeout: 5000 });
+check("code lab runs JS in a worker and passes tests",
+  (await page.locator(".widget-codelab .cl-summary").innerText()).includes("passed"));
+await page.locator(".widget-codelab .cl-actions .btn", { hasText: "Hint" }).click();
+check("code lab reveals a hint", (await page.locator(".widget-codelab .cl-hint").count()) >= 1);
+check("AI hub shows resources + daily pick",
+  (await page.locator(".widget-ailearn .ail-item").count()) >= 4 && (await page.locator(".widget-ailearn .ail-daily").count()) === 1);
+check("prompt library seeded", (await page.locator(".widget-snippets .snip-item").count()) >= 3);
+await page.locator(".widget-snippets .snip-search").fill("debounce");
+await page.waitForTimeout(150);
+check("prompt library search filters", (await page.locator(".widget-snippets .snip-item").count()) === 1);
 await gotoWidget("medbot");
 check("medbot shows the SA decision-support intro", /South African/i.test(await page.locator(".widget-medbot").innerText()));
 await page.locator(".widget-medbot .med-input").fill("First-line HIV-TB co-infection management?");

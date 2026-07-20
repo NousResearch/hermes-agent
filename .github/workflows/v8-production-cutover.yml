@@ -1,0 +1,46 @@
+name: V8 Production Cutover
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: v8-production-cutover-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  production-cutover:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Playwright browser
+        run: npx playwright install chromium
+
+      - name: Run V8 production cutover check
+        run: npm run dashboard:v8:production:check
+        env:
+          HERMES_AGENT_DASHBOARD_USERNAME: ${{ secrets.HERMES_AGENT_DASHBOARD_USERNAME }}
+          HERMES_AGENT_DASHBOARD_PASSWORD: ${{ secrets.HERMES_AGENT_DASHBOARD_PASSWORD }}
+
+      - name: Upload V8 production artifacts
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: v8-production-cutover-artifacts
+          path: test-results/v8-production-cutover
+          if-no-files-found: ignore
+          retention-days: 7

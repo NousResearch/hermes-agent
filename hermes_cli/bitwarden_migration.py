@@ -10,6 +10,7 @@ from __future__ import annotations
 import os
 import re
 import shutil
+import stat
 import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -537,6 +538,7 @@ def apply_prune_plan(plan: PrunePlan) -> PruneResult:
             changed=False,
         )
 
+    original_mode = stat.S_IMODE(plan.env_path.stat().st_mode)
     original_lines, assignments = _read_env_assignment_spans(plan.env_path)
     if any(not assignment.complete for assignment in assignments):
         return PruneResult(
@@ -582,8 +584,8 @@ def apply_prune_plan(plan: PrunePlan) -> PruneResult:
             fh.write("".join(kept_lines))
             fh.flush()
             os.fsync(fh.fileno())
+        os.chmod(tmp_path, original_mode)
         atomic_replace(tmp_path, plan.env_path)
-        _tighten_mode(plan.env_path)
     except Exception:
         raise
 

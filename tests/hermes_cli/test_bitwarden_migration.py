@@ -314,7 +314,7 @@ PATH=/usr/local/bin
 
 class TestPruneApply:
     @pytest.mark.skipif(sys.platform.startswith("win"), reason="POSIX mode bits not enforced on Windows")
-    def test_apply_prune_plan_creates_0600_backup_and_leaves_config_untouched(
+    def test_apply_prune_plan_preserves_env_mode_and_creates_0600_backup(
         self,
         make_profile,
     ) -> None:
@@ -336,6 +336,7 @@ UNVERIFIED_SECRET=keep-me
 """,
         )
         env_path = profile_home / ".env"
+        env_path.chmod(0o640)
         config_path = profile_home / "config.yaml"
         original_config = config_path.read_text(encoding="utf-8")
 
@@ -374,7 +375,7 @@ UNVERIFIED_SECRET=keep-me
         assert result.backup_path.exists()
         assert result.backup_path.name.startswith(".env.bak-pre-bitwarden-prune-")
         assert stat.S_IMODE(result.backup_path.stat().st_mode) == 0o600
-        assert stat.S_IMODE(env_path.stat().st_mode) == 0o600
+        assert stat.S_IMODE(env_path.stat().st_mode) == 0o640
         assert result.backup_path.read_text(encoding="utf-8") == (
             "BWS_ACCESS_TOKEN=0.coding-token\n"
             "OPENAI_API_KEY=sk-coding-secret\n"
@@ -419,6 +420,7 @@ UNVERIFIED_SECRET=keep-me
 """,
         )
         env_path = profile_home / ".env"
+        original_mode = stat.S_IMODE(env_path.stat().st_mode)
 
         def fake_fetch(**_kwargs):
             return ({"PRIVATE_KEY": "line-one\nline-two"}, [])
@@ -452,7 +454,7 @@ UNVERIFIED_SECRET=keep-me
         assert result.backup_path is not None
         assert result.backup_path.read_text(encoding="utf-8") == original_env
         assert stat.S_IMODE(result.backup_path.stat().st_mode) == 0o600
-        assert stat.S_IMODE(env_path.stat().st_mode) == 0o600
+        assert stat.S_IMODE(env_path.stat().st_mode) == original_mode
         assert env_path.read_text(encoding="utf-8") == (
             "# keep leading comment\n"
             "BWS_ACCESS_TOKEN=0.coding-token\n"

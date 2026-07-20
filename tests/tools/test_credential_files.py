@@ -609,3 +609,36 @@ class TestMasterCredentialStoresAreNeverMountable:
         with patch.dict(os.environ, {"HERMES_HOME": str(home)}):
             assert register_credential_file("../../.ssh/id_rsa") is False
             assert register_credential_file("/etc/passwd") is False
+
+    def test_missing_guard_fails_closed_with_error_log(self, tmp_path, caplog):
+        """If agent.file_safety can't be imported the mount is refused loudly.
+
+        The fail-closed path must be observable (#67665): a silent deny with
+        no diagnostic reproduces the trust gap the deny-list was added to fix.
+        """
+        import tools.credential_files as cf
+
+        home = self._home(tmp_path)
+        with patch.dict(os.environ, {"HERMES_HOME": str(home)}), \
+                patch.object(cf, "get_read_block_error", None):
+            with caplog.at_level("ERROR", logger="tools.credential_files"):
+                assert cf.register_credential_file("google_token.json") is False
+            assert cf.get_credential_file_mounts() == []
+        assert any("deny-list cannot be consulted" in r.message for r in caplog.records)
+
+    def test_guard_exception_fails_closed_with_traceback(self, tmp_path, caplog):
+        """A raising guard refuses the mount and logs the stack trace."""
+        import tools.credential_files as cf
+
+        home = self._home(tmp_path)
+
+        def _boom(path):
+            raise RuntimeError("guard exploded")
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(home)}), \
+                patch.object(cf, "get_read_block_error", _boom):
+            with caplog.at_level("ERROR", logger="tools.credential_files"):
+                assert cf.register_credential_file("google_token.json") is False
+            assert cf.get_credential_file_mounts() == []
+        rec = next(r for r in caplog.records if "read guard raised" in r.message)
+        assert rec.exc_info is not None, "traceback must be attached (logger.exception)"

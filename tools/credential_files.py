@@ -28,6 +28,11 @@ from pathlib import Path
 from typing import Dict, List, Optional
 from hermes_cli.config import cfg_get
 
+try:  # pragma: no cover - exercised via the fail-closed test below
+    from agent.file_safety import get_read_block_error
+except ImportError:  # noqa: F401 - sentinel consumed in register_credential_file
+    get_read_block_error = None  # type: ignore[assignment]
+
 logger = logging.getLogger(__name__)
 
 # Session-scoped list of credential files to mount.
@@ -110,15 +115,22 @@ def register_credential_file(
     # Master credential stores are never mountable, even though they sit
     # inside HERMES_HOME and therefore pass the containment check above.
     # Fails CLOSED: if the canonical guard can't be consulted we refuse the
-    # mount rather than risk bind-mounting auth.json into a sandbox.
+    # mount rather than risk bind-mounting auth.json into a sandbox. The
+    # import lives at module top (no circular-import concern — file_safety is
+    # stdlib-only); the sentinel + logger.exception keep guard failures
+    # debuggable instead of silently swallowed (#67665).
+    if get_read_block_error is None:
+        logger.error(
+            "credential_files: refusing %r — agent.file_safety could not be "
+            "imported, so the master-store deny-list cannot be consulted",
+            relative_path,
+        )
+        return False
     try:
-        from agent.file_safety import get_read_block_error
-
         denied = get_read_block_error(str(resolved))
-    except Exception as exc:  # pragma: no cover - core module
-        logger.warning(
-            "credential_files: refusing %r — read guard unavailable (%s)",
-            relative_path, exc,
+    except Exception:
+        logger.exception(
+            "credential_files: refusing %r — read guard raised", relative_path
         )
         return False
     if denied:

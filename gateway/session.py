@@ -95,6 +95,7 @@ from .whatsapp_identity import (
     normalize_whatsapp_identifier,  # noqa: F401 - re-exported for gateway.session callers
 )
 from utils import atomic_replace
+from agent.turn_context import extract_api_content_sidecar
 
 # Session keys/ids flow into filesystem paths downstream (e.g.
 # ``sessions_dir / f"{session_id}.json"`` in hermes_state, request-dump
@@ -563,6 +564,16 @@ def build_session_context_prompt(
                 "Do not promise to perform these actions. If the user asks, explain "
                 "that you can only read messages sent directly to you and respond."
             )
+        # Static (never per-turn): live voice-channel state used to be
+        # appended here and changed bytes every turn the bot sat in a voice
+        # channel, busting the prompt cache.  It now arrives on the current
+        # user message as a `[Voice channel now: ...]` note, injected only
+        # when it actually changed.
+        lines.append("")
+        lines.append(
+            "Voice-channel state, when relevant, appears in the current "
+            "message as a `[Voice channel now: ...]` note."
+        )
     elif context.source.platform == Platform.BLUEBUBBLES:
         lines.append("")
         lines.append(
@@ -1028,6 +1039,10 @@ class SessionStore:
         self._persisted_routing_generation = 0
         self._inflight_lock = threading.Lock()
         self._inflight_sessions: Dict[str, _SessionFlight] = {}
+        self._transcript_retry_lock = threading.Lock()
+        self._dirty_transcripts: Dict[str, List[Dict[str, Any]]] = {}
+        self._transcript_append_failures: Dict[str, int] = {}
+        self._fts_rebuild_attempted = False
         self._has_active_processes_fn = has_active_processes_fn
         # Whether to keep writing the legacy sessions.json mirror alongside
         # the primary gateway_routing table in state.db. Default True for
@@ -2505,31 +2520,145 @@ class SessionStore:
                      _flush_messages_to_session_db(), preventing the
                      duplicate-write bug (#860).
         """
-        if self._db and not skip_db:
-            try:
-                self._db.append_message(
-                    session_id=session_id,
-                    role=message.get("role", "unknown"),
-                    content=message.get("content"),
-                    tool_name=message.get("tool_name"),
-                    tool_calls=message.get("tool_calls"),
-                    tool_call_id=message.get("tool_call_id"),
-                    reasoning=message.get("reasoning") if message.get("role") == "assistant" else None,
-                    reasoning_content=message.get("reasoning_content") if message.get("role") == "assistant" else None,
-                    reasoning_details=message.get("reasoning_details") if message.get("role") == "assistant" else None,
-                    codex_reasoning_items=message.get("codex_reasoning_items") if message.get("role") == "assistant" else None,
-                    codex_message_items=message.get("codex_message_items") if message.get("role") == "assistant" else None,
-                    # Platform-side message id (yuanbao msg_id, telegram update_id, …).
-                    # Accept either explicit ``platform_message_id`` or the legacy
-                    # ``message_id`` key the JSONL transcript used.
-                    platform_message_id=(
-                        message.get("platform_message_id") or message.get("message_id")
-                    ),
-                    observed=bool(message.get("observed")),
-                    timestamp=message.get("timestamp"),
+        if not self._db or skip_db:
+            return
+        with self._transcript_retry_lock:
+            pending = self._dirty_transcripts.setdefault(session_id, [])
+            pending.append(dict(message))
+            # Cap pending messages per session to avoid unbounded memory
+            # growth when the DB is persistently broken. Drop the oldest.
+            if len(pending) > self._MAX_PENDING_PER_SESSION:
+                dropped = pending.pop(0)
+                logger.warning(
+                    "Session DB transcript pending queue full for %s "
+                    "(cap=%d); dropping oldest message to make room",
+                    session_id, self._MAX_PENDING_PER_SESSION,
                 )
-            except Exception as e:
-                logger.debug("Session DB operation failed: %s", e)
+            # Snapshot the first pending message, then release the lock
+            # before the DB write so other sessions are not blocked.
+            msg = pending[0]
+        # DB write outside the retry lock — other sessions can append
+        # concurrently. We re-acquire the lock only to update the queue.
+        while True:
+            try:
+                self._append_transcript_message(session_id, msg)
+            except Exception as exc:
+                if self._is_fts_corruption_error(exc) and self._rebuild_fts_once():
+                    try:
+                        self._append_transcript_message(session_id, msg)
+                    except Exception as retry_exc:
+                        exc = retry_exc
+                    else:
+                        with self._transcript_retry_lock:
+                            if pending and pending[0] is msg:
+                                pending.pop(0)
+                            if not pending:
+                                self._dirty_transcripts.pop(session_id, None)
+                                self._transcript_append_failures.pop(session_id, None)
+                        continue
+                with self._transcript_retry_lock:
+                    failures = self._transcript_append_failures.get(session_id, 0) + 1
+                    self._transcript_append_failures[session_id] = failures
+                logger.warning(
+                    "Session DB transcript append failed for %s "
+                    "(failure_count=%d, pending=%d); will retry: %s",
+                    session_id, failures, len(pending), exc,
+                )
+                return
+            else:
+                with self._transcript_retry_lock:
+                    if pending and pending[0] is msg:
+                        pending.pop(0)
+                    if not pending:
+                        self._dirty_transcripts.pop(session_id, None)
+                        self._transcript_append_failures.pop(session_id, None)
+                        return
+                    msg = pending[0]
+                continue
+
+    def _append_transcript_message(self, session_id: str, message: Dict[str, Any]) -> None:
+        """Write one transcript row. Caller handles retry queuing."""
+        self._db.append_message(
+            session_id=session_id,
+            role=message.get("role", "unknown"),
+            content=message.get("content"),
+            tool_name=message.get("tool_name"),
+            tool_calls=message.get("tool_calls"),
+            tool_call_id=message.get("tool_call_id"),
+            reasoning=message.get("reasoning") if message.get("role") == "assistant" else None,
+            reasoning_content=message.get("reasoning_content") if message.get("role") == "assistant" else None,
+            reasoning_details=message.get("reasoning_details") if message.get("role") == "assistant" else None,
+            codex_reasoning_items=message.get("codex_reasoning_items") if message.get("role") == "assistant" else None,
+            codex_message_items=message.get("codex_message_items") if message.get("role") == "assistant" else None,
+            platform_message_id=(message.get("platform_message_id") or message.get("message_id")),
+            observed=bool(message.get("observed")),
+            timestamp=message.get("timestamp"),
+            # api_content sidecar: the exact bytes sent to the API for
+            # this message (prompt-cache-stable replay). Must survive
+            # any gateway-side persistence path or the next turn's
+            # replay diverges at this row.
+            api_content=extract_api_content_sidecar(message),
+        )
+
+    # Maximum in-memory pending messages per session before dropping the
+    # oldest. Prevents unbounded growth when the DB is persistently broken.
+    _MAX_PENDING_PER_SESSION = 200
+
+    @staticmethod
+    def _is_fts_corruption_error(exc: Exception) -> bool:
+        """True if *exc* looks like an FTS index corruption error.
+
+        Matches the specific SQLite error strings for malformed disk images
+        and FTS table corruption — not bare ``"fts"`` substrings which match
+        unrelated words like ``"shifts"`` or ``"gifts"``.
+        """
+        text = str(exc).lower()
+        return any(
+            marker in text
+            for marker in (
+                "database disk image is malformed",
+                "malformed database schema",
+                "messages_fts",
+                "no such table: messages_fts",
+            )
+        )
+
+    def _rebuild_fts_once(self) -> bool:
+        """Attempt FTS5 ``rebuild`` command once per store lifetime.
+
+        Delegates to ``SessionDB.rebuild_fts()`` which handles locking and
+        table-existence checks internally. Returns ``True`` when at least
+        one index was rebuilt.
+        """
+        if self._fts_rebuild_attempted:
+            return False
+        self._fts_rebuild_attempted = True
+        db = self._db
+        if db is None or not hasattr(db, "rebuild_fts"):
+            return False
+        try:
+            rebuilt = db.rebuild_fts()
+        except Exception as exc:
+            logger.warning("Session DB FTS rebuild failed: %s", exc)
+            return False
+        if rebuilt:
+            logger.warning(
+                "Rebuilt %d Session DB FTS index(es) after append corruption",
+                rebuilt,
+            )
+        return rebuilt > 0
+
+    def _clear_dirty_transcript(self, session_id: str) -> None:
+        """Drop queued pending messages for a session.
+
+        Called by ``rewrite_transcript`` and ``rewind_session`` so that
+        /retry, /undo, /compress — which replace or truncate the transcript —
+        don't leave stale messages that would be re-inserted on the next
+        append.
+        """
+        with self._transcript_retry_lock:
+            self._dirty_transcripts.pop(session_id, None)
+            self._transcript_append_failures.pop(session_id, None)
     
     def has_platform_message_id(
         self, session_id: str, platform_message_id: str
@@ -2565,6 +2694,7 @@ class SessionStore:
         """
         if not self._db:
             return True
+        self._clear_dirty_transcript(session_id)
         try:
             self._db.replace_messages(session_id, messages)
             return True
@@ -2607,6 +2737,7 @@ class SessionStore:
         """
         if not self._db:
             return None
+        self._clear_dirty_transcript(session_id)
         if n < 1:
             n = 1
         try:

@@ -1,6 +1,7 @@
 import { useStore } from '@nanostores/react'
 import type * as React from 'react'
 
+import { ProfileTag } from '@/app/chat/profile-tag'
 import { startSessionDrag } from '@/app/chat/session-drag'
 import { PlatformAvatar } from '@/app/messaging/platform-icon'
 import { Button } from '@/components/ui/button'
@@ -14,12 +15,14 @@ import { handoffOriginSource, sessionSourceLabel } from '@/lib/session-source'
 import { coarseElapsed } from '@/lib/time'
 import { cn } from '@/lib/utils'
 import { $backgroundRunningSessionIds } from '@/store/composer-status'
-import { $attentionSessionIds, $unreadFinishedSessionIds } from '@/store/session'
-import { openSessionTile } from '@/store/session-states'
+import { $unreadFinishedSessionIds } from '@/store/session'
+import { $sessionColorById } from '@/store/session-color'
+import { $attentionSessionIds, openSessionTile } from '@/store/session-states'
 import { canOpenSessionWindow, openSessionInNewWindow } from '@/store/windows'
 
 import { SidebarRowBody, SidebarRowGrab, SidebarRowLabel, SidebarRowLead, SidebarRowShell } from './chrome'
 import { SessionActionsMenu, SessionContextMenu } from './session-actions-menu'
+import { useProfilePrewarm } from './use-profile-prewarm'
 
 interface SidebarSessionRowProps extends React.ComponentProps<'div'> {
   session: SessionInfo
@@ -36,6 +39,10 @@ interface SidebarSessionRowProps extends React.ComponentProps<'div'> {
   reorderable?: boolean
   dragging?: boolean
   dragHandleProps?: React.HTMLAttributes<HTMLElement>
+  /** Tag the row with its owning profile (initial chip + tooltip). Used by
+   *  flat cross-profile lists — Pinned and search results in the All-profiles
+   *  view — where no group header communicates ownership (#66003). */
+  showProfile?: boolean
 }
 
 const AGE_KEY = { day: 'ageDay', hour: 'ageHour', minute: 'ageMin' } as const
@@ -61,6 +68,7 @@ export function SidebarSessionRow({
   reorderable = false,
   dragging = false,
   dragHandleProps,
+  showProfile = false,
   className,
   style,
   ref,
@@ -68,6 +76,7 @@ export function SidebarSessionRow({
 }: SidebarSessionRowProps) {
   const { t } = useI18n()
   const r = t.sidebar.row
+  const { cancelPrewarm, startPrewarm } = useProfilePrewarm(session.profile)
   const title = sessionTitle(session)
   const age = formatAge(session.last_active || session.started_at, r)
   const handleLabel = `Reorder ${title}`
@@ -83,6 +92,9 @@ export function SidebarSessionRow({
   const isUnread = useStore($unreadFinishedSessionIds).includes(session.id)
   // True when a terminal(background=true) process is alive in this session.
   const hasBackground = useStore($backgroundRunningSessionIds).includes(session.id)
+  // The session's resolved color (idle dot tint), read from the ONE shared map
+  // the pane tabs also read — an O(1) lookup, never re-derived per render.
+  const projectColor = useStore($sessionColorById)[session.id] ?? null
 
   // Resolve the dot's display state once — the four signals are mutually
   // exclusive by priority, so threading them as booleans through wrappers just
@@ -161,6 +173,12 @@ export function SidebarSessionRow({
 
           startSessionDrag({ id: session.id, profile: session.profile || 'default', title }, event)
         }}
+        // Hovering a row from another profile (the all-profiles view) telegraphs
+        // a cross-profile resume — start that backend's spawn now so the click
+        // doesn't pay the full cold boot. Same-profile rows no-op inside
+        // prewarmProfileBackend.
+        onPointerEnter={startPrewarm}
+        onPointerLeave={cancelPrewarm}
         ref={ref}
         style={style}
         {...rest}
@@ -226,11 +244,12 @@ export function SidebarSessionRow({
                 branchStem={branchStem}
                 className="transition-opacity group-hover/handle:opacity-0 group-focus-within/handle:opacity-0"
                 dotState={dotState}
+                projectColor={projectColor}
               />
             </SidebarRowGrab>
           ) : (
             <SidebarRowLead className={needsInput ? 'overflow-visible' : 'overflow-hidden'}>
-              <SessionRowLeadDot branchStem={branchStem} dotState={dotState} />
+              <SessionRowLeadDot branchStem={branchStem} dotState={dotState} projectColor={projectColor} />
             </SidebarRowLead>
           )}
           {handoffSource && handoffLabel ? (
@@ -245,6 +264,7 @@ export function SidebarSessionRow({
           <SidebarRowLabel className="flex-1 font-normal group-hover:text-foreground group-data-[working=true]:text-foreground/90">
             {title}
           </SidebarRowLabel>
+          {showProfile && <ProfileTag profile={session.profile} />}
         </SidebarRowBody>
       </SidebarRowShell>
     </SessionContextMenu>
@@ -259,11 +279,13 @@ type SessionDotState = 'background' | 'idle' | 'needs-input' | 'unread' | 'worki
 function SessionRowLeadDot({
   branchStem,
   dotState = 'idle',
-  className
+  className,
+  projectColor
 }: {
   branchStem?: string
   dotState?: SessionDotState
   className?: string
+  projectColor?: null | string
 }) {
   return (
     <span className={cn('flex items-center gap-0.5', className)}>
@@ -272,7 +294,7 @@ function SessionRowLeadDot({
           {branchStem}
         </span>
       ) : null}
-      <SidebarRowDot dotState={dotState} />
+      <SidebarRowDot dotState={dotState} projectColor={projectColor} />
     </span>
   )
 }
@@ -333,9 +355,32 @@ const DOT_VARIANTS: Record<SessionDotState, DotVariant> = {
   }
 }
 
-function SidebarRowDot({ dotState, className }: { dotState: SessionDotState; className?: string }) {
+function SidebarRowDot({
+  dotState,
+  className,
+  projectColor
+}: {
+  dotState: SessionDotState
+  className?: string
+  projectColor?: null | string
+}) {
   const { t } = useI18n()
   const r = t.sidebar.row
+
+  // An idle session inherits its project's color (a quiet marker matching the
+  // project row's own color dot). The active states (working / needs-input /
+  // background / unread) own the dot and keep their semantic color, so the
+  // inherited tint never competes with an attention cue.
+  if (dotState === 'idle' && projectColor) {
+    return (
+      <span
+        aria-hidden="true"
+        className={cn('size-1 rounded-full', className)}
+        style={{ backgroundColor: projectColor }}
+      />
+    )
+  }
+
   const variant = DOT_VARIANTS[dotState]
 
   return (

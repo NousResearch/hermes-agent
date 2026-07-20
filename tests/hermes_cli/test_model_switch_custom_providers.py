@@ -1326,3 +1326,156 @@ def test_resolve_custom_provider_bare_custom_self_heal_passes_key_env():
 
     assert resolved is not None
     assert resolved.api_key_env_vars == ("XIAOMI_MIMO_API_KEY",)
+
+
+def test_discovered_models_auto_saved_to_cache(monkeypatch):
+    """Discovered models are persisted to config so ``discover_models: false``
+    has a populated cache on the next read (#65652).
+
+    When a successful probe returns live models, ``_save_discovered_models_to_config``
+    must be called with the provider's base_url and the discovered model list.
+    """
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr("hermes_cli.providers.HERMES_OVERLAYS", {})
+
+    save_calls = []
+
+    def fake_fetch_api_models(api_key, base_url, **kwargs):
+        return ["discovered-a", "discovered-b", "discovered-c"]
+
+    monkeypatch.setattr("hermes_cli.models.fetch_api_models", fake_fetch_api_models)
+    monkeypatch.setattr(
+        "hermes_cli.model_switch._save_discovered_models_to_config",
+        lambda api_url, model_ids: save_calls.append((api_url, model_ids)),
+    )
+
+    custom_providers = [
+        {
+            "name": "my-gateway",
+            "api_key": "***",
+            "base_url": "https://gateway.example.com/v1",
+            "discover_models": True,
+            "model": "only-model",
+            "models": {"only-model": {"context_length": 128000}},
+        }
+    ]
+
+    providers = list_authenticated_providers(
+        current_provider="my-gateway",
+        current_base_url="https://gateway.example.com/v1",
+        custom_providers=custom_providers,
+        max_models=50,
+        probe_custom_providers=True,
+    )
+
+    assert len(save_calls) == 1, (
+        "_save_discovered_models_to_config must be called after a successful probe"
+    )
+    assert save_calls[0][0] == "https://gateway.example.com/v1"
+    assert save_calls[0][1] == ["discovered-a", "discovered-b", "discovered-c"]
+
+    gateway_prov = next(
+        (p for p in providers if p.get("api_url") == "https://gateway.example.com/v1"),
+        None,
+    )
+    assert gateway_prov is not None
+    assert gateway_prov["models"] == ["discovered-a", "discovered-b", "discovered-c"]
+
+
+def test_discovered_models_not_saved_on_empty_probe(monkeypatch):
+    """When a probe returns an empty list, no auto-save must happen (#65652)."""
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr("hermes_cli.providers.HERMES_OVERLAYS", {})
+
+    save_calls = []
+
+    def fake_fetch_api_models(api_key, base_url, **kwargs):
+        return []
+
+    monkeypatch.setattr("hermes_cli.models.fetch_api_models", fake_fetch_api_models)
+    monkeypatch.setattr(
+        "hermes_cli.model_switch._save_discovered_models_to_config",
+        lambda api_url, model_ids: save_calls.append((api_url, model_ids)),
+    )
+
+    custom_providers = [
+        {
+            "name": "my-gateway",
+            "api_key": "***",
+            "base_url": "https://gateway.example.com/v1",
+            "discover_models": True,
+            "model": "only-model",
+        }
+    ]
+
+    list_authenticated_providers(
+        current_provider="my-gateway",
+        current_base_url="https://gateway.example.com/v1",
+        custom_providers=custom_providers,
+        max_models=50,
+        probe_custom_providers=True,
+    )
+
+    assert save_calls == [], "Empty probe must not trigger a save"
+
+
+def test_save_discovered_models_skips_unchanged(monkeypatch):
+    """``_save_discovered_models_to_config`` must not write config when the
+    model list hasn't changed (#65652)."""
+    from hermes_cli.model_switch import _save_discovered_models_to_config
+
+    save_calls = []
+
+    def fake_save(config):
+        save_calls.append(dict(config))
+
+    monkeypatch.setattr("hermes_cli.config.save_config", fake_save)
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {
+            "custom_providers": [
+                {
+                    "name": "my-gateway",
+                    "base_url": "https://gateway.example.com/v1",
+                    "models": ["model-a", "model-b"],
+                }
+            ]
+        },
+    )
+
+    # Same list — no write
+    _save_discovered_models_to_config(
+        "https://gateway.example.com/v1",
+        ["model-a", "model-b"],
+    )
+    assert save_calls == [], "Unchanged models must not trigger config write"
+
+    # Changed list — write
+    _save_discovered_models_to_config(
+        "https://gateway.example.com/v1",
+        ["model-a", "model-b", "model-c"],
+    )
+    assert len(save_calls) == 1, "Changed models must trigger config write"
+    updated = save_calls[0]["custom_providers"][0]
+    assert updated["models"] == ["model-a", "model-b", "model-c"]
+
+
+def test_save_discovered_models_noop_on_empty_args(monkeypatch):
+    """``_save_discovered_models_to_config`` is a no-op when api_url or
+    model_ids are blank (#65652)."""
+    from hermes_cli.model_switch import _save_discovered_models_to_config
+
+    load_calls = 0
+
+    def fake_load():
+        nonlocal load_calls
+        load_calls += 1
+        return {"custom_providers": []}
+
+    monkeypatch.setattr("hermes_cli.config.load_config", fake_load)
+
+    _save_discovered_models_to_config("", ["a"])
+    _save_discovered_models_to_config("https://x.com", [])
+    _save_discovered_models_to_config("", [])
+
+    assert load_calls == 0, "load_config must not be called for empty args"

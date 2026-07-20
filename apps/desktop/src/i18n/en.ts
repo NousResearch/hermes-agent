@@ -314,6 +314,7 @@ export const en: Translations = {
       providers: 'Providers',
       providerAccounts: 'Accounts',
       providerApiKeys: 'API keys',
+      providerCustomEndpoints: 'Custom Endpoints',
       gateway: 'Gateway',
       apiKeys: 'Tools & Keys',
       keybinds: 'Keyboard Shortcuts',
@@ -322,6 +323,7 @@ export const en: Translations = {
       mcp: 'MCP',
       archivedChats: 'Archived Chats',
       about: 'About',
+      billing: 'Billing',
       notifications: 'Notifications',
       plugins: 'Plugins'
     },
@@ -512,6 +514,7 @@ export const en: Translations = {
     config: {
       none: 'None',
       noneParen: '(none)',
+      builtinOnly: 'Built-in only',
       notSet: 'Not set',
       commaSeparated: 'comma-separated values',
       loading: 'Loading Hermes configuration...',
@@ -535,6 +538,7 @@ export const en: Translations = {
     envActions: {
       actionsFor: label => `Actions for ${label}`,
       credentialActions: 'Credential actions',
+      manageInKeys: 'Manage in API Keys',
       docs: 'Docs',
       hideValue: 'Hide value',
       revealValue: 'Reveal value',
@@ -766,6 +770,10 @@ export const en: Translations = {
       noProviderKeys: 'No provider API keys available.',
       searchKeys: 'Search providers…',
       noKeysMatch: 'No providers match your search.',
+      localEndpoint: {
+        title: 'Local / custom endpoint',
+        description: 'Point Hermes at any OpenAI-compatible endpoint (Zyphra, vLLM, llama.cpp, Ollama, etc).'
+      },
       loading: 'Loading providers...'
     },
     sessions: {
@@ -814,11 +822,22 @@ export const en: Translations = {
       noProviderOptions: 'This toolset has no provider options — enable it and it works with your current setup.',
       noProviders: 'No providers are available for this toolset right now.',
       ready: 'Ready',
+      needsSignIn: 'Needs sign-in',
+      needsSetup: 'Needs setup',
       nousIncluded: 'Included with a Nous subscription — sign in to Nous Portal to activate.',
+      nousAuthNeededTitle: 'Sign in to Nous Portal',
+      nousAuthNeededMessage: provider => `${provider} is saved but won't activate until you sign in to Nous Portal.`,
+      nousAuthSignIn: 'Sign in',
+      nousAuthDoneTitle: 'Nous Portal connected',
+      nousAuthDoneMessage: 'Your subscription backends are now active.',
+      nousAuthFailed: 'Nous Portal sign-in did not complete',
       noApiKeyRequired: 'No API key required.',
       postSetupHint: step =>
         `This backend needs a one-time install (${step}). Runs on this machine — may take a few minutes.`,
+      postSetupInstalledHint: 'Installed. Re-run setup only if something is broken.',
       postSetupRun: 'Run setup',
+      postSetupRerun: 'Re-run setup',
+      postSetupInstalled: 'Installed',
       postSetupRunning: 'Installing…',
       postSetupStarting: 'Starting…',
       postSetupCompleteTitle: 'Setup complete',
@@ -826,6 +845,15 @@ export const en: Translations = {
       postSetupErrorTitle: 'Setup finished with errors',
       postSetupErrorMessage: step => `Check the ${step} log.`,
       postSetupFailed: step => `Failed to run ${step} setup`,
+      webSearchActive: backend => `Search: ${backend}`,
+      webExtractActive: backend => `Extract: ${backend}`,
+      webCapabilityUnset: 'not set',
+      webUseForSearch: 'Use for Search',
+      webUseForExtract: 'Use for Extract',
+      webUsedForSearch: 'Search backend',
+      webUsedForExtract: 'Extract backend',
+      webCapabilitySelectedMessage: (provider, capability) => `${provider} now handles web ${capability}.`,
+      failedSelectCapability: provider => `Failed to set ${provider}`,
       loadingModels: 'Loading model catalog...',
       modelSectionTitle: 'Model',
       modelCount: count => `${count} model${count === 1 ? '' : 's'}`,
@@ -834,7 +862,20 @@ export const en: Translations = {
       modelInactiveHint: 'Select this backend first to change its model.',
       modelSelectedTitle: 'Model selected',
       modelSelectedMessage: model => `${model} applies to new sessions.`,
-      failedSelectModel: model => `Failed to select ${model}`
+      failedSelectModel: model => `Failed to select ${model}`,
+      terminalBackend: {
+        sectionTitle: 'Execution backend',
+        loading: 'Checking execution backends…',
+        failedLoad: 'Could not load terminal backends',
+        ready: 'Ready',
+        needsSetup: 'Needs setup',
+        unavailable: 'Unavailable',
+        inUse: 'In use',
+        selectedTitle: 'Backend selected',
+        selectedMessage: backend => `Terminal commands now run via ${backend}. Applies to new sessions.`,
+        failedSelect: backend => `Failed to select ${backend}`,
+        needsSetupHint: 'You can select this backend now — commands will fail until setup is complete.'
+      }
     }
   },
 
@@ -856,6 +897,9 @@ export const en: Translations = {
     noDescription: 'No description.',
     configured: 'Configured',
     needsKeys: 'Needs keys',
+    visionModelHint:
+      'Vision uses your auxiliary model configuration — the image-capable model is picked there, not per-provider here.',
+    visionModelLink: 'Choose vision model in Settings → Models',
     toolsetsEnabled: (enabled, total) => `${enabled}/${total} toolsets enabled`,
     configureToolset: label => `Configure ${label}`,
     toggleToolset: label => `Toggle ${label} toolset`,
@@ -1497,6 +1541,8 @@ export const en: Translations = {
     promptPlaceholder: 'Summarize my unread Slack threads and email me the top 5...',
     frequencyLabel: 'Frequency',
     deliverLabel: 'Deliver to',
+    modelLabel: 'Model',
+    modelDefault: 'Default (global model)',
     customScheduleLabel: 'Custom schedule',
     customPlaceholder: '0 9 * * * or weekdays at 9am',
     customHint: 'Cron expression, or phrases like "every hour" or "weekdays at 9am".',
@@ -1660,6 +1706,7 @@ export const en: Translations = {
       finishedUnread: 'Finished — unread',
       backgroundRunning: 'Background task running',
       handoffOrigin: platform => `Handed off from ${platform}`,
+      ownedByProfile: profile => `Profile: ${profile}`,
       renamed: 'Renamed',
       renameFailed: 'Rename failed',
       renameTitle: 'Rename session',
@@ -1971,6 +2018,7 @@ export const en: Translations = {
     recommended: 'Recommended',
     connected: 'Connected',
     featuredPitch: 'One subscription, 300+ frontier models — the recommended way to run Hermes',
+    fireworksPitch: 'Direct model API — Fireworks-hosted frontier models',
     openRouterPitch: 'One key, hundreds of models — a solid default',
     apiKeyOptions: {
       fireworks: {
@@ -2173,6 +2221,7 @@ export const en: Translations = {
       noModel: 'no model',
       switchModel: 'Switch model',
       openModelPicker: 'Open model picker',
+      modelPinned: 'pinned by you; new chats use this instead of the Settings default',
       modelTitle: (provider, model) => `Model · ${provider}: ${model}`,
       providerModelTitle: (provider, model) => `${provider} · ${model}`
     }

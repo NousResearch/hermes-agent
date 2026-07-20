@@ -180,7 +180,11 @@ jobs:
       - name: Require ci-reviewed label
         id: label-check
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Read-only label lookup. Use the built-in GITHUB_TOKEN (present and
+          # read-only on forks) so the gate works on fork PRs; fall back to it
+          # when AUTOFIX_BOT_PAT is empty. `|| true` degrades an API blip to
+          # "label absent" rather than hard-failing the step.
+          GH_TOKEN: ${{ secrets.AUTOFIX_BOT_PAT || github.token }}
         run: |
           set -euo pipefail
           PR="${{ github.event.pull_request.number }}"
@@ -200,7 +204,7 @@ jobs:
       - name: Post or update review warning
         if: steps.label-check.outputs.reviewed != 'true' && github.event.pull_request.head.repo.fork != true
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.AUTOFIX_BOT_PAT || github.token }}
         run: |
           set -euo pipefail
           PR="${{ github.event.pull_request.number }}"
@@ -248,7 +252,7 @@ jobs:
       - name: Update previous warning to passed
         if: steps.label-check.outputs.reviewed == 'true' && github.event.pull_request.head.repo.fork != true
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.AUTOFIX_BOT_PAT || github.token }}
         run: |
           set -euo pipefail
           PR="${{ github.event.pull_request.number }}"

@@ -93,11 +93,10 @@ import {
   $sessions,
   $sessionsLoading,
   $sessionsTotal,
-  $workingSessionIds,
   sessionPinId,
   setCurrentCwd
 } from '@/store/session'
-import { $focusedStoredSessionId, type SplitDir } from '@/store/session-states'
+import { $focusedStoredSessionId, $workingSessionIds, type SplitDir } from '@/store/session-states'
 
 import {
   type AppView,
@@ -717,7 +716,7 @@ export function ChatSidebar({
   // session settles (its turn finished) or the window refocuses (an external
   // terminal may have changed things) — only while a project is entered, and
   // only the cheap per-repo `git worktree list`, never the heavy tree scan.
-  const prevWorkingIdsRef = useRef<string[]>(workingSessionIds)
+  const prevWorkingIdsRef = useRef<readonly string[]>(workingSessionIds)
 
   useEffect(() => {
     const prev = prevWorkingIdsRef.current
@@ -1232,6 +1231,7 @@ export function ChatSidebar({
                 pinned={false}
                 rootClassName="min-h-32 flex-1 overflow-hidden p-0"
                 sessions={searchResults}
+                showProfileTags={showAllProfiles}
                 workingSessionIdSet={workingSessionIdSet}
               />
             )}
@@ -1254,6 +1254,7 @@ export function ChatSidebar({
                 pinned
                 rootClassName="shrink-0 p-0 pb-1"
                 sessions={pinnedSessions}
+                showProfileTags={showAllProfiles}
                 sortable={pinnedSessions.length > 1}
                 workingSessionIdSet={workingSessionIdSet}
               />

@@ -42,8 +42,30 @@ logger = logging.getLogger(__name__)
 # Module-level cache.  The probe result is deterministic for the
 # lifetime of the process — Python install state doesn't change
 # mid-session in any way that would matter for the system prompt.
+#
+# Concurrency model (#67964): the probe runs in exactly ONE background
+# worker thread; ``_PROBE_DONE`` signals completion.  Callers never
+# execute the probe themselves and never wait unboundedly — they block
+# at most ``_PROBE_WAIT_TIMEOUT`` seconds on the event and then fail
+# open with "".  This guarantees a stuck probe (e.g. a Windows pipe
+# wedged open by an orphaned pip descendant) can degrade at most the
+# probe line itself, never system-prompt construction.
 _CACHE_LOCK = threading.Lock()
 _CACHED_LINE: Optional[str] = None  # None = not probed yet; "" = probed, nothing to say.
+_PROBE_DONE = threading.Event()
+_PROBE_THREAD: Optional[threading.Thread] = None
+# Generation counter — bumped on every reset so a stale worker (started
+# before a test reset) can't publish its result into the fresh generation.
+_PROBE_GEN = 0
+
+# Upper bound a prompt build will wait for the probe.  Generous vs the
+# ~0.5s healthy runtime (6 subprocesses × 3s timeout ≈ 18s pathological
+# worst case), but finite: prompt construction must always proceed.
+_PROBE_WAIT_TIMEOUT = 10.0
+# Once one caller has burned the full wait and given up, later callers
+# stop paying it too — they just peek at the event.  If the stuck worker
+# ever finishes, the published line resumes appearing in new prompts.
+_WAIT_ALREADY_TIMED_OUT = False
 
 # Remote backends — keep in sync with agent/prompt_builder.py:_REMOTE_TERMINAL_BACKENDS.
 # Duplicated rather than imported to avoid a circular import (prompt_builder
@@ -53,26 +75,77 @@ _REMOTE_BACKENDS = frozenset({
 })
 
 
+def _kill_process_tree(proc: "subprocess.Popen") -> None:
+    """Best-effort kill of ``proc`` and its descendants.
+
+    On Windows, killing only the direct child leaves any descendants it
+    spawned (e.g. the ``python.exe`` a ``pip.exe`` console-script launcher
+    starts) alive and holding inherited stdout/stderr write handles, which
+    is exactly what wedges pipe readers (#67964).  ``taskkill /T`` sweeps
+    the tree while it is still intact; it cannot catch descendants that
+    were already orphaned, which is why ``_run`` must additionally never
+    perform an unbounded pipe read after a timeout.
+    """
+    if sys.platform == "win32":
+        try:
+            # No pipes → this call cannot itself deadlock on captured output.
+            subprocess.run(
+                ["taskkill", "/T", "/F", "/PID", str(proc.pid)],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=2,
+                check=False,
+            )
+        except Exception:
+            pass
+    try:
+        proc.kill()
+    except Exception:
+        pass
+
+
 def _run(cmd: list[str], timeout: float = 3.0) -> tuple[int, str, str]:
     """Run a short subprocess.  Returns (returncode, stdout, stderr).
 
     Failures (binary missing, timeout, OSError) return (-1, "", "<reason>").
+
+    Deliberately NOT ``subprocess.run``: on Windows, ``run()`` reacts to a
+    ``TimeoutExpired`` by calling ``communicate()`` a second time with **no
+    timeout** to collect partial output.  That second call joins the pipe
+    reader threads unboundedly — and if the child spawned a descendant that
+    inherited the stdout/stderr write handles and outlives it (an orphaned
+    ``pip --version`` grandchild in incident #67964), the pipes never hit
+    EOF and the join blocks forever.  Here a timeout kills the process tree
+    and abandons the (daemon) reader threads instead: bounded always, at
+    the cost of discarding partial output we don't need anyway.
     """
+    proc = None
     try:
-        result = subprocess.run(
+        proc = subprocess.Popen(
             cmd,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            check=False,
             stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
         )
-        return result.returncode, (result.stdout or "").strip(), (result.stderr or "").strip()
+        stdout, stderr = proc.communicate(timeout=timeout)
+        return proc.returncode, (stdout or "").strip(), (stderr or "").strip()
     except FileNotFoundError:
         return -1, "", "not found"
     except subprocess.TimeoutExpired:
+        if proc is not None:
+            _kill_process_tree(proc)
+            try:
+                # Bounded reap of the direct child.  Does NOT read the pipes,
+                # so an orphaned descendant holding them open cannot block us.
+                proc.wait(timeout=1)
+            except Exception:
+                pass
         return -1, "", "timeout"
     except OSError as exc:
+        if proc is not None:
+            _kill_process_tree(proc)
         return -1, "", f"oserror: {exc}"
 
 
@@ -219,29 +292,74 @@ def get_environment_probe_line(*, force_refresh: bool = False) -> str:
     assembler should drop the section in that case rather than
     emit an empty heading.
 
+    The probe itself always runs in a single background worker thread;
+    this function waits on its completion event for at most
+    ``_PROBE_WAIT_TIMEOUT`` seconds and then fails open with "".  A
+    wedged probe subprocess (#67964) therefore can never block
+    system-prompt construction — at worst the toolchain line is absent
+    from prompts built while the probe is stuck.
+
     ``force_refresh`` is for tests; real callers should never need it.
     """
-    global _CACHED_LINE
+    global _CACHED_LINE, _PROBE_THREAD, _PROBE_GEN, _WAIT_ALREADY_TIMED_OUT
     if force_refresh:
         with _CACHE_LOCK:
             _CACHED_LINE = None
+            _PROBE_DONE.clear()
+            _PROBE_THREAD = None
+            _PROBE_GEN += 1
+            _WAIT_ALREADY_TIMED_OUT = False
 
-    if _CACHED_LINE is not None:
-        return _CACHED_LINE
+    if _PROBE_DONE.is_set():
+        return _CACHED_LINE or ""
 
+    _ensure_probe_started()
+    wait_timeout = 0.05 if _WAIT_ALREADY_TIMED_OUT else _PROBE_WAIT_TIMEOUT
+    if not _PROBE_DONE.wait(timeout=wait_timeout):
+        # Probe stuck or pathologically slow.  The line is a nice-to-have;
+        # blocking prompt construction is an outage.  Fail open — if the
+        # worker eventually finishes, sessions started later get the line.
+        if not _WAIT_ALREADY_TIMED_OUT:
+            _WAIT_ALREADY_TIMED_OUT = True
+            logger.warning(
+                "env_probe did not finish within %.0fs; building the system "
+                "prompt without the Python toolchain line",
+                _PROBE_WAIT_TIMEOUT,
+            )
+        return ""
+    return _CACHED_LINE or ""
+
+
+def _probe_worker(gen: int) -> None:
+    """Body of the single probe thread — computes and publishes the line."""
+    global _CACHED_LINE
+    try:
+        line = _build_probe_line()
+    except Exception as exc:  # never let probe failure propagate
+        logger.debug("env_probe failed: %s", exc)
+        line = ""
     with _CACHE_LOCK:
-        if _CACHED_LINE is not None:  # raced
-            return _CACHED_LINE
-        try:
-            line = _build_probe_line()
-        except Exception as exc:  # never let probe failure block prompt build
-            logger.debug("env_probe failed: %s", exc)
-            line = ""
+        if gen != _PROBE_GEN:
+            return  # superseded by a reset (tests) — discard stale result
         _CACHED_LINE = line
-        return line
+        _PROBE_DONE.set()
 
 
-_warm_started = False
+def _ensure_probe_started() -> None:
+    """Start the probe worker if it isn't running and hasn't finished."""
+    global _PROBE_THREAD
+    with _CACHE_LOCK:
+        if _PROBE_DONE.is_set():
+            return
+        if _PROBE_THREAD is not None and _PROBE_THREAD.is_alive():
+            return
+        _PROBE_THREAD = threading.Thread(
+            target=_probe_worker,
+            args=(_PROBE_GEN,),
+            name="env-probe",
+            daemon=True,
+        )
+        _PROBE_THREAD.start()
 
 
 def warm_environment_probe_async() -> None:
@@ -251,25 +369,19 @@ def warm_environment_probe_async() -> None:
     critical path.
 
     Idempotent and fail-safe.  The prompt-build call to
-    ``get_environment_probe_line`` takes the same ``_CACHE_LOCK``, so it
-    blocks only for whatever remains of an in-flight warm instead of
-    recomputing.  Called from agent init (all platforms); safe to call
-    from anywhere.
+    ``get_environment_probe_line`` waits (bounded) on the same worker's
+    completion event instead of recomputing.  Called from agent init
+    (all platforms); safe to call from anywhere.
     """
-    global _warm_started
-    if _warm_started or _CACHED_LINE is not None:
-        return
-    _warm_started = True
-    threading.Thread(
-        target=get_environment_probe_line,
-        name="env-probe-warm",
-        daemon=True,
-    ).start()
+    _ensure_probe_started()
 
 
 def _reset_cache_for_tests() -> None:
     """Test helper — clear the cache between probe scenarios."""
-    global _CACHED_LINE, _warm_started
+    global _CACHED_LINE, _PROBE_THREAD, _PROBE_GEN, _WAIT_ALREADY_TIMED_OUT
     with _CACHE_LOCK:
         _CACHED_LINE = None
-        _warm_started = False
+        _PROBE_DONE.clear()
+        _PROBE_THREAD = None
+        _PROBE_GEN += 1
+        _WAIT_ALREADY_TIMED_OUT = False

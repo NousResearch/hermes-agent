@@ -489,10 +489,10 @@ def _spawn(spec: ShellHookSpec, stdin_json: str) -> Dict[str, Any]:
     return result
 
 
-def _make_callback(spec: ShellHookSpec) -> Callable[..., Optional[Dict[str, Any]]]:
+def _make_callback(spec: ShellHookSpec) -> Callable[..., Optional[Union[str, Dict[str, Any]]]]:
     """Build the closure that ``invoke_hook()`` will call per firing."""
 
-    def _callback(**kwargs: Any) -> Optional[Dict[str, Any]]:
+    def _callback(**kwargs: Any) -> Optional[Union[str, Dict[str, Any]]]:
         # Matcher gate — only meaningful for tool-scoped events.
         if spec.event in {"pre_tool_call", "post_tool_call"}:
             if not spec.matches_tool(kwargs.get("tool_name")):
@@ -563,8 +563,8 @@ def _block_message(primary: Any, secondary: Any) -> str:
     return raw if isinstance(raw, str) and raw else _DEFAULT_BLOCK_MESSAGE
 
 
-def _parse_response(event: str, stdout: str) -> Optional[Dict[str, Any]]:
-    """Translate stdout JSON into a Hermes wire-shape dict.
+def _parse_response(event: str, stdout: str) -> Optional[Union[str, Dict[str, Any]]]:
+    """Translate stdout JSON into a Hermes wire-shape value.
 
     For ``pre_tool_call`` the Claude-Code-style ``{"decision": "block",
     "reason": "..."}`` payload is translated into the canonical Hermes
@@ -576,6 +576,14 @@ def _parse_response(event: str, stdout: str) -> Optional[Dict[str, Any]]:
 
     For ``pre_llm_call``, ``{"context": "..."}`` is passed through
     unchanged to match the existing plugin-hook contract.
+
+    For the response-shaping family — ``transform_llm_output``,
+    ``transform_tool_result``, ``transform_terminal_output`` — a bare
+    JSON string on stdout (e.g. ``printf '"replaced text"\\n'``) is
+    returned as a plain string so the caller's ``isinstance(result, str)``
+    replacement path actually fires (#67890). Returning a dict here would
+    silently no-op every such script because the consumer asks for a
+    string, never for a shape key.
 
     Anything else returns ``None``.
     """
@@ -590,6 +598,25 @@ def _parse_response(event: str, stdout: str) -> Optional[Dict[str, Any]]:
             "shell hook stdout was not valid JSON (event=%s): %s",
             event, stdout[:200],
         )
+        return None
+
+    # transform_* events want a bare string replacement. Accept both:
+    # ‑ JSON string literal on stdout (``printf '"text"\\n'``) — the
+    #   idiom the docs demonstrate — and
+    # ‑ dict with a single ``"text"``/``"content"`` field (handy when
+    #   the shell script wants to package metadata next to the body).
+    # Real-world #67890 reproducer printed a JSON string literal and
+    # observed the response unchanged because the previous shape forced
+    # everything through the ``{"context": ...}`` extraction.
+    if event in _TRANSFORM_RESPONSE_EVENTS:
+        if isinstance(data, str) and data:
+            return data
+        if isinstance(data, dict):
+            body = data.get("text") if isinstance(data.get("text"), str) else None
+            if body is None:
+                body = data.get("content") if isinstance(data.get("content"), str) else None
+            if body:
+                return body
         return None
 
     if not isinstance(data, dict):
@@ -618,6 +645,15 @@ def _parse_response(event: str, stdout: str) -> Optional[Dict[str, Any]]:
         return {"context": context}
 
     return None
+
+
+# Response-shaping transforms return a bare string (the replacement text)
+# rather than a dict —see :func:`_parse_response` for the rationale (#67890).
+_TRANSFORM_RESPONSE_EVENTS = frozenset({
+    "transform_llm_output",
+    "transform_tool_result",
+    "transform_terminal_output",
+})
 
 
 # ---------------------------------------------------------------------------

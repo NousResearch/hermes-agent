@@ -377,14 +377,14 @@ async def test_heartbeat_probe_reenters_ladder_when_updater_not_running():
     mock_app.bot.get_me = AsyncMock()
     adapter._app = mock_app
 
-    adapter._handle_polling_network_error = AsyncMock()
+    adapter._schedule_polling_recovery = MagicMock()
 
     with patch("asyncio.sleep", new_callable=AsyncMock):
         await adapter._verify_polling_after_reconnect()
 
     mock_app.bot.get_me.assert_not_called()
-    adapter._handle_polling_network_error.assert_awaited_once()
-    err = adapter._handle_polling_network_error.await_args.args[0]
+    adapter._schedule_polling_recovery.assert_called_once()
+    err = adapter._schedule_polling_recovery.call_args.args[0]
     assert isinstance(err, RuntimeError)
     assert "not running" in str(err).lower()
 
@@ -408,7 +408,7 @@ async def test_heartbeat_probe_reenters_ladder_when_get_me_times_out():
     mock_app.bot.get_me = AsyncMock(side_effect=hang_forever)
     adapter._app = mock_app
 
-    adapter._handle_polling_network_error = AsyncMock()
+    adapter._schedule_polling_recovery = MagicMock()
 
     async def fast_wait_for(coro, timeout):
         if asyncio.iscoroutine(coro):
@@ -419,7 +419,7 @@ async def test_heartbeat_probe_reenters_ladder_when_get_me_times_out():
         with patch("plugins.platforms.telegram.adapter.asyncio.wait_for", new=fast_wait_for):
             await adapter._verify_polling_after_reconnect()
 
-    adapter._handle_polling_network_error.assert_awaited_once()
+    adapter._schedule_polling_recovery.assert_called_once()
 
 
 @pytest.mark.asyncio
@@ -438,15 +438,56 @@ async def test_heartbeat_probe_reenters_ladder_on_get_me_network_error():
     mock_app.bot.get_me = AsyncMock(side_effect=ConnectionError("pool wedged"))
     adapter._app = mock_app
 
-    adapter._handle_polling_network_error = AsyncMock()
+    adapter._schedule_polling_recovery = MagicMock()
 
     with patch("asyncio.sleep", new_callable=AsyncMock):
         await adapter._verify_polling_after_reconnect()
 
-    adapter._handle_polling_network_error.assert_awaited_once()
+    adapter._schedule_polling_recovery.assert_called_once()
     assert isinstance(
-        adapter._handle_polling_network_error.await_args.args[0], ConnectionError
+        adapter._schedule_polling_recovery.call_args.args[0], ConnectionError
     )
+
+
+@pytest.mark.asyncio
+async def test_overlapping_post_reconnect_probes_schedule_one_recovery():
+    """Overlapping failed probes must collapse to one recovery task.
+
+    Successful reconnects can leave multiple delayed probes behind. A failed
+    probe must use `_polling_error_task` as the single-flight boundary rather
+    than calling the recovery coroutine directly.
+    """
+    adapter = _make_adapter()
+    mock_updater = MagicMock()
+    mock_updater.running = False
+    mock_app = MagicMock()
+    mock_app.updater = mock_updater
+    adapter._app = mock_app
+
+    recovery_started = asyncio.Event()
+    release_recovery = asyncio.Event()
+
+    async def blocked_recovery(_error):
+        recovery_started.set()
+        await release_recovery.wait()
+
+    adapter._handle_polling_network_error = AsyncMock(side_effect=blocked_recovery)
+
+    with patch("asyncio.sleep", new_callable=AsyncMock):
+        await asyncio.gather(
+            adapter._verify_polling_after_reconnect(),
+            adapter._verify_polling_after_reconnect(),
+        )
+
+    await recovery_started.wait()
+    recovery_task = adapter._polling_error_task
+    assert recovery_task is not None
+    assert recovery_task in adapter._background_tasks
+    assert adapter._send_path_degraded is True
+    adapter._handle_polling_network_error.assert_awaited_once()
+
+    release_recovery.set()
+    await recovery_task
 
 
 @pytest.mark.asyncio

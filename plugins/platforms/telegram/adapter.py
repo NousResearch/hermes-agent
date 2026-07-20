@@ -1739,12 +1739,12 @@ class TelegramAdapter(BasePlatformAdapter):
                 )
 
     def _schedule_polling_recovery(self, error: Exception, *, reason: str) -> None:
-        """Schedule polling recovery without failing gateway startup.
+        """Schedule exactly one polling-recovery task.
 
-        A Telegram bootstrap failure (deleteWebhook / initial start_polling)
-        caused by a transient network error should degrade only the Telegram
-        adapter: the gateway process stays alive and the existing reconnect
-        ladder (``_handle_polling_network_error``) recovers in the background.
+        Bootstrap failures, PTB callbacks, the persistent heartbeat, and delayed
+        post-reconnect probes can all observe the same outage. They must pass
+        through this shared guard; directly awaiting the recovery coroutine
+        bypasses ``_polling_error_task`` and permits concurrent stop/start cycles.
         """
         if self.has_fatal_error:
             return
@@ -2128,8 +2128,9 @@ class TelegramAdapter(BasePlatformAdapter):
                 "[%s] Updater not running %ds after reconnect — treating as wedged",
                 self.name, HEARTBEAT_PROBE_DELAY,
             )
-            await self._handle_polling_network_error(
-                RuntimeError("Updater not running after reconnect heartbeat")
+            self._schedule_polling_recovery(
+                RuntimeError("Updater not running after reconnect heartbeat"),
+                reason="post-reconnect heartbeat",
             )
             return
 
@@ -2141,7 +2142,10 @@ class TelegramAdapter(BasePlatformAdapter):
                 "[%s] Polling heartbeat probe failed %ds after reconnect: %s",
                 self.name, HEARTBEAT_PROBE_DELAY, probe_err,
             )
-            await self._handle_polling_network_error(probe_err)
+            self._schedule_polling_recovery(
+                probe_err,
+                reason="post-reconnect heartbeat",
+            )
 
     def _disarm_ptb_retry_loop(self) -> None:
         """Synchronously stop PTB's internal polling retry loop.

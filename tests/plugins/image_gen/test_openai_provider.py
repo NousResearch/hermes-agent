@@ -123,6 +123,15 @@ class TestModelResolution:
 
     def test_custom_base_url_ignores_macos_system_proxy(self, monkeypatch):
         monkeypatch.setenv("OPENAI_BASE_URL", "https://proxy.example/v1")
+        # Clear explicit proxy env vars so the test specifically verifies
+        # system-proxy bypass, not env-var-level masking.  Mirrors the
+        # pattern in tests/agent/test_auxiliary_client_proxy_env.py.
+        for key in (
+            "HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY",
+            "https_proxy", "http_proxy", "all_proxy",
+            "NO_PROXY", "no_proxy",
+        ):
+            monkeypatch.delenv(key, raising=False)
         with patch(
             "urllib.request.getproxies",
             return_value={"https": "http://127.0.0.1:7897"},

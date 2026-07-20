@@ -12,6 +12,7 @@ import {
   setCurrentModelSource,
   setCurrentProvider
 } from '@/store/session'
+import type * as SessionStates from '@/store/session-states'
 
 import { useModelControls } from './use-model-controls'
 
@@ -35,7 +36,7 @@ vi.mock('@/hermes', () => ({
 }))
 
 vi.mock('@/store/session-states', async importOriginal => {
-  const actual = await importOriginal<typeof import('@/store/session-states')>()
+  const actual = await importOriginal<typeof SessionStates>()
 
   return {
     ...actual,

@@ -1,8 +1,8 @@
 ---
 name: model-fusion
-description: "Use when a user explicitly requests a supervised, read-only synthesis from independent architect and builder models followed by one judging model."
+description: "Run supervised read-only synthesis across configured models."
 version: 1.0.0
-author: Hermes Agent
+author: Jimmy Carson (@luckyjc) + Hermes Agent
 license: MIT
 platforms: [linux, macos, windows]
 metadata:

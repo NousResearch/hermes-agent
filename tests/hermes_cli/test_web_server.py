@@ -4252,6 +4252,69 @@ class TestWebServerEndpoints:
         assert cfg["model"]["default"] == "gpt-5.4"
         assert cfg["model"]["base_url"] == "http://127.0.0.1:8081/v1"
 
+    def test_deleting_the_active_custom_endpoint_clears_its_model_mirror(self):
+        """Deleting an endpoint must not leave its key running the agent.
+
+        ``activate`` copies the endpoint's base_url + api_key onto ``model``,
+        and ``model.api_key`` outranks the environment at client construction
+        (#62269). Without clearing that mirror the agent keeps authenticating
+        to the deleted host with the deleted key, and the key the operator
+        just removed through the dashboard stays in config.yaml.
+        """
+        from hermes_cli.config import load_config
+
+        self.client.post(
+            "/api/providers/custom-endpoints",
+            json={
+                "id": "acme",
+                "name": "Acme",
+                "base_url": "https://llm.acme.corp/v1",
+                "model": "acme/model-1",
+                "api_key": "sk-acme-secret",
+            },
+        )
+        assert self.client.post(
+            "/api/providers/custom-endpoints/acme/activate", json={}
+        ).status_code == 200
+
+        cfg = load_config()
+        assert cfg["model"]["api_key"] == "sk-acme-secret"
+
+        assert self.client.request(
+            "DELETE", "/api/providers/custom-endpoints/acme"
+        ).status_code == 200
+
+        cfg = load_config()
+        assert "acme" not in (cfg.get("providers") or {})
+        model_cfg = cfg.get("model") or {}
+        assert not model_cfg.get("api_key"), "deleted endpoint's key still in config.yaml"
+        assert not model_cfg.get("base_url"), "deleted endpoint's host still routed to"
+        assert not model_cfg.get("provider")
+
+    def test_deleting_an_inactive_custom_endpoint_leaves_the_active_one_alone(self):
+        """Only the mirror of the DELETED provider is scrubbed."""
+        from hermes_cli.config import load_config
+
+        for name, key in (("acme", "sk-acme"), ("other", "sk-other")):
+            self.client.post(
+                "/api/providers/custom-endpoints",
+                json={
+                    "id": name,
+                    "name": name,
+                    "base_url": f"https://llm.{name}.corp/v1",
+                    "model": f"{name}/m",
+                    "api_key": key,
+                },
+            )
+
+        self.client.post("/api/providers/custom-endpoints/other/activate", json={})
+        self.client.request("DELETE", "/api/providers/custom-endpoints/acme")
+
+        model_cfg = load_config().get("model") or {}
+        assert model_cfg.get("provider") == "other"
+        assert model_cfg.get("api_key") == "sk-other"
+        assert model_cfg.get("base_url") == "https://llm.other.corp/v1"
+
     def test_set_model_main_preserves_base_url_for_named_custom_provider(self):
         """Selecting a named custom endpoint from the Desktop model picker
         should keep its endpoint URL attached to model config.

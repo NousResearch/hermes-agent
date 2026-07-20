@@ -7023,6 +7023,29 @@ def _custom_endpoint_response(cfg: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _detach_main_model_from_provider(cfg: Dict[str, Any], provider_key: str) -> None:
+    """Drop the main-slot mirror of a provider that no longer exists.
+
+    ``activate_custom_endpoint`` copies the endpoint's ``base_url`` and
+    ``api_key`` onto ``model``. That mirror outranks the environment at client
+    construction (#62269), so deleting the endpoint without clearing it leaves
+    the agent still authenticating to the deleted host with the deleted key —
+    and leaves that key sitting in config.yaml after the operator believes the
+    dashboard removed it.
+
+    Only touches ``model`` when it actually names the deleted provider, so an
+    endpoint deleted while a *different* provider is active is left alone.
+    """
+    model_cfg = cfg.get("model")
+    if not isinstance(model_cfg, dict):
+        return
+    if str(model_cfg.get("provider") or "").strip().lower() != provider_key:
+        return
+    for field in ("provider", "base_url", "api_key"):
+        model_cfg.pop(field, None)
+    cfg["model"] = model_cfg
+
+
 def _write_custom_endpoint(cfg: Dict[str, Any], body: CustomEndpointUpdate) -> Tuple[str, Dict[str, Any]]:
     endpoint_id = _custom_endpoint_id(body.id or body.name)
     name = (body.name or "").strip()
@@ -7143,6 +7166,7 @@ def delete_custom_endpoint(endpoint_id: str):
             raise HTTPException(status_code=404, detail="custom endpoint not found")
         providers.pop(provider_key, None)
         cfg["providers"] = providers
+        _detach_main_model_from_provider(cfg, provider_key)
         save_config(cfg)
         response = _custom_endpoint_response(cfg)
         response["ok"] = True

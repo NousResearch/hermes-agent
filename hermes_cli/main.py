@@ -82,7 +82,6 @@ def _exit_after_oneshot(rc: object) -> None:
         except Exception:
             pass
     try:
-        import logging
         logging.shutdown()
     except Exception:
         pass

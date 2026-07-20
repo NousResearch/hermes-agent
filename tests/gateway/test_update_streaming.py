@@ -413,6 +413,59 @@ class TestWatchUpdateProgress:
         assert not exit_code_path.exists()
 
     @pytest.mark.asyncio
+    async def test_final_status_retries_retryable_send_before_cleanup(self, tmp_path):
+        """A transient final-send failure keeps markers until a retry succeeds."""
+        from gateway.platforms.base import SendResult
+
+        runner = _make_runner()
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+
+        pending_path = hermes_home / ".update_pending.json"
+        output_path = hermes_home / ".update_output.txt"
+        exit_code_path = hermes_home / ".update_exit_code"
+        pending_path.write_text(json.dumps({
+            "platform": "telegram",
+            "chat_id": "111",
+            "user_id": "222",
+            "session_key": "agent:main:telegram:dm:111",
+        }))
+        output_path.write_text("")
+        exit_code_path.write_text("0")
+
+        send_attempts = 0
+
+        async def send_final_status(*args, **kwargs):
+            nonlocal send_attempts
+            send_attempts += 1
+            if send_attempts == 1:
+                return SendResult(
+                    success=False,
+                    error="send_path_degraded",
+                    retryable=True,
+                )
+            assert pending_path.exists()
+            assert output_path.exists()
+            assert exit_code_path.exists()
+            return SendResult(success=True, message_id="update-finished")
+
+        mock_adapter = AsyncMock()
+        mock_adapter.send = AsyncMock(side_effect=send_final_status)
+        runner.adapters = {Platform.TELEGRAM: mock_adapter}
+
+        with patch("gateway.run._hermes_home", hermes_home):
+            await runner._watch_update_progress(
+                poll_interval=0.01,
+                stream_interval=0.01,
+                timeout=1.0,
+            )
+
+        assert mock_adapter.send.await_count == 2
+        assert not pending_path.exists()
+        assert not output_path.exists()
+        assert not exit_code_path.exists()
+
+    @pytest.mark.asyncio
     async def test_failure_exit_code(self, tmp_path):
         """Non-zero exit code sends failure message."""
         runner = _make_runner()

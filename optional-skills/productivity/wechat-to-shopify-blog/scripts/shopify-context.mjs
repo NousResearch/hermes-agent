@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { loadShopifyEnv, shopifyCliGraphql } from "./lib/shopify-helpers.mjs";
+import { fetchPublic } from "./lib/public-fetch.mjs";
 
 function parseArgs(argv) {
   const args = {
@@ -71,7 +72,7 @@ async function fetchHomepageMeta(url) {
     return { url, ok: false, error: `Request blocked: ${e.message}` };
   }
   try {
-    const response = await fetch(url, { redirect: "follow" });
+    const response = await fetchPublic(url, {}, { timeoutMs: 15000 });
     if (!response.ok) return { url, ok: false, status: response.status };
     const html = await response.text();
     const title = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1]?.replace(/\s+/g, " ").trim() || "";

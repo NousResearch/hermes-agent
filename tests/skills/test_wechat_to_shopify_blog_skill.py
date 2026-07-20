@@ -18,9 +18,10 @@ def test_hermes_metadata_contract():
 def test_wechat_fetches_validate_redirects_and_dns():
     helper = (SKILL / "scripts" / "lib" / "public-fetch.mjs").read_text(encoding="utf-8")
     fetcher = (SKILL / "scripts" / "fetch-wechat-article.mjs").read_text(encoding="utf-8")
-    assert 'redirect: "follow"' not in helper + fetcher
+    context = (SKILL / "scripts" / "shopify-context.mjs").read_text(encoding="utf-8")
+    assert 'redirect: "follow"' not in helper + fetcher + context
     assert 'redirect: "manual"' in helper and "dns.lookup" in helper
-    assert "mp.weixin.qq.com" in fetcher
+    assert "mp.weixin.qq.com" in fetcher and "fetchPublic" in context
 
 
 def test_published_article_updates_are_blocked():

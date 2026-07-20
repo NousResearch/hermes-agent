@@ -3295,11 +3295,17 @@ DEFAULT_CONFIG = {
         "wait_timeout": 5.0,
 
         # How to handle missing server binaries.
-        # ``"auto"`` — try to install via npm/go/pip into
+        # ``auto`` — try to install via npm/go/pip into
         #              ``<HERMES_HOME>/lsp/bin/`` on first use.
-        # ``"manual"`` — only use binaries already on PATH.
-        # ``"off"`` — alias for ``manual``.
+        # ``manual`` — only use binaries already on PATH.
+        # ``off`` — alias for ``manual``.
         "install_strategy": "auto",
+
+        # Idle language-server processes are shut down automatically after
+        # this many seconds with no file activity.  This prevents long-running
+        # gateway processes from accumulating stale pyright/gopls/tsserver
+        # children as agents move across worktrees.
+        "idle_timeout": 600.0,
 
         # Per-server overrides.  Each key is a server_id from the
         # registry (``pyright``, ``typescript``, ``gopls``,

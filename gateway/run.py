@@ -9169,6 +9169,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _phase_elapsed(),
             )
 
+            # The process-global LSP service is independent from the tool
+            # subprocess registry.  Explicitly stop it during gateway teardown
+            # so long-running gateway restarts do not leave pyright/gopls/
+            # typescript-language-server children around until atexit.
+            try:
+                from agent.lsp import shutdown_service as _shutdown_lsp_service
+                _shutdown_lsp_service()
+            except Exception as _e:
+                logger.debug("LSP shutdown_service error: %s", _e)
+            logger.info(
+                "Shutdown phase: LSP service cleanup done at +%.2fs",
+                _phase_elapsed(),
+            )
+
             # Reap the process-global auxiliary-client cache once at the very
             # end of teardown.  Per-turn cleanup runs in _cleanup_agent_resources
             # for each active agent, but clients bound to worker-thread loops

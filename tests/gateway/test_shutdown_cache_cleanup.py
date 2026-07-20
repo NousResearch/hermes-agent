@@ -12,7 +12,7 @@ The fix adds an explicit sweep of ``_agent_cache`` after
 import asyncio
 import threading
 from collections import OrderedDict
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -162,6 +162,16 @@ class TestCachedAgentCleanupOnShutdown:
         await gw_mod.GatewayRunner.stop(gw)  # Should not raise
 
         assert len(gw._agent_cache) == 0
+
+    @pytest.mark.asyncio
+    async def test_lsp_service_shut_down_on_gateway_stop(self):
+        """Gateway stop explicitly tears down the process-global LSP service."""
+        gw = _FakeGateway()
+
+        with patch("agent.lsp.shutdown_service") as shutdown_service:
+            await gw_mod.GatewayRunner.stop(gw)  # pyright: ignore[reportArgumentType]
+
+        shutdown_service.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_multiple_cached_agents_all_cleaned(self):

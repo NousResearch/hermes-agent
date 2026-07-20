@@ -469,86 +469,85 @@ class TestSecretRedactionInDisplay:
 # ---------------------------------------------------------------------------
 
 class TestSchemaValidation:
-    """#34067: ``hermes config set`` must refuse to silently write unknown
-    keys to config.yaml. The headline case in the issue was
-    ``gateway.discord.gateway_restart_notification`` being silently accepted
-    even though the correct path is ``discord.gateway_restart_notification``
-    (platform configs live at the top level, not nested under ``gateway``).
+    """#34067: ``hermes config set`` must not report bare success for
+    unrecognized keys. The key IS written (arbitrary keys are supported —
+    top-level scalars bridge into os.environ for skills/external apps), but
+    a post-write notice warns that Hermes may never read it and suggests the
+    likely-intended path. Headline case: the plausible-but-wrong
+    ``gateway.discord.gateway_restart_notification`` (correct path:
+    ``discord.gateway_restart_notification``).
     """
 
-    def test_unknown_top_level_key_is_refused(self, _isolated_hermes_home, capsys):
-        """An entirely-unknown top-level key triggers SystemExit(2) with a
-        red error message."""
-        with pytest.raises(SystemExit) as exc_info:
-            set_config_value("totally_made_up_key", "value")
-        assert exc_info.value.code == 2
+    def test_unknown_top_level_key_written_with_notice(self, _isolated_hermes_home, capsys):
+        """An unknown top-level key is saved AND a notice is printed."""
+        set_config_value("totally_made_up_key", "value")
         out = capsys.readouterr().out
-        assert "Unknown config key" in out
+        assert "not a recognized config key" in out
         assert "totally_made_up_key" in out
-        # And nothing was written to config.yaml.
-        assert "totally_made_up_key" not in _read_config(_isolated_hermes_home)
+        assert "saved anyway" in out
+        # The value WAS written.
+        assert "totally_made_up_key" in _read_config(_isolated_hermes_home)
 
-    def test_unknown_subkey_is_refused(self, _isolated_hermes_home, capsys):
-        """The headline #34067 bug: ``gateway`` is a valid top-level key but
-        ``gateway.discord`` is not a valid sub-key (gateway only has
-        strict/media_delivery_allow_dirs/trust_recent_files/...)."""
-        with pytest.raises(SystemExit) as exc_info:
-            set_config_value("gateway.discord.gateway_restart_notification", "false")
-        assert exc_info.value.code == 2
+    def test_unknown_subkey_written_with_notice(self, _isolated_hermes_home, capsys):
+        """The headline #34067 path: written, but warned about — no more
+        bare success for gateway.discord.gateway_restart_notification."""
+        set_config_value("gateway.discord.gateway_restart_notification", "false")
         out = capsys.readouterr().out
-        assert "Unknown config key" in out
-        assert "gateway.discord.gateway_restart_notification" in out
-        # Nothing was written.
-        assert "discord" not in _read_config(_isolated_hermes_home).split("gateway:")[-1] if "gateway:" in _read_config(_isolated_hermes_home) else True
+        assert "✓ Set" in out
+        assert "not a recognized config key" in out
 
-    def test_platforms_container_is_accepted(self, _isolated_hermes_home):
+    def test_platforms_container_is_accepted(self, _isolated_hermes_home, capsys):
         """``platforms.<name>.<field>`` is a valid current shape: gateway/
         config.py resolves a top-level ``platforms`` map in addition to the
-        top-level platform blocks, so it must NOT be refused."""
+        top-level platform blocks, so it must NOT trigger the notice."""
         set_config_value("platforms.discord.enabled", "true")
         content = _read_config(_isolated_hermes_home)
         assert "enabled: true" in content
+        assert "not a recognized config key" not in capsys.readouterr().out
 
-    def test_gateway_platforms_nested_is_accepted(self, _isolated_hermes_home):
+    def test_gateway_platforms_nested_is_accepted(self, _isolated_hermes_home, capsys):
         """Docs configure platforms under ``gateway.platforms.<name>`` — the
-        canonical layout must validate as known."""
+        canonical layout must validate as known (no notice)."""
         set_config_value("gateway.platforms.my_platform.extra.token", "abc")
         content = _read_config(_isolated_hermes_home)
         assert "token: abc" in content
+        assert "not a recognized config key" not in capsys.readouterr().out
 
-    def test_unknown_approvals_subkey_is_refused(self, _isolated_hermes_home, capsys):
-        """``approvals`` is a defined schema, so a typo'd sub-key must be
-        rejected rather than silently written."""
-        with pytest.raises(SystemExit):
-            set_config_value("approvals.notarealkey", "true")
+    def test_unknown_approvals_subkey_warns_but_writes(self, _isolated_hermes_home, capsys):
+        """``approvals`` is a defined schema, so a typo'd sub-key gets the
+        notice — but is still written."""
+        set_config_value("approvals.notarealkey", "true")
+        out = capsys.readouterr().out
+        assert "not a recognized config key" in out
+        assert "notarealkey" in _read_config(_isolated_hermes_home)
 
-    def test_known_approvals_subkey_is_accepted(self, _isolated_hermes_home):
-        """Real ``approvals.*`` keys still validate."""
+    def test_known_approvals_subkey_is_accepted(self, _isolated_hermes_home, capsys):
+        """Real ``approvals.*`` keys still validate silently."""
         set_config_value("approvals.mode", "off")
         import yaml
         saved = yaml.safe_load(_read_config(_isolated_hermes_home))
         assert saved["approvals"]["mode"] == "off"
+        assert "not a recognized config key" not in capsys.readouterr().out
 
     def test_close_typo_suggests_correct_key(self, _isolated_hermes_home, capsys):
         """Typo'd top-level keys should get a fuzzy-match suggestion."""
-        with pytest.raises(SystemExit):
-            set_config_value("disco", "false")
+        set_config_value("disco", "false")
         out = capsys.readouterr().out
         assert "Did you mean" in out
         assert "discord" in out
 
     def test_typoed_subkey_suggests_sibling(self, _isolated_hermes_home, capsys):
         """``agent.max_turn`` should suggest ``agent.max_turns``."""
-        with pytest.raises(SystemExit):
-            set_config_value("agent.max_turn", "100")
+        set_config_value("agent.max_turn", "100")
         out = capsys.readouterr().out
         assert "agent.max_turns" in out
 
-    def test_force_bypasses_validation(self, _isolated_hermes_home):
-        """``--force`` allows writing unknown keys (forward-compat with
-        config keys that a newer Hermes version adds)."""
-        # Should not raise.
+    def test_force_suppresses_notice(self, _isolated_hermes_home, capsys):
+        """``--force`` writes unknown keys without the notice (scripted
+        forward-compat writes)."""
         set_config_value("brand_new_future_key", "value", force=True)
+        out = capsys.readouterr().out
+        assert "not a recognized config key" not in out
         # And the value WAS written.
         content = _read_config(_isolated_hermes_home)
         assert "brand_new_future_key" in content

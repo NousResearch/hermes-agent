@@ -43,9 +43,8 @@ def build_config_parser(subparsers, *, cmd_config: Callable) -> None:
     config_set.add_argument(
         "--force",
         action="store_true",
-        help="Bypass schema validation (write unknown keys without warning). "
-        "Use this when setting a key that a newer Hermes version supports "
-        "but the running version doesn't recognize yet.",
+        help="Skip the unknown-key notice printed after writing a key the "
+        "running version doesn't recognize (the value is saved either way).",
     )
 
     # config unset

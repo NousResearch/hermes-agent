@@ -8714,9 +8714,9 @@ def set_config_value(key: str, value: str, force: bool = False):
     Args:
         key: Dotted config path (e.g. ``terminal.backend``).
         value: String value (auto-coerced to bool/int/float when matching).
-        force: When True, skip schema validation — useful for setting keys
-            that a newer Hermes version added but this one doesn't know about
-            yet. The CLI exposes this via ``hermes config set --force``.
+        force: When True, skip the unknown-key warning — useful for scripted
+            writes of keys the running version doesn't recognize yet. The CLI
+            exposes this via ``hermes config set --force``.
     """
     if is_managed():
         managed_error("set configuration values")
@@ -8747,28 +8747,14 @@ def set_config_value(key: str, value: str, force: bool = False):
         print(f"✓ Set {key} in {get_env_path()}")
         return
 
-    # Schema validation (#34067): refuse to silently write unknown top-level
-    # keys into config.yaml. The previous behavior accepted arbitrary key
-    # paths (e.g. ``gateway.discord.gateway_restart_notification`` instead of
-    # the correct ``discord.gateway_restart_notification``), reported success,
-    # and left the user debugging behavior that hadn't actually changed.
+    # Unknown-key notice (#34067): the key is still written (arbitrary keys
+    # are supported — top-level scalars are bridged into os.environ for
+    # skills and external apps), but a plausible-but-wrong dotted path like
+    # ``gateway.discord.gateway_restart_notification`` previously reported
+    # bare success and left the user debugging behavior that never changed.
+    # Warn after the write so the user gets immediate feedback plus a
+    # "did you mean" hint, without blocking legitimate unknown keys.
     is_known, suggestion = _validate_config_key(key)
-    if not is_known and not force:
-        print(color(f"✗ Unknown config key: {key}", Colors.RED, Colors.BOLD))
-        if suggestion:
-            print(color(f"  Did you mean: {suggestion}", Colors.YELLOW))
-        else:
-            print(color(
-                "  No close match found in the known config schema.",
-                Colors.YELLOW,
-            ))
-        print()
-        print(
-            "  If this is a key your version of Hermes doesn't know about yet "
-            "but a newer version does, bypass this check with:\n"
-            f"    hermes config set --force {key} {value}"
-        )
-        sys.exit(2)
 
     # Otherwise it goes to config.yaml
     # Read the raw user config (not merged with defaults) to avoid
@@ -8835,6 +8821,23 @@ def set_config_value(key: str, value: str, force: bool = False):
     else:
         _display_value = value
     print(f"✓ Set {key} = {_display_value} in {config_path}")
+
+    # Post-write unknown-key notice (#34067): value IS saved, but tell the
+    # user the runtime may never read it and suggest the likely-intended path.
+    if not is_known and not force:
+        print(color(
+            f"⚠ '{key}' is not a recognized config key — it was saved anyway, "
+            "but Hermes may not read it.",
+            Colors.YELLOW,
+        ))
+        if suggestion:
+            print(color(f"  Did you mean: {suggestion}", Colors.YELLOW))
+        print(color(
+            "  (Custom top-level keys are supported and bridged to the "
+            "environment for skills/external tools. Use --force to skip "
+            "this notice.)",
+            Colors.DIM,
+        ))
 
 
 def get_config_value(key: str, *, as_json: bool = False):
@@ -8948,7 +8951,7 @@ def config_command(args):
             print("  hermes config set terminal.backend docker")
             print("  hermes config set OPENROUTER_API_KEY sk-or-...")
             print()
-            print("  --force: bypass schema validation for unknown keys")
+            print("  --force: skip the unknown-key notice for unrecognized keys")
             sys.exit(1)
         set_config_value(key, value, force=force)
 

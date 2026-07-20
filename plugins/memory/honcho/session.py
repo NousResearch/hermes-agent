@@ -16,6 +16,18 @@ from plugins.memory.honcho.client import get_honcho_client
 if TYPE_CHECKING:
     from honcho import Honcho
 
+# Workaround for issue #67013: newer Honcho servers send fields (like observe_others)
+# that the honcho-ai<=2.2.0 SDK strictly rejects. We monkeypatch the Pydantic models
+# to ignore extra fields until the upstream SDK is updated on PyPI.
+try:
+    from honcho.api_types import PeerConfig, PeerResponse
+    if PeerConfig.model_config.get("extra") == "forbid":
+        PeerConfig.model_config["extra"] = "ignore"
+        PeerConfig.model_rebuild(force=True)
+        PeerResponse.model_rebuild(force=True)
+except ImportError:
+    pass
+
 logger = logging.getLogger(__name__)
 
 # Sentinel to signal the async writer thread to shut down

@@ -12,6 +12,7 @@ handler are thin wrappers that parse args and delegate.
 
 import json
 import re
+import shlex
 import shutil
 import tempfile
 from pathlib import Path
@@ -787,6 +788,8 @@ def do_install(identifier: str, category: str = "", force: bool = False,
 
 def _local_skill_scan_path(identifier: str) -> Optional[Path]:
     path = Path(identifier).expanduser()
+    if path.is_symlink():
+        return path
     if not path.exists():
         return None
     if path.is_dir():
@@ -819,17 +822,32 @@ def _write_bundle_to_temp(bundle, root: Path) -> Path:
     return skill_path
 
 
+def _remote_scan_trust_level(matched_source, bundle) -> str:
+    """Resolve remote trust only through the adapter that fetched ``bundle``."""
+    resolver = getattr(matched_source, "scan_trust_level_for_bundle", None)
+    if not callable(resolver):
+        return "community"
+    try:
+        trust_level = resolver(bundle)
+    except Exception:
+        return "community"
+    return trust_level if trust_level in {"builtin", "trusted", "community"} else "community"
+
+
 def do_scan(
     identifier: str, source: str = "local", console: Optional[Console] = None
 ) -> None:
     """Run the Skills Guard checks against a local or registry skill without installing."""
     from tools.skills_hub import GitHubAuth, create_source_router
-    from tools.skills_guard import format_scan_report, scan_skill
+    from tools.skills_guard import _resolve_trust_level, format_scan_report, scan_skill
 
     c = console or _console
     local_path = _local_skill_scan_path(identifier)
     if local_path is not None:
-        result = scan_skill(local_path, source=source or "local")
+        local_source = source or "local"
+        if _resolve_trust_level(local_source) != "community":
+            local_source = "local"
+        result = scan_skill(local_path, source=local_source)
         c.print(format_scan_report(result))
         return
 
@@ -859,10 +877,15 @@ def do_scan(
         or getattr(meta, "identifier", "")
         or identifier
     )
+    scan_trust_level = _remote_scan_trust_level(_matched_source, bundle)
     try:
         with tempfile.TemporaryDirectory(prefix="hermes-skill-scan-") as tmp:
             scan_path = _write_bundle_to_temp(bundle, Path(tmp))
-            result = scan_skill(scan_path, source=scan_source)
+            result = scan_skill(
+                scan_path,
+                source=scan_source,
+                trust_level=scan_trust_level,
+            )
             c.print(format_scan_report(result))
     except ValueError as exc:
         c.print(f"[bold red]Scan blocked:[/] {exc}\n")
@@ -1975,17 +1998,26 @@ def handle_skills_slash(cmd: str, console: Optional[Console] = None) -> None:
                    name_override=name_override, console=c)
 
     elif action == "scan":
-        if not args:
+        try:
+            scan_parts = shlex.split(cmd.strip())
+        except ValueError as exc:
+            c.print(f"[bold red]Invalid /skills scan arguments:[/] {exc}\n")
+            return
+        if scan_parts and scan_parts[0].lower() == "/skills":
+            scan_parts = scan_parts[1:]
+        if scan_parts and scan_parts[0].lower() == "scan":
+            scan_parts = scan_parts[1:]
+        if not scan_parts:
             c.print(
                 "[bold red]Usage:[/] /skills scan <identifier-or-path> "
                 "[--source <source>]\n"
             )
             return
-        identifier = args[0]
+        identifier = scan_parts[0]
         source = "local"
-        for i, arg in enumerate(args):
-            if arg == "--source" and i + 1 < len(args):
-                source = args[i + 1]
+        for i, arg in enumerate(scan_parts):
+            if arg == "--source" and i + 1 < len(scan_parts):
+                source = scan_parts[i + 1]
         do_scan(identifier, source=source, console=c)
 
     elif action == "inspect":

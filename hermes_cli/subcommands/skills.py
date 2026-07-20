@@ -118,7 +118,7 @@ def build_skills_parser(subparsers, *, cmd_skills: Callable) -> None:
     skills_scan.add_argument(
         "--source",
         default="local",
-        help="Source label used for local trust resolution (default: local)",
+        help="Community source label for local scan reports (cannot elevate trust)",
     )
 
     skills_inspect = skills_subparsers.add_parser(

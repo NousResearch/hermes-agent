@@ -686,6 +686,10 @@ class TestStackedSkillCompletion:
         texts = [c.text for c in completions]
         assert "install" in texts
 
+    def test_skills_scan_is_centrally_completed(self):
+        completions = _completions(_stacked_completer(), "/skills sc")
+        assert "scan" in [completion.text for completion in completions]
+
 
 # ── SUBCOMMANDS extraction ──────────────────────────────────────────────
 
@@ -695,6 +699,7 @@ class TestSubcommands:
         """Commands with explicit subcommands on CommandDef are extracted."""
         assert "/skills" in SUBCOMMANDS
         assert "install" in SUBCOMMANDS["/skills"]
+        assert "scan" in SUBCOMMANDS["/skills"]
 
     def test_reasoning_has_subcommands(self):
         assert "/reasoning" in SUBCOMMANDS

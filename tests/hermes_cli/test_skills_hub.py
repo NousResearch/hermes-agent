@@ -1,4 +1,5 @@
 from io import StringIO
+import sys
 from unittest.mock import patch
 
 import pytest
@@ -278,6 +279,9 @@ def test_do_install_scans_with_resolved_identifier(monkeypatch, tmp_path, hub_en
     canonical_identifier = "skills-sh/anthropics/skills/frontend-design"
 
     class _ResolvedSource:
+        def scan_trust_level_for_bundle(self, bundle):
+            return "community"
+
         def inspect(self, identifier):
             return type("Meta", (), {
                 "extra": {},
@@ -425,6 +429,96 @@ def test_do_scan_local_skill_uses_guard_report_without_installing(monkeypatch, t
     assert "formatted:True" in sink.getvalue()
 
 
+@pytest.mark.parametrize("claimed_source", ["official", "agent-created", "openai/skills"])
+def test_do_scan_local_skill_cannot_claim_privileged_trust(
+    monkeypatch, tmp_path, claimed_source
+):
+    import tools.skills_guard as guard
+
+    skill_dir = tmp_path / "local-skill"
+    skill_dir.mkdir()
+    (skill_dir / "SKILL.md").write_text("# Local\n", encoding="utf-8")
+
+    scanned = {}
+
+    def _scan_skill(skill_path, source="community"):
+        scanned["source"] = source
+        return guard.ScanResult(
+            skill_name="local-skill",
+            source=source,
+            trust_level=guard._resolve_trust_level(source),
+            verdict="safe",
+        )
+
+    monkeypatch.setattr(guard, "scan_skill", _scan_skill)
+    monkeypatch.setattr(guard, "format_scan_report", lambda result: "scan ok")
+
+    do_scan(str(skill_dir), source=claimed_source, console=Console(file=StringIO()))
+
+    assert scanned["source"] == "local"
+
+
+def test_cli_skills_scan_dispatches_end_to_end(monkeypatch):
+    from hermes_cli.main import main
+
+    captured = {}
+
+    def _do_scan(identifier, source="local", console=None):
+        captured.update(identifier=identifier, source=source, console=console)
+
+    monkeypatch.setattr("hermes_cli.skills_hub.do_scan", _do_scan)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["hermes", "skills", "scan", "./my-skill", "--source", "my-registry"],
+    )
+
+    main()
+
+    assert captured == {
+        "identifier": "./my-skill",
+        "source": "my-registry",
+        "console": None,
+    }
+
+
+def test_slash_skills_scan_preserves_quoted_local_path(monkeypatch):
+    captured = {}
+
+    def _do_scan(identifier, source="local", console=None):
+        captured.update(identifier=identifier, source=source, console=console)
+
+    monkeypatch.setattr("hermes_cli.skills_hub.do_scan", _do_scan)
+    console = Console(file=StringIO(), force_terminal=False)
+
+    handle_skills_slash(
+        '/skills scan "/tmp/my quoted skill" --source local-test',
+        console=console,
+    )
+
+    assert captured == {
+        "identifier": "/tmp/my quoted skill",
+        "source": "local-test",
+        "console": console,
+    }
+
+
+def test_slash_skills_scan_rejects_malformed_quoting_before_lookup(monkeypatch):
+    monkeypatch.setattr(
+        "hermes_cli.skills_hub.do_scan",
+        lambda *args, **kwargs: pytest.fail("malformed input must not reach lookup"),
+    )
+    sink = StringIO()
+
+    handle_skills_slash(
+        '/skills scan "/tmp/unclosed skill',
+        console=Console(file=sink, force_terminal=False, color_system=None),
+    )
+
+    assert "Invalid /skills scan arguments" in sink.getvalue()
+    assert "No closing quotation" in sink.getvalue()
+
+
 def test_do_scan_remote_identifier_fetches_temp_bundle_without_installing(
     monkeypatch, tmp_path, hub_env
 ):
@@ -463,11 +557,12 @@ def test_do_scan_remote_identifier_fetches_temp_bundle_without_installing(
                 },
             )()
 
-    def _scan_skill(skill_path, source="community"):
+    def _scan_skill(skill_path, source="community", *, trust_level=None):
         temp_scan_paths.append(skill_path)
         assert (skill_path / "SKILL.md").is_file()
         assert (skill_path / "scripts" / "run.sh").is_file()
         assert source == canonical_identifier
+        assert trust_level == "community"
         return scan_result
 
     monkeypatch.setattr(hub, "ensure_hub_dirs", lambda: None)
@@ -497,6 +592,145 @@ def test_do_scan_remote_identifier_fetches_temp_bundle_without_installing(
     assert len(temp_scan_paths) == 1
     assert not temp_scan_paths[0].exists()
     assert "formatted:True" in sink.getvalue()
+
+
+def test_do_scan_remote_official_bundle_uses_exact_official_provenance(
+    monkeypatch, tmp_path, hub_env
+):
+    import tools.skills_guard as guard
+    import tools.skills_hub as hub
+
+    source = hub.OptionalSkillSource.__new__(hub.OptionalSkillSource)
+    bundle = type(
+        "Bundle",
+        (),
+        {
+            "name": "prunus-gaia",
+            "files": {"SKILL.md": "# Prunus Gaia\n"},
+            "source": "official",
+            "identifier": "official/agent/prunus-gaia",
+            "trust_level": "builtin",
+            "metadata": {},
+        },
+    )()
+    monkeypatch.setattr(source, "inspect", lambda identifier: None)
+    monkeypatch.setattr(source, "fetch", lambda identifier: bundle)
+
+    scanned = {}
+
+    def _scan_skill(skill_path, source="community", *, trust_level=None):
+        scanned["source"] = source
+        scanned["trust_level"] = trust_level
+        return guard.ScanResult(
+            skill_name="prunus-gaia",
+            source=source,
+            trust_level=trust_level,
+            verdict="safe",
+        )
+
+    monkeypatch.setattr(hub, "create_source_router", lambda auth: [source])
+    monkeypatch.setattr(guard, "scan_skill", _scan_skill)
+    monkeypatch.setattr(guard, "format_scan_report", lambda result: "scan ok")
+
+    do_scan(
+        "official/agent/prunus-gaia",
+        console=Console(file=StringIO(), force_terminal=False),
+    )
+
+    assert scanned == {
+        "source": "official/agent/prunus-gaia",
+        "trust_level": "builtin",
+    }
+
+
+def test_do_scan_remote_trusted_github_bundle_uses_adapter_provenance(
+    monkeypatch, hub_env
+):
+    import tools.skills_guard as guard
+    import tools.skills_hub as hub
+
+    source = hub.GitHubSource.__new__(hub.GitHubSource)
+    bundle = type(
+        "Bundle",
+        (),
+        {
+            "name": "pdf",
+            "files": {"SKILL.md": "# PDF\n"},
+            "source": "github",
+            "identifier": "openai/skills/pdf",
+            "trust_level": "trusted",
+            "metadata": {},
+        },
+    )()
+    monkeypatch.setattr(source, "inspect", lambda identifier: None)
+    monkeypatch.setattr(source, "fetch", lambda identifier: bundle)
+    monkeypatch.setattr(hub, "create_source_router", lambda auth: [source])
+
+    scanned = {}
+
+    def _scan_skill(skill_path, source="community", *, trust_level=None):
+        scanned.update(source=source, trust_level=trust_level)
+        return guard.ScanResult(
+            skill_name="pdf",
+            source=source,
+            trust_level=trust_level,
+            verdict="safe",
+        )
+
+    monkeypatch.setattr(guard, "scan_skill", _scan_skill)
+    monkeypatch.setattr(guard, "format_scan_report", lambda result: "scan ok")
+
+    do_scan("openai/skills/pdf", console=Console(file=StringIO()))
+
+    assert scanned == {"source": "openai/skills/pdf", "trust_level": "trusted"}
+
+
+@pytest.mark.parametrize("claim", ["official", "agent-created", "openai/skills/pdf"])
+def test_do_scan_remote_community_bundle_cannot_self_claim_trust(
+    monkeypatch, hub_env, claim
+):
+    import tools.skills_guard as guard
+    import tools.skills_hub as hub
+
+    class _CommunitySource:
+        def scan_trust_level_for_bundle(self, bundle):
+            return "community"
+
+        def inspect(self, identifier):
+            return type("Meta", (), {"identifier": claim, "extra": {}})()
+
+        def fetch(self, identifier):
+            return type(
+                "Bundle",
+                (),
+                {
+                    "name": claim,
+                    "files": {"SKILL.md": "# Community\n"},
+                    "source": claim,
+                    "identifier": claim,
+                    "trust_level": "builtin" if claim == "official" else "trusted",
+                    "metadata": {},
+                },
+            )()
+
+    scanned = {}
+
+    def _scan_skill(skill_path, source="community", *, trust_level=None):
+        scanned.update(source=source, trust_level=trust_level)
+        return guard.ScanResult(
+            skill_name=str(skill_path.name),
+            source=source,
+            trust_level=trust_level,
+            verdict="safe",
+        )
+
+    monkeypatch.setattr(hub, "create_source_router", lambda auth: [_CommunitySource()])
+    monkeypatch.setattr(guard, "scan_skill", _scan_skill)
+    monkeypatch.setattr(guard, "format_scan_report", lambda result: "scan ok")
+
+    do_scan("community/request", console=Console(file=StringIO()))
+
+    assert scanned == {"source": claim, "trust_level": "community"}
 
 
 def test_do_install_preserves_nested_official_optional_path(

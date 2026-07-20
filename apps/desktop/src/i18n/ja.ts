@@ -225,7 +225,8 @@ export const ja = defineLocale({
       archivedChats: 'アーカイブ済みチャット',
       about: '情報',
       billing: '請求',
-      notifications: '通知'
+      notifications: '通知',
+      system: 'システム'
     },
     notifications: {
       title: '通知',
@@ -265,6 +266,18 @@ export const ja = defineLocale({
       completionSoundDesc: 'エージェントのターン終了時に再生されます。プリセットを選んでここで試聴できます。',
       completionSoundPreview: '試聴'
     },
+    system: {
+      title: 'システム',
+      intro: 'この端末での Hermes の動作。設定は端末ごとに保存されます。',
+      keepAwakeTitle: 'コンピューターをスリープさせない',
+      keepAwakeDesc: '本体のスリープを防ぎ、長時間や夜通しの実行を継続します。画面は暗転できます。',
+      translucencyTitle: 'ウィンドウの透過',
+      translucencyDesc: 'ウィンドウ全体を透過させてデスクトップを表示します。macOS と Windows のみ。',
+      uiScaleTitle: 'UI スケール',
+      uiScaleDesc: (percent: number) => `アプリ全体の文字と UI を拡大縮小します。Cmd/Ctrl と +、-、0 でも変更できます。現在: ${percent}%`,
+      hapticsTitle: '触覚フィードバック',
+      hapticsDesc: '操作やトグル時にトラックパッドの触覚を返します。対応ハードウェアのみ（macOS）。'
+    },
     sections: {
       model: 'モデル',
       chat: 'チャット',
@@ -296,11 +309,6 @@ export const ja = defineLocale({
       colorModeDesc: '固定モードを選ぶか、Hermes をシステム設定に合わせます。',
       toolViewTitle: 'ツール呼び出しの表示',
       toolViewDesc: 'プロダクト表示は生のツールペイロードを隠し、テクニカル表示は入出力をすべて表示します。',
-      uiScaleTitle: 'UI スケール',
-      uiScaleDesc: (percent: number) =>
-        `アプリ全体の文字と UI を拡大縮小します。Cmd/Ctrl と +、-、0 でも変更できます。現在: ${percent}%`,
-      translucencyTitle: 'ウィンドウの透過',
-      translucencyDesc: 'ウィンドウ全体を透過させてデスクトップを表示します。macOS と Windows のみ。',
       backdropTitle: 'チャット背景',
       backdropDesc: '会話の背後に表示される淡い彫像の画像。',
       embedsTitle: 'インライン埋め込み',
@@ -2100,6 +2108,8 @@ export const ja = defineLocale({
       openCommandCenter: 'コマンドセンターを開く',
       showTerminal: 'ターミナルを表示',
       hideTerminal: 'ターミナルを非表示',
+      keepAwakeOn: 'スリープ抑止中 — クリックで解除',
+      keepAwakeOff: 'コンピューターをスリープさせない',
       gateway: 'ゲートウェイ',
       gatewayReady: '準備完了',
       gatewayNeedsSetup: '設定が必要',

@@ -20,6 +20,7 @@ import {
   nativeTheme,
   Notification,
   powerMonitor,
+  powerSaveBlocker,
   protocol,
   safeStorage,
   screen,
@@ -104,6 +105,7 @@ import {
 } from './hardening'
 import { createLinkTitleWindow, guardLinkTitleSession, readLinkTitleWindowTitle } from './link-title-window'
 import { ensureMainWindow } from './main-window-lifecycle'
+import { createKeepAwake } from './power-save'
 import { serializeJsonBody, setJsonRequestHeaders } from './oauth-net-request'
 import { decideProfileDeleteAction, profileNameFromDeleteRequest, resolveRouteProfile } from './profile-delete-routing'
 import {
@@ -8552,6 +8554,13 @@ ipcMain.on('hermes:translucency', (_event, payload) => {
   for (const win of BrowserWindow.getAllWindows()) {
     applyWindowTranslucency(win)
   }
+})
+
+// Keep-awake: the renderer owns the preference; main holds the one blocker.
+const keepAwake = createKeepAwake(powerSaveBlocker)
+
+ipcMain.on('hermes:keep-awake', (_event, on) => {
+  keepAwake.set(Boolean(on))
 })
 
 ipcMain.handle('hermes:openExternal', (_event, url) => {

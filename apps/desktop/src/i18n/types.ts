@@ -284,6 +284,7 @@ export interface Translations {
       billing: string
       notifications: string
       plugins: string
+      system: string
     }
     plugins: {
       title: string
@@ -317,6 +318,18 @@ export interface Translations {
       completionSoundDesc: string
       completionSoundPreview: string
     }
+    system: {
+      title: string
+      intro: string
+      keepAwakeTitle: string
+      keepAwakeDesc: string
+      translucencyTitle: string
+      translucencyDesc: string
+      uiScaleTitle: string
+      uiScaleDesc: (percent: number) => string
+      hapticsTitle: string
+      hapticsDesc: string
+    }
     sections: Record<string, string>
     searchPlaceholder: Record<'about' | 'config' | 'gateway' | 'keys' | 'mcp' | 'sessions', string>
     modeOptions: Record<'light' | 'dark' | 'system', ModeOptionCopy>
@@ -327,10 +340,6 @@ export interface Translations {
       colorModeDesc: string
       toolViewTitle: string
       toolViewDesc: string
-      uiScaleTitle: string
-      uiScaleDesc: (percent: number) => string
-      translucencyTitle: string
-      translucencyDesc: string
       backdropTitle: string
       backdropDesc: string
       embedsTitle: string
@@ -1802,6 +1811,8 @@ export interface Translations {
       openCommandCenter: string
       showTerminal: string
       hideTerminal: string
+      keepAwakeOn: string
+      keepAwakeOff: string
       gateway: string
       gatewayReady: string
       gatewayNeedsSetup: string

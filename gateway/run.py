@@ -1612,6 +1612,17 @@ class SecondaryPortBindingConfigError(MultiplexConfigError):
     """A secondary profile conflicts with the multiplexer's shared listener."""
 
 
+class ProfileNotServedError(RuntimeError):
+    """An inbound source names a profile this gateway does not serve.
+
+    Raised per-message (not at startup) by ``_require_served_profile_home`` for
+    a stale route, a renamed/deleted profile, or any stamped profile outside the
+    served set. Callers must refuse the message: the alternative — the lenient
+    global-HERMES_HOME fallback — would serve that traffic under the
+    multiplexer's own config, skills and credentials.
+    """
+
+
 @_contextmanager
 def _profile_runtime_scope(profile_home: "Path"):
     """Scope config/skills/memory AND credentials to a profile for one turn.
@@ -3551,7 +3562,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         from gateway.pairing import PairingStore
         self.pairing_store = PairingStore()
         self.pairing_stores: Dict[str, "PairingStore"] = {}
-        
+        # Profiles whose PairingStore failed to initialize. Kept separate from
+        # "never registered" so ``_pairing_store_for`` can tell an init failure
+        # (fail closed, never fall back to the default profile's whitelist)
+        # from a single-profile gateway that legitimately has no per-profile
+        # map at all.
+        self._pairing_store_failed: set = set()
+
         # Event hook system
         from gateway.hooks import HookRegistry
         self.hooks = HookRegistry()
@@ -7959,7 +7976,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         enabled_platform_count = 0
         startup_nonretryable_errors: list[str] = []
         startup_retryable_errors: list[str] = []
-        
+
+        # Adapters built here serve the profile this process runs as. Secondary
+        # profiles get theirs from _start_one_profile_adapters.
+        active_profile = self._active_profile_name()
+
+        # Under multiplexing, register the active profile's PairingStore before
+        # any adapter connects — the first adapter to come up is live (and can
+        # be authorized against) before the rest of startup finishes.
+        if getattr(self.config, "multiplex_profiles", False):
+            self._ensure_pairing_store(active_profile)
+
         # Initialize and connect each configured platform
         _multiplex_on = bool(getattr(self.config, "multiplex_profiles", False))
         _multiplex_skipped_platforms: list[Platform] = []
@@ -8003,6 +8030,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             
             # Set up message + fatal error handlers
             adapter.set_message_handler(self._handle_message)
+            self._stamp_adapter_owner_profile(adapter, active_profile)
             adapter.set_fatal_error_handler(self._handle_adapter_fatal_error)
             adapter.set_session_store(self.session_store)
             adapter.set_busy_session_handler(self._handle_active_session_busy_message)
@@ -8903,14 +8931,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     break
                 await asyncio.sleep(1)
 
-    def _active_profile_name(self) -> str:
-        """Return the profile name this gateway represents."""
-        try:
-            from hermes_cli.profiles import get_active_profile_name
-            return get_active_profile_name() or "default"
-        except Exception:
-            return "default"
-
     # ── Kanban board watchers ───────────────────────────────────────────
     # The kanban notifier/dispatcher watcher loops + their helpers live in
     # GatewayKanbanWatchersMixin (gateway/kanban_watchers.py). They use only
@@ -8985,6 +9005,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         continue
 
                     adapter.set_message_handler(self._handle_message)
+                    self._stamp_adapter_owner_profile(
+                        adapter, self._active_profile_name()
+                    )
                     adapter.set_fatal_error_handler(self._handle_adapter_fatal_error)
                     adapter.set_session_store(self.session_store)
                     adapter.set_busy_session_handler(self._handle_active_session_busy_message)
@@ -9715,6 +9738,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if profile_name == active:
                 continue  # handled by the primary startup loop
             try:
+                # Register the pairing store BEFORE connecting this profile's
+                # adapters. Socket-mode transports (Slack) are live the moment
+                # connect() returns — and a pre-dispatch command seam authorizes
+                # ahead of the startup restore queue — so a store registered
+                # after the connect loop leaves a window where a correctly
+                # stamped secondary source finds no per-profile store.
+                self._ensure_pairing_store(profile_name)
                 connected += await self._start_one_profile_adapters(
                     profile_name, profile_home, claimed
                 )
@@ -9735,20 +9765,125 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Record served profiles in runtime status for `hermes status`.
         try:
             from gateway.status import write_runtime_status
-            from gateway.pairing import PairingStore
             served = [active] + sorted(self._profile_adapters.keys())
-            # Per-profile PairingStores so authz_mixin can route pairing
-            # checks to the right whitelist. The active profile gets a store
-            # at its HERMES_HOME; additional served profiles get one under
-            # profiles/<name>/pairing/. See gateway.pairing.PairingStore.
+            # Safety net only: every profile above already registered its store
+            # before connecting. This re-runs for any profile whose adapters all
+            # failed to connect (so the loop above skipped it) and keeps the
+            # served list and the store map in agreement.
             for name in served:
-                if name and name not in self.pairing_stores:
-                    self.pairing_stores[name] = PairingStore(profile=name)
+                self._ensure_pairing_store(name)
             write_runtime_status(served_profiles=served)
         except Exception:
             logger.debug("could not record served_profiles", exc_info=True)
 
         return connected
+
+    def _ensure_pairing_store(self, profile_name: Optional[str]) -> bool:
+        """Register a profile's PairingStore, returning whether one is usable.
+
+        Idempotent — an already-registered profile short-circuits. On failure
+        the profile is recorded in ``_pairing_store_failed`` so
+        ``_pairing_store_for`` denies rather than silently consulting the
+        default profile's whitelist: a store we could not open must never
+        degrade into another profile's pairing grants.
+        """
+        name = (profile_name or "").strip()
+        if not name:
+            return False
+        # getattr-default throughout: bare ``object.__new__(GatewayRunner)``
+        # instances (used by tests and by partially-constructed runners) never
+        # ran __init__, and bookkeeping must not mask the store registration.
+        failed = getattr(self, "_pairing_store_failed", None)
+        if failed is None:
+            failed = set()
+            self._pairing_store_failed = failed
+        stores = getattr(self, "pairing_stores", None)
+        if stores is None:
+            stores = {}
+            self.pairing_stores = stores
+        if name in stores:
+            return True
+        # The "default" profile IS ``~/.hermes`` — there is no
+        # ``profiles/default/`` subtree. ``PairingStore(profile="default")``
+        # would create and read an empty directory *beside* the real one, so
+        # codes issued here would never be visible to ``hermes pairing
+        # approve`` or to the dashboard (both of which use the legacy global
+        # path), and an approval made there would never be seen here. Alias the
+        # global store so every default-profile reader and writer shares one
+        # set of files.
+        if name == "default":
+            legacy = getattr(self, "pairing_store", None)
+            if legacy is None:
+                failed.add(name)
+                logger.error(
+                    "No global PairingStore to alias for the default profile; "
+                    "pairing grants are denied until it is fixed"
+                )
+                return False
+            stores[name] = legacy
+            failed.discard(name)
+            return True
+        try:
+            from gateway.pairing import PairingStore
+
+            stores[name] = PairingStore(profile=name)
+        except Exception:
+            failed.add(name)
+            logger.error(
+                "Could not initialize PairingStore for profile '%s'; pairing "
+                "grants are denied for that profile until it is fixed",
+                name, exc_info=True,
+            )
+            return False
+        failed.discard(name)
+        return True
+
+    def _multiplex_served_profiles(self) -> set:
+        """Names of every profile this process actually serves.
+
+        The active profile plus each secondary profile that got adapters from
+        ``_start_secondary_profile_adapters``. Used to reject a stamped profile
+        that this gateway does not serve — a stale route, a renamed profile, or
+        a source stamped by something other than our own startup wiring.
+        """
+        served = set(getattr(self, "_profile_adapters", None) or {})
+        active = self._active_profile_name()
+        if active:
+            served.add(active)
+        return {name for name in served if name}
+
+    def _require_served_profile_home(self, source: SessionSource) -> "Path":
+        """Resolve a source's profile home, refusing unknown/stale profiles.
+
+        Same answer as ``_resolve_profile_home_for_source`` for every valid
+        source — route precedence and adapter ownership are untouched. The
+        difference is the failure mode under multiplexing: a nonempty explicit
+        or stamped profile that this gateway does not serve, or that no longer
+        exists on disk, raises instead of falling back to the global
+        HERMES_HOME. Entering the global home would run another profile's
+        traffic against the multiplexer's own config, skills and credentials.
+
+        Callers on authorization and runtime-entry paths use this; the plain
+        resolver keeps its lenient fallback for non-multiplex callers.
+        """
+        if getattr(getattr(self, "config", None), "multiplex_profiles", False):
+            name = (getattr(source, "profile", None) or "").strip()
+            if not name:
+                name = (self._profile_name_for_source(source) or "").strip()
+            if name:
+                served = self._multiplex_served_profiles()
+                if name not in served:
+                    raise ProfileNotServedError(
+                        f"profile {name!r} is not served by this gateway "
+                        f"(served: {sorted(served) or 'none'})"
+                    )
+                from hermes_cli.profiles import profile_exists
+
+                if not profile_exists(name):
+                    raise ProfileNotServedError(
+                        f"profile {name!r} no longer exists on disk"
+                    )
+        return self._resolve_profile_home_for_source(source)
 
     async def _start_one_profile_adapters(
         self, profile_name: str, profile_home: "Path", claimed: Dict[tuple, str]
@@ -9859,7 +9994,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         platform: Platform,
     ) -> None:
         """Install the profile-scoped handlers shared by startup and reconnect."""
+        # Stamp every inbound event from this adapter with its profile so the
+        # agent turn (and session key) resolve to the right home.
         adapter.set_message_handler(self._make_profile_message_handler(profile_name))
+        # The handler above only stamps events that reach it. Record the
+        # ownership explicitly too, so a platform seam that acts on a message
+        # *before* dispatch (and therefore never runs that wrapper) can still
+        # resolve this profile instead of defaulting.
+        self._stamp_adapter_owner_profile(adapter, profile_name)
         adapter.set_fatal_error_handler(
             self._make_profile_fatal_error_handler(profile_name, platform)
         )
@@ -10040,6 +10182,44 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         )
         # Reconnect is scoped to the profile's own config and secret mapping;
         # never rebuild a secondary adapter with the default profile's credentials.
+
+    def _active_profile_name(self) -> Optional[str]:
+        """Name of the profile this gateway process itself runs as.
+
+        Adapters built by the primary startup and reconnect loops speak for this
+        profile; ``_start_one_profile_adapters`` stamps its own name instead.
+        Returns None when the profile system is unavailable — ownership then
+        stays unset, and pre-dispatch callers under multiplexing fail closed
+        rather than guess.
+        """
+        try:
+            from hermes_cli.profiles import get_active_profile_name
+            return get_active_profile_name() or "default"
+        except Exception:
+            logger.debug("could not resolve active profile name", exc_info=True)
+            return None
+
+    @staticmethod
+    def _stamp_adapter_owner_profile(adapter: Any, profile_name: Optional[str]) -> None:
+        """Record the owning profile on an adapter.
+
+        Every real adapter inherits ``set_owner_profile`` from
+        ``BasePlatformAdapter``; the attribute fallback covers minimal stand-ins
+        that implement only the handler-installation surface. A failure here is
+        never fatal — it leaves ownership unset, which makes pre-dispatch seams
+        fail closed instead of serving traffic under the wrong profile.
+        """
+        try:
+            setter = getattr(adapter, "set_owner_profile", None)
+            if callable(setter):
+                setter(profile_name)
+            else:
+                adapter.owner_profile = (profile_name or "").strip() or None
+        except Exception:
+            logger.warning(
+                "could not record owning profile %r on %s adapter",
+                profile_name, getattr(adapter, "platform", "?"), exc_info=True,
+            )
 
     def _make_profile_message_handler(self, profile_name: str):
         """Return a message handler that stamps source.profile then delegates.
@@ -10610,12 +10790,32 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 == "pair"
             ):
                 platform_name = source.platform.value if source.platform else "unknown"
+                # Issue and rate-limit against the SAME store the authorization
+                # check above just read from. Writing the global store while
+                # ``_is_user_authorized`` reads the routed profile's store hands
+                # the user a code that lands in one profile's pending list and is
+                # checked against another's approved list — so approving it never
+                # grants access, and the rate limit meant to stop the DM spam is
+                # counted in a file nobody consults.
+                pairing_store = self._pairing_store_for(source)
+                if pairing_store is None:
+                    # Multiplexing with no usable store for this profile. There is
+                    # no file an approval could land in, so a code would be a dead
+                    # end — deny exactly as the authorization read did.
+                    logger.warning(
+                        "No PairingStore for profile %r; not issuing a pairing "
+                        "code to %s on %s",
+                        source.profile,
+                        source.user_id,
+                        platform_name,
+                    )
+                    return None
                 # Rate-limit ALL pairing responses (code or rejection) to
                 # prevent spamming the user with repeated messages when
                 # multiple DMs arrive in quick succession.
-                if self.pairing_store._is_rate_limited(platform_name, source.user_id):
+                if pairing_store._is_rate_limited(platform_name, source.user_id):
                     return None
-                code = self.pairing_store.generate_code(
+                code = pairing_store.generate_code(
                     platform_name, source.user_id, source.user_name or ""
                 )
                 if code:
@@ -10637,7 +10837,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             "Please try again later!"
                         )
                     # Record rate limit so subsequent messages are silently ignored
-                    self.pairing_store._record_rate_limit(platform_name, source.user_id)
+                    pairing_store._record_rate_limit(platform_name, source.user_id)
             return None
         
         # Intercept messages that are responses to a pending /update prompt.
@@ -12493,7 +12693,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     ) -> Optional[str]:
         """Run inbound preprocessing under the routed profile when multiplexed."""
         if getattr(getattr(self, "config", None), "multiplex_profiles", False):
-            with _profile_runtime_scope(self._resolve_profile_home_for_source(source)):
+            with _profile_runtime_scope(self._require_served_profile_home(source)):
                 return await self._prepare_inbound_message_text(
                     event=event,
                     source=source,
@@ -14372,7 +14572,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         thread.
         """
         if getattr(getattr(self, "config", None), "multiplex_profiles", False):
-            with _profile_runtime_scope(self._resolve_profile_home_for_source(source)):
+            with _profile_runtime_scope(self._require_served_profile_home(source)):
                 return self._format_session_info()
         return self._format_session_info()
 
@@ -19692,7 +19892,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 persist_user_timestamp=persist_user_timestamp,
             )
 
-        profile_home = self._resolve_profile_home_for_source(source)
+        profile_home = self._require_served_profile_home(source)
         with _profile_runtime_scope(profile_home):
             return await self._run_agent_inner(
                 message, context_prompt, history, source, session_id,

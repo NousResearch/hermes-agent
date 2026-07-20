@@ -150,6 +150,95 @@ class TestProfileMessageHandler:
         assert seen["profile"] == "writer"
 
 
+class TestAdapterOwnerProfile:
+    """Per-profile adapters carry their owning profile explicitly.
+
+    The message-handler wrapper above only stamps events that reach dispatch.
+    A platform seam that handles a message *before* dispatch (Slack's custom
+    command hook) never runs it, so it resolves the profile from ownership
+    instead — which only works if startup actually records it.
+    """
+
+    @pytest.mark.asyncio
+    async def test_secondary_profile_adapter_records_its_owner(self, monkeypatch):
+        from gateway.config import GatewayConfig, Platform, PlatformConfig
+
+        class _Adapter:
+            platform = Platform.TELEGRAM
+            owner_profile = None
+
+            def set_message_handler(self, handler):
+                pass
+
+            def set_owner_profile(self, profile_name):
+                self.owner_profile = profile_name
+
+            def set_fatal_error_handler(self, handler):
+                pass
+
+            def set_session_store(self, store):
+                pass
+
+            def set_busy_session_handler(self, handler):
+                pass
+
+            def set_topic_recovery_fn(self, handler):
+                pass
+
+            def set_authorization_check(self, handler):
+                pass
+
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner.config = GatewayConfig(multiplex_profiles=True)
+        runner._profile_adapters = {}
+        runner.session_store = object()
+        runner._handle_adapter_fatal_error = object()
+        runner._handle_active_session_busy_message = object()
+        runner._recover_telegram_topic_thread_id = object()
+        runner._busy_text_mode = "queue"
+        runner._make_adapter_auth_check = lambda platform, profile_name=None: object()
+
+        reviewer_cfg = GatewayConfig(multiplex_profiles=True)
+        reviewer_cfg.platforms = {
+            Platform.TELEGRAM: PlatformConfig(enabled=True, token="reviewer-token"),
+        }
+        monkeypatch.setattr("gateway.config.load_gateway_config", lambda: reviewer_cfg)
+
+        adapter = _Adapter()
+
+        async def _connect(a, platform):
+            return True
+
+        monkeypatch.setattr(runner, "_create_adapter", lambda p, c: adapter)
+        monkeypatch.setattr(runner, "_connect_adapter_with_timeout", _connect)
+
+        await runner._start_one_profile_adapters("reviewer", "/tmp/x", {})
+
+        assert adapter.owner_profile == "reviewer"
+
+    def test_stamping_tolerates_adapters_without_the_setter(self):
+        """A minimal stand-in still ends up owned, via plain attribute set."""
+
+        class _Bare:
+            platform = "telegram"
+
+        adapter = _Bare()
+        GatewayRunner._stamp_adapter_owner_profile(adapter, "reviewer")
+
+        assert adapter.owner_profile == "reviewer"
+
+    def test_blank_owner_normalizes_to_none(self):
+        """Empty/whitespace names must not read as a real profile downstream."""
+
+        class _Bare:
+            platform = "telegram"
+
+        adapter = _Bare()
+        GatewayRunner._stamp_adapter_owner_profile(adapter, "   ")
+
+        assert adapter.owner_profile is None
+
+
 class _SecondaryRecoveryAdapter:
     platform = Platform.DISCORD
 

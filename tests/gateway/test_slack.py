@@ -12,11 +12,12 @@ import asyncio
 import contextlib
 import importlib
 from importlib.machinery import PathFinder
+import logging
 import os
 import socket
 import sys
 import time
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch, call
 
 import pytest
@@ -2433,6 +2434,967 @@ class TestBangPrefixCommands:
         msg_event = adapter.handle_message.await_args.args[0]
         assert msg_event.source.chat_type == "group"
         assert msg_event.source.chat_id == "C123"
+
+
+# ---------------------------------------------------------------------------
+# TestCustomMessageHook
+# ---------------------------------------------------------------------------
+
+
+class _FakeRunner:
+    """Minimal ``GatewayRunner`` stand-in for the members the seam reaches for.
+
+    The Slack custom-message seam runs ahead of ``handle_message``, so it has
+    to consult the runner directly for two things ordinary messages get for
+    free: profile routing (``_profile_name_for_source``, called by
+    ``build_source``; ``_resolve_profile_home_for_source``, used to enter the
+    routed profile's runtime scope) and authorization (``_is_user_authorized``,
+    the one policy every inbound message is judged by).
+    """
+
+    def __init__(self, *, multiplex=False, routes=None, homes=None, authorized=True):
+        self.config = SimpleNamespace(multiplex_profiles=multiplex)
+        self._routes = routes or {}
+        self._homes = homes or {}
+        self.authorized = authorized
+        #: Every source ``_is_user_authorized`` was asked about, in order.
+        self.auth_sources = []
+
+    def _profile_name_for_source(self, source):
+        if not self.config.multiplex_profiles:
+            return None
+        return self._routes.get(source.chat_id)
+
+    def _resolve_profile_home_for_source(self, source):
+        name = source.profile or self._profile_name_for_source(source) or "default"
+        return self._homes[name]
+
+    def _is_user_authorized(self, source):
+        self.auth_sources.append(source)
+        if callable(self.authorized):
+            return self.authorized(source)
+        return self.authorized
+
+
+class _HookAdapter(SlackAdapter):
+    """Stand-in for an out-of-tree ``SlackAdapter`` subclass plugin.
+
+    Real deployment-specific thread commands live in out-of-tree plugins; core
+    only guarantees the two-stage seam: a sync classifier that labels the
+    message, and an async hook that executes it.
+    """
+
+    #: Bare tokens this fake plugin claims, mapped to opaque classification
+    #: values.  ``!queue`` is deliberately a *known gateway command* so the
+    #: "hook declines → normal bang/slash handling" path can be asserted.
+    COMMANDS = {"!log": "log", "!find": "find", "!queue": "queue-alias"}
+
+    def __init__(self, config, handled=True, boom=False, classify_boom=False):
+        super().__init__(config)
+        self._hook_handled = handled
+        self._hook_boom = boom
+        self._classify_boom = classify_boom
+        self.classify_calls = []
+        self.hook_calls = []
+        #: ``get_hermes_home()`` as observed from inside the hook, per call.
+        self.hook_homes = []
+
+    def _classify_custom_message(self, text, event):
+        self.classify_calls.append(text)
+        if self._classify_boom:
+            raise RuntimeError("plugin classifier exploded")
+        first = text.split(maxsplit=1)[0] if text.split() else ""
+        return self.COMMANDS.get(first)
+
+    async def _on_custom_message(self, ctx):
+        from hermes_constants import get_hermes_home
+
+        self.hook_calls.append(ctx)
+        self.hook_homes.append(get_hermes_home())
+        if self._hook_boom:
+            raise RuntimeError("plugin hook exploded")
+        return self._hook_handled
+
+
+class TestCustomMessageHook:
+    """Two-stage seam for plugin subclasses.
+
+    ``_classify_custom_message`` is sync, side-effect-free, and runs *before*
+    mention gating so a bare top-level ``!log`` is recognised at all.  A
+    classification token waives only mention/session gating — never
+    channel/user authorization, bot filters, dedup or subtype filters.
+    ``_on_custom_message`` then executes, but only for classified messages.
+    """
+
+    def _make_adapter(self, runner=None, **kwargs):
+        config = PlatformConfig(enabled=True, token="xoxb-fake-token")
+        a = _HookAdapter(config, **kwargs)
+        a._app = MagicMock()
+        a._app.client = AsyncMock()
+        a._bot_user_id = "U_BOT"
+        a._running = True
+        a.handle_message = AsyncMock()
+        a.send = AsyncMock()
+        a._resolve_user_name = AsyncMock(return_value="Test User")
+        a._fetch_thread_context = AsyncMock(return_value="")
+        a._fetch_thread_parent_text = AsyncMock(return_value="")
+        # Channel messages: mention required, non-strict — the realistic
+        # deployment where the regression bit.
+        a._slack_require_mention = MagicMock(return_value=True)
+        a._slack_strict_mention = MagicMock(return_value=False)
+        # Custom commands execute before the gateway's own user authorization,
+        # so the seam authorizes the routed source itself against the same
+        # runner policy. Default to an authorizing runner; auth tests flip it.
+        a.gateway_runner = _FakeRunner() if runner is None else runner
+        return a
+
+    def _make_profile_adapter(self, profile, runner, **kwargs):
+        """An adapter wired the way ``gateway/run.py`` wires a per-profile one.
+
+        Two things happen at that seam: ownership is recorded
+        (``set_owner_profile``) and the message handler is wrapped so it stamps
+        ``source.profile`` before delegating. The wrapper is reproduced here as
+        a ``handle_message`` side effect because that is precisely the point —
+        it fires on *dispatch* only, so a classified custom message (handled
+        before dispatch) never reaches it and must recover the profile from
+        ownership instead.
+        """
+        a = self._make_adapter(runner=runner, **kwargs)
+        a.set_owner_profile(profile)
+
+        async def _stamp_on_dispatch(event):
+            source = getattr(event, "source", None)
+            if source is not None and not source.profile:
+                source.profile = profile
+
+        a.handle_message = AsyncMock(side_effect=_stamp_on_dispatch)
+        return a
+
+    def _make_event(self, text, channel_type="im", channel="D123", **extra):
+        evt = {
+            "text": text,
+            "user": "U_USER",
+            "channel": channel,
+            "channel_type": channel_type,
+            "ts": "1234567890.000001",
+        }
+        evt.update(extra)
+        return evt
+
+    def test_hook_version_marker_is_exposed(self):
+        """Plugins pin against an explicit contract version."""
+        assert SlackAdapter.CUSTOM_MESSAGE_HOOK_VERSION == 1
+
+    # -- stage 1: classification -------------------------------------------
+
+    def test_default_classifier_returns_none(self, adapter):
+        """Base adapter classifies nothing, so nothing ever bypasses gating."""
+        assert adapter._classify_custom_message("!log today", {}) is None
+        assert adapter._classify_custom_message("", {}) is None
+
+    @pytest.mark.asyncio
+    async def test_classifier_sees_raw_bang_text_and_is_called_once(self):
+        """Classifier runs on the pre-rewrite text, exactly once, no side effects.
+
+        ``!queue`` is a known gateway command that the adapter rewrites to
+        ``/queue``; the classifier must still see the ``!`` the user typed.
+        """
+        a = self._make_adapter(handled=True)
+
+        await a._handle_slack_message(
+            self._make_event("!queue", channel_type="channel", channel="C123")
+        )
+
+        assert a.classify_calls == ["!queue"]
+        # Classification alone must not send or dispatch anything.
+        a.send.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_classified_bare_command_bypasses_mention_gating(self):
+        """THE regression: authorized ``!log`` works top-level, no @mention."""
+        a = self._make_adapter(handled=True)
+
+        await a._handle_slack_message(
+            self._make_event("!log", channel_type="channel", channel="C123")
+        )
+
+        assert len(a.hook_calls) == 1
+        assert a.hook_calls[0].classification == "log"
+        a.handle_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_classified_command_bypasses_strict_mention_gating(self):
+        """strict_mention is mention gating too — same bypass applies."""
+        a = self._make_adapter(handled=True)
+        a._slack_strict_mention = MagicMock(return_value=True)
+
+        await a._handle_slack_message(
+            self._make_event("!log", channel_type="channel", channel="C123")
+        )
+
+        assert len(a.hook_calls) == 1
+        a.handle_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_unclassified_bare_text_is_still_ignored_without_mention(self):
+        """No token → mention gating stands, message dropped, hook never runs."""
+        a = self._make_adapter(handled=True)
+
+        await a._handle_slack_message(
+            self._make_event("hello there", channel_type="channel", channel="C123")
+        )
+
+        assert a.hook_calls == []
+        a.handle_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_classification_does_not_bypass_allowed_channel_check(self):
+        """A token waives mention gating only — never channel authorization."""
+        a = self._make_adapter(handled=True)
+        a._slack_allowed_channels = MagicMock(return_value={"C_ALLOWED"})
+
+        await a._handle_slack_message(
+            self._make_event("!log", channel_type="channel", channel="C_DENIED")
+        )
+
+        assert a.hook_calls == []
+        a.handle_message.assert_not_called()
+        a.send.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_classification_does_not_bypass_user_authorization(self):
+        """THE hole: the seam runs before the gateway ever checks the user.
+
+        ``_on_custom_message`` executes ahead of ``handle_message``, so the
+        runner's ``_is_user_authorized`` (``SLACK_ALLOWED_USERS`` and friends)
+        never sees a classified command. The seam must therefore authorize the
+        caller itself, and drop unauthorized ones silently — no hook, no agent
+        dispatch, and no reply that would confirm the command exists.
+        """
+        a = self._make_adapter(handled=True, runner=_FakeRunner(authorized=False))
+
+        await a._handle_slack_message(
+            self._make_event("!log", channel_type="channel", channel="C123")
+        )
+
+        assert a.hook_calls == []
+        a.handle_message.assert_not_called()
+        a.send.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_authorization_exception_fails_closed(self):
+        """A broken profile policy must not fall back to a broader env gate."""
+        def explode(_source):
+            raise RuntimeError("pairing store unavailable")
+
+        runner = _FakeRunner()
+        runner.authorized = explode  # type: ignore[assignment]
+        a = self._make_adapter(handled=True, runner=runner)
+        env_auth = MagicMock(return_value=True)
+        a._is_env_allowlisted_user = env_auth  # type: ignore[method-assign]
+
+        await a._handle_slack_message(
+            self._make_event("!log", channel_type="channel", channel="C123")
+        )
+
+        assert a.hook_calls == []
+        a.handle_message.assert_not_called()
+        a.send.assert_not_called()
+        env_auth.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_unauthorized_custom_command_is_dropped_in_dm(self):
+        """DMs skip mention gating entirely, so they need the same check."""
+        a = self._make_adapter(handled=True, runner=_FakeRunner(authorized=False))
+
+        await a._handle_slack_message(self._make_event("!log"))
+
+        assert a.hook_calls == []
+        a.handle_message.assert_not_called()
+        a.send.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_custom_command_auth_judges_the_real_routed_source(self):
+        """Auth runs on the *actual* source, not a stripped-down stand-in.
+
+        ``_is_user_authorized`` reads chat type, thread, team scope, bot flag
+        and profile off the source — a synthetic source missing any of them is
+        judged under the wrong policy (wrong pairing store, wrong group rules).
+        """
+        runner = _FakeRunner()
+        a = self._make_adapter(handled=True, runner=runner)
+
+        await a._handle_slack_message(
+            self._make_event(
+                "!log",
+                channel_type="channel",
+                channel="C123",
+                team="T_TEAM",
+                thread_ts="1111111111.000001",
+            )
+        )
+
+        assert len(runner.auth_sources) == 1
+        src = runner.auth_sources[0]
+        assert src.platform == Platform.SLACK
+        assert src.chat_id == "C123"
+        assert src.chat_type == "group"
+        assert src.user_id == "U_USER"
+        assert src.thread_id == "1111111111.000001"
+        assert src.scope_id == "T_TEAM"
+        assert src.is_bot is False
+        assert len(a.hook_calls) == 1
+        # And it is the very same source the hook then receives.
+        assert a.hook_calls[0].source.chat_id == src.chat_id
+        assert a.hook_calls[0].source.thread_id == src.thread_id
+        assert a.hook_calls[0].source.profile == src.profile
+
+    @pytest.mark.asyncio
+    async def test_dm_custom_command_auth_uses_dm_chat_type(self):
+        """A DM must be judged as a DM — group policy would be the wrong gate."""
+        runner = _FakeRunner()
+        a = self._make_adapter(handled=True, runner=runner)
+
+        await a._handle_slack_message(self._make_event("!log"))
+
+        assert len(runner.auth_sources) == 1
+        assert runner.auth_sources[0].chat_type == "dm"
+        assert runner.auth_sources[0].chat_id == "D123"
+
+    @pytest.mark.asyncio
+    async def test_unclassified_message_keeps_normal_gateway_auth(self):
+        """No token → no seam-level auth; the gateway path stays the only check.
+
+        Authorization is duplicated only for messages that skip
+        ``handle_message``. Everything else must reach the gateway with its
+        auth flow intact, even when the seam's own check would say no.
+        """
+        a = self._make_adapter(handled=True, runner=_FakeRunner(authorized=False))
+
+        await a._handle_slack_message(self._make_event("hello there"))
+
+        assert a.gateway_runner.auth_sources == []
+        a.handle_message.assert_awaited_once()
+
+    # -- multiplex: profile-aware authorization and runtime scope -----------
+
+    @pytest.mark.asyncio
+    async def test_custom_command_auth_carries_the_routed_profile(self, tmp_path):
+        """Routing stamps ``source.profile``; auth must see it.
+
+        ``_is_user_authorized`` picks the per-profile pairing store off
+        ``source.profile``. Authorizing a profile-less source silently consults
+        the *default* profile's pairing state for a secondary profile's channel.
+        """
+        runner = _FakeRunner(
+            multiplex=True,
+            routes={"C_SECONDARY": "secondary"},
+            homes={"secondary": tmp_path / "secondary", "default": tmp_path / "default"},
+        )
+        a = self._make_adapter(handled=True, runner=runner)
+
+        await a._handle_slack_message(
+            self._make_event("!log", channel_type="channel", channel="C_SECONDARY")
+        )
+
+        assert len(runner.auth_sources) == 1
+        assert runner.auth_sources[0].profile == "secondary"
+        assert len(a.hook_calls) == 1
+
+    @pytest.mark.asyncio
+    async def test_default_profile_pairing_does_not_authorize_routed_profile(
+        self, tmp_path
+    ):
+        """Paired on the default profile ≠ paired on the routed one.
+
+        The runner here approves only profile-less (default) sources — exactly
+        what a default-profile pairing grant looks like. A command in a channel
+        routed to ``secondary`` must be dropped, not admitted on the default
+        profile's grant.
+        """
+        runner = _FakeRunner(
+            multiplex=True,
+            routes={"C_SECONDARY": "secondary"},
+            homes={"secondary": tmp_path / "secondary", "default": tmp_path / "default"},
+            authorized=lambda source: source.profile is None,
+        )
+        a = self._make_adapter(handled=True, runner=runner)
+
+        await a._handle_slack_message(
+            self._make_event("!log", channel_type="channel", channel="C_SECONDARY")
+        )
+
+        assert a.hook_calls == []
+        a.handle_message.assert_not_called()
+        a.send.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_hook_runs_inside_the_routed_profile_runtime_scope(self, tmp_path):
+        """The hook resolves config/skills/memory against its own profile home.
+
+        ``_on_custom_message`` replaces the agent turn for a classified command,
+        so it must run in the same ``_profile_runtime_scope`` the gateway would
+        have entered — otherwise a secondary profile's command reads the
+        default profile's HERMES_HOME.
+        """
+        secondary = tmp_path / "secondary"
+        secondary.mkdir()
+        runner = _FakeRunner(
+            multiplex=True,
+            routes={"C_SECONDARY": "secondary"},
+            homes={"secondary": secondary, "default": tmp_path / "default"},
+        )
+        a = self._make_adapter(handled=True, runner=runner)
+
+        await a._handle_slack_message(
+            self._make_event("!log", channel_type="channel", channel="C_SECONDARY")
+        )
+
+        assert a.hook_homes == [secondary]
+
+    @pytest.mark.asyncio
+    async def test_profile_scope_resolution_failure_consumes_command(self, tmp_path):
+        """Never execute a routed command under the process-default profile."""
+        runner = _FakeRunner(
+            multiplex=True,
+            routes={"C_SECONDARY": "secondary"},
+            homes={},
+        )
+        a = self._make_adapter(handled=True, runner=runner)
+        handle_mock = getattr(a, "handle_message")
+        send_mock = getattr(a, "send")
+
+        await a._handle_slack_message(
+            self._make_event("!log", channel_type="channel", channel="C_SECONDARY")
+        )
+
+        assert a.hook_calls == []
+        handle_mock.assert_not_called()
+        send_mock.assert_awaited_once()
+        assert send_mock.await_args.kwargs["metadata"] == {}
+
+    @pytest.mark.asyncio
+    async def test_hook_scope_is_released_after_the_hook_returns(self, tmp_path):
+        """The profile override is per-turn — it must not leak into the process."""
+        from hermes_constants import get_hermes_home
+
+        secondary = tmp_path / "secondary"
+        secondary.mkdir()
+        runner = _FakeRunner(
+            multiplex=True,
+            routes={"C_SECONDARY": "secondary"},
+            homes={"secondary": secondary, "default": tmp_path / "default"},
+        )
+        a = self._make_adapter(handled=True, runner=runner)
+        before = get_hermes_home()
+
+        await a._handle_slack_message(
+            self._make_event("!log", channel_type="channel", channel="C_SECONDARY")
+        )
+
+        assert get_hermes_home() == before
+
+    @pytest.mark.asyncio
+    async def test_single_profile_gateway_does_not_enter_profile_scope(self):
+        """Multiplexing off → transparent pass-through, exactly like the runner."""
+        from hermes_constants import get_hermes_home
+
+        a = self._make_adapter(handled=True)
+
+        await a._handle_slack_message(
+            self._make_event("!log", channel_type="channel", channel="C123")
+        )
+
+        assert a.hook_homes == [get_hermes_home()]
+
+    # -- multiplex: per-profile adapter ownership ---------------------------
+
+    @pytest.mark.asyncio
+    async def test_owning_profile_serves_command_without_any_route(self, tmp_path):
+        """THE regression: a per-profile adapter, no ``profile_routes`` at all.
+
+        Production only stamps ``source.profile`` in the per-profile
+        message-handler wrapper, which runs on dispatch. A classified command is
+        handled *before* dispatch, so without adapter ownership the source comes
+        back profile-less and the secondary profile's command is authorized
+        against — and executed under — the default profile.
+        """
+        secondary = tmp_path / "secondary"
+        secondary.mkdir()
+        runner = _FakeRunner(
+            multiplex=True,
+            routes={},  # no profile_routes configured — ownership is all we have
+            homes={"secondary": secondary, "default": tmp_path / "default"},
+        )
+        a = self._make_profile_adapter("secondary", runner, handled=True)
+
+        await a._handle_slack_message(
+            self._make_event("!log", channel_type="channel", channel="C_ANY")
+        )
+
+        assert len(runner.auth_sources) == 1
+        assert runner.auth_sources[0].profile == "secondary"
+        assert a.hook_homes == [secondary]
+        # The dispatch wrapper never ran — the command replaced the agent turn.
+        a.handle_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_explicit_route_outranks_adapter_ownership(self, tmp_path):
+        """``profile_routes`` keeps precedence; ownership only fills a gap."""
+        routed = tmp_path / "routed"
+        routed.mkdir()
+        runner = _FakeRunner(
+            multiplex=True,
+            routes={"C_ROUTED": "routed"},
+            homes={
+                "routed": routed,
+                "secondary": tmp_path / "secondary",
+                "default": tmp_path / "default",
+            },
+        )
+        # Adapter is owned by "secondary", but the channel routes to "routed".
+        a = self._make_profile_adapter("secondary", runner, handled=True)
+
+        await a._handle_slack_message(
+            self._make_event("!log", channel_type="channel", channel="C_ROUTED")
+        )
+
+        assert len(runner.auth_sources) == 1
+        assert runner.auth_sources[0].profile == "routed"
+        assert a.hook_homes == [routed]
+
+    @pytest.mark.asyncio
+    async def test_ordinary_message_ownership_matches_the_dispatch_wrapper(
+        self, tmp_path
+    ):
+        """Stamping ownership early agrees with what the wrapper would do.
+
+        The same helper builds the source for ordinary messages, so this pins
+        that filling the profile in early is not a behaviour change: the
+        dispatched event carries the owning profile either way.
+        """
+        runner = _FakeRunner(
+            multiplex=True,
+            routes={},
+            homes={"secondary": tmp_path / "secondary", "default": tmp_path / "default"},
+        )
+        a = self._make_profile_adapter("secondary", runner, handled=True)
+
+        await a._handle_slack_message(
+            self._make_event("<@U_BOT> how do I export a report", channel_type="channel")
+        )
+
+        a.handle_message.assert_awaited_once()
+        assert a.handle_message.call_args[0][0].source.profile == "secondary"
+
+    @pytest.mark.asyncio
+    async def test_unowned_adapter_under_multiplex_fails_closed(self, tmp_path):
+        """Ambiguous ownership must never fall back to the default profile.
+
+        Multiplexing is on, no route matches, and the adapter carries no owner —
+        so there is no way to tell whose policy or HERMES_HOME applies. The
+        command is dropped before authorization is even consulted.
+        """
+        runner = _FakeRunner(
+            multiplex=True,
+            routes={},
+            homes={"default": tmp_path / "default"},
+        )
+        a = self._make_adapter(handled=True, runner=runner)  # no owner recorded
+
+        await a._handle_slack_message(
+            self._make_event("!log", channel_type="channel", channel="C_ANY")
+        )
+
+        assert a.hook_calls == []
+        assert runner.auth_sources == []
+        a.handle_message.assert_not_called()
+        a.send.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_single_profile_adapter_needs_no_ownership(self):
+        """Multiplexing off: an unset profile is unambiguous, nothing changes."""
+        from hermes_constants import get_hermes_home
+
+        runner = _FakeRunner(multiplex=False)
+        a = self._make_adapter(handled=True, runner=runner)  # no owner recorded
+
+        await a._handle_slack_message(
+            self._make_event("!log", channel_type="channel", channel="C123")
+        )
+
+        assert len(a.hook_calls) == 1
+        assert len(runner.auth_sources) == 1
+        assert runner.auth_sources[0].profile is None
+        assert a.hook_homes == [get_hermes_home()]
+
+    @pytest.mark.asyncio
+    async def test_classification_does_not_bypass_bot_message_filter(self):
+        """Bot/self filters run before classification and still win."""
+        a = self._make_adapter(handled=True)
+
+        await a._handle_slack_message(
+            self._make_event(
+                "!log",
+                channel_type="channel",
+                channel="C123",
+                bot_id="B_OTHER",
+                subtype="bot_message",
+            )
+        )
+
+        assert a.classify_calls == []
+        assert a.hook_calls == []
+
+    @pytest.mark.asyncio
+    async def test_classification_does_not_bypass_dedup(self):
+        """A redelivered event is dropped before the classifier runs."""
+        a = self._make_adapter(handled=True)
+        evt = self._make_event("!log", channel_type="channel", channel="C123")
+
+        await a._handle_slack_message(evt)
+        await a._handle_slack_message(dict(evt))
+
+        assert len(a.hook_calls) == 1
+        assert len(a.classify_calls) == 1
+
+    @pytest.mark.asyncio
+    async def test_classification_does_not_bypass_subtype_filter(self):
+        """Edits/deletions never reach the seam."""
+        a = self._make_adapter(handled=True)
+
+        await a._handle_slack_message(
+            self._make_event(
+                "!log",
+                channel_type="channel",
+                channel="C123",
+                subtype="message_changed",
+            )
+        )
+
+        assert a.classify_calls == []
+        assert a.hook_calls == []
+
+    # -- stage 2: execution -------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_execution_hook_not_invoked_without_classification(self):
+        """Unclassified messages go straight to the agent, hook untouched."""
+        a = self._make_adapter(handled=True)
+
+        await a._handle_slack_message(self._make_event("just a message"))
+
+        assert a.hook_calls == []
+        a.handle_message.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_hook_receives_token_and_normalized_context(self):
+        """Hook gets the opaque token plus normalized text and reply context."""
+        a = self._make_adapter(handled=True)
+
+        await a._handle_slack_message(
+            self._make_event(
+                "<@U_BOT> !find blog toc",
+                channel_type="channel",
+                channel="C123",
+                thread_ts="1111111111.000001",
+                team="T_TEAM",
+            )
+        )
+
+        ctx = a.hook_calls[0]
+        assert ctx.classification == "find"
+        # Mention stripped, not the raw event text.
+        assert ctx.text == "!find blog toc"
+        assert ctx.channel_id == "C123"
+        assert ctx.user_id == "U_USER"
+        assert ctx.team_id == "T_TEAM"
+        assert ctx.thread_ts == "1111111111.000001"
+        assert ctx.ts == "1234567890.000001"
+        assert ctx.is_mentioned is True
+        assert ctx.is_dm is False
+        # Enough context to reply without reimplementing _handle_slack_message.
+        assert ctx.event["channel"] == "C123"
+        assert ctx.source.chat_id == "C123"
+        assert ctx.source.thread_id == "1111111111.000001"
+        assert ctx.client is a._app.client
+        # Workspace-scoped: without slack_team_id, send() resolves the client
+        # from a channel-id map that two workspaces can collide in.
+        assert ctx.reply_metadata == {
+            "slack_team_id": "T_TEAM",
+            "thread_id": "1111111111.000001",
+        }
+
+    @pytest.mark.asyncio
+    async def test_reply_metadata_carries_team_for_top_level_messages(self):
+        """No thread key, but still a workspace — the team must survive."""
+        a = self._make_adapter(handled=True)
+
+        await a._handle_slack_message(
+            self._make_event(
+                "!log", channel_type="channel", channel="C123", team="T_TEAM"
+            )
+        )
+
+        assert a.hook_calls[0].reply_metadata == {"slack_team_id": "T_TEAM"}
+
+    # -- cross-workspace reply safety --------------------------------------
+
+    def _make_multi_workspace_adapter(self, **kwargs):
+        """Two workspaces that share a channel ID — the collision case."""
+        a = self._make_adapter(**kwargs)
+        a._team_clients = {"T_A": AsyncMock(), "T_B": AsyncMock()}
+        for client in a._team_clients.values():
+            client.chat_postMessage.return_value = {}
+        # A stale channel→team mapping from workspace A. This is the trap:
+        # _get_client falls back to it whenever metadata carries no team.
+        a._channel_team = {"C_SHARED": "T_A"}
+        return a
+
+    @pytest.mark.asyncio
+    async def test_reply_metadata_selects_the_invoking_workspace_client(self):
+        """Same channel ID in two workspaces must not cross-post."""
+        a = self._make_multi_workspace_adapter(handled=True)
+
+        await a._handle_slack_message(
+            self._make_event(
+                "!log", channel_type="channel", channel="C_SHARED", team="T_B"
+            )
+        )
+
+        ctx = a.hook_calls[0]
+        assert ctx.reply_metadata["slack_team_id"] == "T_B"
+        resolved = a._get_client(
+            ctx.channel_id, team_id=a._metadata_team_id(ctx.reply_metadata)
+        )
+        assert resolved is a._team_clients["T_B"]
+        assert resolved is not a._team_clients["T_A"]
+
+    @pytest.mark.asyncio
+    async def test_hook_error_reply_posts_to_the_invoking_workspace(self):
+        """The generic failure notice must land in the workspace that asked."""
+        a = self._make_multi_workspace_adapter(boom=True)
+        # Real send(): prove the client selection end to end, not just metadata.
+        del a.send
+
+        await a._handle_slack_message(
+            self._make_event(
+                "!log", channel_type="channel", channel="C_SHARED", team="T_B"
+            )
+        )
+
+        a.handle_message.assert_not_called()
+        a._team_clients["T_B"].chat_postMessage.assert_awaited_once()
+        a._team_clients["T_A"].chat_postMessage.assert_not_awaited()
+        a._app.client.chat_postMessage.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_hook_returning_false_falls_through_to_bang_handling(self):
+        """Agent-routed aliases: declining resumes normal bang/slash handling."""
+        a = self._make_adapter(handled=False)
+
+        await a._handle_slack_message(
+            self._make_event("!queue", channel_type="channel", channel="C123")
+        )
+
+        assert len(a.hook_calls) == 1
+        a.handle_message.assert_awaited_once()
+        msg_event = a.handle_message.call_args[0][0]
+        # The !→/ rewrite still applied downstream of the declined hook.
+        assert msg_event.text.startswith("/queue")
+        assert msg_event.message_type == MessageType.COMMAND
+
+    @pytest.mark.asyncio
+    async def test_hook_exception_is_consumed_with_error_reply(self):
+        """Fail closed: a broken command never falls into the LLM."""
+        a = self._make_adapter(boom=True)
+
+        await a._handle_slack_message(
+            self._make_event("!log", channel_type="channel", channel="C123")
+        )
+
+        a.handle_message.assert_not_called()
+        a.send.assert_awaited_once()
+        chat_id, content = a.send.call_args[0][:2]
+        assert chat_id == "C123"
+        assert content  # generic, user-visible error
+        # Top-level channel message → flat reply, no synthetic thread.
+        assert a.send.call_args.kwargs["metadata"] == {}
+
+    @pytest.mark.asyncio
+    async def test_hook_exception_in_thread_replies_in_thread(self):
+        """The error lands on the invoking surface."""
+        a = self._make_adapter(boom=True)
+
+        await a._handle_slack_message(
+            self._make_event(
+                "!log",
+                channel_type="channel",
+                channel="C123",
+                thread_ts="1111111111.000001",
+            )
+        )
+
+        a.handle_message.assert_not_called()
+        assert a.send.call_args.kwargs["metadata"] == {
+            "thread_id": "1111111111.000001"
+        }
+
+    # -- classifier failure -------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_classifier_exception_consumes_the_message_in_channel(self):
+        """A broken classifier must not hand the raw text to the agent.
+
+        The classifier is the only thing that knows whether this was a command.
+        If it fails, treating the message as ordinary chat forwards a
+        side-effecting command (``!log delete everything``) to the LLM to
+        improvise. Fail closed: consume it.
+        """
+        a = self._make_adapter(classify_boom=True)
+
+        await a._handle_slack_message(
+            self._make_event("!log", channel_type="channel", channel="C123")
+        )
+
+        assert a.classify_calls == ["!log"]
+        assert a.hook_calls == []
+        a.handle_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_classifier_exception_consumes_the_message_in_dm(self):
+        """DMs have no mention gate to fall back on — same fail-closed rule."""
+        a = self._make_adapter(classify_boom=True)
+
+        await a._handle_slack_message(self._make_event("hello there"))
+
+        assert a.hook_calls == []
+        a.handle_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_classifier_exception_does_not_log_message_text(self, caplog):
+        """Log the failure, never the payload — it may carry user content."""
+        a = self._make_adapter(classify_boom=True)
+
+        with caplog.at_level("DEBUG"):
+            await a._handle_slack_message(
+                self._make_event("!log my private passphrase hunter2")
+            )
+
+        assert "hunter2" not in caplog.text
+
+    # -- context text purity ------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_ctx_text_excludes_fetched_thread_history(self):
+        """``ctx.text`` is what the user just typed, not the thread transcript.
+
+        Entering a thread cold prepends fetched history to ``text`` for the
+        LLM's benefit. A command parser reading that prefixed string would
+        parse someone else's earlier message as its arguments.
+        """
+        a = self._make_adapter(handled=True)
+        a._has_active_session_for_thread = MagicMock(return_value=False)
+        a._fetch_thread_context = AsyncMock(
+            return_value="[Thread context]\nU_OTHER: !log fake earlier entry\n\n"
+        )
+
+        await a._handle_slack_message(
+            self._make_event(
+                "<@U_BOT> !find blog toc",
+                channel_type="channel",
+                channel="C123",
+                thread_ts="1111111111.000001",
+            )
+        )
+
+        ctx = a.hook_calls[0]
+        assert ctx.text == "!find blog toc"
+        assert "fake earlier entry" not in ctx.text
+
+    @pytest.mark.asyncio
+    async def test_thread_history_still_reaches_the_llm_on_fallthrough(self):
+        """Purity applies to ``ctx.text`` only — the agent still gets context."""
+        a = self._make_adapter(handled=False)
+        a._has_active_session_for_thread = MagicMock(return_value=False)
+        a._fetch_thread_context = AsyncMock(
+            return_value="[Thread context]\nU_OTHER: earlier\n\n"
+        )
+
+        await a._handle_slack_message(
+            self._make_event(
+                "<@U_BOT> !find blog toc",
+                channel_type="channel",
+                channel="C123",
+                thread_ts="1111111111.000001",
+            )
+        )
+
+        msg_event = a.handle_message.call_args[0][0]
+        assert msg_event.text.startswith("[Thread context]")
+        assert msg_event.text.endswith("!find blog toc")
+
+    # -- assistant thread titles -------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_classified_command_does_not_title_the_assistant_thread(self):
+        """A command is not a conversation topic.
+
+        Auto-titling reads the first DM turn's text. ``!log`` and ``!name?``
+        are not known gateway commands, so they never get the ``/`` rewrite
+        that the title path skips — without an explicit guard the thread ends
+        up titled with the command the user typed.
+        """
+        a = self._make_adapter(handled=True)
+        a._app.client.assistant_threads_setTitle = AsyncMock()
+        a.config.extra["assistant_thread_titles"] = True
+
+        await a._handle_slack_message(self._make_event("!log"))
+
+        assert len(a.hook_calls) == 1
+        a._app.client.assistant_threads_setTitle.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_unclassified_dm_still_titles_the_assistant_thread(self):
+        """The guard is scoped to commands — ordinary DMs keep auto-titling."""
+        a = self._make_adapter(handled=True)
+        a._app.client.assistant_threads_setTitle = AsyncMock()
+        a.config.extra["assistant_thread_titles"] = True
+
+        await a._handle_slack_message(self._make_event("how do I export a report"))
+
+        a._app.client.assistant_threads_setTitle.assert_awaited_once()
+
+    # -- base adapter regression net ---------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_default_seam_does_not_swallow_normal_messages(self, adapter):
+        """Base adapter is a no-op — unchanged public behavior."""
+        # ``_app.client`` is a bare AsyncMock, so ``users_info`` would return
+        # another AsyncMock and the ``result.get(...)`` inside
+        # ``_resolve_user_name`` would build a coroutine nobody awaits. Give the
+        # concrete lookup a real response dict so it runs to completion.
+        adapter._app.client.users_info = AsyncMock(
+            return_value={"user": {"profile": {"display_name": "Test User"}}}
+        )
+
+        await adapter._handle_slack_message(self._make_event("just a message"))
+
+        adapter.handle_message.assert_awaited_once()
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert msg_event.text == "just a message"
+
+    @pytest.mark.asyncio
+    async def test_default_seam_still_ignores_unmentioned_channel_bang(self, adapter):
+        """Without a classifier, ``!log`` in a channel stays gated as before."""
+        adapter._slack_require_mention = MagicMock(return_value=True)
+        adapter._slack_strict_mention = MagicMock(return_value=False)
+
+        await adapter._handle_slack_message(
+            self._make_event("!log", channel_type="channel", channel="C123")
+        )
+
+        adapter.handle_message.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -5753,6 +6715,32 @@ class TestAssistantThreadLifecycle:
         assert msg_event.metadata["slack_team_id"] == "T_TEAM"
 
     @pytest.mark.asyncio
+    async def test_existing_dm_reply_does_not_reset_title_after_restart(
+        self, assistant_adapter
+    ):
+        """A fresh adapter must not auto-title an already-existing DM thread."""
+        assistant_adapter._app.client.users_info = AsyncMock(
+            return_value={"user": {"profile": {"display_name": "Tyler"}}}
+        )
+        assistant_adapter._app.client.reactions_add = AsyncMock()
+        assistant_adapter._app.client.reactions_remove = AsyncMock()
+        assistant_adapter._app.client.assistant_threads_setTitle = AsyncMock()
+
+        await assistant_adapter._handle_slack_message(
+            {
+                "text": "This reply must not replace an explicit !name title",
+                "channel": "D123",
+                "channel_type": "im",
+                "ts": "171.222",
+                "thread_ts": "171.111",
+                "team": "T_TEAM",
+                "user": "U_USER",
+            }
+        )
+
+        assistant_adapter._app.client.assistant_threads_setTitle.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_dm_message_title_can_be_disabled(self, assistant_adapter):
         assistant_adapter.config.extra["assistant_thread_titles"] = False
         assistant_adapter._app.client.users_info = AsyncMock(return_value={"user": {}})
@@ -8837,3 +9825,234 @@ class TestSlackUserAgent:
             "user_agent_prefix sticks on the app-owned client; got "
             f"kwargs={async_app_kwargs}"
         )
+# TestSendErrorSanitization
+# ---------------------------------------------------------------------------
+
+
+class _TokenBearingSlackApiError(Exception):
+    """Stand-in for ``slack_sdk.errors.SlackApiError``.
+
+    The real one renders its whole ``SlackResponse`` — including the request's
+    ``token`` — through ``__str__``, and carries the same response object on
+    ``.response``. Both leak paths are reproduced here so the test pins the
+    contract rather than the SDK version installed in CI.
+    """
+
+    def __init__(self, token, code="channel_not_found"):
+        self.response = {
+            "ok": False,
+            "error": code,
+            "req_args": {"token": token, "channel": "C1"},
+        }
+        super().__init__(
+            f"The request to the Slack API failed. "
+            f"(url: https://slack.com/api/chat.postMessage) "
+            f"The server responded with: {self.response}"
+        )
+
+
+class TestSendErrorSanitization:
+    """Host contract: a send failure must not leak credentials.
+
+    ``send()`` is inherited unmodified by every out-of-tree ``SlackAdapter``
+    subclass, so whatever it logs and returns is part of the surface those
+    plugins inherit. It used to log the raw exception with ``exc_info=True``
+    and return ``str(e)`` — for a ``SlackApiError`` that is the bot token, in
+    the log file and in a ``SendResult.error`` that callers may render into a
+    channel.
+
+    These drive the REAL inherited ``send`` on a plugin subclass.
+    """
+
+    TOKEN = "xoxb-9876543210-SUPERSECRET-do-not-log"
+
+    def _adapter(self):
+        """A plugin subclass with the real inherited ``send``."""
+        adapter = _HookAdapter(PlatformConfig(enabled=True, token=self.TOKEN))
+        adapter._app = MagicMock()
+        adapter._app.client = AsyncMock()
+        adapter.stop_typing = AsyncMock()
+        # No pending slash context — exercise the chat_postMessage path.
+        adapter._pop_slash_context = MagicMock(return_value=None)
+        assert type(adapter).send is SlackAdapter.send, (
+            "test must exercise the inherited send, not an override"
+        )
+        return adapter
+
+    def _fail_with(self, adapter, exc):
+        adapter._app.client.chat_postMessage = AsyncMock(side_effect=exc)
+        adapter._get_client = MagicMock(return_value=adapter._app.client)
+
+    def test_token_absent_from_returned_error(self, caplog):
+        adapter = self._adapter()
+        self._fail_with(adapter, _TokenBearingSlackApiError(self.TOKEN))
+
+        with caplog.at_level(logging.DEBUG):
+            result = asyncio.run(adapter.send("C1", "hello"))
+
+        assert result.success is False
+        assert self.TOKEN not in (result.error or ""), (
+            "bot token leaked into SendResult.error"
+        )
+        assert "SUPERSECRET" not in (result.error or "")
+
+    def test_token_absent_from_logs(self, caplog):
+        adapter = self._adapter()
+        self._fail_with(adapter, _TokenBearingSlackApiError(self.TOKEN))
+
+        with caplog.at_level(logging.DEBUG):
+            asyncio.run(adapter.send("C1", "hello"))
+
+        blob = "\n".join(
+            [r.getMessage() for r in caplog.records]
+            + [str(r.exc_info) for r in caplog.records if r.exc_info]
+        )
+        assert self.TOKEN not in blob, "bot token leaked into the log record"
+        assert "SUPERSECRET" not in blob
+
+    def test_no_traceback_or_request_context_logged(self, caplog):
+        """No ``exc_info``: traceback frames carry the request kwargs."""
+        adapter = self._adapter()
+        self._fail_with(adapter, _TokenBearingSlackApiError(self.TOKEN))
+
+        with caplog.at_level(logging.DEBUG):
+            asyncio.run(adapter.send("C1", "hello"))
+
+        send_errors = [r for r in caplog.records if "Send error" in r.getMessage()]
+        assert send_errors, "the send failure was not logged at all"
+        for record in send_errors:
+            assert record.exc_info is None, "raw traceback attached to the log record"
+            assert "req_args" not in record.getMessage()
+            assert "slack.com/api" not in record.getMessage()
+
+    def test_stable_slack_error_code_is_kept(self, caplog):
+        """Sanitized ≠ useless: the stable error slug still reaches the log."""
+        adapter = self._adapter()
+        self._fail_with(adapter, _TokenBearingSlackApiError(self.TOKEN, code="ratelimited"))
+
+        with caplog.at_level(logging.DEBUG):
+            asyncio.run(adapter.send("C1", "hello"))
+
+        blob = "\n".join(r.getMessage() for r in caplog.records)
+        assert "ratelimited" in blob
+        assert "_TokenBearingSlackApiError" in blob
+
+    def test_returned_error_is_stable_across_failures(self):
+        """The returned text must not vary with the underlying exception."""
+        first = self._adapter()
+        self._fail_with(first, _TokenBearingSlackApiError(self.TOKEN, code="ratelimited"))
+        second = self._adapter()
+        self._fail_with(second, RuntimeError(f"boom {self.TOKEN}"))
+
+        r1 = asyncio.run(first.send("C1", "hello"))
+        r2 = asyncio.run(second.send("C1", "hello"))
+
+        assert r1.error == r2.error, (
+            "SendResult.error varies with the exception — it can still be used "
+            "as an oracle for its contents"
+        )
+        assert self.TOKEN not in (r2.error or "")
+
+    def test_plain_exception_text_is_not_echoed(self, caplog):
+        """A non-SDK exception's message is untrusted text too."""
+        adapter = self._adapter()
+        self._fail_with(adapter, RuntimeError(f"connection to {self.TOKEN} refused"))
+
+        with caplog.at_level(logging.DEBUG):
+            result = asyncio.run(adapter.send("C1", "hello"))
+
+        blob = "\n".join(r.getMessage() for r in caplog.records)
+        assert self.TOKEN not in blob
+        assert self.TOKEN not in (result.error or "")
+        assert "RuntimeError" in blob, "the exception type should still be logged"
+
+    def test_junk_error_code_is_dropped(self, caplog):
+        """Only the known slug shape is trusted; anything else is dropped."""
+        adapter = self._adapter()
+        exc = _TokenBearingSlackApiError(self.TOKEN)
+        exc.response["error"] = f"not a slug: {self.TOKEN}"
+        self._fail_with(adapter, exc)
+
+        with caplog.at_level(logging.DEBUG):
+            asyncio.run(adapter.send("C1", "hello"))
+
+        blob = "\n".join(r.getMessage() for r in caplog.records)
+        assert self.TOKEN not in blob, (
+            "an attacker-shaped error field was echoed into the log"
+        )
+
+    def test_typing_indicator_still_cleared_on_failure(self):
+        """Sanitizing must not disturb the existing cleanup behavior."""
+        adapter = self._adapter()
+        self._fail_with(adapter, _TokenBearingSlackApiError(self.TOKEN))
+
+        asyncio.run(adapter.send("C1", "hello", reply_to="100.0"))
+
+        adapter.stop_typing.assert_awaited()
+
+    def test_threaded_send_and_real_status_cleanup_do_not_leak(self, caplog):
+        """A second Slack failure during cleanup cannot bypass send sanitization."""
+        adapter = self._adapter()
+        adapter.stop_typing = SlackAdapter.stop_typing.__get__(adapter, type(adapter))
+        assert adapter._app is not None
+        client = adapter._app.client
+        client.chat_postMessage = AsyncMock(
+            side_effect=_TokenBearingSlackApiError(self.TOKEN)
+        )
+        client.assistant_threads_setStatus = AsyncMock(
+            side_effect=_TokenBearingSlackApiError(self.TOKEN)
+        )
+        adapter._get_client = MagicMock(return_value=client)
+
+        with caplog.at_level(logging.DEBUG):
+            result = asyncio.run(
+                adapter.send(
+                    "C1",
+                    "hello",
+                    metadata={"thread_id": "100.0", "slack_team_id": "T1"},
+                )
+            )
+
+        blob = "\n".join(
+            [r.getMessage() for r in caplog.records]
+            + [str(r.exc_info) for r in caplog.records if r.exc_info]
+        )
+        assert result.success is False
+        assert self.TOKEN not in blob
+        assert self.TOKEN not in (result.error or "")
+        client.chat_postMessage.assert_awaited_once()
+        client.assistant_threads_setStatus.assert_awaited_once()
+
+    def test_pre_hook_slack_reads_do_not_log_credentials(self, caplog):
+        """User and cold-thread lookups sanitize SDK exceptions before hooks run."""
+        adapter = self._adapter()
+        assert adapter._app is not None
+        client = adapter._app.client
+        client.users_info = AsyncMock(
+            side_effect=_TokenBearingSlackApiError(self.TOKEN)
+        )
+        client.conversations_replies = AsyncMock(
+            side_effect=_TokenBearingSlackApiError(self.TOKEN)
+        )
+        adapter._get_client = MagicMock(return_value=client)
+
+        async def exercise():
+            assert await adapter._resolve_user_name(
+                "U1", chat_id="C1", team_id="T1"
+            ) == "U1"
+            assert await adapter._fetch_thread_context(
+                "C1", "100.0", "101.0", team_id="T1"
+            ) == ""
+            assert await adapter._fetch_thread_parent_text(
+                "C1", "100.0", team_id="T1"
+            ) == ""
+
+        with caplog.at_level(logging.DEBUG):
+            asyncio.run(exercise())
+
+        blob = "\n".join(
+            [r.getMessage() for r in caplog.records]
+            + [str(r.exc_info) for r in caplog.records if r.exc_info]
+        )
+        assert self.TOKEN not in blob
+        assert "_TokenBearingSlackApiError" in blob

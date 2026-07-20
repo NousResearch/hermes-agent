@@ -2451,6 +2451,16 @@ class BasePlatformAdapter(ABC):
     # routing is platform-generic instead of Discord-only.
     gateway_runner = None  # type: ignore[assignment]  # set by gateway/run.py
 
+    # The gateway profile this adapter instance speaks for, injected by
+    # ``gateway/run.py`` at the same seam that installs the message handler.
+    # Under ``gateway.multiplex_profiles`` one process runs a separate adapter
+    # per profile, and ordinary inbound events get ``source.profile`` stamped by
+    # the per-profile message-handler wrapper in run.py. Any path that acts on a
+    # message *before* that wrapper — a platform's pre-dispatch command seam,
+    # say — sees an unstamped source and would otherwise be served by the
+    # default profile. ``apply_owner_profile`` is the generic recovery.
+    owner_profile: Optional[str] = None  # type: ignore[assignment]  # set by gateway/run.py
+
     def __init__(self, config: PlatformConfig, platform: Platform):
         self.config = config
         self.platform = platform
@@ -2966,6 +2976,80 @@ class BasePlatformAdapter(ABC):
         an optional response string.
         """
         self._message_handler = handler
+
+    def set_owner_profile(self, profile_name: Optional[str]) -> None:
+        """Record which gateway profile owns this adapter instance.
+
+        ``gateway/run.py`` calls this for every adapter it creates — the active
+        profile's as well as each secondary profile's — so "which profile does
+        this adapter speak for" is answerable directly, instead of only
+        implicitly via the message-handler closure that stamps
+        ``source.profile`` on the way to ``_handle_message``.
+        """
+        name = (profile_name or "").strip()
+        self.owner_profile = name or None  # type: ignore[assignment]
+
+    def _owning_gateway_runner(self) -> Any:
+        """Return the ``GatewayRunner`` driving this adapter, or ``None``.
+
+        ``gateway_runner`` is the reference run.py injects and the one
+        ``build_source`` already uses for profile routing; the
+        ``_message_handler`` bound-method owner is the older path some adapters
+        were wired through. Prefer the former so callers resolve the *same*
+        runner that stamped ``source.profile``.
+        """
+        runner = getattr(self, "gateway_runner", None)
+        if runner is not None:
+            return runner
+        return getattr(getattr(self, "_message_handler", None), "__self__", None)
+
+    def apply_owner_profile(self, source: Any) -> bool:
+        """Stamp this adapter's owning profile onto a pre-dispatch ``source``.
+
+        Returns whether ``source`` ends up carrying a *determinate* profile
+        identity. Precedence, highest first:
+
+          1. An explicit ``gateway.profile_routes`` match. ``build_source``
+             already stamped ``source.profile`` from it, and routing always
+             wins — this never overwrites a set profile.
+          2. This adapter's owning profile, for events that never reached the
+             per-profile message-handler wrapper in ``gateway/run.py``.
+
+        On a single-profile gateway there is nothing to disambiguate: an unset
+        profile unambiguously means the one active profile. Returns True
+        *without* stamping, so session keying stays byte-identical to before.
+
+        Under multiplexing an adapter with no recorded owner is ambiguous — it
+        could speak for any served profile — and this returns False. Callers on
+        security-sensitive paths (authorization, runtime scope) must fail closed
+        on False rather than let the default profile's policy and HERMES_HOME
+        serve another profile's traffic.
+        """
+        if source is None:
+            return False
+        if getattr(source, "profile", None):
+            return True
+
+        runner = self._owning_gateway_runner()
+        if not getattr(getattr(runner, "config", None), "multiplex_profiles", False):
+            return True
+
+        owner = (getattr(self, "owner_profile", None) or "").strip()
+        if not owner:
+            logger.warning(
+                "%s adapter has no owning profile under multiplexing; "
+                "cannot resolve the profile for %s/%s",
+                getattr(self, "platform", "?"),
+                getattr(source, "platform", "?"),
+                getattr(source, "chat_id", "?"),
+            )
+            return False
+        try:
+            source.profile = owner
+        except Exception:
+            logger.warning("could not stamp owning profile on source", exc_info=True)
+            return False
+        return True
 
     def set_topic_recovery_fn(
         self,

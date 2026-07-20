@@ -76,6 +76,10 @@ platforms:
             pr_number: "{number}"
 ```
 
+webhook 监听器默认绑定到 `127.0.0.1`。这适用于 ngrok 或 cloudflared
+等本地隧道。如果你有意直接在网络接口上暴露 gateway，请显式设置
+`extra.host: "0.0.0.0"`。
+
 **关键字段：**
 
 | 字段 | 说明 |
@@ -102,7 +106,7 @@ hermes gateway
 你应该看到：
 
 ```
-[webhook] Listening on 0.0.0.0:8644 — routes: github-pr-review
+[webhook] Listening on 127.0.0.1:8644 — routes: github-pr-review
 ```
 
 验证其是否正在运行：
@@ -303,7 +307,7 @@ platforms:
   webhook:
     enabled: true
     extra:
-      host: "0.0.0.0"         # 绑定地址（默认：0.0.0.0）
+      host: "127.0.0.1"       # 绑定地址（默认：127.0.0.1）
       port: 8644               # 监听端口（默认：8644）
       secret: ""               # 可选的全局回退 secret
       rate_limit: 30           # 每条路由每分钟请求数

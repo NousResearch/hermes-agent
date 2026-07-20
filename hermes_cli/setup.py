@@ -1906,9 +1906,11 @@ def _setup_webhooks():
             return
 
     print()
-    print_warning("⚠  Webhook and SMS platforms require exposing gateway ports to the")
-    print_warning("   internet. For security, run the gateway in a sandboxed environment")
-    print_warning("   (Docker, VM, etc.) to limit blast radius from prompt injection.")
+    print_warning("⚠  Webhook and SMS platforms receive requests from external services.")
+    print_warning("   Keep the default loopback bind and use a tunnel or reverse proxy,")
+    print_warning("   or explicitly bind to 0.0.0.0 when exposing a gateway port.")
+    print_warning("   Run the gateway in a sandboxed environment (Docker, VM, etc.) to")
+    print_warning("   limit blast radius from prompt injection.")
     print()
     print_info("   Full guide: https://hermes-agent.nousresearch.com/docs/user-guide/messaging/webhooks/")
     print()
@@ -1933,7 +1935,10 @@ def _setup_webhooks():
     print_success("Webhooks enabled! Next steps:")
     from hermes_constants import display_hermes_home as _dhh
     print_info(f"   1. Define webhook routes in {_dhh()}/config.yaml")
-    print_info("   2. Point your service (GitHub, GitLab, etc.) at:")
+    print_info("   2. Expose the listener with a TLS-terminating tunnel or reverse")
+    print_info("      proxy, then point your service at:")
+    print_info("      https://your-public-url/webhooks/<route-name>")
+    print_info("      A direct 0.0.0.0 bind instead serves plain HTTP at:")
     print_info("      http://your-server:8644/webhooks/<route-name>")
     print()
     print_info("   Route configuration guide:")

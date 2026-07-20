@@ -96,7 +96,7 @@ def _is_webhook_enabled() -> bool:
 
 def _get_webhook_base_url() -> str:
     wh = _get_webhook_config().get("extra", {})
-    host = wh.get("host")
+    host = wh.get("host", "127.0.0.1")
     port = wh.get("port", 8644)
     display_host = "localhost" if not host or host in {"0.0.0.0", "::"} else host
     if ":" in display_host and not display_host.startswith("["):
@@ -117,6 +117,7 @@ def _setup_hint() -> str:
        webhook:
          enabled: true
          extra:
+           host: "127.0.0.1"
            port: 8644
            secret: "your-global-hmac-secret"
 

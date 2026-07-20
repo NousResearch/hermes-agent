@@ -213,7 +213,7 @@ def _try_skill_graph_fallback(name: str) -> str | None:
     """
     try:
         import importlib
-        sg = importlib.import_module("plugins.skill_graph")
+        sg = importlib.import_module("hermes_plugins.skill_graph")
         if not hasattr(sg, "_handle_skill_load"):
             return None
         return sg._handle_skill_load({"name": name})

@@ -429,3 +429,106 @@ class TestBestEffortFinalizeDoubleSend:
             f"fallback send fired {len(adapter.fallback_sends)} time(s) "
             f"(stream_consumer.py:2085-2088 'DO NOT mark' path)"
         )
+
+
+# ===========================================================================
+# Test group 3: orphan-queue ack routing race (adapter-level)
+# ===========================================================================
+
+
+def _make_manual_ack_adapter():
+    """Real WeComAdapter whose ``_send_json`` records frames but NEVER
+    auto-resolves any ack, so the test can orchestrate the exact interleaving
+    of intermediate-ack arrival vs. finalize registration by hand.
+    """
+    from plugins.platforms.wecom.adapter import WeComAdapter
+    from gateway.config import PlatformConfig
+
+    adapter = WeComAdapter(PlatformConfig(enabled=True))
+    adapter._ws = MagicMock(closed=False)
+    adapter._last_chat_req_ids[CHAT_ID] = REQ_ID
+
+    frames: list[dict] = []
+
+    async def _fake_send_json(payload: dict) -> None:
+        frames.append(payload)
+
+    adapter._send_json = _fake_send_json
+    adapter._recorded_frames = frames
+    return adapter
+
+
+class TestOrphanQueueAckRouting:
+    """The finalize frame shares the inbound req_id with the intermediate
+    frames. While the finalize awaits the pending intermediate ack to drain,
+    that intermediate ack can arrive and ``_resolve_reply_ack`` pops the WHOLE
+    queue out of ``_reply_queues``. Before the fix, the finalize then
+    registered its ``pending_ack`` on the now-orphaned queue object (detached
+    from the dict), so its own ack landed in Unrouted and the finalize hit a
+    15s timeout. The fix re-attaches the queue to the dict before registering.
+    """
+
+    @pytest.mark.asyncio
+    async def test_intermediate_ack_mid_drain_does_not_orphan_finalize_queue(self):
+        adapter = _make_manual_ack_adapter()
+        adapter._REPLY_ACK_TIMEOUT = 0.3  # snappy: bounds the failure mode
+
+        # 1) Fire an intermediate frame (skip_if_pending) — occupies pending_ack.
+        await adapter._send_reply_queued(
+            REQ_ID,
+            {"msgtype": "stream", "stream": {"id": "s1", "finish": False, "content": "hi"}},
+            is_final=False, skip_if_pending=True,
+        )
+        inter_queue = adapter._reply_queues[REQ_ID]
+        assert inter_queue.pending_ack is not None
+
+        # 2) Start the finalize: it enters the is_final drain branch and yields
+        #    at `await shield(pending_frame.future)`.
+        fin_task = asyncio.create_task(adapter._send_reply_queued(
+            REQ_ID,
+            {"msgtype": "stream", "stream": {"id": "s1", "finish": True, "content": "done"}},
+            is_final=True, skip_if_pending=False,
+        ))
+        await asyncio.sleep(0)  # let finalize reach the drain await
+
+        # 3) Deliver the intermediate ack MID-DRAIN. _resolve_reply_ack resolves
+        #    the drain future AND pops the whole queue out of _reply_queues.
+        await adapter._dispatch_payload(
+            {"headers": {"req_id": REQ_ID}, "body": {"errcode": 0}}
+        )
+        assert REQ_ID not in adapter._reply_queues, (
+            "precondition: intermediate ack should have popped the queue"
+        )
+
+        # 4) Let finalize resume: it must clear the drained pending_ack, create
+        #    its own frame, re-attach the queue, register pending_ack, and write
+        #    bytes. Resuming through the shield/wait_for wrapper takes several
+        #    event-loop iterations, so yield until the finalize has re-registered
+        #    (bounded, to avoid a hang if the fix regresses).
+        for _ in range(20):
+            await asyncio.sleep(0)
+            q = adapter._reply_queues.get(REQ_ID)
+            if q is not None and q.pending_ack is not None:
+                break
+
+        # FIX ASSERTION: the finalize must have re-attached its queue to the
+        # dict, so its ack is routable. Without the fix the queue would still
+        # be absent here (orphaned) and the finalize ack would go Unrouted.
+        assert REQ_ID in adapter._reply_queues, (
+            "orphan-queue bug: finalize registered pending_ack on a queue "
+            "detached from _reply_queues — its ack would be Unrouted"
+        )
+        assert adapter._reply_queues[REQ_ID].pending_ack is not None
+
+        # 5) Deliver the finalize's own ack — it must route and resolve.
+        await adapter._dispatch_payload(
+            {"headers": {"req_id": REQ_ID}, "body": {"errcode": 0}}
+        )
+        resp = await asyncio.wait_for(fin_task, timeout=1.0)
+
+        # Routed successfully → NOT the synthetic timeout-assumed response.
+        assert resp.get("errmsg") != "ack_timeout_assumed_delivered", (
+            "finalize ack should have been routed, not timed out"
+        )
+
+        await _cleanup_adapter(adapter)

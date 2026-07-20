@@ -106,6 +106,10 @@ DEDUP_MAX_SIZE = 1000
 # finish=true closes the stream.
 STREAM_EXPIRED_ERRCODE = 846608  # >6 min without update — stream is dead
 STREAM_NOT_SUBSCRIBED_ERRCODE = 846609  # ws connection lost the subscription
+STREAM_VERSION_CONFLICT_ERRCODE = 6000  # finalize raced a newer frame on the
+# same stream_id — the bubble was ALREADY replaced by that newer version, so
+# for a finalize frame this is benign (idempotent re-finalize hitting an
+# already-updated bubble), NOT a delivery failure. See _send_stream_reply.
 MAX_STREAM_CONTENT_LENGTH = 20480  # WeCom server-enforced byte limit per frame
 # Per-turn cap on intermediate frames.  WeCom SDK has an internal 100-frame
 # per-reqId queue limit; we cap at 85 (matching openclaw plugin) to guarantee
@@ -1124,6 +1128,19 @@ class WeComAdapter(BasePlatformAdapter):
         # If WeCom acks during _send_json await, _dispatch_payload needs
         # to find the pending frame to resolve it. Registering after would
         # miss the ack and timeout.
+        #
+        # Fix (orphan-queue race): re-attach `queue` to the dict before
+        # registering pending_ack. A final frame shares the inbound req_id
+        # with the intermediate frames; while it awaits the pending
+        # intermediate ack to drain (the `is_final` branch above yields at
+        # `await`), that intermediate ack can arrive and _resolve_reply_ack
+        # pops the WHOLE queue out of self._reply_queues (the "cleanup empty
+        # queue" pop). The local `queue` reference captured at the top is then
+        # an ORPHAN — detached from the dict — so registering pending_ack on it
+        # is invisible to _dispatch_payload, and the final frame's own ack
+        # lands in Unrouted → 15s timeout. Writing the reference back here
+        # closes that window: the final frame's ack can always be routed.
+        self._reply_queues[normalized] = queue
         queue.pending_ack = frame
 
         # Diagnostic: log every frame send for ack tracking analysis
@@ -2343,6 +2360,21 @@ class WeComAdapter(BasePlatformAdapter):
             raise WeComStreamExpiredError(
                 errcode=errcode, errmsg=str(response.get("errmsg") or ""),
             )
+        if errcode == STREAM_VERSION_CONFLICT_ERRCODE:
+            # 6000 = version conflict: a newer frame on this stream_id already
+            # replaced the bubble. For a finalize frame this means the content
+            # is ALREADY on screen (idempotent re-finalize losing the race to a
+            # newer version), so treat it as delivered rather than raising —
+            # raising here would pop the turn and drop us into a duplicate
+            # standalone send(). This is what makes idempotent finalize retry
+            # safe: retrying a finalize that already landed returns 6000, which
+            # we now absorb instead of turning into a second message.
+            logger.info(
+                "[%s] finalize hit errcode 6000 (version conflict) — bubble "
+                "already replaced by a newer frame; treating as delivered.",
+                self.name,
+            )
+            return response
         self._raise_for_wecom_error(response, "send stream reply")
         return response
 

@@ -359,7 +359,16 @@ export function useVoiceConversation({
           consumePendingResponse()
           resetSpeechBuffer()
           pendingStartRef.current = true
-          setStatus('idle')
+
+          // The final spoken chunk already leaves us idle. Setting idle again
+          // is a React no-op, so the effect would not rerun to restart the mic.
+          // Resume directly when possible; otherwise transition to idle and let
+          // the next effect pass start listening.
+          if (status === 'idle') {
+            void startListening()
+          } else {
+            setStatus('idle')
+          }
 
           return
         }

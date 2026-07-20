@@ -20,6 +20,7 @@ from aiohttp.test_utils import TestClient, TestServer
 from gateway.config import PlatformConfig
 from gateway.platforms.api_server import (
     APIServerAdapter,
+    RUN_INLINE_IMAGE_MAX_COUNT,
     _approval_event_choices,
     cors_middleware,
     security_headers_middleware,
@@ -209,6 +210,77 @@ class TestStartRun:
                     headers={"Authorization": "Bearer sk-secret"},
                 )
                 assert resp.status == 202
+
+    @pytest.mark.asyncio
+    async def test_start_accepts_bounded_inline_images_through_runs_lifecycle(self, adapter):
+        app = _create_runs_app(adapter)
+        image_input = [
+            {"type": "input_text", "text": "Describe this image."},
+            {"type": "input_image", "image_url": "data:image/png;base64,AAAA"},
+        ]
+        expected_message = [
+            {"type": "text", "text": "Describe this image."},
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
+        ]
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                mock_agent = MagicMock()
+                mock_agent.run_conversation.return_value = {"final_response": "A tiny image."}
+                mock_agent.session_prompt_tokens = 1
+                mock_agent.session_completion_tokens = 1
+                mock_agent.session_total_tokens = 2
+                mock_create.return_value = mock_agent
+
+                resp = await cli.post("/v1/runs", json={"input": image_input})
+                assert resp.status == 202, await resp.text()
+                run_id = (await resp.json())["run_id"]
+                for _ in range(20):
+                    await asyncio.sleep(0)
+                    if adapter._run_statuses[run_id]["status"] == "completed":
+                        break
+
+        _, kwargs = mock_agent.run_conversation.call_args
+        assert kwargs["user_message"] == expected_message
+        assert adapter._run_statuses[run_id]["status"] == "completed"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("image_url", "expected_code"),
+        [
+            ("https://private.example/image.png", "run_image_data_url_required"),
+            ("data:image/svg+xml;base64,PHN2Zy8+", "run_image_data_url_required"),
+            ("data:image/png;base64,not base64", "run_image_data_url_required"),
+        ],
+    )
+    async def test_start_rejects_nonprivate_or_invalid_inline_image_inputs(
+        self, adapter, image_url, expected_code
+    ):
+        app = _create_runs_app(adapter)
+        payload = {"input": [{"type": "input_image", "image_url": image_url}]}
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post("/v1/runs", json=payload)
+            body = await resp.json()
+        assert resp.status == 400
+        assert body["error"]["code"] == expected_code
+        assert adapter._run_streams == {}
+        assert adapter._run_statuses == {}
+
+    @pytest.mark.asyncio
+    async def test_start_rejects_too_many_inline_images_before_allocating_run(self, adapter):
+        app = _create_runs_app(adapter)
+        payload = {
+            "input": [
+                {"type": "input_image", "image_url": "data:image/png;base64,AAAA"}
+                for _ in range(RUN_INLINE_IMAGE_MAX_COUNT + 1)
+            ]
+        }
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post("/v1/runs", json=payload)
+            body = await resp.json()
+        assert resp.status == 400
+        assert body["error"]["code"] == "run_image_limit"
+        assert adapter._run_streams == {}
+        assert adapter._run_statuses == {}
 
 
 # ---------------------------------------------------------------------------

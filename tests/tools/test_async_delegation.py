@@ -206,6 +206,148 @@ def test_interrupt_all_signals_running_children():
     assert evt["status"] == "interrupted"
 
 
+def test_interrupt_by_id_only_signals_target_and_is_idempotent():
+    gates = [threading.Event(), threading.Event()]
+    interrupts = [0, 0]
+    handles = []
+
+    for index in range(2):
+        def runner(i=index):
+            gates[i].wait(timeout=5)
+            return {"status": "interrupted" if interrupts[i] else "completed"}
+
+        def interrupt_fn(i=index):
+            interrupts[i] += 1
+            gates[i].set()
+
+        handles.append(ad.dispatch_async_delegation(
+            goal=f"task-{index}", context=None, toolsets=None, role="leaf",
+            model="m", session_key="", runner=runner,
+            interrupt_fn=interrupt_fn, max_async_children=3,
+        )["delegation_id"])
+
+    result = ad.interrupt_async_delegation(handles[0], reason="test")
+    assert result["status"] == "cancelling"
+    assert result["delegation_id"] == handles[0]
+    assert interrupts == [1, 0]
+
+    repeated = ad.interrupt_async_delegation(handles[0], reason="test again")
+    assert repeated["status"] == "cancelling"
+    assert repeated["already_requested"] is True
+    assert interrupts == [1, 0]
+
+    evt = _drain_one()
+    assert evt is not None
+    assert evt["delegation_id"] == handles[0]
+    assert evt["status"] == "interrupted"
+    gates[1].set()
+
+
+def test_interrupt_by_id_reports_unknown_and_completed():
+    assert ad.interrupt_async_delegation("deleg_missing")["status"] == "not_found"
+
+    handle = ad.dispatch_async_delegation(
+        goal="quick", context=None, toolsets=None, role="leaf", model="m",
+        session_key="", runner=lambda: {"status": "completed"},
+    )["delegation_id"]
+    assert _drain_one() is not None
+
+    result = ad.interrupt_async_delegation(handle)
+    assert result["status"] == "completed"
+    assert result["active"] is False
+
+
+def test_stalled_status_is_derived_from_child_activity_and_can_recover():
+    gate = threading.Event()
+    activity = {"last_activity_ts": 100.0, "last_activity_desc": "waiting", "current_tool": None}
+    handle = ad.dispatch_async_delegation(
+        goal="slow", context=None, toolsets=None, role="leaf", model="m",
+        session_key="", runner=lambda: (gate.wait(timeout=5) or {"status": "completed"}),
+        activity_fn=lambda: dict(activity),
+    )["delegation_id"]
+
+    stalled = ad.get_async_delegation(
+        handle, now=400.0, stalled_after_seconds=180.0
+    )
+    assert stalled["status"] == "stalled"
+    assert stalled["last_activity_at"] == 100.0
+    assert stalled["seconds_since_activity"] == 300.0
+
+    activity["last_activity_ts"] = 390.0
+    running = ad.get_async_delegation(
+        handle, now=400.0, stalled_after_seconds=180.0
+    )
+    assert running["status"] == "running"
+    assert running["seconds_since_activity"] == 10.0
+    gate.set()
+
+
+def test_workspace_lock_allows_read_read_and_different_workspaces(tmp_path):
+    gate = threading.Event()
+    kwargs = dict(
+        context=None, toolsets=["web"], role="leaf", model="m", session_key="",
+        runner=lambda: (gate.wait(timeout=5) or {"status": "completed"}),
+        max_async_children=4,
+    )
+    first = ad.dispatch_async_delegation(
+        goal="read-a", workspace_path=str(tmp_path / "repo"), workspace_mode="read", **kwargs
+    )
+    second = ad.dispatch_async_delegation(
+        goal="read-b", workspace_path=str(tmp_path / "repo"), workspace_mode="read", **kwargs
+    )
+    third = ad.dispatch_async_delegation(
+        goal="write-other", workspace_path=str(tmp_path / "other"), workspace_mode="write", **kwargs
+    )
+    assert [first["status"], second["status"], third["status"]] == [
+        "dispatched", "dispatched", "dispatched"
+    ]
+    gate.set()
+
+
+@pytest.mark.parametrize(
+    ("first_mode", "second_mode"),
+    [("write", "read"), ("read", "write"), ("write", "write")],
+)
+def test_workspace_lock_rejects_conflicting_modes(tmp_path, first_mode, second_mode):
+    gate = threading.Event()
+    kwargs = dict(
+        context=None, toolsets=None, role="leaf", model="m", session_key="",
+        runner=lambda: (gate.wait(timeout=5) or {"status": "completed"}),
+        max_async_children=3,
+    )
+    first = ad.dispatch_async_delegation(
+        goal="first", workspace_path=str(tmp_path / "repo"), workspace_mode=first_mode, **kwargs
+    )
+    second = ad.dispatch_async_delegation(
+        goal="second", workspace_path=str(tmp_path / "repo"), workspace_mode=second_mode, **kwargs
+    )
+    assert first["status"] == "dispatched"
+    assert second["status"] == "rejected"
+    assert second["reason_code"] == "workspace_locked"
+    assert second["holder_delegation_id"] == first["delegation_id"]
+    gate.set()
+
+
+def test_workspace_lock_is_released_after_completion(tmp_path):
+    repo = str(tmp_path / "repo")
+    first = ad.dispatch_async_delegation(
+        goal="first", context=None, toolsets=None, role="leaf", model="m",
+        session_key="", runner=lambda: {"status": "completed"},
+        workspace_path=repo, workspace_mode="write",
+    )
+    assert first["status"] == "dispatched"
+    assert _drain_one() is not None
+
+    gate = threading.Event()
+    second = ad.dispatch_async_delegation(
+        goal="second", context=None, toolsets=None, role="leaf", model="m",
+        session_key="", runner=lambda: (gate.wait(timeout=5) or {"status": "completed"}),
+        workspace_path=repo, workspace_mode="write",
+    )
+    assert second["status"] == "dispatched"
+    gate.set()
+
+
 def test_completed_records_pruned_to_cap():
     # Run more than the retention cap quickly; ensure list doesn't grow forever.
     for i in range(ad._MAX_RETAINED_COMPLETED + 10):

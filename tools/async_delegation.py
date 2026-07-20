@@ -37,6 +37,7 @@ logic stays in one place.
 from __future__ import annotations
 
 import logging
+import os
 import threading
 import time
 import uuid
@@ -98,8 +99,99 @@ _records_lock = threading.Lock()
 _records: Dict[str, Dict[str, Any]] = {}
 
 _DEFAULT_MAX_ASYNC_CHILDREN = 3
+_DEFAULT_STALLED_AFTER_SECONDS = 180.0
 # How many completed records to retain for status queries before pruning.
 _MAX_RETAINED_COMPLETED = 50
+
+
+def _is_active(record: Dict[str, Any]) -> bool:
+    """Whether a record still owns runtime capacity and workspace locks."""
+    return record.get("completed_at") is None
+
+
+def _normalize_workspace_path(path: Optional[str]) -> Optional[str]:
+    if not path or not str(path).strip():
+        return None
+    return os.path.realpath(os.path.abspath(os.path.expanduser(str(path))))
+
+
+def _workspace_conflict_locked(
+    workspace_path: Optional[str], workspace_mode: Optional[str]
+) -> Optional[Dict[str, Any]]:
+    """Find an active same-workspace conflict; caller holds _records_lock."""
+    if not workspace_path:
+        return None
+    requested_mode = "read" if workspace_mode == "read" else "write"
+    for record in _records.values():
+        if not _is_active(record) or record.get("workspace_path") != workspace_path:
+            continue
+        held_mode = "read" if record.get("workspace_mode") == "read" else "write"
+        if requested_mode == "write" or held_mode == "write":
+            return record
+    return None
+
+
+def _workspace_rejection(holder: Dict[str, Any], workspace_path: str) -> Dict[str, Any]:
+    return {
+        "status": "rejected",
+        "reason_code": "workspace_locked",
+        "holder_delegation_id": holder.get("delegation_id"),
+        "workspace_path": workspace_path,
+        "error": (
+            f"Workspace is already in use by active delegation "
+            f"{holder.get('delegation_id')}: {workspace_path}. Wait for it to "
+            "finish or cancel it before starting a conflicting task."
+        ),
+    }
+
+
+def _snapshot_record(
+    record: Dict[str, Any],
+    *,
+    now: Optional[float] = None,
+    stalled_after_seconds: float = _DEFAULT_STALLED_AFTER_SECONDS,
+) -> Dict[str, Any]:
+    """Return a serialisable record with live activity and derived status."""
+    current_time = time.time() if now is None else float(now)
+    snapshot = {
+        key: value
+        for key, value in record.items()
+        if key not in {"interrupt_fn", "activity_fn"}
+    }
+    activity_fn = record.get("activity_fn")
+    if _is_active(record) and callable(activity_fn):
+        try:
+            activity = activity_fn() or {}
+            if not isinstance(activity, dict):
+                activity = {}
+            activity_at = activity.get("last_activity_ts")
+            if isinstance(activity_at, (int, float)):
+                snapshot["last_activity_at"] = float(activity_at)
+            snapshot["last_activity_desc"] = activity.get("last_activity_desc")
+            snapshot["current_tool"] = activity.get("current_tool")
+            snapshot["api_call_count"] = activity.get("api_call_count", 0)
+        except Exception as exc:
+            logger.debug(
+                "Async delegation %s activity snapshot failed: %s",
+                record.get("delegation_id"), exc,
+            )
+
+    last_activity_at = snapshot.get("last_activity_at") or snapshot.get("dispatched_at")
+    if isinstance(last_activity_at, (int, float)):
+        seconds_since = max(0.0, current_time - float(last_activity_at))
+        snapshot["seconds_since_activity"] = round(seconds_since, 1)
+    else:
+        seconds_since = 0.0
+
+    snapshot["active"] = _is_active(record)
+    if _is_active(record):
+        if record.get("cancel_requested"):
+            snapshot["status"] = "cancelling"
+        elif seconds_since >= max(0.0, float(stalled_after_seconds)):
+            snapshot["status"] = "stalled"
+        else:
+            snapshot["status"] = "running"
+    return snapshot
 
 
 def _get_executor(max_workers: int) -> ThreadPoolExecutor:
@@ -124,7 +216,7 @@ def _get_executor(max_workers: int) -> ThreadPoolExecutor:
 def active_count() -> int:
     """Number of async delegations currently running."""
     with _records_lock:
-        return sum(1 for r in _records.values() if r.get("status") == "running")
+        return sum(1 for r in _records.values() if _is_active(r))
 
 
 def _new_delegation_id() -> str:
@@ -159,6 +251,9 @@ def dispatch_async_delegation(
     session_key: str,
     runner: Callable[[], Dict[str, Any]],
     interrupt_fn: Optional[Callable[[], None]] = None,
+    activity_fn: Optional[Callable[[], Dict[str, Any]]] = None,
+    workspace_path: Optional[str] = None,
+    workspace_mode: Optional[str] = None,
     max_async_children: int = _DEFAULT_MAX_ASYNC_CHILDREN,
 ) -> Dict[str, Any]:
     """Spawn ``runner`` on the daemon executor and return a handle immediately.
@@ -192,6 +287,11 @@ def dispatch_async_delegation(
     """
     delegation_id = _new_delegation_id()
     dispatched_at = time.time()
+    normalized_workspace = _normalize_workspace_path(workspace_path)
+    normalized_mode = (
+        ("read" if workspace_mode == "read" else "write")
+        if normalized_workspace else None
+    )
     record: Dict[str, Any] = {
         "delegation_id": delegation_id,
         "goal": goal,
@@ -204,17 +304,24 @@ def dispatch_async_delegation(
         "dispatched_at": dispatched_at,
         "completed_at": None,
         "interrupt_fn": interrupt_fn,
+        "activity_fn": activity_fn,
+        "last_activity_at": dispatched_at,
+        "cancel_requested": False,
+        "workspace_path": normalized_workspace,
+        "workspace_mode": normalized_mode,
     }
-    # Capacity check and record insert under ONE lock hold — checking
+    # Capacity/workspace checks and insert share ONE lock hold — checking
     # active_count() separately would let two concurrent dispatches (e.g.
     # from different gateway sessions) both pass the check and exceed the cap.
     with _records_lock:
-        running = sum(
-            1 for r in _records.values() if r.get("status") == "running"
-        )
+        holder = _workspace_conflict_locked(normalized_workspace, normalized_mode)
+        if holder is not None:
+            return _workspace_rejection(holder, normalized_workspace or "")
+        running = sum(1 for r in _records.values() if _is_active(r))
         if running >= max_async_children:
             return {
                 "status": "rejected",
+                "reason_code": "capacity_reached",
                 "error": (
                     f"Async delegation capacity reached ({max_async_children} "
                     f"running). Wait for one to finish (its result will re-enter "
@@ -269,9 +376,12 @@ def _finalize(delegation_id: str, result: Dict[str, Any], status: str) -> None:
         record = _records.get(delegation_id)
         if record is None:
             return
+        if record.get("cancel_requested"):
+            status = "interrupted"
         record["status"] = status
         record["completed_at"] = time.time()
         record["interrupt_fn"] = None  # drop the closure; child is done
+        record["activity_fn"] = None
         # Snapshot fields needed for the event while holding the lock.
         event_record = dict(record)
         _prune_completed_locked()
@@ -344,6 +454,9 @@ def dispatch_async_delegation_batch(
     session_key: str,
     runner: Callable[[], Dict[str, Any]],
     interrupt_fn: Optional[Callable[[], None]] = None,
+    activity_fn: Optional[Callable[[], Dict[str, Any]]] = None,
+    workspace_path: Optional[str] = None,
+    workspace_mode: Optional[str] = None,
     max_async_children: int = _DEFAULT_MAX_ASYNC_CHILDREN,
 ) -> Dict[str, Any]:
     """Dispatch a WHOLE fan-out batch as ONE background unit.
@@ -368,6 +481,11 @@ def dispatch_async_delegation_batch(
     """
     delegation_id = _new_delegation_id()
     dispatched_at = time.time()
+    normalized_workspace = _normalize_workspace_path(workspace_path)
+    normalized_mode = (
+        ("read" if workspace_mode == "read" else "write")
+        if normalized_workspace else None
+    )
     n = len(goals)
     # A combined goal label for status listings / the completion header.
     combined_goal = (
@@ -386,15 +504,22 @@ def dispatch_async_delegation_batch(
         "dispatched_at": dispatched_at,
         "completed_at": None,
         "interrupt_fn": interrupt_fn,
+        "activity_fn": activity_fn,
+        "last_activity_at": dispatched_at,
+        "cancel_requested": False,
+        "workspace_path": normalized_workspace,
+        "workspace_mode": normalized_mode,
         "is_batch": True,
     }
     with _records_lock:
-        running = sum(
-            1 for r in _records.values() if r.get("status") == "running"
-        )
+        holder = _workspace_conflict_locked(normalized_workspace, normalized_mode)
+        if holder is not None:
+            return _workspace_rejection(holder, normalized_workspace or "")
+        running = sum(1 for r in _records.values() if _is_active(r))
         if running >= max_async_children:
             return {
                 "status": "rejected",
+                "reason_code": "capacity_reached",
                 "error": (
                     f"Async delegation capacity reached ({max_async_children} "
                     f"running). Wait for one to finish (its result will re-enter "
@@ -456,9 +581,12 @@ def _finalize_batch(
         record = _records.get(delegation_id)
         if record is None:
             return
+        if record.get("cancel_requested"):
+            status = "interrupted"
         record["status"] = status
         record["completed_at"] = time.time()
         record["interrupt_fn"] = None
+        record["activity_fn"] = None
         event_record = dict(record)
         _prune_completed_locked()
 
@@ -504,41 +632,110 @@ def _finalize_batch(
         )
 
 
-def list_async_delegations() -> List[Dict[str, Any]]:
-    """Snapshot of async delegations (running + recently completed).
-
-    Safe to call from any thread. Excludes the non-serialisable interrupt_fn.
-    """
+def list_async_delegations(
+    *,
+    now: Optional[float] = None,
+    stalled_after_seconds: float = _DEFAULT_STALLED_AFTER_SECONDS,
+) -> List[Dict[str, Any]]:
+    """Snapshot running and recently completed async delegations."""
     with _records_lock:
-        return [
-            {k: v for k, v in r.items() if k != "interrupt_fn"}
-            for r in _records.values()
-        ]
+        records = list(_records.values())
+    return [
+        _snapshot_record(
+            record, now=now, stalled_after_seconds=stalled_after_seconds
+        )
+        for record in records
+    ]
+
+
+def get_async_delegation(
+    delegation_id: str,
+    *,
+    now: Optional[float] = None,
+    stalled_after_seconds: float = _DEFAULT_STALLED_AFTER_SECONDS,
+) -> Optional[Dict[str, Any]]:
+    """Return one serialisable delegation snapshot, or None if unknown."""
+    with _records_lock:
+        record = _records.get(delegation_id)
+    if record is None:
+        return None
+    return _snapshot_record(
+        record, now=now, stalled_after_seconds=stalled_after_seconds
+    )
+
+
+def interrupt_async_delegation(
+    delegation_id: str, reason: str = "explicit cancel"
+) -> Dict[str, Any]:
+    """Idempotently request cancellation of one active async delegation."""
+    with _records_lock:
+        record = _records.get(delegation_id)
+        if record is None:
+            return {
+                "delegation_id": delegation_id,
+                "status": "not_found",
+                "active": False,
+            }
+        if not _is_active(record):
+            snapshot = _snapshot_record(record)
+            snapshot["active"] = False
+            return snapshot
+        if record.get("cancel_requested"):
+            return {
+                "delegation_id": delegation_id,
+                "status": "cancelling",
+                "active": True,
+                "already_requested": True,
+            }
+        fn = record.get("interrupt_fn")
+        if not callable(fn):
+            return {
+                "delegation_id": delegation_id,
+                "status": "unavailable",
+                "active": True,
+                "error": "This delegation does not expose an interrupt callback.",
+            }
+        record["cancel_requested"] = True
+
+    try:
+        fn()
+    except Exception as exc:
+        with _records_lock:
+            current = _records.get(delegation_id)
+            if current is not None and current is record and _is_active(current):
+                current["cancel_requested"] = False
+        logger.debug("interrupt_async_delegation(%s) failed: %s", delegation_id, exc)
+        return {
+            "delegation_id": delegation_id,
+            "status": "error",
+            "active": True,
+            "error": str(exc),
+        }
+
+    logger.info(
+        "Cancellation requested for async delegation %s (%s)", delegation_id, reason
+    )
+    return {
+        "delegation_id": delegation_id,
+        "status": "cancelling",
+        "active": True,
+        "already_requested": False,
+    }
 
 
 def interrupt_all(reason: str = "shutdown") -> int:
-    """Signal every running async delegation to stop. Returns how many.
-
-    Used on ``/stop`` and gateway shutdown so a dangling background subagent
-    can't keep burning tokens with no one listening. The child still emits a
-    completion event (status='interrupted') via the normal finalize path.
-    """
+    """Signal every active async delegation to stop. Returns how many."""
     count = 0
     with _records_lock:
         targets = [
-            r for r in _records.values() if r.get("status") == "running"
+            str(record.get("delegation_id"))
+            for record in _records.values()
+            if _is_active(record)
         ]
-    for r in targets:
-        fn = r.get("interrupt_fn")
-        if callable(fn):
-            try:
-                fn()
-                count += 1
-            except Exception as exc:
-                logger.debug(
-                    "interrupt_all: %s interrupt failed: %s",
-                    r.get("delegation_id"), exc,
-                )
+    for delegation_id in targets:
+        result = interrupt_async_delegation(delegation_id, reason=reason)
+        if result.get("status") == "cancelling" and not result.get("already_requested"):
+            count += 1
     if count:
         logger.info("Interrupted %d async delegation(s) (%s)", count, reason)
     return count

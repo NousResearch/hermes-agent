@@ -139,3 +139,115 @@ def test_multi_file_keeps_separate_text(monkeypatch: pytest.MonkeyPatch) -> None
     finally:
         os.unlink(img)
         os.unlink(img2)
+
+
+def test_document_send_uses_basename_not_full_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    """send_document receives filename=os.path.basename(media_path), not the full host path."""
+    from tools.send_message_tool import _send_telegram
+
+    _no_proxy(monkeypatch)
+    bot = _make_bot()
+    _install_telegram_mock(monkeypatch, MagicMock(return_value=bot))
+
+    # Create a temp file with a long path that would exceed Telegram's filename limit
+    # if the full path were used as the multipart filename.
+    with tempfile.TemporaryDirectory(prefix="very_long_directory_name_that_exceeds_limits_") as tmpdir:
+        long_filename = "A" * 50 + ".pdf"  # 50+ char basename
+        media_path = os.path.join(tmpdir, long_filename)
+        with open(media_path, "wb") as f:
+            f.write(b"dummy content")
+
+        try:
+            res = asyncio.run(
+                _send_telegram("tok", "123", "Here is the doc", media_files=[(media_path, False)])
+            )
+            assert res["success"] is True
+            # send_document should be called with filename=basename only
+            bot.send_document.assert_awaited_once()
+            call_kwargs = bot.send_document.await_args.kwargs
+            assert "filename" in call_kwargs
+            assert call_kwargs["filename"] == long_filename
+            assert call_kwargs["filename"] != media_path  # full path NOT leaked
+        finally:
+            pass  # temp dir auto-cleans
+
+
+def test_document_retry_thread_not_found_uses_basename(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Retry path (thread not found) also passes filename=basename."""
+    from tools.send_message_tool import _send_telegram, _is_telegram_thread_not_found
+
+    _no_proxy(monkeypatch)
+    bot = _make_bot()
+    _install_telegram_mock(monkeypatch, MagicMock(return_value=bot))
+
+    # Make first send_document raise "thread not found", second succeed
+    call_count = {"n": 0}
+
+    async def failing_then_ok(*args, **kwargs):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            # Simulate "thread not found" error
+            raise Exception("Bad Request: thread not found")
+        return SimpleNamespace(message_id=99)
+
+    bot.send_document = AsyncMock(side_effect=failing_then_ok)
+
+    with tempfile.TemporaryDirectory(prefix="long_path_") as tmpdir:
+        fname = "B" * 60 + ".docx"
+        media_path = os.path.join(tmpdir, fname)
+        with open(media_path, "wb") as f:
+            f.write(b"x")
+
+        try:
+            res = asyncio.run(
+                _send_telegram("tok", "123", "caption", media_files=[(media_path, False)], thread_id="123")
+            )
+            assert res["success"] is True
+            # Two calls: first fails, second succeeds (retry without thread_id)
+            assert bot.send_document.await_count == 2
+            # Both calls should have filename=basename
+            for call in bot.send_document.await_args_list:
+                assert call.kwargs.get("filename") == fname
+                assert call.kwargs.get("filename") != media_path
+        finally:
+            pass
+
+
+def test_document_retry_caption_parse_failure_uses_basename(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Retry path (caption parse failure) also passes filename=basename."""
+    from tools.send_message_tool import _send_telegram
+
+    _no_proxy(monkeypatch)
+    bot = _make_bot()
+    _install_telegram_mock(monkeypatch, MagicMock(return_value=bot))
+
+    # First call fails with "can't parse entities" (caption parse error), second succeeds
+    call_count = {"n": 0}
+
+    async def failing_then_ok(*args, **kwargs):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            raise Exception("Bad Request: can't parse entities: Character '$' is reserved")
+        return SimpleNamespace(message_id=99)
+
+    bot.send_document = AsyncMock(side_effect=failing_then_ok)
+
+    with tempfile.TemporaryDirectory(prefix="long_path_") as tmpdir:
+        fname = "C" * 55 + ".txt"
+        media_path = os.path.join(tmpdir, fname)
+        with open(media_path, "wb") as f:
+            f.write(b"x")
+
+        try:
+            res = asyncio.run(
+                _send_telegram("tok", "123", "Price: $100", media_files=[(media_path, False)])
+            )
+            assert res["success"] is True
+            # Two calls: first fails, second succeeds (retry with parse_mode=None)
+            assert bot.send_document.await_count == 2
+            # Both calls should have filename=basename
+            for call in bot.send_document.await_args_list:
+                assert call.kwargs.get("filename") == fname
+                assert call.kwargs.get("filename") != media_path
+        finally:
+            pass

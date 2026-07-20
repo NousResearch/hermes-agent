@@ -559,9 +559,20 @@ interface FileDiffPanelProps {
   /** Render an old/new line-number gutter (the full preview diff). The compact
    *  tool-card + inline review diff leave this off. */
   showLineNumbers?: boolean
+  /** Window the rows (fixed-row virtualization) WITHOUT a gutter — for a large
+   *  diff in a scrolling pane (the review panel), so only visible rows mount
+   *  instead of highlighting every line. `showLineNumbers` implies windowing. */
+  virtualized?: boolean
 }
 
-export function FileDiffPanel({ className, diff, fullText, path, showLineNumbers = false }: FileDiffPanelProps) {
+export function FileDiffPanel({
+  className,
+  diff,
+  fullText,
+  path,
+  showLineNumbers = false,
+  virtualized = false
+}: FileDiffPanelProps) {
   const lines = React.useMemo(
     () => (fullText != null ? parseFullFileDiff(diff, fullText) : parseDiff(diff)),
     [diff, fullText]
@@ -580,32 +591,50 @@ export function FileDiffPanel({ className, diff, fullText, path, showLineNumbers
 
   const language = shikiLanguageForFilename(path)
   const canHighlight = Boolean(language) && !exceedsHighlightBudget(fullText ?? diff)
+  const windowed = showLineNumbers || virtualized
 
-  // Full-file preview: we own the rows (tokens rendered inside) so blank lines
-  // can't collapse. Compact tool/review diffs let Shiki own the rows.
-  const body = !canHighlight ? (
-    showLineNumbers ? (
-      <PreviewDiffRows afterLines={afterRows} beforeLines={beforeRows} chunks={visibleLineChunks} />
-    ) : (
-      <DiffBody lines={lines} />
-    )
-  ) : fullText != null ? (
+  // Windowed: we own fixed-height rows and render only the visible chunks, so a
+  // large diff never mounts (or Shiki-highlights) every line. Compact tool cards
+  // are small/clamped, so they let Shiki own the rows (SyntaxDiff).
+  const windowedBody = canHighlight ? (
     <TokenizedDiffBody
       afterLines={afterRows}
       beforeLines={beforeRows}
-      chunked={showLineNumbers}
+      chunked
       chunks={visibleLineChunks}
       language={language}
       lines={lines}
     />
   ) : (
+    <PreviewDiffRows afterLines={afterRows} beforeLines={beforeRows} chunks={visibleLineChunks} />
+  )
+
+  const compactBody = !canHighlight ? (
+    <DiffBody lines={lines} />
+  ) : fullText != null ? (
+    <TokenizedDiffBody language={language} lines={lines} />
+  ) : (
     <SyntaxDiff language={language} lines={lines} />
   )
 
-  if (!showLineNumbers) {
+  if (!windowed) {
     return (
       <div className={cn(DIFF_BOX_CLASS, className)} data-slot="file-diff-panel">
-        {body}
+        {compactBody}
+      </div>
+    )
+  }
+
+  // Windowed but no gutter (the review panel): a fixed-row scroller so only the
+  // visible rows render, killing the full-Shiki-of-every-line freeze on large
+  // diffs. The gutter variant (below) adds line numbers on top of the same window.
+  if (!showLineNumbers) {
+    return (
+      <div className={cn(DIFF_BOX_CLASS, 'relative overflow-hidden', className)} data-slot="file-diff-panel">
+        <div className="absolute inset-0 overflow-auto" onScroll={onScroll} ref={scrollerRef}>
+          <div className="min-w-0">{windowedBody}</div>
+        </div>
+        <DiffOverviewRuler lines={lines} />
       </div>
     )
   }
@@ -638,7 +667,7 @@ export function FileDiffPanel({ className, diff, fullText, path, showLineNumbers
             ))}
             {afterRows > 0 && <div aria-hidden style={{ height: afterRows * PREVIEW_LINE_PX }} />}
           </div>
-          <div className="min-w-0">{body}</div>
+          <div className="min-w-0">{windowedBody}</div>
         </div>
       </div>
       <DiffOverviewRuler lines={lines} />

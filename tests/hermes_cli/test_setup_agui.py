@@ -1,9 +1,26 @@
 """Tests for the AG-UI section of the interactive setup wizard."""
 
+import importlib
 from argparse import ArgumentParser
 
-from hermes_cli.setup import SETUP_SECTIONS, setup_agui
 from hermes_cli.subcommands.setup import build_setup_parser
+
+
+def _setup_module():
+    """Resolve ``hermes_cli.setup`` fresh, rather than binding it at import.
+
+    A module-level ``from hermes_cli.setup import setup_agui`` pins the function
+    object at collection time. If anything later in a full-suite run evicts
+    ``hermes_cli.setup`` from ``sys.modules`` and it gets re-imported, that
+    creates a NEW module object: the pinned ``setup_agui`` still resolves its
+    globals through the OLD dict, while ``monkeypatch`` patches the NEW one, so
+    the patches silently miss and the real ``prompt()`` calls ``input()`` under
+    capture. Resolving here keeps the patched namespace and the executed
+    function the same object no matter what ``sys.modules`` currently holds.
+    (``importlib.reload`` does not trigger this — it re-executes into the same
+    module object — so only eviction plus re-import exposes it.)
+    """
+    return importlib.import_module("hermes_cli.setup")
 
 
 def _default_config():
@@ -21,26 +38,27 @@ def _default_config():
 
 
 def _run_setup(monkeypatch, config, answers, *, model_choice=0, existing_token=None):
+    setup = _setup_module()
     prompt_answers = iter(answers)
     saved_secrets = {}
     monkeypatch.setattr(
-        "hermes_cli.setup.prompt",
+        setup, "prompt",
         lambda *args, **kwargs: next(prompt_answers),
     )
     monkeypatch.setattr(
-        "hermes_cli.setup.prompt_choice",
+        setup, "prompt_choice",
         lambda *args, **kwargs: model_choice,
     )
     monkeypatch.setattr(
-        "hermes_cli.setup.get_env_value",
+        setup, "get_env_value",
         lambda key: existing_token if key == "HERMES_AGUI_SESSION_TOKEN" else None,
     )
     monkeypatch.setattr(
-        "hermes_cli.setup.save_env_value",
+        setup, "save_env_value",
         lambda key, value: saved_secrets.__setitem__(key, value),
     )
 
-    setup_agui(config)
+    setup.setup_agui(config)
     return saved_secrets
 
 
@@ -126,6 +144,7 @@ def test_setup_agui_recovers_from_malformed_existing_values(monkeypatch):
 
 
 def test_setup_parser_accepts_agui_section():
+    setup = _setup_module()
     parser = ArgumentParser()
     subparsers = parser.add_subparsers(dest="command")
     handler = object()
@@ -135,5 +154,7 @@ def test_setup_parser_accepts_agui_section():
 
     assert args.section == "agui"
     assert args.func is handler
-    registered_sections = {key: func for key, _label, func in SETUP_SECTIONS}
-    assert registered_sections["agui"] is setup_agui
+    # Both sides resolved from the same module object, so this compares the
+    # registration against the live function rather than a stale import.
+    registered_sections = {key: func for key, _label, func in setup.SETUP_SECTIONS}
+    assert registered_sections["agui"] is setup.setup_agui

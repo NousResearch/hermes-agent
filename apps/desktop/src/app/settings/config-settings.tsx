@@ -18,13 +18,21 @@ import { setHermesConfigCache, useHermesConfigRecord } from '../hooks/use-config
 import { useOnProfileSwitch } from '../hooks/use-on-profile-switch'
 import { PanelEmpty } from '../overlays/panel'
 
-import { CONTROL_TEXT, EMPTY_SELECT_VALUE, FIELD_DESCRIPTIONS, FIELD_LABELS, SECTIONS } from './constants'
+import { CONTROL_TEXT, EMPTY_SELECT_VALUE, FIELD_DESCRIPTIONS, FIELD_LABELS } from './constants'
+import { FallbackModelsField } from './fallback-models-field'
 import { fieldCopyForSchemaKey } from './field-copy'
-import { enumOptionsFor, getNested, prettyName, setNested } from './helpers'
+import {
+  enumOptionsFor,
+  getNested,
+  isExternalMemoryProvider,
+  prettyName,
+  sectionFieldEntries,
+  setNested
+} from './helpers'
 import { MemoryConnect } from './memory/connect'
+import { ProviderConfigPanel } from './memory/provider-config-panel'
 import { ModelSettings, ModelSettingsSkeleton } from './model-settings'
 import { EmptyState, ListRow, LoadingState, SettingsContent } from './primitives'
-import { ProviderConfigPanel } from './provider-config-panel'
 
 // On the Voice page, only surface the sub-fields of the *selected* TTS/STT
 // provider — otherwise every provider's options render at once (the "totally
@@ -100,6 +108,13 @@ function ConfigField({
     <ListRow action={action} description={descriptionNode} title={label} wide={wide} />
   )
 
+  // `fallback_providers` is a list of {provider, model} objects; the generic
+  // `list` branch below would stringify them to "[object Object]". Render the
+  // dedicated structured editor instead.
+  if (schemaKey === 'fallback_providers') {
+    return row(<FallbackModelsField onChange={onChange} value={value} />, true)
+  }
+
   if (schema.type === 'boolean') {
     return row(
       <div className="flex items-center justify-end">
@@ -126,7 +141,9 @@ function ConfigField({
                 ? (optionLabels?.[option] ?? prettyName(option))
                 : schemaKey === 'display.personality'
                   ? c.none
-                  : c.noneParen}
+                  : schemaKey === 'memory.provider'
+                    ? c.builtinOnly
+                    : c.noneParen}
             </SelectItem>
           ))}
         </SelectContent>
@@ -328,14 +345,12 @@ export function ConfigSettings({
   }
 
   const sectionFields = useMemo(() => {
-    if (!schema) {
+    if (!schema || !config) {
       return new Map<string, [string, ConfigFieldSchema][]>()
     }
 
-    return new Map(
-      SECTIONS.map(s => [s.id, s.keys.flatMap(k => (schema[k] ? [[k, schema[k]] as [string, ConfigFieldSchema]] : []))])
-    )
-  }, [schema])
+    return sectionFieldEntries(schema, config)
+  }, [schema, config])
 
   const fields = sectionFields.get(activeSectionId) ?? []
 
@@ -451,7 +466,7 @@ export function ConfigSettings({
             <div className="scroll-mt-6 rounded-lg" id={`setting-field-${key}`} key={key}>
               <ConfigField
                 descriptionExtra={
-                  key === 'memory.provider' && Boolean(getNested(config, key)) ? (
+                  key === 'memory.provider' && isExternalMemoryProvider(getNested(config, key)) ? (
                     <MemoryConnect provider={String(getNested(config, key))} />
                   ) : undefined
                 }
@@ -466,8 +481,8 @@ export function ConfigSettings({
                 schemaKey={key}
                 value={getNested(config, key)}
               />
-              {key === 'memory.provider' && typeof getNested(config, key) === 'string' && getNested(config, key) ? (
-                <ProviderConfigPanel provider={String(getNested(config, key))} />
+              {key === 'memory.provider' && isExternalMemoryProvider(getNested(config, key)) ? (
+                <ProviderConfigPanel key={String(getNested(config, key))} provider={String(getNested(config, key))} />
               ) : null}
             </div>
           ))}

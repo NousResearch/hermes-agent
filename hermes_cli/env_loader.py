@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import codecs
+import io
 import os
 import sys
 from pathlib import Path
@@ -20,6 +22,12 @@ _CREDENTIAL_SUFFIXES = ("_API_KEY", "_TOKEN", "_SECRET", "_KEY")
 # load_hermes_dotenv() calls (user env + project env, gateway hot-reload,
 # tests) don't spam the same warning multiple times.
 _WARNED_KEYS: set[str] = set()
+
+# Paths we've already emitted a UTF-32 refuse-to-mangle warning for.
+# load_hermes_dotenv can call _sanitize_env_file_if_needed multiple times
+# for the same file (user env + project env + hot-reload); once per path
+# is enough.
+_WARNED_UTF32_PATHS: set[str] = set()
 
 # Map of env-var name → source label ("bitwarden", etc.) for credentials
 # that were injected by an external secret source during load_hermes_dotenv().
@@ -78,9 +86,17 @@ def format_secret_source_suffix(env_var: str) -> str:
         return ""
     if source == "bitwarden":
         return " (from Bitwarden)"
-    # Generic fallback — future-proofing for additional secret sources
-    # (e.g. 1Password, HashiCorp Vault) without having to update every
-    # call site.
+    # Ask the registry for the source's human label (e.g. "1Password").
+    # Fall back to the raw source name for labels the registry doesn't
+    # know (stale provenance from an uninstalled plugin, tests).
+    try:
+        from agent.secret_sources.registry import get_source
+
+        registered = get_source(source)
+        if registered is not None and registered.label:
+            return f" (from {registered.label})"
+    except Exception:  # noqa: BLE001 — label lookup must never raise
+        pass
     return f" (from {source})"
 
 
@@ -168,6 +184,12 @@ def _sanitize_env_file_if_needed(path: Path) -> None:
     with ``ValueError: embedded null byte`` — typically introduced by
     copy-pasting API keys from terminals or rich-text editors.
 
+    Encoding: sniffs a leading BOM *before* any text decode. UTF-16
+    (Notepad "Unicode") is decoded correctly and rewritten as clean
+    UTF-8. UTF-32 is refused (left untouched) so we never fall through
+    to the errors=replace corruption path. Order of BOM checks matters:
+    UTF-32-LE's BOM starts with UTF-16-LE's FF FE.
+
     We delegate to ``hermes_cli.config._sanitize_env_lines`` which
     already knows all valid Hermes env-var names and can split
     concatenated lines correctly.
@@ -179,16 +201,70 @@ def _sanitize_env_file_if_needed(path: Path) -> None:
     except ImportError:
         return  # early bootstrap — config module not available yet
 
-    read_kw = {"encoding": "utf-8-sig", "errors": "replace"}
     try:
-        with open(path, **read_kw) as f:
-            original = f.readlines()
+        raw = path.read_bytes()
+    except Exception:
+        return
+
+    # Sniff leading BOM bytes BEFORE decoding. ORDER MATTERS:
+    # codecs.BOM_UTF32_LE is FF FE 00 00, which startswith
+    # codecs.BOM_UTF16_LE (FF FE). Checking UTF-16 first would
+    # misdetect UTF-32-LE as UTF-16-LE and mangle the file.
+    force_utf8_rewrite = False
+    if raw.startswith(codecs.BOM_UTF32_LE) or raw.startswith(codecs.BOM_UTF32_BE):
+        # Lazy import keeps the module import block identical to #65124's
+        # codecs/io additions so the two PRs auto-merge either order.
+        path_key = str(path.resolve())
+        if path_key not in _WARNED_UTF32_PATHS:
+            _WARNED_UTF32_PATHS.add(path_key)
+            import logging
+
+            logging.getLogger(__name__).warning(
+                "Skipping .env sanitize for %s: UTF-32 BOM detected; "
+                "leaving file untouched to avoid corruption",
+                path,
+            )
+        return
+    if raw.startswith(codecs.BOM_UTF16_LE) or raw.startswith(codecs.BOM_UTF16_BE):
+        # "utf-16" uses the BOM to select endianness and strips it.
+        # TextIOWrapper + newline=None matches open()'s universal-newlines
+        # line splitting (\\n/\\r\\n/\\r only — not splitlines()'s extra
+        # Unicode boundaries like U+2028), so sanitize sees the same lines
+        # as the UTF-8 path.
+        try:
+            with io.TextIOWrapper(
+                io.BytesIO(raw), encoding="utf-16", newline=None
+            ) as f:
+                original = f.readlines()
+        except UnicodeDecodeError:
+            return
+        # Source is UTF-16 on disk; always rewrite as clean UTF-8 so
+        # the subsequent utf-8 dotenv load sees a canonical file.
+        force_utf8_rewrite = True
+    else:
+        # Default path: utf-8-sig (strips UTF-8 BOM if present) with
+        # errors=replace so embedded NULs can be stripped below.
+        try:
+            with open(path, encoding="utf-8-sig", errors="replace") as f:
+                original = f.readlines()
+        except Exception:
+            return
+        # Defense-in-depth: errors=replace turns undecodable leading
+        # bytes into U+FFFD. Persisting that glues replacement chars
+        # onto the first key name and rewrites the file permanently
+        # (the UTF-16-with-BOM corruption path before BOM sniffing).
+        # Leave the file untouched rather than write the mangling.
+        if original and original[0].startswith("\ufffd"):
+            return
+
+    try:
         # Strip null bytes before _sanitize_env_lines so they never
         # reach python-dotenv (which passes them to os.environ and
-        # crashes with ValueError).
+        # crashes with ValueError). Also intentionally repairs
+        # BOM-less UTF-16 (NUL-padded ASCII) into clean UTF-8.
         stripped = [line.replace("\x00", "") for line in original]
         sanitized = _sanitize_env_lines(stripped)
-        if sanitized != original:
+        if sanitized != original or force_utf8_rewrite:
             import tempfile
             fd, tmp = tempfile.mkstemp(
                 dir=str(path.parent), suffix=".tmp", prefix=".env_"
@@ -238,6 +314,20 @@ def load_hermes_dotenv(
         _load_dotenv_with_fallback(user_env, override=True)
         loaded.append(user_env)
 
+    # Load .op.env AFTER .env so that .env values win, but the bootstrap
+    # token (OP_SERVICE_ACCOUNT_TOKEN) becomes available for
+    # apply_onepassword_secrets() even in cron / subprocess environments
+    # that inherit no shell state (no systemd EnvironmentFile, no op run).
+    # .op.env is gitignored — the service-account token never enters the
+    # committed .env file.
+    # Users on systemd can alternatively use:
+    #   EnvironmentFile=-/path/to/.hermes/.op.env
+    # in their gateway unit, which takes precedence (override=False below
+    # ensures .op.env never clobbers a token already in the environment).
+    op_env = home_path / ".op.env"
+    if op_env.exists() and not os.environ.get("OP_SERVICE_ACCOUNT_TOKEN"):
+        _load_dotenv_with_fallback(op_env, override=False)
+
     if project_env_path and project_env_path.exists():
         _load_dotenv_with_fallback(project_env_path, override=not loaded)
         loaded.append(project_env_path)
@@ -281,21 +371,27 @@ def _apply_managed_env() -> None:
 
 
 def _apply_external_secret_sources(home_path: Path) -> None:
-    """Pull secrets from external sources (currently Bitwarden) into env.
+    """Pull secrets from every enabled external source into env.
 
-    Runs AFTER dotenv loads so .env values are visible (we use them to
-    locate the access token) but BEFORE the rest of Hermes reads
+    Runs AFTER dotenv loads so .env values are visible (sources use them
+    to locate bootstrap tokens) but BEFORE the rest of Hermes reads
     ``os.environ`` for credentials.  Any failure here is logged and
     swallowed — external secret sources must never block startup.
+
+    The heavy lifting (source ordering, mapped-beats-bulk precedence,
+    first-claim-wins conflict handling, override semantics, provenance)
+    lives in ``agent.secret_sources.registry.apply_all``; this wrapper
+    owns the once-per-HERMES_HOME guard, the post-apply ASCII
+    sanitization sweep, the ``_SECRET_SOURCES`` provenance map that
+    UI surfaces read, and the startup status lines.
 
     Idempotent within a process: subsequent calls for the same
     ``home_path`` are no-ops.  ``load_hermes_dotenv()`` runs at import
     time from several hot modules (cli.py, hermes_cli/main.py,
     run_agent.py, trajectory_compressor.py, ...), so without this guard
-    the Bitwarden status line would print 3-5x per CLI startup.  Use
+    the status lines would print 3-5x per CLI startup.  Use
     ``reset_secret_source_cache()`` if you need to force a re-pull
-    (tests, future ``hermes secrets bitwarden sync`` from a long-running
-    process).
+    (tests, long-running processes after a config change).
     """
     home_key = str(Path(home_path).resolve())
     if home_key in _APPLIED_HOMES:
@@ -306,54 +402,45 @@ def _apply_external_secret_sources(home_path: Path) -> None:
         cfg = _load_secrets_config(home_path)
     except Exception:  # noqa: BLE001 — config errors must not block startup
         return
-
-    bw_cfg = (cfg or {}).get("bitwarden") or {}
-    if not bw_cfg.get("enabled"):
+    if not cfg:
         return
 
     try:
-        from agent.secret_sources.bitwarden import apply_bitwarden_secrets
+        from agent.secret_sources.registry import apply_all
     except ImportError:
         return
 
-    result = apply_bitwarden_secrets(
-        enabled=True,
-        access_token_env=bw_cfg.get("access_token_env", "BWS_ACCESS_TOKEN"),
-        project_id=bw_cfg.get("project_id", ""),
-        override_existing=bool(bw_cfg.get("override_existing", False)),
-        cache_ttl_seconds=float(bw_cfg.get("cache_ttl_seconds", 300)),
-        auto_install=bool(bw_cfg.get("auto_install", True)),
-        server_url=str(bw_cfg.get("server_url", "") or "").strip(),
-        home_path=home_path,
-    )
+    try:
+        report = apply_all(cfg, home_path)
+    except Exception:  # noqa: BLE001 — belt-and-braces; apply_all shouldn't raise
+        return
 
-    if result.applied:
-        # Re-run the ASCII sanitization pass: BSM values are user-supplied
-        # and might have the same copy-paste corruption as a manually
-        # edited .env (see #6843).
+    if report.applied_any:
+        # Re-run the ASCII sanitization pass: vault values are
+        # user-supplied and might have the same copy-paste corruption as
+        # a manually edited .env (see #6843).
         _sanitize_loaded_credentials()
-        # Remember where these came from so the setup / `hermes model`
-        # flows can label detected credentials with "(from Bitwarden)" —
-        # otherwise users see "credentials ✓" with no hint that the value
-        # came from BSM rather than .env.
-        for name in result.applied:
-            _SECRET_SOURCES[name] = "bitwarden"
-        print(
-            f"  Bitwarden Secrets Manager: applied {len(result.applied)} "
-            f"secret{'s' if len(result.applied) != 1 else ''} "
-            f"({', '.join(sorted(result.applied))})",
-            file=sys.stderr,
-        )
-    if result.error:
-        print(
-            f"  Bitwarden Secrets Manager: {result.error}",
-            file=sys.stderr,
-        )
-    for warn in result.warnings:
-        print(
-            f"  Bitwarden Secrets Manager: {warn}",
-            file=sys.stderr,
-        )
+        # Remember where each var came from so setup / `hermes model`
+        # flows can label detected credentials with "(from Bitwarden)" /
+        # "(from 1Password)" — otherwise users see "credentials ✓" with
+        # no hint the value came from a vault rather than .env.
+        for name, applied in report.provenance.items():
+            _SECRET_SOURCES[name] = applied.source
+
+    for src in report.sources:
+        if src.applied:
+            print(
+                f"  {src.label}: applied {len(src.applied)} "
+                f"secret{'s' if len(src.applied) != 1 else ''} "
+                f"({', '.join(sorted(src.applied))})",
+                file=sys.stderr,
+            )
+        if src.result.error:
+            print(f"  {src.label}: {src.result.error}", file=sys.stderr)
+        for warn in src.result.warnings:
+            print(f"  {src.label}: {warn}", file=sys.stderr)
+    for conflict in report.conflicts:
+        print(f"  Secret sources: {conflict}", file=sys.stderr)
 
 
 def _load_secrets_config(home_path: Path) -> dict:

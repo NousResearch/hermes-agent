@@ -6,11 +6,12 @@ import { Input } from "@nous-research/ui/ui/components/input";
 import { Label } from "@nous-research/ui/ui/components/label";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import type { GatewayClient } from "@/lib/gatewayClient";
-import { Check, Search, X } from "lucide-react";
+import { Check, RefreshCw, Search, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { cn, themedBody } from "@/lib/utils";
 import { fuzzyRank } from "@/lib/fuzzy";
+import { queryMatchesProviderOnly } from "@/lib/model-picker-filter";
 
 /**
  * Two-stage model picker modal.
@@ -71,7 +72,7 @@ interface Props {
   onSubmit?(slashCommand: string): void;
 
   /** Standalone-mode: when present (and onSubmit absent), picker calls onApply. */
-  loader?(): Promise<ModelOptionsResponse>;
+  loader?(options?: { refresh?: boolean }): Promise<ModelOptionsResponse>;
   onApply?(args: {
     confirmExpensiveModel?: boolean;
     provider: string;
@@ -111,37 +112,74 @@ export function ModelPickerDialog(props: Props) {
   const [query, setQuery] = useState("");
   const [persistGlobal, setPersistGlobal] = useState(alwaysGlobal);
   const [applying, setApplying] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
   const [pendingConfirm, setPendingConfirm] =
     useState<PendingExpensiveConfirm | null>(null);
   const closedRef = useRef(false);
+
+  const applyOptions = (r: ModelOptionsResponse) => {
+    const next = r?.providers ?? [];
+    setProviders(next);
+    setCurrentModel(String(r?.model ?? ""));
+    setCurrentProviderSlug(String(r?.provider ?? ""));
+    setSelectedSlug((prev) => {
+      if (prev && next.some((p) => p.slug === prev)) return prev;
+      return (next.find((p) => p.is_current) ?? next[0])?.slug ?? "";
+    });
+    setSelectedModel("");
+  };
+
+  const requestOptions = (refresh = false) =>
+    standalone
+      ? (loader as (options?: { refresh?: boolean }) => Promise<ModelOptionsResponse>)({
+          refresh,
+        })
+      : (gw as GatewayClient).request<ModelOptionsResponse>(
+          "model.options",
+          {
+            ...(sessionId ? { session_id: sessionId } : {}),
+            ...(refresh ? { refresh: true } : {}),
+            // Dashboard picker mirrors the TUI: full provider universe with
+            // setup warnings. The backend now defaults to the configured
+            // subset (#56974), so opt into unconfigured rows explicitly.
+            include_unconfigured: true,
+          },
+        );
+
+  const refreshOptions = () => {
+    setError(null);
+    setRefreshing(true);
+
+    requestOptions(true)
+      .then((r) => {
+        if (closedRef.current) return;
+        applyOptions(r);
+      })
+      .catch((e) => {
+        if (closedRef.current) return;
+        setError(e instanceof Error ? e.message : String(e));
+      })
+      .finally(() => {
+        if (closedRef.current) return;
+        setRefreshing(false);
+      });
+  };
 
   // Load providers + models on open.
   useEffect(() => {
     closedRef.current = false;
 
-    const promise = standalone
-      ? (loader as () => Promise<ModelOptionsResponse>)()
-      : (gw as GatewayClient).request<ModelOptionsResponse>(
-          "model.options",
-          sessionId ? { session_id: sessionId } : {},
-        );
-
-    promise
+    requestOptions()
       .then((r) => {
         if (closedRef.current) return;
-        const next = r?.providers ?? [];
-        setProviders(next);
-        setCurrentModel(String(r?.model ?? ""));
-        setCurrentProviderSlug(String(r?.provider ?? ""));
-        setSelectedSlug(
-          (next.find((p) => p.is_current) ?? next[0])?.slug ?? "",
-        );
-        setSelectedModel("");
-        setLoading(false);
+        applyOptions(r);
       })
       .catch((e) => {
         if (closedRef.current) return;
         setError(e instanceof Error ? e.message : String(e));
+      })
+      .finally(() => {
+        if (closedRef.current) return;
         setLoading(false);
       });
 
@@ -189,15 +227,30 @@ export function ModelPickerDialog(props: Props) {
     [providers, trimmedQuery],
   );
 
+  // A query that matched the SELECTED provider by name/slug (not its models)
+  // located that provider — it shouldn't also hide that provider's models
+  // just because their ids don't share a substring with the provider name
+  // (e.g. typing "aws" to find "AWS Build" then finding zero of its Claude
+  // model ids contain "aws"). Fall back to an unfiltered model list in that
+  // case; a query that also matches a model id keeps filtering normally.
+  const queryMatchesSelectedProviderOnly = useMemo(
+    () => queryMatchesProviderOnly(selectedProvider, models, trimmedQuery),
+    [trimmedQuery, selectedProvider, models],
+  );
+
   // Fuzzy-ranked models carrying the matched character positions so the model
   // list can highlight why each entry matched.
   const filteredModels = useMemo(
     () =>
-      fuzzyRank(models, trimmedQuery, (m) => m).map((r) => ({
+      fuzzyRank(
+        models,
+        queryMatchesSelectedProviderOnly ? "" : trimmedQuery,
+        (m) => m,
+      ).map((r) => ({
         model: r.item,
         positions: r.positions,
       })),
-    [models, trimmedQuery],
+    [models, trimmedQuery, queryMatchesSelectedProviderOnly],
   );
 
   const canConfirm = !!selectedProvider && !!selectedModel && !applying;
@@ -390,6 +443,14 @@ export function ModelPickerDialog(props: Props) {
           )}
 
           <div className="flex items-center gap-2 ml-auto">
+            <Button
+              outlined
+              onClick={refreshOptions}
+              disabled={applying || loading || refreshing}
+            >
+              {refreshing ? <Spinner /> : <RefreshCw className="h-3.5 w-3.5" />}
+              Refresh Models
+            </Button>
             <Button outlined onClick={onClose} disabled={applying}>
               Cancel
             </Button>

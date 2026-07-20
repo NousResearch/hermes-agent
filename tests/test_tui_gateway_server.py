@@ -8211,6 +8211,7 @@ def test_session_activate_returns_inflight_stream_before_completion(monkeypatch)
         run_thread = server._sessions.get("sid-live", {}).get("_run_thread")
         if run_thread is not None:
             run_thread.join(2)
+            assert not run_thread.is_alive(), "prompt worker survived test cleanup"
         server._sessions.pop("sid-live", None)
 
 

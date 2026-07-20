@@ -1,6 +1,7 @@
 import { atom, computed } from 'nanostores'
 
 import { translateNow } from '@/i18n'
+import { stableArray } from '@/lib/stable-array'
 import type { TodoItem, TodoStatus } from '@/lib/todos'
 
 import { $gateway } from './gateway'
@@ -44,36 +45,24 @@ export const $backgroundStatusBySession = atom<Record<string, ComposerStatusItem
 // $backgroundStatusBySession is keyed by RUNTIME session id (gateway events
 // and process.list both speak that); the sidebar row knows only the STORED id.
 // $sessionStates bridges the two: runtime id → state.storedSessionId.
-// Perf: this recomputes whenever $sessionStates changes (every message delta,
-// tens/sec during a turn), but the background-running set changes rarely.
-// Returning a fresh array each time re-renders every sidebar row that reads it;
-// hand back the previous reference when the set is unchanged so nanostores skips
-// the notify.
-let backgroundRunningCache: string[] = []
+// Perf: recomputes on every $sessionStates change (message deltas, tens/sec),
+// but the background-running set rarely moves. `stableArray` keeps the prior
+// reference when unchanged so rows reading this don't re-render per token.
+let backgroundRunningIds: readonly string[] = []
 export const $backgroundRunningSessionIds = computed([$backgroundStatusBySession, $sessionStates], (bg, states) => {
   const ids = new Set<string>()
 
   for (const [runtimeId, items] of Object.entries(bg)) {
-    if (!items.some(i => i.state === 'running')) {
-      continue
-    }
+    if (items.some(i => i.state === 'running')) {
+      const storedId = states[runtimeId]?.storedSessionId
 
-    const storedId = states[runtimeId]?.storedSessionId
-
-    if (storedId) {
-      ids.add(storedId)
+      if (storedId) {
+        ids.add(storedId)
+      }
     }
   }
 
-  const next = [...ids]
-
-  if (next.length === backgroundRunningCache.length && next.every((id, i) => id === backgroundRunningCache[i])) {
-    return backgroundRunningCache
-  }
-
-  backgroundRunningCache = next
-
-  return next
+  return (backgroundRunningIds = stableArray(backgroundRunningIds, [...ids]))
 })
 
 // Rows the user X-ed away. The registry keeps finished processes around for a

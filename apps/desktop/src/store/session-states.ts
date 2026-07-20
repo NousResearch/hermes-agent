@@ -27,6 +27,7 @@ import {
   noteActiveTreeGroup,
   revealTreePane
 } from '@/components/pane-shell/tree/store'
+import { stableArray } from '@/lib/stable-array'
 import { readJson, writeJson } from '@/lib/storage'
 
 import { $activeGatewayProfile, normalizeProfileKey } from './profile'
@@ -198,49 +199,30 @@ export function clearAllSessionStates() {
   $sessionStates.set({})
 }
 
-// Derived per-session status sets. `$sessionStates` already holds `busy` and
-// `needsInput` for every runtime session (written by updateSessionState); these
-// are pure projections of it, not independently maintained atoms. This keeps the
-// data flow one-directional: gateway event → cache → $sessionStates → computed
-// views, eliminating the "projection atom out of sync with cache" bug class.
+// Derived per-session status sets — pure projections of `$sessionStates` (which
+// holds `busy`/`needsInput` per runtime), keeping the data flow one-directional:
+// gateway event → cache → $sessionStates → computed views.
 //
-// CRITICAL for streaming perf: `$sessionStates` is republished on EVERY message
-// delta (tens of times/sec during a turn), but the *membership* of these ID sets
-// only changes on busy/needsInput edges. `computed` notifies on `!==`, so
-// returning a fresh array each time would re-render the whole sidebar (and every
-// row) per token. Return the PREVIOUS array reference when the contents match so
-// nanostores skips the notify unless the set actually changed.
-function stableIds(previous: string[], next: string[]): string[] {
-  if (previous.length === next.length && previous.every((id, i) => id === next[i])) {
-    return previous
-  }
+// Perf: `$sessionStates` is republished on EVERY message delta (tens/sec during
+// a turn), but these sets only change on busy/needsInput edges. `stableArray`
+// keeps the prior reference when membership is unchanged so `computed` skips the
+// emit — otherwise the whole sidebar + every row re-renders per token.
+const storedIds = (states: Record<string, ClientSessionState>, pred: (s: ClientSessionState) => boolean) =>
+  Object.values(states)
+    .filter(s => pred(s) && s.storedSessionId)
+    .map(s => s.storedSessionId!)
 
-  return next
-}
+let workingIds: readonly string[] = []
+export const $workingSessionIds = computed(
+  $sessionStates,
+  states => (workingIds = stableArray(workingIds, storedIds(states, s => s.busy)))
+)
 
-let workingIdsCache: string[] = []
-export const $workingSessionIds = computed($sessionStates, states => {
-  workingIdsCache = stableIds(
-    workingIdsCache,
-    Object.values(states)
-      .filter(s => s.busy && s.storedSessionId)
-      .map(s => s.storedSessionId!)
-  )
-
-  return workingIdsCache
-})
-
-let attentionIdsCache: string[] = []
-export const $attentionSessionIds = computed($sessionStates, states => {
-  attentionIdsCache = stableIds(
-    attentionIdsCache,
-    Object.values(states)
-      .filter(s => s.needsInput && s.storedSessionId)
-      .map(s => s.storedSessionId!)
-  )
-
-  return attentionIdsCache
-})
+let attentionIds: readonly string[] = []
+export const $attentionSessionIds = computed(
+  $sessionStates,
+  states => (attentionIds = stableArray(attentionIds, storedIds(states, s => s.needsInput)))
+)
 
 // ---------------------------------------------------------------------------
 // Session tiles.

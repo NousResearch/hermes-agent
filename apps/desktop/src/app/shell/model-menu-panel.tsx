@@ -18,6 +18,7 @@ import {
 import { Skeleton } from '@/components/ui/skeleton'
 import type { HermesGateway } from '@/hermes'
 import { useI18n } from '@/i18n'
+import { ChevronDown, ChevronRight } from '@/lib/icons'
 import { requestModelOptions } from '@/lib/model-options'
 import {
   currentPickerSelection,
@@ -27,7 +28,6 @@ import {
 } from '@/lib/model-status-label'
 import { normalize } from '@/lib/text'
 import { cn } from '@/lib/utils'
-import { ChevronDown, ChevronRight } from '@/lib/icons'
 import { $modelPresets, applyModelPreset, modelPresetKey } from '@/store/model-presets'
 import {
   $visibleModels,
@@ -245,6 +245,7 @@ export function ModelMenuPanel({ gateway, onSelectModel, requestGateway }: Model
         <div className="max-h-[max(150px,30dvh)] overflow-y-auto py-0.5">
           {groups.map(group => {
             const slug = group.provider.slug
+
             // Collapsed when stored + no active search + not the current provider.
             const collapsed =
               collapsedProviders.includes(slug) && !search && slug !== optionsProvider

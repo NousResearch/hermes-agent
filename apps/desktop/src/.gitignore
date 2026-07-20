@@ -1,4 +1,0 @@
-# Prevent local transpilation artifacts from shadowing TS/TSX source files.
-# If needed intentionally, force-add with: git add -f <file>
-**/*.js
-**/*.js.map

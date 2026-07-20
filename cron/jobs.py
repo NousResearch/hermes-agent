@@ -2072,6 +2072,33 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
                                 rj["next_run_at"] = new_next
                                 needs_save = True
                                 break
+
+                        # Guard against re-firing a job that already completed
+                        # the slot we're about to credit it for. next_run_at is
+                        # normally advanced past this slot before/on completion
+                        # (advance_next_run + mark_job_run), but if the gateway
+                        # crashes in the narrow window between a run finishing
+                        # and that advance persisting, next_run_at can still
+                        # show the just-completed slot as "missed" here and
+                        # cause a duplicate fire. Mirrors the one-shot guard in
+                        # _recoverable_oneshot_run_at (`if last_run_at: return
+                        # None`), generalized to cron/interval by comparing
+                        # timestamps instead of mere presence.
+                        last_run_at = job.get("last_run_at")
+                        if last_run_at:
+                            try:
+                                last_run_dt = _ensure_aware(datetime.fromisoformat(last_run_at))
+                            except Exception:
+                                last_run_dt = None
+                            if last_run_dt and last_run_dt >= next_run_dt:
+                                logger.info(
+                                    "Job '%s': already ran for the missed slot (%s) "
+                                    "at %s — skipping duplicate fire",
+                                    job.get("name", job.get("id", "?")),
+                                    next_run,
+                                    last_run_at,
+                                )
+                                continue
                         # Fall through to due.append(job) — execute once now
 
                 # One-shot dispatch-limit guard (issue #38758): a finite one-shot

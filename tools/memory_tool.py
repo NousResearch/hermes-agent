@@ -56,6 +56,99 @@ def get_memory_dir() -> Path:
     """Return the profile-scoped memories directory."""
     return get_hermes_home() / "memories"
 
+
+# Directory mode for the memory store.  Issue #66183: Docker and other
+# restricted-umask environments (e.g. UGREEN NAS, common base images with
+# ``umask 0777``) create directories with ``000`` permissions when Python's
+# ``Path.mkdir(parents=True, exist_ok=True)`` is called without an explicit
+# mode, leaving MEMORY.md / USER.md / the .lock file inaccessible for the
+# rest of the session and on subsequent restarts.
+#
+# 0o755 = rwxr-xr-x: owner can read/write, group and others can read and
+# traverse.  This matches what a user expects from ``mkdir -p`` under any
+# reasonable umask and is consistent with the default mode of ``os.makedirs``.
+_MEMORY_DIR_MODE = 0o755
+
+
+def _mkdir_p(path: Path) -> None:
+    """Create ``path`` (and parents) with predictable, accessible permissions.
+
+    Wraps ``Path.mkdir(parents=True, exist_ok=True)`` with an explicit
+    ``chmod(0o755)`` on every directory we own.  Two reasons to chmod:
+
+    1. ``mkdir(mode=...)`` only applies the mode to *newly created* leaf
+       directories; on Python < 3.13 the mode is also AND-ed with the
+       process umask, so ``mode=0o755`` under ``umask 0777`` still yields
+       ``0o000``.  Calling ``chmod`` afterwards is the only way to guarantee
+       the mode regardless of umask.
+    2. If the directory was created earlier (e.g. by an older Hermes version
+       that left it ``0o000`` on a Docker host), we repair it on the next
+       load rather than leaving the user to find and ``chmod`` it manually.
+
+    We use iterative segment-by-segment creation instead of
+    ``mkdir(parents=True)`` because under ``umask 0777`` the recursive
+    ``mkdir`` creates intermediate directories with ``mode & ~umask`` =
+    ``0o000``, immediately blocking every subsequent creation step (#66183).
+    Setting ``os.umask(0)`` first and then building the path one segment at
+    a time avoids this dead-end entirely.
+
+    Idempotent: silently no-ops if the directory already has the right mode.
+    Skips chmod on directories we do not own (e.g. `/`, `/tmp`) — the only
+    segments skipped are guaranteed to be world-traversable already, so
+    memory files written under them remain accessible.  Propagates any
+    OSError so callers see "disk full" / "read-only filesystem" failures.
+    """
+    if path.is_dir():
+        # Already exists — try to repair its mode, swallow EPERM on
+        # paths we don't own (root-owned /tmp, /, etc.).
+        try:
+            path.chmod(_MEMORY_DIR_MODE)
+        except PermissionError:
+            pass  # not ours; assume world-traversable already
+        except OSError as exc:
+            logger.warning(
+                "Could not set memory dir %s to %o: %s",
+                path, _MEMORY_DIR_MODE, exc,
+            )
+        return
+
+    old_umask = os.umask(0)
+    try:
+        # Walk from the anchor (e.g. ``/``) to the leaf, creating each
+        # segment with an explicit mode.  Iterating lets us set 0o755 on
+        # every segment we actually create, and skip chmod on segments
+        # that already existed (which we typically don't own — /, /tmp).
+        accumulating = Path(path.anchor)
+        for part in path.relative_to(path.anchor).parts:
+            accumulating = accumulating / part
+            created = False
+            try:
+                accumulating.mkdir(mode=_MEMORY_DIR_MODE, exist_ok=False)
+                created = True
+            except FileExistsError:
+                pass
+            if created:
+                # We created it; mode is 0o755 already under umask=0.
+                continue
+            # Existing segment — check mode and chmod only if it's off
+            # AND we have permission to.  EACCES/EPERM on a parent we
+            # don't own (root-owned /tmp, /) is safe to ignore because
+            # such system dirs are world-traversable.
+            try:
+                current_mode = accumulating.stat().st_mode & 0o777
+                if current_mode != _MEMORY_DIR_MODE:
+                    accumulating.chmod(_MEMORY_DIR_MODE)
+            except PermissionError:
+                pass  # not ours
+            except OSError as exc:
+                logger.warning(
+                    "Could not stat/chmod memory dir %s: %s",
+                    accumulating, exc,
+                )
+    finally:
+        os.umask(old_umask)
+
+
 ENTRY_DELIMITER = "\n§\n"
 
 
@@ -183,7 +276,7 @@ class MemoryStore:
         stable for the entire session (prefix-cache invariant holds).
         """
         mem_dir = get_memory_dir()
-        mem_dir.mkdir(parents=True, exist_ok=True)
+        _mkdir_p(mem_dir)
 
         self.memory_entries = self._read_file(mem_dir / "MEMORY.md")
         self.user_entries = self._read_file(mem_dir / "USER.md")
@@ -249,7 +342,7 @@ class MemoryStore:
         atomically replaced via os.replace().
         """
         lock_path = path.with_suffix(path.suffix + ".lock")
-        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        _mkdir_p(lock_path.parent)
 
         if fcntl is None and msvcrt is None:
             yield
@@ -308,7 +401,7 @@ class MemoryStore:
 
     def save_to_disk(self, target: str):
         """Persist entries to the appropriate file. Called after every mutation."""
-        get_memory_dir().mkdir(parents=True, exist_ok=True)
+        _mkdir_p(get_memory_dir())
         self._write_file(self._path_for(target), self._entries_for(target))
 
     def _entries_for(self, target: str) -> List[str]:

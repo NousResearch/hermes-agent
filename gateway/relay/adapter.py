@@ -513,6 +513,51 @@ class RelayAdapter(BasePlatformAdapter):
             error=result.get("error"),
         )
 
+    async def edit_message(
+        self,
+        chat_id: str,
+        message_id: str,
+        content: str,
+        *,
+        finalize: bool = False,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Edit a relayed message through the connector-owned platform API."""
+        if self._transport is None:
+            return SendResult(success=False, error="no transport")
+        result = await self._transport.send_outbound(
+            {
+                "op": "edit",
+                "chat_id": chat_id,
+                "message_id": message_id,
+                "content": content,
+                "metadata": self._with_scope(chat_id, metadata),
+            },
+            platform=self._platform_by_chat.get(str(chat_id)),
+        )
+        return SendResult(
+            success=bool(result.get("success")),
+            message_id=result.get("message_id") or message_id,
+            error=result.get("error"),
+        )
+
+    async def send_typing(
+        self,
+        chat_id: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Forward a typing/status heartbeat to the connector."""
+        if self._transport is None:
+            return
+        await self._transport.send_outbound(
+            {
+                "op": "typing",
+                "chat_id": chat_id,
+                "metadata": self._with_scope(chat_id, metadata),
+            },
+            platform=self._platform_by_chat.get(str(chat_id)),
+        )
+
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         # Proxied to the connector (it owns the platform connection / cache).
         if self._transport is None:

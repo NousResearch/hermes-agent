@@ -834,8 +834,18 @@ def _secure_dir(path):
     vars are set (#34107 — Docker deployments need this so profile subdirs
     created at runtime by kanban workers don't land as root:root and block
     subsequent uid-mapped workers).
+
+    Symlinked subdirs are left alone. If an operator symlinks a HERMES_HOME
+    subdir (e.g. ``skills`` -> a group-shared library) to storage they own
+    deliberately, the target's permissions are theirs to set, not ours to
+    normalize (#68055). ``os.chmod`` follows symlinks, so securing the link
+    would clamp the *target* to 0700 on every ``load_config()`` and strip a
+    shared group's r+x. ``follow_symlinks=False`` is not an option — Linux has
+    no ``lchmod`` and raises ``NotImplementedError``.
     """
     if is_managed():
+        return
+    if os.path.islink(path):
         return
     try:
         mode_str = os.environ.get("HERMES_HOME_MODE", "").strip()

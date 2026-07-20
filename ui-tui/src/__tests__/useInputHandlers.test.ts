@@ -1,10 +1,15 @@
 import { describe, expect, it, vi } from 'vitest'
 
 import { getOverlayState, patchOverlayState, resetOverlayState } from '../app/overlayStore.js'
+import { copyLatestAssistantResponse } from '../app/slash/commands/core.js'
 import {
   applyVoiceRecordResponse,
+  consumeDashboardNativeSubmission,
   dismissSensitivePrompt,
+  handleDashboardCopyLastShortcut,
+  handleDashboardNativeSubmission,
   handleIdleHotkeyExit,
+  rememberNativeSubmitRequest,
   shouldAllowIdleHotkeyExit,
   shouldFallThroughForScroll
 } from '../app/useInputHandlers.js'
@@ -56,6 +61,116 @@ describe('shouldAllowIdleHotkeyExit', () => {
 
   it('disables idle exit hotkeys in dashboard chat', () => {
     expect(shouldAllowIdleHotkeyExit(true)).toBe(false)
+  })
+})
+
+describe('handleDashboardCopyLastShortcut', () => {
+  it('copies the latest assistant response without changing draft or selection', async () => {
+    const state = { draft: 'keep this draft', selection: 'selected draft text' }
+    const write = vi.fn().mockResolvedValue('osc52')
+    let copy: Promise<void> | undefined
+    const copyLastAssistantResponse = vi.fn(() => {
+      expect(state).toEqual({ draft: 'keep this draft', selection: 'selected draft text' })
+      copy = copyLatestAssistantResponse(
+        [
+          { role: 'assistant', text: 'older response' },
+          { role: 'assistant', text: 'latest response' }
+        ],
+        vi.fn(),
+        write
+      )
+    })
+
+    expect(
+      handleDashboardCopyLastShortcut(
+        { copyLastAssistantResponse },
+        { ctrl: true, super: true },
+        'c',
+        true
+      )
+    ).toBe(true)
+    expect(copyLastAssistantResponse).toHaveBeenCalledOnce()
+    await copy
+    expect(write).toHaveBeenCalledWith('latest response')
+    expect(state).toEqual({ draft: 'keep this draft', selection: 'selected draft text' })
+  })
+
+  it('ignores the sequence outside dashboard mode', () => {
+    const copyLastAssistantResponse = vi.fn()
+
+    expect(
+      handleDashboardCopyLastShortcut(
+        { copyLastAssistantResponse },
+        { ctrl: true, super: true },
+        'c',
+        false
+      )
+    ).toBe(false)
+    expect(copyLastAssistantResponse).not.toHaveBeenCalled()
+  })
+})
+
+describe('handleDashboardNativeSubmission', () => {
+  const frame = '\x1b_HERMES_SUBMIT;request-1;7ZWc6riAIOuplOyLnOyngA==\x1b\\'
+
+  it('submits exactly the decoded native draft in dashboard mode', () => {
+    const submitDashboardNativeDraft = vi.fn()
+
+    expect(handleDashboardNativeSubmission({ submitDashboardNativeDraft }, frame, true)).toBe(true)
+    expect(submitDashboardNativeDraft).toHaveBeenCalledWith('한글 메시지', 'request-1')
+  })
+
+  it('ignores the protocol outside dashboard mode, malformed data, or whitespace-only drafts', () => {
+    const submitDashboardNativeDraft = vi.fn()
+
+    expect(handleDashboardNativeSubmission({ submitDashboardNativeDraft }, frame, false)).toBe(false)
+    expect(
+      handleDashboardNativeSubmission(
+        { submitDashboardNativeDraft },
+        '\x1b_HERMES_SUBMIT;request-1;%%%\x1b\\',
+        true
+      )
+    ).toBe(false)
+    expect(
+      handleDashboardNativeSubmission(
+        { submitDashboardNativeDraft },
+        '\x1b_HERMES_SUBMIT;request-1;ICAg\x1b\\',
+        true
+      )
+    ).toBe(false)
+    expect(submitDashboardNativeDraft).not.toHaveBeenCalled()
+  })
+})
+
+describe('consumeDashboardNativeSubmission', () => {
+  it('dispatches and stops propagation for a valid frame only', () => {
+    const submitDashboardNativeDraft = vi.fn()
+    const stopImmediatePropagation = vi.fn()
+    const event = {
+      keypress: { raw: '\x1b_HERMES_SUBMIT;request-1;ZHJhZnQ=\x1b\\' },
+      stopImmediatePropagation
+    }
+
+    expect(consumeDashboardNativeSubmission({ submitDashboardNativeDraft }, event, true)).toBe(true)
+    expect(submitDashboardNativeDraft).toHaveBeenCalledWith('draft', 'request-1')
+    expect(stopImmediatePropagation).toHaveBeenCalledOnce()
+
+    event.keypress.raw = '\x1b_HERMES_SUBMIT;request-2;%%%\x1b\\'
+    stopImmediatePropagation.mockClear()
+    expect(consumeDashboardNativeSubmission({ submitDashboardNativeDraft }, event, true)).toBe(false)
+    expect(stopImmediatePropagation).not.toHaveBeenCalled()
+  })
+})
+
+describe('rememberNativeSubmitRequest', () => {
+  it('accepts a request once, rejects replays, and bounds receiver memory', () => {
+    const accepted: string[] = []
+
+    expect(rememberNativeSubmitRequest(accepted, 'request-1', 2)).toBe(true)
+    expect(rememberNativeSubmitRequest(accepted, 'request-1', 2)).toBe(false)
+    expect(rememberNativeSubmitRequest(accepted, 'request-2', 2)).toBe(true)
+    expect(rememberNativeSubmitRequest(accepted, 'request-3', 2)).toBe(true)
+    expect(accepted).toEqual(['request-2', 'request-3'])
   })
 })
 

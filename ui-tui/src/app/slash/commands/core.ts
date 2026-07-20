@@ -84,6 +84,54 @@ export const DASHBOARD_EXIT_DISABLED_MESSAGE =
 export const DASHBOARD_UPDATE_DISABLED_MESSAGE =
   'update is disabled in hosted dashboard chat — the hosted environment is managed separately'
 
+export async function copyTextForHost(
+  text: string,
+  dashboardTuiMode = DASHBOARD_TUI_MODE,
+  writeNative: (value: string) => Promise<boolean> = writeClipboardText,
+  writeOsc52: (value: string) => void = writeOsc52Clipboard
+): Promise<'native' | 'osc52'> {
+  if (dashboardTuiMode) {
+    writeOsc52(text)
+
+    return 'osc52'
+  }
+
+  if (await writeNative(text)) {
+    return 'native'
+  }
+
+  writeOsc52(text)
+
+  return 'osc52'
+}
+
+export async function copyLatestAssistantResponse(
+  historyItems: Msg[],
+  sys: (text: string) => void,
+  write: (text: string) => Promise<'native' | 'osc52'> = copyTextForHost,
+  stale: () => boolean = () => false
+): Promise<void> {
+  const target = historyItems.filter(message => message.role === 'assistant').at(-1)
+
+  if (!target) {
+    sys('nothing to copy — start a conversation first')
+
+    return
+  }
+
+  try {
+    const path = await write(target.text)
+
+    if (!stale()) {
+      sys(path === 'native' ? 'copied to clipboard' : 'sent OSC52 copy sequence (terminal support required)')
+    }
+  } catch (error) {
+    if (!stale()) {
+      sys(`copy failed: ${String(error)}`)
+    }
+  }
+}
+
 export const coreCommands: SlashCommand[] = [
   {
     help: 'list commands + hotkeys',
@@ -393,31 +441,10 @@ export const coreCommands: SlashCommand[] = [
         return sys('usage: /copy [number]')
       }
 
-      const all = ctx.local.getHistoryItems().filter(m => m.role === 'assistant')
+      const all = ctx.local.getHistoryItems().filter(message => message.role === 'assistant')
       const target = all[arg ? Math.min(parseInt(arg, 10), all.length) - 1 : all.length - 1]
 
-      if (!target) {
-        return sys('nothing to copy — start a conversation first')
-      }
-
-      void writeClipboardText(target.text)
-        .then(nativeOk => {
-          if (ctx.stale()) {
-            return
-          }
-
-          if (nativeOk) {
-            sys('copied to clipboard')
-          } else {
-            writeOsc52Clipboard(target.text)
-            sys('sent OSC52 copy sequence (terminal support required)')
-          }
-        })
-        .catch(error => {
-          if (!ctx.stale()) {
-            sys(`copy failed: ${String(error)}`)
-          }
-        })
+      return copyLatestAssistantResponse(target ? [target] : [], sys, copyTextForHost, ctx.stale)
     }
   },
 

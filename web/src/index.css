@@ -42,6 +42,34 @@
   src: url('/fonts-terminal/JetBrainsMono-Italic.woff2') format('woff2');
 }
 
+/* xterm renders glyphs on a canvas and disables native selection by default.
+   On iOS, screenReaderMode supplies an aligned DOM text layer. Let Safari
+   target that layer so long-press exposes native selection handles and the
+   Copy/Look Up menu while the canvas remains the visible renderer. */
+@supports (-webkit-touch-callout: default) {
+  .hermes-chat-native-selection .xterm {
+    -webkit-user-select: text !important;
+    user-select: text !important;
+  }
+
+  .hermes-chat-native-selection .xterm-accessibility:not(.debug) {
+    pointer-events: auto;
+    -webkit-touch-callout: default;
+    touch-action: pan-y;
+  }
+
+  .hermes-chat-native-selection .xterm-accessibility-tree,
+  .hermes-chat-native-selection .xterm-accessibility-tree * {
+    -webkit-user-select: text !important;
+    user-select: text !important;
+  }
+
+  .hermes-chat-native-selection .xterm-accessibility-tree:not(.debug) *::selection {
+    color: transparent;
+    background: rgb(120 160 255 / 45%);
+  }
+}
+
 /* ------------------------------------------------------------------ */
 /* Hermes Agent — Nous DS with the LENS_0 (Hermes teal) palette applied
    statically as the default dashboard theme. */

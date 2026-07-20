@@ -48,6 +48,16 @@ describe('enhanced keyboard modifier parsing', () => {
     expect(event.key.super).toBe(true)
   })
 
+  it('preserves a dashboard native-submit APC frame as one raw input event', () => {
+    const frame = '\u001b_HERMES_SUBMIT;request-1;ZHJhZnQ=\u001b\\'
+    const parsed = parseOne(frame)
+    const event = new InputEvent(parsed)
+
+    expect(parsed.sequence).toBe(frame)
+    expect(parsed.isPasted).toBe(false)
+    expect(event.input).toBe('')
+  })
+
   it('preserves Cmd on word-delete and word-navigation sequences', () => {
     const backspace = new InputEvent(parseOne('\u001b[127;9u'))
     const left = new InputEvent(parseOne('\u001b[1;9D'))

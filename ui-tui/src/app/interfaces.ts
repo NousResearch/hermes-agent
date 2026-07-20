@@ -254,6 +254,8 @@ export interface UseComposerStateResult {
 export interface InputHandlerActions {
   answerClarify: (answer: string) => void
   appendMessage: (msg: Msg) => void
+  copyLastAssistantResponse: () => void
+  submitDashboardNativeDraft: (text: string, requestId: string) => void
   die: () => void
   dispatchSubmission: (full: string) => void
   guardBusySessionSwitch: (what?: string) => boolean

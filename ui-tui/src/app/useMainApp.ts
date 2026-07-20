@@ -40,12 +40,13 @@ import { type GatewayRpc, type TranscriptRow } from './interfaces.js'
 import { $overlayState, patchOverlayState } from './overlayStore.js'
 import { $goodVibesTick } from './petFlashStore.js'
 import { scrollWithSelectionBy } from './scroll.js'
+import { copyLatestAssistantResponse } from './slash/commands/core.js'
 import { turnController } from './turnController.js'
 import { patchTurnState, useTurnSelector } from './turnStore.js'
 import { $uiState, getUiState, patchUiState } from './uiStore.js'
 import { useComposerState } from './useComposerState.js'
 import { useConfigSync } from './useConfigSync.js'
-import { useInputHandlers } from './useInputHandlers.js'
+import { rememberNativeSubmitRequest, useInputHandlers } from './useInputHandlers.js'
 import { useLongRunToolCharms } from './useLongRunToolCharms.js'
 import { useSessionLifecycle } from './useSessionLifecycle.js'
 import { useSubmission } from './useSubmission.js'
@@ -680,7 +681,7 @@ export function useMainApp(gw: GatewayClient) {
 
   clipboardPasteRef.current = paste
 
-  const { dispatchSubmission, send, sendQueued, submit } = useSubmission({
+  const { dispatchNativeSubmission, dispatchSubmission, send, sendQueued, submit } = useSubmission({
     appendMessage,
     composerActions,
     composerRefs,
@@ -691,6 +692,27 @@ export function useMainApp(gw: GatewayClient) {
     submitRef,
     sys
   })
+
+  const copyLastAssistantResponse = useCallback(() => {
+    void copyLatestAssistantResponse(historyItemsRef.current, sys)
+  }, [sys])
+
+  const acceptedNativeSubmitIdsRef = useRef<string[]>([])
+  const submitDashboardNativeDraft = useCallback(
+    (text: string, requestId: string) => {
+      const acceptedIds = acceptedNativeSubmitIdsRef.current
+      if (!rememberNativeSubmitRequest(acceptedIds, requestId)) {
+        process.stdout.write(`\x1b]777;HERMES_SUBMIT_ACK;${requestId}\x07`)
+        return
+      }
+      if (!dispatchNativeSubmission(text)) {
+        acceptedIds.splice(acceptedIds.indexOf(requestId), 1)
+        return
+      }
+      process.stdout.write(`\x1b]777;HERMES_SUBMIT_ACK;${requestId}\x07`)
+    },
+    [dispatchNativeSubmission]
+  )
 
   // Drain one queued message whenever the session settles (busy → false):
   // agent turn ends, interrupt, shell.exec finishes, error recovered, or the
@@ -719,6 +741,8 @@ export function useMainApp(gw: GatewayClient) {
     actions: {
       answerClarify,
       appendMessage,
+      copyLastAssistantResponse,
+      submitDashboardNativeDraft,
       die,
       dispatchSubmission,
       guardBusySessionSwitch: session.guardBusySessionSwitch,

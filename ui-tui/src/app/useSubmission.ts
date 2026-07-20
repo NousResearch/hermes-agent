@@ -297,6 +297,49 @@ export function useSubmission(opts: UseSubmissionOptions) {
     [appendMessage, composerActions, composerRefs, handleBusyInput, interpolate, send, sendQueued, shellExec, slashRef]
   )
 
+  const dispatchNativeSubmission = useCallback(
+    (full: string): boolean => {
+      if (!full.trim()) {
+        return false
+      }
+
+      if (looksLikeSlashCommand(full)) {
+        appendMessage({ kind: 'slash', role: 'system', text: full })
+        composerActions.pushHistory(full)
+        slashRef.current(full)
+        return true
+      }
+
+      if (full.startsWith('!')) {
+        void shellExec(full.slice(1).trim())
+        return true
+      }
+
+      const live = getUiState()
+      composerActions.pushHistory(full)
+
+      if (!live.sid) {
+        composerActions.enqueue(full)
+        return true
+      }
+
+      if (live.busy) {
+        handleBusyInput(full)
+        return true
+      }
+
+      if (hasInterpolation(full)) {
+        patchUiState({ busy: true })
+        void interpolate(full, send)
+        return true
+      }
+
+      send(full)
+      return true
+    },
+    [appendMessage, composerActions, handleBusyInput, interpolate, send, shellExec, slashRef]
+  )
+
   const submit = useCallback(
     (value: string) => {
       if (composerState.completions.length) {
@@ -351,7 +394,7 @@ export function useSubmission(opts: UseSubmissionOptions) {
 
   submitRef.current = submit
 
-  return { dispatchSubmission, send, sendQueued, submit }
+  return { dispatchNativeSubmission, dispatchSubmission, send, sendQueued, submit }
 }
 
 export interface UseSubmissionOptions {

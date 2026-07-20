@@ -1,5 +1,6 @@
 import { forceRedraw, useInput } from '@hermes/ink'
 import { useStore } from '@nanostores/react'
+import { Buffer } from 'buffer'
 import { useEffect, useRef } from 'react'
 
 import { DASHBOARD_TUI_MODE } from '../config/env.js'
@@ -32,6 +33,98 @@ const isCtrl = (key: { ctrl: boolean }, ch: string, target: string) => key.ctrl 
 const DASHBOARD_NEW_SESSION_MESSAGE = 'starting a fresh dashboard chat...'
 
 export const shouldAllowIdleHotkeyExit = (dashboardTuiMode = DASHBOARD_TUI_MODE) => !dashboardTuiMode
+
+const DASHBOARD_NATIVE_SUBMIT_PREFIX = '\x1b_HERMES_SUBMIT;'
+const APC_END = '\x1b\\'
+const MAX_NATIVE_DRAFT_BYTES = 256 * 1024
+const VALID_REQUEST_ID = /^[A-Za-z0-9-]{1,64}$/
+const VALID_BASE64 = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/
+
+export function handleDashboardNativeSubmission(
+  actions: Pick<InputHandlerActions, 'submitDashboardNativeDraft'>,
+  sequence: string,
+  dashboardTuiMode = DASHBOARD_TUI_MODE
+): boolean {
+  if (
+    !dashboardTuiMode ||
+    !sequence.startsWith(DASHBOARD_NATIVE_SUBMIT_PREFIX) ||
+    !sequence.endsWith(APC_END)
+  ) {
+    return false
+  }
+
+  const body = sequence.slice(DASHBOARD_NATIVE_SUBMIT_PREFIX.length, -APC_END.length)
+  const separator = body.indexOf(';')
+  const requestId = separator < 0 ? '' : body.slice(0, separator)
+  const payload = separator < 0 ? '' : body.slice(separator + 1)
+  const maxEncodedLength = Math.ceil(MAX_NATIVE_DRAFT_BYTES / 3) * 4
+  if (
+    !VALID_REQUEST_ID.test(requestId) ||
+    !payload ||
+    payload.length > maxEncodedLength ||
+    !VALID_BASE64.test(payload)
+  ) {
+    return false
+  }
+
+  try {
+    const bytes = Buffer.from(payload, 'base64')
+    if (bytes.length > MAX_NATIVE_DRAFT_BYTES) {
+      return false
+    }
+    const text = new TextDecoder('utf-8', { fatal: true }).decode(bytes)
+    if (!text.trim()) {
+      return false
+    }
+    actions.submitDashboardNativeDraft(text, requestId)
+
+    return true
+  } catch {
+    return false
+  }
+}
+
+export function consumeDashboardNativeSubmission(
+  actions: Pick<InputHandlerActions, 'submitDashboardNativeDraft'>,
+  event: { keypress: { raw?: string }; stopImmediatePropagation(): void },
+  dashboardTuiMode = DASHBOARD_TUI_MODE
+): boolean {
+  if (!handleDashboardNativeSubmission(actions, event.keypress.raw ?? '', dashboardTuiMode)) {
+    return false
+  }
+  event.stopImmediatePropagation()
+  return true
+}
+
+export function rememberNativeSubmitRequest(
+  acceptedIds: string[],
+  requestId: string,
+  limit = 128
+): boolean {
+  if (acceptedIds.includes(requestId)) {
+    return false
+  }
+  acceptedIds.push(requestId)
+  if (acceptedIds.length > limit) {
+    acceptedIds.splice(0, acceptedIds.length - limit)
+  }
+  return true
+}
+
+export function handleDashboardCopyLastShortcut(
+  actions: Pick<InputHandlerActions, 'copyLastAssistantResponse'>,
+  key: { ctrl: boolean; super: boolean },
+  ch: string,
+  dashboardTuiMode = DASHBOARD_TUI_MODE
+): boolean {
+  if (!dashboardTuiMode || !key.ctrl || !key.super || ch.toLowerCase() !== 'c') {
+    return false
+  }
+
+  actions.copyLastAssistantResponse()
+
+  return true
+}
 
 export function handleIdleHotkeyExit(
   actions: Pick<InputHandlerActions, 'die' | 'sys'>,
@@ -308,8 +401,17 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       })
   }
 
-  useInput((ch, key) => {
+  useInput((ch, key, event) => {
     const live = getUiState()
+
+    if (
+      consumeDashboardNativeSubmission(
+        actions,
+        event as unknown as { keypress: { raw?: string }; stopImmediatePropagation(): void }
+      )
+    ) {
+      return
+    }
 
     if (isBlocked) {
       // When approval/clarify/confirm overlays are active, their own useInput
@@ -507,6 +609,10 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
 
         return
       }
+    }
+
+    if (handleDashboardCopyLastShortcut(actions, key, ch)) {
+      return
     }
 
     if (isCopyShortcut(key, ch)) {

@@ -94,6 +94,13 @@ function parseKey(keypress: ParsedKey): [Key, string] {
     input = input.slice(1)
   }
 
+  // Dashboard-native submissions are application protocol frames, never text.
+  // A dedicated dashboard listener consumes and validates the raw frame; all
+  // other listeners must see an empty input so it cannot leak into a composer.
+  if (keypress.raw?.startsWith('\u001b_HERMES_SUBMIT;')) {
+    input = ''
+  }
+
   // Track whether we've already processed this as a special sequence
   // that converted input to the key name (CSI u or application keypad mode).
   // For these, we don't want to clear input with nonAlphanumericKeys check.

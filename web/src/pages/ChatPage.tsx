@@ -25,7 +25,7 @@ import "@xterm/xterm/css/xterm.css";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { Typography } from "@nous-research/ui/ui/components/typography/index";
 import { cn } from "@/lib/utils";
-import { Copy, PanelRight, RotateCcw, X } from "lucide-react";
+import { ClipboardPaste, Copy, PanelRight, RotateCcw, Send, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useSearchParams } from "react-router-dom";
@@ -36,6 +36,20 @@ import { usePageHeader } from "@/contexts/usePageHeader";
 import { useI18n } from "@/i18n";
 import { api } from "@/lib/api";
 import { normalizeSessionTitle } from "@/lib/chat-title";
+import {
+  copyTextToClipboard,
+  readTextFromClipboard,
+  writeTextToSecureClipboard,
+} from "@/lib/clipboard";
+import {
+  DASHBOARD_COPY_LAST_SEQUENCE,
+  DASHBOARD_NATIVE_SUBMIT_ACK_OSC,
+  NATIVE_SUBMIT_ACK_TTL_MS,
+  OSC52_COPY_REQUEST_TTL_MS,
+  consumeNativeSubmitAck,
+  consumePendingOsc52Write,
+  sendNativeDraftSubmission,
+} from "@/lib/pty-clipboard";
 import {
   PTY_CONNECTING_TIMEOUT_MS,
   PTY_RECONNECT_INPUT_MESSAGE,
@@ -177,7 +191,20 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       : null,
   );
   const [copyState, setCopyState] = useState<"idle" | "copied">("idle");
+  const [pastePanelOpen, setPastePanelOpen] = useState(false);
+  const [pasteDraft, setPasteDraft] = useState("");
+  const [nativeDraft, setNativeDraft] = useState("");
+  const [nativeSubmitPending, setNativeSubmitPending] = useState(false);
+  const [iosNativeEditing] = useState(() =>
+    typeof navigator !== "undefined"
+      ? isIosLikeUserAgent(navigator.userAgent, navigator.maxTouchPoints)
+      : false,
+  );
   const copyResetRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const copyAuthorizationTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pendingOsc52CopyAtRef = useRef<number | null>(null);
+  const nativeSubmitAckTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pendingNativeSubmitRef = useRef<{ requestId: string; draft: string } | null>(null);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const reconnectAttemptRef = useRef(0);
   const forceFreshPtyRef = useRef(false);
@@ -433,20 +460,83 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   const handleCopyLast = () => {
     const ws = wsRef.current;
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
-    // Send the slash as a burst, wait long enough for Ink's tokenizer to
-    // emit a keypress event for each character (not coalesce them into a
-    // paste), then send Return as its own event.  The timing here is
-    // empirical — 100ms is safely past Node's default stdin coalescing
-    // window and well inside UI responsiveness.
-    ws.send("/copy");
-    setTimeout(() => {
-      const s = wsRef.current;
-      if (s && s.readyState === WebSocket.OPEN) s.send("\r");
-    }, 100);
-    setCopyState("copied");
-    if (copyResetRef.current) clearTimeout(copyResetRef.current);
-    copyResetRef.current = setTimeout(() => setCopyState("idle"), 1500);
-    termRef.current?.focus();
+    // Never inject `/copy` into the composer: it appends to and submits any
+    // draft the user is currently editing. Dashboard TUI mode recognizes this
+    // forwarded Cmd+C control sequence and dispatches `/copy` internally.
+    const pendingAt = Date.now();
+    pendingOsc52CopyAtRef.current = pendingAt;
+    if (copyAuthorizationTimerRef.current) {
+      clearTimeout(copyAuthorizationTimerRef.current);
+    }
+    copyAuthorizationTimerRef.current = setTimeout(() => {
+      copyAuthorizationTimerRef.current = null;
+      if (pendingOsc52CopyAtRef.current === pendingAt) {
+        pendingOsc52CopyAtRef.current = null;
+      }
+    }, OSC52_COPY_REQUEST_TTL_MS);
+    try {
+      ws.send(DASHBOARD_COPY_LAST_SEQUENCE);
+    } catch {
+      pendingOsc52CopyAtRef.current = null;
+      clearTimeout(copyAuthorizationTimerRef.current);
+      copyAuthorizationTimerRef.current = null;
+      return;
+    }
+    if (!iosNativeEditing) {
+      termRef.current?.focus();
+    }
+  };
+
+  const insertPastedText = (text: string) => {
+    if (!text) return;
+    if (iosNativeEditing) {
+      setNativeDraft((draft) => draft + text);
+    } else {
+      termRef.current?.paste(text);
+    }
+    setPasteDraft("");
+    setPastePanelOpen(false);
+    if (!iosNativeEditing) {
+      termRef.current?.focus();
+    }
+  };
+
+  const handlePaste = async () => {
+    const result = await readTextFromClipboard();
+    if (result.ok && result.text) {
+      insertPastedText(result.text);
+      return;
+    }
+    // Clipboard reads require HTTPS in Safari/Chrome. The dashboard is often
+    // opened over a private Tailscale HTTP address, so provide a native
+    // textarea where mobile users can long-press → Paste, then insert.
+    setPastePanelOpen(true);
+  };
+
+  const submitNativeDraft = () => {
+    const value = nativeDraft;
+    const ws = wsRef.current;
+    if (!value.trim() || nativeSubmitPending || !ws || ws.readyState !== WebSocket.OPEN) return;
+
+    const requestId =
+      typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+        ? crypto.randomUUID()
+        : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+    pendingNativeSubmitRef.current = { requestId, draft: value };
+    if (!sendNativeDraftSubmission(value, requestId, (payload) => ws.send(payload))) {
+      pendingNativeSubmitRef.current = null;
+      return;
+    }
+
+    setNativeSubmitPending(true);
+    if (nativeSubmitAckTimerRef.current) clearTimeout(nativeSubmitAckTimerRef.current);
+    nativeSubmitAckTimerRef.current = setTimeout(() => {
+      nativeSubmitAckTimerRef.current = null;
+      if (pendingNativeSubmitRef.current?.requestId === requestId) {
+        pendingNativeSubmitRef.current = null;
+        setNativeSubmitPending(false);
+      }
+    }, NATIVE_SUBMIT_ACK_TTL_MS);
   };
 
   useEffect(() => {
@@ -463,6 +553,12 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     }
 
     const tierW0 = terminalTierWidthPx(host);
+    const isMobileLike =
+      typeof navigator !== "undefined" &&
+      /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent);
+    const isIosLike =
+      typeof navigator !== "undefined" &&
+      isIosLikeUserAgent(navigator.userAgent, navigator.maxTouchPoints);
     const term = new Terminal({
       allowProposedApi: true,
       cursorBlink: true,
@@ -470,6 +566,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         "'JetBrains Mono', 'Cascadia Mono', 'Fira Code', 'MesloLGS NF', 'Source Code Pro', Menlo, Consolas, 'DejaVu Sans Mono', monospace",
       fontSize: terminalFontSizeForWidth(tierW0),
       lineHeight: terminalLineHeightForWidth(tierW0),
+      screenReaderMode: isIosLike,
       letterSpacing: 0,
       fontWeight: "400",
       fontWeightBold: "700",
@@ -522,24 +619,49 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     // supported — that would let any content the TUI renders exfiltrate
     // the user's clipboard.
     term.parser.registerOscHandler(52, (data) => {
-      // Format: "<targets>;<base64 | '?'>"
-      const semi = data.indexOf(";");
-      if (semi < 0) return false;
-      const payload = data.slice(semi + 1);
-      if (payload === "?" || payload === "") return false; // read/clear — ignore
-      try {
-        const binary = atob(payload);
-        const bytes = Uint8Array.from(binary, (c) => c.charCodeAt(0));
-        const text = new TextDecoder("utf-8").decode(bytes);
-        navigator.clipboard.writeText(text).catch((err) => {
-          // Most common reason: the Clipboard API requires a user gesture.
-          // This can fail when the OSC 52 response arrives outside the
-          // original keydown event's activation. Log to aid debugging.
-          console.warn("[dashboard clipboard] OSC 52 write failed:", err.message);
-        });
-      } catch {
-        console.warn("[dashboard clipboard] malformed OSC 52 payload");
+      const result = consumePendingOsc52Write(
+        data,
+        pendingOsc52CopyAtRef.current,
+      );
+      pendingOsc52CopyAtRef.current = result.pendingAt;
+      if (copyAuthorizationTimerRef.current) {
+        clearTimeout(copyAuthorizationTimerRef.current);
+        copyAuthorizationTimerRef.current = null;
       }
+      if (result.text === null) {
+        return true;
+      }
+
+      void writeTextToSecureClipboard(result.text).then((copied) => {
+        if (!copied) {
+          console.warn("[dashboard clipboard] OSC 52 write failed");
+          return;
+        }
+        setCopyState("copied");
+        if (copyResetRef.current) clearTimeout(copyResetRef.current);
+        copyResetRef.current = setTimeout(() => setCopyState("idle"), 1500);
+      });
+      return true;
+    });
+
+    term.parser.registerOscHandler(DASHBOARD_NATIVE_SUBMIT_ACK_OSC, (data) => {
+      const pending = pendingNativeSubmitRef.current;
+      if (!consumeNativeSubmitAck(data, pending?.requestId ?? null) || !pending) {
+        return true;
+      }
+
+      pendingNativeSubmitRef.current = null;
+      if (nativeSubmitAckTimerRef.current) {
+        clearTimeout(nativeSubmitAckTimerRef.current);
+        nativeSubmitAckTimerRef.current = null;
+      }
+      setNativeSubmitPending(false);
+      setNativeDraft((current) => {
+        if (current === pending.draft) return "";
+        return current.startsWith(pending.draft)
+          ? current.slice(pending.draft.length)
+          : current;
+      });
       return true;
     });
 
@@ -576,7 +698,9 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         s.send("\r");
         await pasteDelay();
       }
-      term.focus();
+      if (!isIosLike) {
+        term.focus();
+      }
     };
     const uploadAndAttachImages = (files: File[]) => {
       if (!files.length) return;
@@ -592,10 +716,20 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     };
     const handleBrowserPaste = (ev: ClipboardEvent) => {
       const files = imageFilesFromTransfer(ev.clipboardData);
-      if (!files.length) return;
-      ev.preventDefault();
-      ev.stopPropagation();
-      uploadAndAttachImages(files);
+      if (files.length) {
+        ev.preventDefault();
+        ev.stopPropagation();
+        uploadAndAttachImages(files);
+        return;
+      }
+      if (isIosLike) {
+        const text = ev.clipboardData?.getData("text/plain") ?? "";
+        if (text) {
+          ev.preventDefault();
+          ev.stopPropagation();
+          setNativeDraft((draft) => draft + text);
+        }
+      }
     };
     const handleBrowserDragOver = (ev: DragEvent) => {
       if (!transferMayContainImage(ev.dataTransfer)) return;
@@ -631,8 +765,10 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
           // Direct writeText inside the keydown handler preserves the user
           // gesture — async round-trips through OSC 52 can lose activation
           // and fail with "Document is not focused".
-          navigator.clipboard.writeText(sel).catch((err) => {
-            console.warn("[dashboard clipboard] direct copy failed:", err.message);
+          void copyTextToClipboard(sel).then((copied) => {
+            if (!copied) {
+              console.warn("[dashboard clipboard] direct copy failed");
+            }
           });
           // Clear xterm.js's highlight after copy (matches gnome-terminal).
           term.clearSelection();
@@ -671,13 +807,15 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
           } catch {
             /* fall through to text paste */
           }
-          try {
-            const text = await navigator.clipboard.readText();
-            if (text) term.paste(text);
-          } catch (err) {
-            const message =
-              err instanceof Error ? err.message : String(err);
-            console.warn("[dashboard clipboard] paste failed:", message);
+          const result = await readTextFromClipboard();
+          if (result.ok && result.text) {
+            if (isIosLike) {
+              setNativeDraft((draft) => draft + result.text);
+            } else {
+              term.paste(result.text);
+            }
+          } else {
+            setPastePanelOpen(true);
           }
         })();
         return false;
@@ -716,12 +854,6 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     let mobileImeComposing = false;
     let mobileHangulRawComposition = "";
     let mobileReconcileNativeFinal = false;
-    const isMobileLike =
-      typeof navigator !== "undefined" &&
-      /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent);
-    const isIosLike =
-      typeof navigator !== "undefined" &&
-      isIosLikeUserAgent(navigator.userAgent, navigator.maxTouchPoints);
     term.open(host);
 
     const textarea = term.textarea;
@@ -1162,7 +1294,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       });
     })();
 
-    term.focus();
+    if (!isIosLike) term.focus();
 
     return () => {
       unmounting = true;
@@ -1201,6 +1333,17 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         clearTimeout(copyResetRef.current);
         copyResetRef.current = null;
       }
+      if (copyAuthorizationTimerRef.current) {
+        clearTimeout(copyAuthorizationTimerRef.current);
+        copyAuthorizationTimerRef.current = null;
+      }
+      pendingOsc52CopyAtRef.current = null;
+      if (nativeSubmitAckTimerRef.current) {
+        clearTimeout(nativeSubmitAckTimerRef.current);
+        nativeSubmitAckTimerRef.current = null;
+      }
+      pendingNativeSubmitRef.current = null;
+      setNativeSubmitPending(false);
       if (reconnectTimerRef.current) {
         clearTimeout(reconnectTimerRef.current);
         reconnectTimerRef.current = null;
@@ -1242,7 +1385,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
           active !== document.body &&
           host !== null &&
           !host.contains(active);
-        if (!focusIsElsewhereInChatPage) {
+        if (!iosNativeEditing && !focusIsElsewhereInChatPage) {
           termRef.current?.focus();
         }
       });
@@ -1251,7 +1394,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       if (raf1) cancelAnimationFrame(raf1);
       if (raf2) cancelAnimationFrame(raf2);
     };
-  }, [isActive]);
+  }, [iosNativeEditing, isActive]);
 
   const maybeReconnectOnPageResume = useCallback(() => {
     const visibilityState =
@@ -1445,8 +1588,45 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         >
           <div
             ref={hostRef}
-            className="hermes-chat-xterm-host min-h-0 min-w-0 flex-1"
+            className={cn(
+              "hermes-chat-xterm-host min-h-0 min-w-0 flex-1",
+              iosNativeEditing && "hermes-chat-native-selection",
+            )}
           />
+
+          {iosNativeEditing && (
+            <div
+              className="absolute inset-x-2 bottom-2 z-20 flex items-end gap-2 border-t border-current/25 px-1 pt-2"
+              style={{ color: terminalFg, backgroundColor: terminalBg }}
+            >
+              <textarea
+                value={nativeDraft}
+                onChange={(event) => setNativeDraft(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" && !event.shiftKey) {
+                    event.preventDefault();
+                    submitNativeDraft();
+                  }
+                }}
+                enterKeyHint="send"
+                rows={2}
+                aria-label="Message"
+                placeholder="Message — long-press to edit or paste"
+                className="min-h-11 min-w-0 flex-1 resize-none border-0 bg-transparent px-1 py-1.5 text-base text-inherit outline-none [font-family:var(--theme-font-mono)] placeholder:text-current/45"
+              />
+              <Button
+                ghost
+                size="icon"
+                disabled={!nativeDraft.trim() || nativeSubmitPending || ptyState !== "open"}
+                onClick={submitNativeDraft}
+                aria-label="Send message"
+                title="Send message"
+                className="mb-0.5 h-10 w-10 shrink-0 rounded-full border border-current/30 bg-black/15"
+              >
+                <Send className="h-4 w-4" />
+              </Button>
+            </div>
+          )}
 
           {showReconnectOverlay && (
             <div className="absolute inset-x-3 top-3 z-20 flex justify-center sm:inset-x-auto sm:right-3 sm:justify-end">
@@ -1487,30 +1667,104 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
             </div>
           )}
 
-          <Button
-            ghost
-            onClick={handleCopyLast}
-            title="Copy last assistant response as raw markdown"
-            aria-label="Copy last assistant response"
+          {pastePanelOpen && (
+            <div
+              role="dialog"
+              aria-label="Paste text into chat"
+              className={cn(
+                "absolute inset-x-2 bottom-12 z-20 flex flex-col gap-2",
+                "rounded border border-current/40 bg-black/95 p-2 shadow-xl",
+                "sm:inset-x-auto sm:right-3 sm:w-80 lg:right-4",
+              )}
+              style={{ color: terminalFg }}
+            >
+              <label htmlFor="chat-manual-paste" className="text-xs tracking-wide">
+                Long-press below and choose Paste
+              </label>
+              <textarea
+                id="chat-manual-paste"
+                autoFocus
+                value={pasteDraft}
+                onChange={(event) => setPasteDraft(event.target.value)}
+                placeholder="Paste text here"
+                rows={3}
+                className="w-full resize-y rounded border border-current/30 bg-white/10 px-2 py-1.5 text-sm text-inherit outline-none focus:border-current/70"
+              />
+              <div className="flex justify-end gap-2">
+                <Button
+                  ghost
+                  size="sm"
+                  onClick={() => {
+                    setPasteDraft("");
+                    setPastePanelOpen(false);
+                    if (!iosNativeEditing) {
+                      termRef.current?.focus();
+                    }
+                  }}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  size="sm"
+                  disabled={!pasteDraft}
+                  onClick={() => insertPastedText(pasteDraft)}
+                >
+                  Insert
+                </Button>
+              </div>
+            </div>
+          )}
+
+          <div
             className={cn(
-              "absolute z-10",
-              "normal-case tracking-normal font-normal",
-              "rounded border border-current/30",
-              "bg-black/20",
-              "opacity-70 hover:opacity-100 hover:border-current/60",
-              "transition-opacity duration-150",
-              "bottom-2 right-2 px-2 py-1 text-xs sm:bottom-3 sm:right-3 sm:px-2.5 sm:py-1.5",
-              "lg:bottom-4 lg:right-4",
+              "absolute right-2 z-10 flex gap-1.5 sm:right-3 lg:right-4",
+              iosNativeEditing
+                ? "bottom-[5.75rem]"
+                : "bottom-2 sm:bottom-3 lg:bottom-4",
             )}
-            style={{ color: terminalFg }}
           >
-            <span className="inline-flex items-center gap-1.5">
-              <Copy className="h-3 w-3 shrink-0" />
-              <span className="hidden min-[400px]:inline tracking-wide">
-                {copyState === "copied" ? "copied" : "copy last response"}
+            <Button
+              ghost
+              onClick={() => void handlePaste()}
+              title="Paste text into chat"
+              aria-label="Paste text into chat"
+              className={cn(
+                "normal-case tracking-normal font-normal",
+                "rounded border border-current/30",
+                "bg-black/20 px-2 py-1 text-xs sm:px-2.5 sm:py-1.5",
+                "opacity-70 hover:opacity-100 hover:border-current/60",
+                "transition-opacity duration-150",
+              )}
+              style={{ color: terminalFg }}
+            >
+              <span className="inline-flex items-center gap-1.5">
+                <ClipboardPaste className="h-3 w-3 shrink-0" />
+                <span className="hidden min-[400px]:inline tracking-wide">paste</span>
               </span>
-            </span>
-          </Button>
+            </Button>
+
+            <Button
+              ghost
+              onClick={handleCopyLast}
+              title="Copy last assistant response as raw markdown"
+              aria-label="Copy last assistant response"
+              className={cn(
+                "normal-case tracking-normal font-normal",
+                "rounded border border-current/30",
+                "bg-black/20 px-2 py-1 text-xs sm:px-2.5 sm:py-1.5",
+                "opacity-70 hover:opacity-100 hover:border-current/60",
+                "transition-opacity duration-150",
+              )}
+              style={{ color: terminalFg }}
+            >
+              <span className="inline-flex items-center gap-1.5">
+                <Copy className="h-3 w-3 shrink-0" />
+                <span className="hidden min-[400px]:inline tracking-wide">
+                  {copyState === "copied" ? "copied" : "copy last response"}
+                </span>
+              </span>
+            </Button>
+          </div>
         </div>
 
         {!narrow && (

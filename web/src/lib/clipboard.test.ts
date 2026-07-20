@@ -1,5 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { copyTextToClipboard } from "./clipboard";
+import {
+  copyTextToClipboard,
+  readTextFromClipboard,
+  writeTextToSecureClipboard,
+} from "./clipboard";
 
 const originalNavigator = globalThis.navigator;
 const originalDocument = globalThis.document;
@@ -20,6 +24,61 @@ afterEach(() => {
   setGlobal("document", originalDocument);
   setGlobal("window", originalWindow);
   vi.restoreAllMocks();
+});
+
+describe("readTextFromClipboard", () => {
+  it("reads text in secure browser contexts", async () => {
+    const readText = vi.fn().mockResolvedValue("pasted text");
+    setGlobal(
+      "navigator",
+      { clipboard: { readText } } as unknown as Navigator,
+    );
+    setGlobal(
+      "window",
+      { isSecureContext: true } as unknown as Window & typeof globalThis,
+    );
+
+    await expect(readTextFromClipboard()).resolves.toEqual({
+      ok: true,
+      text: "pasted text",
+    });
+    expect(readText).toHaveBeenCalledOnce();
+  });
+
+  it("requests the manual paste fallback in insecure contexts", async () => {
+    const readText = vi.fn().mockResolvedValue("must not be read");
+    setGlobal(
+      "navigator",
+      { clipboard: { readText } } as unknown as Navigator,
+    );
+    setGlobal(
+      "window",
+      { isSecureContext: false } as unknown as Window & typeof globalThis,
+    );
+
+    await expect(readTextFromClipboard()).resolves.toEqual({
+      ok: false,
+      reason: "unavailable",
+    });
+    expect(readText).not.toHaveBeenCalled();
+  });
+
+  it("requests the manual paste fallback when clipboard permission is denied", async () => {
+    const readText = vi.fn().mockRejectedValue(new Error("not allowed"));
+    setGlobal(
+      "navigator",
+      { clipboard: { readText } } as unknown as Navigator,
+    );
+    setGlobal(
+      "window",
+      { isSecureContext: true } as unknown as Window & typeof globalThis,
+    );
+
+    await expect(readTextFromClipboard()).resolves.toEqual({
+      ok: false,
+      reason: "denied",
+    });
+  });
 });
 
 describe("copyTextToClipboard", () => {
@@ -110,5 +169,17 @@ describe("copyTextToClipboard", () => {
     setGlobal("document", undefined);
 
     await expect(copyTextToClipboard("CODEX-1234")).resolves.toBe(false);
+  });
+});
+
+describe("writeTextToSecureClipboard", () => {
+  it("requires the secure Clipboard API and never uses execCommand", async () => {
+    const execCommand = vi.fn().mockReturnValue(true);
+    setGlobal("navigator", {} as Navigator);
+    setGlobal("window", { isSecureContext: false } as Window & typeof globalThis);
+    setGlobal("document", { execCommand } as unknown as Document);
+
+    await expect(writeTextToSecureClipboard("assistant reply")).resolves.toBe(false);
+    expect(execCommand).not.toHaveBeenCalled();
   });
 });

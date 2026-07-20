@@ -1,3 +1,41 @@
+export type ClipboardReadResult =
+  | { ok: true; text: string }
+  | { ok: false; reason: "unavailable" | "denied" };
+
+export async function readTextFromClipboard(): Promise<ClipboardReadResult> {
+  const clipboard =
+    typeof navigator === "undefined" ? undefined : navigator.clipboard;
+  const secureContext =
+    typeof window === "undefined" ? true : window.isSecureContext;
+
+  if (!secureContext || typeof clipboard?.readText !== "function") {
+    return { ok: false, reason: "unavailable" };
+  }
+
+  try {
+    return { ok: true, text: await clipboard.readText() };
+  } catch {
+    return { ok: false, reason: "denied" };
+  }
+}
+
+export async function writeTextToSecureClipboard(text: string): Promise<boolean> {
+  const clipboard =
+    typeof navigator === "undefined" ? undefined : navigator.clipboard;
+  const secureContext =
+    typeof window === "undefined" ? true : window.isSecureContext;
+  if (!secureContext || typeof clipboard?.writeText !== "function") {
+    return false;
+  }
+
+  try {
+    await clipboard.writeText(text);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export async function copyTextToClipboard(text: string): Promise<boolean> {
   const clipboard =
     typeof navigator === "undefined" ? undefined : navigator.clipboard;

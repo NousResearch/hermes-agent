@@ -201,6 +201,44 @@ class TestBuildAnthropicClient:
             betas = kwargs["default_headers"]["anthropic-beta"]
             assert "context-1m-2025-08-07" in betas
 
+    def test_palantir_foundry_anthropic_endpoint_uses_bearer_auth(self):
+        """Palantir Foundry's LLM proxy requires Authorization: Bearer.
+
+        Regression test for PR #36043: Palantir's
+        ``<org>.palantirfoundry.com/api/v2/llm/proxy/anthropic`` endpoint
+        rejects x-api-key with 401 — the SDK must be built with auth_token.
+        """
+        with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
+            build_anthropic_client(
+                "foundry-secret-123",
+                base_url="https://acme.palantirfoundry.com/api/v2/llm/proxy/anthropic",
+            )
+            kwargs = mock_sdk.Anthropic.call_args[1]
+            assert kwargs["auth_token"] == "foundry-secret-123"
+            assert "api_key" not in kwargs
+
+    def test_palantir_bearer_auth_matches_hostname_not_substring(self):
+        """The palantirfoundry check must be a hostname match, not a loose
+        substring match — a URL merely *containing* the string (path segment,
+        lookalike domain) must not trigger Bearer auth."""
+        from agent.anthropic_adapter import _requires_bearer_auth
+
+        # Real Foundry hosts (org subdomains) → Bearer.
+        assert _requires_bearer_auth(
+            "https://acme.palantirfoundry.com/api/v2/llm/proxy/anthropic"
+        ) is True
+        assert _requires_bearer_auth("https://palantirfoundry.com/anthropic") is True
+        # Substring false-positives → x-api-key (default).
+        assert _requires_bearer_auth(
+            "https://evil.example.com/palantirfoundry/anthropic"
+        ) is False
+        assert _requires_bearer_auth(
+            "https://palantirfoundry.com.evil.example/anthropic"
+        ) is False
+        assert _requires_bearer_auth(
+            "https://notpalantirfoundry.com/anthropic"
+        ) is False
+
     def test_disables_sdk_retries_for_api_key(self):
         """#26293: the SDK's default max_retries=2 ignores Retry-After and
         double-retries inside hermes's outer loop. We delegate retry entirely
@@ -1565,16 +1603,32 @@ class TestBuildAnthropicKwargs:
             assert _forbids_sampling_params(m) is False, m
 
     def test_non_claude_anthropic_models_use_manual_path(self):
-        """Non-Claude Anthropic-Messages models (minimax, qwen3, kimi) must not
-        be misclassified as adaptive by the default-to-modern rule."""
+        """Non-Claude Anthropic-Messages models (minimax, qwen3, glm) must not
+        be misclassified as adaptive by the default-to-modern rule. Kimi is
+        the deliberate exception — see test_kimi_family_uses_adaptive_path."""
         from agent.anthropic_adapter import (
             _supports_adaptive_thinking,
             _supports_xhigh_effort,
             _forbids_sampling_params,
         )
-        for m in ("minimax-m2", "qwen3-max", "moonshotai/kimi-k2.5", "glm-4.6"):
+        for m in ("minimax-m2", "qwen3-max", "glm-4.6"):
             assert _supports_adaptive_thinking(m) is False, m
             assert _supports_xhigh_effort(m) is False, m
+            assert _forbids_sampling_params(m) is False, m
+
+    def test_kimi_family_uses_adaptive_path(self):
+        """Kimi / Moonshot models use adaptive thinking: their
+        Anthropic-compatible endpoints accept thinking.type="adaptive" +
+        output_config.effort including xhigh. Sampling params stay untouched
+        (the 4.7+ sampling ban is a Claude-only contract)."""
+        from agent.anthropic_adapter import (
+            _supports_adaptive_thinking,
+            _supports_xhigh_effort,
+            _forbids_sampling_params,
+        )
+        for m in ("moonshotai/kimi-k2.5", "kimi-0714-preview", "k2-thinking"):
+            assert _supports_adaptive_thinking(m) is True, m
+            assert _supports_xhigh_effort(m) is True, m
             assert _forbids_sampling_params(m) is False, m
 
     def test_fast_mode_omitted_for_unsupported_model(self):

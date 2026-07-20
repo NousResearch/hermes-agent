@@ -138,7 +138,7 @@ Reference and aggregator slots may also set `reasoning_effort`. Use this when
 you want the same model to contribute at different depths, or when the
 aggregator should think harder than the advisory references. Valid values match
 Hermes' normal reasoning controls: `none`, `minimal`, `low`, `medium`, `high`,
-`xhigh`, and `max`.
+`xhigh`, `max`, and `ultra`.
 
 ```yaml
 moa:

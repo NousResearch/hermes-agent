@@ -261,6 +261,40 @@ class TestClassifyApiError:
         result = classify_api_error(e, provider="openrouter")
         assert result.reason == FailoverReason.billing
 
+    def test_xai_403_structured_spending_limit_code_classified_as_billing(self):
+        """xAI reports exhausted Grok credits as a provider-specific 403 code."""
+        e = MockAPIError(
+            "Error code: 403",
+            status_code=403,
+            body={
+                "code": "personal-team-blocked:spending-limit",
+                "error": (
+                    "You have run out of credits or need a Grok subscription. "
+                    "Add credits at Grok or upgrade at Grok."
+                ),
+            },
+        )
+
+        result = classify_api_error(e, provider="xai-oauth")
+
+        assert result.reason == FailoverReason.billing
+        assert result.retryable is False
+        assert result.should_rotate_credential is True
+        assert result.should_fallback is True
+
+    def test_non_xai_403_generic_billing_code_remains_auth(self):
+        """Do not broaden generic providers' historical structured-403 behavior."""
+        e = MockAPIError(
+            "Error code: 403",
+            status_code=403,
+            body={"code": "insufficient_quota", "error": "Forbidden"},
+        )
+
+        result = classify_api_error(e, provider="openrouter")
+
+        assert result.reason == FailoverReason.auth
+        assert result.should_rotate_credential is False
+
     # ── Billing ──
 
     def test_402_plain_billing(self):
@@ -1165,6 +1199,38 @@ class TestClassifyApiError:
         assert result.retryable is False
         assert result.should_compress is False
 
+    def test_empty_provider_response_advisory_not_context_overflow(self):
+        """nano-gpt / OpenRouter empty-response advisories mention
+        'very low max_tokens' as a possible cause. That used to match the
+        bare 'max_tokens' overflow pattern and thrash compression until
+        'Cannot compress further' on a healthy session."""
+        msg = (
+            "The model returned an empty response despite retries across "
+            "available sources. This is usually a temporary upstream issue "
+            "and retrying the request often succeeds. Less commonly it can "
+            "be caused by stop sequences matching the output, a very low "
+            "max_tokens, or content filtering. No charge was applied."
+        )
+        result = classify_api_error(
+            Exception(msg),
+            approx_tokens=143000,
+            context_length=1_048_576,
+            num_messages=300,
+        )
+        assert result.reason == FailoverReason.server_error
+        assert result.retryable is True
+        assert result.should_compress is False
+
+    def test_max_tokens_exceeded_still_context_overflow(self):
+        """Specific max_tokens-exceeded phrasing must keep compressing."""
+        result = classify_api_error(
+            Exception("Request failed: max_tokens exceeded for this model"),
+            approx_tokens=200000,
+            context_length=128000,
+        )
+        assert result.reason == FailoverReason.context_overflow
+        assert result.should_compress is True
+
     def test_400_unknown_parameter_not_context_overflow(self):
         """'Unknown parameter' 400s are deterministic request-validation
         failures, not overflows."""
@@ -1244,6 +1310,20 @@ class TestClassifyApiError:
     def test_chinese_context_overflow(self):
         e = MockAPIError("超过最大长度限制", status_code=400)
         result = classify_api_error(e)
+        assert result.reason == FailoverReason.context_overflow
+
+    # ── Z.AI / Zhipu GLM error messages ──
+
+    def test_zai_glm_token_limit_overflow(self):
+        """Z.AI GLM's 'tokens in request more than max tokens allowed'
+        (error code 1210) → context_overflow, so the agent compresses
+        instead of blindly retrying. Port of anomalyco/opencode#35671."""
+        e = MockAPIError(
+            '{"error": {"code": "1210", "message": '
+            '"tokens in request more than max tokens allowed"}}',
+            status_code=400,
+        )
+        result = classify_api_error(e, provider="zai")
         assert result.reason == FailoverReason.context_overflow
 
     # ── vLLM / local inference server error messages ──

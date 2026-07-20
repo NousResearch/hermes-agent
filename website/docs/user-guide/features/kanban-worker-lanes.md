@@ -56,15 +56,18 @@ Every claim must end in exactly one of:
 
 The kanban kernel enforces that exactly one of these terminates each run. A worker that calls neither and exits normally is treated as crashed.
 
-## Outputs and the review-required convention
+## Outputs and review handoffs
 
-For most code-changing tasks, the work isn't truly *done* the moment the worker finishes — it needs a human reviewer. The kanban kernel doesn't enforce this distinction (a "code-changing task" is fuzzy and forcing block-instead-of-complete on every code worker would break flows where no review is wanted). It's a convention layered on top:
+For code-changing work that needs a non-author review, use the atomic handoff rather than a free-form block:
 
-- **Block instead of complete**, with `reason` prefixed `review-required: ` so the dashboard / `hermes kanban show` surfaces the row as awaiting review.
-- **Drop structured metadata into a `kanban_comment` first** since `kanban_block` only carries the human-readable `reason`. Comments are the durable annotation channel — every audit-relevant field (changed_files, tests_run, diff_path or PR url, decisions) belongs there.
-- **Reviewer either approves and unblocks**, which respawns the worker with the comment thread for follow-ups; or asks for changes via another comment, which the next worker run sees as part of `kanban_show`'s context.
+- Run `hermes kanban handoff <task-id> --review <PR|commit|artifact>`. It creates or reuses one Athena gate and moves the source to the non-dispatchable **Review** presentation lane.
+- Put structured evidence (changed files, tests, diff/PR reference, decisions) in the handoff context or a durable comment before handoff.
+- Athena completes its separate gate with `VERDICT: GO|NO-GO|HOLD`. The verdict is copied to the source as evidence but never automatically respawns or completes it.
+- H-Omar makes the explicit source transition: `hermes kanban review-decision <task-id> go-ready`, `no-go-ready`, or `go-complete`.
 
-The injected `KANBAN_GUIDANCE` covers both `kanban_complete` (truly terminal tasks — typo fixes, docs changes, research writeups) and the `review-required` block pattern.
+Legacy `blocked` cards whose result starts `review-required:` can be inspected safely with `hermes kanban review-migrate` and migrated idempotently only after an explicit `--apply`. Ordinary human blocks are excluded from that migration.
+
+The injected `KANBAN_GUIDANCE` covers both `kanban_complete` (truly terminal tasks — typo fixes, docs changes, research writeups) and `kanban_handoff` for deliverables requiring review.
 
 ## Logs and audit trail
 

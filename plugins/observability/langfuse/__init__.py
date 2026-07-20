@@ -22,6 +22,7 @@ Optional env vars:
 """
 from __future__ import annotations
 
+import atexit
 import json
 import logging
 import os
@@ -90,6 +91,24 @@ def _env_bool(*names: str) -> bool:
         if value:
             return value in {"1", "true", "yes", "on"}
     return False
+
+
+def _runtime_metadata() -> dict[str, str]:
+    """Best-effort Hermes runtime identifiers for trace metadata.
+
+    The conversation-loop hooks provide the internal Hermes ``task_id`` but
+    dispatcher-spawned Kanban workers also expose the durable board id via
+    ``HERMES_KANBAN_TASK``. Keep that id explicit so Langfuse traces can be
+    joined back to the shared Kanban board without guessing from session names
+    or tool output. Empty values are omitted to avoid noisy metadata on normal
+    CLI sessions.
+    """
+    values = {
+        "profile": _env("HERMES_PROFILE"),
+        "kanban_task_id": _env("HERMES_KANBAN_TASK"),
+        "kanban_run_id": _env("HERMES_KANBAN_RUN"),
+    }
+    return {key: value for key, value in values.items() if value}
 
 
 def _debug_enabled() -> bool:
@@ -615,6 +634,7 @@ def _start_root_trace(task_key: str, *, task_id: str, session_id: str, platform:
         "model": model,
         "api_mode": api_mode,
     }
+    metadata.update(_runtime_metadata())
 
     # session_id must be passed in trace_context for Langfuse session grouping.
     trace_ctx: Dict[str, Any] = {"trace_id": trace_id}
@@ -681,7 +701,8 @@ def _start_child_observation(state: TraceState, *, client: Langfuse, name: str, 
 
 
 def _end_observation(observation: Any, *, output: Any = None, metadata: Optional[dict] = None,
-                     usage_details: Optional[dict] = None, cost_details: Optional[dict] = None) -> None:
+                     usage_details: Optional[dict] = None, cost_details: Optional[dict] = None,
+                     level: Optional[str] = None, status_message: Optional[str] = None) -> None:
     if observation is None:
         return
     try:
@@ -694,6 +715,10 @@ def _end_observation(observation: Any, *, output: Any = None, metadata: Optional
             update_kwargs["usage_details"] = usage_details
         if cost_details:
             update_kwargs["cost_details"] = cost_details
+        if level is not None:
+            update_kwargs["level"] = level
+        if status_message is not None:
+            update_kwargs["status_message"] = status_message
         if update_kwargs:
             observation.update(**update_kwargs)
         observation.end()
@@ -728,10 +753,53 @@ def _evict_stale_locked() -> None:
     stale = sorted(_TRACE_STATE.items(), key=lambda kv: kv[1].last_updated_at)[:over]
     for key, state in stale:
         _TRACE_STATE.pop(key, None)
+        _close_root(state)
+
+
+def _close_root(state: "TraceState") -> None:
+    """End a trace's root span by closing its context manager.
+
+    ``_start_root_trace`` enters ``start_as_current_observation`` manually and
+    keeps that generator-based context open across the turn. Calling only
+    ``root_span.end()`` leaves the generator (and its OTel context token)
+    dangling until interpreter shutdown, where its finalization runs against
+    torn-down OTel module globals and prints
+    ``Exception ignored ... isinstance() arg 2 must be a type`` on every
+    worker exit. ``__exit__`` ends the span (``end_on_exit`` default) AND
+    detaches the context token cleanly while the interpreter is still whole.
+    """
+    try:
+        state.root_ctx.__exit__(None, None, None)
+    except Exception as exc:  # pragma: no cover - fail-open
+        _debug(f"close root ctx failed: {exc}")
         try:
             state.root_span.end()
-        except Exception as exc:  # pragma: no cover - fail-open
-            _debug(f"evict stale trace failed: {exc}")
+        except Exception:
+            pass
+
+
+def _shutdown_traces() -> None:
+    """atexit safety net: close any still-open root spans, then flush.
+
+    Turns that never reach ``_finish_trace`` (worker killed, tool-only final
+    step, hard exit) would otherwise leave open generators to be finalized
+    during interpreter teardown — the source of the shutdown TypeError noise
+    seen at the end of Kanban worker logs.
+    """
+    with _STATE_LOCK:
+        states = list(_TRACE_STATE.values())
+        _TRACE_STATE.clear()
+    for state in states:
+        _close_root(state)
+    client = _LANGFUSE_CLIENT
+    if client is not None:
+        try:
+            client.shutdown()
+        except Exception:  # pragma: no cover - fail-open
+            pass
+
+
+atexit.register(_shutdown_traces)
 
 
 def _finish_trace(task_key: str, *, output: Any = None) -> None:
@@ -756,7 +824,7 @@ def _finish_trace(task_key: str, *, output: Any = None) -> None:
         if final_output is not None:
             state.root_span.set_trace_io(output=final_output)
             state.root_span.update(output=final_output)
-        state.root_span.end()
+        _close_root(state)
     except Exception as exc:  # pragma: no cover - fail-open
         _debug(f"finish trace failed: {exc}")
     finally:
@@ -1071,6 +1139,30 @@ def on_pre_tool_call(*, tool_name: str = "", args: Any = None, task_id: str = ""
             state.pending_tools_by_name.setdefault(tool_name, []).append(observation)
 
 
+def _detect_tool_error(result: Any) -> Optional[str]:
+    """Retourne un message si le résultat d'outil signale un ÉCHEC, sinon None.
+
+    Détection sur champs STRUCTURÉS uniquement (jamais un grep de contenu) :
+    un résultat d'outil Hermès porte un champ ``error`` en cas d'échec ; les
+    outils shell exposent ``exit_code``/``returncode``. Permet à Langfuse de
+    marquer l'observation ``level=ERROR`` — base de la mesure d'approximation.
+    """
+    if not isinstance(result, dict):
+        return None
+    if result.get("error"):
+        return str(result["error"])[:500]
+    for key in ("exit_code", "returncode", "status_code"):
+        value = result.get(key)
+        if isinstance(value, int) and value != 0:
+            return f"{key}={value}"
+    if result.get("is_error") is True:
+        return "is_error"
+    status = result.get("status")
+    if isinstance(status, str) and status.lower() in ("error", "failed", "failure"):
+        return status
+    return None
+
+
 def on_post_tool_call(*, tool_name: str = "", args: Any = None, result: Any = None,
                       task_id: str = "", session_id: str = "", tool_call_id: str = "",
                       turn_id: str = "", api_request_id: str = "", **_: Any) -> None:
@@ -1118,10 +1210,14 @@ def on_post_tool_call(*, tool_name: str = "", args: Any = None, result: Any = No
                             function_payload["output"] = safe_result_value
                         break
 
+    tool_err = _detect_tool_error(result_value)
     _end_observation(
         observation,
         output=safe_result_value,
-        metadata={"tool_name": tool_name, "args": _safe_value(args, parse_json_strings=True)},
+        metadata={"tool_name": tool_name, "args": _safe_value(args, parse_json_strings=True),
+                  "is_error": tool_err is not None},
+        level="ERROR" if tool_err is not None else None,
+        status_message=tool_err,
     )
 
 

@@ -3352,6 +3352,214 @@ def _synthesize_ended_run(
 # Dependency resolution (todo -> ready)
 # ---------------------------------------------------------------------------
 
+def handoff_task(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    review_ref: str,
+    reason: Optional[str] = None,
+    author: Optional[str] = None,
+    expected_run_id: Optional[int] = None,
+) -> str:
+    """C4 (harvest 06/07): atomic review handoff — the single verb a worker
+    calls when its deliverable needs a non-author review.
+
+    Replaces the error-prone pair «create a gate + pick the right block
+    kind» that produced the ready-stuck deadlock class (3 cards × 650-1200
+    guard ticks: a ``dependency`` block re-promotes when PARENTS finish,
+    but a review gate is a CHILD — the card came back to ready forever).
+
+    Atomic by idempotence, in safe order:
+
+    1. get-or-create the Athena gate — idempotency key
+       ``auto-athena-review:<source>`` is the SAME key the review router
+       uses, so neither path ever duplicates the other's gate;
+    2. link the gate as a PARENT of the source for provenance;
+    3. place the source in the non-dispatchable ``review`` presentation
+       lane. A gate verdict is evidence only: H-Omar explicitly arbitrates
+       the source to ``ready`` or ``done``.
+
+    A crash between steps leaves a re-callable state (same gate reused,
+    block retried). Returns the gate task id.
+    """
+    ref = (review_ref or "").strip()
+    if not ref:
+        raise ValueError(
+            "review_ref is required — PR URL, PR#N, commit hash or "
+            "artifact path (the gate must have something to review)"
+        )
+    src = get_task(conn, task_id)
+    if src is None:
+        raise ValueError(f"unknown task {task_id}")
+
+    idem = f"auto-athena-review:{task_id}"
+    row = conn.execute(
+        "SELECT id FROM tasks WHERE idempotency_key = ?", (idem,)
+    ).fetchone()
+    if row is not None:
+        gate_id = row["id"]
+    else:
+        gate_id = create_task(
+            conn,
+            title=f"[ATHENA GATE] Review {ref} (from {task_id})",
+            body=(
+                "Gate créée par kanban_handoff (verbe atomique).\n\n"
+                f"Source task: {task_id}\n"
+                f"review_target: {ref}\n"
+                f"Source title: {src.title}\n"
+                + (f"Handoff reason: {reason}\n" if reason else "")
+                + "\nMission: vérifier le livrable ci-dessus (lire la carte "
+                "source et ses commentaires, rejouer tests/smokes si "
+                "possible).\n"
+                "Clôture: kanban_complete --result commençant par "
+                f"'VERDICT: GO|NO-GO|HOLD — {ref}' puis la justification.\n"
+                "Déposer aussi review_result.json (verdict, evidence, findings, reviewed_ref) "
+                "dans le workspace.\n"
+                "Contraintes: no commit, no push, no deploy. Review "
+                "seulement."
+            ),
+            assignee="oa-athena",
+            priority=105,
+            idempotency_key=idem,
+            created_by=author or "kanban_handoff",
+        )
+    # The gate is a parent for provenance/dependency visibility, but the
+    # source itself is deliberately parked in the non-dispatchable Review
+    # lane. A verdict is evidence only; an operator must arbitrate it.
+    link_tasks(conn, gate_id, task_id)
+    review_reason = f"review-required: {ref}" + (
+        f" — {reason}" if reason and reason.strip() else ""
+    )
+    with write_txn(conn):
+        query = (
+            "UPDATE tasks SET status='review', result=?, claim_lock=NULL, "
+            "claim_expires=NULL, worker_pid=NULL, block_kind=NULL "
+            "WHERE id=? AND status IN ('running','ready','todo','blocked','review')"
+        )
+        params: tuple[Any, ...] = (review_reason, task_id)
+        if expected_run_id is not None:
+            query += " AND current_run_id=?"
+            params += (int(expected_run_id),)
+        if conn.execute(query, params).rowcount != 1:
+            cur = get_task(conn, task_id)
+            raise ValueError(
+                f"handoff created gate {gate_id} but could not park {task_id} "
+                f"in review (status={cur.status if cur else '?'})"
+            )
+        run_id = _end_run(conn, task_id, outcome="review_handoff", summary=review_reason)
+        _append_event(conn, task_id, "review_handoff", {
+            "gate_id": gate_id, "review_ref": ref, "reason": reason,
+        }, run_id=run_id)
+    add_comment(
+        conn, task_id, author or "kanban_handoff",
+        f"Handoff review: gate {gate_id} créée/réutilisée pour {ref}. "
+        "La source reste en Review jusqu'à arbitrage explicite H-Omar.",
+    )
+    return gate_id
+
+
+def arbitrate_review_task(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    decision: str,
+) -> bool:
+    """Explicit H-Omar/default transition out of the sticky Review lane.
+
+    Review arbitration is deliberately a narrow operator boundary. The
+    database primitive derives its actor from the canonical active
+    ``HERMES_HOME`` profile itself, so neither the CLI nor a direct caller can
+    supply or forge an actor label.
+
+    This is a runtime profile-authority boundary, not OS isolation: a process
+    able to replace another process's ``HERMES_HOME`` environment or filesystem
+    can impersonate that runtime. No static token or secret is used here; OS
+    process/filesystem permissions remain the trust boundary.
+
+    ``go-ready`` and ``no-go-ready`` route work deliberately; ``go-complete``
+    records a terminal acceptance. This primitive never merges or deploys.
+    """
+    from hermes_cli.profiles import get_active_profile_name
+
+    canonical_actor = get_active_profile_name().casefold()
+    authorized_actors = frozenset({"default", "h-omar"})
+    if canonical_actor not in authorized_actors:
+        raise PermissionError(
+            "review arbitration is restricted to the configured H-Omar/default operator"
+        )
+    targets = {"go-ready": "ready", "no-go-ready": "ready", "go-complete": "done"}
+    target = targets.get(decision)
+    if target is None:
+        raise ValueError(f"invalid review decision {decision!r}; use one of {sorted(targets)}")
+    now = int(time.time())
+    with write_txn(conn):
+        cur = conn.execute(
+            "UPDATE tasks SET status=?, claim_lock=NULL, claim_expires=NULL, worker_pid=NULL, "
+            "completed_at=CASE WHEN ?='done' THEN ? ELSE completed_at END "
+            "WHERE id=? AND status='review'",
+            (target, target, now, task_id),
+        )
+        if cur.rowcount != 1:
+            return False
+        _append_event(conn, task_id, "review_arbitrated", {
+            "actor": canonical_actor, "decision": decision, "target_status": target,
+        })
+    return True
+
+
+def migrate_legacy_review_required(
+    conn: sqlite3.Connection, *, dry_run: bool = True, author: Optional[str] = None,
+) -> dict[str, list[str]]:
+    """Migrate only legacy ``review-required:`` blocks; ordinary blocks remain.
+
+    Dry-run is read-only and stable by task id. Applying uses the same
+    idempotency key as ``handoff_task``, so a partially completed migration is
+    safe to repeat.
+    """
+    rows = conn.execute(
+        "SELECT id, title, result FROM tasks WHERE status='blocked' "
+        "AND result LIKE 'review-required:%' ORDER BY id"
+    ).fetchall()
+    report = {"candidate_ids": [r["id"] for r in rows],
+              "would_create_gate_ids": [], "existing_gate_ids": [],
+              "migrated_ids": []}
+    for row in rows:
+        task_id = row["id"]
+        key = f"auto-athena-review:{task_id}"
+        existing = conn.execute(
+            "SELECT id FROM tasks WHERE idempotency_key=?", (key,)
+        ).fetchone()
+        (report["existing_gate_ids"] if existing else report["would_create_gate_ids"]).append(task_id)
+        if dry_run:
+            continue
+        ref = (row["result"] or "").split(":", 1)[1].strip() or task_id
+        gate_id = existing["id"] if existing else create_task(
+            conn, title=f"[ATHENA GATE] Review {ref} (from {task_id})",
+            body=("Gate migrée depuis un ancien review-required block.\n\n"
+                  f"Source task: {task_id}\nreview_target: {ref}\n"
+                  f"Source title: {row['title']}\n\n"
+                  "Mission: vérifier le livrable, déposer review_result.json, puis "
+                  "terminer avec VERDICT: GO|NO-GO|HOLD. Contraintes: no commit, "
+                  "no push, no deploy."),
+            assignee="oa-athena", priority=105, idempotency_key=key,
+            created_by=author or "kanban_review_migration",
+        )
+        link_tasks(conn, gate_id, task_id)
+        with write_txn(conn):
+            conn.execute(
+                "UPDATE tasks SET status='review', claim_lock=NULL, "
+                "claim_expires=NULL, worker_pid=NULL, block_kind=NULL "
+                "WHERE id=? AND status='blocked'", (task_id,),
+            )
+            _append_event(conn, task_id, "review_handoff_migrated",
+                          {"gate_id": gate_id, "review_ref": ref})
+        add_comment(conn, task_id, "kanban_review_migration",
+                    f"Migration: gate {gate_id} créée/réutilisée. La source reste "
+                    "en Review jusqu'à arbitrage explicite H-Omar.")
+        report["migrated_ids"].append(task_id)
+    return report
+
+
 def _has_sticky_block(conn: sqlite3.Connection, task_id: str) -> bool:
     """Return True when ``task_id`` is sticky-blocked by an explicit
     worker/operator ``kanban_block`` call (#28712).
@@ -3610,72 +3818,8 @@ def claim_review_task(
     ttl_seconds: Optional[int] = None,
     claimer: Optional[str] = None,
 ) -> Optional[Task]:
-    """Atomically transition ``review -> running``.
-
-    Returns the claimed ``Task`` on success, ``None`` if the task was
-    already claimed (or is not in ``review`` status).
-
-    Unlike ``claim_task`` (which handles ``ready -> running``), this
-    does NOT check parent dependencies — the task already passed that
-    gate on its original ``todo -> ready -> running`` transition.
-
-    Creates a new run entry so the review agent's lifecycle is tracked
-    independently from the original worker run.
-    """
-    now = int(time.time())
-    lock = claimer or _claimer_id()
-    expires = now + _resolve_claim_ttl_seconds(ttl_seconds)
-    with write_txn(conn):
-        cur = conn.execute(
-            """
-            UPDATE tasks
-               SET status        = 'running',
-                   claim_lock    = ?,
-                   claim_expires = ?,
-                   started_at    = COALESCE(started_at, ?)
-             WHERE id = ?
-               AND status = 'review'
-               AND claim_lock IS NULL
-            """,
-            (lock, expires, now, task_id),
-        )
-        if cur.rowcount != 1:
-            return None
-        trow = conn.execute(
-            "SELECT assignee, max_runtime_seconds, current_step_key "
-            "FROM tasks WHERE id = ?",
-            (task_id,),
-        ).fetchone()
-        run_cur = conn.execute(
-            """
-            INSERT INTO task_runs (
-                task_id, profile, step_key, status,
-                claim_lock, claim_expires, max_runtime_seconds,
-                started_at
-            ) VALUES (?, ?, ?, 'running', ?, ?, ?, ?)
-            """,
-            (
-                task_id,
-                trow["assignee"] if trow else None,
-                trow["current_step_key"] if trow else None,
-                lock,
-                expires,
-                trow["max_runtime_seconds"] if trow else None,
-                now,
-            ),
-        )
-        run_id = run_cur.lastrowid
-        conn.execute(
-            "UPDATE tasks SET current_run_id = ? WHERE id = ?",
-            (run_id, task_id),
-        )
-        _append_event(
-            conn, task_id, "claimed",
-            {"lock": lock, "expires": expires, "run_id": run_id,
-             "source_status": "review"},
-            run_id=run_id,
-        )
-        return get_task(conn, task_id)
+    """Retired compatibility shim: Review cards are never worker-claimed."""
+    return None
 
 
 def heartbeat_claim(
@@ -4091,6 +4235,34 @@ class ArtifactPreservationError(RuntimeError):
     """Raised when a declared scratch deliverable cannot be preserved."""
 
 
+_GATE_VERDICT_RE = re.compile(r"^\s*VERDICT:\s*(GO|NO-GO|HOLD)\b", re.I)
+
+
+def _propagate_gate_verdict(
+    conn: sqlite3.Connection, gate_id: str, result: Optional[str],
+) -> None:
+    """Relay a gate verdict to Review sources without changing their state."""
+    try:
+        m = _GATE_VERDICT_RE.match(result or "")
+        if m is None:
+            return
+        verdict = m.group(1).upper()
+        for link in conn.execute(
+            "SELECT child_id FROM task_links WHERE parent_id = ?",
+            (gate_id,),
+        ).fetchall():
+            src = get_task(conn, link["child_id"])
+            if src is None or src.status != "review":
+                continue
+            add_comment(
+                conn, src.id, "gate-verdict",
+                f"VERDICT: {verdict} (gate {gate_id}) — arbitrage H-Omar requis. "
+                f"Verdict complet: {(result or '')[:400]}",
+            )
+    except Exception:
+        _log.debug("gate verdict propagation failed", exc_info=True)
+
+
 def complete_task(
     conn: sqlite3.Connection,
     task_id: str,
@@ -4130,6 +4302,12 @@ def complete_task(
     and never blocks.
     """
     now = int(time.time())
+    if (result is None or not str(result).strip()) and summary is not None and str(summary).strip():
+        # Keep the legacy ``tasks.result`` column useful for dashboards,
+        # audits, and OA-Dog: workers are encouraged to pass ``summary`` as the
+        # structured handoff, but an empty task result makes terminal cards look
+        # evidence-free even when the run row has a readable summary.
+        result = str(summary).strip()
 
     # Gate: verify created_cards BEFORE the main write txn. A rejected
     # completion still needs an auditable event, so we emit it in a
@@ -4285,6 +4463,13 @@ def complete_task(
     # just tracks "is there a current pathology the breaker should
     # care about", and a success resets that question.
     _clear_failure_counter(conn, task_id)
+    # C2 (harvest 06/07): a gate completing with ``VERDICT: GO`` auto-
+    # unblocks its linked review-required sources — closing the loop
+    # kanban_handoff opened. Review wait was the system's #1 latency
+    # (median 47.9h for a 0.1h review); before this, every GO verdict
+    # needed a manual drainage pass. NO-GO/HOLD leave the source
+    # blocked for rework (the verdict is relayed as a comment).
+    _propagate_gate_verdict(conn, task_id, result)
     # Recompute ready status for dependents (separate txn so children see done).
     recompute_ready(conn)
     # Clean up the scratch workspace and any stale tmux session for the worker.
@@ -4358,7 +4543,14 @@ def _persist_scratch_completion_artifacts(
     task_id: str,
     metadata: dict,
 ) -> None:
-    """Copy scratch-workspace completion artifacts before cleanup removes them."""
+    """Copy declared workspace artifacts to durable attachments before completion.
+
+    Source files inside every task workspace are copied, never moved or
+    rewritten. This is required for persistent ``dir``/``worktree`` tasks as
+    well as scratch tasks that are cleaned after completion. Paths outside the
+    workspace retain their existing metadata unchanged. A missing declared file
+    under the workspace is a false deliverable claim and aborts completion.
+    """
     raw_artifacts = metadata.get("artifacts")
     if not isinstance(raw_artifacts, (list, tuple)):
         return
@@ -4367,13 +4559,11 @@ def _persist_scratch_completion_artifacts(
         "SELECT workspace_kind, workspace_path FROM tasks WHERE id = ?",
         (task_id,),
     ).fetchone()
-    if not row or row["workspace_kind"] != "scratch" or not row["workspace_path"]:
+    if not row or not row["workspace_path"]:
         return
 
     workspace = Path(row["workspace_path"]).expanduser()
-    is_managed, board = _managed_scratch_path_info(workspace)
-    if not is_managed:
-        return
+    _, board = _managed_scratch_path_info(workspace)
 
     try:
         workspace_root = workspace.resolve()
@@ -4382,6 +4572,7 @@ def _persist_scratch_completion_artifacts(
 
     attachment_dir = task_attachments_dir(task_id, board=board)
     persisted: list[str] = []
+    archive_map: dict[str, str] = {}
     used_destinations: set[Path] = set()
     changed = False
 
@@ -4414,14 +4605,14 @@ def _persist_scratch_completion_artifacts(
         if not src.is_file():
             _discard_copies()
             raise ArtifactPreservationError(
-                f"declared scratch artifact is unavailable or not a regular file: {artifact}"
+                f"declared workspace artifact is unavailable or not a regular file: {artifact}"
             )
 
         size = resolved_src.stat().st_size
         if size > KANBAN_ATTACHMENT_MAX_BYTES:
             _discard_copies()
             raise ArtifactPreservationError(
-                f"declared scratch artifact exceeds the "
+                f"declared workspace artifact exceeds the "
                 f"{KANBAN_ATTACHMENT_MAX_BYTES}-byte limit: {artifact}"
             )
 
@@ -4435,7 +4626,7 @@ def _persist_scratch_completion_artifacts(
                     copied += len(chunk)
                     if copied > KANBAN_ATTACHMENT_MAX_BYTES:
                         raise ArtifactPreservationError(
-                            f"declared scratch artifact grew beyond the size limit: {artifact}"
+                            f"declared workspace artifact grew beyond the size limit: {artifact}"
                         )
                     destination_file.write(chunk)
         except Exception as exc:
@@ -4448,15 +4639,18 @@ def _persist_scratch_completion_artifacts(
             if isinstance(exc, ArtifactPreservationError):
                 raise
             raise ArtifactPreservationError(
-                f"could not preserve declared scratch artifact {artifact}: {exc}"
+                f"could not preserve declared workspace artifact {artifact}: {exc}"
             ) from exc
 
         used_destinations.add(dest)
-        persisted.append(str(dest.resolve()))
+        destination = str(dest.resolve())
+        persisted.append(destination)
+        archive_map[artifact] = destination
         changed = True
 
     if changed:
         metadata["artifacts"] = persisted
+        metadata["artifact_archive_map"] = archive_map
         metadata["_staged_artifacts"] = [
             path for path in persisted if path.startswith(str(attachment_dir.resolve()))
         ]
@@ -4881,7 +5075,7 @@ def block_task(
     kind: Optional[str] = None,
     expected_run_id: Optional[int] = None,
 ) -> bool:
-    """Transition ``running``/``ready`` → ``blocked`` (or route elsewhere).
+    """Transition ``running``/``ready``/``review`` → ``blocked`` (or route elsewhere).
 
     ``kind`` (one of :data:`VALID_BLOCK_KINDS`, or ``None`` for a legacy
     un-typed block) drives routing instead of every block landing in one
@@ -4912,6 +5106,11 @@ def block_task(
         raise ValueError(
             f"block kind must be one of {sorted(VALID_BLOCK_KINDS)} or None"
         )
+    result_text = (
+        str(reason).strip()
+        if reason is not None and str(reason).strip()
+        else None
+    )
     routed_to = "blocked"
     recurrences = 0
     with write_txn(conn):
@@ -4938,15 +5137,16 @@ def block_task(
                 """
                 UPDATE tasks
                    SET status        = 'todo',
+                       result        = COALESCE(?, result),
                        claim_lock    = NULL,
                        claim_expires = NULL,
                        worker_pid    = NULL,
                        block_kind    = ?
                  WHERE id = ?
-                   AND status IN ('running', 'ready')
+                   AND status IN ('running', 'ready', 'review')
                 """ + ("" if expected_run_id is None else " AND current_run_id = ?"),
-                (kind, task_id) if expected_run_id is None
-                else (kind, task_id, int(expected_run_id)),
+                (result_text, kind, task_id) if expected_run_id is None
+                else (result_text, kind, task_id, int(expected_run_id)),
             )
             if cur.rowcount != 1:
                 return False
@@ -4991,16 +5191,17 @@ def block_task(
                 """
                 UPDATE tasks
                    SET status        = 'triage',
+                       result        = COALESCE(?, result),
                        claim_lock    = NULL,
                        claim_expires = NULL,
                        worker_pid    = NULL,
                        block_kind    = ?,
                        block_recurrences = ?
                  WHERE id = ?
-                   AND status IN ('running', 'ready')
+                   AND status IN ('running', 'ready', 'review')
                 """ + ("" if expected_run_id is None else " AND current_run_id = ?"),
-                (kind, recurrences, task_id) if expected_run_id is None
-                else (kind, recurrences, task_id, int(expected_run_id)),
+                (result_text, kind, recurrences, task_id) if expected_run_id is None
+                else (result_text, kind, recurrences, task_id, int(expected_run_id)),
             )
             if cur.rowcount != 1:
                 return False
@@ -5030,31 +5231,33 @@ def block_task(
                     """
                     UPDATE tasks
                        SET status        = 'blocked',
+                           result        = COALESCE(?, result),
                            claim_lock    = NULL,
                            claim_expires = NULL,
                            worker_pid    = NULL,
                            block_kind    = ?,
                            block_recurrences = ?
                      WHERE id = ?
-                       AND status IN ('running', 'ready')
+                       AND status IN ('running', 'ready', 'review')
                     """,
-                    (kind, recurrences, task_id),
+                    (result_text, kind, recurrences, task_id),
                 )
             else:
                 cur = conn.execute(
                     """
                     UPDATE tasks
                        SET status        = 'blocked',
+                           result        = COALESCE(?, result),
                            claim_lock    = NULL,
                            claim_expires = NULL,
                            worker_pid    = NULL,
                            block_kind    = ?,
                            block_recurrences = ?
                      WHERE id = ?
-                       AND status IN ('running', 'ready')
+                       AND status IN ('running', 'ready', 'review')
                        AND current_run_id = ?
                     """,
-                    (kind, recurrences, task_id, int(expected_run_id)),
+                    (result_text, kind, recurrences, task_id, int(expected_run_id)),
                 )
             if cur.rowcount != 1:
                 return False
@@ -5432,6 +5635,22 @@ def decompose_triage_task(
         for idx, child in enumerate(children):
             new_id = _new_task_id()
             title = child["title"].strip()
+            # Idempotency: re-decomposing the same root must not duplicate
+            # children (harvest 06/07: 0/263 decomposer cards had a key,
+            # 210 ended archived unused). Key = decomp:<root>:<title-slug>;
+            # an existing child with the same key is REUSED at this index
+            # so sibling parent-linking below stays coherent.
+            idem_key = "decomp:%s:%s" % (
+                task_id,
+                re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")[:48],
+            )
+            existing = conn.execute(
+                "SELECT id FROM tasks WHERE idempotency_key = ?",
+                (idem_key,),
+            ).fetchone()
+            if existing is not None:
+                child_ids.append(existing["id"])
+                continue
             body = child.get("body")
             assignee = _canonical_assignee(child.get("assignee"))
             # Per-child override wins; otherwise inherit the root's
@@ -5449,8 +5668,9 @@ def decompose_triage_task(
             conn.execute(
                 "INSERT INTO tasks "
                 "(id, title, body, assignee, status, workspace_kind, "
-                " workspace_path, tenant, created_at, created_by) "
-                "VALUES (?, ?, ?, ?, 'todo', ?, ?, ?, ?, ?)",
+                " workspace_path, tenant, created_at, created_by, "
+                " idempotency_key) "
+                "VALUES (?, ?, ?, ?, 'todo', ?, ?, ?, ?, ?, ?)",
                 (
                     new_id,
                     title,
@@ -5461,6 +5681,7 @@ def decompose_triage_task(
                     tenant,
                     now,
                     (author or "decomposer"),
+                    idem_key,
                 ),
             )
             _append_event(
@@ -6014,10 +6235,84 @@ DEFAULT_RATE_LIMIT_COOLDOWN_SECONDS = 300  # 5 minutes
 # Within this window a GitHub PR URL in a comment blocks re-spawn.
 _RESPAWN_GUARD_PR_WINDOW = 86400  # 24 hours
 
+# Escalation for review-flavoured guards (active_pr / recent_success): after
+# this many respawn_guarded events within the window, the dispatcher stops
+# deferring and issues the sticky needs_input block itself (see dispatch tick).
+_RESPAWN_GUARD_BLOCK_TICKS = 30       # ~30 min at the default 60s interval
+
+# Review lanes whose cards legitimately reference PRs/recent work — exempt
+# from the anti-duplicate guards (active_pr / recent_success): reviewing an
+# existing PR is their purpose, not a duplication risk.
+_REVIEW_LANE_ASSIGNEES = frozenset({"oa-athena", "oa-reviewer"})
+
+
+# C3 fleet quota breaker (harvest 06/07): during the 05/07 429 wall the
+# dispatcher attempted 44 doomed spawns. When >= _FLEET_BREAKER_TRIP
+# rate_limited events land within _FLEET_BREAKER_WINDOW seconds, ALL
+# spawning pauses until <last event + cooldown>; the cooldown escalates
+# with the observed wall duration. Purely event-derived (stateless):
+# survives gateway restarts with no schema change. Maintenance (reclaim,
+# crash detection, promotion) is never paused — only spawning.
+_FLEET_BREAKER_TRIP = 5
+_FLEET_BREAKER_WINDOW = 600           # seconds
+_FLEET_BREAKER_COOLDOWNS = (900, 1800, 3600)  # 15 → 30 → 60 min
+_fleet_pause_last_log = {"at": 0.0}
+
+
+def _fleet_quota_pause_until(conn: sqlite3.Connection) -> float:
+    """Return the epoch until which fleet spawning is paused (0.0 = not
+    paused). See the breaker comment above for the derivation."""
+    now = time.time()
+    row = conn.execute(
+        "SELECT COUNT(*), MAX(created_at) FROM task_events "
+        "WHERE kind = 'rate_limited' AND created_at > ?",
+        (int(now - _FLEET_BREAKER_WINDOW),),
+    ).fetchone()
+    count = int(row[0] or 0)
+    last_at = row[1]
+    if count < _FLEET_BREAKER_TRIP or last_at is None:
+        return 0.0
+    first_in_hour = conn.execute(
+        "SELECT MIN(created_at) FROM task_events "
+        "WHERE kind = 'rate_limited' AND created_at > ?",
+        (int(now - 3600),),
+    ).fetchone()[0] or last_at
+    wall_age = int(last_at) - int(first_in_hour)
+    if wall_age < 900:
+        cooldown = _FLEET_BREAKER_COOLDOWNS[0]
+    elif wall_age < 2400:
+        cooldown = _FLEET_BREAKER_COOLDOWNS[1]
+    else:
+        cooldown = _FLEET_BREAKER_COOLDOWNS[2]
+    return float(int(last_at) + cooldown)
+
+
+def _provider_quota_wall_active() -> bool:
+    """True when the primary provider (codex pool) is in a known quota
+    cooldown — used by the reaper to avoid classifying quota-killed
+    workers as protocol violations (C1, harvest 06/07)."""
+    try:
+        from hermes_cli.auth import _codex_pool_rate_limit_status
+        return _codex_pool_rate_limit_status() is not None
+    except Exception:
+        return False
+
+
+_RESPAWN_GUARD_BLOCK_WINDOW = 3600    # seconds
+
 # Pattern matching a GitHub PR URL in task comments.
 _RESPAWN_GUARD_PR_URL_RE = re.compile(
     r"https?://github\.com/[^/\s]+/[^/\s]+/pull/\d+",
     re.IGNORECASE,
+)
+
+# Explicit operator authorization for an Athena cold-review gate.  These tasks
+# are supposed to consume an existing PR URL as review input; the active_pr
+# duplicate-PR guard must not treat that URL as proof the gate already shipped
+# its own work.
+_RESPAWN_GUARD_ATHENA_AUTH_RE = re.compile(
+    r"\bUNBLOCK\b.*\bauthori[sz]e\b.*\boa-athena\b.*\breview\b",
+    re.IGNORECASE | re.DOTALL,
 )
 
 
@@ -6053,6 +6348,11 @@ class DispatchResult:
     subsequent tick when the assignee has capacity. Separate bucket so
     telemetry / dashboards can show "this profile is busy" vs
     "task is genuinely stuck"."""
+    skipped_policy_guarded: list[tuple[str, str, str]] = field(default_factory=list)
+    """Tasks blocked before claim/spawn by a deterministic dispatcher policy
+    guard, as ``(task_id, policy, reason)`` triples. These are configuration
+    or safety failures, not worker crashes, so they should not consume retry
+    budget or create a running worker attempt."""
     crashed: list[str] = field(default_factory=list)
     """Task ids reclaimed because their worker PID disappeared."""
     auto_blocked: list[str] = field(default_factory=list)
@@ -6063,6 +6363,9 @@ class DispatchResult:
     """Task ids reclaimed because no progress (heartbeat) was seen
     within ``dispatch_stale_timeout_seconds``."""
     respawn_guarded: list[tuple[str, str]] = field(default_factory=list)
+    # C3: epoch until which the fleet quota breaker paused spawning
+    # this tick (0.0 = breaker not tripped).
+    fleet_paused_until: float = 0.0
     """Tasks skipped by the respawn guard, as ``(task_id, reason)`` pairs.
 
     Reasons: ``"blocker_auth"`` (quota/auth error — also auto-blocked),
@@ -6812,7 +7115,29 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
             pid = int(row["worker_pid"])
             kind, code = _classify_worker_exit(pid)
             rate_limited_exit = False
-            if kind == "clean_exit":
+            if kind == "clean_exit" and _provider_quota_wall_active():
+                # C1 (harvest 06/07): during a provider quota wall the agent
+                # process can die before its first tool call and still exit 0
+                # — that is the wall, not a protocol violation. 45 false
+                # violations were recorded in 80 min during the 05/07 429
+                # window, each burning a circuit-breaker strike
+                # (effective_limit 1-2 → gave_up). Reclassify as a
+                # rate-limited bail: requeue without counting a failure.
+                protocol_violation = False
+                rate_limited_exit = True
+                error_text = (
+                    f"pid {pid} exited rc=0 during an active provider quota "
+                    f"wall — reclassified rate-limited, requeued without "
+                    f"counting a failure"
+                )
+                event_kind = "rate_limited"
+                event_payload = {
+                    "pid": pid,
+                    "claimer": row["claim_lock"],
+                    "exit_code": code,
+                    "quota_wall": True,
+                }
+            elif kind == "clean_exit":
                 # Worker subprocess returned 0 but its task is still
                 # ``running`` in the DB — it exited without calling
                 # ``kanban_complete`` / ``kanban_block``. Overwhelmingly the
@@ -7025,6 +7350,7 @@ def _record_task_failure(
     error: str,
     *,
     outcome: str,
+    summary: Optional[str] = None,
     failure_limit: int = None,
     force_trip: bool = False,
     release_claim: bool = False,
@@ -7076,6 +7402,11 @@ def _record_task_failure(
     """
     if failure_limit is None:
         failure_limit = DEFAULT_FAILURE_LIMIT
+    handoff_summary = summary if outcome in {"timed_out", "gave_up"} else None
+    handoff_metadata = (
+        {"handoff_summary_len": len(handoff_summary or "")}
+        if handoff_summary is not None else {}
+    )
     blocked = False
     with write_txn(conn):
         row = conn.execute(
@@ -7126,12 +7457,14 @@ def _record_task_failure(
                 run_id = _end_run(
                     conn, task_id,
                     outcome="gave_up", status="gave_up",
+                    summary=handoff_summary,
                     error=error[:500],
                     metadata={
                         "failures": failures,
                         "trigger_outcome": outcome,
                         "effective_limit": effective_limit,
                         "limit_source": limit_source,
+                        **handoff_metadata,
                     },
                 )
             payload = {
@@ -7171,8 +7504,12 @@ def _record_task_failure(
                 run_id = _end_run(
                     conn, task_id,
                     outcome=outcome, status=outcome,
+                    summary=handoff_summary,
                     error=error[:500],
-                    metadata={"failures": failures},
+                    metadata={
+                        "failures": failures,
+                        **handoff_metadata,
+                    },
                 )
                 _append_event(
                     conn, task_id, outcome,
@@ -7244,6 +7581,22 @@ def _clear_failure_counter(conn: sqlite3.Connection, task_id: str) -> None:
 _clear_spawn_failures = _clear_failure_counter
 
 
+def _is_authorized_athena_gate(
+    task_row: sqlite3.Row, comment_bodies: list[str],
+) -> bool:
+    """True when an active_pr hit belongs to an explicitly authorized
+    Athena review gate rather than to a worker task that already opened a PR.
+    """
+    assignee = (task_row["assignee"] or "").strip().lower()
+    title = (task_row["title"] or "").strip().lower()
+    if assignee != "oa-athena" and "athena gate" not in title:
+        return False
+    return any(
+        body and _RESPAWN_GUARD_ATHENA_AUTH_RE.search(body)
+        for body in comment_bodies
+    )
+
+
 def check_respawn_guard(conn: sqlite3.Connection, task_id: str) -> Optional[str]:
     """Return a guard reason if ``task_id`` should NOT be re-spawned, else None.
 
@@ -7293,7 +7646,7 @@ def check_respawn_guard(conn: sqlite3.Connection, task_id: str) -> Optional[str]
     genuinely dead (no live PID on this host).
     """
     row = conn.execute(
-        "SELECT last_failure_error FROM tasks WHERE id = ?",
+        "SELECT title, assignee, last_failure_error FROM tasks WHERE id = ?",
         (task_id,),
     ).fetchone()
     if row is None:
@@ -7342,6 +7695,25 @@ def check_respawn_guard(conn: sqlite3.Connection, task_id: str) -> Optional[str]
     if err and _RESPAWN_BLOCKER_RE.search(err):
         return "blocker_auth"
 
+    # Review lanes are exempt from the duplication guards below: a gate card
+    # cites the very PR it must review, so the anti-duplicate-PR heuristic
+    # (active_pr) — and the recent-success damper — would park every gate
+    # forever once combined with the sticky-block escalation (observed
+    # 05/07: 3 Athena gates auto-blocked, review throughput stalled).
+    # Quota / auth blockers above still apply to these lanes.
+    lane_row = conn.execute(
+        "SELECT assignee, title FROM tasks WHERE id = ?", (task_id,)
+    ).fetchone()
+    if lane_row is not None:
+        lane_assignee = lane_row["assignee"] or ""
+        lane_title = (lane_row["title"] or "").lower()
+        if (
+            lane_assignee in _REVIEW_LANE_ASSIGNEES
+            or "[athena gate]" in lane_title
+            or lane_title.startswith("gate")
+        ):
+            return None
+
     # 3. Completed run within guard window — proof of recent success.
     #    Exception: an explicit re-queue AFTER that success (an operator
     #    dragging done→ready, a dependency re-promotion, an unblock, a
@@ -7369,12 +7741,15 @@ def check_respawn_guard(conn: sqlite3.Connection, task_id: str) -> Optional[str]
 
     # 4. GitHub PR URL in a recent comment — prior worker already opened a PR.
     pr_cutoff = now - _RESPAWN_GUARD_PR_WINDOW
-    for c in conn.execute(
+    comment_rows = conn.execute(
         "SELECT body FROM task_comments WHERE task_id = ? AND created_at >= ?",
         (task_id, pr_cutoff),
-    ).fetchall():
-        if c["body"] and _RESPAWN_GUARD_PR_URL_RE.search(c["body"]):
-            return "active_pr"
+    ).fetchall()
+    comment_bodies = [c["body"] or "" for c in comment_rows]
+    if any(_RESPAWN_GUARD_PR_URL_RE.search(body) for body in comment_bodies):
+        if _is_authorized_athena_gate(row, comment_bodies):
+            return None
+        return "active_pr"
 
     return None
 
@@ -7412,28 +7787,114 @@ def has_spawnable_ready(conn: sqlite3.Connection) -> bool:
 
 
 def has_spawnable_review(conn: sqlite3.Connection) -> bool:
-    """Return True iff there is at least one review+assigned+unclaimed task
-    whose assignee maps to a real Hermes profile.
-
-    Mirror of :func:`has_spawnable_ready` for the review column —
-    used by the health telemetry to decide whether the dispatcher
-    should have spawned a review agent.
-    """
-    rows = conn.execute(
-        "SELECT DISTINCT assignee FROM tasks "
-        "WHERE status = 'review' AND assignee IS NOT NULL "
-        "    AND claim_lock IS NULL"
-    ).fetchall()
-    if not rows:
-        return False
-    try:
-        from hermes_cli.profiles import profile_exists  # local import: avoids cycle
-    except Exception:
-        return True
-    for row in rows:
-        if profile_exists(row["assignee"]):
-            return True
+    """Review is an operator presentation lane, never dispatcher work."""
     return False
+
+
+def _worktree_workspace_config_error(
+    task: Task,
+    *,
+    board: Optional[str] = None,
+) -> Optional[str]:
+    """Return a deterministic pre-claim workspace-config error, if any.
+
+    A worktree task with neither an explicit ``workspace_path`` nor a board
+    ``default_workdir`` cannot be materialized by a worker. Guard it before
+    claim/spawn so the board records a human-actionable block instead of a
+    crash/retry-budget failure.
+    """
+    if (task.workspace_kind or "scratch") != "worktree" or task.workspace_path:
+        return None
+    board_slug = board if board else get_current_board()
+    board_default = (
+        read_board_metadata(board_slug).get("default_workdir") or ""
+    ).strip()
+    if board_default:
+        return None
+    return (
+        f"workspace config invalid: task {task.id} has workspace_kind=worktree "
+        f"but no workspace_path, and board {board_slug!r} has no default_workdir. "
+        "Set a board default workdir that points to a git repo, or recreate/update "
+        "the task with --workspace worktree:<absolute-repo-path>."
+    )
+
+
+def _guard_worktree_workspace_config(
+    conn: sqlite3.Connection,
+    result: DispatchResult,
+    task_id: str,
+    *,
+    board: Optional[str] = None,
+    dry_run: bool = False,
+) -> bool:
+    """Apply the pre-claim worktree config guard.
+
+    Returns True when dispatch for this task should stop for this tick.
+    """
+    task = get_task(conn, task_id)
+    if task is None:
+        return True
+    reason = _worktree_workspace_config_error(task, board=board)
+    if reason is None:
+        return False
+    result.skipped_policy_guarded.append((task_id, "workspace-config", reason))
+    if dry_run:
+        return True
+    with write_txn(conn):
+        _append_event(
+            conn,
+            task_id,
+            "dispatch_guarded",
+            {"policy": "workspace-config", "reason": reason},
+        )
+    if block_task(conn, task_id, reason=f"config-blocked: {reason}", kind="needs_input"):
+        result.auto_blocked.append(task_id)
+    return True
+
+
+_SKILL_PROFILE_LOOKUP_LOCK = threading.RLock()
+
+
+def _task_skills_loadable(task: Task, skill_names: Optional[Iterable[str]] = None) -> list[str]:
+    """Return forced skills that cannot be loaded by the assignee profile."""
+    names = [str(name).strip() for name in (skill_names if skill_names is not None else task.skills or [])]
+    names = [name for name in names if name]
+    if not names or not task.assignee:
+        return []
+    from agent.skill_commands import _load_skill_payload
+    from hermes_cli.profiles import get_profile_dir
+    with _SKILL_PROFILE_LOOKUP_LOCK:
+        previous_home = os.environ.get("HERMES_HOME")
+        try:
+            os.environ["HERMES_HOME"] = str(get_profile_dir(task.assignee))
+            return [name for name in names if _load_skill_payload(name) is None]
+        finally:
+            if previous_home is None:
+                os.environ.pop("HERMES_HOME", None)
+            else:
+                os.environ["HERMES_HOME"] = previous_home
+
+
+def _guard_task_skills(conn: sqlite3.Connection, result: DispatchResult, task_id: str, *, skill_names: Optional[Iterable[str]] = None, dry_run: bool = False) -> bool:
+    """Block missing skills before a task is claimed or a retry is consumed."""
+    task = get_task(conn, task_id)
+    if task is None:
+        return True
+    required_skills = list(task.skills or [])
+    if skill_names is not None:
+        required_skills.extend(skill_names)
+    missing = _task_skills_loadable(task, required_skills)
+    if not missing:
+        return False
+    reason = f"attached skills unavailable for profile {task.assignee!r}: {', '.join(missing)}"
+    result.skipped_policy_guarded.append((task_id, "skills", reason))
+    if dry_run:
+        return True
+    with write_txn(conn):
+        _append_event(conn, task_id, "dispatch_guarded", {"policy": "skills", "missing_skills": missing, "reason": reason})
+    if block_task(conn, task_id, reason=f"config-blocked: {reason}", kind="needs_input"):
+        result.auto_blocked.append(task_id)
+    return True
 
 
 def dispatch_once(
@@ -7593,6 +8054,26 @@ def _dispatch_once_locked(
         "WHERE status = 'ready' AND claim_lock IS NULL "
         "ORDER BY priority DESC, created_at ASC"
     ).fetchall()
+    # C3 fleet quota breaker: skip ALL spawning while a provider quota
+    # wall is in force (see _fleet_quota_pause_until). The first spawn
+    # after expiry is the probe; if the wall persists, the resulting
+    # rate_limited event re-arms the pause at the next cooldown tier.
+    if ready_rows:
+        _pause_until = _fleet_quota_pause_until(conn)
+        if _pause_until > time.time():
+            result.fleet_paused_until = _pause_until
+            _now = time.time()
+            if _now - _fleet_pause_last_log["at"] >= 300:
+                _fleet_pause_last_log["at"] = _now
+                _log.warning(
+                    "fleet quota breaker: spawning paused until %s "
+                    "(%d ready task(s) deferred; maintenance continues)",
+                    time.strftime(
+                        "%H:%M:%S", time.localtime(_pause_until)
+                    ),
+                    len(ready_rows),
+                )
+            ready_rows = []
     # Honour kanban.max_in_progress: if the board already has enough running
     # tasks, skip spawning this tick so slow workers (local LLMs,
     # resource-constrained hosts) can finish what they have before more tasks
@@ -7727,6 +8208,12 @@ def _dispatch_once_locked(
                     (row["id"], row_assignee, current)
                 )
                 continue
+        if _guard_worktree_workspace_config(
+            conn, result, row["id"], board=board, dry_run=dry_run
+        ):
+            continue
+        if _guard_task_skills(conn, result, row["id"], dry_run=dry_run):
+            continue
         # Respawn guard: refuse to re-spawn when useful work is already
         # in-flight/recent, or when the last failure is a deterministic
         # blocker (quota / auth). The guard defers the spawn this tick so
@@ -7747,6 +8234,40 @@ def _dispatch_once_locked(
                         conn, row["id"], "respawn_guarded",
                         {"reason": guard_reason},
                     )
+                # Review-flavoured guards (active_pr / recent_success) mean
+                # "useful work already delivered — wait for review". Deferring
+                # them tick after tick leaves the task permanently
+                # ready-but-unspawnable: recompute_ready keeps promoting it (a
+                # review gate is a CHILD, not a parent, so parent-gating never
+                # holds it back) while the guard keeps refusing the spawn.
+                # Observed as a 14.7h silent stall ("ready queue non-empty,
+                # 0 workers spawned"). After _RESPAWN_GUARD_BLOCK_TICKS
+                # guarded ticks inside _RESPAWN_GUARD_BLOCK_WINDOW, convert
+                # the deadlock into the sticky needs_input block the worker
+                # should have issued, so the ready queue reflects reality.
+                if guard_reason in ("active_pr", "recent_success"):
+                    guarded_ticks = conn.execute(
+                        "SELECT COUNT(*) FROM task_events "
+                        "WHERE task_id = ? AND kind = 'respawn_guarded' "
+                        "AND created_at >= ?",
+                        (
+                            row["id"],
+                            int(time.time()) - _RESPAWN_GUARD_BLOCK_WINDOW,
+                        ),
+                    ).fetchone()[0]
+                    if guarded_ticks >= _RESPAWN_GUARD_BLOCK_TICKS:
+                        if block_task(
+                            conn, row["id"],
+                            reason=(
+                                f"auto-block: respawn guarded "
+                                f"({guard_reason}) for {guarded_ticks} "
+                                "consecutive ticks — work already delivered, "
+                                "waiting on review/merge; unblock after the "
+                                "gate verdict"
+                            ),
+                            kind="needs_input",
+                        ):
+                            result.auto_blocked.append(row["id"])
             continue
         if dry_run:
             result.spawned.append((row["id"], row_assignee, ""))
@@ -7830,11 +8351,9 @@ def _dispatch_once_locked(
     # Same concurrency model as ready dispatch: review spawns count
     # against max_spawn alongside ready tasks, so the total number of
     # running workers stays bounded.
-    review_rows = conn.execute(
-        "SELECT id, assignee FROM tasks "
-        "WHERE status = 'review' AND claim_lock IS NULL "
-        "ORDER BY priority DESC, created_at ASC"
-    ).fetchall()
+    # Review is an operator presentation lane. Athena gates are independent
+    # ready tasks, so never claim the source card from here.
+    review_rows: list[sqlite3.Row] = []
     for row in review_rows:
         if max_spawn is not None and running_count + spawned >= max_spawn:
             break
@@ -7847,6 +8366,12 @@ def _dispatch_once_locked(
             profile_exists = None  # type: ignore[assignment]
         if profile_exists is not None and not profile_exists(row["assignee"]):
             result.skipped_nonspawnable.append(row["id"])
+            continue
+        if _guard_worktree_workspace_config(
+            conn, result, row["id"], board=board, dry_run=dry_run
+        ):
+            continue
+        if _guard_task_skills(conn, result, row["id"], skill_names=["sdlc-review"], dry_run=dry_run):
             continue
         if dry_run:
             result.spawned.append((row["id"], row["assignee"], ""))

@@ -514,10 +514,10 @@ def _handle_complete(args: dict, **kw) -> str:
     summary = args.get("summary")
     metadata = args.get("metadata")
     result = args.get("result")
-    if summary:
-        summary = redact_sensitive_text(str(summary), force=True)
-    if result:
-        result = redact_sensitive_text(str(result), force=True)
+    if summary is not None:
+        summary = redact_sensitive_text(str(summary), force=True).strip()
+    if result is not None:
+        result = redact_sensitive_text(str(result), force=True).strip()
     if metadata is not None and isinstance(metadata, dict):
         meta_json = json.dumps(metadata)
         meta_json = redact_sensitive_text(meta_json, force=True)
@@ -581,7 +581,8 @@ def _handle_complete(args: dict, **kw) -> str:
                 metadata["artifacts"] = artifacts
     if not (summary or result):
         return tool_error(
-            "provide at least one of: summary (preferred), result"
+            "summary or result is required — describe what you produced "
+            "with concrete evidence"
         )
     if metadata is not None and not isinstance(metadata, dict):
         return tool_error(
@@ -675,6 +676,52 @@ def _handle_complete(args: dict, **kw) -> str:
     except Exception as e:
         logger.exception("kanban_complete failed")
         return tool_error(f"kanban_complete: {e}")
+
+
+def _handle_handoff(args: dict, **kw) -> str:
+    """Atomic review handoff: gate + sticky review-required block (C4)."""
+    tid = _default_task_id(args.get("task_id"))
+    if not tid:
+        return tool_error(
+            "task_id is required (or set HERMES_KANBAN_TASK in the env)"
+        )
+    ownership_err = _enforce_worker_task_ownership(tid)
+    if ownership_err:
+        return ownership_err
+    review = (args.get("review") or "").strip()
+    if not review:
+        return tool_error(
+            "review is required — PR URL, PR#N, commit hash or artifact path"
+        )
+    review = redact_sensitive_text(review, force=True)
+    reason = args.get("reason")
+    if reason:
+        reason = redact_sensitive_text(str(reason), force=True)
+    board = args.get("board")
+    try:
+        kb, conn = _connect(board=board)
+        try:
+            gate_id = kb.handoff_task(
+                conn, tid,
+                review_ref=review,
+                reason=reason,
+                author="worker",
+                expected_run_id=_worker_run_id(tid),
+            )
+            landed = kb.get_task(conn, tid)
+            return _ok(
+                task_id=tid,
+                gate_id=gate_id,
+                status=landed.status if landed else "blocked",
+                review=review,
+            )
+        finally:
+            conn.close()
+    except ValueError as e:
+        return tool_error(f"kanban_handoff: {e}")
+    except Exception as e:
+        logger.exception("kanban_handoff failed")
+        return tool_error(f"kanban_handoff: {e}")
 
 
 def _handle_block(args: dict, **kw) -> str:
@@ -1464,7 +1511,10 @@ KANBAN_COMPLETE_SCHEMA = {
                 "type": "object",
                 "description": (
                     "Free-form dict of structured facts about this "
-                    "attempt — {\"changed_files\": [...], \"tests_run\": 12, "
+                    "attempt — {\"schema\": \"agent_run_result.v1\", "
+                    "\"status\": \"done\", \"evidence\": [...], "
+                    "\"verdict\": \"pass\", \"next_state\": \"done\", "
+                    "\"changed_files\": [...], \"tests_run\": 12, "
                     "\"findings\": [...]}. Surfaced to downstream "
                     "workers alongside ``summary``."
                 ),
@@ -1562,6 +1612,45 @@ KANBAN_BLOCK_SCHEMA = {
             "board": _board_schema_prop(),
         },
         "required": ["reason"],
+    },
+}
+
+KANBAN_HANDOFF_SCHEMA = {
+    "name": "kanban_handoff",
+    "description": (
+        "Hand your finished deliverable to review in ONE atomic call: "
+        "creates (or reuses) the Athena review gate for ``review`` and "
+        "sticky-blocks this task as 'review-required' so it never "
+        "returns to ready before the verdict. USE THIS instead of "
+        "kanban_block when your work is DONE but needs a non-author "
+        "review (PR opened, artifact produced) — picking a block kind "
+        "by hand caused week-long stuck cards. ``review`` must point at "
+        "something concrete: PR URL, PR#N, commit hash or artifact path."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "task_id": {
+                "type": "string",
+                "description": _DESC_TASK_ID_DEFAULT,
+            },
+            "review": {
+                "type": "string",
+                "description": (
+                    "The deliverable the gate must review: PR URL, PR#N, "
+                    "commit hash or absolute artifact path."
+                ),
+            },
+            "reason": {
+                "type": "string",
+                "description": (
+                    "Optional one-line context for the reviewer (what "
+                    "changed, what to look at first)."
+                ),
+            },
+            "board": _board_schema_prop(),
+        },
+        "required": ["review"],
     },
 }
 
@@ -1955,6 +2044,15 @@ registry.register(
     handler=_handle_block,
     check_fn=_check_kanban_mode,
     emoji="⏸",
+)
+
+registry.register(
+    name="kanban_handoff",
+    toolset="kanban",
+    schema=KANBAN_HANDOFF_SCHEMA,
+    handler=_handle_handoff,
+    check_fn=_check_kanban_mode,
+    emoji="🤝",
 )
 
 registry.register(

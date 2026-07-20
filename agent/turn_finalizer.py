@@ -91,15 +91,22 @@ def finalize_turn(
     """
     from agent.conversation_loop import logger
 
+    _kanban_pre_stop_budget_guard = str(_turn_exit_reason).startswith(
+        "kanban_pre_stop_budget_guard("
+    )
     budget_exhausted = (
         api_call_count >= agent.max_iterations
         or agent.iteration_budget.remaining <= 0
+        or _kanban_pre_stop_budget_guard
     )
     budget_fallback_eligible = (
         budget_exhausted
         and not interrupted
         and not failed
-        and str(_turn_exit_reason) in {"unknown", "budget_exhausted"}
+        and (
+            str(_turn_exit_reason) in {"unknown", "budget_exhausted"}
+            or _kanban_pre_stop_budget_guard
+        )
     )
     continuation_budget_exhausted = (
         final_response is None
@@ -128,9 +135,10 @@ def finalize_turn(
         # Budget exhausted — ask the model for a summary via one extra
         # API call with tools stripped.  _handle_max_iterations injects a
         # user message and makes a single toolless request.
-        _turn_exit_reason = f"max_iterations_reached({api_call_count}/{agent.max_iterations})"
+        if not _kanban_pre_stop_budget_guard:
+            _turn_exit_reason = f"max_iterations_reached({api_call_count}/{agent.max_iterations})"
         agent._emit_status(
-            f"⚠️ Iteration budget exhausted ({api_call_count}/{agent.max_iterations}) "
+            f"⚠️ Iteration budget handoff ({api_call_count}/{agent.max_iterations}) "
             "— asking model to summarise"
         )
         if not agent.quiet_mode:
@@ -157,21 +165,41 @@ def finalize_turn(
                 from hermes_cli import kanban_db as _kb
                 _conn = _kb.connect()
                 try:
+                    _handoff_summary = (final_response or "").strip()
+                    if _handoff_summary:
+                        try:
+                            _kb.add_comment(
+                                _conn,
+                                _kanban_task,
+                                "kanban-budget-guard",
+                                (
+                                    f"Budget handoff at {api_call_count}/{agent.max_iterations}.\n\n"
+                                    f"{_handoff_summary[:4000]}"
+                                ),
+                            )
+                        except Exception:
+                            logger.debug(
+                                "Failed to add budget handoff comment for task %s",
+                                _kanban_task,
+                                exc_info=True,
+                            )
                     _kb._record_task_failure(
                         _conn,
                         _kanban_task,
                         error=(
-                            f"Iteration budget exhausted "
+                            f"Iteration budget exhausted/handoff "
                             f"({api_call_count}/{agent.max_iterations}) — "
                             "task could not complete within the allowed "
                             "iterations"
                         ),
                         outcome="timed_out",
+                        summary=_handoff_summary or None,
                         release_claim=True,
                         end_run=True,
                         event_payload_extra={
                             "budget_used": api_call_count,
                             "budget_max": agent.max_iterations,
+                            "pre_stop_guard": _kanban_pre_stop_budget_guard,
                         },
                     )
                     logger.info(
@@ -195,6 +223,7 @@ def finalize_turn(
     completed = (
         final_response is not None
         and not failed
+        and not _kanban_pre_stop_budget_guard
         and (
             api_call_count < agent.max_iterations
             or normal_text_response

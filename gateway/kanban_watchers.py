@@ -1100,8 +1100,6 @@ class GatewayKanbanWatchersMixin:
                     conn = _kb.connect(board=slug)
                     if _kb.has_spawnable_ready(conn):
                         return True
-                    if _kb.has_spawnable_review(conn):
-                        return True
                 except Exception:
                     continue
                 finally:

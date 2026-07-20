@@ -719,6 +719,36 @@ def run_conversation(
         )
 
     while (api_call_count < agent.max_iterations and agent.iteration_budget.remaining > 0) or agent._budget_grace_call:
+        # Kanban workers need a usable handoff before the hard turn limit.
+        # Long-running goal cards were reaching 60/60 after useful work, then
+        # closing with an empty task_run.summary because the model had no tool
+        # budget left to persist its own kanban_comment/block.  Stop a few
+        # calls early in Kanban mode so the post-loop finalizer can ask for a
+        # no-tools summary and persist it on the run before the dispatcher
+        # records the timeout/gave_up outcome.  Non-Kanban sessions and tiny
+        # unit-test budgets are intentionally unaffected.
+        if (
+            os.environ.get("HERMES_KANBAN_TASK")
+            and not agent._budget_grace_call
+            and agent.max_iterations >= 10
+        ):
+            try:
+                _prestop_remaining = int(
+                    os.environ.get("HERMES_KANBAN_BUDGET_PRESTOP_REMAINING", "5")
+                )
+            except (TypeError, ValueError):
+                _prestop_remaining = 5
+            if _prestop_remaining > 0 and api_call_count >= max(1, agent.max_iterations - _prestop_remaining):
+                _turn_exit_reason = (
+                    f"kanban_pre_stop_budget_guard({api_call_count}/{agent.max_iterations})"
+                )
+                if not agent.quiet_mode:
+                    agent._safe_print(
+                        "\n⚠️  Kanban pre-stop budget guard reached "
+                        f"({api_call_count}/{agent.max_iterations}); requesting handoff summary"
+                    )
+                break
+
         # Reset per-turn checkpoint dedup so each iteration can take one snapshot
         agent._checkpoint_mgr.new_turn()
 

@@ -195,6 +195,7 @@ With streaming enabled (the default), you'll see brief inline indicators as tool
 |----------|---------|-------------|
 | `API_SERVER_ENABLED` | `false` | Enable the API server |
 | `API_SERVER_PORT` | `8642` | HTTP server port |
+| `API_SERVER_MAX_REQUEST_BYTES` | `10000000` | Maximum request body in bytes. Increase for trusted local Open WebUI deployments that inline large images. |
 | `API_SERVER_HOST` | `127.0.0.1` | Bind address |
 | `API_SERVER_KEY` | _(required)_ | Bearer token for auth. Match `OPENAI_API_KEY`. |
 
@@ -230,6 +231,12 @@ Make sure your `OPENAI_API_KEY` in Open WebUI matches the `API_SERVER_KEY` in He
 :::warning
 Open WebUI persists OpenAI-compatible connection settings in its own database after first launch. If you accidentally saved a wrong key in the Admin UI, fixing the environment variables alone is not enough — update or delete the saved connection in **Admin Settings → Connections**, or reset the Open WebUI data directory / database.
 :::
+
+### "Request body too large" errors
+
+Open WebUI may inline attached images as Base64 data URLs in the completion request. Base64 adds about 33% overhead, so a large image can exceed Hermes's default 10 MB request limit even when separately uploaded PDFs are small.
+
+Prefer configuring Open WebUI's image-compression width and height so oversized screenshots are resized before they are sent. For trusted deployments that intentionally need larger inline payloads, set `API_SERVER_MAX_REQUEST_BYTES` to a positive byte count and restart the Hermes gateway. Keep the limit bounded: the API server may hold the request body in memory while parsing it.
 
 ## Multi-User Setup with Profiles
 

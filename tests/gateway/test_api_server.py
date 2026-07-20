@@ -31,6 +31,7 @@ from gateway.platforms.api_server import (
     _IdempotencyCache,
     _derive_chat_session_id,
     _redact_api_error_text,
+    body_limit_middleware,
     check_api_server_requirements,
     cors_middleware,
     security_headers_middleware,
@@ -330,6 +331,34 @@ class TestAdapterInit:
         adapter = APIServerAdapter(config)
         assert adapter._port == 8642
 
+    def test_max_request_bytes_from_env(self, monkeypatch):
+        monkeypatch.setenv("API_SERVER_MAX_REQUEST_BYTES", "25000000")
+        adapter = APIServerAdapter(PlatformConfig(enabled=True))
+        assert adapter._max_request_bytes == 25_000_000
+
+    @pytest.mark.parametrize("value", ["not-a-number", "0", "-1"])
+    def test_invalid_max_request_bytes_falls_back_to_default(self, monkeypatch, value):
+        monkeypatch.setenv("API_SERVER_MAX_REQUEST_BYTES", value)
+        adapter = APIServerAdapter(PlatformConfig(enabled=True))
+        assert adapter._max_request_bytes == 10_000_000
+
+    @pytest.mark.parametrize(
+        "value",
+        [True, False, 1.5, float("inf"), float("-inf"), float("nan")],
+    )
+    def test_invalid_extra_max_request_bytes_falls_back_to_default(self, value):
+        adapter = APIServerAdapter(
+            PlatformConfig(enabled=True, extra={"max_request_bytes": value})
+        )
+        assert adapter._max_request_bytes == 10_000_000
+
+    def test_extra_max_request_bytes_overrides_env(self, monkeypatch):
+        monkeypatch.setenv("API_SERVER_MAX_REQUEST_BYTES", "25000000")
+        adapter = APIServerAdapter(
+            PlatformConfig(enabled=True, extra={"max_request_bytes": 15_000_000})
+        )
+        assert adapter._max_request_bytes == 15_000_000
+
     def test_create_agent_forwards_runtime_config(self, monkeypatch):
         captured = {}
 
@@ -489,6 +518,50 @@ class TestAdapterInit:
 
         assert isinstance(agent, FakeAgent)
         assert captured["model"] == "primary/model"
+
+
+class TestBodyLimit:
+    @pytest.mark.asyncio
+    async def test_rejects_content_length_above_adapter_limit(self):
+        adapter = APIServerAdapter(
+            PlatformConfig(enabled=True, extra={"max_request_bytes": 64})
+        )
+
+        async def handler(_request):
+            return web.Response(text="ok")
+
+        app = web.Application(middlewares=[body_limit_middleware], client_max_size=1024)
+        app["api_server_adapter"] = adapter
+        app.router.add_post("/", handler)
+
+        async with TestClient(TestServer(app)) as cli:
+            response = await cli.post("/", data=b"x" * 65)
+            response_status = response.status
+            response_data = await response.json()
+
+        assert response_status == 413
+        assert response_data["error"]["code"] == "body_too_large"
+
+    @pytest.mark.asyncio
+    async def test_connect_applies_adapter_limit_to_aiohttp(self):
+        adapter = APIServerAdapter(
+            PlatformConfig(
+                enabled=True,
+                extra={
+                    "host": "127.0.0.1",
+                    "port": 0,
+                    "key": "sk-test-1234567890",
+                    "max_request_bytes": 64,
+                },
+            )
+        )
+
+        try:
+            assert await adapter.connect() is True
+            assert adapter._app is not None
+            assert adapter._app._client_max_size == 64
+        finally:
+            await adapter.disconnect()
 
 
 # ---------------------------------------------------------------------------

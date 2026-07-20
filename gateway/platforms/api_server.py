@@ -164,6 +164,17 @@ def _coerce_request_bool(value: Any, default: bool = False) -> bool:
     return default
 
 
+def _coerce_positive_int(value: Any, default: int) -> int:
+    """Parse a positive integer, falling back for malformed or unsafe values."""
+    if isinstance(value, (bool, float)):
+        return default
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError, OverflowError):
+        return default
+    return parsed if parsed > 0 else default
+
+
 def _normalize_chat_content(
     content: Any, *, _max_depth: int = 10, _depth: int = 0,
 ) -> str:
@@ -751,11 +762,13 @@ if AIOHTTP_AVAILABLE:
     @web.middleware
     async def body_limit_middleware(request, handler):
         """Reject overly large request bodies early based on Content-Length."""
+        adapter = request.app.get("api_server_adapter")
+        max_request_bytes = getattr(adapter, "_max_request_bytes", MAX_REQUEST_BYTES)
         if request.method in {"POST", "PUT", "PATCH"}:
             cl = request.headers.get("Content-Length")
             if cl is not None:
                 try:
-                    if int(cl) > MAX_REQUEST_BYTES:
+                    if int(cl) > max_request_bytes:
                         return web.json_response(_openai_error("Request body too large.", code="body_too_large"), status=413)
                 except ValueError:
                     return web.json_response(_openai_error("Invalid Content-Length header.", code="invalid_content_length"), status=400)
@@ -945,6 +958,13 @@ class APIServerAdapter(BasePlatformAdapter):
         if raw_port is None:
             raw_port = os.getenv("API_SERVER_PORT", str(DEFAULT_PORT))
         self._port: int = _coerce_port(raw_port, DEFAULT_PORT)
+        self._max_request_bytes: int = _coerce_positive_int(
+            extra.get(
+                "max_request_bytes",
+                os.getenv("API_SERVER_MAX_REQUEST_BYTES", str(MAX_REQUEST_BYTES)),
+            ),
+            MAX_REQUEST_BYTES,
+        )
         self._api_key: str = extra.get("key", os.getenv("API_SERVER_KEY", ""))
         self._cors_origins: tuple[str, ...] = self._parse_cors_origins(
             extra.get("cors_origins", os.getenv("API_SERVER_CORS_ORIGINS", "")),
@@ -5400,7 +5420,10 @@ class APIServerAdapter(BasePlatformAdapter):
                 )
                 if mw is not None
             ]
-            self._app = web.Application(middlewares=mws, client_max_size=MAX_REQUEST_BYTES)
+            self._app = web.Application(
+                middlewares=mws,
+                client_max_size=self._max_request_bytes,
+            )
             assert self._app is not None
             # Native routes + multiplex /p/<profile>/… mirrors. Same handlers;
             # the profile-prefix middleware validates the prefix and scopes

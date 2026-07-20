@@ -4582,6 +4582,14 @@ OPTIONAL_ENV_VARS = {
         "category": "messaging",
         "advanced": True,
     },
+    "API_SERVER_MAX_REQUEST_BYTES": {
+        "description": "Maximum API server request-body size in bytes (default: 10000000). Increase for trusted local frontends that inline large images or documents.",
+        "prompt": "API server maximum request bytes",
+        "url": None,
+        "password": False,
+        "category": "messaging",
+        "advanced": True,
+    },
     "API_SERVER_HOST": {
         "description": "Host/bind address for the API server (default: 127.0.0.1). API_SERVER_KEY is still required even on loopback binds.",
         "prompt": "API server host",

@@ -135,8 +135,18 @@ check("package-native parity registry", () => {
 });
 
 check("priority project snapshot endpoints are implemented", () => {
-  requireIncludes(read("../media-engine/tasks/ops-dashboard-server.js"), "/dashboard-snapshot", "Media Engine snapshot route");
-  requireIncludes(read("../khashi-vc/src/web/server.ts"), "/dashboard-snapshot", "Khashi snapshot route");
+  const externalFiles = [
+    ["../media-engine/tasks/ops-dashboard-server.js", "Media Engine snapshot route"],
+    ["../khashi-vc/src/web/server.ts", "Khashi snapshot route"],
+  ];
+  const missing = externalFiles.filter(([relativePath]) => !exists(relativePath));
+  if (missing.length && process.env.CI === "true") {
+    console.log(`skip external workspace endpoint check in CI: ${missing.map(([relativePath]) => relativePath).join(", ")}`);
+    return;
+  }
+  for (const [relativePath, label] of externalFiles) {
+    requireIncludes(read(relativePath), "/dashboard-snapshot", label);
+  }
 });
 
 check("package script", () => {
@@ -171,6 +181,10 @@ function finish(label) {
 
 function read(relativePath) {
   return fs.readFileSync(path.join(root, relativePath), "utf8");
+}
+
+function exists(relativePath) {
+  return fs.existsSync(path.join(root, relativePath));
 }
 
 function requireIncludes(text, needle, label) {

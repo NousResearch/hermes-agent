@@ -9,6 +9,7 @@ import pytest
 from unittest.mock import MagicMock, patch, AsyncMock
 
 from gateway.config import Platform, PlatformConfig
+from plugins.platforms.matrix.adapter import MatrixRelation
 from gateway.platforms.base import MessageType
 
 
@@ -46,6 +47,7 @@ def _make_fake_mautrix():
         REACTION = "m.reaction"
         ROOM_ENCRYPTED = "m.room.encrypted"
         ROOM_NAME = "m.room.name"
+        ROOM_REDACTION = "m.room.redaction"
 
     class UserID(str):
         pass
@@ -80,6 +82,14 @@ def _make_fake_mautrix():
         BACKWARD = "b"
         FORWARD = "f"
 
+    class Event:
+        @classmethod
+        def deserialize(cls, raw):
+            evt = cls()
+            evt.__dict__.update(raw if isinstance(raw, dict) else {})
+            return evt
+
+    mautrix_types.Event = Event
     mautrix_types.EventType = EventType
     mautrix_types.UserID = UserID
     mautrix_types.RoomID = RoomID
@@ -624,63 +634,39 @@ class TestMatrixDmDetection:
 class TestMatrixReplyFallbackStripping:
     """Test that Matrix reply fallback lines ('> ' prefix) are stripped."""
 
-    def setup_method(self):
-        self.adapter = _make_adapter()
-        self.adapter._user_id = "@bot:example.org"
-        self.adapter._startup_ts = 0.0
-        self.adapter._dm_rooms = {}
-        self.adapter._message_handler = AsyncMock()
-
-    def _strip_fallback(self, body: str, has_reply: bool = True) -> str:
-        """Simulate the reply fallback stripping logic from _on_room_message."""
-        reply_to = "some_event_id" if has_reply else None
-        if reply_to and body.startswith("> "):
-            lines = body.split("\n")
-            stripped = []
-            past_fallback = False
-            for line in lines:
-                if not past_fallback:
-                    if line.startswith("> ") or line == ">":
-                        continue
-                    if line == "":
-                        past_fallback = True
-                        continue
-                    past_fallback = True
-                stripped.append(line)
-            body = "\n".join(stripped) if stripped else body
-        return body
-
     def test_simple_reply_fallback(self):
+        from plugins.platforms.matrix.adapter import _strip_reply_fallback
+
         body = "> <@alice:ex.org> Original message\n\nActual reply"
-        result = self._strip_fallback(body)
-        assert result == "Actual reply"
+        assert _strip_reply_fallback(body) == ("Actual reply", "Original message")
 
     def test_multiline_reply_fallback(self):
+        from plugins.platforms.matrix.adapter import _strip_reply_fallback
+
         body = "> <@alice:ex.org> Line 1\n> Line 2\n\nMy response"
-        result = self._strip_fallback(body)
-        assert result == "My response"
+        assert _strip_reply_fallback(body) == ("My response", "Line 1\nLine 2")
 
     def test_no_reply_fallback_preserved(self):
-        body = "Just a normal message"
-        result = self._strip_fallback(body, has_reply=False)
-        assert result == "Just a normal message"
+        from plugins.platforms.matrix.adapter import _strip_reply_fallback
 
-    def test_quote_without_reply_preserved(self):
-        """'> ' lines without a reply_to context should be preserved."""
-        body = "> This is a blockquote"
-        result = self._strip_fallback(body, has_reply=False)
-        assert result == "> This is a blockquote"
+        body = "Just a normal message"
+        assert _strip_reply_fallback(body) == ("Just a normal message", None)
 
     def test_empty_fallback_separator(self):
         """The blank line between fallback and actual content should be stripped."""
+        from plugins.platforms.matrix.adapter import _strip_reply_fallback
+
         body = "> <@alice:ex.org> hi\n>\n\nResponse"
-        result = self._strip_fallback(body)
-        assert result == "Response"
+        assert _strip_reply_fallback(body) == ("Response", "hi")
 
     def test_multiline_response_after_fallback(self):
+        from plugins.platforms.matrix.adapter import _strip_reply_fallback
+
         body = "> <@alice:ex.org> Original\n\nLine 1\nLine 2\nLine 3"
-        result = self._strip_fallback(body)
-        assert result == "Line 1\nLine 2\nLine 3"
+        assert _strip_reply_fallback(body) == (
+            "Line 1\nLine 2\nLine 3",
+            "Original",
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -884,46 +870,40 @@ class TestMatrixBangCommandAlias:
 class TestMatrixThreadDetection:
     def test_thread_id_from_m_relates_to(self):
         """m.relates_to with rel_type=m.thread should extract the event_id."""
-        relates_to = {
-            "rel_type": "m.thread",
-            "event_id": "$thread_root_event",
-            "is_falling_back": True,
-            "m.in_reply_to": {"event_id": "$some_event"},
-        }
-        # Simulate the extraction logic from _on_room_message
-        thread_id = None
-        if relates_to.get("rel_type") == "m.thread":
-            thread_id = relates_to.get("event_id")
-        assert thread_id == "$thread_root_event"
+        from plugins.platforms.matrix.adapter import _parse_relates_to
+
+        relation = _parse_relates_to(
+            {
+                "rel_type": "m.thread",
+                "event_id": "$thread_root_event",
+                "is_falling_back": True,
+                "m.in_reply_to": {"event_id": "$some_event"},
+            }
+        )
+        assert relation.thread_root == "$thread_root_event"
 
     def test_no_thread_for_reply(self):
         """m.in_reply_to without m.thread should not set thread_id."""
-        relates_to = {
-            "m.in_reply_to": {"event_id": "$reply_event"},
-        }
-        thread_id = None
-        if relates_to.get("rel_type") == "m.thread":
-            thread_id = relates_to.get("event_id")
-        assert thread_id is None
+        from plugins.platforms.matrix.adapter import _parse_relates_to
+
+        relation = _parse_relates_to({"m.in_reply_to": {"event_id": "$reply_event"}})
+        assert relation.thread_root is None
 
     def test_no_thread_for_edit(self):
         """m.replace relation should not set thread_id."""
-        relates_to = {
-            "rel_type": "m.replace",
-            "event_id": "$edited_event",
-        }
-        thread_id = None
-        if relates_to.get("rel_type") == "m.thread":
-            thread_id = relates_to.get("event_id")
-        assert thread_id is None
+        from plugins.platforms.matrix.adapter import _parse_relates_to
+
+        relation = _parse_relates_to(
+            {"rel_type": "m.replace", "event_id": "$edited_event"}
+        )
+        assert relation.thread_root is None
+        assert relation.is_edit is True
 
     def test_empty_relates_to(self):
         """Empty m.relates_to should not set thread_id."""
-        relates_to = {}
-        thread_id = None
-        if relates_to.get("rel_type") == "m.thread":
-            thread_id = relates_to.get("event_id")
-        assert thread_id is None
+        from plugins.platforms.matrix.adapter import _parse_relates_to
+
+        assert _parse_relates_to({}).thread_root is None
 
 
 # ---------------------------------------------------------------------------
@@ -3237,7 +3217,7 @@ class TestMatrixReadReceipts:
             event_id="$event1",
             body="hello",
             source_content={"body": "hello"},
-            relates_to={},
+            relation=MatrixRelation(),
         )
 
         assert ctx is not None
@@ -4279,7 +4259,7 @@ class TestMatrixRequireMention:
             event_id="$unmentioned",
             body="hello there",
             source_content={"body": "hello there"},
-            relates_to={},
+            relation=MatrixRelation(),
         )
 
         assert ctx is not None
@@ -4306,7 +4286,7 @@ class TestMatrixFreeResponsePolicy:
             event_id="$free",
             body="hello there",
             source_content={"body": "hello there"},
-            relates_to={},
+            relation=MatrixRelation(),
         )
 
         assert ctx is not None
@@ -4319,7 +4299,7 @@ class TestMatrixFreeResponsePolicy:
             event_id="$locked",
             body="hello there",
             source_content={"body": "hello there"},
-            relates_to={},
+            relation=MatrixRelation(),
         )
 
         assert ctx is None
@@ -4551,7 +4531,7 @@ class TestMatrixDmAutoThread:
             event_id="$ev1",
             body="hello",
             source_content={"body": "hello"},
-            relates_to={},
+            relation=MatrixRelation(),
         )
 
         assert ctx is not None
@@ -4569,7 +4549,7 @@ class TestMatrixDmAutoThread:
             event_id="$ev2",
             body="hello",
             source_content={"body": "hello"},
-            relates_to={},
+            relation=MatrixRelation(),
         )
 
         assert ctx is not None

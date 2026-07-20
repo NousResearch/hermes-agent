@@ -12,6 +12,7 @@ import pytest
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.base import MessageEvent
+from plugins.platforms.matrix.adapter import MatrixRelation, _parse_relates_to
 from hermes_state import AsyncSessionDB
 from gateway.session import (
     SessionContext,
@@ -85,7 +86,7 @@ async def _source_for(adapter, room_id: str, event_id: str = "$event"):
         event_id=event_id,
         body="What is next?",
         source_content={"body": "What is next?"},
-        relates_to={},
+        relation=MatrixRelation(),
     )
     assert ctx is not None
     return ctx[-1]
@@ -187,7 +188,9 @@ async def test_matrix_session_scope_auto_and_thread_preserve_synthetic_threads()
         event_id="$reply",
         body="thread reply",
         source_content={"body": "thread reply"},
-        relates_to={"rel_type": "m.thread", "event_id": "$root"},
+        relation=_parse_relates_to(
+            {"rel_type": "m.thread", "event_id": "$root"}
+        ),
     )
     assert real_thread is not None
     assert real_thread[-1].thread_id == "$root"

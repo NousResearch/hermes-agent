@@ -233,10 +233,12 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
   const strip = (s: string) => (s.endsWith('_tools') ? s.slice(0, -6) : s)
 
   // Hierarchy: category labels lead in the theme's label tone; member lists
-  // recede in body-text faded toward the surface. Skin-relative on purpose —
-  // `muted` is the STRONG family tone on gold skins but the weak one on blue
-  // skins, so hardcoding it flips the hierarchy per skin (slate/poseidon bug).
-  const listFade = mix(t.color.text, t.color.completionBg, 0.5)
+  // recede in the midpoint of muted and text. Anchoring on MUTED (a
+  // mid-luminance family tone) keeps the fade readable on both poles even
+  // when polarity detection is wrong — blending toward the SURFACE instead
+  // made the fade invisible whenever text was already pale (light-rendered
+  // default: cream toward white = nothing).
+  const listFade = mix(t.color.muted, t.color.text, 0.5)
 
   // ── Local collapse state for each section ──
   const [toolsOpen, setToolsOpen] = useState(true)

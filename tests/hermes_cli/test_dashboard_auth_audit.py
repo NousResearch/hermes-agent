@@ -97,3 +97,25 @@ def test_audit_rotates_when_over_max_bytes(profile_home, monkeypatch):
     assert (logs / "dashboard-auth.log.3").exists()
     assert not (logs / "dashboard-auth.log.4").exists()
     assert (logs / "dashboard-auth.log").stat().st_size < 2000
+
+
+def test_audit_rotates_on_crossing_write(profile_home, monkeypatch):
+    """A single write that pushes the file past the cap must rotate
+    immediately, not wait for a later event (regression: pending line
+    size must be counted before the size check, not after)."""
+    import hermes_cli.dashboard_auth.audit as audit_module
+
+    monkeypatch.setattr(audit_module, "_MAX_BYTES", 200)
+    monkeypatch.setattr(audit_module, "_BACKUP_COUNT", 3)
+
+    logs = profile_home / "logs"
+    logs.mkdir()
+    prior = logs / "dashboard-auth.log"
+    prior.write_bytes(b"x" * 190)
+
+    audit_log(AuditEvent.LOGIN_START, provider="nous")
+
+    assert prior.exists()
+    assert (logs / "dashboard-auth.log.1").exists()
+    assert (logs / "dashboard-auth.log.1").read_bytes() == b"x" * 190
+    assert prior.stat().st_size < 200

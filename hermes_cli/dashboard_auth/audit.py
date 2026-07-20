@@ -69,14 +69,15 @@ def _resolve_log_path() -> Path:
     return Path(home) / "logs" / "dashboard-auth.log"
 
 
-def _rotate_if_needed(path: Path) -> None:
-    """Rotate ``path`` to ``.1``/``.2``/``.3`` once it hits ``_MAX_BYTES``.
+def _rotate_if_needed(path: Path, pending_bytes: int) -> None:
+    """Rotate ``path`` to ``.1``/``.2``/``.3`` once appending ``pending_bytes``
+    would push it to or past ``_MAX_BYTES``.
 
     Mirrors stdlib ``RotatingFileHandler``'s naming scheme. Must be called
     with ``_write_lock`` held.
     """
     try:
-        if path.stat().st_size < _MAX_BYTES:
+        if path.stat().st_size + pending_bytes < _MAX_BYTES:
             return
     except FileNotFoundError:
         return
@@ -106,12 +107,13 @@ def audit_log(event: AuditEvent, **fields: Any) -> None:
         **safe_fields,
     }
     line = json.dumps(entry, separators=(",", ":")) + "\n"
+    line_bytes = line.encode("utf-8")
     path = _resolve_log_path()
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         with _write_lock:
-            _rotate_if_needed(path)
-            with open(path, "a", encoding="utf-8") as f:
-                f.write(line)
+            _rotate_if_needed(path, len(line_bytes))
+            with open(path, "ab") as f:
+                f.write(line_bytes)
     except Exception as e:
         _log.warning("dashboard-auth audit log write failed: %s", e)

@@ -1,8 +1,14 @@
+import type * as React from 'react'
+
 import { atom } from 'nanostores'
 import { cleanup, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { SessionInfo } from '@/hermes'
+import type * as ComposerStatusStore from '@/store/composer-status'
+import type * as SessionStore from '@/store/session'
+import type * as SessionStatesStore from '@/store/session-states'
+import type * as WindowsStore from '@/store/windows'
 
 import { SidebarSessionRow } from './session-row'
 
@@ -53,17 +59,17 @@ vi.mock('@/lib/time', () => ({ coarseElapsed: () => ({ unit: 'minute' as const, 
 // Overriding only the named atoms we actually control keeps this test
 // resilient to that drift.
 vi.mock('@/store/composer-status', async importOriginal => {
-  const actual = await importOriginal<typeof import('@/store/composer-status')>()
+  const actual = await importOriginal<typeof ComposerStatusStore>()
 
   return { ...actual, $backgroundRunningSessionIds: atom<string[]>([]) }
 })
 vi.mock('@/store/session', async importOriginal => {
-  const actual = await importOriginal<typeof import('@/store/session')>()
+  const actual = await importOriginal<typeof SessionStore>()
 
   return { ...actual, $unreadFinishedSessionIds: atom<string[]>([]) }
 })
 vi.mock('@/store/session-states', async importOriginal => {
-  const actual = await importOriginal<typeof import('@/store/session-states')>()
+  const actual = await importOriginal<typeof SessionStatesStore>()
 
   return {
     ...actual,
@@ -73,7 +79,7 @@ vi.mock('@/store/session-states', async importOriginal => {
   }
 })
 vi.mock('@/store/windows', async importOriginal => {
-  const actual = await importOriginal<typeof import('@/store/windows')>()
+  const actual = await importOriginal<typeof WindowsStore>()
 
   return {
     ...actual,

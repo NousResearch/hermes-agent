@@ -352,6 +352,21 @@ class _MatrixChoicePickerPrompt:
     bot_reaction_events: dict[str, str] = field(default_factory=dict)
 
 
+@dataclass
+class _MatrixDigestDetailPrompt:
+    """Tracks a pending Matrix digest-detail source selection prompt."""
+
+    chat_id: str
+    message_id: str
+    digest_event_id: str
+    choices: dict[str, int]
+    record: dict[str, Any]
+    requester_user_id: str | None = None
+    expires_at: float | None = None
+    resolved: bool = False
+    bot_reaction_events: dict[str, str] = field(default_factory=dict)
+
+
 # Matrix message size limit (4000 chars practical, spec has no hard limit
 # but clients render poorly above this).
 MAX_MESSAGE_LENGTH = 4000
@@ -978,6 +993,7 @@ class MatrixAdapter(BasePlatformAdapter):
             self._approval_timeout_seconds = 300
         self._model_picker_prompts_by_event: Dict[str, _MatrixModelPickerPrompt] = {}
         self._choice_picker_prompts_by_event: Dict[str, _MatrixChoicePickerPrompt] = {}
+        self._digest_detail_prompts_by_event: Dict[str, _MatrixDigestDetailPrompt] = {}
         allowed_users_raw = os.getenv("MATRIX_ALLOWED_USERS", "")
         self._allowed_user_ids: Set[str] = {
             u.strip() for u in allowed_users_raw.split(",") if u.strip()
@@ -3446,6 +3462,117 @@ class MatrixAdapter(BasePlatformAdapter):
                     )
                 return
 
+            digest_prompt = getattr(self, "_digest_detail_prompts_by_event", {}).get(reacts_to)
+            if digest_prompt and not digest_prompt.resolved:
+                if room_id != digest_prompt.chat_id:
+                    return
+                if self._matrix_prompt_expired(digest_prompt):
+                    await self._expire_matrix_digest_detail_prompt(room_id, reacts_to, digest_prompt)
+                    return
+                if not await self._validate_matrix_prompt_reactor(
+                    room_id, digest_prompt.digest_event_id, sender, digest_prompt, "digest detail"
+                ):
+                    return
+                source_index = digest_prompt.choices.get(key)
+                if source_index is None:
+                    await self._send_invalid_reaction_feedback(
+                        room_id,
+                        reacts_to,
+                        "That reaction is not one of the available digest detail choices.",
+                    )
+                    return
+                digest_prompt.resolved = True
+                self._digest_detail_prompts_by_event.pop(reacts_to, None)
+                await self._redact_bot_digest_detail_reactions(room_id, digest_prompt)
+                try:
+                    from cron.digest_reactions import format_digest_detail_response
+
+                    await self.send(
+                        room_id,
+                        format_digest_detail_response(digest_prompt.record, source_index=source_index),
+                        reply_to=digest_prompt.digest_event_id,
+                    )
+                except Exception as exc:
+                    logger.error("Failed to send Matrix digest detail from reaction: %s", exc)
+                    await self.send(
+                        room_id,
+                        f"Failed to load digest detail: {exc}",
+                        reply_to=digest_prompt.digest_event_id,
+                    )
+                return
+
+            if key == "🧾":
+                try:
+                    from cron.digest_reactions import (
+                        format_digest_detail_response,
+                        format_digest_source_selection,
+                        resolve_digest_delivery,
+                        selection_reactions,
+                    )
+
+                    record = resolve_digest_delivery(room_id, reacts_to)
+                    if not record:
+                        return
+                    pseudo_prompt = _MatrixDigestDetailPrompt(
+                        chat_id=room_id,
+                        message_id=reacts_to,
+                        digest_event_id=reacts_to,
+                        choices={},
+                        record=record,
+                        requester_user_id=sender,
+                        expires_at=time.monotonic() + max(getattr(self, "_approval_timeout_seconds", 300), 0),
+                    )
+                    if not await self._validate_matrix_prompt_reactor(
+                        room_id, reacts_to, sender, pseudo_prompt, "digest detail"
+                    ):
+                        return
+                    sources = record.get("sources") if isinstance(record, dict) else []
+                    if not isinstance(sources, list) or not sources:
+                        await self.send(
+                            room_id,
+                            "⚠️ Für diesen Digest sind keine Einzelberichte registriert.",
+                            reply_to=reacts_to,
+                        )
+                    elif len(sources) == 1:
+                        await self.send(
+                            room_id,
+                            format_digest_detail_response(record, source_index=0),
+                            reply_to=reacts_to,
+                        )
+                    else:
+                        result = await self.send(
+                            room_id,
+                            format_digest_source_selection(record),
+                            reply_to=reacts_to,
+                        )
+                        selection_event_id = str(getattr(result, "message_id", "") or "")
+                        if selection_event_id:
+                            emojis = selection_reactions(len(sources))
+                            prompt = _MatrixDigestDetailPrompt(
+                                chat_id=room_id,
+                                message_id=selection_event_id,
+                                digest_event_id=reacts_to,
+                                choices={emoji: idx for idx, emoji in enumerate(emojis)},
+                                record=record,
+                                requester_user_id=sender,
+                                expires_at=time.monotonic() + max(getattr(self, "_approval_timeout_seconds", 300), 0),
+                            )
+                            if not hasattr(self, "_digest_detail_prompts_by_event"):
+                                self._digest_detail_prompts_by_event = {}
+                            self._digest_detail_prompts_by_event[selection_event_id] = prompt
+                            for emoji in emojis:
+                                reaction_event_id = await self._send_reaction(room_id, selection_event_id, emoji)
+                                if reaction_event_id:
+                                    prompt.bot_reaction_events[emoji] = reaction_event_id
+                except Exception as exc:
+                    logger.error("Failed to handle Matrix digest detail reaction: %s", exc)
+                    await self.send(
+                        room_id,
+                        f"Failed to load digest detail: {exc}",
+                        reply_to=reacts_to,
+                    )
+                return
+
     def _matrix_prompt_expired(self, prompt: Any) -> bool:
         expires_at = getattr(prompt, "expires_at", None)
         return expires_at is not None and time.monotonic() > float(expires_at)
@@ -3534,6 +3661,21 @@ class MatrixAdapter(BasePlatformAdapter):
             "This model picker has expired. Run `/model` again to choose a model.",
         )
 
+    async def _expire_matrix_digest_detail_prompt(
+        self,
+        room_id: str,
+        target_event_id: str,
+        prompt: "_MatrixDigestDetailPrompt",
+    ) -> None:
+        prompt.resolved = True
+        self._digest_detail_prompts_by_event.pop(target_event_id, None)
+        await self._redact_bot_digest_detail_reactions(room_id, prompt)
+        await self._send_invalid_reaction_feedback(
+            room_id,
+            target_event_id,
+            "This digest detail selection has expired. React with 🧾 on the digest again.",
+        )
+
     async def _redact_bot_approval_reactions(
         self,
         room_id: str,
@@ -3556,6 +3698,19 @@ class MatrixAdapter(BasePlatformAdapter):
                 logger.debug("Matrix: redacted model picker reaction %s (%s)", emoji, evt_id)
             except Exception as exc:
                 logger.debug("Matrix: failed to redact model picker reaction %s: %s", emoji, exc)
+
+    async def _redact_bot_digest_detail_reactions(
+        self,
+        room_id: str,
+        prompt: "_MatrixDigestDetailPrompt",
+    ) -> None:
+        """Redact the bot's seeded digest-detail selection reactions."""
+        for emoji, evt_id in prompt.bot_reaction_events.items():
+            try:
+                await self.redact_message(room_id, evt_id, "digest detail resolved")
+                logger.debug("Matrix: redacted digest detail reaction %s (%s)", emoji, evt_id)
+            except Exception as exc:
+                logger.debug("Matrix: failed to redact digest detail reaction %s: %s", emoji, exc)
 
     # ------------------------------------------------------------------
     # Text message aggregation (handles Matrix client-side splits)

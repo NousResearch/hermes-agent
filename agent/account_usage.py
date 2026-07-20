@@ -785,8 +785,17 @@ def _fetch_anthropic_account_usage() -> Optional[AccountUsageSnapshot]:
         monthly_limit = extra.get("monthly_limit")
         currency = extra.get("currency") or "USD"
         if isinstance(used_credits, (int, float)) and isinstance(monthly_limit, (int, float)):
+            decimal_places = extra.get("decimal_places", 2)
+            if (
+                isinstance(decimal_places, bool)
+                or not isinstance(decimal_places, int)
+                or not 0 <= decimal_places <= 6
+            ):
+                decimal_places = 2
+            scale = 10 ** decimal_places
             details.append(
-                f"Extra usage: {used_credits:.2f} / {monthly_limit:.2f} {currency}"
+                f"Extra usage: {used_credits / scale:.{decimal_places}f} / "
+                f"{monthly_limit / scale:.{decimal_places}f} {currency}"
             )
     return AccountUsageSnapshot(
         provider="anthropic",

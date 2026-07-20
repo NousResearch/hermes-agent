@@ -322,7 +322,7 @@ By default, messaging a busy agent interrupts it. Three other modes are availabl
 
 - `queue` — follow-up messages wait and run as the next turn after the current task finishes.
 - `steer` — follow-up messages are injected into the current run via `/steer`, arriving at the agent after the next tool call. No interrupt, no new turn. Falls back to `queue` behavior if the agent hasn't started yet.
-- `reject` — ordinary follow-up input is discarded while the current turn continues unchanged. Hermes sends an explicit notice telling the user to resend after the response finishes. Slash commands keep their existing mid-turn behavior.
+- `reject` — ordinary follow-up input, including text and media, is discarded while the current turn continues unchanged. Hermes sends an explicit notice telling the user to resend after the response finishes. Slash commands keep their existing mid-turn behavior.
 
 ```yaml
 display:
@@ -332,7 +332,7 @@ display:
 
 For `queue`, `steer`, and `interrupt`, the first busy message appends a one-line reminder explaining the knob (`"💡 First-time tip — …"`). The reminder fires once per install — a flag under `onboarding.seen.busy_input_prompt` latches it. Delete that key to see the tip again. `reject` uses its explicit refusal notice without consuming this onboarding flag.
 
-If you find the busy-ack noisy — especially with voice input or rapid-fire messages — set `display.busy_ack_enabled: false`. In `queue`, `steer`, and `interrupt` modes, only the chat reply is silenced. In `reject` mode, input is still discarded, so disabling the acknowledgment removes the user's confirmation that it was refused.
+If you find the busy-ack noisy — especially with voice input or rapid-fire messages — set `display.busy_ack_enabled: false`. In `queue`, `steer`, and `interrupt` modes, only the chat reply is silenced. In `reject` mode, text and media follow-ups are still discarded, so disabling the acknowledgment removes the user's confirmation that they were refused.
 
 ## Tool Progress Notifications
 

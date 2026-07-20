@@ -3859,31 +3859,34 @@ def _run_on_mcp_loop(coro_or_factory, timeout: float = 30):
 
     with _lock:
         loop = _mcp_loop
-    if loop is None or not loop.is_running():
-        if asyncio.iscoroutine(coro_or_factory):
-            coro_or_factory.close()
-        raise RuntimeError("MCP event loop is not running")
+        if loop is None or not loop.is_running():
+            if asyncio.iscoroutine(coro_or_factory):
+                coro_or_factory.close()
+            raise RuntimeError("MCP event loop is not running")
 
-    coro = coro_or_factory() if callable(coro_or_factory) else coro_or_factory
+        coro: Any = coro_or_factory() if callable(coro_or_factory) else coro_or_factory
 
-    # Propagate the context-local HERMES_HOME override onto the MCP loop.
-    # Tasks scheduled via run_coroutine_threadsafe are created INSIDE the
-    # loop thread, so they copy the loop thread's context — not the
-    # scheduling thread's. A per-request profile scope (the dashboard's
-    # ?profile= endpoints, e.g. the MCP "Test server" probe) would silently
-    # vanish here: OAuth token stores and any other get_hermes_home()
-    # resolution inside the coroutine would read the process home instead
-    # of the selected profile's. Re-establish the override inside the
-    # task's own context (task-local — concurrent calls carrying different
-    # scopes don't interfere). No-op when no override is active.
-    coro = _wrap_with_home_override(coro)
-    coro = _wrap_with_dashboard_oauth_flow(coro)
+        # Propagate the context-local HERMES_HOME override onto the MCP loop.
+        # Tasks scheduled via run_coroutine_threadsafe are created INSIDE the
+        # loop thread, so they copy the loop thread's context — not the
+        # scheduling thread's. A per-request profile scope (the dashboard's
+        # ?profile= endpoints, e.g. the MCP "Test server" probe) would silently
+        # vanish here: OAuth token stores and any other get_hermes_home()
+        # resolution inside the coroutine would read the process home instead
+        # of the selected profile's. Re-establish the override inside the
+        # task's own context (task-local — concurrent calls carrying different
+        # scopes don't interfere). No-op when no override is active.
+        coro = _wrap_with_home_override(coro)
+        coro = _wrap_with_dashboard_oauth_flow(coro)
 
-    future = safe_schedule_threadsafe(
-        coro, loop,
-        logger=logger,
-        log_message="MCP scheduling failed",
-    )
+        # Scheduling and loop invalidation must be atomic. Otherwise one-shot
+        # shutdown can drain an empty task snapshot while a discovery thread
+        # that already captured ``loop`` schedules a new connection afterward.
+        future = safe_schedule_threadsafe(
+            coro, loop,
+            logger=logger,
+            log_message="MCP scheduling failed",
+        )
     if future is None:
         raise RuntimeError("MCP event loop unavailable (failed to schedule)")
     start_time = time.monotonic()
@@ -5876,7 +5879,7 @@ def _kill_orphaned_mcp_children(
 
 
 def _stop_mcp_loop_if_idle() -> bool:
-    """Stop the MCP loop only when no registered server still owns it.
+    """Stop the shared MCP loop only when no registered/connect-in-flight work exists.
 
     Probe paths create temporary MCPServerTask instances that are not placed in
     ``_servers``.  They should clean up an otherwise-idle loop, but must not
@@ -5887,8 +5890,37 @@ def _stop_mcp_loop_if_idle() -> bool:
     return _stop_mcp_loop(only_if_idle=True)
 
 
+async def _cancel_pending_mcp_tasks() -> None:
+    """Cancel and drain every remaining task on the dedicated MCP loop.
+
+    A fast one-shot CLI invocation can finish while background MCP discovery is
+    still connecting. Those ``MCPServerTask.run`` instances are not yet present
+    in ``_servers``, so the normal graceful server shutdown cannot see them.
+    They must still unwind on their owning loop before it is closed; otherwise
+    their transport context managers are finalized later and raise
+    ``RuntimeError: Event loop is closed`` (or ``no running event loop``).
+    """
+    current = asyncio.current_task()
+    # Cancellation cleanup (notably anyio/subprocess teardown) may spawn a
+    # follow-up task. Re-snapshot a few times so those helpers are drained too,
+    # without allowing a cancellation-resistant task to hang shutdown forever.
+    for _ in range(3):
+        pending = [
+            task
+            for task in asyncio.all_tasks()
+            if task is not current and not task.done()
+        ]
+        if not pending:
+            break
+        for task in pending:
+            task.cancel()
+        await asyncio.gather(*pending, return_exceptions=True)
+
+    await asyncio.get_running_loop().shutdown_asyncgens()
+
+
 def _stop_mcp_loop(*, only_if_idle: bool = False) -> bool:
-    """Stop the background event loop and join its thread."""
+    """Drain pending MCP work, then stop the background loop and join its thread."""
     global _mcp_loop, _mcp_thread
     with _lock:
         if only_if_idle and (_servers or _server_connecting):
@@ -5896,9 +5928,26 @@ def _stop_mcp_loop(*, only_if_idle: bool = False) -> bool:
             return False
         loop = _mcp_loop
         thread = _mcp_thread
+        # Publish the stopped state before draining so no new callers can race
+        # onto this loop after the pending-task snapshot is taken.
         _mcp_loop = None
         _mcp_thread = None
+        _server_connecting.clear()
     if loop is not None:
+        if loop.is_running():
+            drain_coro = _cancel_pending_mcp_tasks()
+            try:
+                drain_future = asyncio.run_coroutine_threadsafe(drain_coro, loop)
+            except Exception:
+                drain_coro.close()
+                logger.debug("Could not schedule MCP pending-task drain", exc_info=True)
+            else:
+                try:
+                    drain_future.result(timeout=5)
+                except concurrent.futures.TimeoutError:
+                    logger.warning("Timed out draining pending MCP tasks before loop shutdown")
+                except Exception:
+                    logger.debug("Error draining pending MCP tasks", exc_info=True)
         loop.call_soon_threadsafe(loop.stop)
         if thread is not None:
             thread.join(timeout=5)

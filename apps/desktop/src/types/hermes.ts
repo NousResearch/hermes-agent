@@ -1,7 +1,13 @@
 export interface ConfigFieldSchema {
   category?: string
   description?: string
+  // Optional numeric bounds for `type: 'number'` fields. The backend may
+  // supply these; when absent the desktop falls back to NUMBER_BOUNDS so a
+  // bounded ratio (e.g. compression.target_ratio) can't be set out of range.
+  max?: number
+  min?: number
   options?: unknown[]
+  step?: number
   type?: 'boolean' | 'list' | 'number' | 'select' | 'string' | 'text'
 }
 

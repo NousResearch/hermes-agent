@@ -285,6 +285,30 @@ export const ENUM_OPTIONS: Record<string, string[]> = {
   'updates.non_interactive_local_changes': ['stash', 'discard']
 }
 
+export interface NumberBounds {
+  max?: number
+  min?: number
+  step?: number
+}
+
+// Numeric config fields that represent a bounded quantity. The generic number
+// input has no intrinsic range, so a field like compression.target_ratio would
+// otherwise accept negatives or values > 1.0 (#65703). The field renderer
+// applies these to the input AND clamps typed values. Backend-supplied bounds
+// on the schema take precedence over these fallbacks.
+//
+// Ranges mirror the runtime contract, not the nominal [0, 1] of a ratio:
+//   - compression.threshold: fraction of the context window that triggers a
+//     compression pass (`hermes_cli/config.py`, default 0.50) — any fraction.
+//   - compression.target_ratio: clamped to 0.10-0.80 by the runtime
+//     (`agent/context_compressor.py`: `max(0.10, min(summary_target_ratio, 0.80))`)
+//     and documented as 0.10-0.80 in the context-compression developer guide.
+//     Enforcing it here stops the UI saving a value the runtime discards.
+export const NUMBER_BOUNDS: Record<string, NumberBounds> = {
+  'compression.threshold': { min: 0, max: 1, step: 0.05 },
+  'compression.target_ratio': { min: 0.1, max: 0.8, step: 0.05 }
+}
+
 export const FIELD_LABELS: Record<string, string> = defineFieldCopy({
   model: 'Default Model',
   modelContextLength: 'Context Window',

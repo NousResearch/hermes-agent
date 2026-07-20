@@ -151,6 +151,11 @@ class TestEnvAssignments:
         result = redact_sensitive_text(text)
         assert result == text  # unchanged — `...` is not a secret
 
+    def test_literal_secret_still_matched_after_shell_substitution_carveout(self):
+        text = "TOKEN=ordinary-literal-secret"
+        result = redact_sensitive_text(text)
+        assert "ordinary-literal-secret" not in result
+
 
 class TestEnvLookupPreserved:
     """Programmatic env var lookups must not be corrupted (issue #2852)."""

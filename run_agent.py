@@ -60,7 +60,6 @@ from typing import List, Dict, Any, Optional, Callable
 # ModuleNotFoundError on broken/partial installs where `fire` isn't present.
 from datetime import datetime
 from pathlib import Path
-from types import SimpleNamespace
 
 from hermes_constants import get_hermes_home
 
@@ -153,7 +152,6 @@ from agent.model_metadata import (
     estimate_request_tokens_rough,  # noqa: F401  # re-exported for tests that mock.patch("run_agent.estimate_request_tokens_rough")
     is_local_endpoint,
 )
-from agent.usage_pricing import normalize_usage
 # Re-exported for tests that monkeypatch these symbols on run_agent.
 from agent.context_compressor import (  # noqa: F401
     COMPRESSED_SUMMARY_METADATA_KEY,
@@ -2376,42 +2374,28 @@ class AIAgent:
         return extract_api_error_context(error)
 
     def _usage_summary_for_api_request_hook(self, response: Any) -> Optional[Dict[str, Any]]:
-        """Token buckets for ``post_api_request`` plugins (no raw ``response`` object)."""
-        if response is None:
-            return None
-        raw_usage = getattr(response, "usage", None)
-        if not raw_usage:
-            return None
-        from dataclasses import asdict
+        """Forwarder — see ``agent.api_observer.usage_summary_for_api_request_hook``."""
+        from agent.api_observer import usage_summary_for_api_request_hook
 
-        cu = normalize_usage(raw_usage, provider=self.provider, api_mode=self.api_mode)
-        summary = asdict(cu)
-        summary.pop("raw_usage", None)
-        summary["prompt_tokens"] = cu.prompt_tokens
-        summary["total_tokens"] = cu.total_tokens
-        return summary
+        return usage_summary_for_api_request_hook(
+            response,
+            provider=self.provider,
+            api_mode=self.api_mode,
+        )
 
     @staticmethod
     def _hook_payload_max_chars() -> int:
-        raw = os.getenv("HERMES_PLUGIN_PAYLOAD_MAX_CHARS", "50000")
-        try:
-            return max(1000, int(raw))
-        except (TypeError, ValueError):
-            return 50000
+        """Forwarder — see ``agent.api_observer.hook_payload_max_chars``."""
+        from agent.api_observer import hook_payload_max_chars
+
+        return hook_payload_max_chars()
 
     @staticmethod
     def _is_sensitive_hook_key(key: Any) -> bool:
-        if not isinstance(key, str):
-            return False
-        lowered = key.lower().replace("-", "_")
-        exact = {
-            "api_key",
-            "authorization",
-            "proxy_authorization",
-            "cookie",
-            "set_cookie",
-        }
-        return lowered in exact or lowered.endswith("_api_key")
+        """Forwarder — see ``agent.api_observer.is_sensitive_hook_key``."""
+        from agent.api_observer import is_sensitive_hook_key
+
+        return is_sensitive_hook_key(key)
 
     @classmethod
     def _hook_jsonable(
@@ -2423,137 +2407,29 @@ class AIAgent:
         max_string: int = 8000,
         max_sequence: int = 200,
     ) -> Any:
-        if depth > max_depth:
-            return f"<{type(value).__name__} depth limit>"
-        if value is None or isinstance(value, (bool, int, float)):
-            return value
-        if isinstance(value, str):
-            if len(value) > max_string:
-                return value[:max_string] + f"...[truncated {len(value) - max_string} chars]"
-            return value
-        if isinstance(value, (bytes, bytearray)):
-            return f"<{len(value)} bytes>"
-        if isinstance(value, dict):
-            out: Dict[str, Any] = {}
-            for idx, (key, item) in enumerate(value.items()):
-                if idx >= max_sequence:
-                    out["_truncated_items"] = len(value) - max_sequence
-                    break
-                str_key = str(key)
-                if cls._is_sensitive_hook_key(str_key):
-                    out[str_key] = "<redacted>"
-                else:
-                    out[str_key] = cls._hook_jsonable(
-                        item,
-                        depth=depth + 1,
-                        max_depth=max_depth,
-                        max_string=max_string,
-                        max_sequence=max_sequence,
-                    )
-            return out
-        if isinstance(value, (list, tuple, set)):
-            seq = list(value)
-            out = [
-                cls._hook_jsonable(
-                    item,
-                    depth=depth + 1,
-                    max_depth=max_depth,
-                    max_string=max_string,
-                    max_sequence=max_sequence,
-                )
-                for item in seq[:max_sequence]
-            ]
-            if len(seq) > max_sequence:
-                out.append({"_truncated_items": len(seq) - max_sequence})
-            return out
-        try:
-            if hasattr(value, "model_dump"):
-                try:
-                    dumped = value.model_dump(mode="json")
-                except TypeError:
-                    dumped = value.model_dump()
-                return cls._hook_jsonable(
-                    dumped,
-                    depth=depth + 1,
-                    max_depth=max_depth,
-                    max_string=max_string,
-                    max_sequence=max_sequence,
-                )
-        except Exception:
-            pass
-        try:
-            from dataclasses import asdict, is_dataclass
-            if is_dataclass(value):
-                return cls._hook_jsonable(
-                    asdict(value),
-                    depth=depth + 1,
-                    max_depth=max_depth,
-                    max_string=max_string,
-                    max_sequence=max_sequence,
-                )
-        except Exception:
-            pass
-        if isinstance(value, SimpleNamespace):
-            return cls._hook_jsonable(
-                vars(value),
-                depth=depth + 1,
-                max_depth=max_depth,
-                max_string=max_string,
-                max_sequence=max_sequence,
-            )
-        if hasattr(value, "__dict__"):
-            try:
-                public_attrs = {
-                    k: v
-                    for k, v in vars(value).items()
-                    if not str(k).startswith("_")
-                }
-                return cls._hook_jsonable(
-                    public_attrs,
-                    depth=depth + 1,
-                    max_depth=max_depth,
-                    max_string=max_string,
-                    max_sequence=max_sequence,
-                )
-            except Exception:
-                pass
-        return str(value)[:max_string]
+        """Forwarder — see ``agent.api_observer.hook_jsonable``."""
+        from agent.api_observer import hook_jsonable
+
+        return hook_jsonable(
+            value,
+            depth=depth,
+            max_depth=max_depth,
+            max_string=max_string,
+            max_sequence=max_sequence,
+        )
 
     @classmethod
     def _sanitize_hook_payload(cls, value: Any) -> Any:
-        payload = cls._hook_jsonable(value)
-        limit = cls._hook_payload_max_chars()
-        try:
-            encoded = json.dumps(payload, ensure_ascii=False, default=str)
-        except Exception:
-            return str(payload)[:limit]
-        if len(encoded) <= limit:
-            return payload
-        payload = cls._hook_jsonable(value, max_string=1000, max_sequence=50)
-        try:
-            encoded = json.dumps(payload, ensure_ascii=False, default=str)
-        except Exception:
-            return str(payload)[:limit]
-        if len(encoded) <= limit:
-            return payload
-        return {
-            "_truncated": True,
-            "original_type": type(value).__name__,
-            "preview": encoded[:limit],
-        }
+        """Forwarder — see ``agent.api_observer.sanitize_hook_payload``."""
+        from agent.api_observer import sanitize_hook_payload
+
+        return sanitize_hook_payload(value)
 
     def _api_request_payload_for_hook(self, api_kwargs: Optional[Dict[str, Any]]) -> Dict[str, Any]:
-        body = {
-            key: value
-            for key, value in (api_kwargs or {}).items()
-            if key not in {"timeout", "http_client"}
-        }
-        return self._sanitize_hook_payload(
-            {
-                "method": "POST",
-                "body": body,
-            }
-        )
+        """Forwarder — see ``agent.api_observer.api_request_payload_for_hook``."""
+        from agent.api_observer import api_request_payload_for_hook
+
+        return api_request_payload_for_hook(api_kwargs)
 
     def _api_response_payload_for_hook(
         self,
@@ -2562,25 +2438,15 @@ class AIAgent:
         *,
         finish_reason: Optional[str],
     ) -> Dict[str, Any]:
-        # ``tool_calls`` is the raw list of provider SDK objects (e.g.
-        # OpenAI ``ChatCompletionMessageToolCall``).  We deliberately hand
-        # the raw objects to ``_sanitize_hook_payload`` and rely on
-        # ``_hook_jsonable`` to normalise them via ``model_dump`` /
-        # ``__dict__`` / dataclass introspection — a future refactor of
-        # the sanitiser MUST preserve that capability or hook subscribers
-        # will receive opaque ``str(obj)`` blobs here.
-        tool_calls = getattr(assistant_message, "tool_calls", None) or []
-        return self._sanitize_hook_payload(
-            {
-                "model": getattr(response, "model", None),
-                "finish_reason": finish_reason,
-                "assistant_message": {
-                    "role": getattr(assistant_message, "role", "assistant"),
-                    "content": getattr(assistant_message, "content", None),
-                    "tool_calls": tool_calls,
-                },
-                "usage": self._usage_summary_for_api_request_hook(response),
-            }
+        """Forwarder — see ``agent.api_observer.api_response_payload_for_hook``."""
+        from agent.api_observer import api_response_payload_for_hook
+
+        return api_response_payload_for_hook(
+            response,
+            assistant_message,
+            finish_reason=finish_reason,
+            provider=self.provider,
+            api_mode=self.api_mode,
         )
 
     def _invoke_api_request_error_hook(
@@ -2630,10 +2496,10 @@ class AIAgent:
                 max_retries=max_retries,
                 retryable=retryable,
                 reason=reason,
-                error={
+                error=self._sanitize_hook_payload({
                     "type": error_type,
                     "message": error_message,
-                },
+                }),
                 request=self._api_request_payload_for_hook(api_kwargs),
             )
         except Exception:

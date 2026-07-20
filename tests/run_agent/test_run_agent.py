@@ -4400,6 +4400,32 @@ class TestRunConversation:
         assert payload_built is False
         assert hook_called is False
 
+    def test_api_request_error_hook_redacts_sensitive_message(self, agent, monkeypatch):
+        events = []
+        secret = "sk-abcdefghijklmnopqrstuvwxyz123456"
+        monkeypatch.setattr(
+            "hermes_cli.plugins.has_hook",
+            lambda name: name == "api_request_error",
+        )
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda name, **kwargs: events.append((name, kwargs)) or [],
+        )
+
+        agent._invoke_api_request_error_hook(
+            task_id="task-1",
+            turn_id="turn-1",
+            api_request_id="api-1",
+            api_call_count=1,
+            api_start_time=0.0,
+            api_kwargs={"messages": [{"role": "user", "content": "hi"}]},
+            error_type="RuntimeError",
+            error_message=f"Authorization: Bearer {secret}",
+        )
+
+        assert events[0][0] == "api_request_error"
+        assert events[0][1]["error"]["message"] == "Authorization: Bearer ***"
+
     def test_request_scoped_api_hooks_skip_payload_work_without_listeners(self, agent, monkeypatch):
         self._setup_agent(agent)
         agent.client.chat.completions.create.return_value = _mock_response(

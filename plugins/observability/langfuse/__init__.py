@@ -67,6 +67,14 @@ _LANGFUSE_CLIENT = None
 _READ_FILE_LINE_RE = re.compile(r"^\s*(\d+)\|(.*)$")
 _READ_FILE_HEAD_LINES = 25
 _READ_FILE_TAIL_LINES = 15
+_AUXILIARY_REQUEST_KIND = "auxiliary"
+_AUXILIARY_METADATA_KEYS = (
+    "request_kind",
+    "auxiliary_task",
+    "auxiliary_call_id",
+    "attempt_index",
+    "attempt_reason",
+)
 
 # Langfuse-issued keys always carry these prefixes (cloud or self-hosted —
 # the prefix is baked into the server-side issuance flow, not a UI hint).
@@ -602,8 +610,14 @@ def _usage_and_cost(response: Any, *, provider: str, api_mode: str, model: str, 
 
 def _start_root_trace(task_key: str, *, task_id: str, session_id: str, platform: str, provider: str, model: str,
                       api_mode: str, messages: Any, client: Langfuse,
-                      turn_id: str = "", api_request_id: str = "") -> TraceState:
-    trace_id = client.create_trace_id(seed=f"{session_id or 'sessionless'}::{task_id or task_key}")
+                      turn_id: str = "", api_request_id: str = "",
+                      request_kind: str = "", auxiliary_call_id: str = "") -> TraceState:
+    trace_scope = (
+        auxiliary_call_id or api_request_id
+        if request_kind == _AUXILIARY_REQUEST_KIND
+        else task_id or task_key
+    )
+    trace_id = client.create_trace_id(seed=f"{session_id or 'sessionless'}::{trace_scope}")
     trace_input = _extract_last_user_message(messages)
     metadata = {
         "source": "hermes",
@@ -770,8 +784,109 @@ def _assistant_has_tool_calls(message: Any) -> bool:
     return bool(getattr(message, "tool_calls", None))
 
 
-def _request_key(api_call_count: Any) -> str:
-    return str(api_call_count or 0)
+def _request_key(api_call_count: Any, api_request_id: str = "") -> str:
+    return str(api_request_id or api_call_count or 0)
+
+
+def _request_trace_key(
+    task_id: str,
+    session_id: str,
+    *,
+    turn_id: str = "",
+    api_request_id: str = "",
+    request_kind: str = "",
+) -> str:
+    if request_kind == _AUXILIARY_REQUEST_KIND and api_request_id:
+        return _trace_key(
+            task_id,
+            session_id,
+            api_request_id=api_request_id,
+        )
+    return _trace_key(
+        task_id,
+        session_id,
+        turn_id=turn_id,
+        api_request_id=api_request_id,
+    )
+
+
+def _generation_name(
+    *,
+    request_kind: str,
+    auxiliary_task: str,
+    attempt_index: Any,
+    api_call_count: Any,
+) -> str:
+    if request_kind != _AUXILIARY_REQUEST_KIND:
+        return f"LLM call {api_call_count}"
+    attempt_number = (
+        attempt_index + 1
+        if isinstance(attempt_index, int)
+        else api_call_count or 1
+    )
+    return f"Auxiliary {auxiliary_task or 'request'} attempt {attempt_number}"
+
+
+def _auxiliary_metadata(
+    *,
+    request_kind: str = "",
+    auxiliary_task: str = "",
+    auxiliary_call_id: str = "",
+    attempt_index: Any = None,
+    attempt_reason: str = "",
+) -> dict[str, Any]:
+    values = {
+        "request_kind": request_kind,
+        "auxiliary_task": auxiliary_task,
+        "auxiliary_call_id": auxiliary_call_id,
+        "attempt_index": attempt_index,
+        "attempt_reason": attempt_reason,
+    }
+    metadata: dict[str, Any] = {}
+    for key in _AUXILIARY_METADATA_KEYS:
+        value = values[key]
+        if request_kind == _AUXILIARY_REQUEST_KIND or (
+            value is not None and value != ""
+        ):
+            metadata[key] = _safe_value(value)
+    return metadata
+
+
+def _generation_metadata(
+    *,
+    provider: str,
+    platform: str,
+    api_mode: str,
+    base_url: str,
+    request_kind: str = "",
+    auxiliary_task: str = "",
+    auxiliary_call_id: str = "",
+    attempt_index: Any = None,
+    attempt_reason: str = "",
+) -> dict[str, Any]:
+    metadata: dict[str, Any] = {
+        "provider": provider,
+        "platform": platform,
+        "api_mode": api_mode,
+        "base_url": base_url,
+    }
+    metadata.update(_auxiliary_metadata(
+        request_kind=request_kind,
+        auxiliary_task=auxiliary_task,
+        auxiliary_call_id=auxiliary_call_id,
+        attempt_index=attempt_index,
+        attempt_reason=attempt_reason,
+    ))
+    return metadata
+
+
+def _sanitize_error_metadata(error: Any) -> Any:
+    try:
+        from agent.api_observer import sanitize_hook_payload
+
+        return _safe_value(sanitize_hook_payload(error))
+    except Exception:
+        return {"type": type(error).__name__, "message": "<unavailable>"}
 
 
 def on_pre_llm_call(*, task_id: str = "", session_id: str = "", platform: str = "", model: str = "",
@@ -845,6 +960,11 @@ def on_pre_llm_request(
     user_message: Any = None,
     turn_id: str = "",
     api_request_id: str = "",
+    request_kind: str = "",
+    auxiliary_task: str = "",
+    auxiliary_call_id: str = "",
+    attempt_index: Any = None,
+    attempt_reason: str = "",
     **_: Any,
 ) -> None:
     client = _get_langfuse()
@@ -858,13 +978,14 @@ def on_pre_llm_request(
         user_message=user_message,
     )
 
-    task_key = _trace_key(
+    task_key = _request_trace_key(
         task_id,
         session_id,
         turn_id=turn_id,
         api_request_id=api_request_id,
+        request_kind=request_kind,
     )
-    req_key = _request_key(api_call_count)
+    req_key = _request_key(api_call_count, api_request_id)
 
     with _STATE_LOCK:
         state = _TRACE_STATE.get(task_key)
@@ -881,6 +1002,8 @@ def on_pre_llm_request(
                 client=client,
                 turn_id=turn_id,
                 api_request_id=api_request_id,
+                request_kind=request_kind,
+                auxiliary_call_id=auxiliary_call_id,
             )
             _evict_stale_locked()
             _TRACE_STATE[task_key] = state
@@ -891,15 +1014,25 @@ def on_pre_llm_request(
         state.generations[req_key] = _start_child_observation(
             state,
             client=client,
-            name=f"LLM call {api_call_count}",
+            name=_generation_name(
+                request_kind=request_kind,
+                auxiliary_task=auxiliary_task,
+                attempt_index=attempt_index,
+                api_call_count=api_call_count,
+            ),
             as_type="generation",
             input_value=_serialize_messages(input_messages),
-            metadata={
-                "provider": provider,
-                "platform": platform,
-                "api_mode": api_mode,
-                "base_url": base_url,
-            },
+            metadata=_generation_metadata(
+                provider=provider,
+                platform=platform,
+                api_mode=api_mode,
+                base_url=base_url,
+                request_kind=request_kind,
+                auxiliary_task=auxiliary_task,
+                auxiliary_call_id=auxiliary_call_id,
+                attempt_index=attempt_index,
+                attempt_reason=attempt_reason,
+            ),
             model=model,
             model_parameters={"api_mode": api_mode, "provider": provider},
         )
@@ -912,18 +1045,22 @@ def on_post_llm_call(*, task_id: str = "", session_id: str = "", provider: str =
                      usage: Any = None, assistant_content_chars: int = 0,
                      assistant_tool_call_count: int = 0, assistant_response: Any = None,
                      turn_id: str = "", api_request_id: str = "",
+                     request_kind: str = "", auxiliary_task: str = "",
+                     auxiliary_call_id: str = "", attempt_index: Any = None,
+                     attempt_reason: str = "",
                      **_: Any) -> None:
     client = _get_langfuse()
     if client is None:
         return
 
-    task_key = _trace_key(
+    task_key = _request_trace_key(
         task_id,
         session_id,
         turn_id=turn_id,
         api_request_id=api_request_id,
+        request_kind=request_kind,
     )
-    req_key = _request_key(api_call_count)
+    req_key = _request_key(api_call_count, api_request_id)
 
     with _STATE_LOCK:
         state = _TRACE_STATE.get(task_key)
@@ -932,10 +1069,20 @@ def on_post_llm_call(*, task_id: str = "", session_id: str = "", provider: str =
         return
 
     # Handle both call patterns:
-    # 1. post_api_request: passes usage (dict), assistant_content_chars, assistant_tool_call_count
+    # 1. post_api_request: passes a sanitized response dict and usage summary
     # 2. post_llm_call: passes assistant_message (object), response (object), assistant_response (str)
     if assistant_message is not None:
         output = _serialize_assistant_message(assistant_message)
+    elif isinstance(response, dict) and isinstance(response.get("assistant_message"), dict):
+        observed_message = response["assistant_message"]
+        output = {
+            "content": _safe_value(observed_message.get("content")),
+            "reasoning": None,
+            "tool_calls": _safe_value(
+                observed_message.get("tool_calls"),
+                parse_json_strings=True,
+            ) or [],
+        }
     elif assistant_response is not None:
         # post_llm_call passes assistant_response as a plain string
         output = {"content": _safe_value(assistant_response), "reasoning": None, "tool_calls": []}
@@ -1020,7 +1167,14 @@ def on_post_llm_call(*, task_id: str = "", session_id: str = "", provider: str =
         usage_details, cost_details = {}, {}
 
     tool_count = len(output.get("tool_calls", [])) or assistant_tool_call_count
-    gen_metadata: Dict[str, Any] = {"tool_call_count": tool_count}
+    gen_metadata = _auxiliary_metadata(
+        request_kind=request_kind,
+        auxiliary_task=auxiliary_task,
+        auxiliary_call_id=auxiliary_call_id,
+        attempt_index=attempt_index,
+        attempt_reason=attempt_reason,
+    )
+    gen_metadata["tool_call_count"] = tool_count
     if api_duration and api_duration > 0:
         gen_metadata["api_duration_s"] = round(api_duration, 3)
     if finish_reason:
@@ -1033,9 +1187,84 @@ def on_post_llm_call(*, task_id: str = "", session_id: str = "", provider: str =
         metadata=gen_metadata,
     )
 
+    if request_kind == _AUXILIARY_REQUEST_KIND:
+        _finish_trace(task_key, output=output)
+        return
+
     has_tools = _assistant_has_tool_calls(assistant_message) if assistant_message else (assistant_tool_call_count > 0)
     has_content = bool(output.get("content"))
     if not has_tools and has_content:
+        _finish_trace(task_key, output=output)
+
+
+def on_api_request_error(
+    *,
+    task_id: str = "",
+    session_id: str = "",
+    provider: str = "",
+    base_url: str = "",
+    api_mode: str = "",
+    api_call_count: int = 0,
+    api_duration: float = 0.0,
+    status_code: Any = None,
+    retryable: Any = None,
+    reason: str = "",
+    error: Any = None,
+    turn_id: str = "",
+    api_request_id: str = "",
+    request_kind: str = "",
+    auxiliary_task: str = "",
+    auxiliary_call_id: str = "",
+    attempt_index: Any = None,
+    attempt_reason: str = "",
+    **_: Any,
+) -> None:
+    client = _get_langfuse()
+    if client is None:
+        return
+
+    task_key = _request_trace_key(
+        task_id,
+        session_id,
+        turn_id=turn_id,
+        api_request_id=api_request_id,
+        request_kind=request_kind,
+    )
+    req_key = _request_key(api_call_count, api_request_id)
+    with _STATE_LOCK:
+        state = _TRACE_STATE.get(task_key)
+        generation = state.generations.pop(req_key, None) if state else None
+    if state is None or generation is None:
+        return
+
+    safe_error = _sanitize_error_metadata(error or {})
+    metadata = _generation_metadata(
+        provider=provider,
+        platform="",
+        api_mode=api_mode,
+        base_url=base_url,
+        request_kind=request_kind,
+        auxiliary_task=auxiliary_task,
+        auxiliary_call_id=auxiliary_call_id,
+        attempt_index=attempt_index,
+        attempt_reason=attempt_reason,
+    )
+    metadata.update({
+        "status": "error",
+        "error": safe_error,
+    })
+    if api_duration and api_duration > 0:
+        metadata["api_duration_s"] = round(api_duration, 3)
+    if status_code is not None:
+        metadata["status_code"] = _safe_value(status_code)
+    if retryable is not None:
+        metadata["retryable"] = bool(retryable)
+    if reason:
+        metadata["reason"] = _safe_value(reason)
+    output = {"error": safe_error}
+    _end_observation(generation, output=output, metadata=metadata)
+
+    if request_kind == _AUXILIARY_REQUEST_KIND:
         _finish_trace(task_key, output=output)
 
 
@@ -1127,10 +1356,11 @@ def on_post_tool_call(*, tool_name: str = "", args: Any = None, result: Any = No
 
 def register(ctx) -> None:
     # Register for both hook name variants so the plugin works across
-    # Hermes versions.  pre_api_request / post_api_request fire per API
-    # call (preferred); pre_llm_call / post_llm_call fire once per turn.
+    # Hermes versions. Request hooks fire per API attempt (preferred);
+    # pre_llm_call / post_llm_call fire once per turn.
     ctx.register_hook("pre_api_request", on_pre_llm_request)
     ctx.register_hook("post_api_request", on_post_llm_call)
+    ctx.register_hook("api_request_error", on_api_request_error)
     ctx.register_hook("pre_llm_call", on_pre_llm_call)
     ctx.register_hook("post_llm_call", on_post_llm_call)
     ctx.register_hook("pre_tool_call", on_pre_tool_call)

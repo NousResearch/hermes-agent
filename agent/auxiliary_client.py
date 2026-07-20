@@ -42,6 +42,7 @@ Payment / credit exhaustion fallback:
 
 import contextlib
 import contextvars
+import functools
 import hashlib
 import inspect
 import json
@@ -50,6 +51,7 @@ import os
 import re
 import threading
 import time
+import uuid
 from pathlib import Path  # noqa: F401 — used by test mocks
 from types import SimpleNamespace
 from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
@@ -3626,8 +3628,13 @@ def _retry_same_provider_sync(
     )
     if _is_anthropic_compat_endpoint(resolved_provider, retry_base):
         retry_kwargs["messages"] = _convert_openai_images_to_anthropic(retry_kwargs["messages"])
-    return _validate_llm_response(
-        retry_client.chat.completions.create(**retry_kwargs), task,
+    return _execute_auxiliary_attempt_sync(
+        client=retry_client,
+        kwargs=retry_kwargs,
+        task=task,
+        provider=resolved_provider,
+        api_mode=resolved_api_mode,
+        attempt_reason="retry:refreshed_credentials",
     )
 
 
@@ -3685,8 +3692,13 @@ async def _retry_same_provider_async(
     )
     if _is_anthropic_compat_endpoint(resolved_provider, retry_base):
         retry_kwargs["messages"] = _convert_openai_images_to_anthropic(retry_kwargs["messages"])
-    return _validate_llm_response(
-        await retry_client.chat.completions.create(**retry_kwargs), task,
+    return await _execute_auxiliary_attempt_async(
+        client=retry_client,
+        kwargs=retry_kwargs,
+        task=task,
+        provider=resolved_provider,
+        api_mode=resolved_api_mode,
+        attempt_reason="retry:refreshed_credentials",
     )
 
 
@@ -3872,8 +3884,13 @@ def _call_fallback_candidate_sync(
         extra_body=effective_extra_body, reasoning_config=reasoning_config,
         base_url=fb_base)
     try:
-        return _validate_llm_response(
-            fb_client.chat.completions.create(**fb_kwargs), task)
+        return _execute_auxiliary_attempt_sync(
+            client=fb_client,
+            kwargs=fb_kwargs,
+            task=task,
+            provider=fb_label,
+            attempt_reason=f"fallback:{fb_label}",
+        )
     except Exception as fb_err:
         if not _is_auth_error(fb_err):
             raise
@@ -3889,8 +3906,13 @@ def _call_fallback_candidate_sync(
                     reasoning_config=reasoning_config,
                     base_url=str(getattr(retry_client, "base_url", "") or fb_base))
                 try:
-                    return _validate_llm_response(
-                        retry_client.chat.completions.create(**retry_kwargs), task)
+                    return _execute_auxiliary_attempt_sync(
+                        client=retry_client,
+                        kwargs=retry_kwargs,
+                        task=task,
+                        provider=fb_provider,
+                        attempt_reason="fallback_retry:refreshed_credentials",
+                    )
                 except Exception as retry_err:
                     if not _is_auth_error(retry_err):
                         raise
@@ -3938,8 +3960,13 @@ async def _call_fallback_candidate_async(
         extra_body=effective_extra_body, reasoning_config=reasoning_config,
         base_url=fb_base)
     try:
-        return _validate_llm_response(
-            await fb_client.chat.completions.create(**fb_kwargs), task)
+        return await _execute_auxiliary_attempt_async(
+            client=fb_client,
+            kwargs=fb_kwargs,
+            task=task,
+            provider=fb_label,
+            attempt_reason=f"fallback:{fb_label}",
+        )
     except Exception as fb_err:
         if not _is_auth_error(fb_err):
             raise
@@ -3956,8 +3983,13 @@ async def _call_fallback_candidate_async(
                     reasoning_config=reasoning_config,
                     base_url=str(getattr(retry_client, "base_url", "") or fb_base))
                 try:
-                    return _validate_llm_response(
-                        await retry_client.chat.completions.create(**retry_kwargs), task)
+                    return await _execute_auxiliary_attempt_async(
+                        client=retry_client,
+                        kwargs=retry_kwargs,
+                        task=task,
+                        provider=fb_provider,
+                        attempt_reason="fallback_retry:refreshed_credentials",
+                    )
                 except Exception as retry_err:
                     if not _is_auth_error(retry_err):
                         raise
@@ -6814,12 +6846,12 @@ def _validate_llm_response(
     See #7264.
 
     Also the single accounting chokepoint for auxiliary usage: every
-    successful non-streaming aux response passes through here exactly once,
-    so token usage is recorded against the ambient session context published
-    by the agent loop (``agent.aux_accounting``, issue #23270). Recording is
-    best-effort and never affects validation. *provider*/*base_url* are
-    optional accounting hints — fallback-path calls omit them and the row
-    keeps the model (read from the response itself) with an empty route.
+    non-streaming aux response passes through here exactly once, so token usage
+    is recorded against the ambient session context published by the agent
+    loop (``agent.aux_accounting``, issue #23270). Recording remains
+    best-effort and happens before shape validation so a provider response
+    that consumed tokens is not lost when its payload is unusable.
+    *provider*/*base_url* identify the physical route that served the response.
     """
     if response is None:
         raise RuntimeError(
@@ -6827,24 +6859,22 @@ def _validate_llm_response(
         )
     from agent.aux_accounting import record_aux_usage
     record_aux_usage(response, task, provider=provider, base_url=base_url)
-    # Allow SimpleNamespace responses from adapters (CodexAuxiliaryClient,
-    # AnthropicAuxiliaryClient) — they have .choices[0].message.
     try:
         choices = response.choices
         if not choices or not hasattr(choices[0], "message"):
             raise AttributeError("missing choices[0].message")
     except (AttributeError, TypeError, IndexError) as exc:
         recovered = _recover_aux_response_message(response)
-        if recovered is not None:
-            return recovered
-        response_type = type(response).__name__
-        response_preview = str(response)[:120]
-        raise RuntimeError(
-            f"Auxiliary {task or 'call'}: LLM returned invalid response "
-            f"(type={response_type}): {response_preview!r}. "
-            f"Expected object with .choices[0].message — check provider "
-            f"adapter or custom endpoint compatibility."
-        ) from exc
+        if recovered is None:
+            response_type = type(response).__name__
+            response_preview = str(response)[:120]
+            raise RuntimeError(
+                f"Auxiliary {task or 'call'}: LLM returned invalid response "
+                f"(type={response_type}): {response_preview!r}. "
+                f"Expected object with .choices[0].message — check provider "
+                f"adapter or custom endpoint compatibility."
+            ) from exc
+        response = recovered
     return response
 
 
@@ -6906,6 +6936,431 @@ def _obj_get(obj: Any, key: str, default: Any = None) -> Any:
     return value
 
 
+class _AuxiliaryObserverContext:
+    def __init__(self):
+        self.auxiliary_call_id = str(uuid.uuid4())
+        self.attempt_index = 0
+
+    def next_attempt(self) -> int:
+        attempt_index = self.attempt_index
+        self.attempt_index += 1
+        return attempt_index
+
+
+_auxiliary_observer_context: contextvars.ContextVar[
+    Optional[_AuxiliaryObserverContext]
+] = contextvars.ContextVar("auxiliary_observer_context", default=None)
+
+_MAIN_LOOP_OBSERVED_AUXILIARY_TASKS = frozenset({"moa_aggregator"})
+
+
+def _auxiliary_observer_lifecycle(call):
+    if inspect.iscoroutinefunction(call):
+        @functools.wraps(call)
+        async def _async_wrapper(*args, **kwargs):
+            token = _auxiliary_observer_context.set(_AuxiliaryObserverContext())
+            try:
+                return await call(*args, **kwargs)
+            finally:
+                _auxiliary_observer_context.reset(token)
+
+        return _async_wrapper
+
+    @functools.wraps(call)
+    def _sync_wrapper(*args, **kwargs):
+        token = _auxiliary_observer_context.set(_AuxiliaryObserverContext())
+        try:
+            return call(*args, **kwargs)
+        finally:
+            _auxiliary_observer_context.reset(token)
+
+    return _sync_wrapper
+
+
+def _auxiliary_session_id() -> str:
+    try:
+        from agent.aux_accounting import get_accounting_context
+
+        accounting = get_accounting_context()
+        if accounting is not None:
+            return str(accounting[1] or "")
+    except Exception:
+        pass
+    return ""
+
+
+def _auxiliary_client_base_url(client: Any, fallback: Optional[str] = None) -> str:
+    for candidate in (
+        client,
+        getattr(client, "_real_client", None),
+        getattr(client, "_client", None),
+    ):
+        raw = getattr(candidate, "base_url", None)
+        if not raw:
+            continue
+        rendered = str(raw)
+        if "://" in rendered or rendered.startswith("acp"):
+            return rendered
+    return str(fallback or "")
+
+
+def _auxiliary_attempt_provider(provider: Optional[str], base_url: str) -> str:
+    candidate = str(provider or "").strip()
+    label_match = re.search(r"\(([^()]+)\)$", candidate)
+    if label_match:
+        candidate = label_match.group(1)
+    normalized = _normalize_aux_provider(candidate)
+    if normalized not in {"", "auto"}:
+        return normalized
+    try:
+        from agent.model_metadata import _infer_provider_from_url
+
+        inferred = _infer_provider_from_url(base_url)
+    except Exception:
+        inferred = None
+    if inferred == "openai" and base_url_host_matches(base_url, "chatgpt.com"):
+        return "openai-codex"
+    if inferred:
+        return _normalize_aux_provider(inferred)
+    if base_url:
+        return "custom"
+    return normalized or "unknown"
+
+
+def _initial_auxiliary_attempt_reason(provider: Optional[str]) -> str:
+    route = str(provider or "")
+    if (
+        route.startswith("fallback_chain[")
+        or route.startswith("fallback_providers[")
+        or route.startswith("main-agent(")
+    ):
+        return f"fallback:{route}"
+    return "initial"
+
+
+def _auxiliary_attempt_api_mode(
+    client: Any,
+    api_mode: Optional[str],
+    base_url: str,
+) -> str:
+    if api_mode:
+        return api_mode
+    if isinstance(client, (CodexAuxiliaryClient, AsyncCodexAuxiliaryClient)):
+        return "codex_responses"
+    if isinstance(client, (AnthropicAuxiliaryClient, AsyncAnthropicAuxiliaryClient)):
+        return "anthropic_messages"
+    if isinstance(client, (BedrockAuxiliaryClient, AsyncBedrockAuxiliaryClient)):
+        return "bedrock_converse"
+    if base_url_host_matches(base_url, "chatgpt.com"):
+        return "codex_responses"
+    if _endpoint_speaks_anthropic_messages(base_url):
+        return "anthropic_messages"
+    if "bedrock-runtime" in base_url:
+        return "bedrock_converse"
+    return "chat_completions"
+
+
+def _auxiliary_observers_enabled(task: Optional[str]) -> bool:
+    if task in _MAIN_LOOP_OBSERVED_AUXILIARY_TASKS:
+        return False
+    try:
+        from hermes_cli import plugins
+
+        plugins.discover_plugins()
+        return any(
+            plugins.has_hook(hook_name)
+            for hook_name in (
+                "pre_api_request",
+                "post_api_request",
+                "api_request_error",
+            )
+        )
+    except Exception:
+        return False
+
+
+def _auxiliary_attempt_metadata(
+    *,
+    client: Any,
+    kwargs: Dict[str, Any],
+    task: Optional[str],
+    provider: Optional[str],
+    api_mode: Optional[str],
+    attempt_reason: str,
+) -> Dict[str, Any]:
+    observer = _auxiliary_observer_context.get()
+    if observer is None:
+        observer = _AuxiliaryObserverContext()
+    attempt_index = observer.next_attempt()
+    base_url = _auxiliary_client_base_url(client)
+    try:
+        from agent.api_observer import sanitize_hook_payload
+
+        observer_base_url = sanitize_hook_payload(base_url)
+        if not isinstance(observer_base_url, str):
+            observer_base_url = ""
+    except Exception:
+        observer_base_url = ""
+    actual_provider = _auxiliary_attempt_provider(provider, base_url)
+    actual_api_mode = _auxiliary_attempt_api_mode(client, api_mode, base_url)
+    metadata = {
+        "request_kind": "auxiliary",
+        "auxiliary_task": task or "",
+        "auxiliary_call_id": observer.auxiliary_call_id,
+        "api_request_id": str(uuid.uuid4()),
+        "attempt_index": attempt_index,
+        "attempt_reason": attempt_reason,
+        "session_id": _auxiliary_session_id(),
+        "task_id": task or "auxiliary",
+        "turn_id": observer.auxiliary_call_id,
+        "platform": "",
+        "provider": actual_provider,
+        "model": str(kwargs.get("model") or ""),
+        "base_url": observer_base_url,
+        "api_mode": actual_api_mode,
+        "api_call_count": attempt_index + 1,
+    }
+    return metadata
+
+
+def _invoke_auxiliary_observer(hook_name: str, **kwargs: Any) -> None:
+    try:
+        from hermes_cli import plugins
+
+        plugins.invoke_hook(hook_name, **kwargs)
+    except Exception:
+        pass
+
+
+def _start_auxiliary_observer_attempt(
+    metadata: Dict[str, Any],
+    kwargs: Dict[str, Any],
+) -> Tuple[bool, float, Dict[str, Any]]:
+    started_at = time.time()
+    if not _auxiliary_observers_enabled(metadata.get("auxiliary_task")):
+        return False, started_at, {}
+    try:
+        from agent.api_observer import api_request_payload_for_hook
+
+        request = api_request_payload_for_hook(kwargs)
+        request_body = request.get("body", {}) if isinstance(request, dict) else {}
+        request_messages = request_body.get("messages") or request_body.get("input") or []
+        _invoke_auxiliary_observer(
+            "pre_api_request",
+            **metadata,
+            started_at=started_at,
+            request=request,
+            request_messages=request_messages if isinstance(request_messages, list) else [],
+            message_count=len(request_messages) if isinstance(request_messages, list) else 0,
+            tool_count=len(request_body.get("tools") or []) if isinstance(request_body, dict) else 0,
+            max_tokens=request_body.get("max_tokens") if isinstance(request_body, dict) else None,
+        )
+        return True, started_at, request
+    except Exception:
+        return False, started_at, {}
+
+
+def _finish_auxiliary_observer_error(
+    metadata: Dict[str, Any],
+    *,
+    started_at: float,
+    request: Dict[str, Any],
+    error: Exception,
+    attempt_reason: str,
+) -> None:
+    try:
+        from agent.api_observer import sanitize_hook_payload
+
+        error_payload = sanitize_hook_payload(
+            {
+                "type": type(error).__name__,
+                "message": str(error),
+            }
+        )
+    except Exception:
+        error_payload = {
+            "type": type(error).__name__,
+            "message": "<unavailable>",
+        }
+    try:
+        status_code = getattr(error, "status_code", None)
+    except Exception:
+        status_code = None
+    ended_at = time.time()
+    _invoke_auxiliary_observer(
+        "api_request_error",
+        **metadata,
+        started_at=started_at,
+        ended_at=ended_at,
+        api_duration=ended_at - started_at,
+        status_code=status_code,
+        reason=attempt_reason,
+        error=error_payload,
+        request=request,
+    )
+
+
+def _finish_auxiliary_observer_success(
+    metadata: Dict[str, Any],
+    *,
+    started_at: float,
+    response: Any,
+) -> None:
+    finish_reason = None
+    response_model = None
+    assistant_content = None
+    assistant_tool_calls = []
+    try:
+        from agent.api_observer import (
+            api_response_payload_for_hook,
+            usage_summary_for_api_request_hook,
+        )
+
+        choices = getattr(response, "choices", None) or []
+        choice = choices[0] if choices else None
+        assistant_message = getattr(choice, "message", None)
+        finish_reason = getattr(choice, "finish_reason", None)
+        response_model = getattr(response, "model", None)
+        assistant_content = getattr(assistant_message, "content", None)
+        assistant_tool_calls = getattr(assistant_message, "tool_calls", None) or []
+        usage = usage_summary_for_api_request_hook(
+            response,
+            provider=metadata["provider"],
+            api_mode=metadata["api_mode"],
+        )
+        response_payload = api_response_payload_for_hook(
+            response,
+            assistant_message,
+            finish_reason=finish_reason,
+            provider=metadata["provider"],
+            api_mode=metadata["api_mode"],
+        )
+    except Exception:
+        usage = None
+        response_payload = {"_serialization_error": True}
+    ended_at = time.time()
+    _invoke_auxiliary_observer(
+        "post_api_request",
+        **metadata,
+        started_at=started_at,
+        ended_at=ended_at,
+        api_duration=ended_at - started_at,
+        finish_reason=finish_reason,
+        response_model=response_model,
+        response=response_payload,
+        usage=usage,
+        assistant_content_chars=len(assistant_content) if isinstance(assistant_content, str) else 0,
+        assistant_tool_call_count=len(assistant_tool_calls),
+    )
+
+
+def _execute_auxiliary_attempt_sync(
+    *,
+    client: Any,
+    kwargs: Dict[str, Any],
+    task: Optional[str],
+    provider: Optional[str],
+    api_mode: Optional[str] = None,
+    attempt_reason: str,
+) -> Any:
+    metadata = _auxiliary_attempt_metadata(
+        client=client,
+        kwargs=kwargs,
+        task=task,
+        provider=provider,
+        api_mode=api_mode,
+        attempt_reason=attempt_reason,
+    )
+    is_observed, started_at, request = _start_auxiliary_observer_attempt(
+        metadata,
+        kwargs,
+    )
+    try:
+        response = _validate_llm_response(
+            client.chat.completions.create(**kwargs),
+            task,
+            provider=metadata["provider"],
+            base_url=_auxiliary_client_base_url(client),
+        )
+    except Exception as error:
+        if is_observed:
+            try:
+                _finish_auxiliary_observer_error(
+                    metadata,
+                    started_at=started_at,
+                    request=request,
+                    error=error,
+                    attempt_reason=attempt_reason,
+                )
+            except Exception:
+                pass
+        raise
+    if is_observed:
+        try:
+            _finish_auxiliary_observer_success(
+                metadata,
+                started_at=started_at,
+                response=response,
+            )
+        except Exception:
+            pass
+    return response
+
+
+async def _execute_auxiliary_attempt_async(
+    *,
+    client: Any,
+    kwargs: Dict[str, Any],
+    task: Optional[str],
+    provider: Optional[str],
+    api_mode: Optional[str] = None,
+    attempt_reason: str,
+) -> Any:
+    metadata = _auxiliary_attempt_metadata(
+        client=client,
+        kwargs=kwargs,
+        task=task,
+        provider=provider,
+        api_mode=api_mode,
+        attempt_reason=attempt_reason,
+    )
+    is_observed, started_at, request = _start_auxiliary_observer_attempt(
+        metadata,
+        kwargs,
+    )
+    try:
+        response = _validate_llm_response(
+            await client.chat.completions.create(**kwargs),
+            task,
+            provider=metadata["provider"],
+            base_url=_auxiliary_client_base_url(client),
+        )
+    except Exception as error:
+        if is_observed:
+            try:
+                _finish_auxiliary_observer_error(
+                    metadata,
+                    started_at=started_at,
+                    request=request,
+                    error=error,
+                    attempt_reason=attempt_reason,
+                )
+            except Exception:
+                pass
+        raise
+    if is_observed:
+        try:
+            _finish_auxiliary_observer_success(
+                metadata,
+                started_at=started_at,
+                response=response,
+            )
+        except Exception:
+            pass
+    return response
+
+
+@_auxiliary_observer_lifecycle
 def call_llm(
     task: str = None,
     *,
@@ -7099,9 +7554,14 @@ def call_llm(
         # ``first_err`` and the existing fallback handling unchanged. Unified home
         # for the transient retry every auxiliary task shares. (PR #16587)
         try:
-            return _validate_llm_response(
-                client.chat.completions.create(**kwargs), task,
-                provider=resolved_provider, base_url=_base_info)
+            return _execute_auxiliary_attempt_sync(
+                client=client,
+                kwargs=kwargs,
+                task=task,
+                provider=resolved_provider,
+                api_mode=resolved_api_mode,
+                attempt_reason=_initial_auxiliary_attempt_reason(resolved_provider),
+            )
         except Exception as transient_err:
             if not _is_transient_transport_error(transient_err):
                 raise
@@ -7132,8 +7592,14 @@ def call_llm(
                 )
                 time.sleep(_backoff)
                 try:
-                    return _validate_llm_response(
-                        client.chat.completions.create(**kwargs), task)
+                    return _execute_auxiliary_attempt_sync(
+                        client=client,
+                        kwargs=kwargs,
+                        task=task,
+                        provider=resolved_provider,
+                        api_mode=resolved_api_mode,
+                        attempt_reason="retry:transient_transport",
+                    )
                 except Exception as retry_transient:
                     if not _is_transient_transport_error(retry_transient):
                         raise
@@ -7149,8 +7615,14 @@ def call_llm(
                 task or "call",
             )
             try:
-                return _validate_llm_response(
-                    client.chat.completions.create(**retry_kwargs), task)
+                return _execute_auxiliary_attempt_sync(
+                    client=client,
+                    kwargs=retry_kwargs,
+                    task=task,
+                    provider=resolved_provider,
+                    api_mode=resolved_api_mode,
+                    attempt_reason="retry:unsupported_temperature",
+                )
             except Exception as retry_err:
                 retry_err_str = str(retry_err)
                 # If retry still fails, fall through to the max_tokens /
@@ -7187,8 +7659,14 @@ def call_llm(
             kwargs.pop("max_tokens", None)
             kwargs.pop("max_completion_tokens", None)
             try:
-                return _validate_llm_response(
-                    client.chat.completions.create(**kwargs), task)
+                return _execute_auxiliary_attempt_sync(
+                    client=client,
+                    kwargs=kwargs,
+                    task=task,
+                    provider=resolved_provider,
+                    api_mode=resolved_api_mode,
+                    attempt_reason="retry:unsupported_max_tokens",
+                )
             except Exception as retry_err:
                 # If the max_tokens retry also hits a payment or connection
                 # error, fall through to the fallback chain below.
@@ -7217,8 +7695,14 @@ def call_llm(
                 )
                 kwargs["model"] = healed_model
                 try:
-                    return _validate_llm_response(
-                        client.chat.completions.create(**kwargs), task)
+                    return _execute_auxiliary_attempt_sync(
+                        client=client,
+                        kwargs=kwargs,
+                        task=task,
+                        provider=resolved_provider,
+                        api_mode=resolved_api_mode,
+                        attempt_reason="retry:refreshed_model",
+                    )
                 except Exception as retry_err:
                     first_err = retry_err
 
@@ -7250,8 +7734,14 @@ def call_llm(
                 if refreshed_model and refreshed_model != kwargs.get("model"):
                     kwargs["model"] = refreshed_model
                 try:
-                    return _validate_llm_response(
-                        refreshed_client.chat.completions.create(**kwargs), task)
+                    return _execute_auxiliary_attempt_sync(
+                        client=refreshed_client,
+                        kwargs=kwargs,
+                        task=task,
+                        provider="nous",
+                        api_mode=resolved_api_mode,
+                        attempt_reason="retry:refreshed_credentials",
+                    )
                 except Exception as retry_err:
                     if not (
                         _is_auth_error(retry_err)
@@ -7278,8 +7768,14 @@ def call_llm(
                             task or "call")
                 if refreshed_model and refreshed_model != kwargs.get("model"):
                     kwargs["model"] = refreshed_model
-                return _validate_llm_response(
-                    refreshed_client.chat.completions.create(**kwargs), task)
+                return _execute_auxiliary_attempt_sync(
+                    client=refreshed_client,
+                    kwargs=kwargs,
+                    task=task,
+                    provider="nous",
+                    api_mode=resolved_api_mode,
+                    attempt_reason="retry:refreshed_credentials",
+                )
 
         # ── Auth refresh retry ───────────────────────────────────────
         auth_refresh_provider = _auth_refresh_provider_for_route(
@@ -7327,8 +7823,14 @@ def call_llm(
             # won't accept another request with the same exhausted key.
             if _is_rate_limit_error(first_err) and not _is_payment_error(first_err):
                 try:
-                    return _validate_llm_response(
-                        client.chat.completions.create(**kwargs), task)
+                    return _execute_auxiliary_attempt_sync(
+                        client=client,
+                        kwargs=kwargs,
+                        task=task,
+                        provider=resolved_provider,
+                        api_mode=resolved_api_mode,
+                        attempt_reason="retry:rate_limit",
+                    )
                 except Exception as retry_err:
                     if not (_is_auth_error(retry_err) or _is_payment_error(retry_err) or _is_rate_limit_error(retry_err)):
                         raise
@@ -7573,6 +8075,7 @@ def extract_content_or_reasoning(response) -> str:
     return ""
 
 
+@_auxiliary_observer_lifecycle
 async def async_call_llm(
     task: str = None,
     *,
@@ -7685,9 +8188,14 @@ async def async_call_llm(
         # before the except-chain escalates to fallback — see call_llm()
         # for the rationale. (PR #16587)
         try:
-            return _validate_llm_response(
-                await client.chat.completions.create(**kwargs), task,
-                provider=resolved_provider, base_url=_client_base)
+            return await _execute_auxiliary_attempt_async(
+                client=client,
+                kwargs=kwargs,
+                task=task,
+                provider=resolved_provider,
+                api_mode=resolved_api_mode,
+                attempt_reason=_initial_auxiliary_attempt_reason(resolved_provider),
+            )
         except Exception as transient_err:
             if not _is_transient_transport_error(transient_err):
                 raise
@@ -7706,8 +8214,14 @@ async def async_call_llm(
                 "once on the same provider before fallback: %s",
                 task or "call", transient_err,
             )
-            return _validate_llm_response(
-                await client.chat.completions.create(**kwargs), task)
+            return await _execute_auxiliary_attempt_async(
+                client=client,
+                kwargs=kwargs,
+                task=task,
+                provider=resolved_provider,
+                api_mode=resolved_api_mode,
+                attempt_reason="retry:transient_transport",
+            )
     except Exception as first_err:
         if "temperature" in kwargs and _is_unsupported_temperature_error(first_err):
             retry_kwargs = dict(kwargs)
@@ -7717,8 +8231,14 @@ async def async_call_llm(
                 task or "call",
             )
             try:
-                return _validate_llm_response(
-                    await client.chat.completions.create(**retry_kwargs), task)
+                return await _execute_auxiliary_attempt_async(
+                    client=client,
+                    kwargs=retry_kwargs,
+                    task=task,
+                    provider=resolved_provider,
+                    api_mode=resolved_api_mode,
+                    attempt_reason="retry:unsupported_temperature",
+                )
             except Exception as retry_err:
                 retry_err_str = str(retry_err)
                 if not (
@@ -7751,8 +8271,14 @@ async def async_call_llm(
             kwargs.pop("max_tokens", None)
             kwargs.pop("max_completion_tokens", None)
             try:
-                return _validate_llm_response(
-                    await client.chat.completions.create(**kwargs), task)
+                return await _execute_auxiliary_attempt_async(
+                    client=client,
+                    kwargs=kwargs,
+                    task=task,
+                    provider=resolved_provider,
+                    api_mode=resolved_api_mode,
+                    attempt_reason="retry:unsupported_max_tokens",
+                )
             except Exception as retry_err:
                 # If the max_tokens retry also hits a payment or connection
                 # error, fall through to the fallback chain below.
@@ -7780,8 +8306,14 @@ async def async_call_llm(
                 )
                 kwargs["model"] = healed_model
                 try:
-                    return _validate_llm_response(
-                        await client.chat.completions.create(**kwargs), task)
+                    return await _execute_auxiliary_attempt_async(
+                        client=client,
+                        kwargs=kwargs,
+                        task=task,
+                        provider=resolved_provider,
+                        api_mode=resolved_api_mode,
+                        attempt_reason="retry:refreshed_model",
+                    )
                 except Exception as retry_err:
                     first_err = retry_err
 
@@ -7812,8 +8344,14 @@ async def async_call_llm(
                 if refreshed_model and refreshed_model != kwargs.get("model"):
                     kwargs["model"] = refreshed_model
                 try:
-                    return _validate_llm_response(
-                        await refreshed_client.chat.completions.create(**kwargs), task)
+                    return await _execute_auxiliary_attempt_async(
+                        client=refreshed_client,
+                        kwargs=kwargs,
+                        task=task,
+                        provider="nous",
+                        api_mode=resolved_api_mode,
+                        attempt_reason="retry:refreshed_credentials",
+                    )
                 except Exception as retry_err:
                     if not (
                         _is_auth_error(retry_err)
@@ -7839,8 +8377,14 @@ async def async_call_llm(
                             task or "call")
                 if refreshed_model and refreshed_model != kwargs.get("model"):
                     kwargs["model"] = refreshed_model
-                return _validate_llm_response(
-                    await refreshed_client.chat.completions.create(**kwargs), task)
+                return await _execute_auxiliary_attempt_async(
+                    client=refreshed_client,
+                    kwargs=kwargs,
+                    task=task,
+                    provider="nous",
+                    api_mode=resolved_api_mode,
+                    attempt_reason="retry:refreshed_credentials",
+                )
 
         # ── Auth refresh retry (mirrors sync call_llm) ───────────────
         auth_refresh_provider = _auth_refresh_provider_for_route(
@@ -7883,8 +8427,14 @@ async def async_call_llm(
             # won't accept another request with the same exhausted key.
             if _is_rate_limit_error(first_err) and not _is_payment_error(first_err):
                 try:
-                    return _validate_llm_response(
-                        await client.chat.completions.create(**kwargs), task)
+                    return await _execute_auxiliary_attempt_async(
+                        client=client,
+                        kwargs=kwargs,
+                        task=task,
+                        provider=resolved_provider,
+                        api_mode=resolved_api_mode,
+                        attempt_reason="retry:rate_limit",
+                    )
                 except Exception as retry_err:
                     if not (_is_auth_error(retry_err) or _is_payment_error(retry_err) or _is_rate_limit_error(retry_err)):
                         raise

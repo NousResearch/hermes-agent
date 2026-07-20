@@ -34,6 +34,13 @@ logger = logging.getLogger(__name__)
 
 _MEMORY_PLUGINS_DIR = Path(__file__).parent
 
+_DEPENDENCY_IMPORT_NAMES = {
+    "honcho-ai": "honcho",
+    "mem0ai": "mem0",
+    "hindsight-client": "hindsight_client",
+    "hindsight-all": "hindsight",
+}
+
 # Synthetic parent package for user-installed providers, so they don't
 # collide with bundled providers in sys.modules.
 _USER_NAMESPACE = "_hermes_user_memory"
@@ -137,6 +144,43 @@ def find_provider_dir(name: str) -> Optional[Path]:
         if user.is_dir() and _is_memory_provider_dir(user):
             return user
     return None
+
+
+def memory_provider_dependency_satisfied(spec: str) -> bool:
+    """Return whether a manifest dependency is importable at a valid version."""
+    try:
+        from importlib.metadata import PackageNotFoundError, version
+        from packaging.requirements import Requirement
+        from packaging.utils import canonicalize_name
+    except ImportError:
+        return False
+    try:
+        requirement = Requirement(spec)
+    except Exception:
+        return False
+
+    if requirement.marker is not None and not requirement.marker.evaluate():
+        return True
+
+    canonical_package = canonicalize_name(requirement.name)
+    import_name = _DEPENDENCY_IMPORT_NAMES.get(
+        canonical_package, canonical_package.replace("-", "_")
+    )
+    try:
+        __import__(import_name)
+    except ImportError:
+        return False
+
+    if not requirement.specifier:
+        return True
+    try:
+        return requirement.specifier.contains(
+            version(requirement.name), prereleases=True
+        )
+    except PackageNotFoundError:
+        return False
+    except Exception:
+        return False
 
 
 # ---------------------------------------------------------------------------

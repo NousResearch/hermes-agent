@@ -5167,32 +5167,10 @@ def _memory_provider_setup_info(name: str) -> Dict[str, Any]:
     return setup
 
 
-_MEMORY_PROVIDER_IMPORT_NAMES = {
-    "honcho-ai": "honcho",
-    "mem0ai": "mem0",
-    "hindsight-client": "hindsight_client",
-    "hindsight-all": "hindsight",
-}
-
-
-def _memory_provider_dependency_package(dep: str) -> str:
-    return re.split(r"[\[<>=!~;]", dep, maxsplit=1)[0].strip()
-
-
-def _memory_provider_import_name(dep: str) -> str:
-    package = _memory_provider_dependency_package(dep)
-    return _MEMORY_PROVIDER_IMPORT_NAMES.get(package, package.replace("-", "_"))
-
-
 def _dependency_importable(dep: str) -> bool:
-    import_name = _memory_provider_import_name(dep)
-    if not import_name:
-        return False
-    try:
-        __import__(import_name)
-        return True
-    except ImportError:
-        return False
+    from plugins.memory import memory_provider_dependency_satisfied
+
+    return memory_provider_dependency_satisfied(dep)
 
 
 def _trim_setup_output(value: Optional[str], limit: int = 4000) -> str:

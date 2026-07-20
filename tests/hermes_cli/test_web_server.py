@@ -603,6 +603,16 @@ class TestWebServerEndpoints:
         assert config_resp.status_code == 200
         assert config_resp.json()["setup"]["external_dependencies"] == byterover_setup["external_dependencies"]
 
+    def test_memory_provider_dependency_check_honors_version_specifier(self):
+        from importlib.metadata import version
+
+        import hermes_cli.web_server as web_server
+
+        installed = version("httpx")
+        assert web_server._dependency_importable(f"httpx=={installed}") is True
+        assert web_server._dependency_importable(f"HTTPX=={installed}") is True
+        assert web_server._dependency_importable("httpx==0.0.0") is False
+
     def test_memory_status_reports_honcho_needs_config_after_dependency_setup(self, monkeypatch, tmp_path):
         # Pin HOME so a developer's real ~/.honcho config can't flip the status.
         monkeypatch.setenv("HOME", str(tmp_path))

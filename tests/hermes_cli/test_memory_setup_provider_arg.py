@@ -103,3 +103,28 @@ class TestInstallDependenciesRunner:
         calls, py = self._run_with_missing_dep(tmp_path, lambda b: None, behavior)
         assert any("ensurepip" in c for c in calls)
         assert calls[-1][:4] == [py, "-m", "pip", "install"]
+
+    def test_versioned_dependency_uses_shared_satisfaction_check(self, tmp_path):
+        (tmp_path / "plugin.yaml").write_text(
+            "pip_dependencies:\n  - numpy==2.4.3\n", encoding="utf-8"
+        )
+
+        with patch("plugins.memory.find_provider_dir", return_value=tmp_path), \
+             patch("plugins.memory.memory_provider_dependency_satisfied", return_value=True) as satisfied, \
+             patch("hermes_cli.tools_config._pip_install") as pip_install:
+            memory_setup._install_dependencies("holographic")
+
+        satisfied.assert_called_once_with("numpy==2.4.3")
+        pip_install.assert_not_called()
+
+    def test_installed_package_at_wrong_version_is_reinstalled(self, tmp_path):
+        (tmp_path / "plugin.yaml").write_text(
+            "pip_dependencies:\n  - numpy==0.0.0\n", encoding="utf-8"
+        )
+
+        result = SimpleNamespace(returncode=0, stdout="", stderr="")
+        with patch("plugins.memory.find_provider_dir", return_value=tmp_path), \
+             patch("hermes_cli.tools_config._pip_install", return_value=result) as pip_install:
+            memory_setup._install_dependencies("holographic")
+
+        pip_install.assert_called_once_with(["--quiet", "numpy==0.0.0"], timeout=120)

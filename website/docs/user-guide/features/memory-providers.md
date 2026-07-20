@@ -446,8 +446,8 @@ Local SQLite fact store with FTS5 full-text search, trust scoring, and HRR (Holo
 
 | | |
 |---|---|
-| **Best for** | Local-only memory with advanced retrieval, no external dependencies |
-| **Requires** | Nothing (SQLite is always available). NumPy optional for HRR algebra. |
+| **Best for** | Local-only memory with advanced retrieval and no external service |
+| **Requires** | SQLite (always available). Setup installs NumPy for HRR algebra. |
 | **Data storage** | Local SQLite |
 | **Cost** | Free |
 
@@ -457,6 +457,7 @@ Local SQLite fact store with FTS5 full-text search, trust scoring, and HRR (Holo
 ```bash
 hermes memory setup    # select "holographic"
 # Or manually:
+uv pip install --python "$(command -v python)" numpy==2.4.3  # enables HRR algebra
 hermes config set memory.provider holographic
 ```
 

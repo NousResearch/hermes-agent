@@ -27,6 +27,7 @@ from tools.registry import tool_error
 from .store import MemoryStore
 from .retrieval import FactRetriever
 from hermes_cli.config import cfg_get
+from utils import is_truthy_value
 
 logger = logging.getLogger(__name__)
 
@@ -235,7 +236,7 @@ class HolographicMemoryProvider(MemoryProvider):
         return tool_error(f"Unknown tool: {tool_name}")
 
     def on_session_end(self, messages: List[Dict[str, Any]]) -> None:
-        if not self._config.get("auto_extract", False):
+        if not is_truthy_value(self._config.get("auto_extract"), default=False):
             return
         if not self._store or not messages:
             return

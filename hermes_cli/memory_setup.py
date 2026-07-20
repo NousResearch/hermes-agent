@@ -80,7 +80,10 @@ def _prompt(label: str, default: str | None = None, secret: bool = False) -> str
 def _install_dependencies(provider_name: str) -> None:
     """Install pip dependencies declared in plugin.yaml."""
     import subprocess
-    from plugins.memory import find_provider_dir
+    from plugins.memory import (
+        find_provider_dir,
+        memory_provider_dependency_satisfied,
+    )
 
     plugin_dir = find_provider_dir(provider_name)
     if not plugin_dir:
@@ -100,22 +103,10 @@ def _install_dependencies(provider_name: str) -> None:
     if not pip_deps:
         return
 
-    # pip name → import name mapping for packages where they differ
-    _IMPORT_NAMES = {
-        "honcho-ai": "honcho",
-        "mem0ai": "mem0",
-        "hindsight-client": "hindsight_client",
-        "hindsight-all": "hindsight",
-    }
-
     # Check which packages are missing
-    missing = []
-    for dep in pip_deps:
-        import_name = _IMPORT_NAMES.get(dep, dep.replace("-", "_").split("[")[0])
-        try:
-            __import__(import_name)
-        except ImportError:
-            missing.append(dep)
+    missing = [
+        dep for dep in pip_deps if not memory_provider_dependency_satisfied(dep)
+    ]
 
     if not missing:
         return

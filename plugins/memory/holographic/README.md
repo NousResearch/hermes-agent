@@ -4,7 +4,8 @@ Local SQLite fact store with FTS5 search, trust scoring, entity resolution, and 
 
 ## Requirements
 
-None — uses SQLite (always available). NumPy optional for HRR algebra.
+SQLite is always available. The setup wizard installs NumPy for HRR algebra;
+without NumPy the provider falls back to FTS5 and token-overlap retrieval.
 
 ## Setup
 
@@ -14,6 +15,7 @@ hermes memory setup    # select "holographic"
 
 Or manually:
 ```bash
+uv pip install --python "$(command -v python)" numpy==2.4.3  # enables HRR algebra
 hermes config set memory.provider holographic
 ```
 

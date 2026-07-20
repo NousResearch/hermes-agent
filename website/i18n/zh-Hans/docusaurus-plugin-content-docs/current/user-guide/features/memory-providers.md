@@ -376,8 +376,8 @@ echo "HINDSIGHT_API_KEY=your-key" >> ~/.hermes/.env
 
 | | |
 |---|---|
-| **适合场景** | 无外部依赖的纯本地高级检索记忆 |
-| **依赖** | 无（SQLite 始终可用）。NumPy 可选，用于 HRR 代数。 |
+| **适合场景** | 无外部服务的纯本地高级检索记忆 |
+| **依赖** | SQLite（始终可用）。安装向导会安装 NumPy 以启用 HRR 代数。 |
 | **数据存储** | 本地 SQLite |
 | **费用** | 免费 |
 
@@ -387,6 +387,7 @@ echo "HINDSIGHT_API_KEY=your-key" >> ~/.hermes/.env
 ```bash
 hermes memory setup    # 选择 "holographic"
 # 或手动配置：
+uv pip install --python "$(command -v python)" numpy==2.4.3  # 启用 HRR 代数
 hermes config set memory.provider holographic
 ```
 

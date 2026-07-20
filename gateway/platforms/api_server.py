@@ -18,6 +18,7 @@ Exposes an HTTP server with endpoints:
 - GET  /v1/runs/{run_id}           — retrieve current run status
 - GET  /v1/runs/{run_id}/events    — SSE stream of structured lifecycle events
 - POST /v1/runs/{run_id}/approval — resolve a pending run approval
+- POST /v1/runs/{run_id}/clarification — answer an exact pending clarification
 - POST /v1/runs/{run_id}/steer      — inject guidance into a running agent
 - POST /v1/runs/{run_id}/stop       — interrupt a running agent
 - GET  /health                     — health check
@@ -70,6 +71,13 @@ _PROFILE_REJECTED = object()
 _api_request_profile: ContextVar[Optional[str]] = ContextVar(
     "api_server_request_profile", default=None
 )
+
+_RUN_CLARIFY_PROMPT_VERSION = 1
+_RUN_CLARIFY_MAX_QUESTION_CHARS = 2000
+_RUN_CLARIFY_MAX_CHOICE_CHARS = 500
+_RUN_CLARIFY_MAX_RESPONSE_CHARS = 2000
+_RUN_CLARIFY_REQUEST_ID_RE = re.compile(r"^clarify_[0-9a-f]{32}$")
+
 
 def _approval_event_choices(*, smart_denied: bool, allow_permanent: bool) -> list[str]:
     if smart_denied:
@@ -1436,6 +1444,9 @@ class APIServerAdapter(BasePlatformAdapter):
         # resolves requests by session key, while API clients address the
         # in-flight run by run_id.
         self._run_approval_sessions: Dict[str, str] = {}
+        # Clarify requests use the same per-run isolation rule as approvals,
+        # but remain a separate primitive and response endpoint.
+        self._run_clarify_sessions: Dict[str, str] = {}
         self._session_db: Optional[Any] = None  # Lazy-init SessionDB for session continuity
         self._session_dbs: Dict[str, Any] = {}
         self._session_db_cache_lock = threading.Lock()
@@ -1587,7 +1598,13 @@ class APIServerAdapter(BasePlatformAdapter):
             # "cancelled" — an unbounded window, not the old ~5s hard-timeout
             # wait. Excluding it here undercounts active_api_runs for the
             # whole duration of a cooperative stop.
-            if status.get("status") in {"queued", "running", "waiting_for_approval", "stopping"}
+            if status.get("status") in {
+                "queued",
+                "running",
+                "waiting_for_approval",
+                "waiting_for_clarification",
+                "stopping",
+            }
         )
         process_depth = 0
         active_delegations = 0
@@ -2095,6 +2112,7 @@ class APIServerAdapter(BasePlatformAdapter):
             ("GET", "/v1/runs/{run_id}", self._handle_get_run),
             ("GET", "/v1/runs/{run_id}/events", self._handle_run_events),
             ("POST", "/v1/runs/{run_id}/approval", self._handle_run_approval),
+            ("POST", "/v1/runs/{run_id}/clarification", self._handle_run_clarification),
             ("POST", "/v1/runs/{run_id}/steer", self._handle_steer_run),
             ("POST", "/v1/runs/{run_id}/stop", self._handle_stop_run),
         ]
@@ -2653,6 +2671,8 @@ class APIServerAdapter(BasePlatformAdapter):
         route: Optional[Dict[str, Any]] = None,
         session_model: Optional[str] = None,
         confirmed_runtime_lock: bool = False,
+        clarify_callback=None,
+        enable_clarify: bool = False,
     ) -> Any:
         """
         Create an AIAgent instance using the gateway's runtime config.
@@ -2686,6 +2706,11 @@ class APIServerAdapter(BasePlatformAdapter):
         session ``/model`` override, disables the global fallback model
         chain, and fails closed if the locked provider's credentials cannot
         be resolved.
+
+        ``enable_clarify`` is reserved for the Runs lifecycle, whose typed,
+        request-bound HTTP response route can safely satisfy the callback.
+        Other API surfaces remain headless even when their configured toolset
+        would otherwise include ``clarify``.
         """
         from run_agent import AIAgent
         from gateway.run import (
@@ -2918,7 +2943,10 @@ class APIServerAdapter(BasePlatformAdapter):
                 self._last_resolved_model["*"] = model
 
         user_config = _load_gateway_config()
-        enabled_toolsets = sorted(_get_platform_tools(user_config, "api_server"))
+        enabled_toolsets = set(_get_platform_tools(user_config, "api_server"))
+        if enable_clarify:
+            enabled_toolsets.add("clarify")
+        enabled_toolsets = sorted(enabled_toolsets)
 
         max_iterations = _current_max_iterations()
 
@@ -2959,6 +2987,7 @@ class APIServerAdapter(BasePlatformAdapter):
             "tool_progress_callback": tool_progress_callback,
             "tool_start_callback": tool_start_callback,
             "tool_complete_callback": tool_complete_callback,
+            "clarify_callback": clarify_callback,
             "session_db": self._ensure_session_db(),
             "fallback_model": fallback_model,
             "reasoning_config": reasoning_config,
@@ -3177,8 +3206,12 @@ class APIServerAdapter(BasePlatformAdapter):
                 "run_stop": True,
                 "run_steer": True,
                 "run_approval_response": True,
+                "run_clarification_response": True,
+                "run_clarification_request_binding": True,
+                "run_clarification_prompt_version": _RUN_CLARIFY_PROMPT_VERSION,
                 "tool_progress_events": True,
                 "approval_events": True,
+                "clarification_events": True,
                 "session_resources": True,
                 "model_options": True,
                 "session_chat": True,
@@ -3206,6 +3239,10 @@ class APIServerAdapter(BasePlatformAdapter):
                 "run_status": {"method": "GET", "path": "/v1/runs/{run_id}"},
                 "run_events": {"method": "GET", "path": "/v1/runs/{run_id}/events"},
                 "run_approval": {"method": "POST", "path": "/v1/runs/{run_id}/approval"},
+                "run_clarification": {
+                    "method": "POST",
+                    "path": "/v1/runs/{run_id}/clarification",
+                },
                 "run_steer": {"method": "POST", "path": "/v1/runs/{run_id}/steer"},
                 "run_stop": {"method": "POST", "path": "/v1/runs/{run_id}/stop"},
                 "skills": {"method": "GET", "path": "/v1/skills"},
@@ -6765,6 +6802,7 @@ class APIServerAdapter(BasePlatformAdapter):
         # concurrent runs can intentionally share them, and resolving an
         # approval for one run must not unblock another run's dangerous command.
         approval_session_key = run_id
+        clarify_session_key = run_id
         ephemeral_system_prompt = instructions
         loop = asyncio.get_running_loop()
         q: "asyncio.Queue[Optional[Dict]]" = asyncio.Queue()
@@ -6772,6 +6810,7 @@ class APIServerAdapter(BasePlatformAdapter):
         self._run_streams[run_id] = q
         self._run_streams_created[run_id] = created_at
         self._run_approval_sessions[run_id] = approval_session_key
+        self._run_clarify_sessions[run_id] = clarify_session_key
 
         event_cb = self._make_run_event_callback(run_id, loop)
 
@@ -6823,6 +6862,78 @@ class APIServerAdapter(BasePlatformAdapter):
                         last_event="run.cancelled",
                     )
                     return
+                def _clarify_callback(question: str, choices) -> str:
+                    from tools import clarify_gateway
+
+                    safe_question = str(
+                        redact_sensitive_text(str(question or ""), force=True) or ""
+                    )[:_RUN_CLARIFY_MAX_QUESTION_CHARS]
+                    safe_choices = None
+                    if choices:
+                        safe_choices = [
+                            str(redact_sensitive_text(str(choice), force=True) or "")[
+                                :_RUN_CLARIFY_MAX_CHOICE_CHARS
+                            ]
+                            for choice in list(choices)[:4]
+                        ]
+                    request_id = f"clarify_{uuid.uuid4().hex}"
+                    clarify_gateway.register(
+                        clarify_id=request_id,
+                        session_key=clarify_session_key,
+                        question=safe_question,
+                        choices=safe_choices,
+                    )
+                    prompt: Dict[str, Any] = {
+                        "version": _RUN_CLARIFY_PROMPT_VERSION,
+                        "type": "choice" if safe_choices else "text",
+                        "question": safe_question,
+                    }
+                    if safe_choices:
+                        prompt["choices"] = [
+                            {"id": f"choice-{index}", "label": label}
+                            for index, label in enumerate(safe_choices, start=1)
+                        ]
+
+                    def _publish_clarify() -> None:
+                        if (
+                            run_id in self._stopping_run_ids
+                            or clarify_gateway.get_pending_by_id(
+                                request_id,
+                                session_key=clarify_session_key,
+                            )
+                            is None
+                        ):
+                            return
+                        if self._run_streams.get(run_id) is not q:
+                            clarify_gateway.clear_session(clarify_session_key)
+                            return
+                        self._set_run_status(
+                            run_id,
+                            "waiting_for_clarification",
+                            last_event="clarify.request",
+                        )
+                        _put_event_if_active({
+                            "event": "clarify.request",
+                            "run_id": run_id,
+                            "request_id": request_id,
+                            "timestamp": time.time(),
+                            "prompt": prompt,
+                        })
+
+                    try:
+                        loop.call_soon_threadsafe(_publish_clarify)
+                    except RuntimeError:
+                        clarify_gateway.clear_session(clarify_session_key)
+                        return "[clarify prompt could not be delivered]"
+                    timeout = clarify_gateway.get_clarify_timeout()
+                    response = clarify_gateway.wait_for_response(
+                        request_id,
+                        timeout=float(timeout),
+                    )
+                    if not response:
+                        return f"[user did not respond within {int(timeout / 60)}m]"
+                    return response
+
                 with self._profile_scope(request_profile):
                     agent = self._create_agent(
                         ephemeral_system_prompt=ephemeral_system_prompt,
@@ -6834,6 +6945,8 @@ class APIServerAdapter(BasePlatformAdapter):
                         requested_provider=agent_overrides.get("requested_provider"),
                         model_options=agent_overrides.get("model_options"),
                         route=route,
+                        clarify_callback=_clarify_callback,
+                        enable_clarify=True,
                     )
                 self._active_run_agents[run_id] = agent
 
@@ -7065,6 +7178,13 @@ class APIServerAdapter(BasePlatformAdapter):
                 self._active_run_agents.pop(run_id, None)
                 self._active_run_tasks.pop(run_id, None)
                 self._run_approval_sessions.pop(run_id, None)
+                try:
+                    from tools.clarify_gateway import clear_session
+
+                    clear_session(clarify_session_key)
+                except Exception:
+                    pass
+                self._run_clarify_sessions.pop(run_id, None)
                 self._stopping_run_ids.discard(run_id)
 
         self._activate_admitted_request()
@@ -7241,6 +7361,150 @@ class APIServerAdapter(BasePlatformAdapter):
             "resolved": resolved,
         })
 
+    async def _handle_run_clarification(self, request: "web.Request") -> "web.Response":
+        """Answer one exact, run-bound clarification request."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        run_id = request.match_info["run_id"]
+        if run_id not in self._run_statuses:
+            return web.json_response(
+                _openai_error(f"Run not found: {run_id}", code="run_not_found"),
+                status=404,
+            )
+        try:
+            body = await request.json()
+        except Exception:
+            return web.json_response(_openai_error("Invalid JSON"), status=400)
+        if not isinstance(body, dict):
+            return web.json_response(_openai_error("JSON body must be an object"), status=400)
+
+        request_id = body.get("request_id")
+        if not isinstance(request_id, str) or not _RUN_CLARIFY_REQUEST_ID_RE.fullmatch(request_id):
+            return web.json_response(
+                _openai_error(
+                    "Invalid clarification request_id",
+                    code="invalid_clarification_request_id",
+                ),
+                status=400,
+            )
+        response = body.get("response")
+        if not isinstance(response, dict):
+            return web.json_response(
+                _openai_error(
+                    "Clarification response must be an object",
+                    code="invalid_clarification_response",
+                ),
+                status=400,
+            )
+
+        clarify_session_key = self._run_clarify_sessions.get(run_id)
+        if not clarify_session_key:
+            return web.json_response(
+                _openai_error(
+                    f"Run has no active clarification session: {run_id}",
+                    code="clarification_not_active",
+                ),
+                status=409,
+            )
+        from tools import clarify_gateway
+
+        pending = clarify_gateway.get_pending_by_id(
+            request_id,
+            session_key=clarify_session_key,
+        )
+        if pending is None:
+            return web.json_response(
+                _openai_error(
+                    "Clarification is stale, unknown, resolved, or belongs to another run",
+                    code="clarification_not_pending",
+                ),
+                status=409,
+            )
+
+        response_type = response.get("type")
+        if response_type == "choice":
+            choice_id = response.get("choice_id")
+            choices = pending.get("choices") or []
+            match = re.fullmatch(r"choice-([1-4])", str(choice_id or ""))
+            index = int(match.group(1)) - 1 if match else -1
+            if index < 0 or index >= len(choices):
+                return web.json_response(
+                    _openai_error(
+                        "Invalid clarification choice_id",
+                        code="invalid_clarification_choice",
+                    ),
+                    status=400,
+                )
+            answer = str(choices[index])
+            response_summary: Dict[str, Any] = {
+                "type": "choice",
+                "choice_id": choice_id,
+            }
+        elif response_type == "text":
+            text_value = response.get("text")
+            if not isinstance(text_value, str) or not text_value.strip():
+                return web.json_response(
+                    _openai_error(
+                        "Clarification text must be a non-empty string",
+                        code="invalid_clarification_text",
+                    ),
+                    status=400,
+                )
+            if len(text_value) > _RUN_CLARIFY_MAX_RESPONSE_CHARS:
+                return web.json_response(
+                    _openai_error(
+                        f"Clarification text exceeds {_RUN_CLARIFY_MAX_RESPONSE_CHARS} characters",
+                        code="clarification_text_too_long",
+                    ),
+                    status=400,
+                )
+            answer = text_value.strip()
+            response_summary = {"type": "text"}
+        else:
+            return web.json_response(
+                _openai_error(
+                    "Clarification response type must be 'choice' or 'text'",
+                    code="invalid_clarification_response_type",
+                ),
+                status=400,
+            )
+
+        if not clarify_gateway.resolve_gateway_clarify(
+            request_id,
+            answer,
+            session_key=clarify_session_key,
+        ):
+            return web.json_response(
+                _openai_error(
+                    "Clarification is no longer pending",
+                    code="clarification_not_pending",
+                ),
+                status=409,
+            )
+
+        self._set_run_status(run_id, "running", last_event="clarify.responded")
+        q = self._run_streams.get(run_id)
+        event = {
+            "event": "clarify.responded",
+            "run_id": run_id,
+            "request_id": request_id,
+            "timestamp": time.time(),
+            **response_summary,
+        }
+        if q is not None:
+            try:
+                q.put_nowait(event)
+            except Exception:
+                pass
+        return web.json_response({
+            "object": "hermes.run.clarification_response",
+            "run_id": run_id,
+            "request_id": request_id,
+            **response_summary,
+        })
+
     async def _handle_steer_run(self, request: "web.Request") -> "web.Response":
         """POST /v1/runs/{run_id}/steer — inject guidance into a running agent."""
         auth_err = self._check_auth(request)
@@ -7331,6 +7595,15 @@ class APIServerAdapter(BasePlatformAdapter):
                 agent, source="api_server_run_stop"
             )
 
+        clarify_session_key = self._run_clarify_sessions.get(run_id)
+        if clarify_session_key:
+            try:
+                from tools.clarify_gateway import clear_session
+
+                clear_session(clarify_session_key)
+            except Exception:
+                pass
+
         return web.json_response({"run_id": run_id, "status": "stopping"})
 
     async def _sweep_orphaned_runs(self) -> None:
@@ -7370,6 +7643,14 @@ class APIServerAdapter(BasePlatformAdapter):
                 self._active_run_agents.pop(run_id, None)
                 self._active_run_tasks.pop(run_id, None)
                 self._run_approval_sessions.pop(run_id, None)
+                clarify_session_key = self._run_clarify_sessions.pop(run_id, None)
+                if clarify_session_key:
+                    try:
+                        from tools.clarify_gateway import clear_session
+
+                        clear_session(clarify_session_key)
+                    except Exception:
+                        pass
                 self._stopping_run_ids.discard(run_id)
 
         stale_statuses = [

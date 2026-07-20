@@ -177,6 +177,53 @@ def test_docker_build_context_includes_skills_without_local_artifacts():
     assert ignore_spec.match_file("README.md")
 
 
+def test_docker_candidate_builds_share_complete_oci_identity():
+    """The tested local image and published digest must identify one source.
+
+    The workflow builds twice: first it loads an image for the integration
+    tests, then it rebuilds from the cached layers and pushes by digest.  If OCI
+    labels are only added to the second build, the image that passed tests is
+    not the image identity later published.  Keep the identity contract on
+    both build-push steps.
+    """
+    workflow = (REPO_ROOT / ".github" / "workflows" / "docker.yml").read_text(
+        encoding="utf-8"
+    )
+    step_starts = [
+        match.start()
+        for match in re.finditer(r"(?m)^      - name: ", workflow)
+    ]
+    step_starts.append(len(workflow))
+    build_steps = [
+        workflow[start:end]
+        for start, end in zip(step_starts, step_starts[1:])
+        if "uses: docker/build-push-action@" in workflow[start:end]
+    ]
+
+    assert len(build_steps) == 2, (
+        "expected the local-load and push-by-digest docker/build-push-action "
+        "steps"
+    )
+    expected_labels = {
+        "org.opencontainers.image.source=https://github.com/${{ github.repository }}",
+        "org.opencontainers.image.revision=${{ github.sha }}",
+        "org.opencontainers.image.version=${{ github.event.release.tag_name || github.ref_name }}",
+    }
+    for step in build_steps:
+        labels_match = re.search(
+            r"(?m)^          labels: \|\n(?P<labels>(?:^            .+\n)+)",
+            step,
+        )
+        assert labels_match is not None, "every candidate build must set OCI labels"
+        labels = {
+            line.strip()
+            for line in labels_match.group("labels").splitlines()
+            if line.strip()
+        }
+        assert expected_labels <= labels
+        assert "HERMES_GIT_SHA=${{ github.sha }}" in step
+
+
 def test_bundled_plugin_manifests_ship_in_both_wheel_and_sdist():
     """Regression test for #34034 / #28149.
 

@@ -2595,7 +2595,14 @@ class CLICommandsMixin:
             return
 
         self.reasoning_config = parsed
-        self.agent = None  # Force agent re-init with new reasoning config
+        if self.agent is not None:
+            # reasoning_config is read dynamically on every API call
+            # (agent/chat_completion_helpers.py), so update in-place instead
+            # of destroying the agent — avoids MCP rediscovery storm, prompt
+            # cache invalidation, and "Agent updated — 0 tool(s) available".
+            self.agent.reasoning_config = parsed
+        else:
+            self.agent = None  # No live agent — re-init on next turn
 
         if explicit_global and save_config_value("agent.reasoning_effort", arg):
             agent_cfg = CLI_CONFIG.get("agent")
@@ -2699,7 +2706,14 @@ class CLICommandsMixin:
             _cprint(f"  {_DIM}Usage: /fast [normal|fast|status] [--global]{_RST}")
             return
 
-        self.agent = None  # Force agent re-init with new service-tier config
+        if self.agent is not None:
+            # service_tier is resolved per-turn via request_overrides
+            # (hermes_cli/cli_agent_setup_mixin.py), so update in-place
+            # instead of destroying the agent — avoids MCP rediscovery storm,
+            # prompt cache invalidation, and "Agent updated — 0 tool(s)".
+            self.agent.service_tier = self.service_tier
+        else:
+            self.agent = None  # No live agent — re-init on next turn
         if explicit_global and save_config_value("agent.service_tier", saved_value):
             _cprint(f"  {_ACCENT}✓ {feature_name} set to {label} (saved to config){_RST}")
         elif explicit_global:

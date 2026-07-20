@@ -60,3 +60,48 @@ def test_register_wakes_stale_cached_server(monkeypatch, tmp_path):
     finally:
         mcp_tool._servers.pop("parked-srv", None)
         mcp_tool._servers.pop("healthy-srv", None)
+
+
+@pytest.mark.no_isolate
+def test_register_rejects_source_bound_reuse_when_cached_config_missing(
+    monkeypatch, tmp_path,
+):
+    """Missing legacy cache metadata must not weaken profile isolation."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    from tools import mcp_tool
+
+    woken: list[str] = []
+
+    class _Event:
+        def set(self):
+            woken.append("gbrain")
+
+    class _LegacyStale:
+        session = None
+
+        def __init__(self):
+            self.name = "gbrain"
+            self._reconnect_event = _Event()
+            self._registered_tool_names: list[str] = []
+
+    monkeypatch.setattr(mcp_tool, "_MCP_AVAILABLE", True)
+    monkeypatch.setitem(mcp_tool._servers, "gbrain", _LegacyStale())
+
+    requested = {
+        "gbrain": {
+            "url": "http://127.0.0.1:7331/mcp",
+            "auth": "oauth",
+            "oauth": {
+                "grant_type": "client_credentials",
+                "token_url": "http://127.0.0.1:7331/token",
+                "client_id": "profile-client",
+            },
+        }
+    }
+    try:
+        with pytest.raises(RuntimeError, match="refusing to reuse"):
+            mcp_tool.register_mcp_servers(requested)
+        assert woken == []
+    finally:
+        mcp_tool._servers.pop("gbrain", None)

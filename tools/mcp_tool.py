@@ -1710,7 +1710,9 @@ class ElicitationHandler:
 # Server task -- each MCP server lives in one long-lived asyncio Task
 # ---------------------------------------------------------------------------
 
-def _uses_client_credentials(config: dict) -> bool:
+def _uses_client_credentials(config: dict | None) -> bool:
+    if not isinstance(config, dict):
+        return False
     oauth = config.get("oauth")
     return (
         str(config.get("auth") or "").lower().strip() == "oauth"
@@ -5189,12 +5191,12 @@ def _source_bound_connection_matches_profile(
     requested_config: dict,
 ) -> bool:
     """Return whether a live client-credentials connection belongs here."""
-    active_config = existing._config
+    active_config = getattr(existing, "_config", None)
     return bool(
         _uses_client_credentials(active_config)
         and _uses_client_credentials(requested_config)
-        and existing._oauth_profile_token_dir is not None
-        and existing._oauth_profile_token_dir
+        and getattr(existing, "_oauth_profile_token_dir", None) is not None
+        and getattr(existing, "_oauth_profile_token_dir", None)
         == _client_credentials_profile_token_dir(requested_config)
         and active_config.get("url") == requested_config.get("url")
         and dict(active_config.get("oauth") or {})
@@ -5232,7 +5234,7 @@ def assert_mcp_profile_compatible() -> None:
         )
         active_source_bound = bool(
             existing is not None
-            and _uses_client_credentials(existing._config)
+            and _uses_client_credentials(getattr(existing, "_config", None))
         )
         requested_source_bound = bool(
             requested_enabled and _uses_client_credentials(requested)
@@ -5278,7 +5280,9 @@ def register_mcp_servers(servers: Dict[str, dict]) -> List[str]:
             existing = _servers.get(srv_name)
         if existing is None:
             continue
-        active_source_bound = _uses_client_credentials(existing._config)
+        active_source_bound = _uses_client_credentials(
+            getattr(existing, "_config", None)
+        )
         requested_source_bound = _uses_client_credentials(srv_cfg)
         if active_source_bound or requested_source_bound:
             if not _source_bound_connection_matches_profile(existing, srv_cfg):

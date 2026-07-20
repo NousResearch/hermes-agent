@@ -27,8 +27,15 @@ def _patch_pipeline(monkeypatch, *, success=True, output="out", final="final res
         calls.append(("save", jid))
         return f"/tmp/{jid}.txt"
 
-    def fake_deliver(job, content, adapters=None, loop=None):
-        calls.append(("deliver", job["id"]))
+    def fake_deliver(
+        job,
+        content,
+        adapters=None,
+        loop=None,
+        output_file=None,
+        success=True,
+    ):
+        calls.append(("deliver", job["id"], output_file, success))
         return None
 
     def fake_mark(jid, ok, err=None, delivery_error=None):
@@ -52,6 +59,7 @@ def test_tick_process_job_sequence(monkeypatch):
 
     assert [c[0] for c in calls] == ["run_job", "save", "deliver", "mark"]
     assert calls[-1] == ("mark", "j1", True)
+    assert ("deliver", "j1", "/tmp/j1.txt", True) in calls
 
 
 def test_run_one_job_success_sequence(monkeypatch):
@@ -64,6 +72,7 @@ def test_run_one_job_success_sequence(monkeypatch):
     assert ok is True
     assert [c[0] for c in calls] == ["run_job", "save", "deliver", "mark"]
     assert calls[-1] == ("mark", "j2", True)
+    assert ("deliver", "j2", "/tmp/j2.txt", True) in calls
 
 
 def test_run_one_job_silent_skips_delivery(monkeypatch):
@@ -98,6 +107,7 @@ def test_run_one_job_failed_job_delivers_error(monkeypatch):
     assert "deliver" in kinds  # failures always deliver
     mark = [c for c in calls if c[0] == "mark"][0]
     assert mark == ("mark", "j5", False)
+    assert ("deliver", "j5", "/tmp/j5.txt", False) in calls
 
 
 def test_run_one_job_exception_marks_failure(monkeypatch):
@@ -184,7 +194,16 @@ def test_run_one_job_delivers_before_agent_teardown(monkeypatch):
         defer_agent_teardown.append(FakeAgent())
         return (True, "out", "final response", None)
 
-    def fake_deliver(job, content, adapters=None, loop=None):
+    def fake_deliver(
+        job,
+        content,
+        adapters=None,
+        loop=None,
+        output_file=None,
+        success=True,
+    ):
+        assert output_file == "/tmp/j8.txt"
+        assert success is True
         order.append("deliver")
         return None
 
@@ -219,7 +238,16 @@ def test_run_one_job_tears_down_deferred_agent_when_delivery_raises(monkeypatch)
         defer_agent_teardown.append(FakeAgent())
         return (True, "out", "final response", None)
 
-    def boom_deliver(job, content, adapters=None, loop=None):
+    def boom_deliver(
+        job,
+        content,
+        adapters=None,
+        loop=None,
+        output_file=None,
+        success=True,
+    ):
+        assert output_file == "/tmp/j9.txt"
+        assert success is True
         order.append("deliver-raise")
         raise RuntimeError("send blew up")
 

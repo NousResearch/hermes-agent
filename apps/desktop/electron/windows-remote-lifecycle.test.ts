@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+
 import { test } from 'vitest'
 
 import {
@@ -26,11 +27,25 @@ test('PowerShell transport uses UTF-16LE encoded commands and literal escaping',
 test('platform detection preserves POSIX and falls back to Windows PowerShell', async () => {
   assert.deepEqual(await detectRemotePlatform(sshWith(async () => 'Linux\nx86_64\n')), { os: 'Linux', arch: 'x86_64' })
   const calls: string[] = []
-  const result = await detectRemotePlatform(sshWith(async command => {
-    calls.push(command)
-    if (command.startsWith('uname ')) throw new Error('PowerShell does not recognize uname')
-    return JSON.stringify({ os: 'Windows', arch: 'ARM64', hermesHome: 'C:\\h', hermesPath: 'C:\\h\\hermes.exe', python: 'C:\\h\\python.exe' })
-  }))
+
+  const result = await detectRemotePlatform(
+    sshWith(async command => {
+      calls.push(command)
+
+      if (command.startsWith('uname ')) {
+        throw new Error('PowerShell does not recognize uname')
+      }
+
+      return JSON.stringify({
+        os: 'Windows',
+        arch: 'ARM64',
+        hermesHome: 'C:\\h',
+        hermesPath: 'C:\\h\\hermes.exe',
+        python: 'C:\\h\\python.exe'
+      })
+    })
+  )
+
   assert.equal(result.os, 'Windows')
   assert.match(calls[1], /EncodedCommand/)
 })
@@ -41,22 +56,34 @@ test('platform detection surfaces transport failures as themselves, not unsuppor
   const transportErr: any = new Error('SSH connection timed out')
   transportErr.kind = 'timeout'
   await assert.rejects(
-    detectRemotePlatform(sshWith(async () => { throw transportErr })),
+    detectRemotePlatform(
+      sshWith(async () => {
+        throw transportErr
+      })
+    ),
     (err: any) => err.kind === 'timeout'
   )
   // Probe genuinely failing on a reachable host still classifies unsupported,
   // and carries the probe detail for diagnosis.
   await assert.rejects(
-    detectRemotePlatform(sshWith(async command => {
-      if (command.startsWith('uname ')) throw new Error('not recognized')
-      throw new Error('Hermes is not installed on the remote Windows host.')
-    })),
+    detectRemotePlatform(
+      sshWith(async command => {
+        if (command.startsWith('uname ')) {
+          throw new Error('not recognized')
+        }
+
+        throw new Error('Hermes is not installed on the remote Windows host.')
+      })
+    ),
     (err: any) => err.kind === 'unsupported-platform' && /Hermes is not installed/.test(err.message)
   )
 })
 
 test('helper command uses the fixed remote Python entry point and quotes path data', () => {
-  const command = helperCommand({ python: "C:\\Program Files\\Hermes's\\python.exe" }, 'inspect', ["C:\\x y\\hermes.exe"])
+  const command = helperCommand({ python: "C:\\Program Files\\Hermes's\\python.exe" }, 'inspect', [
+    'C:\\x y\\hermes.exe'
+  ])
+
   const encoded = command.split(' ').pop()!
   const script = Buffer.from(encoded, 'base64').toString('utf16le')
   assert.match(script, /-m' 'hermes_cli\.windows_ssh_runtime' 'inspect'/)
@@ -77,6 +104,7 @@ test('Windows lock validation is scoped and exact', () => {
     hermesPath: 'C:\\h\\hermes.exe',
     hermesHome: 'C:\\h'
   }
+
   assert.equal(validLock(lock, ownershipId), true)
   assert.equal(validLock({ ...lock, ownershipId: 'b'.repeat(32) }, ownershipId), false)
   assert.equal(validLock({ ...lock, creationTimeNs: '0' }, ownershipId), false)

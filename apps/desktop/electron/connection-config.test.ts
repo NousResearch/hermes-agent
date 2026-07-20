@@ -23,19 +23,19 @@ import {
   cookiesHaveLiveSession,
   cookiesHavePrivySession,
   cookiesHaveSession,
+  localProfileEntry,
   modeIsRemoteLike,
   normalizeRemoteBaseUrl,
   normalizeSshConfig,
-  localProfileEntry,
   normAuthMode,
   pathWithGlobalRemoteProfile,
   profileHasRemoteConnection,
   profileRemoteOverride,
   profileSshOverride,
-  savedProfileSsh,
   resolveAuthMode,
   resolveTestWsUrl,
   RT_COOKIE_VARIANTS,
+  savedProfileSsh,
   tokenPreview
 } from './connection-config'
 
@@ -134,22 +134,31 @@ test('SSH remains separate from URL-shaped remote modes', () => {
   const config = { profiles: { coder: { mode: 'ssh', host: 'alice@box:2222', keyPath: '/key' } } }
   assert.equal(profileRemoteOverride(config, 'coder'), null)
   assert.deepEqual(profileSshOverride(config, 'coder'), {
-    mode: 'ssh', host: 'box', user: 'alice', port: 2222, keyPath: '/key'
+    mode: 'ssh',
+    host: 'box',
+    user: 'alice',
+    port: 2222,
+    keyPath: '/key'
   })
 })
 
 test('normalizeSshConfig handles IPv6 and strict port bounds', () => {
   assert.deepEqual(normalizeSshConfig({ mode: 'ssh', host: '::1', port: 22 }), {
-    mode: 'ssh', host: '::1'
+    mode: 'ssh',
+    host: '::1'
   })
   assert.deepEqual(normalizeSshConfig({ mode: 'ssh', host: '[::1]:2222' }), {
-    mode: 'ssh', host: '::1', port: 2222
+    mode: 'ssh',
+    host: '::1',
+    port: 2222
   })
   assert.deepEqual(normalizeSshConfig({ mode: 'ssh', host: 'box', port: '2222junk' }), {
-    mode: 'ssh', host: 'box'
+    mode: 'ssh',
+    host: 'box'
   })
   assert.deepEqual(normalizeSshConfig({ mode: 'ssh', host: 'box', port: 65536 }), {
-    mode: 'ssh', host: 'box'
+    mode: 'ssh',
+    host: 'box'
   })
 })
 
@@ -157,7 +166,8 @@ test('localProfileEntry preserves inactive SSH drafts but drops Cloud state', ()
   const ssh = { mode: 'ssh', host: 'box', user: 'alice', remoteHermesPath: '/hermes' }
   assert.deepEqual(localProfileEntry(ssh), { mode: 'local', savedSsh: ssh })
   assert.deepEqual(localProfileEntry({ mode: 'local', savedSsh: ssh }), {
-    mode: 'local', savedSsh: ssh
+    mode: 'local',
+    savedSsh: ssh
   })
   assert.equal(localProfileEntry({ mode: 'cloud', url: 'https://agent' }), null)
 })

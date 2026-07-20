@@ -29,11 +29,13 @@ describe('selectSshHost', () => {
 
   it('enriches only the host that produced the ssh config result', () => {
     const selected = selectSshHost(state, 'mac-box')
-    expect(enrichSelectedSshHost(selected, 'mac-box', {
-      identityFile: '~/.ssh/id_ed25519',
-      port: 22,
-      user: 'hermes'
-    })).toMatchObject({
+    expect(
+      enrichSelectedSshHost(selected, 'mac-box', {
+        identityFile: '~/.ssh/id_ed25519',
+        port: 22,
+        user: 'hermes'
+      })
+    ).toMatchObject({
       sshHost: 'mac-box',
       sshUser: 'hermes',
       sshPort: null,

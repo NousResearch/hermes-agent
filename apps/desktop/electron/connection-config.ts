@@ -171,52 +171,91 @@ function modeIsRemoteLike(mode) {
 }
 
 function normalizeSshConfig(entry) {
-  if (!entry || typeof entry !== 'object' || entry.mode !== 'ssh') return null
+  if (!entry || typeof entry !== 'object' || entry.mode !== 'ssh') {
+    return null
+  }
+
   let host = String(entry.host || '').trim()
-  if (!host) return null
+
+  if (!host) {
+    return null
+  }
+
   let parsedUser
   let parsedPort
   const at = host.indexOf('@')
+
   if (at > 0) {
     parsedUser = host.slice(0, at)
     host = host.slice(at + 1)
   }
+
   const bracketed = /^\[([^\]]+)](?::(\d+))?$/.exec(host)
+
   if (bracketed) {
     host = bracketed[1]
-    if (bracketed[2]) parsedPort = Number(bracketed[2])
+
+    if (bracketed[2]) {
+      parsedPort = Number(bracketed[2])
+    }
   } else if ((host.match(/:/g) || []).length === 1) {
     const [name, rawPort] = host.split(':')
+
     if (/^\d+$/.test(rawPort)) {
       host = name
       parsedPort = Number(rawPort)
     }
   }
-  if (!host) return null
+
+  if (!host) {
+    return null
+  }
+
   const out: any = { mode: 'ssh', host }
   const user = String(entry.user || '').trim() || parsedUser || ''
-  if (user) out.user = user
+
+  if (user) {
+    out.user = user
+  }
+
   const rawExplicitPort = String(entry.port ?? '').trim()
   const explicitPort = /^\d+$/.test(rawExplicitPort) ? Number(rawExplicitPort) : null
   const port = explicitPort ?? parsedPort
-  if (Number.isInteger(port) && port > 0 && port <= 65535 && port !== 22) out.port = port
+
+  if (Number.isInteger(port) && port > 0 && port <= 65535 && port !== 22) {
+    out.port = port
+  }
+
   const keyPath = String(entry.keyPath || '').trim()
-  if (keyPath) out.keyPath = keyPath
+
+  if (keyPath) {
+    out.keyPath = keyPath
+  }
+
   const remoteHermesPath = String(entry.remoteHermesPath || '').trim()
-  if (remoteHermesPath) out.remoteHermesPath = remoteHermesPath
+
+  if (remoteHermesPath) {
+    out.remoteHermesPath = remoteHermesPath
+  }
+
   return out
 }
 
 function profileSshOverride(config, profile) {
   const key = connectionScopeKey(profile)
   const entry = key ? config?.profiles?.[key] : null
+
   return normalizeSshConfig(entry)
 }
 
 function savedProfileSsh(config, profile) {
   const key = connectionScopeKey(profile)
   const entry = key ? config?.profiles?.[key] : null
-  if (!entry || entry.mode !== 'local') return null
+
+  if (!entry || entry.mode !== 'local') {
+    return null
+  }
+
   return normalizeSshConfig(entry.savedSsh)
 }
 
@@ -226,15 +265,24 @@ function profileHasRemoteConnection(config, profile) {
 
 function localProfileEntry(existing) {
   const ssh = normalizeSshConfig(existing) || normalizeSshConfig(existing?.savedSsh)
+
   return ssh ? { mode: 'local', savedSsh: ssh } : null
 }
 
 function hostLabelFromBaseUrl(baseUrl) {
   const raw = String(baseUrl || '').trim()
-  if (!raw) return null
+
+  if (!raw) {
+    return null
+  }
+
   try {
     const parsed = new URL(raw)
-    if (!parsed.hostname) return null
+
+    if (!parsed.hostname) {
+      return null
+    }
+
     return parsed.port && parsed.port !== '80' && parsed.port !== '443'
       ? `${parsed.hostname}:${parsed.port}`
       : parsed.hostname
@@ -411,19 +459,19 @@ export {
   cookiesHavePrivySession,
   cookiesHaveSession,
   hostLabelFromBaseUrl,
+  localProfileEntry,
   modeIsRemoteLike,
   normalizeRemoteBaseUrl,
   normalizeSshConfig,
-  localProfileEntry,
   normAuthMode,
   pathWithGlobalRemoteProfile,
   PRIVY_SESSION_COOKIE_VARIANTS,
   profileHasRemoteConnection,
   profileRemoteOverride,
   profileSshOverride,
-  savedProfileSsh,
   resolveAuthMode,
   resolveTestWsUrl,
   RT_COOKIE_VARIANTS,
+  savedProfileSsh,
   tokenPreview
 }

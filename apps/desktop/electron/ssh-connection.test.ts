@@ -3,11 +3,10 @@ import { EventEmitter } from 'node:events'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+
 import { test } from 'vitest'
 
 import {
-  SSH_ERROR,
-  SshConnection,
   baseSshOptions,
   buildControlArgs,
   buildExecArgs,
@@ -20,12 +19,13 @@ import {
   hostArgs,
   redactSecrets,
   runSsh,
-  stopTunnelChild,
+  SSH_ERROR,
+  SshConnection,
   sshErrorMessage,
+  stopTunnelChild,
   target,
   validateSshTarget
 } from './ssh-connection'
-
 
 test('redactSecrets scrubs the spawn-time session token env var', () => {
   const line = 'setsid env HERMES_DASHBOARD_SESSION_TOKEN=abc123deadbeef HERMES_DESKTOP=1 hermes dashboard'
@@ -56,7 +56,6 @@ test('redactSecrets handles null/undefined and non-secret text untouched', () =>
   assert.equal(redactSecrets('uname -s -m'), 'uname -s -m')
 })
 
-
 test('controlSocketPath is stable, short, and host-distinct', () => {
   const a = controlSocketPath('me', 'box1', 22, '/tmp/d')
   const a2 = controlSocketPath('me', 'box1', 22, '/tmp/d')
@@ -80,7 +79,6 @@ test('controlSocketPath default base stays under sun_path even with the temp-lis
   // And it must NOT live under the deeply-nested macOS per-user temp dir.
   assert.ok(!p.includes('/var/folders/'), 'default base must not be os.tmpdir() on macOS')
 })
-
 
 test('baseSshOptions carries the house ControlMaster/BatchMode/accept-new policy', () => {
   const opts = baseSshOptions('/tmp/x.sock', 15000)
@@ -163,9 +161,11 @@ test('buildInteractiveSshArgs single-quotes a cwd with quotes safely', () => {
   assert.ok(args[args.length - 1].includes('exec "$SHELL" -l'))
 })
 
-
 test('classifySshError detects a changed host key (fail-closed)', () => {
-  assert.equal(classifySshError('@@@@ WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED! @@@@'), SSH_ERROR.HOST_KEY_CHANGED)
+  assert.equal(
+    classifySshError('@@@@ WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED! @@@@'),
+    SSH_ERROR.HOST_KEY_CHANGED
+  )
   assert.equal(classifySshError('Host key verification failed.'), SSH_ERROR.HOST_KEY_CHANGED)
   assert.equal(classifySshError('Offending ECDSA key in /home/u/.ssh/known_hosts:5'), SSH_ERROR.HOST_KEY_CHANGED)
 })
@@ -186,27 +186,38 @@ test('sshErrorMessage gives actionable guidance for auth and host-key-change', (
   assert.match(sshErrorMessage(SSH_ERROR.HOST_KEY_CHANGED, conn, 'CHANGED'), /ssh-keygen -R box/)
 })
 
-
 // A fake child process that emits a scripted result on next tick.
 function fakeChild({ code = 0, stdout = '', stderr = '', errorEvent = null, hang = false }: any = {}) {
   const child: any = new EventEmitter()
   child.stdout = new EventEmitter()
   child.stderr = new EventEmitter()
+
   child.kill = () => {
     child._killed = true
   }
+
   if (hang) {
     return child // never emits close → drives the timeout path
   }
+
   process.nextTick(() => {
     if (errorEvent) {
       child.emit('error', errorEvent)
+
       return
     }
-    if (stdout) child.stdout.emit('data', Buffer.from(stdout))
-    if (stderr) child.stderr.emit('data', Buffer.from(stderr))
+
+    if (stdout) {
+      child.stdout.emit('data', Buffer.from(stdout))
+    }
+
+    if (stderr) {
+      child.stderr.emit('data', Buffer.from(stderr))
+    }
+
     child.emit('close', code)
   })
+
   return child
 }
 
@@ -215,13 +226,17 @@ function fakeChild({ code = 0, stdout = '', stderr = '', errorEvent = null, hang
 function scriptedSpawn(scripts) {
   const calls: any[] = []
   let i = 0
+
   const fn: any = (_cmd, args) => {
     calls.push(args)
     const script = typeof scripts === 'function' ? scripts(args, i) : scripts[Math.min(i, scripts.length - 1)]
     i += 1
+
     return fakeChild(script || {})
   }
+
   fn.calls = calls
+
   return fn
 }
 
@@ -229,11 +244,17 @@ test('open() establishes the master when not already alive', async () => {
   // `-O check` fails first (not alive) → master opens (code 0). Track which
   // ssh ops ran rather than re-probing with the same always-failing check.
   const ops: string[] = []
+
   const spawnFn = scriptedSpawn(args => {
     ops.push(args.includes('check') ? 'check' : args.includes('-M') ? 'master' : 'other')
-    if (args.includes('check')) return { code: 255, stderr: 'no control path' }
+
+    if (args.includes('check')) {
+      return { code: 255, stderr: 'no control path' }
+    }
+
     return { code: 0 }
   })
+
   const conn = new SshConnection({ host: 'box', user: 'me' }, { spawnFn, controlDir: '/tmp/d' })
   await conn.open()
   assert.deepEqual(ops, ['check', 'master'], 'probes liveness first, then opens the master')
@@ -241,10 +262,13 @@ test('open() establishes the master when not already alive', async () => {
 
 test('open() is a no-op when the master is already alive and execs verify', async () => {
   const ops: string[] = []
+
   const spawnFn = scriptedSpawn(args => {
     ops.push(args.includes('check') ? 'check' : args.includes('exit 0') ? 'verify' : 'master')
+
     return { code: 0 } // check succeeds → alive; verify exec succeeds → trusted
   })
+
   const conn = new SshConnection({ host: 'box', user: 'me' }, { spawnFn, controlDir: '/tmp/d' })
   await conn.open()
   assert.deepEqual(ops, ['check', 'verify'], 'alive master is exec-verified, then trusted without reopening')
@@ -255,29 +279,57 @@ test('open() evicts a wedged master (check passes, exec hangs) and dials fresh',
   // every exec through it hangs. open() must verify, evict (-O exit), and
   // establish a fresh master instead of trusting the corpse.
   const ops: string[] = []
+
   const spawnFn = scriptedSpawn(args => {
-    if (args.includes('check')) { ops.push('check'); return { code: 0 } }
-    if (args.includes('exit 0')) { ops.push('verify'); return { hang: true } }
-    if (args.includes('-O')) { ops.push('evict'); return { code: 0 } }
-    ops.push('master'); return { code: 0 }
+    if (args.includes('check')) {
+      ops.push('check')
+
+      return { code: 0 }
+    }
+
+    if (args.includes('exit 0')) {
+      ops.push('verify')
+
+      return { hang: true }
+    }
+
+    if (args.includes('-O')) {
+      ops.push('evict')
+
+      return { code: 0 }
+    }
+
+    ops.push('master')
+
+    return { code: 0 }
   })
-  const conn = new SshConnection(
-    { host: 'box', user: 'me' },
-    { spawnFn, controlDir: '/tmp/d', connectTimeoutMs: 50 }
-  )
+
+  const conn = new SshConnection({ host: 'box', user: 'me' }, { spawnFn, controlDir: '/tmp/d', connectTimeoutMs: 50 })
+
   await conn.open()
-  assert.deepEqual(ops, ['check', 'verify', 'evict', 'master'],
-    'wedged master: verified, evicted, then a fresh master is dialed')
+  assert.deepEqual(
+    ops,
+    ['check', 'verify', 'evict', 'master'],
+    'wedged master: verified, evicted, then a fresh master is dialed'
+  )
 })
 
 test('close() removes the control socket when -O exit fails', async () => {
   const dir = path.join(os.tmpdir(), `hermes-ssh-close-${process.pid}-${Date.now()}`)
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 })
+
   const spawnFn = scriptedSpawn(args => {
-    if (args.includes('check')) return { code: 255 } // not alive → open dials master
-    if (args.includes('-M')) return { code: 0 }
+    if (args.includes('check')) {
+      return { code: 255 }
+    } // not alive → open dials master
+
+    if (args.includes('-M')) {
+      return { code: 0 }
+    }
+
     return { code: 255, stderr: 'mux: master gone' } // -O exit fails
   })
+
   const conn = new SshConnection({ host: 'box', user: 'me' }, { spawnFn, controlDir: dir })
   await conn.open()
   fs.writeFileSync(conn.controlPath, '') // simulate the lingering socket file
@@ -291,6 +343,7 @@ test('open() creates the control-socket directory if it does not exist', async (
   assert.ok(!fs.existsSync(dir), 'precondition: control dir absent')
   const spawnFn = scriptedSpawn(args => (args.includes('check') ? { code: 255 } : { code: 0 }))
   const conn = new SshConnection({ host: 'box', user: 'me' }, { spawnFn, controlDir: dir })
+
   try {
     await conn.open()
     assert.ok(fs.existsSync(dir), 'open() created the control-socket directory before spawning ssh')
@@ -305,15 +358,20 @@ test('open() creates the control-socket directory if it does not exist', async (
 
 test('open() surfaces a classified auth error', async () => {
   const spawnFn = scriptedSpawn(args => {
-    if (args.includes('check')) return { code: 255 }
+    if (args.includes('check')) {
+      return { code: 255 }
+    }
+
     return { code: 255, stderr: 'Permission denied (publickey).' }
   })
+
   const conn = new SshConnection({ host: 'box', user: 'me' }, { spawnFn, controlDir: '/tmp/d' })
   await assert.rejects(
     () => conn.open(),
     (err: any) => {
       assert.equal(err.kind, SSH_ERROR.AUTH_FAILED)
       assert.match(err.message, /ssh-agent|ssh-add/)
+
       return true
     }
   )
@@ -330,6 +388,7 @@ test('exec() returns stdout on success and rejects (classified) on failure', asy
     () => conn2.exec('uname -s'),
     (err: any) => {
       assert.equal(err.kind, SSH_ERROR.UNREACHABLE)
+
       return true
     }
   )
@@ -342,6 +401,7 @@ test('exec() treats a hung ssh as a timeout (half-open connection)', async () =>
     () => conn.exec('uname -s', { timeoutMs: 30 }),
     (err: any) => {
       assert.equal(err.kind, SSH_ERROR.TIMEOUT)
+
       return true
     }
   )
@@ -360,23 +420,27 @@ test('forward() issues -O forward with a loopback-bound -L spec', async () => {
 test('lifecycle logging passes through redaction', async () => {
   const logs: string[] = []
   const spawnFn = scriptedSpawn(args => (args.includes('check') ? { code: 255 } : { code: 0 }))
+
   const conn = new SshConnection(
     { host: 'box', user: 'me' },
     { spawnFn, controlDir: '/tmp/d', rememberLog: l => logs.push(l) }
   )
+
   await conn.open()
+
   // none of the emitted log lines may carry a raw token-shaped secret
   for (const line of logs) {
     assert.ok(!/token=[^<]/.test(line))
   }
+
   assert.ok(logs.some(l => l.includes('[ssh]')))
 })
-
 
 test('no-mux: ssh args carry no ControlMaster/ControlPath options', async () => {
   const spawnFn = scriptedSpawn({ code: 0 })
   const conn = new SshConnection({ host: 'box', user: 'me' }, { spawnFn, mux: false })
   await conn.open()
+
   for (const args of spawnFn.calls) {
     assert.ok(!args.some(a => /ControlMaster|ControlPath|ControlPersist/.test(a)), `mux option leaked: ${args}`)
   }
@@ -387,7 +451,10 @@ test('no-mux: open() verifies auth with a one-shot exec, no -M master', async ()
   const conn = new SshConnection({ host: 'box', user: 'me' }, { spawnFn, mux: false })
   await conn.open()
   assert.ok(!spawnFn.calls.some(args => args.includes('-M')), 'no master should be spawned')
-  assert.ok(spawnFn.calls.some(args => args[args.length - 1] === 'exit 0'), 'liveness/openness via one-shot exec')
+  assert.ok(
+    spawnFn.calls.some(args => args[args.length - 1] === 'exit 0'),
+    'liveness/openness via one-shot exec'
+  )
 })
 
 test('SSH probe never creates or closes a ControlMaster', async () => {
@@ -414,26 +481,37 @@ test('no-mux: forward spawns a persistent -N -L child; cancel + close kill it', 
   await new Promise<void>(r => srv.listen(0, '127.0.0.1', () => r()))
   const localPort = (srv.address() as any).port
   const tunnels: any[] = []
+
   const spawnFn: any = (_cmd, args) => {
     const child: any = new EventEmitter()
     child.stderr = new EventEmitter()
     child.exitCode = null
+
     child.kill = () => {
       child._killed = true
       child.exitCode = 0
       process.nextTick(() => child.emit('exit', 0))
+
       return true
     }
+
     if (args.includes('-N')) {
       tunnels.push({ args, child })
-      process.nextTick(() => child.stderr.emit('data', Buffer.from(`Local forwarding listening on 127.0.0.1 port ${localPort}.`)))
-    } else process.nextTick(() => child.emit('close', 0))
+      process.nextTick(() =>
+        child.stderr.emit('data', Buffer.from(`Local forwarding listening on 127.0.0.1 port ${localPort}.`))
+      )
+    } else {
+      process.nextTick(() => child.emit('close', 0))
+    }
+
     if (!args.includes('-N')) {
       child.stdout = new EventEmitter()
       process.nextTick(() => child.emit('close', 0))
     }
+
     return child
   }
+
   const conn = new SshConnection({ host: 'box', user: 'me' }, { spawnFn, mux: false })
   await conn.forward(localPort, 9119)
   assert.equal(tunnels.length, 1, 'one persistent tunnel child')
@@ -453,15 +531,19 @@ test('no-mux: forward fails fast when the tunnel child dies (bad spec/auth)', as
     const child: any = new EventEmitter()
     child.stderr = new EventEmitter()
     child.exitCode = null
+
     child.kill = () => {}
+
     if (args.includes('-N')) {
       process.nextTick(() => {
         child.stderr.emit('data', Buffer.from('Permission denied (publickey).'))
         child.exitCode = 255
       })
     }
+
     return child
   }
+
   const conn = new SshConnection({ host: 'box', user: 'me' }, { spawnFn, mux: false, forwardTimeoutMs: 2000 })
   await assert.rejects(conn.forward(1, 9119), (err: any) => err.kind === 'auth-failed')
 })
@@ -471,11 +553,14 @@ test('no-mux: an unrelated listener cannot mask a delayed bind failure', async (
   const srv = net.createServer()
   await new Promise<void>(resolve => srv.listen(0, '127.0.0.1', resolve))
   const localPort = (srv.address() as any).port
+
   const spawnFn: any = (_cmd, args) => {
     const child: any = new EventEmitter()
     child.stderr = new EventEmitter()
     child.exitCode = null
+
     child.kill = () => {}
+
     if (args.includes('-N')) {
       setTimeout(() => {
         child.stderr.emit('data', Buffer.from(`bind [127.0.0.1]:${localPort}: Address already in use`))
@@ -483,8 +568,10 @@ test('no-mux: an unrelated listener cannot mask a delayed bind failure', async (
         child.emit('exit', 255)
       }, 20)
     }
+
     return child
   }
+
   const conn = new SshConnection({ host: 'box' }, { spawnFn, mux: false, forwardTimeoutMs: 1000 })
   await assert.rejects(conn.forward(localPort, 9119), /address already in use/i)
   srv.close()
@@ -496,18 +583,27 @@ test('no-mux: tunnel death after readiness makes the connection unhealthy', asyn
   await new Promise<void>(resolve => srv.listen(0, '127.0.0.1', resolve))
   const localPort = (srv.address() as any).port
   let tunnel
+
   const spawnFn: any = (_cmd, args) => {
     const child: any = new EventEmitter()
     child.stdout = new EventEmitter()
     child.stderr = new EventEmitter()
     child.exitCode = null
+
     child.kill = () => {}
+
     if (args.includes('-N')) {
       tunnel = child
-      process.nextTick(() => child.stderr.emit('data', Buffer.from(`Local forwarding listening on 127.0.0.1 port ${localPort}.`)))
-    } else process.nextTick(() => child.emit('close', 0))
+      process.nextTick(() =>
+        child.stderr.emit('data', Buffer.from(`Local forwarding listening on 127.0.0.1 port ${localPort}.`))
+      )
+    } else {
+      process.nextTick(() => child.emit('close', 0))
+    }
+
     return child
   }
+
   const conn = new SshConnection({ host: 'box' }, { spawnFn, mux: false })
   await conn.open()
   await conn.forward(localPort, 9119)
@@ -515,7 +611,6 @@ test('no-mux: tunnel death after readiness makes the connection unhealthy', asyn
   assert.equal(await conn.isAlive(), false)
   srv.close()
 })
-
 
 test('validateSshTarget rejects a host starting with a dash (option injection)', () => {
   assert.throws(() => validateSshTarget('-oProxyCommand=evil', '', 22), /unsafe/i)
@@ -600,18 +695,24 @@ test('hostArgs accepts valid key paths', () => {
 
 test('runSsh delivers stdinData to the child and does not log it', async () => {
   let stdinWritten = ''
+
   const spawnFn: any = (_cmd, _args, opts) => {
     const child: any = new EventEmitter()
     child.stdout = new EventEmitter()
     child.stderr = new EventEmitter()
+
     child.kill = () => {}
     child.stdin = {
-      end(data) { stdinWritten = String(data) }
+      end(data) {
+        stdinWritten = String(data)
+      }
     }
     assert.equal(opts.stdio[0], 'pipe', 'stdin must be pipe when stdinData is provided')
     process.nextTick(() => child.emit('close', 0))
+
     return child
   }
+
   await runSsh(['host', 'cat'], { timeoutMs: 5000, spawnFn, stdinData: 'secret-token-value' })
   assert.equal(stdinWritten, 'secret-token-value', 'stdinData must be written to child.stdin')
 })
@@ -629,7 +730,10 @@ test('open() rejects a control-dir that is a symlink', async () => {
 })
 
 test('open() enforces 0700 on an existing control dir with lax permissions', async () => {
-  if (process.platform === 'win32') return
+  if (process.platform === 'win32') {
+    return
+  }
+
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ssh-test-'))
   const dir = path.join(tmp, 'ctrl')
   fs.mkdirSync(dir, { mode: 0o755 })
@@ -647,49 +751,74 @@ test('control socket identity separates installation scope and key identity', ()
     scope: 'primary',
     keyPath: '/keys/id'
   })
-  assert.equal(base, controlSocketPath('me', 'box', 22, '/tmp/d', {
-    ownershipId: 'installation-a',
-    scope: 'primary',
-    keyPath: '/keys/./id'
-  }))
-  assert.notEqual(base, controlSocketPath('me', 'box', 22, '/tmp/d', {
-    ownershipId: 'installation-a',
-    scope: 'worker',
-    keyPath: '/keys/id'
-  }))
-  assert.notEqual(base, controlSocketPath('me', 'box', 22, '/tmp/d', {
-    ownershipId: 'installation-b',
-    scope: 'primary',
-    keyPath: '/keys/id'
-  }))
-  assert.notEqual(base, controlSocketPath('me', 'box', 22, '/tmp/d', {
-    ownershipId: 'installation-a',
-    scope: 'primary',
-    keyPath: '/keys/other'
-  }))
-  assert.notEqual(base, controlSocketPath('me', 'box', 22, '/tmp/d', {
-    ownershipId: 'installation-a',
-    scope: 'primary',
-    keyPath: '/keys/id',
-    effectiveConfigFingerprint: 'changed-config'
-  }))
+
+  assert.equal(
+    base,
+    controlSocketPath('me', 'box', 22, '/tmp/d', {
+      ownershipId: 'installation-a',
+      scope: 'primary',
+      keyPath: '/keys/./id'
+    })
+  )
+  assert.notEqual(
+    base,
+    controlSocketPath('me', 'box', 22, '/tmp/d', {
+      ownershipId: 'installation-a',
+      scope: 'worker',
+      keyPath: '/keys/id'
+    })
+  )
+  assert.notEqual(
+    base,
+    controlSocketPath('me', 'box', 22, '/tmp/d', {
+      ownershipId: 'installation-b',
+      scope: 'primary',
+      keyPath: '/keys/id'
+    })
+  )
+  assert.notEqual(
+    base,
+    controlSocketPath('me', 'box', 22, '/tmp/d', {
+      ownershipId: 'installation-a',
+      scope: 'primary',
+      keyPath: '/keys/other'
+    })
+  )
+  assert.notEqual(
+    base,
+    controlSocketPath('me', 'box', 22, '/tmp/d', {
+      ownershipId: 'installation-a',
+      scope: 'primary',
+      keyPath: '/keys/id',
+      effectiveConfigFingerprint: 'changed-config'
+    })
+  )
 })
 
 test('closing one scope addresses only that scope control master', async () => {
   const firstSpawn = scriptedSpawn({ code: 0 })
   const secondSpawn = scriptedSpawn({ code: 0 })
-  const first = new SshConnection({ host: 'box', user: 'me' }, {
-    spawnFn: firstSpawn,
-    controlDir: '/tmp/d',
-    ownershipId: 'installation',
-    scope: 'first'
-  })
-  const second = new SshConnection({ host: 'box', user: 'me' }, {
-    spawnFn: secondSpawn,
-    controlDir: '/tmp/d',
-    ownershipId: 'installation',
-    scope: 'second'
-  })
+
+  const first = new SshConnection(
+    { host: 'box', user: 'me' },
+    {
+      spawnFn: firstSpawn,
+      controlDir: '/tmp/d',
+      ownershipId: 'installation',
+      scope: 'first'
+    }
+  )
+
+  const second = new SshConnection(
+    { host: 'box', user: 'me' },
+    {
+      spawnFn: secondSpawn,
+      controlDir: '/tmp/d',
+      ownershipId: 'installation',
+      scope: 'second'
+    }
+  )
+
   first._opened = true
   second._opened = true
   await first.close()
@@ -715,15 +844,22 @@ test('failed ControlMaster close disowns the master instead of retrying it', asy
 test('stopTunnelChild waits for process exit', async () => {
   const child: any = new EventEmitter()
   child.exitCode = null
+
   child.kill = () => {
     process.nextTick(() => {
       child.exitCode = 0
       child.emit('exit', 0)
     })
+
     return true
   }
+
   let stopped = false
-  const stopping = stopTunnelChild(child).then(() => { stopped = true })
+
+  const stopping = stopTunnelChild(child).then(() => {
+    stopped = true
+  })
+
   assert.equal(stopped, false)
   await stopping
   assert.equal(stopped, true)

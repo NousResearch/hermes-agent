@@ -1,28 +1,29 @@
 import assert from 'node:assert/strict'
+
 import { test } from 'vitest'
 
 import {
-  LOCKFILE_SCHEMA_VERSION,
-  PROTOCOL_VERSION,
-  READY_RE,
   buildSpawnCommand,
   cleanupStale,
   connect,
   expandRemotePath,
   fingerprintToken,
-  locateHermes,
   isForwardBindCollision,
+  locateHermes,
+  LOCKFILE_SCHEMA_VERSION,
   lockfilePath,
   openForward,
   ownershipDirectory,
   pidIsOurDashboard,
   probeRemotePlatform,
+  PROTOCOL_VERSION,
   readLockfile,
+  READY_RE,
   remotePidAlive,
   remoteSupportsSshOwnership,
   scrapeReadyPort,
-  spawnRemoteDashboard,
   spawnLogPath,
+  spawnRemoteDashboard,
   validateRemotePath,
   writeLockfile
 } from './remote-lifecycle'
@@ -52,23 +53,30 @@ function ownedLock(over: any = {}) {
 // [regex|fn, response|fn] rules. First match wins; unmatched commands return ''.
 function fakeSsh(rules: any[] = []) {
   const calls: string[] = []
+
   return {
     calls,
     async exec(cmd) {
       calls.push(cmd)
+
       for (const [matcher, resp] of rules) {
         const hit = typeof matcher === 'function' ? matcher(cmd) : matcher.test(cmd)
+
         if (hit) {
           const out = typeof resp === 'function' ? resp(cmd) : resp
-          if (out instanceof Error) throw out
+
+          if (out instanceof Error) {
+            throw out
+          }
+
           return out
         }
       }
+
       return ''
     }
   }
 }
-
 
 test('locateHermes prefers the explicit profile path when executable', async () => {
   const ssh = fakeSsh([[/\[ -x .*\/opt\/hermes/, 'OK']])
@@ -82,11 +90,13 @@ test('locateHermes throws (no silent fallback) when an EXPLICIT path is not exec
     [/command -v hermes/, '/home/u/.local/bin/hermes\n'],
     [/\[ -x .*\.local\/bin\/hermes/, 'OK']
   ])
+
   await assert.rejects(
     () => locateHermes(ssh, '/bad/path/hermes'),
     (err: any) => {
       assert.equal(err.kind, 'hermes-not-found')
       assert.match(err.message, /\/bad\/path\/hermes/)
+
       return true
     }
   )
@@ -97,6 +107,7 @@ test('locateHermes falls back to the login-shell command -v probe', async () => 
     [/command -v hermes/, '/home/u/.local/bin/hermes\n'],
     [/\[ -x .*\.local\/bin\/hermes/, 'OK']
   ])
+
   assert.equal(await locateHermes(ssh, ''), '/home/u/.local/bin/hermes')
 })
 
@@ -106,6 +117,7 @@ test('locateHermes canonicalizes an installer wrapper to its executable target',
     [/\[ -x .*\.local\/bin\/hermes/, 'OK'],
     [/python3 -c/, '/home/u/.hermes/hermes-agent/venv/bin/hermes\n']
   ])
+
   assert.equal(await locateHermes(ssh, ''), '/home/u/.hermes/hermes-agent/venv/bin/hermes')
 })
 
@@ -115,6 +127,7 @@ test('locateHermes falls back to ~/.local/bin/hermes when the login-shell probe 
     [/command -v hermes/, ''],
     [/\[ -x .*\.local\/bin\/hermes/, 'OK']
   ])
+
   assert.equal(await locateHermes(ssh, ''), '~/.local/bin/hermes')
 })
 
@@ -130,6 +143,7 @@ test('locateHermes throws a hermes-not-found error with an install hint', async 
     (err: any) => {
       assert.equal(err.kind, 'hermes-not-found')
       assert.match(err.message, /install/i)
+
       return true
     }
   )
@@ -140,10 +154,13 @@ test('locateHermes uses a login shell for the command -v probe', async () => {
     [/command -v hermes/, '/x/hermes'],
     [/\[ -x/, 'OK']
   ])
-  await locateHermes(ssh, '')
-  assert.ok(ssh.calls.some(c => /bash -lc/.test(c)), 'must probe in a login shell (PATH pitfall)')
-})
 
+  await locateHermes(ssh, '')
+  assert.ok(
+    ssh.calls.some(c => /bash -lc/.test(c)),
+    'must probe in a login shell (PATH pitfall)'
+  )
+})
 
 test('probeRemotePlatform accepts Linux and macOS', async () => {
   assert.deepEqual(await probeRemotePlatform(fakeSsh([[/uname/, 'Linux\nx86_64']])), {
@@ -161,12 +178,11 @@ test('probeRemotePlatform rejects unsupported remote platforms', async () => {
     () => probeRemotePlatform(fakeSsh([[/uname/, 'MINGW64_NT\nx86_64']])),
     (err: any) => {
       assert.equal(err.kind, 'unsupported-platform')
+
       return true
     }
   )
 })
-
-
 
 test('ownership paths are isolated by ownership ID and spawn nonce', () => {
   assert.equal(ownershipDirectory(OWNERSHIP_ID), `~/.hermes/desktop-ssh/${OWNERSHIP_ID}`)
@@ -215,22 +231,39 @@ test('metadata and process proof transport failures remain indeterminate', async
 test('pidIsOurDashboard requires the exact serve ownership nonce', async () => {
   const ours = `/x/hermes serve --isolated --ssh-owner-nonce ${SPAWN_NONCE}`
   assert.equal(await pidIsOurDashboard(fakeSsh([[/print\("OWNED"/, 'OWNED\n']]), 5, SPAWN_NONCE, '/x/hermes'), true)
-  assert.equal(await pidIsOurDashboard(fakeSsh([[/print\("OWNED"/, command => command.includes('fedcba9876543210') ? 'FOREIGN\n' : 'OWNED\n']]), 5, 'fedcba9876543210', '/x/hermes'), false)
+  assert.equal(
+    await pidIsOurDashboard(
+      fakeSsh([[/print\("OWNED"/, command => (command.includes('fedcba9876543210') ? 'FOREIGN\n' : 'OWNED\n')]]),
+      5,
+      'fedcba9876543210',
+      '/x/hermes'
+    ),
+    false
+  )
   assert.equal(await pidIsOurDashboard(fakeSsh([[/print\("OWNED"/, 'FOREIGN\n']]), 5, SPAWN_NONCE, '/x/hermes'), false)
 })
 
 test('cleanupStale kills ONLY a provably-ours pid, always drops the lockfile', async () => {
   const notOurs = fakeSsh([[/print\("OWNED"/, 'FOREIGN\n']])
-  await cleanupStale(notOurs, OWNERSHIP_ID, { pid: 5, spawnNonce: SPAWN_NONCE, hermesPath: '/x/hermes', logPath: spawnLogPath(OWNERSHIP_ID, SPAWN_NONCE) })
+  await cleanupStale(notOurs, OWNERSHIP_ID, {
+    pid: 5,
+    spawnNonce: SPAWN_NONCE,
+    hermesPath: '/x/hermes',
+    logPath: spawnLogPath(OWNERSHIP_ID, SPAWN_NONCE)
+  })
   assert.ok(!notOurs.calls.some(c => /kill 5\b/.test(c)), 'must not kill a pid that is not our dashboard')
   assert.ok(notOurs.calls.some(c => /rm -f/.test(c)))
 
   const ours = fakeSsh([[/print\("OWNED"/, 'OWNED\n']])
-  await cleanupStale(ours, OWNERSHIP_ID, { pid: 9, spawnNonce: SPAWN_NONCE, hermesPath: '/x/hermes', logPath: spawnLogPath(OWNERSHIP_ID, SPAWN_NONCE) })
+  await cleanupStale(ours, OWNERSHIP_ID, {
+    pid: 9,
+    spawnNonce: SPAWN_NONCE,
+    hermesPath: '/x/hermes',
+    logPath: spawnLogPath(OWNERSHIP_ID, SPAWN_NONCE)
+  })
   assert.ok(ours.calls.some(c => /kill 9\b/.test(c)))
   assert.ok(ours.calls.some(c => /rm -f/.test(c)))
 })
-
 
 test('buildSpawnCommand is headless serve, detached, token not in argv', () => {
   const cmd = buildSpawnCommand('/x/hermes', 'work', { logPath: spawnLogPath(OWNERSHIP_ID, SPAWN_NONCE) })
@@ -263,7 +296,14 @@ test('spawnRemoteDashboard returns exact ownership artifacts', async () => {
     [/printf '%s\\n'/, ''],
     [/setsid|nohup/, '4242\n']
   ])
-  const { pid, spawnNonce, logPath } = await spawnRemoteDashboard(ssh, { hermesPath: '/x/hermes', profile: '', token: 'tk', ownershipId: OWNERSHIP_ID })
+
+  const { pid, spawnNonce, logPath } = await spawnRemoteDashboard(ssh, {
+    hermesPath: '/x/hermes',
+    profile: '',
+    token: 'tk',
+    ownershipId: OWNERSHIP_ID
+  })
+
   assert.equal(pid, 4242)
   assert.match(spawnNonce, /^[0-9a-f]{16}$/)
   assert.equal(logPath, spawnLogPath(OWNERSHIP_ID, spawnNonce))
@@ -276,6 +316,7 @@ test('spawnRemoteDashboard always spawns serve (legacy dashboard path removed)',
     [/printf '%s\\n'/, ''],
     [/setsid|nohup/, '4242\n']
   ])
+
   await spawnRemoteDashboard(ssh, { hermesPath: '/x/hermes', profile: '', token: 'tk', ownershipId: OWNERSHIP_ID })
   const spawn = ssh.calls.find(c => /setsid|nohup/.test(c))
   assert.match(spawn, /serve --isolated/)
@@ -294,10 +335,12 @@ test('spawnRemoteDashboard rejects when no pid is returned', async () => {
     [/printf '%s\\n'/, ''],
     [/setsid|nohup/, 'not-a-pid']
   ])
+
   await assert.rejects(
     () => spawnRemoteDashboard(ssh, { hermesPath: '/x/hermes', profile: '', token: 't', ownershipId: OWNERSHIP_ID }),
     (err: any) => {
       assert.equal(err.kind, 'spawn-failed')
+
       return true
     }
   )
@@ -318,19 +361,24 @@ test('scrapeReadyPort times out and reports a dead spawn', async () => {
     () => scrapeReadyPort(ssh, spawnLogPath(OWNERSHIP_ID, SPAWN_NONCE), { timeoutMs: 60 }),
     (err: any) => {
       assert.equal(err.kind, 'ready-timeout')
+
       return true
     }
   )
   // dead process before announcement → spawn-failed
   await assert.rejects(
-    () => scrapeReadyPort(fakeSsh([[/cat/, '']]), spawnLogPath(OWNERSHIP_ID, SPAWN_NONCE), { timeoutMs: 1000, isAlive: async () => false }),
+    () =>
+      scrapeReadyPort(fakeSsh([[/cat/, '']]), spawnLogPath(OWNERSHIP_ID, SPAWN_NONCE), {
+        timeoutMs: 1000,
+        isAlive: async () => false
+      }),
     (err: any) => {
       assert.equal(err.kind, 'spawn-failed')
+
       return true
     }
   )
 })
-
 
 function connectDeps(ssh, over: any = {}) {
   return {
@@ -361,6 +409,7 @@ test('connect() spawns fresh when there is no lockfile, adopts the served token'
     [/kill -0 777/, 'ALIVE'],
     [/cat .*\.log/, 'HERMES_DASHBOARD_READY port=51999\n']
   ])
+
   const result = await connect(connectDeps(ssh, { adoptServedToken: async () => 'the-served-token' }))
   assert.equal(result.reused, false)
   assert.equal(result.remotePort, 51999)
@@ -374,6 +423,7 @@ test('connect() spawns fresh when there is no lockfile, adopts the served token'
 test('connect() reuses a healthy dashboard when fingerprint + probe pass', async () => {
   const reuseToken = 'stored-token'
   const lock = ownedLock({ tokenFingerprint: fingerprintToken(reuseToken) })
+
   const ssh = fakeSsh([
     [/uname/, 'Linux\nx86_64'],
     [/\[ -x/, 'OK'],
@@ -381,6 +431,7 @@ test('connect() reuses a healthy dashboard when fingerprint + probe pass', async
     [/kill -0/, 'ALIVE'],
     [/print\("OWNED"/, 'OWNED\n']
   ])
+
   const result = await connect(connectDeps(ssh, { reuseToken, adoptServedToken: async (_b, t) => t }))
   assert.equal(result.reused, true)
   assert.equal(result.pid, 333)
@@ -392,6 +443,7 @@ test('connect() reuses a healthy dashboard when fingerprint + probe pass', async
 test('connect() respawns when the lockfile hermesPath differs from the resolved path', async () => {
   const reuseToken = 'stored-token'
   const lock = ownedLock({ hermesPath: '/old/stale/hermes', tokenFingerprint: fingerprintToken(reuseToken) })
+
   const ssh = fakeSsh([
     [/uname/, 'Linux\nx86_64'],
     [/\[ -x/, 'OK'],
@@ -404,13 +456,21 @@ test('connect() respawns when the lockfile hermesPath differs from the resolved 
     [/setsid/, '890\n'],
     [/cat .*\.log/, 'HERMES_DASHBOARD_READY port=52050\n']
   ])
-  const result = await connect(connectDeps(ssh, { reuseToken, remoteHermesPath: '/new/hermes', adoptServedToken: async () => 'fresh' }))
+
+  const result = await connect(
+    connectDeps(ssh, { reuseToken, remoteHermesPath: '/new/hermes', adoptServedToken: async () => 'fresh' })
+  )
+
   assert.equal(result.reused, false, 'must respawn, not reuse the old-path dashboard')
-  assert.ok(ssh.calls.some(c => /setsid/.test(c)), 'a fresh dashboard must be spawned')
+  assert.ok(
+    ssh.calls.some(c => /setsid/.test(c)),
+    'a fresh dashboard must be spawned'
+  )
 })
 
 test('connect() respawns when the lockfile protocolVersion is incompatible', async () => {
   const reuseToken = 'stored-token'
+
   const lock = {
     schemaVersion: LOCKFILE_SCHEMA_VERSION,
     protocolVersion: PROTOCOL_VERSION + 99,
@@ -418,6 +478,7 @@ test('connect() respawns when the lockfile protocolVersion is incompatible', asy
     port: 40000,
     tokenFingerprint: fingerprintToken(reuseToken)
   }
+
   const ssh = fakeSsh([
     [/uname/, 'Linux\nx86_64'],
     [/\[ -x/, 'OK'],
@@ -430,6 +491,7 @@ test('connect() respawns when the lockfile protocolVersion is incompatible', asy
     [/kill -0 901/, 'ALIVE'],
     [/cat .*\.log/, 'HERMES_DASHBOARD_READY port=44100\n']
   ])
+
   const result = await connect(connectDeps(ssh, { reuseToken, adoptServedToken: async () => 'fresh' }))
   assert.equal(result.reused, false, 'incompatible protocol must force a fresh spawn, not a reattach')
   assert.equal(result.pid, 901)
@@ -437,6 +499,7 @@ test('connect() respawns when the lockfile protocolVersion is incompatible', asy
 
 test('connect() fresh spawn writes hermesHome + protocolVersion into the lockfile', async () => {
   const writes: string[] = []
+
   const ssh = fakeSsh([
     [/uname/, 'Linux\nx86_64'],
     [/\[ -x/, 'OK'],
@@ -452,10 +515,12 @@ test('connect() fresh spawn writes hermesHome + protocolVersion into the lockfil
       /printf '%s' '/,
       c => {
         writes.push(c)
+
         return ''
       }
     ]
   ])
+
   await connect(connectDeps(ssh, { adoptServedToken: async () => 'fresh' }))
   const lockWrite = writes.find(c => c.includes('schemaVersion')) || ''
   assert.match(lockWrite, new RegExp(`"protocolVersion":${PROTOCOL_VERSION}`))
@@ -464,6 +529,7 @@ test('connect() fresh spawn writes hermesHome + protocolVersion into the lockfil
 
 test('connect() respawns when the lockfile pid is dead (killed dashboard)', async () => {
   const lock = ownedLock({ tokenFingerprint: fingerprintToken('t') })
+
   const ssh = fakeSsh([
     [/uname/, 'Linux\nx86_64'],
     [/\[ -x/, 'OK'],
@@ -476,16 +542,20 @@ test('connect() respawns when the lockfile pid is dead (killed dashboard)', asyn
     [/kill -0 888/, 'ALIVE'],
     [/cat .*\.log/, 'HERMES_DASHBOARD_READY port=42000\n']
   ])
+
   const result = await connect(connectDeps(ssh, { reuseToken: 't', adoptServedToken: async () => 'fresh' }))
   assert.equal(result.reused, false)
   assert.equal(result.pid, 888)
   assert.equal(result.remotePort, 42000)
-  assert.ok(!ssh.calls.some(command => command.includes('pid=333') && command.includes('print("OWNED"')),
-    'a dead pid has no process identity to verify')
+  assert.ok(
+    !ssh.calls.some(command => command.includes('pid=333') && command.includes('print("OWNED"')),
+    'a dead pid has no process identity to verify'
+  )
 })
 
 test('connect() respawns when the dashboard is wedged (alive pid, probe fails)', async () => {
   const reuseToken = 'stored'
+
   const lock = {
     schemaVersion: LOCKFILE_SCHEMA_VERSION,
     protocolVersion: PROTOCOL_VERSION,
@@ -493,6 +563,7 @@ test('connect() respawns when the dashboard is wedged (alive pid, probe fails)',
     port: 40000,
     tokenFingerprint: fingerprintToken(reuseToken)
   }
+
   const ssh = fakeSsh([
     [/uname/, 'Linux\nx86_64'],
     [/\[ -x/, 'OK'],
@@ -505,9 +576,15 @@ test('connect() respawns when the dashboard is wedged (alive pid, probe fails)',
     [/kill -0 999/, 'ALIVE'],
     [/cat .*\.log/, 'HERMES_DASHBOARD_READY port=43000\n']
   ])
+
   const result = await connect(
-    connectDeps(ssh, { reuseToken, probeReuseProof: async () => 'authenticated-stale', adoptServedToken: async () => 'fresh' })
+    connectDeps(ssh, {
+      reuseToken,
+      probeReuseProof: async () => 'authenticated-stale',
+      adoptServedToken: async () => 'fresh'
+    })
   )
+
   assert.equal(result.reused, false)
   assert.equal(result.pid, 999)
   assert.equal(result.remotePort, 43000)
@@ -519,6 +596,7 @@ test('connect() aborts on an unsupported remote platform before doing anything e
     () => connect(connectDeps(ssh)),
     (err: any) => {
       assert.equal(err.kind, 'unsupported-platform')
+
       return true
     }
   )
@@ -528,13 +606,21 @@ test('connect() aborts on an unsupported remote platform before doing anything e
 test('openForward retries bind collisions only', async () => {
   const ports = [41001, 41002]
   const calls: number[] = []
-  const localPort = await openForward({
-    pickLocalPort: async () => ports.shift(),
-    forward: async port => {
-      calls.push(port)
-      if (calls.length === 1) throw new Error('bind: Address already in use')
-    }
-  }, 9119)
+
+  const localPort = await openForward(
+    {
+      pickLocalPort: async () => ports.shift(),
+      forward: async port => {
+        calls.push(port)
+
+        if (calls.length === 1) {
+          throw new Error('bind: Address already in use')
+        }
+      }
+    },
+    9119
+  )
+
   assert.equal(localPort, 41002)
   assert.deepEqual(calls, [41001, 41002])
   assert.equal(isForwardBindCollision(new Error('Permission denied')), false)
@@ -543,6 +629,7 @@ test('openForward retries bind collisions only', async () => {
 test('connect() preserves an owned backend when a reuse transport throws', async () => {
   const reuseToken = 'stored-token'
   const lock = ownedLock({ tokenFingerprint: fingerprintToken(reuseToken) })
+
   const ssh = fakeSsh([
     [/uname/, 'Linux\nx86_64'],
     [/\[ -x/, 'OK'],
@@ -550,13 +637,21 @@ test('connect() preserves an owned backend when a reuse transport throws', async
     [/kill -0/, 'ALIVE'],
     [/print\("OWNED"/, 'OWNED\n']
   ])
-  await assert.rejects(() => connect(connectDeps(ssh, {
-    reuseToken,
-    forward: async () => { throw new Error('network reset') }
-  })), /network reset/)
+
+  await assert.rejects(
+    () =>
+      connect(
+        connectDeps(ssh, {
+          reuseToken,
+          forward: async () => {
+            throw new Error('network reset')
+          }
+        })
+      ),
+    /network reset/
+  )
   assert.ok(!ssh.calls.some(cmd => /kill 333\b/.test(cmd)))
 })
-
 
 test('validateRemotePath accepts absolute POSIX paths', () => {
   assert.doesNotThrow(() => validateRemotePath('/usr/bin/hermes'))
@@ -624,6 +719,7 @@ test('buildSpawnCommand includes --ssh-session-token-file when tokenFilePath is 
     logPath: spawnLogPath(OWNERSHIP_ID, SPAWN_NONCE),
     spawnNonce: SPAWN_NONCE
   })
+
   assert.match(cmd, /--ssh-session-token-file/)
   assert.match(cmd, /\.hermes\/desktop-ssh\//)
 })
@@ -638,11 +734,13 @@ test('buildSpawnCommand always uses serve, never dashboard', () => {
 
 test('spawnRemoteDashboard removes a token file when upload reporting fails', async () => {
   const failure = new Error('channel closed')
+
   const ssh = fakeSsh([
     [/grep -q ssh-session-token-file/, 'YES\n'],
     [command => /python3 -c/.test(command) && !/rm -f/.test(command), failure],
     [/rm -f/, '']
   ])
+
   await assert.rejects(
     () => spawnRemoteDashboard(ssh, { hermesPath: '/x/hermes', profile: '', token: 'tok', ownershipId: OWNERSHIP_ID }),
     /channel closed/
@@ -653,24 +751,50 @@ test('spawnRemoteDashboard removes a token file when upload reporting fails', as
 test('spawnRemoteDashboard streams the token over stdin, not argv/env', async () => {
   const stdinCalls: string[] = []
   const calls: string[] = []
+
   const ssh = {
     calls,
     async exec(cmd, opts?) {
       calls.push(cmd)
-      if (opts?.stdinData) stdinCalls.push(opts.stdinData)
-      if (/grep -q ssh-session-token-file/.test(cmd)) return 'YES\n'
-      if (/python3 -c/.test(cmd)) return ''
-      if (/setsid|nohup/.test(cmd)) return '4242\n'
-      if (/printf '%s\\n'/.test(cmd)) return ''
+
+      if (opts?.stdinData) {
+        stdinCalls.push(opts.stdinData)
+      }
+
+      if (/grep -q ssh-session-token-file/.test(cmd)) {
+        return 'YES\n'
+      }
+
+      if (/python3 -c/.test(cmd)) {
+        return ''
+      }
+
+      if (/setsid|nohup/.test(cmd)) {
+        return '4242\n'
+      }
+
+      if (/printf '%s\\n'/.test(cmd)) {
+        return ''
+      }
+
       return ''
     }
   }
+
   const { pid } = await spawnRemoteDashboard(ssh as any, {
-    hermesPath: '/x/hermes', profile: '', token: 'secret_token_val', ownershipId: OWNERSHIP_ID
+    hermesPath: '/x/hermes',
+    profile: '',
+    token: 'secret_token_val',
+    ownershipId: OWNERSHIP_ID
   })
+
   assert.equal(pid, 4242)
   assert.ok(stdinCalls.length > 0, 'token must be sent via stdin')
-  assert.ok(stdinCalls.some(d => d === 'secret_token_val'), 'stdin must contain the token')
+  assert.ok(
+    stdinCalls.some(d => d === 'secret_token_val'),
+    'stdin must contain the token'
+  )
+
   for (const cmd of calls) {
     assert.ok(!cmd.includes('secret_token_val'), `token leaked into command: ${cmd}`)
   }
@@ -678,19 +802,37 @@ test('spawnRemoteDashboard streams the token over stdin, not argv/env', async ()
 
 test('spawnRemoteDashboard upload uses exclusive-create and O_NOFOLLOW', async () => {
   const calls: string[] = []
+
   const ssh = {
     calls,
     async exec(cmd, opts?) {
       calls.push(cmd)
-      if (/grep -q ssh-session-token-file/.test(cmd)) return 'YES\n'
-      if (/python3 -c/.test(cmd)) return ''
-      if (/setsid|nohup/.test(cmd)) return '4242\n'
-      if (/printf '%s\\n'/.test(cmd)) return ''
+
+      if (/grep -q ssh-session-token-file/.test(cmd)) {
+        return 'YES\n'
+      }
+
+      if (/python3 -c/.test(cmd)) {
+        return ''
+      }
+
+      if (/setsid|nohup/.test(cmd)) {
+        return '4242\n'
+      }
+
+      if (/printf '%s\\n'/.test(cmd)) {
+        return ''
+      }
+
       return ''
     }
   }
+
   await spawnRemoteDashboard(ssh as any, {
-    hermesPath: '/x/hermes', profile: '', token: 'tk', ownershipId: OWNERSHIP_ID
+    hermesPath: '/x/hermes',
+    profile: '',
+    token: 'tk',
+    ownershipId: OWNERSHIP_ID
   })
   const uploadCmd = calls.find(c => /python3 -c/.test(c))
   assert.ok(uploadCmd, 'must use python3 -c for token upload')
@@ -728,6 +870,7 @@ test('readLockfile accepts a complete owned lock', async () => {
 test('connect() reuse path does not write a token file', async () => {
   const reuseToken = 'stored-token'
   const lock = ownedLock({ tokenFingerprint: fingerprintToken(reuseToken) })
+
   const ssh = fakeSsh([
     [/uname/, 'Linux\nx86_64'],
     [/\[ -x/, 'OK'],
@@ -735,21 +878,21 @@ test('connect() reuse path does not write a token file', async () => {
     [/kill -0/, 'ALIVE'],
     [/print\("OWNED"/, 'OWNED\n']
   ])
+
   const result = await connect(connectDeps(ssh, { reuseToken, adoptServedToken: async (_b, t) => t }))
   assert.equal(result.reused, true)
-  assert.ok(!ssh.calls.some(c => /sys\.stdin\.buffer\.read/.test(c)),
-    'reuse must not upload a token file')
+  assert.ok(!ssh.calls.some(c => /sys\.stdin\.buffer\.read/.test(c)), 'reuse must not upload a token file')
 })
 
 test('spawnRemoteDashboard fails with update-required when remote lacks --ssh-session-token-file', async () => {
-  const ssh = fakeSsh([
-    [/--ssh-session-token-file/, 'NO\n']
-  ])
+  const ssh = fakeSsh([[/--ssh-session-token-file/, 'NO\n']])
+
   await assert.rejects(
     () => spawnRemoteDashboard(ssh, { hermesPath: '/x/hermes', profile: '', token: 'tk', ownershipId: OWNERSHIP_ID }),
     (err: any) => {
       assert.match(err.message, /update|upgrade/i)
       assert.equal(err.kind, 'update-required')
+
       return true
     }
   )
@@ -784,6 +927,7 @@ test('connect removes the token file when a fresh backend fails after returning 
     [/setsid/, '999\n'],
     [/kill -0 999/, 'DEAD']
   ])
+
   await assert.rejects(() => connect(connectDeps(ssh)), /exited before announcing/i)
   assert.ok(ssh.calls.some(command => /rm -f .*\.token/.test(command)))
 })
@@ -791,6 +935,7 @@ test('connect removes the token file when a fresh backend fails after returning 
 test('connect preserves an exact-owned backend when reuse proof transport fails', async () => {
   const reuseToken = 'stored-token'
   const lock = ownedLock({ tokenFingerprint: fingerprintToken(reuseToken) })
+
   const ssh = fakeSsh([
     [/uname/, 'Linux\nx86_64'],
     [/\[ -x/, 'OK'],
@@ -798,10 +943,19 @@ test('connect preserves an exact-owned backend when reuse proof transport fails'
     [/kill -0/, 'ALIVE'],
     [/print\("OWNED"/, 'OWNED\n']
   ])
-  await assert.rejects(() => connect(connectDeps(ssh, {
-    reuseToken,
-    probeReuseProof: async () => { throw new Error('connection reset') }
-  })), (error: any) => error.kind === 'transient-transport-error')
+
+  await assert.rejects(
+    () =>
+      connect(
+        connectDeps(ssh, {
+          reuseToken,
+          probeReuseProof: async () => {
+            throw new Error('connection reset')
+          }
+        })
+      ),
+    (error: any) => error.kind === 'transient-transport-error'
+  )
   assert.ok(!ssh.calls.some(command => /kill 333\b/.test(command)))
   assert.ok(!ssh.calls.some(command => /rm -f .*backend\.lock\.json/.test(command)))
 })
@@ -809,6 +963,7 @@ test('connect preserves an exact-owned backend when reuse proof transport fails'
 test('connect replaces an exact-owned backend only after authenticated stale proof', async () => {
   const reuseToken = 'stored-token'
   const lock = ownedLock({ tokenFingerprint: fingerprintToken(reuseToken) })
+
   const ssh = fakeSsh([
     [/uname/, 'Linux\nx86_64'],
     [/\[ -x/, 'OK'],
@@ -821,28 +976,38 @@ test('connect replaces an exact-owned backend only after authenticated stale pro
     [/kill -0 999/, 'ALIVE'],
     [/cat .*\.log/, 'HERMES_DASHBOARD_READY port=43000\n']
   ])
-  const result = await connect(connectDeps(ssh, {
-    reuseToken,
-    probeReuseProof: async (_baseUrl, token, nonce) => {
-      assert.equal(token, reuseToken)
-      assert.equal(nonce, SPAWN_NONCE)
-      return 'authenticated-stale'
-    },
-    adoptServedToken: async () => 'fresh'
-  }))
+
+  const result = await connect(
+    connectDeps(ssh, {
+      reuseToken,
+      probeReuseProof: async (_baseUrl, token, nonce) => {
+        assert.equal(token, reuseToken)
+        assert.equal(nonce, SPAWN_NONCE)
+
+        return 'authenticated-stale'
+      },
+      adoptServedToken: async () => 'fresh'
+    })
+  )
+
   assert.equal(result.reused, false)
   assert.ok(ssh.calls.some(command => /kill 333\b/.test(command)))
 })
 
 test('remote SSH ownership capability requires both secure bootstrap flags', async () => {
   let helpProbe = ''
-  const supported = fakeSsh([[
-    /serve --help/,
-    command => {
-      helpProbe = command
-      return 'YES\n'
-    }
-  ]])
+
+  const supported = fakeSsh([
+    [
+      /serve --help/,
+      command => {
+        helpProbe = command
+
+        return 'YES\n'
+      }
+    ]
+  ])
+
   assert.equal(await remoteSupportsSshOwnership(supported, '/x/hermes'), true)
   assert.match(helpProbe, /ssh-session-token-file/)
   assert.match(helpProbe, /ssh-owner-nonce/)

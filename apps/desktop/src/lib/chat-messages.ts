@@ -152,10 +152,7 @@ const normalizeWs = (value: string) => value.replace(/\s+/g, ' ').trim()
  * - Keeps all other part types (tool-call, image, etc.).
  * - Appends the final text as a new text part.
  */
-export function mergeFinalAssistantText(
-  parts: ChatMessagePart[],
-  finalText: string
-): ChatMessagePart[] {
+export function mergeFinalAssistantText(parts: ChatMessagePart[], finalText: string): ChatMessagePart[] {
   const dedupeReference = normalizeWs(finalText)
 
   const kept = parts.filter(part => {

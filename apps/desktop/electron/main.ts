@@ -48,27 +48,22 @@ import {
   cookiesHavePrivySession,
   cookiesHaveSession,
   hostLabelFromBaseUrl,
+  localProfileEntry,
   modeIsRemoteLike,
   normalizeRemoteBaseUrl,
   normalizeSshConfig,
-  localProfileEntry,
   normAuthMode,
   pathWithGlobalRemoteProfile,
   profileHasRemoteConnection,
   profileRemoteOverride,
   profileSshOverride,
-  savedProfileSsh,
   resolveAuthMode,
   resolveTestWsUrl,
+  savedProfileSsh,
   tokenPreview
 } from './connection-config'
 import { adoptServedDashboardToken } from './dashboard-token'
 import { loadOrCreateInstallationId, sshOwnershipId } from './desktop-installation'
-import { createBootstrapCoordinator, sshConfigFingerprint } from './ssh-bootstrap-coordinator'
-import { SshConnection, buildInteractiveSshArgs, createSshProbeConnection, pickLocalPort, redactSecrets } from './ssh-connection'
-import * as remoteLifecycle from './remote-lifecycle'
-import { collectSshConfigHosts, parseSshGOutput } from './ssh-config'
-import { buildWindowsInteractiveCommand, connectWindowsRemote, detectRemotePlatform, helper } from './windows-remote-lifecycle'
 import {
   buildPosixCleanupScript,
   buildWindowsCleanupScript,
@@ -119,6 +114,7 @@ import { createLinkTitleWindow, guardLinkTitleSession, readLinkTitleWindowTitle 
 import { ensureMainWindow } from './main-window-lifecycle'
 import { serializeJsonBody, setJsonRequestHeaders } from './oauth-net-request'
 import { decideProfileDeleteAction, profileNameFromDeleteRequest, resolveRouteProfile } from './profile-delete-routing'
+import * as remoteLifecycle from './remote-lifecycle'
 import {
   buildSessionWindowUrl,
   chatWindowWebPreferences,
@@ -127,6 +123,15 @@ import {
   SESSION_WINDOW_MIN_WIDTH
 } from './session-windows'
 import { ensureSpawnHelperExecutable } from './spawn-helper-perms'
+import { createBootstrapCoordinator, sshConfigFingerprint } from './ssh-bootstrap-coordinator'
+import { collectSshConfigHosts, parseSshGOutput } from './ssh-config'
+import {
+  buildInteractiveSshArgs,
+  createSshProbeConnection,
+  pickLocalPort,
+  redactSecrets,
+  SshConnection
+} from './ssh-connection'
 import { nativeOverlayWidth as computeNativeOverlayWidth, macTitleBarOverlayHeight } from './titlebar-overlay-width'
 import { resolveBehindCount, shouldCountCommits } from './update-count'
 import { readLiveUpdateMarker, writeUpdateMarker } from './update-marker'
@@ -157,6 +162,12 @@ import {
   getVenvSitePackagesEntries,
   resolveVenvHermesCommand
 } from './windows-hermes-path'
+import {
+  buildWindowsInteractiveCommand,
+  connectWindowsRemote,
+  detectRemotePlatform,
+  helper
+} from './windows-remote-lifecycle'
 import {
   alreadyHasNoSandbox,
   buildNoSandboxRelaunchArgs,
@@ -4607,6 +4618,7 @@ async function waitForHermes(baseUrl, token, signal?) {
       error.kind = 'superseded'
       throw error
     }
+
     try {
       await fetchJson(`${baseUrl}/api/status`, token)
 
@@ -4615,12 +4627,16 @@ async function waitForHermes(baseUrl, token, signal?) {
       lastError = error
       await new Promise((resolve, reject) => {
         const timer = setTimeout(resolve, 500)
-        signal?.addEventListener('abort', () => {
-          clearTimeout(timer)
-          const aborted: any = new Error('SSH bootstrap was superseded by newer connection settings.')
-          aborted.kind = 'superseded'
-          reject(aborted)
-        }, { once: true })
+        signal?.addEventListener(
+          'abort',
+          () => {
+            clearTimeout(timer)
+            const aborted: any = new Error('SSH bootstrap was superseded by newer connection settings.')
+            aborted.kind = 'superseded'
+            reject(aborted)
+          },
+          { once: true }
+        )
       })
     }
   }
@@ -4948,7 +4964,9 @@ function setAndPersistZoomLevel(window, zoomLevel) {
   // downgrade or JSON read failure still finds a sane value).
   window.webContents
     .executeJavaScript(
-      `try { localStorage.setItem(${JSON.stringify(ZOOM_STORAGE_KEY)}, ${JSON.stringify(String(next))}) } catch {}`
+      `try { localStorage.setItem(${JSON.stringify(ZOOM_STORAGE_KEY)}, ${JSON.stringify(String(next))}) } catch {
+      void 0
+    }`
     )
     .catch(error => rememberLog(`[zoom] persist failed: ${error?.message || error}`))
 }
@@ -6056,10 +6074,15 @@ function sanitizeConnectionProfiles(raw: Record<string, any>) {
 
     if (entry.mode === 'ssh') {
       const ssh = normalizeSshConfig(entry)
+
       if (ssh) {
-        if (entry.token && typeof entry.token === 'object') ssh.token = entry.token
+        if (entry.token && typeof entry.token === 'object') {
+          ssh.token = entry.token
+        }
+
         out[name] = ssh
       }
+
       continue
     }
 
@@ -6076,7 +6099,10 @@ function sanitizeConnectionProfiles(raw: Record<string, any>) {
 
     if (cleaned.mode === 'local') {
       const savedSsh = normalizeSshConfig(entry.savedSsh)
-      if (savedSsh) cleaned.savedSsh = savedSsh
+
+      if (savedSsh) {
+        cleaned.savedSsh = savedSsh
+      }
     }
 
     const url = String(entry.url || '').trim()
@@ -6205,9 +6231,9 @@ async function sanitizeDesktopConnectionConfig(config = readDesktopConnectionCon
   const envOverride = key ? false : Boolean(process.env.HERMES_DESKTOP_REMOTE_URL)
   const savedMode = key ? scoped?.mode : config.mode
   const ssh = savedMode === 'ssh' ? normalizeSshConfig(block) : null
-  const savedSsh = savedMode === 'local'
-    ? key ? savedProfileSsh(config, key) : normalizeSshConfig(block)
-    : null
+
+  const savedSsh = savedMode === 'local' ? (key ? savedProfileSsh(config, key) : normalizeSshConfig(block)) : null
+
   const remoteToken = decryptDesktopSecret(block.token)
   const authMode = normAuthMode(block.authMode)
   const remoteUrl = envOverride ? String(process.env.HERMES_DESKTOP_REMOTE_URL || '') : String(block.url || '')
@@ -6314,14 +6340,17 @@ function coerceDesktopConnectionConfig(input: any = {}, existing = readDesktopCo
 
   if (mode === 'ssh') {
     const sshBlock = buildSshBlock(input, savedProfileSsh(existing, key) || rawExistingBlock)
+
     if (key) {
       const profiles = { ...(existing.profiles || {}), [key]: sshBlock }
+
       return {
         mode: existing.mode === 'ssh' || modeIsRemoteLike(existing.mode) ? existing.mode : 'local',
         remote: existing.remote || {},
         profiles
       }
     }
+
     return { mode: 'ssh', remote: sshBlock, profiles: existing.profiles || {} }
   }
 
@@ -6335,8 +6364,12 @@ function coerceDesktopConnectionConfig(input: any = {}, existing = readDesktopCo
       profiles[key] = { mode, ...buildRemoteBlock(remoteUrl, authMode, nextToken, cloudOrg) }
     } else {
       const localEntry = localProfileEntry(rawExistingBlock)
-      if (localEntry) profiles[key] = localEntry
-      else delete profiles[key]
+
+      if (localEntry) {
+        profiles[key] = localEntry
+      } else {
+        delete profiles[key]
+      }
     }
 
     return {
@@ -6371,14 +6404,17 @@ function buildSshBlock(input: any, existingBlock: any = {}) {
     keyPath: input.sshKeyPath ?? existingBlock.keyPath,
     remoteHermesPath: input.sshRemoteHermesPath ?? existingBlock.remoteHermesPath
   })
+
   if (!merged) {
     throw new Error('SSH host is required.')
   }
+
   // Carry forward an already-adopted dashboard token unless the host changed
   // (a different host invalidates the old dashboard's token).
   if (existingBlock.token && existingBlock.host === merged.host) {
     merged.token = existingBlock.token
   }
+
   return merged
 }
 
@@ -6387,7 +6423,15 @@ function buildSshBlock(input: any, existingBlock: any = {}) {
 // and is shared by the per-profile, env, and global resolution paths. `token`
 // is the DECRYPTED static token (or null in OAuth mode). `source` is a label
 // for diagnostics ('profile' | 'env' | 'settings').
-async function buildRemoteConnection(rawUrl, authMode, token, source, remoteHost?, remoteKind = 'url', remoteIdentity?) {
+async function buildRemoteConnection(
+  rawUrl,
+  authMode,
+  token,
+  source,
+  remoteHost?,
+  remoteKind = 'url',
+  remoteIdentity?
+) {
   const baseUrl = normalizeRemoteBaseUrl(rawUrl)
   // For token/oauth remotes the meaningful host is the real backend URL; for
   // SSH remotes the caller passes the entered/resolved host explicitly (the
@@ -6483,11 +6527,15 @@ function sshRememberLog(chunk) {
 async function sshProbeReuseProof(baseUrl, token, spawnNonce) {
   try {
     const proof: any = await fetchJson(`${baseUrl}/api/ssh/ownership`, token)
+
     return proof?.ok === true && proof.sshOwnerNonce === spawnNonce && proof.protocolVersion === 1
       ? 'authenticated-ok'
       : 'authenticated-stale'
   } catch (error: any) {
-    if (/^(401|403|404):/.test(String(error?.message || ''))) return 'authenticated-stale'
+    if (/^(401|403|404):/.test(String(error?.message || ''))) {
+      return 'authenticated-stale'
+    }
+
     throw error
   }
 }
@@ -6495,13 +6543,19 @@ async function sshProbeReuseProof(baseUrl, token, spawnNonce) {
 async function teardownSshConnection(profile) {
   const scope = sshScopeKey(profile)
   const state = sshConnections.get(scope)
-  if (!state) return
+
+  if (!state) {
+    return
+  }
+
   sshConnections.delete(scope)
+
   for (const [id, info] of [...terminalSessions.entries()]) {
     if (info.sshScope === scope) {
       disposeTerminalSession(id)
     }
   }
+
   try {
     if (state.localPort && state.remotePort) {
       await state.ssh.cancelForward(state.localPort, state.remotePort)
@@ -6509,6 +6563,7 @@ async function teardownSshConnection(profile) {
   } catch {
     // best effort
   }
+
   try {
     await state.ssh.close()
   } catch {
@@ -6527,30 +6582,46 @@ function activeSshTerminalTarget() {
   if (profileSshOverride(config, profile)) {
     const scope = sshScopeKey(profile)
     const state = sshConnections.get(scope)
+
     return state && state.ssh ? { ssh: state.ssh, scope } : 'pending'
   }
+
   if (profileRemoteOverride(config, profile)) {
     return null
   }
+
   if (process.env.HERMES_DESKTOP_REMOTE_URL) {
     return null
   }
+
   if (config.mode === 'ssh') {
     const state = sshConnections.get('')
+
     return state && state.ssh ? { ssh: state.ssh, scope: '' } : 'pending'
   }
+
   return null
 }
 
 function effectiveSshConfigFingerprint(sshConfig) {
-  const ssh = process.platform === 'win32'
-    ? path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'OpenSSH', 'ssh.exe')
-    : 'ssh'
+  const ssh =
+    process.platform === 'win32'
+      ? path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'OpenSSH', 'ssh.exe')
+      : 'ssh'
+
   const args = ['-G']
-  if (sshConfig.port) args.push('-p', String(sshConfig.port))
-  if (sshConfig.keyPath) args.push('-i', sshConfig.keyPath)
+
+  if (sshConfig.port) {
+    args.push('-p', String(sshConfig.port))
+  }
+
+  if (sshConfig.keyPath) {
+    args.push('-i', sshConfig.keyPath)
+  }
+
   args.push('--', sshConfig.user ? `${sshConfig.user}@${sshConfig.host}` : sshConfig.host)
   const output = execFileSync(ssh, args, { encoding: 'utf8', timeout: 10_000, windowsHide: true })
+
   return crypto.createHash('sha256').update(output).digest('hex')
 }
 
@@ -6559,6 +6630,7 @@ async function bootstrapSshConnection(profile, sshConfig, reuseToken, source) {
   const effectiveConfigFingerprint = effectiveSshConfigFingerprint(sshConfig)
   const resolvedConfig = { ...sshConfig, effectiveConfigFingerprint }
   const fingerprint = sshConfigFingerprint(scope, resolvedConfig)
+
   return sshBootstrapCoordinator.start(scope, fingerprint, lease =>
     bootstrapSshConnectionInner(profile, resolvedConfig, reuseToken, source, fingerprint, lease)
   )
@@ -6568,18 +6640,28 @@ async function bootstrapSshConnectionInner(profile, sshConfig, reuseToken, sourc
   const scope = sshScopeKey(profile)
   const hostLabel = sshConfig.user ? `${sshConfig.user}@${sshConfig.host}` : sshConfig.host
   const existing = sshConnections.get(scope)
-  if (existing && existing.fingerprint !== fingerprint) await teardownSshConnection(profile)
+
+  if (existing && existing.fingerprint !== fingerprint) {
+    await teardownSshConnection(profile)
+  }
 
   let ssh = sshConnections.get(scope)?.ssh
+
   if (ssh && !(await ssh.isAlive())) {
     try {
       await ssh.close()
-    } catch {}
+    } catch {
+      void 0
+    }
+
     ssh = null
     sshConnections.delete(scope)
   }
+
   const created = !ssh
+
   let removeForceCleanup = () => {}
+
   if (created) {
     ssh = new SshConnection(
       { host: sshConfig.host, user: sshConfig.user, port: sshConfig.port, keyPath: sshConfig.keyPath },
@@ -6595,6 +6677,7 @@ async function bootstrapSshConnectionInner(profile, sshConfig, reuseToken, sourc
   }
 
   let result
+
   try {
     const platform = await detectRemotePlatform(ssh, sshConfig.remoteHermesPath || '')
     const lifecycle = platform.os === 'Windows' ? connectWindowsRemote : remoteLifecycle.connect
@@ -6615,8 +6698,13 @@ async function bootstrapSshConnectionInner(profile, sshConfig, reuseToken, sourc
     })
   } catch (error: any) {
     if (created) {
-      try { await ssh.close() } catch {}
+      try {
+        await ssh.close()
+      } catch {
+        void 0
+      }
     }
+
     const err = new Error(error.message) as any
     err.sshError = error.kind || 'unknown'
     err.isSshBootstrap = true
@@ -6629,7 +6717,10 @@ async function bootstrapSshConnectionInner(profile, sshConfig, reuseToken, sourc
     try {
       await ssh.cancelForward(result.localPort, result.remotePort)
       await ssh.close()
-    } catch {}
+    } catch {
+      void 0
+    }
+
     throw error
   }
 
@@ -6655,8 +6746,15 @@ async function bootstrapSshConnectionInner(profile, sshConfig, reuseToken, sourc
   )
 
   const connection = await buildRemoteConnection(
-    result.baseUrl, 'token', result.token, source, hostLabel, 'ssh', result.ownershipId
+    result.baseUrl,
+    'token',
+    result.token,
+    source,
+    hostLabel,
+    'ssh',
+    result.ownershipId
   )
+
   return { ...connection, remoteHermesVersion: result.hermesVersion || '' }
 }
 
@@ -6664,8 +6762,10 @@ function persistSshConnectionToken(profile, source, token) {
   try {
     const config = readDesktopConnectionConfig()
     const encrypted = encryptDesktopSecret(token)
+
     if (source === 'profile') {
       const key = connectionScopeKey(profile)
+
       if (key && config.profiles?.[key]?.mode === 'ssh') {
         config.profiles[key].token = encrypted
         writeDesktopConnectionConfig(config)
@@ -6693,8 +6793,10 @@ async function resolveRemoteBackend(profile) {
   //    over the env override so an explicitly-configured profile always
   //    reaches its intended backend.
   const sshOverride = profileSshOverride(config, profile)
+
   if (sshOverride) {
     const reuseToken = decryptDesktopSecret(config.profiles?.[connectionScopeKey(profile)]?.token)
+
     return bootstrapSshConnection(profile, sshOverride, reuseToken, 'profile')
   }
 
@@ -6704,7 +6806,12 @@ async function resolveRemoteBackend(profile) {
     const token = override.authMode === 'oauth' ? null : decryptDesktopSecret(override.token)
 
     return buildRemoteConnection(
-      override.url, override.authMode, token, 'profile', undefined, config.profiles?.[connectionScopeKey(profile)]?.mode === 'cloud' ? 'cloud' : 'url'
+      override.url,
+      override.authMode,
+      token,
+      'profile',
+      undefined,
+      config.profiles?.[connectionScopeKey(profile)]?.mode === 'cloud' ? 'cloud' : 'url'
     )
   }
 
@@ -6726,8 +6833,13 @@ async function resolveRemoteBackend(profile) {
   // 3. Global remote.
   if (config.mode === 'ssh') {
     const ssh = normalizeSshConfig({ mode: 'ssh', ...(config.remote || {}) })
-    if (!ssh) throw new Error('SSH remote mode is selected but no host is configured.')
+
+    if (!ssh) {
+      throw new Error('SSH remote mode is selected but no host is configured.')
+    }
+
     const reuseToken = decryptDesktopSecret(config.remote?.token)
+
     return bootstrapSshConnection(null, ssh, reuseToken, 'settings')
   }
 
@@ -6740,7 +6852,12 @@ async function resolveRemoteBackend(profile) {
   const token = authMode === 'oauth' ? null : decryptDesktopSecret(config.remote?.token)
 
   return buildRemoteConnection(
-    config.remote?.url, authMode, token, 'settings', undefined, config.mode === 'cloud' ? 'cloud' : 'url'
+    config.remote?.url,
+    authMode,
+    token,
+    'settings',
+    undefined,
+    config.mode === 'cloud' ? 'cloud' : 'url'
   )
 }
 
@@ -6768,6 +6885,7 @@ function globalRemoteActive() {
   }
 
   const mode = readDesktopConnectionConfig().mode
+
   return modeIsRemoteLike(mode) || mode === 'ssh'
 }
 
@@ -6865,19 +6983,29 @@ async function probeRemoteAuthMode(rawUrl) {
 async function testDesktopConnectionConfig(input: any = {}) {
   if (input.mode === 'ssh') {
     const sshConfig = normalizeSshConfig({
-      mode: 'ssh', host: input.sshHost, user: input.sshUser, port: input.sshPort,
-      keyPath: input.sshKeyPath, remoteHermesPath: input.sshRemoteHermesPath
+      mode: 'ssh',
+      host: input.sshHost,
+      user: input.sshUser,
+      port: input.sshPort,
+      keyPath: input.sshKeyPath,
+      remoteHermesPath: input.sshRemoteHermesPath
     })
-    if (!sshConfig) return { reachable: false, sshError: 'unreachable', error: 'SSH host is required.' }
+
+    if (!sshConfig) {
+      return { reachable: false, sshError: 'unreachable', error: 'SSH host is required.' }
+    }
+
     const ssh = createSshProbeConnection(
       { host: sshConfig.host, user: sshConfig.user, port: sshConfig.port, keyPath: sshConfig.keyPath },
       { rememberLog: sshRememberLog }
     )
+
     try {
       // One bounded retry on TIMEOUT only: a cold Windows backend's first
       // PowerShell exec can exceed the budget (observed live), and a timeout is
       // indeterminate — unlike auth/host-key/unreachable, which are verdicts.
       let attempt = 0
+
       for (;;) {
         try {
           await ssh.open()
@@ -6885,6 +7013,7 @@ async function testDesktopConnectionConfig(input: any = {}) {
           let hermesPath
           let hermesVersion
           let supported
+
           if (platform.os === 'Windows') {
             const runtime = platform
             hermesPath = runtime.hermesPath
@@ -6896,28 +7025,43 @@ async function testDesktopConnectionConfig(input: any = {}) {
             hermesVersion = await remoteLifecycle.probeHermesVersion(ssh, hermesPath)
             supported = await remoteLifecycle.remoteSupportsSshOwnership(ssh, hermesPath)
           }
+
           if (!supported) {
-            return { reachable: false, sshError: 'update-required', error: 'Update Hermes on the remote host before connecting with Desktop SSH.' }
+            return {
+              reachable: false,
+              sshError: 'update-required',
+              error: 'Update Hermes on the remote host before connecting with Desktop SSH.'
+            }
           }
+
           return {
-            reachable: true, sshError: null, error: null,
+            reachable: true,
+            sshError: null,
+            error: null,
             remotePlatform: `${platform.os}/${platform.arch}`,
-            remoteHermesPath: hermesPath, remoteHermesVersion: hermesVersion,
+            remoteHermesPath: hermesPath,
+            remoteHermesVersion: hermesVersion,
             host: sshConfig.user ? `${sshConfig.user}@${sshConfig.host}` : sshConfig.host
           }
         } catch (error: any) {
           if (error?.kind === 'timeout' && attempt === 0) {
             attempt += 1
             sshRememberLog('[ssh] test probe timed out once; retrying')
+
             continue
           }
+
           throw error
         }
       }
     } catch (error: any) {
       return { reachable: false, sshError: error.kind || 'unknown', error: error.message }
     } finally {
-      try { await ssh.close() } catch {}
+      try {
+        await ssh.close()
+      } catch {
+        void 0
+      }
     }
   }
 
@@ -8183,6 +8327,7 @@ ipcMain.handle('hermes:connection:revalidate', async () => {
   try {
     await fetchPublicJson(`${base}/api/status`, { timeoutMs: 10_000 })
     revalidateTimeoutStreak = 0
+
     return { ok: true, rebuilt: false }
   } catch (error: any) {
     // A timeout is indeterminate (slow VM, idle tunnel re-establishing) — not
@@ -8190,20 +8335,26 @@ ipcMain.handle('hermes:connection:revalidate', async () => {
     // bounded streak of timeouts, so one slow answer can't destroy a healthy
     // transport and cancel in-flight bootstraps.
     const refused = /ECONNREFUSED/i.test(String(error?.code || error?.cause?.code || error?.message || ''))
+
     if (!refused) {
       revalidateTimeoutStreak += 1
+
       if (revalidateTimeoutStreak < 3) {
         rememberLog(`Remote liveness probe indeterminate (${revalidateTimeoutStreak}/3); keeping connection.`)
+
         return { ok: true, rebuilt: false }
       }
     }
+
     revalidateTimeoutStreak = 0
     rememberLog('Cached remote Hermes backend failed liveness probe; dropping stale connection.')
+
     if (conn.remoteKind === 'ssh') {
       const profile = primaryProfileKey()
       await sshBootstrapCoordinator.cancelAndWait(sshScopeKey(profile))
       await teardownSshConnection(profile)
     }
+
     resetHermesConnection()
 
     return { ok: true, rebuilt: true }
@@ -8438,28 +8589,44 @@ ipcMain.handle('hermes:connection-config:get', async (_event, profile) =>
 ipcMain.handle('hermes:ssh-config:hosts', async () => ({ hosts: collectSshConfigHosts() }))
 ipcMain.handle('hermes:ssh-config:resolve', async (_event, host) => {
   const value = String(host || '').trim()
-  if (!value) throw new Error('SSH host is required.')
-  const ssh = process.platform === 'win32'
-    ? path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'OpenSSH', 'ssh.exe')
-    : 'ssh'
+
+  if (!value) {
+    throw new Error('SSH host is required.')
+  }
+
+  const ssh =
+    process.platform === 'win32'
+      ? path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'OpenSSH', 'ssh.exe')
+      : 'ssh'
+
   return new Promise((resolve, reject) => {
     const child = spawn(ssh, ['-G', '--', value], hiddenWindowsChildOptions({ stdio: ['ignore', 'pipe', 'pipe'] }))
     let stdout = ''
     let stderr = ''
+
     const timer = setTimeout(() => {
       child.kill()
       reject(new Error('SSH config resolution timed out.'))
     }, 10_000)
-    child.stdout.on('data', chunk => { stdout += String(chunk) })
-    child.stderr.on('data', chunk => { stderr += String(chunk) })
+
+    child.stdout.on('data', chunk => {
+      stdout += String(chunk)
+    })
+    child.stderr.on('data', chunk => {
+      stderr += String(chunk)
+    })
     child.once('error', error => {
       clearTimeout(timer)
       reject(error)
     })
     child.once('close', code => {
       clearTimeout(timer)
-      if (code !== 0) reject(new Error(stderr.trim() || 'Could not resolve SSH host.'))
-      else resolve(parseSshGOutput(stdout))
+
+      if (code !== 0) {
+        reject(new Error(stderr.trim() || 'Could not resolve SSH host.'))
+      } else {
+        resolve(parseSshGOutput(stdout))
+      }
     })
   })
 })
@@ -9565,9 +9732,12 @@ ipcMain.handle('hermes:terminal:start', async (event, payload = {}) => {
   const sshTarget = await resolveTerminalConnection(activeSshTerminalTarget, () => ensureBackend(primaryProfileKey()))
   const remote = Boolean(sshTarget)
   const remoteState = remote ? sshConnections.get(sshTarget.scope) : null
-  const remoteCommand = remoteState?.remotePlatform === 'Windows'
-    ? buildWindowsInteractiveCommand(String(payload?.cwd || '').trim())
-    : undefined
+
+  const remoteCommand =
+    remoteState?.remotePlatform === 'Windows'
+      ? buildWindowsInteractiveCommand(String(payload?.cwd || '').trim())
+      : undefined
+
   const ptyProcess = remote
     ? nodePty.spawn(
         process.platform === 'win32'
@@ -10132,10 +10302,12 @@ app.on('before-quit', event => {
     event.preventDefault()
     sshBootstrapCoordinator.cancelAll()
     const scopes = [...sshConnections.keys()]
+
     const pending = Promise.allSettled([
       ...scopes.map(scope => teardownSshConnection(scope || null)),
       ...sshBootstrapCoordinator.promises()
     ])
+
     void Promise.race([pending, new Promise(resolve => setTimeout(resolve, 4_000))]).then(async () => {
       await sshBootstrapCoordinator.forceCleanupAll()
       sshQuitTeardownDone = true

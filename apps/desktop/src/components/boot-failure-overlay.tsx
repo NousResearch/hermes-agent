@@ -13,7 +13,13 @@ import { notify, notifyError } from '@/store/notifications'
 import { $desktopOnboarding } from '@/store/onboarding'
 
 import type { RemoteReauth } from './boot-failure-reauth'
-import { deriveProviderShape, isRemoteConfig, isRemoteReauthFailure, signInLabel, sshFailureMessage } from './boot-failure-reauth'
+import {
+  deriveProviderShape,
+  isRemoteConfig,
+  isRemoteReauthFailure,
+  signInLabel,
+  sshFailureMessage
+} from './boot-failure-reauth'
 
 // The recovery "Gateway settings" view embeds the real Settings → Gateway panel
 // (identical URL/auth/test/save controls — no parallel form to drift). Lazy so

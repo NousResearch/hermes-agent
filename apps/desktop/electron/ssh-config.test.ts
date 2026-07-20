@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+
 import { test } from 'vitest'
 
 import { collectSshConfigHosts, parseSshConfigHosts, parseSshConfigIncludes, parseSshGOutput } from './ssh-config'
@@ -12,6 +13,7 @@ test('parseSshConfigHosts keeps literal aliases and drops wildcard/negated patte
     '# Host commented-out',
     'host lower-case'
   ].join('\n')
+
   assert.deepEqual(parseSshConfigHosts(cfg), ['devbox', 'prod', 'alpha', 'beta', 'lower-case'])
 })
 
@@ -31,10 +33,12 @@ test('collectSshConfigHosts follows Include directives (read-only)', () => {
     '/home/u/.ssh/nested': 'Host deep',
     '/home/u/abs_inc': 'Host home-abs'
   }
+
   const hosts = collectSshConfigHosts('/home/u/.ssh/config', {
     homeDir: '/home/u',
     readFile: p => files[p] ?? null
   })
+
   assert.deepEqual(hosts.sort(), ['deep', 'home-abs', 'main', 'work-box'].sort())
 })
 
@@ -47,10 +51,12 @@ test('collectSshConfigHosts does not loop on a self-include cycle', () => {
     '/home/u/.ssh/config': 'Host a\nInclude loop',
     '/home/u/.ssh/loop': 'Host b\nInclude config' // points back at config
   }
+
   const hosts = collectSshConfigHosts('/home/u/.ssh/config', {
     homeDir: '/home/u',
     readFile: p => files[p] ?? null
   })
+
   assert.deepEqual(hosts.sort(), ['a', 'b'])
 })
 
@@ -60,12 +66,14 @@ test('collectSshConfigHosts expands globbed includes via injected globSync', () 
     '/home/u/.ssh/config.d/10-work': 'Host work',
     '/home/u/.ssh/config.d/20-home': 'Host home'
   }
+
   const hosts = collectSshConfigHosts('/home/u/.ssh/config', {
     homeDir: '/home/u',
     readFile: p => files[p] ?? null,
     globSync: pattern =>
       pattern.endsWith('config.d/*') ? ['/home/u/.ssh/config.d/10-work', '/home/u/.ssh/config.d/20-home'] : [pattern]
   })
+
   assert.deepEqual(hosts.sort(), ['home', 'root', 'work'].sort())
 })
 
@@ -78,6 +86,7 @@ test('parseSshGOutput pulls hostname/user/port/identityfile', () => {
     'identityfile ~/.ssh/id_ed25519',
     'forwardagent no'
   ].join('\n')
+
   assert.deepEqual(parseSshGOutput(out), {
     hostname: '10.0.0.5',
     user: 'alice',

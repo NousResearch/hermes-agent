@@ -100,7 +100,10 @@ function fakeDesktop() {
     onBackendExit: vi.fn(() => () => undefined),
     onConnectionApplied: vi.fn(callback => {
       connectionApplied = callback
-      return () => { connectionApplied = null }
+
+      return () => {
+        connectionApplied = null
+      }
     }),
     onPowerResume: vi.fn(() => () => undefined),
     onWindowStateChanged: vi.fn(() => () => undefined),

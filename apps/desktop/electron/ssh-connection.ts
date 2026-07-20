@@ -41,35 +41,46 @@ const DEFAULT_EXEC_TIMEOUT_MS = 20_000
 const DEFAULT_FORWARD_TIMEOUT_MS = 15_000
 const CONTROL_PERSIST_SECONDS = 300
 
+// eslint-disable-next-line no-control-regex -- deliberately reject control chars in ssh targets
 const _CONTROL_CHAR_RE = /[\x00-\x1f\x7f]/
 
 function validateSshTarget(host, user, port) {
   if (!host || typeof host !== 'string') {
     throw new Error('Unsafe SSH target: host is required.')
   }
+
   if (host.startsWith('-')) {
     throw new Error(`Unsafe SSH target: host must not start with a dash ("${host}").`)
   }
+
   if (_CONTROL_CHAR_RE.test(host)) {
     throw new Error('Unsafe SSH target: host contains control characters.')
   }
+
   if (user && _CONTROL_CHAR_RE.test(user)) {
     throw new Error('Unsafe SSH target: user contains control characters.')
   }
+
   if (user && user.startsWith('-')) {
     throw new Error(`Unsafe SSH target: user must not start with a dash ("${user}").`)
   }
+
   const p = Number(port)
+
   if (!Number.isInteger(p) || p < 1 || p > 65535) {
     throw new Error(`Unsafe SSH port: ${port} (must be 1-65535).`)
   }
 }
 
 function validateKeyPath(keyPath) {
-  if (!keyPath) return
+  if (!keyPath) {
+    return
+  }
+
   if (_CONTROL_CHAR_RE.test(keyPath)) {
     throw new Error('Unsafe SSH key path: contains control characters.')
   }
+
   if (keyPath.startsWith('-')) {
     throw new Error(`Unsafe SSH key path: must not start with a dash ("${keyPath}").`)
   }
@@ -86,9 +97,11 @@ const _REDACTIONS: Array<[RegExp, string]> = [
 
 function redactSecrets(text) {
   let out = String(text == null ? '' : text)
+
   for (const [re, repl] of _REDACTIONS) {
     out = out.replace(re, repl)
   }
+
   return out
 }
 
@@ -107,8 +120,19 @@ function redactSecrets(text) {
 function controlSocketPath(user, host, port, baseDir?, identity: any = {}) {
   const dir = baseDir || defaultControlDir()
   const keyPathIdentity = path.normalize(String(identity.keyPath || ''))
-  const parts = [identity.ownershipId || '', identity.scope || '', user || '', host, Number(port), keyPathIdentity, identity.effectiveConfigFingerprint || '']
+
+  const parts = [
+    identity.ownershipId || '',
+    identity.scope || '',
+    user || '',
+    host,
+    Number(port),
+    keyPathIdentity,
+    identity.effectiveConfigFingerprint || ''
+  ]
+
   const id = crypto.createHash('sha256').update(JSON.stringify(parts)).digest('hex').slice(0, 16)
+
   return path.join(dir, `${id}.sock`)
 }
 
@@ -118,6 +142,7 @@ function defaultControlDir() {
   if (process.platform === 'win32') {
     return path.join(os.tmpdir(), 'hermes-desktop-ssh')
   }
+
   return path.join(os.homedir(), '.hermes', 'desktop-ssh')
 }
 
@@ -128,28 +153,44 @@ function defaultControlDir() {
 // per-invocation options — each ssh call authenticates on its own.
 function baseSshOptions(controlPath, connectTimeoutMs?) {
   const connectSecs = Math.max(1, Math.round((connectTimeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS) / 1000))
+
   const mux = controlPath
-    ? ['-o', `ControlPath=${controlPath}`, '-o', 'ControlMaster=auto', '-o', `ControlPersist=${CONTROL_PERSIST_SECONDS}`]
+    ? [
+        '-o',
+        `ControlPath=${controlPath}`,
+        '-o',
+        'ControlMaster=auto',
+        '-o',
+        `ControlPersist=${CONTROL_PERSIST_SECONDS}`
+      ]
     : []
+
   return [
     ...mux,
-    '-o', 'BatchMode=yes',
-    '-o', 'StrictHostKeyChecking=accept-new',
-    '-o', 'ExitOnForwardFailure=yes',
-    '-o', `ConnectTimeout=${connectSecs}`
+    '-o',
+    'BatchMode=yes',
+    '-o',
+    'StrictHostKeyChecking=accept-new',
+    '-o',
+    'ExitOnForwardFailure=yes',
+    '-o',
+    `ConnectTimeout=${connectSecs}`
   ]
 }
 
 // Non-default port and explicit identity file, shared by exec/master/forward.
 function hostArgs({ port, keyPath }: { port?: number | string; keyPath?: string } = {}) {
   const args: string[] = []
+
   if (port && Number(port) !== 22) {
     args.push('-p', String(port))
   }
+
   if (keyPath) {
     validateKeyPath(keyPath)
     args.push('-i', keyPath)
   }
+
   return args
 }
 
@@ -158,18 +199,40 @@ function target(user, host) {
 }
 
 function buildExecArgs(conn, remoteCommand, connectTimeoutMs?) {
-  return [...baseSshOptions(conn.controlPath, connectTimeoutMs), ...hostArgs(conn), '--', target(conn.user, conn.host), remoteCommand]
+  return [
+    ...baseSshOptions(conn.controlPath, connectTimeoutMs),
+    ...hostArgs(conn),
+    '--',
+    target(conn.user, conn.host),
+    remoteCommand
+  ]
 }
 
 function buildControlArgs(conn, op, extra: string[] = [], connectTimeoutMs?) {
-  return ['-O', op, ...extra, ...baseSshOptions(conn.controlPath, connectTimeoutMs), ...hostArgs(conn), '--', target(conn.user, conn.host)]
+  return [
+    '-O',
+    op,
+    ...extra,
+    ...baseSshOptions(conn.controlPath, connectTimeoutMs),
+    ...hostArgs(conn),
+    '--',
+    target(conn.user, conn.host)
+  ]
 }
 
 // Open the master explicitly: `-M -N -f` backgrounds ssh once the master is up,
 // so the spawn resolves when the connection is established (or fails fast under
 // BatchMode if auth is non-interactive-only).
 function buildMasterArgs(conn, connectTimeoutMs?) {
-  return ['-M', '-N', '-f', ...baseSshOptions(conn.controlPath, connectTimeoutMs), ...hostArgs(conn), '--', target(conn.user, conn.host)]
+  return [
+    '-M',
+    '-N',
+    '-f',
+    ...baseSshOptions(conn.controlPath, connectTimeoutMs),
+    ...hostArgs(conn),
+    '--',
+    target(conn.user, conn.host)
+  ]
 }
 
 // Interactive `ssh -tt` for the INTERIM remote terminal (SSH mode only). Reuses
@@ -179,18 +242,29 @@ function buildMasterArgs(conn, connectTimeoutMs?) {
 // NOTE(remote-terminal): interim until the dashboard /api/terminal WebSocket
 // lands (specs/desktop-remote-terminal.md); delete this path then.
 function buildInteractiveSshArgs(conn, remoteCwd, connectTimeoutMs?, remoteCommand?) {
-  const args = ['-tt', ...baseSshOptions(conn.controlPath, connectTimeoutMs), ...hostArgs(conn), '--', target(conn.user, conn.host)]
+  const args = [
+    '-tt',
+    ...baseSshOptions(conn.controlPath, connectTimeoutMs),
+    ...hostArgs(conn),
+    '--',
+    target(conn.user, conn.host)
+  ]
+
   if (remoteCommand) {
     args.push(remoteCommand)
+
     return args
   }
+
   const cwd = String(remoteCwd || '').trim()
+
   if (cwd) {
     const q = `'${cwd.replace(/'/g, `'\\''`)}'`
     args.push(`cd ${q} 2>/dev/null; exec "$SHELL" -l`)
   } else {
     args.push('exec "$SHELL" -l')
   }
+
   return args
 }
 
@@ -214,20 +288,37 @@ const SSH_ERROR = {
 // so check it before generic auth.
 function classifySshError(stderr) {
   const text = String(stderr || '')
-  if (/REMOTE HOST IDENTIFICATION HAS CHANGED|Host key verification failed|Offending (?:key|ECDSA|RSA|ED25519)/i.test(text)) {
+
+  if (
+    /REMOTE HOST IDENTIFICATION HAS CHANGED|Host key verification failed|Offending (?:key|ECDSA|RSA|ED25519)/i.test(
+      text
+    )
+  ) {
     return SSH_ERROR.HOST_KEY_CHANGED
   }
-  if (/Permission denied|Too many authentication failures|no matching host key|publickey|password|keyboard-interactive/i.test(text)) {
+
+  if (
+    /Permission denied|Too many authentication failures|no matching host key|publickey|password|keyboard-interactive/i.test(
+      text
+    )
+  ) {
     return SSH_ERROR.AUTH_FAILED
   }
-  if (/Could not resolve hostname|Connection refused|Connection timed out|No route to host|Network is unreachable|Operation timed out|port \d+: Connection/i.test(text)) {
+
+  if (
+    /Could not resolve hostname|Connection refused|Connection timed out|No route to host|Network is unreachable|Operation timed out|port \d+: Connection/i.test(
+      text
+    )
+  ) {
     return SSH_ERROR.UNREACHABLE
   }
+
   return SSH_ERROR.UNKNOWN
 }
 
 function sshErrorMessage(kind, conn, stderr?) {
   const host = target(conn.user, conn.host)
+
   switch (kind) {
     case SSH_ERROR.HOST_KEY_CHANGED:
       return (
@@ -236,6 +327,7 @@ function sshErrorMessage(kind, conn, stderr?) {
         `SSH refused to connect. Verify the change is expected, then remove the old key ` +
         `with \`ssh-keygen -R ${conn.host}\` and reconnect.\n\n${String(stderr || '').trim()}`
       )
+
     case SSH_ERROR.AUTH_FAILED:
       return (
         `SSH authentication to ${host} failed. Desktop runs ssh non-interactively ` +
@@ -243,10 +335,13 @@ function sshErrorMessage(kind, conn, stderr?) {
         `ssh-agent first (e.g. \`ssh-add ~/.ssh/id_ed25519\`), or set an IdentityFile in ` +
         `~/.ssh/config. Original error: ${String(stderr || '').trim()}`
       )
+
     case SSH_ERROR.UNREACHABLE:
       return `Could not reach ${host} over SSH. Check the host, port, and your network. Original error: ${String(stderr || '').trim()}`
+
     case SSH_ERROR.TIMEOUT:
       return `SSH operation to ${host} timed out. The connection may be half-open (e.g. after sleep); reconnecting.`
+
     default:
       return `SSH error connecting to ${host}: ${String(stderr || '').trim() || 'unknown failure'}`
   }
@@ -260,10 +355,12 @@ function runSsh(args, { timeoutMs, spawnFn = spawn, stdin = 'ignore', stdinData 
   return new Promise((resolve, reject) => {
     const useStdinPipe = stdinData != null || stdin !== 'ignore'
     let child
+
     try {
       child = spawnFn('ssh', args, { stdio: [useStdinPipe ? 'pipe' : 'ignore', 'pipe', 'pipe'] })
     } catch (error) {
       reject(error)
+
       return
     }
 
@@ -276,13 +373,18 @@ function runSsh(args, { timeoutMs, spawnFn = spawn, stdin = 'ignore', stdinData 
     let settled = false
 
     const timer = setTimeout(() => {
-      if (settled) return
+      if (settled) {
+        return
+      }
+
       settled = true
+
       try {
         child.kill('SIGKILL')
       } catch {
         // already gone
       }
+
       const err: any = new Error(`ssh timed out after ${timeoutMs}ms`)
       err.kind = SSH_ERROR.TIMEOUT
       reject(err)
@@ -295,13 +397,19 @@ function runSsh(args, { timeoutMs, spawnFn = spawn, stdin = 'ignore', stdinData 
       stderr += d.toString()
     })
     child.on('error', error => {
-      if (settled) return
+      if (settled) {
+        return
+      }
+
       settled = true
       clearTimeout(timer)
       reject(error)
     })
     child.on('close', code => {
-      if (settled) return
+      if (settled) {
+        return
+      }
+
       settled = true
       clearTimeout(timer)
       resolve({ code, stdout, stderr })
@@ -310,24 +418,35 @@ function runSsh(args, { timeoutMs, spawnFn = spawn, stdin = 'ignore', stdinData 
 }
 
 function stopTunnelChild(child, timeoutMs = 5_000) {
-  if (!child || child.exitCode != null || child.signalCode != null) return Promise.resolve()
+  if (!child || child.exitCode != null || child.signalCode != null) {
+    return Promise.resolve()
+  }
+
   return new Promise<void>((resolve, reject) => {
     let settled = false
+
     const finish = (error?: unknown) => {
-      if (settled) return
+      if (settled) {
+        return
+      }
+
       settled = true
       clearTimeout(timer)
       child.off?.('exit', onExit)
       child.off?.('error', onError)
       error ? reject(error) : resolve()
     }
+
     const onExit = () => finish()
     const onError = error => finish(error)
     const timer = setTimeout(() => finish(new Error('SSH tunnel did not exit after termination.')), timeoutMs)
     child.once('exit', onExit)
     child.once('error', onError)
+
     try {
-      if (!child.kill()) finish(new Error('SSH tunnel termination was refused.'))
+      if (!child.kill()) {
+        finish(new Error('SSH tunnel termination was refused.'))
+      }
     } catch (error) {
       finish(error)
     }
@@ -355,9 +474,14 @@ class SshConnection {
     if (!cfg || !cfg.host) {
       throw new Error('SshConnection requires a host.')
     }
+
     const port = cfg.port ? Number(cfg.port) : 22
     validateSshTarget(cfg.host, cfg.user || '', port)
-    if (cfg.keyPath) validateKeyPath(cfg.keyPath)
+
+    if (cfg.keyPath) {
+      validateKeyPath(cfg.keyPath)
+    }
+
     this.host = cfg.host
     this.user = cfg.user || ''
     this.port = port
@@ -378,6 +502,7 @@ class SshConnection {
     this._tunnels = new Map()
 
     this._spawnFn = opts.spawnFn || spawn
+
     this._log = typeof opts.rememberLog === 'function' ? opts.rememberLog : () => {}
     this._connectTimeoutMs = opts.connectTimeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS
     this._execTimeoutMs = opts.execTimeoutMs ?? DEFAULT_EXEC_TIMEOUT_MS
@@ -394,12 +519,15 @@ class SshConnection {
     if (stderrOrErr && stderrOrErr.kind === SSH_ERROR.TIMEOUT) {
       const err: any = new Error(sshErrorMessage(SSH_ERROR.TIMEOUT, this))
       err.kind = SSH_ERROR.TIMEOUT
+
       return err
     }
+
     const stderr = typeof stderrOrErr === 'string' ? stderrOrErr : stderrOrErr?.message || ''
     const kind = stderr ? classifySshError(stderr) : fallbackKind
     const err: any = new Error(sshErrorMessage(kind, this, stderr))
     err.kind = kind
+
     return err
   }
 
@@ -414,14 +542,18 @@ class SshConnection {
       // a real exec before trusting it; on failure, evict and dial fresh.
       if (!this._mux || (await this._verifyMuxChannel())) {
         this._opened = true
+
         return
       }
+
       this._logLine('existing control master failed exec verification; evicting stale master')
       await this._evictStaleMaster()
     }
+
     if (!this._mux) {
       this._logLine(`connecting (no-mux) to ${target(this.user, this.host)}:${this.port}`)
       let result
+
       try {
         result = await runSsh(buildExecArgs(this, 'exit 0', this._connectTimeoutMs), {
           timeoutMs: this._connectTimeoutMs,
@@ -430,43 +562,59 @@ class SshConnection {
       } catch (error) {
         throw this._fail(error, SSH_ERROR.UNREACHABLE)
       }
+
       if (result.code !== 0) {
         throw this._fail(result.stderr, SSH_ERROR.UNREACHABLE)
       }
+
       this._opened = true
       this._logLine('connection verified (no-mux; per-operation ssh)')
+
       return
     }
+
     const controlDir = path.dirname(this.controlPath)
+
     try {
       fs.mkdirSync(controlDir, { recursive: true, mode: 0o700 })
-    } catch {}
+    } catch {
+      void 0
+    }
+
     if (process.platform !== 'win32') {
       const st = fs.lstatSync(controlDir)
+
       if (st.isSymbolicLink()) {
         throw new Error(`Unsafe SSH control dir: ${controlDir} is a symlink.`)
       }
+
       if (!st.isDirectory()) {
         throw new Error(`Unsafe SSH control dir: ${controlDir} is not a directory.`)
       }
+
       if (st.uid !== process.getuid!()) {
         throw new Error(`Unsafe SSH control dir: ${controlDir} is owned by uid ${st.uid}, not ${process.getuid!()}.`)
       }
+
       if ((st.mode & 0o777) !== 0o700) {
         fs.chmodSync(controlDir, 0o700)
       }
     }
+
     const args = buildMasterArgs(this, this._connectTimeoutMs)
     this._logLine(`opening control master to ${target(this.user, this.host)}:${this.port}`)
     let result
+
     try {
       result = await runSsh(args, { timeoutMs: this._connectTimeoutMs, spawnFn: this._spawnFn })
     } catch (error) {
       throw this._fail(error, SSH_ERROR.UNREACHABLE)
     }
+
     if (result.code !== 0) {
       throw this._fail(result.stderr, SSH_ERROR.UNREACHABLE)
     }
+
     this._opened = true
     this._logLine('control master established')
   }
@@ -474,12 +622,17 @@ class SshConnection {
   // Liveness. Mux: `-O check` against the master socket. No-mux: a cheap
   // one-shot exec — "alive" means "we can still authenticate and run".
   async isAlive() {
-    if ([...this._tunnels.values()].some(tunnel => tunnel.alive === false)) return false
+    if ([...this._tunnels.values()].some(tunnel => tunnel.alive === false)) {
+      return false
+    }
+
     const args = this._mux
       ? buildControlArgs(this, 'check', [], this._connectTimeoutMs)
       : buildExecArgs(this, 'exit 0', this._connectTimeoutMs)
+
     try {
       const result: any = await runSsh(args, { timeoutMs: this._connectTimeoutMs, spawnFn: this._spawnFn })
+
       return result.code === 0
     } catch {
       return false
@@ -494,6 +647,7 @@ class SshConnection {
         timeoutMs: this._connectTimeoutMs,
         spawnFn: this._spawnFn
       })
+
       return result.code === 0
     } catch {
       return false
@@ -510,11 +664,16 @@ class SshConnection {
         timeoutMs: this._connectTimeoutMs,
         spawnFn: this._spawnFn
       })
-    } catch {}
+    } catch {
+      void 0
+    }
+
     try {
       fs.unlinkSync(this.controlPath)
     } catch (error: any) {
-      if (error?.code !== 'ENOENT') this._logLine(`could not remove stale control socket (${error.code}); a fresh master may not dial`)
+      if (error?.code !== 'ENOENT') {
+        this._logLine(`could not remove stale control socket (${error.code}); a fresh master may not dial`)
+      }
     }
   }
 
@@ -523,6 +682,7 @@ class SshConnection {
   async exec(remoteCommand, { timeoutMs, stdinData }: any = {}) {
     const args = buildExecArgs(this, remoteCommand, this._connectTimeoutMs)
     let result
+
     try {
       result = await runSsh(args, {
         timeoutMs: timeoutMs ?? this._execTimeoutMs,
@@ -532,9 +692,11 @@ class SshConnection {
     } catch (error) {
       throw this._fail(error)
     }
+
     if (result.code !== 0) {
       throw this._fail(result.stderr)
     }
+
     return result.stdout
   }
 
@@ -545,8 +707,19 @@ class SshConnection {
   async forward(localPort, remotePort, remoteHost = '127.0.0.1') {
     const spec = forwardSpec(localPort, remotePort, remoteHost)
     this._logLine(`forwarding 127.0.0.1:${localPort} -> ${remoteHost}:${remotePort}`)
+
     if (!this._mux) {
-      const args = [...baseSshOptions('', this._connectTimeoutMs), ...hostArgs(this), '-v', '-N', '-L', spec, '--', target(this.user, this.host)]
+      const args = [
+        ...baseSshOptions('', this._connectTimeoutMs),
+        ...hostArgs(this),
+        '-v',
+        '-N',
+        '-L',
+        spec,
+        '--',
+        target(this.user, this.host)
+      ]
+
       const child = this._spawnFn('ssh', args, { stdio: ['ignore', 'ignore', 'pipe'] })
       const tunnel = { child, alive: true }
       this._tunnels.set(spec, tunnel)
@@ -554,14 +727,20 @@ class SshConnection {
       let readyConfirmed = false
       let readyResolve
       let readyReject
+
       const ready = new Promise<void>((resolve, reject) => {
         readyResolve = resolve
         readyReject = reject
       })
+
       const readyPattern = new RegExp(`Local forwarding listening on .* port ${localPort}\\b`)
       child.stderr?.on('data', d => {
-        if (readyConfirmed) return
+        if (readyConfirmed) {
+          return
+        }
+
         stderr = `${stderr}${String(d)}`.slice(-16_384)
+
         if (readyPattern.test(stderr)) {
           readyConfirmed = true
           readyResolve()
@@ -580,11 +759,15 @@ class SshConnection {
         readyReject(new Error(`tunnel process closed with code ${code}`))
       })
       let readyTimeout
+
       try {
         await Promise.race([
           ready,
           new Promise((_, reject) => {
-            readyTimeout = setTimeout(() => reject(new Error('tunnel did not confirm local forwarding')), this._forwardTimeoutMs)
+            readyTimeout = setTimeout(
+              () => reject(new Error('tunnel did not confirm local forwarding')),
+              this._forwardTimeoutMs
+            )
           })
         ])
       } catch (error: any) {
@@ -594,19 +777,24 @@ class SshConnection {
         } catch (stopError) {
           throw this._fail(stopError, SSH_ERROR.UNKNOWN)
         }
+
         throw this._fail(stderr || error, SSH_ERROR.UNKNOWN)
       } finally {
         clearTimeout(readyTimeout)
       }
+
       return
     }
+
     const args = buildControlArgs(this, 'forward', ['-L', spec], this._connectTimeoutMs)
     let result
+
     try {
       result = await runSsh(args, { timeoutMs: this._forwardTimeoutMs, spawnFn: this._spawnFn })
     } catch (error) {
       throw this._fail(error)
     }
+
     if (result.code !== 0) {
       throw this._fail(result.stderr)
     }
@@ -616,16 +804,21 @@ class SshConnection {
   // logged but not thrown (close tears everything down anyway).
   async cancelForward(localPort, remotePort, remoteHost = '127.0.0.1') {
     const spec = forwardSpec(localPort, remotePort, remoteHost)
+
     if (!this._mux) {
       const tunnel = this._tunnels.get(spec)
+
       if (tunnel) {
         await stopTunnelChild(tunnel.child)
         this._tunnels.delete(spec)
         this._logLine(`cancelled forward 127.0.0.1:${localPort}`)
       }
+
       return
     }
+
     const args = buildControlArgs(this, 'cancel', ['-L', spec], this._connectTimeoutMs)
+
     try {
       await runSsh(args, { timeoutMs: this._forwardTimeoutMs, spawnFn: this._spawnFn })
       this._logLine(`cancelled forward 127.0.0.1:${localPort}`)
@@ -637,28 +830,45 @@ class SshConnection {
   // Tear down. Mux: exit the master (drops every forward with it). No-mux:
   // kill the tunnel children. Best-effort; never throws.
   async close() {
-    if (!this._opened) return
+    if (!this._opened) {
+      return
+    }
+
     if (!this._mux) {
       for (const [spec, tunnel] of this._tunnels) {
         await stopTunnelChild(tunnel.child)
         this._tunnels.delete(spec)
       }
+
       this._opened = false
       this._logLine('connection closed (no-mux tunnels killed)')
+
       return
     }
+
     const args = buildControlArgs(this, 'exit', [], this._connectTimeoutMs)
+
     try {
       const result: any = await runSsh(args, { timeoutMs: this._connectTimeoutMs, spawnFn: this._spawnFn })
-      if (result.code !== 0) throw this._fail(result.stderr)
+
+      if (result.code !== 0) {
+        throw this._fail(result.stderr)
+      }
+
       this._logLine('control master closed')
     } catch (error: any) {
       // A master that refuses -O exit is the wedge that poisons re-attach;
       // disown it. (Without its socket the orphan is inert; ControlPersist may
       // not reap it if a wedged channel never idles.)
       this._logLine(`close failed; removing control socket: ${error.message}`)
-      try { fs.unlinkSync(this.controlPath) } catch {}
+
+      try {
+        fs.unlinkSync(this.controlPath)
+      } catch {
+        void 0
+      }
     }
+
     this._opened = false
   }
 }
@@ -684,27 +894,27 @@ function createSshProbeConnection(config, options: any = {}) {
 }
 
 export {
-  CONTROL_PERSIST_SECONDS,
-  DEFAULT_CONNECT_TIMEOUT_MS,
-  DEFAULT_EXEC_TIMEOUT_MS,
-  DEFAULT_FORWARD_TIMEOUT_MS,
-  SSH_ERROR,
-  SshConnection,
   baseSshOptions,
   buildControlArgs,
   buildExecArgs,
   buildInteractiveSshArgs,
   buildMasterArgs,
   classifySshError,
+  CONTROL_PERSIST_SECONDS,
   controlSocketPath,
   createSshProbeConnection,
+  DEFAULT_CONNECT_TIMEOUT_MS,
+  DEFAULT_EXEC_TIMEOUT_MS,
+  DEFAULT_FORWARD_TIMEOUT_MS,
   forwardSpec,
   hostArgs,
   pickLocalPort,
   redactSecrets,
   runSsh,
-  stopTunnelChild,
+  SSH_ERROR,
+  SshConnection,
   sshErrorMessage,
+  stopTunnelChild,
   target,
   validateKeyPath,
   validateSshTarget

@@ -269,7 +269,11 @@ export function useSessionActions({
       // rebind race, so leaving the old id here could revive it on a very fast
       // New Chat -> Enter sequence.
       onFreshDraftRouteIntent?.()
-      if (!preserveRoute) navigate(NEW_CHAT_ROUTE, { replace: replaceRoute })
+
+      if (!preserveRoute) {
+        navigate(NEW_CHAT_ROUTE, { replace: replaceRoute })
+      }
+
       setActiveSessionId(null)
       activeSessionIdRef.current = null
       setSelectedStoredSessionId(null)

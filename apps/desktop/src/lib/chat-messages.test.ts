@@ -804,10 +804,7 @@ describe('mergeFinalAssistantText', () => {
   })
 
   it('drops reasoning that the final text fully covers (reasoning ⊆ final)', () => {
-    const parts = [
-      reasoningPart('Let me check the files.'),
-      { type: 'text' as const, text: 'streamed' }
-    ]
+    const parts = [reasoningPart('Let me check the files.'), { type: 'text' as const, text: 'streamed' }]
 
     const result = mergeFinalAssistantText(parts, 'Let me check the files. Everything looks good.')
 
@@ -819,7 +816,9 @@ describe('mergeFinalAssistantText', () => {
     // #61447: a short final ("Done.") must NOT swallow a longer reasoning block
     // that merely starts with it.
     const parts = [
-      reasoningPart('Done. The root cause was a bare catch block swallowing Stripe errors. The fix adds proper error logging.'),
+      reasoningPart(
+        'Done. The root cause was a bare catch block swallowing Stripe errors. The fix adds proper error logging.'
+      ),
       { type: 'text' as const, text: 'streamed' }
     ]
 
@@ -842,10 +841,7 @@ describe('mergeFinalAssistantText', () => {
   })
 
   it('handles empty final text', () => {
-    const parts = [
-      { type: 'text' as const, text: 'streamed' },
-      reasoningPart('some reasoning')
-    ]
+    const parts = [{ type: 'text' as const, text: 'streamed' }, reasoningPart('some reasoning')]
 
     const result = mergeFinalAssistantText(parts, '')
 

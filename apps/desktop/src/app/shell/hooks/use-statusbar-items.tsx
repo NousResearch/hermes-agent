@@ -290,15 +290,30 @@ export function useStatusbarItems({
   ])
 
   const connectionItem = useMemo<StatusbarItem | null>(() => {
-    if (connection?.mode !== 'remote' || !connection.remoteHost) return null
+    if (connection?.mode !== 'remote' || !connection.remoteHost) {
+      return null
+    }
+
     const ssh = connection.remoteKind === 'ssh'
     const cloud = connection.remoteKind === 'cloud'
+
     return {
-      className: cn('px-2 -ml-1 font-medium', ssh ? 'bg-primary text-primary-foreground' : 'bg-accent text-accent-foreground'),
+      className: cn(
+        'px-2 -ml-1 font-medium',
+        ssh ? 'bg-primary text-primary-foreground' : 'bg-accent text-accent-foreground'
+      ),
       icon: <Terminal className="size-3" />,
       id: 'connection',
-      label: ssh ? copy.connectionSsh(connection.remoteHost) : cloud ? copy.connectionCloud(connection.remoteHost) : copy.connectionRemote(connection.remoteHost),
-      title: ssh ? copy.connectionSshTooltip(connection.remoteHost) : cloud ? copy.connectionCloudTooltip(connection.remoteHost) : copy.connectionRemoteTooltip(connection.remoteHost),
+      label: ssh
+        ? copy.connectionSsh(connection.remoteHost)
+        : cloud
+          ? copy.connectionCloud(connection.remoteHost)
+          : copy.connectionRemote(connection.remoteHost),
+      title: ssh
+        ? copy.connectionSshTooltip(connection.remoteHost)
+        : cloud
+          ? copy.connectionCloudTooltip(connection.remoteHost)
+          : copy.connectionRemoteTooltip(connection.remoteHost),
       to: `${SETTINGS_ROUTE}?tab=gateway`
     }
   }, [connection?.mode, connection?.remoteHost, connection?.remoteKind, copy])

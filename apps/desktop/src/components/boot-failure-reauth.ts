@@ -31,10 +31,16 @@ const DEFAULT_SIGN_IN_COPY: SignInCopy = {
 // Gateway (edit URL / token / sign in) — the local Retry/Repair buttons target
 // the bundled backend and can't help. Drives the escape-hatch emphasis.
 export function isRemoteConfig(config: DesktopConnectionConfig | null | undefined): boolean {
-  if (!config) return false
+  if (!config) {
+    return false
+  }
+
   const ssh = config as DesktopConnectionConfig & { sshHost?: string }
-  return ((config.mode === 'remote' || config.mode === 'cloud') && Boolean(config.remoteUrl)) ||
+
+  return (
+    ((config.mode === 'remote' || config.mode === 'cloud') && Boolean(config.remoteUrl)) ||
     ((config.mode as string) === 'ssh' && Boolean(ssh.sshHost))
+  )
 }
 
 // True when a boot error is auth-shaped — the refresh token was rejected or the
@@ -73,15 +79,41 @@ export function sshFailureMessage(
   }
 ): string {
   const raw = String(error || '')
-  if (config?.mode !== 'ssh') return raw
+
+  if (config?.mode !== 'ssh') {
+    return raw
+  }
+
   const text = raw.toLowerCase()
-  if (text.includes('host key')) return copy.sshErrHostKey || raw
-  if (text.includes('auth')) return copy.sshErrAuth || raw
-  if (text.includes('not installed') || text.includes('not found')) return copy.sshErrNotInstalled || raw
-  if (text.includes('unsupported')) return copy.sshErrPlatform || raw
-  if (text.includes('timed out') || text.includes('timeout')) return copy.sshErrTimeout || raw
-  if (text.includes('update')) return copy.sshErrUpdateRequired || raw
-  if (text.includes('unreachable') || text.includes('could not reach')) return copy.sshErrUnreachable || raw
+
+  if (text.includes('host key')) {
+    return copy.sshErrHostKey || raw
+  }
+
+  if (text.includes('auth')) {
+    return copy.sshErrAuth || raw
+  }
+
+  if (text.includes('not installed') || text.includes('not found')) {
+    return copy.sshErrNotInstalled || raw
+  }
+
+  if (text.includes('unsupported')) {
+    return copy.sshErrPlatform || raw
+  }
+
+  if (text.includes('timed out') || text.includes('timeout')) {
+    return copy.sshErrTimeout || raw
+  }
+
+  if (text.includes('update')) {
+    return copy.sshErrUpdateRequired || raw
+  }
+
+  if (text.includes('unreachable') || text.includes('could not reach')) {
+    return copy.sshErrUnreachable || raw
+  }
+
   return copy.sshErrUnknown || raw
 }
 

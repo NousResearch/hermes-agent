@@ -41,6 +41,7 @@ describe('isRemoteConfig', () => {
     const ssh = config({ mode: 'ssh' as never, remoteUrl: '', remoteAuthMode: 'token' }) as DesktopConnectionConfig & {
       sshHost: string
     }
+
     ssh.sshHost = 'remote-box'
 
     expect(isRemoteConfig(ssh)).toBe(true)

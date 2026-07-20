@@ -45,18 +45,30 @@ function mintToken() {
 // Fingerprint a token for the lockfile — never store the raw secret on the
 // remote. SHA256, truncated.
 function fingerprintToken(token) {
-  return crypto.createHash('sha256').update(String(token || '')).digest('hex').slice(0, 32)
+  return crypto
+    .createHash('sha256')
+    .update(String(token || ''))
+    .digest('hex')
+    .slice(0, 32)
 }
 
 function validateOwnershipId(ownershipId) {
   const value = String(ownershipId || '')
-  if (!/^[0-9a-f]{32}$/.test(value)) throw new Error('SSH ownership ID is invalid.')
+
+  if (!/^[0-9a-f]{32}$/.test(value)) {
+    throw new Error('SSH ownership ID is invalid.')
+  }
+
   return value
 }
 
 function validateSpawnNonce(spawnNonce) {
   const value = String(spawnNonce || '')
-  if (!/^[0-9a-f]{16}$/.test(value)) throw new Error('SSH spawn nonce is invalid.')
+
+  if (!/^[0-9a-f]{16}$/.test(value)) {
+    throw new Error('SSH spawn nonce is invalid.')
+  }
+
   return value
 }
 
@@ -79,16 +91,34 @@ function shq(value) {
 
 function validateRemotePath(p) {
   const s = String(p || '')
-  if (!s) throw new Error('Remote path must not be empty.')
-  if (/[\x00\n\r]/.test(s)) throw new Error('Unsafe remote path: contains NUL or newline.')
-  if (s === '~' || s.startsWith('~/') || s.startsWith('/')) return
+
+  if (!s) {
+    throw new Error('Remote path must not be empty.')
+  }
+
+  // eslint-disable-next-line no-control-regex -- deliberately reject NUL in remote paths
+  if (/[\x00\n\r]/.test(s)) {
+    throw new Error('Unsafe remote path: contains NUL or newline.')
+  }
+
+  if (s === '~' || s.startsWith('~/') || s.startsWith('/')) {
+    return
+  }
+
   throw new Error(`Remote path must be absolute or start with ~/: "${s}"`)
 }
 
 function expandRemotePath(p) {
   validateRemotePath(p)
-  if (p === '~') return '"$HOME"'
-  if (p.startsWith('~/')) return '"$HOME"' + shq(p.slice(1))
+
+  if (p === '~') {
+    return '"$HOME"'
+  }
+
+  if (p.startsWith('~/')) {
+    return '"$HOME"' + shq(p.slice(1))
+  }
+
   return shq(p)
 }
 
@@ -112,7 +142,9 @@ async function locateHermes(ssh, remoteHermesPath) {
       '   break\n' +
       'except (OSError,ValueError):pass\n' +
       'print(out)'
+
     const resolved = (await ssh.exec(`python3 -c ${shq(script)}`)).trim()
+
     return resolved || candidate
   }
 
@@ -120,6 +152,7 @@ async function locateHermes(ssh, remoteHermesPath) {
     try {
       validateRemotePath(candidate)
       const ok = (await ssh.exec(`[ -x ${expandRemotePath(candidate)} ] && echo OK || true`)).trim()
+
       return ok === 'OK'
     } catch {
       return false
@@ -130,24 +163,29 @@ async function locateHermes(ssh, remoteHermesPath) {
     if (await isExecutable(remoteHermesPath)) {
       return resolveLauncher(remoteHermesPath)
     }
+
     const err: any = new Error(
       `The Hermes path you set is not an executable on the remote host: "${remoteHermesPath}". ` +
         'Check the path (it must be the full path to the `hermes` binary on the remote, e.g. ' +
         '~/hermes-agent/.venv/bin/hermes), or clear it to auto-detect.'
     )
+
     err.kind = 'hermes-not-found'
     throw err
   }
 
   const candidates: string[] = []
+
   try {
     const found = (await ssh.exec(`bash -lc ${shq('command -v hermes')}`)).trim()
+
     if (found) {
       candidates.push(found.split('\n').pop().trim())
     }
   } catch {
     // ignore
   }
+
   // Fallback candidates when the login-shell probe misses: the installer's
   // command locations (scripts/install.sh) — per-user, root/FHS, legacy venv.
   candidates.push('~/.local/bin/hermes')
@@ -155,7 +193,10 @@ async function locateHermes(ssh, remoteHermesPath) {
   candidates.push('~/.hermes/hermes-agent/venv/bin/hermes')
 
   for (const candidate of candidates) {
-    if (!candidate) continue
+    if (!candidate) {
+      continue
+    }
+
     if (await isExecutable(candidate)) {
       return resolveLauncher(candidate)
     }
@@ -166,6 +207,7 @@ async function locateHermes(ssh, remoteHermesPath) {
       'Install it on the remote with:  curl -fsSL https://hermes-agent.nousresearch.com/install.sh | sh  ' +
       '— or set the Hermes path explicitly in the SSH connection settings.'
   )
+
   err.kind = 'hermes-not-found'
   throw err
 }
@@ -176,6 +218,7 @@ async function locateHermes(ssh, remoteHermesPath) {
 async function probeHermesVersion(ssh, hermesPath) {
   try {
     const out = (await ssh.exec(`${expandRemotePath(hermesPath)} --version 2>&1`)).trim()
+
     return (out.split('\n')[0] || '').trim()
   } catch {
     return ''
@@ -186,13 +229,16 @@ async function probeRemotePlatform(ssh) {
   const out = (await ssh.exec('uname -s; uname -m')).trim().split('\n')
   const osName = (out[0] || '').trim()
   const arch = (out[1] || '').trim()
+
   if (!SUPPORTED_REMOTE_OS.has(osName)) {
     const err: any = new Error(
       `Unsupported remote platform "${osName || 'unknown'}". Hermes Desktop SSH mode supports Linux, macOS, and Windows remote hosts.`
     )
+
     err.kind = 'unsupported-platform'
     throw err
   }
+
   return { os: osName, arch }
 }
 
@@ -202,6 +248,7 @@ async function probeRemotePlatform(ssh) {
 async function probeRemoteHermesHome(ssh) {
   try {
     const out = (await ssh.exec('echo "${HERMES_HOME:-$HOME/.hermes}"')).trim().split('\n').pop()
+
     return out || '~/.hermes'
   } catch (cause) {
     const error: any = new Error('Could not resolve the remote Hermes home.')
@@ -214,6 +261,7 @@ async function probeRemoteHermesHome(ssh) {
 async function readLockfile(ssh, ownershipId) {
   const lpath = lockfilePath(ownershipId)
   let raw
+
   try {
     raw = await ssh.exec(`if [ ! -e ${expandRemotePath(lpath)} ]; then exit 0; fi; cat ${expandRemotePath(lpath)}`)
   } catch (cause) {
@@ -222,30 +270,60 @@ async function readLockfile(ssh, ownershipId) {
     error.cause = cause
     throw error
   }
+
   const text = String(raw || '').trim()
-  if (!text) return null
+
+  if (!text) {
+    return null
+  }
+
   let parsed
+
   try {
     parsed = JSON.parse(text)
   } catch {
     return null
   }
+
   if (!parsed || parsed.schemaVersion !== LOCKFILE_SCHEMA_VERSION) {
     return null
   }
+
   const pid = parsed.pid
   const port = parsed.port
-  if (!Number.isInteger(pid) || pid <= 0 || pid > 4194304) return null
+
+  if (!Number.isInteger(pid) || pid <= 0 || pid > 4194304) {
+    return null
+  }
+
   // port 0 = spawn-in-progress record (written before readiness); valid
   // ownership proof for cleanup, but never reusable.
-  if (!Number.isInteger(port) || port < 0 || port > 65535) return null
-  if (parsed.ownershipId !== ownershipId || !/^[0-9a-f]{16}$/.test(parsed.spawnNonce || '')) return null
-  if (!/^[0-9a-f]{32}$/.test(parsed.tokenFingerprint || '')) return null
-  if (parsed.protocolVersion !== PROTOCOL_VERSION) return null
-  if (parsed.logPath !== spawnLogPath(ownershipId, parsed.spawnNonce)) return null
-  for (const field of ['profile', 'hermesPath', 'hermesHome', 'logPath', 'startedAt']) {
-    if (typeof parsed[field] !== 'string' || parsed[field].length > 1024) return null
+  if (!Number.isInteger(port) || port < 0 || port > 65535) {
+    return null
   }
+
+  if (parsed.ownershipId !== ownershipId || !/^[0-9a-f]{16}$/.test(parsed.spawnNonce || '')) {
+    return null
+  }
+
+  if (!/^[0-9a-f]{32}$/.test(parsed.tokenFingerprint || '')) {
+    return null
+  }
+
+  if (parsed.protocolVersion !== PROTOCOL_VERSION) {
+    return null
+  }
+
+  if (parsed.logPath !== spawnLogPath(ownershipId, parsed.spawnNonce)) {
+    return null
+  }
+
+  for (const field of ['profile', 'hermesPath', 'hermesHome', 'logPath', 'startedAt']) {
+    if (typeof parsed[field] !== 'string' || parsed[field].length > 1024) {
+      return null
+    }
+  }
+
   return parsed
 }
 
@@ -263,6 +341,7 @@ async function writeLockfile(ssh, ownershipId, lock) {
 
 async function removeLockfile(ssh, ownershipId) {
   const lpath = lockfilePath(ownershipId)
+
   try {
     await ssh.exec(`rm -f ${expandRemotePath(lpath)}`)
   } catch {
@@ -271,9 +350,13 @@ async function removeLockfile(ssh, ownershipId) {
 }
 
 async function remotePidAlive(ssh, pid) {
-  if (!pid || !Number.isInteger(Number(pid))) return false
+  if (!pid || !Number.isInteger(Number(pid))) {
+    return false
+  }
+
   try {
     const out = (await ssh.exec(`kill -0 ${Number(pid)} 2>/dev/null && echo ALIVE || echo DEAD`)).trim()
+
     return out === 'ALIVE'
   } catch (cause) {
     const error: any = new Error('Could not verify the SSH backend process.')
@@ -286,7 +369,10 @@ async function remotePidAlive(ssh, pid) {
 // A pid is "provably ours" only if its remote cmdline carries our dashboard
 // args — never kill a pid we can't positively identify as our dashboard.
 async function pidIsOurDashboard(ssh, pid, spawnNonce, hermesPath = '') {
-  if (!pid || !/^[0-9a-f]{16}$/.test(String(spawnNonce || '')) || !hermesPath) return false
+  if (!pid || !/^[0-9a-f]{16}$/.test(String(spawnNonce || '')) || !hermesPath) {
+    return false
+  }
+
   try {
     const script =
       'import os,shlex,subprocess,sys\n' +
@@ -308,7 +394,9 @@ async function pidIsOurDashboard(ssh, pid, spawnNonce, hermesPath = '') {
       ' ok=(direct or python_entry) and "--isolated" in args[serve+1:] and args[owner+1]==nonce\n' +
       'except (ValueError,IndexError):pass\n' +
       'print("OWNED" if ok else "FOREIGN")'
+
     const out = await ssh.exec(`python3 -c ${shq(script)}`)
+
     return String(out || '').trim() === 'OWNED'
   } catch (cause) {
     const error: any = new Error('Could not verify SSH backend process ownership.')
@@ -320,13 +408,16 @@ async function pidIsOurDashboard(ssh, pid, spawnNonce, hermesPath = '') {
 
 // Kill the stale dashboard ONLY if provably ours, then drop the lockfile.
 async function cleanupStale(ssh, ownershipId, lock, pidAlive = true) {
-  if (pidAlive && lock && await pidIsOurDashboard(ssh, lock.pid, lock.spawnNonce, lock.hermesPath)) {
+  if (pidAlive && lock && (await pidIsOurDashboard(ssh, lock.pid, lock.spawnNonce, lock.hermesPath))) {
     try {
-      const result = (await ssh.exec(
-        `kill ${Number(lock.pid)} && ` +
-          `i=0; while kill -0 ${Number(lock.pid)} 2>/dev/null; do ` +
-          `i=$((i+1)); [ "$i" -ge 50 ] && exit 1; sleep 0.1; done`
-      )).trim()
+      const result = (
+        await ssh.exec(
+          `kill ${Number(lock.pid)} && ` +
+            `i=0; while kill -0 ${Number(lock.pid)} 2>/dev/null; do ` +
+            `i=$((i+1)); [ "$i" -ge 50 ] && exit 1; sleep 0.1; done`
+        )
+      ).trim()
+
       void result
     } catch (cause) {
       const error: any = new Error('Could not terminate the stale SSH backend.')
@@ -335,10 +426,17 @@ async function cleanupStale(ssh, ownershipId, lock, pidAlive = true) {
       throw error
     }
   }
+
   const expectedLogPath = lock?.spawnNonce ? spawnLogPath(ownershipId, lock.spawnNonce) : ''
+
   if (lock?.logPath === expectedLogPath) {
-    try { await ssh.exec(`rm -f ${expandRemotePath(lock.logPath)}`) } catch {}
+    try {
+      await ssh.exec(`rm -f ${expandRemotePath(lock.logPath)}`)
+    } catch {
+      void 0
+    }
   }
+
   await removeLockfile(ssh, ownershipId)
 }
 
@@ -354,6 +452,7 @@ function buildSpawnCommand(hermesPath, profile, opts: any = {}) {
   const ownerArg = opts.spawnNonce ? ` --ssh-owner-nonce ${validateSpawnNonce(opts.spawnNonce)}` : ''
   const subCmd = `serve --isolated --host 127.0.0.1 --port 0${tokenArg}${ownerArg}`
   const dashCmd = `env HERMES_DESKTOP=1 ${hermes} ${profileArgs}${subCmd}`
+
   return (
     `mkdir -p "$(dirname ${logPath})" && ` +
     `"$(command -v setsid || echo nohup)" sh -c ${shq(`${dashCmd} </dev/null >> ${logPath} 2>&1 & echo $!`)}`
@@ -362,36 +461,48 @@ function buildSpawnCommand(hermesPath, profile, opts: any = {}) {
 
 async function remoteSupportsSshOwnership(ssh, hermesPath) {
   const hermes = expandRemotePath(hermesPath)
+
   const out = await ssh.exec(
     `help="$(${hermes} serve --help 2>&1)"; ` +
       `printf '%s' "$help" | grep -q ssh-session-token-file && ` +
       `printf '%s' "$help" | grep -q ssh-owner-nonce && echo YES || echo NO`
   )
-  return String(out || '').trim().endsWith('YES')
+
+  return String(out || '')
+    .trim()
+    .endsWith('YES')
 }
 
 async function scrapeReadyPort(ssh, logPath, { timeoutMs = DEFAULT_READY_TIMEOUT_MS, isAlive, signal }: any = {}) {
   const deadline = Date.now() + timeoutMs
   const remoteLog = expandRemotePath(logPath)
+
   while (Date.now() < deadline) {
     assertNotAborted(signal)
+
     if (isAlive && !(await isAlive())) {
       const err: any = new Error('Remote dashboard process exited before announcing its port.')
       err.kind = 'spawn-failed'
       throw err
     }
+
     let tail
+
     try {
       tail = await ssh.exec(`cat ${remoteLog} 2>/dev/null || true`)
     } catch {
       tail = ''
     }
+
     const m = READY_RE.exec(String(tail || ''))
+
     if (m) {
       return parseInt(m[1], 10)
     }
+
     await new Promise(r => setTimeout(r, READY_POLL_INTERVAL_MS))
   }
+
   const err: any = new Error(`Timed out waiting for the remote dashboard to announce its port (${timeoutMs}ms).`)
   err.kind = 'ready-timeout'
   throw err
@@ -403,6 +514,7 @@ async function spawnRemoteDashboard(ssh, { hermesPath, profile, token, ownership
       'The remote Hermes install does not support --ssh-session-token-file and --ssh-owner-nonce. ' +
         'Update Hermes on the remote host to continue using Desktop SSH mode.'
     )
+
     err.kind = 'update-required'
     throw err
   }
@@ -441,36 +553,63 @@ async function spawnRemoteDashboard(ssh, { hermesPath, profile, token, ownership
     '  raise\n' +
     ' finally:os.close(fd)\n' +
     'finally:os.close(dd)'
+
   try {
     await ssh.exec(`python3 -c ${shq(tokenUploadPy)}`, { stdinData: token })
   } catch (error) {
-    try { await ssh.exec(`rm -f ${expandRemotePath(tokenFilePath)}`) } catch {}
+    try {
+      await ssh.exec(`rm -f ${expandRemotePath(tokenFilePath)}`)
+    } catch {
+      void 0
+    }
+
     throw error
   }
 
   let out
+
   try {
-    out = await ssh.exec(
-      buildSpawnCommand(hermesPath, profile, { spawnNonce, tokenFilePath, logPath })
-    )
+    out = await ssh.exec(buildSpawnCommand(hermesPath, profile, { spawnNonce, tokenFilePath, logPath }))
   } catch (error) {
-    try { await ssh.exec(`rm -f ${expandRemotePath(tokenFilePath)}`) } catch {}
+    try {
+      await ssh.exec(`rm -f ${expandRemotePath(tokenFilePath)}`)
+    } catch {
+      void 0
+    }
+
     throw error
   }
-  const pid = parseInt(String(out || '').trim().split('\n').pop(), 10)
+
+  const pid = parseInt(
+    String(out || '')
+      .trim()
+      .split('\n')
+      .pop(),
+    10
+  )
+
   if (!Number.isInteger(pid) || pid <= 0) {
-    try { await ssh.exec(`rm -f ${expandRemotePath(tokenFilePath)}`) } catch {}
+    try {
+      await ssh.exec(`rm -f ${expandRemotePath(tokenFilePath)}`)
+    } catch {
+      void 0
+    }
+
     const err: any = new Error('Failed to launch the remote dashboard (no pid returned).')
     err.kind = 'spawn-failed'
     throw err
   }
+
   return { pid, spawnNonce, logPath, tokenFilePath }
 }
 
 // Best-effort forward teardown when a reuse attempt fails mid-flight, so we
 // don't leak a forward before respawning. `deps.cancelForward` is optional.
 async function cancelForwardSafe(deps, localPort, remotePort) {
-  if (typeof deps.cancelForward !== 'function') return
+  if (typeof deps.cancelForward !== 'function') {
+    return
+  }
+
   try {
     await deps.cancelForward(localPort, remotePort)
   } catch {
@@ -492,16 +631,23 @@ function isForwardBindCollision(error) {
 
 async function openForward(deps, remotePort, attempts = 3) {
   let lastError
+
   for (let attempt = 0; attempt < attempts; attempt++) {
     const localPort = await deps.pickLocalPort()
+
     try {
       await deps.forward(localPort, remotePort)
+
       return localPort
     } catch (error) {
       lastError = error
-      if (!isForwardBindCollision(error) || attempt === attempts - 1) throw error
+
+      if (!isForwardBindCollision(error) || attempt === attempts - 1) {
+        throw error
+      }
     }
   }
+
   throw lastError
 }
 
@@ -516,11 +662,13 @@ async function adoptOwnedServedToken(adoptServedToken, baseUrl, expectedToken, s
     childAlive: () => true,
     label
   })
+
   if (!(await remotePidAlive(ssh, pid))) {
     const error: any = new Error(`${label} exited while its served token was being resolved.`)
     error.kind = token === expectedToken ? 'spawn-failed' : 'foreign-backend'
     throw error
   }
+
   return token
 }
 
@@ -548,23 +696,36 @@ async function connect(deps) {
   const hermesPath = await locateHermes(ssh, remoteHermesPath)
   log(`located hermes at ${hermesPath}`)
   const hermesVersion = await probeHermesVersion(ssh, hermesPath)
-  if (hermesVersion) log(`remote hermes version: ${hermesVersion}`)
+
+  if (hermesVersion) {
+    log(`remote hermes version: ${hermesVersion}`)
+  }
 
   const reuseToken = deps.reuseToken || ''
   const hermesHome = await probeRemoteHermesHome(ssh)
   const lock = await readLockfile(ssh, ownershipId)
+
   if (lock) {
     const pidAlive = await remotePidAlive(ssh, lock.pid)
-    const owned = pidAlive && await pidIsOurDashboard(ssh, lock.pid, lock.spawnNonce, lock.hermesPath)
-    const reusable = pidAlive && owned && lock.port > 0 && Boolean(reuseToken) &&
+    const owned = pidAlive && (await pidIsOurDashboard(ssh, lock.pid, lock.spawnNonce, lock.hermesPath))
+
+    const reusable =
+      pidAlive &&
+      owned &&
+      lock.port > 0 &&
+      Boolean(reuseToken) &&
       lock.tokenFingerprint === fingerprintToken(reuseToken) &&
-      lock.hermesPath === hermesPath && lock.hermesHome === hermesHome
+      lock.hermesPath === hermesPath &&
+      lock.hermesHome === hermesHome
+
     if (reusable) {
       assertNotAborted(signal)
       const localPort = await openForward(deps, lock.port)
+
       try {
         const baseUrl = `http://127.0.0.1:${localPort}`
         let reuseClassification
+
         try {
           reuseClassification = await probeReuseProof(baseUrl, reuseToken, lock.spawnNonce)
         } catch (cause) {
@@ -573,16 +734,24 @@ async function connect(deps) {
           error.cause = cause
           throw error
         }
+
         if (reuseClassification === 'authenticated-stale') {
           assertNotAborted(signal)
           await cancelForwardSafe(deps, localPort, lock.port)
           await cleanupStale(ssh, ownershipId, lock)
         } else if (reuseClassification === 'authenticated-ok') {
           const token = await adoptOwnedServedToken(
-            adoptServedToken, baseUrl, reuseToken, ssh, lock.pid, 'reused remote dashboard'
+            adoptServedToken,
+            baseUrl,
+            reuseToken,
+            ssh,
+            lock.pid,
+            'reused remote dashboard'
           )
+
           assertNotAborted(signal)
           log(`reusing remote dashboard pid=${lock.pid} port=${lock.port}`)
+
           return {
             baseUrl,
             token,
@@ -615,12 +784,14 @@ async function connect(deps) {
 
   assertNotAborted(signal)
   const spawnToken = mintToken()
+
   const { pid, spawnNonce, logPath, tokenFilePath } = await spawnRemoteDashboard(ssh, {
     hermesPath,
     profile,
     token: spawnToken,
     ownershipId
   })
+
   log(`spawned remote dashboard pid=${pid}`)
 
   const ownedSpawn = {
@@ -636,8 +807,10 @@ async function connect(deps) {
     protocolVersion: PROTOCOL_VERSION,
     startedAt: new Date().toISOString()
   }
+
   let localPort = 0
   let remotePort = 0
+
   try {
     // Write the ownership record IMMEDIATELY (port=0): a supersede between
     // spawn and readiness whose cleanup cannot reach the box must not leave a
@@ -659,9 +832,8 @@ async function connect(deps) {
     await waitForHermes(baseUrl, spawnToken)
     assertNotAborted(signal)
 
-    const token = await adoptOwnedServedToken(
-      adoptServedToken, baseUrl, spawnToken, ssh, pid, 'remote dashboard'
-    )
+    const token = await adoptOwnedServedToken(adoptServedToken, baseUrl, spawnToken, ssh, pid, 'remote dashboard')
+
     assertNotAborted(signal)
     const tokenFingerprint = fingerprintToken(token)
     await writeLockfile(ssh, ownershipId, { ...ownedSpawn, port: remotePort, tokenFingerprint })
@@ -683,44 +855,52 @@ async function connect(deps) {
       logPath
     }
   } catch (error) {
-    if (localPort && remotePort) await cancelForwardSafe(deps, localPort, remotePort)
-    try { await ssh.exec(`rm -f ${expandRemotePath(tokenFilePath)}`) } catch {}
+    if (localPort && remotePort) {
+      await cancelForwardSafe(deps, localPort, remotePort)
+    }
+
+    try {
+      await ssh.exec(`rm -f ${expandRemotePath(tokenFilePath)}`)
+    } catch {
+      void 0
+    }
+
     await cleanupStale(ssh, ownershipId, ownedSpawn)
     throw error
   }
 }
 
 export {
-  DEFAULT_READY_TIMEOUT_MS,
   adoptOwnedServedToken,
-  LOCKFILE_SCHEMA_VERSION,
-  PROTOCOL_VERSION,
-  READY_RE,
-  REMOTE_LOCK_DIR,
-  SUPPORTED_REMOTE_OS,
   buildSpawnCommand,
   cleanupStale,
   connect,
+  DEFAULT_READY_TIMEOUT_MS,
   expandRemotePath,
   fingerprintToken,
-  locateHermes,
-  lockfilePath,
-  ownershipDirectory,
-  spawnLogPath,
   isForwardBindCollision,
-  openForward,
+  locateHermes,
+  LOCKFILE_SCHEMA_VERSION,
+  lockfilePath,
   mintToken,
+  openForward,
+  ownershipDirectory,
   pidIsOurDashboard,
-  probeRemotePlatform,
   probeHermesVersion,
   probeRemoteHermesHome,
-  remoteSupportsSshOwnership,
+  probeRemotePlatform,
+  PROTOCOL_VERSION,
   readLockfile,
+  READY_RE,
+  REMOTE_LOCK_DIR,
   remotePidAlive,
+  remoteSupportsSshOwnership,
   removeLockfile,
   scrapeReadyPort,
   shq,
+  spawnLogPath,
   spawnRemoteDashboard,
+  SUPPORTED_REMOTE_OS,
   validateRemotePath,
   writeLockfile
 }

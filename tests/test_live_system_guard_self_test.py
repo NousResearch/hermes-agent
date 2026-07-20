@@ -20,12 +20,23 @@ from __future__ import annotations
 import os
 import signal
 import subprocess
+import sys
 
 import pytest
 
 # A guaranteed-foreign PID: PID 1 (init).  Owned by root, not us, and
 # always exists. A sane guard refuses to signal it.
 FOREIGN_PID = 1
+
+
+@pytest.fixture(autouse=True)
+def _provide_systemctl_on_darwin(monkeypatch, tmp_path):
+    if sys.platform != "darwin":
+        return
+    systemctl = tmp_path / "systemctl"
+    systemctl.write_text("#!/bin/sh\nexit 0\n")
+    systemctl.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{tmp_path}{os.pathsep}{os.environ['PATH']}")
 
 
 # ──────────────────── kill primitives ─────────────────────────

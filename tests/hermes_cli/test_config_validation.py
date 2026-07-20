@@ -176,6 +176,54 @@ class TestFallbackModelValidation:
         assert any("fallback_model[0]" in i.message and "should be a dict" in i.message for i in issues)
 
 
+class TestFallbackProvidersValidation:
+    """fallback_providers should be a top-level list of dict entries."""
+
+    def test_non_list_fallback_providers(self):
+        issues = validate_config_structure({
+            "fallback_providers": {"provider": "openrouter", "model": "anthropic/claude-sonnet-4"},
+        })
+        assert any("fallback_providers should be a list" in i.message for i in issues)
+
+    def test_entry_missing_provider(self):
+        issues = validate_config_structure({
+            "fallback_providers": [{"model": "anthropic/claude-sonnet-4"}],
+        })
+        assert any("fallback_providers[0]" in i.message and "missing 'provider'" in i.message for i in issues)
+
+    def test_entry_missing_model(self):
+        issues = validate_config_structure({
+            "fallback_providers": [{"provider": "openrouter"}],
+        })
+        assert any("fallback_providers[0]" in i.message and "missing 'model'" in i.message for i in issues)
+
+    def test_non_dict_entry(self):
+        issues = validate_config_structure({
+            "fallback_providers": ["openrouter:anthropic/claude-sonnet-4"],
+        })
+        assert any("fallback_providers[0]" in i.message and "not a dict" in i.message for i in issues)
+
+    def test_valid_fallback_providers(self):
+        issues = validate_config_structure({
+            "fallback_providers": [
+                {"provider": "openrouter", "model": "anthropic/claude-sonnet-4"},
+                {"provider": "custom", "model": "gpt-5.4", "base_url": "https://example.com/v1"},
+            ],
+        })
+        fb_issues = [i for i in issues if "fallback" in i.message.lower()]
+        assert len(fb_issues) == 0
+
+    def test_detects_nested_fallback_providers(self):
+        issues = validate_config_structure({
+            "custom_providers": {
+                "name": "test",
+                "fallback_providers": [{"provider": "openrouter", "model": "test"}],
+            },
+        })
+        errors = [i for i in issues if i.severity == "error"]
+        assert any("fallback_providers" in i.message and "inside" in i.message for i in errors)
+
+
 class TestMissingModelSection:
     """Warn when custom_providers exists but model section is missing."""
 

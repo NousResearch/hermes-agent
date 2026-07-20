@@ -2421,6 +2421,20 @@ def get_plugin_auxiliary_tasks() -> List[Dict[str, Any]]:
     return [manager._aux_tasks[k] for k in sorted(manager._aux_tasks)]
 
 
+def get_plugin_command_names() -> Set[str]:
+    """Return slash-command names exposed by registered plugin CLI commands."""
+    return set(get_plugin_manager()._cli_commands.keys())
+
+
+def get_plugin_command_handler(name: str) -> Callable | None:
+    """Return the handler function for a registered plugin slash command."""
+    entry = get_plugin_manager()._cli_commands.get(str(name or "").strip())
+    if not isinstance(entry, dict):
+        return None
+    handler = entry.get("handler_fn")
+    return handler if callable(handler) else None
+
+
 def get_plugin_toolsets() -> List[tuple]:
     """Return plugin toolsets as ``(key, label, description)`` tuples.
 

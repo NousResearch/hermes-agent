@@ -15,6 +15,7 @@ from agent.prompt_builder import (
     _find_hermes_md,
     _find_git_root,
     _strip_yaml_frontmatter,
+    build_platform_tool_guidance,
     build_skills_system_prompt,
     build_nous_subscription_prompt,
     build_context_files_prompt,
@@ -53,6 +54,28 @@ class TestGuidanceConstants:
     def test_session_search_guidance_is_simple_cross_session_recall(self):
         assert "relevant cross-session context exists" in SESSION_SEARCH_GUIDANCE
         assert "recent turns of the current session" not in SESSION_SEARCH_GUIDANCE
+
+
+class TestPlatformHints:
+    def test_qq_napcat_hint_includes_media_and_silent_reply_contract(self):
+        hint = PLATFORM_HINTS["qq_napcat"]
+
+        assert "QQ" in hint
+        assert "NapCat" in hint
+        assert "MEDIA:" in hint
+        assert "real absolute path" in hint
+        assert "[[NO_REPLY]]" in hint
+
+
+    def test_platform_tool_guidance_prefers_prompt_faithful_image_tool(self):
+        guidance = build_platform_tool_guidance(
+            "qq_napcat",
+            {"prompt_faithful_image_generate"},
+        )
+
+        assert "prompt_faithful_image_generate" in guidance
+        assert "literally" in guidance
+        assert "do not rewrite" in guidance
 
 
 # =========================================================================

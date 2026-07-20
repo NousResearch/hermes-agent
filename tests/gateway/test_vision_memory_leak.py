@@ -18,11 +18,33 @@ import pytest
 
 @pytest.fixture
 def gateway_runner():
-    """Minimal GatewayRunner stub with just the method under test bound."""
+    """Minimal GatewayRunner stub with auto-vision helpers bound."""
     from gateway.run import GatewayRunner
 
     class _Stub:
         _enrich_message_with_vision = GatewayRunner._enrich_message_with_vision
+        _ensure_auto_vision_state = GatewayRunner._ensure_auto_vision_state
+        _prune_auto_vision_state = GatewayRunner._prune_auto_vision_state
+        _auto_vision_cache_key = GatewayRunner._auto_vision_cache_key
+        _get_auto_vision_cache_entry = GatewayRunner._get_auto_vision_cache_entry
+        _auto_vision_inline_wait_seconds = GatewayRunner._auto_vision_inline_wait_seconds
+        _auto_vision_degraded_note = GatewayRunner._auto_vision_degraded_note
+        _auto_vision_analysis_timeout_seconds = (
+            GatewayRunner._auto_vision_analysis_timeout_seconds
+        )
+        _classify_auto_vision_failure = GatewayRunner._classify_auto_vision_failure
+        _run_auto_vision_task = GatewayRunner._run_auto_vision_task
+        _start_auto_vision_task = GatewayRunner._start_auto_vision_task
+        _clear_auto_vision_cooldown = GatewayRunner._clear_auto_vision_cooldown
+        _mark_auto_vision_cooldown = GatewayRunner._mark_auto_vision_cooldown
+        _auto_vision_cooldown_remaining = GatewayRunner._auto_vision_cooldown_remaining
+
+        def __init__(self):
+            self._auto_vision_cache = {}
+            self._auto_vision_tasks = {}
+            self._auto_vision_unhealthy_until = 0.0
+            self._auto_vision_unhealthy_reason = ""
+            self._background_tasks = set()
 
     return _Stub()
 

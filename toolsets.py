@@ -539,6 +539,23 @@ TOOLSETS = {
         "includes": []
     },
 
+    "hermes-qq-napcat": {
+        "description": "QQ (NapCat) bot toolset - personal QQ messaging via OneBot/NapCat",
+        "tools": _HERMES_CORE_TOOLS + [
+            "messaging_control",
+            "qq_control",
+            "qq_social_control",
+            "qq_intel_control",
+            "qq_group_policy",
+            "qq_group_archive",
+            "qq_group_file",
+            "qq_group_moderation",
+            "employee_route_control",
+            "send_message",
+        ],
+        "includes": []
+    },
+
     "hermes-wecom": {
         "description": "WeCom bot toolset - enterprise WeChat messaging (full access)",
         "tools": _HERMES_CORE_TOOLS,
@@ -579,7 +596,7 @@ TOOLSETS = {
     "hermes-gateway": {
         "description": "Gateway toolset - union of all messaging platform tools",
         "tools": [],
-        "includes": ["hermes-telegram", "hermes-discord", "hermes-whatsapp", "hermes-slack", "hermes-signal", "hermes-bluebubbles", "hermes-homeassistant", "hermes-email", "hermes-sms", "hermes-mattermost", "hermes-matrix", "hermes-dingtalk", "hermes-feishu", "hermes-wecom", "hermes-wecom-callback", "hermes-weixin", "hermes-qqbot", "hermes-webhook", "hermes-yuanbao"]
+        "includes": ["hermes-telegram", "hermes-discord", "hermes-whatsapp", "hermes-slack", "hermes-signal", "hermes-bluebubbles", "hermes-homeassistant", "hermes-email", "hermes-sms", "hermes-mattermost", "hermes-matrix", "hermes-dingtalk", "hermes-feishu", "hermes-wecom", "hermes-wecom-callback", "hermes-weixin", "hermes-qqbot", "hermes-qq-napcat", "hermes-webhook", "hermes-yuanbao"]
     }
 }
 

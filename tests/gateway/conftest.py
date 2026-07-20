@@ -51,13 +51,35 @@ def make_async_session_db(sync_mock=None):
 def _ensure_telegram_mock() -> None:
     """Install a comprehensive telegram mock in sys.modules.
 
-    Idempotent — skips when the real library is already imported.
-    Uses ``sys.modules[name] = mod`` (overwrite) instead of
-    ``setdefault`` so it wins even if a partial/broken import
-    already cached a module with ``ChatType = None``.
+    Idempotent — prefers the real python-telegram-bot package when it is
+    installed.  Only falls back to a MagicMock when the real package is
+    unavailable.  Uses ``sys.modules[name] = mod`` (overwrite) instead of
+    ``setdefault`` so it wins even if a partial/broken import already
+    cached a module with ``ChatType = None``.
     """
-    if "telegram" in sys.modules and hasattr(sys.modules["telegram"], "__file__"):
-        return  # Real library is installed — nothing to mock
+    existing = sys.modules.get("telegram")
+    if existing is not None and hasattr(existing, "__file__"):
+        return  # Real library is already imported
+
+    # Prefer the real package when installed.  A prior MagicMock leak in
+    # sys.modules would otherwise shadow it and leave adapter.ChatType as
+    # a MagicMock — causing order-dependent failures (chat_type falls
+    # through to "dm") in thread-routing tests that read ChatType.SUPERGROUP.
+    if existing is not None and not hasattr(existing, "__file__"):
+        for name in (
+            "telegram",
+            "telegram.ext",
+            "telegram.constants",
+            "telegram.request",
+            "telegram.error",
+        ):
+            sys.modules.pop(name, None)
+    try:
+        import telegram as _real_telegram  # noqa: F401
+        if hasattr(sys.modules.get("telegram"), "__file__"):
+            return
+    except Exception:
+        pass
 
     mod = MagicMock()
     mod.ext.ContextTypes.DEFAULT_TYPE = type(None)

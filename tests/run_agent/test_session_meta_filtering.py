@@ -62,6 +62,110 @@ class TestSanitizeApiMessagesRoleFilter:
         assert len(out) == 2
         assert [m["role"] for m in out] == ["user", "assistant"]
 
+    def test_strips_qq_cq_image_markup_and_signed_urls_from_prompt_bound_text(self):
+        msgs = [
+            {
+                "role": "user",
+                "content": (
+                    "[The user sent an image. Auto vision is warming in the background. "
+                    "Don't block your reply on it right now.]\n"
+                    "[CQ:image,file=7CDEAA1F045EF8013AC8631FF3708901.png,"
+                    "url=https://multimedia.nt.qq.com.cn/download?appid=1406&fileid=abc&rkey=def]\n"
+                    "看看这个"
+                ),
+            }
+        ]
+
+        out = AIAgent._sanitize_api_messages(msgs)
+
+        assert len(out) == 1
+        content = out[0]["content"]
+        assert "看看这个" in content
+        assert "CQ:image" not in content
+        assert "multimedia.nt.qq.com.cn" not in content
+        assert "7CDEAA1F045EF8013AC8631FF3708901" not in content
+
+    def test_compacts_remote_vision_fetch_failure_tool_results(self):
+        msgs = [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [{"id": "c1", "function": {"name": "vision_analyze", "arguments": "{}"}}],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "c1",
+                "content": (
+                    '{"success": false, "error": "Error analyzing image: Failed to fetch input URL: 400", '
+                    '"analysis": "The remote image URL could not be fetched by the vision provider. '
+                    'If this image came from the current chat, use the local cached file path mentioned '
+                    'in the conversation instead of the remote CDN URL. '
+                    'https://multimedia.nt.qq.com.cn/download?appid=1406&fileid=abc&rkey=def"}'
+                ),
+            },
+        ]
+
+        out = AIAgent._sanitize_api_messages(msgs)
+
+        assert len(out) == 2
+        tool_content = out[1]["content"]
+        assert "multimedia.nt.qq.com.cn" not in tool_content
+        assert "Failed to fetch input URL: 400" not in tool_content
+        assert "local cached file path" in tool_content
+
+    def test_compacts_low_value_vision_tool_results(self):
+        msgs = [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [{"id": "c1", "function": {"name": "vision_analyze", "arguments": "{}"}}],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "c1",
+                "content": (
+                    '{"success": false, "error": "Error analyzing image: Sticker-like or low-value media skipped", '
+                    '"analysis": "This looks like a sticker-like or low-value image, so vision skipped it to keep '
+                    'chat responsive. If details matter, ask for a static screenshot instead. '
+                    'Source: /tmp/qq-sticker.webp"}'
+                ),
+            },
+        ]
+
+        out = AIAgent._sanitize_api_messages(msgs)
+
+        assert len(out) == 2
+        tool_content = out[1]["content"]
+        assert "/tmp/qq-sticker.webp" not in tool_content
+        assert "chat responsive" in tool_content
+        assert "static screenshot" in tool_content
+
+
+class TestVisionAntiRepeatKeys:
+
+    def test_vision_tool_cache_key_normalizes_remote_qq_signed_urls(self):
+        first = AIAgent._vision_tool_cache_key(
+            "vision_analyze",
+            {
+                "image_url": (
+                    "https://multimedia.nt.qq.com.cn/download?appid=1406"
+                    "&fileid=abc&rkey=first"
+                )
+            },
+        )
+        second = AIAgent._vision_tool_cache_key(
+            "vision_analyze",
+            {
+                "image_url": (
+                    "https://multimedia.nt.qq.com.cn/download?appid=1406"
+                    "&fileid=def&rkey=second"
+                )
+            },
+        )
+
+        assert first == second
+        assert first == "[qq-remote-image-url]"
+
 
 # ---------------------------------------------------------------------------
 # Layer 2 — CLI session-restore filters session_meta before loading

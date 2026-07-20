@@ -13,9 +13,11 @@ from unittest.mock import MagicMock, patch
 from tools.interrupt import set_interrupt
 
 
-def _make_slow_api_response(delay=5.0):
+def _make_slow_api_response(delay=5.0, started_event=None):
     """Create a mock that simulates a slow API response (like a real LLM call)."""
     def slow_create(**kwargs):
+        if started_event is not None:
+            started_event.set()
         # Simulate a slow API call
         time.sleep(delay)
         # Return a simple text response (no tool calls)
@@ -81,6 +83,7 @@ class TestRealSubagentInterrupt(unittest.TestCase):
         from tools.delegate_tool import _run_single_child
 
         child_started = threading.Event()
+        api_call_started = threading.Event()
         result_holder = [None]
         error_holder = [None]
 
@@ -90,7 +93,10 @@ class TestRealSubagentInterrupt(unittest.TestCase):
                 with patch('run_agent.OpenAI') as MockOpenAI:
                     mock_client = MagicMock()
                     # API call takes 5 seconds — should be interrupted before that
-                    mock_client.chat.completions.create = _make_slow_api_response(delay=5.0)
+                    mock_client.chat.completions.create = _make_slow_api_response(
+                        delay=5.0,
+                        started_event=api_call_started,
+                    )
                     mock_client.close = MagicMock()
                     MockOpenAI.return_value = mock_client
 
@@ -144,8 +150,12 @@ class TestRealSubagentInterrupt(unittest.TestCase):
                 raise error_holder[0]
             self.fail("Child never started run_conversation")
 
-        # Give child time to enter main loop and start API call
-        time.sleep(0.5)
+        api_started = api_call_started.wait(timeout=10)
+        if not api_started:
+            agent_thread.join(timeout=1)
+            if error_holder[0]:
+                raise error_holder[0]
+            self.fail("Child never started API call")
 
         # Verify child is registered
         print(f"Active children: {len(parent._active_children)}")

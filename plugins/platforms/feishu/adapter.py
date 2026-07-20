@@ -3363,9 +3363,17 @@ class FeishuAdapter(BasePlatformAdapter):
         existing.media_types.extend(event.media_types)
         if event.text:
             existing.text = self._merge_caption(existing.text, event.text)
+        # Keep the latest event's identity/context so reply routing and
+        # explicit-address flags reflect the newest message in the burst.
         existing.timestamp = event.timestamp
         if event.message_id:
             existing.message_id = event.message_id
+        if event.raw_message is not None:
+            existing.raw_message = event.raw_message
+        if event.metadata:
+            merged_meta = dict(existing.metadata or {})
+            merged_meta.update(event.metadata)
+            existing.metadata = merged_meta
         self._schedule_media_batch_flush(key)
 
     def _schedule_media_batch_flush(self, key: str) -> None:
@@ -3686,6 +3694,12 @@ class FeishuAdapter(BasePlatformAdapter):
         existing.timestamp = event.timestamp
         if event.message_id:
             existing.message_id = event.message_id
+        if event.raw_message is not None:
+            existing.raw_message = event.raw_message
+        if event.metadata:
+            merged_meta = dict(existing.metadata or {})
+            merged_meta.update(event.metadata)
+            existing.metadata = merged_meta
         self._pending_text_batch_counts[key] = next_count
         self._schedule_text_batch_flush(key)
 

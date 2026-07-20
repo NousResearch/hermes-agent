@@ -1452,17 +1452,51 @@ class TestStreamLeakOnStartFailure:
 class TestSilenceCallbackLock:
     """Bug: _on_silence_stop was read/written without lock in audio callback."""
 
-    def test_fire_block_acquires_lock(self):
-        import inspect
+    def test_silence_callback_waits_for_lock(self, mock_sd):
+        import threading
+        np = pytest.importorskip("numpy")
         from tools.voice_mode import AudioRecorder
 
-        source = inspect.getsource(AudioRecorder._ensure_stream)
-        # Verify lock is used before reading _on_silence_stop in fire block
-        assert "with self._lock:" in source
-        assert "cb = self._on_silence_stop" in source
-        lock_pos = source.index("with self._lock:")
-        cb_pos = source.index("cb = self._on_silence_stop")
-        assert lock_pos < cb_pos
+        mock_stream = MagicMock()
+        mock_sd.InputStream.return_value = mock_stream
+
+        recorder = AudioRecorder()
+        recorder._silence_duration = 0.0
+        recorder._min_speech_duration = 0.0
+        recorder.start(on_silence_stop=lambda: None)
+
+        callback = mock_sd.InputStream.call_args.kwargs.get("callback")
+        if callback is None:
+            callback = mock_sd.InputStream.call_args[1]["callback"]
+
+        recorder._has_spoken = True
+        recorder._start_time = time.monotonic() - 1
+
+        lock_held = threading.Event()
+        release_lock = threading.Event()
+        callback_returned = threading.Event()
+
+        def hold_lock():
+            with recorder._lock:
+                lock_held.set()
+                release_lock.wait(timeout=5)
+
+        holder = threading.Thread(target=hold_lock, daemon=True)
+        holder.start()
+        assert lock_held.wait(timeout=2)
+
+        silence_chunk = np.zeros((256, 1), dtype=np.int16)
+
+        def run_callback():
+            callback(silence_chunk, len(silence_chunk), None, None)
+            callback_returned.set()
+
+        worker = threading.Thread(target=run_callback, daemon=True)
+        worker.start()
+
+        assert not callback_returned.wait(timeout=0.2)
+        release_lock.set()
+        assert callback_returned.wait(timeout=2)
 
     def test_cancel_clears_callback_under_lock(self, mock_sd):
         from tools.voice_mode import AudioRecorder

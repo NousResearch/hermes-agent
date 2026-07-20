@@ -42,6 +42,18 @@ _approval_session_key: contextvars.ContextVar[str] = contextvars.ContextVar(
     "approval_session_key",
     default="",
 )
+_approval_admin_user_ids: contextvars.ContextVar[tuple[str, ...]] = contextvars.ContextVar(
+    "approval_admin_user_ids",
+    default=(),
+)
+_approval_current_user_is_admin: contextvars.ContextVar[Optional[bool]] = contextvars.ContextVar(
+    "approval_current_user_is_admin",
+    default=None,
+)
+_external_approval_backend: contextvars.ContextVar[object | None] = contextvars.ContextVar(
+    "external_approval_backend",
+    default=None,
+)
 _approval_turn_id: contextvars.ContextVar[str] = contextvars.ContextVar(
     "approval_turn_id",
     default="",
@@ -176,6 +188,153 @@ def set_current_session_key(session_key: str) -> contextvars.Token[str]:
 def reset_current_session_key(token: contextvars.Token[str]) -> None:
     """Restore the prior approval session key context."""
     _approval_session_key.reset(token)
+
+
+def set_current_admin_policy(
+    admin_user_ids: list[str] | tuple[str, ...] | None,
+    is_admin: Optional[bool],
+) -> tuple[contextvars.Token[tuple[str, ...]], contextvars.Token[Optional[bool]]]:
+    """Bind the active gateway admin policy to the current context."""
+    ids_token = _approval_admin_user_ids.set(tuple(admin_user_ids or ()))
+    admin_token = _approval_current_user_is_admin.set(is_admin)
+    return ids_token, admin_token
+
+
+def reset_current_admin_policy(
+    tokens: tuple[contextvars.Token[tuple[str, ...]], contextvars.Token[Optional[bool]]],
+) -> None:
+    """Restore the prior admin policy context."""
+    ids_token, admin_token = tokens
+    _approval_admin_user_ids.reset(ids_token)
+    _approval_current_user_is_admin.reset(admin_token)
+
+
+def get_current_admin_policy() -> tuple[list[str], Optional[bool]]:
+    """Return configured admin IDs and whether the current user is an admin."""
+    admin_ids = list(_approval_admin_user_ids.get())
+    if not admin_ids:
+        raw_ids = os.getenv("HERMES_SESSION_ADMIN_USER_IDS", "")
+        admin_ids = [item.strip() for item in raw_ids.split(",") if item.strip()]
+
+    is_admin = _approval_current_user_is_admin.get()
+    if is_admin is None:
+        raw_flag = str(os.getenv("HERMES_SESSION_IS_ADMIN", "")).strip().lower()
+        if raw_flag in ("true", "1", "yes", "on"):
+            is_admin = True
+        elif raw_flag in ("false", "0", "no", "off"):
+            is_admin = False
+
+    return admin_ids, is_admin
+
+
+def set_external_approval_backend(backend: object | None) -> contextvars.Token[object | None]:
+    """Bind an optional cross-process approval backend to the current context."""
+    return _external_approval_backend.set(backend)
+
+
+def reset_external_approval_backend(token: contextvars.Token[object | None]) -> None:
+    """Restore the prior external approval backend context."""
+    _external_approval_backend.reset(token)
+
+
+def get_external_approval_backend() -> object | None:
+    """Return the active external approval backend, if any."""
+    return _external_approval_backend.get()
+
+
+_APPROVAL_DESCRIPTION_ZH = {
+    "delete in root path": "删除根路径内容",
+    "recursive delete": "递归删除",
+    "recursive delete (long flag)": "递归删除（长参数）",
+    "world/other-writable permissions": "将权限改为所有人可写",
+    "recursive world/other-writable (long flag)": "递归将权限改为所有人可写（长参数）",
+    "recursive chown to root": "递归将属主改为 root",
+    "recursive chown to root (long flag)": "递归将属主改为 root（长参数）",
+    "format filesystem": "格式化文件系统",
+    "disk copy": "磁盘级复制",
+    "write to block device": "写入块设备",
+    "SQL DROP": "执行 SQL DROP",
+    "SQL DELETE without WHERE": "执行不带 WHERE 的 SQL DELETE",
+    "SQL TRUNCATE": "执行 SQL TRUNCATE",
+    "overwrite system config": "覆写系统配置",
+    "stop/disable system service": "停止或禁用系统服务",
+    "kill all processes": "杀掉全部进程",
+    "force kill processes": "强制杀进程",
+    "fork bomb": "fork 炸弹",
+    "shell command via -c/-lc flag": "通过 -c/-lc 执行 shell 命令",
+    "script execution via -e/-c flag": "通过 -e/-c 执行脚本",
+    "pipe remote content to shell": "把远程内容直接管道给 shell 执行",
+    "execute remote script via process substitution": "通过进程替换执行远程脚本",
+    "overwrite system file via tee": "通过 tee 覆写系统文件",
+    "overwrite system file via redirection": "通过重定向覆写系统文件",
+    "xargs with rm": "通过 xargs 调用 rm",
+    "find -exec rm": "通过 find -exec 调用 rm",
+    "find -delete": "使用 find -delete",
+    "start gateway outside systemd (use 'systemctl --user restart hermes-gateway')": (
+        "请不要绕过 systemd 直接启动 gateway，请改用 "
+        "`systemctl --user restart hermes-gateway`"
+    ),
+    "kill hermes/gateway process (self-termination)": "终止 hermes/gateway 自身进程",
+    "copy/move file into /etc/": "复制或移动文件到 /etc/",
+    "in-place edit of system config": "原地修改系统配置",
+    "in-place edit of system config (long flag)": "原地修改系统配置（长参数）",
+}
+
+_APPROVAL_TITLE_ZH = {
+    "Dangerous command requires approval": "危险命令需要授权",
+    "Dangerous action requires approval": "危险操作需要授权",
+}
+
+
+def localize_approval_description(description: str) -> str:
+    """Return a Chinese user-facing description for a dangerous action."""
+    text = str(description or "").strip()
+    if not text:
+        return ""
+    parts = [part.strip() for part in text.split(";") if part.strip()]
+    localized_parts = [
+        _APPROVAL_DESCRIPTION_ZH.get(part, part)
+        for part in parts
+    ]
+    return "；".join(localized_parts)
+
+
+def localize_approval_title(title: str) -> str:
+    """Return a Chinese user-facing title for approval prompts."""
+    text = str(title or "").strip()
+    if not text:
+        return "危险命令需要授权"
+    return _APPROVAL_TITLE_ZH.get(text, text)
+
+
+def build_gateway_approval_message(
+    *,
+    command: str,
+    description: str,
+    prompt_title: str = "Dangerous command requires approval",
+    approver_name: str = "管理员",
+    allow_persistence: bool = True,
+) -> str:
+    """Build a localized gateway approval prompt for chat platforms."""
+    title_text = localize_approval_title(prompt_title)
+    description_text = localize_approval_description(description)
+    cmd_preview = command[:200] + "..." if len(command) > 200 else command
+    if allow_persistence:
+        instructions = (
+            "请回复 `/approve` 执行；回复 `/approve session` 在本会话内授权同类命令；"
+            "回复 `/approve always` 长期授权同类命令；回复 `/deny` 取消。"
+        )
+    else:
+        instructions = (
+            f"这事我得先取得{approver_name}的授权。"
+            f"请{approver_name}回复 `/approve` 执行，或回复 `/deny` 取消。"
+        )
+    return (
+        f"⚠️ **{title_text}：**\n"
+        f"```\n{cmd_preview}\n```\n"
+        f"原因：{description_text}\n\n"
+        f"{instructions}"
+    )
 
 
 def set_current_observability_context(
@@ -2112,6 +2271,33 @@ def has_blocking_approval(session_key: str) -> bool:
         return bool(_gateway_queues.get(session_key))
 
 
+def peek_blocking_approval(session_key: str) -> Optional[dict]:
+    """Return the oldest pending gateway approval for a session, if any.
+
+    Non-destructive: does not resolve or dequeue the approval. Used by status
+    summaries and the busy-followup path that auto-denies dangerous commands
+    when an explicit follow-up arrives mid-turn.
+    """
+    with _lock:
+        queue = _gateway_queues.get(session_key) or []
+        if not queue:
+            return None
+        entry = queue[0]
+        # Production entries store the payload on ``.data`` (_ApprovalEntry).
+        payload = getattr(entry, "data", None)
+        if isinstance(payload, dict):
+            return dict(payload)
+        payload = getattr(entry, "approval", None) or getattr(entry, "payload", None)
+        if isinstance(payload, dict):
+            return dict(payload)
+        command = getattr(entry, "command", None)
+        if command is not None:
+            return {"command": command}
+        if isinstance(entry, dict):
+            return dict(entry)
+        return {"command": str(entry)}
+
+
 def submit_pending(session_key: str, approval: dict):
     """Store a pending approval request for a session."""
     with _lock:
@@ -2933,6 +3119,42 @@ def check_dangerous_command(command: str, env_type: str,
         ),
         autoapprove_log_prefix=(
             "AUTO-APPROVED dangerous command in non-interactive non-gateway context"
+        ),
+    )
+
+
+
+def request_dangerous_action_approval(
+    *,
+    action_preview: str,
+    description: str,
+    prompt_title: str = "Dangerous action requires approval",
+    approver_name: str = "管理员",
+    approval_callback=None,
+) -> dict:
+    """Require explicit approval for a non-terminal dangerous action.
+
+    Used for privileged tool calls such as QQ group moderation. Routes through
+    the shared human-approval gate so CLI, gateway, and cron paths stay
+    consistent with other approval surfaces.
+    """
+    desc = description or action_preview or "dangerous action"
+    key_hash = hashlib.sha256(f"{prompt_title}:{desc}:{action_preview}".encode("utf-8")).hexdigest()[:12]
+    pattern_key = f"dangerous_action:{key_hash}"
+    display_target = action_preview or f"<{prompt_title}>"
+    return _run_approval_gate(
+        pattern_key=pattern_key,
+        description=f"{prompt_title}: {desc}",
+        display_target=display_target,
+        approval_callback=approval_callback,
+        cron_deny_message=(
+            f"BLOCKED: 这类危险操作需要先取得{approver_name}授权，但 cron 任务无法交互审批。"
+            "如需允许，请设置 approvals.cron_mode: approve。"
+        ),
+        autoapprove_log_prefix="AUTO-APPROVED dangerous action in non-interactive non-gateway context",
+        fail_closed_when_no_human=True,
+        no_human_block_message=(
+            f"BLOCKED: 这类危险操作需要先取得{approver_name}授权，但当前没有可用的交互式审批通道。"
         ),
     )
 

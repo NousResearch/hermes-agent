@@ -80,15 +80,49 @@ def _channel_target_name(platform_name: str, channel: Dict[str, Any]) -> str:
     name = channel["name"]
     if platform_name == "discord" and channel.get("guild"):
         return f"#{name}"
-    if platform_name != "discord" and channel.get("type"):
-        return f"{name} ({channel['type']})"
+    label_type = _normalized_chat_type(channel.get("type")) or channel.get("type")
+    if platform_name != "discord" and label_type:
+        return f"{name} ({label_type})"
     return name
 
 
-def _session_entry_id(origin: Dict[str, Any]) -> Optional[str]:
+def _normalized_chat_type(chat_type: Optional[str]) -> Optional[str]:
+    """Normalize persisted chat types across old and current session formats."""
+    normalized = str(chat_type or "").strip().lower()
+    if not normalized:
+        return None
+    if normalized == "private":
+        return "dm"
+    return normalized
+
+
+def _resolved_channel_id(platform_name: str, channel: Dict[str, Any]) -> Optional[str]:
+    """Return the stored channel id, normalizing legacy QQ cache entries."""
+    channel_id = channel.get("id")
+    if channel_id is None:
+        return None
+    channel_id = str(channel_id)
+    if platform_name != "qq_napcat" or channel_id.startswith(("group:", "dm:")):
+        return channel_id
+
+    chat_type = _normalized_chat_type(channel.get("type"))
+    if chat_type in {"group", "dm"}:
+        return f"{chat_type}:{channel_id}"
+    return channel_id
+
+
+def _session_entry_id(origin: Dict[str, Any], chat_type: Optional[str] = None) -> Optional[str]:
     chat_id = origin.get("chat_id")
     if not chat_id:
         return None
+    if origin.get("platform") == "qq_napcat":
+        effective_chat_type = _normalized_chat_type(chat_type) or _normalized_chat_type(
+            origin.get("chat_type")
+        )
+        if effective_chat_type == "group":
+            return f"group:{chat_id}"
+        if effective_chat_type == "dm":
+            return f"dm:{chat_id}"
     thread_id = origin.get("thread_id")
     if thread_id:
         return f"{chat_id}:{thread_id}"
@@ -318,14 +352,18 @@ def _build_from_sessions_db(platform_name: str) -> List[Dict[str, str]]:
                     "thread_id": row.get("thread_id"),
                     "chat_name": row.get("display_name"),
                 }
-            entry_id = _session_entry_id(origin)
+            origin.setdefault("platform", platform_name)
+            entry_chat_type = _normalized_chat_type(row.get("chat_type")) or _normalized_chat_type(
+                origin.get("chat_type")
+            )
+            entry_id = _session_entry_id(origin, entry_chat_type)
             if not entry_id or entry_id in seen_ids:
                 continue
             seen_ids.add(entry_id)
             entries.append({
                 "id": entry_id,
                 "name": _session_entry_name(origin),
-                "type": row.get("chat_type") or "dm",
+                "type": entry_chat_type or "dm",
                 "thread_id": origin.get("thread_id"),
             })
     except Exception as e:
@@ -356,14 +394,17 @@ def _build_from_sessions_json(platform_name: str) -> List[Dict[str, str]]:
             origin = session.get("origin") or {}
             if origin.get("platform") != platform_name:
                 continue
-            entry_id = _session_entry_id(origin)
+            entry_chat_type = _normalized_chat_type(session.get("chat_type")) or _normalized_chat_type(
+                origin.get("chat_type")
+            )
+            entry_id = _session_entry_id(origin, entry_chat_type)
             if not entry_id or entry_id in seen_ids:
                 continue
             seen_ids.add(entry_id)
             entries.append({
                 "id": entry_id,
                 "name": _session_entry_name(origin),
-                "type": session.get("chat_type", "dm"),
+                "type": entry_chat_type or "dm",
                 "thread_id": origin.get("thread_id"),
             })
     except Exception as e:
@@ -424,16 +465,16 @@ def resolve_channel_name(platform_name: str, name: str) -> Optional[str]:
     raw = name.strip()
     for ch in channels:
         if ch.get("id") == raw:
-            return ch["id"]
+            return _resolved_channel_id(platform_name, ch)
 
     query = _normalize_channel_query(name)
 
     # 1. Exact name match, including the display labels shown by send_message(action="list")
     for ch in channels:
         if _normalize_channel_query(ch["name"]) == query:
-            return ch["id"]
+            return _resolved_channel_id(platform_name, ch)
         if _normalize_channel_query(_channel_target_name(platform_name, ch)) == query:
-            return ch["id"]
+            return _resolved_channel_id(platform_name, ch)
 
     # 2. Guild-qualified match for Discord ("GuildName/channel")
     if "/" in query:
@@ -441,12 +482,12 @@ def resolve_channel_name(platform_name: str, name: str) -> Optional[str]:
         for ch in channels:
             guild = ch.get("guild", "").strip().lower()
             if guild == guild_part and _normalize_channel_query(ch["name"]) == ch_part:
-                return ch["id"]
+                return _resolved_channel_id(platform_name, ch)
 
     # 3. Partial prefix match (only if unambiguous)
     matches = [ch for ch in channels if _normalize_channel_query(ch["name"]).startswith(query)]
     if len(matches) == 1:
-        return matches[0]["id"]
+        return _resolved_channel_id(platform_name, matches[0])
 
     return None
 
@@ -460,6 +501,8 @@ def format_directory_for_display() -> str:
         return "No messaging platforms connected or no channels discovered yet."
 
     lines = ["Available messaging targets:\n"]
+
+    display_names = {"qq_napcat": "QQ (NapCat)"}
 
     for plat_name, channels in sorted(platforms.items()):
         if not channels:

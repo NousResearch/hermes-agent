@@ -2277,13 +2277,21 @@ class GatewaySlashCommandsMixin:
         # Reset stored token count — transcript was truncated
         session_entry.last_prompt_tokens = 0
 
-        # Re-send by creating a fake text event with the old message
+        # Re-send by creating a fake text event with the old message.
+        # Preserve delivery/context fields so group addressing, reply anchors,
+        # and platform message identity survive the rebuild (#retry context).
         retry_event = MessageEvent(
             text=last_user_msg,
             message_type=MessageType.TEXT,
             source=source,
             raw_message=event.raw_message,
             channel_prompt=event.channel_prompt,
+            message_id=event.message_id,
+            metadata=dict(getattr(event, "metadata", None) or {}),
+            reply_to_message_id=getattr(event, "reply_to_message_id", None),
+            reply_to_text=getattr(event, "reply_to_text", None),
+            auto_skill=getattr(event, "auto_skill", None),
+            timestamp=getattr(event, "timestamp", None),
         )
         
         # Let the normal message handler process it

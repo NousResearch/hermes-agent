@@ -5,6 +5,7 @@ the `else` clause of the attachment content-type loop that was added
 to download, cache, and optionally inject text from non-image/audio files.
 """
 
+import contextlib
 import os
 import sys
 from datetime import datetime, timezone
@@ -137,8 +138,13 @@ def make_message(attachments: list, content: str = "") -> SimpleNamespace:
     )
 
 
+@contextlib.contextmanager
 def _mock_aiohttp_download(raw_bytes: bytes):
-    """Return a patch context manager that makes aiohttp return raw_bytes."""
+    """Make aiohttp return raw_bytes and bypass URL-safety for fake CDN hosts.
+
+    Also stubs URL safety so fake Discord CDN hosts are not blocked by
+    environment-specific DNS (e.g. clash fake-ip → 198.18.0.0/15).
+    """
     resp = AsyncMock()
     resp.status = 200
     resp.read = AsyncMock(return_value=raw_bytes)
@@ -150,7 +156,15 @@ def _mock_aiohttp_download(raw_bytes: bytes):
     session.__aenter__ = AsyncMock(return_value=session)
     session.__aexit__ = AsyncMock(return_value=False)
 
-    return patch("aiohttp.ClientSession", return_value=session)
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(patch("aiohttp.ClientSession", return_value=session))
+        stack.enter_context(
+            patch(
+                "plugins.platforms.discord.adapter.is_safe_url",
+                return_value=True,
+            )
+        )
+        yield
 
 
 # ---------------------------------------------------------------------------
@@ -350,7 +364,10 @@ class TestIncomingDocumentHandling:
 
             return FakeSession()
 
-        with patch("aiohttp.ClientSession", return_value=make_session([content1, content2])):
+        with patch("aiohttp.ClientSession", return_value=make_session([content1, content2])), patch(
+            "plugins.platforms.discord.adapter.is_safe_url",
+            return_value=True,
+        ):
             msg = make_message(
                 attachments=[
                     make_attachment(filename="file1.txt", content_type="text/plain"),

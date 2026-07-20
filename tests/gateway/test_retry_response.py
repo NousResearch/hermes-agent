@@ -58,3 +58,44 @@ async def test_retry_no_previous_message(gateway):
     )
     result = await gateway._handle_retry_command(event)
     assert result == "No previous message to retry."
+
+
+@pytest.mark.asyncio
+async def test_retry_preserves_event_context_when_rebuilding_message(gateway):
+    gateway.session_store.get_or_create_session.return_value = MagicMock(
+        session_id="test-session"
+    )
+    gateway.session_store.load_transcript.return_value = [
+        {"role": "user", "content": "原始问题"},
+        {"role": "assistant", "content": "旧回复"},
+    ]
+    gateway.session_store.rewrite_transcript = MagicMock()
+
+    captured = {}
+
+    async def fake_handle_message(event):
+        captured["event"] = event
+        return "retried"
+
+    gateway._handle_message = AsyncMock(side_effect=fake_handle_message)
+    event = MessageEvent(
+        text="/retry",
+        message_type=MessageType.TEXT,
+        source=MagicMock(),
+        raw_message={"platform": "qq"},
+        message_id="qq-1",
+        metadata={"explicit_addressed": True, "address_reason": "bot_mention"},
+        reply_to_message_id="bot-msg-1",
+        reply_to_text="上一条",
+    )
+
+    result = await gateway._handle_retry_command(event)
+
+    assert result == "retried"
+    retried_event = captured["event"]
+    assert retried_event.text == "原始问题"
+    assert retried_event.raw_message == {"platform": "qq"}
+    assert retried_event.message_id == "qq-1"
+    assert retried_event.metadata["explicit_addressed"] is True
+    assert retried_event.reply_to_message_id == "bot-msg-1"
+    assert retried_event.reply_to_text == "上一条"

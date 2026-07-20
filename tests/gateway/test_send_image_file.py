@@ -57,6 +57,24 @@ class TestExtractMediaImages:
         assert "/audio.ogg" in paths
         assert "/screenshot.png" in paths
 
+    def test_instructional_media_phrase_not_extracted(self):
+        content = "include MEDIA: followed by the real absolute path to an existing local file"
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert media == []
+        assert cleaned == content
+
+    def test_placeholder_media_path_is_ignored(self):
+        content = "MEDIA:/absolute/path/to/file.png"
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert media == []
+        assert cleaned == ""
+
+    def test_quoted_media_path_with_spaces_is_extracted(self):
+        content = 'MEDIA:"/tmp/generated images/cat photo.png"'
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert media == [("/tmp/generated images/cat photo.png", False)]
+        assert cleaned == ""
+
 
 # ---------------------------------------------------------------------------
 # Telegram send_image_file tests

@@ -507,6 +507,49 @@ class TestAgentCacheLifecycle:
             assert "session-A" not in runner._agent_cache
             assert "session-B" in runner._agent_cache
 
+    def test_pinned_fallback_does_not_force_cache_eviction(self):
+        from gateway.run import GatewayRunner
+
+        runner = object.__new__(GatewayRunner)
+        runner._session_model_overrides = {}
+        agent = MagicMock()
+        agent.model = "glm-5.1"
+        agent.provider = "openrouter"
+        agent._has_pinned_fallback.return_value = True
+
+        assert runner._should_evict_cached_agent_after_turn(agent, "gpt-5.4") is False
+
+    def test_unpinned_fallback_still_evicts_cached_agent(self):
+        from gateway.run import GatewayRunner
+
+        runner = object.__new__(GatewayRunner)
+        runner._session_model_overrides = {}
+        agent = MagicMock()
+        agent.model = "glm-5.1"
+        agent.provider = "openrouter"
+        agent._has_pinned_fallback.return_value = False
+
+        assert runner._should_evict_cached_agent_after_turn(agent, "gpt-5.4") is True
+
+    def test_intentional_model_switch_does_not_evict(self):
+        from gateway.run import GatewayRunner
+
+        runner = object.__new__(GatewayRunner)
+        runner._session_model_overrides = {
+            "sk": {"model": "glm-5.1"},
+        }
+        agent = MagicMock()
+        agent.model = "glm-5.1"
+        agent.provider = "openrouter"
+        agent._has_pinned_fallback.return_value = False
+
+        assert (
+            runner._should_evict_cached_agent_after_turn(
+                agent, "gpt-5.4", session_key="sk"
+            )
+            is False
+        )
+
     def test_reasoning_config_updates_in_place(self):
         """Reasoning config can be set on a cached agent without eviction."""
         from run_agent import AIAgent
@@ -1997,11 +2040,21 @@ class TestAgentCacheMessageCountRebaseline:
         import inspect
         from gateway.run import GatewayRunner
 
-        # The recursion + pre-recursion re-baseline live in the extracted
-        # ``_run_agent_inner`` (older trees had them inline in ``_run_agent``).
-        src = inspect.getsource(GatewayRunner._run_agent_inner)
-        marker = "followup_result = await self._run_agent("
-        assert marker in src, "in-band queued follow-up recursion not found in _run_agent_inner"
+        # Production body lives in agent_run_runtime_service (runner keeps a
+        # thin ``_run_agent_inner`` delegate). Older trees had this inline in
+        # ``_run_agent`` / ``_run_agent_inner`` on GatewayRunner.
+        from gateway import agent_run_runtime_service as agent_run_svc
+
+        src = inspect.getsource(agent_run_svc)
+        markers = (
+            "followup_result = await runner._run_agent(",
+            "followup_result = await self._run_agent(",
+        )
+        marker = next((m for m in markers if m in src), None)
+        assert marker is not None, (
+            "in-band queued follow-up recursion not found in "
+            "agent_run_runtime_service"
+        )
         before_recursion = src[: src.index(marker)]
         assert "_refresh_agent_cache_message_count" in before_recursion, (
             "the in-band queued follow-up recursion must be preceded by a "

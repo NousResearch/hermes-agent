@@ -52,6 +52,7 @@ class _FakeOpenAI:
     def __init__(self, **kw):
         self.api_key = kw.get("api_key", "test")
         self.base_url = kw.get("base_url", "http://test")
+        self.kwargs = kw
     def close(self):
         pass
 
@@ -116,6 +117,8 @@ class TestBuildApiKwargsOpenRouter:
         assert "tools" in kwargs
         tool_names = [t["function"]["name"] for t in kwargs["tools"]]
         assert "web_search" in tool_names
+        assert kwargs["tool_choice"] == "auto"
+        assert kwargs["parallel_tool_calls"] is True
 
     def test_no_responses_api_fields(self, monkeypatch):
         agent = _make_agent(monkeypatch, "openrouter")
@@ -504,6 +507,35 @@ class TestBuildApiKwargsCustomEndpoint:
         assert tool_call["function"]["name"] == "terminal"
         assert "call_id" not in tool_call
         assert "response_item_id" not in tool_call
+
+    def test_generic_custom_endpoint_sets_neutral_user_agent(self, monkeypatch):
+        captured = {}
+
+        class _CaptureOpenAI:
+            def __init__(self, **kw):
+                captured.update(kw)
+                self.api_key = kw.get("api_key", "test")
+                self.base_url = kw.get("base_url", "http://test")
+
+            def close(self):
+                pass
+
+        monkeypatch.setattr("run_agent.get_tool_definitions", lambda **kw: _tool_defs("web_search"))
+        monkeypatch.setattr("run_agent.check_toolset_requirements", lambda: {})
+        monkeypatch.setattr("run_agent.OpenAI", _CaptureOpenAI)
+
+        AIAgent(
+            api_key="test-key",
+            base_url="https://api.example.com/v1",
+            provider="custom",
+            api_mode="chat_completions",
+            max_iterations=2,
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+
+        assert captured["default_headers"]["User-Agent"] == "python-requests/2.32.3"
 
 
 class TestBuildApiKwargsCodex:

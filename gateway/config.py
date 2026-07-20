@@ -178,6 +178,15 @@ def _coerce_dict(value: Any) -> Dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
+def _normalize_busy_input_mode(value: Any, default: str = "interrupt") -> str:
+    """Normalize busy-input mode to a supported value."""
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"interrupt", "queue", "smart", "steer"}:
+            return normalized
+    return default
+
+
 def _normalize_unauthorized_dm_behavior(value: Any, default: str = "pair") -> str:
     """Normalize unauthorized DM behavior to a supported value."""
     if isinstance(value, str):
@@ -282,6 +291,7 @@ class Platform(Enum):
     WEIXIN = "weixin"
     BLUEBUBBLES = "bluebubbles"
     QQBOT = "qqbot"
+    QQ_NAPCAT = "qq_napcat"  # personal QQ via NapCat / OneBot 11
     YUANBAO = "yuanbao"
     RELAY = "relay"  # generic relay adapter fronted by the connector (EXPERIMENTAL)
     @classmethod
@@ -759,6 +769,7 @@ _PLATFORM_CONNECTED_CHECKERS: dict[Platform, Callable[[PlatformConfig], bool]] =
     Platform.QQBOT: lambda cfg: bool(
         cfg.extra.get("app_id") and cfg.extra.get("client_secret")
     ),
+    Platform.QQ_NAPCAT: lambda cfg: bool(cfg.extra.get("ws_url")),
     Platform.YUANBAO: lambda cfg: bool(
         cfg.extra.get("app_id") and cfg.extra.get("app_secret")
     ),
@@ -821,6 +832,15 @@ class GatewayConfig:
     group_sessions_per_user: bool = True  # Isolate group/channel sessions per participant when user IDs are available
     thread_sessions_per_user: bool = False  # When False (default), threads are shared across all participants
     max_concurrent_sessions: Optional[int] = None  # Positive int caps simultaneous active chat sessions
+
+    # When True, long work requests can auto-detach into background jobs so the
+    # foreground chat stays responsive (QQ ops / group rooms).
+    auto_background_work: bool = False
+
+    # What to do when a new message arrives while the agent is already working.
+    # "smart" queues briefly, then interrupts explicit follow-ups on long runs.
+    # "steer" injects mid-run when the agent supports it.
+    busy_input_mode: str = "interrupt"  # "interrupt" | "queue" | "smart" | "steer"
 
     # Multi-profile multiplexing (opt-in; default off preserves one-gateway-per-profile).
     # When True, the default profile's gateway serves inbound messages for every
@@ -964,6 +984,8 @@ class GatewayConfig:
             "stt_echo_transcripts": self.stt_echo_transcripts,
             "group_sessions_per_user": self.group_sessions_per_user,
             "thread_sessions_per_user": self.thread_sessions_per_user,
+            "auto_background_work": self.auto_background_work,
+            "busy_input_mode": self.busy_input_mode,
             "max_concurrent_sessions": self.max_concurrent_sessions,
             "multiplex_profiles": self.multiplex_profiles,
             "systemd_watchdog_seconds": self.systemd_watchdog_seconds,
@@ -1027,6 +1049,11 @@ class GatewayConfig:
 
         group_sessions_per_user = data.get("group_sessions_per_user")
         thread_sessions_per_user = data.get("thread_sessions_per_user")
+        auto_background_work = data.get("auto_background_work")
+        busy_input_mode = _normalize_busy_input_mode(
+            data.get("busy_input_mode"),
+            "interrupt",
+        )
         multiplex_profiles = data.get("multiplex_profiles")
         nested_gateway = data.get("gateway") if isinstance(data.get("gateway"), dict) else {}
         if "systemd_watchdog_seconds" in data:
@@ -1096,6 +1123,8 @@ class GatewayConfig:
             stt_echo_transcripts=_coerce_bool(stt_echo_transcripts, True),
             group_sessions_per_user=_coerce_bool(group_sessions_per_user, True),
             thread_sessions_per_user=_coerce_bool(thread_sessions_per_user, False),
+            auto_background_work=_coerce_bool(auto_background_work, False),
+            busy_input_mode=busy_input_mode,
             multiplex_profiles=_coerce_bool(multiplex_profiles, False),
             systemd_watchdog_seconds=systemd_watchdog_seconds,
             max_concurrent_sessions=max_concurrent_sessions,
@@ -1104,6 +1133,50 @@ class GatewayConfig:
             session_store_max_age_days=session_store_max_age_days,
             profile_routes=profile_routes,
         )
+
+
+
+    def get_session_isolation(self, platform: Optional[Platform] = None) -> tuple[bool, bool]:
+        """Return (group_sessions_per_user, thread_sessions_per_user) for a platform."""
+        group = bool(self.group_sessions_per_user)
+        thread = bool(self.thread_sessions_per_user)
+        if platform:
+            platform_cfg = self.platforms.get(platform)
+            extra = getattr(platform_cfg, "extra", None) if platform_cfg else None
+            if isinstance(extra, dict):
+                if "group_sessions_per_user" in extra:
+                    group = _coerce_bool(extra.get("group_sessions_per_user"), group)
+                if "thread_sessions_per_user" in extra:
+                    thread = _coerce_bool(extra.get("thread_sessions_per_user"), thread)
+        return group, thread
+
+    def get_auto_background_work(self, platform: Optional[Platform] = None) -> bool:
+        """Return whether long work requests should auto-detach into background."""
+        enabled = _coerce_bool(getattr(self, "auto_background_work", None), False)
+        if platform:
+            platform_cfg = self.platforms.get(platform)
+            extra = getattr(platform_cfg, "extra", None) if platform_cfg else None
+            if isinstance(extra, dict) and "auto_background_work" in extra:
+                enabled = _coerce_bool(extra.get("auto_background_work"), enabled)
+        return enabled
+
+    def get_busy_input_mode(self, platform: Optional[Platform] = None) -> str:
+        """Return the effective busy-input mode for a platform."""
+        mode = _normalize_busy_input_mode(
+            getattr(self, "busy_input_mode", None),
+            "interrupt",
+        )
+        if platform:
+            platform_cfg = self.platforms.get(platform)
+            extra = getattr(platform_cfg, "extra", None) if platform_cfg else None
+            if isinstance(extra, dict) and "busy_input_mode" in extra:
+                mode = _normalize_busy_input_mode(extra.get("busy_input_mode"), mode)
+            elif platform == Platform.QQ_NAPCAT:
+                # QQ group chats behave better with the hybrid "smart" policy:
+                # explicit follow-ups stay responsive, while ambient group
+                # chatter does not constantly interrupt active work.
+                return "smart"
+        return mode
 
     def get_unauthorized_dm_behavior(self, platform: Optional[Platform] = None) -> str:
         """Return the effective unauthorized-DM behavior for a platform.
@@ -1208,6 +1281,29 @@ def load_gateway_config() -> GatewayConfig:
 
             if "thread_sessions_per_user" in yaml_cfg:
                 gw_data["thread_sessions_per_user"] = yaml_cfg["thread_sessions_per_user"]
+
+            if "auto_background_work" in yaml_cfg:
+                gw_data["auto_background_work"] = yaml_cfg["auto_background_work"]
+            elif isinstance(gateway_cfg, dict) and "auto_background_work" in gateway_cfg:
+                gw_data["auto_background_work"] = gateway_cfg["auto_background_work"]
+
+            if isinstance(gateway_cfg, dict) and "busy_input_mode" in gateway_cfg:
+                gw_data["busy_input_mode"] = _normalize_busy_input_mode(
+                    gateway_cfg.get("busy_input_mode"),
+                    gw_data.get("busy_input_mode", "interrupt"),
+                )
+            elif "busy_input_mode" in yaml_cfg:
+                gw_data["busy_input_mode"] = _normalize_busy_input_mode(
+                    yaml_cfg.get("busy_input_mode"),
+                    gw_data.get("busy_input_mode", "interrupt"),
+                )
+            else:
+                display_cfg = yaml_cfg.get("display")
+                if isinstance(display_cfg, dict) and "busy_input_mode" in display_cfg:
+                    gw_data["busy_input_mode"] = _normalize_busy_input_mode(
+                        display_cfg.get("busy_input_mode"),
+                        gw_data.get("busy_input_mode", "interrupt"),
+                    )
 
             # Multiplexing flag: accept both the top-level key and the nested
             # gateway.multiplex_profiles form (written by
@@ -1535,6 +1631,150 @@ def load_gateway_config() -> GatewayConfig:
             # Feishu settings → env vars: migrated to the feishu plugin's
             # apply_yaml_config_fn hook (plugins/platforms/feishu/adapter.py).
             # #41112 / #3823.
+
+            # QQ NapCat (personal QQ / OneBot 11) — top-level or nested block.
+            qq_napcat_cfg = yaml_cfg.get("qq_napcat")
+            if not isinstance(qq_napcat_cfg, dict):
+                _nested = yaml_cfg.get("platforms")
+                if isinstance(_nested, dict) and isinstance(_nested.get("qq_napcat"), dict):
+                    qq_napcat_cfg = _nested.get("qq_napcat")
+            if isinstance(qq_napcat_cfg, dict):
+                plat_data, extra = _ensure_platform_extra_dict(
+                    platforms_data, Platform.QQ_NAPCAT.value
+                )
+                plat_data["enabled"] = bool(
+                    qq_napcat_cfg.get("enabled", True)
+                )
+                for key in ("ws_url", "access_token", "system_prompt"):
+                    if key in qq_napcat_cfg and qq_napcat_cfg.get(key) is not None:
+                        extra[key] = qq_napcat_cfg.get(key)
+                if "employee_routes" in qq_napcat_cfg:
+                    employee_routes = qq_napcat_cfg.get("employee_routes")
+                    if isinstance(employee_routes, list):
+                        extra["employee_routes"] = employee_routes
+                    else:
+                        logger.warning(
+                            "Ignoring invalid qq_napcat.employee_routes=%r",
+                            employee_routes,
+                        )
+                for key in ("allowed_users", "allowed_groups", "admin_users"):
+                    raw = qq_napcat_cfg.get(key)
+                    if raw is None:
+                        continue
+                    if isinstance(raw, str):
+                        values = [p.strip() for p in raw.split(",") if p.strip()]
+                    elif isinstance(raw, list):
+                        values = [str(p).strip() for p in raw if str(p).strip()]
+                    else:
+                        values = []
+                    if values:
+                        extra[key] = values
+                for key, default in (
+                    ("allow_all_users", False),
+                    ("allow_all_groups", False),
+                    ("group_sessions_per_user", True),
+                    ("thread_sessions_per_user", False),
+                    ("project_group_mode", False),
+                    ("require_mention", False),
+                    ("auto_background_work", False),
+                ):
+                    if key in qq_napcat_cfg:
+                        extra[key] = _coerce_bool(
+                            qq_napcat_cfg.get(key), default=default
+                        )
+                if "busy_input_mode" in qq_napcat_cfg:
+                    extra["busy_input_mode"] = _normalize_busy_input_mode(
+                        qq_napcat_cfg.get("busy_input_mode"),
+                        "smart",
+                    )
+                if "mention_patterns" in qq_napcat_cfg:
+                    patterns = qq_napcat_cfg.get("mention_patterns")
+                    if isinstance(patterns, list):
+                        extra["mention_patterns"] = [
+                            str(p) for p in patterns if str(p).strip()
+                        ]
+                    elif isinstance(patterns, str) and patterns.strip():
+                        extra["mention_patterns"] = [
+                            p.strip()
+                            for p in patterns.replace("\n", ",").split(",")
+                            if p.strip()
+                        ]
+                for key in (
+                    "group_batch_debounce_seconds",
+                    "group_min_model_interval_seconds",
+                    "group_batch_retry_seconds",
+                ):
+                    value = qq_napcat_cfg.get(key)
+                    if value is None or value == "":
+                        continue
+                    try:
+                        extra[key] = float(value)
+                    except (TypeError, ValueError):
+                        logger.warning(
+                            "Ignoring invalid qq_napcat.%s=%r", key, value
+                        )
+                for key in (
+                    "group_observed_max_messages",
+                    "group_batch_max_messages",
+                    "reconnect_interval",
+                ):
+                    value = qq_napcat_cfg.get(key)
+                    if value is None or value == "":
+                        continue
+                    try:
+                        extra[key] = int(value)
+                    except (TypeError, ValueError):
+                        logger.warning(
+                            "Ignoring invalid qq_napcat.%s=%r", key, value
+                        )
+                home_channel = qq_napcat_cfg.get("home_channel")
+                if home_channel:
+                    plat_data["home_channel"] = {
+                        "platform": Platform.QQ_NAPCAT.value,
+                        "chat_id": str(home_channel),
+                        "name": qq_napcat_cfg.get("home_channel_name", "Home"),
+                    }
+                # Bridge key env vars so authz / adapters that still read env
+                # keep working when only config.yaml is populated.
+                env_bridge = {
+                    "ws_url": "QQ_NAPCAT_WS_URL",
+                    "access_token": "QQ_NAPCAT_ACCESS_TOKEN",
+                    "system_prompt": "QQ_NAPCAT_SYSTEM_PROMPT",
+                    "require_mention": "QQ_NAPCAT_REQUIRE_MENTION",
+                }
+                for cfg_key, env_key in env_bridge.items():
+                    if os.getenv(env_key):
+                        continue
+                    value = extra.get(cfg_key)
+                    if value is None:
+                        continue
+                    if isinstance(value, bool):
+                        os.environ[env_key] = "true" if value else "false"
+                    else:
+                        os.environ[env_key] = str(value)
+                if extra.get("allowed_users") and not os.getenv(
+                    "QQ_NAPCAT_ALLOWED_USERS"
+                ):
+                    os.environ["QQ_NAPCAT_ALLOWED_USERS"] = ",".join(
+                        str(u) for u in extra["allowed_users"]
+                    )
+                if extra.get("allowed_groups") and not os.getenv(
+                    "QQ_NAPCAT_ALLOWED_GROUPS"
+                ):
+                    os.environ["QQ_NAPCAT_ALLOWED_GROUPS"] = ",".join(
+                        str(g) for g in extra["allowed_groups"]
+                    )
+                if extra.get("allow_all_users") and not os.getenv(
+                    "QQ_NAPCAT_ALLOW_ALL_USERS"
+                ):
+                    os.environ["QQ_NAPCAT_ALLOW_ALL_USERS"] = "true"
+                if extra.get("mention_patterns") and not os.getenv(
+                    "QQ_NAPCAT_MENTION_PATTERNS"
+                ):
+                    import json as _json
+                    os.environ["QQ_NAPCAT_MENTION_PATTERNS"] = _json.dumps(
+                        extra["mention_patterns"], ensure_ascii=False
+                    )
 
     except Exception as e:
         logger.warning(
@@ -2229,6 +2469,125 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
                     or getenv("QQ_HOME_CHANNEL_THREAD_ID")
                     or None
                 ),
+            )
+
+
+    # QQ NapCat / OneBot 11 WebSocket client (personal QQ)
+    qq_napcat_ws = getenv("QQ_NAPCAT_WS_URL")
+    qq_napcat_env_keys = (
+        "QQ_NAPCAT_WS_URL",
+        "QQ_NAPCAT_ACCESS_TOKEN",
+        "QQ_NAPCAT_ALLOWED_USERS",
+        "QQ_NAPCAT_ADMIN_USERS",
+        "QQ_NAPCAT_ALLOWED_GROUPS",
+        "QQ_NAPCAT_ALLOW_ALL_USERS",
+        "QQ_NAPCAT_ALLOW_ALL_GROUPS",
+        "QQ_NAPCAT_HOME_CHANNEL",
+        "QQ_NAPCAT_SYSTEM_PROMPT",
+        "QQ_NAPCAT_REQUIRE_MENTION",
+        "QQ_NAPCAT_MENTION_PATTERNS",
+        "QQ_NAPCAT_RECONNECT_INTERVAL",
+        "QQ_NAPCAT_GROUP_SESSIONS_PER_USER",
+        "QQ_NAPCAT_THREAD_SESSIONS_PER_USER",
+        "QQ_NAPCAT_PROJECT_GROUP_MODE",
+        "QQ_NAPCAT_ALLOW_ALL_GROUPS",
+        "QQ_NAPCAT_GROUP_BATCH_DEBOUNCE_SECONDS",
+        "QQ_NAPCAT_GROUP_MIN_MODEL_INTERVAL_SECONDS",
+        "QQ_NAPCAT_GROUP_BATCH_RETRY_SECONDS",
+        "QQ_NAPCAT_GROUP_OBSERVED_MAX_MESSAGES",
+        "QQ_NAPCAT_GROUP_BATCH_MAX_MESSAGES",
+        "QQ_NAPCAT_AUTO_BACKGROUND_WORK",
+    )
+    if qq_napcat_ws or any(getenv(k) is not None for k in qq_napcat_env_keys) or Platform.QQ_NAPCAT in config.platforms:
+        if Platform.QQ_NAPCAT not in config.platforms:
+            config.platforms[Platform.QQ_NAPCAT] = PlatformConfig()
+        qq_cfg = config.platforms[Platform.QQ_NAPCAT]
+        if qq_napcat_ws:
+            qq_cfg.enabled = True
+            qq_cfg.extra["ws_url"] = qq_napcat_ws
+        for env_key, extra_key in (
+            ("QQ_NAPCAT_ACCESS_TOKEN", "access_token"),
+            ("QQ_NAPCAT_SYSTEM_PROMPT", "system_prompt"),
+        ):
+            val = getenv(env_key)
+            if val:
+                qq_cfg.extra[extra_key] = val
+        for env_key, extra_key in (
+            ("QQ_NAPCAT_ALLOWED_USERS", "allowed_users"),
+            ("QQ_NAPCAT_ADMIN_USERS", "admin_users"),
+            ("QQ_NAPCAT_ALLOWED_GROUPS", "allowed_groups"),
+        ):
+            raw = getenv(env_key, "").strip()
+            if raw:
+                qq_cfg.extra[extra_key] = [p.strip() for p in raw.split(",") if p.strip()]
+        for env_key, extra_key, default in (
+            ("QQ_NAPCAT_ALLOW_ALL_USERS", "allow_all_users", False),
+            ("QQ_NAPCAT_ALLOW_ALL_GROUPS", "allow_all_groups", False),
+            ("QQ_NAPCAT_GROUP_SESSIONS_PER_USER", "group_sessions_per_user", True),
+            ("QQ_NAPCAT_THREAD_SESSIONS_PER_USER", "thread_sessions_per_user", False),
+            ("QQ_NAPCAT_PROJECT_GROUP_MODE", "project_group_mode", False),
+            ("QQ_NAPCAT_REQUIRE_MENTION", "require_mention", False),
+            ("QQ_NAPCAT_AUTO_BACKGROUND_WORK", "auto_background_work", False),
+        ):
+            raw = getenv(env_key)
+            if raw is not None:
+                qq_cfg.extra[extra_key] = _coerce_bool(raw, default=default)
+        mention = getenv("QQ_NAPCAT_MENTION_PATTERNS", "").strip()
+        if mention:
+            patterns = None
+            if mention.startswith("["):
+                try:
+                    import json as _json
+                    parsed = _json.loads(mention)
+                    if isinstance(parsed, list):
+                        patterns = [str(p) for p in parsed if str(p).strip()]
+                except Exception:
+                    patterns = None
+            if patterns is None:
+                patterns = [
+                    p.strip()
+                    for p in mention.replace("\n", ",").split(",")
+                    if p.strip()
+                ]
+            if patterns:
+                qq_cfg.extra["mention_patterns"] = patterns
+        reconnect = getenv("QQ_NAPCAT_RECONNECT_INTERVAL")
+        if reconnect and str(reconnect).strip():
+            try:
+                qq_cfg.extra["reconnect_interval"] = int(reconnect)
+            except ValueError:
+                logging.getLogger(__name__).warning(
+                    "Ignoring invalid QQ_NAPCAT_RECONNECT_INTERVAL=%r", reconnect
+                )
+        for env_key, extra_key in (
+            ("QQ_NAPCAT_GROUP_BATCH_DEBOUNCE_SECONDS", "group_batch_debounce_seconds"),
+            ("QQ_NAPCAT_GROUP_MIN_MODEL_INTERVAL_SECONDS", "group_min_model_interval_seconds"),
+            ("QQ_NAPCAT_GROUP_BATCH_RETRY_SECONDS", "group_batch_retry_seconds"),
+        ):
+            raw = getenv(env_key)
+            if raw is None or not str(raw).strip():
+                continue
+            try:
+                qq_cfg.extra[extra_key] = float(raw)
+            except ValueError:
+                logging.getLogger(__name__).warning("Ignoring invalid %s=%r", env_key, raw)
+        for env_key, extra_key in (
+            ("QQ_NAPCAT_GROUP_OBSERVED_MAX_MESSAGES", "group_observed_max_messages"),
+            ("QQ_NAPCAT_GROUP_BATCH_MAX_MESSAGES", "group_batch_max_messages"),
+        ):
+            raw = getenv(env_key)
+            if raw is None or not str(raw).strip():
+                continue
+            try:
+                qq_cfg.extra[extra_key] = int(raw)
+            except ValueError:
+                logging.getLogger(__name__).warning("Ignoring invalid %s=%r", env_key, raw)
+        qq_home = getenv("QQ_NAPCAT_HOME_CHANNEL")
+        if qq_home:
+            qq_cfg.home_channel = HomeChannel(
+                platform=Platform.QQ_NAPCAT,
+                chat_id=qq_home,
+                name=getenv("QQ_NAPCAT_HOME_CHANNEL_NAME", "Home"),
             )
 
     # Yuanbao — YUANBAO_APP_ID preferred

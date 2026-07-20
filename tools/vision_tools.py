@@ -48,6 +48,83 @@ import sys
 
 logger = logging.getLogger(__name__)
 
+# Failure cooldown state used by gateway auto-vision and tests.
+_RECENT_VISION_FAILURES = {}
+_VISION_PROVIDER_UNHEALTHY = {}
+
+_LOW_VALUE_WEBP_HINTS = (
+    "sticker",
+    "emoji",
+    "emote",
+    "reaction",
+    "stamp",
+    "face",
+)
+_LOW_VALUE_MEDIA_SUMMARY = (
+    "This looks like a sticker-like or low-value image, so vision skipped it "
+    "to keep chat responsive. If details matter, ask for a static screenshot "
+    "instead."
+)
+
+
+def _normalized_ref_text(ref: str) -> str:
+    return str(ref or "").strip().lower()
+
+
+def _looks_like_sticker_ref(ref: str) -> bool:
+    lowered = _normalized_ref_text(ref)
+    return any(hint in lowered for hint in _LOW_VALUE_WEBP_HINTS)
+
+
+def _looks_like_low_value_media(image_url: str, *, mime_type: str = "") -> str | None:
+    """Return a human reason when the media is not worth auto-vision spend."""
+    ref = str(image_url or "").strip()
+    mime = str(mime_type or "").strip().lower()
+    lowered = _normalized_ref_text(ref)
+    suffix = Path(lowered.split("?", 1)[0]).suffix
+    if suffix == ".gif" or mime == "image/gif":
+        return "Animated GIF media is skipped for auto-vision."
+    if (suffix == ".webp" or mime == "image/webp") and _looks_like_sticker_ref(ref):
+        return _LOW_VALUE_MEDIA_SUMMARY
+    if any(hint in lowered for hint in _LOW_VALUE_WEBP_HINTS) and suffix in {".webp", ".png", ".jpg", ".jpeg"}:
+        # QQ sticker filenames often include these hints even for non-webp.
+        if "sticker" in lowered or "emoji" in lowered or "emote" in lowered:
+            return _LOW_VALUE_MEDIA_SUMMARY
+    return None
+
+
+def should_prefer_remote_vision_source(
+    image_url: str,
+    *,
+    model=None,
+    provider=None,
+    base_url=None,
+    api_key=None,
+) -> bool:
+    """Whether auto-vision should pass the remote URL instead of a local cache.
+
+    Conservative default for personal QQ: signed QQ CDN URLs stay local so we
+    do not re-hit short-lived signed links. Plain public HTTPS may use remote
+    when the URL is not QQ-signed.
+    """
+    value = str(image_url or "").strip()
+    if not value:
+        return False
+    try:
+        from urllib.parse import urlparse
+        parsed = urlparse(value)
+    except Exception:
+        return False
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return False
+    host = parsed.netloc.lower()
+    # NapCat/QQ signed multimedia hosts — prefer local cache bytes.
+    if "qq.com" in host or "qpic.cn" in host or "gtimg.cn" in host:
+        return False
+    return True
+
+
+
 _debug = DebugSession("vision_tools", env_var="VISION_TOOLS_DEBUG")
 
 # Configurable HTTP download timeout for _download_image().
@@ -1126,6 +1203,14 @@ async def vision_analyze_tool(
 
         logger.info("Analyzing image: %s", image_url[:60])
         logger.info("User prompt: %s", user_prompt[:100])
+
+        low_value_reason = _looks_like_low_value_media(image_url)
+        if low_value_reason:
+            return tool_error(
+                f"Error analyzing image: {low_value_reason}",
+                success=False,
+                analysis=low_value_reason,
+            )
 
         # Resolve the source to raw bytes through the single resolver (unifies
         # data:/http/file/local/container and enforces terminal-backend

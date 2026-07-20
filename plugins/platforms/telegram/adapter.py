@@ -8950,8 +8950,17 @@ class TelegramAdapter(BasePlatformAdapter):
         
         # Determine chat type.  Normalize through ``str`` so tests/mocks and
         # python-telegram-bot enum values both work (``ChatType.CHANNEL`` is
-        # string-like, but mocks often provide plain strings).
-        telegram_chat_type = str(getattr(chat, "type", "")).split(".")[-1].lower()
+        # string-like, but mocks often provide plain strings).  Prefer
+        # ``.value`` when present; fall back to token search so MagicMock
+        # attribute paths like ``mock.ChatType.SUPERGROUP`` still resolve.
+        _raw_chat_type = getattr(chat, "type", "")
+        _chat_type_value = getattr(_raw_chat_type, "value", _raw_chat_type)
+        _chat_type_text = str(_chat_type_value if _chat_type_value is not None else "").strip().lower()
+        telegram_chat_type = _chat_type_text.rsplit(".", 1)[-1]
+        for _token in ("supergroup", "channel", "private", "group"):
+            if _token in telegram_chat_type or _token in _chat_type_text:
+                telegram_chat_type = _token
+                break
         chat_type = "dm"
         if telegram_chat_type in {"group", "supergroup"}:
             chat_type = "group"

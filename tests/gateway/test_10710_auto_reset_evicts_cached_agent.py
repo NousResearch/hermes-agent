@@ -48,12 +48,14 @@ def _assigns_false(node: ast.AST, attr: str) -> bool:
 
 
 def test_auto_reset_cleanup_evicts_cached_agent():
-    """The auto-reset cleanup block in gateway/run.py must call
+    """The auto-reset cleanup block (promoted to agent_turn_start) must call
     ``_evict_cached_agent`` so the fresh session does not reuse the previous
     conversation's cached agent (and its leaked
     ``context_compressor._previous_summary``) — the cache is keyed on the
     stable ``session_key`` (#10710)."""
-    tree = ast.parse(inspect.getsource(gateway_run))
+    from gateway import agent_turn_start_runtime_service as start_svc
+
+    tree = ast.parse(inspect.getsource(start_svc))
 
     # Fingerprint the cleanup branch: the `if <was_auto_reset>:` block that
     # clears the conversation scope via the funnel (post-#64934 refactor:
@@ -71,7 +73,7 @@ def test_auto_reset_cleanup_evicts_cached_agent():
             and _assigns_false(node, "was_auto_reset")
         ):
             assert "_evict_cached_agent" in calls, (
-                "gateway/run.py auto-reset cleanup block must call "
+                "agent_turn_start auto-reset cleanup block must call "
                 "`_evict_cached_agent(session_key)` so the auto-reset session "
                 "does not reuse the previous cached agent and leak its "
                 "context_compressor._previous_summary into new compaction "
@@ -81,8 +83,8 @@ def test_auto_reset_cleanup_evicts_cached_agent():
             break
     assert found, (
         "could not locate the auto-reset transient-state cleanup block in "
-        "gateway/run.py (fingerprint: _clear_conversation_scope + "
-        "was_auto_reset = False)."
+        "agent_turn_start_runtime_service (fingerprint: "
+        "_clear_conversation_scope + was_auto_reset = False)."
     )
 
 

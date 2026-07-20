@@ -89,3 +89,33 @@ def test_compressor_not_present_does_not_crash(mock_ctx_len, mock_resolve):
 
     result = agent._try_activate_fallback()
     assert result is True
+
+
+@patch("agent.auxiliary_client.resolve_provider_client")
+@patch("agent.model_metadata.get_model_context_length", return_value=258_000)
+def test_compressor_uses_fallback_context_length_override(mock_ctx_len, mock_resolve):
+    """Fallback config context_length should be passed into model metadata lookup."""
+    agent = _make_agent_with_compressor()
+    agent._fallback_model = {
+        "provider": "custom",
+        "model": "gpt-5.4",
+        "base_url": "https://api.888933.xyz/v1",
+        "api_key": "sk-fallback",
+        "context_length": 258_000,
+    }
+    agent._fallback_chain = [agent._fallback_model]
+    agent._fallback_index = 0
+
+    fb_client = MagicMock()
+    fb_client.base_url = "https://api.888933.xyz/v1"
+    fb_client.api_key = "sk-fallback"
+    mock_resolve.return_value = (fb_client, None)
+
+    agent._is_direct_openai_url = lambda url: False
+    agent._emit_status = lambda msg: None
+
+    result = agent._try_activate_fallback()
+
+    assert result is True
+    assert mock_ctx_len.call_args.kwargs["config_context_length"] == 258_000
+    assert agent.context_compressor.context_length == 258_000

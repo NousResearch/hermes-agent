@@ -8,6 +8,7 @@ return content=None, these produce null snapshots or null analysis.
 These tests verify both sites are guarded.
 """
 
+import json
 import types
 from unittest.mock import patch
 
@@ -66,13 +67,29 @@ class TestExtractRelevantContentNoneGuard:
 class TestBrowserVisionNoneGuard:
     """tools/browser_tool.py — browser_vision() analysis extraction"""
 
-    def test_none_content_produces_fallback_message(self):
-        """When LLM returns None content, analysis should have a fallback message."""
-        response = _make_response(None)
-        analysis = (response.choices[0].message.content or "").strip()
-        fallback = analysis or "Vision analysis returned no content."
+    def test_none_content_produces_fallback_message(self, tmp_path):
+        """When LLM returns None content, browser_vision should emit the fallback text."""
+        screenshot_path = tmp_path / "browser-shot.png"
+        screenshot_path.write_bytes(b"fake-png")
 
-        assert fallback == "Vision analysis returned no content."
+        with (
+            patch("hermes_constants.get_hermes_dir", return_value=tmp_path),
+            patch("tools.browser_tool._cleanup_old_screenshots"),
+            patch(
+                "tools.browser_tool._run_browser_command",
+                return_value={"success": True, "data": {"path": str(screenshot_path)}},
+            ),
+            patch("tools.browser_tool.call_llm", return_value=_make_response(None)),
+            patch("agent.redact.redact_sensitive_text", side_effect=lambda text: text),
+            patch("hermes_cli.config.load_config", return_value={}),
+        ):
+            from tools.browser_tool import browser_vision
+
+            result = json.loads(browser_vision("What is on the page?", task_id="task-1"))
+
+        assert result["success"] is True
+        assert result["analysis"] == "Vision analysis returned no content."
+        assert result["screenshot_path"] == str(screenshot_path)
 
     def test_normal_content_passes_through(self):
         """Normal analysis content should pass through unchanged."""
@@ -81,31 +98,3 @@ class TestBrowserVisionNoneGuard:
         fallback = analysis or "Vision analysis returned no content."
 
         assert fallback == "The page shows a login form."
-
-
-# ── source line verification ──────────────────────────────────────────────
-
-class TestBrowserSourceLinesAreGuarded:
-    """Verify the actual source file has the fix applied."""
-
-    @staticmethod
-    def _read_file() -> str:
-        import os
-        base = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
-        with open(os.path.join(base, "tools", "browser_tool.py")) as f:
-            return f.read()
-
-    def test_extract_relevant_content_guarded(self):
-        src = self._read_file()
-        # The old unguarded pattern should NOT exist
-        assert "return response.choices[0].message.content\n" not in src, (
-            "browser_tool.py _extract_relevant_content still has unguarded "
-            ".content return — apply None guard"
-        )
-
-    def test_browser_vision_guarded(self):
-        src = self._read_file()
-        assert "analysis = response.choices[0].message.content\n" not in src, (
-            "browser_tool.py browser_vision still has unguarded "
-            ".content assignment — apply None guard"
-        )

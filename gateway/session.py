@@ -17,7 +17,7 @@ import threading
 import uuid
 from pathlib import Path
 from datetime import datetime, timedelta
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Any
 
 logger = logging.getLogger(__name__)
@@ -309,6 +309,13 @@ class SessionContext:
     connected_platforms: List[Platform]
     home_channels: Dict[Platform, HomeChannel]
     shared_multi_user_session: bool = False
+    # Branch-local shared-session metadata used by QQ group history/prompt
+    # shaping. ``shared_multi_user_session`` stays the upstream boolean flag;
+    # ``shared_session_kind`` distinguishes thread vs group shared rooms.
+    shared_session: bool = False
+    shared_session_kind: Optional[str] = None
+    admin_user_ids: List[str] = field(default_factory=list)
+    is_admin_user: Optional[bool] = None
     
     # Session metadata
     session_key: str = ""
@@ -324,6 +331,10 @@ class SessionContext:
                 p.value: hc.to_dict() for p, hc in self.home_channels.items()
             },
             "shared_multi_user_session": self.shared_multi_user_session,
+            "shared_session": self.shared_session,
+            "shared_session_kind": self.shared_session_kind,
+            "admin_user_ids": list(self.admin_user_ids),
+            "is_admin_user": self.is_admin_user,
             "session_key": self.session_key,
             "session_id": self.session_id,
             "created_at": self.created_at.isoformat() if self.created_at else None,
@@ -499,12 +510,45 @@ def build_session_context_prompt(
     # changes per-turn and would bust the prompt cache.  Instead, note that
     # this is a multi-user session; individual sender names are prefixed on
     # each user message by the gateway.
-    if context.shared_multi_user_session:
-        session_label = "Multi-user thread" if context.source.thread_id else "Multi-user session"
-        lines.append(
-            f"**Session type:** {session_label} — messages are prefixed "
-            "with [sender name]. Multiple users may participate."
-        )
+    shared_kind = context.shared_session_kind
+    if not shared_kind and context.shared_multi_user_session:
+        shared_kind = "thread" if context.source.thread_id else "group"
+    if context.shared_session or context.shared_multi_user_session:
+        if shared_kind == "thread":
+            lines.append(
+                "**Session type:** Multi-user thread — messages are prefixed "
+                "with [sender name]. Multiple users may participate."
+            )
+        else:
+            # Keep the "Multi-user session" label for non-thread shared groups so
+            # upstream status/prompt tests and historical prompts stay stable;
+            # group-specific guidance follows on subsequent lines.
+            lines.append(
+                "**Session type:** Multi-user session — messages are prefixed "
+                "with [sender name]. Multiple users may participate."
+            )
+            lines.append(
+                "**Reply focus:** Prioritize the latest message or current batch. "
+                "Do not drag stale topics, old task state, or previously completed "
+                "answers into a new reply unless someone explicitly asks to continue them."
+            )
+            lines.append(
+                "**Transcript semantics:** The replayed conversation history in this session "
+                "is the real room transcript. Messages with role=assistant are your own "
+                "replies that were already sent to the group."
+            )
+            lines.append(
+                "**Repeat suppression:** Treat prior assistant messages as completed replies, "
+                "not drafts or pending points. Do not restate, re-summarize, or re-address "
+                "your own earlier reply unless someone explicitly asks for a summary, a "
+                "continuation, or a correction."
+            )
+            lines.append(
+                "**Batch handling:** When a user turn contains a merged batch of multiple "
+                "speakers, default to replying to the newest active prompt only. Do not "
+                "turn the whole batch into a room-wide recap unless the group explicitly "
+                "asks for one."
+            )
     elif context.source.user_name:
         lines.append(
             f"**User:** {_format_untrusted_prompt_value(context.source.user_name)}"
@@ -514,6 +558,27 @@ def build_session_context_prompt(
         if redact_pii:
             uid = _hash_sender_id(uid)
         lines.append(f"**User ID:** {_format_untrusted_prompt_value(uid)}")
+
+    if context.admin_user_ids:
+        lines.append("")
+        lines.append(
+            "**Privilege policy:** Dangerous actions that affect files, system state, "
+            "or remote machines require administrator approval."
+        )
+        lines.append(
+            f"**Administrator user IDs:** {', '.join(context.admin_user_ids)}"
+        )
+        if context.is_admin_user is True:
+            lines.append("**Current user privilege:** Administrator")
+            if context.source.platform == Platform.QQ_NAPCAT and context.source.chat_type == "group":
+                lines.append(
+                    "**QQ group admin turn handling:** In QQ group chats, when the current "
+                    "latest message comes from the administrator, treat it as needing a "
+                    "direct response by default. If the request is brief or ambiguous, "
+                    "ask a short clarifying question instead of returning [[NO_REPLY]]."
+                )
+        elif context.is_admin_user is False:
+            lines.append("**Current user privilege:** Standard user")
 
     # Platform-specific behavioral notes
     if context.source.platform == Platform.SLACK:
@@ -2780,7 +2845,9 @@ class SessionStore:
 def build_session_context(
     source: SessionSource,
     config: GatewayConfig,
-    session_entry: Optional[SessionEntry] = None
+    session_entry: Optional[SessionEntry] = None,
+    admin_user_ids: Optional[List[str]] = None,
+    is_admin_user: Optional[bool] = None,
 ) -> SessionContext:
     """
     Build a full session context from a source and config.
@@ -2794,16 +2861,36 @@ def build_session_context(
         home = config.get_home_channel(platform)
         if home:
             home_channels[platform] = home
+
+    get_isolation = getattr(config, "get_session_isolation", None)
+    if callable(get_isolation):
+        group_sessions_per_user, thread_sessions_per_user = get_isolation(source.platform)
+    else:
+        group_sessions_per_user = getattr(config, "group_sessions_per_user", True)
+        thread_sessions_per_user = getattr(config, "thread_sessions_per_user", False)
+
+    shared_session_kind = None
+    if source.chat_type != "dm":
+        if source.thread_id and not thread_sessions_per_user:
+            shared_session_kind = "thread"
+        elif not source.thread_id and not group_sessions_per_user:
+            shared_session_kind = "group"
+
+    shared_multi_user = is_shared_multi_user_session(
+        source,
+        group_sessions_per_user=group_sessions_per_user,
+        thread_sessions_per_user=thread_sessions_per_user,
+    )
     
     context = SessionContext(
         source=source,
         connected_platforms=connected,
         home_channels=home_channels,
-        shared_multi_user_session=is_shared_multi_user_session(
-            source,
-            group_sessions_per_user=getattr(config, "group_sessions_per_user", True),
-            thread_sessions_per_user=getattr(config, "thread_sessions_per_user", False),
-        ),
+        shared_multi_user_session=shared_multi_user,
+        shared_session=shared_session_kind is not None,
+        shared_session_kind=shared_session_kind,
+        admin_user_ids=list(admin_user_ids or []),
+        is_admin_user=is_admin_user,
     )
     
     if session_entry:

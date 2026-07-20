@@ -238,5 +238,5 @@ def approval_callback(cli, command: str, description: str) -> str:
         cli._approval_deadline = 0
         if hasattr(cli, "_app") and cli._app:
             cli._app.invalidate()
-        cprint(f"\n{_DIM}  ⏱ Timeout — denying command{_RST}")
+        cprint(f"\n{_DIM}  ⏱ 超时，已拒绝该命令{_RST}")
         return "deny"

@@ -922,10 +922,8 @@ class TestUpdateInHelp:
         assert "/update" in result
 
     def test_update_is_known_command(self):
-        """The /update command is in the help text (proxy for _known_commands)."""
-        # _known_commands is local to _handle_message, so we verify by
-        # checking the help output includes it.
+        """The /update command is dispatched via GatewayRunner production handler."""
         from gateway.run import GatewayRunner
-        import inspect
-        source = inspect.getsource(GatewayRunner._handle_message)
-        assert '"update"' in source
+
+        assert hasattr(GatewayRunner, "_handle_update_command")
+        assert callable(getattr(GatewayRunner, "_handle_update_command"))

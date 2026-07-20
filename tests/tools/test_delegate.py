@@ -155,6 +155,12 @@ class TestChildSystemPrompt(unittest.TestCase):
         prompt = _build_child_system_prompt("Do something", "  ")
         self.assertNotIn("CONTEXT", prompt)
 
+    def test_prompt_forbids_shared_destructive_cleanup(self):
+        prompt = _build_child_system_prompt("Research several GitHub projects")
+        self.assertIn("Never delete or recursively clean shared directories", prompt)
+        self.assertIn("rm -rf", prompt)
+        self.assertIn("unique scratch directory", prompt)
+
 
 class TestStripBlockedTools(unittest.TestCase):
     def test_removes_blocked_toolsets(self):

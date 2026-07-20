@@ -499,8 +499,14 @@ from pathlib import Path as _Path
 sys.path.insert(0, str(_Path(__file__).resolve().parents[2]))
 
 from gateway.config import Platform, PlatformConfig
+from gateway.media_pipeline import (
+    MessageAttachment,
+    attachments_from_legacy_media,
+    legacy_media_from_attachments,
+)
 from gateway.session import SessionSource, build_session_key
 from hermes_constants import get_default_hermes_root, get_hermes_dir, get_hermes_home
+
 
 
 GATEWAY_SECRET_CAPTURE_UNSUPPORTED_MESSAGE = (
@@ -1530,6 +1536,28 @@ def _normalize_media_tag_path(raw: str) -> str:
     return path.lstrip("`\"'").rstrip("`\"',.;:)}]")
 
 
+def _is_docs_example_media_path(path: str) -> bool:
+    """Return True for placeholder paths that appear in skill/docs examples.
+
+    Prompts and skill docs use ``MEDIA:/absolute/path/to/file.png`` as a
+    template; those must never become real delivery attachments.
+
+    Only the explicit docs placeholder form is filtered — generic
+    ``/path/to/file.png`` examples used in unit tests and real LLM
+    output must still extract as media.
+    """
+    normalized = str(path or "").replace("\\", "/").strip().lower()
+    if not normalized:
+        return False
+    return (
+        "/absolute/path/to/" in normalized
+        or normalized in {
+            "/absolute/path/to/file.png",
+            "/absolute/path/to/image.png",
+        }
+    )
+
+
 def _path_lacks_deliverable_extension(path: str) -> bool:
     """True when MEDIA_TAG_CLEANUP_RE's extension alternation does not cover
     ``path`` — either the basename has no extension at all (Caddyfile,
@@ -1783,8 +1811,15 @@ class MessageEvent:
     platform_update_id: Optional[int] = None
     
     # Media attachments
+    # Prefer normalized ``attachments`` for vision/analysis. Legacy
+    # ``media_urls`` / ``media_types`` / ``media_sources`` stay in sync via
+    # ``ensure_attachments`` / ``add_attachment`` / ``extend_attachments``.
+    attachments: List[MessageAttachment] = field(default_factory=list)
     # media_urls: local file paths (for vision tool access)
     media_urls: List[str] = field(default_factory=list)
+    # media_sources: preferred per-item analysis source (remote URL when
+    # preserved, otherwise same as media_urls).
+    media_sources: List[str] = field(default_factory=list)
     media_types: List[str] = field(default_factory=list)
     
     # Reply context
@@ -1821,6 +1856,12 @@ class MessageEvent:
 
     # Timestamps
     timestamp: datetime = field(default_factory=datetime.now)
+
+    def __post_init__(self) -> None:
+        if self.attachments:
+            self._sync_legacy_media_fields()
+        elif self.media_urls or self.media_sources or self.media_types:
+            self._sync_attachments()
     
     def is_command(self) -> bool:
         """Check if this is a command message (e.g., /new, /reset)."""
@@ -1849,6 +1890,35 @@ class MessageEvent:
         # iOS auto-corrects -- to — (em dash) and - to – (en dash)
         args = args.replace("\u2014\u2014", "--").replace("\u2014", "--").replace("\u2013", "-")
         return args
+
+    def _sync_attachments(self) -> None:
+        self.attachments = attachments_from_legacy_media(
+            self.media_urls,
+            self.media_sources,
+            self.media_types,
+        )
+
+    def _sync_legacy_media_fields(self) -> None:
+        self.media_urls, self.media_sources, self.media_types = legacy_media_from_attachments(
+            self.attachments
+        )
+
+    def ensure_attachments(self) -> List[MessageAttachment]:
+        """Rebuild normalized attachments from legacy media fields."""
+        self._sync_attachments()
+        return self.attachments
+
+    def add_attachment(self, attachment: MessageAttachment) -> None:
+        self.ensure_attachments()
+        self.attachments.append(attachment)
+        self._sync_legacy_media_fields()
+
+    def extend_attachments(self, attachments: List[MessageAttachment]) -> None:
+        if not attachments:
+            return
+        self.ensure_attachments()
+        self.attachments.extend(list(attachments))
+        self._sync_legacy_media_fields()
 
 
 @dataclass
@@ -2182,6 +2252,7 @@ def merge_pending_message_event(
         ):
             if event.text:
                 existing.text = f"{existing.text}\n{event.text}" if existing.text else event.text
+            BasePlatformAdapter._merge_text_pending_event(existing, event)
             return
 
     pending_messages[session_key] = event
@@ -2457,8 +2528,26 @@ class BasePlatformAdapter(ABC):
         # Without the owner-task map, an old task's finally block could delete
         # a newer task's guard, leaving stale busy state.
         self._active_sessions: Dict[str, asyncio.Event] = {}
+        self._active_session_started_at: Dict[str, float] = {}
         self._pending_messages: Dict[str, MessageEvent] = {}
         self._session_tasks: Dict[str, asyncio.Task] = {}
+        # Platform-aware busy-input mode (interrupt | queue | smart). Tests and
+        # QQ NapCat pass this via PlatformConfig.extra["busy_input_mode"].
+        try:
+            from gateway.config import _normalize_busy_input_mode as _norm_busy
+        except Exception:
+            def _norm_busy(value, default="interrupt"):  # type: ignore[misc]
+                if isinstance(value, str) and value.strip().lower() in {
+                    "interrupt", "queue", "smart", "steer",
+                }:
+                    return value.strip().lower()
+                return default
+        self._busy_input_mode: str = _norm_busy(
+            getattr(self.config, "extra", {}).get("busy_input_mode")
+            if isinstance(getattr(self.config, "extra", None), dict)
+            else None,
+            "interrupt",
+        )
         # Legacy busy_text_mode env var; when unset the runner syncs the
         # resolved value (driven by busy_input_mode) onto the adapter after
         # construction (gateway/run.py). Default to "interrupt" so a stray
@@ -2468,6 +2557,8 @@ class BasePlatformAdapter(ABC):
             os.environ.get("HERMES_GATEWAY_BUSY_TEXT_MODE", "interrupt").strip().lower()
             or "interrupt"
         )
+        if self._busy_input_mode == "queue" and self._busy_text_mode == "interrupt":
+            self._busy_text_mode = "queue"
         self._busy_text_debounce_seconds: float = _float_env(
             "HERMES_GATEWAY_BUSY_TEXT_DEBOUNCE_SECONDS", 0.35
         )
@@ -3772,15 +3863,22 @@ class BasePlatformAdapter(ABC):
         # stay valid; chaining them masks the union of both protected regions.
         scan_content = BasePlatformAdapter._mask_protected_spans(content)
         scan_content = BasePlatformAdapter._mask_json_string_media(scan_content)
+        placeholder_spans = []
         for match in media_pattern.finditer(scan_content):
             path = _normalize_media_tag_path(match.group("path"))
-            if path:
-                try:
-                    media.append((os.path.expanduser(path), has_voice_tag))
-                except (OSError, RuntimeError, ValueError):
-                    # Skip a crafted ~\x00 path rather than aborting extraction
-                    # and dropping every other attachment in the response.
-                    continue
+            if not path:
+                continue
+            if _is_docs_example_media_path(path):
+                # Strip docs/skill example paths from visible text without
+                # treating them as deliverable attachments.
+                placeholder_spans.append(match.span())
+                continue
+            try:
+                media.append((os.path.expanduser(path), has_voice_tag))
+            except (OSError, RuntimeError, ValueError):
+                # Skip a crafted ~\x00 path rather than aborting extraction
+                # and dropping every other attachment in the response.
+                continue
 
         seen_paths = {p for p, _ in media}
         for match in MEDIA_EXTENSIONLESS_TAG_RE.finditer(scan_content):
@@ -3800,10 +3898,16 @@ class BasePlatformAdapter(ABC):
         # in the delivered text, not be blanked to whitespace. Masking
         # ``cleaned`` (not ``content``) keeps offsets valid after the
         # [[audio_as_voice]] / [[as_document]] directives are removed.
-        if media:
+        if media or placeholder_spans:
             masked_cleaned = BasePlatformAdapter._mask_protected_spans(cleaned)
             masked_cleaned = BasePlatformAdapter._mask_json_string_media(masked_cleaned)
             spans = [m.span() for m in media_pattern.finditer(masked_cleaned)]
+            # Keep only spans that correspond to delivered media OR known
+            # docs placeholders (so example MEDIA: tags leave no residue).
+            if placeholder_spans and not media:
+                spans = list(placeholder_spans)
+            elif placeholder_spans:
+                spans = list(spans) + list(placeholder_spans)
             for match in MEDIA_EXTENSIONLESS_TAG_RE.finditer(masked_cleaned):
                 path = _normalize_media_tag_path(match.group("path"))
                 if not path or not _path_lacks_deliverable_extension(path):
@@ -4354,6 +4458,194 @@ class BasePlatformAdapter(ABC):
             return f"{existing_text}\n\n{new_text}".strip()
         return existing_text
 
+    def get_busy_input_mode(self) -> str:
+        """Return how active-session follow-up text should be handled."""
+        try:
+            from gateway.config import _normalize_busy_input_mode
+        except Exception:
+            def _normalize_busy_input_mode(value, default="interrupt"):  # type: ignore[misc]
+                if isinstance(value, str) and value.strip().lower() in {
+                    "interrupt", "queue", "smart", "steer",
+                }:
+                    return value.strip().lower()
+                return default
+
+        # Explicit empty-string _busy_text_mode is the legacy "direct-merge
+        # queue" sentinel used by interrupt-key tests. It must win over the
+        # constructor default of busy_input_mode=interrupt.
+        if getattr(self, "_busy_text_mode", None) == "":
+            return "queue"
+
+        raw = getattr(self, "_busy_input_mode", None)
+        if isinstance(raw, str) and raw.strip():
+            return _normalize_busy_input_mode(raw, "interrupt")
+
+        # Legacy / partial test adapters may only set _busy_text_mode.
+        # Empty string means "direct-merge queue" (no interrupt, no debounce).
+        text_mode = str(getattr(self, "_busy_text_mode", "interrupt") or "").strip().lower()
+        if text_mode == "queue" or text_mode == "":
+            return "queue"
+        return "interrupt"
+
+    def set_busy_input_mode(self, mode: str) -> None:
+        """Update the active-session follow-up mode at runtime."""
+        try:
+            from gateway.config import _normalize_busy_input_mode
+        except Exception:
+            def _normalize_busy_input_mode(value, default="interrupt"):  # type: ignore[misc]
+                if isinstance(value, str) and value.strip().lower() in {
+                    "interrupt", "queue", "smart", "steer",
+                }:
+                    return value.strip().lower()
+                return default
+        normalized = _normalize_busy_input_mode(mode, self.get_busy_input_mode())
+        self._busy_input_mode = normalized
+        if isinstance(getattr(self.config, "extra", None), dict):
+            self.config.extra["busy_input_mode"] = normalized
+        if normalized == "queue":
+            self._busy_text_mode = "queue"
+        elif normalized in {"interrupt", "smart", "steer"} and self._busy_text_mode == "queue":
+            # Keep smart/interrupt on the non-debounce path so grace-period
+            # interrupt decisions remain responsive.
+            self._busy_text_mode = "interrupt"
+
+    def _active_session_age_seconds(self, session_key: str) -> float:
+        started_at = getattr(self, "_active_session_started_at", {}).get(session_key)
+        if not started_at:
+            return 0.0
+        return max(0.0, time.time() - started_at)
+
+    def _smart_busy_interrupt_grace_seconds(self, event: MessageEvent) -> float:
+        """Return the smart-mode grace period before explicit follow-ups interrupt."""
+        return 5.0
+
+    @staticmethod
+    def _message_text_candidates(event: MessageEvent) -> list[str]:
+        """Return de-duplicated text bodies that may contain the user's intent."""
+        candidates: list[str] = []
+        seen: set[str] = set()
+        for value in (
+            getattr(event, "text", ""),
+            (
+                getattr(event, "raw_message", {}).get("raw_message")
+                if isinstance(getattr(event, "raw_message", None), dict)
+                else getattr(event, "raw_message", "")
+            ),
+        ):
+            text = str(value or "").strip()
+            if not text or text in seen:
+                continue
+            seen.add(text)
+            candidates.append(text)
+        return candidates
+
+    def _is_explicit_busy_followup(self, event: MessageEvent) -> bool:
+        """Return True when a busy follow-up should be treated as explicit/urgent."""
+        return getattr(event.source, "chat_type", "") == "dm"
+
+    def _busy_followup_ack(self, event: MessageEvent, *, interrupting: bool = False) -> str:
+        """Return an optional user-visible acknowledgement for a busy follow-up."""
+        return ""
+
+    def _should_inline_active_session_message(self, event: MessageEvent) -> bool:
+        """Return True when a busy-session message should be dispatched inline."""
+        return False
+
+    def _should_interrupt_busy_followup(self, session_key: str, event: MessageEvent) -> bool:
+        """Decide whether smart busy-input mode should interrupt the active run."""
+        if self.get_busy_input_mode() != "smart":
+            return False
+        if event.message_type == MessageType.PHOTO:
+            return False
+        if not self._is_explicit_busy_followup(event):
+            return False
+        if session_key in self._pending_messages:
+            return True
+        return self._active_session_age_seconds(session_key) >= self._smart_busy_interrupt_grace_seconds(event)
+
+    @staticmethod
+    def _merge_text_event_metadata(
+        existing_metadata: Optional[Dict[str, Any]],
+        incoming_metadata: Optional[Dict[str, Any]],
+    ) -> Optional[Dict[str, Any]]:
+        """Merge queued text-event metadata without downgrading explicit reply state."""
+        existing = dict(existing_metadata or {})
+        incoming = dict(incoming_metadata or {})
+        if not existing and not incoming:
+            return None
+
+        merged = dict(existing)
+        merged.update(incoming)
+
+        try:
+            from gateway.group_runtime import build_group_message_metadata
+        except Exception:
+            return merged or None
+
+        group_policy_mode = (
+            incoming.get("group_policy_mode")
+            if "group_policy_mode" in incoming
+            else existing.get("group_policy_mode")
+        )
+        allow_model_dispatch = (
+            incoming.get("allow_model_dispatch")
+            if "allow_model_dispatch" in incoming
+            else existing.get("allow_model_dispatch")
+        )
+        trigger_reason = str(
+            incoming.get("group_trigger_reason")
+            or existing.get("group_trigger_reason")
+            or ""
+        ).strip()
+        explicit_reason = str(
+            incoming.get("address_reason")
+            or incoming.get("explicit_group_trigger_reason")
+            or existing.get("address_reason")
+            or existing.get("explicit_group_trigger_reason")
+            or ""
+        ).strip()
+
+        group_metadata = build_group_message_metadata(
+            trigger_reason=trigger_reason or None,
+            explicit_reason=explicit_reason or None,
+            group_policy_mode=group_policy_mode,
+            allow_model_dispatch=allow_model_dispatch
+            if isinstance(allow_model_dispatch, bool)
+            else None,
+        )
+        if group_metadata:
+            merged.update(group_metadata)
+        return merged or None
+
+    @staticmethod
+    def _merge_text_pending_event(existing: MessageEvent, incoming: MessageEvent) -> None:
+        """Merge queued text events while preserving the strongest reply context."""
+        existing.metadata = BasePlatformAdapter._merge_text_event_metadata(
+            existing.metadata,
+            incoming.metadata,
+        )
+        if incoming.raw_message is not None:
+            existing.raw_message = incoming.raw_message
+        if incoming.message_id:
+            existing.message_id = incoming.message_id
+        if incoming.reply_to_message_id:
+            existing.reply_to_message_id = incoming.reply_to_message_id
+        if incoming.reply_to_text:
+            existing.reply_to_text = incoming.reply_to_text
+        if incoming.auto_skill:
+            existing.auto_skill = incoming.auto_skill
+        if getattr(incoming, "timestamp", None) is not None:
+            existing.timestamp = incoming.timestamp
+
+    def queue_message(self, session_key: str, event: MessageEvent) -> None:
+        """Queue or merge a follow-up message for processing after the current run."""
+        merge_pending_message_event(
+            self._pending_messages,
+            session_key,
+            event,
+            merge_text=event.message_type == MessageType.TEXT,
+        )
+
     def _text_debounce_store(self) -> dict[str, TextDebounceState]:
         store = getattr(self, "_text_debounce", None)
         if store is None:
@@ -4362,7 +4654,12 @@ class BasePlatformAdapter(ABC):
         return store
 
     def _is_queue_text_debounce_candidate(self, event: MessageEvent) -> bool:
-        """Return True for normal text eligible for queue-mode debounce."""
+        """Return True for normal text eligible for queue-mode debounce.
+
+        Debounce is gated on the legacy ``_busy_text_mode == "queue"`` flag so
+        empty-string direct-merge tests and ``busy_input_mode`` unit tests that
+        zero the debounce window keep immediate pending visibility.
+        """
         result = (
             getattr(self, "_busy_text_mode", "interrupt") == "queue"
             and event.message_type == MessageType.TEXT
@@ -4597,6 +4894,9 @@ class BasePlatformAdapter(ABC):
         """
         guard = interrupt_event or asyncio.Event()
         self._active_sessions[session_key] = guard
+        if not hasattr(self, "_active_session_started_at"):
+            self._active_session_started_at = {}
+        self._active_session_started_at[session_key] = time.time()
 
         task = asyncio.create_task(self._process_message_background(event, session_key))
         self._session_tasks[session_key] = task
@@ -4914,6 +5214,43 @@ class BasePlatformAdapter(ABC):
                 except Exception as e:
                     logger.error("[%s] Busy-session handler failed: %s", self.name, e, exc_info=True)
 
+            # Platform adapters (QQ NapCat) can inline deterministic control /
+            # status turns while a foreground agent is still active.
+            if self._should_inline_active_session_message(event):
+                logger.debug(
+                    "[%s] Inline busy-session message bypassing active-session guard for %s",
+                    self.name,
+                    session_key,
+                )
+                try:
+                    _thread_meta = _thread_metadata_for_source(
+                        event.source, _reply_anchor_for_event(event)
+                    )
+                    response = await self._message_handler(event)
+                    _text, _eph_ttl = self._unwrap_ephemeral(response)
+                    if _text:
+                        _r = await self._send_with_retry(
+                            chat_id=event.source.chat_id,
+                            content=_text,
+                            reply_to=_reply_anchor_for_event(event),
+                            metadata=_mark_notify_metadata(_thread_meta),
+                        )
+                        if _eph_ttl > 0 and _r.success and _r.message_id:
+                            self._schedule_ephemeral_delete(
+                                chat_id=event.source.chat_id,
+                                message_id=_r.message_id,
+                                ttl_seconds=_eph_ttl,
+                            )
+                        return
+                    # No direct response — fall through to queue/interrupt.
+                except Exception as exc:
+                    logger.debug(
+                        "[%s] Inline busy-session dispatch failed for %s: %s",
+                        self.name,
+                        session_key,
+                        exc,
+                    )
+
             # Special case: photo bursts/albums frequently arrive as multiple near-
             # simultaneous messages. Queue them without interrupting the active run,
             # then process them immediately after the current task finishes.
@@ -4922,28 +5259,92 @@ class BasePlatformAdapter(ABC):
                 merge_pending_message_event(self._pending_messages, session_key, event)
                 return  # Don't interrupt now - will run after current task completes
 
-            if self._is_queue_text_debounce_candidate(event):
-                logger.debug(
-                    "[%s] New text message while session %s is active — "
-                    "debouncing follow-up (busy_text_mode=queue, window=%.2fs)",
-                    self.name,
-                    session_key,
-                    self._busy_text_debounce_seconds,
+            busy_mode = self.get_busy_input_mode()
+            should_interrupt = self._should_interrupt_busy_followup(session_key, event)
+
+            if busy_mode == "queue" or (busy_mode == "smart" and not should_interrupt):
+                debounce_window = float(
+                    getattr(self, "_busy_text_debounce_seconds", 0.0) or 0.0
                 )
-                await self._queue_text_debounce(session_key, event)
-            else:
-                logger.debug(
-                    "[%s] New message while session %s is active — queuing follow-up "
-                    "(no interrupt, will cascade after current turn)",
-                    self.name,
-                    session_key,
-                )
-                merge_pending_message_event(
-                    self._pending_messages,
-                    session_key,
-                    event,
-                    merge_text=event.message_type == MessageType.TEXT,
-                )
+                if (
+                    debounce_window > 0
+                    and self._is_queue_text_debounce_candidate(event)
+                ):
+                    logger.debug(
+                        "[%s] New text message while session %s is active — "
+                        "debouncing follow-up (busy_text_mode=queue, window=%.2fs)",
+                        self.name,
+                        session_key,
+                        debounce_window,
+                    )
+                    await self._queue_text_debounce(session_key, event)
+                else:
+                    logger.debug(
+                        "[%s] New message while session %s is active — queueing without interrupt (mode=%s)",
+                        self.name,
+                        session_key,
+                        busy_mode,
+                    )
+                    merge_pending_message_event(
+                        self._pending_messages,
+                        session_key,
+                        event,
+                        merge_text=event.message_type == MessageType.TEXT,
+                    )
+                busy_ack = self._busy_followup_ack(event, interrupting=False)
+                if busy_ack:
+                    try:
+                        _thread_meta = _thread_metadata_for_source(
+                            event.source, _reply_anchor_for_event(event)
+                        )
+                        await self._send_with_retry(
+                            chat_id=event.source.chat_id,
+                            content=busy_ack,
+                            reply_to=_reply_anchor_for_event(event),
+                            metadata=_mark_notify_metadata(_thread_meta),
+                        )
+                    except Exception as exc:
+                        logger.debug(
+                            "[%s] Busy queue ack failed for %s: %s",
+                            self.name,
+                            session_key,
+                            exc,
+                        )
+                return
+
+            # Interrupt path (interrupt mode, or smart after grace).
+            # Always stage the follow-up in _pending_messages so post-run
+            # drain can deliver the full MessageEvent (media included).
+            logger.debug(
+                "[%s] New message while session %s is active — triggering interrupt (mode=%s)",
+                self.name,
+                session_key,
+                busy_mode,
+            )
+            self.queue_message(session_key, event)
+            interrupt_event = self._active_sessions.get(session_key)
+            if interrupt_event is not None:
+                interrupt_event.set()
+            if busy_mode == "smart":
+                busy_ack = self._busy_followup_ack(event, interrupting=True)
+                if busy_ack:
+                    try:
+                        _thread_meta = _thread_metadata_for_source(
+                            event.source, _reply_anchor_for_event(event)
+                        )
+                        await self._send_with_retry(
+                            chat_id=event.source.chat_id,
+                            content=busy_ack,
+                            reply_to=_reply_anchor_for_event(event),
+                            metadata=_mark_notify_metadata(_thread_meta),
+                        )
+                    except Exception as exc:
+                        logger.debug(
+                            "[%s] Busy interrupt ack failed for %s: %s",
+                            self.name,
+                            session_key,
+                            exc,
+                        )
             return  # Don't process now - will be handled after current task finishes
         
         # Mark session as active BEFORE spawning background task to close

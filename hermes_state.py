@@ -1024,7 +1024,18 @@ class SessionDB:
     _IMPORT_MAX_TOTAL_BYTES = 25 * 1024 * 1024
 
     def __init__(self, db_path: Path = None, read_only: bool = False):
-        self.db_path = db_path or DEFAULT_DB_PATH
+        # Re-resolve HERMES_HOME on each construction so tests / profile
+        # switches that patch the env after import are honored. DEFAULT_DB_PATH
+        # is only a cold-start convenience and may point at the process-launch
+        # home forever.
+        if db_path is None:
+            try:
+                from hermes_constants import get_hermes_home
+                self.db_path = get_hermes_home() / "state.db"
+            except Exception:
+                self.db_path = DEFAULT_DB_PATH
+        else:
+            self.db_path = db_path
         self.read_only = read_only
 
         self._lock = threading.Lock()

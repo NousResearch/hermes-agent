@@ -43,11 +43,13 @@ def _assigns_false(node: ast.AST, attr: str) -> bool:
 
 
 def test_run_consumes_was_auto_reset_in_cleanup_block():
-    """The auto-reset cleanup block in gateway/run.py must set
+    """The auto-reset cleanup block (promoted to agent_turn_start) must set
     `session_entry.was_auto_reset = False` so the cleanup (which pops the
     session model/reasoning overrides) cannot re-fire on the next message and
     wipe an override stored between turns (#48031)."""
-    tree = ast.parse(inspect.getsource(gateway_run))
+    from gateway import agent_turn_start_runtime_service as start_svc
+
+    tree = ast.parse(inspect.getsource(start_svc))
 
     # Find the cleanup branch: an `if <flag>:` block that clears the
     # conversation scope (post-funnel: one _clear_conversation_scope call
@@ -68,7 +70,7 @@ def test_run_consumes_was_auto_reset_in_cleanup_block():
             found = True
             break
     assert found, (
-        "gateway/run.py auto-reset cleanup block must consume "
+        "agent_turn_start auto-reset cleanup block must consume "
         "`was_auto_reset` (set it False) so it can't re-fire and wipe a "
         "model override stored between turns (#48031)."
     )

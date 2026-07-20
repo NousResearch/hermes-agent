@@ -383,3 +383,35 @@ class TestCronTimezone:
 
         next_run = datetime.fromisoformat(job["next_run_at"])
         assert next_run.tzinfo is not None
+
+    def test_load_jobs_rebases_next_run_after_timezone_change(self, tmp_path, monkeypatch):
+        """Changing Hermes timezone should recompute stored next_run_at for active jobs."""
+        import cron.jobs as jobs_module
+        from zoneinfo import ZoneInfo
+
+        monkeypatch.setattr(jobs_module, "CRON_DIR", tmp_path / "cron")
+        monkeypatch.setattr(jobs_module, "JOBS_FILE", tmp_path / "cron" / "jobs.json")
+        monkeypatch.setattr(jobs_module, "OUTPUT_DIR", tmp_path / "cron" / "output")
+
+        fixed_utc = datetime(2026, 4, 10, 1, 0, 0, tzinfo=timezone.utc)
+        monkeypatch.setattr(jobs_module, "_hermes_now", lambda: fixed_utc)
+        os.environ["HERMES_TIMEZONE"] = "UTC"
+        hermes_time.reset_cache()
+
+        from cron.jobs import create_job, load_jobs
+
+        job = create_job(
+            prompt="intel",
+            schedule="every 1h",
+        )
+        assert job["next_run_at"] == "2026-04-10T02:00:00+00:00"
+
+        shanghai_now = fixed_utc.astimezone(ZoneInfo("Asia/Shanghai"))
+        monkeypatch.setattr(jobs_module, "_hermes_now", lambda: shanghai_now)
+        os.environ["HERMES_TIMEZONE"] = "Asia/Shanghai"
+        hermes_time.reset_cache()
+
+        reloaded = load_jobs()
+
+        assert reloaded[0]["timezone"] == "Asia/Shanghai"
+        assert reloaded[0]["next_run_at"] == "2026-04-10T10:00:00+08:00"

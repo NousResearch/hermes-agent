@@ -413,6 +413,36 @@ def test_get_platform_tools_mixed_does_not_resurrect_default_off():
     assert "rl" not in enabled
 
 
+def test_qq_napcat_platform_has_default_toolset():
+    from hermes_cli.tools_config import PLATFORMS
+
+    assert PLATFORMS["qq_napcat"]["default_toolset"] == "hermes-qq-napcat"
+
+
+def test_qq_napcat_group_file_tool_is_scoped_to_qq_toolsets():
+    from toolsets import resolve_toolset
+
+    assert "qq_group_file" in resolve_toolset("hermes-qq-napcat")
+    assert "qq_group_file" in resolve_toolset("hermes-gateway")
+    assert "qq_group_file" not in resolve_toolset("hermes-telegram")
+
+
+def test_get_platform_tools_keeps_qq_default_platform_specific_tools():
+    from toolsets import resolve_toolset, validate_toolset
+
+    enabled = _get_platform_tools({}, "qq_napcat", include_default_mcp_servers=False)
+
+    assert "hermes-qq-napcat" in enabled
+
+    tool_names = set()
+    for toolset_name in enabled:
+        if validate_toolset(toolset_name):
+            tool_names.update(resolve_toolset(toolset_name))
+
+    assert "qq_group_file" in tool_names
+    assert "qq_group_moderation" in tool_names
+
+
 def test_get_platform_tools_preserves_explicit_empty_selection():
     config = {"platform_toolsets": {"cli": []}}
 

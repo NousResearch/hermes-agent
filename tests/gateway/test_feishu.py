@@ -1858,6 +1858,124 @@ class TestAdapterBehavior(unittest.TestCase):
         self.assertEqual(second.text, "C")
 
     @patch.dict(os.environ, {}, clear=True)
+    def test_text_batch_keeps_latest_event_context(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.base import MessageEvent, MessageType
+        from gateway.platforms.feishu import FeishuAdapter
+        from gateway.session import SessionSource
+
+        adapter = FeishuAdapter(PlatformConfig())
+        adapter.handle_message = AsyncMock()
+        source = SessionSource(
+            platform=adapter.platform,
+            chat_id="oc_chat",
+            chat_name="Feishu DM",
+            chat_type="dm",
+            user_id="ou_user",
+            user_name="张三",
+        )
+
+        async def _sleep(_delay):
+            return None
+
+        async def _run() -> None:
+            with patch("gateway.platforms.feishu.asyncio.sleep", side_effect=_sleep):
+                await adapter._dispatch_inbound_event(
+                    MessageEvent(
+                        text="A",
+                        message_type=MessageType.TEXT,
+                        source=source,
+                        message_id="om_1",
+                        metadata={"explicit_addressed": False},
+                        raw_message={"id": "raw-1"},
+                        reply_to_message_id="om_bot_1",
+                        reply_to_text="上一条",
+                    )
+                )
+                await adapter._dispatch_inbound_event(
+                    MessageEvent(
+                        text="B",
+                        message_type=MessageType.TEXT,
+                        source=source,
+                        message_id="om_2",
+                        metadata={"explicit_addressed": True, "address_reason": "reply_to_bot"},
+                        raw_message={"id": "raw-2"},
+                        reply_to_message_id="om_bot_1",
+                        reply_to_text="上一条",
+                    )
+                )
+                pending = list(adapter._pending_text_batch_tasks.values())
+                self.assertEqual(len(pending), 1)
+                await asyncio.gather(*pending, return_exceptions=True)
+
+        asyncio.run(_run())
+
+        adapter.handle_message.assert_awaited_once()
+        event = adapter.handle_message.await_args.args[0]
+        self.assertEqual(event.text, "A\nB")
+        self.assertEqual(event.message_id, "om_2")
+        self.assertEqual(event.raw_message, {"id": "raw-2"})
+        self.assertTrue(event.metadata["explicit_addressed"])
+        self.assertEqual(event.metadata["address_reason"], "reply_to_bot")
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_text_batch_flushes_incompatible_reply_context_before_merge(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.base import MessageEvent, MessageType
+        from gateway.platforms.feishu import FeishuAdapter
+        from gateway.session import SessionSource
+
+        adapter = FeishuAdapter(PlatformConfig())
+        adapter.handle_message = AsyncMock()
+        source = SessionSource(
+            platform=adapter.platform,
+            chat_id="oc_chat",
+            chat_name="Feishu DM",
+            chat_type="dm",
+            user_id="ou_user",
+            user_name="张三",
+        )
+
+        async def _sleep(_delay):
+            return None
+
+        async def _run() -> None:
+            with patch("gateway.platforms.feishu.asyncio.sleep", side_effect=_sleep):
+                await adapter._dispatch_inbound_event(
+                    MessageEvent(
+                        text="reply A",
+                        message_type=MessageType.TEXT,
+                        source=source,
+                        message_id="om_1",
+                        reply_to_message_id="om_bot_1",
+                        reply_to_text="上一条",
+                    )
+                )
+                await adapter._dispatch_inbound_event(
+                    MessageEvent(
+                        text="reply B",
+                        message_type=MessageType.TEXT,
+                        source=source,
+                        message_id="om_2",
+                        reply_to_message_id="om_bot_2",
+                        reply_to_text="另一条",
+                    )
+                )
+                pending = list(adapter._pending_text_batch_tasks.values())
+                self.assertEqual(len(pending), 1)
+                await asyncio.gather(*pending, return_exceptions=True)
+
+        asyncio.run(_run())
+
+        self.assertEqual(adapter.handle_message.await_count, 2)
+        first = adapter.handle_message.await_args_list[0].args[0]
+        second = adapter.handle_message.await_args_list[1].args[0]
+        self.assertEqual(first.text, "reply A")
+        self.assertEqual(first.reply_to_message_id, "om_bot_1")
+        self.assertEqual(second.text, "reply B")
+        self.assertEqual(second.reply_to_message_id, "om_bot_2")
+
+    @patch.dict(os.environ, {}, clear=True)
     def test_media_batch_merges_rapid_photo_messages(self):
         from gateway.config import PlatformConfig
         from gateway.platforms.base import MessageEvent, MessageType
@@ -1911,6 +2029,67 @@ class TestAdapterBehavior(unittest.TestCase):
         self.assertEqual(event.media_urls, ["/tmp/a.png", "/tmp/b.png"])
         self.assertIn("第一张", event.text)
         self.assertIn("第二张", event.text)
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_media_batch_keeps_latest_event_context(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.base import MessageEvent, MessageType
+        from gateway.platforms.feishu import FeishuAdapter
+        from gateway.session import SessionSource
+
+        adapter = FeishuAdapter(PlatformConfig())
+        adapter.handle_message = AsyncMock()
+        source = SessionSource(
+            platform=adapter.platform,
+            chat_id="oc_chat",
+            chat_name="Feishu DM",
+            chat_type="dm",
+            user_id="ou_user",
+            user_name="张三",
+        )
+
+        async def _sleep(_delay):
+            return None
+
+        async def _run() -> None:
+            with patch("gateway.platforms.feishu.asyncio.sleep", side_effect=_sleep):
+                await adapter._dispatch_inbound_event(
+                    MessageEvent(
+                        text="第一张",
+                        message_type=MessageType.PHOTO,
+                        source=source,
+                        message_id="om_p1",
+                        media_urls=["/tmp/a.png"],
+                        media_types=["image/png"],
+                        metadata={"explicit_addressed": False},
+                        raw_message={"id": "raw-p1"},
+                    )
+                )
+                await adapter._dispatch_inbound_event(
+                    MessageEvent(
+                        text="第二张",
+                        message_type=MessageType.PHOTO,
+                        source=source,
+                        message_id="om_p2",
+                        media_urls=["/tmp/b.png"],
+                        media_types=["image/png"],
+                        metadata={"explicit_addressed": True, "address_reason": "reply_to_bot"},
+                        raw_message={"id": "raw-p2"},
+                    )
+                )
+                pending = list(adapter._pending_media_batch_tasks.values())
+                self.assertEqual(len(pending), 1)
+                await asyncio.gather(*pending, return_exceptions=True)
+
+        asyncio.run(_run())
+
+        adapter.handle_message.assert_awaited_once()
+        event = adapter.handle_message.await_args.args[0]
+        self.assertEqual(event.media_urls, ["/tmp/a.png", "/tmp/b.png"])
+        self.assertEqual(event.message_id, "om_p2")
+        self.assertEqual(event.raw_message, {"id": "raw-p2"})
+        self.assertTrue(event.metadata["explicit_addressed"])
+        self.assertEqual(event.metadata["address_reason"], "reply_to_bot")
 
     @patch.dict(os.environ, {}, clear=True)
     def test_send_image_downloads_then_uses_native_image_send(self):

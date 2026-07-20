@@ -386,6 +386,46 @@ class TestSidecarNoteStaging:
         assert runner._consume_pending_turn_sidecar_notes("sk") == []  # noqa: SLF001
         assert runner._consume_pending_turn_sidecar_notes("") == []  # noqa: SLF001
 
+    def test_consume_is_idempotent_after_first_pop(self):
+        """finally-block cleanup must be safe after the happy-path consume."""
+        runner = _make_runner()
+        runner._set_pending_turn_sidecar_notes("sk", ["note-a", "note-b"])  # noqa: SLF001
+        assert runner._consume_pending_turn_sidecar_notes("sk") == ["note-a", "note-b"]  # noqa: SLF001
+        assert "sk" not in getattr(runner, "_pending_turn_sidecar_notes", {})
+        assert runner._consume_pending_turn_sidecar_notes("sk") == []  # noqa: SLF001
+        assert "sk" not in getattr(runner, "_pending_turn_sidecar_notes", {})
+
+    def test_proxy_path_discards_staged_notes(self, monkeypatch):
+        """Proxy never builds a local agent; staged notes must not leak."""
+        import asyncio
+
+        runner = _make_runner()
+        runner._set_pending_turn_sidecar_notes("sk", ["[System note: group reply]"])  # noqa: SLF001
+        monkeypatch.setattr(runner, "_get_proxy_url", lambda: "http://proxy.test")
+        # Avoid real HTTP: fail import of aiohttp so proxy returns early error dict.
+        import builtins
+
+        real_import = builtins.__import__
+
+        def _block_aiohttp(name, *args, **kwargs):
+            if name == "aiohttp" or name.startswith("aiohttp."):
+                raise ImportError("blocked for test")
+            return real_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", _block_aiohttp)
+        result = asyncio.get_event_loop().run_until_complete(
+            runner._run_agent_via_proxy(  # noqa: SLF001
+                message="hi",
+                context_prompt="",
+                history=[],
+                source=type("S", (), {"platform": None, "chat_id": "1"})(),
+                session_id="sid",
+                session_key="sk",
+            )
+        )
+        assert isinstance(result, dict)
+        assert "sk" not in getattr(runner, "_pending_turn_sidecar_notes", {})
+
 
 # ---------------------------------------------------------------------------
 # 6. Connected platforms: stable order

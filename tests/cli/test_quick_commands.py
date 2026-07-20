@@ -31,13 +31,21 @@ class TestCLIQuickCommands:
         cli.session_id = "test-session"
         return cli
 
+    def _run_and_collect_output(self, cli, command):
+        with patch("cli._cprint") as mock_cprint:
+            result = cli.process_command(command)
+        output = "\n".join(
+            self._printed_plain(call.args[0])
+            for call in mock_cprint.call_args_list
+            if call.args
+        )
+        return result, output
+
     def test_exec_command_runs_and_prints_output(self):
         cli = self._make_cli({"dn": {"type": "exec", "command": "echo daily-note"}})
-        result = cli.process_command("/dn")
+        result, output = self._run_and_collect_output(cli, "/dn")
         assert result is True
-        cli.console.print.assert_called_once()
-        printed = self._printed_plain(cli.console.print.call_args[0][0])
-        assert printed == "daily-note"
+        assert "daily-note" in output
 
     def test_exec_command_uses_chat_console_when_tui_is_live(self):
         cli = self._make_cli({"dn": {"type": "exec", "command": "echo daily-note"}})
@@ -55,17 +63,14 @@ class TestCLIQuickCommands:
 
     def test_exec_command_stderr_shown_on_no_stdout(self):
         cli = self._make_cli({"err": {"type": "exec", "command": "echo error >&2"}})
-        result = cli.process_command("/err")
+        result, output = self._run_and_collect_output(cli, "/err")
         assert result is True
-        # stderr fallback — should print something
-        cli.console.print.assert_called_once()
+        assert "error" in output.lower()
 
     def test_exec_command_no_output_shows_fallback(self):
         cli = self._make_cli({"empty": {"type": "exec", "command": "true"}})
-        cli.process_command("/empty")
-        cli.console.print.assert_called_once()
-        args = cli.console.print.call_args[0][0]
-        assert "no output" in args.lower()
+        _result, output = self._run_and_collect_output(cli, "/empty")
+        assert "no output" in output.lower()
 
     def test_alias_command_routes_to_target(self):
         """Alias quick commands rewrite to the target command."""
@@ -84,33 +89,25 @@ class TestCLIQuickCommands:
 
     def test_alias_no_target_shows_error(self):
         cli = self._make_cli({"broken": {"type": "alias", "target": ""}})
-        cli.process_command("/broken")
-        cli.console.print.assert_called_once()
-        args = cli.console.print.call_args[0][0]
-        assert "no target defined" in args.lower()
+        _result, output = self._run_and_collect_output(cli, "/broken")
+        assert "no target defined" in output.lower()
 
     def test_unsupported_type_shows_error(self):
         cli = self._make_cli({"bad": {"type": "prompt", "command": "echo hi"}})
-        cli.process_command("/bad")
-        cli.console.print.assert_called_once()
-        args = cli.console.print.call_args[0][0]
-        assert "unsupported type" in args.lower()
+        _result, output = self._run_and_collect_output(cli, "/bad")
+        assert "unsupported type" in output.lower()
 
     def test_missing_command_field_shows_error(self):
         cli = self._make_cli({"oops": {"type": "exec"}})
-        cli.process_command("/oops")
-        cli.console.print.assert_called_once()
-        args = cli.console.print.call_args[0][0]
-        assert "no command defined" in args.lower()
+        _result, output = self._run_and_collect_output(cli, "/oops")
+        assert "no command defined" in output.lower()
 
     def test_quick_command_takes_priority_over_skill_commands(self):
         """Quick commands must be checked before skill slash commands."""
         cli = self._make_cli({"mygif": {"type": "exec", "command": "echo overridden"}})
         with patch("cli._skill_commands", {"/mygif": {"name": "gif-search"}}):
-            cli.process_command("/mygif")
-        cli.console.print.assert_called_once()
-        printed = self._printed_plain(cli.console.print.call_args[0][0])
-        assert printed == "overridden"
+            _result, output = self._run_and_collect_output(cli, "/mygif")
+        assert "overridden" in output
 
     def test_unknown_command_still_shows_error(self):
         cli = self._make_cli({})
@@ -123,10 +120,8 @@ class TestCLIQuickCommands:
     def test_timeout_shows_error(self):
         cli = self._make_cli({"slow": {"type": "exec", "command": "sleep 100"}})
         with patch("subprocess.run", side_effect=subprocess.TimeoutExpired("sleep", 30)):
-            cli.process_command("/slow")
-        cli.console.print.assert_called_once()
-        args = cli.console.print.call_args[0][0]
-        assert "timed out" in args.lower()
+            _result, output = self._run_and_collect_output(cli, "/slow")
+        assert "timed out" in output.lower()
 
 
 # ── Gateway tests ──────────────────────────────────────────────────────────
@@ -224,10 +219,23 @@ class TestGatewayQuickCommands:
         runner._is_user_authorized = MagicMock(return_value=True)
 
         event = self._make_event("slow")
-        with patch("asyncio.wait_for", side_effect=asyncio.TimeoutError):
+        fake_proc = MagicMock()
+        fake_proc.returncode = None
+        fake_proc.communicate = AsyncMock(return_value=(b"", b""))
+        fake_proc.wait = AsyncMock(return_value=-9)
+
+        def _kill():
+            fake_proc.returncode = -9
+
+        fake_proc.kill.side_effect = _kill
+
+        with patch("asyncio.create_subprocess_shell", new=AsyncMock(return_value=fake_proc)), \
+             patch("asyncio.wait_for", side_effect=asyncio.TimeoutError):
             result = await runner._handle_message(event)
         assert result is not None
         assert "timed out" in result.lower()
+        fake_proc.kill.assert_called_once()
+        fake_proc.wait.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_gateway_config_object_supports_quick_commands(self):

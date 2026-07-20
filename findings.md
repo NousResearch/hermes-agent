@@ -1,0 +1,87 @@
+# Findings
+
+- 当前 QQ 群底座已具备：
+  - `gateway/qq_group_policies.py`：群监听/采集/日报/目标配置
+  - `gateway/qq_group_archive.py`：原始采集、日报 rollup、即时快照、清理
+  - `tools/qq_group_policy_tool.py` / `tools/qq_group_archive_tool.py`：可口头控制
+  - `cron/scheduler.py`：日报 rollup 后自动投递
+- NapCat 现有代码支持：
+  - `get_group_list`
+  - `send_group_msg` / `send_private_msg`
+  - `get_group_member_info`
+  - 群文件、群管接口
+- 当前代码库中未发现现成的“主动加群/加好友/查询陌生人资料/处理好友申请”工具封装。
+- 现有群监听优化已经支持 project group batching / collect-only / 按群策略覆盖 allowlist。
+- 更合理的抽象是：
+  - shared archive per group
+  - multiple intel assignments referencing one group
+  - assignment-level daily/manual/notify targets
+  - scheduler reconciliation for membership/status transitions
+- 已实现的新层：
+  - `gateway/qq_intel_assignments.py`：worker/mission 状态持久化
+  - `tools/qq_intel_tool.py`：统一 control-plane 工具
+  - `gateway/platforms/qq_napcat.py`：active intel worker 的 collect-only runtime overlay
+  - `cron/scheduler.py`：membership 对账、assignment 日报投递、状态通知
+- 需求盘点（截至 2026-04-13）：
+  - 已完成：
+    - 可口头招募/暂停/恢复/停止/查询情报员任务
+    - 可按群设置 `collect_only` / `project_mode` / `disabled`
+    - 群采集支持原始消息归档、日报 rollup、汇报投递、raw 清理
+    - 情报员支持 `awaiting_group_approval` / `active_collecting` / `paused` / `stopped` / `failed` / `rejected`
+    - 已入群检测和 scheduler 对账已接入
+    - QQ 群禁言/踢人已有专用工具，并要求董事长授权
+    - project group batching 已落地：按群防抖、最小模型间隔、多人消息合并
+  - 部分完成：
+    - 系统内部仍保留 `qq_social_control` / `qq_intel_control` / `qq_group_policy` / `qq_group_archive` / `qq_group_moderation` / `qq_group_file` 这些底层工具做兼容分发，但模型侧现在已经优先收束到 `qq_control`
+  - 未完成：
+    - 主动加好友
+    - 主动申请加群
+    - 真正意义上的“员工 = skill 实例化调度”；当前采用的是更稳妥的 assignment/store 架构，而不是 skill 实体
+- 新增 QQ 社交入口控制面（2026-04-13）：
+  - `gateway/qq_social_requests.py`：持久化 request 事件（friend/group）
+  - `tools/qq_social_tool.py`：`qq_social_control`
+  - `gateway/platforms/qq_napcat.py`：已接入 `post_type=request` 事件采集
+  - 当前已支持：
+    - 查看待处理好友/群请求
+    - 批准/拒绝请求
+    - 查询陌生人资料（`get_stranger_info`）
+    - 查看好友列表（`get_friend_list`）
+  - 当前仍未支持：
+    - 主动发起加好友
+    - 主动申请加群
+- 2026-04-13 收口修复：
+  - `delegate_task` 子代理现已明确禁止用 `rm -rf` / `git clean -fdx` 一类方式清理共享目录来做研究任务准备
+  - QQ gateway 在危险命令审批挂起时，若收到显式追问，会自动拒绝挂起命令并切到新的追问
+  - 长耗时状态提示会暴露 `waiting for approval: <command>`，便于判断是真卡住还是在等董事长拍板
+  - `qq_control` 已纳入 QQ 群文件操作，并在模型侧隐藏 `qq_group_file`，进一步收束到单一总控入口
+- 2026-04-18 口头控制误判收口：
+  - `那个情报员还在吗` 会被错误解析成 `worker_name=还在吗`，直接触发 `get_worker`
+  - `员工钢镚还在吗` / `员工钢镚什么状态` 之前会把状态词吞进 worker 名，导致显式状态查询失效
+  - bot 可见别名（`马嘎` / `马哥` / `老马` 等）如果恰好存在同名 worker，会被 `qq_intel` 当成已知 worker 直接截获
+  - 即使 `qq_intel` 让路，QQ 群控的 `report_now` 无目标分支仍会把 `让马哥现在汇报` 这类 bot 对话抢走并返回缺少群目标错误
+- 2026-04-18 第二轮口头控制审查：
+  - `_looks_like_qq_joined_group_list_query()` 对 `列一下群` 采用 substring 命中，导致 `列一下群里的部署问题` 被错误路由成 `list_joined_groups`
+  - `qq_intel` 对“已知 worker 名 + 监听/汇报”采用宽匹配，`让钢镚现在汇报一下这个页面为什么回退了`、`让钢镚继续监听线上部署日志，查清楚后向我汇报` 都会被错误截成简短控制命令
+  - `group_control` 在无群目标时只要命中 `监听/汇报` 就直接返回缺少目标错误，导致上一条问题即使从 `qq_intel` 放行，也会被群控再次抢走
+- 2026-04-18 第三轮 shortcut 顺序审查：
+  - `看看情报员钢镚现在什么状态。` 在会话里存在后台任务时，会先被 runtime/background status shortcut 吸走，返回后台任务状态而不是情报员状态
+  - 根因不是 `qq_intel`，而是 `_looks_like_qq_runtime_status_query()` / `_looks_like_qq_background_status_query()` 没有先排除“显式情报员状态查询”这类更具体的语义
+- 2026-04-19 第四轮 group runtime shortcut 顺序审查：
+  - `这个群现在什么状态` 在群会话有后台任务时，会先被 runtime status shortcut 抢走，返回后台任务状态而不是当前群运行态
+  - 根因有两层：共享 `looks_like_group_runtime_status_query()` 对“有群指代 + 泛化状态问句”识别不足，而 QQ 的 runtime/background shortcut 也没有先排除这类显式群运行态查询
+- 2026-04-19 Weixin 既有失败排查：
+  - `这个群切到监听采集，日报发我私聊` 能识别 `collect_only` 和投递目标，但不会把“明确日报投递目标”视为“开启日报”
+  - 根因在共享 `group_control_requests`：此前只有命中 `GROUP_REPORT_ENABLE_TERMS` 才会附带 `daily_report_*`，没有覆盖“enable_listen + 明确日报投递目标”这个自然口头表达
+- 2026-04-19 全量测试收口补丁：
+  - ACP 相关测试目录在缺少可选依赖 `acp` 时会直接 collection error，更合理的行为是跳过该目录
+  - `tests/tools/test_browser_camofox_state.py` 中 `_config_version` 断言仍停留在 13，当前真实默认值已经是 14
+- 2026-04-19 测试噪音/漂移收口：
+  - `tests/e2e/test_telegram_commands.py::test_provider_shows_current_provider` 的 `xfail` 不是单纯过期标记，`gateway.run._handle_provider_command()` 在缺少 `config.yaml` 时确实会访问未绑定的 `model_cfg`
+  - 网关 quick command 超时分支此前会留下未正确收尾的 `communicate()` / subprocess transport；并行全量下可放大成 `Process.communicate was never awaited` 与事件循环关闭告警
+  - Nous auth 的 TLS `ca_bundle` 之前直接把字符串路径传给 `httpx.Client(verify=...)`，会触发 `verify=<str>` deprecation；应在调用前转成 `ssl.SSLContext`
+  - MCP 两处 warning 来自测试本身把 coroutine 交给 patched `_run_on_mcp_loop` 后既不执行也不关闭，不是运行时代码缺陷
+  - `tests/run_agent/test_real_interrupt_subagent.py::test_interrupt_child_during_api_call` 存在竞态：它只等 `run_conversation()` 开始，不等实际 API 调用启动；xdist 下会偶发把 interrupt 发早
+- 相关回归：
+  - QQ 相关/新增链路：`170 passed`
+  - 全量仓库：`37 failed, 9361 passed, 87 skipped, 6 errors`
+  - 全量失败主要集中在 ACP 缺依赖、CLI/UI、SSR F 安全测试、转录依赖、若干既有 provider/环境测试，和本轮 QQ 情报员改动不在同一改动面。

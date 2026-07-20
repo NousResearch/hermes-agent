@@ -98,6 +98,7 @@ def _find_session_id(
     chat_id: str,
     thread_id: Optional[str] = None,
     user_id: Optional[str] = None,
+    chat_type: Optional[str] = None,
 ) -> Optional[str]:
     """
     Find the active session_id for a platform + chat_id pair.
@@ -110,7 +111,23 @@ def _find_session_id(
     When *user_id* is provided, prefer exact sender matches. If multiple
     same-chat candidates exist and none matches the user, return None instead
     of guessing and contaminating another participant's session.
+
+    QQ NapCat targets may arrive as ``group:12345`` / ``dm:12345``. When that
+    form is used (or *chat_type* is provided), match origin chat_type too so
+    group and DM sessions with the same numeric id stay distinct.
     """
+    lookup_chat_id = str(chat_id or "")
+    lookup_chat_type = str(chat_type or "").strip().lower() or None
+    if ":" in lookup_chat_id and lookup_chat_id.split(":", 1)[0].lower() in {
+        "group",
+        "dm",
+        "private",
+        "channel",
+    }:
+        prefix, bare = lookup_chat_id.split(":", 1)
+        lookup_chat_type = lookup_chat_type or prefix.lower()
+        lookup_chat_id = bare
+
     # Primary: state.db
     try:
         from hermes_state import SessionDB
@@ -118,12 +135,22 @@ def _find_session_id(
         try:
             finder = getattr(db, "find_session_by_origin", None)
             if callable(finder):
-                session_id = finder(
-                    platform=platform,
-                    chat_id=chat_id,
-                    thread_id=thread_id,
-                    user_id=user_id,
-                )
+                try:
+                    session_id = finder(
+                        platform=platform,
+                        chat_id=lookup_chat_id,
+                        thread_id=thread_id,
+                        user_id=user_id,
+                        chat_type=lookup_chat_type,
+                    )
+                except TypeError:
+                    # Older SessionDB helpers may not accept chat_type yet.
+                    session_id = finder(
+                        platform=platform,
+                        chat_id=lookup_chat_id,
+                        thread_id=thread_id,
+                        user_id=user_id,
+                    )
                 if session_id:
                     return str(session_id)
         finally:
@@ -156,10 +183,16 @@ def _find_session_id(
             continue
 
         origin_chat_id = str(origin.get("chat_id", ""))
-        if origin_chat_id == str(chat_id):
+        if origin_chat_id == lookup_chat_id or origin_chat_id == str(chat_id):
             origin_thread_id = origin.get("thread_id")
             if thread_id is not None and str(origin_thread_id or "") != str(thread_id):
                 continue
+            if lookup_chat_type:
+                entry_chat_type = str(
+                    origin.get("chat_type") or entry.get("chat_type") or ""
+                ).strip().lower()
+                if entry_chat_type and entry_chat_type != lookup_chat_type:
+                    continue
             candidates.append(entry)
 
     if not candidates:

@@ -47,7 +47,10 @@ from hermes_state import SessionDB
 # ---------------------------------------------------------------------------
 def _find_compression_exhausted_reset_block() -> ast.If:
     """Return the ``if agent_result.get('compression_exhausted') ...`` block."""
-    tree = ast.parse(inspect.getsource(gateway_run))
+    # Production path promoted to agent_turn_finish_runtime_service.
+    from gateway import agent_turn_finish_runtime_service as finish_svc
+
+    tree = ast.parse(inspect.getsource(finish_svc))
 
     for node in ast.walk(tree):
         if not isinstance(node, ast.If):
@@ -71,7 +74,8 @@ def _find_compression_exhausted_reset_block() -> ast.If:
     raise AssertionError(
         "Could not locate the compression-exhausted auto-reset block "
         "(if agent_result.get('compression_exhausted') ... reset_session) "
-        "in gateway/run.py — the structure changed or the AST walker is stale."
+        "in agent_turn_finish_runtime_service — the structure changed or "
+        "the AST walker is stale."
     )
 
 

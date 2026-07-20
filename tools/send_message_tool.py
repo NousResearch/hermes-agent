@@ -13,9 +13,12 @@ import re
 import ssl
 import time
 from email.utils import formatdate
+from pathlib import Path
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from agent.redact import redact_sensitive_text
 from agent.secret_scope import get_secret
+from gateway.qq_napcat_runtime import diagnose_local_qq_napcat_endpoint
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +33,7 @@ _FEISHU_TARGET_RE = re.compile(r"^\s*((?:oc|ou|on|chat|open)_[-A-Za-z0-9]+)(?::(
 _SLACK_TARGET_RE = re.compile(r"^\s*([CGDU][A-Z0-9]{8,})\s*$")
 # Session-derived Slack thread targets use "<conversation_id>:<thread_ts>".
 _SLACK_THREAD_TARGET_RE = re.compile(r"^\s*([CGD][A-Z0-9]{8,}):([^\s:]+)\s*$")
+_QQ_NAPCAT_TARGET_RE = re.compile(r"^\s*(dm|group):(\d+)\s*$")
 _WEIXIN_TARGET_RE = re.compile(r"^\s*((?:wxid|gh|v\d+|wm|wb)_[A-Za-z0-9_-]+|[A-Za-z0-9._-]+@chatroom|filehelper)\s*$")
 _YUANBAO_TARGET_RE = re.compile(r"^\s*((?:group|direct):[^:]+)\s*$")
 # Discord snowflake IDs are numeric, same regex pattern as Telegram topic targets.
@@ -795,6 +799,11 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     if platform == Platform.WEIXIN:
         return await _send_weixin(pconfig, chat_id, message, media_files=media_files)
 
+    if platform == Platform.QQ_NAPCAT:
+        return await _send_qq_napcat(
+            pconfig.extra, chat_id, message, media_files=media_files
+        )
+
     from gateway.platforms.base import BasePlatformAdapter, utf16_len
 
     # Telegram adapter import is optional (requires python-telegram-bot)
@@ -1036,7 +1045,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     if media_files and not message.strip():
         return {
             "error": (
-                f"send_message MEDIA delivery is currently only supported for telegram, discord, matrix, weixin, signal, yuanbao, feishu and whatsapp; "
+                f"send_message MEDIA delivery is currently only supported for telegram, discord, matrix, weixin, qq_napcat, signal, yuanbao, feishu and whatsapp; "
                 f"target {platform.value} had only media attachments"
             )
         }
@@ -1044,7 +1053,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     if media_files:
         warning = (
             f"MEDIA attachments were omitted for {platform.value}; "
-            "native send_message media delivery is currently only supported for telegram, discord, matrix, weixin, signal, yuanbao, feishu and whatsapp"
+            "native send_message media delivery is currently only supported for telegram, discord, matrix, weixin, qq_napcat, signal, yuanbao, feishu and whatsapp"
         )
 
     last_result = None
@@ -1855,6 +1864,174 @@ def _check_send_message():
         return is_gateway_running()
     except Exception:
         return False
+
+
+
+
+def _with_access_token(ws_url: str, access_token: str) -> str:
+    """Append/replace access_token without corrupting an existing path or query."""
+    ws_url = str(ws_url or "").strip()
+    token = str(access_token or "").strip()
+    if not token:
+        return ws_url
+
+    parsed = urlsplit(ws_url)
+    query_items = [
+        (key, value)
+        for key, value in parse_qsl(parsed.query, keep_blank_values=True)
+        if key != "access_token"
+    ]
+    query_items.append(("access_token", token))
+    return urlunsplit((
+        parsed.scheme,
+        parsed.netloc,
+        parsed.path,
+        urlencode(query_items),
+        parsed.fragment,
+    ))
+
+
+def _qq_napcat_target_error(chat_id: str, *, context: str) -> dict:
+    """Return a clear error for ambiguous QQ outbound targets."""
+    sample = str(chat_id or "").strip()
+    sample_id = sample.lstrip("-") if sample.lstrip("-").isdigit() else "123456"
+    return _error(
+        f"Invalid QQ NapCat {context} {chat_id!r}. "
+        f"Use 'qq_napcat:group:{sample_id}' or 'qq_napcat:dm:{sample_id}'."
+    )
+
+
+def _validate_qq_napcat_outbound_chat_id(chat_id: str, *, context: str) -> dict | None:
+    """Reject ambiguous QQ targets outside the live adapter/session flow."""
+    if str(chat_id or "").startswith(("dm:", "group:")) and _QQ_NAPCAT_TARGET_RE.fullmatch(str(chat_id)):
+        return None
+    return _qq_napcat_target_error(chat_id, context=context)
+
+
+def _qq_napcat_target(chat_id: str) -> tuple[str, int]:
+    """Return (chat_type, numeric_id) for a qq_napcat outbound target."""
+    if chat_id.startswith("group:"):
+        return "group", int(chat_id.split(":", 1)[1])
+    if chat_id.startswith("dm:"):
+        return "dm", int(chat_id.split(":", 1)[1])
+    # bare numeric defaults to private chat for back-compat
+    return "dm", int(str(chat_id).strip())
+
+
+def _qq_napcat_file_uri(path: str) -> str:
+    return Path(os.path.abspath(os.path.expanduser(path))).as_uri()
+
+
+async def _qq_napcat_call(extra, action: str, params: dict):
+    try:
+        import aiohttp
+    except ImportError:
+        return None, {"error": "aiohttp not installed. Run: pip install aiohttp"}
+
+    ws_url = (extra.get("ws_url") or "").strip()
+    if not ws_url:
+        return None, {"error": "QQ NapCat not configured (QQ_NAPCAT_WS_URL required)"}
+
+    access_token = (extra.get("access_token") or "").strip()
+    connect_url = _with_access_token(ws_url, access_token)
+    payload = {
+        "action": action,
+        "params": params,
+        "echo": f"send_message_tool_{int(time.time() * 1000)}",
+    }
+
+    try:
+        timeout = aiohttp.ClientTimeout(total=30)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.ws_connect(connect_url) as ws:
+                await ws.send_json(payload)
+                async for msg in ws:
+                    if msg.type != aiohttp.WSMsgType.TEXT:
+                        continue
+                    data = msg.json()
+                    if data.get("echo") != payload["echo"]:
+                        continue
+                    if data.get("status") != "ok" or data.get("retcode") not in (0, None):
+                        return None, _error(
+                            f"QQ NapCat API error ({data.get('retcode')}): {data.get('message', 'unknown')}"
+                        )
+                    return data.get("data"), None
+    except Exception as e:
+        diagnostic = diagnose_local_qq_napcat_endpoint(ws_url)
+        if diagnostic:
+            return None, _error(diagnostic["message"])
+        return None, _error(f"QQ NapCat send failed: {e}")
+
+    return None, _error("QQ NapCat send failed: no response from websocket")
+
+
+async def _send_qq_napcat(extra, chat_id, message, media_files=None):
+    """Send via NapCat / OneBot 11 websocket API."""
+    media_files = media_files or []
+
+    chat_type, numeric_id = _qq_napcat_target(chat_id)
+    action = "send_group_msg" if chat_type == "group" else "send_private_msg"
+    id_key = "group_id" if chat_type == "group" else "user_id"
+
+    last_message_id = None
+
+    if message.strip():
+        data, error = await _qq_napcat_call(
+            extra,
+            action,
+            {
+                id_key: numeric_id,
+                "message": [{"type": "text", "data": {"text": message}}],
+            },
+        )
+        if error:
+            return error
+        last_message_id = (data or {}).get("message_id")
+
+    for media_path, is_voice in media_files:
+        if not os.path.exists(media_path):
+            return _error(f"QQ NapCat media file not found: {media_path}")
+
+        ext = os.path.splitext(media_path)[1].lower()
+        if ext in _IMAGE_EXTS:
+            segment_type = "image"
+        elif ext in _VIDEO_EXTS:
+            segment_type = "video"
+        elif ext in _VOICE_EXTS and is_voice:
+            segment_type = "record"
+        elif ext in _AUDIO_EXTS:
+            segment_type = "record"
+        else:
+            segment_type = "file"
+
+        data, error = await _qq_napcat_call(
+            extra,
+            action,
+            {
+                id_key: numeric_id,
+                "message": [
+                    {
+                        "type": segment_type,
+                        "data": {"file": _qq_napcat_file_uri(media_path)},
+                    }
+                ],
+            },
+        )
+        if error:
+            return error
+        last_message_id = (data or {}).get("message_id", last_message_id)
+
+    if last_message_id is None and not message.strip() and not media_files:
+        return {"error": "No deliverable text or media remained after processing MEDIA tags"}
+
+    result = {
+        "success": True,
+        "platform": "qq_napcat",
+        "chat_id": chat_id,
+    }
+    if last_message_id is not None:
+        result["message_id"] = str(last_message_id)
+    return result
 
 
 async def _send_qqbot(pconfig, chat_id, message):

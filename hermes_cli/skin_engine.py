@@ -215,35 +215,21 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "shell_dollar": "#4dabf7",
             "voice_status_bg": "#1a1a2e",
         },
-        # Hand-tuned light palette (mirrors the TUI's LIGHT_THEME golds).
+        # No paired light_colors. On a light (in practice transparent) terminal
+        # the beloved classic look is these vivid golds rendered RAW — xterm
+        # applies no contrast lift over a transparent bg, so #FFD700 shows as
+        # bright #F5C242, not a WCAG-darkened mustard. The TUI's display shim
+        # only flips fills to light polarity and rescues genuinely-invisible
+        # near-white text; the golds pass through untouched. A hand-authored
+        # dark "light palette" here is exactly what made it read as mud.
         "light_colors": {
-            "banner_border": "#7A4F1F",
-            "banner_title": "#8B6914",
-            "banner_accent": "#A0651C",
-            "banner_dim": "#7A5A0F",
-            "banner_text": "#3D2F13",
-            "ui_accent": "#A0651C",
-            "ui_label": "#7A5A0F",
-            "ui_ok": "#2E7D32",
-            "ui_error": "#C62828",
-            "ui_warn": "#E65100",
-            "prompt": "#2B2014",
-            "input_rule": "#7A4F1F",
-            "response_border": "#8B6914",
-            "status_bar_bg": "#F5F5F5",
-            "status_bar_text": "#333333",
-            "status_bar_strong": "#8B6914",
-            "status_bar_dim": "#8A8A8A",
-            "status_bar_good": "#2E7D32",
-            "status_bar_warn": "#8B6914",
-            "status_bar_bad": "#D84315",
-            "status_bar_critical": "#B71C1C",
-            "session_label": "#7A5A0F",
-            "session_border": "#7A5A0F",
+            # Fills only: on a light terminal the dark navy menu/status fills
+            # must flip to light. Foregrounds intentionally inherit the vivid
+            # `colors` above so they render raw.
             "completion_menu_bg": "#F5F5F5",
             "completion_menu_current_bg": "#E0D1BF",
             "selection_bg": "#D4E4F7",
-            "shell_dollar": "#1565C0",
+            "status_bar_bg": "#F5F5F5",
             "voice_status_bg": "#F5F5F5",
         },
         "spinner": {

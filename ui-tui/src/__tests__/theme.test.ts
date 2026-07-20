@@ -307,9 +307,11 @@ describe('fromSkin', () => {
     const theme = fromSkin({ banner_text: '#FFF8DC' }, {})
 
     // No ansi256 bucketing on truecolor terminals — a truly invisible cream
-    // (1.08:1 on white) still gets the display shim's gentle rescue.
+    // (1.08:1 on white) still gets the display shim's gentle light-mode rescue
+    // (floor 1.18: enough to make near-white text appear, not enough to crush
+    // the vivid golds into mud).
     expect(theme.color.text).toMatch(/^#[0-9a-f]{6}$/i)
-    expect(contrastRatio(theme.color.text, '#ffffff')!).toBeGreaterThanOrEqual(1.45)
+    expect(contrastRatio(theme.color.text, '#ffffff')!).toBeGreaterThanOrEqual(1.18)
   })
 
   it('normalizes Apple Terminal names before matching', async () => {
@@ -398,8 +400,10 @@ describe('derived tone ladder', () => {
       [dark.DARK_THEME.color.completionBg, '#1a1a2e', 'dark surface'],
       [dark.DARK_THEME.color.completionCurrentBg, '#333355', 'dark chip'],
       [dark.DARK_THEME.color.selectionBg, '#3a3a55', 'dark selection'],
-      [light.LIGHT_THEME.color.muted, '#7A5A0F', 'light muted'],
-      [light.LIGHT_THEME.color.statusFg, '#333333', 'light statusFg'],
+      // Light canon = liftForContrast(dark literal, white, 4.5): the exact
+      // colors xterm's minimumContrastRatio rendered on light hosts.
+      [light.LIGHT_THEME.color.muted, '#946C08', 'light muted'],
+      [light.LIGHT_THEME.color.statusFg, '#6F6F6F', 'light statusFg'],
       [light.LIGHT_THEME.color.completionBg, '#F5F5F5', 'light surface'],
       [light.LIGHT_THEME.color.completionCurrentBg, '#e0d1bf', 'light chip'],
       [light.LIGHT_THEME.color.selectionBg, '#D4E4F7', 'light selection']
@@ -457,14 +461,17 @@ describe('background-aware adaptation (OSC-11 light terminals)', () => {
     expect(color.accent.toLowerCase()).toBe('#7eb8f6')
     expect(color.muted.toLowerCase()).toBe('#4b5563')
 
-    // Colors below the display floor get xterm's hue-preserving rescue.
+    // Light mode renders the authored palette essentially RAW: a transparent
+    // terminal (the common Cursor case) applies no contrast lift of its own,
+    // and the beloved classic look is the vivid palette, not a WCAG-darkened
+    // one. Foregrounds only clear the near-invisible floor (1.18).
     for (const key of ['text', 'prompt', 'accent', 'label', 'primary', 'muted', 'border'] as const) {
-      expect(contrastRatio(color[key], '#ffffff'), `${key} ${color[key]}`).toBeGreaterThanOrEqual(1.45)
+      expect(contrastRatio(color[key], '#ffffff'), `${key} ${color[key]}`).toBeGreaterThanOrEqual(1.18)
     }
 
-    // Semantic alert colors carry meaning — firmer floor.
+    // Semantic alert colors carry meaning — firmer floor, still gentle on light.
     for (const key of ['ok', 'error', 'warn', 'statusGood', 'statusCritical'] as const) {
-      expect(contrastRatio(color[key], '#ffffff'), `${key} ${color[key]}`).toBeGreaterThanOrEqual(2.15)
+      expect(contrastRatio(color[key], '#ffffff'), `${key} ${color[key]}`).toBeGreaterThanOrEqual(1.6)
     }
 
     // Background roles the skin never defined must be light-polarity fills,
@@ -480,7 +487,7 @@ describe('background-aware adaptation (OSC-11 light terminals)', () => {
     const { color } = fromSkin({ banner_text: '#FFF8DC' }, {})
 
     expect(color.text.toLowerCase()).not.toBe('#fff8dc')
-    expect(contrastRatio(color.text, '#ffffff')!).toBeGreaterThanOrEqual(1.45)
+    expect(contrastRatio(color.text, '#ffffff')!).toBeGreaterThanOrEqual(1.18)
 
     // Multiplicative lift preserves channel ordering (warm stays warm).
     const [r, g, b] = [1, 3, 5].map(i => parseInt(color.text.slice(i, i + 2), 16))

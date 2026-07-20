@@ -215,6 +215,7 @@ async def test_relay_fronted_logical_home_gets_startup_notification(tmp_path, mo
     relay = MagicMock()
     relay.fronts_platform.side_effect = lambda platform: platform == Platform.SLACK
     relay.send_for_platform = AsyncMock(return_value=SendResult(success=True, message_id="home"))
+    relay.send = AsyncMock(return_value=SendResult(success=True, message_id="home"))
     runner.adapters = {Platform.RELAY: relay}
     runner.config.platforms = {
         Platform.RELAY: PlatformConfig(enabled=True),
@@ -233,14 +234,13 @@ async def test_relay_fronted_logical_home_gets_startup_notification(tmp_path, mo
     delivered = await runner._send_home_channel_startup_notifications()
 
     assert delivered == {("slack", "D123", None)}
-    relay.send_for_platform.assert_awaited_once()
-    assert relay.send_for_platform.await_args.args[:3] == (
-        Platform.SLACK,
+    relay.send.assert_awaited_once()
+    assert relay.send.await_args.args[:2] == (
         "D123",
         "♻️ Gateway online — Hermes is back and ready.",
     )
-    assert relay.send_for_platform.await_args.kwargs["metadata"]["user_id"] == "U123"
-    assert relay.send_for_platform.await_args.kwargs["metadata"]["scope_id"] == "T123"
+    assert relay.send.await_args.kwargs["metadata"]["user_id"] == "U123"
+    assert relay.send.await_args.kwargs["metadata"]["scope_id"] == "T123"
 
 
 @pytest.mark.asyncio
@@ -366,6 +366,7 @@ async def test_relay_restart_notification_uses_logical_platform_and_owner(tmp_pa
     relay.send_for_platform = AsyncMock(
         return_value=SendResult(success=True, message_id="restart")
     )
+    relay.send = AsyncMock(return_value=SendResult(success=True, message_id="restart"))
     runner.adapters = {Platform.RELAY: relay}
     runner.config.platforms = {
         Platform.RELAY: PlatformConfig(enabled=True),
@@ -375,9 +376,9 @@ async def test_relay_restart_notification_uses_logical_platform_and_owner(tmp_pa
     delivered_target = await runner._send_restart_notification()
 
     assert delivered_target == ("slack", "D123", None)
-    relay.send_for_platform.assert_awaited_once()
-    assert relay.send_for_platform.await_args.args[0:2] == (Platform.SLACK, "D123")
-    metadata = relay.send_for_platform.await_args.kwargs["metadata"]
+    relay.send.assert_awaited_once()
+    assert relay.send.await_args.args[0] == "D123"
+    metadata = relay.send.await_args.kwargs["metadata"]
     assert metadata["user_id"] == "U123"
     assert metadata["scope_id"] == "T123"
     assert not notify_path.exists()

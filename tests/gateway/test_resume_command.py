@@ -854,6 +854,14 @@ class TestSameOriginChatGroupScoping:
         b = self._src("alice", chat_type="dm", chat_id="dm-1")
         assert runner._same_origin_chat(a, b) is True
 
+    def test_dm_allows_cross_thread_same_chat(self):
+        """DM sessions are scoped by chat_id + user_id, not thread_id — a
+        caller in thread A should match a session in thread B of the same DM."""
+        runner = _make_runner()
+        a = self._src("alice", chat_type="dm", chat_id="dm-1", thread_id="thread-A")
+        b = self._src("alice", chat_type="dm", chat_id="dm-1", thread_id="thread-B")
+        assert runner._same_origin_chat(a, b) is True
+
     @pytest.mark.asyncio
     async def test_resume_target_allowed_blocks_cross_user_live_group(self):
         """End-to-end via the live-origin branch: Alice cannot resume Bob's

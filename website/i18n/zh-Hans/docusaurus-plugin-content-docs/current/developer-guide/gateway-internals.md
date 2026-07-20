@@ -176,12 +176,13 @@ gateway/platforms/                  # 核心 base 与旧的直接适配器
 └── api_server.py        # REST API 服务器适配器
 ```
 
-适配器共享 `BasePlatformAdapter` 契约：
-- `connect(*, is_reconnect=False)` / `disconnect()` — 生命周期管理
-- `send(chat_id, content, reply_to=None, metadata=None)` — 出站消息投递
-- `set_message_handler(handler)` — 安装接收入站 `MessageEvent` 的 gateway 回调
+适配器需要实现 `BasePlatformAdapter` 要求的四个抽象方法：
+- `connect(*, is_reconnect=False)` — 连接平台并开始接收消息
+- `disconnect()` — 断开平台连接
+- `send(chat_id, content, reply_to=None, metadata=None)` — 投递出站消息
+- `get_chat_info(chat_id)` — 返回聊天或频道的元数据
 
-每个适配器的平台专属监听器会把入站平台事件规范化为 `MessageEvent`，再交给 base 的 `handle_message(event)` 流程。
+入站消息使用独立的回调链路。`GatewayRunner` 通过 `set_message_handler(handler)` 注册回调。每个适配器的平台专属监听器会将入站平台事件规范化为 `MessageEvent`，再交给基类的 `handle_message(event)` 流程。
 
 ### Token 锁
 

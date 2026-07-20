@@ -23,8 +23,8 @@ sidebar_position: 9
 - **`connect(*, is_reconnect=False)`** — 建立连接（WebSocket、长轮询、HTTP 服务器等）*(抽象方法)*
 - **`disconnect()`** — 清理关闭 *(抽象方法)*
 - **`send(chat_id, content, reply_to=None, metadata=None)`** — 向聊天发送文本消息 *(抽象方法)*
+- **`get_chat_info(chat_id)`** — 返回聊天元数据 *(抽象方法)*
 - **`send_typing()`** — 显示正在输入指示器（可选覆盖）
-- **`get_chat_info()`** — 返回聊天元数据（可选覆盖）
 
 适配器接收入站消息后，通过 `self.handle_message(event)` 转发，基类将其路由到 gateway runner。
 

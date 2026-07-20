@@ -23,8 +23,8 @@ Every adapter extends `BasePlatformAdapter` from `gateway/platforms/base.py` and
 - **`connect(*, is_reconnect=False)`** — Establish connection (WebSocket, long-poll, HTTP server, etc.) *(abstract)*
 - **`disconnect()`** — Clean shutdown *(abstract)*
 - **`send(chat_id, content, reply_to=None, metadata=None)`** — Send a text message to a chat *(abstract)*
+- **`get_chat_info(chat_id)`** — Return chat metadata *(abstract)*
 - **`send_typing()`** — Show typing indicator (optional override)
-- **`get_chat_info()`** — Return chat metadata (optional override)
 
 Inbound messages are received by the adapter and forwarded via `self.handle_message(event)`, which the base class routes to the gateway runner.
 

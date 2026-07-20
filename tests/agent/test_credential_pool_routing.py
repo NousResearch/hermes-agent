@@ -480,3 +480,35 @@ class TestFailureAttribution:
         assert statuses["cred-0"] != "exhausted"
         swapped = agent._swap_credential.call_args[0][0]
         assert swapped.id == "cred-0"
+
+    def test_auth_refresh_targets_failing_key_not_pointer(self, tmp_path, monkeypatch):
+        """The auth path must refresh the entry that supplied the failing key,
+        not current(). With current() pointing at healthy A while key B failed,
+        try_refresh_current() force-refreshes A — for non-OAuth entries a
+        forced refresh marks the entry exhausted outright — so healthy A dies,
+        the hinted rotation then exhausts B, and the pool has nothing left."""
+        pool = self._make_pool(
+            tmp_path, monkeypatch,
+            [self._entry(0, "key-a"), self._entry(1, "key-b")],
+        )
+        # Point the shared cursor at the healthy entry, as a concurrent
+        # turn's select() would.
+        selected = pool.select()
+        assert selected.id == "cred-0"
+        assert pool.current().id == "cred-0"
+
+        agent = self._agent(pool, failing_key="key-b")
+        agent._is_entitlement_failure = MagicMock(return_value=False)
+
+        from agent.agent_runtime_helpers import recover_with_credential_pool
+
+        recovered, _ = recover_with_credential_pool(
+            agent, status_code=401, has_retried_429=False
+        )
+
+        assert recovered is True
+        statuses = self._statuses(pool)
+        assert statuses["cred-1"] == "exhausted"
+        assert statuses["cred-0"] != "exhausted"
+        swapped = agent._swap_credential.call_args[0][0]
+        assert swapped.id == "cred-0"

@@ -378,6 +378,7 @@ async def test_start_command_is_noop_during_active_session():
         ("/commands", "_handle_commands_command", "Commands text"),
         ("/update", "_handle_update_command", "Update text"),
         ("/profile", "_handle_profile_command", "Profile text"),
+        ("/fetch", "_handle_fetch_command", "Fetch runtime overview"),
     ],
 )
 async def test_active_session_bypass_commands_dispatch_without_interrupt(
@@ -399,6 +400,24 @@ async def test_active_session_bypass_commands_dispatch_without_interrupt(
 
     assert result == handler_result
     fake_agent.interrupt.assert_not_called()
+    assert session_key not in runner.adapters[Platform.TELEGRAM]._pending_messages
+
+
+@pytest.mark.asyncio
+async def test_fetch_command_idle_session_returns_overview():
+    """When no agent is running, /fetch must still return the overview directly."""
+    runner = _make_runner()
+    event = _make_event(text="/fetch")
+    session_key = build_session_key(event.source)
+
+    # No agent running — should still hit the bypass handler
+    runner._handle_fetch_command = AsyncMock(return_value="Fetch runtime overview")
+
+    result = await runner._handle_message(event)
+
+    assert result == "Fetch runtime overview"
+    runner._handle_fetch_command.assert_awaited_once_with(event)
+    assert session_key not in runner._running_agents
     assert session_key not in runner.adapters[Platform.TELEGRAM]._pending_messages
 
 

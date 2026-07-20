@@ -147,11 +147,20 @@ def _skill_view_dedupe_before_payload(
 
             if unchanged:
                 chars = len(rendered_content)
+                approx_tokens = (chars + 3) // 4
                 _skill_view_dedupe_counters["skill_view_dedupe_hits"] += 1
                 _skill_view_dedupe_counters["skill_view_chars_avoided"] += chars
                 _skill_view_dedupe_counters[
                     "skill_view_approx_tokens_avoided"
-                ] += (chars + 3) // 4
+                ] += approx_tokens
+                logger.info(
+                    "skill_view.dedupe_hit skill=%s linked_file=%s "
+                    "chars_avoided=%d approx_tokens_avoided=%d",
+                    canonical_name,
+                    linked_file or _SKILL_VIEW_MAIN_MARKER,
+                    chars,
+                    approx_tokens,
+                )
             return unchanged, content_hash
     except Exception as exc:
         logger.warning(

@@ -803,6 +803,33 @@ class TestSkillViewDedupe:
         assert bump_view.call_args_list == [(("sample",),), (("sample",),)]
         assert bump_use.call_args_list == [(("sample",),), (("sample",),)]
 
+    def test_dedupe_hit_logs_stable_metadata_only_event(self, tmp_path, caplog):
+        _make_skill(tmp_path, "sample", body="Instructions")
+        with (
+            patch("tools.skills_tool.SKILLS_DIR", tmp_path),
+            caplog.at_level(logging.INFO, logger="tools.skills_tool"),
+        ):
+            first = json.loads(skill_view("sample", session_id="session-a"))
+            json.loads(skill_view("sample", session_id="session-a"))
+
+        hit_records = [
+            record
+            for record in caplog.records
+            if record.getMessage().startswith("skill_view.dedupe_hit")
+        ]
+        assert len(hit_records) == 1
+        record = hit_records[0]
+        chars_avoided = len(first["content"])
+        approx_tokens_avoided = (chars_avoided + 3) // 4
+        assert record.levelno == logging.INFO
+        assert record.getMessage() == (
+            "skill_view.dedupe_hit skill=sample linked_file=<main> "
+            f"chars_avoided={chars_avoided} "
+            f"approx_tokens_avoided={approx_tokens_avoided}"
+        )
+        assert "Instructions" not in record.getMessage()
+        assert first["content_hash"] not in record.getMessage()
+
 
 class TestSkillViewSecureSetupOnLoad:
     def test_requests_missing_required_env_and_continues(self, tmp_path, monkeypatch):

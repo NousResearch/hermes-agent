@@ -6,13 +6,18 @@
  * Usage: node store-scanner.mjs <url>
  */
 
+import fs from "node:fs/promises";
+import { fetchPublic } from "./public-fetch.mjs";
+
 const TIMEOUT_MS = 15000;
 const REQUEST_DELAY_MS = 800;
 const MAX_PAGES = 5;
 const MAX_RETRIES = 2;
 const USER_AGENT = 'Mozilla/5.0 (compatible; ShopifyDetector/1.0; +https://selofy.com)';
 
-const url = process.argv[2];
+const url = process.argv.find((value, index) => index > 0 && !value.startsWith("--"));
+const outputFlag = process.argv.indexOf("--output");
+const outputPath = outputFlag >= 0 ? process.argv[outputFlag + 1] : null;
 if (!url) {
   console.error('Usage: node store-scanner.mjs <url>');
   process.exit(1);
@@ -61,19 +66,43 @@ function normalizeUrl(raw) {
 }
 
 async function fetchWithTimeout(url, opts = {}) {
-  try {
-    validateSafeUrl(url);
-  } catch (e) {
-    throw e;
-  }
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
-  try {
-    const res = await fetch(url, { ...opts, signal: controller.signal, redirect: 'follow' });
-    return res;
-  } finally {
-    clearTimeout(timer);
-  }
+  return fetchPublic(url, opts, { timeoutMs: TIMEOUT_MS });
+}
+
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
+async function writeHtmlReport(bundle, output) {
+  if (!output) return null;
+  const template = await fs.readFile(new URL("../templates/report-template.html", import.meta.url), "utf8");
+  const domain = (() => { try { return new URL(bundle.storeUrl).hostname; } catch { return "unknown"; } })();
+  const theme = bundle.shopifyTheme || {};
+  const values = {
+    STORE_DOMAIN: domain,
+    STORE_URL: bundle.storeUrl,
+    SCAN_DATE: bundle.scannedAt,
+    THEME_NAME: theme.name || "Unknown",
+    THEME_NAME_SHORT: theme.name || "Unknown",
+    THEME_SCHEMA_NAME: theme.schema_name || "unknown",
+    THEME_ENTITY_ID: theme.id || "unknown",
+    THEME_VERSION: theme.version || "unknown",
+    THEME_STORE_ID: theme.theme_store_id || "unknown",
+    CONFIRMED_COUNT: 0,
+    PROBABLE_COUNT: 0,
+    CLUES_COUNT: bundle.shopifySignals?.length || 0,
+  };
+  let html = template.replace(/\{\{([A-Z0-9_]+)\}\}/g, (match, key) => escapeHtml(values[key] ?? ""));
+  const safeJson = JSON.stringify(bundle).replaceAll("<", "\\u003c").replaceAll(">", "\\u003e").replaceAll("&", "\\u0026");
+  const evidence = `<section style="margin:24px;padding:24px;border:1px solid #dbe3ef;border-radius:12px;background:#fff"><h2>Raw evidence bundle</h2><p>This report contains static scan evidence only.</p><pre style="white-space:pre-wrap;overflow:auto">${escapeHtml(JSON.stringify(bundle, null, 2))}</pre></section>`;
+  html = html.replace("</body>", `${evidence}<script type="application/json" id="report-data">${safeJson}</script></body>`);
+  await fs.writeFile(output, html, "utf8");
+  return output;
 }
 
 function sleep(ms) {
@@ -497,7 +526,7 @@ async function main() {
   const isShopify = allShopifySignals.length > 0 || !!homePage.shopifyTheme || !!homePage.shopifyShop;
 
   if (!isShopify) {
-    console.log(JSON.stringify({
+    const bundle = {
       storeUrl,
       storeFavicon: homePage.favicon || `${storeUrl}/favicon.ico`,
       isShopify: false,
@@ -506,7 +535,9 @@ async function main() {
       responseHeaders: headHeaders,
       errors: [],
       scannedAt: new Date().toISOString(),
-    }, null, 2));
+    };
+    await writeHtmlReport(bundle, outputPath);
+    console.log(JSON.stringify(bundle, null, 2));
     return;
   }
 
@@ -580,7 +611,8 @@ async function main() {
     scannedAt: new Date().toISOString(),
   };
 
-  console.log(JSON.stringify(bundle, null, 2));
+  const report = await writeHtmlReport(bundle, outputPath);
+  console.log(JSON.stringify({ ...bundle, reportPath: report }, null, 2));
 }
 
 main().catch(err => {

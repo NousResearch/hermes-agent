@@ -3335,6 +3335,11 @@ def _run_job_unscoped(
             # example DeepSeek) for cron jobs that do not pin provider/model.
             runtime_kwargs = {
                 "requested": job.get("provider"),
+                # Derive provider-specific api_mode from the model this job
+                # will actually run (per-job pin > env > config default), not
+                # the stale persisted default — mirrors the fallback path
+                # below, which already passes its fb_model.
+                "target_model": model,
             }
             if job.get("base_url"):
                 runtime_kwargs["explicit_base_url"] = job.get("base_url")

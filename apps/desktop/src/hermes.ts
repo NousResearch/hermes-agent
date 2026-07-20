@@ -14,6 +14,9 @@ import type {
   CronJobCreatePayload,
   CronJobUpdates,
   CuratorStatusResponse,
+  CustomEndpointsResponse,
+  CustomEndpointUpdate,
+  CustomEndpointValidationResponse,
   DebugShareResponse,
   ElevenLabsVoicesResponse,
   EnvVarInfo,
@@ -105,6 +108,10 @@ export type {
   CronJobSchedule,
   CronJobUpdates,
   CuratorStatusResponse,
+  CustomEndpoint,
+  CustomEndpointsResponse,
+  CustomEndpointUpdate,
+  CustomEndpointValidationResponse,
   DebugShareResponse,
   ElevenLabsVoice,
   ElevenLabsVoicesResponse,
@@ -619,6 +626,42 @@ export function validateProviderCredential(
   })
 }
 
+export function getCustomEndpoints(): Promise<CustomEndpointsResponse> {
+  return window.hermesDesktop.api<CustomEndpointsResponse>({
+    path: '/api/providers/custom-endpoints'
+  })
+}
+
+export function saveCustomEndpoint(endpoint: CustomEndpointUpdate): Promise<CustomEndpointsResponse> {
+  return window.hermesDesktop.api<CustomEndpointsResponse>({
+    path: '/api/providers/custom-endpoints',
+    method: 'POST',
+    body: endpoint
+  })
+}
+
+export function validateCustomEndpoint(endpoint: CustomEndpointUpdate): Promise<CustomEndpointValidationResponse> {
+  return window.hermesDesktop.api<CustomEndpointValidationResponse>({
+    path: '/api/providers/custom-endpoints/validate',
+    method: 'POST',
+    body: endpoint
+  })
+}
+
+export function activateCustomEndpoint(id: string): Promise<{ ok: boolean; provider: string; model: string }> {
+  return window.hermesDesktop.api<{ ok: boolean; provider: string; model: string }>({
+    path: `/api/providers/custom-endpoints/${encodeURIComponent(id)}/activate`,
+    method: 'POST'
+  })
+}
+
+export function deleteCustomEndpoint(id: string): Promise<CustomEndpointsResponse> {
+  return window.hermesDesktop.api<CustomEndpointsResponse>({
+    path: `/api/providers/custom-endpoints/${encodeURIComponent(id)}`,
+    method: 'DELETE'
+  })
+}
+
 export function deleteEnvVar(key: string): Promise<{ ok: boolean }> {
   return window.hermesDesktop.api<{ ok: boolean }>({
     ...profileScoped(),
@@ -865,15 +908,30 @@ export function selectToolsetModel(
   })
 }
 
+export interface SelectToolsetProviderResponse {
+  ok: boolean
+  name: string
+  provider: string
+  /** Present when the selection was scoped to one web capability. */
+  capability?: string
+  /** Present (true) when a managed Nous row was selected but the Portal
+   *  entitlement is missing — the row won't activate until the user signs
+   *  in to Nous Portal. */
+  needs_nous_auth?: boolean
+  /** The managed feature key (e.g. "browser") when needs_nous_auth is set. */
+  feature?: string
+}
+
 export function selectToolsetProvider(
   name: string,
-  provider: string
-): Promise<{ ok: boolean; name: string; provider: string }> {
-  return window.hermesDesktop.api<{ ok: boolean; name: string; provider: string }>({
+  provider: string,
+  capability?: 'search' | 'extract'
+): Promise<SelectToolsetProviderResponse> {
+  return window.hermesDesktop.api<SelectToolsetProviderResponse>({
     ...profileScoped(),
     path: `/api/tools/toolsets/${encodeURIComponent(name)}/provider`,
     method: 'PUT',
-    body: { provider }
+    body: capability ? { provider, capability } : { provider }
   })
 }
 
@@ -941,21 +999,31 @@ export function testMessagingPlatform(platformId: string): Promise<MessagingPlat
   })
 }
 
-export function getCronJobs(): Promise<CronJob[]> {
+// Cron jobs are stored per-profile (<HERMES_HOME>/cron/jobs.json), and the
+// backend's list endpoint defaults to 'all'. Pass a concrete profile key to
+// list just that profile's jobs, or 'all' for the unified cross-profile view.
+// Omitting the arg keeps the legacy 'all' default for non-profile callers.
+// profileScoped() still rides along for backend-process routing.
+export function getCronJobs(profile?: string): Promise<CronJob[]> {
+  const suffix = profile ? `?profile=${encodeURIComponent(profile)}` : ''
+
   return window.hermesDesktop.api<CronJob[]>({
-    path: '/api/cron/jobs',
+    ...profileScoped(),
+    path: `/api/cron/jobs${suffix}`,
     timeoutMs: STARTUP_REQUEST_TIMEOUT_MS
   })
 }
 
 export function getCronJob(jobId: string): Promise<CronJob> {
   return window.hermesDesktop.api<CronJob>({
+    ...profileScoped(),
     path: `/api/cron/jobs/${encodeURIComponent(jobId)}`
   })
 }
 
 export async function getCronJobRuns(jobId: string, limit = 20): Promise<SessionInfo[]> {
   const { runs } = await window.hermesDesktop.api<{ runs: SessionInfo[] }>({
+    ...profileScoped(),
     path: `/api/cron/jobs/${encodeURIComponent(jobId)}/runs?limit=${limit}`
   })
 
@@ -964,6 +1032,7 @@ export async function getCronJobRuns(jobId: string, limit = 20): Promise<Session
 
 export function createCronJob(body: CronJobCreatePayload): Promise<CronJob> {
   return window.hermesDesktop.api<CronJob>({
+    ...profileScoped(),
     path: '/api/cron/jobs',
     method: 'POST',
     body
@@ -972,6 +1041,7 @@ export function createCronJob(body: CronJobCreatePayload): Promise<CronJob> {
 
 export function updateCronJob(jobId: string, updates: CronJobUpdates): Promise<CronJob> {
   return window.hermesDesktop.api<CronJob>({
+    ...profileScoped(),
     path: `/api/cron/jobs/${encodeURIComponent(jobId)}`,
     method: 'PUT',
     body: { updates }
@@ -980,6 +1050,7 @@ export function updateCronJob(jobId: string, updates: CronJobUpdates): Promise<C
 
 export function pauseCronJob(jobId: string): Promise<CronJob> {
   return window.hermesDesktop.api<CronJob>({
+    ...profileScoped(),
     path: `/api/cron/jobs/${encodeURIComponent(jobId)}/pause`,
     method: 'POST'
   })
@@ -987,6 +1058,7 @@ export function pauseCronJob(jobId: string): Promise<CronJob> {
 
 export function resumeCronJob(jobId: string): Promise<CronJob> {
   return window.hermesDesktop.api<CronJob>({
+    ...profileScoped(),
     path: `/api/cron/jobs/${encodeURIComponent(jobId)}/resume`,
     method: 'POST'
   })
@@ -994,6 +1066,7 @@ export function resumeCronJob(jobId: string): Promise<CronJob> {
 
 export function triggerCronJob(jobId: string): Promise<CronJob> {
   return window.hermesDesktop.api<CronJob>({
+    ...profileScoped(),
     path: `/api/cron/jobs/${encodeURIComponent(jobId)}/trigger`,
     method: 'POST'
   })
@@ -1001,6 +1074,7 @@ export function triggerCronJob(jobId: string): Promise<CronJob> {
 
 export function deleteCronJob(jobId: string): Promise<{ ok: boolean }> {
   return window.hermesDesktop.api<{ ok: boolean }>({
+    ...profileScoped(),
     path: `/api/cron/jobs/${encodeURIComponent(jobId)}`,
     method: 'DELETE'
   })

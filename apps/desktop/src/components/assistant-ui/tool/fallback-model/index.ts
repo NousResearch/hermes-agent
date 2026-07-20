@@ -11,7 +11,6 @@ import {
   isRecord,
   numberValue,
   parseMaybeObject,
-  prettyJson,
   unwrapToolPayload
 } from './format'
 import { findFirstUrl, hostnameOf, looksLikePath, looksLikeUrl } from './targets'
@@ -1409,8 +1408,6 @@ export function buildToolView(part: ToolPart, inlineDiff: string): ToolView {
     imageUrl: toolImageUrl(argsRecord, resultRecord),
     inlineDiff,
     previewTarget: toolPreviewTarget(part.toolName, argsRecord, resultRecord),
-    rawArgs: prettyJson(part.args),
-    rawResult: prettyJson(part.result),
     rendersAnsi: rendersAnsi || undefined,
     searchHits: searchHits?.length ? searchHits : undefined,
     stderr: hasSplitStreams ? stderrRaw || undefined : undefined,

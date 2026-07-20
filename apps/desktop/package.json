@@ -32,6 +32,8 @@
     "dist:win:msi": "npm run build && npm run builder -- --win msi",
     "dist:win:nsis": "npm run build && npm run builder -- --win nsis",
     "dist:linux": "npm run build && npm run builder -- --linux AppImage deb rpm",
+    "perf": "node scripts/perf/run.mjs",
+    "perf:serve": "node scripts/perf/serve.mjs",
     "test:desktop": "node scripts/test-desktop.mjs",
     "test:desktop:all": "node scripts/test-desktop.mjs all",
     "test:desktop:dmg": "node scripts/test-desktop.mjs dmg",

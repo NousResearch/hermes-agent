@@ -70,8 +70,9 @@ def test_x_search_posts_responses_request(monkeypatch):
     tool_def = captured["json"]["tools"][0]
     assert captured["url"] == "https://api.x.ai/v1/responses"
     assert captured["headers"]["User-Agent"] == f"Hermes-Agent/{__version__}"
-    assert captured["json"]["model"] == "grok-4.20-reasoning"
+    assert captured["json"]["model"] == "grok-4.5"
     assert captured["json"]["store"] is False
+    assert "reasoning" not in captured["json"]
     assert tool_def["type"] == "x_search"
     assert tool_def["allowed_x_handles"] == ["xai", "grok"]
     assert tool_def["from_date"] == "2026-04-01"
@@ -422,6 +423,50 @@ def test_x_search_honors_config_model_and_timeout(monkeypatch, tmp_path):
     assert result["success"] is True
     assert captured["model"] == "grok-custom-test"
     assert captured["timeout"] == 45
+
+
+def test_x_search_honors_config_reasoning_effort(monkeypatch, tmp_path):
+    """Configured reasoning effort reaches the xAI Responses request."""
+    from tools.x_search_tool import x_search_tool
+
+    monkeypatch.setenv("XAI_API_KEY", "xai-test-key")
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / "config.yaml").write_text(
+        "x_search:\n  reasoning_effort: low\n  retries: 0\n",
+        encoding="utf-8",
+    )
+    captured = {}
+
+    def _fake_post(url, headers=None, json=None, timeout=None):
+        assert json is not None
+        captured["reasoning"] = json.get("reasoning")
+        return _FakeResponse({"output_text": "Reasoning configured."})
+
+    monkeypatch.setattr("requests.post", _fake_post)
+
+    result = json.loads(x_search_tool(query="anything"))
+
+    assert result["success"] is True
+    assert captured["reasoning"] == {"effort": "low"}
+
+
+def test_x_search_rejects_invalid_config_reasoning_effort(monkeypatch):
+    """A typo must fail closed instead of silently using xAI's default effort."""
+    from tools.x_search_tool import x_search_tool
+
+    monkeypatch.setenv("XAI_API_KEY", "xai-test-key")
+    monkeypatch.setattr(
+        "tools.x_search_tool._load_x_search_config",
+        lambda: {"reasoning_effort": "minimal"},
+    )
+    _no_post_allowed(monkeypatch)
+
+    result = json.loads(x_search_tool(query="anything"))
+
+    assert result["error"] == (
+        "x_search.reasoning_effort must be one of: low, medium, high, xhigh "
+        "(got 'minimal')"
+    )
 
 
 def test_x_search_registered_in_registry_with_check_fn():

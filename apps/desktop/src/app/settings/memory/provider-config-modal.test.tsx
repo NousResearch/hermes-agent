@@ -69,6 +69,7 @@ async function renderModal(open = true) {
   const { ProviderConfigModal } = await import('./provider-config-modal')
   const onOpenChange = vi.fn()
   const onSaved = vi.fn().mockResolvedValue(undefined)
+  // Keep official props/API; wrap in act() (fork advantage) for async mount stability.
   let result: ReturnType<typeof render>
   await act(async () => {
     result = render(

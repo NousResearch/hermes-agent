@@ -149,6 +149,49 @@ export interface MemoryProviderConfig {
   name: string
 }
 
+export interface CustomEndpoint {
+  api_key_preview?: null | string
+  base_url: string
+  context_length?: null | number
+  discover_models: boolean
+  has_api_key: boolean
+  id: string
+  is_current?: boolean
+  model: string
+  models: string[]
+  name: string
+  source?: string
+}
+
+export interface CustomEndpointsResponse {
+  current: {
+    base_url: string
+    model: string
+    provider: string
+  }
+  endpoints: CustomEndpoint[]
+  id?: string
+  ok?: boolean
+}
+
+export interface CustomEndpointUpdate {
+  api_key?: string
+  base_url: string
+  context_length?: number
+  discover_models?: boolean
+  id?: string
+  make_default?: boolean
+  model: string
+  name: string
+}
+
+export interface CustomEndpointValidationResponse {
+  message: string
+  models: string[]
+  ok: boolean
+  reachable: boolean
+}
+
 export interface MessagingEnvVarInfo {
   advanced: boolean
   description: string
@@ -572,10 +615,12 @@ export interface CronJob {
   id: string
   last_error?: null | string
   last_run_at?: null | string
+  model?: null | string
   name?: null | string
   next_run_at?: null | string
   no_agent?: boolean
   prompt?: null | string
+  provider?: null | string
   schedule?: CronJobSchedule
   schedule_display?: null | string
   script?: null | string
@@ -584,8 +629,10 @@ export interface CronJob {
 
 export interface CronJobCreatePayload {
   deliver?: string
+  model?: string
   name?: string
   prompt: string
+  provider?: string
   schedule: string
 }
 
@@ -598,8 +645,10 @@ export interface CronJobSchedule {
 export interface CronJobUpdates {
   deliver?: string
   enabled?: boolean
+  model?: null | string
   name?: string
   prompt?: string
+  provider?: null | string
   schedule?: string
 }
 
@@ -708,7 +757,17 @@ export interface ToolProvider {
   /** Honest readiness computed server-side (keys ∧ Nous entitlement ∧
    *  post-setup install state). Optional for older backends. */
   status?: ToolProviderStatus
+  /** Web toolset only: the backend key written to web.*backend config
+   *  (e.g. 'searxng'). Absent on other toolsets and older backends. */
+  web_backend?: string
+  /** Web toolset only: capabilities this backend can serve. Search-only
+   *  providers (ddgs, brave-free) report ['search']. */
+  capabilities?: WebCapability[]
 }
+
+/** A web toolset capability — the runtime dispatches web_search and
+ *  web_extract to independently configurable backends. */
+export type WebCapability = 'search' | 'extract'
 
 export interface ToolsetConfig {
   name: string
@@ -716,6 +775,11 @@ export interface ToolsetConfig {
   providers: ToolProvider[]
   /** Name of the currently active provider, or null if none is configured. */
   active_provider: string | null
+  /** Web toolset only: backend the web_search tool resolves to right now
+   *  (web.search_backend → web.backend → credential auto-detect). */
+  active_search_backend?: string | null
+  /** Web toolset only: backend the web_extract tool resolves to right now. */
+  active_extract_backend?: string | null
 }
 
 /** Health status of a terminal execution backend row.

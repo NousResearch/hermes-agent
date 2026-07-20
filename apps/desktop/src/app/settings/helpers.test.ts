@@ -205,6 +205,99 @@ describe('settings helpers', () => {
       expect(opts).toContain('my-custom-command-tts')
       expect(opts).toContain('xai')
     })
+
+    it('surfaces user-defined command-type TTS providers (canonical providers nesting + legacy)', () => {
+      const withCustom: HermesConfigRecord = {
+        tts: {
+          provider: 'neutts',
+          // canonical location the runtime resolves first: tts.providers.<name>
+          providers: {
+            higgs8: { type: 'command', command: 'curl …' },
+            indextts2: { type: 'command', command: 'curl …' },
+            // `type:` is optional at runtime — a bare command block still qualifies
+            typeless: { command: 'curl …' },
+            // misconfigured: type:command but no command → NOT a runtime provider
+            noop: { type: 'command' }
+          },
+          // back-compat: a top-level tts.<name> command block still resolves at runtime
+          mylegacy: { type: 'command', command: 'curl …' },
+          // a non-command block (built-in config) must NOT be offered as a provider
+          edge: { voice: 'en-US-JennyNeural' }
+        }
+      }
+
+      const opts = enumOptionsFor('tts.provider', 'neutts', withCustom)
+      expect(opts).toContain('higgs8') // canonical providers.<name>
+      expect(opts).toContain('indextts2') // canonical providers.<name>
+      expect(opts).toContain('typeless') // command block with no type: still surfaced
+      expect(opts).toContain('mylegacy') // legacy top-level tts.<name>
+      expect(opts).toContain('elevenlabs') // built-ins preserved
+      expect(opts).not.toContain('noop') // type:command with no command is excluded
+      // 'edge' appears once (the built-in), not duplicated by the config block
+      expect(opts!.filter(o => o === 'edge')).toHaveLength(1)
+      // the 'providers' container itself is never offered as a provider name
+      expect(opts).not.toContain('providers')
+    })
+
+    it('surfaces command-type STT providers too (canonical providers nesting)', () => {
+      const withCustom: HermesConfigRecord = {
+        stt: {
+          provider: 'local',
+          providers: { myasr: { type: 'command', command: 'curl …' } }
+        }
+      }
+
+      const opts = enumOptionsFor('stt.provider', 'local', withCustom)
+      expect(opts).toContain('myasr')
+      expect(opts).toContain('local')
+      expect(opts).not.toContain('providers')
+    })
+
+    // The runtime rejects a built-in name as a command provider before any config
+    // lookup, so such a block must never be offered — including the names the
+    // display list omits (`deepinfra` for TTS; `deepinfra`/`local_command` for
+    // STT), where filtering on ENUM_OPTIONS instead of the runtime's built-in set
+    // would wrongly offer a provider that can never dispatch.
+    it('never offers a built-in name as a command provider, even one absent from the dropdown list', () => {
+      const shadowing: HermesConfigRecord = {
+        tts: {
+          provider: 'edge',
+          providers: {
+            // built-in and absent from ENUM_OPTIONS['tts.provider']
+            deepinfra: { type: 'command', command: 'curl …' },
+            // built-in guard is case-insensitive at runtime (provider.lower())
+            EDGE: { type: 'command', command: 'curl …' },
+            // a genuine custom provider alongside them still surfaces
+            higgs8: { type: 'command', command: 'curl …' }
+          }
+        }
+      }
+
+      const opts = enumOptionsFor('tts.provider', 'edge', shadowing)
+      expect(opts).not.toContain('deepinfra')
+      expect(opts).not.toContain('EDGE')
+      expect(opts).toContain('higgs8')
+      expect(opts!.filter(o => o === 'edge')).toHaveLength(1)
+    })
+
+    it('never offers a built-in STT name absent from the dropdown list as a command provider', () => {
+      const shadowing: HermesConfigRecord = {
+        stt: {
+          provider: 'local',
+          providers: {
+            // both are built-in STT names omitted from ENUM_OPTIONS['stt.provider']
+            local_command: { type: 'command', command: 'curl …' },
+            deepinfra: { type: 'command', command: 'curl …' },
+            myasr: { type: 'command', command: 'curl …' }
+          }
+        }
+      }
+
+      const opts = enumOptionsFor('stt.provider', 'local', shadowing)
+      expect(opts).not.toContain('local_command')
+      expect(opts).not.toContain('deepinfra')
+      expect(opts).toContain('myasr')
+    })
   })
 
   describe('sectionFieldEntries', () => {

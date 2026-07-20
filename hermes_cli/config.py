@@ -2192,9 +2192,12 @@ DEFAULT_CONFIG = {
         },
         "xai": {
             "voice_id": "eve",  # or custom voice ID — see https://docs.x.ai/developers/model-capabilities/audio/custom-voices
-            "language": "en",
-            "sample_rate": 24000,
-            "bit_rate": 128000,
+            "language": "en",  # BCP-47 code ("en", "pt-BR") or "auto"
+            "speed": 1.0,  # 0.7–1.5, playback speed
+            "auto_speech_tags": False,  # insert expressive audio tags via LLM rewrite
+            "optimize_streaming_latency": 0,  # 0–2, trades quality for lower latency
+            "sample_rate": 24000,  # 22050 / 24000 / 44100 / 48000
+            "bit_rate": 128000,  # MP3 bitrate; only applies when codec=mp3
         },
         "mistral": {
             "model": "voxtral-mini-tts-2603",
@@ -3322,10 +3325,13 @@ DEFAULT_CONFIG = {
     # OAuth or XAI_API_KEY) AND the x_search toolset is enabled in
     # `hermes tools`. These settings tune the backing Responses API call.
     "x_search": {
-        # xAI model used for the Responses call. grok-4.20-reasoning is
-        # the recommended default; any Grok model with x_search tool
+        # xAI model used for the Responses call. grok-4.5 is the
+        # recommended default; any Grok model with x_search tool
         # access works.
-        "model": "grok-4.20-reasoning",
+        "model": "grok-4.5",
+        # Optional reasoning effort sent to xAI Responses API models that
+        # support it. Leave null to preserve the selected model's default.
+        "reasoning_effort": None,
         # Request timeout in seconds (minimum 30). x_search can take
         # 60-120s for complex queries — the default is generous.
         "timeout_seconds": 180,
@@ -5641,7 +5647,14 @@ _EXTRA_KNOWN_ROOT_KEYS = {
     "plugins",           # plugin enable/disable lists (hermes_cli/plugins_cmd.py)
     "smart_model_routing",   # written by the setup wizard (hermes_cli/setup.py)
     "platform_toolsets",     # written by the setup wizard (hermes_cli/setup.py)
+    "known_plugin_toolsets", # written/read by hermes_cli/tools_config.py toolset-save flow
     "session_reset",         # top-level form read by gateway/config.py + setup
+    "group_sessions_per_user",   # top-level form bridged by gateway/config.py
+    "thread_sessions_per_user",  # top-level form bridged by gateway/config.py
+    "stt_echo_transcripts",      # top-level form bridged by gateway/config.py
+    "reset_triggers",            # top-level form bridged by gateway/config.py
+    "always_log_local",          # top-level form bridged by gateway/config.py
+    "filter_silence_narration",  # top-level form bridged by gateway/config.py
     "multiplex_profiles",    # top-level form accepted alongside gateway.multiplex_profiles
     "profile_routes",        # top-level form accepted alongside gateway.profile_routes
     "platforms",             # top-level per-platform map merged by gateway/config.py

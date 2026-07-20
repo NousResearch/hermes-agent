@@ -1,8 +1,12 @@
 """Tests for hermes_cli.gateway."""
 
 import argparse
+import os
+import pty
 import signal
+import subprocess
 import sys
+import textwrap
 from types import ModuleType, SimpleNamespace
 
 import pytest
@@ -76,6 +80,87 @@ def test_run_gateway_exits_nonzero_when_start_gateway_reports_failure(monkeypatc
 
     assert exc_info.value.code == 1
     assert calls == [(True, None)]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX PTY coverage")
+@pytest.mark.parametrize(
+    ("stdin_is_tty", "outcome", "expected_exit"),
+    [
+        (True, "systemexit:75", 75),
+        (False, "systemexit:75", 75),
+        (False, "systemexit:78", 78),
+        (False, "failure", 1),
+    ],
+)
+def test_gateway_run_subprocess_preserves_daemon_exit_codes(
+    tmp_path, stdin_is_tty, outcome, expected_exit
+):
+    """TTY state must not rewrite the gateway's process-level exit contract.
+
+    Exit 75 is the intentional systemd/launchd restart handoff, exit 78 is a
+    fatal configuration error, and a false startup result is a generic failure.
+    In particular, a non-TTY daemon launch must not blanket-catch SystemExit,
+    because doing so would hide genuine startup/configuration failures.
+    """
+    script = textwrap.dedent(
+        """
+        import os
+        import sys
+        import types
+
+        import hermes_cli.gateway as gateway_cli
+
+        outcome = os.environ["HERMES_TEST_GATEWAY_OUTCOME"]
+
+        async def start_gateway(*, replace, verbosity):
+            if outcome == "failure":
+                return False
+            raise SystemExit(int(outcome.split(":", 1)[1]))
+
+        fake_run = types.ModuleType("gateway.run")
+        fake_run.start_gateway = start_gateway
+        sys.modules["gateway.run"] = fake_run
+
+        gateway_cli._guard_official_docker_root_gateway = lambda: None
+        gateway_cli._guard_named_profile_under_multiplexer = lambda force=False: None
+        gateway_cli._guard_supervised_gateway_conflict = lambda force=False: None
+        gateway_cli._guard_existing_gateway_process_conflict = lambda replace=False: None
+        gateway_cli.supports_systemd_services = lambda: False
+        gateway_cli.run_gateway()
+        """
+    )
+    env = {
+        **os.environ,
+        "HERMES_HOME": str(tmp_path),
+        "HERMES_GATEWAY_EXIT_DIAG": "0",
+        "HERMES_TEST_GATEWAY_OUTCOME": outcome,
+        "INVOCATION_ID": "systemd-test",
+    }
+
+    master_fd = slave_fd = None
+    try:
+        if stdin_is_tty:
+            master_fd, slave_fd = pty.openpty()
+            stdin = slave_fd
+        else:
+            stdin = subprocess.DEVNULL
+        completed = subprocess.run(
+            [sys.executable, "-c", script],
+            stdin=stdin,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env,
+            timeout=30,
+            check=False,
+        )
+    finally:
+        if slave_fd is not None:
+            os.close(slave_fd)
+        if master_fd is not None:
+            os.close(master_fd)
+
+    assert completed.returncode == expected_exit, completed.stderr
 
 
 def test_run_gateway_refuses_root_in_official_docker(monkeypatch, tmp_path, capsys):

@@ -101,6 +101,62 @@ def _declared_model_ids(value: Any) -> list[str]:
     return ids
 
 
+def _save_discovered_models_to_config(
+    api_url: str, model_ids: list[str]
+) -> None:
+    """Persist discovered models into ``custom_providers`` in config.yaml.
+
+    Called after a successful ``/v1/models`` probe so that the next read
+    with ``discover_models: false`` uses the cached list instead of a stale
+    or minimal manually-configured subset.
+
+    Matches entries by ``base_url`` (trailing-slash-normalised).  A failed
+    config write is swallowed — the picker still shows the live models for
+    this session.
+    """
+    if not api_url or not model_ids:
+        return
+    try:
+        from hermes_cli.config import load_config, save_config
+
+        cfg = load_config()
+        providers = cfg.get("custom_providers") or []
+        if not isinstance(providers, list):
+            return
+
+        norm_url = api_url.strip().rstrip("/").lower()
+        changed = False
+        for entry in providers:
+            if not isinstance(entry, dict):
+                continue
+            entry_url = (entry.get("base_url", "") or entry.get("url", "") or "").strip()
+            if entry_url.rstrip("/").lower() != norm_url:
+                continue
+            existing = entry.get("models")
+            # Preserve per-model metadata: when ``models`` is a mapping
+            # (e.g. ``{"model-a": {"context_length": 8192}}``) or a list of
+            # dicts (e.g. ``[{"id": "model-a", "context_length": 8192}]``),
+            # the user has curated metadata per model — do not replace it.
+            if isinstance(existing, dict):
+                continue
+            if isinstance(existing, list) and any(
+                isinstance(m, dict) for m in existing
+            ):
+                continue
+            # Only update when models are stale — avoids unnecessary
+            # config writes on every picker open.
+            if isinstance(existing, list) and existing == model_ids:
+                continue
+            entry["models"] = model_ids
+            changed = True
+
+        if changed:
+            cfg["custom_providers"] = providers
+            save_config(cfg)
+    except Exception:
+        pass
+
+
 def _bare_custom_provider_def(current_base_url: str) -> Optional[ProviderDef]:
     """ProviderDef for a direct ``model.provider: custom`` endpoint."""
     base_url = str(current_base_url or "").strip()
@@ -2447,6 +2503,12 @@ def list_authenticated_providers(
                     if live_models:
                         grp["models"] = live_models
                         grp["total_models"] = len(live_models)
+                        # Auto-save discovered models back to config so
+                        # ``discover_models: false`` has a populated cache
+                        # on the next read.  A failed save is non-fatal.
+                        _save_discovered_models_to_config(
+                            api_url, live_models
+                        )
                 except Exception:
                     pass
             results.append({

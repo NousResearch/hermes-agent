@@ -31,6 +31,8 @@
   "direct_iam_project_read_role_title": "@DIRECT_IAM_PROJECT_READ_ROLE_TITLE@",
   "direct_iam_project_read_role_description": "@DIRECT_IAM_PROJECT_READ_ROLE_DESCRIPTION@",
   "direct_iam_project_read_permissions": [
+    "compute.disks.list",
+    "compute.instances.list",
     "iam.roles.get",
     "iam.serviceAccountKeys.list",
     "iam.serviceAccounts.get",

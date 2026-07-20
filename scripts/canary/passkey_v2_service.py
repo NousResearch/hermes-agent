@@ -117,6 +117,8 @@ SERVICE_UID_RATE_PER_SECOND = 8.0
 SERVICE_UID_BURST = 8.0
 
 _DIRECT_IAM_PROJECT_PERMISSIONS = (
+    "compute.disks.list",
+    "compute.instances.list",
     "iam.roles.get",
     "iam.serviceAccountKeys.list",
     "iam.serviceAccounts.get",

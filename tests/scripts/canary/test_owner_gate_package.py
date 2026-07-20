@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import copy
 import hashlib
+import json
 import os
 import shutil
 import stat
@@ -21,12 +22,23 @@ from scripts.canary import owner_gate_package as package
 from scripts.canary import owner_gate_stage0 as stage0
 from scripts.canary import owner_gate_trust as trust
 from scripts.canary import direct_iam_identity_authority as direct_iam
+from scripts.canary import passkey_v2_service as passkey_service
 
 
 ROOT = Path(__file__).parents[3]
 REVISION = "a" * 40
 FOUNDATION_REVISION = "f" * 40
 FOUNDATION_TREE_OID = "e" * 40
+
+
+def test_executor_project_read_contract_matches_signed_foundation_authority() -> None:
+    executor = json.loads(
+        (ROOT / "ops/muncho/owner-gate/executor.json").read_text("utf-8")
+    )
+    expected = list(foundation.READ_ONLY_IAM_PERMISSIONS)
+
+    assert executor["direct_iam_project_read_permissions"] == expected
+    assert list(passkey_service._DIRECT_IAM_PROJECT_PERMISSIONS) == expected
 
 
 def test_package_formatted_traceback_suppresses_raw_cause(tmp_path: Path) -> None:

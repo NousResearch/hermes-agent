@@ -111,7 +111,16 @@ export function writeBootTheme(theme: Theme, background?: string): void {
  */
 const boot = readBootTheme()
 
-if (boot?.background && !process.env.HERMES_TUI_BACKGROUND && !process.env.HERMES_TUI_THEME && !process.env.HERMES_TUI_LIGHT) {
+if (
+  boot?.background &&
+  // Never seed the untrusted "unset default" fingerprint — a cache written
+  // before the distrust rule existed must not poison this session's
+  // detection (it would also suppress the macOS-appearance fallback).
+  boot.background.toLowerCase() !== '#000000' &&
+  !process.env.HERMES_TUI_BACKGROUND &&
+  !process.env.HERMES_TUI_THEME &&
+  !process.env.HERMES_TUI_LIGHT
+) {
   process.env.HERMES_TUI_BACKGROUND = boot.background
 }
 

@@ -3,6 +3,7 @@ import concurrent.futures
 import contextlib
 import contextvars
 import copy
+import hashlib
 import inspect
 import json
 import logging
@@ -226,6 +227,13 @@ _LONG_HANDLERS = frozenset(
         "pet.thumb",
         "learning.frames",
         "plugins.manage",
+        # reload.mcp shuts down and rediscovers every MCP server — with a
+        # flapping server (retry loops, connect timeouts up to 120s) that can
+        # block for minutes. Inline it froze the reader thread: config.set,
+        # complete.slash, prompt.submit all sat unread and the TUI appeared
+        # dead after a few skin switches. The handler serializes concurrent
+        # reloads via _mcp_reload_lock.
+        "reload.mcp",
         "process.list",
         "projects.discover_repos",
         "projects.record_repos",
@@ -12674,11 +12682,24 @@ def _(rid, params: dict) -> dict:
     if key == "mtime":
         cfg_path = _hermes_home / "config.yaml"
         try:
-            return _ok(
-                rid, {"mtime": cfg_path.stat().st_mtime if cfg_path.exists() else 0}
-            )
+            mtime = cfg_path.stat().st_mtime if cfg_path.exists() else 0
         except Exception:
             return _ok(rid, {"mtime": 0})
+        # Revision hash of the MCP-relevant config sections. The TUI's
+        # config-change poller uses it to reload MCP servers only when their
+        # config actually changed — a /skin or /statusbar write bumps mtime
+        # but must not cost a multi-second MCP reconnect.
+        try:
+            cfg = _load_cfg()
+            rev_src = json.dumps(
+                {"mcp": cfg.get("mcp"), "tools": cfg.get("tools")},
+                sort_keys=True,
+                default=str,
+            )
+            mcp_rev = hashlib.sha1(rev_src.encode()).hexdigest()[:12]
+        except Exception:
+            mcp_rev = ""
+        return _ok(rid, {"mtime": mtime, "mcp_rev": mcp_rev})
     return _err(rid, 4002, f"unknown config key: {key}")
 
 
@@ -12852,6 +12873,14 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 5010, str(e))
 
 
+# reload.mcp runs on the RPC pool (see _LONG_HANDLERS) so a slow/flapping MCP
+# server can't freeze the reader thread. Serialize reloads: overlapping
+# shutdown+discover pairs from stacked config-change polls would interleave
+# and leave the registry half-built. Piggyback rather than queue — a reload
+# that arrives while one is running would just redo identical work.
+_mcp_reload_lock = threading.Lock()
+
+
 @method("reload.mcp")
 def _(rid, params: dict) -> dict:
     session = _sessions.get(params.get("session_id", ""))
@@ -12906,8 +12935,18 @@ def _(rid, params: dict) -> dict:
 
         from tools.mcp_tool import shutdown_mcp_servers, discover_mcp_tools
 
-        shutdown_mcp_servers()
-        discover_mcp_tools()
+        if not _mcp_reload_lock.acquire(blocking=False):
+            # A reload is already in flight; wait for it to finish and reuse
+            # its result instead of tearing the freshly-built registry down.
+            with _mcp_reload_lock:
+                pass
+            return _ok(rid, {"status": "reloaded", "coalesced": True})
+
+        try:
+            shutdown_mcp_servers()
+            discover_mcp_tools()
+        finally:
+            _mcp_reload_lock.release()
         if session:
             agent = session["agent"]
             # Rebuild the cached agent's tool snapshot so the current session

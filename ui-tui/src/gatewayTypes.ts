@@ -128,6 +128,9 @@ export interface ConfigFullResponse {
 }
 
 export interface ConfigMtimeResponse {
+  /** Revision hash of MCP-relevant config sections; reload MCP only when it
+   *  changes (cosmetic writes like /skin must not trigger reconnects). */
+  mcp_rev?: string
   mtime?: number
 }
 

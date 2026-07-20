@@ -254,6 +254,39 @@ REFLECT_SCHEMA = {
                    "properties": {"query": {"type": "string", "description": "The question to reflect on."}}},
 }
 
+INVALIDATE_SCHEMA = {
+    "name": "hindsight_invalidate",
+    "description": (
+        "Invalidate (soft-delete) or restore a stored memory. "
+        "Invalidated memories are excluded from recall, consolidation, "
+        "and graph maintenance, but kept for audit — fully reversible. "
+        "Only world/experience facts can be invalidated; observations are derived.\n\n"
+        "WORKFLOW: first use hindsight_recall to find the memory_id "
+        "(each result includes an id=... prefix), confirm it is the "
+        "target, then call this tool. "
+        "Pass restore=true to revert a previous invalidation."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "memory_id": {
+                "type": "string",
+                "description": "Memory ID from hindsight_recall results (e.g. '5e79c849-f3b6')."
+            },
+            "reason": {
+                "type": "string",
+                "description": "Why this memory is being invalidated (for audit trail)."
+            },
+            "restore": {
+                "type": "boolean",
+                "default": False,
+                "description": "Set true to RESTORE a previously invalidated memory to valid."
+            },
+        },
+        "required": ["memory_id"],
+    },
+}
+
 
 def _load_config() -> dict:
     """$HERMES_HOME/hindsight/config.json (profile-scoped), else ~/.hindsight/config.json
@@ -1086,7 +1119,8 @@ class HindsightMemoryProvider(MemoryProvider):
     # -- tools -------------------------------------------------------------------
 
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
-        return [] if self._memory_mode == "context" else [RETAIN_SCHEMA, RECALL_SCHEMA, REFLECT_SCHEMA]
+        return [] if self._memory_mode == "context" else [
+            RETAIN_SCHEMA, RECALL_SCHEMA, REFLECT_SCHEMA, INVALIDATE_SCHEMA]
 
     def _tool_retain(self, args: dict) -> str:
         content, context = args["content"], args.get("context")
@@ -1104,7 +1138,17 @@ class HindsightMemoryProvider(MemoryProvider):
                      self._bank_id, len(query), self._budget)
         results = self._recall(query)
         logger.debug("Tool hindsight_recall: %d results", len(results))
-        return "\n".join(f"{i}. {r.text}" for i, r in enumerate(results, 1)) or "No relevant memories found."
+        if not results:
+            return "No relevant memories found."
+        # The id= prefix lets the model target a memory with hindsight_invalidate;
+        # [INVALIDATED] marks hits the server still returns for audit.
+        lines = []
+        for i, r in enumerate(results, 1):
+            sid = r.id[:12] if r.id else "?"
+            state = getattr(r, "state", None)
+            flag = " [INVALIDATED]" if state == "invalidated" else ""
+            lines.append(f"{i}. id={sid} {r.text}{flag}")
+        return "\n".join(lines)
 
     def _tool_reflect(self, args: dict) -> str:
         query = args["query"]
@@ -1114,11 +1158,56 @@ class HindsightMemoryProvider(MemoryProvider):
         logger.debug("Tool hindsight_reflect: response_len=%d", len(text))
         return text or "No relevant memories found."
 
+    def _tool_invalidate(self, args: dict) -> str:
+        """Soft-delete (or restore, with ``restore=true``) one stored memory."""
+        memory_id = args["memory_id"]
+        state = "valid" if args.get("restore", False) else "invalidated"
+        self._http_patch_memory(memory_id, state, reason=args.get("reason") or None)
+        action = "restored" if state == "valid" else "invalidated"
+        return f"Memory {memory_id[:12]}... {action}."
+
+    def _http_patch_memory(self, memory_id: str, state: str, *,
+                           reason: str | None = None) -> None:
+        """PATCH /v1/default/banks/{bank_id}/memories/{memory_id}.
+
+        Direct HTTP call to the Hindsight server's memory curation endpoint.
+        Uses urllib (already imported in this module for /version checks).
+        Works with any hindsight-client SDK version — no SDK upgrade required.
+
+        Raises RuntimeError on HTTP errors.
+        """
+        import urllib.error       # noqa: PLC0415
+        import urllib.request     # noqa: PLC0415
+
+        url = (
+            f"{self._api_url.rstrip('/')}"
+            f"/v1/default/banks/{self._bank_id}/memories/{memory_id}"
+        )
+        body = {"state": state}
+        if reason:
+            body["reason"] = reason
+        data = json.dumps(body).encode("utf-8")
+
+        req = urllib.request.Request(
+            url, data=data, method="PATCH",
+            headers={"Content-Type": "application/json"},
+        )
+        if self._api_key:
+            req.add_header("Authorization", f"Bearer {self._api_key}")
+
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:  # noqa: S310
+                resp.read()  # consume — 200 returns empty body
+        except urllib.error.HTTPError as e:
+            body = e.read().decode(errors="replace")
+            raise RuntimeError(f"HTTP {e.code}: {body[:300]}") from None
+
     # tool name -> (required arg, handler, user-facing failure prefix)
     _TOOL_HANDLERS = {
         "hindsight_retain": ("content", _tool_retain, "Failed to store memory"),
         "hindsight_recall": ("query", _tool_recall, "Failed to search memory"),
         "hindsight_reflect": ("query", _tool_reflect, "Failed to reflect"),
+        "hindsight_invalidate": ("memory_id", _tool_invalidate, "Failed to curate memory"),
     }
 
     def handle_tool_call(self, tool_name: str, args: dict, **kwargs) -> str:

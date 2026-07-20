@@ -927,8 +927,8 @@ def _sqlite_facts() -> tuple[Mapping[str, Any], Mapping[str, Any]]:
         or authority_sha != authority_after_sha
         or executor_sha != executor_after_sha
         or counts != {"requests": 0, "challenges": 0, "grants": 0, "credential_uses": 0}
-        or authority_preflight.get("runtime_eligible") is not True
-        or executor_preflight.get("runtime_eligible") is not True
+        or authority_preflight.get("ok") is not True
+        or executor_preflight.get("ok") is not True
     ):
         _error("owner_gate_host_database_changed")
     sqlite_facts = {

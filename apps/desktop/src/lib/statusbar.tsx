@@ -72,5 +72,7 @@ export function LiveDuration({ since }: { since: number | null | undefined }) {
     return () => window.clearInterval(timer)
   }, [since])
 
-  return since ? formatDuration(now - since) : null
+  // `tabular-nums` keeps every digit the same width so the counting timer
+  // doesn't change width each second and shove its statusbar neighbors around.
+  return since ? <span className="tabular-nums">{formatDuration(now - since)}</span> : null
 }

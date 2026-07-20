@@ -16343,18 +16343,32 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     exit_code_raw = exit_code_path.read_text().strip() or "1"
                     exit_code = int(exit_code_raw)
                     if exit_code == 0:
-                        await adapter.send(
-                            chat_id,
-                            "✅ Hermes update finished.",
-                            metadata=_non_conversational_metadata(metadata, platform=platform),
+                        message = "✅ Hermes update finished."
+                    else:
+                        message = "❌ Hermes update failed (exit code {}).".format(exit_code)
+                    result = await adapter.send(
+                        chat_id,
+                        message,
+                        metadata=_non_conversational_metadata(metadata, platform=platform),
+                    )
+                    if result is not None and getattr(result, "success", True) is False:
+                        error = getattr(result, "error", "send returned success=False")
+                        if getattr(result, "retryable", False):
+                            logger.info(
+                                "Update final notification deferred after transient send failure "
+                                "for %s: %s",
+                                session_key,
+                                error,
+                            )
+                            await asyncio.sleep(poll_interval)
+                            continue
+                        logger.warning(
+                            "Update final notification to %s was not delivered: %s",
+                            session_key,
+                            error,
                         )
                     else:
-                        await adapter.send(
-                            chat_id,
-                            "❌ Hermes update failed (exit code {}).".format(exit_code),
-                            metadata=_non_conversational_metadata(metadata, platform=platform),
-                        )
-                    logger.info("Update finished (exit=%s), notified %s", exit_code, session_key)
+                        logger.info("Update finished (exit=%s), notified %s", exit_code, session_key)
                 except Exception as e:
                     logger.warning("Update final notification failed: %s", e)
 

@@ -4649,13 +4649,13 @@ def test_complete_slash_details_args():
     assert any(item["text"] == "expanded" for item in resp_mode["result"]["items"])
 
 
-def test_complete_slash_reasoning_includes_current_efforts_and_session_scope():
+def test_complete_slash_reasoning_includes_current_efforts_and_global_scope():
     resp = server.handle_request(
         {"id": "1", "method": "complete.slash", "params": {"text": "/reasoning "}}
     )
 
     values = {item["text"] for item in resp["result"]["items"]}
-    assert {"max", "ultra", "--session"} <= values
+    assert {"max", "ultra", "--global"} <= values
 
 
 def test_config_set_reasoning_updates_live_session_and_agent(tmp_path, monkeypatch):

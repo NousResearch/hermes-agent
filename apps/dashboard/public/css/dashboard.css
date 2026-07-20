@@ -554,6 +554,7 @@ a { color: inherit; }
 .weather-day:hover { background: var(--accent-dim); }
 
 .city-search { margin: 10px 0; }
+.city-locate { margin-top: 6px; }
 .city-results { display: flex; flex-direction: column; gap: 2px; margin-top: 6px; }
 .city-option {
   font: inherit;

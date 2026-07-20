@@ -30,7 +30,7 @@ export default {
       try {
         data = loc
           ? await ctx.api.flights(loc.lat, loc.lon, loc.name)
-          : await ctx.api.flights(40.7128, -74.006, null);
+          : await ctx.api.flights(-29.8587, 31.0218, "Durban");
       } catch (err) {
         clear(body).append(h("div.widget-error", {}, `Flight data unavailable: ${err.message}`));
         return;

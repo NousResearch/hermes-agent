@@ -25,7 +25,7 @@ export default {
       try {
         data = loc
           ? await ctx.api.air(loc.lat, loc.lon, loc.name)
-          : await ctx.api.air(40.7128, -74.006, null);
+          : await ctx.api.air(-29.8587, 31.0218, "Durban");
       } catch (err) {
         clear(body).append(h("div.widget-error", {}, `Air data unavailable: ${err.message}`));
         return;

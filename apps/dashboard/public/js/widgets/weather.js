@@ -104,6 +104,33 @@ function citySearch(ctx, onPicked) {
     "aria-label": "Search city",
   });
   const results = h("div.city-results");
+
+  // "Use my location" — browser geolocation, no external reverse-geocode.
+  const locateBtn = h("button.btn.btn-tiny.city-locate", {
+    type: "button", title: "Use my current location",
+  }, "📍 Use my location");
+  locateBtn.addEventListener("click", () => {
+    if (!navigator.geolocation) {
+      clear(results).append(h("div.muted", {}, "Geolocation not supported."));
+      return;
+    }
+    locateBtn.disabled = true;
+    locateBtn.textContent = "📍 Locating…";
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        const { latitude, longitude } = pos.coords;
+        onPicked({ name: "My location", lat: Math.round(latitude * 1e4) / 1e4,
+          lon: Math.round(longitude * 1e4) / 1e4 });
+      },
+      (err) => {
+        locateBtn.disabled = false;
+        locateBtn.textContent = "📍 Use my location";
+        clear(results).append(h("div.muted", {},
+          err.code === err.PERMISSION_DENIED ? "Location permission denied." : "Couldn't get location."));
+      },
+      { enableHighAccuracy: false, timeout: 8000, maximumAge: 600000 },
+    );
+  });
   const runSearch = debounce(async () => {
     const q = input.value.trim();
     clear(results);
@@ -124,7 +151,7 @@ function citySearch(ctx, onPicked) {
     }
   }, 300);
   input.addEventListener("input", runSearch);
-  return h("div.city-search", {}, input, results);
+  return h("div.city-search", {}, input, locateBtn, results);
 }
 
 export default {
@@ -147,7 +174,7 @@ export default {
       try {
         data = loc
           ? await ctx.api.weather(loc.lat, loc.lon, loc.name)
-          : await ctx.api.weather(40.7128, -74.006, null);
+          : await ctx.api.weather(-29.8587, 31.0218, "Durban");
       } catch (err) {
         clear(body).append(h("div.widget-error", {}, `Weather unavailable: ${err.message}`));
         return;

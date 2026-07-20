@@ -28,7 +28,7 @@ export default {
       try {
         data = loc
           ? await ctx.api.marine(loc.lat, loc.lon, loc.name)
-          : await ctx.api.marine(-33.92, 18.42, "Cape Town");
+          : await ctx.api.marine(-29.8587, 31.0218, "Durban");
       } catch (err) {
         clear(body).append(h("div.widget-error", {}, `Marine data unavailable: ${err.message}`));
         return;

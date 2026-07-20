@@ -31,7 +31,7 @@ export default {
       try {
         data = loc
           ? await ctx.api.alerts(loc.lat, loc.lon, loc.name)
-          : await ctx.api.alerts(40.7128, -74.006, null);
+          : await ctx.api.alerts(-29.8587, 31.0218, "Durban");
       } catch (err) {
         clear(body).append(h("div.widget-error", {}, `Alerts unavailable: ${err.message}`));
         return;

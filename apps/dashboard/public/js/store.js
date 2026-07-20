@@ -89,7 +89,10 @@ function defaultState() {
     calendar: { events: [] },
     agent: { history: [] },
     focus: { running: false, endsAt: null, remainingMs: 25 * 60000, minutes: 25, mode: "focus", sessions: [] },
-    weather: { locations: [], active: 0 }, // empty → server default city
+    // Default location: Durban, SA — used by weather + all Intel widgets
+    // (air, marine, alerts, flights) until the user adds/locates their own.
+    weather: { locations: [{ name: "Durban", lat: -29.8587, lon: 31.0218 }], active: 0 },
+    locSeed: 1,
     news: { topic: "top", muted: [], pinned: [] },
     reading: { items: [] },
     newsRead: {}, // url → timestamp of first open (bounded in markRead)
@@ -133,6 +136,14 @@ function migrate(parsed) {
       active: 0,
     };
   }
+  // One-time seed of a default location (Durban) for existing users who never
+  // set one, so the Intel widgets have accurate local data out of the box.
+  if (parsed.weather && Array.isArray(parsed.weather.locations)
+      && parsed.weather.locations.length === 0 && !parsed.locSeed) {
+    parsed.weather.locations = [{ name: "Durban", lat: -29.8587, lon: 31.0218 }];
+    parsed.weather.active = 0;
+  }
+  if (parsed.weather) parsed.locSeed = 1;
   // Legacy single-board state → one "Main" page holding it, intact.
   if (Array.isArray(parsed.layout) && !Array.isArray(parsed.pages)) {
     parsed.pages = [{ id: uid(), name: "Main", layout: parsed.layout }];

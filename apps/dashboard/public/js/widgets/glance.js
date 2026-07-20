@@ -45,7 +45,7 @@ export default {
       clear(body).append(h("div.widget-loading", {}, "COMPILING…"));
       const loc = (store.state.weather?.locations || [])[store.state.weather?.active] || null;
       const [weather, markets, news, world] = await Promise.all([
-        (loc ? ctx.api.weather(loc.lat, loc.lon, loc.name) : ctx.api.weather(40.7128, -74.006, null)).catch(() => null),
+        (loc ? ctx.api.weather(loc.lat, loc.lon, loc.name) : ctx.api.weather(-29.8587, 31.0218, "Durban")).catch(() => null),
         ctx.api.markets(store.state.markets?.ids).catch(() => null),
         ctx.api.news("top", 1).catch(() => null),
         ctx.api.worldstate().catch(() => null),

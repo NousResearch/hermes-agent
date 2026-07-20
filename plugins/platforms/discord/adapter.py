@@ -2159,13 +2159,21 @@ class DiscordAdapter(BasePlatformAdapter):
             parent_id = self._get_parent_channel_id(message.channel)
             channel_keys = self._discord_channel_keys(message, parent_id)
             free_channels = self._discord_free_response_channels()
+            # Group-role handoffs are an address mechanism for human authors
+            # only. Keep this aligned with the live and final handler gates:
+            # a sibling bot must type a real inline self-mention even when
+            # allow_bots=all and inline mentions are otherwise optional.
+            role_handoff = (
+                not bool(getattr(getattr(message, "author", None), "bot", False))
+                and self._discord_group_role_mentioned(message, parent_id)
+            )
             if (
                 self._discord_require_mention()
                 and "*" not in free_channels
                 and not (channel_keys & free_channels)
                 and not self._discord_is_voice_linked_channel(message)
                 and not self._self_is_explicitly_mentioned(message)
-                and not self._discord_group_role_mentioned(message, parent_id)
+                and not role_handoff
             ):
                 return False
         admitted, role_authorized = self._discord_message_admission(

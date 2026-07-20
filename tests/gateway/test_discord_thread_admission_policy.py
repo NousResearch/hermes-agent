@@ -539,6 +539,32 @@ async def test_recovered_admits_configured_group_role_mention_in_scope(adapter):
 
 
 @pytest.mark.asyncio
+async def test_recovered_denies_bot_role_only_handoff_in_participated_thread(adapter):
+    """Backfill cannot hand off a configured role ping from a sibling bot.
+
+    This pins the formerly divergent recovered pre-gate. Even with permissive
+    bot policy, inline mentions disabled, an in-scope role, and prior thread
+    participation, only a human author may use a group-role handoff.
+    """
+    _free_config(adapter)
+    adapter.config.extra["allow_bots"] = "all"
+    adapter.config.extra["bots_require_inline_mention"] = False
+    adapter.config.extra["group_mention_role_ids"] = [str(ROLE_ID)]
+    adapter.config.extra["group_mention_channel_ids"] = [str(OPS_ID)]
+    adapter._threads.mark("456")
+    message = make_message(
+        channel=_ops_thread(),
+        content=f"<@&{ROLE_ID}> sibling bot, recovered role-only handoff",
+        bot=True,
+    )
+
+    admitted = await adapter._dispatch_recovered_message(message)
+
+    assert admitted is False
+    adapter._handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_recovered_denies_group_role_mention_out_of_configured_scope(adapter):
     """(5, recovered, negative) An out-of-scope group-role mention stays denied.
 

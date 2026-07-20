@@ -38,13 +38,15 @@ TUI_CONTEXT_DIRS = [
 ]
 
 # User plugin roots — scanned at runtime if they exist.  Plugins load from
-# ~/.hermes/plugins/ and ./.hermes/plugins/ (hermes_cli/plugins.py:10-12),
-# but the guard only checked the bundled plugins/ dir, missing user-installed
-# code that spawns subprocesses (gap reported in #67639).
-USER_PLUGIN_DIRS = [
-    Path.home() / ".hermes" / "plugins",
-    Path.cwd() / ".hermes" / "plugins",
-]
+# ``get_hermes_home() / "plugins"`` (user) and ``./.hermes/plugins/`` (project,
+# gated behind ``HERMES_ENABLE_PROJECT_PLUGINS``) — see
+# ``hermes_cli/plugins.py:10-12``.  The guard only checked the bundled
+# ``plugins/`` dir, missing user-installed code that spawns subprocesses
+# (gap reported in #67639).
+#
+# Import is deferred to ``main()`` (after ``os.chdir(repo_root)``) because
+# this script runs as a standalone subprocess — ``hermes_constants`` isn't
+# on ``sys.path`` until the repo root is added.
 
 # subprocess and os APIs that inherit stdin by default when called without
 # an explicit stdin= argument.  The original regex only covered run/Popen
@@ -155,6 +157,11 @@ def main() -> int:
     repo_root = Path(__file__).resolve().parent.parent
     os.chdir(repo_root)
 
+    # Add repo root to sys.path so we can import hermes_constants (this script
+    # runs as a standalone subprocess, not as a module).
+    sys.path.insert(0, str(repo_root))
+    from hermes_constants import get_hermes_home
+
     all_violations = []
 
     for tui_dir in TUI_CONTEXT_DIRS:
@@ -178,11 +185,15 @@ def main() -> int:
             violations = find_subprocess_calls(content, rel)
             all_violations.extend(violations)
 
-    # Scan user plugin directories (Gap 1: guard missed ~/.hermes/plugins/
-    # and ./.hermes/plugins/, where user-installed plugins like ori/hooks.py
-    # can spawn subprocesses with inherited stdin — #67639).
+    # Scan user plugin directories (Gap 1: guard missed user-installed
+    # plugins in get_hermes_home()/plugins/ and project plugins in
+    # ./.hermes/plugins/, where code like ori/hooks.py can spawn
+    # subprocesses with inherited stdin — #67639).
+    plugin_roots: list[Path] = [get_hermes_home() / "plugins"]
+    if os.environ.get("HERMES_ENABLE_PROJECT_PLUGINS"):
+        plugin_roots.append(Path.cwd() / ".hermes" / "plugins")
     seen_roots: set[Path] = set()
-    for plugin_root in USER_PLUGIN_DIRS:
+    for plugin_root in plugin_roots:
         resolved = plugin_root.resolve()
         if resolved in seen_roots or not resolved.is_dir():
             continue

@@ -65,3 +65,22 @@ stateful, and usage-monitor templates. Generated views are intentionally
 single-document surfaces: inline styles/scripts and `data:`/`blob:` images work;
 CDNs and sibling assets do not. Localhost development previews remain on the
 existing webview path for full multi-file development workflows.
+
+## Desktop walkthrough
+
+Artifacts discovers valid documents independently of recent-session artifact
+indexing and makes their declared authority visible before they are opened.
+
+![Generated view discovery in Artifacts](images/generated-views/artifacts-views.jpeg)
+
+The host constructs no authored iframe until the user approves the exact digest.
+Editing the manifest or HTML destroys the running frame and returns the pane to
+this gate with the new digest and authority summary.
+
+![Exact-content generated view approval](images/generated-views/approval-gate.jpeg)
+
+Once approved, a view is an ordinary shell pane. This usage-monitor example was
+dragged into the main tab stack, restarted with Hermes Desktop, and restored in
+the same position with its read-only data bridge live.
+
+![Usage Monitor restored as a main workspace tab](images/generated-views/usage-monitor-pane.jpeg)

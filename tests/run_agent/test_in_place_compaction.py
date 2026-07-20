@@ -213,8 +213,14 @@ class TestRotationFallbackWhenFlagOff:
             ).fetchall()
             assert len(child) == 1
             assert child[0]["title"] == "my-research #2"
-            # Flush cursor reset for the new row.
-            assert agent._last_flushed_db_idx == 0
+            # The compacted child is persisted atomically at the rotation
+            # boundary, so a headless process killed before finalization can
+            # still resume it without duplicating the two handoff messages.
+            assert agent._last_flushed_db_idx == 2
+            assert [m.get("content") for m in db.get_messages_as_conversation(agent.session_id)] == [
+                "[CONTEXT COMPACTION] summary of prior turns",
+                "recent reply",
+            ]
             # Rotation mode does NOT set the in-place signal.
             assert getattr(agent, "_last_compaction_in_place", False) is False
 
@@ -317,4 +323,3 @@ class TestCompactedTurnsStaySearchable:
                 "ZEBRAWORD", role_filter=["user", "assistant"], include_inactive=True
             )
             assert len(recovered) == 1
-

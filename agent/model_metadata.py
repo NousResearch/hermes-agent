@@ -2250,12 +2250,16 @@ def get_model_context_length(
                 )
                 # Fall through; step 5b reconciles and overwrites if portal responds.
             # Invalidate stale Bedrock entries seeded before the Claude 4.6+
-            # long-context table was corrected to 1M.
+            # long-context table was corrected to 1M. The static table is a
+            # FLOOR, not an override: probe-derived cache entries (step 1b)
+            # may legitimately exceed the table (real window read from
+            # Bedrock's length-validation error), so only under-reporting
+            # entries are dropped — never a cached value above the table.
             elif is_bedrock_context:
                 try:
                     from agent.bedrock_adapter import get_bedrock_context_length
                     bedrock_ctx = get_bedrock_context_length(model)
-                    if cached != bedrock_ctx:
+                    if cached < bedrock_ctx:
                         logger.info(
                             "Dropping stale Bedrock cache entry %s@%s -> %s; "
                             "using static Bedrock table value %s",

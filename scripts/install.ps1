@@ -3515,6 +3515,21 @@ if ($IncludeDesktop) {
     # (Hermes-Setup.exe), never via the irm|iex CLI one-liner.
     $InstallStages += @{ Name = "desktop"; Title = "Building desktop app"; Category = "install"; NeedsUserInput = $false; Worker = "Stage-Desktop" }
 }
+# browser is added AFTER desktop (if enabled) for two reasons:
+#   1. Install-AgentBrowser (L355) runs `npm install -g --prefix` against a
+#      separate prefix ($HERMES_HOME\node) -- it has no dependency on the
+#      per-repo apps/desktop/node_modules Stage-NodeDeps / Stage-Desktop produce.
+#      So the ordering choice is not a hard dependency, only a stable one.
+#   2. Running after Stage-Desktop means a freshly-built Hermes.exe (if
+#      -IncludeDesktop was passed) picks up the freshly-installed
+#      agent-browser on its first relaunch, instead of inheriting a stale
+#      bare-PATH agent-browser from NVM. This is the same upgrade ordering
+#      install.sh's ensure_browser() achieves on Linux/macOS (L2550-2600).
+#   The stage also runs for non-desktop installs (the irm|iex one-liner) --
+#   browser tools are a general Hermes capability, not a desktop-only feature.
+#   Soft-skip when Node is unavailable (browser tools degrade gracefully);
+#   see the Stage-Node note at L3548-3558 for the same pattern.
+$InstallStages += @{ Name = "browser"; Title = "Installing agent-browser"; Category = "install"; NeedsUserInput = $false; Worker = "Stage-Browser" }
 $InstallStages += @(
     @{ Name = "path";             Title = "Adding Hermes to PATH";                Category = "finalize";     NeedsUserInput = $false; Worker = "Stage-Path" }
     @{ Name = "config-templates"; Title = "Writing configuration templates";      Category = "finalize";     NeedsUserInput = $false; Worker = "Stage-ConfigTemplates" }
@@ -3562,6 +3577,34 @@ function Stage-Venv             { Resolve-UvCmd; Install-Venv }
 function Stage-Dependencies     { Resolve-UvCmd; Install-Dependencies }
 function Stage-NodeDeps         { Install-NodeDeps }
 function Stage-Desktop          { Install-Desktop }
+# Stage-Browser installs agent-browser into the Hermes-bundled npm prefix
+# ($HERMES_HOME\node) via `npm install -g --prefix`.  Idempotent: a second
+# invocation with agent-browser already at ^0.26.0 is a near-no-op (npm
+# install -g is idempotent against a satisfied version range; cold installs
+# take ~5-15s on Windows, warm reinstalls are much faster).
+#
+# Soft-skip when Node is unavailable -- mirrors Stage-Node at L3548-3558:
+# browser tools are optional and the install flow MUST NOT abort.  The
+# skipped-false/true distinction is surfaced to the JSON frame by the
+# $script:_StageSkippedReason channel Invoke-Stage resets each stage
+# (L3609-3616).
+#
+# SkipChromium: Install-AgentBrowser's own parameter (L356) gates the
+# bundled Chromium download behind `agent-browser install`.  When the
+# caller's $SkipChromium is set (e.g. system browser override at L384-386
+# via Find-SystemBrowser), it is forwarded so the post-install step is
+# skipped.  install.ps1 has no top-level -SkipChromium param today, so
+# $SkipChromium here is normally $false; Install-AgentBrowser's body also
+# re-checks Find-SystemBrowser internally, so the semantics are preserved
+# regardless of how this worker is invoked.
+function Stage-Browser          {
+    [void](Test-Node)
+    if (-not $script:HasNode) {
+        $script:_StageSkippedReason = 'Node.js not available; agent-browser install skipped (browser tools will be unavailable)'
+        return
+    }
+    Install-AgentBrowser -SkipChromium:$SkipChromium
+}
 function Stage-Path             { Set-PathVariable }
 function Stage-ConfigTemplates  { Copy-ConfigTemplates }
 function Stage-PlatformSdks     { Resolve-UvCmd; Install-PlatformSdks }

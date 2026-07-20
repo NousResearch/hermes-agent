@@ -93,6 +93,31 @@ if ($manifest) {
         Assert-True ($names -contains $expected) -Label "manifest contains stage '$expected'"
     }
 
+    # The 'browser' stage must be in the manifest so the desktop Update flow
+    # (bootstrap-runner.ts L779 - drives install.ps1 -Stage <name> per-stage)
+    # actually installs/upgrades agent-browser into $HERMES_HOME\node.  Without
+    # this stage, Windows desktop installs fall through to whatever
+    # agent-browser is on bare PATH (commonly a stale v0.17.1 with the zombie
+    # bug from PR #65701).  Related: tests/test_install_ps1_browser_stage.py
+    # pins the stage definition at the source-level for cross-platform CI.
+    Assert-True ($names -contains "browser") -Label "manifest contains stage 'browser'"
+
+    # 'browser' must come AFTER 'node' (Install-AgentBrowser calls Resolve-NpmCmd
+    # which throws if npm is missing) and BEFORE 'configure' (interactive stages
+    # run last).  Cross-process driver mode runs each stage in its own child
+    # powershell, so the stage can't rely on a $script:HasNode flag set in a
+    # sibling -- it needs the Node binaries from Stage-Node in PATH first.
+    Assert-True ($names.IndexOf("node") -lt $names.IndexOf("browser")) -Label "'browser' stage appears after 'node' stage"
+    Assert-True ($names.IndexOf("browser") -lt $names.IndexOf("configure")) -Label "'browser' stage appears before 'configure' stage"
+
+    # browser must declare needs_user_input=$false (it's a non-interactive install
+    # driven by the desktop Update flow with -NonInteractive -Json).
+    $browserStage = $manifest.stages | Where-Object { $_.name -eq "browser" } | Select-Object -First 1
+    if ($browserStage) {
+        Assert-Equal -Expected $false -Actual $browserStage.needs_user_input -Label "'browser' stage declares needs_user_input=false"
+        Assert-Equal -Expected "install" -Actual $browserStage.category -Label "'browser' stage category is 'install'"
+    }
+
     # The two known-interactive stages must declare needs_user_input
     $interactive = $manifest.stages | Where-Object { $_.needs_user_input } | ForEach-Object { $_.name }
     Assert-True ($interactive -contains "configure") -Label "'configure' stage flagged needs_user_input"

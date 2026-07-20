@@ -837,6 +837,12 @@ class MatrixAdapter(BasePlatformAdapter):
     # (see _normalize_matrix_bang_command), so instruction text shows "!".
     typed_command_prefix = "!"
 
+    # Class-level defaults so partially-constructed instances (tests build
+    # adapters via object.__new__ without __init__) keep working; __init__
+    # overrides both from _resolve_max_message_length().
+    max_message_length = DEFAULT_MAX_MESSAGE_LENGTH
+    _split_threshold = DEFAULT_MAX_MESSAGE_LENGTH - 100
+
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.MATRIX)
 

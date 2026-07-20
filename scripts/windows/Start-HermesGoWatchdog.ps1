@@ -85,11 +85,22 @@ if ($ForceRestart -or $Once) {
     exit 0
 }
 
+# Quote paths with spaces ("New project") so ShellExecute does not split
+# -hermes-root at the space (that yielded Dir=...\Documents\New → ERROR_DIRECTORY).
+function Format-WatchdogArg([string]$Name, [string]$Value) {
+    if ($null -eq $Value) { $Value = "" }
+    if ($Value -match '[\s"]') {
+        $escaped = $Value.Replace('"', '\"')
+        return ('{0}="{1}"' -f $Name, $escaped)
+    }
+    return ('{0}={1}' -f $Name, $Value)
+}
+
 $argList = @(
     "-interval=$IntervalSec",
     "-fail-threshold=$FailThreshold",
-    "-hermes-root=`"$RepoRoot`"",
-    "-hermes-home=`"$HermesHome`"",
+    (Format-WatchdogArg "-hermes-root" $RepoRoot),
+    (Format-WatchdogArg "-hermes-home" $HermesHome),
     "-listen=$Listen"
 )
 if ($Once) { $argList += "-once" }
@@ -100,16 +111,28 @@ if (-not $NoTsnet -and ($env:HERMES_WATCHDOG_TS_AUTHKEY -or $env:TS_AUTHKEY)) {
 
 $env:HERMES_HOME = $HermesHome
 $workDir = Split-Path -Parent $Exe
-Write-Host "Starting Go watchdog detached: $Exe $($argList -join ' ')"
+$argString = ($argList -join ' ')
+Write-Host "Starting Go watchdog detached: $Exe $argString"
 
-# UseShellExecute detaches from Cursor/agent job objects (see Start-HermesDesktopBackendWatchdog.ps1 header).
-$startInfo = New-Object System.Diagnostics.ProcessStartInfo
-$startInfo.FileName = $Exe
-$startInfo.WorkingDirectory = $workDir
-$startInfo.Arguments = ($argList -join ' ')
-$startInfo.WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Hidden
-$startInfo.UseShellExecute = $true
-[void][System.Diagnostics.Process]::Start($startInfo)
+# Prefer ArgumentList (CreateProcess) so each flag is one argv — spaces in
+# hermes-root stay intact. Fall back to UseShellExecute only if that fails
+# (job-object detach for Cursor/agent shells).
+$launched = $false
+try {
+    $proc = Start-Process -FilePath $Exe -ArgumentList $argList -WorkingDirectory $workDir -WindowStyle Hidden -PassThru
+    if ($proc) { $launched = $true }
+} catch {
+    Write-Warning "Start-Process ArgumentList failed: $($_.Exception.Message); trying UseShellExecute"
+}
+if (-not $launched) {
+    $startInfo = New-Object System.Diagnostics.ProcessStartInfo
+    $startInfo.FileName = $Exe
+    $startInfo.WorkingDirectory = $workDir
+    $startInfo.Arguments = $argString
+    $startInfo.WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Hidden
+    $startInfo.UseShellExecute = $true
+    [void][System.Diagnostics.Process]::Start($startInfo)
+}
 
 Start-Sleep -Seconds 2
 if (Test-GoWatchdogAlive) {

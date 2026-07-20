@@ -104,10 +104,34 @@ func resolveWebDist(hermesRoot string) string {
 	return candidate
 }
 
+func resolveServeWorkDir(cfg Config, python string) string {
+	candidates := []string{
+		strings.Trim(strings.TrimSpace(cfg.HermesRoot), `"'`),
+		strings.Trim(strings.TrimSpace(cfg.HermesHome), `"'`),
+	}
+	if python != "" {
+		// shared venv: ~/.hermes/hermes-agent/venv/Scripts/python.exe → repo-ish parent
+		candidates = append(candidates, filepath.Clean(filepath.Join(filepath.Dir(python), "..", "..")))
+	}
+	for _, dir := range candidates {
+		if dir == "" {
+			continue
+		}
+		if st, err := os.Stat(dir); err == nil && st.IsDir() {
+			return dir
+		}
+	}
+	return ""
+}
+
 func buildServeCommand(cfg Config) (*exec.Cmd, string, int, error) {
 	python := resolvePythonExe(cfg.HermesRoot)
 	if python == "" {
 		return nil, "", 0, fmt.Errorf("python not found under %s (.venv or venv)", cfg.HermesRoot)
+	}
+	workDir := resolveServeWorkDir(cfg, python)
+	if workDir == "" {
+		return nil, "", 0, fmt.Errorf("no valid workdir for hermes serve (hermes-root=%q)", cfg.HermesRoot)
 	}
 	token, err := generateSessionToken()
 	if err != nil {
@@ -120,7 +144,10 @@ func buildServeCommand(cfg Config) (*exec.Cmd, string, int, error) {
 	if isReservedOpsPort(port) {
 		return nil, "", 0, fmt.Errorf("managed backend port %d is reserved for ops services", port)
 	}
-	webDist := resolveWebDist(cfg.HermesRoot)
+	webDist := resolveWebDist(workDir)
+	if webDist == "" {
+		webDist = resolveWebDist(cfg.HermesRoot)
+	}
 	cmd := exec.Command(
 		python,
 		"-m", "hermes_cli.main",
@@ -128,15 +155,15 @@ func buildServeCommand(cfg Config) (*exec.Cmd, string, int, error) {
 		"--host", "127.0.0.1",
 		"--port", fmt.Sprintf("%d", port),
 	)
-	cmd.Dir = cfg.HermesRoot
+	cmd.Dir = workDir
 	cmd.Env = append(os.Environ(),
 		"HERMES_HOME="+cfg.HermesHome,
 		"HERMES_DESKTOP=1",
 		"HERMES_WATCHDOG_MANAGED=1",
 		"HERMES_DASHBOARD_SESSION_TOKEN="+token,
 		"HERMES_WEB_DIST="+webDist,
-		"HERMES_DESKTOP_HERMES_ROOT="+cfg.HermesRoot,
-		"HERMES_DESKTOP_CWD="+cfg.HermesRoot,
+		"HERMES_DESKTOP_HERMES_ROOT="+workDir,
+		"HERMES_DESKTOP_CWD="+workDir,
 		"PYTHONUTF8=1",
 		"PYTHONIOENCODING=utf-8",
 		"PYTHONUNBUFFERED=1",

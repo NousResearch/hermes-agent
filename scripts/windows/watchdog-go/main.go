@@ -39,12 +39,23 @@ func main() {
 	noHTTP := flag.Bool("no-http", false, "Disable HTTP control plane (watch loop only)")
 	flag.Parse()
 
-	root := *repoRoot
+	root := sanitizePathFlag(*repoRoot)
+	home := sanitizePathFlag(*hermesHome)
+	if home == "" {
+		home = defaultHermesHome()
+	}
 	if root == "" {
 		root = detectRepoRoot()
 	}
 	if root != "" && !fileExists(filepath.Join(root, "pyproject.toml")) {
 		if detected := detectRepoRoot(); detected != "" && fileExists(filepath.Join(detected, "pyproject.toml")) {
+			root = detected
+		}
+	}
+	// Paths with spaces (e.g. "...\New project\...") must stay intact; if a
+	// broken partial Dir was ever used, prefer a root that still has pyproject.
+	if root != "" && !dirExists(root) {
+		if detected := detectRepoRoot(); detected != "" && dirExists(detected) {
 			root = detected
 		}
 	}
@@ -61,7 +72,7 @@ func main() {
 		TsnetHostname: *tsnetHost,
 		EnableTsnet:   *enableTsnet,
 		HermesRoot:    root,
-		HermesHome:    *hermesHome,
+		HermesHome:    home,
 		PackagedExe:   *packagedExe,
 		DataDir:       *dataDir,
 		AdminToken:    loadAdminToken(),
@@ -166,4 +177,20 @@ func detectRepoRoot() string {
 		return candidate
 	}
 	return candidate
+}
+
+// sanitizePathFlag strips accidental shell quotes and trims space so CreateProcess
+// Dir never becomes `"C:\Users\...\New` (split at the space in "New project").
+func sanitizePathFlag(raw string) string {
+	s := strings.TrimSpace(raw)
+	s = strings.Trim(s, `"'`)
+	return strings.TrimSpace(s)
+}
+
+func dirExists(path string) bool {
+	if path == "" {
+		return false
+	}
+	st, err := os.Stat(path)
+	return err == nil && st.IsDir()
 }

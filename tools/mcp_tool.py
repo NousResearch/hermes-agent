@@ -262,6 +262,7 @@ _DEFAULT_CONNECT_TIMEOUT = 60    # seconds for initial connection per server
 _MAX_RECONNECT_RETRIES = 5
 _MAX_INITIAL_CONNECT_RETRIES = 3 # retries for the very first connection attempt
 _MAX_BACKOFF_SECONDS = 60
+_COLD_RETRY_INTERVAL_SECONDS = 300  # after giveup, retry this often instead of dying
 
 # Environment variables that are safe to pass to stdio subprocesses
 _SAFE_ENV_KEYS = frozenset({
@@ -1637,12 +1638,31 @@ class MCPServerTask:
 
                 retries += 1
                 if retries > _MAX_RECONNECT_RETRIES:
-                    logger.warning(
-                        "MCP server '%s' failed after %d reconnection attempts, "
-                        "giving up: %s",
-                        self.name, _MAX_RECONNECT_RETRIES, exc,
-                    )
-                    return
+                    # Don't give up permanently — a transient blip on the
+                    # server side (e.g. a routine restart) shouldn't kill
+                    # this tool until the whole gateway restarts. Fall back
+                    # to a slow, indefinite cold-retry loop instead of
+                    # returning. Logged once on the transition, then at
+                    # debug level so a long outage doesn't spam warnings.
+                    if retries == _MAX_RECONNECT_RETRIES + 1:
+                        logger.warning(
+                            "MCP server '%s' failed after %d fast reconnection "
+                            "attempts — falling back to a slow retry every "
+                            "%.0fs so a transient outage self-heals without a "
+                            "gateway restart: %s",
+                            self.name, _MAX_RECONNECT_RETRIES,
+                            _COLD_RETRY_INTERVAL_SECONDS, exc,
+                        )
+                    else:
+                        logger.debug(
+                            "MCP server '%s': cold retry (attempt %d) still "
+                            "failing: %s",
+                            self.name, retries, exc,
+                        )
+                    await asyncio.sleep(_COLD_RETRY_INTERVAL_SECONDS)
+                    if self._shutdown_event.is_set():
+                        return
+                    continue
 
                 logger.warning(
                     "MCP server '%s' connection lost (attempt %d/%d), "

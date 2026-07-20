@@ -10850,6 +10850,25 @@ async def get_session_stats(profile: Optional[str] = None):
         db.close()
 
 
+# Serialises the one-time writable schema bootstrap for read-only opens.
+# Concurrent first-load polls otherwise race sqlite file creation: the losers
+# open mode=ro against a store whose schema is still being written and every
+# query raises "no such table: sessions".
+_session_db_bootstrap_lock = threading.Lock()
+
+# Stale-schema probe for read-only opens: compiled against the newest column
+# each dashboard read path actually queries (session list/count filter on
+# s.archived; transcript and search filter on m.active / m.compacted). Reads
+# at most one row per table. Read-only opens skip _reconcile_columns(), so a
+# store created before these columns existed would otherwise 500 on every
+# poll until something opened it writable.
+_SESSION_DB_READ_PROBE_SQL = (
+    "SELECT (SELECT archived FROM sessions LIMIT 1), "
+    "(SELECT active FROM messages LIMIT 1), "
+    "(SELECT compacted FROM messages LIMIT 1)"
+)
+
+
 def _open_session_db_for_profile(profile: Optional[str], *, read_only: bool):
     """Open a SessionDB with an explicit access mode for a profile.
 
@@ -10858,21 +10877,79 @@ def _open_session_db_for_profile(profile: Optional[str], *, read_only: bool):
     ``state.db`` directly so the primary backend can serve cross-profile
     requests without spawning that profile's backend.
 
-    Existing stores honour ``read_only`` exactly. A missing store receives the
-    historical one-time writable schema bootstrap so a fresh dashboard still
-    returns an empty session list instead of a 500; every subsequent read opens
-    through SQLite's read-only URI.
+    Writable opens keep their full init/reconcile/repair machinery. Read-only
+    opens self-heal the failure modes that machinery used to cover implicitly:
+
+    - A missing or zero-byte store gets the historical one-time writable
+      schema bootstrap, serialised under a module lock so concurrent
+      first-load polls can't race sqlite file creation. A fresh dashboard
+      returns an empty session list instead of a 500.
+    - A store predating the columns the read endpoints query (or with a
+      malformed schema) fails a cheap probe after the read-only open and gets
+      ONE writable healing open — running the existing init/reconcile/repair
+      machinery — before reopening read-only. Any other failure raises to the
+      caller's existing error handling.
+
+    The happy path stays read-only end to end: no writable open, no WAL
+    checkpoint.
     """
-    from hermes_state import DEFAULT_DB_PATH, SessionDB
+    import sqlite3
+
+    from hermes_state import DEFAULT_DB_PATH, SessionDB, is_malformed_db_error
     if profile:
         _name, home = _cron_profile_home(profile)
         db_path = Path(home) / "state.db"
     else:
         db_path = Path(DEFAULT_DB_PATH)
-    if read_only and not db_path.exists():
-        bootstrap_db = SessionDB(db_path=db_path)
-        bootstrap_db.close()
-    return SessionDB(db_path=db_path, read_only=read_only)
+    if not read_only:
+        return SessionDB(db_path=db_path, read_only=False)
+
+    def _needs_bootstrap():
+        # A zero-byte file (crashed first boot, stray touch) passes an
+        # exists() guard but holds no schema — treat it as missing. Any other
+        # stat failure falls through to the open, which raises the
+        # caller-visible error as before.
+        try:
+            return db_path.stat().st_size == 0
+        except FileNotFoundError:
+            return True
+        except OSError:
+            return False
+
+    if _needs_bootstrap():
+        with _session_db_bootstrap_lock:
+            # Re-check under the lock: the winner of a concurrent first-load
+            # race has fully initialised the store before releasing it.
+            if _needs_bootstrap():
+                SessionDB(db_path=db_path).close()
+
+    def _open_probed():
+        db = SessionDB(db_path=db_path, read_only=True)
+        # Unit-test fakes replace SessionDB without a raw sqlite handle;
+        # only probe real connections.
+        conn = getattr(db, "_conn", None)
+        if conn is not None:
+            try:
+                conn.execute(_SESSION_DB_READ_PROBE_SQL).fetchone()
+            except BaseException:
+                db.close()
+                raise
+        return db
+
+    try:
+        return _open_probed()
+    except sqlite3.DatabaseError as exc:
+        message = str(exc).lower()
+        stale_schema = "no such table" in message or "no such column" in message
+        if not stale_schema and not is_malformed_db_error(exc):
+            raise
+        # One writable healing open: before the read-only conversion every
+        # dashboard read ran the writable init, so old stores self-healed via
+        # _reconcile_columns() and the malformed-schema repair. Restore that
+        # exactly once, then reopen read-only; a second failure propagates to
+        # the endpoint's existing error handling.
+        SessionDB(db_path=db_path).close()
+        return _open_probed()
 
 
 @app.get("/api/sessions/{session_id}")

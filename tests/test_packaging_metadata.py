@@ -142,16 +142,38 @@ def test_docker_build_checks_gbrain_skill_contract_after_source_copy():
     assert source_copy < gate < privilege_drop
 
 
-def test_docker_build_context_includes_gbrain_skill_contract_only():
+def test_docker_build_context_includes_skills_without_local_artifacts():
     dockerignore = (REPO_ROOT / ".dockerignore").read_text(encoding="utf-8")
-    ignore_spec = pathspec.GitIgnoreSpec.from_lines(dockerignore.splitlines())
+    # Docker applies the last matching rule. PathSpec's gitwildmatch pattern
+    # grammar models the glob/negation forms used here without GitIgnoreSpec's
+    # extra directory-priority semantics.
+    ignore_spec = pathspec.PathSpec.from_lines(
+        "gitwildmatch", dockerignore.splitlines()
+    )
 
     included = [
         "skills/RESOLVER.md",
         "skills/manifest.json",
         "skills/software-development/hermes-agent-skill-authoring/SKILL.md",
+        "skills/research/polymarket/scripts/polymarket.py",
+        "skills/research/polymarket/references/api-endpoints.md",
+        "skills/research/research-paper-writing/templates/colm2025/"
+        "colm2025_conference.pdf",
     ]
+    assert all((REPO_ROOT / path).is_file() for path in included)
     assert all(not ignore_spec.match_file(path) for path in included)
+
+    excluded = [
+        "skills/example/.env",
+        "skills/example/.env.local",
+        "skills/example/.venv/lib/python/site.py",
+        "skills/example/node_modules/package/index.js",
+        "skills/example/scripts/__pycache__/helper.cpython-313.pyc",
+        "skills/example/scripts/helper.pyc",
+        "skills/example/dist/bundle.js",
+        "skills/example/build/output.bin",
+    ]
+    assert all(ignore_spec.match_file(path) for path in excluded)
     assert ignore_spec.match_file("README.md")
 
 

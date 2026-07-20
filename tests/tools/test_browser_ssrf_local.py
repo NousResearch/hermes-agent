@@ -368,3 +368,33 @@ class TestAllowPrivateUrlsConfig:
         )
 
         assert browser_tool._allow_private_urls() is False
+
+    def test_profile_scoped_config_does_not_reuse_another_profiles_opt_out(
+        self, tmp_path
+    ):
+        """The browser's independent guard must follow the active profile."""
+        from hermes_constants import (
+            reset_hermes_home_override,
+            set_hermes_home_override,
+        )
+
+        allowed_home = tmp_path / "allowed"
+        blocked_home = tmp_path / "blocked"
+        allowed_home.mkdir()
+        blocked_home.mkdir()
+        (allowed_home / "config.yaml").write_text(
+            "browser:\n  allow_private_urls: true\n", encoding="utf-8"
+        )
+        (blocked_home / "config.yaml").write_text(
+            "browser:\n  allow_private_urls: false\n", encoding="utf-8"
+        )
+
+        def under_profile(home):
+            token = set_hermes_home_override(home)
+            try:
+                return browser_tool._allow_private_urls()
+            finally:
+                reset_hermes_home_override(token)
+
+        assert under_profile(allowed_home) is True
+        assert under_profile(blocked_home) is False

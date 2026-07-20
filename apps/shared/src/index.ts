@@ -47,6 +47,7 @@ export {
   type GatewayAuthMode,
   GatewayReauthRequiredError,
   type GatewayWsConnection,
+  type GatewayWsUrlResult,
   type HermesWebSocketUrlOptions,
   isGatewayReauthRequired,
   resolveGatewayWsUrl,

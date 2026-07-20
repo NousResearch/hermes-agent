@@ -24,6 +24,7 @@ import {
   cookiesHavePrivySession,
   cookiesHaveSession,
   gatewayTicketFailure,
+  gatewayWsUrlIpcResult,
   isGatewayAuthRejection,
   modeIsRemoteLike,
   normalizeRemoteBaseUrl,
@@ -486,6 +487,34 @@ test('gateway ticket failures classify only explicit auth rejection statuses as 
   const serverFailure = gatewayTicketFailure(new Error('network timeout'), 'sign in', 'retry connection') as any
   assert.equal(serverFailure.message, 'retry connection')
   assert.equal(serverFailure.needsOauthLogin, undefined)
+})
+
+test('gateway WS URL IPC result serializes success and the auth-vs-transport matrix', async () => {
+  assert.deepEqual(await gatewayWsUrlIpcResult(async () => 'wss://gateway.example.com/api/ws?ticket=fresh'), {
+    ok: true,
+    wsUrl: 'wss://gateway.example.com/api/ws?ticket=fresh'
+  })
+
+  for (const statusCode of [401, 403]) {
+    const error = Object.assign(new Error(`${statusCode}: rejected`), { statusCode })
+
+    assert.deepEqual(await gatewayWsUrlIpcResult(async () => Promise.reject(error)), {
+      error: `${statusCode}: rejected`,
+      needsOauthLogin: true,
+      ok: false
+    })
+  }
+
+  for (const error of [
+    Object.assign(new Error('500: unavailable'), { statusCode: 500 }),
+    new Error('Timed out connecting to Hermes backend after 8000ms'),
+    Object.assign(new Error('socket reset'), { code: 'ECONNRESET' })
+  ]) {
+    assert.deepEqual(await gatewayWsUrlIpcResult(async () => Promise.reject(error)), {
+      error: error.message,
+      ok: false
+    })
+  }
 })
 
 test('resolveTestWsUrl (oauth) requires a mintTicket function', async () => {

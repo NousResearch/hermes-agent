@@ -48,7 +48,7 @@ import {
   cookiesHavePrivySession,
   cookiesHaveSession,
   gatewayTicketFailure,
-  isGatewayAuthRejection,
+  gatewayWsUrlIpcResult,
   modeIsRemoteLike,
   normalizeRemoteBaseUrl,
   normAuthMode,
@@ -110,7 +110,7 @@ import { ensureMainWindow } from './main-window-lifecycle'
 import { serializeJsonBody, setJsonRequestHeaders } from './oauth-net-request'
 import { createKeepAwake } from './power-save'
 import { decideProfileDeleteAction, profileNameFromDeleteRequest, resolveRouteProfile } from './profile-delete-routing'
-import { REMOTE_LIVENESS_FAILURE_LIMIT, REMOTE_LIVENESS_TIMEOUT_MS, RemoteLivenessTracker } from './remote-liveness'
+import { RemoteLivenessTracker, RemoteRevalidationCoordinator, revalidateRemoteConnection } from './remote-liveness'
 import {
   buildSessionWindowUrl,
   chatWindowWebPreferences,
@@ -937,6 +937,7 @@ function registerMediaProtocol() {
 let mainWindow = null
 const backendConnectionState = createBackendConnectionState<ReturnType<typeof spawn>, any>()
 const remoteLiveness = new RemoteLivenessTracker()
+const remoteRevalidation = new RemoteRevalidationCoordinator()
 // True while connection-config:apply soft-rehomes the primary — suppresses the
 // backend-exit toast so an intentional kill doesn't look like a crash.
 let softRehomeInProgress = false
@@ -7782,46 +7783,19 @@ ipcMain.handle('hermes:connection:revalidate', async () => {
     return { ok: true, rebuilt: false }
   }
 
-  let conn = null
-
-  try {
-    conn = await connectionPromise
-  } catch {
-    // The cached boot already rejected (its own catch clears the promise);
-    // nothing to revalidate — the next getConnection() builds fresh.
-    return { ok: true, rebuilt: false }
-  }
-
-  if (!conn || conn.mode !== 'remote' || !conn.baseUrl) {
-    return { ok: true, rebuilt: false }
-  }
-
-  const base = conn.baseUrl.replace(/\/+$/, '')
-
-  try {
-    await fetchPublicJson(`${base}/api/status`, { timeoutMs: REMOTE_LIVENESS_TIMEOUT_MS })
-    remoteLiveness.recordSuccess(base)
-
-    return { ok: true, rebuilt: false }
-  } catch {
-    const failure = remoteLiveness.recordFailure(base)
-
-    if (!failure.shouldReset) {
-      rememberLog(
-        `Cached remote Hermes backend failed liveness probe (${failure.failures}/${REMOTE_LIVENESS_FAILURE_LIMIT}); keeping connection for retry.`
-      )
-
-      return { ok: true, rebuilt: false }
-    }
-
-    // Unreachable remote: drop the stale cache so the renderer's next reconnect
-    // tick rebuilds a fresh, reachable descriptor. resetHermesConnection only
-    // clears the connection promise for a remote (no child to SIGTERM).
-    rememberLog('Cached remote Hermes backend failed liveness probe; dropping stale connection.')
-    resetHermesConnection()
-
-    return { ok: true, rebuilt: true }
-  }
+  // Main and every session pop-out have their own renderer reconnect loop but
+  // share this primary connection. Coalesce simultaneous requests so one outage
+  // produces one failure observation rather than exhausting the whole streak.
+  return remoteRevalidation.run(connectionPromise, () =>
+    revalidateRemoteConnection({
+      connectionPromise,
+      currentConnectionPromise: () => backendConnectionState.getPromise(),
+      log: rememberLog,
+      probe: fetchPublicJson,
+      resetConnection: resetHermesConnection,
+      tracker: remoteLiveness
+    })
+  )
 })
 ipcMain.handle('hermes:backend:touch', async (_event, profile) => {
   touchPoolBackend(profile)
@@ -7829,15 +7803,7 @@ ipcMain.handle('hermes:backend:touch', async (_event, profile) => {
   return { ok: true }
 })
 ipcMain.handle('hermes:gateway:ws-url', async (_event, profile) => {
-  try {
-    return { ok: true, wsUrl: await freshGatewayWsUrl(profile) }
-  } catch (error) {
-    return {
-      error: error instanceof Error ? error.message : String(error),
-      needsOauthLogin: isGatewayAuthRejection(error),
-      ok: false
-    }
-  }
+  return gatewayWsUrlIpcResult(() => freshGatewayWsUrl(profile))
 })
 ipcMain.handle('hermes:window:openSession', async (_event, sessionId, opts) => {
   if (typeof sessionId !== 'string' || !sessionId.trim()) {

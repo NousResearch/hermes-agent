@@ -112,6 +112,19 @@ function gatewayTicketFailure(error, authMessage, transportMessage) {
   return err
 }
 
+/** Serialize a fresh-WS-URL attempt across Electron's IPC boundary. */
+async function gatewayWsUrlIpcResult(resolveWsUrl: () => Promise<string>) {
+  try {
+    return { ok: true as const, wsUrl: await resolveWsUrl() }
+  } catch (error) {
+    return {
+      error: error instanceof Error ? error.message : String(error),
+      ...(isGatewayAuthRejection(error) ? { needsOauthLogin: true as const } : {}),
+      ok: false as const
+    }
+  }
+}
+
 /**
  * Build the WS URL the renderer would connect with, so the connection test can
  * exercise the same transport the app actually uses.
@@ -358,6 +371,7 @@ export {
   cookiesHavePrivySession,
   cookiesHaveSession,
   gatewayTicketFailure,
+  gatewayWsUrlIpcResult,
   isGatewayAuthRejection,
   modeIsRemoteLike,
   normalizeRemoteBaseUrl,

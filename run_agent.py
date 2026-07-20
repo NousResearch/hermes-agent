@@ -1647,7 +1647,7 @@ class AIAgent:
         review_memory: bool = False,
         review_skills: bool = False,
     ) -> None:
-        """Spawn the background memory/skill review thread.
+        """Spawn a durable review from a retention-safe transcript copy.
 
         Thin wrapper — the heavy lifting lives in
         ``agent.background_review.spawn_background_review_thread`` which
@@ -1656,10 +1656,15 @@ class AIAgent:
         keep working.
         """
         from agent.background_review import spawn_background_review_thread
+        from agent.memory_manager import memory_safe_session_messages
         from tools.thread_context import propagate_context_to_thread
+
+        # Both memory and skill reviews can write durable state. Filter at this
+        # shared seam so no runtime can replay a do-not-retain turn into either.
+        safe_messages_snapshot = memory_safe_session_messages(messages_snapshot)
         target, _prompt = spawn_background_review_thread(
             self,
-            messages_snapshot,
+            safe_messages_snapshot,
             review_memory=review_memory,
             review_skills=review_skills,
         )

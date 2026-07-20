@@ -46,8 +46,6 @@ class BriefRecord:
     environment: str = field(default_factory=lambda: os.environ.get("HERMES_ENV", "unknown"))
     version: str = field(default_factory=lambda: os.environ.get("HERMES_VERSION", "0.18.2"))
     git_sha: str = field(default_factory=lambda: os.environ.get("HERMES_GIT_SHA", "unknown"))
-    railway_deployment_id: str = field(default_factory=lambda: os.environ.get("RAILWAY_DEPLOYMENT_ID", "unknown"))
-    railway_service_name: str = field(default_factory=lambda: os.environ.get("RAILWAY_SERVICE_NAME", "unknown"))
 
 
 @dataclass(frozen=True)
@@ -146,8 +144,6 @@ def make_executive_brief(
         "environment": record.environment,
         "version": record.version,
         "git_sha": record.git_sha,
-        "railway_deployment_id": record.railway_deployment_id,
-        "railway_service_name": record.railway_service_name,
         "generated_at": now,
         "generated_timestamp": now,
         "currency": "USD",
@@ -223,8 +219,6 @@ def make_executive_brief(
             "execution_id": record.execution_id,
             "environment": record.environment,
             "git_sha": record.git_sha,
-            "railway_service_name": record.railway_service_name,
-            "railway_deployment_id": record.railway_deployment_id,
         },
     }
     return brief
@@ -374,8 +368,12 @@ def store_delivery_blocklist(idempotency_key: str, db_path: str = "/app/.hermes/
 
 def is_delivery_blocked(idempotency_key: str, db_path: str = "/app/.hermes/executions.db") -> bool:
     try:
+        os.makedirs(os.path.dirname(db_path), exist_ok=True)
         conn = sqlite3.connect(db_path)
         cur = conn.cursor()
+        cur.execute(
+            "CREATE TABLE IF NOT EXISTS delivery_blocklist(idempotency_key TEXT PRIMARY KEY, created_at TEXT)"
+        )
         cur.execute("SELECT 1 FROM delivery_blocklist WHERE idempotency_key = ?", (idempotency_key,))
         row = cur.fetchone()
         conn.close()

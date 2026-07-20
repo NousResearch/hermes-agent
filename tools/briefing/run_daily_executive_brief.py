@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 import logging
 import os
@@ -11,6 +12,7 @@ from tools.briefing.executive_brief import (
     ExecutionMetrics,
     append_execution_log,
     classify_failure,
+    duplicate_delivery_key,
     is_delivery_blocked,
     is_dry_run,
     make_executive_brief,
@@ -127,7 +129,7 @@ def main(argv: list[str] | None = None) -> int:
                 try:
                     from tools.briefing.executive_brief_telegram import deliver_brief
                     start = time.time()
-                    result = deliver_brief(brief)
+                    result = asyncio.run(deliver_brief(brief))
                     latency_ms = int((time.time() - start) * 1000)
                     delivery_status = {
                         "success": result.get("success", False),

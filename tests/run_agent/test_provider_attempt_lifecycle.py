@@ -491,3 +491,98 @@ def test_post_terminal_local_error_after_visible_partial_text():
     assert result["turn_exit_reason"] == LOCAL_REASON
     assert result["final_response"]
     assert "error" in result["final_response"].lower()
+
+
+# ── #67923 × attempt lifecycle: partial-stub backstop × fresh continuation ──
+
+def test_partial_stub_backstop_terminal_does_not_poison_fresh_continuation():
+    """Cross-contract: attempt A's stream ends with NO finish_reason after a
+    text delta (#67923 text-only drop). The transport builds a
+    PARTIAL_STREAM_STUB_ID stub with finish_reason='length', and the
+    _perform_api_call backstop marks attempt A's token terminal_received.
+
+    That backstop mark must NOT poison the continuation: the length
+    continuation triggers normally, creates a BRAND NEW attempt B token,
+    B is NOT terminal before its own dispatch, and B completes the turn.
+
+    Asserts the full contract: call_count == 2, token A is not token B,
+    token A terminal, token B not-terminal pre-dispatch, completed, not
+    failed, no local_post_response_error, partial + continuation text
+    preserved exactly once, no LOCAL_FAILURE_NOTE, no adjacent assistant,
+    no dangling tool call.
+    """
+    from agent.message_sanitization import LOCAL_FAILURE_NOTE
+
+    tokens = []
+    real_new = cch._new_provider_attempt
+    def spy_new(agent):
+        tok = real_new(agent)
+        tokens.append(tok)
+        return tok
+
+    calls = {"n": 0}
+    def factory(n):
+        calls["n"] = n
+        if n == 1:
+            # Attempt A: text delta, then clean stream-end with NO
+            # finish_reason — the #67923 text-only drop path.
+            return iter([_chunk("partial")])
+        # Attempt B: normal completion.
+        usage = SimpleNamespace(prompt_tokens=1, completion_tokens=1, total_tokens=2)
+        return iter([_chunk("finished", finish="stop", usage=usage)])
+
+    fake = _FakeStreamClient(factory)
+    agent = _agent(fake)
+
+    def _capture_dispatch(a, kw, *, make_client, attempt):
+        # Attempt B must NOT be terminal before its own dispatch.
+        if len(tokens) >= 2:
+            assert not tokens[1].terminal_received, (
+                "continuation attempt B inherited terminal state from stubbed A"
+            )
+        return real_dispatch(a, kw, make_client=make_client, attempt=attempt)
+
+    real_dispatch = cch._dispatch_nonstreaming_api_request
+
+    with ExitStack() as st:
+        st.enter_context(patch("run_agent.jittered_backoff", return_value=0))
+        st.enter_context(patch("agent.conversation_loop.jittered_backoff", return_value=0))
+        st.enter_context(patch("agent.conversation_loop.time.sleep"))
+        st.enter_context(patch.object(agent, "_save_trajectory"))
+        st.enter_context(patch.object(agent, "_persist_session"))
+        st.enter_context(patch.object(agent, "_cleanup_task_resources"))
+        st.enter_context(patch.object(agent, "_create_request_openai_client", lambda *a, **k: fake))
+        st.enter_context(patch.object(cch, "_new_provider_attempt", spy_new))
+        st.enter_context(patch.object(cch, "_dispatch_nonstreaming_api_request", _capture_dispatch))
+        result = agent.run_conversation("stub continuation probe")
+
+    # Exact call contract: stub consumed A, continuation was B.
+    assert fake.calls == 2
+    assert calls["n"] == 2
+    assert len(tokens) == 2
+    assert tokens[0] is not tokens[1]
+    # A reached terminal via the wrapper backstop (stub returned a response).
+    assert tokens[0].terminal_received
+    # B went through its own in_flight -> terminal lifecycle.
+    assert tokens[1].terminal_received
+    # Turn completed through legal continuation — NOT a local failure.
+    assert result["completed"] is True
+    assert result["failed"] is False
+    assert result.get("turn_exit_reason") != LOCAL_REASON
+    # Partial + continuation text preserved, exactly once.
+    final = result["final_response"] or ""
+    assert "partial" in final and "finished" in final
+    assert final.count("partial") == 1
+    # No generic local-failure note, no adjacent assistants, no dangling tools.
+    assert LOCAL_FAILURE_NOTE not in final
+    msgs = result["messages"]
+    roles = [m.get("role") for m in msgs if isinstance(m, dict)]
+    assert not any(
+        roles[i] == "assistant" and roles[i - 1] == "assistant"
+        for i in range(1, len(roles))
+    )
+    answered = {m.get("tool_call_id") for m in msgs if isinstance(m, dict) and m.get("role") == "tool"}
+    for m in msgs:
+        if isinstance(m, dict) and m.get("role") == "assistant" and m.get("tool_calls"):
+            for tc in m["tool_calls"]:
+                assert tc.get("id") in answered

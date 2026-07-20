@@ -756,3 +756,30 @@ def test_partial_visible_text_preserved_after_terminal_local_failure():
     assert "post-terminal materialization failure" not in (result["final_response"] or "")
     for payload in _persisted_payloads(persist):
         assert _adjacent_assistant_pairs(payload) == []
+
+
+def test_non_local_provider_error_does_not_show_local_failure_note(capsys):
+    """Narrow regression: a retryable provider/transport error must keep its
+    original provider error display semantics and must NOT be reported as a
+    local response-processing failure (LOCAL_FAILURE_NOTE)."""
+    from agent.message_sanitization import LOCAL_FAILURE_NOTE
+
+    agent = _make_agent()
+    request = MagicMock(
+        side_effect=[
+            ConnectionError("wire down attempt 1"),
+            ConnectionError("wire down attempt 2"),
+            ConnectionError("wire down attempt 3"),
+        ]
+    )
+    result, _, _, _ = _run(agent, request)
+
+    out = capsys.readouterr().out
+    # Retry classification is unchanged: three attempts were made.
+    assert request.call_count == 3
+    # The provider error display keeps its original semantics...
+    assert "wire down" in out
+    # ...and is NEVER misreported as a local response-processing failure.
+    assert LOCAL_FAILURE_NOTE not in out
+    assert result.get("turn_exit_reason") != "local_post_response_error"
+    assert result.get("turn_exit_reason") != "local_post_response_error"

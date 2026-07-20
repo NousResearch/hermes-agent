@@ -5770,13 +5770,20 @@ def run_conversation(
                 )
             else:
                 error_msg = f"Error during OpenAI-compatible API call #{api_call_count}: {str(e)}"
-            # User-facing surfaces (stdout, transcript, synthetic tool
-            # results, final_response) only ever carry the fixed generic
-            # note. The detailed error_msg stays in the logs.
+            # Only deterministic LOCAL post-response failures get the fixed
+            # generic note on user-facing surfaces (stdout, transcript,
+            # final_response). Retryable provider/transport errors keep
+            # their original provider error display semantics — they must
+            # NOT be misreported as a local response-processing error.
             try:
-                print(f"❌ {LOCAL_FAILURE_NOTE}")
+                if _is_local_processing_error:
+                    print(f"❌ {LOCAL_FAILURE_NOTE}")
+                else:
+                    print(f"❌ {error_msg}")
             except (OSError, ValueError):
-                logger.error(LOCAL_FAILURE_NOTE)
+                logger.error(
+                    LOCAL_FAILURE_NOTE if _is_local_processing_error else error_msg
+                )
             logger.error(error_msg)
 
             # Emit the full traceback at ERROR level so it lands in both

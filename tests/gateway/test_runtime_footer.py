@@ -260,3 +260,71 @@ def test_build_footer_no_data_returns_empty_even_when_enabled():
     # With no TERMINAL_CWD env either
     if not os.environ.get("TERMINAL_CWD"):
         assert out == ""
+
+
+# ---------------------------------------------------------------------------
+# Provider propagation — fix for the "footer shows configured primary instead
+# of the runtime provider that actually answered the turn" bug.
+# ---------------------------------------------------------------------------
+
+def test_provider_field_renders_runtime_provider():
+    user = {"display": {"runtime_footer": {
+        "enabled": True,
+        "fields": ["model", "provider"],
+    }}}
+    out = build_footer_line(
+        user_config=user, platform_key="feishu",
+        model="volces-agent/GLM-5.2",
+        context_tokens=0, context_length=None, cwd="",
+        provider="volces-agent",
+    )
+    assert out == "GLM-5.2 · volces-agent"
+
+
+def test_provider_reflects_runtime_fallback_not_config():
+    """The bug: footer showed config's model.provider (kimi) while the agent
+    actually ran volces-agent after a fallback switch.  build_footer_line must
+    prefer the runtime-propagated provider."""
+    user = {"display": {"runtime_footer": {
+        "enabled": True,
+        "fields": ["model", "provider"],
+    }}, "model": {"provider": "kimi"}}  # configured primary, NOT what ran
+    out = build_footer_line(
+        user_config=user, platform_key="feishu",
+        model="GLM-5.2",
+        context_tokens=0, context_length=None, cwd="",
+        provider="volces-agent",  # what actually answered
+    )
+    assert "volces-agent" in out
+    assert "kimi" not in out
+
+
+def test_provider_falls_back_to_config_when_runtime_missing():
+    """Legacy call sites that don't propagate provider yet should still get a
+    populated field from config's model.provider, not an empty slot."""
+    user = {"display": {"runtime_footer": {
+        "enabled": True,
+        "fields": ["model", "provider"],
+    }}, "model": {"provider": "kimi"}}
+    out = build_footer_line(
+        user_config=user, platform_key="feishu",
+        model="k3",
+        context_tokens=0, context_length=None, cwd="",
+        provider=None,  # runtime didn't propagate (old run.py)
+    )
+    assert "kimi" in out
+
+
+def test_provider_omitted_when_neither_runtime_nor_config():
+    user = {"display": {"runtime_footer": {
+        "enabled": True,
+        "fields": ["model", "provider"],
+    }}}
+    out = build_footer_line(
+        user_config=user, platform_key="feishu",
+        model="gpt-5.4",
+        context_tokens=0, context_length=None, cwd="",
+        provider=None,
+    )
+    # No provider anywhere -> field silently dropped, no trailing separator
+    assert out == "gpt-5.4"

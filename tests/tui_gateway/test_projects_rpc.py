@@ -172,6 +172,55 @@ def test_add_folder_and_for_cwd(tmp_path):
     assert "branch" in resolved
 
 
+def test_project_info_for_cwd_returns_status_payload(tmp_path):
+    # The status-surface resolver returns the owning project's identity for a
+    # nested cwd — the shape the TUI status label + /status read.
+    folder = tmp_path / "repo"
+    folder.mkdir()
+    created = _call("projects.create", {"name": "Repo", "folders": [str(folder)]})["project"]
+
+    nested = folder / "src"
+    nested.mkdir()
+
+    assert server._project_info_for_cwd(str(nested)) == {
+        "id": created["id"],
+        "slug": "repo",
+        "name": "Repo",
+        "primary_path": str(folder),
+    }
+
+
+def test_project_info_for_cwd_unowned_and_blank_are_none(tmp_path):
+    # A cwd outside every project — and an empty cwd — carry no project, so the
+    # status label falls back to the cwd leaf on every surface.
+    owned = tmp_path / "owned"
+    owned.mkdir()
+    _call("projects.create", {"name": "Owned", "folders": [str(owned)]})
+
+    outside = tmp_path / "outside"
+    outside.mkdir()
+
+    assert server._project_info_for_cwd(str(outside)) is None
+    assert server._project_info_for_cwd("") is None
+
+
+def test_session_info_carries_project_for_owned_cwd(tmp_path):
+    # session.info threads the resolved project through so the desktop/TUI can
+    # name the workspace without a second round-trip.
+    folder = tmp_path / "proj"
+    folder.mkdir()
+    _call("projects.create", {"name": "Proj", "folders": [str(folder)]})
+
+    info = server._session_info(None, {"cwd": str(folder), "session_key": "s1"})
+    assert info["project"] == {
+        "id": info["project"]["id"],
+        "slug": "proj",
+        "name": "Proj",
+        "primary_path": str(folder),
+    }
+    assert info["project"]["name"] == "Proj"
+
+
 def test_update_and_archive(tmp_path):
     pid = _call("projects.create", {"name": "Orig", "folders": [str(tmp_path)]})["project"]["id"]
 

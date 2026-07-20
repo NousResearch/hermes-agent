@@ -124,6 +124,9 @@ gateway:
     label_normal:          "NORMAL"
     status_fast:           "fast"
     status_normal:         "normal"
+    picker_title:          "⚡ **Priority Processing**\\n\\nHuidige modus: `{mode}`\\n\\nKies \\'n opsie:"
+    choice_fast:           "fast — Priority Processing aan"
+    choice_normal:         "normal — standaardverwerking"
 
   footer:
     status:                "📎 Looptyd-voetstuk: **{state}**\nVelde: `{fields}`\nPlatform: `{platform}`"
@@ -194,6 +197,11 @@ gateway:
     reset_global_unsupported:  "⚠️ `/reasoning reset --global` word nie ondersteun nie. Gebruik `/reasoning <level> --global` om die globale verstek te verander."
     reset_done:                "🧠 ✓ Sessie-redenering-oorskryf verwyder; val terug op globale konfigurasie."
     unknown_arg:               "⚠️ Onbekende argument: `{arg}`\n\n**Geldige vlakke:** none, minimal, low, medium, high, xhigh, max, ultra\n**Vertoon:** show, hide\n**Permanent:** voeg `--global` by om verby hierdie sessie te stoor"
+    picker_title:              "🧠 **Redenering-instellings**\\n\\n**Inspanning:** `{level}`\\n**Bereik:** {scope}\\n**Vertoon:** {display}\\n\\nKies \\'n opsie:"
+    choice_none:               "none — deaktiveer redenering"
+    choice_reset:              "reset — vee sessie-oorskrywing uit"
+    choice_show:               "wys redenering in antwoorde"
+    choice_hide:               "versteek redenering in antwoorde"
     set_global:                "🧠 ✓ Redenering-inspanning gestel op `{effort}` (gestoor in konfigurasie)\n_(neem effek by die volgende boodskap)_"
     set_global_save_failed:    "🧠 ✓ Redenering-inspanning gestel op `{effort}` (slegs sessie — konfigurasie-stoor het misluk)\n_(neem effek by die volgende boodskap)_"
     set_session:               "🧠 ✓ Redenering-inspanning gestel op `{effort}` (slegs sessie — voeg `--global` by om permanent te stoor)\n_(neem effek by die volgende boodskap)_"

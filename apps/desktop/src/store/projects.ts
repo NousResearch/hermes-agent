@@ -180,6 +180,44 @@ export function projectIdForCwd(cwd: string): null | string {
   return best
 }
 
+// The display NAME of the explicit, named project owning `cwd` (longest path
+// match), or null when the cwd sits in no named project. The status bar reads
+// this to label the workspace by project instead of the bare cwd leaf. We skip
+// auto-projects (a repo root promoted with no projects.db row) and the synthetic
+// "No project" bucket on purpose: those have no human name, so their sessions
+// keep the cwd-leaf label — matching the backend `_project_info_for_cwd`, which
+// only resolves projects.db rows, so the desktop and TUI name the same session
+// identically without threading a second per-session copy through session.info.
+export function projectNameForCwd(cwd: string): null | string {
+  const target = (cwd || '').trim()
+
+  if (!target) {
+    return null
+  }
+
+  let best: null | string = null
+  let bestLen = -1
+
+  for (const project of $projectTree.get()) {
+    if (project.isAuto || project.isNoProject) {
+      continue
+    }
+
+    const paths = [project.path, ...project.repos.flatMap(repo => [repo.path, ...repo.groups.map(group => group.path)])]
+
+    for (const path of paths) {
+      const p = (path || '').trim()
+
+      if (p && underPath(p, target) && p.length > bestLen) {
+        bestLen = p.length
+        best = project.label
+      }
+    }
+  }
+
+  return best
+}
+
 // The active session's agent relocated itself (created/entered another repo or
 // worktree via the terminal — backend re-anchors its cwd and emits session.info).
 // Re-pull projects + tree so a freshly created/auto project and the relocated
@@ -533,6 +571,38 @@ export async function updateProject(
       ...(patch.icon === null && { icon: '' })
     })
   )
+}
+
+// Appearance for an AUTO (inherited git-repo) project has no projects.db row to
+// write to — its id is just the repo path. So the first color/icon change ADOPTS
+// the repo as a real project (folder = repo root, name = its label) carrying the
+// chosen look; from then on it patches in place like any explicit project.
+// Returns true when an adoption happened, so an incremental picker can close
+// (the node's id changes on adopt, and a second stale write would double-create).
+export async function setProjectAppearance(
+  project: Pick<SidebarProjectTree, 'color' | 'icon' | 'id' | 'isAuto' | 'label' | 'path'>,
+  patch: { color?: null | string; icon?: null | string }
+): Promise<boolean> {
+  if (!project.isAuto) {
+    await updateProject(project.id, patch)
+
+    return false
+  }
+
+  if (!project.path) {
+    return false
+  }
+
+  await createProject({
+    name: project.label,
+    folders: [project.path],
+    primaryPath: project.path,
+    // Carry any already-set look so setting one field doesn't wipe the other.
+    color: (patch.color ?? project.color) || undefined,
+    icon: (patch.icon ?? project.icon) || undefined
+  })
+
+  return true
 }
 
 export async function addProjectFolder(

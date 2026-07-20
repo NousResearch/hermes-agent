@@ -75,7 +75,11 @@ def test_handoff_in_protected_head_populates_previous_summary_before_update():
     old_summary = "PROTECTED-HEAD-SUMMARY durable facts from before restart"
     seen_turns = []
 
-    def fake_generate_summary(turns_to_summarize, focus_topic=None):
+    def fake_generate_summary(
+        turns_to_summarize,
+        focus_topic=None,
+        memory_context="",
+    ):
         seen_turns.extend(turns_to_summarize)
         return "new summary from resumed turns"
 

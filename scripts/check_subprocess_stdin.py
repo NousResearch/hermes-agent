@@ -37,6 +37,27 @@ TUI_CONTEXT_DIRS = [
     "tui_gateway/",
 ]
 
+# User plugin roots — scanned at runtime if they exist.  Plugins load from
+# ``get_hermes_home() / "plugins"`` (user) and ``./.hermes/plugins/`` (project,
+# gated behind ``HERMES_ENABLE_PROJECT_PLUGINS``) — see
+# ``hermes_cli/plugins.py:10-12``.  The guard only checked the bundled
+# ``plugins/`` dir, missing user-installed code that spawns subprocesses
+# (gap reported in #67639).
+#
+# Import is deferred to ``main()`` (after ``os.chdir(repo_root)``) because
+# this script runs as a standalone subprocess — ``hermes_constants`` isn't
+# on ``sys.path`` until the repo root is added.
+
+# subprocess and os APIs that inherit stdin by default when called without
+# an explicit stdin= argument.  The original regex only covered run/Popen
+# (gap #1 in #67639); call, check_output, check_call, os.system, and
+# asyncio.create_subprocess_* all inherit fd 0 equally.
+_SUBPROCESS_PATTERNS = [
+    r"subprocess\.(run|Popen|call|check_output|check_call)\s*\([\"'a-zA-Z_\[\(]",
+    r"os\.system\s*\([\"'a-zA-Z_\[\(]",
+    r"asyncio\.create_subprocess_(exec|shell)\s*\([\"'a-zA-Z_\[\(]",
+]
+
 # Files with intentional stdin= override (e.g. input= creates a pipe).
 # Format: "filepath:line" or just "filepath" to skip the whole file.
 KNOWN_SAFE = {
@@ -64,16 +85,14 @@ SKIP_DIRS = {
 
 
 def find_subprocess_calls(content: str, filepath: str) -> list[dict]:
-    """Find all subprocess.run/Popen calls missing stdin= in content."""
+    """Find all subprocess/os/asyncio calls missing stdin= in content."""
     violations = []
     lines = content.split("\n")
 
     # Match only actual function calls — not comments, docstrings, or prose.
-    # The pattern requires an opening paren followed by an arg character
-    # (quote, bracket, letter, or closing paren for empty calls).
-    # This excludes ``subprocess.Popen(...)`` in docstrings and
-    # subprocess.run(...) in comments.
-    pattern = re.compile(r'subprocess\.(run|Popen)\s*\(["\'a-zA-Z_\[\(]')
+    # Multiple patterns cover subprocess.run/Popen/call/check_output/check_call,
+    # os.system, and asyncio.create_subprocess_exec/shell.
+    patterns = [re.compile(p) for p in _SUBPROCESS_PATTERNS]
 
     for i, line in enumerate(lines):
         # Skip comments.
@@ -85,7 +104,7 @@ def find_subprocess_calls(content: str, filepath: str) -> list[dict]:
         if "``subprocess" in line:
             continue
 
-        if not pattern.search(line):
+        if not any(p.search(line) for p in patterns):
             continue
 
         # Collect the full call (may span multiple lines).
@@ -138,6 +157,11 @@ def main() -> int:
     repo_root = Path(__file__).resolve().parent.parent
     os.chdir(repo_root)
 
+    # Add repo root to sys.path so we can import hermes_constants (this script
+    # runs as a standalone subprocess, not as a module).
+    sys.path.insert(0, str(repo_root))
+    from hermes_constants import get_hermes_home
+
     all_violations = []
 
     for tui_dir in TUI_CONTEXT_DIRS:
@@ -158,6 +182,32 @@ def main() -> int:
                 continue
 
             content = py_file.read_text()
+            violations = find_subprocess_calls(content, rel)
+            all_violations.extend(violations)
+
+    # Scan user plugin directories (Gap 1: guard missed user-installed
+    # plugins in get_hermes_home()/plugins/ and project plugins in
+    # ./.hermes/plugins/, where code like ori/hooks.py can spawn
+    # subprocesses with inherited stdin — #67639).
+    plugin_roots: list[Path] = [get_hermes_home() / "plugins"]
+    if os.environ.get("HERMES_ENABLE_PROJECT_PLUGINS"):
+        plugin_roots.append(Path.cwd() / ".hermes" / "plugins")
+    seen_roots: set[Path] = set()
+    for plugin_root in plugin_roots:
+        resolved = plugin_root.resolve()
+        if resolved in seen_roots or not resolved.is_dir():
+            continue
+        seen_roots.add(resolved)
+
+        for py_file in resolved.rglob("*.py"):
+            rel = str(py_file)
+            if py_file.name in ("conftest.py",) or "/tests/" in rel:
+                continue
+
+            try:
+                content = py_file.read_text()
+            except Exception:
+                continue
             violations = find_subprocess_calls(content, rel)
             all_violations.extend(violations)
 

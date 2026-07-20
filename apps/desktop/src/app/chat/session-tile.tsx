@@ -15,11 +15,14 @@
  */
 
 import { useStore } from '@nanostores/react'
+import { useQueryClient } from '@tanstack/react-query'
 import { atom, computed } from 'nanostores'
 import { useEffect, useMemo, useRef } from 'react'
 
 import { useGatewayRequest } from '@/app/gateway/hooks/use-gateway-request'
+import { useModelControls } from '@/app/session/hooks/use-model-controls'
 import { blobToDataUrl } from '@/app/session/hooks/use-prompt-actions/utils'
+import { ModelMenuPanel } from '@/app/shell/model-menu-panel'
 import { formatRefValue } from '@/components/assistant-ui/directive-text'
 import { CenteredThreadSpinner } from '@/components/assistant-ui/thread/status'
 import { findGroupOfPane } from '@/components/pane-shell/tree/model'
@@ -84,11 +87,13 @@ function buildTileView(storedSessionId: string): SessionView {
     $awaitingResponse: computed($state, state => Boolean(state?.awaitingResponse)),
     $busy: computed($state, state => Boolean(state?.busy)),
     $cwd: computed($state, state => state?.cwd ?? ''),
+    $fast: computed($state, state => Boolean(state?.fast)),
     $lastVisibleIsUser: computed($messages, lastVisibleMessageIsUser),
     $messages,
     $messagesEmpty: computed($messages, messages => messages.length === 0),
     $model: computed($state, state => state?.model ?? ''),
     $provider: computed($state, state => state?.provider ?? ''),
+    $reasoningEffort: computed($state, state => state?.reasoningEffort ?? ''),
     $runtimeId,
     // Constant for the tile's lifetime — a plain atom, not a computed.
     $storedId: atom(storedSessionId)
@@ -105,7 +110,10 @@ function TileChat({
   view: SessionView
 }) {
   const { gatewayRef, requestGateway } = useGatewayRequest()
+  const queryClient = useQueryClient()
+  const { selectModel } = useModelControls({ queryClient, requestGateway })
   const cwd = useStore(view.$cwd)
+  const gatewayOpen = useStore($gatewayState) === 'open'
 
   // One attachment set + focus key per tile, stable for the tile's lifetime.
   const attachments = useRef(createComposerAttachmentScope()).current
@@ -132,11 +140,26 @@ function TileChat({
     scope: { add: attachments.add, remove: attachments.remove, target: scope.target }
   })
 
+  // Per-tile model menu — rendered under this tile's SessionView so the pill
+  // + switch target THIS runtime, not the primary (which may be mid-turn).
+  const modelMenuContent = useMemo(
+    () =>
+      gatewayOpen ? (
+        <ModelMenuPanel
+          gateway={gatewayRef.current || undefined}
+          onSelectModel={selectModel}
+          requestGateway={requestGateway}
+        />
+      ) : null,
+    [gatewayOpen, gatewayRef, requestGateway, selectModel]
+  )
+
   return (
     <SessionViewProvider value={view}>
       <ComposerScopeProvider value={scope}>
         <ChatView
           gateway={gatewayRef.current}
+          modelMenuContent={modelMenuContent}
           onAddContextRef={composer.addContextRefAttachment}
           onAddUrl={url => composer.addContextRefAttachment(`@url:${formatRefValue(url)}`, url)}
           onAttachDroppedItems={composer.attachDroppedItems}

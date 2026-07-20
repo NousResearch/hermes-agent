@@ -10,6 +10,7 @@ import {
   type ChatMessagePart,
   chatMessageText,
   type GatewayEventPayload,
+  mergeFinalAssistantText,
   reasoningPart,
   renderMediaTags,
   upsertToolPart
@@ -370,8 +371,62 @@ export function useMessageStream({
     [flushQueuedDeltas, mutateStream, sessionInterrupted]
   )
 
-  const completeAssistantMessage = useCallback(
+  const finalizeInterimAssistantMessage = useCallback(
     (sessionId: string, text: string) => {
+      updateSessionState(sessionId, state => {
+        if (state.interrupted) {
+          return state
+        }
+
+        const authoritativeText = renderMediaTags(text).trim()
+
+        if (!authoritativeText) {
+          return state
+        }
+
+        const streamId = state.streamId
+
+        const replaceTextPart = (parts: ChatMessagePart[]) => {
+          const visibleText = stripGeneratedImageEchoes(authoritativeText, generatedImageEchoSources(parts)).trim()
+
+          return mergeFinalAssistantText(parts, visibleText)
+        }
+
+        let nextMessages = state.messages
+
+        if (streamId && nextMessages.some(m => m.id === streamId)) {
+          // Finalize the existing streaming bubble in place
+          nextMessages = nextMessages.map(m =>
+            m.id === streamId ? { ...m, parts: replaceTextPart(m.parts), pending: false } : m
+          )
+        } else {
+          // No streaming bubble — create a standalone interim message
+          nextMessages = [
+            ...nextMessages,
+            {
+              id: `assistant-interim-${Date.now()}`,
+              role: 'assistant' as const,
+              parts: [assistantTextPart(authoritativeText)],
+              pending: false,
+              branchGroupId: state.pendingBranchGroup ?? undefined
+            }
+          ]
+        }
+
+        return {
+          ...state,
+          messages: nextMessages,
+          streamId: null,
+          interimBoundaryPending: true,
+          sawAssistantPayload: state.sawAssistantPayload || Boolean(authoritativeText)
+        }
+      })
+    },
+    [updateSessionState]
+  )
+
+  const completeAssistantMessage = useCallback(
+    (sessionId: string, text: string, responsePreviewed?: boolean) => {
       let shouldHydrate = false
 
       const completedState = updateSessionState(sessionId, state => {
@@ -394,27 +449,12 @@ export function useMessageStream({
         const streamId = state.streamId
         const finalText = renderMediaTags(text).trim()
         const completionError = completionErrorText(finalText)
-        const normalize = (value: string) => value.replace(/\s+/g, ' ').trim()
+        const interimBoundaryPending = state.interimBoundaryPending
 
         const replaceTextPart = (parts: ChatMessagePart[]) => {
           const visibleFinalText = stripGeneratedImageEchoes(finalText, generatedImageEchoSources(parts)).trim()
-          const dedupeReference = normalize(visibleFinalText)
 
-          const kept = parts.filter(part => {
-            if (part.type === 'text') {
-              return false
-            }
-
-            if (part.type !== 'reasoning' || !dedupeReference) {
-              return true
-            }
-
-            const r = normalize(part.text)
-
-            return !(r && (dedupeReference.startsWith(r) || r.startsWith(dedupeReference)))
-          })
-
-          return visibleFinalText ? [...kept, assistantTextPart(visibleFinalText)] : kept
+          return mergeFinalAssistantText(parts, visibleFinalText)
         }
 
         const completeMessage = (message: ChatMessage): ChatMessage =>
@@ -454,7 +494,27 @@ export function useMessageStream({
             const existing = prev[index]
             const existingText = chatMessageText(existing).trim()
 
-            if (existing.pending || (finalText && existingText === finalText)) {
+            if (existing.pending || (!interimBoundaryPending && finalText && existingText === finalText)) {
+              nextMessages = prev.map((message, messageIndex) =>
+                messageIndex === index ? completeMessage(message) : message
+              )
+            } else if (
+              interimBoundaryPending &&
+              responsePreviewed &&
+              finalText &&
+              existingText &&
+              finalText.startsWith(existingText)
+            ) {
+              // The verification candidate was published provisionally as an
+              // interim message and then reused as the terminal response
+              // (continuation-budget fallback). Settle the interim in place
+              // instead of creating a duplicate — the DB has one row, so the
+              // live UI must agree. (#65919 review: duplicate-message blocker)
+              //
+              // Prefix match (not exact equality): the final response may be
+              // the streamed text plus a trailing delta.  mergeFinalAssistantText
+              // (called via completeMessage) handles the actual merge — it
+              // strips the old text parts and appends the full final text.
               nextMessages = prev.map((message, messageIndex) =>
                 messageIndex === index ? completeMessage(message) : message
               )
@@ -480,6 +540,7 @@ export function useMessageStream({
           awaitingResponse: false,
           busy: false,
           needsInput: false,
+          interimBoundaryPending: false,
           turnStartedAt: null
         }
       })
@@ -543,6 +604,7 @@ export function useMessageStream({
           awaitingResponse: false,
           busy: false,
           needsInput: false,
+          interimBoundaryPending: false,
           turnStartedAt: null
         }
       })
@@ -560,6 +622,7 @@ export function useMessageStream({
     completeAssistantMessage,
     failAssistantMessage,
     flushQueuedDeltas,
+    finalizeInterimAssistantMessage,
     queryClient,
     refreshHermesConfig,
     sessionInterrupted,
@@ -573,6 +636,7 @@ export function useMessageStream({
     appendReasoningDelta,
     completeAssistantMessage,
     handleGatewayEvent,
+    finalizeInterimAssistantMessage,
     upsertToolCall
   }
 }

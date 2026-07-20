@@ -17,7 +17,7 @@ import {
   setTurnStartedAt,
   setYoloActive
 } from '@/store/session'
-import { publishSessionState, setWatchdogClearFn } from '@/store/session-states'
+import { publishSessionState } from '@/store/session-states'
 
 import type { ClientSessionState } from '../../types'
 
@@ -288,33 +288,6 @@ export function useSessionStateCache({
 
     return runtimeState?.storedSessionId === storedSessionId ? runtimeId : null
   }, [])
-
-  // Wire the watchdog's force-clear callback to our cache. When the watchdog
-  // fires (8 min of stream silence — a hung or looping turn that never
-  // delivered its terminal event), it calls this to clear the session's busy
-  // state. Clearing the sidebar dot alone would leave the composer wedged on
-  // "Thinking"/Stop; updateSessionState propagates the clear to $sessionStates
-  // → $workingSessionIds (computed) follows automatically, and
-  // syncSessionStateToView re-syncs $busy when the healed session is the one
-  // on screen.
-  useEffect(() => {
-    setWatchdogClearFn(runtimeId => {
-      const state = sessionStateByRuntimeIdRef.current.get(runtimeId)
-
-      if (!state?.busy) {
-        return
-      }
-
-      updateSessionState(runtimeId, current => ({
-        ...current,
-        awaitingResponse: false,
-        busy: false,
-        needsInput: false
-      }))
-    })
-
-    return () => setWatchdogClearFn(null)
-  }, [updateSessionState])
 
   return {
     activeSessionIdRef,

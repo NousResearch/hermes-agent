@@ -214,38 +214,27 @@ class TestConfigIssueDataclass:
 
 
 class TestUnknownTopLevelKeys:
-    """Unknown top-level keys should warn (not error); known roots stay silent."""
+    """Arbitrary top-level keys must NOT warn — they are bridged to os.environ.
 
-    def test_typo_top_level_key_warns_with_key_name(self):
-        """A typo like skillz: must surface as a warning naming the key."""
+    Top-level scalars in config.yaml are forwarded into the environment
+    (gateway/run.py, hermes send) so users can feed skills and external apps
+    env-style keys like DISCORD_HOME_CHANNEL or MY_APP_TOKEN. A closed-world
+    allowlist can never enumerate those, so no "Unknown top-level config key"
+    warning may exist.
+    """
+
+    def test_arbitrary_top_level_keys_stay_silent(self):
+        """Env-style and custom keys must produce no unknown-key warnings."""
         issues = validate_config_structure({
             "model": {"provider": "openrouter"},
+            "DISCORD_HOME_CHANNEL": "12345",
+            "TELEGRAM_HOME_CHANNEL": "-100987",
+            "DISCORD_ALLOW_ALL_USERS": True,
+            "MY_CUSTOM_SKILL_VAR": "hello",
             "skillz": {"enabled": True},
-            "secrity": {"redact": True},
         })
-        warnings = [i for i in issues if i.severity == "warning"]
-        unknown = [i for i in warnings if "Unknown top-level config key" in i.message]
-        messages = " ".join(i.message for i in unknown)
-        assert "skillz" in messages
-        assert "secrity" in messages
-        assert all(i.severity == "warning" for i in unknown)
-        assert not any(i.severity == "error" for i in unknown)
-
-    def test_all_default_config_roots_accepted_without_unknown_warning(self):
-        """Every DEFAULT_CONFIG root (and legacy extras) must not warn as unknown."""
-        config = {key: {} if isinstance(DEFAULT_CONFIG.get(key), dict) else DEFAULT_CONFIG.get(key)
-                  for key in DEFAULT_CONFIG}
-        for key in _EXTRA_KNOWN_ROOT_KEYS:
-            if key == "custom_providers":
-                config[key] = [{"name": "x", "base_url": "https://example.com"}]
-                config.setdefault("model", {"provider": "custom", "default": "m"})
-            elif key == "fallback_model":
-                config[key] = {"provider": "openrouter", "model": "test"}
-            else:
-                config[key] = {}
-        issues = validate_config_structure(config)
-        unknown = [i for i in issues if "Unknown top-level config key" in i.message]
-        assert unknown == [], f"Unexpected unknown-key warnings: {[i.message for i in unknown]}"
+        assert not any("Unknown top-level config key" in i.message for i in issues)
+        assert issues == []
 
     def test_known_root_keys_derived_from_default_config(self):
         """_KNOWN_ROOT_KEYS must be DEFAULT_CONFIG.keys() plus extras — single source of truth."""
@@ -254,7 +243,7 @@ class TestUnknownTopLevelKeys:
         assert _KNOWN_ROOT_KEYS == frozenset(DEFAULT_CONFIG.keys()) | _EXTRA_KNOWN_ROOT_KEYS
 
     def test_provider_like_unknown_root_keeps_misplaced_message(self):
-        """Preserve existing base_url/api_key root-level guidance (not generic unknown)."""
+        """Preserve existing base_url/api_key root-level guidance."""
         issues = validate_config_structure({
             "base_url": "https://example.com/v1",
             "api_key": "secret",
@@ -263,19 +252,13 @@ class TestUnknownTopLevelKeys:
             i for i in issues
             if i.severity == "warning" and "looks misplaced" in i.message
         ]
-        generic_unknown = [
-            i for i in issues
-            if "Unknown top-level config key" in i.message
-        ]
         assert any("base_url" in i.message for i in misplaced)
         assert any("api_key" in i.message for i in misplaced)
-        assert generic_unknown == []
 
     def test_private_underscore_keys_not_flagged(self):
-        """Internal keys starting with _ remain ignored (except known defaults)."""
+        """Internal keys starting with _ remain ignored."""
         issues = validate_config_structure({
             "_internal_scratch": True,
             "model": {"provider": "openrouter"},
         })
-        assert not any("Unknown top-level" in i.message for i in issues)
-        assert not any("_internal_scratch" in i.message for i in issues)
+        assert issues == []

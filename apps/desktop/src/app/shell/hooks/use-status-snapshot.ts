@@ -14,38 +14,67 @@ export function useStatusSnapshot(gatewayState: string | undefined, requestGatew
 
   useEffect(() => {
     let cancelled = false
+    let timer: number | undefined
+
+    // A closed/connecting gateway cannot have an authoritative live-runtime
+    // result. Clear readiness before starting the REST status leg so a hung
+    // getStatus() cannot leave a stale "ready" state visible after disconnect.
+    if (gatewayState !== 'open') {
+      setInferenceStatus(null)
+    }
+
+    const scheduleRefresh = () => {
+      if (!cancelled) {
+        timer = window.setTimeout(() => void refresh(), REFRESH_MS)
+      }
+    }
 
     const refresh = async () => {
       try {
-        const [next, inference] = await Promise.all([
+        // Wait for both legs before scheduling the next refresh. setInterval
+        // allowed a slow runtime check to overlap with later polls, which
+        // multiplied load on an already-busy gateway and let stale failures
+        // race newer healthy results.
+        const [statusResult, inferenceResult] = await Promise.allSettled([
           getStatus(),
-          gatewayState === 'open'
-            ? evaluateRuntimeReadiness(requestGateway).catch(error => ({
-                checksDisagree: false,
-                ready: false,
-                reason: error instanceof Error ? error.message : String(error),
-                source: 'fallback' as const
-              }))
-            : Promise.resolve(null)
+          gatewayState === 'open' ? evaluateRuntimeReadiness(requestGateway) : Promise.resolve(null)
         ])
 
         if (cancelled) {
           return
         }
 
-        setStatusSnapshot(next)
-        setInferenceStatus(inference)
-      } catch {
-        // Keep last snapshot through transient gateway flaps.
+        if (statusResult.status === 'fulfilled') {
+          setStatusSnapshot(statusResult.value)
+        }
+
+        if (inferenceResult.status === 'fulfilled') {
+          const inference = inferenceResult.value
+
+          if (inference === null) {
+            setInferenceStatus(null)
+          } else if (inference.source !== 'fallback') {
+            // runtime_check/setup_status returned an authoritative boolean.
+            // A fallback means both RPCs failed or returned no boolean, so it
+            // is a transient/unknown transport state, not proof that inference
+            // became unconfigured. Keep the last authoritative result instead
+            // of flashing "Inference not ready" during a gateway flap.
+            setInferenceStatus(inference)
+          }
+        }
+      } finally {
+        scheduleRefresh()
       }
     }
 
     void refresh()
-    const timer = window.setInterval(() => void refresh(), REFRESH_MS)
 
     return () => {
       cancelled = true
-      window.clearInterval(timer)
+
+      if (timer !== undefined) {
+        window.clearTimeout(timer)
+      }
     }
   }, [gatewayState, requestGateway])
 

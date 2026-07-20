@@ -348,17 +348,58 @@ def test_bedrock_claude_rows_all_carry_cache_pricing():
         assert entry.cache_write_cost_per_million > entry.input_cost_per_million, key
 
 
+def test_bedrock_current_gen_claude_rows_resolve():
+    """Current-gen Claude models (Opus 4.8/4.7, Sonnet 5) must have Bedrock
+    pricing rows so cached sessions report a dollar cost, not ``unknown``.
+    Assert each resolves via the bare id and a cross-region inference profile
+    (us./global. prefix), that every id for a given model resolves to the same
+    entry, and that the row carries the cache fields a Bedrock Claude session
+    needs.
+
+    (Version-suffixed IDs like ``...-v1:0`` are covered separately by the
+    normalizer test in the suffix-strip change; this test intentionally sticks
+    to id shapes that resolve on ``main`` so it is independent of that PR.)
+    """
+    url = "https://bedrock-runtime.us-east-1.amazonaws.com"
+    for bare in (
+        "anthropic.claude-opus-4-8",
+        "anthropic.claude-opus-4-7",
+        "anthropic.claude-sonnet-5",
+    ):
+        ref = get_pricing_entry(bare, provider="bedrock", base_url=url)
+        assert ref is not None, bare
+        assert ref.input_cost_per_million is not None, bare
+        assert ref.output_cost_per_million is not None, bare
+        # Output costs more than input across the Claude line; sanity-check the
+        # row isn't malformed (input < output).
+        assert ref.output_cost_per_million > ref.input_cost_per_million, bare
+        # Cache fields present so cached sessions price correctly (the #50295
+        # symptom was unknown cost on cached Bedrock Claude sessions).
+        assert ref.cache_read_cost_per_million is not None, bare
+        assert ref.cache_write_cost_per_million is not None, bare
+        # Cross-region inference profiles resolve to the same entry.
+        for mid in (f"us.{bare}", f"global.{bare}"):
+            entry = get_pricing_entry(mid, provider="bedrock", base_url=url)
+            assert entry is not None, mid
+            assert entry.input_cost_per_million == ref.input_cost_per_million, mid
+            assert entry.output_cost_per_million == ref.output_cost_per_million, mid
+
+
 def test_bedrock_cross_region_profile_prefix_resolves_to_pricing():
-    """Cross-region inference profiles (us./global./eu. prefixes) must resolve
-    to the same pricing entry as the bare foundation-model id.  Without prefix
-    normalization, ``us.anthropic.claude-*`` sessions price as unknown.
+    """Cross-region inference profiles must resolve to the same pricing entry
+    as the bare foundation-model id.  Without prefix normalization a scoped
+    ``<region>.anthropic.claude-*`` session prices as unknown.
+
+    Asia-Pacific (``apac.``) and Australia (``au.``) are included because AWS
+    uses the full ``apac.`` prefix, not ``ap.`` — a bare ``ap.`` never matches
+    an ``apac.*`` id, so those geographies previously priced as unknown.
     """
     bedrock_url = "https://bedrock-runtime.us-east-1.amazonaws.com"
     bare = get_pricing_entry(
         "anthropic.claude-sonnet-4-5", provider="bedrock", base_url=bedrock_url
     )
     assert bare is not None
-    for prefix in ("us.", "global.", "eu."):
+    for prefix in ("us.", "global.", "eu.", "apac.", "au."):
         scoped = get_pricing_entry(
             f"{prefix}anthropic.claude-sonnet-4-5",
             provider="bedrock",
@@ -367,6 +408,61 @@ def test_bedrock_cross_region_profile_prefix_resolves_to_pricing():
         assert scoped is not None, prefix
         assert scoped.input_cost_per_million == bare.input_cost_per_million
         assert scoped.cache_read_cost_per_million == bare.cache_read_cost_per_million
+
+
+def test_bedrock_versioned_inference_profile_resolves_to_bare_pricing():
+    """Bedrock profile IDs may include the provider's dated version suffix.
+
+    The pricing table intentionally uses shorter model-family IDs, so the
+    lookup needs a longest-prefix fallback after stripping the region scope.
+    """
+    bare = get_pricing_entry("anthropic.claude-sonnet-4-6", provider="bedrock")
+    assert bare is not None
+
+    for model in (
+        "us.anthropic.claude-sonnet-4-6-20250514-v1:0",
+        "global.anthropic.claude-sonnet-4-6-20250514-v1:0",
+    ):
+        scoped = get_pricing_entry(model, provider="bedrock")
+        assert scoped is not None, model
+        assert scoped.input_cost_per_million == bare.input_cost_per_million
+        assert scoped.output_cost_per_million == bare.output_cost_per_million
+        assert scoped.cache_read_cost_per_million == bare.cache_read_cost_per_million
+        assert scoped.cache_write_cost_per_million == bare.cache_write_cost_per_million
+
+
+def test_bedrock_pricing_supports_less_common_inference_profile_prefixes():
+    """AWS also exposes profile scopes beyond us./global./eu.; those should
+    not silently fall through to unknown pricing.
+    """
+    bare = get_pricing_entry("anthropic.claude-haiku-4-5", provider="bedrock")
+    entry = get_pricing_entry(
+        "apac.anthropic.claude-haiku-4-5-20251001-v1:0",
+        provider="bedrock",
+    )
+
+    assert bare is not None
+    assert entry is not None
+    for field in (
+        "input_cost_per_million",
+        "output_cost_per_million",
+        "cache_read_cost_per_million",
+        "cache_write_cost_per_million",
+    ):
+        assert getattr(entry, field) == getattr(bare, field)
+
+
+def test_bedrock_unknown_model_continuation_does_not_use_base_pricing():
+    """Unrecognized Bedrock SKUs must remain unknown rather than inheriting a
+    similarly named model family's price.
+    """
+    assert (
+        get_pricing_entry(
+            "anthropic.claude-sonnet-4-6-experimental",
+            provider="bedrock",
+        )
+        is None
+    )
 
 
 def test_bedrock_claude_cached_session_estimates_cost_not_unknown():

@@ -36,8 +36,6 @@ export interface ToolView {
   imageUrl?: string
   inlineDiff: string
   previewTarget?: string
-  rawArgs: string
-  rawResult: string
   /** Set for tools whose output naturally contains ANSI escape codes
    *  (terminal/execute_code) so the renderer knows to run them through
    *  the ANSI parser instead of printing them as literals. */

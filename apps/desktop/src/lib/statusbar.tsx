@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 
+import { StableText } from '@/components/chat/stable-text'
 import { compactNumber } from '@/lib/format'
 import type { UsageStats } from '@/types/hermes'
 
@@ -72,5 +73,9 @@ export function LiveDuration({ since }: { since: number | null | undefined }) {
     return () => window.clearInterval(timer)
   }, [since])
 
-  return since ? formatDuration(now - since) : null
+  if (!since) {
+    return null
+  }
+
+  return <StableText>{formatDuration(now - since)}</StableText>
 }

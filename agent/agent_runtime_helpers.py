@@ -530,6 +530,12 @@ def repair_message_sequence(agent, messages: List[Dict]) -> int:
             or m.get("finish_reason") == "incomplete"
         )
 
+    def _is_verification_candidate(m: Dict) -> bool:
+        return m.get("finish_reason") in {
+            "verification_required",
+            "verify_hook_continue",
+        }
+
     collapsed: List[Dict] = []
     for msg in messages:
         if (
@@ -542,6 +548,16 @@ def repair_message_sequence(agent, messages: List[Dict]) -> int:
             and not _is_codex_interim(collapsed[-1])
         ):
             prev = collapsed[-1]
+            # Verification candidate collapsing: when the earlier assistant
+            # message is a provisional candidate (finish_reason =
+            # verification_required / verify_hook_continue), the later
+            # response supersedes it for model replay — replace rather than
+            # union. Both remain durable in state.db; this only affects the
+            # in-memory sequence sent to the model. (#65919 §7)
+            if _is_verification_candidate(prev):
+                collapsed[-1] = msg
+                repairs += 1
+                continue
             # Union tool_calls (preserve order, both may carry them).
             prev_calls = list(prev.get("tool_calls") or [])
             new_calls = list(msg.get("tool_calls") or [])

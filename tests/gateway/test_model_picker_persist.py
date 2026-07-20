@@ -8,9 +8,10 @@ model in the Telegram/Discord picker silently reverted on the next launch while
 *typing* the same model persisted — a contradiction the same PR introduced.
 
 After the fix (#49176), the picker callback honors the resolved
-``persist_global`` (defaults to ``True``, still respects ``--session``) and runs
-the same read-modify-write block the text path uses, so a tapped model survives
-across sessions like a typed one.
+``persist_global`` and runs the same read-modify-write block the text path
+uses, so a tapped model behaves exactly like a typed one.  Since the
+session-scope-by-default change, both default to session-only and persist
+only with ``--global`` (or ``model.persist_switch_by_default: true``).
 
 These tests drive the real ``_handle_model_command`` with a fake picker-capable
 adapter that captures the ``on_model_selected`` callback, then invoke that
@@ -176,14 +177,14 @@ async def _drive_picker(runner, event):
     ],
     ids=["nested-dict", "flat-string"],
 )
-async def test_picker_tap_persists_by_default(tmp_path, monkeypatch, seed_model):
-    """Tapping a model in the picker (bare /model) persists to config.yaml,
-    matching the typed ``/model`` default — this is the #49176 fix. The written
-    ``model:`` must always end up a nested dict regardless of the seed shape."""
+async def test_picker_tap_global_flag_persists(tmp_path, monkeypatch, seed_model):
+    """Tapping a model in a ``/model --global`` picker persists to config.yaml,
+    matching the typed ``/model --global`` path. The written ``model:`` must
+    always end up a nested dict regardless of the seed shape."""
     adapter = _FakePickerAdapter()
     cfg_path = _setup_isolated_home(tmp_path, monkeypatch, seed_model)
 
-    confirmation = await _drive_picker(_make_runner(adapter), _make_event("/model"))
+    confirmation = await _drive_picker(_make_runner(adapter), _make_event("/model --global"))
 
     assert confirmation is not None
     assert "gpt-5.5" in confirmation
@@ -196,6 +197,34 @@ async def test_picker_tap_persists_by_default(tmp_path, monkeypatch, seed_model)
     assert "base_url" not in written["model"]
     assert "api_key" not in written["model"]
     assert "api_mode" not in written["model"]
+
+
+@pytest.mark.asyncio
+async def test_picker_tap_is_session_scoped_by_default(tmp_path, monkeypatch):
+    """Tapping a model in a bare ``/model`` picker applies an in-memory session
+    override and does NOT touch config.yaml — switches are session-scoped
+    unless the user opts in with ``--global`` (or sets
+    ``model.persist_switch_by_default: true``)."""
+    adapter = _FakePickerAdapter()
+    cfg_path = _setup_isolated_home(
+        tmp_path, monkeypatch, {"default": "old-model", "provider": "openrouter"}
+    )
+    runner = _make_runner(adapter)
+
+    confirmation = await _drive_picker(runner, _make_event("/model"))
+
+    assert confirmation is not None
+    assert "gpt-5.5" in confirmation
+    # The session override IS applied in-memory (the switch worked).
+    assert runner._session_model_overrides, "session override should be set"
+    assert any(
+        ov.get("model") == "gpt-5.5"
+        for ov in runner._session_model_overrides.values()
+    )
+    # But config.yaml is untouched — session-scoped by default.
+    written = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
+    assert written["model"]["default"] == "old-model"
+    assert written["model"]["provider"] == "openrouter"
 
 
 @pytest.mark.asyncio

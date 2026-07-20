@@ -1,37 +1,59 @@
 {
   "_meta": {
-    "note": "SEED baseline only. Values are approximations from apps/desktop/scripts/profile-typing-lag.md (May 2026, 34MB session, PRE incremental-lex). Run `npm run perf -- --update-baseline` on YOUR reference device to capture real numbers, then commit. Tolerances are intentionally loose until then.",
-    "platform": null,
-    "node": null,
-    "updated": null
+    "note": "Median of 5 runs, darwin-arm64, `--spawn --prod` (PRODUCTION minified renderer, real boot — no fake-boot). Representative shipped numbers, not dev-inflated. cold-start reuses one profile so the V8 code cache is WARM (what users get after first launch, ~1.0s); a fresh-profile first launch is ~+400ms (measure with `--cold-fresh`). Marks are process-spawn wall clock (spawn_to_*) or renderer nav-relative (dom_*). Re-baseline per device with `--update-baseline`; tolerances loose for cross-machine/disk variance.",
+    "platform": "darwin-arm64",
+    "node": "v24.11.0",
+    "updated": "2026-07-19T23:16:01.227Z"
   },
   "scenarios": {
     "stream": {
-      "tolerance": { "tolFrac": 0.5, "tolAbs": 2 },
+      "tolerance": {
+        "tolFrac": 0.6,
+        "tolAbs": 5
+      },
       "metrics": {
-        "longtasks_n": 2,
-        "longtask_max_ms": 127,
-        "frame_p95_ms": 25.6,
-        "frame_p99_ms": 31.4,
-        "slow_frames_33": 6,
-        "intermut_p95_ms": 45
+        "longtasks_n": 1,
+        "longtask_max_ms": 67,
+        "frame_p95_ms": 22,
+        "frame_p99_ms": 23.7,
+        "slow_frames_33": 1,
+        "intermut_p95_ms": 36.1
       }
     },
     "keystroke": {
-      "tolerance": { "tolFrac": 0.5, "tolAbs": 3 },
+      "tolerance": {
+        "tolFrac": 0.6,
+        "tolAbs": 4
+      },
       "metrics": {
-        "keystroke_p50_ms": 8,
-        "keystroke_p95_ms": 17,
-        "keystroke_p99_ms": 28,
-        "keystroke_slow_16": 6
+        "keystroke_p50_ms": 2.1,
+        "keystroke_p95_ms": 8.7,
+        "keystroke_p99_ms": 16.9,
+        "keystroke_slow_16": 2
       }
     },
     "transcript": {
-      "tolerance": { "tolFrac": 0.5, "tolAbs": 20 },
+      "tolerance": {
+        "tolFrac": 0.75,
+        "tolAbs": 40
+      },
       "metrics": {
-        "transcript_mount_ms": 450,
-        "transcript_longtask_ms": 350,
-        "transcript_longtask_max_ms": 160
+        "transcript_mount_ms": 145,
+        "transcript_longtask_ms": 82,
+        "transcript_longtask_max_ms": 82
+      }
+    },
+    "cold-start": {
+      "tolerance": {
+        "tolFrac": 0.6,
+        "tolAbs": 150
+      },
+      "metrics": {
+        "spawn_to_cdp_ms": 606,
+        "spawn_to_driver_ms": 984,
+        "dom_interactive_ms": 324,
+        "dom_content_loaded_ms": 574,
+        "nav_to_read_ms": 721
       }
     }
   }

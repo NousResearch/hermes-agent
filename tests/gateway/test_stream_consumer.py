@@ -2379,3 +2379,40 @@ class TestStripOrphanCloseTags:
             assert tag not in consumer._accumulated
         assert "trailing prose" in consumer._accumulated
         assert "more" in consumer._accumulated
+
+
+class TestHasDeliveredTextAfterSegmentBreak:
+    """has_delivered_text must find a delivered segment after a segment break,
+    but must not claim text from a failed delivery. (#65919 review)"""
+
+    def test_finds_delivered_segment_after_segment_break(self):
+        """A successfully delivered segment must still be found by
+        has_delivered_text after _reset_segment_state runs."""
+        c = _make_consumer()
+        # Simulate a successfully delivered segment
+        c._last_sent_text = "Here is the first segment"
+        c._reset_segment_state()
+        # After the reset, has_delivered_text must still find it
+        assert c.has_delivered_text("Here is the first segment") is True
+
+    def test_does_not_find_undelivered_text(self):
+        """Text that was never delivered must not be claimed."""
+        c = _make_consumer()
+        c._last_sent_text = "delivered text"
+        c._reset_segment_state()
+        assert c.has_delivered_text("never sent text") is False
+
+    def test_finds_commentary_text(self):
+        """has_delivered_text must find commentary text delivered via
+        on_commentary."""
+        c = _make_consumer()
+        c._delivered_commentary_texts.append("interim commentary")
+        assert c.has_delivered_text("interim commentary") is True
+
+    def test_does_not_match_empty(self):
+        """Empty/whitespace text must not match."""
+        c = _make_consumer()
+        c._last_sent_text = "some text"
+        c._reset_segment_state()
+        assert c.has_delivered_text("") is False
+        assert c.has_delivered_text("   ") is False

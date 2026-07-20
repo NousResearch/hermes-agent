@@ -112,13 +112,11 @@ export function ProjectMenu({
 
   // Appearance writes route through the adopt-aware helper: an auto project is
   // materialized on its first change (its id then changes), so close the picker
-  // when that happens to avoid a second write double-creating from a stale node.
-  const applyAppearance = (patch: { color?: null | string; icon?: null | string }) => {
-    void setProjectAppearance(project, patch).then(adopted => {
-      if (adopted) {
-        setAppearanceOpen(false)
-      }
-    })
+  // on adopt to stop a second write double-creating from a now-stale node.
+  const applyAppearance = async (patch: { color?: null | string; icon?: null | string }) => {
+    if (await setProjectAppearance(project, patch)) {
+      setAppearanceOpen(false)
+    }
   }
 
   // Set color / pick an icon — shown for explicit projects and for auto ones
@@ -168,12 +166,12 @@ export function ProjectMenu({
             // Inherited (auto) repos can still be themed — the change adopts the
             // repo as a real project. Rename / add-folder / set-active stay out
             // until then (they need the materialized record).
-            project.path ? (
+            project.path && (
               <>
                 {appearanceItem}
                 <DropdownMenuSeparator />
               </>
-            ) : null
+            )
           ) : (
             <>
               <DropdownMenuItem onSelect={() => openProjectRename(target)}>
@@ -224,7 +222,7 @@ export function ProjectMenu({
         <ColorSwatches
           clearIcon="circle-slash"
           clearLabel={p.noColor}
-          onChange={color => applyAppearance({ color })}
+          onChange={color => void applyAppearance({ color })}
           swatches={PROFILE_SWATCHES}
           value={project.color ?? null}
         />
@@ -239,7 +237,7 @@ export function ProjectMenu({
                 project.icon === name && 'bg-(--ui-control-active-background) text-foreground'
               )}
               key={name}
-              onClick={() => applyAppearance({ icon: project.icon === name ? null : name })}
+              onClick={() => void applyAppearance({ icon: project.icon === name ? null : name })}
               style={project.icon === name && project.color ? { color: project.color } : undefined}
               type="button"
             >

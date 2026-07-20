@@ -2,7 +2,7 @@
 name: parallel-cli
 description: Optional Parallel research, FindAll, enrich, and monitor.
 version: 1.2.0
-author: Kshitij (kshitijk4poor), George Pickett (grp06), Hermes Agent
+author: Hermes Agent
 license: MIT
 platforms: [linux, macos, windows]
 prerequisites:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional
 
@@ -47,18 +48,30 @@ DEFAULT_CODEX_MODELS: List[str] = [
     # live discovery will pick them up automatically via _fetch_models_from_api.
 ]
 
-# These slugs are valid on other OpenAI product/API surfaces but the ChatGPT
-# Codex OAuth endpoint has returned HTTP 400 for them.  Keep them out of
-# offline config/cache fallbacks.  This is deliberately *not* applied to a
-# successful live response: if the Codex endpoint starts advertising one of
-# them for an account, live provider authority immediately re-enables it.
-_LIVE_ONLY_CODEX_MODELS = frozenset(
+# These slugs are valid on other OpenAI product/API surfaces or appeared in
+# older Codex catalogs, but the ChatGPT Codex OAuth endpoint has returned HTTP
+# 400 for them. Keep them out of every offline config/cache/default fallback.
+# This is deliberately *not* applied to a successful live response: if the
+# account endpoint advertises one again, live authority immediately re-enables
+# it.
+_OFFLINE_BLOCKED_CODEX_MODELS = frozenset(
     {
         "gpt-5.6-sol-pro",
         "gpt-5.6-terra-pro",
         "gpt-5.6-luna-pro",
+        "gpt-5.2-codex",
+        "gpt-5.1-codex-max",
+        "gpt-5.1-codex-mini",
     }
 )
+
+
+@dataclass(frozen=True)
+class CodexModelDiscovery:
+    """Resolved model IDs plus whether a successful live response owns them."""
+
+    model_ids: List[str]
+    live_authoritative: bool
 
 
 def _dedupe_model_ids(
@@ -68,7 +81,7 @@ def _dedupe_model_ids(
     ordered: List[str] = []
     seen: set[str] = set()
     for model_id in model_ids:
-        if exclude_live_only and model_id in _LIVE_ONLY_CODEX_MODELS:
+        if exclude_live_only and model_id in _OFFLINE_BLOCKED_CODEX_MODELS:
             continue
         if model_id not in seen:
             ordered.append(model_id)
@@ -96,6 +109,7 @@ def _fetch_models_from_api(access_token: str) -> Optional[List[str]]:
         return None
 
     sortable = []
+    valid_slug_entries = 0
     for item in entries:
         if not isinstance(item, dict):
             continue
@@ -103,6 +117,7 @@ def _fetch_models_from_api(access_token: str) -> Optional[List[str]]:
         if not isinstance(slug, str) or not slug.strip():
             continue
         slug = slug.strip()
+        valid_slug_entries += 1
         # Codex CLI's catalog uses ``supported_in_api`` for the public OpenAI
         # API, not for the OAuth-backed Codex backend that this provider uses.
         # Some valid Codex CLI models (for example gpt-5.3-codex-spark) are
@@ -113,6 +128,12 @@ def _fetch_models_from_api(access_token: str) -> Optional[List[str]]:
         priority = item.get("priority")
         rank = int(priority) if isinstance(priority, (int, float)) else 10_000
         sortable.append((rank, slug))
+
+    # An empty list and a list containing only well-formed hidden entries are
+    # valid authoritative catalogs. A non-empty list in which every entry is
+    # structurally unusable is a schema failure and must use the offline path.
+    if entries and valid_slug_entries == 0:
+        return None
 
     sortable.sort(key=lambda x: (x[0], x[1]))
     # A successful live response is authoritative.  Do not synthesize models
@@ -175,11 +196,12 @@ def _read_cache_models(codex_home: Path) -> List[str]:
     return deduped
 
 
-def get_codex_model_ids(access_token: Optional[str] = None) -> List[str]:
-    """Return available Codex model IDs, trying API first, then local sources.
-    
-    Resolution order: API (live, if token provided) > config.toml default >
-    local cache > hardcoded defaults.
+def discover_codex_models(access_token: Optional[str] = None) -> CodexModelDiscovery:
+    """Resolve Codex models without discarding live-authority provenance.
+
+    ``live_authoritative`` is true for every structurally valid HTTP-200 live
+    catalog, including an empty or all-hidden one. Only transport, HTTP, JSON,
+    or schema failure permits config/cache/default fallback.
     """
     codex_home_str = os.getenv("CODEX_HOME", "").strip() or str(Path.home() / ".codex")
     codex_home = Path(codex_home_str).expanduser()
@@ -189,15 +211,18 @@ def get_codex_model_ids(access_token: Optional[str] = None) -> List[str]:
     if access_token:
         api_models = _fetch_models_from_api(access_token)
         if api_models is not None:
-            return _dedupe_model_ids(api_models)
+            return CodexModelDiscovery(
+                model_ids=_dedupe_model_ids(api_models),
+                live_authoritative=True,
+            )
 
     # Fall back to local sources
     default_model = _read_default_model(codex_home)
-    if default_model and default_model not in _LIVE_ONLY_CODEX_MODELS:
+    if default_model and default_model not in _OFFLINE_BLOCKED_CODEX_MODELS:
         ordered.append(default_model)
 
     for model_id in _read_cache_models(codex_home):
-        if model_id in _LIVE_ONLY_CODEX_MODELS:
+        if model_id in _OFFLINE_BLOCKED_CODEX_MODELS:
             continue
         if model_id not in ordered:
             ordered.append(model_id)
@@ -206,4 +231,13 @@ def get_codex_model_ids(access_token: Optional[str] = None) -> List[str]:
         if model_id not in ordered:
             ordered.append(model_id)
 
-    return _dedupe_model_ids(ordered, exclude_live_only=True)
+    return CodexModelDiscovery(
+        model_ids=_dedupe_model_ids(ordered, exclude_live_only=True),
+        live_authoritative=False,
+    )
+
+
+def get_codex_model_ids(access_token: Optional[str] = None) -> List[str]:
+    """Return model IDs while preserving the historical list-only API."""
+
+    return discover_codex_models(access_token=access_token).model_ids

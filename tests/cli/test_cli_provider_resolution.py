@@ -253,11 +253,16 @@ def test_codex_provider_replaces_incompatible_default_model(monkeypatch):
             "source": "env/config",
         }
 
+    from hermes_cli.codex_models import CodexModelDiscovery
+
     monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", _runtime_resolve)
     monkeypatch.setattr("hermes_cli.runtime_provider.format_runtime_provider_error", lambda exc: str(exc))
     monkeypatch.setattr(
-        "hermes_cli.codex_models.get_codex_model_ids",
-        lambda access_token=None: ["gpt-5.2-codex", "gpt-5.1-codex-mini"],
+        "hermes_cli.codex_models.discover_codex_models",
+        lambda access_token=None: CodexModelDiscovery(
+            ["gpt-5.2-codex", "gpt-5.1-codex-mini"],
+            True,
+        ),
     )
 
     shell = cli.HermesCLI(compact=True, max_turns=1)

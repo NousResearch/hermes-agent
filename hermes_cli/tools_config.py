@@ -374,6 +374,12 @@ TOOL_CATEGORIES = {
                 "post_setup": "piper",
             },
             {
+                "name": "VOICEVOX (local, Japanese)",
+                "badge": "free",
+                "tag": "Japanese TTS — VOICEVOX-compatible engines",
+                "tts_provider": "voicevox",
+            },
+            {
                 "name": "DeepInfra TTS",
                 "badge": "paid",
                 "tag": "Chatterbox, Qwen3-TTS, … — live catalog from api.deepinfra.com",

@@ -6983,7 +6983,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 return 0
             # Only claim rows we can actually send this boot: self.adapters
             # holds a platform only after its connect() succeeded, and each
-            # claim spends one of the row's three redelivery attempts.
+            # claim spends one of the row's MAX_ATTEMPTS redelivery attempts.
             _deliverable = {
                 getattr(p, "value", str(p)) for p in self.adapters
             }

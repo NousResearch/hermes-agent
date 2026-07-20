@@ -1234,6 +1234,186 @@ def test_historical_done_compatibility_rejects_only_contradictory_history(
         assert contradictory_child_task.status == "todo"
 
 
+def test_archiving_invalid_or_pending_completion_does_not_release_child(
+    kanban_home,
+):
+    with kb.connect() as conn:
+        rejected = kb.create_task(conn, title="rejected review", assignee="security")
+        rejected_child = kb.create_task(
+            conn, title="BUILD after rejected review", parents=[rejected]
+        )
+        assert kb.claim_task(conn, rejected) is not None
+        rejected_run = kb.latest_run(conn, rejected)
+        assert rejected_run is not None
+        with pytest.raises(kb.InvalidCompletionHandoffError):
+            kb.stage_task_completion(
+                conn,
+                rejected,
+                expected_run_id=rejected_run.id,
+                summary="Review found a release blocker.",
+                metadata={
+                    "review_verdict": "fix-required",
+                    "blocking_findings": ["HIGH: dependency bypass"],
+                },
+            )
+
+        assert kb.archive_task(conn, rejected)
+        rejected_valid, _ = kb.completion_validity(conn, rejected)
+        assert rejected_valid is False
+        rejected_child_task = kb.get_task(conn, rejected_child)
+        assert rejected_child_task is not None
+        assert rejected_child_task.status == "todo"
+        assert kb.claim_task(conn, rejected_child) is None
+
+        pending = kb.create_task(conn, title="pending completion", assignee="engineer")
+        pending_child = kb.create_task(
+            conn, title="BUILD after pending completion", parents=[pending]
+        )
+        assert kb.claim_task(conn, pending) is not None
+        pending_run = kb.latest_run(conn, pending)
+        assert pending_run is not None
+        assert kb.stage_task_completion(
+            conn,
+            pending,
+            expected_run_id=pending_run.id,
+            summary="Completion intent has not reached the turn finalizer.",
+        )
+
+        assert kb.archive_task(conn, pending)
+        pending_valid, _ = kb.completion_validity(conn, pending)
+        assert pending_valid is False
+        pending_child_task = kb.get_task(conn, pending_child)
+        assert pending_child_task is not None
+        assert pending_child_task.status == "todo"
+        assert kb.claim_task(conn, pending_child) is None
+
+
+def test_editing_pass_to_fix_required_quarantines_released_descendants(
+    kanban_home,
+):
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="implementation", assignee="engineer")
+        child = kb.create_task(
+            conn, title="security review", assignee="security", parents=[parent]
+        )
+        grandchild = kb.create_task(
+            conn, title="release", assignee="release", parents=[child]
+        )
+        assert kb.complete_task(conn, parent, summary="PASS: implementation verified")
+        assert kb.claim_task(conn, child) is not None
+        child_run = kb.latest_run(conn, child)
+        assert child_run is not None
+
+        assert kb.edit_completed_task_result(
+            conn,
+            parent,
+            result="FIX-REQUIRED: release guard remains bypassable",
+            metadata={
+                "review_verdict": "fix-required",
+                "blocking_findings": ["HIGH: release guard bypass"],
+            },
+        )
+
+        parent_task = kb.get_task(conn, parent)
+        child_task = kb.get_task(conn, child)
+        grandchild_task = kb.get_task(conn, grandchild)
+        assert parent_task is not None and parent_task.status == "blocked"
+        assert child_task is not None and child_task.status == "todo"
+        assert grandchild_task is not None and grandchild_task.status == "todo"
+        assert not kb.valid_completion(conn, parent)
+        assert not kb.complete_task(
+            conn,
+            child,
+            summary="stale review worker attempted to complete",
+            expected_run_id=child_run.id,
+        )
+        assert kb.claim_task(conn, child) is None
+
+
+def test_completion_rechecks_parent_validity_before_terminal_transition(
+    kanban_home,
+):
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="implementation", assignee="engineer")
+        child = kb.create_task(conn, title="review", assignee="security", parents=[parent])
+        grandchild = kb.create_task(conn, title="release", parents=[child])
+        assert kb.complete_task(conn, parent, summary="PASS: implementation verified")
+        parent_run = kb.latest_run(conn, parent)
+        assert parent_run is not None
+        assert kb.claim_task(conn, child) is not None
+        child_run = kb.latest_run(conn, child)
+        assert child_run is not None
+
+        # Simulate an external/legacy writer contradicting the authoritative
+        # parent receipt without calling the modern descendant-demotion helper.
+        conn.execute(
+            "UPDATE task_runs SET summary = ? WHERE id = ?",
+            ("FIX-REQUIRED: HIGH issue remains", parent_run.id),
+        )
+
+        assert not kb.complete_task(
+            conn,
+            child,
+            summary="review worker raced the invalid parent update",
+            expected_run_id=child_run.id,
+        )
+        child_task = kb.get_task(conn, child)
+        grandchild_task = kb.get_task(conn, grandchild)
+        invalidated_run = kb.get_run(conn, child_run.id)
+        assert child_task is not None and child_task.status == "todo"
+        assert grandchild_task is not None and grandchild_task.status == "todo"
+        assert invalidated_run is not None
+        assert invalidated_run.outcome == "dependency_invalidated"
+
+
+@pytest.mark.parametrize(
+    ("field", "verdict"),
+    [
+        ("verdict", "FAIL"),
+        ("review_verdict", "timed out"),
+        ("completion_verdict", "ship_it"),
+    ],
+)
+def test_authoritative_structured_verdicts_fail_closed(
+    kanban_home,
+    field,
+    verdict,
+):
+    with kb.connect() as conn:
+        task = kb.create_task(conn, title=f"structured verdict {verdict}")
+        assert kb.claim_task(conn, task) is not None
+        run = kb.latest_run(conn, task)
+        assert run is not None
+        with pytest.raises(kb.InvalidCompletionHandoffError, match="verdict"):
+            kb.stage_task_completion(
+                conn,
+                task,
+                expected_run_id=run.id,
+                summary="Neutral prose cannot override the structured lifecycle verdict.",
+                metadata={field: verdict},
+            )
+        blocked_task = kb.get_task(conn, task)
+        assert blocked_task is not None and blocked_task.status == "blocked"
+
+
+@pytest.mark.parametrize("verdict", ["PASS", "approved", "successful", "completed"])
+def test_authoritative_structured_pass_verdicts_remain_valid(kanban_home, verdict):
+    with kb.connect() as conn:
+        task = kb.create_task(conn, title=f"structured pass {verdict}")
+        assert kb.claim_task(conn, task) is not None
+        run = kb.latest_run(conn, task)
+        assert run is not None
+        assert kb.stage_task_completion(
+            conn,
+            task,
+            expected_run_id=run.id,
+            summary="Structured pass handoff.",
+            metadata={"verdict": verdict},
+        )
+        assert kb.finalize_staged_completion(conn, task, expected_run_id=run.id)
+        assert kb.valid_completion(conn, task)
+
+
 def test_create_task_unknown_parent_errors(kanban_home):
     with kb.connect() as conn, pytest.raises(ValueError, match="unknown parent"):
         kb.create_task(conn, title="orphan", parents=["t_ghost"])
@@ -4358,24 +4538,19 @@ def test_unlink_tasks_triggers_recompute_ready(kanban_home):
         )
 
 
-def test_archive_task_triggers_recompute_ready_for_dependents(kanban_home):
-    """Archiving a parent must immediately unblock its children.
-
-    ``recompute_ready()`` already treats ``archived`` parents as satisfied
-    dependencies, just like ``done``. Regression: ``archive_task()`` updated
-    the parent row but never ran the ready-promotion pass, so children stayed
-    stuck in ``todo`` until a later dispatcher tick.
-    """
+def test_archive_task_recomputes_only_for_validly_completed_parent(kanban_home):
+    """Archiving preserves a valid receipt and recomputes waiting children."""
     with kb.connect() as conn:
-        parent = kb.create_task(conn, title="obsolete parent")
+        parent = kb.create_task(conn, title="completed obsolete parent")
+        assert kb.complete_task(conn, parent, summary="work completed before archive")
         child = kb.create_task(conn, title="child", parents=[parent])
-
-        assert kb.get_task(conn, child).status == "todo"
+        # Reconstruct a stale pre-recompute child without changing the valid
+        # parent receipt; archive_task must run the shared release pass.
+        conn.execute("UPDATE tasks SET status = 'todo' WHERE id = ?", (child,))
         assert kb.archive_task(conn, parent) is True
-
+        assert kb.valid_completion(conn, parent)
         assert kb.get_task(conn, child).status == "ready", (
-            "child should promote to ready immediately after its last blocking "
-            "parent is archived"
+            "child should promote only when the archived parent retains a valid receipt"
         )
 
 # ---------------------------------------------------------------------------
@@ -5310,6 +5485,79 @@ def test_detect_stale_does_not_tick_failure_counter(kanban_home, monkeypatch):
         assert "stale" in kinds, (
             f"Expected 'stale' event in task_events; got {kinds!r}"
         )
+
+
+def test_detect_stale_is_run_fenced_when_same_lock_claims_new_retry(
+    kanban_home,
+    monkeypatch,
+):
+    """A stale snapshot cannot reclaim a newer run that reuses the same lock."""
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="stale generation", assignee="worker")
+        claim_lock = "dispatcher:stable-lock"
+        assert kb.claim_task(conn, task_id, claimer=claim_lock) is not None
+        first_run = kb.latest_run(conn, task_id)
+        assert first_run is not None
+        kb._set_worker_pid(conn, task_id, 111)
+        five_hours_ago = int(time.time()) - (5 * 3600)
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE tasks SET started_at = ?, last_heartbeat_at = NULL WHERE id = ?",
+                (five_hours_ago, task_id),
+            )
+            conn.execute(
+                "UPDATE task_runs SET started_at = ? WHERE id = ?",
+                (five_hours_ago, first_run.id),
+            )
+
+        replacement_run_id = None
+
+        def replace_attempt(_pid, _lock, *, signal_fn=None):
+            nonlocal replacement_run_id
+            with kb.write_txn(conn):
+                conn.execute(
+                    "UPDATE tasks SET status = 'ready', claim_lock = NULL, "
+                    "claim_expires = NULL, worker_pid = NULL WHERE id = ? "
+                    "AND current_run_id = ?",
+                    (task_id, first_run.id),
+                )
+                assert kb._end_run(
+                    conn,
+                    task_id,
+                    outcome="reclaimed",
+                    status="reclaimed",
+                    expected_run_id=first_run.id,
+                ) == first_run.id
+            assert kb.claim_task(conn, task_id, claimer=claim_lock) is not None
+            replacement = kb.latest_run(conn, task_id)
+            assert replacement is not None and replacement.id != first_run.id
+            replacement_run_id = replacement.id
+            kb._set_worker_pid(conn, task_id, 222)
+            assert kb.heartbeat_worker(
+                conn,
+                task_id,
+                expected_run_id=replacement.id,
+            )
+            return {
+                "prev_pid": 111,
+                "host_local": True,
+                "termination_attempted": True,
+                "terminated": True,
+                "sigkill": False,
+            }
+
+        monkeypatch.setattr(kb, "_terminate_reclaimed_worker", replace_attempt)
+        assert kb.detect_stale_running(conn, stale_timeout_seconds=14400) == []
+
+        task = kb.get_task(conn, task_id)
+        assert task is not None
+        assert replacement_run_id is not None
+        assert task.status == "running"
+        assert task.current_run_id == replacement_run_id
+        assert task.worker_pid == 222
+        replacement = kb.get_run(conn, replacement_run_id)
+        assert replacement is not None and replacement.ended_at is None
+        assert replacement.outcome is None
 
 
 # ---------------------------------------------------------------------------

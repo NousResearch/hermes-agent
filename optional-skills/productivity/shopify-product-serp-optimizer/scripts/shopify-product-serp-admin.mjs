@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { assertRequiredScopes, devDashboardGraphql, isDevDashboardMode, mergeRuntimeEnv } from "./lib/shopify-dev-dashboard-auth.mjs";
+import { fetchPublic } from "./lib/public-fetch.mjs";
 
 const DEFAULT_ENV = "skill-hub.env";
 const DEFAULT_VERSION_CANDIDATES = ["2026-04", "2026-01", "2025-10", "2025-07"];
@@ -91,16 +92,15 @@ async function loadEnv(file) {
 }
 
 function normalizeDomain(value) {
-  const domain = String(value || "")
-    .trim()
-    .replace(/^https?:\/\//i, "")
-    .replace(/\/.*$/, "")
-    .toLowerCase();
-  
-  if (!domain.endsWith(".myshopify.com") || domain.includes("/")) {
-    fail(`Invalid store domain: "${value}". Domain must end with ".myshopify.com".`);
+  const raw = String(value || "").trim();
+  if (!raw) return null;
+  try {
+    const url = raw.includes("://") ? new URL(raw) : new URL(`https://${raw}`);
+    if (!/^[-a-z0-9.]+$/i.test(url.hostname) || url.hostname.includes("..")) return null;
+    return url.hostname.toLowerCase();
+  } catch {
+    return null;
   }
-  return domain;
 }
 
 async function ensureGitignoreLine(line) {
@@ -256,10 +256,10 @@ async function resolveShopifyDomain(rawInput) {
 
 async function fetchPublicProduct(shop, handle) {
   shop = String(shop || "").trim().toLowerCase();
-  if (!shop.endsWith(".myshopify.com") || shop.includes("/")) {
+  if (!shop || shop.includes("/") || !/^[-a-z0-9.]+$/i.test(shop)) {
     fail(`Invalid shop domain: ${shop}. Request blocked for security.`);
   }
-  const response = await fetch(`https://${shop}/products/${handle}.json`, {
+  const response = await fetchPublic(`https://${shop}/products/${handle}.json`, {
     headers: { "User-Agent": "Shopify-Skill-Hub/1.0" },
   });
   if (!response.ok) return null;
@@ -269,10 +269,10 @@ async function fetchPublicProduct(shop, handle) {
 
 async function fetchPublicProductHtml(shop, handle) {
   shop = String(shop || "").trim().toLowerCase();
-  if (!shop.endsWith(".myshopify.com") || shop.includes("/")) {
+  if (!shop || shop.includes("/") || !/^[-a-z0-9.]+$/i.test(shop)) {
     fail(`Invalid shop domain: ${shop}. Request blocked for security.`);
   }
-  const response = await fetch(`https://${shop}/products/${handle}`, {
+  const response = await fetchPublic(`https://${shop}/products/${handle}`, {
     headers: { "User-Agent": "Shopify-Skill-Hub/1.0" },
   });
   if (!response.ok) return null;
@@ -290,7 +290,7 @@ async function resolveAdmin(env) {
     if (!shop) fail("Missing or invalid store domain for public_storefront mode.");
     // Test accessibility of public JSON endpoint
     const testUrl = `https://${shop}/products.json?limit=1`;
-    const testResponse = await fetch(testUrl, { headers: { "User-Agent": "Shopify-Skill-Hub/1.0" } }).catch(() => null);
+    const testResponse = await fetchPublic(testUrl, { headers: { "User-Agent": "Shopify-Skill-Hub/1.0" } }).catch(() => null);
     if (!testResponse || !testResponse.ok) {
       fail(`Could not access public products endpoint at ${testUrl}. Verify the store domain is correct and the store is not bot-protected.`);
     }
@@ -524,7 +524,7 @@ function isWeakText(value) {
 }
 
 function mediaStats(product) {
-  const media = product?.media?.nodes || [];
+  const media = Array.isArray(product?.media) ? product.media : (product?.media?.nodes || []);
   const alts = media.map((item) => String(item.alt || "").trim()).filter(Boolean);
   const missingAlt = media.length - alts.length;
   const repeatedAlt = alts.length - new Set(alts.map((alt) => alt.toLowerCase())).size;
@@ -676,7 +676,7 @@ async function readAllProductsPublic(shop, args) {
   const products = [];
   let page = 1;
   while (products.length < maxProducts) {
-    const response = await fetch(`https://${shop}/products.json?limit=${pageSize}&page=${page}`, {
+    const response = await fetchPublic(`https://${shop}/products.json?limit=${pageSize}&page=${page}`, {
       headers: { "User-Agent": "Shopify-Skill-Hub/1.0" },
     });
     if (!response.ok) break;
@@ -1488,6 +1488,11 @@ async function applyCommand(args) {
   
   const results = [];
 
+  const assertNoUserErrors = (payload, operation) => {
+    if (!payload || !Array.isArray(payload.userErrors)) fail(`${operation} did not return userErrors; refusing to report success.`);
+    if (payload.userErrors.length) fail(`${operation} failed: ${JSON.stringify(payload.userErrors)}`);
+  };
+
   for (const change of changes.filter((item) => item.type === "product_full_bundle")) {
     const current = await gql(client, PRODUCT_UPDATE_READ_QUERY, { identifier: { id: change.productId } });
     if (!current.product) fail(`Could not load current product for ${change.productId}`);
@@ -1513,6 +1518,7 @@ async function applyCommand(args) {
         }`,
         { product },
       );
+      assertNoUserErrors(data.productUpdate, "product_full_bundle update");
       results.push({ type: "product_full_bundle", productId: change.productId, response: data.productUpdate });
     }
   }
@@ -1531,6 +1537,7 @@ async function applyCommand(args) {
       }`,
       { product },
     );
+    assertNoUserErrors(data.productUpdate, "product SEO update");
     results.push({ type: "product_seo", productId: change.productId, response: data.productUpdate });
   }
 
@@ -1549,6 +1556,7 @@ async function applyCommand(args) {
       }`,
       { files: fileUpdates },
     );
+    assertNoUserErrors(data.fileUpdate, "product media alt update");
     results.push({ type: "product_media_alt", response: data.fileUpdate });
   }
 

@@ -1073,14 +1073,11 @@ def run_conversation(
         # the OpenAI SDK. Sanitizing here prevents the 3-retry cycle.
         _sanitize_messages_surrogates(api_messages)
 
-        # Approximate request size for logging + pressure checks, from ONE
-        # message-token estimate. Tool schemas ship as a separate field, so add
-        # them back for compression decisions (50+ tools = 20-30K tokens).
-        # (estimate_messages_tokens_rough already image-strips base64.) This
-        # replaces a `str(msg)` char walk that re-serialized the whole history
-        # incl. base64 every call, plus estimate_request_tokens_rough re-walking
-        # the messages a second time. total_chars stays a rough (~) proxy — it
-        # only feeds a verbose log + the pre-api-request hook metric.
+        # One image-stripped message estimate feeds both figures. Was: a
+        # str(msg) char walk (re-serialized base64 every call) + a second
+        # messages walk inside estimate_request_tokens_rough. Tools added
+        # separately (compression needs them: 50+ tools = 20-30K tokens).
+        # total_chars is a rough (~) proxy — verbose log + hook metric only.
         approx_tokens = estimate_messages_tokens_rough(api_messages)
         request_pressure_tokens = approx_tokens + (
             _estimate_tools_tokens_rough(agent.tools) if agent.tools else 0

@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from gateway.config import PlatformConfig
+from plugins.platforms.telegram import adapter as telegram_adapter_module
 from plugins.platforms.telegram.adapter import TelegramAdapter
 
 
@@ -81,6 +82,24 @@ def test_owner_gate_owner_chat_file_rejects_unsafe_mode(tmp_path, monkeypatch):
     monkeypatch.delenv("HERMES_OWNER_GATE_TELEGRAM_CHAT_ID", raising=False)
     monkeypatch.setenv("HERMES_OWNER_GATE_TELEGRAM_ENV_FILE", str(env_file))
     adapter = TelegramAdapter(PlatformConfig(enabled=True, token="test-token"))
+    assert adapter._owner_gate_owner_chat_id() is None
+
+
+def test_owner_gate_owner_chat_file_fails_closed_without_posix_uid(
+    tmp_path, monkeypatch
+):
+    env_file = tmp_path / "owner.env"
+    env_file.write_text("TELEGRAM_CHAT_ID=12345\n", encoding="utf-8")
+    monkeypatch.delenv("ULTRA_INSTINKT_TELEGRAM_OWNER_CHAT_ID", raising=False)
+    monkeypatch.delenv("HERMES_OWNER_GATE_TELEGRAM_CHAT_ID", raising=False)
+    monkeypatch.setenv("HERMES_OWNER_GATE_TELEGRAM_ENV_FILE", str(env_file))
+    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="test-token"))
+    real_getenv = telegram_adapter_module.os.getenv
+    monkeypatch.setattr(
+        telegram_adapter_module,
+        "os",
+        SimpleNamespace(getenv=real_getenv),
+    )
     assert adapter._owner_gate_owner_chat_id() is None
 
 

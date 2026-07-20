@@ -902,10 +902,14 @@ class TelegramAdapter(BasePlatformAdapter):
         try:
             import stat
 
+            get_effective_uid = getattr(os, "geteuid", None)
+            if get_effective_uid is None:
+                return None
+            process_uid = get_effective_uid()
             info = env_file.lstat()
             if (
                 not stat.S_ISREG(info.st_mode)
-                or info.st_uid != os.geteuid()
+                or info.st_uid != process_uid
                 or info.st_mode & 0o022
             ):
                 return None

@@ -91,6 +91,10 @@ import { ContribWiring, WiredPane } from './wiring'
 // ONE render identity for the workspace pane — syncWorkspaceTitle re-registers
 // the contribution (new title) and a fresh closure would remount the chat.
 const renderWorkspacePane = () => <WiredPane part="chatRoutes" />
+
+// Boot-hidden panes mount behind display:none (instant-toggle contract) — defer
+// them to idle so they're off the first-paint path, warm before reveal.
+const idle = (node: ReactElement) => <IdleMount>{node}</IdleMount>
 // The main tab carries the same session context menu as tile tabs (targets
 // the loaded primary session; no menu on a fresh draft).
 const wrapWorkspaceTab = (tab: ReactElement) => <WorkspaceTabMenu>{tab}</WorkspaceTabMenu>
@@ -183,11 +187,7 @@ registry.registerMany([
       minWidth: FILE_BROWSER_MIN_WIDTH,
       maxWidth: FILE_BROWSER_MAX_WIDTH
     },
-    render: () => (
-      <IdleMount>
-        <FilesPane />
-      </IdleMount>
-    )
+    render: () => idle(<FilesPane />)
   },
   {
     id: 'preview',
@@ -205,11 +205,7 @@ registry.registerMany([
       minWidth: PREVIEW_RAIL_MIN_WIDTH,
       maxWidth: PREVIEW_RAIL_MAX_WIDTH
     },
-    render: () => (
-      <IdleMount>
-        <PreviewRailPane />
-      </IdleMount>
-    )
+    render: () => idle(<PreviewRailPane />)
   },
   {
     id: 'review',
@@ -225,11 +221,7 @@ registry.registerMany([
       minWidth: FILE_BROWSER_MIN_WIDTH,
       maxWidth: FILE_BROWSER_MAX_WIDTH
     },
-    render: () => (
-      <IdleMount>
-        <ReviewPaneContent />
-      </IdleMount>
-    )
+    render: () => idle(<ReviewPaneContent />)
   },
   {
     // Optional chrome — in NO default layout. Adoption stacks it with the
@@ -240,11 +232,7 @@ registry.registerMany([
     // revealOnPreset: the Quad layout places logs, so applying it turns the
     // logs pane on (like a ⌘K "Toggle logs") instead of leaving it collapsed.
     data: { placement: 'bottom', height: '20vh', minHeight: '7.5rem', maxHeight: '80vh', revealOnPreset: true },
-    render: () => (
-      <IdleMount>
-        <LogsPane />
-      </IdleMount>
-    )
+    render: () => idle(<LogsPane />)
   }
 ])
 

@@ -887,21 +887,78 @@ class TestLaunchdServiceRecovery:
             "gateway.status.get_running_pid",
             lambda: 321,
         )
+        monkeypatch.setattr(gateway_cli, "_launchd_domain", lambda: "gui/502")
+        monkeypatch.setattr(gateway_cli, "get_launchd_label", lambda: "ai.hermes.gateway")
         monkeypatch.setattr(
             gateway_cli,
             "_request_gateway_self_restart",
             lambda pid: calls.append(("self", pid)) or True,
         )
         monkeypatch.setattr(
+            gateway_cli,
+            "_spawn_launchd_ensure_relaunch_watcher",
+            lambda old_pid: calls.append(("ensure", old_pid)) or True,
+        )
+        monkeypatch.setattr(
             gateway_cli.subprocess,
             "run",
-            lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("launchctl should not run")),
+            lambda *args, **kwargs: (_ for _ in ()).throw(
+                AssertionError("launchctl kickstart/bootout should not run on SIGUSR1 path")
+            ),
         )
 
         gateway_cli.launchd_restart()
 
-        assert calls == [("self", 321)]
-        assert "restart requested" in capsys.readouterr().out.lower()
+        assert calls == [("self", 321), ("ensure", 321)]
+        out = capsys.readouterr().out.lower()
+        assert "restart requested" in out
+        assert "ensure-relaunch watcher armed" in out
+
+    def test_spawn_launchd_ensure_relaunch_watcher_uses_detached_session(
+        self, monkeypatch, tmp_path
+    ):
+        """Watcher must outlive gateway process-group teardown."""
+        pops = []
+
+        monkeypatch.setattr(gateway_cli, "get_launchd_label", lambda: "ai.hermes.gateway")
+        monkeypatch.setattr(gateway_cli, "_launchd_domain", lambda: "gui/502")
+        monkeypatch.setattr(
+            gateway_cli, "get_launchd_plist_path", lambda: tmp_path / "ai.hermes.gateway.plist"
+        )
+        monkeypatch.setattr(
+            gateway_cli, "_launchd_reload_log_path", lambda: tmp_path / "launchd-reload.log"
+        )
+        monkeypatch.setattr(gateway_cli, "_get_restart_drain_timeout", lambda: 12.0)
+        monkeypatch.setenv("_HERMES_GATEWAY", "1")
+
+        def fake_popen(cmd, **kwargs):
+            pops.append((cmd, kwargs))
+            return SimpleNamespace(pid=999)
+
+        monkeypatch.setattr(gateway_cli.subprocess, "Popen", fake_popen)
+
+        assert gateway_cli._spawn_launchd_ensure_relaunch_watcher(old_pid=4242) is True
+        assert len(pops) == 1
+        cmd, kwargs = pops[0]
+        assert cmd[0] == "/bin/bash"
+        assert cmd[1] == "-c"
+        script = cmd[2]
+        assert "old=4242" in script
+        assert "launchctl bootstrap" in script
+        assert "launchctl kickstart" in script
+        assert "ensure-relaunch" in script
+        assert kwargs.get("start_new_session") is True
+        # Gateway marker must not leak into the watcher env.
+        assert "_HERMES_GATEWAY" not in (kwargs.get("env") or {})
+
+    def test_spawn_launchd_ensure_relaunch_watcher_rejects_bad_pid(self, monkeypatch):
+        monkeypatch.setattr(
+            gateway_cli.subprocess,
+            "Popen",
+            lambda *a, **k: (_ for _ in ()).throw(AssertionError("should not spawn")),
+        )
+        assert gateway_cli._spawn_launchd_ensure_relaunch_watcher(old_pid=0) is False
+        assert gateway_cli._spawn_launchd_ensure_relaunch_watcher(old_pid=-3) is False
 
     def test_launchd_stop_uses_bootout_not_kill(self, monkeypatch):
         """launchd_stop must bootout the service so KeepAlive doesn't respawn it."""

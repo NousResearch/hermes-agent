@@ -3764,6 +3764,99 @@ def _append_launchd_reload_log(message: str) -> None:
         pass
 
 
+def _spawn_launchd_ensure_relaunch_watcher(*, old_pid: int) -> bool:
+    """Detached macOS helper: after SIGUSR1 self-restart, ensure launchd relaunches.
+
+    In-process ``hermes update`` / ``gateway restart`` takes the SIGUSR1 path and
+    returns without kickstart, relying on launchd ``KeepAlive``. If the job is
+    unloaded during drain/plist refresh (bootout without bootstrap — #43842 /
+    2026-06-26 class), KeepAlive cannot revive it and messaging stays dark.
+
+    Spawn a session-detached watcher that:
+      1. waits for ``old_pid`` to exit (bounded by drain budget + headroom)
+      2. gives KeepAlive a short chance to respawn
+      3. if the label is not ``state = running``, bootout(best-effort) +
+         bootstrap + kickstart until live or budget exhausted
+      4. appends success/failure lines to ``launchd-reload.log``
+
+    Returns True when the watcher process was spawned, False otherwise.
+    """
+    if old_pid <= 0 or not hasattr(os, "setsid"):
+        return False
+
+    label = get_launchd_label()
+    domain = _launchd_domain()
+    target = f"{domain}/{label}"
+    plist_path = get_launchd_plist_path()
+    log_path = _launchd_reload_log_path()
+    try:
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        pass
+
+    # Drain may consume the full restart budget; add headroom for bootstrap.
+    budget = int(max(45.0, _get_restart_drain_timeout() + 30.0))
+    script = (
+        f"old={int(old_pid)}; "
+        f"budget={budget}; "
+        f"label={shlex.quote(label)}; "
+        f"domain={shlex.quote(domain)}; "
+        f"target={shlex.quote(target)}; "
+        f"plist={shlex.quote(str(plist_path))}; "
+        f"log={shlex.quote(str(log_path))}; "
+        f"deadline=$(($(date +%s) + budget)); "
+        # Wait for the draining gateway to exit (or budget).
+        f"while kill -0 \"$old\" 2>/dev/null && [ $(date +%s) -lt $deadline ]; do "
+        f"  sleep 0.5; "
+        f"done; "
+        # Brief KeepAlive window after exit.
+        f"sleep 5; "
+        f"is_running() {{ "
+        f"  launchctl print \"$target\" 2>/dev/null | grep -q 'state = running'; "
+        f"}}; "
+        f"if is_running; then "
+        f"  echo \"[$(date '+%Y-%m-%d %H:%M:%S %z')] ensure-relaunch: KeepAlive already running for $target (old_pid=$old)\" >> \"$log\"; "
+        f"  exit 0; "
+        f"fi; "
+        f"echo \"[$(date '+%Y-%m-%d %H:%M:%S %z')] ensure-relaunch: job not live after SIGUSR1 — recovering $target (old_pid=$old)\" >> \"$log\"; "
+        f"launchctl bootout \"$target\" 2>/dev/null || true; "
+        f"sleep 1; "
+        f"while [ $(date +%s) -lt $deadline ]; do "
+        f"  launchctl bootstrap \"$domain\" \"$plist\" 2>/dev/null || true; "
+        f"  launchctl kickstart \"$target\" 2>/dev/null || true; "
+        f"  if is_running; then "
+        f"    echo \"[$(date '+%Y-%m-%d %H:%M:%S %z')] ensure-relaunch: recovered $target\" >> \"$log\"; "
+        f"    exit 0; "
+        f"  fi; "
+        f"  sleep 2; "
+        f"done; "
+        f"echo \"[$(date '+%Y-%m-%d %H:%M:%S %z')] FAILED ensure-relaunch for $target after ${{budget}}s (old_pid=$old)\" >> \"$log\"; "
+        f"exit 1"
+    )
+
+    # Scrub gateway marker so any nested hermes CLI inside the watcher is not
+    # treated as an in-gateway self-restart loop (same lesson as detached
+    # restart watchers in gateway/run.py).
+    watcher_env = os.environ.copy()
+    watcher_env.pop("_HERMES_GATEWAY", None)
+
+    try:
+        subprocess.Popen(
+            ["/bin/bash", "-c", script],
+            start_new_session=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            env=watcher_env,
+        )
+    except Exception as e:
+        logger.warning("ensure-relaunch watcher could not be spawned: %s", e)
+        _append_launchd_reload_log(
+            f"FAILED to spawn ensure-relaunch watcher for {target} (old_pid={old_pid}): {e}"
+        )
+        return False
+    return True
+
+
 def _launchctl_label_registered(label: str) -> bool:
     """True when ``launchctl list <label>`` reports the job as registered."""
     try:
@@ -4407,7 +4500,20 @@ def launchd_restart():
     try:
         pid = get_running_pid()
         if pid is not None and _request_gateway_self_restart(pid):
+            # SIGUSR1 path relies on launchd KeepAlive. Arm a detached watcher
+            # so an unloaded job (bootout without bootstrap) is re-registered
+            # instead of staying dark until a manual restart.
             print("✓ Service restart requested")
+            if _spawn_launchd_ensure_relaunch_watcher(old_pid=pid):
+                print(
+                    "↻ ensure-relaunch watcher armed "
+                    "(recovers if launchd leaves the job unloaded)"
+                )
+            else:
+                print(
+                    "⚠ ensure-relaunch watcher not armed — "
+                    "verify with: hermes gateway status"
+                )
             _clear_launchd_unsupported_marker()
             return
         if pid is not None:

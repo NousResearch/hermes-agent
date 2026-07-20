@@ -3234,6 +3234,39 @@ class TestDelegationLifecycleIntegration:
         assert invoke_hook.call_args.args[0] == "subagent_stop"
         assert invoke_hook.call_args.kwargs["child_status"] == "rejected"
 
+    def test_run_child_teardown_continues_when_override_cleanup_fails(self):
+        import tools.delegate_tool as dt
+
+        parent = _make_mock_parent()
+        child = MagicMock()
+        child._subagent_id = "sa-teardown"
+        child._delegate_saved_tool_names = []
+        child._delegate_role = "leaf"
+        child.tool_progress_callback = None
+        child.run_conversation.return_value = {
+            "final_response": "done", "completed": True, "api_calls": 1,
+        }
+        child.get_activity_summary.return_value = {"api_call_count": 1}
+        pool = MagicMock()
+        pool.acquire_lease.return_value = "lease-1"
+        pool.current.return_value = None
+        child._credential_pool = pool
+        parent._active_children = [child]
+        parent._active_children_lock = threading.Lock()
+
+        with patch.object(
+            dt, "_clear_child_workspace_override",
+            side_effect=RuntimeError("cleanup boom"),
+        ):
+            result = dt._run_single_child(
+                task_index=0, goal="done", child=child, parent_agent=parent
+            )
+
+        assert result["status"] == "completed"
+        pool.release_lease.assert_called_once_with("lease-1")
+        child.close.assert_called_once_with()
+        assert child not in parent._active_children
+
     def test_rejection_teardown_continues_when_override_cleanup_fails(self):
         import tools.delegate_tool as dt
 

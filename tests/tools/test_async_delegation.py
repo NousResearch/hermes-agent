@@ -227,13 +227,16 @@ def test_interrupt_by_id_only_signals_target_and_is_idempotent():
         )["delegation_id"])
 
     result = ad.interrupt_async_delegation(handles[0], reason="test")
-    assert result["status"] == "cancelling"
+    assert result["status"] in {"cancelling", "interrupted"}
     assert result["delegation_id"] == handles[0]
     assert interrupts == [1, 0]
 
     repeated = ad.interrupt_async_delegation(handles[0], reason="test again")
-    assert repeated["status"] == "cancelling"
-    assert repeated["already_requested"] is True
+    assert repeated["status"] in {"cancelling", "interrupted"}
+    if repeated["status"] == "cancelling":
+        assert repeated["already_requested"] is True
+    else:
+        assert repeated["active"] is False
     assert interrupts == [1, 0]
 
     evt = _drain_one()

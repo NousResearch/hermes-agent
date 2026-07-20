@@ -2177,20 +2177,26 @@ def _run_single_child(
         }
 
     finally:
-        # Stop the heartbeat thread so it doesn't keep touching parent activity
-        # after the child has finished (or failed).  Guard the join: .start()
-        # now lives inside the try block, so if it raised (OS thread
-        # exhaustion) the thread was never started and Thread.join() would
-        # raise RuntimeError.  ident is None until start() succeeds.
-        _heartbeat_stop.set()
-        if _heartbeat_thread.ident is not None:
-            _heartbeat_thread.join(timeout=5)
+        # Every teardown step is independently guarded: a failed workspace
+        # cleanup must never block credential release, parent ownership removal,
+        # or child.close().
+        try:
+            _heartbeat_stop.set()
+            if _heartbeat_thread.ident is not None:
+                _heartbeat_thread.join(timeout=5)
+        except Exception:
+            logger.warning("Failed to stop child heartbeat", exc_info=True)
 
-        # Drop the TUI-facing registry entry.  Safe to call even if the
-        # child was never registered (e.g. ID missing on test doubles).
         if _subagent_id:
-            _unregister_subagent(_subagent_id)
-        _clear_child_workspace_override(child)
+            try:
+                _unregister_subagent(_subagent_id)
+            except Exception:
+                logger.warning("Failed to unregister child lifecycle", exc_info=True)
+
+        try:
+            _clear_child_workspace_override(child)
+        except Exception:
+            logger.warning("Failed to clear child workspace override", exc_info=True)
 
         if child_pool is not None and leased_cred_id is not None:
             try:
@@ -2198,17 +2204,15 @@ def _run_single_child(
             except Exception as exc:
                 logger.debug("Failed to release credential lease: %s", exc)
 
-        # Restore the parent's tool names so the process-global is correct
-        # for any subsequent execute_code calls or other consumers.
-        import model_tools
+        try:
+            import model_tools
 
-        saved_tool_names = getattr(child, "_delegate_saved_tool_names", None)
-        if isinstance(saved_tool_names, list):
-            model_tools._last_resolved_tool_names = list(saved_tool_names)
+            saved_tool_names = getattr(child, "_delegate_saved_tool_names", None)
+            if isinstance(saved_tool_names, list):
+                model_tools._last_resolved_tool_names = list(saved_tool_names)
+        except Exception:
+            logger.warning("Failed to restore parent tool registry", exc_info=True)
 
-        # Remove child from active tracking
-
-        # Unregister child from interrupt propagation
         if hasattr(parent_agent, "_active_children"):
             try:
                 lock = getattr(parent_agent, "_active_children_lock", None)
@@ -2217,17 +2221,20 @@ def _run_single_child(
                         parent_agent._active_children.remove(child)
                 else:
                     parent_agent._active_children.remove(child)
-            except (ValueError, UnboundLocalError) as e:
-                logger.debug("Could not remove child from active_children: %s", e)
+            except ValueError:
+                pass
+            except Exception:
+                logger.warning(
+                    "Failed to remove child from active lifecycle", exc_info=True
+                )
 
-        # Close tool resources (terminal sandboxes, browser daemons,
-        # background processes, httpx clients) so subagent subprocesses
-        # don't outlive the delegation.
         try:
             if hasattr(child, "close"):
                 child.close()
         except Exception:
-            logger.debug("Failed to close child agent after delegation")
+            logger.debug(
+                "Failed to close child agent after delegation", exc_info=True
+            )
 
 
 def _recover_tasks_from_json_string(

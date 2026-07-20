@@ -78,6 +78,9 @@ _SESSION_THREAD_ID: ContextVar = ContextVar("HERMES_SESSION_THREAD_ID", default=
 _SESSION_USER_ID: ContextVar = ContextVar("HERMES_SESSION_USER_ID", default=_UNSET)
 _SESSION_USER_NAME: ContextVar = ContextVar("HERMES_SESSION_USER_NAME", default=_UNSET)
 _SESSION_KEY: ContextVar = ContextVar("HERMES_SESSION_KEY", default=_UNSET)
+_SESSION_CHANNEL_IDENTITY: ContextVar = ContextVar(
+    "HERMES_SESSION_CHANNEL_IDENTITY", default=_UNSET
+)
 _SESSION_ID: ContextVar = ContextVar("HERMES_SESSION_ID", default=_UNSET)
 # In-process UI session/window id for multi-session desktop/TUI hosts. This is
 # intentionally separate from HERMES_SESSION_ID: the latter is the durable
@@ -129,6 +132,7 @@ _VAR_MAP = {
     "HERMES_SESSION_USER_ID": _SESSION_USER_ID,
     "HERMES_SESSION_USER_NAME": _SESSION_USER_NAME,
     "HERMES_SESSION_KEY": _SESSION_KEY,
+    "HERMES_SESSION_CHANNEL_IDENTITY": _SESSION_CHANNEL_IDENTITY,
     "HERMES_SESSION_ID": _SESSION_ID,
     "HERMES_UI_SESSION_ID": _SESSION_UI_SESSION_ID,
     "HERMES_SESSION_MESSAGE_ID": _SESSION_MESSAGE_ID,
@@ -163,6 +167,7 @@ def set_session_vars(
     user_id: str = "",
     user_name: str = "",
     session_key: str = "",
+    channel_identity: str = "",
     session_id: str = "",
     message_id: str = "",
     profile: str = "",
@@ -199,6 +204,7 @@ def set_session_vars(
         _SESSION_USER_ID.set(user_id),
         _SESSION_USER_NAME.set(user_name),
         _SESSION_KEY.set(session_key),
+        _SESSION_CHANNEL_IDENTITY.set(channel_identity),
         _SESSION_ID.set(session_id),
         _SESSION_UI_SESSION_ID.set(ui_session_id),
         _SESSION_MESSAGE_ID.set(message_id),
@@ -234,6 +240,7 @@ def clear_session_vars(tokens: list) -> None:
         _SESSION_USER_ID,
         _SESSION_USER_NAME,
         _SESSION_KEY,
+        _SESSION_CHANNEL_IDENTITY,
         _SESSION_ID,
         _SESSION_UI_SESSION_ID,
         _SESSION_MESSAGE_ID,

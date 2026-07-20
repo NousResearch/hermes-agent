@@ -116,6 +116,7 @@ def test_overlong_channel_name_is_capped_in_identity_json():
     context = SessionContext(source=source, connected_platforms=[], home_channels={})
     import json
     identity = json.loads(context.channel_identity_json)
-    assert len(identity["channel_name"]) <= _MAX_PROMPT_METADATA_CHARS + 8  # ellipsis allowance
+    assert len(identity["channel_name"]) == _MAX_PROMPT_METADATA_CHARS
+    assert identity["channel_name"].endswith("...")
     prompt = build_session_context_prompt(context)
     assert long_name not in prompt

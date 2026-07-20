@@ -313,6 +313,7 @@ async def test_run_in_executor_with_context_preserves_session_env(monkeypatch):
                 "chat_id": get_session_env("HERMES_SESSION_CHAT_ID"),
                 "user_id": get_session_env("HERMES_SESSION_USER_ID"),
                 "session_key": get_session_env("HERMES_SESSION_KEY"),
+                "channel_identity": get_session_env("HERMES_SESSION_CHANNEL_IDENTITY"),
             }
         )
     finally:
@@ -324,6 +325,10 @@ async def test_run_in_executor_with_context_preserves_session_env(monkeypatch):
         "chat_id": "2144471399",
         "user_id": "123456",
         "session_key": "agent:main:telegram:dm:2144471399",
+        "channel_identity": (
+            '{"channel_id":"2144471399","channel_type":"dm",'
+            '"platform":"telegram"}'
+        ),
     }
 
 

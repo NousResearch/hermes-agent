@@ -129,6 +129,45 @@ def test_feishu_load_settings_parses_per_group_require_mention(monkeypatch):
     assert settings.group_rules["oc_inherit"].require_mention is None
 
 
+@pytest.mark.parametrize(
+    "env_value, expected",
+    [
+        (None, "open"),
+        ("open", "open"),
+        ("disabled", "disabled"),
+        ("  Disabled  ", "disabled"),
+    ],
+)
+def test_feishu_load_settings_dm_policy(monkeypatch, env_value, expected):
+    from plugins.platforms.feishu.adapter import FeishuAdapter
+
+    monkeypatch.setenv("FEISHU_APP_ID", "cli_test")
+    monkeypatch.setenv("FEISHU_APP_SECRET", "secret_test")
+    if env_value is None:
+        monkeypatch.delenv("FEISHU_DM_POLICY", raising=False)
+    else:
+        monkeypatch.setenv("FEISHU_DM_POLICY", env_value)
+
+    settings = FeishuAdapter._load_settings(extra={})
+    assert settings.dm_policy == expected
+
+
+def test_feishu_load_settings_warns_on_unknown_dm_policy(monkeypatch, caplog):
+    import logging
+
+    from plugins.platforms.feishu.adapter import FeishuAdapter
+
+    monkeypatch.setenv("FEISHU_APP_ID", "cli_test")
+    monkeypatch.setenv("FEISHU_APP_SECRET", "secret_test")
+    monkeypatch.setenv("FEISHU_DM_POLICY", "closed")
+
+    with caplog.at_level(logging.WARNING, logger="plugins.platforms.feishu.adapter"):
+        settings = FeishuAdapter._load_settings(extra={})
+
+    assert settings.dm_policy == "open"
+    assert any("dm_policy" in r.message and "closed" in r.message for r in caplog.records)
+
+
 # --- Module-level helpers --------------------------------------------------
 
 
@@ -159,6 +198,64 @@ def test_is_bot_sender_rejects_non_bot_origin(sender_type):
     from plugins.platforms.feishu.adapter import _is_bot_sender
 
     assert _is_bot_sender(SimpleNamespace(sender_type=sender_type)) is False
+
+
+def test_extract_mention_ids_accepts_bare_open_id_string():
+    from plugins.platforms.feishu.adapter import _extract_mention_ids
+
+    mention = SimpleNamespace(id="ou_self", id_type="", name="Hermes")
+    assert _extract_mention_ids(mention) == ("ou_self", "")
+
+
+def test_extract_mention_ids_accepts_bare_user_id_string():
+    from plugins.platforms.feishu.adapter import _extract_mention_ids
+
+    mention = SimpleNamespace(id="u_self", id_type="", name="Hermes")
+    assert _extract_mention_ids(mention) == ("", "u_self")
+
+
+def test_extract_mention_ids_rejects_unknown_bare_string():
+    from plugins.platforms.feishu.adapter import _extract_mention_ids
+
+    mention = SimpleNamespace(id="not-an-id", id_type="", name="Hermes")
+    assert _extract_mention_ids(mention) == ("", "")
+
+
+def test_message_mentions_bot_accepts_bare_open_id_string():
+    adapter = make_adapter_skeleton(bot_open_id="ou_self")
+    mentions = [SimpleNamespace(id="ou_self", id_type="", name="Hermes")]
+    assert adapter._message_mentions_bot(mentions) is True
+
+
+def test_message_mentions_bot_accepts_bare_user_id_string():
+    adapter = make_adapter_skeleton(bot_open_id="", bot_user_id="u_self")
+    mentions = [SimpleNamespace(id="u_self", id_type="", name="Hermes")]
+    assert adapter._message_mentions_bot(mentions) is True
+
+
+def test_admit_group_bot_mention_accepts_bare_open_id_string():
+    adapter = make_adapter_skeleton(
+        bot_open_id="ou_self", allow_bots="mentions", require_mention=True, group_policy="open"
+    )
+    sender = make_sender(sender_type="bot", open_id="ou_peer")
+    message = make_message(
+        chat_type="group",
+        mentions=[SimpleNamespace(id="ou_self", id_type="", name="Hermes")],
+    )
+    assert adapter._admit(sender, message) is None
+
+
+def test_admit_p2p_disabled_rejects_before_allowlist_but_group_still_works():
+    adapter = make_adapter_skeleton(group_policy="open", dm_policy="disabled")
+    sender = make_sender(sender_type="user", open_id="ou_human")
+
+    assert adapter._admit(sender, make_message(chat_type="p2p")) == "dm_policy_rejected"
+
+    group_message = make_message(
+        chat_type="group",
+        mentions=[SimpleNamespace(id="ou_me", id_type="", name="Hermes")],
+    )
+    assert adapter._admit(sender, group_message) is None
 
 
 # --- _admit pipeline matrix ------------------------------------------------

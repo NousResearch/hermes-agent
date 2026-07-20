@@ -97,6 +97,10 @@ export interface Translations {
     revealInSidebar: string
     copyPath: string
     copyRelativePath: string
+    download: string
+    saveCopy: string
+    saved: (name: string) => string
+    saveFailed: string
     rename: string
     delete: string
     renameTitle: string

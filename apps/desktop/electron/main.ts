@@ -66,6 +66,7 @@ import {
   uninstallArgsForMode
 } from './desktop-uninstall'
 import { installEmbedReferer } from './embed-referer'
+import { copyFileAtomically, downloadFilename, streamDownloadWithDataUrlFallback } from './file-download'
 import { readDirForIpc } from './fs-read-dir'
 import { probeGatewayWebSocket } from './gateway-ws-probe'
 import { scanGitRepos } from './git-repo-scan'
@@ -5560,6 +5561,59 @@ function fetchJsonViaOauthSession(url, options: any = {}) {
   })
 }
 
+// Stream a backend file directly into a local destination without buffering
+// it in the main process. OAuth connections use the same isolated cookie jar
+// as other gateway REST calls; token/local connections use the session token.
+function backendFileRequest(url, connection) {
+  const requestOptions: any = { method: 'GET', url, redirect: 'follow' }
+
+  if (connection.authMode === 'oauth') {
+    const sess = getOauthSession()
+
+    if (!sess) {
+      throw new Error('OAuth session partition is unavailable.')
+    }
+
+    requestOptions.session = sess
+    requestOptions.useSessionCookies = true
+  }
+
+  const request = electronNet.request(requestOptions)
+
+  if (connection.authMode !== 'oauth') {
+    if (!connection.token) {
+      throw new Error('Hermes backend session token is unavailable.')
+    }
+
+    request.setHeader('X-Hermes-Session-Token', connection.token)
+  }
+
+  return request
+}
+
+async function streamBackendFileToPath(
+  url,
+  legacyDataUrl,
+  connection,
+  destination: string
+): Promise<void> {
+  const fallback = async () => {
+    const body = (
+      connection.authMode === 'oauth'
+        ? await fetchJsonViaOauthSession(legacyDataUrl)
+        : await fetchJson(legacyDataUrl, connection.token)
+    ) as any
+
+    if (typeof body?.dataUrl !== 'string') {
+      throw new Error('Gateway returned no file data')
+    }
+
+    return body.dataUrl
+  }
+
+  await streamDownloadWithDataUrlFallback(backendFileRequest(url, connection) as any, destination, fallback)
+}
+
 // Mint a single-use WS ticket for a gated gateway. Returns the ticket string.
 // Throws (with statusCode 401) if the session cookie is missing/expired —
 // callers treat that as "needs re-login".
@@ -8428,6 +8482,75 @@ ipcMain.handle('hermes:readFileText', async (_event, filePath) => {
   } finally {
     await handle.close()
   }
+})
+
+ipcMain.handle('hermes:fs:saveFileAs', async (_event, payload: any = {}) => {
+  const sourcePath = String(payload?.path || '').trim()
+
+  if (!sourcePath) {
+    throw new Error('Save file: missing source path')
+  }
+
+  const profile = String(payload?.profile || '').trim() || undefined
+  const remote = Boolean(payload?.remote)
+  let localSource: string | null = null
+  let remoteDownload: { connection: any; legacyDataUrl: string; url: string } | null = null
+
+  // Resolve local sources before showing the destination picker and capture
+  // the intended remote connection up front. The remote endpoint applies its
+  // own managed-root and sensitive-path policy when the stream starts.
+  if (remote) {
+    const connection = await ensureBackend(profile)
+
+    if (connection.mode !== 'remote') {
+      throw new Error('The selected remote file source is no longer active.')
+    }
+
+    const routeOptions = {
+      globalRemote: globalRemoteActive(),
+      profileRemoteOverride: profileHasRemoteOverride(profile)
+    }
+    const requestPath = pathWithGlobalRemoteProfile(
+      `/api/fs/download?path=${encodeURIComponent(sourcePath)}`,
+      profile,
+      routeOptions
+    )
+    const legacyRequestPath = pathWithGlobalRemoteProfile(
+      `/api/fs/read-data-url?path=${encodeURIComponent(sourcePath)}`,
+      profile,
+      routeOptions
+    )
+
+    remoteDownload = {
+      connection,
+      legacyDataUrl: `${connection.baseUrl}${legacyRequestPath}`,
+      url: `${connection.baseUrl}${requestPath}`
+    }
+  } else {
+    ;({ resolvedPath: localSource } = await resolveReadableFileForIpc(sourcePath, { purpose: 'Save file copy' }))
+  }
+
+  const result = await dialog.showSaveDialog(mainWindow, {
+    title: String(payload?.title || '').trim() || 'Save File',
+    defaultPath: path.join(app.getPath('downloads'), downloadFilename(sourcePath))
+  })
+
+  if (result.canceled || !result.filePath) {
+    return { canceled: true, path: null }
+  }
+
+  if (remoteDownload) {
+    await streamBackendFileToPath(
+      remoteDownload.url,
+      remoteDownload.legacyDataUrl,
+      remoteDownload.connection,
+      result.filePath
+    )
+  } else {
+    await copyFileAtomically(localSource as string, result.filePath)
+  }
+
+  return { canceled: false, path: result.filePath }
 })
 
 ipcMain.handle('hermes:selectPaths', async (_event, options: any = {}) => {

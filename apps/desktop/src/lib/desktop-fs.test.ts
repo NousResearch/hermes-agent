@@ -9,6 +9,7 @@ import {
   readDesktopDir,
   readDesktopFileDataUrl,
   readDesktopFileText,
+  saveDesktopFileAs,
   selectDesktopPaths,
   setDesktopFsRemotePicker
 } from './desktop-fs'
@@ -17,6 +18,7 @@ const readDir = vi.fn(async () => ({ entries: [{ name: 'local', path: '/local', 
 const readFileText = vi.fn(async () => ({ path: '/local/file.txt', text: 'local', byteSize: 5 }))
 const readFileDataUrl = vi.fn(async () => 'data:text/plain;base64,bG9jYWw=')
 const gitRoot = vi.fn(async () => '/local')
+const saveFileAs = vi.fn(async () => ({ canceled: false, path: '/downloads/file.txt' }))
 const selectPaths = vi.fn(async () => ['/local'])
 
 const api = vi.fn(async ({ path }: { path: string }) => {
@@ -55,6 +57,7 @@ function stubBridge() {
       readDir,
       readFileDataUrl,
       readFileText,
+      saveFileAs,
       selectPaths
     }
   })
@@ -83,12 +86,22 @@ describe('desktop filesystem facade', () => {
     await expect(readDesktopFileDataUrl('/work/file.txt')).resolves.toBe('data:text/plain;base64,bG9jYWw=')
     await expect(desktopGitRoot('/work')).resolves.toBe('/local')
     await expect(selectDesktopPaths({ directories: true })).resolves.toEqual(['/local'])
+    await expect(saveDesktopFileAs('/work/file.txt', 'Save a Copy…')).resolves.toEqual({
+      canceled: false,
+      path: '/downloads/file.txt'
+    })
 
     expect(readDir).toHaveBeenCalledWith('/work')
     expect(readFileText).toHaveBeenCalledWith('/work/file.txt')
     expect(readFileDataUrl).toHaveBeenCalledWith('/work/file.txt')
     expect(gitRoot).toHaveBeenCalledWith('/work')
     expect(selectPaths).toHaveBeenCalledWith({ directories: true })
+    expect(saveFileAs).toHaveBeenCalledWith({
+      path: '/work/file.txt',
+      profile: undefined,
+      remote: false,
+      title: 'Save a Copy…'
+    })
     expect(api).not.toHaveBeenCalled()
   })
 
@@ -117,9 +130,16 @@ describe('desktop filesystem facade', () => {
 
     await readDesktopDir('/srv/project')
     await desktopDefaultCwd()
+    await saveDesktopFileAs('/srv/project/report.pdf', 'Download…')
 
     expect(api).toHaveBeenCalledWith({ path: '/api/fs/list?path=%2Fsrv%2Fproject', profile: 'remote-docker' })
     expect(api).toHaveBeenCalledWith({ path: '/api/fs/default-cwd', profile: 'remote-docker' })
+    expect(saveFileAs).toHaveBeenCalledWith({
+      path: '/srv/project/report.pdf',
+      profile: 'remote-docker',
+      remote: true,
+      title: 'Download…'
+    })
   })
 
   it('routes file diffs through backend git in remote mode', async () => {

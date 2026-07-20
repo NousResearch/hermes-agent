@@ -532,23 +532,23 @@ class LSPService:
             except Exception:  # noqa: BLE001
                 return None
 
-        # We claimed the spawn slot.  Now safe to await: no other
-        # caller can spawn for this key — they'll see _spawning[key]
-        # is set and await our spawn_future instead.
-        if client is not None:
-            logger.debug(
-                "[%s] cleaning up stale client for %s before respawn",
-                srv.server_id, per_server_root,
-            )
-            try:
-                await client.shutdown()
-            except Exception as e:  # noqa: BLE001
-                logger.warning(
-                    "[%s] failed to terminate stale client for %s: %s",
-                    srv.server_id, per_server_root, e,
-                )
-
+        # Begin spawn (and terminate stale client if needed — inside the
+        # same try block so any exception, including CancelledError during
+        # shutdown, resolves spawn_future rather than hanging waiters).
         try:
+            if client is not None:
+                logger.debug(
+                    "[%s] cleaning up stale client for %s before respawn",
+                    srv.server_id, per_server_root,
+                )
+                try:
+                    await client.shutdown()
+                except Exception as e:  # noqa: BLE001
+                    logger.warning(
+                        "[%s] failed to terminate stale client for %s: %s",
+                        srv.server_id, per_server_root, e,
+                    )
+
             ctx = ServerContext(
                 workspace_root=per_server_root,
                 install_strategy=self._install_strategy,
@@ -588,6 +588,12 @@ class LSPService:
             eventlog.log_active(srv.server_id, per_server_root)
             spawn_future.set_result(client)
             return client
+        except BaseException as exc:
+            # Resolve the spawn future so concurrent callers waiting on it
+            # don't hang forever.  The finally block below still cleans up
+            # self._spawning.
+            spawn_future.set_exception(exc)
+            raise
         finally:
             with self._state_lock:
                 self._spawning.pop(key, None)

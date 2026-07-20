@@ -99,7 +99,7 @@ try:
     from fastapi.middleware.cors import CORSMiddleware
     from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
     from fastapi.staticfiles import StaticFiles
-    from pydantic import BaseModel, SecretStr
+    from pydantic import BaseModel, SecretStr, model_validator
     from starlette.concurrency import run_in_threadpool
 except ImportError:
     # First try lazy-installing the dashboard extras. Only the user actually
@@ -115,7 +115,7 @@ except ImportError:
         from fastapi.middleware.cors import CORSMiddleware
         from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
         from fastapi.staticfiles import StaticFiles
-        from pydantic import BaseModel, SecretStr
+        from pydantic import BaseModel, SecretStr, model_validator
         from starlette.concurrency import run_in_threadpool
     except Exception:
         raise SystemExit(
@@ -10420,6 +10420,7 @@ class CronJobCreate(BaseModel):
     prompt: str = ""
     schedule: str
     name: str = ""
+    repeat: Optional[int] = None
     deliver: str = "local"
     skills: Optional[List[str]] = None
     model: Optional[str] = None
@@ -10430,6 +10431,12 @@ class CronJobCreate(BaseModel):
     enabled_toolsets: Optional[List[str]] = None
     workdir: Optional[str] = None
     no_agent: bool = False
+
+    @model_validator(mode="after")
+    def _check_repeat(self):
+        if self.repeat is not None and self.repeat < 1:
+            raise ValueError("repeat must be a positive integer")
+        return self
 
 
 class CronJobUpdate(BaseModel):
@@ -10443,6 +10450,24 @@ def _cron_optional_text(value: Any, *, strip_trailing_slash: bool = False) -> Op
     if strip_trailing_slash:
         text = text.rstrip("/")
     return text or None
+
+
+def _cron_optional_int(value: Any) -> Optional[int]:
+    """Return an Optional[int] or None, matching cron.jobs.create_job semantics.
+
+    ``cron.jobs.create_job`` treats ``repeat=None`` as unlimited and
+    ``repeat <= 0`` as unlimited, so we normalise here: None is passed through,
+    zero and negatives are passed through as zero so the core normalises to
+    None itself (we don't want two normalisation sites), and non-integer
+    garbage raises ValueError.
+    """
+    if value is None:
+        return None
+    try:
+        ival = int(value)
+    except (TypeError, ValueError):
+        raise ValueError("repeat must be a positive integer, or omitted")
+    return ival
 
 
 def _cron_string_list(value: Any) -> Optional[List[str]]:
@@ -10742,6 +10767,7 @@ def _create_cron_job_sync(body: CronJobCreate, profile: str = "default"):
             prompt=body.prompt or "",
             schedule=body.schedule,
             name=body.name,
+            repeat=_cron_optional_int(body.repeat),
             deliver=_cron_optional_text(body.deliver) or "local",
             skills=skills,
             model=_cron_optional_text(body.model),

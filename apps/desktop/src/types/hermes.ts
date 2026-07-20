@@ -570,6 +570,7 @@ export interface CronJobCreatePayload {
   deliver?: string
   name?: string
   prompt: string
+  repeat?: number
   schedule: string
 }
 

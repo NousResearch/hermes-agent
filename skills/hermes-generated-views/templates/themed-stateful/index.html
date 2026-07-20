@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Focus Board</title>
+    <style>
+      :root { --bg: #101114; --fg: #f5f6f7; --accent: #79e6a8; --border: #343840; --muted: #aeb4bf; font-family: ui-sans-serif, system-ui, sans-serif; }
+      * { box-sizing: border-box; }
+      body { margin: 0; min-height: 100vh; background: var(--bg); color: var(--fg); }
+      main { width: min(42rem, 100%); margin: auto; padding: clamp(1rem, 4vw, 2rem); }
+      header { display: flex; align-items: end; justify-content: space-between; gap: 1rem; border-bottom: 1px solid var(--border); padding-bottom: 1rem; }
+      .eyebrow { color: var(--accent); font: 600 .68rem ui-monospace, monospace; letter-spacing: .14em; }
+      h1 { margin: .35rem 0 0; font-size: clamp(1.4rem, 5vw, 2.2rem); }
+      .count { font: 600 2rem ui-monospace, monospace; }
+      button { margin-top: 1.25rem; border: 1px solid var(--border); border-radius: .65rem; padding: .7rem 1rem; background: color-mix(in srgb, var(--accent) 14%, transparent); color: var(--fg); cursor: pointer; }
+      p { color: var(--muted); line-height: 1.6; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header><div><div class="eyebrow">TODAY'S FOCUS</div><h1>Small wins, kept locally</h1></div><div class="count" id="count">0</div></header>
+      <p>This counter is stored by Hermes under this view's host-bound identity. The iframe cannot name or read another view's state.</p>
+      <button id="increment" type="button">Complete one step</button>
+    </main>
+    <script>
+      const pending = new Map(); let sequence = 0;
+      function request(type, payload = {}) { const requestId = `focus-${++sequence}`; parent.postMessage({ v: 1, type, requestId, ...payload }, '*'); return new Promise((resolve, reject) => pending.set(requestId, { resolve, reject })); }
+      addEventListener('message', event => { const message = event.data; if (event.source !== parent || message?.v !== 1 || typeof message.requestId !== 'string') return; const job = pending.get(message.requestId); if (!job) return; pending.delete(message.requestId); message.type === 'hermes:error' ? job.reject(new Error(message.message)) : job.resolve(message); });
+      async function boot() {
+        const theme = await request('hermes:getTheme');
+        const tokens = theme.tokens || {};
+        document.documentElement.style.setProperty('--bg', tokens['--theme-background-seed'] || '#101114');
+        document.documentElement.style.setProperty('--fg', tokens['--theme-foreground'] || '#f5f6f7');
+        document.documentElement.style.setProperty('--accent', tokens['--theme-primary'] || '#79e6a8');
+        document.documentElement.style.setProperty('--border', tokens['--dt-border'] || '#343840');
+        const saved = await request('hermes:getState');
+        let count = Number(saved.state?.count || 0); const output = document.querySelector('#count'); output.textContent = count;
+        document.querySelector('#increment').addEventListener('click', async () => { count += 1; output.textContent = count; await request('hermes:setState', { state: { count } }); });
+      }
+      boot().catch(error => { document.querySelector('p').textContent = error.message; });
+    </script>
+  </body>
+</html>

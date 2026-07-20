@@ -1747,6 +1747,7 @@ export const zh: Translations = {
     tabImages: '图片',
     tabFiles: '文件',
     tabLinks: '链接',
+    tabViews: '视图',
     noArtifactsTitle: '未找到产物',
     noArtifactsDesc: '当会话生成图片和文件输出时，它们会显示在这里。',
     failedLoad: '产物加载失败',
@@ -1770,7 +1771,16 @@ export const zh: Translations = {
     kindLink: '链接',
     chat: '对话',
     copyUrl: '复制 URL',
-    copyPath: '复制路径'
+    copyPath: '复制路径',
+    viewsTitle: '智能体创作的视图',
+    viewsDescription: '由 Hermes 智能体创作的安全持久桌面界面，可作为普通可移动窗格打开。',
+    viewOpen: '打开视图',
+    viewEntry: '入口',
+    viewInvalid: (id, message) => `${id}：${message}`,
+    viewApprovalTitle: title => `运行 ${title}？`,
+    viewIsolationSummary: '内联脚本在隔离框架中运行，无法访问网络、表单、弹窗、下载或导航。',
+    viewCapabilities: '能力',
+    viewBindings: '只读数据'
   },
 
   sidebar: {

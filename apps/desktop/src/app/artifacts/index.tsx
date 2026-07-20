@@ -1,3 +1,4 @@
+import { useStore } from '@nanostores/react'
 import type * as React from 'react'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
@@ -20,13 +21,20 @@ import { Tip } from '@/components/ui/tooltip'
 import { getSessionMessages, listAllProfileSessions } from '@/hermes'
 import { type Translations, useI18n } from '@/i18n'
 import { ExternalLink, ExternalLinkIcon, hostPathLabel, urlSlugTitleLabel, useLinkTitle } from '@/lib/external-link'
-import { FileImage, FileText, FolderOpen, Link2, Loader2, RefreshCw } from '@/lib/icons'
+import { FileImage, FileText, FolderOpen, LayoutDashboard, Link2, Loader2, Play, RefreshCw } from '@/lib/icons'
 import { downloadGatewayMediaFile, isRemoteGateway } from '@/lib/media'
 import { normalize } from '@/lib/text'
 import { fmtDayTime } from '@/lib/time'
 import { cn } from '@/lib/utils'
 import { notifyError } from '@/store/notifications'
 
+import { openGeneratedViewPane } from '../generated-views/panes'
+import {
+  $generatedViewProblems,
+  $generatedViews,
+  discoverGeneratedViews,
+  type GeneratedViewDocument
+} from '../generated-views/store'
 import { useRefreshHotkey } from '../hooks/use-refresh-hotkey'
 import { useRouteEnumParam } from '../hooks/use-route-enum-param'
 import { PageSearchShell } from '../page-search-shell'
@@ -82,6 +90,9 @@ function paginationItems(page: number, pageCount: number): Array<number | 'ellip
   return pages
 }
 
+type ArtifactPageFilter = ArtifactFilter | 'view'
+const ARTIFACT_PAGE_FILTERS: readonly ArtifactPageFilter[] = [...ARTIFACT_FILTERS, 'view']
+
 type CellCtx = {
   onOpen: (href: string) => void | Promise<void>
   onOpenChat: (sessionId: string) => void
@@ -107,9 +118,11 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
   const a = t.artifacts
   const navigate = useNavigate()
   const [artifacts, setArtifacts] = useState<ArtifactRecord[] | null>(null)
+  const generatedViews = useStore($generatedViews)
+  const generatedViewProblems = useStore($generatedViewProblems)
   const [query, setQuery] = useState('')
 
-  const [kindFilter, setKindFilter] = useRouteEnumParam('tab', ARTIFACT_FILTERS, 'all')
+  const [kindFilter, setKindFilter] = useRouteEnumParam('tab', ARTIFACT_PAGE_FILTERS, 'all')
 
   const [failedImageIds, setFailedImageIds] = useState<Set<string>>(() => new Set())
   const [imagePage, setImagePage] = useState(1)
@@ -119,6 +132,7 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
 
   const refreshArtifacts = useCallback(async () => {
     setRefreshing(true)
+    void discoverGeneratedViews()
 
     try {
       const sessions = (await listAllProfileSessions(30, 1)).sessions
@@ -162,6 +176,10 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
     const q = normalize(query)
 
     return artifacts.filter(artifact => {
+      if (kindFilter === 'view') {
+        return false
+      }
+
       if (kindFilter !== 'all' && artifact.kind !== kindFilter) {
         return false
       }
@@ -177,6 +195,26 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
       )
     })
   }, [artifacts, kindFilter, query])
+
+  const visibleGeneratedViews = useMemo(() => {
+    if (kindFilter !== 'all' && kindFilter !== 'view') {
+      return []
+    }
+
+    const q = normalize(query)
+
+    return generatedViews.filter(view => {
+      if (!q) {
+        return true
+      }
+
+      return (
+        view.manifest.title.toLowerCase().includes(q) ||
+        view.manifest.id.toLowerCase().includes(q) ||
+        view.entryPath.toLowerCase().includes(q)
+      )
+    })
+  }, [generatedViews, kindFilter, query])
 
   const visibleImageArtifacts = useMemo(
     () => visibleArtifacts.filter(artifact => artifact.kind === 'image'),
@@ -228,12 +266,13 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
     const all = artifacts || []
 
     return {
-      all: all.length,
+      all: all.length + generatedViews.length,
       image: all.filter(artifact => artifact.kind === 'image').length,
       file: all.filter(artifact => artifact.kind === 'file').length,
-      link: all.filter(artifact => artifact.kind === 'link').length
+      link: all.filter(artifact => artifact.kind === 'link').length,
+      view: generatedViews.length
     }
-  }, [artifacts])
+  }, [artifacts, generatedViews])
 
   const openArtifact = useCallback(
     async (href: string) => {
@@ -303,21 +342,37 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
         { id: 'all', label: a.tabAll, meta: artifacts ? counts.all : null },
         { id: 'image', label: a.tabImages, meta: artifacts ? counts.image : null },
         { id: 'file', label: a.tabFiles, meta: artifacts ? counts.file : null },
-        { id: 'link', label: a.tabLinks, meta: artifacts ? counts.link : null }
+        { id: 'link', label: a.tabLinks, meta: artifacts ? counts.link : null },
+        { id: 'view', label: a.tabViews, meta: counts.view }
       ]}
     >
-      {!artifacts ? (
+      {!artifacts && kindFilter !== 'view' ? (
         <PageLoader label={a.indexing} />
-      ) : visibleArtifacts.length === 0 ? (
+      ) : visibleArtifacts.length === 0 && visibleGeneratedViews.length === 0 ? (
         <div className="grid h-full place-items-center px-6 text-center">
           <div>
-            <div className="text-sm font-medium">{a.noArtifactsTitle}</div>
-            <div className="mt-1 text-xs text-muted-foreground">{a.noArtifactsDesc}</div>
+            <div className="text-sm font-medium">{kindFilter === 'view' ? a.viewsTitle : a.noArtifactsTitle}</div>
+            <div className="mt-1 text-xs text-muted-foreground">
+              {kindFilter === 'view' ? a.viewsDescription : a.noArtifactsDesc}
+            </div>
+            {kindFilter === 'view' && generatedViewProblems.length > 0 && (
+              <div className="mt-3 max-w-xl text-left font-mono text-[0.6875rem] text-destructive">
+                {generatedViewProblems.map(problem => (
+                  <div key={`${problem.path}:${problem.message}`}>
+                    {a.viewInvalid(problem.id ?? problem.path, problem.message)}
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         </div>
       ) : (
         <div className="h-full overflow-y-auto [scrollbar-gutter:stable]">
           <div className="flex flex-col gap-3 px-3 pb-2">
+            {visibleGeneratedViews.length > 0 && (
+              <GeneratedViewsSection onOpen={openGeneratedViewPane} views={visibleGeneratedViews} />
+            )}
+
             {visibleImageArtifacts.length > 0 && (
               <section className="flex flex-col">
                 <div className="sticky top-0 z-10 -mx-3 flex h-7 items-center gap-3 overflow-x-auto bg-background px-3">
@@ -349,7 +404,7 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
                 <div className="sticky top-0 z-10 -mx-3 flex h-7 items-center gap-3 overflow-x-auto bg-background px-3">
                   <ArtifactsPagination
                     className="ml-auto justify-end px-0"
-                    itemLabel={itemsLabel(kindFilter, a)}
+                    itemLabel={itemsLabel(kindFilter === 'view' ? 'all' : kindFilter, a)}
                     onPageChange={setFilePage}
                     page={currentFilePage}
                     pageSize={100}
@@ -357,7 +412,11 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
                   />
                 </div>
                 <div className="overflow-x-auto rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-chat-bubble-background)">
-                  <ArtifactTable artifacts={pagedFileArtifacts} ctx={cellCtx} filter={kindFilter} />
+                  <ArtifactTable
+                    artifacts={pagedFileArtifacts}
+                    ctx={cellCtx}
+                    filter={kindFilter === 'view' ? 'all' : kindFilter}
+                  />
                 </div>
               </section>
             )}
@@ -365,6 +424,68 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
         </div>
       )}
     </PageSearchShell>
+  )
+}
+
+export function GeneratedViewsSection({
+  onOpen,
+  views
+}: {
+  onOpen: (id: string) => void
+  views: readonly GeneratedViewDocument[]
+}) {
+  const { t } = useI18n()
+  const a = t.artifacts
+
+  return (
+    <section className="flex flex-col gap-2 pt-1.5">
+      <div className="px-1">
+        <div className="text-xs font-medium text-foreground">{a.viewsTitle}</div>
+        <div className="mt-0.5 text-[0.6875rem] text-muted-foreground">{a.viewsDescription}</div>
+      </div>
+      <div className="grid grid-cols-[repeat(auto-fill,minmax(17rem,1fr))] gap-2">
+        {views.map(view => (
+          <article
+            className="group/view flex min-h-40 flex-col overflow-hidden rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-chat-bubble-background)"
+            key={view.manifest.id}
+          >
+            <div className="flex flex-1 items-start gap-3 p-3">
+              <div className="grid size-9 shrink-0 place-items-center rounded-md bg-(--ui-bg-tertiary) text-(--ui-text-secondary)">
+                <LayoutDashboard className="size-4.5" />
+              </div>
+              <div className="min-w-0 flex-1">
+                <div className="truncate text-sm font-medium text-foreground">{view.manifest.title}</div>
+                <div className="mt-0.5 truncate font-mono text-[0.625rem] text-(--ui-text-tertiary)">
+                  {view.manifest.id}
+                </div>
+                <div className="mt-3 grid gap-1 text-[0.6875rem] text-muted-foreground">
+                  <div className="truncate">
+                    <span className="font-medium text-(--ui-text-secondary)">{a.viewEntry}:</span> {view.manifest.entry}
+                  </div>
+                  <div className="truncate">
+                    <span className="font-medium text-(--ui-text-secondary)">{a.viewCapabilities}:</span>{' '}
+                    {view.manifest.capabilities.join(', ') || '—'}
+                  </div>
+                  <div className="truncate">
+                    <span className="font-medium text-(--ui-text-secondary)">{a.viewBindings}:</span>{' '}
+                    {view.manifest.bindings.join(', ') || '—'}
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div className="flex items-center justify-between border-t border-(--ui-stroke-tertiary) px-3 py-2">
+              <span className="font-mono text-[0.625rem] text-(--ui-text-quaternary)">
+                sha256:{view.digest.slice(0, 8)}
+              </span>
+              <Button onClick={() => onOpen(view.manifest.id)} size="xs" type="button" variant="textStrong">
+                <Play className="size-3" />
+                {a.viewOpen}
+              </Button>
+            </div>
+          </article>
+        ))}
+      </div>
+    </section>
   )
 }
 

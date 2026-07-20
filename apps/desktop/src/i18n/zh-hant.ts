@@ -1444,6 +1444,7 @@ export const zhHant = defineLocale({
     tabImages: '圖片',
     tabFiles: '檔案',
     tabLinks: '連結',
+    tabViews: '檢視',
     noArtifactsTitle: '找不到成品',
     noArtifactsDesc: '當工作階段產生圖片和檔案輸出時，它們會顯示在這裡。',
     failedLoad: '成品載入失敗',
@@ -1467,7 +1468,16 @@ export const zhHant = defineLocale({
     kindLink: '連結',
     chat: '聊天',
     copyUrl: '複製 URL',
-    copyPath: '複製路徑'
+    copyPath: '複製路徑',
+    viewsTitle: '代理程式建立的檢視',
+    viewsDescription: '由 Hermes 代理程式建立的安全持久桌面介面，可作為一般可移動窗格開啟。',
+    viewOpen: '開啟檢視',
+    viewEntry: '進入點',
+    viewInvalid: (id, message) => `${id}：${message}`,
+    viewApprovalTitle: title => `執行 ${title}？`,
+    viewIsolationSummary: '內嵌指令碼會在隔離框架中執行，無法使用網路、表單、彈出視窗、下載或導覽。',
+    viewCapabilities: '功能',
+    viewBindings: '唯讀資料'
   },
 
   sidebar: {

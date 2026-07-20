@@ -1294,6 +1294,7 @@ export interface Translations {
     tabImages: string
     tabFiles: string
     tabLinks: string
+    tabViews: string
     noArtifactsTitle: string
     noArtifactsDesc: string
     failedLoad: string
@@ -1318,6 +1319,15 @@ export interface Translations {
     chat: string
     copyUrl: string
     copyPath: string
+    viewsTitle: string
+    viewsDescription: string
+    viewOpen: string
+    viewEntry: string
+    viewInvalid: (id: string, message: string) => string
+    viewApprovalTitle: (title: string) => string
+    viewIsolationSummary: string
+    viewCapabilities: string
+    viewBindings: string
   }
 
   sidebar: {

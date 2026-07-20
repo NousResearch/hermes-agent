@@ -1564,6 +1564,7 @@ export const en: Translations = {
     tabImages: 'Images',
     tabFiles: 'Files',
     tabLinks: 'Links',
+    tabViews: 'Views',
     noArtifactsTitle: 'No artifacts found',
     noArtifactsDesc: 'Generated images and file outputs will appear here as sessions produce them.',
     failedLoad: 'Artifacts failed to load',
@@ -1587,7 +1588,16 @@ export const en: Translations = {
     kindLink: 'link',
     chat: 'Chat',
     copyUrl: 'Copy URL',
-    copyPath: 'Copy path'
+    copyPath: 'Copy path',
+    viewsTitle: 'Agent-authored views',
+    viewsDescription: 'Safe, persistent desktop surfaces authored by Hermes agents and opened as normal movable panes.',
+    viewOpen: 'Open view',
+    viewEntry: 'Entry',
+    viewInvalid: (id, message) => `${id}: ${message}`,
+    viewApprovalTitle: title => `Run ${title}?`,
+    viewIsolationSummary: 'Inline scripts run in an isolated frame with no network, forms, popups, downloads, or navigation.',
+    viewCapabilities: 'Capabilities',
+    viewBindings: 'Read-only data'
   },
 
   sidebar: {

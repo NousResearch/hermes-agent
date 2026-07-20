@@ -1,0 +1,8 @@
+{
+  "version": 1,
+  "id": "hello-view",
+  "title": "Hello View",
+  "entry": "index.html",
+  "capabilities": [],
+  "bindings": []
+}

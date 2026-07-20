@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { readDesktopFileText } from '@/lib/desktop-fs'
 
 import { SANDBOXED_HTML_CSP, SANDBOXED_HTML_PERMISSIONS } from './sandboxed-html-approval'
-import { SandboxedHtmlPreview } from './sandboxed-html-preview'
+import { SandboxedHtmlDocument, SandboxedHtmlPreview } from './sandboxed-html-preview'
 
 vi.mock('@/lib/desktop-fs', () => ({
   desktopFsCacheKey: vi.fn(() => 'remote:work:https://gateway'),
@@ -106,6 +106,62 @@ describe('SandboxedHtmlPreview', () => {
 
     expect(await screen.findByText('Run sandboxed preview')).not.toBeNull()
     expect(globalThis.document.querySelector('iframe')).toBeNull()
+  })
+
+  it('unmounts an approved frame synchronously when its digest changes', async () => {
+    const view = render(
+      <SandboxedHtmlDocument
+        digest={'a'.repeat(64)}
+        documentSource="<p>first</p>"
+        frameTitle="Generated view"
+        identity="generated:demo"
+        path="/views/demo/view.json"
+        source="<p>first</p>"
+      />
+    )
+
+    fireEvent.click(screen.getByText('Run sandboxed preview'))
+    expect(globalThis.document.querySelector('iframe')).not.toBeNull()
+
+    view.rerender(
+      <SandboxedHtmlDocument
+        digest={'b'.repeat(64)}
+        documentSource="<p>changed</p>"
+        frameTitle="Generated view"
+        identity="generated:demo"
+        path="/views/demo/view.json"
+        source="<p>changed</p>"
+      />
+    )
+
+    expect(globalThis.document.querySelector('iframe')).toBeNull()
+    expect(screen.getByText('Run sandboxed preview')).not.toBeNull()
+  })
+
+  it('forwards bridge messages only from the exact iframe window', async () => {
+    const bridge = { handleMessage: vi.fn() }
+    render(
+      <SandboxedHtmlDocument
+        bridge={bridge}
+        digest={'c'.repeat(64)}
+        documentSource="<p>bridge</p>"
+        frameTitle="Generated view"
+        identity="generated:bridge"
+        path="/views/bridge/view.json"
+        source="<p>bridge</p>"
+      />
+    )
+    fireEvent.click(screen.getByText('Run sandboxed preview'))
+    const iframe = globalThis.document.querySelector('iframe') as HTMLIFrameElement
+    fireEvent.load(iframe)
+    await waitFor(() => expect(registerFrame).toHaveBeenCalled())
+    await waitFor(() => expect(iframe.getAttribute('srcdoc')).toContain('bridge'))
+
+    window.dispatchEvent(new MessageEvent('message', { data: { v: 1 }, source: window }))
+    expect(bridge.handleMessage).not.toHaveBeenCalled()
+
+    window.dispatchEvent(new MessageEvent('message', { data: { v: 1 }, source: iframe.contentWindow }))
+    expect(bridge.handleMessage).toHaveBeenCalledWith({ v: 1 }, expect.any(Function))
   })
 
   it.each([

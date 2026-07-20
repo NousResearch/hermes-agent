@@ -23,7 +23,6 @@ const SAFE_BOOTSTRAP_DOCUMENT =
 const FRAME_NAME_PREFIX = 'hermes-sandboxed-html:'
 
 interface ReadyPreview {
-  approved: boolean
   digest: string
   identity: string
   path: string
@@ -42,10 +41,26 @@ function frameName(): string {
   return `${FRAME_NAME_PREFIX}${id}`
 }
 
-function ApprovedSandbox({ documentSource, onIsolationError }: { documentSource: string; onIsolationError: () => void }) {
+export interface SandboxedHtmlBridge {
+  dispose?: () => void
+  handleMessage: (data: unknown, post: (message: unknown) => void) => void
+}
+
+function ApprovedSandbox({
+  bridge,
+  documentSource,
+  frameTitle,
+  onIsolationError
+}: {
+  bridge?: SandboxedHtmlBridge
+  documentSource: string
+  frameTitle: string
+  onIsolationError: () => void
+}) {
   const [name] = useState(frameName)
   const [registered, setRegistered] = useState(false)
   const registrationPendingRef = useRef(false)
+  const iframeRef = useRef<HTMLIFrameElement>(null)
 
   useEffect(
     () => () => {
@@ -53,6 +68,29 @@ function ApprovedSandbox({ documentSource, onIsolationError }: { documentSource:
     },
     [name]
   )
+
+  useEffect(() => {
+    const iframe = iframeRef.current
+
+    if (!registered || !iframe || !bridge) {
+      return
+    }
+
+    const post = (message: unknown) => iframe.contentWindow?.postMessage(message, '*')
+
+    const onMessage = (event: MessageEvent) => {
+      if (event.source === iframe.contentWindow) {
+        bridge.handleMessage(event.data, post)
+      }
+    }
+
+    window.addEventListener('message', onMessage)
+
+    return () => {
+      window.removeEventListener('message', onMessage)
+      bridge.dispose?.()
+    }
+  }, [bridge, registered])
 
   const registerFrame = () => {
     if (registered || registrationPendingRef.current) {
@@ -88,11 +126,123 @@ function ApprovedSandbox({ documentSource, onIsolationError }: { documentSource:
       className="h-full w-full border-0 bg-background"
       name={name}
       onLoad={registerFrame}
+      ref={iframeRef}
       referrerPolicy="no-referrer"
       sandbox="allow-scripts"
       srcDoc={registered ? documentSource : SAFE_BOOTSTRAP_DOCUMENT}
-      title="Sandboxed HTML preview"
+      title={frameTitle}
     />
+  )
+}
+
+export interface SandboxedHtmlDocumentProps {
+  bridge?: SandboxedHtmlBridge
+  digest: string
+  documentSource: string
+  frameTitle: string
+  identity: string
+  path: string
+  permissionSummary?: string
+  source: string
+  title?: string
+}
+
+/** Shared host-owned approval gate and opaque-origin renderer for authored HTML. */
+export function SandboxedHtmlDocument({
+  bridge,
+  digest,
+  documentSource,
+  frameTitle,
+  identity,
+  path,
+  permissionSummary,
+  source,
+  title
+}: SandboxedHtmlDocumentProps) {
+  const { t } = useI18n()
+  const copy = t.preview.sandboxedHtml
+  const [, setApprovalRevision] = useState(0)
+  const [showSource, setShowSource] = useState(false)
+  const [isolationError, setIsolationError] = useState(false)
+  const approved = isSandboxedHtmlApproved(identity, digest)
+
+  useEffect(() => {
+    setShowSource(false)
+    setIsolationError(false)
+  }, [digest, identity])
+
+  if (isolationError) {
+    return (
+      <PreviewEmptyState
+        body={copy.isolationBody}
+        primaryAction={{ label: copy.tryAgain, onClick: () => setIsolationError(false) }}
+        title={copy.isolationTitle}
+        tone="warning"
+      />
+    )
+  }
+
+  if (approved) {
+    return (
+      <ApprovedSandbox
+        bridge={bridge}
+        documentSource={documentSource}
+        frameTitle={frameTitle}
+        onIsolationError={() => setIsolationError(true)}
+      />
+    )
+  }
+
+  return (
+    <div className="absolute inset-0 overflow-auto bg-background px-6 py-8">
+      <div className="mx-auto grid max-w-2xl gap-5">
+        <div className="flex items-start gap-3 border-b border-border/60 pb-5">
+          <div className="mt-0.5 grid size-8 shrink-0 place-items-center rounded-[4px] bg-muted text-muted-foreground">
+            <Lock className="size-4" />
+          </div>
+          <div className="min-w-0 space-y-1">
+            <h2 className="text-sm font-medium text-foreground">{title ?? copy.approvalTitle}</h2>
+            <p className="text-xs leading-relaxed text-muted-foreground">{copy.approvalBody}</p>
+          </div>
+        </div>
+
+        <dl className="grid gap-3 text-xs">
+          <div className="grid gap-1 sm:grid-cols-[7rem_minmax(0,1fr)]">
+            <dt className="font-medium text-foreground">{copy.fileLabel}</dt>
+            <dd className="break-all font-mono text-muted-foreground">{path}</dd>
+          </div>
+          <div className="grid gap-1 sm:grid-cols-[7rem_minmax(0,1fr)]">
+            <dt className="font-medium text-foreground">{copy.digestLabel}</dt>
+            <dd className="font-mono text-muted-foreground">sha256:{digest.slice(0, 12)}</dd>
+          </div>
+          <div className="grid gap-1 sm:grid-cols-[7rem_minmax(0,1fr)]">
+            <dt className="font-medium text-foreground">{copy.permissionsLabel}</dt>
+            <dd className="leading-relaxed text-muted-foreground">{permissionSummary ?? copy.permissionsBody}</dd>
+          </div>
+        </dl>
+
+        <div className="flex flex-wrap items-center gap-3 border-t border-border/60 pt-5">
+          <Button
+            onClick={() => {
+              approveSandboxedHtml(identity, digest)
+              setApprovalRevision(value => value + 1)
+            }}
+            type="button"
+          >
+            {copy.runAction}
+          </Button>
+          <Button onClick={() => setShowSource(value => !value)} size="inline" type="button" variant="text">
+            {showSource ? copy.hideSource : copy.showSource}
+          </Button>
+        </div>
+
+        {showSource && (
+          <pre className="max-h-80 overflow-auto border border-border/60 bg-muted/30 p-3 text-left font-mono text-[0.6875rem] leading-5 text-foreground">
+            <code>{source}</code>
+          </pre>
+        )}
+      </div>
+    </div>
   )
 }
 
@@ -100,7 +250,6 @@ export function SandboxedHtmlPreview({ reloadKey, target }: { reloadKey: number;
   const { t } = useI18n()
   const copy = t.preview.sandboxedHtml
   const [loadNonce, setLoadNonce] = useState(0)
-  const [showSource, setShowSource] = useState(false)
   const [state, setState] = useState<PreviewState>({ status: 'loading' })
 
   useEffect(() => {
@@ -109,7 +258,6 @@ export function SandboxedHtmlPreview({ reloadKey, target }: { reloadKey: number;
     const connectionKey = desktopFsCacheKey()
 
     setState({ status: 'loading' })
-    setShowSource(false)
 
     void readDesktopFileText(requestedPath)
       .then(async result => {
@@ -139,7 +287,6 @@ export function SandboxedHtmlPreview({ reloadKey, target }: { reloadKey: number;
         }
 
         setState({
-          approved: isSandboxedHtmlApproved(identity, digest),
           digest,
           identity,
           path: result.path,
@@ -187,66 +334,14 @@ export function SandboxedHtmlPreview({ reloadKey, target }: { reloadKey: number;
     )
   }
 
-  if (state.approved) {
-    return (
-      <ApprovedSandbox
-        documentSource={state.sandboxedDocument}
-        onIsolationError={() =>
-          setState({ body: copy.isolationBody, status: 'error', title: copy.isolationTitle })
-        }
-      />
-    )
-  }
-
   return (
-    <div className="absolute inset-0 overflow-auto bg-background px-6 py-8">
-      <div className="mx-auto grid max-w-2xl gap-5">
-        <div className="flex items-start gap-3 border-b border-border/60 pb-5">
-          <div className="mt-0.5 grid size-8 shrink-0 place-items-center rounded-[4px] bg-muted text-muted-foreground">
-            <Lock className="size-4" />
-          </div>
-          <div className="min-w-0 space-y-1">
-            <h2 className="text-sm font-medium text-foreground">{copy.approvalTitle}</h2>
-            <p className="text-xs leading-relaxed text-muted-foreground">{copy.approvalBody}</p>
-          </div>
-        </div>
-
-        <dl className="grid gap-3 text-xs">
-          <div className="grid gap-1 sm:grid-cols-[7rem_minmax(0,1fr)]">
-            <dt className="font-medium text-foreground">{copy.fileLabel}</dt>
-            <dd className="break-all font-mono text-muted-foreground">{state.path}</dd>
-          </div>
-          <div className="grid gap-1 sm:grid-cols-[7rem_minmax(0,1fr)]">
-            <dt className="font-medium text-foreground">{copy.digestLabel}</dt>
-            <dd className="font-mono text-muted-foreground">sha256:{state.digest.slice(0, 12)}</dd>
-          </div>
-          <div className="grid gap-1 sm:grid-cols-[7rem_minmax(0,1fr)]">
-            <dt className="font-medium text-foreground">{copy.permissionsLabel}</dt>
-            <dd className="leading-relaxed text-muted-foreground">{copy.permissionsBody}</dd>
-          </div>
-        </dl>
-
-        <div className="flex flex-wrap items-center gap-3 border-t border-border/60 pt-5">
-          <Button
-            onClick={() => {
-              approveSandboxedHtml(state.identity, state.digest)
-              setState({ ...state, approved: true })
-            }}
-            type="button"
-          >
-            {copy.runAction}
-          </Button>
-          <Button onClick={() => setShowSource(value => !value)} size="inline" type="button" variant="text">
-            {showSource ? copy.hideSource : copy.showSource}
-          </Button>
-        </div>
-
-        {showSource && (
-          <pre className="max-h-80 overflow-auto border border-border/60 bg-muted/30 p-3 text-left font-mono text-[0.6875rem] leading-5 text-foreground">
-            <code>{state.source}</code>
-          </pre>
-        )}
-      </div>
-    </div>
+    <SandboxedHtmlDocument
+      digest={state.digest}
+      documentSource={state.sandboxedDocument}
+      frameTitle="Sandboxed HTML preview"
+      identity={state.identity}
+      path={state.path}
+      source={state.source}
+    />
   )
 }

@@ -1493,6 +1493,7 @@ export const ja = defineLocale({
     tabImages: '画像',
     tabFiles: 'ファイル',
     tabLinks: 'リンク',
+    tabViews: 'ビュー',
     noArtifactsTitle: 'アーティファクトが見つかりません',
     noArtifactsDesc: 'セッションで生成された画像やファイルの出力がここに表示されます。',
     failedLoad: 'アーティファクトの読み込みに失敗しました',
@@ -1516,7 +1517,16 @@ export const ja = defineLocale({
     kindLink: 'リンク',
     chat: 'チャット',
     copyUrl: 'URL をコピー',
-    copyPath: 'パスをコピー'
+    copyPath: 'パスをコピー',
+    viewsTitle: 'エージェント作成ビュー',
+    viewsDescription: 'Hermes エージェントが作成した安全で永続的なデスクトップ画面を、通常の移動可能なペインとして開きます。',
+    viewOpen: 'ビューを開く',
+    viewEntry: 'エントリ',
+    viewInvalid: (id, message) => `${id}: ${message}`,
+    viewApprovalTitle: title => `${title} を実行しますか？`,
+    viewIsolationSummary: 'インラインスクリプトは隔離フレーム内で実行され、ネットワーク、フォーム、ポップアップ、ダウンロード、ナビゲーションは使用できません。',
+    viewCapabilities: '機能',
+    viewBindings: '読み取り専用データ'
   },
 
   sidebar: {

@@ -2197,6 +2197,36 @@ def cleanup_task_resources(agent, task_id: str) -> None:
             logger.warning(f"Failed to cleanup browser for task {task_id}: {e}")
 
 
+def _build_partial_stream_stub(
+    role, full_content, full_reasoning, model_name, usage_obj, *,
+    dropped_tool_names=None,
+):
+    """Build a partial-stream-stub response for mid-stream drop scenarios.
+
+    Used when the SSE stream ends without a ``finish_reason`` after
+    delivering content (text-only drops, tool-call-arg drops).  The stub
+    is tagged ``PARTIAL_STREAM_STUB_ID`` with ``FINISH_REASON_LENGTH`` so
+    the conversation loop enters its continuation/retry path instead of
+    silently accepting truncated output as a complete turn (#32086).
+    """
+    mock_message = SimpleNamespace(
+        role=role,
+        content=full_content,
+        tool_calls=None,
+        reasoning_content=full_reasoning,
+    )
+    mock_choice = SimpleNamespace(
+        index=0,
+        message=mock_message,
+        finish_reason=FINISH_REASON_LENGTH,
+    )
+    return SimpleNamespace(
+        id=PARTIAL_STREAM_STUB_ID,
+        model=model_name,
+        choices=[mock_choice],
+        usage=usage_obj,
+        _dropped_tool_names=dropped_tool_names or None,
+    )
 
 
 def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=None):
@@ -2978,24 +3008,11 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                 "mid-tool-call stream drop, not an output-length truncation.",
                 _dropped_names,
             )
-            full_reasoning = "".join(reasoning_parts) or None
-            mock_message = SimpleNamespace(
-                role=role,
-                content=full_content,
-                tool_calls=None,
-                reasoning_content=full_reasoning,
-            )
-            mock_choice = SimpleNamespace(
-                index=0,
-                message=mock_message,
-                finish_reason=FINISH_REASON_LENGTH,
-            )
-            return SimpleNamespace(
-                id=PARTIAL_STREAM_STUB_ID,
-                model=model_name,
-                choices=[mock_choice],
-                usage=usage_obj,
-                _dropped_tool_names=_dropped_names or None,
+            return _build_partial_stream_stub(
+                role, full_content,
+                "".join(reasoning_parts) or None,
+                model_name, usage_obj,
+                dropped_tool_names=_dropped_names or None,
             )
 
         # Text-only stream drop: the upstream closed the connection (or the
@@ -3013,23 +3030,10 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                 "Stream ended with no finish_reason after delivering text "
                 "with no tool calls; treating as a mid-stream drop."
             )
-            full_reasoning = "".join(reasoning_parts) or None
-            mock_message = SimpleNamespace(
-                role=role,
-                content=full_content,
-                tool_calls=None,
-                reasoning_content=full_reasoning,
-            )
-            mock_choice = SimpleNamespace(
-                index=0,
-                message=mock_message,
-                finish_reason=FINISH_REASON_LENGTH,
-            )
-            return SimpleNamespace(
-                id=PARTIAL_STREAM_STUB_ID,
-                model=model_name,
-                choices=[mock_choice],
-                usage=usage_obj,
+            return _build_partial_stream_stub(
+                role, full_content,
+                "".join(reasoning_parts) or None,
+                model_name, usage_obj,
             )
 
         effective_finish_reason = finish_reason or "stop"

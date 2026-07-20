@@ -46,9 +46,9 @@ hermes tools
 # ~/.hermes/config.yaml
 x_search:
   # 用于 Responses 调用的 xAI 模型。
-  # grok-4.20-reasoning 是推荐的默认值；任何支持
+  # grok-4.5 是推荐的默认值；任何支持
   # x_search 工具访问权限的 Grok 模型均可使用。
-  model: grok-4.20-reasoning
+  model: grok-4.5
 
   # 请求超时时间（秒）。复杂查询的 x_search 可能需要 60–120 秒，
   # 默认值较为宽松。最小值：30。
@@ -114,7 +114,7 @@ agent 将：
 
 ### "`x_search` is not enabled for this model"
 
-配置的 `x_search.model` 没有访问服务端 `x_search` 工具的权限。请切换至 `grok-4.20-reasoning`（默认值）或其他支持该工具的 Grok 模型。当前支持列表请查阅 [xAI 文档](https://docs.x.ai/)。
+配置的 `x_search.model` 没有访问服务端 `x_search` 工具的权限。请切换至 `grok-4.5`（默认值）或其他支持该工具的 Grok 模型。当前支持列表请查阅 [xAI 文档](https://docs.x.ai/)。
 
 ### 工具未出现在 schema 中
 

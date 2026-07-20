@@ -1,31 +1,35 @@
 import { useStore } from '@nanostores/react'
-import { useCallback, useMemo } from 'react'
+import { useMemo } from 'react'
 
 import type { CommandCenterSection } from '@/app/command-center'
 import { $terminalTakeover, setTerminalTakeover } from '@/app/right-sidebar/store'
+import { useApprovalModeStatusbarItem } from '@/app/shell/approval-mode-menu'
 import { ContextUsagePanel } from '@/app/shell/context-usage-panel'
 import { GatewayMenuPanel } from '@/app/shell/gateway-menu-panel'
 import { Codicon } from '@/components/ui/codicon'
 import { GlyphSpinner } from '@/components/ui/glyph-spinner'
 import { useI18n } from '@/i18n'
-import { Activity, AlertCircle, Clock, Command, FolderOpen, Hash, Loader2, Terminal, Zap, ZapFilled } from '@/lib/icons'
+import { Activity, AlertCircle, Clock, Command, FolderOpen, Hash, Loader2, Terminal } from '@/lib/icons'
 import type { RuntimeReadinessResult } from '@/lib/runtime-readiness'
 import { contextBarLabel, LiveDuration, usageContextLabel } from '@/lib/statusbar'
 import { cn } from '@/lib/utils'
-import { setGlobalYolo, setSessionYolo } from '@/lib/yolo-session'
 import { copyFilePath, revealFile } from '@/store/file-actions'
 import { revealFileInTree } from '@/store/layout'
+import { $activeGatewayProfile } from '@/store/profile'
+import { $projectTree, projectNameForCwd } from '@/store/projects'
 import {
   $activeSessionId,
   $busy,
   $connection,
   $currentCwd,
   $currentUsage,
+  $selectedStoredSessionId,
+  $sessions,
   $sessionStartedAt,
   $turnStartedAt,
-  $yoloActive,
-  setYoloActive
+  sessionMatchesStoredId
 } from '@/store/session'
+import { $focusedRuntimeId, $focusedSessionState, $focusedStoredSessionId } from '@/store/session-states'
 import { $subagentsBySession, activeSubagentCount, failedSubagentCount } from '@/store/subagents'
 import { $gatewayRestarting } from '@/store/system-actions'
 import {
@@ -39,7 +43,9 @@ import {
 import type { StatusResponse } from '@/types/hermes'
 
 import { CRON_ROUTE } from '../../routes'
-import type { StatusbarItem, StatusbarSelectModifiers } from '../statusbar-controls'
+import type { StatusbarItem } from '../statusbar-controls'
+
+const EMPTY_USAGE = { calls: 0, input: 0, output: 0, total: 0 } as const
 
 function workspaceLabel(cwd: string): string {
   const normalized = cwd.replace(/[\\/]+$/, '')
@@ -74,7 +80,6 @@ export function useStatusbarItems({
   inferenceStatus,
   openAgents,
   openCommandCenterSection,
-  freshDraftReady,
   requestGateway,
   statusSnapshot,
   toggleCommandCenter
@@ -82,15 +87,21 @@ export function useStatusbarItems({
   const { t } = useI18n()
   const copy = t.shell.statusbar
   const fileMenu = t.fileMenu
-  const activeSessionId = useStore($activeSessionId)
+  const primaryActiveSessionId = useStore($activeSessionId)
+  const activeGatewayProfile = useStore($activeGatewayProfile)
   const terminalTakeover = useStore($terminalTakeover)
-  const yoloActive = useStore($yoloActive)
-  const busy = useStore($busy)
+  const primaryBusy = useStore($busy)
   const currentCwd = useStore($currentCwd)
-  const currentUsage = useStore($currentUsage)
+  // Derive the workspace's project name from the already-cached project tree
+  // (backend truth via projects.*), so the status item labels by project without
+  // a second per-session copy of the same fact. Re-derives whenever the cwd or
+  // the tree changes; null (no named project) falls back to the cwd leaf below.
+  const projectTree = useStore($projectTree)
+  const projectName = useMemo(() => projectNameForCwd(currentCwd), [currentCwd, projectTree])
+  const primaryUsage = useStore($currentUsage)
   const gatewayRestarting = useStore($gatewayRestarting)
-  const sessionStartedAt = useStore($sessionStartedAt)
-  const turnStartedAt = useStore($turnStartedAt)
+  const primarySessionStartedAt = useStore($sessionStartedAt)
+  const primaryTurnStartedAt = useStore($turnStartedAt)
   const subagentsBySession = useStore($subagentsBySession)
   const updateStatus = useStore($updateStatus)
   const updateApply = useStore($updateApply)
@@ -99,47 +110,41 @@ export function useStatusbarItems({
   const desktopVersion = useStore($desktopVersion)
   const connection = useStore($connection)
 
+  // The FOCUSED session (interacted tile, else the primary — the same
+  // derivation the titlebar title follows): every session-scoped readout
+  // below (context count, timers, busy pulse) tracks it, so clicking into a
+  // tile makes the statusbar describe THAT session.
+  const focusedStoredSessionId = useStore($focusedStoredSessionId)
+  const focusedRuntimeId = useStore($focusedRuntimeId)
+  const focusedState = useStore($focusedSessionState)
+  const sessions = useStore($sessions)
+  const selectedStoredSessionId = useStore($selectedStoredSessionId)
+  const primaryFocused = !focusedStoredSessionId || focusedStoredSessionId === selectedStoredSessionId
+
+  const activeSessionId = primaryFocused ? primaryActiveSessionId : (focusedRuntimeId ?? null)
+  const busy = primaryFocused ? primaryBusy : Boolean(focusedState?.busy)
+
+  // EMPTY_USAGE (module constant) keeps the fallback referentially stable —
+  // a fresh `{...}` each render would bust the usage-label memos below.
+  const currentUsage = primaryFocused ? primaryUsage : (focusedState?.usage ?? EMPTY_USAGE)
+
+  const turnStartedAt = primaryFocused ? primaryTurnStartedAt : (focusedState?.turnStartedAt ?? null)
+
+  // A tile's session-start comes from its stored row (the cache only knows
+  // runtime state); seconds → ms.
+  const focusedRow = focusedStoredSessionId
+    ? sessions.find(s => sessionMatchesStoredId(s, focusedStoredSessionId))
+    : null
+
+  const sessionStartedAt = primaryFocused
+    ? primarySessionStartedAt
+    : focusedRow?.started_at
+      ? focusedRow.started_at * 1000
+      : null
+
   const contextUsage = useMemo(() => usageContextLabel(currentUsage), [currentUsage])
   const contextBar = useMemo(() => contextBarLabel(currentUsage), [currentUsage])
-
-  // Per-session approval bypass (same scope as the TUI's Shift+Tab). On a
-  // new-chat draft (no runtime session yet) we arm locally; the session-create
-  // path applies it once the backend session exists.
-  //
-  // Shift+click flips the GLOBAL approvals.mode instead — a persistent,
-  // all-sessions/CLI/TUI/cron bypass that survives restarts.
-  const toggleYolo = useCallback(
-    async (modifiers?: StatusbarSelectModifiers) => {
-      const next = !$yoloActive.get()
-
-      setYoloActive(next)
-
-      if (modifiers?.shiftKey) {
-        try {
-          await setGlobalYolo(requestGateway, next)
-        } catch {
-          setYoloActive(!next)
-        }
-
-        return
-      }
-
-      const sid = $activeSessionId.get()
-
-      if (!sid) {
-        return
-      }
-
-      try {
-        await setSessionYolo(requestGateway, sid, next)
-      } catch {
-        setYoloActive(!next)
-      }
-    },
-    [requestGateway]
-  )
-
-  const showYoloToggle = gatewayState === 'open' && (!!activeSessionId || freshDraftReady)
+  const approvalModeItem = useApprovalModeStatusbarItem(activeGatewayProfile, requestGateway)
 
   const gatewayMenuContent = useMemo(
     () => (close: () => void) => (
@@ -315,7 +320,10 @@ export function useStatusbarItems({
         hidden: !currentCwd,
         icon: <FolderOpen className="size-3" />,
         id: 'workspace-cwd',
-        label: currentCwd ? workspaceLabel(currentCwd) : undefined,
+        // Prefer the named project; fall back to the cwd leaf. The full cwd is
+        // always in the tooltip (`title` below), so hovering reveals where the
+        // session actually sits — the worktree/subfolder, not just the project.
+        label: projectName || (currentCwd ? workspaceLabel(currentCwd) : undefined),
         menuItems: currentCwd
           ? [
               {
@@ -390,6 +398,7 @@ export function useStatusbarItems({
       inferenceReady,
       inferenceStatus?.reason,
       openAgents,
+      projectName,
       subagentsFailed,
       subagentsRunning,
       toggleCommandCenter
@@ -429,19 +438,11 @@ export function useStatusbarItems({
         variant: 'text'
       },
       {
-        className: cn('px-1', yoloActive && 'bg-(--chrome-action-hover)'),
-        hidden: !showYoloToggle,
-        icon: yoloActive ? (
-          <ZapFilled className="size-3.5 shrink-0" />
-        ) : (
-          <Zap className="size-3.5 shrink-0 opacity-70" />
-        ),
-        id: 'yolo',
-        onSelect: modifiers => void toggleYolo(modifiers),
-        title: yoloActive ? copy.yoloOn : copy.yoloOff,
-        variant: 'action'
+        ...approvalModeItem,
+        hidden: gatewayState !== 'open'
       },
       {
+        actionId: 'view.showTerminal',
         className: `w-7 justify-center px-0${terminalTakeover ? ' bg-accent/55 text-foreground' : ''}`,
         hidden: !chatOpen,
         icon: <Terminal className="size-3.5" />,
@@ -455,6 +456,7 @@ export function useStatusbarItems({
     ],
     [
       activeSessionId,
+      approvalModeItem,
       backendVersionItem,
       busy,
       chatOpen,
@@ -465,11 +467,9 @@ export function useStatusbarItems({
       currentUsage,
       requestGateway,
       sessionStartedAt,
-      showYoloToggle,
+      gatewayState,
       terminalTakeover,
-      toggleYolo,
-      turnStartedAt,
-      yoloActive
+      turnStartedAt
     ]
   )
 

@@ -43,11 +43,19 @@ logger = logging.getLogger(__name__)
 
 
 def _load_config_safe() -> Optional[dict]:
-    """Load config.yaml, returning None on any error."""
-    try:
-        from hermes_cli.config import load_config
+    """Load config.yaml read-only, returning None on any error.
 
-        return load_config()
+    Uses ``load_config_readonly()``: every consumer in this module only reads
+    (``get_pool_strategy``, ``_iter_custom_providers``, the model-config seed),
+    and the deepcopy that ``load_config()`` pays per call is what made
+    credential-pool checks the dominant cost of ``model.options`` — the picker
+    calls ``load_pool()`` once per provider row, each of which loaded (and
+    deep-copied) the full config again.
+    """
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        return load_config_readonly()
     except Exception:
         return None
 
@@ -114,6 +122,20 @@ EXHAUSTED_TTL_401_SECONDS = 5 * 60           # 5 minutes
 EXHAUSTED_TTL_429_SECONDS = 60 * 60          # 1 hour
 EXHAUSTED_TTL_DEFAULT_SECONDS = 60 * 60      # 1 hour
 
+# Throttle window for the "no available entries" INFO line. Credential
+# selection runs on a hot path (every model call, plus auxiliary tasks like
+# compression/moa/titles), so when a pool is empty or fully exhausted the
+# un-throttled log fires on *every* selection. On Windows several Hermes
+# processes share one rotating log guarded by concurrent-log-handler's
+# cross-process lock; that per-selection volume storms the lock
+# (``RuntimeError: Cannot acquire lock after 20 attempts``), pegs a core, and
+# stalls the asyncio event loop long enough to fail the Desktop backend
+# readiness handshake ("Timed out connecting to Hermes backend after
+# 15000ms"). Logging the condition at most once per window preserves the
+# signal while removing the storm — same class of fix as the warn-once
+# dedup in #58265.
+NO_AVAILABLE_ENTRIES_LOG_THROTTLE_SECONDS = 60.0
+
 # Pool key prefix for custom OpenAI-compatible endpoints.
 # Custom endpoints all share provider='custom' but are keyed by their
 # custom_providers name: 'custom:<normalized_name>'.
@@ -126,6 +148,17 @@ _EXTRA_KEYS = frozenset({
     "expires_in", "agent_key_id", "agent_key_expires_in", "agent_key_reused",
     "agent_key_obtained_at", "tls", "secret_source", "secret_fingerprint",
 })
+
+
+def _normalize_pool_auth_type(provider: str, token: Any, auth_type: Any) -> str:
+    """Infer pool auth metadata for token formats with one unambiguous meaning."""
+    if (
+        provider == "anthropic"
+        and isinstance(token, str)
+        and token.startswith("sk-ant-oat")
+    ):
+        return AUTH_TYPE_OAUTH
+    return str(auth_type or AUTH_TYPE_API_KEY)
 
 
 @dataclass
@@ -157,6 +190,11 @@ class PooledCredential:
     def __post_init__(self):
         if self.extra is None:
             self.extra = {}
+        self.auth_type = _normalize_pool_auth_type(
+            self.provider,
+            self.access_token,
+            self.auth_type,
+        )
 
     def __getattr__(self, name: str):
         if name in _EXTRA_KEYS:
@@ -527,14 +565,12 @@ def _write_through_provider_state_to_global_root(
             except Exception:
                 return
     try:
-        if global_path.exists():
-            global_store = _load_auth_store(global_path)
-        else:
-            global_store = {}
-        if not isinstance(global_store, dict):
-            return
-        _store_provider_state(global_store, provider_id, dict(state), set_active=False)
-        auth_mod._save_auth_store(global_store, global_path)
+        auth_mod._persist_provider_state_to_store(
+            provider_id,
+            state,
+            global_path,
+            set_active=False,
+        )
     except Exception as exc:  # pragma: no cover - best effort
         logger.debug(
             "%s pool refresh: write-through to global root failed: %s",
@@ -552,6 +588,12 @@ class CredentialPool:
         self._lock = threading.Lock()
         self._active_leases: Dict[str, int] = {}
         self._max_concurrent = DEFAULT_MAX_CONCURRENT_PER_CREDENTIAL
+        # Monotonic timestamp of the last "no available entries" log, used to
+        # throttle that message so an empty/exhausted pool cannot storm the
+        # shared rotating log (see NO_AVAILABLE_ENTRIES_LOG_THROTTLE_SECONDS).
+        # Re-armed to None on every successful selection so a recover→re-exhaust
+        # transition logs promptly instead of being swallowed by a stale window.
+        self._last_no_entries_log_at: Optional[float] = None
 
     def has_credentials(self) -> bool:
         return bool(self._entries)
@@ -810,6 +852,45 @@ class CredentialPool:
             logger.debug("Failed to sync xAI OAuth entry from auth.json: %s", exc)
         return entry
 
+    def _sync_xai_oauth_entry_from_pool_store(
+        self, entry: PooledCredential
+    ) -> PooledCredential:
+        """Adopt a token pair rotated by another pool instance.
+
+        Direct xAI integrations load a fresh ``CredentialPool`` for each
+        request. Their in-memory locks therefore cannot protect xAI's
+        single-use refresh token across concurrent requests or processes.
+        This helper is called while the shared auth-store lock is held and
+        re-reads the exact persisted row before a refresh POST is attempted.
+        """
+        if self.provider != "xai-oauth":
+            return entry
+        try:
+            persisted = next(
+                (
+                    payload
+                    for payload in read_credential_pool(self.provider)
+                    if isinstance(payload, dict) and payload.get("id") == entry.id
+                ),
+                None,
+            )
+            if not isinstance(persisted, dict):
+                return entry
+            stored = PooledCredential.from_dict(self.provider, persisted)
+            if (
+                stored.access_token != entry.access_token
+                or stored.refresh_token != entry.refresh_token
+            ):
+                logger.debug(
+                    "Pool entry %s: adopting xAI OAuth tokens rotated by another pool instance",
+                    entry.id,
+                )
+                self._replace_entry(entry, stored)
+                return stored
+        except Exception as exc:
+            logger.debug("Failed to sync xAI OAuth entry from credential pool: %s", exc)
+        return entry
+
     def _sync_nous_entry_from_auth_store(self, entry: PooledCredential) -> PooledCredential:
         """Sync a Nous pool entry from auth.json if tokens differ.
 
@@ -1003,30 +1084,57 @@ class CredentialPool:
                 self._mark_exhausted(entry, None)
             return None
 
-        # Codex OAuth refresh tokens are single-use.  The sync→POST→write-back
-        # sequence below must run atomically across Hermes processes: otherwise
-        # two processes can both adopt the same on-disk token, both POST it, and
-        # the loser gets ``refresh_token_reused``.  Serialize the whole sequence
-        # through the shared cross-process auth-store flock (the same lock and
-        # extended-timeout pattern used by resolve_codex_runtime_credentials()).
-        # When a waiter finally acquires the lock, the in-lock re-sync below
-        # picks up the rotated token the winner persisted and skips the POST.
-        if self.provider == "openai-codex":
-            refresh_timeout_seconds = auth_mod.env_float(
-                "HERMES_CODEX_REFRESH_TIMEOUT_SECONDS", 20
+        # Codex and xAI OAuth refresh tokens are single-use.  The
+        # sync→POST→write-back sequence below must run atomically across Hermes
+        # processes: otherwise two processes can both adopt the same on-disk
+        # token, both POST it, and the loser gets ``refresh_token_reused``.
+        # Serialize the whole sequence through the shared cross-process
+        # auth-store flock (the same lock and extended-timeout pattern used by
+        # resolve_codex_runtime_credentials()).  When a waiter finally acquires
+        # the lock, the in-lock re-sync below picks up the rotated token the
+        # winner persisted and skips the POST.
+        if self.provider in ("openai-codex", "xai-oauth"):
+            sync_entry = (
+                self._sync_codex_entry_from_auth_store
+                if self.provider == "openai-codex"
+                else self._sync_xai_oauth_entry_from_pool_store
             )
-            lock_timeout = max(
-                float(auth_mod.AUTH_LOCK_TIMEOUT_SECONDS),
-                float(refresh_timeout_seconds) + 5.0,
-            )
-            with _auth_store_lock(timeout_seconds=lock_timeout):
-                synced = self._sync_codex_entry_from_auth_store(entry)
-                if synced is not entry:
-                    entry = synced
-                    if not force and not self._entry_needs_refresh(entry):
-                        return entry
-                return self._refresh_entry_impl(entry, force=force)
+            with _auth_store_lock(
+                timeout_seconds=self._single_use_refresh_lock_timeout()
+            ):
+                synced = sync_entry(entry)
+                if self.provider == "openai-codex":
+                    if synced is not entry:
+                        entry = synced
+                        if not force and not self._entry_needs_refresh(entry):
+                            return entry
+                    return self._refresh_entry_impl(entry, force=force)
+                if (
+                    synced.access_token != entry.access_token
+                    or synced.refresh_token != entry.refresh_token
+                ):
+                    return synced
+                return self._refresh_entry_impl(synced, force=force)
         return self._refresh_entry_impl(entry, force=force)
+
+    def _single_use_refresh_lock_timeout(self) -> float:
+        """Lock timeout for single-use-refresh-token providers.
+
+        Covers the configured refresh POST timeout plus a margin so a slow
+        token endpoint cannot make the flock give up before the refresh
+        resolves.  Reads the provider's ``HERMES_*_REFRESH_TIMEOUT_SECONDS``
+        override.
+        """
+        env_var = (
+            "HERMES_CODEX_REFRESH_TIMEOUT_SECONDS"
+            if self.provider == "openai-codex"
+            else "HERMES_XAI_REFRESH_TIMEOUT_SECONDS"
+        )
+        refresh_timeout_seconds = auth_mod.env_float(env_var, 20)
+        return max(
+            float(auth_mod.AUTH_LOCK_TIMEOUT_SECONDS),
+            float(refresh_timeout_seconds) + 5.0,
+        )
 
     def _refresh_entry_impl(
         self, entry: PooledCredential, *, force: bool
@@ -1524,12 +1632,31 @@ class CredentialPool:
             self._persist(removed_ids=entries_to_prune)
         return available
 
-    def _select_unlocked(self) -> Optional[PooledCredential]:
-        available = self._available_entries(clear_expired=True, refresh=True)
+    def _log_no_available_entries(self) -> None:
+        """Emit the empty-pool INFO line at most once per throttle window.
+
+        Called on every selection while the pool is empty/exhausted. Without
+        throttling this storms the Windows cross-process log lock and stalls the
+        event loop (see NO_AVAILABLE_ENTRIES_LOG_THROTTLE_SECONDS).
+        """
+        now = time.monotonic()
+        last = self._last_no_entries_log_at
+        if last is not None and (now - last) < NO_AVAILABLE_ENTRIES_LOG_THROTTLE_SECONDS:
+            return
+        self._last_no_entries_log_at = now
+        logger.info("credential pool: no available entries (all exhausted or empty)")
+
+    def _select_unlocked(self, *, refresh: bool = True) -> Optional[PooledCredential]:
+        available = self._available_entries(clear_expired=True, refresh=refresh)
         if not available:
             self._current_id = None
-            logger.info("credential pool: no available entries (all exhausted or empty)")
+            self._log_no_available_entries()
             return None
+
+        # A successful selection means the pool recovered; re-arm the throttle
+        # so a later re-exhaustion logs immediately rather than being silenced
+        # by a window opened during the previous empty stretch.
+        self._last_no_entries_log_at = None
 
         if self._strategy == STRATEGY_RANDOM:
             entry = random.choice(available)
@@ -1652,6 +1779,35 @@ class CredentialPool:
 
     def try_refresh_current(self) -> Optional[PooledCredential]:
         with self._lock:
+            return self._try_refresh_current_unlocked()
+
+    def try_refresh_matching(
+        self, api_key_hint: Optional[str] = None
+    ) -> Optional[PooledCredential]:
+        """Force-refresh the entry that supplied ``api_key_hint``.
+
+        Direct provider integrations may reload the pool after a request has
+        already failed, so they cannot rely on ``current_id`` identifying the
+        issuing credential. With no hint, select an entry without first doing
+        the normal proactive refresh; the forced refresh below must consume a
+        rotating refresh token exactly once.
+        """
+        with self._lock:
+            entry = None
+            if api_key_hint:
+                entry = next(
+                    (
+                        candidate
+                        for candidate in self._entries
+                        if candidate.runtime_api_key == api_key_hint
+                    ),
+                    None,
+                )
+            else:
+                entry = self.current() or self._select_unlocked(refresh=False)
+            if entry is None:
+                return None
+            self._current_id = entry.id
             return self._try_refresh_current_unlocked()
 
     def _try_refresh_current_unlocked(self) -> Optional[PooledCredential]:
@@ -2252,12 +2408,6 @@ def _seed_from_env(provider: str, entries: List[PooledCredential]) -> Tuple[bool
         if _is_source_suppressed(provider, source):
             continue
         active_sources.add(source)
-        # Claude Code OAuth tokens are the only Anthropic credentials that should flow into the OAuth refresh path.
-        auth_type = (
-            AUTH_TYPE_OAUTH
-            if provider == "anthropic" and token.startswith("sk-ant-oat")
-            else AUTH_TYPE_API_KEY
-        )
         base_url = env_url or pconfig.inference_base_url
         if provider == "kimi-coding":
             base_url = _resolve_kimi_base_url(token, pconfig.inference_base_url, env_url)
@@ -2272,7 +2422,6 @@ def _seed_from_env(provider: str, entries: List[PooledCredential]) -> Tuple[bool
                 env_var=env_var,
                 token=token,
                 base_url=base_url,
-                auth_type=auth_type,
             ),
         )
     return changed, active_sources
@@ -2400,16 +2549,37 @@ def load_pool(provider: str) -> CredentialPool:
         for payload in raw_entries
     )
     entries = [PooledCredential.from_dict(provider, payload) for payload in raw_entries]
+    raw_needs_auth_normalization = any(
+        isinstance(payload, dict)
+        and _normalize_pool_auth_type(
+            provider,
+            payload.get("access_token"),
+            payload.get("auth_type", AUTH_TYPE_API_KEY),
+        ) != payload.get("auth_type", AUTH_TYPE_API_KEY)
+        for payload in raw_entries
+    )
+    if raw_needs_auth_normalization:
+        # A profile may be reading this provider from the global-root fallback.
+        # Keep that fallback read-only: only the store that owns these rows may
+        # rewrite them. Loading the default/root profile will heal global rows.
+        active_pool = _load_auth_store().get("credential_pool")
+        active_entries = active_pool.get(provider) if isinstance(active_pool, dict) else None
+        raw_needs_auth_normalization = bool(active_entries)
 
     if provider.startswith(CUSTOM_POOL_PREFIX):
         # Custom endpoint pool — seed from custom_providers config and model config
         custom_changed, custom_sources = _seed_custom_pool(provider, entries)
-        changed = raw_needs_sanitization or custom_changed
+        changed = raw_needs_sanitization or raw_needs_auth_normalization or custom_changed
         changed |= _prune_stale_seeded_entries(entries, custom_sources)
     else:
         singleton_changed, singleton_sources = _seed_from_singletons(provider, entries)
         env_changed, env_sources = _seed_from_env(provider, entries)
-        changed = raw_needs_sanitization or singleton_changed or env_changed
+        changed = (
+            raw_needs_sanitization
+            or raw_needs_auth_normalization
+            or singleton_changed
+            or env_changed
+        )
         # ``load_pool()`` is a non-destructive read for env-seeded entries: a
         # process missing a provider env var must not delete the persisted
         # pool entry for every other process (#9331). File-backed singletons

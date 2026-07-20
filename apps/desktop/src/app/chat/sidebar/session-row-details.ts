@@ -1,3 +1,4 @@
+import type { SessionListDensity } from '@/store/session-list-density'
 import type { SessionInfo } from '@/types/hermes'
 
 export interface SessionRowDetails {
@@ -11,7 +12,7 @@ const countLabel = (count: number, singular: string, plural = `${singular}s`) =>
 const modelLabel = (model: null | string) => model?.split('/').pop()?.trim() || null
 const oneLine = (value: null | string) => value?.replace(/\s+/g, ' ').trim() || null
 
-export const sessionRowEstimate = (density: 'compact' | 'comfortable' | 'detailed') =>
+export const sessionRowEstimate = (density: SessionListDensity) =>
   ({ compact: 28, comfortable: 45, detailed: 63 })[density]
 
 export function sessionRowDetails(session: SessionInfo): SessionRowDetails {

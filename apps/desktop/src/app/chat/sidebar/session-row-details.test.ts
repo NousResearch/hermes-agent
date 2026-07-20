@@ -57,6 +57,18 @@ describe('session row details', () => {
     ).toEqual({ metadata: '1 message · 1 tool call', preview: null })
   })
 
+  it('normalizes whitespace-only title, branch, and preview values', () => {
+    expect(
+      sessionRowDetails(
+        session({
+          git_branch: '   ',
+          preview: '  ',
+          title: '   '
+        })
+      )
+    ).toEqual({ metadata: 'gemini-3.1-pro · 26 messages · 8 tool calls', preview: null })
+  })
+
   it('omits the preview when it already supplies the displayed title', () => {
     expect(sessionRowDetails(session({ title: null }))).toEqual({
       metadata: 'gemini-3.1-pro · 26 messages · 8 tool calls',

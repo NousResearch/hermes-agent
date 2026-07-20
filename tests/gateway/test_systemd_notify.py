@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 import socket
 import sys
+import tempfile
 
 import pytest
 
@@ -17,18 +19,20 @@ def test_notify_without_notify_socket_is_a_noop(monkeypatch):
     assert notify("READY=1") is False
 
 
-def test_notify_sends_real_unix_datagram(tmp_path, monkeypatch):
-    address = str(tmp_path / "notify.sock")
-    receiver = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
-    receiver.bind(address)
-    receiver.settimeout(1.0)
-    monkeypatch.setenv("NOTIFY_SOCKET", address)
+def test_notify_sends_real_unix_datagram(monkeypatch):
+    # macOS has a short AF_UNIX pathname limit; pytest's tmp_path can exceed it.
+    # The nested context managers close the receiver before removing its socket.
+    with tempfile.TemporaryDirectory(dir="/tmp", prefix="h-") as socket_dir:
+        address = str(Path(socket_dir) / "n")
+        with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as receiver:
+            receiver.bind(address)
+            receiver.settimeout(1.0)
+            monkeypatch.setenv("NOTIFY_SOCKET", address)
 
-    from gateway.systemd_notify import notify
+            from gateway.systemd_notify import notify
 
-    assert notify("READY=1") is True
-    assert receiver.recv(4096) == b"READY=1"
-    receiver.close()
+            assert notify("READY=1") is True
+            assert receiver.recv(4096) == b"READY=1"
 
 
 @pytest.mark.skipif(

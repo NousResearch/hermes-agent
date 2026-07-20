@@ -812,17 +812,12 @@ def _collect_credential_env_vars() -> list[str]:
             if var:
                 env_vars.add(var)
     # Well-known tool / auxiliary credential env vars.
-    # Only include vars NOT already present in PROVIDER_REGISTRY
-    # to avoid duplication while keeping coverage broad.
+    # Only include vars NOT already present in PROVIDER_REGISTRY.
     extra: set[str] = {
         "OPENROUTER_API_KEY",
         "FIRECRAWL_API_KEY",
         "FAL_KEY",
         "GROQ_API_KEY",
-        "MINIMAX_API_KEY",
-        "DASHSCOPE_API_KEY",
-        "HF_TOKEN",
-        "COPILOT_GITHUB_TOKEN",
     }
     # Deduplicate against PROVIDER_REGISTRY (in case registry grows
     # to cover these in the future)

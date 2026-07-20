@@ -5,6 +5,7 @@ import sys
 import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -267,6 +268,75 @@ def test_append_log_record_single_write_lines(tmp_path):
     assert len(lines) == 32
     assert sorted(line.split("-", 2)[1] for line in lines) == [f"{i:03d}" for i in range(32)]
     assert all(line.endswith("x" * 2000) for line in lines)
+
+
+def test_supervisor_pid_probe_never_sends_signal_zero(monkeypatch):
+    from tui_gateway import host_supervisor
+
+    checked: list[int] = []
+    monkeypatch.setattr(
+        "gateway.status._pid_exists",
+        lambda pid: checked.append(int(pid)) or True,
+    )
+    monkeypatch.setattr(
+        host_supervisor.os,
+        "kill",
+        lambda *_args: pytest.fail("liveness probe sent a signal"),
+    )
+
+    assert host_supervisor._pid_alive(4242) is True
+    assert checked == [4242]
+
+
+def test_compute_host_identity_uses_psutil_when_proc_is_unavailable(monkeypatch):
+    from gateway import status as gateway_status
+    from tui_gateway import host_supervisor
+
+    class _Process:
+        def __init__(self, pid: int) -> None:
+            assert pid == 4242
+
+        def cmdline(self) -> list[str]:
+            return [r"C:\Python\python.exe", "-m", "tui_gateway.compute_host"]
+
+    monkeypatch.setattr(
+        Path, "read_bytes", lambda *_args: (_ for _ in ()).throw(FileNotFoundError())
+    )
+    monkeypatch.setattr(gateway_status, "_IS_WINDOWS", True)
+    monkeypatch.setitem(sys.modules, "psutil", SimpleNamespace(Process=_Process))
+    monkeypatch.setattr(
+        host_supervisor.subprocess,
+        "check_output",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(FileNotFoundError()),
+    )
+
+    assert host_supervisor.is_compute_host_identity(4242) is True
+
+
+def test_supervisor_pid_termination_uses_cross_platform_helper(tmp_path, monkeypatch):
+    from gateway import status as gateway_status
+    from tui_gateway import host_supervisor
+
+    calls: list[tuple[int, bool]] = []
+
+    def _terminate_pid(pid: int, *, force: bool = False) -> None:
+        calls.append((pid, force))
+
+    monkeypatch.setattr(gateway_status, "terminate_pid", _terminate_pid)
+    monkeypatch.setattr(
+        host_supervisor.os,
+        "kill",
+        lambda *_args: pytest.fail("supervisor bypassed cross-platform termination"),
+    )
+    supervisor = HostSupervisor(
+        registry_path=tmp_path / "dashboard-compute-host.json",
+        argv=[sys.executable, "-c", ""],
+        autostart=False,
+    )
+
+    supervisor._terminate_pid(4242, timeout=0)
+
+    assert calls == [(4242, False), (4242, True)]
 
 
 def test_supervisor_startup_reconcile_pid_reuse_guard(tmp_path, monkeypatch):

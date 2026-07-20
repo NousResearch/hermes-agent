@@ -14248,8 +14248,20 @@ async def list_profiles_endpoint():
     from hermes_cli import profiles as profiles_mod
     try:
         loop = asyncio.get_running_loop()
-        profiles = await loop.run_in_executor(None, profiles_mod.list_profiles)
+        # ponytail: cap the executor walk so the response fails fast to
+        # _fallback_profile_dicts under MCP-tool-discovery GIL pressure.
+        # 30s is well above the healthy cold-boot budget (1-3s for 183 profiles)
+        # and below the renderer's 60s IPC ceiling; if we exceed it, the
+        # cached fallback prevents the renderer from hanging indefinitely.
+        # Renderer timeout is 120s after the matching apps/desktop PR.
+        profiles = await asyncio.wait_for(
+            loop.run_in_executor(None, profiles_mod.list_profiles),
+            timeout=30.0,
+        )
         return {"profiles": [_profile_to_dict(p) for p in profiles]}
+    except asyncio.TimeoutError:
+        _log.warning("GET /api/profiles exceeded 30s budget; returning fallback scan")
+        return {"profiles": _fallback_profile_dicts(profiles_mod)}
     except Exception:
         _log.exception("GET /api/profiles failed; falling back to profile directory scan")
         return {"profiles": _fallback_profile_dicts(profiles_mod)}

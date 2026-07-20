@@ -75,6 +75,11 @@ import type {
 export const STARTUP_REQUEST_TIMEOUT_MS = 60_000
 const DEFAULT_GATEWAY_REQUEST_TIMEOUT_MS = 30_000
 const SESSION_LIST_REQUEST_TIMEOUT_MS = 60_000
+// ponytail: /api/profiles walks 183+ profiles doing rglob + yaml per profile;
+// under MCP-tool-discovery GIL pressure that routinely exceeds 60s on a fresh
+// desktop child. Server-side cap in web_server.py is 30s — this is the
+// renderer-side ceiling that lets a slow but legitimate response land.
+export const PROFILES_REQUEST_TIMEOUT_MS = 120_000
 // prompt.submit is effectively fire-and-forget: turn completion is signaled by
 // stream / message.complete events, NOT by the RPC return. A long turn (MoA
 // presets running references + aggregator in series, deep reasoning, large tool
@@ -1161,7 +1166,7 @@ export function deleteCronJob(jobId: string): Promise<{ ok: boolean }> {
 export function getProfiles(): Promise<ProfilesResponse> {
   return window.hermesDesktop.api<ProfilesResponse>({
     path: '/api/profiles',
-    timeoutMs: STARTUP_REQUEST_TIMEOUT_MS
+    timeoutMs: PROFILES_REQUEST_TIMEOUT_MS
   })
 }
 

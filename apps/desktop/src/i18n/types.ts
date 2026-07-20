@@ -274,6 +274,7 @@ export interface Translations {
       providers: string
       providerAccounts: string
       providerApiKeys: string
+      providerCustomEndpoints: string
       gateway: string
       apiKeys: string
       keybinds: string
@@ -282,8 +283,191 @@ export interface Translations {
       mcp: string
       archivedChats: string
       about: string
+      billing: string
       notifications: string
       plugins: string
+    }
+    customEndpoints: {
+      loadFailed: string
+      saved: string
+      saveFailed: string
+      reachableModels: (count: number) => string
+      reachable: string
+      validationFailed: string
+      activationFailed: string
+      deleteConfirm: (name: string) => string
+      deleteFailed: string
+      loading: string
+      title: string
+      active: string
+      sourceConfig: string
+      apiKeySet: string
+      use: string
+      deleteEndpoint: string
+      emptyTitle: string
+      emptyDescription: string
+      editTitle: string
+      addTitle: string
+      name: string
+      namePlaceholder: string
+      providerId: string
+      providerIdPlaceholder: string
+      endpointUrl: string
+      defaultModel: string
+      defaultModelPlaceholder: string
+      context: string
+      auto: string
+      apiKey: string
+      keepKey: string
+      optional: string
+      useNewChats: string
+      discoverModels: string
+      test: string
+      newEndpoint: string
+    }
+    billing: {
+      title: string
+      account: string
+      usage: string
+      invoices: string
+      autoRefillUpdated: string
+      autoRefillTurnedOff: string
+      threshold: string
+      autoRefillThreshold: string
+      reloadTo: string
+      autoRefillReloadTo: string
+      disable: string
+      turnOffPrompt: string
+      turnOff: string
+      customCreditAmount: string
+      buy: string
+      processingSettlement: string
+      addedBalanceRefreshing: (amount: string) => string
+      openPortal: string
+      openVerification: string
+      dismiss: string
+      waitingVerification: string
+      verifyContinue: string
+      usageFallback: (label: string) => string
+      fixture: (name: string) => string
+      updatedAgo: (time: string) => string
+      billingFixture: string
+      live: string
+      openPortalExternal: string
+      connectAccountMessage: string
+      connectAccountTitle: string
+      balance: string
+      plan: string
+      autoRefill: string
+      enabled: string
+      off: string
+      justNow: string
+      secondsAgo: (seconds: number) => string
+      minutesAgo: (minutes: number) => string
+      hoursAgo: (hours: number) => string
+      updateExternal: string
+      paymentMethodMissingDescription: string
+      paymentMethod: string
+      noCard: string
+      paymentMethodDescription: string
+      adjustPlanExternal: string
+      subscriptionUnavailable: string
+      renews: (date: string) => string
+      subscriptionDescription: string
+      opensPortal: string
+      subscription: string
+      buyCredits: string
+      buyCreditsDescription: string
+      manage: string
+      manageAutoRefillPortal: string
+      autoRefillDescription: string
+      turnOnAutoRefillPortal: string
+      differentCard: string
+      reconcileExternal: string
+      autoRefillCharges: (card: string) => string
+      refillWhen: (amount: string, threshold: string) => string
+      subscriptionRemainingOver: (remaining: string, monthly: string, over: string) => string
+      subscriptionRemaining: (remaining: string, monthly: string) => string
+      subscriptionCreditsRemaining: string
+      resets: (date: string) => string
+      subscriptionCredits: string
+      topUpCreditsRemaining: string
+      doesNotExpire: string
+      topUpCredits: string
+      amountOfLimitUsed: (amount: string, limit: string) => string
+      monthlySpendCapUsed: string
+      defaultCeiling: string
+      monthlyTerminalBillingSpend: string
+      monthlySpendCap: string
+      planMonthly: (tier: string, price: string) => string
+      autoRefillCard: string
+      customerDefault: string
+      subscriptionCard: string
+      creditsAdded: (amount: string) => string
+      creditsAddedGeneric: string
+      chargeFailedTitle: string
+      chargeOutcomeUnconfirmedMessage: (message: string) => string
+      chargeOutcomeUnconfirmedTitle: string
+      couldNotCheckCharge: string
+      couldNotCheckChargeTitle: string
+      acceptedNoChargeId: string
+      chargeCouldNotBeTracked: string
+      chargeMayStillSettle: string
+      stillProcessing: string
+      bankVerificationRequired: string
+      cardExpired: string
+      cardDeclined: string
+      chargeProcessingError: (reason: string) => string
+      verificationNotGrantedMessage: string
+      verificationNotGrantedTitle: string
+      billingAccessVerifiedMessage: string
+      billingAccessVerifiedTitle: string
+      reloadGreaterThanThreshold: string
+      invalidAmount: (label: string) => string
+      amountGreaterThanZero: (label: string) => string
+      minimumAmount: (label: string, minimum: string) => string
+      maximumAmount: (label: string, maximum: string) => string
+      errors: {
+        tooManyChargesRetry: (minutes: number) => string
+        tooManyCharges: string
+        stripeRetry: (minutes: number) => string
+        stripeTrouble: string
+        confirmCard: string
+        cardConfirmationNeeded: string
+        terminalBillingApprovalMessage: string
+        terminalBillingApprovalTitle: string
+        adminDisabledTerminalBilling: string
+        youDisabledTerminalBilling: string
+        reauthorizeDevice: (message: string) => string
+        terminalBillingOffTitle: string
+        sessionLoggedOutMessage: string
+        sessionLoggedOutTitle: string
+        terminalBillingDisabledMessage: string
+        terminalBillingDisabledTitle: string
+        adminRoleMessage: string
+        adminRoleTitle: string
+        idempotencyMessage: string
+        idempotencyTitle: string
+        noPaymentMethodMessage: string
+        noPaymentMethodTitle: string
+        orgAccessMessage: string
+        orgAccessTitle: string
+        monthlyCapRemaining: (remaining: number) => string
+        monthlyCapMessage: string
+        monthlyCapTitle: string
+        tooManyChargesTitle: string
+        stripeTroubleTitle: string
+        planLimitMessage: string
+        planLimitTitle: string
+        endpointUnavailableMessage: string
+        endpointUnavailableTitle: string
+        timeoutMessage: string
+        timeoutTitle: string
+        transportMessage: string
+        transportTitle: string
+        defaultMessage: string
+        defaultTitle: string
+      }
     }
     plugins: {
       title: string
@@ -436,6 +620,7 @@ export interface Translations {
     config: {
       none: string
       noneParen: string
+      builtinOnly: string
       notSet: string
       commaSeparated: string
       loading: string
@@ -459,6 +644,7 @@ export interface Translations {
     envActions: {
       actionsFor: (label: string) => string
       credentialActions: string
+      manageInKeys: string
       docs: string
       hideValue: string
       revealValue: string
@@ -651,6 +837,7 @@ export interface Translations {
       activating: string
       activate: string
       setupProvider: (provider: string) => string
+      setupProviderGeneric: string
       moaTitle: string
       moaDescription: string
       moaPreset: string
@@ -697,13 +884,22 @@ export interface Translations {
     memoryProvider: {
       keepCurrent: string
       loadFailed: string
+      loadFailedDetail: (message: string) => string
       savedTitle: (provider: string) => string
       savedMessage: string
       saveFailed: (provider: string) => string
+      saveFieldFailed: (field: string) => string
       loading: string
       settings: (provider: string) => string
       fieldSet: (field: string) => string
       fieldNotSet: (field: string) => string
+      fieldAbout: (field: string) => string
+      fullConfig: string
+      fullConfigurationTitle: (provider: string) => string
+      fullConfigurationDescription: (provider: string, profile: string) => string
+      configReference: (provider: string) => string
+      otherGroup: string
+      saveChanges: string
       startFailedDetail: string
       startFailedTitle: string
       timedOut: string
@@ -799,10 +995,21 @@ export interface Translations {
       noProviderOptions: string
       noProviders: string
       ready: string
+      needsSignIn: string
+      needsSetup: string
       nousIncluded: string
+      nousAuthNeededTitle: string
+      nousAuthNeededMessage: (provider: string) => string
+      nousAuthSignIn: string
+      nousAuthDoneTitle: string
+      nousAuthDoneMessage: string
+      nousAuthFailed: string
       noApiKeyRequired: string
       postSetupHint: (step: string) => string
+      postSetupInstalledHint: string
       postSetupRun: string
+      postSetupRerun: string
+      postSetupInstalled: string
       postSetupRunning: string
       postSetupStarting: string
       postSetupCompleteTitle: string
@@ -810,6 +1017,15 @@ export interface Translations {
       postSetupErrorTitle: string
       postSetupErrorMessage: (step: string) => string
       postSetupFailed: (step: string) => string
+      webSearchActive: (backend: string) => string
+      webExtractActive: (backend: string) => string
+      webCapabilityUnset: string
+      webUseForSearch: string
+      webUseForExtract: string
+      webUsedForSearch: string
+      webUsedForExtract: string
+      webCapabilitySelectedMessage: (provider: string, capability: string) => string
+      failedSelectCapability: (provider: string) => string
       loadingModels: string
       modelSectionTitle: string
       modelCount: (count: number) => string
@@ -819,6 +1035,19 @@ export interface Translations {
       modelSelectedTitle: string
       modelSelectedMessage: (model: string) => string
       failedSelectModel: (model: string) => string
+      terminalBackend: {
+        sectionTitle: string
+        loading: string
+        failedLoad: string
+        ready: string
+        needsSetup: string
+        unavailable: string
+        inUse: string
+        selectedTitle: string
+        selectedMessage: (backend: string) => string
+        failedSelect: (backend: string) => string
+        needsSetupHint: string
+      }
     }
   }
 
@@ -840,6 +1069,8 @@ export interface Translations {
     noDescription: string
     configured: string
     needsKeys: string
+    visionModelHint: string
+    visionModelLink: string
     toolsetsEnabled: (enabled: number, total: number) => string
     configureToolset: (label: string) => string
     toggleToolset: (label: string) => string
@@ -1343,6 +1574,8 @@ export interface Translations {
     promptPlaceholder: string
     frequencyLabel: string
     deliverLabel: string
+    modelLabel: string
+    modelDefault: string
     customScheduleLabel: string
     customPlaceholder: string
     customHint: string

@@ -113,6 +113,7 @@ import {
   SESSION_WINDOW_MIN_HEIGHT,
   SESSION_WINDOW_MIN_WIDTH
 } from './session-windows'
+import { ensureSpawnHelperExecutable } from './spawn-helper-perms'
 import { nativeOverlayWidth as computeNativeOverlayWidth, macTitleBarOverlayHeight } from './titlebar-overlay-width'
 import { resolveBehindCount, shouldCountCommits } from './update-count'
 import { readLiveUpdateMarker, writeUpdateMarker } from './update-marker'
@@ -143,6 +144,20 @@ import {
   getVenvSitePackagesEntries,
   resolveVenvHermesCommand
 } from './windows-hermes-path'
+import {
+  alreadyHasNoSandbox,
+  buildNoSandboxRelaunchArgs,
+  decideWindowsSandboxLaunch,
+  fallbackMarker,
+  grantAllApplicationPackagesAcl,
+  markerAfterSuccessfulBoot,
+  readSandboxMarker,
+  type SandboxFallbackReason,
+  shouldAttemptAclRepair,
+  shouldRelaunchForGpuSandboxCrash,
+  shouldRelaunchForRendererSandboxCrashLoop,
+  writeSandboxMarker
+} from './windows-sandbox-fallback'
 import { installWindowsSystemCaTrust } from './windows-system-ca'
 import { readWindowsUserEnvVar } from './windows-user-env'
 import { isPackagedInstallPath as isPackagedInstallPathUnderRoots } from './workspace-cwd'
@@ -201,6 +216,107 @@ if (IS_WSL && !REMOTE_DISPLAY_REASON && fs.existsSync('/dev/dxg')) {
   app.commandLine.appendSwitch('enable-gpu-rasterization')
   app.commandLine.appendSwitch('enable-zero-copy')
   console.log('[hermes] WSL GPU passthrough (/dev/dxg) detected; enabling GPU acceleration')
+}
+
+// Windows sandbox / GPU breakpoint crash recovery (#38216).
+//
+// Some hosts (AMD RX 6000 drivers, orphan AppContainer SIDs under %LOCALAPPDATA%,
+// missing S-1-15-2-2 ACEs) kill Chromium's sandboxed GPU/renderer children with
+// 0x80000003. After enough GPU deaths the browser process FATAL-exits before the
+// UI is usable. Must run before app `ready` so `--no-sandbox` applies to child
+// processes. The sticky marker recovers Start Menu / shortcut launches that
+// never go through `hermes desktop`; it is version-scoped so an app update
+// re-probes the sandbox instead of degrading forever.
+//
+// `windowsSandboxFallbackActive` = this process runs without the Chromium
+// sandbox (any cause, including a manual --no-sandbox flag) — guards the
+// relaunch handlers. `windowsSandboxFallbackSticky` = the fallback machinery
+// engaged and the marker must stay `fallback` after a successful boot; a
+// manual flag alone is honored but never made sticky.
+let windowsSandboxFallbackActive = false
+let windowsSandboxFallbackSticky = false
+let windowsSandboxFallbackReason: SandboxFallbackReason = 'boot-loop'
+let windowsNoSandboxRelaunchAttempted = false
+
+if (IS_WINDOWS) {
+  const windowsUserData = app.getPath('userData')
+  const priorMarker = readSandboxMarker(windowsUserData)
+
+  // Best-effort ACL repair, only when the last boot aborted or the fallback is
+  // engaged — icacls /T recurses the whole install tree, so healthy launches
+  // skip it (the installer already granted the ACE at install time). Repair
+  // targets the install dir only: granting AppContainer read on userData would
+  // expose Hermes sessions/config to every packaged app on the machine.
+  if (shouldAttemptAclRepair(priorMarker)) {
+    const exeDir = path.dirname(process.execPath)
+    const acl = grantAllApplicationPackagesAcl(exeDir, { execFileSync })
+
+    if (acl.ok) {
+      console.log(`[hermes] granted ALL APPLICATION PACKAGES RX on ${exeDir} (#38216)`)
+    } else if (acl.error && acl.error !== 'missing-target-or-exec') {
+      console.warn(`[hermes] AppContainer ACL grant failed on ${exeDir}: ${acl.error}`)
+    }
+  }
+
+  const sandboxDecision = decideWindowsSandboxLaunch({
+    argv: process.argv,
+    env: process.env,
+    marker: priorMarker,
+    appVersion: app.getVersion()
+  })
+
+  windowsSandboxFallbackActive = sandboxDecision.enable
+  windowsSandboxFallbackSticky = sandboxDecision.nextMarker.state === 'fallback'
+
+  if (sandboxDecision.nextMarker.state === 'fallback' && sandboxDecision.nextMarker.reason) {
+    windowsSandboxFallbackReason = sandboxDecision.nextMarker.reason
+  }
+
+  if (sandboxDecision.enable && sandboxDecision.reason !== 'already-enabled') {
+    app.commandLine.appendSwitch('no-sandbox')
+    process.env.ELECTRON_DISABLE_SANDBOX = '1'
+    console.log(
+      `[hermes] Windows sandbox fallback enabled (${sandboxDecision.reason}); launching with --no-sandbox (#38216)`
+    )
+  }
+
+  writeSandboxMarker(windowsUserData, sandboxDecision.nextMarker)
+
+  // Catch the first GPU breakpoint death and relaunch before Chromium's
+  // "GPU process isn't usable" FATAL abort ends the process with no recovery.
+  app.on('child-process-gone', (_event, details) => {
+    if (
+      !shouldRelaunchForGpuSandboxCrash({
+        details,
+        alreadyNoSandbox: windowsSandboxFallbackActive || alreadyHasNoSandbox(process.argv, process.env),
+        relaunchAttempted: windowsNoSandboxRelaunchAttempted
+      })
+    ) {
+      return
+    }
+
+    windowsNoSandboxRelaunchAttempted = true
+    windowsSandboxFallbackActive = true
+    windowsSandboxFallbackSticky = true
+    windowsSandboxFallbackReason = 'gpu-breakpoint'
+
+    try {
+      writeSandboxMarker(app.getPath('userData'), fallbackMarker('gpu-breakpoint', app.getVersion()))
+    } catch {
+      void 0
+    }
+
+    console.warn(
+      `[hermes] Windows GPU sandbox crashed (exit=${details?.exitCode}); relaunching once with --no-sandbox (#38216)`
+    )
+
+    try {
+      app.relaunch({ args: buildNoSandboxRelaunchArgs(process.argv.slice(1)) })
+      app.exit(0)
+    } catch (error) {
+      console.error(`[hermes] --no-sandbox relaunch failed: ${error?.message || error}`)
+    }
+  })
 }
 
 ipcMain.handle('hermes:get-remote-display-reason', () => REMOTE_DISPLAY_REASON)
@@ -1960,6 +2076,33 @@ function persistWindowState() {
 
 // resized/moved fire many times mid-drag on Linux; debounce to one write.
 const schedulePersistWindowState = debounce(persistWindowState, 250)
+
+// Zoom's primary store is a main-process JSON file. The renderer localStorage
+// mirror lives under Electron's cache/storage folders, which crash recovery
+// can move or recreate — wiping the zoom setting exactly when the user just
+// recovered from a crash (#56726). JSON survives; localStorage is kept as a
+// secondary mirror so pre-JSON installs migrate transparently on first read.
+const DESKTOP_ZOOM_STATE_PATH = path.join(app.getPath('userData'), 'zoom-state.json')
+
+function readZoomState() {
+  try {
+    const raw = JSON.parse(fs.readFileSync(DESKTOP_ZOOM_STATE_PATH, 'utf8'))
+    const level = Number(raw?.zoomLevel)
+
+    return Number.isFinite(level) ? level : null
+  } catch {
+    return null
+  }
+}
+
+function writeZoomState(zoomLevel) {
+  try {
+    fs.mkdirSync(path.dirname(DESKTOP_ZOOM_STATE_PATH), { recursive: true })
+    writeFileAtomic(DESKTOP_ZOOM_STATE_PATH, JSON.stringify({ zoomLevel }, null, 2))
+  } catch (error) {
+    rememberLog(`[zoom] json persist failed: ${error?.message || error}`)
+  }
+}
 
 // Match the backend's source resolution but bias toward a real git checkout.
 // Dev → SOURCE_REPO_ROOT. Packaged/CLI install → ACTIVE_HERMES_ROOT.
@@ -4768,6 +4911,11 @@ function setAndPersistZoomLevel(window, zoomLevel) {
   // Apply + notify in one funnel so the settings UI stays in sync, including
   // changes made via the keyboard shortcuts or the View menu.
   const next = applyZoomLevel(window.webContents, zoomLevel)
+
+  // Primary store: main-process JSON (survives crash recovery — #56726).
+  writeZoomState(next)
+  // Secondary mirror: renderer localStorage (legacy store; kept in sync so a
+  // downgrade or JSON read failure still finds a sane value).
   window.webContents
     .executeJavaScript(
       `try { localStorage.setItem(${JSON.stringify(ZOOM_STORAGE_KEY)}, ${JSON.stringify(String(next))}) } catch {}`
@@ -4780,6 +4928,19 @@ function restorePersistedZoomLevel(window) {
     return
   }
 
+  // Prefer the JSON file — it survives crash recovery wiping Electron's
+  // cache/storage folders (#56726). applyZoomLevel notifies the renderer so
+  // the Appearance UI Scale control stays in sync.
+  const saved = readZoomState()
+
+  if (saved != null) {
+    applyZoomLevel(window.webContents, saved)
+
+    return
+  }
+
+  // Fall back to localStorage for installs that predate zoom-state.json,
+  // migrating the value into the JSON store on first read.
   window.webContents
     .executeJavaScript(
       `(() => { try { return localStorage.getItem(${JSON.stringify(ZOOM_STORAGE_KEY)}) } catch { return null } })()`
@@ -4791,7 +4952,8 @@ function restorePersistedZoomLevel(window) {
 
       // Notify the renderer too — otherwise the Appearance UI Scale control
       // can stay stuck at 100% even though the window zoom was restored.
-      applyZoomLevel(window.webContents, Number(stored))
+      const applied = applyZoomLevel(window.webContents, Number(stored))
+      writeZoomState(applied)
     })
     .catch(error => rememberLog(`[zoom] restore failed: ${error?.message || error}`))
 }
@@ -4805,22 +4967,46 @@ function installZoomShortcuts(window) {
   window.webContents.on('before-input-event', (event, input) => {
     const mod = IS_MAC ? input.meta : input.control
 
-    if (!mod || input.alt || input.shift) {
+    if (!mod || input.alt) {
       return
     }
 
     const key = input.key
 
     if (key === '0') {
+      if (input.shift) {
+        return // Ctrl/Cmd+Shift+0 is not a zoom chord — leave it alone
+      }
+
       event.preventDefault()
       setAndPersistZoomLevel(window, 0)
     } else if (key === '=' || key === '+') {
+      // Zoom-in must accept the shift modifier: on US layouts Plus is
+      // physically Shift+=, so Cmd+Plus arrives as Cmd+Shift+'+' (or '='
+      // depending on platform). The old blanket shift guard silently
+      // dropped keyboard zoom-in on macOS (#43517).
       event.preventDefault()
       setAndPersistZoomLevel(window, window.webContents.getZoomLevel() + ZOOM_STEP)
     } else if (key === '-') {
+      if (input.shift) {
+        return // Shift+'-' is '_' territory on most layouts, not zoom-out
+      }
+
       event.preventDefault()
       setAndPersistZoomLevel(window, window.webContents.getZoomLevel() - ZOOM_STEP)
     }
+  })
+
+  // Ctrl/Cmd + mouse wheel — the standard desktop/browser zoom gesture
+  // (#40295). Chromium surfaces it as the main-process 'zoom-changed' event
+  // (wheel events are DOM-side, so before-input-event never sees them).
+  // Route through the same persist+notify funnel as the keyboard shortcuts
+  // so wheel zoom survives restarts and the settings Scale control stays in
+  // sync, and use the same half step for consistency.
+  window.webContents.on('zoom-changed', (event, zoomDirection) => {
+    event.preventDefault()
+    const delta = zoomDirection === 'in' ? ZOOM_STEP : -ZOOM_STEP
+    setAndPersistZoomLevel(window, window.webContents.getZoomLevel() + delta)
   })
 }
 
@@ -7011,11 +7197,14 @@ function wireCommonWindowHandlers(win, { zoom = true }: { zoom?: boolean } = {})
 
   if (zoom) {
     installZoomShortcuts(win)
-    // Re-apply persisted zoom on show/restore/cross-display move (Windows can
-    // drop webContents zoom after minimize or a monitor-scale change) and on
-    // first load (reloads / crash recovery).
+    // Re-apply persisted zoom on show/restore/resize/cross-display move
+    // (Chromium can drop webContents zoom after these window transitions) and
+    // on EVERY full load — not once. The crash-recovery path calls
+    // webContents.reload(), which fires did-finish-load again after a `once`
+    // listener is spent, so zoom was silently lost on renderer crash
+    // recovery and any in-place reload/navigation (#46429).
     installZoomReassertOnWindowEvents(win, () => restorePersistedZoomLevel(win))
-    win.webContents.once('did-finish-load', () => restorePersistedZoomLevel(win))
+    win.webContents.on('did-finish-load', () => restorePersistedZoomLevel(win))
   }
 
   installContextMenu(win)
@@ -7324,6 +7513,29 @@ function createWindow() {
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.show()
     }
+
+    // Persist geometry as soon as the window is visible so a crash before the
+    // first clean resize/move/close still captures the restored bounds (#56726).
+    schedulePersistWindowState()
+
+    // #38216: clear the mid-boot marker only after a window is actually usable.
+    // Keep sticky `fallback` when we launched with --no-sandbox so the next
+    // Start Menu click does not re-enter the GPU FATAL crash loop. The marker
+    // records the app version so the next update re-probes the sandbox.
+    if (IS_WINDOWS) {
+      try {
+        writeSandboxMarker(
+          app.getPath('userData'),
+          markerAfterSuccessfulBoot({
+            fallbackActive: windowsSandboxFallbackSticky,
+            reason: windowsSandboxFallbackReason,
+            appVersion: app.getVersion()
+          })
+        )
+      } catch (error) {
+        rememberLog(`[sandbox] marker update after ready-to-show failed: ${error?.message || error}`)
+      }
+    }
   })
 
   mainWindow.on('will-enter-full-screen', () => sendWindowStateChanged(true))
@@ -7364,6 +7576,40 @@ function createWindow() {
         rememberLog(
           `[renderer] suppressing reload: ${rendererReloadTimes.length} crashes within ${RENDERER_RELOAD_WINDOW_MS}ms (likely a crash loop)`
         )
+
+        // #38216 renderer flavor (same recovery as #56726, credit @Sahil-SS9):
+        // a deterministic Windows renderer crash loop with the sandbox
+        // breakpoint signature gets one --no-sandbox relaunch instead of a
+        // dead window. Gated on the exit code so unrelated crash loops don't
+        // silently drop the sandbox.
+        if (
+          shouldRelaunchForRendererSandboxCrashLoop({
+            reason: details?.reason,
+            exitCode: details?.exitCode,
+            alreadyNoSandbox: windowsSandboxFallbackActive || alreadyHasNoSandbox(process.argv, process.env),
+            relaunchAttempted: windowsNoSandboxRelaunchAttempted
+          })
+        ) {
+          windowsNoSandboxRelaunchAttempted = true
+          windowsSandboxFallbackActive = true
+          windowsSandboxFallbackSticky = true
+          windowsSandboxFallbackReason = 'renderer-crash-loop'
+
+          try {
+            writeSandboxMarker(app.getPath('userData'), fallbackMarker('renderer-crash-loop', app.getVersion()))
+          } catch {
+            void 0
+          }
+
+          rememberLog('[renderer] Windows sandbox crash loop detected; relaunching once with --no-sandbox (#38216)')
+
+          try {
+            app.relaunch({ args: buildNoSandboxRelaunchArgs(process.argv.slice(1)) })
+            app.exit(0)
+          } catch (err) {
+            rememberLog(`[renderer] --no-sandbox relaunch failed: ${err?.message || err}`)
+          }
+        }
 
         return
       }
@@ -7409,12 +7655,20 @@ function createWindow() {
     mainWindow.loadURL(pathToFileURL(resolveRendererIndex()).toString())
   }
 
+  // Start the Python backend NOW, in parallel with the renderer load — not on
+  // did-finish-load. The backend cold boot (spawn → port announce → /api/status)
+  // is the dominant startup cost, and serializing it behind Chromium's load
+  // added the whole renderer load time to first-usable-composer. The promise is
+  // shared (backendConnectionState), so the renderer's getConnection() joins
+  // this in-flight boot instead of duplicating it; early boot-progress events
+  // the renderer misses are recovered by its getBootProgress() pull on mount.
+  startHermes().catch(error => rememberLog(error.stack || error.message))
+
   mainWindow.webContents.once('did-finish-load', () => {
     // Zoom restore is handled by wireCommonWindowHandlers (shared with session
     // windows); no need to reapply it here.
     broadcastBootProgress()
     sendWindowStateChanged()
-    startHermes().catch(error => rememberLog(error.stack || error.message))
   })
 }
 
@@ -7835,6 +8089,71 @@ async function interceptSessionRequestForRemote(request) {
     return mergeRemoteProfileSessions(searchParams, remoteProfiles)
   }
 
+  // Batched sidebar slices. With no remote profiles the local batched endpoint
+  // (one DB open per profile) serves it directly — take the fast path. When
+  // remotes exist, fan the three slices back out to the per-slice
+  // /api/profiles/sessions path (which already merges remote rows correctly) and
+  // reassemble; local profiles fall back to three primary reads there, but
+  // remote correctness is preserved.
+  if (method === 'GET' && pathname === '/api/profiles/sessions/sidebar') {
+    const remoteProfiles = configuredRemoteProfileNames()
+
+    if (remoteProfiles.length === 0) {
+      return undefined // local fast path → batched endpoint's single DB open
+    }
+
+    const recentsProfile = (searchParams.get('recents_profile') || 'all').trim() || 'all'
+
+    const sliceParams = (limitKey, defaultLimit, extra) => {
+      const sp = new URLSearchParams({
+        limit: searchParams.get(limitKey) || defaultLimit,
+        offset: '0',
+        min_messages: '1',
+        archived: 'exclude',
+        order: 'recent',
+        ...extra
+      })
+
+      return sp
+    }
+
+    const recentsSp = sliceParams('recents_limit', '20', { profile: recentsProfile })
+    const recentsExclude = searchParams.get('recents_exclude')
+
+    if (recentsExclude) {
+      recentsSp.set('exclude_sources', recentsExclude)
+    }
+
+    const cronSp = sliceParams('cron_limit', '50', { profile: 'all', source: 'cron' })
+
+    const messagingSp = sliceParams('messaging_limit', '100', { profile: 'all' })
+    const messagingExclude = searchParams.get('messaging_exclude')
+
+    if (messagingExclude) {
+      messagingSp.set('exclude_sources', messagingExclude)
+    }
+
+    const [recents, cron, messaging] = await Promise.all([
+      fetchProfilesSessionSlice(recentsSp, remoteProfiles),
+      fetchProfilesSessionSlice(cronSp, remoteProfiles),
+      fetchProfilesSessionSlice(messagingSp, remoteProfiles)
+    ])
+
+    return {
+      recents: {
+        sessions: rowsOf(recents),
+        total: Number(recents?.total) || 0,
+        profile_totals: recents?.profile_totals || {}
+      },
+      cron: { sessions: rowsOf(cron) },
+      messaging: {
+        sessions: rowsOf(messaging),
+        total: Number(messaging?.total) || rowsOf(messaging).length
+      },
+      errors: []
+    }
+  }
+
   // Per-session read/mutation. Owner is in ?profile= (reads) or request.profile
   // (mutations). Two remote shapes:
   //  - per-profile override: route to that profile's own remote, sans profile
@@ -7897,6 +8216,30 @@ async function remoteSessionList(profile, searchParams) {
   }
 
   return { ...(data as any), sessions: rowsOf(data) }
+}
+
+// Resolve one /api/profiles/sessions slice with remote profiles spliced in —
+// the same branch logic as the GET /api/profiles/sessions intercept, but always
+// returns data (never `undefined`) so a batched caller can compose slices. A
+// specific local profile reads from the local primary; a remote-override profile
+// reads from its remote; 'all' merges every remote into the primary aggregate.
+async function fetchProfilesSessionSlice(searchParams, remoteProfiles) {
+  const requested = (searchParams.get('profile') || 'all').trim() || 'all'
+
+  if (requested !== 'all') {
+    if (profileHasRemoteOverride(requested)) {
+      return remoteSessionList(requested, searchParams)
+    }
+
+    const primary = await ensureBackend(null)
+
+    return fetchJson(`${primary.baseUrl}/api/profiles/sessions?${searchParams}`, primary.token, {
+      method: 'GET',
+      timeoutMs: DEFAULT_FETCH_TIMEOUT_MS
+    }).catch(() => ({ sessions: [], total: 0, profile_totals: {} }))
+  }
+
+  return mergeRemoteProfileSessions(searchParams, remoteProfiles)
 }
 
 // Unified list: primary's local aggregate, with each remote profile's stale local
@@ -8663,7 +9006,39 @@ ipcMain.handle('hermes:git:scanRepos', async (_event, roots, options) => {
   }
 })
 
+// node-pty's published tarball ships the POSIX `spawn-helper` without an exec
+// bit; the dev flow resolves node-pty straight from node_modules (nothing
+// chmods it there), so the first terminal spawn dies with `posix_spawnp
+// failed`. Restore the bit once, lazily, right before the first spawn. Packaged
+// builds already stage an executable copy, so this is a no-op there.
+let _spawnHelperEnsured = false
+
+function ensureNodePtySpawnHelper() {
+  if (_spawnHelperEnsured || IS_WINDOWS) {
+    return
+  }
+
+  _spawnHelperEnsured = true
+
+  try {
+    const nodePtyRoot = path.dirname(require.resolve('node-pty/package.json'))
+    const { fixed, errors } = ensureSpawnHelperExecutable(nodePtyRoot)
+
+    for (const helperPath of fixed) {
+      rememberLog(`[terminal] restored +x on node-pty spawn-helper: ${helperPath}`)
+    }
+
+    for (const failure of errors) {
+      rememberLog(`[terminal] could not chmod spawn-helper ${failure.path}: ${failure.error}`)
+    }
+  } catch (error) {
+    rememberLog(`[terminal] spawn-helper exec check skipped: ${error instanceof Error ? error.message : String(error)}`)
+  }
+}
+
 ipcMain.handle('hermes:terminal:start', async (event, payload = {}) => {
+  ensureNodePtySpawnHelper()
+
   const id = crypto.randomUUID()
   const { args, command, name } = terminalShellCommand()
   const cwd = safeTerminalCwd(payload?.cwd)
@@ -9224,6 +9599,18 @@ function configureSpellChecker() {
 }
 
 app.on('before-quit', () => {
+  // Clean quit mid-boot should not trip next-launch --no-sandbox (#38216).
+  // FATAL GPU aborts skip before-quit, leaving the `booting` marker in place.
+  // Keyed on sticky (not active): a manual --no-sandbox run still records a
+  // clean quit, while an engaged fallback keeps its sticky marker.
+  if (IS_WINDOWS && !windowsSandboxFallbackSticky) {
+    try {
+      writeSandboxMarker(app.getPath('userData'), markerAfterSuccessfulBoot({ fallbackActive: false }))
+    } catch {
+      void 0
+    }
+  }
+
   // The always-on-top overlay isn't a "real" app window; close it so a stray
   // pet can't keep the process alive or float over a quit app.
   closePetOverlay()

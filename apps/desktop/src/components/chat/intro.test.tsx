@@ -47,9 +47,9 @@ describe('Intro i18n', () => {
   })
 
   it.each([
-    ['zh-hant', '问问题、贴报错，或指向一个仓库。我可以读代码、运行工具，并帮你交付。'],
-    ['ja', 'Ask a question, paste an error, or point me at a repo. I can read code, run tools, and help you ship.']
-  ] as const)('uses the explicit intro fallback for %s', (locale, expectedBody) => {
+    ['zh-hant', '問問題、貼錯誤，或指向一個儲存庫。我可以讀程式碼、執行工具，並協助你交付。'],
+    ['ja', '質問、エラー、またはリポジトリを示してください。コードを読み、ツールを実行し、完成まで支援します。']
+  ] as const)('uses the dedicated intro corpus for %s', (locale, expectedBody) => {
     vi.spyOn(Math, 'random').mockReturnValue(0)
 
     render(

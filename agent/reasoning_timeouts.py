@@ -111,6 +111,7 @@ _REASONING_STALE_TIMEOUT_FLOORS: tuple[tuple[str, int], ...] = (
     # non-reasoning pairs.
     ("grok-4-fast-reasoning", 300),
     ("grok-4.20-reasoning", 300),
+    ("grok-4.5", 300),
     ("grok-4-fast-non-reasoning", 180),
 )
 

@@ -33,6 +33,7 @@ from agent.model_metadata import (
     estimate_messages_tokens_rough,
 )
 from agent.redact import redact_sensitive_text
+from agent.turn_context import drop_stale_api_content
 
 logger = logging.getLogger(__name__)
 
@@ -298,6 +299,7 @@ _FALLBACK_TURN_MAX_CHARS = 700
 _AUTO_FOCUS_MAX_TURNS = 3
 _AUTO_FOCUS_TURN_MAX_CHARS = 260
 _AUTO_FOCUS_MAX_CHARS = 700
+_ACTIVE_TASK_MAX_CHARS = 1400
 # Keep a short run of recent messages verbatim even when the token budget is
 # already exhausted.  The public ``protect_last_n`` default is intentionally
 # high for small/light tails, but using all 20 as a hard floor here would bring
@@ -321,6 +323,9 @@ _PATH_MENTION_RE = re.compile(r"(?:/|~/?|[A-Za-z]:\\)[^\s`'\")\]}<>]+")
 # the summary, the downstream model may re-emit it as an active directive on
 # the next turn, triggering bogus attachment sends (#14665).
 _MEDIA_DIRECTIVE_RE = re.compile(r"MEDIA:\S+")
+_HISTORICAL_TASK_SECTION_RE = re.compile(
+    rf"(?ms)^{re.escape(HISTORICAL_TASK_HEADING)}\s*\n.*?(?=^## |\Z)"
+)
 
 
 def _dedupe_append(items: list[str], value: str, *, limit: int) -> None:
@@ -655,6 +660,9 @@ def _strip_historical_media(messages: List[Dict[str, Any]]) -> List[Dict[str, An
             continue
         new_msg = msg.copy()
         new_msg["content"] = _strip_images_from_content(content)
+        # Content rewritten → the api_content sidecar (exact bytes previously
+        # sent) is stale; drop it so replay can't resend the pre-rewrite bytes.
+        drop_stale_api_content(new_msg)
         result.append(new_msg)
         changed = True
 
@@ -881,6 +889,7 @@ class ContextCompressor(ContextEngine):
         self._verify_compaction_cleared_threshold = False
         self._last_compression_made_progress = False
         self._summary_failure_cooldown_until = 0.0  # transient errors must not block a fresh session
+        self._cooldown_persist_failed = False
         self._last_summary_error = None
         self._last_compress_aborted = False
         self.last_real_prompt_tokens = 0
@@ -920,6 +929,7 @@ class ContextCompressor(ContextEngine):
         self._verify_compaction_cleared_threshold = False
         self._last_compression_made_progress = False
         self._summary_failure_cooldown_until = 0.0
+        self._cooldown_persist_failed = False
         self._last_compress_aborted = False
         self._context_probed = False
         self._context_probe_persistable = False
@@ -933,6 +943,7 @@ class ContextCompressor(ContextEngine):
         self._session_db = session_db
         self._session_id = session_id or ""
         self._summary_failure_cooldown_until = 0.0
+        self._cooldown_persist_failed = False
         self._last_summary_error = None
         self._consecutive_timeout_failures = 0
         self._fallback_compression_streak = 0
@@ -1014,42 +1025,66 @@ class ContextCompressor(ContextEngine):
             self._fallback_compression_streak = 0
         self._persist_fallback_compression_streak()
 
-    def get_active_compression_failure_cooldown(self) -> Optional[Dict[str, Any]]:
+    def get_active_compression_failure_cooldown(
+        self,
+        *,
+        refresh: bool = False,
+    ) -> Optional[Dict[str, Any]]:
         """Return the live compression-failure cooldown for the bound session."""
         now_mono = time.monotonic()
+        local_state = None
         if self._summary_failure_cooldown_until > now_mono:
-            return {
+            local_state = {
                 "cooldown_until": time.time() + (
                     self._summary_failure_cooldown_until - now_mono
                 ),
                 "remaining_seconds": self._summary_failure_cooldown_until - now_mono,
                 "error": self._last_summary_error,
             }
+            if not refresh:
+                return local_state
 
         session_db = getattr(self, "_session_db", None)
         session_id = getattr(self, "_session_id", "")
         if not session_db or not session_id:
-            return None
+            return local_state
 
         getter = getattr(session_db, "get_compression_failure_cooldown", None)
         if getter is None:
-            return None
+            return local_state
         try:
             state = getter(session_id)
         except sqlite3.Error as exc:
             logger.debug("compression failure cooldown lookup failed: %s", exc)
-            return None
+            return local_state
         except Exception:
-            return None
+            return local_state
         if not state:
+            if refresh:
+                if local_state is not None and self._cooldown_persist_failed:
+                    # The live local cooldown never made it to the DB (persist
+                    # failed), so the empty row is not evidence that another
+                    # agent cleared it. Honouring the DB here would re-enable
+                    # auto-compress mid-cooldown and reopen the #11529 thrash
+                    # window. Keep the local timer authoritative until it
+                    # expires or a successful DB read supersedes it.
+                    return local_state
+                self._summary_failure_cooldown_until = 0.0
+                self._last_summary_error = None
             return None
 
         remaining_seconds = float(state.get("remaining_seconds") or 0.0)
         if remaining_seconds <= 0:
+            if refresh:
+                if local_state is not None and self._cooldown_persist_failed:
+                    return local_state
+                self._summary_failure_cooldown_until = 0.0
+                self._last_summary_error = None
             return None
 
         self._summary_failure_cooldown_until = now_mono + remaining_seconds
         self._last_summary_error = state.get("error")
+        self._cooldown_persist_failed = False
         return {
             "cooldown_until": float(state.get("cooldown_until") or 0.0),
             "remaining_seconds": remaining_seconds,
@@ -1072,18 +1107,23 @@ class ContextCompressor(ContextEngine):
 
         recorder = getattr(session_db, "record_compression_failure_cooldown", None)
         if recorder is None:
+            self._cooldown_persist_failed = True
             return
         try:
             recorder(session_id, cooldown_until, error)
+            self._cooldown_persist_failed = False
         except sqlite3.Error as exc:
+            self._cooldown_persist_failed = True
             logger.debug("compression failure cooldown persist failed: %s", exc)
         except Exception as exc:
+            self._cooldown_persist_failed = True
             logger.debug("compression failure cooldown persist failed (non-sqlite): %s", exc)
 
     def _clear_compression_failure_cooldown(self) -> None:
         self._summary_failure_cooldown_until = 0.0
         self._last_summary_error = None
         self._consecutive_timeout_failures = 0
+        self._cooldown_persist_failed = False
 
         session_db = getattr(self, "_session_db", None)
         session_id = getattr(self, "_session_id", "")
@@ -1377,6 +1417,10 @@ class ContextCompressor(ContextEngine):
         # no-op/abort without inferring progress from message-list length.
         self._last_compression_made_progress: bool = False
         self._summary_failure_cooldown_until: float = 0.0
+        # True while the live local cooldown failed to persist to the DB;
+        # a refresh must then treat an empty durable row as unknown, not
+        # cleared (see get_active_compression_failure_cooldown).
+        self._cooldown_persist_failed: bool = False
         self._last_summary_error: Optional[str] = None
         # When summary generation fails and a static fallback is inserted,
         # record how many turns were unrecoverably dropped so callers
@@ -1522,8 +1566,48 @@ class ContextCompressor(ContextEngine):
             return False
         return not self._automatic_compression_blocked()
 
+    def _refresh_durable_guards(self) -> None:
+        """Re-read durable cooldown + fallback-streak state from the DB.
+
+        Cheap, best-effort, and only called when a gate is about to say
+        "blocked": another agent on the same session may have cleared the
+        durable rows (successful boundary, forced retry) after this
+        compressor was bound, and a fallback streak has no timer — without
+        a re-read the stale in-memory snapshot blocks forever.
+        """
+        try:
+            self.get_active_compression_failure_cooldown(refresh=True)
+        except Exception as exc:
+            logger.debug("compression cooldown refresh failed: %s", exc)
+        try:
+            self._load_fallback_compression_streak()
+        except Exception as exc:
+            logger.debug("compression fallback-streak refresh failed: %s", exc)
+
     def _automatic_compression_blocked(self) -> bool:
         """Return whether automatic compaction is in cooldown or tripped."""
+        if not self._automatic_compression_blocked_locally():
+            return False
+        # Blocked on the in-memory snapshot. Durable guard rows may have
+        # been cleared by another agent since bind_session_state(); refresh
+        # and re-evaluate so a stale local block cannot outlive the durable
+        # state that justified it. The unblocked hot path above never pays
+        # for the DB reads.
+        if (
+            self._summary_failure_cooldown_until <= time.monotonic()
+            and self._fallback_compression_streak < 2
+        ):
+            # Blocked solely by the in-memory ineffective-compression
+            # counter, which is not durable — there is nothing in the DB
+            # that could unblock it, so skip the refresh (otherwise this
+            # branch would re-read the DB on every gate check for the rest
+            # of the session).
+            return True
+        self._refresh_durable_guards()
+        return self._automatic_compression_blocked_locally()
+
+    def _automatic_compression_blocked_locally(self) -> bool:
+        """Evaluate the automatic-compaction gate on in-memory state only."""
         # Do not trigger compression while the summary LLM is in cooldown.
         # On a 429/transient failure _generate_summary() sets a cooldown and
         # returns None; compress() then inserts a static fallback marker and
@@ -2142,9 +2226,9 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
         _template_sections = f"""{HISTORICAL_TASK_HEADING}
 [THE SINGLE MOST IMPORTANT FIELD. Capture the user's most recent unfulfilled
 input verbatim — the exact words they used. This includes:
-- Explicit task assignments ("refactor the auth module")
-- Questions awaiting an answer ("waarom staat X op Y?", "wat zijn de volgende stappen?")
-- Decisions awaiting input ("optie A of B?")
+- Explicit task assignments ("<specific user task>")
+- Questions awaiting an answer ("<specific user question>")
+- Decisions awaiting input ("<option A or B?>")
 - Ongoing discussions where the assistant owes the next substantive reply
 A conversation where the user just asked a question IS an active task — the
 task is "answer that question with full context". Do NOT write "None" merely
@@ -2152,15 +2236,15 @@ because the user did not issue an imperative command; reserve "None" for the
 rare case where the last exchange was fully resolved and the user said
 something like "thanks, that's all".
 If multiple items are outstanding, list only the ones NOT yet completed.
-Continuation should pick up exactly here. Examples:
-"User asked: 'Now refactor the auth module to use JWT instead of sessions'"
-"User asked: 'Waarom stond provider ineens op openrouter?' — needs investigation + answer"
-"User chose option A; awaiting implementation of step 2"
+This historical snapshot must identify the latest unresolved user input precisely. Examples:
+"User asked: '<exact latest user request>'"
+"User asked: '<exact latest user question>' — needs investigation + answer"
+"User chose <option>; awaiting implementation of <specific next step>"
 If the user's most recent message was a reverse signal (stop, undo, roll
 back, never mind, just verify, change of topic) that supersedes earlier
 work, write the reverse signal verbatim and DO NOT carry forward the
-cancelled task. Example: "User asked: 'Stop the i18n refactor and just
-verify the current diff' — earlier i18n in-flight work is cancelled."
+cancelled task. Example: "User asked: '<exact reverse signal>' — earlier
+in-flight work is cancelled."
 If no outstanding task exists, write "None."]
 
 ## Goal
@@ -2322,6 +2406,7 @@ This compaction should PRIORITISE preserving all information related to the focu
             # Redact the summary output as well — the summarizer LLM may
             # ignore prompt instructions and echo back secrets verbatim.
             summary = redact_sensitive_text(content.strip())
+            summary = self._ground_historical_task_snapshot(summary, turns_to_summarize)
             # Store for iterative updates on next compaction
             self._previous_summary = summary
             self._clear_compression_failure_cooldown()
@@ -2592,6 +2677,69 @@ This compaction should PRIORITISE preserving all information related to the focu
         if len(focus) > _AUTO_FOCUS_MAX_CHARS:
             focus = focus[: _AUTO_FOCUS_MAX_CHARS - 1].rstrip() + "…"
         return focus
+
+    @classmethod
+    def _latest_user_task_snapshot(
+        cls,
+        messages: List[Dict[str, Any]],
+    ) -> Optional[str]:
+        """Return a deterministic task-snapshot line from the newest real user turn.
+
+        The LLM summarizer is allowed to compress prose, but it must not invent
+        the "what is the active task?" anchor from a prompt example or stale
+        prior summary.  This helper extracts the anchor locally from the exact
+        compacted turns so the summary can be grounded before it becomes live
+        context.
+        """
+        # Reuse the runtime's real-user predicate so the deterministic
+        # snapshot can never anchor on user-role scaffolding (todo
+        # snapshots, truncation notices, background-process reports) —
+        # the exact class of turn this grounding exists to bypass.
+        from agent.conversation_compression import _is_real_user_message
+
+        for msg in reversed(messages):
+            if msg.get("role") != "user":
+                continue
+            if not _is_real_user_message(msg):
+                continue
+            content = msg.get("content")
+            text = redact_sensitive_text(_content_text_for_contains(content).strip())
+            if not text:
+                continue
+            text = re.sub(r"\s+", " ", text)
+            if len(text) > _ACTIVE_TASK_MAX_CHARS:
+                text = text[: _ACTIVE_TASK_MAX_CHARS - 15].rstrip() + " ...[truncated]"
+            return (
+                f"User asked (deterministic, from compacted turns): {text!r}\n"
+                "Historical only; newer protected-tail messages after this summary win."
+            )
+        return None
+
+    @classmethod
+    def _ground_historical_task_snapshot(
+        cls,
+        summary: str,
+        messages: List[Dict[str, Any]],
+    ) -> str:
+        """Force the task snapshot section to match a real user turn when possible."""
+        snapshot = cls._latest_user_task_snapshot(messages)
+        if not snapshot:
+            return summary
+
+        body = cls._strip_summary_prefix(summary)
+        # Keep the section terminated with a blank line: re.sub consumes the
+        # section's trailing newlines, and without restoring them the next
+        # "## " heading is glued onto the snapshot line — corrupting the
+        # markdown and making the heading invisible to this same regex on the
+        # next iterative compaction (which would then delete every following
+        # section via the \Z branch).
+        replacement = f"{HISTORICAL_TASK_HEADING}\n{snapshot}\n\n"
+        if _HISTORICAL_TASK_SECTION_RE.search(body):
+            grounded = _HISTORICAL_TASK_SECTION_RE.sub(
+                lambda _m: replacement, body, count=1
+            )
+            return grounded.strip()
+        return f"{replacement}{body}".strip()
 
     @classmethod
     def _find_latest_context_summary(
@@ -3464,6 +3612,10 @@ This compaction should PRIORITISE preserving all information related to the focu
                 # Mark the merged message so frontends can identify it as
                 # containing a compression summary prefix.
                 msg[COMPRESSED_SUMMARY_METADATA_KEY] = True
+                # Content rewritten → the api_content sidecar (exact bytes
+                # previously sent) is stale; drop it so replay can't resend
+                # the pre-merge bytes without the summary.
+                drop_stale_api_content(msg)
                 _merge_summary_into_tail = False
             compressed.append(msg)
 

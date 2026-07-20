@@ -10,27 +10,34 @@
  * Only these imports resolve: @hermes/plugin-sdk, react, react/jsx-runtime.
  */
 
-import { cn, haptic, host, Tip, useValue } from '@hermes/plugin-sdk'
+import { cn, haptic, host, Tip, usePluginI18n, useValue } from '@hermes/plugin-sdk'
 import { jsx, jsxs } from 'react/jsx-runtime'
 
+// Ship your OWN strings (never edit core en.ts). `usePluginI18n` resolves them
+// against the app's active locale, falling back to `en`, then the raw key.
+const ID = 'my-plugin'
+
 function MyPane() {
+  const t = usePluginI18n(ID)
   const gateway = useValue(host.state.gateway)
 
   return jsxs('div', {
     className: 'flex h-full flex-col gap-2 p-3 text-sm',
     children: [
-      jsx('div', { className: 'font-medium', children: 'My Plugin Pane' }),
+      jsx('div', { className: 'font-medium', children: t('paneTitle') }),
       jsx('div', {
         className: 'text-(--ui-text-tertiary)',
-        children: `gateway: ${gateway}`
+        children: t('gateway', gateway)
       })
     ]
   })
 }
 
 function MyChip() {
+  const t = usePluginI18n(ID)
+
   return jsx(Tip, {
-    label: 'My plugin — click me',
+    label: t('chipTip'),
     children: jsx('button', {
       className: cn(
         'inline-flex h-full items-center gap-1 px-1.5 text-[0.6875rem] transition-colors',
@@ -39,7 +46,7 @@ function MyChip() {
       type: 'button',
       onClick: () => {
         haptic('tap')
-        host.notify({ kind: 'info', message: 'Hello from my plugin!' })
+        host.notify({ kind: 'info', message: t('hello') })
       },
       children: 'my-plugin'
     })
@@ -47,9 +54,26 @@ function MyChip() {
 }
 
 export default {
-  id: 'my-plugin', // must match the folder name
+  id: ID, // must match the folder name
   name: 'My Plugin',
   register(ctx) {
+    // Register locale bundles — scoped to this plugin, torn down on reload.
+    // Values are literals or interpolators (`arg => `…${arg}…``).
+    ctx.i18n.register({
+      en: {
+        paneTitle: 'My Plugin Pane',
+        gateway: state => `gateway: ${state}`,
+        chipTip: 'My plugin — click me',
+        hello: 'Hello from my plugin!'
+      },
+      ja: {
+        paneTitle: 'マイプラグイン',
+        gateway: state => `ゲートウェイ: ${state}`,
+        chipTip: 'マイプラグイン — クリック',
+        hello: 'マイプラグインからこんにちは！'
+      }
+    })
+
     // A layout pane — auto-placed by the placement hint; user can drag it.
     // To land on a specific edge instead of stacking, add a dock gesture,
     // e.g. below the conversation:

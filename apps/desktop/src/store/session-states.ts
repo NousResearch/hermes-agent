@@ -27,6 +27,7 @@ import {
   noteActiveTreeGroup,
   revealTreePane
 } from '@/components/pane-shell/tree/store'
+import { stableArray } from '@/lib/stable-array'
 import { readJson, writeJson } from '@/lib/storage'
 
 import { $activeGatewayProfile, normalizeProfileKey } from './profile'
@@ -34,7 +35,7 @@ import {
   $activeSessionId,
   $selectedStoredSessionId,
   $unreadFinishedSessionIds,
-  setActiveSessionStoredId
+  setActiveSessionStoredIdRotation
 } from './session'
 import { isSecondaryWindow } from './windows'
 
@@ -109,10 +110,18 @@ export function getRecentlySettledSessionIds(now: number = Date.now()): string[]
 
 // --- Transition detection (called automatically from publishSessionState) ---
 function handleTransition(previous: ClientSessionState | null, next: ClientSessionState, runtimeId: string) {
-  // Compression id rotation: signal the route-follow effect.
+  // Compression id rotation: signal the route-follow effect with enough
+  // provenance (previous id + runtime) that the consumer can reject the event
+  // if the user navigated elsewhere before React handled it. A bare next id
+  // could let a background session's delayed rotation steal the foreground
+  // route.
   if (previous?.storedSessionId && next.storedSessionId && previous.storedSessionId !== next.storedSessionId) {
     if (runtimeId === $activeSessionId.get()) {
-      setActiveSessionStoredId(next.storedSessionId)
+      setActiveSessionStoredIdRotation({
+        nextStoredSessionId: next.storedSessionId,
+        previousStoredSessionId: previous.storedSessionId,
+        runtimeSessionId: runtimeId
+      })
     }
 
     clearSettled(previous.storedSessionId)
@@ -190,21 +199,37 @@ export function clearAllSessionStates() {
   $sessionStates.set({})
 }
 
-// Derived per-session status sets. `$sessionStates` already holds `busy` and
-// `needsInput` for every runtime session (written by updateSessionState); these
-// are pure projections of it, not independently maintained atoms. This keeps the
-// data flow one-directional: gateway event → cache → $sessionStates → computed
-// views, eliminating the "projection atom out of sync with cache" bug class.
-export const $workingSessionIds = computed($sessionStates, states =>
+// Derived per-session status sets — pure projections of `$sessionStates` (which
+// holds `busy`/`needsInput` per runtime), keeping the data flow one-directional:
+// gateway event → cache → $sessionStates → computed views.
+//
+// Perf: `$sessionStates` is republished on EVERY message delta (tens/sec during
+// a turn), but these sets only change on busy/needsInput edges. `stableArray`
+// keeps the prior reference when membership is unchanged so `computed` skips the
+// emit — otherwise the whole sidebar + every row re-renders per token.
+const storedIds = (states: Record<string, ClientSessionState>, pred: (s: ClientSessionState) => boolean) =>
   Object.values(states)
-    .filter(s => s.busy && s.storedSessionId)
+    .filter(s => pred(s) && s.storedSessionId)
     .map(s => s.storedSessionId!)
+
+let workingIds: readonly string[] = []
+export const $workingSessionIds = computed(
+  $sessionStates,
+  states =>
+    (workingIds = stableArray(
+      workingIds,
+      storedIds(states, s => s.busy)
+    ))
 )
 
-export const $attentionSessionIds = computed($sessionStates, states =>
-  Object.values(states)
-    .filter(s => s.needsInput && s.storedSessionId)
-    .map(s => s.storedSessionId!)
+let attentionIds: readonly string[] = []
+export const $attentionSessionIds = computed(
+  $sessionStates,
+  states =>
+    (attentionIds = stableArray(
+      attentionIds,
+      storedIds(states, s => s.needsInput)
+    ))
 )
 
 // ---------------------------------------------------------------------------

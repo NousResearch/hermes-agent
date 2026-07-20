@@ -3,7 +3,9 @@ import { type CSSProperties, useState } from 'react'
 import { type Locale, useI18n } from '@/i18n'
 import { capitalize, normalize } from '@/lib/text'
 
+import introCopyJaJsonl from './intro-copy.ja.jsonl?raw'
 import introCopyJsonl from './intro-copy.jsonl?raw'
+import introCopyZhHantJsonl from './intro-copy.zh-hant.jsonl?raw'
 import introCopyZhJsonl from './intro-copy.zh.jsonl?raw'
 
 type IntroCopy = {
@@ -105,21 +107,21 @@ function parseIntroCopy(raw: string): Record<string, IntroCopy[]> {
   return byPersonality
 }
 
-type IntroAssetLocale = 'en' | 'zh'
+type IntroAssetLocale = Locale
 
 const INTRO_COPY_BY_LOCALE: Record<IntroAssetLocale, Record<string, IntroCopy[]>> = {
   en: parseIntroCopy(introCopyJsonl),
-  zh: parseIntroCopy(introCopyZhJsonl)
+  ja: parseIntroCopy(introCopyJaJsonl),
+  zh: parseIntroCopy(introCopyZhJsonl),
+  'zh-hant': parseIntroCopy(introCopyZhHantJsonl)
 }
 
 // Intro copy is a generated personality corpus rather than ordinary UI labels.
-// Until dedicated corpora are reviewed, Traditional Chinese uses the Simplified
-// Chinese corpus and Japanese uses the original English corpus.
 const INTRO_ASSET_LOCALE: Record<Locale, IntroAssetLocale> = {
   en: 'en',
-  ja: 'en',
+  ja: 'ja',
   zh: 'zh',
-  'zh-hant': 'zh'
+  'zh-hant': 'zh-hant'
 }
 
 function copyByPersonality(locale: Locale): Record<string, IntroCopy[]> {

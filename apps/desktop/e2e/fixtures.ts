@@ -28,6 +28,7 @@ import * as path from 'node:path'
 import { _electron, type ElectronApplication, type Page } from '@playwright/test'
 
 import { startMockServer } from './mock-server'
+import { installErrorBannerGuard } from './test'
 
 const DESKTOP_ROOT = path.resolve(import.meta.dirname, '..')
 const REPO_ROOT = path.resolve(DESKTOP_ROOT, '..', '..')
@@ -305,6 +306,10 @@ export async function launchDesktop(
 
   const page = await app.firstWindow()
 
+  // Install the error-banner guard so any [role="alert"] that appears
+  // during a test is collected and surfaced in afterEach.
+  installErrorBannerGuard(page)
+
   return { app, page }
 }
 
@@ -514,6 +519,7 @@ export async function setupPackagedApp(): Promise<PackagedAppFixture> {
   })
 
   const page = await app.firstWindow()
+  installErrorBannerGuard(page)
 
   return {
     app,

@@ -280,3 +280,80 @@ class TestSvgNormalization:
             path, mime, err = vt._normalize_to_supported_image(svg, "image/svg+xml")
         assert path is None
         assert "rasterizer" in err
+
+
+# HEIF/HEIC/AVIF ISO-BMFF headers: 'ftyp' box at bytes 4-8, major brand at 8-12.
+# 0x18-byte box length prefix mirrors a real iPhone HEIC (\x00\x00\x00\x18 ftyp...).
+HEIC_HEADER = b"\x00\x00\x00\x18ftypheic\x00\x00\x00\x00mif1heic" + b"\x00" * 32
+AVIF_HEADER = b"\x00\x00\x00\x1cftypavif\x00\x00\x00\x00avifmif1" + b"\x00" * 32
+MIF1_HEADER = b"\x00\x00\x00\x18ftypmif1\x00\x00\x00\x00mif1heic" + b"\x00" * 32
+
+
+class TestHeicDetection:
+    """iPhone HEIC/HEIF (and AVIF) are sniffed from the ISO-BMFF ftyp brand so
+    they reach _normalize_to_supported_image instead of being rejected as
+    'not a recognized image' (the pre-fix behavior for iPhone photos)."""
+
+    def test_heic_brand_detected(self):
+        from tools.vision_tools import _detect_image_mime_type_from_bytes
+        assert _detect_image_mime_type_from_bytes(HEIC_HEADER) == "image/heic"
+
+    def test_generic_mif1_brand_detected_as_heic(self):
+        from tools.vision_tools import _detect_image_mime_type_from_bytes
+        assert _detect_image_mime_type_from_bytes(MIF1_HEADER) == "image/heic"
+
+    def test_avif_brand_detected(self):
+        from tools.vision_tools import _detect_image_mime_type_from_bytes
+        assert _detect_image_mime_type_from_bytes(AVIF_HEADER) == "image/avif"
+
+    def test_ftyp_with_unknown_brand_not_misdetected(self):
+        """An ISO-BMFF ftyp box that isn't an image brand (e.g. mp4) stays
+        unrecognized — we must not claim every ftyp container is an image."""
+        from tools.vision_tools import _detect_image_mime_type_from_bytes
+        mp4 = b"\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00mp42isom" + b"\x00" * 32
+        assert _detect_image_mime_type_from_bytes(mp4) is None
+
+    @pytest.mark.asyncio
+    async def test_heic_resolves_and_normalizes_to_png(self, tmp_path, monkeypatch):
+        """End-to-end: a real HEIC file resolves (mime image/heic) and
+        _normalize_to_supported_image re-encodes it to PNG via pillow-heif."""
+        pillow_heif = pytest.importorskip("pillow_heif")
+        pillow_heif.register_heif_opener()
+        from PIL import Image
+        from tools import vision_tools as vt
+        isrc = _reload(monkeypatch, tmp_path / "hermes")
+        monkeypatch.setenv("TERMINAL_ENV", "local")
+
+        heic = tmp_path / "photo.heic"
+        Image.new("RGB", (8, 8), (120, 60, 200)).save(str(heic), format="HEIF")
+
+        res = await isrc.resolve_image_source(str(heic), isrc.ResolveContext())
+        assert res.mime == "image/heic"
+
+        path, mime, err = vt._normalize_to_supported_image(heic, "image/heic")
+        assert err is None
+        assert mime == "image/png"
+        assert path.read_bytes().startswith(b"\x89PNG\r\n\x1a\n")
+        path.unlink()
+
+    def test_heic_actionable_error_when_decoder_missing(self, tmp_path, monkeypatch):
+        """With pillow-heif unavailable, a HEIC image gets an actionable error
+        (install pillow-heif) rather than a generic conversion failure — the
+        same soft-dependency posture as SVG-without-rasterizer."""
+        from tools import vision_tools as vt
+        _reload(monkeypatch, tmp_path / "hermes")
+        heic = tmp_path / "photo.heic"
+        heic.write_bytes(HEIC_HEADER)
+
+        import builtins
+        real_import = builtins.__import__
+
+        def _no_heif(name, *args, **kwargs):
+            if name == "pillow_heif":
+                raise ImportError("pillow_heif not installed")
+            return real_import(name, *args, **kwargs)
+
+        with patch.object(builtins, "__import__", side_effect=_no_heif):
+            path, mime, err = vt._normalize_to_supported_image(heic, "image/heic")
+        assert path is None
+        assert "pillow-heif" in err

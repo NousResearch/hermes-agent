@@ -124,6 +124,14 @@ dependencies = [
   # install rather than gating it behind an extra + a mid-session lazy install
   # (which deadlocked the CLI under prompt_toolkit — see #40490).
   "Pillow==12.2.0",
+  # HEIF/HEIC/AVIF decode for the vision tools. iPhone photos and screenshots
+  # are HEIC (frequently mislabeled .jpg by upload pipelines); Pillow has no
+  # built-in HEIF codec, so without this the vision resolver rejects them as
+  # "not a recognized image". pillow-heif registers a Pillow opener so
+  # _normalize_to_supported_image can re-encode HEIF/AVIF to PNG before embed.
+  # Ships prebuilt wheels bundling libheif for the common platforms (no system
+  # libs needed), so it's safe in the base install alongside Pillow.
+  "pillow-heif==1.4.0",
   # Windows log rotation. Stdlib ``RotatingFileHandler.doRollover()`` uses
   # ``os.rename()`` which fails with ``PermissionError [WinError 32]`` on
   # Windows whenever any other process holds an append-mode handle on

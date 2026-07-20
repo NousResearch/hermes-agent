@@ -221,6 +221,27 @@ SEND_MESSAGE_SCHEMA = {
                 "type": "string",
                 "description": "The message text to send. To send an image or file, include MEDIA:<local_path> (e.g. 'MEDIA:/tmp/report.pdf') in the message — the platform will deliver it as a native media attachment."
             },
+            "web_app_button": {
+                "type": "object",
+                "description": (
+                    "For Telegram private chats only: show an already-hosted HTTPS URL "
+                    "as a Mini App button. Use this when the user asks to open, show, or "
+                    "launch a live web interface inside Telegram. Hermes delivers the URL "
+                    "but does not host or deploy the app. Cannot be combined with MEDIA attachments."
+                ),
+                "properties": {
+                    "label": {
+                        "type": "string",
+                        "description": "Short visible button label, for example 'Open app'.",
+                    },
+                    "url": {
+                        "type": "string",
+                        "description": "Public HTTPS URL of the already-hosted Mini App.",
+                    },
+                },
+                "required": ["label", "url"],
+                "additionalProperties": False,
+            },
             "emoji": {
                 "type": "string",
                 "description": "For action='react': the emoji to react with (e.g. '❤️'). On iMessage, ❤️👍👎😂‼️❓ render as native tapbacks; other emoji use custom-emoji reactions."
@@ -365,6 +386,15 @@ def _handle_send(args):
     chat_id = None
     thread_id = None
 
+    try:
+        from plugins.platforms.telegram.web_app import normalize_web_app_button
+
+        web_app_button = normalize_web_app_button(args.get("web_app_button"))
+    except ValueError as exc:
+        return tool_error(str(exc))
+    if web_app_button is not None and platform_name != "telegram":
+        return tool_error("web_app_button is only supported for Telegram targets")
+
     if target_ref:
         chat_id, thread_id, is_explicit = _parse_target_ref(platform_name, target_ref)
     else:
@@ -438,6 +468,8 @@ def _handle_send(args):
 
     media_files, cleaned_message = BasePlatformAdapter.extract_media(message)
     media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
+    if web_app_button is not None and media_files:
+        return tool_error("web_app_button cannot be combined with MEDIA attachments")
     mirror_text = cleaned_message.strip() or _describe_media_for_mirror(media_files)
 
     used_home_channel = False
@@ -489,15 +521,22 @@ def _handle_send(args):
 
     try:
         from model_tools import _run_async
+        send_kwargs = {
+            "thread_id": thread_id,
+            "media_files": media_files,
+            "force_document": force_document_attachments,
+        }
+        # Preserve the long-standing internal sender call shape for every
+        # ordinary send; only Telegram Web App callers opt into the extension.
+        if web_app_button is not None:
+            send_kwargs["web_app_button"] = web_app_button
         result = _run_async(
             _send_to_platform(
                 platform,
                 pconfig,
                 chat_id,
                 cleaned_message,
-                thread_id=thread_id,
-                media_files=media_files,
-                force_document=force_document_attachments,
+                **send_kwargs,
             )
         )
         if used_home_channel and isinstance(result, dict) and result.get("success"):
@@ -777,7 +816,16 @@ async def _send_via_adapter(
     }
 
 
-async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None, media_files=None, force_document=False):
+async def _send_to_platform(
+    platform,
+    pconfig,
+    chat_id,
+    message,
+    thread_id=None,
+    media_files=None,
+    force_document=False,
+    web_app_button=None,
+):
     """Route a message to the appropriate platform sender.
 
     Long messages are automatically chunked to fit within platform limits
@@ -857,6 +905,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             thread_id=thread_id,
             disable_link_previews=disable_link_previews,
             force_document=force_document,
+            web_app_button=web_app_button,
         )
 
     # --- Discord: chunked delivery via the registry's standalone_sender_fn.
@@ -1114,7 +1163,16 @@ def _is_telegram_thread_not_found(error: Exception) -> bool:
     return "thread not found" in str(error).lower()
 
 
-async def _send_telegram(token, chat_id, message, media_files=None, thread_id=None, disable_link_previews=False, force_document=False):
+async def _send_telegram(
+    token,
+    chat_id,
+    message,
+    media_files=None,
+    thread_id=None,
+    disable_link_previews=False,
+    force_document=False,
+    web_app_button=None,
+):
     """Send via Telegram Bot API (one-shot, no polling needed).
 
     Applies markdown→MarkdownV2 formatting (same as the gateway adapter)
@@ -1175,6 +1233,26 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
         # Telegram accepts a numeric chat_id OR an @username string; normalize
         # rather than force-int so username home channels don't crash (#13206).
         int_chat_id = normalize_telegram_chat_id(chat_id)
+        web_app_reply_markup = None
+        if web_app_button is not None:
+            from plugins.platforms.telegram.web_app import normalize_web_app_button
+            from telegram import InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
+
+            normalized_button = normalize_web_app_button(web_app_button)
+            chat = await bot.get_chat(int_chat_id)
+            raw_chat_type = getattr(chat, "type", "")
+            chat_type = str(getattr(raw_chat_type, "value", raw_chat_type)).lower()
+            if chat_type != "private":
+                raise ValueError(
+                    "Telegram Web App buttons are only available in private chats "
+                    "between a user and the bot"
+                )
+            web_app_reply_markup = InlineKeyboardMarkup(
+                [[InlineKeyboardButton(
+                    normalized_button["label"],
+                    web_app=WebAppInfo(url=normalized_button["url"]),
+                )]]
+            )
         media_files = media_files or []
         thread_kwargs = {}
         if thread_id is not None:
@@ -1238,27 +1316,31 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
             text_chunks = BasePlatformAdapter.truncate_message(
                 formatted, 4096, len_fn=utf16_len
             )
-            for chunk in text_chunks:
+            for chunk_index, chunk in enumerate(text_chunks):
+                chunk_kwargs = dict(text_kwargs)
+                if chunk_index == len(text_chunks) - 1 and web_app_reply_markup is not None:
+                    chunk_kwargs["reply_markup"] = web_app_reply_markup
                 try:
                     last_msg = await _send_telegram_message_with_retry(
                         bot,
                         chat_id=int_chat_id, text=chunk,
-                        parse_mode=send_parse_mode, **text_kwargs
+                        parse_mode=send_parse_mode, **chunk_kwargs
                     )
                 except Exception as md_error:
                     # Thread not found — retry without message_thread_id so the
                     # message still delivers (matching the gateway adapter's
                     # fallback behaviour, issue #27012).
-                    if _is_telegram_thread_not_found(md_error) and text_kwargs.get("message_thread_id") is not None:
+                    if _is_telegram_thread_not_found(md_error) and chunk_kwargs.get("message_thread_id") is not None:
                         logger.warning(
                             "Thread %s not found in _send_telegram, retrying without message_thread_id",
-                            text_kwargs.get("message_thread_id"),
+                            chunk_kwargs.get("message_thread_id"),
                         )
                         text_kwargs.pop("message_thread_id", None)
+                        chunk_kwargs.pop("message_thread_id", None)
                         last_msg = await _send_telegram_message_with_retry(
                             bot,
                             chat_id=int_chat_id, text=chunk,
-                            parse_mode=send_parse_mode, **text_kwargs
+                            parse_mode=send_parse_mode, **chunk_kwargs
                         )
                     elif "parse" in str(md_error).lower() or "markdown" in str(md_error).lower() or "html" in str(md_error).lower():
                         logger.warning(
@@ -1277,7 +1359,7 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
                         last_msg = await _send_telegram_message_with_retry(
                             bot,
                             chat_id=int_chat_id, text=plain,
-                            parse_mode=None, **text_kwargs
+                            parse_mode=None, **chunk_kwargs
                         )
                     else:
                         raise

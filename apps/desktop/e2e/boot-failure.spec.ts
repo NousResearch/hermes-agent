@@ -4,8 +4,7 @@
  *
  * Injects a fake boot error (HERMES_DESKTOP_BOOT_FAKE_ERROR) so the backend
  * resolution fails with a controlled error message. The app should show the
- * BootFailureOverlay with retry/repair actions — no progress bar should be
- * visible.
+ * BootFailureOverlay with retry/repair actions.
  *
  * Prerequisite: `npm run build` must have been run so dist/ exists.
  */

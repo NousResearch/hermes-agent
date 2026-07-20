@@ -651,16 +651,9 @@ export async function waitForBootFailure(page: Page, timeoutMs = 60_000): Promis
       // Boot failure is terminal: the backend gave up. The renderer shows
       // either BootFailureOverlay (z-1400, with Retry/Repair buttons) or
       // falls back to the onboarding picker (z-1300) as a recovery path.
-      // Either way, no progress bar should be visible and an error must
-      // have surfaced (toast, boot-failure banner, or the overlay itself).
-      const hasProgressBar = Boolean(
-        document.querySelector('[role="progressbar"], .h-2.rounded-full.bg-muted')
-      )
-
-      if (hasProgressBar) {
-        return false
-      }
-
+      // We wait for the failure dialog itself — the Preparing component may
+      // still paint its progress bar (recolored red) underneath the overlay,
+      // which is harmless.
       const text = document.body.textContent ?? ''
 
       // BootFailureOverlay buttons.

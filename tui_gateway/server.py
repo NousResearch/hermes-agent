@@ -1465,6 +1465,46 @@ def method(name: str):
     return dec
 
 
+# -- Plugin RPC integration --------------------------------------------------
+
+# Set of RPC method names that were injected from the plugin system so we can
+# clean them up on reload without touching built-in gateway methods.
+_plugin_rpc_names: set[str] = set()
+
+
+def _merge_plugin_rpc_methods() -> None:
+    """Merge plugin-registered JSON-RPC methods into _methods.
+
+    Called lazily on the first inbound request so plugins discovered
+    before the gateway started have their RPC methods available.
+    Safe to call multiple times — re-discovers on every invocation so
+    that force-reload or late plugin loads are picked up.
+    """
+    global _plugin_rpc_names
+    try:
+        from hermes_cli.plugins import (
+            discover_plugins,
+            get_plugin_rpc_method_names,
+            get_plugin_rpc_methods,
+        )
+
+        discover_plugins()
+        current = get_plugin_rpc_method_names()
+        new = current - _plugin_rpc_names
+        stale = _plugin_rpc_names - current
+
+        # Remove stale plugin-owned methods from _methods.
+        for name in stale:
+            _methods.pop(name, None)
+        # Add or refresh current plugin methods.
+        for name, handler in get_plugin_rpc_methods().items():
+            _methods[name] = handler
+
+        _plugin_rpc_names = current
+    except Exception as exc:
+        logger.debug("Failed to merge plugin RPC methods: %s", exc)
+
+
 def _normalize_request(req: Any) -> tuple[Any, str, dict] | dict:
     """Validate a JSON-RPC request enough for safe local dispatch."""
     if not isinstance(req, dict):
@@ -1490,6 +1530,7 @@ def handle_request(req: dict) -> dict | None:
         return normalized
 
     rid, method, params = normalized
+    _merge_plugin_rpc_methods()
     fn = _methods.get(method)
     if not fn:
         return _err(rid, -32601, f"unknown method: {method}")

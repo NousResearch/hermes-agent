@@ -310,6 +310,31 @@ auxiliary:
 
 ## Auxiliary Capacity-Error Fallback
 
+### Opt in to explicit quota-only fallback
+
+Set `fallback_on: [quota_exhausted]` when an auxiliary task should use only its configured chain after a confirmed quota error:
+
+```yaml
+auxiliary:
+  compression:
+    provider: openrouter
+    model: google/gemini-3-flash-preview
+    fallback_on: [quota_exhausted]
+    fallback_chain:
+      - provider: nous
+        model: anthropic/claude-sonnet-4
+      - provider: openai
+        model: gpt-4o-mini
+```
+
+This opt-in accepts only the exact structured values `insufficient_quota`, `quota_exhausted`, or `usage_limit_reached` in the primary exception body's `code`, `type`, or `reason` field, either directly or inside one `error` object. If the exception includes a status code, it must be integer `402` or `429`; a bare status code or quota-looking message is not enough.
+
+After the primary provider's existing retries finish, Hermes tries each configured entry once, in order. An unavailable or failed entry is skipped. The first valid response wins; if the chain is exhausted, Hermes re-raises the original primary error. This mode does not append the main agent, top-level `fallback_providers`, `auto` discovery, or other implicit routes.
+
+The opt-in is validated before the primary request. It requires a non-empty chain whose entries have explicit, non-empty `provider` and `model` strings; `auto` and `main` are not valid candidate providers. Synchronous streaming calls are not supported in this mode.
+
+If `fallback_on` is omitted, the legacy capacity-error behavior described below is unchanged.
+
 When you set an explicit auxiliary provider (e.g. `auxiliary.vision.provider: glm`), Hermes treats that as your preferred choice — but if the provider literally cannot serve the request because of a **capacity error** (HTTP 402 payment required, HTTP 429 daily-quota exhaustion, connection failure), Hermes falls back through a layered chain instead of failing silently:
 
 1. **Primary aux provider** — the one you configured (tried first, always)

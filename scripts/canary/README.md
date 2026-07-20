@@ -344,6 +344,16 @@ owner-reauthentication lifetime on unrelated inspection. The copies, mode and
 byte-identity checks, and confirmed binding absence remain mandatory and may
 not be skipped to save time.
 
+If a completed Foundation source authority must be superseded after its exact
+IAM schema changes, the direct-IAM author requires the explicit
+`--rotate-predecessor-authority-file-sha256 <sha256>` argument. The digest must
+identify the current fixed authority and exactly one completed predecessor
+publication journal. Rotation publishes a successor-bound intent, stages and
+validates the new authority, preserves the predecessor at the fixed
+content-addressed history path, and atomically replaces the fixed source name.
+Retries replay the same intent and never recollect after a complete candidate;
+ordinary author invocation still rejects a conflicting Foundation chain.
+
 `success.json` is a signed journal transition wrapper, not a raw foundation
 apply receipt.  Downstream owner gates must not copy it, loosen its mode, or
 extract `.receipt` with `jq`.  They receive the opaque

@@ -1310,6 +1310,11 @@ def test_owner_cli_uses_fixed_output_and_prints_only_hashes(
         release_key=release_key,
         collector_key=collector_key,
     )
+    predecessor_file_sha256 = "3" * 64
+    argv.extend((
+        "--rotate-predecessor-authority-file-sha256",
+        predecessor_file_sha256,
+    ))
     monkeypatch.setattr(
         trust,
         "PINNED_RELEASE_TRUST_PUBLIC_KEY_SHA256",
@@ -1338,6 +1343,9 @@ def test_owner_cli_uses_fixed_output_and_prints_only_hashes(
         assert kwargs["project_ancestry_evidence_raw"] == artifacts[
             "project-ancestry-evidence"
         ]
+        assert kwargs["predecessor_authority_file_sha256"] == (
+            predecessor_file_sha256
+        )
         assert "foundation_apply_receipt_raw" not in kwargs
         return {
             "authority": {"must_not_be_printed": "secret-marker"},

@@ -17,6 +17,9 @@ from scripts.canary import source_artifact_publication as publication
 
 
 _DIRECT_RAW = b'{"artifact":"direct-iam","observed_at_unix":1800000000}'
+_DIRECT_SUCCESSOR_RAW = (
+    b'{"artifact":"direct-iam","observed_at_unix":1800000002}'
+)
 _HOST_RAW = b'{"artifact":"host-identity","observed_at_unix":1800000001}\n'
 _WORKER = r"""
 import hashlib
@@ -66,6 +69,62 @@ def stop(name):
 result = publication._run_direct_iam(
     owner_home=owner_home,
     chain={"foundation_source_revision": chain_name},
+    maximum=4096,
+    validator=validate,
+    collector=collect,
+    _checkpoint=stop,
+)
+sys.stdout.write(json.dumps({"replayed": result.replayed}, sort_keys=True))
+"""
+
+_ROTATION_WORKER = r"""
+import hashlib
+import json
+import os
+import signal
+import sys
+from pathlib import Path
+
+from scripts.canary import source_artifact_publication as publication
+
+owner_home = Path(sys.argv[1])
+checkpoint = sys.argv[2]
+counter = Path(sys.argv[3])
+predecessor_sha256 = sys.argv[4]
+raw = b'{"artifact":"direct-iam","observed_at_unix":1800000002}'
+
+def validate(value):
+    if value != raw:
+        raise RuntimeError("invalid successor artifact")
+    return publication._ValidatedArtifact(
+        value={"artifact": "direct-iam-successor"},
+        logical_sha256=hashlib.sha256(b"logical:" + value).hexdigest(),
+    )
+
+def collect():
+    descriptor = os.open(
+        counter,
+        os.O_WRONLY | os.O_CREAT | os.O_APPEND,
+        0o600,
+    )
+    try:
+        os.write(descriptor, b"x")
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+    return raw
+
+def stop(name):
+    if name == checkpoint:
+        os.kill(os.getpid(), signal.SIGKILL)
+
+result = publication._run_direct_iam_rotation(
+    owner_home=owner_home,
+    chain={
+        "foundation_source_revision": "b" * 40,
+        "pre_foundation_authority_sha256": "b" * 64,
+    },
+    predecessor_file_sha256=predecessor_sha256,
     maximum=4096,
     validator=validate,
     collector=collect,
@@ -145,6 +204,30 @@ def _worker(
     )
 
 
+def _rotation_worker(
+    owner_home: Path,
+    *,
+    checkpoint: str,
+    counter: Path,
+    predecessor_sha256: str,
+) -> subprocess.Popen[bytes]:
+    return subprocess.Popen(
+        (
+            sys.executable,
+            "-c",
+            _ROTATION_WORKER,
+            str(owner_home),
+            checkpoint,
+            str(counter),
+            predecessor_sha256,
+        ),
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        close_fds=True,
+    )
+
+
 def _direct_run(
     owner_home: Path,
     *,
@@ -157,6 +240,28 @@ def _direct_run(
     return publication._run_direct_iam(
         owner_home=owner_home,
         chain=_chain() if chain is None else chain,
+        maximum=4096,
+        validator=_validator(raw),
+        collector=(lambda: raw) if collector is None else collector,
+        _checkpoint=checkpoint,
+        _recovery_only=recovery_only,
+    )
+
+
+def _direct_rotate(
+    owner_home: Path,
+    *,
+    predecessor_file_sha256: str,
+    raw: bytes = _DIRECT_SUCCESSOR_RAW,
+    chain: dict[str, Any] | None = None,
+    collector: Callable[[], bytes] | None = None,
+    checkpoint: Callable[[str], None] | None = None,
+    recovery_only: bool = False,
+) -> publication._PublicationResult:
+    return publication._run_direct_iam_rotation(
+        owner_home=owner_home,
+        chain=_chain("b") if chain is None else chain,
+        predecessor_file_sha256=predecessor_file_sha256,
         maximum=4096,
         validator=_validator(raw),
         collector=(lambda: raw) if collector is None else collector,
@@ -326,6 +431,92 @@ def test_chain_conflict_cannot_recollect_or_replace_final(
     assert (owner_home / publication._DIRECT_RELATIVE).read_bytes() == _DIRECT_RAW
 
 
+def test_explicit_rotation_preserves_predecessor_and_replays_successor(
+    tmp_path: Path,
+) -> None:
+    owner_home = _owner_home(tmp_path)
+    _direct_run(owner_home, chain=_chain("a"))
+    predecessor_sha256 = hashlib.sha256(_DIRECT_RAW).hexdigest()
+
+    first = _direct_rotate(
+        owner_home,
+        predecessor_file_sha256=predecessor_sha256,
+    )
+    replay = _direct_rotate(
+        owner_home,
+        predecessor_file_sha256=predecessor_sha256,
+        collector=lambda: pytest.fail("rotation replay recollected evidence"),
+    )
+
+    final = owner_home / publication._DIRECT_RELATIVE
+    archive = (
+        final.parent
+        / publication._HISTORY_DIRECTORY
+        / publication._DIRECT_KIND
+        / f"{predecessor_sha256}.bin"
+    )
+    root = _transaction_root(owner_home, _chain("b"))
+    intent = json.loads((root / "intent.json").read_bytes())
+    success = json.loads((root / "success.json").read_bytes())
+    assert first.replayed is False
+    assert replay.replayed is True
+    assert first.raw == replay.raw == final.read_bytes() == _DIRECT_SUCCESSOR_RAW
+    assert archive.read_bytes() == _DIRECT_RAW
+    assert stat.S_IMODE(archive.stat().st_mode) == 0o400
+    assert archive.stat().st_nlink == 1
+    assert intent["schema"] == publication._ROTATION_INTENT_SCHEMA
+    assert success["schema"] == publication._ROTATION_SUCCESS_SCHEMA
+    assert success["rotation"] == intent["rotation"]
+    assert intent["rotation"]["predecessor_artifact_file_sha256"] == (
+        predecessor_sha256
+    )
+    assert intent["rotation"]["predecessor_chain_sha256"] == hashlib.sha256(
+        json.dumps(
+            _chain("a"),
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("ascii")
+    ).hexdigest()
+
+
+def test_rotation_requires_exact_current_completed_predecessor(
+    tmp_path: Path,
+) -> None:
+    owner_home = _owner_home(tmp_path)
+    _direct_run(owner_home, chain=_chain("a"))
+    final = owner_home / publication._DIRECT_RELATIVE
+    predecessor_sha256 = hashlib.sha256(_DIRECT_RAW).hexdigest()
+
+    with pytest.raises(
+        publication._SourceArtifactPublicationError,
+        match="source_artifact_rotation_predecessor_mismatch",
+    ):
+        _direct_rotate(
+            owner_home,
+            predecessor_file_sha256="f" * 64,
+            collector=lambda: pytest.fail("wrong predecessor recollected"),
+        )
+    assert final.read_bytes() == _DIRECT_RAW
+
+    _direct_rotate(
+        owner_home,
+        predecessor_file_sha256=predecessor_sha256,
+    )
+    with pytest.raises(
+        publication._SourceArtifactPublicationError,
+        match="source_artifact_rotation_predecessor_mismatch",
+    ):
+        _direct_rotate(
+            owner_home,
+            chain=_chain("c"),
+            predecessor_file_sha256=predecessor_sha256,
+            collector=lambda: pytest.fail("stale predecessor recollected"),
+        )
+    assert final.read_bytes() == _DIRECT_SUCCESSOR_RAW
+
+
 def test_tamper_and_unknown_inventory_fail_closed(tmp_path: Path) -> None:
     owner_home = _owner_home(tmp_path)
     _direct_run(owner_home)
@@ -453,6 +644,65 @@ def test_sigkill_recovery_is_absent_or_complete_and_bounded(
     assert final.stat().st_nlink == 1
 
 
+@pytest.mark.parametrize(
+    ("checkpoint", "expected_before"),
+    [
+        ("after_intent", 0),
+        ("after_candidate", 1),
+        ("after_predecessor_archive", 1),
+        ("after_final_replace", 1),
+        ("after_success_scratch_open", 1),
+        ("after_success", 1),
+    ],
+)
+def test_rotation_sigkill_replays_without_gap_or_recollection(
+    tmp_path: Path,
+    checkpoint: str,
+    expected_before: int,
+) -> None:
+    owner_home = _owner_home(tmp_path)
+    _direct_run(owner_home, chain=_chain("a"))
+    predecessor_sha256 = hashlib.sha256(_DIRECT_RAW).hexdigest()
+    counter = tmp_path / "rotation-collections"
+    killed = _rotation_worker(
+        owner_home,
+        checkpoint=checkpoint,
+        counter=counter,
+        predecessor_sha256=predecessor_sha256,
+    )
+    stdout, stderr = killed.communicate(timeout=20)
+
+    assert killed.returncode == -signal.SIGKILL
+    assert stdout == b""
+    assert stderr == b""
+    before = counter.read_bytes() if counter.exists() else b""
+    assert len(before) == expected_before
+    final = owner_home / publication._DIRECT_RELATIVE
+    assert final.read_bytes() in {_DIRECT_RAW, _DIRECT_SUCCESSOR_RAW}
+    archive = (
+        final.parent
+        / publication._HISTORY_DIRECTORY
+        / publication._DIRECT_KIND
+        / f"{predecessor_sha256}.bin"
+    )
+    if archive.exists():
+        assert archive.read_bytes() == _DIRECT_RAW
+
+    resumed = _rotation_worker(
+        owner_home,
+        checkpoint="none",
+        counter=counter,
+        predecessor_sha256=predecessor_sha256,
+    )
+    resumed_stdout, resumed_stderr = resumed.communicate(timeout=20)
+    assert resumed.returncode == 0, resumed_stderr.decode(errors="replace")
+    assert json.loads(resumed_stdout) == {"replayed": True}
+    assert len(counter.read_bytes()) == 1
+    assert final.read_bytes() == _DIRECT_SUCCESSOR_RAW
+    assert archive.read_bytes() == _DIRECT_RAW
+    assert final.stat().st_nlink == archive.stat().st_nlink == 1
+
+
 def test_recovery_only_refuses_empty_or_intent_only_transaction(
     tmp_path: Path,
 ) -> None:
@@ -523,6 +773,9 @@ def test_concurrent_callers_collect_once_and_reach_one_terminal_state(
 
 def test_private_factories_expose_no_destination_or_journal_selection() -> None:
     direct = set(inspect.signature(publication._run_direct_iam).parameters)
+    rotation = set(
+        inspect.signature(publication._run_direct_iam_rotation).parameters
+    )
     host = set(inspect.signature(publication._run_host_identity).parameters)
     forbidden = {
         "output",
@@ -533,5 +786,6 @@ def test_private_factories_expose_no_destination_or_journal_selection() -> None:
         "journal_path",
     }
     assert forbidden.isdisjoint(direct)
+    assert forbidden.isdisjoint(rotation)
     assert forbidden.isdisjoint(host)
     assert publication.__all__ == []

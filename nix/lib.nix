@@ -64,6 +64,49 @@ let
   # apps/desktop + apps/shared + ui-tui + web → [ "apps" "ui-tui" "web" ].
   jsWorkspaceTopDirs = lib.unique (map (d: builtins.head (lib.splitString "/" d)) workspaceMemberDirs);
 
+  # Transitive `file:` dependency closure of a workspace member: the member's
+  # own dir plus every workspace member it pulls in via a `file:` specifier,
+  # recursively.  That is exactly the set of dirs whose source must be present
+  # for the member to bundle, so a caller passes `workspaceClosure "ui-tui"`
+  # instead of hand-maintaining the list — which silently breaks the build the
+  # moment a new `file:` dep is added but not mirrored here (see mkNpmPassthru).
+  # Derived from each package.json, matching this file's single-source-of-truth
+  # philosophy.  Self is always first, so it stays the packageJsonPath dir.
+  workspaceClosure =
+    startDir:
+    let
+      # Collapse "." / ".." segments in a slash-joined relative path, e.g.
+      # "ui-tui/../apps/shared" → "apps/shared".
+      normalize =
+        p:
+        lib.concatStringsSep "/" (
+          lib.foldl' (acc: seg: if seg == ".." then lib.init acc else acc ++ [ seg ]) [ ] (
+            lib.filter (s: s != "" && s != ".") (lib.splitString "/" p)
+          )
+        );
+      # Dirs of a member's direct `file:` deps, resolved relative to its dir.
+      # Specs are gathered across every dependency map (not merged) so a
+      # `file:` dep can't slip through by living in optionalDependencies etc.
+      fileDepDirs =
+        dir:
+        let
+          pkg = builtins.fromJSON (builtins.readFile (repoRoot + "/${dir}/package.json"));
+          specs = lib.concatMap (m: lib.attrValues (pkg.${m} or { })) [
+            "dependencies"
+            "devDependencies"
+            "optionalDependencies"
+            "peerDependencies"
+          ];
+        in
+        map (v: normalize "${dir}/${lib.removePrefix "file:" v}") (
+          lib.filter (lib.hasPrefix "file:") specs
+        );
+      go =
+        seen: dir:
+        if lib.elem dir seen then seen else lib.foldl' go (seen ++ [ dir ]) (fileDepDirs dir);
+    in
+    go [ ] startDir;
+
   # ── Source filters for reducing rebuild scope ──────────────────────
   # Changing a .tsx/.mjs file should NOT trigger a Python venv rebuild,
   # and changing a .py file should NOT trigger a TUI/Web/Desktop rebuild.
@@ -186,7 +229,7 @@ let
     };
 in
 {
-  inherit pythonSrc;
+  inherit pythonSrc workspaceClosure;
 
   # Regenerate the shared root lockfile from scratch and verify all npm
   # packages still build.  Exposed as a runnable package — `nix run
@@ -222,10 +265,12 @@ in
   # its first entry is the package's own folder (→ packageJsonPath), and
   # all entries scope the filtered src.  Packages that import source from
   # another workspace member (file: deps) must list that member's dir too,
-  # e.g. apps/desktop depends on apps/shared.
+  # e.g. apps/desktop depends on apps/shared.  Prefer `workspaceClosure
+  # "<dir>"` over a hand-written list: it derives that closure from the
+  # package.json `file:` deps, so adding a dep can't silently break the build.
   #
   # Usage:
-  #   npm = hermesNpmLib.mkNpmPassthru { dirs = [ "ui-tui" ]; };
+  #   npm = hermesNpmLib.mkNpmPassthru { dirs = workspaceClosure "ui-tui"; };
   #   npm = hermesNpmLib.mkNpmPassthru { dirs = [ "apps/desktop" "apps/shared" ]; };
   #   pkgs.buildNpmPackage (npm // {
   #     pname = "hermes-tui";

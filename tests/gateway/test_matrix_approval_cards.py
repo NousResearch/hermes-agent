@@ -59,18 +59,18 @@ class TestApprovalCardFormatting:
             assert "♾️" not in text
             assert "always" not in text.lower()
 
-    def test_pending_summarized_keeps_command_in_plaintext_and_details(self):
+    def test_pending_summarized_keeps_command_in_details_not_plaintext(self):
         text, html = format_pending_summarized(
             command="git reset --hard HEAD~1",
             description="git reset --hard (destroys uncommitted changes)",
             summary="Discards recent local commits and uncommitted work.",
         )
         assert "Advisory interpretation" in text
-        assert "git reset --hard HEAD~1" in text
-        assert "Full command" in text
+        # Plaintext stays compact for notifications; full command lives in HTML details.
+        assert "git reset --hard HEAD~1" not in text
         assert html is not None
         assert "<details>" in html
-        assert "Full command" in html
+        assert "git reset --hard HEAD~1" in html
         assert "Discards recent local commits" in html
 
     def test_terminal_compact_one_line_with_details(self):
@@ -366,6 +366,9 @@ class TestMatrixApprovalCardLifecycle:
         body = adapter.edit_message.await_args.args[2]
         assert "Advisory interpretation" in body
         assert "Restarts the example container" in body
-        assert "docker restart example" in body
+        # Notification plaintext stays compact; full command is HTML-only.
+        assert "docker restart example" not in body
         meta = adapter.edit_message.await_args.kwargs.get("metadata") or {}
-        assert "<details>" in (meta.get("matrix_formatted_body") or "")
+        html = meta.get("matrix_formatted_body") or ""
+        assert "<details>" in html
+        assert "docker restart example" in html

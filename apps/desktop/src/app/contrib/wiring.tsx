@@ -918,7 +918,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
               setCurrentProvider(provider)
               setCurrentModel(model)
               setCurrentModelSource('default')
-              updateModelOptionsCache(provider, model, true)
+              updateModelOptionsCache($activeSessionId.get(), provider, model, true)
               void refreshCurrentModel()
               void queryClient.invalidateQueries({ queryKey: ['model-options'] })
             }}

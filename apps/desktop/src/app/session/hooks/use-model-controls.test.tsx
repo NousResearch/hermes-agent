@@ -12,6 +12,7 @@ import {
   setCurrentModelSource,
   setCurrentProvider
 } from '@/store/session'
+import type * as SessionStates from '@/store/session-states'
 
 import { useModelControls } from './use-model-controls'
 
@@ -30,8 +31,18 @@ function deferred<T>() {
 
 vi.mock('@/hermes', () => ({
   getGlobalModelInfo: vi.fn(),
+  setApiRequestProfile: vi.fn(),
   setGlobalModel: (...args: Parameters<typeof setGlobalModel>) => setGlobalModel(...args)
 }))
+
+vi.mock('@/store/session-states', async importOriginal => {
+  const actual = await importOriginal<typeof SessionStates>()
+
+  return {
+    ...actual,
+    sessionTileDelegate: () => null
+  }
+})
 
 vi.mock('@/i18n', () => ({
   useI18n: () => ({
@@ -332,5 +343,32 @@ describe('useModelControls', () => {
     expect($currentModel.get()).toBe('gpt-5.5')
     expect($currentProvider.get()).toBe('openai-codex')
     expect(getCurrentModelSource()).toBe('default')
+  })
+
+  it('targets an explicit tile sessionId without clobbering the primary model', async () => {
+    $activeSessionId.set('primary-runtime')
+    setCurrentModel('primary/model')
+    setCurrentProvider('openai')
+    const requestGateway = vi.fn(async () => ({ key: 'model', value: 'tile-model' }) as never)
+    let controls!: Controls
+
+    render(<Harness onReady={value => (controls = value)} requestGateway={requestGateway} />)
+
+    await expect(
+      controls.selectModel({
+        model: 'tile-model',
+        provider: 'anthropic',
+        sessionId: 'tile-runtime'
+      })
+    ).resolves.toBe(true)
+
+    expect(requestGateway).toHaveBeenCalledWith('config.set', {
+      session_id: 'tile-runtime',
+      key: 'model',
+      value: 'tile-model --provider anthropic --session'
+    })
+    // Primary footer untouched — the busy primary must not absorb a tile pick.
+    expect($currentModel.get()).toBe('primary/model')
+    expect($currentProvider.get()).toBe('openai')
   })
 })

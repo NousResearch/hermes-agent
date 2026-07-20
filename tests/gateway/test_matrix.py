@@ -1058,7 +1058,9 @@ class TestMatrixRenderingPayloads:
 
     @pytest.mark.asyncio
     async def test_long_response_split_replies_only_on_first_chunk(self):
-        long_text = "line\n" * 1200
+        # Exceed configurable outbound chunk size (default 16k since #53026).
+        repeats = (self.adapter.max_message_length // 5) + 200
+        long_text = "line\n" * repeats
 
         result = await self.adapter.send(
             "!room:example.org",
@@ -1081,7 +1083,8 @@ class TestMatrixRenderingPayloads:
     @pytest.mark.asyncio
     async def test_long_response_split_plain_reply_only_on_first_chunk(self):
         """Plain (non-thread) multi-chunk replies only quote the parent once."""
-        long_text = "line\n" * 1200
+        repeats = (self.adapter.max_message_length // 5) + 200
+        long_text = "line\n" * repeats
 
         result = await self.adapter.send(
             "!room:example.org",

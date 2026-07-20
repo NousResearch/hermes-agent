@@ -688,6 +688,20 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
 
         return
 
+      case 'commentary.delta':
+        // Codex mid-turn commentary. commentary.delta is emitted by the shared
+        // tui_gateway only when the desktop's opt-in "Working" lane is enabled
+        // (display.commentary_lane). The Ink TUI has no Working lane, so we
+        // render commentary where upstream puts it when no lane callback is
+        // installed: the reasoning channel (see agent/codex_runtime's
+        // on_reasoning_delta fallback). This keeps the TUI byte-equivalent to
+        // upstream and avoids a silently-dropped event.
+        if (ev.payload?.text) {
+          turnController.recordReasoningDelta(ev.payload.text)
+        }
+
+        return
+
       case 'moa.reference':
         turnController.recordMoaReference(
           String(ev.payload?.label ?? 'reference'),

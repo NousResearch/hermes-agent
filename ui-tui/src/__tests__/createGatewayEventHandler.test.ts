@@ -1223,6 +1223,31 @@ describe('createGatewayEventHandler', () => {
     }
   })
 
+  it('routes commentary.delta into the reasoning channel (no Working lane in the TUI)', () => {
+    // commentary.delta is emitted by the shared tui_gateway only when the
+    // desktop opt-in "Working" lane is on. The Ink TUI has no such lane, so it
+    // must render commentary where upstream puts it with no lane callback: the
+    // reasoning channel. Assert it lands there and does not crash/get dropped.
+    const appended: Msg[] = []
+    const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+    onEvent({ payload: {}, type: 'message.start' } as any)
+    onEvent({ payload: { text: 'inspecting the repo\n\n' }, type: 'commentary.delta' } as any)
+
+    expect(turnController.reasoningText).toBe('inspecting the repo\n\n')
+    // Commentary is not a user-facing transcript message on its own.
+    expect(appended).toHaveLength(0)
+  })
+
+  it('ignores an empty commentary.delta payload without throwing', () => {
+    const appended: Msg[] = []
+    const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+    onEvent({ payload: {}, type: 'message.start' } as any)
+    expect(() => onEvent({ payload: {}, type: 'commentary.delta' } as any)).not.toThrow()
+    expect(turnController.reasoningText).toBe('')
+  })
+
   it('keepBusy interrupt holds busy until the gateway settles and suppresses the cancelled turn’s final_response', () => {
     // Force-send: interrupt holds busy so the drain waits for the real settle
     // instead of racing it (the race duplicated the bubble, leaked a "queued: …"

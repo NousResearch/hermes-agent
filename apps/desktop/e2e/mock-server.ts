@@ -15,16 +15,13 @@
  */
 
 import http from 'node:http'
+import type { ServerResponse } from 'node:http'
 
 /** A canned assistant reply used for every chat completion request. */
 export const MOCK_REPLY = 'Hello from the mock inference server! The full boot chain is working.'
 
 export interface MockServerOptions {
-  /**
-   * Pause a streaming response just after its first token when the latest user
-   * prompt contains this text. E2E tests use this to switch away from a real,
-   * still-running inference turn before resuming that session.
-   */
+  /** Pause the matching stream after its first token for session-switch E2E coverage. */
   holdFirstStreamForPrompt?: string
 }
 
@@ -35,6 +32,65 @@ export interface MockServer {
   waitForHeldStream: () => Promise<void>
   releaseHeldStream: () => void
   close: () => Promise<void>
+}
+
+// ─── Multi-turn interim script ─────────────────────────────────────────
+//
+// When the user's message contains the trigger keyword, the mock server
+// walks through a scripted sequence of responses that exercise the
+// interim-assistant-message fix (#65919) across several patterns:
+//
+//   1. text + single tool_call  → should produce an interim message
+//   2. text + single tool_call  → another interim message
+//   3. no text + tool_call       → NO interim (no visible text alongside tools)
+//   4. text + single tool_call  → another interim message
+//   5. final answer (stop)      → message.complete, different from all interims
+//
+// Each "turn" is one API call. The agent executes the tool after each
+// tool_calls response, then re-calls the API, advancing to the next turn.
+
+export interface ScriptedTurn {
+  /** Assistant text content to stream. Empty string = no visible text. */
+  text: string
+  /** Tool calls to emit. Empty array = final turn (finish_reason: stop). */
+  toolCalls?: Array<{
+    name: string
+    args: Record<string, unknown>
+  }>
+}
+
+const INTERIM_SCRIPT: ScriptedTurn[] = [
+  {
+    text: 'Let me start by planning the approach.',
+    toolCalls: [{ name: 'todo', args: { todos: [{ id: '1', content: 'Plan', status: 'in_progress' }] } }],
+  },
+  {
+    text: 'Now checking the details before answering.',
+    toolCalls: [{ name: 'todo', args: { todos: [{ id: '2', content: 'Check details', status: 'in_progress' }] } }],
+  },
+  {
+    // No visible text alongside this tool call — should NOT produce an
+    // interim message. The agent fires _emit_interim_assistant_message
+    // but _interim_assistant_visible_text returns "" so it's a no-op.
+    text: '',
+    toolCalls: [{ name: 'todo', args: { todos: [{ id: '3', content: 'Silent step', status: 'completed' }] } }],
+  },
+  {
+    text: 'Found something interesting worth noting.',
+    toolCalls: [{ name: 'todo', args: { todos: [{ id: '4', content: 'Note finding', status: 'completed' }] } }],
+  },
+  {
+    // Final answer — different from all interim texts.
+    text: 'All done! Here is the complete summary of what I found.',
+  },
+]
+
+/** Per-server request counter so we can walk through the script turns. */
+let _scriptIndex = 0
+
+/** Reset the script index (called between tests via restartMockServer). */
+function resetScriptIndex(): void {
+  _scriptIndex = 0
 }
 
 /**
@@ -113,94 +169,39 @@ export function startMockServer(options: MockServerOptions = {}): Promise<MockSe
           const stream = parsed.stream === true
           const model = parsed.model || 'mock-model'
 
-          if (stream) {
-            res.writeHead(200, {
-              'Content-Type': 'text/event-stream',
-              'Cache-Control': 'no-cache',
-              Connection: 'keep-alive',
-            })
+          // Detect the interim-message test trigger: the user's message
+          // contains a specific keyword. The mock walks through the
+          // INTERIM_SCRIPT turns in sequence.
+          //
+          // The trigger keyword is chosen so normal chat tests (which send
+          // "Hello, can you hear me?" etc.) never hit this path.
+          const messages: any[] = Array.isArray(parsed.messages) ? parsed.messages : []
+          const lastUserMsg = [...messages].reverse().find(m => m?.role === 'user')
+          const userText = typeof lastUserMsg?.content === 'string' ? lastUserMsg.content : ''
+          const isInterimTrigger = userText.includes('E2E_INTERIM_TRIGGER')
 
-            // Send the content in a few chunks to simulate streaming.
-            const words = MOCK_REPLY.split(' ')
+          if (isInterimTrigger) {
+            const turn = INTERIM_SCRIPT[_scriptIndex] ?? INTERIM_SCRIPT[INTERIM_SCRIPT.length - 1]
+            _scriptIndex++
+            if (stream) {
+              streamScriptedTurn(res, model, turn)
+            } else {
+              nonStreamingScriptedTurn(res, model, turn)
+            }
+            return
+          }
+
+          if (stream) {
             const holdThisStream = Boolean(
               options.holdFirstStreamForPrompt && typeof lastUserMessage?.content === 'string' &&
                 lastUserMessage.content.includes(options.holdFirstStreamForPrompt),
             )
-            let i = 0
-
-            const sendChunk = () => {
-              if (i >= words.length) {
-                // Final chunk with finish_reason
-                res.write(
-                  `data: ${JSON.stringify({
-                    id: 'mock-completion',
-                    object: 'chat.completion.chunk',
-                    created: 0,
-                    model,
-                    choices: [
-                      {
-                        index: 0,
-                        delta: {},
-                        finish_reason: 'stop',
-                      },
-                    ],
-                  })}\n\n`,
-                )
-                res.write('data: [DONE]\n\n')
-                res.end()
-                return
-              }
-
-              const word = i === 0 ? words[i] : ' ' + words[i]
-              res.write(
-                `data: ${JSON.stringify({
-                  id: 'mock-completion',
-                  object: 'chat.completion.chunk',
-                  created: 0,
-                  model,
-                  choices: [
-                    {
-                      index: 0,
-                      delta: { content: word },
-                      finish_reason: null,
-                    },
-                  ],
-                })}\n\n`,
-              )
-              i++
-              if (holdThisStream && i === 1) {
-                resolveHeldStreamStarted?.()
-                heldStreamReleased.then(() => setTimeout(sendChunk, 20))
-                return
-              }
-              // Small delay between chunks to simulate real streaming.
-              setTimeout(sendChunk, 20)
-            }
-
-            sendChunk()
+            streamTextResponse(res, model, MOCK_REPLY, holdThisStream ? () => {
+              resolveHeldStreamStarted?.()
+              return heldStreamReleased
+            } : undefined)
           } else {
-            // Non-streaming response
-            res.writeHead(200, { 'Content-Type': 'application/json' })
-            res.end(
-              JSON.stringify({
-                id: 'mock-completion',
-                object: 'chat.completion',
-                created: 0,
-                model,
-                choices: [
-                  {
-                    index: 0,
-                    message: { role: 'assistant', content: MOCK_REPLY },
-                    finish_reason: 'stop',
-                  },
-                ],
-                usage: {
-                  prompt_tokens: 10,
-                  completion_tokens: 20,
-                  total_tokens: 30,
-                },
-              }),
-            )
+            nonStreamingTextResponse(res, model, MOCK_REPLY)
           }
         })
 
@@ -248,3 +249,214 @@ export function startMockServer(options: MockServerOptions = {}): Promise<MockSe
     })
   })
 }
+
+// ─── Response helpers ──────────────────────────────────────────────────
+
+/** SSE chunk shape for a streaming chat completion. */
+function sseChunk(model: string, delta: Record<string, unknown>, finishReason: string | null = null): string {
+  return `data: ${JSON.stringify({
+    id: 'mock-completion',
+    object: 'chat.completion.chunk',
+    created: 0,
+    model,
+    choices: [{ index: 0, delta, finish_reason: finishReason }],
+  })}\n\n`
+}
+
+/**
+ * Stream a plain text response (no tool calls) as SSE, finishing with
+ * `finish_reason: "stop"`. This is the default canned-reply path.
+ */
+function streamTextResponse(
+  res: ServerResponse,
+  model: string,
+  text: string,
+  waitForRelease?: () => Promise<void>,
+): void {
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache',
+    Connection: 'keep-alive',
+  })
+
+  const words = text.split(' ')
+  let i = 0
+
+  const sendChunk = (): void => {
+    if (i >= words.length) {
+      res.write(sseChunk(model, {}, 'stop'))
+      res.write('data: [DONE]\n\n')
+      res.end()
+      return
+    }
+
+    const word = i === 0 ? words[i] : ' ' + words[i]
+    res.write(sseChunk(model, { content: word }))
+    i++
+    if (waitForRelease && i === 1) {
+      waitForRelease().then(() => setTimeout(sendChunk, 20))
+      return
+    }
+    setTimeout(sendChunk, 20)
+  }
+
+  sendChunk()
+}
+
+/** Non-streaming plain text response. */
+function nonStreamingTextResponse(res: ServerResponse, model: string, text: string): void {
+  res.writeHead(200, { 'Content-Type': 'application/json' })
+  res.end(
+    JSON.stringify({
+      id: 'mock-completion',
+      object: 'chat.completion',
+      created: 0,
+      model,
+      choices: [
+        {
+          index: 0,
+          message: { role: 'assistant', content: text },
+          finish_reason: 'stop',
+        },
+      ],
+      usage: { prompt_tokens: 10, completion_tokens: 20, total_tokens: 30 },
+    }),
+  )
+}
+
+/**
+ * Stream a single scripted turn: first the text content (word by word),
+ * then a chunk carrying the tool_calls (if any), with the appropriate
+ * finish_reason.
+ *
+ * If the turn has no text and no tool calls, it's an empty final response.
+ * If it has text but no tool calls, it's a final answer (finish_reason: stop).
+ * If it has tool calls (with or without text), finish_reason is "tool_calls".
+ */
+function streamScriptedTurn(
+  res: ServerResponse,
+  model: string,
+  turn: ScriptedTurn,
+): void {
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache',
+    Connection: 'keep-alive',
+  })
+
+  const hasToolCalls = turn.toolCalls && turn.toolCalls.length > 0
+  const finishReason = hasToolCalls ? 'tool_calls' : 'stop'
+
+  // If there's no text to stream, go straight to the tool_calls / finish.
+  if (!turn.text) {
+    if (hasToolCalls) {
+      res.write(
+        sseChunk(model, {
+          tool_calls: turn.toolCalls!.map((tc, idx) => ({
+            index: idx,
+            id: `call_e2e_${_scriptIndex}_${idx}`,
+            type: 'function',
+            function: { name: tc.name, arguments: JSON.stringify(tc.args) },
+          })),
+        }, finishReason),
+      )
+    } else {
+      res.write(sseChunk(model, {}, finishReason))
+    }
+    res.write('data: [DONE]\n\n')
+    res.end()
+    return
+  }
+
+  // Stream the text word by word, then emit tool_calls if present.
+  const words = turn.text.split(' ')
+  let i = 0
+
+  const sendChunk = (): void => {
+    if (i >= words.length) {
+      // All text streamed — emit tool_calls if present, then finish.
+      if (hasToolCalls) {
+        res.write(
+          sseChunk(model, {
+            tool_calls: turn.toolCalls!.map((tc, idx) => ({
+              index: idx,
+              id: `call_e2e_${_scriptIndex}_${idx}`,
+              type: 'function',
+              function: { name: tc.name, arguments: JSON.stringify(tc.args) },
+            })),
+          }, finishReason),
+        )
+      } else {
+        res.write(sseChunk(model, {}, finishReason))
+      }
+      res.write('data: [DONE]\n\n')
+      res.end()
+      return
+    }
+
+    const word = i === 0 ? words[i] : ' ' + words[i]
+    res.write(sseChunk(model, { content: word }))
+    i++
+    setTimeout(sendChunk, 20)
+  }
+
+  sendChunk()
+}
+
+/** Non-streaming version of a scripted turn. */
+function nonStreamingScriptedTurn(
+  res: ServerResponse,
+  model: string,
+  turn: ScriptedTurn,
+): void {
+  const hasToolCalls = turn.toolCalls && turn.toolCalls.length > 0
+  const finishReason = hasToolCalls ? 'tool_calls' : 'stop'
+
+  const message: Record<string, unknown> = { role: 'assistant' }
+  if (turn.text) {
+    message.content = turn.text
+  }
+  if (hasToolCalls) {
+    message.tool_calls = turn.toolCalls!.map((tc, idx) => ({
+      id: `call_e2e_${_scriptIndex}_${idx}`,
+      type: 'function',
+      function: { name: tc.name, arguments: JSON.stringify(tc.args) },
+    }))
+  }
+
+  res.writeHead(200, { 'Content-Type': 'application/json' })
+  res.end(
+    JSON.stringify({
+      id: 'mock-completion',
+      object: 'chat.completion',
+      created: 0,
+      model,
+      choices: [{ index: 0, message, finish_reason: finishReason }],
+      usage: { prompt_tokens: 10, completion_tokens: 20, total_tokens: 30 },
+    }),
+  )
+}
+
+/**
+ * Restart the mock server's script index so each test starts from turn 0.
+ * Call this between tests that use the interim trigger.
+ */
+export function restartMockServer(): void {
+  resetScriptIndex()
+}
+
+/**
+ * The interim script's text constants, exported for test assertions.
+ * Each entry is the visible text of one turn. Turns with empty text
+ * produce no interim message and are excluded from this list.
+ */
+export const INTERIM_TEXTS = {
+  /** All interim texts that should appear as sealed messages when the flag is ON. */
+  interims: INTERIM_SCRIPT
+    .filter((t) => t.text && t.toolCalls)
+    .map((t) => t.text),
+  /** The final answer text. */
+  finalText: INTERIM_SCRIPT[INTERIM_SCRIPT.length - 1].text,
+  /** Text that should NOT produce an interim (empty-text tool turn). */
+  silentTurnIndex: INTERIM_SCRIPT.findIndex((t) => !t.text && t.toolCalls),
+} as const

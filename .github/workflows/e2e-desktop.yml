@@ -58,7 +58,8 @@ jobs:
           command: uv sync --locked --python 3.11 --extra all --extra dev
 
       # ── Build desktop app ─────────────────────────────────────────────
-      - run: npm run --prefix apps/desktop build
+      # The Playwright step below runs `npm run build` before testing so
+      # dist/ is always fresh — no separate build step needed here.
 
       # ── Restore visual baseline screenshots from main ──────────────────
       # Baselines are generated on main (via --update-snapshots) and cached.
@@ -79,16 +80,18 @@ jobs:
       # xvfb runs at a fixed 1280x1024 screen so the 1220x800 Electron
       # window always has a consistent viewport for screenshot comparison.
       # On main, we run with --update-snapshots to generate baselines.
+      # `npm run test:e2e` builds dist/ as a pretest hook so the renderer
+      # is always fresh — no separate build step needed.
       - name: Run Playwright E2E tests
         working-directory: apps/desktop
         run: |
           if [ "${{ github.ref_name }}" = "main" ]; then
             echo "On main — generating/updating baseline screenshots"
-            xvfb-run -a --server-args="-screen 0 1280x1024x24" \
+            npm run build && xvfb-run -a --server-args="-screen 0 1280x1024x24" \
               npx playwright test --reporter=list --update-snapshots
           else
             echo "On PR — comparing against cached baselines"
-            xvfb-run -a --server-args="-screen 0 1280x1024x24" \
+            npm run build && xvfb-run -a --server-args="-screen 0 1280x1024x24" \
               npx playwright test --reporter=list
           fi
         env:

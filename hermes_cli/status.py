@@ -123,8 +123,8 @@ def show_status(args):
 
     env_path = get_env_path()
     rich.print(Text.assemble(
-        "  .env file:    ", check_mark(env_path.exists(), " "),
-        f"{'exists' if env_path.exists() else 'not found'}"
+        "  .env file:    ", check_mark(env_path.exists()),
+        f" {'exists' if env_path.exists() else 'not found'}"
     ))
 
     try:

@@ -1202,6 +1202,16 @@ CREATE TABLE IF NOT EXISTS task_events (
     created_at INTEGER NOT NULL
 );
 
+-- Bounded API-server idempotency registry. Keys are SHA-256 digests, never
+-- caller-provided text, and a duplicate key may only replay the exact
+-- canonical request hash recorded with it.
+CREATE TABLE IF NOT EXISTS kanban_api_idempotency (
+    key_hash     TEXT PRIMARY KEY,
+    request_hash TEXT NOT NULL,
+    task_id      TEXT NOT NULL,
+    created_at   INTEGER NOT NULL
+);
+
 -- Historical attempt record. Each time the dispatcher claims a task, a
 -- new row is created here; claim state, PID, heartbeat, runtime cap,
 -- and structured summary all live on the run, not the task. Multiple
@@ -1270,6 +1280,7 @@ CREATE INDEX IF NOT EXISTS idx_links_child           ON task_links(child_id);
 CREATE INDEX IF NOT EXISTS idx_links_parent          ON task_links(parent_id);
 CREATE INDEX IF NOT EXISTS idx_comments_task         ON task_comments(task_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_events_task           ON task_events(task_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_api_idempotency_task  ON kanban_api_idempotency(task_id);
 CREATE INDEX IF NOT EXISTS idx_runs_task             ON task_runs(task_id, started_at);
 CREATE INDEX IF NOT EXISTS idx_runs_status           ON task_runs(status);
 CREATE INDEX IF NOT EXISTS idx_attachments_task      ON task_attachments(task_id, created_at);
@@ -2315,7 +2326,16 @@ def write_txn(conn: sqlite3.Connection):
     The explicit ROLLBACK on exception is wrapped in try/except so that
     a SQLite auto-rollback (which leaves no active transaction) does not
     shadow the original exception with a spurious rollback error.
+
+    Calls may be safely nested when an outer caller already owns the
+    transaction.  The outermost caller remains solely responsible for commit
+    or rollback.  This lets an authenticated API perform an exact snapshot,
+    compare a revision, and invoke the existing mutation helpers in one
+    process-wide write transaction instead of reimplementing their invariants.
     """
+    if getattr(conn, "in_transaction", False):
+        yield conn
+        return
     _execute_boundary_with_retry(conn, "BEGIN IMMEDIATE")
     try:
         yield conn
@@ -2944,7 +2964,7 @@ def add_comment(
 
 def list_comments(conn: sqlite3.Connection, task_id: str) -> list[Comment]:
     rows = conn.execute(
-        "SELECT * FROM task_comments WHERE task_id = ? ORDER BY created_at ASC",
+        "SELECT * FROM task_comments WHERE task_id = ? ORDER BY created_at ASC, id ASC",
         (task_id,),
     ).fetchall()
     return [

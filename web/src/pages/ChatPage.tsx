@@ -37,6 +37,7 @@ import { useI18n } from "@/i18n";
 import { api } from "@/lib/api";
 import { latchChatActivation } from "@/lib/chat-activation";
 import { normalizeSessionTitle } from "@/lib/chat-title";
+import { PtyResumeSanitizer } from "@/lib/pty-resume-sanitizer";
 import {
   PTY_CONNECTING_TIMEOUT_MS,
   PTY_RECONNECT_INPUT_MESSAGE,
@@ -990,27 +991,25 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       }
     };
 
-    // Session resume: strip ANSI codes that Ink's two-pass virtual
-    // scroll unmount emits into the PTY stream (blank-line bursts,
-    // erase-line, erase-char). Gate on resumeParam so short/new
-    // sessions never see the filter.
+    // Session resume: strip pathological ANSI sequences that Ink's
+    // two-pass virtual scroll emits into the PTY stream.
+    // See pty-resume-sanitizer.ts for the stateful stream helper.
     const decoder = new TextDecoder();
-    const sanitizeResumeOutput = (raw: string): string =>
-      resumeParam
-        ? raw.replace(/\n{3,}/g, "\n\n")
-             .replace(/\x1b\[\d*K/g, "")
-             .replace(/\x1b\[\d*X/g, "")
-        : raw;
+    const sanitizer = new PtyResumeSanitizer();
 
     ws.onmessage = (ev) => {
       const text =
         typeof ev.data === "string"
           ? ev.data
-          : decoder.decode(new Uint8Array(ev.data as ArrayBuffer));
-      term.write(sanitizeResumeOutput(text));
+          : decoder.decode(new Uint8Array(ev.data as ArrayBuffer), {stream: true});
+      term.write(resumeParam ? sanitizer.next(text) : text);
     };
 
     ws.onclose = (ev) => {
+      // Flush any buffered partial escape sequence from the sanitizer.
+      if (resumeParam) {
+        try { term.write(sanitizer.flush()); } catch { /* ignore */ }
+      }
       wsRef.current = null;
       connectInFlightRef.current = false;
       clearConnectingTimer();

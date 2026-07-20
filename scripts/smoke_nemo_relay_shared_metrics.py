@@ -215,15 +215,25 @@ def _validate_store(database_path: Path) -> list[dict[str, Any]]:
         "name": "hermes.model_call.count",
         "dimensions": {
             "call_role": "primary",
+            "cost_bucket": "unknown",
+            "input_token_bucket": "1_to_1k",
+            "latency_bucket": by_name["hermes.model_call.count"]["dimensions"].get(
+                "latency_bucket"
+            ),
             "locality": "local",
             "model_family": "gpt",
             "outcome": "success",
+            "output_token_bucket": "1_to_1k",
             "provider_family": "custom",
+            "retry_count_bucket": "0",
         },
         "value": 1,
         "packaged_value": 1,
     }
-    if by_name["hermes.model_call.count"] != expected_model:
+    if (
+        expected_model["dimensions"]["latency_bucket"] == "unknown"
+        or by_name["hermes.model_call.count"] != expected_model
+    ):
         raise AssertionError(
             f"Unexpected model counter: {by_name['hermes.model_call.count']}"
         )
@@ -291,13 +301,19 @@ def _validate_package(outbox: Path, schema_path: Path) -> tuple[Path, dict[str, 
         raise AssertionError(
             f"Unexpected package metrics:\n{json.dumps(package.get('metrics'), indent=2)}"
         )
-    if metrics["hermes.model_call.count"]["dimensions"] != {
+    model_dimensions = metrics["hermes.model_call.count"]["dimensions"]
+    if model_dimensions != {
         "call_role": "primary",
+        "cost_bucket": "unknown",
+        "input_token_bucket": "1_to_1k",
+        "latency_bucket": model_dimensions.get("latency_bucket"),
         "locality": "local",
         "model_family": "gpt",
         "outcome": "success",
+        "output_token_bucket": "1_to_1k",
         "provider_family": "custom",
-    }:
+        "retry_count_bucket": "0",
+    } or model_dimensions["latency_bucket"] == "unknown":
         raise AssertionError(
             f"Unexpected model metric: {metrics['hermes.model_call.count']}"
         )

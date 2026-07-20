@@ -94,14 +94,28 @@
           "additionalProperties": false,
           "required": [
             "call_role",
+            "cost_bucket",
+            "input_token_bucket",
+            "latency_bucket",
             "locality",
             "model_family",
             "outcome",
-            "provider_family"
+            "output_token_bucket",
+            "provider_family",
+            "retry_count_bucket"
           ],
           "properties": {
             "call_role": {
               "const": "primary"
+            },
+            "cost_bucket": {
+              "$ref": "#/$defs/model_cost_bucket"
+            },
+            "input_token_bucket": {
+              "$ref": "#/$defs/model_token_bucket"
+            },
+            "latency_bucket": {
+              "$ref": "#/$defs/model_latency_bucket"
             },
             "locality": {
               "enum": [
@@ -142,6 +156,9 @@
                 "success"
               ]
             },
+            "output_token_bucket": {
+              "$ref": "#/$defs/model_token_bucket"
+            },
             "provider_family": {
               "enum": [
                 "aggregator",
@@ -150,6 +167,9 @@
                 "local",
                 "unknown"
               ]
+            },
+            "retry_count_bucket": {
+              "$ref": "#/$defs/model_retry_bucket"
             }
           }
         },
@@ -331,6 +351,54 @@
         "3_to_5",
         "6_to_10",
         "gte_11"
+      ]
+    },
+    "model_latency_bucket": {
+      "enum": [
+        "100ms_to_250ms",
+        "10s_to_30s",
+        "1s_to_2s",
+        "250ms_to_500ms",
+        "2s_to_5s",
+        "500ms_to_1s",
+        "5s_to_10s",
+        "gte_30s",
+        "lt_100ms",
+        "unknown"
+      ]
+    },
+    "model_token_bucket": {
+      "enum": [
+        "0",
+        "16k_to_64k",
+        "1_to_1k",
+        "1k_to_4k",
+        "4k_to_16k",
+        "gte_64k",
+        "unknown"
+      ]
+    },
+    "model_retry_bucket": {
+      "enum": [
+        "0",
+        "1",
+        "2",
+        "3_to_5",
+        "6_to_10",
+        "gte_11",
+        "unknown"
+      ]
+    },
+    "model_cost_bucket": {
+      "enum": [
+        "0_001_to_0_01",
+        "0_01_to_0_1",
+        "0_1_to_1",
+        "gte_1",
+        "included",
+        "lt_0_001",
+        "unknown",
+        "zero"
       ]
     }
   }

@@ -4345,8 +4345,18 @@ class TestRunConversation:
     def test_request_scoped_api_hooks_fire_for_each_api_call(self, agent):
         self._setup_agent(agent)
         tc = _mock_tool_call(name="web_search", arguments="{}", call_id="c1")
-        resp1 = _mock_response(content="", finish_reason="tool_calls", tool_calls=[tc])
-        resp2 = _mock_response(content="Done searching", finish_reason="stop")
+        usage = {"prompt_tokens": 2_000, "completion_tokens": 200}
+        resp1 = _mock_response(
+            content="",
+            finish_reason="tool_calls",
+            tool_calls=[tc],
+            usage=usage,
+        )
+        resp2 = _mock_response(
+            content="Done searching",
+            finish_reason="stop",
+            usage=usage,
+        )
         agent.client.chat.completions.create.side_effect = [resp1, resp2]
 
         hook_calls = []
@@ -4362,6 +4372,14 @@ class TestRunConversation:
                 side_effect=lambda name: name in {"pre_api_request", "post_api_request"},
             ),
             patch("hermes_cli.lifecycle.invoke_hook", side_effect=_record_hook),
+            patch(
+                "agent.conversation_loop.estimate_usage_cost",
+                return_value=SimpleNamespace(
+                    amount_usd=0.025,
+                    status="estimated",
+                    source="official_docs",
+                ),
+            ),
             patch.object(agent, "_persist_session"),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
@@ -4386,6 +4404,17 @@ class TestRunConversation:
         assert any(msg.get("role") == "user" and msg.get("content") == "search something" for msg in pre_request_calls[0]["request_messages"])
         assert all("usage" in c and "response" in c for c in post_request_calls)
         assert all("assistant_message" in c["response"] for c in post_request_calls)
+        assert all(call["retry_count"] == 0 for call in post_request_calls)
+        assert all(
+            call["usage"]["input_tokens"] == 2_000
+            and call["usage"]["output_tokens"] == 200
+            for call in post_request_calls
+        )
+        assert all(
+            call["estimated_cost_usd"] == 0.025
+            and call["cost_status"] == "estimated"
+            for call in post_request_calls
+        )
 
     def test_terminal_task_closes_logical_calls_before_metrics_scope(self, agent):
         from agent import relay_runtime

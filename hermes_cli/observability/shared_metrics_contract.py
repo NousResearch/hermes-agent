@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from functools import lru_cache
+from math import isfinite
 from typing import Any
 
 from agent.relay_runtime import RUNTIME_INSTANCE_KEY
@@ -39,6 +40,37 @@ PROVIDER_FAMILIES: frozenset[str] = frozenset({
 })
 MODEL_LOCALITIES: frozenset[str] = frozenset({"local", "remote", "unknown"})
 MODEL_OUTCOMES: frozenset[str] = frozenset({"cancelled", "failed", "success"})
+MODEL_LATENCY_BUCKETS: frozenset[str] = frozenset({
+    "100ms_to_250ms",
+    "10s_to_30s",
+    "1s_to_2s",
+    "250ms_to_500ms",
+    "2s_to_5s",
+    "500ms_to_1s",
+    "5s_to_10s",
+    "gte_30s",
+    "lt_100ms",
+    "unknown",
+})
+MODEL_TOKEN_BUCKETS: frozenset[str] = frozenset({
+    "0",
+    "16k_to_64k",
+    "1_to_1k",
+    "1k_to_4k",
+    "4k_to_16k",
+    "gte_64k",
+    "unknown",
+})
+MODEL_COST_BUCKETS: frozenset[str] = frozenset({
+    "0_001_to_0_01",
+    "0_01_to_0_1",
+    "0_1_to_1",
+    "gte_1",
+    "included",
+    "lt_0_001",
+    "unknown",
+    "zero",
+})
 TASK_OUTCOMES: frozenset[str] = frozenset({
     "cancelled",
     "failed",
@@ -92,6 +124,7 @@ COUNT_BUCKETS: frozenset[str] = frozenset({
     "6_to_10",
     "gte_11",
 })
+MODEL_RETRY_BUCKETS: frozenset[str] = COUNT_BUCKETS | frozenset({"unknown"})
 
 # Shared metrics use an explicit family allowlist rather than raw model IDs or
 # dynamically sourced catalog values. The latter would make the exported schema
@@ -123,10 +156,15 @@ MODEL_FAMILIES: frozenset[str] = frozenset({
 _COUNTER_DIMENSION_VALUES: dict[str, dict[str, frozenset[str]]] = {
     MODEL_CALL_METRIC: {
         "call_role": frozenset({PRIMARY_MODEL_CALL_ROLE}),
+        "cost_bucket": MODEL_COST_BUCKETS,
+        "input_token_bucket": MODEL_TOKEN_BUCKETS,
+        "latency_bucket": MODEL_LATENCY_BUCKETS,
         "locality": MODEL_LOCALITIES,
         "model_family": MODEL_FAMILIES,
         "outcome": MODEL_OUTCOMES,
+        "output_token_bucket": MODEL_TOKEN_BUCKETS,
         "provider_family": PROVIDER_FAMILIES,
+        "retry_count_bucket": MODEL_RETRY_BUCKETS,
     },
     TASK_STARTED_METRIC: {
         "entrypoint": TASK_ENTRYPOINTS,
@@ -217,19 +255,29 @@ def model_call_dimensions(event: Any) -> dict[str, str] | None:
     data = getattr(event, "data", None)
     expected_fields = {
         "call_role",
+        "cost_bucket",
+        "input_token_bucket",
+        "latency_bucket",
         "locality",
         "model_family",
         "outcome",
+        "output_token_bucket",
         "provider_family",
+        "retry_count_bucket",
     }
     if not isinstance(data, dict) or set(data) != expected_fields:
         return None
     dimensions = {
         "call_role": data.get("call_role"),
+        "cost_bucket": data.get("cost_bucket"),
+        "input_token_bucket": data.get("input_token_bucket"),
+        "latency_bucket": data.get("latency_bucket"),
         "locality": data.get("locality"),
         "model_family": data.get("model_family"),
         "outcome": data.get("outcome"),
+        "output_token_bucket": data.get("output_token_bucket"),
         "provider_family": data.get("provider_family"),
+        "retry_count_bucket": data.get("retry_count_bucket"),
     }
     if not counter_dimensions_are_valid(MODEL_CALL_METRIC, dimensions):
         return None
@@ -498,6 +546,116 @@ def model_call_fields(kwargs: dict[str, Any]) -> dict[str, str]:
         "model_family": model_family(kwargs),
         "provider_family": provider_category,
     }
+
+
+def model_call_measurement_fields(
+    kwargs: dict[str, Any],
+    *,
+    retry_count: int | None,
+    fallback_duration_ms: int | None = None,
+) -> dict[str, str]:
+    """Build bounded terminal measurements without forwarding exact values."""
+    usage = kwargs.get("usage")
+    if not isinstance(usage, dict):
+        usage = {}
+    return {
+        "cost_bucket": model_cost_bucket(kwargs),
+        "input_token_bucket": model_token_bucket(
+            usage.get("input_tokens", usage.get("prompt_tokens"))
+        ),
+        "latency_bucket": model_latency_bucket(
+            kwargs,
+            fallback_duration_ms=fallback_duration_ms,
+        ),
+        "output_token_bucket": model_token_bucket(
+            usage.get("output_tokens", usage.get("completion_tokens"))
+        ),
+        "retry_count_bucket": model_retry_bucket(retry_count),
+    }
+
+
+def _non_negative_number(value: Any) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    number = float(value)
+    return number if isfinite(number) and number >= 0 else None
+
+
+def model_latency_bucket(
+    kwargs: dict[str, Any],
+    *,
+    fallback_duration_ms: int | None = None,
+) -> str:
+    """Bucket total logical-call latency using the accepted terminal event."""
+    seconds = _non_negative_number(kwargs.get("api_duration"))
+    duration_ms = _non_negative_number(fallback_duration_ms)
+    if seconds is not None:
+        duration_ms = seconds * 1_000
+    if duration_ms is None:
+        return "unknown"
+    if duration_ms < 100:
+        return "lt_100ms"
+    if duration_ms < 250:
+        return "100ms_to_250ms"
+    if duration_ms < 500:
+        return "250ms_to_500ms"
+    if duration_ms < 1_000:
+        return "500ms_to_1s"
+    if duration_ms < 2_000:
+        return "1s_to_2s"
+    if duration_ms < 5_000:
+        return "2s_to_5s"
+    if duration_ms < 10_000:
+        return "5s_to_10s"
+    if duration_ms < 30_000:
+        return "10s_to_30s"
+    return "gte_30s"
+
+
+def model_token_bucket(value: Any) -> str:
+    """Bucket one canonical token count while rejecting malformed values."""
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return "unknown"
+    if value == 0:
+        return "0"
+    if value <= 1_024:
+        return "1_to_1k"
+    if value <= 4_096:
+        return "1k_to_4k"
+    if value <= 16_384:
+        return "4k_to_16k"
+    if value <= 65_536:
+        return "16k_to_64k"
+    return "gte_64k"
+
+
+def model_retry_bucket(value: Any) -> str:
+    """Bucket physical retries while preserving unknown as distinct from zero."""
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return "unknown"
+    return count_bucket(value)
+
+
+def model_cost_bucket(kwargs: dict[str, Any]) -> str:
+    """Bucket one estimated call cost without emitting the exact amount."""
+    value = kwargs.get("estimated_cost_usd")
+    included = str(kwargs.get("cost_status") or "").lower() == "included"
+    if included and value is None:
+        return "included"
+    amount = _non_negative_number(value)
+    if amount is None:
+        return "unknown"
+    if amount == 0:
+        return "included" if included else "zero"
+    if amount < 0.001:
+        return "lt_0_001"
+    if amount < 0.01:
+        return "0_001_to_0_01"
+    if amount < 0.1:
+        return "0_01_to_0_1"
+    if amount < 1:
+        return "0_1_to_1"
+    return "gte_1"
 
 
 def model_family(kwargs: dict[str, Any]) -> str:

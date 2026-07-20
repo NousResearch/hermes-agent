@@ -22,9 +22,13 @@ from hermes_cli.observability.shared_metrics_contract import (
     COUNT_BUCKETS,
     DURATION_BUCKETS,
     EXECUTION_SURFACES,
+    MODEL_COST_BUCKETS,
     MODEL_FAMILIES,
+    MODEL_LATENCY_BUCKETS,
     MODEL_LOCALITIES,
     MODEL_OUTCOMES,
+    MODEL_RETRY_BUCKETS,
+    MODEL_TOKEN_BUCKETS,
     PRIMARY_MODEL_CALL_ROLE,
     PROVIDER_FAMILIES,
     TASK_END_REASONS,
@@ -34,10 +38,15 @@ from hermes_cli.observability.shared_metrics_contract import (
     count_bucket,
     duration_bucket,
     execution_surface,
+    model_call_measurement_fields,
     model_call_outcome,
     model_call_dimensions,
+    model_cost_bucket,
     model_family,
+    model_latency_bucket,
     model_locality,
+    model_retry_bucket,
+    model_token_bucket,
     provider_family,
     task_counter,
     task_start_fields,
@@ -78,10 +87,15 @@ def _task_dimension_schema(kind: str) -> dict[str, object]:
 def _dimensions() -> dict[str, str]:
     return {
         "call_role": PRIMARY_MODEL_CALL_ROLE,
+        "cost_bucket": "0_01_to_0_1",
+        "input_token_bucket": "1k_to_4k",
+        "latency_bucket": "1s_to_2s",
         "locality": "remote",
         "model_family": "claude",
         "outcome": "success",
+        "output_token_bucket": "1_to_1k",
         "provider_family": "direct",
+        "retry_count_bucket": "1",
     }
 
 
@@ -143,8 +157,19 @@ def test_model_call_counter_survives_restart_and_exports_only_new_deltas(tmp_pat
 
 def test_package_schema_matches_the_model_call_contract():
     properties = _package_dimension_schema()["properties"]
+    schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
 
     assert properties["call_role"] == {"const": PRIMARY_MODEL_CALL_ROLE}
+    assert set(schema["$defs"]["model_cost_bucket"]["enum"]) == MODEL_COST_BUCKETS
+    assert set(schema["$defs"]["model_latency_bucket"]["enum"]) == (
+        MODEL_LATENCY_BUCKETS
+    )
+    assert set(schema["$defs"]["model_retry_bucket"]["enum"]) == (
+        MODEL_RETRY_BUCKETS
+    )
+    assert set(schema["$defs"]["model_token_bucket"]["enum"]) == (
+        MODEL_TOKEN_BUCKETS
+    )
     assert set(properties["locality"]["enum"]) == MODEL_LOCALITIES
     assert set(properties["model_family"]["enum"]) == MODEL_FAMILIES
     assert set(properties["outcome"]["enum"]) == MODEL_OUTCOMES
@@ -369,6 +394,93 @@ def test_model_outcome_fails_closed_to_a_bounded_value():
     assert model_call_outcome({"outcome": "private"}) == "failed"
 
 
+@pytest.mark.parametrize(
+    ("seconds", "expected"),
+    [
+        (0, "lt_100ms"),
+        (0.1, "100ms_to_250ms"),
+        (0.25, "250ms_to_500ms"),
+        (0.5, "500ms_to_1s"),
+        (1, "1s_to_2s"),
+        (2, "2s_to_5s"),
+        (5, "5s_to_10s"),
+        (10, "10s_to_30s"),
+        (30, "gte_30s"),
+        (-1, "unknown"),
+        (float("nan"), "unknown"),
+        (True, "unknown"),
+        ("1", "unknown"),
+    ],
+)
+def test_model_latency_bucket_is_bounded(seconds, expected):
+    assert model_latency_bucket({"api_duration": seconds}) == expected
+
+
+def test_model_latency_uses_monotonic_fallback_without_a_terminal_duration():
+    assert model_latency_bucket({}, fallback_duration_ms=250) == "250ms_to_500ms"
+
+
+@pytest.mark.parametrize(
+    ("tokens", "expected"),
+    [
+        (0, "0"),
+        (1, "1_to_1k"),
+        (1_024, "1_to_1k"),
+        (1_025, "1k_to_4k"),
+        (4_097, "4k_to_16k"),
+        (16_385, "16k_to_64k"),
+        (65_537, "gte_64k"),
+        (-1, "unknown"),
+        (True, "unknown"),
+        (1.0, "unknown"),
+    ],
+)
+def test_model_token_bucket_is_bounded(tokens, expected):
+    assert model_token_bucket(tokens) == expected
+
+
+@pytest.mark.parametrize(
+    ("event", "expected"),
+    [
+        ({"cost_status": "included"}, "included"),
+        ({"cost_status": "included", "estimated_cost_usd": 0}, "included"),
+        ({"cost_status": "included", "estimated_cost_usd": 99}, "gte_1"),
+        ({"estimated_cost_usd": 0}, "zero"),
+        ({"estimated_cost_usd": 0.0001}, "lt_0_001"),
+        ({"estimated_cost_usd": 0.001}, "0_001_to_0_01"),
+        ({"estimated_cost_usd": 0.01}, "0_01_to_0_1"),
+        ({"estimated_cost_usd": 0.1}, "0_1_to_1"),
+        ({"estimated_cost_usd": 1}, "gte_1"),
+        ({"estimated_cost_usd": -1}, "unknown"),
+        ({"estimated_cost_usd": float("inf")}, "unknown"),
+        ({"estimated_cost_usd": True}, "unknown"),
+        ({"estimated_cost_usd": "0.1"}, "unknown"),
+        ({}, "unknown"),
+    ],
+)
+def test_model_cost_bucket_is_bounded(event, expected):
+    assert model_cost_bucket(event) == expected
+
+
+def test_model_measurements_bucket_exact_terminal_values():
+    assert model_call_measurement_fields(
+        {
+            "api_duration": 1.25,
+            "usage": {"input_tokens": 2_000, "output_tokens": 200},
+            "estimated_cost_usd": 0.025,
+            "cost_status": "estimated",
+        },
+        retry_count=2,
+    ) == {
+        "cost_bucket": "0_01_to_0_1",
+        "input_token_bucket": "1k_to_4k",
+        "latency_bucket": "1s_to_2s",
+        "output_token_bucket": "1_to_1k",
+        "retry_count_bucket": "2",
+    }
+    assert model_retry_bucket(None) == "unknown"
+
+
 def test_unlisted_model_collapses_to_a_bounded_value():
     assert model_family({"model": "private-model-name"}) == "unknown"
 
@@ -383,19 +495,29 @@ def test_subscriber_contract_rejects_unknown_fields_and_dimension_values():
         metadata={"hermes.metrics.schema_version": "hermes.metrics.event.v1"},
         data={
             "call_role": "primary",
+            "cost_bucket": "unknown",
+            "input_token_bucket": "unknown",
+            "latency_bucket": "unknown",
             "locality": "remote",
             "model_family": "gpt",
             "outcome": "success",
+            "output_token_bucket": "unknown",
             "provider_family": "direct",
+            "retry_count_bucket": "0",
         },
     )
 
     assert model_call_dimensions(event) == {
         "call_role": "primary",
+        "cost_bucket": "unknown",
+        "input_token_bucket": "unknown",
+        "latency_bucket": "unknown",
         "locality": "remote",
         "model_family": "gpt",
         "outcome": "success",
+        "output_token_bucket": "unknown",
         "provider_family": "direct",
+        "retry_count_bucket": "0",
     }
     event.category_profile["model_name"] = "private-model-name"
     assert model_call_dimensions(event) is None

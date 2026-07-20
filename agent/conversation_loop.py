@@ -2206,6 +2206,12 @@ def run_conversation(
                             "error": "First response truncated due to output length limit"
                         }
                 
+                # These terminal values are projected into bounded shared-metric
+                # buckets only after Hermes accepts the response.
+                _model_call_estimated_cost_usd = None
+                _model_call_cost_status = "unknown"
+                _model_call_usage = None
+
                 # Track actual token usage from response for context management
                 if hasattr(response, 'usage') and response.usage:
                     canonical_usage = normalize_usage(
@@ -2268,6 +2274,7 @@ def run_conversation(
                         "cache_write_tokens": canonical_usage.cache_write_tokens,
                         "reasoning_tokens": canonical_usage.reasoning_tokens,
                     }
+                    _model_call_usage = dict(usage_dict)
                     agent.context_compressor.update_from_response(usage_dict)
                 elif getattr(
                     agent.context_compressor,
@@ -2337,13 +2344,19 @@ def run_conversation(
                         base_url=_agg_cost_base_url,
                         api_key=getattr(agent, "api_key", ""),
                     )
+                    _model_call_cost_status = cost_result.status
                     if cost_result.amount_usd is not None:
-                        agent.session_estimated_cost_usd += float(cost_result.amount_usd)
+                        _model_call_estimated_cost_usd = float(cost_result.amount_usd)
+                        agent.session_estimated_cost_usd += _model_call_estimated_cost_usd
                     # Add MoA advisor cost (already priced per-advisor at each
                     # advisor's own model rate) on top of the aggregator cost.
                     if _moa_ref_cost is not None:
                         try:
-                            agent.session_estimated_cost_usd += float(_moa_ref_cost)
+                            _moa_ref_cost_usd = float(_moa_ref_cost)
+                            _model_call_estimated_cost_usd = (
+                                _model_call_estimated_cost_usd or 0.0
+                            ) + _moa_ref_cost_usd
+                            agent.session_estimated_cost_usd += _moa_ref_cost_usd
                         except (TypeError, ValueError):  # pragma: no cover - defensive
                             pass
                     agent.session_cost_status = cost_result.status
@@ -4522,6 +4535,7 @@ def run_conversation(
                         base_url=agent.base_url,
                         api_mode=agent.api_mode,
                         api_call_count=api_call_count,
+                        retry_count=retry_count,
                         api_duration=api_duration,
                         started_at=api_start_time,
                         ended_at=_api_ended_at,
@@ -4533,7 +4547,9 @@ def run_conversation(
                             assistant_message,
                             finish_reason=finish_reason,
                         ),
-                        usage=agent._usage_summary_for_api_request_hook(response),
+                        usage=_model_call_usage,
+                        estimated_cost_usd=_model_call_estimated_cost_usd,
+                        cost_status=_model_call_cost_status,
                         assistant_message=assistant_message,
                         assistant_content_chars=len(_assistant_text),
                         assistant_tool_call_count=len(_assistant_tool_calls),

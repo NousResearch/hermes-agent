@@ -125,8 +125,8 @@ def apply_api_d_switch(
         model: Model name for subagents (empty = keep current).
         api_key: API key for subagents (empty = keep current).
         save_to_config: If True, persist the changes to the active config file.
-            When no runtime ``CLI_CONFIG`` is loaded, changes are always
-            persisted so that future subagent spawns can read them.
+            In gateway mode (no runtime CLI_CONFIG), --save is required to
+            persist; without it the change is rejected with guidance.
 
     Returns:
         :class:`DelegationSwitchResult` describing the outcome.
@@ -138,6 +138,7 @@ def apply_api_d_switch(
     current_provider = str(cfg.get("provider") or "")
     current_model = str(cfg.get("model") or "")
     current_key = str(cfg.get("api_key") or "")
+    current_base_url = str(cfg.get("base_url") or "")
 
     new_provider = provider or current_provider
     new_model = model or current_model
@@ -147,6 +148,46 @@ def apply_api_d_switch(
         return DelegationSwitchResult(
             success=False,
             message="No provider, model, or API key provided.",
+            provider=current_provider,
+            model=current_model,
+            api_key=current_key,
+        )
+
+    # Validate coherence: writing only delegation.api_key is ineffective when
+    # delegation inherits the parent (no provider or base_url configured),
+    # because _resolve_delegation_credentials() returns api_key=None in that
+    # case so the child inherits the parent's key.  Warn the user rather than
+    # silently doing nothing useful.
+    warnings = []
+    if api_key and not new_provider and not current_base_url:
+        warnings.append(
+            "Note: delegation.api_key alone has no effect when no "
+            "delegation.provider or delegation.base_url is configured, "
+            "because subagents inherit the parent agent's key. "
+            "Use --provider to set a separate delegation provider."
+        )
+    # An existing delegation.base_url takes precedence over a newly-set
+    # delegation.provider in _resolve_delegation_credentials().  Warn so the
+    # user knows the provider change will be ignored until base_url is cleared.
+    if provider and current_base_url and not current_provider:
+        warnings.append(
+            f"Note: delegation.base_url is set ({current_base_url}). "
+            "It takes precedence over delegation.provider, so the new "
+            "provider will not take effect until delegation.base_url is cleared."
+        )
+
+    # In gateway mode (no runtime CLI_CONFIG loaded), only persist when the
+    # user explicitly passes --save.  Without --save, the change would be
+    # written to disk silently, making the save flag meaningless on that
+    # surface.  Instead, inform the user that --save is required.
+    if runtime is None and not save_to_config:
+        return DelegationSwitchResult(
+            success=False,
+            message=(
+                "No runtime config available in this process (gateway mode). "
+                "Use --save to persist delegation credentials to config.yaml."
+            )
+            + (" " + " ".join(warnings) if warnings else ""),
             provider=current_provider,
             model=current_model,
             api_key=current_key,
@@ -164,11 +205,9 @@ def apply_api_d_switch(
         if api_key:
             delegation_cfg["api_key"] = api_key
 
-    # Persist the change when requested, or when there is no runtime config in
-    # this process (e.g. gateway before any subagent spawn).  Without a runtime
-    # config the only place future spawns can read the new credentials is disk.
+    # Persist the change when requested.
     saved = False
-    if save_to_config or runtime is None:
+    if save_to_config:
         try:
             from hermes_cli.config import save_config_value
 
@@ -199,9 +238,15 @@ def apply_api_d_switch(
                 api_key=new_key,
             )
 
+    message = "Delegation credentials updated."
+    if warnings:
+        message += " " + " ".join(warnings)
+    if saved:
+        message += " (saved to config.yaml)"
+
     return DelegationSwitchResult(
         success=True,
-        message="Delegation credentials updated.",
+        message=message,
         provider=new_provider,
         model=new_model,
         api_key=new_key,

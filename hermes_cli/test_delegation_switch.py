@@ -107,8 +107,8 @@ class ApplySwitchTests(unittest.TestCase):
         mock_save.assert_any_call("delegation.model", "sonnet")
         mock_save.assert_any_call("delegation.api_key", "sk-new")
 
-    def test_no_runtime_config_persists_automatically(self):
-        """When cli is not loaded, the change must be written to disk to take effect."""
+    def test_no_runtime_config_requires_save_flag(self):
+        """When cli is not loaded (gateway mode), --save is required to persist."""
         # Ensure cli is not in sys.modules.
         modules = {k: v for k, v in sys.modules.items() if k != "cli"}
         with patch.dict(sys.modules, modules, clear=True), patch(
@@ -118,15 +118,34 @@ class ApplySwitchTests(unittest.TestCase):
             "hermes_cli.config.save_config_value",
             return_value=True,
         ) as mock_save:
+            # Without --save: rejected with guidance
             result = apply_api_d_switch(
                 provider="",
                 model="",
                 api_key="sk-new",
                 save_to_config=False,
             )
+        self.assertFalse(result.success)
+        self.assertIn("--save", result.message)
+        mock_save.assert_not_called()
+
+        # With --save: persisted
+        with patch.dict(sys.modules, modules, clear=True), patch(
+            "hermes_cli.delegation_switch._persistent_config",
+            return_value={"delegation": {"provider": "deepseek", "model": "deepseek-v4-flash"}},
+        ), patch(
+            "hermes_cli.config.save_config_value",
+            return_value=True,
+        ) as mock_save2:
+            result = apply_api_d_switch(
+                provider="",
+                model="",
+                api_key="sk-new",
+                save_to_config=True,
+            )
         self.assertTrue(result.success)
         self.assertTrue(result.saved_to_config)
-        mock_save.assert_called_once_with("delegation.api_key", "sk-new")
+        mock_save2.assert_called_once_with("delegation.api_key", "sk-new")
 
 
 if __name__ == "__main__":

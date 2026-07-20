@@ -43,6 +43,7 @@ import { requestModelOptions } from '@/lib/model-options'
 import { asText } from '@/lib/text'
 import { $cronFocusJobId, $cronJobs, setCronFocusJobId, setCronJobs, updateCronJobs } from '@/store/cron'
 import { notify, notifyError } from '@/store/notifications'
+import { $profileScope, ALL_PROFILES } from '@/store/profile'
 
 import { useRefreshHotkey } from '../hooks/use-refresh-hotkey'
 import {
@@ -293,15 +294,20 @@ export function CronView({ onClose, onOpenSession, setStatusbarItemGroup: _setSt
   const [pendingDelete, setPendingDelete] = useState<CronJob | null>(null)
   const [deleting, setDeleting] = useState(false)
 
+  // Jobs live per-profile on disk and the list endpoint aggregates 'all' by
+  // default — scope the fetch to the sidebar's profile scope so this overlay
+  // and the sidebar (which share the $cronJobs atom) agree on what's shown.
+  const profileScope = useStore($profileScope)
+
   const refresh = useCallback(async () => {
     try {
-      setCronJobs(await getCronJobs())
+      setCronJobs(await getCronJobs(profileScope === ALL_PROFILES ? 'all' : profileScope))
     } catch (err) {
       notifyError(err, c.failedLoad)
     } finally {
       setLoading(false)
     }
-  }, [c])
+  }, [c, profileScope])
 
   useRefreshHotkey(refresh)
 

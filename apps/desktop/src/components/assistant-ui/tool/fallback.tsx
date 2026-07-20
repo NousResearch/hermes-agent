@@ -348,15 +348,17 @@ function ToolEntry({ part }: ToolEntryProps) {
     return { body: rest.join('\n\n').trim(), summary }
   }, [view.detail, view.status, view.subtitle])
 
-  const detailMatchesSubtitle = looksRedundant(view.subtitle, view.detail)
+  // `looksRedundant` normalizes the FULL (uncapped) detail payload — a
+  // read_file / terminal result can be huge. Memoize on the view fields so it
+  // recomputes only when the tool's content changes, not on every parent
+  // re-render (tool rows re-render on every stream tick of the running message).
+  const detailMatchesSubtitle = useMemo(() => looksRedundant(view.subtitle, view.detail), [view.subtitle, view.detail])
+  const detailMatchesTitle = useMemo(() => looksRedundant(view.title, view.detail), [view.title, view.detail])
 
   const showDetail =
     !view.inlineDiff &&
     ((view.status === 'error' && Boolean(detailSections.summary || detailSections.body)) ||
-      (view.status !== 'error' &&
-        Boolean(view.detail) &&
-        !looksRedundant(view.title, view.detail) &&
-        !detailMatchesSubtitle))
+      (view.status !== 'error' && Boolean(view.detail) && !detailMatchesTitle && !detailMatchesSubtitle))
 
   const renderDetailAsCode =
     view.status !== 'error' &&

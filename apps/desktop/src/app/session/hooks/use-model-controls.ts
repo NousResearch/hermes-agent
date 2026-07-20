@@ -1,5 +1,5 @@
 import { type QueryClient } from '@tanstack/react-query'
-import { useCallback } from 'react'
+import { useCallback, useRef } from 'react'
 
 import { getGlobalModelInfo } from '@/hermes'
 import { useI18n } from '@/i18n'
@@ -9,7 +9,9 @@ import {
   $activeSessionId,
   $currentModel,
   $currentProvider,
+  getComposerSelectionGeneration,
   getCurrentModelSource,
+  markComposerSelectionManual,
   setCurrentModel,
   setCurrentModelSource,
   setCurrentProvider
@@ -29,6 +31,7 @@ interface ModelControlsOptions {
 export function useModelControls({ queryClient, requestGateway }: ModelControlsOptions) {
   const { t } = useI18n()
   const copy = t.desktop
+  const profileRefreshEpochRef = useRef(0)
 
   // All callbacks here read reactive session state from the store (.get())
   // rather than capturing it as a prop. The actions bag in wiring.tsx mutates
@@ -55,6 +58,14 @@ export function useModelControls({ queryClient, requestGateway }: ModelControlsO
   // draft / session events. A live session owns the footer, so skip entirely.
   const refreshCurrentModel = useCallback(
     async (force = false) => {
+      // A forced profile swap opens a new intent epoch; an older in-flight
+      // response for a previous profile must stand down when it resolves.
+      if (force) {
+        profileRefreshEpochRef.current += 1
+      }
+
+      const profileRefreshEpoch = profileRefreshEpochRef.current
+
       try {
         if ($activeSessionId.get()) {
           return
@@ -79,9 +90,18 @@ export function useModelControls({ queryClient, requestGateway }: ModelControlsO
           return
         }
 
+        // Snapshot the selection generation before awaiting so a picker click
+        // that lands while getGlobalModelInfo is in flight wins over this older
+        // default — value comparisons alone miss re-selecting the same row.
+        const selectionGeneration = getComposerSelectionGeneration()
         const result = await getGlobalModelInfo()
 
-        if ($activeSessionId.get() || keepManualPick()) {
+        if (
+          profileRefreshEpochRef.current !== profileRefreshEpoch ||
+          $activeSessionId.get() ||
+          getComposerSelectionGeneration() !== selectionGeneration ||
+          keepManualPick()
+        ) {
           return
         }
 
@@ -122,7 +142,7 @@ export function useModelControls({ queryClient, requestGateway }: ModelControlsO
 
       setCurrentModel(selection.model)
       setCurrentProvider(selection.provider)
-      setCurrentModelSource('manual')
+      markComposerSelectionManual()
       updateModelOptionsCache(selection.provider, selection.model, !liveSessionId)
 
       // No live session yet: the pick is pure UI state. session.create reads

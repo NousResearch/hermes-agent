@@ -1,6 +1,8 @@
 // Scenario registry. Add a scenario module here and it's automatically
 // available to the runner, the default suite (tier 'ci'), and the baseline gate.
 
+import coldStart from './cold-start.mjs'
+import firstToken from './first-token.mjs'
 import keystroke from './keystroke.mjs'
 import profileSwitch from './profile-switch.mjs'
 import sessionSwitch from './session-switch.mjs'
@@ -12,6 +14,8 @@ export const SCENARIOS = {
   [stream.name]: stream,
   [keystroke.name]: keystroke,
   [transcript.name]: transcript,
+  [coldStart.name]: coldStart,
+  [firstToken.name]: firstToken,
   [submit.name]: submit,
   [sessionSwitch.name]: sessionSwitch,
   [profileSwitch.name]: profileSwitch

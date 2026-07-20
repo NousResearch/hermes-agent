@@ -5941,7 +5941,13 @@ async def update_memory_provider_config(
 
 @app.get("/api/config")
 async def get_config(profile: Optional[str] = None):
-    with _profile_scope(profile):
+    # Config-only scope: this async handler runs on the event-loop thread and
+    # only resolves configuration through the task-local HERMES_HOME override.
+    # Using the skills-aware _profile_scope() here would acquire the
+    # process-global _SKILLS_PROFILE_LOCK synchronously, so a worker thread
+    # holding that lock (e.g. slow model/skills discovery) could wedge the
+    # event loop and stall Desktop startup. Matches sibling get_schema(). (#67936)
+    with _config_profile_scope(profile):
         config = _normalize_config_for_web(load_config())
     # Strip internal keys that the frontend shouldn't see or send back
     return {k: v for k, v in config.items() if not k.startswith("_")}

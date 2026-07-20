@@ -317,14 +317,96 @@ class TestActiveFeatures:
         assert "platform.slack" not in active
 
     def test_multi_package_feature_active_if_any_present(self, monkeypatch):
-        # platform.slack has 3 packages; only one needs to be present
-        # for the feature to count as active (user activated it before,
-        # one transitive may have been uninstalled separately).
+        # platform.slack has 3 packages; a distinctive one present means the
+        # user activated it before (another transitive may have been
+        # uninstalled separately). slack-bolt is listed only by slack.
         monkeypatch.setattr(
             ld, "_is_present",
             lambda spec: ld._pkg_name_from_spec(spec) == "slack-bolt",
         )
         assert "platform.slack" in ld.active_features()
+
+    def test_shared_cve_pin_does_not_activate_messaging_feature(self, monkeypatch):
+        # The aiohttp CVE floor is pinned into several messaging features AND
+        # ships in the base install — its presence alone must not mark any
+        # platform active, or every `hermes update` tries to install
+        # platforms the user never enabled (e.g. Matrix's python-olm chain).
+        monkeypatch.setattr(
+            ld, "_is_present",
+            lambda spec: ld._pkg_name_from_spec(spec) == "aiohttp",
+        )
+        active = ld.active_features()
+        assert "platform.matrix" not in active
+        assert "platform.slack" not in active
+        assert "platform.discord" not in active
+        assert "platform.teams" not in active
+
+    def test_distinctive_package_activates_feature(self, monkeypatch):
+        # mautrix is listed only by platform.matrix — a genuine signal.
+        monkeypatch.setattr(
+            ld, "_is_present",
+            lambda spec: ld._pkg_name_from_spec(spec) == "mautrix",
+        )
+        assert "platform.matrix" in ld.active_features()
+
+    def test_core_package_does_not_activate_feature(self, monkeypatch):
+        # numpy is listed only by stt.faster_whisper, but when the base
+        # install already ships it, presence can't mean the user opted in.
+        monkeypatch.setattr(ld, "_core_requirement_names", lambda: frozenset({"numpy"}))
+        monkeypatch.setattr(
+            ld, "_is_present",
+            lambda spec: ld._pkg_name_from_spec(spec) == "numpy",
+        )
+        assert "stt.faster_whisper" not in ld.active_features()
+
+    def test_unshared_non_core_package_still_activates(self, monkeypatch):
+        # sounddevice: listed only by stt.faster_whisper and not a core dep.
+        monkeypatch.setattr(ld, "_core_requirement_names", lambda: frozenset({"numpy"}))
+        monkeypatch.setattr(
+            ld, "_is_present",
+            lambda spec: ld._pkg_name_from_spec(spec) == "sounddevice",
+        )
+        assert "stt.faster_whisper" in ld.active_features()
+
+    def test_all_shared_feature_falls_back_to_any_present(self, monkeypatch):
+        # tts.mistral and stt.mistral pin the same SDK — no distinctive
+        # package exists, so any-present remains the only possible signal.
+        monkeypatch.setattr(
+            ld, "_is_present",
+            lambda spec: ld._pkg_name_from_spec(spec) == "mistralai",
+        )
+        active = ld.active_features()
+        assert "tts.mistral" in active
+        assert "stt.mistral" in active
+
+
+class TestCoreRequirementNames:
+    def test_excludes_extra_gated_requirements(self, monkeypatch):
+        import importlib.metadata as md
+
+        monkeypatch.setattr(
+            md, "requires",
+            lambda dist: [
+                "aiohttp>=3.7.4,<4",
+                "uvicorn[standard]>=0.41.0; extra == 'web'",
+                'starlette==1.0.1; extra == "computer-use"',
+                "uvloop>=0.21; sys_platform != 'win32'",
+            ],
+        )
+        core = ld._core_requirement_names()
+        assert "aiohttp" in core
+        assert "uvloop" in core  # env markers are still core, not extras
+        assert "uvicorn" not in core
+        assert "starlette" not in core
+
+    def test_metadata_unavailable_returns_empty(self, monkeypatch):
+        import importlib.metadata as md
+
+        def _boom(dist):
+            raise md.PackageNotFoundError(dist)
+
+        monkeypatch.setattr(md, "requires", _boom)
+        assert ld._core_requirement_names() == frozenset()
 
 
 class TestRefreshActiveFeatures:

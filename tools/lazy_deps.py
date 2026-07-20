@@ -855,19 +855,84 @@ def feature_install_command(feature: str) -> Optional[str]:
     return "uv pip install " + " ".join(repr(s) for s in specs)
 
 
+def _normalized_pkg_name(spec_or_name: str) -> str:
+    """PEP 503-normalized package name for cross-spec comparisons."""
+    return re.sub(r"[-_.]+", "-", _pkg_name_from_spec(spec_or_name)).lower()
+
+
+def _core_requirement_names() -> frozenset:
+    """Package names installed by the base ``hermes-agent`` distribution.
+
+    Reads the installed dist's ``Requires-Dist`` and keeps only requirements
+    that are NOT gated behind an extra — i.e. pyproject's ``dependencies``.
+    These ship on every install, so their presence says nothing about which
+    lazy backends the user has activated. Returns an empty frozenset when
+    metadata is unavailable (bare source trees, partial installs) — callers
+    then fall back to cross-feature sharing alone.
+    """
+    try:
+        from importlib.metadata import requires
+    except ImportError:
+        return frozenset()
+    try:
+        reqs = requires("hermes-agent") or []
+    except Exception:
+        return frozenset()
+    core = set()
+    for req in reqs:
+        if "extra ==" in req:
+            continue
+        name = re.split(r"[ ;\[<>=!~(]", req, maxsplit=1)[0].strip()
+        if name:
+            core.add(_normalized_pkg_name(name))
+    return frozenset(core)
+
+
+def _activation_specs(
+    feature: str, shared_counts: dict, core_names: frozenset
+) -> tuple:
+    """Specs whose presence indicates the user actually activated ``feature``.
+
+    A package only counts as an activation signal when it is *distinctive*:
+    listed by no other lazy feature AND not part of the base install.
+    Shared pins (the aiohttp CVE floor lives in four messaging features) and
+    core packages are present whether or not the user ever enabled the
+    backend — treating them as activation made every ``hermes update`` try
+    to install platforms the user never turned on (e.g. Matrix's
+    mautrix/python-olm source build on machines without cmake).
+
+    Features whose packages are ALL shared (``tts.mistral`` /
+    ``stt.mistral`` pin the same SDK) fall back to their full spec list —
+    any-present is the only signal available for those.
+    """
+    specs = LAZY_DEPS[feature]
+    distinctive = tuple(
+        s for s in specs
+        if shared_counts.get(_normalized_pkg_name(s), 0) <= 1
+        and _normalized_pkg_name(s) not in core_names
+    )
+    return distinctive or specs
+
+
 def active_features() -> list[str]:
     """Return the list of features the user has ever lazy-installed.
 
-    A feature counts as "active" if at least one of its declared packages
-    is currently installed in the venv (presence check, ignoring version).
-    Features the user has never enabled stay quiet.
+    A feature counts as "active" if at least one of its *distinctive*
+    packages (see :func:`_activation_specs`) is currently installed in the
+    venv (presence check, ignoring version). Features the user has never
+    enabled stay quiet.
 
     Used by ``hermes update`` to figure out which lazy backends need a
     refresh pass when pins move in :data:`LAZY_DEPS`.
     """
+    shared_counts: dict = {}
+    for specs in LAZY_DEPS.values():
+        for name in {_normalized_pkg_name(s) for s in specs}:
+            shared_counts[name] = shared_counts.get(name, 0) + 1
+    core_names = _core_requirement_names()
     active = []
-    for feature, specs in LAZY_DEPS.items():
-        if any(_is_present(s) for s in specs):
+    for feature in LAZY_DEPS:
+        if any(_is_present(s) for s in _activation_specs(feature, shared_counts, core_names)):
             active.append(feature)
     return active
 

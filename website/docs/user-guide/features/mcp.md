@@ -104,6 +104,13 @@ The pre-checked rows come from:
    catalog entries pre-prune mutating or rarely-useful tools)
 3. **Everything** if neither applies
 
+Some entries with very large auto-generated surfaces (e.g. `cloudflare`,
+~3,300 OpenAPI endpoint tools) instead declare `tools.default_excluded` — a
+curated block-list of names and glob patterns. Installing one of these skips
+the checklist entirely and writes `tools.exclude`; everything not matched
+stays enabled, including tools the server adds later. Edit
+`mcp_servers.<name>.tools.exclude` in config.yaml to re-enable a family.
+
 Submit the checklist with ENTER. Only the checked tools end up in
 `mcp_servers.<name>.tools.include`. If you select everything, no filter is
 written (cleanest config shape, identical behavior).
@@ -447,6 +454,12 @@ mcp_servers:
 ```
 
 Only those MCP server tools are registered.
+
+Entries in `include`/`exclude` may also be glob patterns (`*`, `?`, `[...]`,
+matched case-sensitively): `include: ["*_dns_*"]` registers every tool whose
+name contains `_dns_`. Plain entries without metacharacters stay exact-match.
+Globs are the practical way to filter servers that expose thousands of
+auto-generated endpoint tools by product family.
 
 ### Blacklist server tools
 

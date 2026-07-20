@@ -290,21 +290,57 @@ def _complete_record_locked(record: Dict[str, Any], status: str) -> str:
     return status
 
 
-def _get_executor(max_workers: int) -> ThreadPoolExecutor:
-    """Lazily create (or grow) the shared daemon executor.
+def _prewarm_executor(executor: ThreadPoolExecutor, max_workers: int) -> None:
+    """Start every worker before any business WorkItem can be submitted."""
+    release = threading.Event()
+    ready_condition = threading.Condition()
+    ready_count = 0
 
-    We never shrink — ThreadPoolExecutor can't resize — but if the configured
-    cap grows between calls we rebuild a larger pool. Existing in-flight
-    futures keep running on the old pool until it's garbage collected.
+    def _warm_worker() -> None:
+        nonlocal ready_count
+        with ready_condition:
+            ready_count += 1
+            ready_condition.notify_all()
+        release.wait()
+
+    futures = []
+    try:
+        for _ in range(max_workers):
+            futures.append(executor.submit(_warm_worker))
+        deadline = time.monotonic() + 5.0
+        with ready_condition:
+            while ready_count < max_workers:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise RuntimeError("Timed out while prewarming async executor")
+                ready_condition.wait(timeout=remaining)
+    finally:
+        release.set()
+
+    for future in futures:
+        future.result(timeout=5)
+
+
+def _get_executor(max_workers: int) -> ThreadPoolExecutor:
+    """Lazily create (or grow) a fully prewarmed shared daemon executor.
+
+    Every worker is started before the pool is published. This avoids the
+    stdlib submit edge case where a WorkItem is queued and Thread.start then
+    raises: business submit calls never need to start another worker.
     """
     global _executor, _executor_max_workers
     with _executor_lock:
         if _executor is None or max_workers > _executor_max_workers:
-            # Daemon threads: thread_name_prefix aids debugging in stack dumps.
-            _executor = _DaemonThreadPoolExecutor(
+            candidate = _DaemonThreadPoolExecutor(
                 max_workers=max_workers,
                 thread_name_prefix="async-delegate",
             )
+            try:
+                _prewarm_executor(candidate, max_workers)
+            except Exception:
+                candidate.shutdown(wait=True, cancel_futures=True)
+                raise
+            _executor = candidate
             _executor_max_workers = max_workers
         return _executor
 

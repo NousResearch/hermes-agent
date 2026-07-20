@@ -25,6 +25,7 @@ import os
 import threading
 import time
 from concurrent.futures import (
+    Future,
     ThreadPoolExecutor,
     TimeoutError as FuturesTimeoutError,
 )
@@ -1631,6 +1632,81 @@ def _dump_subagent_timeout_diagnostic(
         return None
 
 
+class _InlineExecutor:
+    """Context-compatible executor used when batch worker startup is unavailable."""
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, traceback):
+        return False
+
+    def submit(self, fn, /, *args, **kwargs):
+        future = Future()
+        try:
+            future.set_result(fn(*args, **kwargs))
+        except BaseException as exc:  # Future preserves worker semantics.
+            future.set_exception(exc)
+        return future
+
+
+def _create_resilient_batch_executor(max_workers: int):
+    """Return a fully prewarmed pool, or a safe inline fallback."""
+    try:
+        executor = ThreadPoolExecutor(max_workers=max_workers)
+    except Exception:
+        logger.warning(
+            "Batch executor construction failed; falling back to inline execution",
+            exc_info=True,
+        )
+        return _InlineExecutor()
+
+    release = threading.Event()
+    ready_condition = threading.Condition()
+    ready_count = 0
+
+    def _warm_worker() -> None:
+        nonlocal ready_count
+        with ready_condition:
+            ready_count += 1
+            ready_condition.notify_all()
+        release.wait()
+
+    futures = []
+    try:
+        for _ in range(max_workers):
+            futures.append(executor.submit(_warm_worker))
+        deadline = time.monotonic() + 5.0
+        with ready_condition:
+            while ready_count < max_workers:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise RuntimeError("Timed out while prewarming batch executor")
+                ready_condition.wait(timeout=remaining)
+    except Exception:
+        release.set()
+        executor.shutdown(wait=True, cancel_futures=True)
+        logger.warning(
+            "Batch executor prewarm failed; falling back to inline execution",
+            exc_info=True,
+        )
+        return _InlineExecutor()
+    finally:
+        release.set()
+
+    try:
+        for future in futures:
+            future.result(timeout=5)
+    except Exception:
+        executor.shutdown(wait=True, cancel_futures=True)
+        logger.warning(
+            "Batch executor warm-up failed; falling back to inline execution",
+            exc_info=True,
+        )
+        return _InlineExecutor()
+    return executor
+
+
 def _fail_safe_preflight_teardown(child: Any, parent_agent: Any) -> None:
     """Best-effort cleanup when child startup fails before the main finally."""
     subagent_id = getattr(child, "_subagent_id", None)
@@ -2609,7 +2685,9 @@ def delegate_task(
             completed_count = 0
             spinner_ref = getattr(parent_agent, "_delegate_spinner", None)
 
-            with ThreadPoolExecutor(max_workers=max_children) as executor:
+            with _create_resilient_batch_executor(
+                min(max_children, n_tasks)
+            ) as executor:
                 futures = {}
                 for i, t, child in children:
                     future = executor.submit(

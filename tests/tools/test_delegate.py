@@ -3054,6 +3054,48 @@ class TestDelegationLifecycleIntegration:
         with pytest.raises(RuntimeError, match="Failed to interrupt 1/1"):
             captured["interrupt_fn"]()
 
+    def test_sync_batch_executor_failure_falls_back_without_child_leaks(self, tmp_path):
+        import tools.delegate_tool as dt
+
+        parent = _make_mock_parent()
+        parent._active_children = []
+        parent._active_children_lock = threading.Lock()
+        built = []
+        creds = {
+            "model": "m", "provider": None, "base_url": None, "api_key": None,
+            "api_mode": None, "command": None, "args": None,
+        }
+
+        def build(**kwargs):
+            child = MagicMock()
+            child._subagent_id = f"sa-sync-{len(built)}"
+            child._delegate_saved_tool_names = []
+            child._delegate_role = "leaf"
+            child.tool_progress_callback = None
+            child._credential_pool = None
+            child.model = "m"
+            child.session_id = child._subagent_id
+            child.get_activity_summary.return_value = {"api_call_count": 0}
+            built.append(child)
+            parent._active_children.append(child)
+            return child
+
+        with (
+            patch.object(dt, "_resolve_workspace_hint", return_value=str(tmp_path)),
+            patch.object(dt, "_build_child_agent", side_effect=build),
+            patch.object(dt, "_resolve_delegation_credentials", return_value=creds),
+            patch.object(dt, "ThreadPoolExecutor", side_effect=RuntimeError("pool failed")),
+        ):
+            result = json.loads(dt.delegate_task(
+                tasks=[{"goal": "one"}, {"goal": "two"}],
+                background=False, parent_agent=parent,
+            ))
+
+        assert len(result["results"]) == 2
+        assert all(item["status"] == "error" for item in result["results"])
+        assert parent._active_children == []
+        assert all(child.close.call_count == 1 for child in built)
+
     def test_background_dispatch_rejects_missing_session_owner(self, tmp_path):
         import tools.delegate_tool as dt
 

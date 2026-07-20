@@ -430,6 +430,47 @@ def test_executor_initialization_failure_rolls_back_single_and_batch(tmp_path):
     assert _drain_one() is not None
 
 
+def test_thread_start_failure_never_runs_rejected_runner(monkeypatch, tmp_path):
+    workspace = tmp_path / "repo"
+    workspace.mkdir()
+    rejected_runner_ran = threading.Event()
+    original_start = threading.Thread.start
+    async_start_count = 0
+
+    def fail_first_async_worker(thread):
+        nonlocal async_start_count
+        if thread.name.startswith("async-delegate"):
+            async_start_count += 1
+            if async_start_count == 1:
+                raise RuntimeError("thread start failed")
+        return original_start(thread)
+
+    monkeypatch.setattr(threading.Thread, "start", fail_first_async_worker)
+    rejected = ad.dispatch_async_delegation(
+        goal="ghost", context=None, toolsets=None, role="leaf", model="m",
+        session_key="s",
+        runner=lambda: (
+            rejected_runner_ran.set() or {"status": "completed"}
+        ),
+        workspace_path=str(workspace), workspace_mode="write",
+        max_async_children=2,
+    )
+    assert rejected["status"] == "rejected"
+    assert rejected["reason_code"] == "schedule_failed"
+
+    monkeypatch.setattr(threading.Thread, "start", original_start)
+    retry = ad.dispatch_async_delegation(
+        goal="retry", context=None, toolsets=None, role="leaf", model="m",
+        session_key="s", runner=lambda: {"status": "completed"},
+        workspace_path=str(workspace), workspace_mode="write",
+        max_async_children=2,
+    )
+    assert retry["status"] == "dispatched"
+    assert _drain_one() is not None
+    time.sleep(0.05)
+    assert rejected_runner_ran.is_set() is False
+
+
 def test_interrupt_by_id_reports_unknown_and_completed():
     assert ad.interrupt_async_delegation("deleg_missing")["status"] == "not_found"
 

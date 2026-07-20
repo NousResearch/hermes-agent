@@ -219,8 +219,7 @@ export const zhHant = defineLocale({
       archivedChats: '已封存聊天',
       about: '關於',
       billing: '帳單',
-      notifications: '通知',
-      system: '系統'
+      notifications: '通知'
     },
     notifications: {
       title: '通知',
@@ -259,18 +258,6 @@ export const zhHant = defineLocale({
       completionSoundDesc: '代理回合結束時播放。可在此選擇預設並預覽。',
       completionSoundPreview: '預覽'
     },
-    system: {
-      title: '系統',
-      intro: 'Hermes 在這台電腦上的行為。設定會依裝置保存，每台電腦各自獨立。',
-      keepAwakeTitle: '保持電腦喚醒',
-      keepAwakeDesc: '阻止本機睡眠，讓長時間或整夜執行持續進行。螢幕仍可變暗。',
-      translucencyTitle: '視窗透明',
-      translucencyDesc: '讓整個視窗透出桌面。僅支援 macOS 與 Windows。',
-      uiScaleTitle: '介面縮放',
-      uiScaleDesc: (percent: number) => `縮放整個應用程式的文字與介面。也可使用 Cmd/Ctrl 加 +、- 或 0 調整。目前：${percent}%`,
-      hapticsTitle: '觸覺回饋',
-      hapticsDesc: '在操作與開關時觸發觸控板輕觸。僅支援對應硬體（macOS）。'
-    },
     sections: {
       model: '模型',
       chat: '聊天',
@@ -301,6 +288,11 @@ export const zhHant = defineLocale({
       colorModeDesc: '選擇固定模式，或讓 Hermes 跟隨系統設定。',
       toolViewTitle: '工具呼叫顯示',
       toolViewDesc: '產品模式會隱藏原始工具 payload；技術模式會顯示完整輸入/輸出。',
+      uiScaleTitle: '介面縮放',
+      uiScaleDesc: (percent: number) =>
+        `縮放整個應用程式的文字與介面。也可使用 Cmd/Ctrl 加 +、- 或 0 調整。目前：${percent}%`,
+      translucencyTitle: '視窗透明',
+      translucencyDesc: '讓整個視窗透出桌面。僅支援 macOS 與 Windows。',
       backdropTitle: '聊天背景',
       backdropDesc: '對話後方那張淡淡的雕像圖片。',
       embedsTitle: '內嵌預覽',
@@ -617,7 +609,9 @@ export const zhHant = defineLocale({
       failedLoad: '設定載入失敗',
       autosaveFailed: '自動儲存失敗',
       imported: '設定已匯入',
-      invalidJson: '設定 JSON 無效'
+      invalidJson: '設定 JSON 無效',
+      keepAwakeTitle: '保持電腦喚醒',
+      keepAwakeDesc: '阻止本機睡眠，讓長時間或整夜執行持續進行。螢幕仍可變暗。'
     },
     credentials: {
       pasteKey: '貼上金鑰',

@@ -316,8 +316,7 @@ export const zh: Translations = {
       about: '关于',
       billing: '账单',
       notifications: '通知',
-      plugins: '插件',
-      system: '系统'
+      plugins: '插件'
     },
     plugins: {
       title: '桌面插件',
@@ -370,18 +369,6 @@ export const zh: Translations = {
       completionSoundDesc: '智能体回合结束时播放。可在此选择预设并预览。',
       completionSoundPreview: '预览'
     },
-    system: {
-      title: '系统',
-      intro: 'Hermes 在这台电脑上的行为。设置按设备保存，每台电脑各自独立。',
-      keepAwakeTitle: '保持电脑唤醒',
-      keepAwakeDesc: '阻止本机休眠，让长时间或通宵运行继续进行。屏幕仍可变暗。',
-      translucencyTitle: '窗口透明',
-      translucencyDesc: '让整个窗口透出桌面。仅支持 macOS 和 Windows。',
-      uiScaleTitle: '界面缩放',
-      uiScaleDesc: (percent: number) => `缩放整个应用的文字和界面。也可使用 Cmd/Ctrl 加 +、- 或 0 调整。当前：${percent}%`,
-      hapticsTitle: '触感反馈',
-      hapticsDesc: '在操作和开关时触发触控板轻触。仅支持相应硬件（macOS）。'
-    },
     sections: {
       model: '模型',
       chat: '对话',
@@ -412,6 +399,11 @@ export const zh: Translations = {
       colorModeDesc: '选择固定模式，或让 Hermes 跟随系统设置。',
       toolViewTitle: '工具调用显示',
       toolViewDesc: '产品模式隐藏原始工具数据；技术模式显示完整输入/输出。',
+      uiScaleTitle: '界面缩放',
+      uiScaleDesc: (percent: number) =>
+        `缩放整个应用的文字和界面。也可使用 Cmd/Ctrl 加 +、- 或 0 调整。当前：${percent}%`,
+      translucencyTitle: '窗口透明',
+      translucencyDesc: '让整个窗口透出桌面。仅支持 macOS 和 Windows。',
       backdropTitle: '聊天背景',
       backdropDesc: '对话后方那张淡淡的雕像图片。',
       embedsTitle: '内嵌预览',
@@ -728,7 +720,9 @@ export const zh: Translations = {
       failedLoad: '设置加载失败',
       autosaveFailed: '自动保存失败',
       imported: '配置已导入',
-      invalidJson: '配置 JSON 无效'
+      invalidJson: '配置 JSON 无效',
+      keepAwakeTitle: '保持电脑唤醒',
+      keepAwakeDesc: '阻止本机休眠，让长时间或通宵运行继续进行。屏幕仍可变暗。'
     },
     credentials: {
       pasteKey: '粘贴密钥',

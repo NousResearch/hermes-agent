@@ -10,7 +10,6 @@ import {
   Archive,
   BarChart3,
   Bell,
-  Cpu,
   Download,
   Globe,
   Info,
@@ -43,7 +42,6 @@ import { NotificationsSettings } from './notifications-settings'
 import { PluginsSettings } from './plugins-settings'
 import { PROVIDER_VIEWS, ProvidersSettings, type ProviderView } from './providers-settings'
 import { SessionsSettings } from './sessions-settings'
-import { SystemSettings } from './system-settings'
 import type { SettingsPageProps, SettingsView as SettingsViewId } from './types'
 
 const SETTINGS_VIEWS: readonly SettingsViewId[] = [
@@ -56,7 +54,6 @@ const SETTINGS_VIEWS: readonly SettingsViewId[] = [
   'billing',
   'plugins',
   'sessions',
-  'system',
   'about'
 ]
 
@@ -155,13 +152,6 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
       id: 'notifications',
       label: t.settings.nav.notifications,
       onSelect: () => setActiveView('notifications')
-    },
-    {
-      active: activeView === 'system',
-      icon: Cpu,
-      id: 'system',
-      label: t.settings.nav.system,
-      onSelect: () => setActiveView('system')
     },
     {
       active: activeView === 'billing',
@@ -326,8 +316,6 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
             <KeysSettings view={keysView} />
           ) : activeView === 'notifications' ? (
             <NotificationsSettings />
-          ) : activeView === 'system' ? (
-            <SystemSettings />
           ) : activeView === 'billing' ? (
             <BillingSettings />
           ) : activeView === 'plugins' ? (

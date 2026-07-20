@@ -1,3 +1,4 @@
+import { useStore } from '@nanostores/react'
 import { useQuery } from '@tanstack/react-query'
 import type { ChangeEvent, ReactNode } from 'react'
 import { useEffect, useMemo, useRef, useState } from 'react'
@@ -11,6 +12,7 @@ import { Textarea } from '@/components/ui/textarea'
 import { getElevenLabsVoices, getHermesConfigSchema, saveHermesConfig } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
+import { $keepAwake, setKeepAwake } from '@/store/keep-awake'
 import { notify, notifyError } from '@/store/notifications'
 import type { ConfigFieldSchema, HermesConfigRecord } from '@/types/hermes'
 
@@ -32,7 +34,7 @@ import {
 import { MemoryConnect } from './memory/connect'
 import { ProviderConfigPanel } from './memory/provider-config-panel'
 import { ModelSettings, ModelSettingsSkeleton } from './model-settings'
-import { EmptyState, ListRow, LoadingState, SettingsContent } from './primitives'
+import { EmptyState, ListRow, LoadingState, SettingsContent, ToggleRow } from './primitives'
 
 // On the Voice page, only surface the sub-fields of the *selected* TTS/STT
 // provider — otherwise every provider's options render at once (the "totally
@@ -242,6 +244,7 @@ export function ConfigSettings({
 }) {
   const { t } = useI18n()
   const c = t.settings.config
+  const keepAwake = useStore($keepAwake)
   // The editable draft is local (debounced autosave watches it), but it's seeded
   // from — and saved back through — the shared config cache, so edits are visible
   // in the MCP/model surfaces and reopening the page doesn't reload-flash.
@@ -457,6 +460,11 @@ export function ConfigSettings({
         <div className="mb-6">
           <ModelSettings onMainModelChanged={onMainModelChanged} />
         </div>
+      )}
+      {/* Device-local desktop pref (not config.yaml) — lives here since keeping
+          the machine awake is a power-user knob. */}
+      {activeSectionId === 'advanced' && (
+        <ToggleRow checked={keepAwake} description={c.keepAwakeDesc} label={c.keepAwakeTitle} onChange={setKeepAwake} />
       )}
       {visibleFields.length === 0 ? (
         <EmptyState description={c.emptyDesc} title={c.emptyTitle} />

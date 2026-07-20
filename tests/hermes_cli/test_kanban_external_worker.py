@@ -224,6 +224,51 @@ def test_public_seam_opens_named_board_without_kanban_db_import(kanban_home):
 # ---------------------------------------------------------------------------
 
 
+def test_candidate_read_is_non_mutating(kanban_home, conn):
+    tid, aid, raw = _make_task_with_spec(conn)
+
+    observed = xw.read_candidate_attachment(
+        conn,
+        task_id=tid,
+        attachment_id=aid,
+    )
+
+    assert observed == raw
+    task = kb.get_task(conn, tid)
+    assert task is not None
+    assert task.status == "triage"
+    assert task.external_spec_hash is None
+    assert task.external_spec_attachment_id is None
+
+
+def test_submit_expected_hash_rejects_candidate_mutation_atomically(kanban_home, conn):
+    tid, aid, raw = _make_task_with_spec(conn)
+    observed = xw.read_candidate_attachment(
+        conn,
+        task_id=tid,
+        attachment_id=aid,
+    )
+    assert observed == raw
+    replacement = _spec_json(objective="x")
+    assert len(replacement) == len(raw)
+    attachment = kb.get_attachment(conn, aid)
+    Path(attachment.stored_path).write_bytes(replacement)
+
+    with pytest.raises(xw.SpecMutationError, match="candidate hash changed"):
+        xw.submit(
+            conn,
+            task_id=tid,
+            spec_attachment_id=aid,
+            expected_spec_hash=hashlib.sha256(raw).hexdigest(),
+        )
+
+    task = kb.get_task(conn, tid)
+    assert task is not None
+    assert task.status == "triage"
+    assert task.external_spec_hash is None
+    assert task.external_spec_attachment_id is None
+
+
 def test_submit_records_raw_byte_hash_and_attachment_id(kanban_home, conn):
     tid, aid, raw = _make_task_with_spec(conn)
     spec = xw.submit(conn, task_id=tid, spec_attachment_id=aid)
@@ -294,9 +339,7 @@ def test_submit_rejects_more_than_one_canonical_attachment(kanban_home, conn):
 
 def test_submit_routes_unfinished_dependency_to_todo(kanban_home, conn):
     parent = kb.create_task(conn, title="parent", body="b")
-    tid = kb.create_task(
-        conn, title="child", body="b", triage=True, parents=[parent]
-    )
+    tid = kb.create_task(conn, title="child", body="b", triage=True, parents=[parent])
     raw = _spec_json()
     aid = kb.store_attachment_bytes(
         conn, tid, filename=xw.SPEC_ATTACHMENT_NAME, data=raw
@@ -305,9 +348,7 @@ def test_submit_routes_unfinished_dependency_to_todo(kanban_home, conn):
     assert kb.get_task(conn, tid).status == "todo"
 
 
-def test_submitted_canonical_attachment_cannot_be_added_or_deleted(
-    kanban_home, conn
-):
+def test_submitted_canonical_attachment_cannot_be_added_or_deleted(kanban_home, conn):
     tid, aid, _raw = _make_task_with_spec(conn)
     xw.submit(conn, task_id=tid, spec_attachment_id=aid)
     att = kb.get_attachment(conn, aid)
@@ -706,9 +747,7 @@ def test_heartbeat_cannot_resurrect_expired_lease(kanban_home, conn):
     _tid, _aid, _raw, _spec, lease = _submit_and_claim(conn)
     lease = _expire_lease(conn, lease)
     with pytest.raises(xw.NotOwner):
-        xw.heartbeat(
-            conn, lease=lease, lease_expires_at=int(time.time()) + 60
-        )
+        xw.heartbeat(conn, lease=lease, lease_expires_at=int(time.time()) + 60)
 
 
 def test_heartbeat_rejects_wrong_lease_token(kanban_home, conn):
@@ -789,33 +828,23 @@ def test_hold_for_recovery_can_quarantine_an_expired_lease(kanban_home, conn):
     proof = xw.RecoveryHoldProof(
         run_id=lease.run_id, task_id=tid, bound=None, evidence="uncertain"
     )
-    held = xw.hold_for_recovery(
-        conn, lease=lease, proof=proof, extension_seconds=60
-    )
+    held = xw.hold_for_recovery(conn, lease=lease, proof=proof, extension_seconds=60)
     assert held.lease_state == xw.LEASE_HOLDING
     assert held.lease_expires_at > int(time.time())
 
 
-def test_second_hold_requires_manual_recovery_and_third_is_rejected(
-    kanban_home, conn
-):
+def test_second_hold_requires_manual_recovery_and_third_is_rejected(kanban_home, conn):
     tid, _aid, _raw, _spec, lease = _submit_and_claim(conn)
     proof = xw.RecoveryHoldProof(
         run_id=lease.run_id, task_id=tid, bound=None, evidence="uncertain"
     )
-    held = xw.hold_for_recovery(
-        conn, lease=lease, proof=proof, extension_seconds=60
-    )
-    held = xw.hold_for_recovery(
-        conn, lease=held, proof=proof, extension_seconds=60
-    )
+    held = xw.hold_for_recovery(conn, lease=lease, proof=proof, extension_seconds=60)
+    held = xw.hold_for_recovery(conn, lease=held, proof=proof, extension_seconds=60)
     assert held.recovery_count == 2
     events = kb.list_events(conn, tid)
     assert [e.kind for e in events].count("external_manual_recovery_required") == 1
     with pytest.raises(xw.RecoveryRejected):
-        xw.hold_for_recovery(
-            conn, lease=held, proof=proof, extension_seconds=60
-        )
+        xw.hold_for_recovery(conn, lease=held, proof=proof, extension_seconds=60)
 
 
 def test_hold_for_recovery_rejects_proof_with_wrong_identity(kanban_home, conn):
@@ -1466,9 +1495,7 @@ def test_list_active_returns_active_external_runs(kanban_home, conn):
     assert active[0].run_id == lease.run_id
 
 
-def test_list_active_ignores_corrupted_task_status_and_run_pointer(
-    kanban_home, conn
-):
+def test_list_active_ignores_corrupted_task_status_and_run_pointer(kanban_home, conn):
     tid, _aid, _raw, _spec, lease = _submit_and_claim(conn)
     with kb.write_txn(conn):
         conn.execute(
@@ -1515,9 +1542,7 @@ def test_native_claim_excludes_ready_external_task(kanban_home, conn):
     assert caught.value.run_id == _lease.run_id
 
 
-def test_native_claim_rejects_submitted_external_task_without_run(
-    kanban_home, conn
-):
+def test_native_claim_rejects_submitted_external_task_without_run(kanban_home, conn):
     tid, aid, _raw = _make_task_with_spec(conn)
     xw.submit(conn, task_id=tid, spec_attachment_id=aid)
     with pytest.raises(kb.ExternalTaskConflict) as caught:
@@ -1595,14 +1620,19 @@ def test_native_recovery_scans_ignore_open_external_run(kanban_home, conn, monke
     monkeypatch.setattr(kb, "_pid_alive", lambda _pid: False)
     signals = []
 
-    assert kb.release_stale_claims(conn, signal_fn=lambda *args: signals.append(args)) == 0
-    assert kb.detect_stale_running(
-        conn, stale_timeout_seconds=1, signal_fn=lambda *args: signals.append(args)
-    ) == []
+    assert (
+        kb.release_stale_claims(conn, signal_fn=lambda *args: signals.append(args)) == 0
+    )
+    assert (
+        kb.detect_stale_running(
+            conn, stale_timeout_seconds=1, signal_fn=lambda *args: signals.append(args)
+        )
+        == []
+    )
     assert kb.detect_crashed_workers(conn) == []
-    assert kb.enforce_max_runtime(
-        conn, signal_fn=lambda *args: signals.append(args)
-    ) == []
+    assert (
+        kb.enforce_max_runtime(conn, signal_fn=lambda *args: signals.append(args)) == []
+    )
     assert signals == []
     assert xw.get_run(conn, run_id=lease.run_id).lease_state == xw.LEASE_ACTIVE
 
@@ -1615,9 +1645,7 @@ def test_native_heartbeat_refuses_open_external_run(kanban_home, conn):
     assert caught.value.operation == "heartbeat_worker"
 
 
-def test_dispatcher_does_not_spawn_external_ready_task(
-    kanban_home, conn, monkeypatch
-):
+def test_dispatcher_does_not_spawn_external_ready_task(kanban_home, conn, monkeypatch):
     tid, aid, _raw = _make_task_with_spec(conn)
     xw.submit(conn, task_id=tid, spec_attachment_id=aid)
     with kb.write_txn(conn):
@@ -1691,9 +1719,7 @@ def test_read_artifact_remains_available_after_finalize(kanban_home, conn):
         run_id=lease.run_id, task_id=tid, spec=spec, disposition="COMPLETE"
     )
     xw.finalize(conn, lease=lease, disposition="COMPLETE", result_bytes=rb)
-    assert xw.read_artifact(
-        conn, run_id=lease.run_id, name="out.txt"
-    ) == b"payload"
+    assert xw.read_artifact(conn, run_id=lease.run_id, name="out.txt") == b"payload"
 
 
 def test_read_artifact_rejects_unknown_name(kanban_home, conn):
@@ -1771,6 +1797,8 @@ def test_finalize_block_with_new_block_kinds(kanban_home, conn):
     assert out.status == xw.FINALIZE_COMMITTED
     t = kb.get_task(conn, tid)
     assert t is not None and t.status == "blocked"
+
+
 # Cross-surface lifecycle and restart regressions
 # ---------------------------------------------------------------------------
 
@@ -1884,13 +1912,9 @@ def test_board_removal_rejects_active_external_run(kanban_home):
         named.close()
 
 
-def test_stale_connection_cannot_claim_after_board_archive(
-    kanban_home, monkeypatch
-):
+def test_stale_connection_cannot_claim_after_board_archive(kanban_home, monkeypatch):
     external_attachments = kanban_home / "external-attachments"
-    monkeypatch.setenv(
-        "HERMES_KANBAN_ATTACHMENTS_ROOT", str(external_attachments)
-    )
+    monkeypatch.setenv("HERMES_KANBAN_ATTACHMENTS_ROOT", str(external_attachments))
     kb.create_board("named")
     named = xw.connect(board="named")
     try:

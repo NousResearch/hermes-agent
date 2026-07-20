@@ -3,6 +3,8 @@
 This module is the public lifecycle surface for an out-of-process worker or
 supervisor driving a Kanban task:
 
+* :func:`read_candidate_attachment` — read an unlocked candidate spec without
+  mutating task state;
 * :func:`submit` — validate and lock an existing task attachment named
   ``mas-task-spec.v1.json`` as the immutable spec for a task;
 * :func:`connect` — open an initialized board connection without requiring
@@ -133,86 +135,77 @@ DEFAULT_LEASE_TTL_SECONDS = kb.DEFAULT_CLAIM_TTL_SECONDS
 MAX_RESULT_BYTES = 1024 * 1024
 MAX_ARTIFACT_BYTES = kb.KANBAN_ATTACHMENT_MAX_BYTES
 
-_TASKSPEC_KEYS = frozenset(
-    {
-        "schema_version",
-        "board",
-        "repo_key",
-        "objective",
-        "acceptance_criteria",
-        "scope",
-        "base_sha",
-        "risk",
-        "workflow",
-        "execution",
-        "verification",
-        "delivery",
-    }
-)
+_TASKSPEC_KEYS = frozenset({
+    "schema_version",
+    "board",
+    "repo_key",
+    "objective",
+    "acceptance_criteria",
+    "scope",
+    "base_sha",
+    "risk",
+    "workflow",
+    "execution",
+    "verification",
+    "delivery",
+})
 _TASKSPEC_NESTED_KEYS = {
     "scope": frozenset({"include", "exclude"}),
-    "execution": frozenset(
-        {"timeout_seconds", "max_attempts", "max_tokens", "max_cost_usd"}
-    ),
-    "verification": frozenset(
-        {"check_ids", "fresh_reviewer", "security_review"}
-    ),
+    "execution": frozenset({
+        "timeout_seconds",
+        "max_attempts",
+        "max_tokens",
+        "max_cost_usd",
+    }),
+    "verification": frozenset({"check_ids", "fresh_reviewer", "security_review"}),
     "delivery": frozenset({"mode", "push", "deploy"}),
 }
 
 _RESULT_TOP_KEYS = frozenset({"mas"})
-_RESULT_MAS_KEYS = frozenset(
-    {
-        "schema_version",
-        "spec_sha256",
-        "submitted_attachment_id",
-        "run_id",
-        "attempt",
-        "outcome",
-        "disposition",
-        "block_kind",
-        "writer",
-        "reviewer",
-        "process",
-        "git",
-        "deliverable",
-        "checks",
-        "usage",
-        "failure_signature",
-        "summary",
-        "artifacts",
-    }
-)
+_RESULT_MAS_KEYS = frozenset({
+    "schema_version",
+    "spec_sha256",
+    "submitted_attachment_id",
+    "run_id",
+    "attempt",
+    "outcome",
+    "disposition",
+    "block_kind",
+    "writer",
+    "reviewer",
+    "process",
+    "git",
+    "deliverable",
+    "checks",
+    "usage",
+    "failure_signature",
+    "summary",
+    "artifacts",
+})
 _RESULT_NESTED_KEYS = {
     "writer": frozenset({"backend", "model"}),
     "reviewer": frozenset({"backend", "model", "verdict"}),
     "process": frozenset({"identity", "termination_status", "absence_proven"}),
-    "git": frozenset(
-        {
-            "base_sha",
-            "head_sha",
-            "branch",
-            "diff_sha256",
-            "changed_files",
-            "primary_unchanged",
-        }
-    ),
+    "git": frozenset({
+        "base_sha",
+        "head_sha",
+        "branch",
+        "diff_sha256",
+        "changed_files",
+        "primary_unchanged",
+    }),
     "deliverable": frozenset({"kind", "attachment", "sha256"}),
-    "usage": frozenset(
-        {
-            "input_tokens",
-            "output_tokens",
-            "reasoning_tokens",
-            "cost_usd",
-            "cost_status",
-            "source",
-        }
-    ),
+    "usage": frozenset({
+        "input_tokens",
+        "output_tokens",
+        "reasoning_tokens",
+        "cost_usd",
+        "cost_status",
+        "source",
+    }),
 }
 _RESULT_IDENTITY_KEYS = frozenset({"host", "pid", "pgid", "start_token"})
-_RESULT_CHECK_KEYS = frozenset(
-    {"id", "status", "argv", "exit_code", "duration_ms"}
-)
+_RESULT_CHECK_KEYS = frozenset({"id", "status", "argv", "exit_code", "duration_ms"})
 _RESULT_ARTIFACT_KEYS = frozenset({"name", "sha256"})
 _RESULT_DISPOSITIONS = {
     "COMPLETE": "complete",
@@ -658,9 +651,7 @@ def _ensure_bool(value: Any, *, label: str) -> bool:
     return value
 
 
-def _ensure_object(
-    value: Any, *, label: str, keys: frozenset[str]
-) -> dict[str, Any]:
+def _ensure_object(value: Any, *, label: str, keys: frozenset[str]) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise SpecParseError(f"{label} must be an object")
     actual = set(value)
@@ -687,7 +678,14 @@ def _validate_taskspec(obj: Any) -> str:
             f"TaskSpec schema_version must be {SPEC_SCHEMA_VERSION!r}, "
             f"got {schema_version!r}"
         )
-    for field_name in ("board", "repo_key", "objective", "base_sha", "risk", "workflow"):
+    for field_name in (
+        "board",
+        "repo_key",
+        "objective",
+        "base_sha",
+        "risk",
+        "workflow",
+    ):
         if not _ensure_str(spec[field_name], label=field_name):
             raise SpecParseError(f"TaskSpec.{field_name} must not be empty")
     _ensure_str_list(spec["acceptance_criteria"], label="acceptance_criteria")
@@ -852,7 +850,9 @@ def _validate_execution_result(
         keys=_RESULT_NESTED_KEYS["deliverable"],
     )
     for field_name in ("kind", "attachment", "sha256"):
-        _ensure_nullable_str(deliverable[field_name], label=f"mas.deliverable.{field_name}")
+        _ensure_nullable_str(
+            deliverable[field_name], label=f"mas.deliverable.{field_name}"
+        )
 
     checks = mas["checks"]
     if not isinstance(checks, list):
@@ -868,7 +868,10 @@ def _validate_execution_result(
         _ensure_str_list(check["argv"], label=f"mas.checks[{index}].argv")
         if check["exit_code"] is not None:
             _ensure_int(check["exit_code"], label=f"mas.checks[{index}].exit_code")
-        if _ensure_int(check["duration_ms"], label=f"mas.checks[{index}].duration_ms") < 0:
+        if (
+            _ensure_int(check["duration_ms"], label=f"mas.checks[{index}].duration_ms")
+            < 0
+        ):
             raise SpecParseError("check duration_ms must be non-negative")
 
     usage = _ensure_object(
@@ -876,7 +879,10 @@ def _validate_execution_result(
     )
     for field_name in ("input_tokens", "output_tokens", "reasoning_tokens"):
         value = usage[field_name]
-        if value is not None and _ensure_int(value, label=f"mas.usage.{field_name}") < 0:
+        if (
+            value is not None
+            and _ensure_int(value, label=f"mas.usage.{field_name}") < 0
+        ):
             raise SpecParseError(f"mas.usage.{field_name} must be non-negative")
     cost = usage["cost_usd"]
     if cost is not None and (
@@ -1118,9 +1124,7 @@ def _validate_result_artifacts(
             raise ResultRejected(f"invalid declared artifact name: {exc}") from exc
         sha = artifact["sha256"]
         if not re.fullmatch(r"[0-9a-f]{64}", sha):
-            raise ResultRejected(
-                f"declared artifact {name!r} has an invalid SHA-256"
-            )
+            raise ResultRejected(f"declared artifact {name!r} has an invalid SHA-256")
         if name in declared:
             raise ResultRejected(f"artifact {name!r} is declared more than once")
         declared[name] = sha
@@ -1246,7 +1250,7 @@ def _transition_task_for_terminal(
 
 
 # ---------------------------------------------------------------------------
-# Public API — submit / read_submitted_attachment / list_ready
+# Public API — candidate read / submit / submitted read / list_ready
 # ---------------------------------------------------------------------------
 
 
@@ -1264,11 +1268,69 @@ def connect(
     return kb.connect(db_path, board=board)
 
 
+def read_candidate_attachment(
+    conn: sqlite3.Connection,
+    *,
+    task_id: str,
+    attachment_id: int,
+) -> bytes:
+    """Read an unlocked canonical TaskSpec candidate without changing state.
+
+    The caller may apply deployment-specific policy before :func:`submit`.
+    ``submit(expected_spec_hash=...)`` re-reads the bytes in its write
+    transaction, so a mutation between this read and submit fails closed.
+    """
+    if not isinstance(task_id, str) or not task_id.strip():
+        raise ValueError("task_id is required")
+    if not isinstance(attachment_id, int) or attachment_id <= 0:
+        raise ValueError("attachment_id must be a positive int")
+    task_row = conn.execute(
+        "SELECT id, status, claim_lock, current_run_id, external_spec_hash "
+        "FROM tasks WHERE id = ?",
+        (task_id,),
+    ).fetchone()
+    if task_row is None:
+        raise ExternalWorkerError(f"task {task_id} does not exist")
+    if task_row["external_spec_hash"] is not None:
+        raise SpecMutationError(
+            f"task {task_id} already has an immutable external spec"
+        )
+    if task_row["status"] not in {"triage", "todo"}:
+        raise ExternalWorkerError(
+            f"task {task_id} must be in triage or todo before submit "
+            f"(status={task_row['status']!r})"
+        )
+    if task_row["claim_lock"] is not None or task_row["current_run_id"] is not None:
+        raise ExternalWorkerError(f"task {task_id} already has execution state")
+    att = _read_attachment_row(conn, attachment_id)
+    if att["task_id"] != task_id:
+        raise AttachmentNotOwnedError(
+            f"attachment {attachment_id} belongs to task {att['task_id']}, "
+            f"not {task_id}"
+        )
+    canonical = conn.execute(
+        "SELECT id FROM task_attachments "
+        "WHERE task_id = ? AND filename = ? ORDER BY id",
+        (task_id, SPEC_ATTACHMENT_NAME),
+    ).fetchall()
+    if len(canonical) != 1 or int(canonical[0]["id"]) != attachment_id:
+        raise AttachmentMismatchError(
+            f"task {task_id} must have exactly one canonical spec attachment"
+        )
+    if att["filename"] != SPEC_ATTACHMENT_NAME:
+        raise AttachmentMismatchError(
+            f"attachment {attachment_id}: filename must be "
+            f"{SPEC_ATTACHMENT_NAME!r}, got {att['filename']!r}"
+        )
+    return _read_attachment_bytes(att)
+
+
 def submit(
     conn: sqlite3.Connection,
     *,
     task_id: str,
     spec_attachment_id: int,
+    expected_spec_hash: Optional[str] = None,
 ) -> SpecIdentity:
     """Validate and lock the spec attachment onto ``task_id``.
 
@@ -1287,12 +1349,20 @@ def submit(
     with :class:`SpecMutationError`. Does NOT touch task title/body — the
     spec attachment is the sole authoritative input from this point on.
 
+    When ``expected_spec_hash`` is supplied, submit compares it with the exact
+    bytes re-read inside the transaction before any task mutation. This closes
+    the candidate-read/policy-validation race for external policy engines.
+
     Returns the immutable :class:`SpecIdentity`.
     """
     if not isinstance(task_id, str) or not task_id.strip():
         raise ValueError("task_id is required")
     if not isinstance(spec_attachment_id, int) or spec_attachment_id <= 0:
         raise ValueError("spec_attachment_id must be a positive int")
+    if expected_spec_hash is not None and not re.fullmatch(
+        r"[0-9a-f]{64}", expected_spec_hash
+    ):
+        raise ValueError("expected_spec_hash must be a lowercase SHA-256 hex digest")
 
     with kb._board_lifecycle_write_txn(conn):
         task_row = conn.execute(
@@ -1347,6 +1417,10 @@ def submit(
         schema_version = _validate_taskspec(obj)
         # Compute the spec hash from the exact raw bytes.
         spec_hash = _sha256_hex(raw)
+        if expected_spec_hash is not None and spec_hash != expected_spec_hash:
+            raise SpecMutationError(
+                f"attachment {spec_attachment_id}: candidate hash changed before submit"
+            )
         unfinished_parent = conn.execute(
             "SELECT 1 FROM task_links l "
             "JOIN tasks p ON p.id = l.parent_id "
@@ -1928,9 +2002,7 @@ def hold_for_recovery(
             )
         prior_holds = int(row["external_recovery_count"])
         if prior_holds >= RECOVERY_REQUEUE_LIMIT:
-            raise RecoveryRejected(
-                f"run {run_id} already requires manual recovery"
-            )
+            raise RecoveryRejected(f"run {run_id} already requires manual recovery")
         new_holds = prior_holds + 1
         cur = conn.execute(
             "UPDATE task_runs "
@@ -2009,9 +2081,7 @@ def _validate_and_hash_result(
     caller. Raises :class:`ResultRejected` on any contract violation.
     """
     if len(raw) > MAX_RESULT_BYTES:
-        raise ResultRejected(
-            f"ExecutionResult exceeds {MAX_RESULT_BYTES} byte limit"
-        )
+        raise ResultRejected(f"ExecutionResult exceeds {MAX_RESULT_BYTES} byte limit")
     try:
         obj = _decode_strict_json(raw)
     except SpecParseError as exc:
@@ -2429,8 +2499,7 @@ def recover_expired(
             raise RecoveryRejected(f"run {run_id} already ended")
         db_lease_state = row["external_lease_state"] or LEASE_ACTIVE
         if (
-            lease.lease_state
-            not in {LEASE_ACTIVE, LEASE_BOUND, LEASE_HOLDING}
+            lease.lease_state not in {LEASE_ACTIVE, LEASE_BOUND, LEASE_HOLDING}
             or db_lease_state != lease.lease_state
         ):
             raise RecoveryRejected(
@@ -2576,10 +2645,7 @@ def list_active(
     ``host`` filters by the bound process host. Without ``host``, returns
     every active external run on the board.
     """
-    q = (
-        "SELECT r.* FROM task_runs r "
-        "WHERE r.worker_kind = ? AND r.ended_at IS NULL"
-    )
+    q = "SELECT r.* FROM task_runs r WHERE r.worker_kind = ? AND r.ended_at IS NULL"
     params: list[Any] = [WORKER_KIND]
     if host is not None:
         q += " AND r.external_host = ?"
@@ -2636,10 +2702,9 @@ def read_result(
         raise ResultRejected(f"run {lease.run_id} durable result hash drift")
     if facts["attempt"] != lease.attempt:
         raise ResultRejected(f"run {lease.run_id} durable result attempt mismatch")
-    if (
-        facts["disposition"] != row["external_terminal_disposition"]
-        or (facts["block_kind"] or None) != (row["external_block_kind"] or None)
-    ):
+    if facts["disposition"] != row["external_terminal_disposition"] or (
+        facts["block_kind"] or None
+    ) != (row["external_block_kind"] or None):
         raise ResultRejected(f"run {lease.run_id} durable result tuple drift")
     _validate_result_artifacts(conn, run_id=lease.run_id, facts=facts)
     return PersistedResult(
@@ -2843,6 +2908,7 @@ __all__ = [
     "StaleBoardConnection",
     # Public API
     "connect",
+    "read_candidate_attachment",
     "submit",
     "read_submitted_attachment",
     "list_ready",

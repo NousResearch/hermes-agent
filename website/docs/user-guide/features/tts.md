@@ -56,6 +56,13 @@ tts:
     voice: "alloy"              # alloy, echo, fable, onyx, nova, shimmer
     base_url: "https://api.openai.com/v1"  # Override for OpenAI-compatible TTS endpoints
     speed: 1.0                  # 0.25 - 4.0
+    # response_format: "mp3"    # Only for OpenAI-compatible backends that can't
+                                # encode opus (e.g. self-hosted Speaches/Kokoro,
+                                # which support only mp3/flac/wav/pcm). Hermes
+                                # synthesizes in this format then transcodes to
+                                # OGG/Opus locally via ffmpeg for Telegram voice
+                                # bubbles. Leave unset for the real OpenAI API,
+                                # which encodes opus natively.
   minimax:
     model: "speech-02-hd"     # speech-02-hd (default), speech-02-turbo
     voice_id: "English_Graceful_Lady"  # See https://platform.minimax.io/faq/system-voice-id
@@ -170,6 +177,9 @@ Only positive integers are honored. Zero, negative, non-numeric, or boolean valu
 Telegram voice bubbles require Opus/OGG audio format:
 
 - **OpenAI, ElevenLabs, and Mistral** produce Opus natively — no extra setup
+  - OpenAI-*compatible* backends that can't encode opus (e.g. self-hosted
+    Speaches/Kokoro) can set `tts.openai.response_format: mp3`; Hermes then
+    uses **ffmpeg** to convert to OGG/Opus for Telegram voice bubbles
 - **Edge TTS** (default) outputs MP3 and needs **ffmpeg** to convert:
 - **MiniMax TTS** outputs MP3 and needs **ffmpeg** to convert for Telegram voice bubbles
 - **Google Gemini TTS** outputs raw PCM and uses **ffmpeg** to encode Opus directly for Telegram voice bubbles

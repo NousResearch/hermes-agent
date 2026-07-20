@@ -2168,6 +2168,13 @@ DEFAULT_CONFIG = {
             "model": "gpt-4o-mini-tts",
             "voice": "alloy",
             # Voices: alloy, echo, fable, onyx, nova, shimmer
+            # response_format: only needed for OpenAI-*compatible* backends
+            # that cannot encode opus (e.g. self-hosted Speaches/Kokoro, which
+            # support only mp3/flac/wav/pcm). Set to one of those formats and
+            # Hermes synthesizes in it, then transcodes to OGG/Opus locally via
+            # ffmpeg for Telegram/Matrix voice bubbles. Leave unset for the
+            # real OpenAI API, which encodes opus natively (issue #54589).
+            # "response_format": "mp3",
         },
         "gemini": {
             "model": "gemini-2.5-flash-preview-tts",

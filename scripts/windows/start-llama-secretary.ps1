@@ -56,14 +56,19 @@ $Alias = Resolve-Default "HERMES_LLAMA_ALIAS" "yuxinlu1/gemma-4-12B-coder-fable5
 $HostName = Resolve-Default "HERMES_LLAMA_HOST" "127.0.0.1"
 $Port = [int](Resolve-Default "HERMES_LLAMA_PORT" "8080")
 $Ctx = [int](Resolve-Default "HERMES_LLAMA_CTX" "65536")
-$CacheK = Resolve-Default "HERMES_LLAMA_CACHE_TYPE_K" "q4_0"
-$CacheV = Resolve-Default "HERMES_LLAMA_CACHE_TYPE_V" "q4_0"
+$CacheK = Resolve-Default "HERMES_LLAMA_CACHE_TYPE_K" "q8_0"
+$CacheV = Resolve-Default "HERMES_LLAMA_CACHE_TYPE_V" "turbo3"
 $SpecType = Resolve-Default "HERMES_LLAMA_SPEC_TYPE" "ngram-mod"
+$SpecNgramMatch = [int](Resolve-Default "HERMES_LLAMA_SPEC_NGRAM_MATCH" "24")
+$SpecNgramMin = [int](Resolve-Default "HERMES_LLAMA_SPEC_NGRAM_MIN" "48")
+$SpecNgramMax = [int](Resolve-Default "HERMES_LLAMA_SPEC_NGRAM_MAX" "64")
 $SpecDraftNMax = [int](Resolve-Default "HERMES_LLAMA_SPEC_DRAFT_N_MAX" "64")
+$BatchSize = [int](Resolve-Default "HERMES_LLAMA_BATCH_SIZE" "2048")
+$UbatchSize = [int](Resolve-Default "HERMES_LLAMA_UBATCH_SIZE" "512")
 $Profile = Resolve-Default "HERMES_LLAMA_PROFILE" "rtx3060"
 
 if ($Ctx -lt 64000) {
-    throw "HERMES_LLAMA_CTX=$Ctx is below the local-secretary minimum of 64000. Set HERMES_LLAMA_CTX=65536."
+    throw "HERMES_LLAMA_CTX=$Ctx is below the Hermes Agent minimum of 64000. Set HERMES_LLAMA_CTX=65536."
 }
 
 if (-not (Test-Path -LiteralPath $ServerExe)) {
@@ -121,14 +126,29 @@ function Build-ServerArgs {
         "-ngl", [string]$GpuLayers,
         "-np", "1"
     )
+    if (Test-HelpFlag $helpText '--cont-batching') {
+        $args += @("--cont-batching")
+    }
+    if (Test-HelpFlag $helpText '--batch-size') {
+        $args += @("--batch-size", [string]$BatchSize)
+    }
+    if (Test-HelpFlag $helpText '--ubatch-size') {
+        $args += @("--ubatch-size", [string]$UbatchSize)
+    }
     if ($IncludeCache -and $supportsCacheK) {
         $args += @("--cache-type-k", $CacheK, "--cache-type-v", $CacheV)
     }
     if ($IncludeSpec -and $supportsSpecType -and $SpecType -and $SpecType -ne "none") {
         $args += @("--spec-type", $SpecType)
         if ($SpecType -eq "ngram-mod") {
+            if (Test-HelpFlag $helpText '--spec-ngram-mod-n-match') {
+                $args += @("--spec-ngram-mod-n-match", [string]$SpecNgramMatch)
+            }
+            if (Test-HelpFlag $helpText '--spec-ngram-mod-n-min') {
+                $args += @("--spec-ngram-mod-n-min", [string]$SpecNgramMin)
+            }
             if (Test-HelpFlag $helpText '--spec-ngram-mod-n-max') {
-                $args += @("--spec-ngram-mod-n-max", [string]$SpecDraftNMax)
+                $args += @("--spec-ngram-mod-n-max", [string]$SpecNgramMax)
             }
         } elseif (Test-HelpFlag $helpText '--spec-draft-n-max') {
             $args += @("--spec-draft-n-max", [string]$SpecDraftNMax)

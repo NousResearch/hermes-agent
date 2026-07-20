@@ -412,6 +412,21 @@ def _scan_gateway_pids(
 
     try:
         if is_windows():
+            try:
+                import psutil
+                for proc in psutil.process_iter(['pid', 'cmdline']):
+                    try:
+                        cmdline = " ".join(proc.info['cmdline'] or [])
+                        if _matches_gateway_runtime(cmdline) and (
+                            all_profiles or _matches_current_profile(cmdline)
+                        ):
+                            _append_unique_pid(pids, proc.info['pid'], exclude_pids)
+                    except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                        continue
+                return pids
+            except ImportError:
+                pass
+
             # Prefer wmic when present (fast, stable output format).  On
             # modern Windows 11 / Win 10 late builds, wmic has been
             # removed as part of the WMIC deprecation — fall back to

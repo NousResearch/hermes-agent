@@ -2,9 +2,9 @@ param(
     [string]$ServerExe = "",
     [string]$ModelPath = "",
     [int]$Port = 8080,
-    [int]$ContextSize = 49152,
-    [ValidateSet("f16v_turbo4", "f16v_q4_0", "turbo4", "q4_0")]
-    [string]$KvProfile = "f16v_turbo4",
+    [int]$ContextSize = 65536,
+    [ValidateSet("f16v_turbo4", "f16v_q4_0", "bf16v_turbo3", "turbo4", "q4_0")]
+    [string]$KvProfile = "bf16v_turbo3",
     [ValidateSet("ngram-mod", "mtp", "none")]
     [string]$SpecType = "ngram-mod",
     [int]$WaitSeconds = 180

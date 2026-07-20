@@ -1457,11 +1457,17 @@ signal to do the extraction, not to regex around it.
 - On Windows Hermes stack restarts, include Desktop by default; keep llama excluded unless the operator explicitly asks for it.
 - Prefer a Desktop `.lnk` shortcut that reuses the Hermes icon over a `.ps1` launcher.
 - After stack restarts, keep Desktop↔backend mutual monitoring (watchdog) running so a dead side is recovered.
+- Prefer the Go watchdog alone for Desktop↔backend mutual monitoring; avoid running the PowerShell desktop-backend watchdog in parallel (dual watchdogs proliferate Hermes/Node processes).
 - Operator watchdog / control-plane HTTP services (Go + Tailscale) must not be controllable from Hermes-agent AI tools or agent sessions.
+- On stack restarts, bring up needed Hermes services without leaving duplicate Desktop, backend, or watchdog processes; use `-SkipTunnels` on `restart-hermes-stack.ps1` when memory-graph/tunnels hang.
+- When merging upstream while the live checkout must stay up, work on a separate branch or worktree; if upstream and fork features are equivalent, take upstream and reapply fork advantages via the Python merge tooling (`scripts/sync_all.py` / `scripts/merge_tools/`).
+- When adding new agent-facing folders (especially harness docs), create `AGENTS.md` and `README` so Hermes AI can follow them.
 
 ## Learned Workspace Facts
 
-- Packaged Desktop binary is typically at `%LOCALAPPDATA%\hermes\hermes-agent\apps\desktop\release\win-unpacked\Hermes.exe` (fallback: repo `apps/desktop/release/win-unpacked/Hermes.exe`).
-- PowerShell mutual watchdog: `scripts/windows/Start-HermesDesktopBackendWatchdog.ps1`.
-- Go watchdog lives under `scripts/windows/watchdog-go/` and is started via `scripts/windows/Start-HermesGoWatchdog.ps1` (default listen `127.0.0.1:9920`, optional Tailscale tsnet).
-- Local Windows port map for ops is in `fork/operations/AGENTS.md` (gateway 8787, `hermes serve` 9119, dashboard 9120).
+- Packaged Desktop binary is typically at `%LOCALAPPDATA%\hermes\hermes-agent\apps\desktop\release\win-unpacked\Hermes.exe` (fallback: repo `apps/desktop/release/win-unpacked/Hermes.exe`); the Desktop shortcut launches that packaged exe, so after Desktop code changes rebuild with `hermes desktop --build-only --force-build` and sync into LocalAppData.
+- Go watchdog lives under `scripts/windows/watchdog-go/` (started via `scripts/windows/Start-HermesGoWatchdog.ps1`, default listen `127.0.0.1:9920`, optional Tailscale tsnet); it may prewarm Desktop-compatible `hermes serve` on `127.0.0.1:9118`. Paths with spaces (e.g. `New project`) need separate argv for `-hermes-root` — never PowerShell `$args`; `detectRepoRoot` must find `pyproject.toml` and must not stop at a `\scripts` parent. Mutual monitoring uses `%LOCALAPPDATA%\HermesWatchdog\desktop-backend.json` plus `HERMES_DESKTOP_REMOTE_*`. Standalone mirror: https://github.com/zapabob/HermesDesktopwatchdog.
+- Legacy PowerShell mutual watchdog script remains at `scripts/windows/Start-HermesDesktopBackendWatchdog.ps1` (prefer Go-only in normal ops).
+- Local Windows port map for ops is in `fork/operations/AGENTS.md` (gateway 8787, `hermes serve` 9119, dashboard 9120); reserved ops ports must not be treated as the Desktop backend or reaped by the watchdog.
+- Worktrees that cannot check out `main` publish with `git push origin HEAD:main`.
+- For Hermes Agent with local llama.cpp, keep context length at least 65536 (operator target often ~100k).

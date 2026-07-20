@@ -57,11 +57,11 @@ function Stop-PortListener {
     param([int]$Port, [string]$NamePattern = ".*")
     $conn = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1
     if (-not $conn) { return }
-    $proc = Get-CimInstance Win32_Process -Filter "ProcessId=$($conn.OwningProcess)" -ErrorAction SilentlyContinue
+    $proc = Get-Process -Id $conn.OwningProcess -ErrorAction SilentlyContinue
     if (-not $proc) { return }
-    if ($proc.CommandLine -and $proc.CommandLine -match $NamePattern) {
-        Write-Step "Stopping $Port pid=$($proc.ProcessId) name=$($proc.Name)"
-        Stop-Process -Id $proc.ProcessId -Force -ErrorAction SilentlyContinue
+    if ($proc.Name -match "python|hermes|llama|node" -or $proc.ProcessName -match "python|hermes|llama|node") {
+        Write-Step "Stopping $Port pid=$($proc.Id) name=$($proc.Name)"
+        Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
         Start-Sleep -Seconds 2
     }
 }
@@ -83,10 +83,8 @@ function Stop-DesktopWatchdogStack {
     }
     Remove-Item (Join-Path $HermesHome "logs\desktop-backend-watchdog.lock") -Force -ErrorAction SilentlyContinue
     Get-Process -Name Hermes -ErrorAction SilentlyContinue | ForEach-Object {
-        cmd /c "taskkill /PID $($_.Id) /T /F >nul 2>&1" | Out-Null
+        Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue
     }
-    # Exit 128 = process not found; must not trip $ErrorActionPreference=Stop
-    cmd /c "taskkill /IM Hermes.exe /T /F >nul 2>&1" | Out-Null
     Start-Sleep -Seconds 2
 }
 

@@ -37,8 +37,9 @@ powershell -ExecutionPolicy Bypass -File scripts/windows/test-irodori-tts.ps1
 
 - `HERMES_LLAMA_CTX=65536`
 - `HERMES_LLAMA_GPU_LAYERS=99`
-- `HERMES_LLAMA_CACHE_TYPE_K=q4_0` / `HERMES_LLAMA_CACHE_TYPE_V=q4_0`
+- `HERMES_LLAMA_CACHE_TYPE_K=q8_0` / `HERMES_LLAMA_CACHE_TYPE_V=turbo3` (TurboQuant asymmetric; safer at 64K+ than symmetric turbo)
 - `HERMES_LLAMA_SPEC_TYPE=ngram-mod`
+- `HERMES_LLAMA_SPEC_NGRAM_MATCH=24` / `HERMES_LLAMA_SPEC_NGRAM_MIN=48` / `HERMES_LLAMA_SPEC_NGRAM_MAX=64`
 
 ### 8GB
 
@@ -64,9 +65,10 @@ powershell -ExecutionPolicy Bypass -File scripts/windows/test-irodori-tts.ps1
 | `HERMES_LLAMA_PORT` | `8080` |
 | `HERMES_LLAMA_CTX` | `65536` |
 | `HERMES_LLAMA_GPU_LAYERS` | `99` |
-| `HERMES_LLAMA_CACHE_TYPE_K/V` | `q4_0` |
+| `HERMES_LLAMA_CACHE_TYPE_K/V` | `q8_0` / `turbo3` |
 | `HERMES_LLAMA_SPEC_TYPE` | `ngram-mod` |
-| `HERMES_LLAMA_SPEC_DRAFT_N_MAX` | `64` |
+| `HERMES_LLAMA_SPEC_NGRAM_MATCH/MIN/MAX` | `24` / `48` / `64` |
+| `HERMES_LLAMA_BATCH_SIZE` / `HERMES_LLAMA_UBATCH_SIZE` | `2048` / `512` |
 | `HERMES_LLAMA_PROFILE` | `rtx3060` |
 
 起動 script は `--help` を見て存在しない option は自動で外す:

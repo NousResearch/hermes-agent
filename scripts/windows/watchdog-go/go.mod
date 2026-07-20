@@ -1,6 +1,6 @@
 module github.com/nousresearch/hermes-agent/scripts/windows/watchdog-go
 
-go 1.23.1
+go 1.25.0
 
 require (
 	github.com/yusufpapurcu/wmi v1.2.4
@@ -8,7 +8,7 @@ require (
 )
 
 require (
-	filippo.io/edwards25519 v1.1.0 // indirect
+	filippo.io/edwards25519 v1.1.1 // indirect
 	github.com/akutz/memconn v0.1.0 // indirect
 	github.com/alexbrainman/sspi v0.0.0-20231016080023-1a75b4708caa // indirect
 	github.com/aws/aws-sdk-go-v2 v1.24.1 // indirect

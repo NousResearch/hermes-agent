@@ -55,7 +55,7 @@ function Resolve-DefaultContextSize {
 
     switch ($Profile) {
         "rtx5060ti" { return 65536 }
-        "rtx3080" { return 49152 }
+        "rtx3080" { return 65536 }
         "rtx3060" { return 65536 }
         default { return 65536 }
     }

@@ -112,6 +112,21 @@
       "note": "Upstream c918d07b5 moved stage2 hook contracts to tests/docker/ runtime tests."
     },
     {
+      "pattern": "plugins/memory/ebbinghaus/**",
+      "action": "preserve_custom",
+      "note": "Fork-only Ebbinghaus bounded/dream memory; absent from NousResearch upstream."
+    },
+    {
+      "pattern": "skills/autonomous-ai-agents/ebbinghaus-memory/**",
+      "action": "preserve_custom",
+      "note": "Fork-only Ebbinghaus skill docs and procedures."
+    },
+    {
+      "pattern": "tests/plugins/test_ebbinghaus*.py",
+      "action": "preserve_custom",
+      "note": "Fork-only Ebbinghaus plugin tests."
+    },
+    {
       "pattern": "fork/**",
       "action": "preserve_custom",
       "note": "Fork layout docs (README/AGENTS.md) for official vs custom navigation; not upstream."

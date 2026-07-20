@@ -35,6 +35,11 @@ $StderrLog = Join-Path $LogDir "memory-graph-server.err.log"
 $PidFile = Join-Path $LogDir "memory-graph-server.pid"
 
 function Get-PythonExe {
+    $venvPy = Join-Path $RepoRoot ".venv\Scripts\python.exe"
+    if (Test-Path -LiteralPath $venvPy) { return @($venvPy) }
+    $venvPy2 = Join-Path $RepoRoot "venv\Scripts\python.exe"
+    if (Test-Path -LiteralPath $venvPy2) { return @($venvPy2) }
+
     $cmd = Get-Command py -ErrorAction SilentlyContinue
     if ($cmd) { return @("py", "-3") }
     $python = Get-Command python -ErrorAction SilentlyContinue
@@ -63,10 +68,8 @@ function Test-MemoryGraphServerRunning {
         if ($null -ne $conn) { return $true }
     } catch {}
 
-    $running = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
-        if (-not $_.CommandLine) { return $false }
-        if ($_.CommandLine -notmatch "memory-graph-server") { return $false }
-        return $_.CommandLine -match [regex]::Escape(":$ListenPort")
+    $running = Get-Process -ErrorAction SilentlyContinue | Where-Object {
+        $_.Name -match "memory-graph-server" -or $_.ProcessName -match "memory-graph-server"
     }
     return ($null -ne $running)
 }
@@ -117,9 +120,14 @@ if (-not $NoRegenerate) {
         Write-Host "Regenerating obsidian-memory-graph.html ..."
         $py = Get-PythonExe
         $genArgs = @()
-        if ($py.Length -gt 1) { $genArgs += $py[1..($py.Length - 1)] }
+        if ($py -is [array]) {
+            $cmd = $py[0]
+            if ($py.Length -gt 1) { $genArgs += $py[1..($py.Length - 1)] }
+        } else {
+            $cmd = $py
+        }
         $genArgs += $graphScript
-        & $py[0] @genArgs | Out-Host
+        & $cmd @genArgs | Out-Host
     }
 }
 

@@ -6,11 +6,17 @@ Option B is the sole durable target: Hermes Kanban gains a deterministic native
 `HarnessExecutor` / `HarnessDriver` seam. Executor identity is separate from
 human assignee and profile ownership. The dispatcher and Kanban lifecycle
 kernel remain the only components allowed to claim, finalize, and accept a
-task. Each attempt also has one immutable invocation identity covering the
-exact prompt/instruction bytes and ordered deterministic launch inputs supplied
-to Pi. The executor invokes a driver and returns structured evidence; neither
-a harness process nor a model worker receives a terminal Kanban mutation
-surface.
+task. The approved provenance chain is `SourceBundle -> ProjectContract ->
+TaskContract -> RunEnvelope`; each attempt has a newly hashed `RunEnvelope`
+linked to the approved parent contracts. Each attempt also has derived,
+attempt-bound `HarnessInvocation` execution evidence covering the exact
+prompt/instruction bytes and ordered deterministic launch inputs supplied to
+the selected driver. `HarnessInvocation` is linked to the approved
+`RunEnvelope` and relevant contract hashes; it does not replace
+`RunEnvelope`, add a fifth logical provenance layer, or authorize rewriting
+approved parent intent. The executor invokes a driver and returns structured
+evidence; neither a harness process nor a model worker receives a terminal
+Kanban mutation surface.
 
 This rejects an external watcher, fake profile, nested Hermes worker,
 DB-writing bridge, worker-owned completion or acceptance, and any second
@@ -28,6 +34,61 @@ The frozen source identities are:
 These are evidence inputs, not merge targets. The recommendation is to extract
 the classified invariants onto pinned/current main. Do not wait for either PR
 and do not merge or rebase either PR wholesale.
+
+## Governing contracts and provenance correction
+
+This remediation is governed by the following immutable reviewed artifacts:
+
+- `pi-harness-project-checkpoint-2026-07-19.md`, SHA-256
+  `3df12fc2874032d27549d2e5d9d3384f35f7e4e2388f02534a4f1bbc9e74672c`;
+- `pi-harness-foundation-taskification-2026-07-19.md`, SHA-256
+  `36e83fe07a5fd6ad2b903fcbae7390e4ddae1273ab7ee152b61011d7fd77adf1`.
+
+This is a correction of an internal scope/provenance contradiction in this
+reconciliation, not a new product or architecture decision. Option B, the
+frozen upstream source identities, and every reuse/adapt/keep/reject
+classification in this artifact remain fixed.
+
+The checkpoint's four independently hashed **logical provenance layers** are:
+
+1. `SourceBundle`: the authenticated, ordered relevant user-source messages,
+   preserving exact source bytes and authorship metadata.
+2. `ProjectContract`: the approved project invariants and boundaries, linked
+   to the `SourceBundle` hash.
+3. `TaskContract`: one card's approved scope, exclusions, acceptance checks,
+   and risk, linked to the `ProjectContract` and `SourceBundle` hashes.
+4. `RunEnvelope`: one execution attempt's driver/model/effort, budgets,
+   timeouts, tool policy, isolation, and retry identity, linked to the
+   `TaskContract` and therefore to the complete approved parent lineage.
+
+The lineage is exactly `SourceBundle -> ProjectContract -> TaskContract ->
+RunEnvelope`. A boundary change requires a new approved parent contract;
+downstream derivation never rewrites approved parent intent. Every retry is a
+new attempt and therefore requires a new `RunEnvelope` and hash.
+
+A separate deterministic **serialization and validation pipeline** applies to
+each logical contract: (1) exact transport bytes, (2) strict decoded JSON,
+(3) validated canonical value, and (4) typed domain object/result. That
+pipeline defines how each contract is parsed, canonicalized, hashed, and
+materialized. It is subordinate to, and not a substitute for, the logical
+contract chain. Hash rules must distinguish exact received bytes from
+deterministic canonical bytes and must never silently substitute canonical
+reserialization for a required raw-byte identity.
+
+`HarnessInvocation` is canonical derived execution evidence for one approved
+`RunEnvelope`. It links the `RunEnvelope`, `TaskContract`, `ProjectContract`,
+and `SourceBundle` hashes and contains the exact effective ordered
+prompt/instruction bytes plus an unambiguous ordered list of non-secret launch
+inputs that can affect execution: invocation schema version, driver identity
+and version, model identifier, argv, non-secret environment/config inputs,
+and tool-schema, skill-content, and other behavior-affecting fingerprints.
+Credentials, tokens, secret values, and secret-derived fingerprints are
+excluded. HARN-01 defines this evidence schema, canonicalization, hashing, and
+golden vectors only. HARN-02 derives it from frozen inputs, persists and binds
+its exact bytes or content-addressed immutable reference to the approved
+attempt and contract identities, re-reads and verifies it, and only then
+crosses the spawn boundary. This ownership split is complete: there is no
+partial mode in which a driver reconstructs or owns the invocation.
 
 ## Primitive reconciliation
 
@@ -175,29 +236,41 @@ then best-effort unlinks its file.
 `ac6550e487e88e17a59a8454720eecacbd341709:hermes_cli/kanban_db.py:delete_attachment/L3225-L3246`,
 `ac6550e487e88e17a59a8454720eecacbd341709:hermes_cli/kanban_db.py:delete_archived_task,delete_task/L5406-L5451`.
 
-### Native deletion and orphan contract
+### Persistence collision consequences and downstream ownership
 
-Native HARN persistence must make deletion complete across both SQL and the
-filesystem. Before either hard-delete transaction commits, it must identify all
-task-owned ordinary attachments, the locked spec attachment, and all native
-run-owned artifact paths; the transaction must delete their metadata rows and
-every HARN run/attempt ledger row along with the existing child rows. After
-commit, it must best-effort unlink only those validated, board-owned paths.
-Because SQLite cannot atomically commit filesystem changes, interrupted writes
-or interrupted post-commit unlinks must be recoverable: an idempotent orphan
-sweeper must reconcile metadata and files under the trusted board storage roots,
-remove unreferenced owned blobs, and handle rows whose blobs are missing under
-an explicit fail-closed policy. It must never infer that SQL rollback removed a
-file.
+The deletion and orphan findings above remain valid source evidence, but they
+do not expand HARN-01 into a run-lifecycle or storage-remediation card.
+HARN-01's required deliverable is the transport-independent logical contract
+kernel, the per-contract serialization/validation pipeline, schema-level
+`HarnessInvocation`, golden vectors, mutation and version behavior, and public
+reference documentation. It adds no Kanban run-lifecycle columns, publishes no
+immutable invocation blob, and changes neither task hard-delete path nor orphan
+reconciliation.
 
-Focused tests must exercise both `delete_archived_task` and `delete_task` with
-ordinary attachments, a locked spec attachment, multiple runs, and multiple
-artifacts, asserting deletion of all SQL rows and stored files. Fault-injection
-tests must interrupt after file write/before row commit and after row
-deletion/before unlink, then run the sweeper twice to prove safe idempotent
-cleanup. Migration coverage must also seed the PR-shaped orphan classes --
-`task_external_artifacts` rows/files and `terminal_handoffs` rows -- so the
-native migration or explicit rejection policy cannot silently retain them.
+HARN-02 owns the minimum native persistence needed to bind verified logical
+contract identities and the derived invocation to an attempt before spawn. If
+existing attachment/storage primitives cannot atomically retain and re-read
+the exact invocation bytes or a content-addressed immutable reference, that
+storage work must be extracted as a separately bounded prerequisite that
+depends on HARN-01 and that HARN-02 in turn depends on. It must land completely
+before any harness spawn path is enabled. Only that prerequisite may introduce
+the necessary storage metadata and, if it introduces new filesystem blobs, the
+corresponding retention, both hard-delete updates, crash-window policy, and
+idempotent orphan reconciliation. Those storage obligations cannot be split
+into a mode where HARN-02 can spawn without durable verified identities.
+
+Any such persistence prerequisite must identify task-owned ordinary
+attachments, locked spec attachments, and native run-owned artifact or
+invocation paths before either hard-delete transaction commits; delete their
+metadata with the owning attempt/lifecycle rows; and after commit best-effort
+unlink only validated board-owned paths. Because SQLite cannot atomically
+commit filesystem changes, fault-injection coverage must include interruption
+after file write/before row commit and after row deletion/before unlink, then
+prove idempotent cleanup. Migration coverage must seed the PR-shaped orphan
+classes -- `task_external_artifacts` rows/files and `terminal_handoffs` rows --
+so a migration or explicit rejection policy cannot silently retain them. This
+conditional storage obligation belongs to HARN-02's prerequisite, not the
+HARN-01 logical contract objective.
 
 There is no literal pinned-main table/index name collision, and the two PRs do
 not literally collide with each other's DDL names. The semantic collision is
@@ -251,47 +324,67 @@ byte-stable system prompt.
 
 ### HARN-01
 
-- Add a focused canonical four-layer contract/hashing module under
-  `hermes_cli/`: exact transport bytes, strict decoded JSON, validated canonical
-  value, and domain object/result. Define which hash belongs to each layer and
-  never silently substitute canonical reserialization for raw bytes.
-- In addition, define one canonical, attempt-bound `HarnessInvocation`
-  contract. Its exact transport bytes contain the byte-for-byte ordered
-  prompt/instruction payload supplied to Pi and an unambiguous ordered list of
-  every deterministic launch input that can affect it: invocation
-  contract/schema version, driver identity/version, model identifier, ordered
-  argv and non-secret environment/config inputs, and ordered tool-schema,
-  skill-content, and other behavior-affecting configuration fingerprints.
-  Credentials, tokens, secret values, and secret-derived fingerprints are not
-  part of this envelope or its persistence.
-- Persist the exact invocation bytes as an immutable native attachment, or as
-  a content-addressed immutable attachment reference, together with its
-  SHA-256. Bind that identity to the trusted task, run, immutable spec,
-  attempt/generation, and executor tuple; retain it with the attempt for audit
-  and replay. Re-read the immutable bytes and recompute their SHA-256
-  immediately before process spawn. Attachment identity, stored hash,
-  recomputed hash, and the complete trusted tuple must all agree or the attempt
-  fails before work is enabled. This is one immutable input identity on the
-  native attempt, not another lifecycle ledger.
-- Add only justified persistence/migration hooks in
-  `hermes_cli/kanban_db.py`. Use native names, distinguish executor identity
-  from assignee/profile, and update fresh DDL, additive migration, rebuild DDL,
-  indexes, deletion, and orphan policy together.
-- Focus tests on strict JSON negatives, exact raw-byte identity, all four
-  spec/result contract layers, invocation exact-byte identity, single-byte
-  prompt mutation, launch-input reordering, tamper detection,
-  fresh/existing/rebuilt schema parity, retention, and cleanup.
+- Restore the ratified objective exactly: add versioned, strict, canonical,
+  hash-linked representations for `SourceBundle`, `ProjectContract`,
+  `TaskContract`, and `RunEnvelope`, independent of Pi and independent of
+  Kanban transport.
+- `SourceBundle` preserves authenticated relevant user messages byte-for-byte
+  with ordering/authorship metadata. `ProjectContract` records approved
+  project invariants and links to the source-bundle hash. `TaskContract`
+  records one card's scope, exclusions, acceptance checks, and risk and links
+  to project/source hashes. `RunEnvelope` records one attempt's
+  driver/model/effort, budgets, timeouts, tool policy, isolation, and retry
+  identity and links to the task contract.
+- Apply exact transport bytes -> strict decoded JSON -> validated canonical
+  value -> typed domain object/result to each of those four logical contracts.
+  Reject duplicate keys, non-finite numbers, invalid UTF-8, BOM, ambiguous
+  normalization, non-canonical input, and unknown required versions/fields.
+  Compute hashes internally from the specified exact canonical bytes; callers
+  cannot assert their own hashes. Preserve exact source-message bytes through
+  round-trip, and make any mutation of a linked layer fail verification.
+- Enforce parent linkage: approved parent intent is immutable, a boundary
+  change requires a newly approved parent contract, and every retry creates a
+  newly hashed `RunEnvelope` rather than editing an earlier attempt envelope.
+- Define the canonical schema, serialization, hashing, and golden vectors for
+  derived attempt-bound `HarnessInvocation` evidence, including exact
+  effective prompt/instruction bytes and ordered non-secret launch inputs. It
+  must carry the approved `RunEnvelope` and relevant parent contract hashes
+  and must not masquerade as, mutate, or replace `RunEnvelope`.
+- Publish golden vectors, round-trip and mutation fixtures, strict parser
+  negatives, downgrade/unknown-version behavior, and public schema/reference
+  documentation for all four logical contracts and the derived invocation
+  evidence.
+- HARN-01 adds no provider, Pi, prompt-builder, dispatcher, run-lifecycle,
+  invocation-persistence, task-deletion, or orphan-reconciliation behavior.
+  No `kanban_db.py` migration is required for this contract kernel. HARN-02,
+  or its fully landed persistence prerequisite, owns persistence and attempt
+  binding.
 
 ### HARN-02
 
 - Add a focused `HarnessExecutor` / `HarnessDriver` seam and deterministic fake
   driver under `hermes_cli/`; do not add a core model tool.
-- `HarnessExecutor` alone constructs the canonical invocation from already
-  frozen attempt inputs, computes and persists its identity, re-reads and
-  verifies it at the pre-spawn boundary, and passes the verified bytes/envelope
-  unchanged to `HarnessDriver`. The driver may consume those bytes but may not
-  regenerate, append to, reorder, or ad-lib the prompt/instructions from
-  mutable task, profile, global configuration, tool, or skill state.
+- Before a harness attempt can start, consume persisted contract identities,
+  re-read the canonical contract bytes, verify all four hashes and the complete
+  `SourceBundle -> ProjectContract -> TaskContract -> RunEnvelope` linkage,
+  and persist the new run-envelope identity on the native attempt. Failure or
+  absence at any link fails closed before driver preparation.
+- `HarnessExecutor` alone derives canonical `HarnessInvocation` from the
+  already frozen `RunEnvelope` inputs, computes its SHA-256, and persists its
+  exact bytes or content-addressed immutable reference with the complete
+  trusted task/run/attempt/executor and logical-contract hash tuple. It then
+  re-reads and verifies the retained invocation at the pre-spawn boundary and
+  passes the verified bytes and typed evidence unchanged to `HarnessDriver`.
+  The driver may consume them but may not regenerate, append to, reorder, or
+  ad-lib prompt/instructions from mutable task, profile, global configuration,
+  tool, or skill state.
+- Keep persistence minimal: contract identities and references, the required
+  run-envelope identity, executor discriminator/identity, and invocation
+  identity/reference on the existing native attempt lifecycle. Do not copy the
+  broad `external_*` schema or create a parallel lifecycle ledger. If exact
+  immutable retention cannot be built safely from existing storage, the
+  separately bounded persistence prerequisite described above must land in
+  full before HARN-02; HARN-02 has no invocation-unbound fallback.
 - Integrate dispatcher selection and Hermes-owned lifecycle in
   `hermes_cli/kanban_db.py`. A harness discriminator selects the executor;
   ordinary non-harness cards retain the exact legacy profile-spawn path.
@@ -299,12 +392,18 @@ byte-stable system prompt.
   `26480e6c57c3558442a73c2dffe313996b19417f:hermes_cli/kanban_db.py:_dispatch_once_locked/L7505-L7807`
   and
   `26480e6c57c3558442a73c2dffe313996b19417f:hermes_cli/kanban_db.py:_default_spawn/L8169-L8355`.
+- Preserve the separate process-binding safety gate: after the driver spawns
+  the selected child but before work/payload execution is enabled, bind and
+  verify the actual child process identity. Invocation verification proves
+  what may run; process binding proves which process will run it. Neither gate
+  substitutes for the other.
 - Use existing configuration validation surfaces for driver selection and
   options. Do not add a non-secret `.env` setting.
-- Add focused contract, fake-driver, selection, identity, process binding,
-  replay/divergence, restart, concurrency, recovery, and lifecycle tests. The
-  fake driver must prove it receives the same already-verified invocation bytes
-  across the seam and is never called after a prompt-byte, launch-order, or
+- Add focused fake-driver, logical-chain verification, selection, persistence,
+  invocation identity, process binding, replay/divergence, restart,
+  concurrency, recovery, and lifecycle tests. The fake driver must prove it
+  receives the same already-verified invocation bytes across the seam and is
+  never called after a contract-link, prompt-byte, launch-order, or
   complete-identity mismatch. Assert that executor identity never changes
   profile ownership and that legacy dispatch output and behavior remain
   unchanged.
@@ -312,13 +411,19 @@ byte-stable system prompt.
 ### HARN-06
 
 - Implement the native Pi driver through `HarnessExecutor`; it is not a nested
-  Hermes worker and receives no worker terminal tools.
-- Immediately before spawn, separately verify the exact immutable invocation
-  bytes and prompt/instruction payload against the attempt-bound invocation
-  SHA-256 and complete invocation identity. This is a distinct pre-spawn
-  invocation/prompt boundary, not one of the following four data/evidence
-  boundaries; it must not be conflated with or silently inserted into their
-  numbering.
+  Hermes worker and receives no worker terminal tools. HARN-06 consumes the
+  HARN-02 seam and persistence contract; it does not introduce another
+  invocation builder, contract store, or lifecycle owner.
+- Before driver start, `HarnessExecutor` verifies all four logical contract
+  hashes and their lineage, then separately verifies the exact immutable
+  `HarnessInvocation` bytes and prompt/instruction payload against the
+  attempt-bound invocation SHA-256 and complete identity. The Pi driver
+  receives those exact verified bytes/evidence unchanged and may neither
+  reconstruct them nor read mutable state to augment them.
+- Retain the separate pre-payload process-binding gate from HARN-02: bind and
+  verify the actual Pi child after spawn and before work is enabled. Logical
+  contract verification, invocation verification, and process binding are
+  three distinct gates.
 - Perform four explicit SHA-256 checks: (1) caller-expected hash versus the
   submitted raw spec bytes at lock time, (2) locked and attachment-record
   hashes versus freshly re-read raw spec bytes immediately before execution,
@@ -326,23 +431,32 @@ byte-stable system prompt.
   tuple, and (4) every declared artifact hash versus its exact durable bytes.
   Use a fresh isolated worktree and fresh attempt/session identity, and persist
   exact deterministic evidence and lifecycle results.
+- These four data/evidence checks remain separately numbered source-backed
+  boundaries. They do not redefine the four logical provenance contracts or
+  the serialization/validation pipeline applied to each contract.
 - Replay is permitted only when the complete invocation identity and SHA-256
-  match the retained attempt record. Any prompt/instruction mutation, changed
-  deterministic fingerprint, reordered launch input, or missing immutable
-  invocation bytes is divergence and must fail before work is enabled.
+  match the retained attempt record and the four logical contract identities
+  still verify. Any prompt/instruction mutation, changed deterministic
+  fingerprint, reordered launch input, missing immutable invocation bytes, or
+  broken parent hash is divergence and must fail before work is enabled.
 - Hermes alone claims, heartbeats, verifies process exit, finalizes, and accepts
-  the run. The Pi process cannot call complete, block, handoff, requeue, or a
-  DB-writing bridge.
+  the run. The Pi driver only spawns/observes the child and returns evidence;
+  the Pi process cannot call complete, block, handoff, requeue, or a DB-writing
+  bridge.
 - Preserve legacy profile behavior unchanged for every non-harness card.
 
 ## Affected migration and test surfaces
 
-Migration surfaces in `hermes_cli/kanban_db.py` are `SCHEMA_SQL`, model/row
-mapping, `_migrate_add_optional_columns`, initialization order,
-`_REBUILD_SPECS`, `_rebuild_drifted_tables`, named index recreation, legacy
-active-run backfill, and both task deletion paths. Filesystem artifact layout,
-attachment deletion, orphan cleanup, and crash recovery are part of migration
-parity even though they are not SQLite DDL.
+HARN-01 does not touch these migration surfaces. If HARN-02 or its required
+persistence prerequisite changes `hermes_cli/kanban_db.py`, the affected
+surfaces are `SCHEMA_SQL`, model/row mapping,
+`_migrate_add_optional_columns`, initialization order, `_REBUILD_SPECS`,
+`_rebuild_drifted_tables`, named index recreation, and legacy active-run
+backfill. If that persistence introduces or reuses filesystem-backed child
+data, both task deletion paths, attachment/blob deletion, crash recovery, and
+orphan cleanup are part of the same prerequisite's parity contract even though
+they are not SQLite DDL. HARN-02 cannot enable spawning until that prerequisite
+is complete.
 
 Focused test surfaces are:
 
@@ -352,10 +466,16 @@ Focused test surfaces are:
 - existing `kanban_db` claim, dispatch, heartbeat, stale claim, crash, maximum
   runtime, completion, block, attachment, deletion, dependency, recurrence,
   and hook tests;
-- new four-layer spec/result contract/hash and strict-decoder tests;
-- new invocation-contract tests for exact prompt/instruction bytes, ordered
-  launch fingerprints, mutation and reordering rejection, identical replay,
-  divergent replay, immutable-attachment retention, and restart re-read/rehash;
+- HARN-01 tests for all four logical contracts in the exact approved order,
+  parent-hash lineage, exact `SourceBundle` bytes, per-contract
+  transport/decode/canonical/domain behavior, golden vectors, mutation,
+  strict-decoder negatives, and downgrade/unknown-version rejection;
+- HARN-01 schema-level invocation tests for exact prompt/instruction bytes,
+  ordered non-secret launch inputs, linked logical contract hashes, mutation,
+  and reordering rejection, without persistence or spawn behavior;
+- HARN-02 invocation-persistence tests for identical replay, divergent replay,
+  immutable-byte/reference retention, restart re-read/rehash, complete
+  contract-tuple binding, and fail-closed missing evidence;
 - new executor/fake-driver tests for routing, trusted attempt identity,
   complete invocation identity, unchanged verified-byte delivery,
   executor/profile separation, process binding and absence, exact result and
@@ -379,6 +499,15 @@ and
 
 - [ ] Use exact commit-object evidence only; record the complete SHA beside
       every source/test claim and never substitute a symbolic ref.
+- [ ] Preserve `SourceBundle -> ProjectContract -> TaskContract -> RunEnvelope`
+      as the four independently hashed logical layers; retries create a new
+      `RunEnvelope`, and derivation never rewrites approved parent intent.
+- [ ] Apply exact transport bytes -> strict decoded JSON -> validated canonical
+      value -> typed domain object/result to each logical contract without
+      treating that pipeline as the logical provenance model.
+- [ ] Keep `HarnessInvocation` derived from and linked to the approved
+      `RunEnvelope` and parent hashes; never substitute it for a logical
+      contract or let a driver reconstruct it.
 - [ ] Keep exactly one lifecycle owner: Hermes Kanban claims, heartbeats,
       finalizes, accepts, emits terminal events, and promotes dependents.
 - [ ] Keep executor identity distinct from human/profile ownership; never
@@ -394,11 +523,11 @@ and
       establish process absence/reaping before release, retry, or acceptance.
 - [ ] Compare and persist exact result bytes and exact artifact bytes; verify
       declared hashes and reject same-name/same-attempt divergent content.
-- [ ] Freeze and persist the exact ordered prompt/instruction bytes and all
-      deterministic non-secret launch fingerprints in an immutable
-      attempt-bound invocation attachment; re-read and re-hash it immediately
-      before spawn, and reject complete-identity mismatch, mutation,
-      reordering, or missing retained bytes before enabling work.
+- [ ] In HARN-02, freeze and persist the exact ordered prompt/instruction bytes
+      and deterministic non-secret launch fingerprints as immutable
+      attempt-bound invocation bytes or a content-addressed reference; re-read
+      and re-hash before spawn, and reject complete-identity mismatch,
+      mutation, reordering, or missing retained bytes before enabling work.
 - [ ] Perform all four SHA-256 checks: expected/submitted raw spec,
       locked/pre-execution re-read raw spec, exact staged/replayed result bytes,
       and every declared/durable artifact byte sequence. Keep the separate
@@ -408,12 +537,41 @@ and
       executor/invocation identity and assert guarded update row counts.
 - [ ] Exercise identical replay, divergent replay, mid-transaction rollback,
       concurrent finalization, restart, and post-commit recovery.
-- [ ] Maintain fresh/additive/rebuilt schema and canonical-index parity; include
-      both deletion paths, filesystem orphan cleanup, custom-index and
-      table-owned-trigger loss, and explicit dependent-view/trigger migration
-      coverage for every compatibility guarantee.
+- [ ] For any HARN-02 persistence migration, maintain fresh/additive/rebuilt
+      schema and canonical-index parity. If filesystem-backed child data is
+      introduced or reused, its fully landed prerequisite also covers both
+      deletion paths, orphan cleanup, custom-index and table-owned-trigger
+      loss, and explicit dependent-view/trigger migration coverage for every
+      compatibility guarantee.
 - [ ] Prove legacy profile selection/spawn/recovery behavior is unchanged for
       non-harness cards.
+
+## Remediation verification and acceptance
+
+This artifact is accepted only after an independent reviewer verifies it
+against both exact governing inputs:
+
+- `pi-harness-project-checkpoint-2026-07-19.md` at SHA-256
+  `3df12fc2874032d27549d2e5d9d3384f35f7e4e2388f02534a4f1bbc9e74672c`;
+- `pi-harness-foundation-taskification-2026-07-19.md` at SHA-256
+  `36e83fe07a5fd6ad2b903fcbae7390e4ddae1273ab7ee152b61011d7fd77adf1`.
+
+The reviewer must confirm both axes: the four logical contract layers appear
+in the approved order with correct parent linkage and retry/approval
+boundaries, while the transport/decode/canonical/domain pipeline is applied to
+each contract and is never presented as a replacement provenance model. The
+reviewer must also confirm that `HarnessInvocation` is derived attempt evidence
+linked to `RunEnvelope`; HARN-01 retains its ratified transport-independent
+four-contract objective and schema-only invocation role; HARN-02 owns minimal
+persistence, binding, pre-spawn verification, and the distinct process-binding
+gate; and HARN-06 receives the verified invocation unchanged without lifecycle
+authority. Finally, the reviewer must confirm that Option B, the frozen source
+SHAs, the source-backed analysis, and the primitive classifications remain
+unchanged except where wording was required to remove the contradiction.
+
+Verification for this remediation is document inspection, exact-hash
+comparison, citation/line-bound review, and whitespace/diff review. Source
+tests are inspected evidence and are not claimed to have been executed.
 
 ## Uncertainties and proof limits
 
@@ -431,8 +589,9 @@ and
 - PR #63297 lacks relevant divergent-key, expired-claim, rollback,
   two-connection finalization, guarded-rowcount, migration/delete,
   post-commit-recovery, authorization, and pinned-main artifact-parity coverage.
-- Exact field names and the minimum native persistence set remain HARN-01/HARN-02
-  design decisions. They must be chosen from the canonical contract and native
-  lifecycle needs, not copied from either external-worker schema.
+- Persistence ownership is fixed: HARN-01 defines the logical kernel and
+  schema-level invocation evidence; HARN-02, or its complete prerequisite,
+  persists and binds the minimum native attempt identities. Neither PR's
+  external schema is an authorized default.
 - The stated ahead/behind counts are measurements at the freeze identities;
   they are not statements about later branch state.

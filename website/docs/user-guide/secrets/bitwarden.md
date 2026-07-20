@@ -124,18 +124,20 @@ Notes:
 - `prune` is dry-run by default.
 - The bootstrap token (`access_token_env`, usually `BWS_ACCESS_TOKEN`) is intentionally kept in the profile-local `.env` so Hermes can keep talking to Bitwarden.
 - `prune --apply` only rewrites the selected profile's `.env`; it does not touch `config.yaml`, and it leaves non-secret config like paths, CPU/memory, and channel IDs alone.
+- Backend exception and warning details are redacted from prune output because they may contain credentials. If verification fails, `--apply` exits nonzero without changing `.env`.
+- Quoted multiline values are treated as one logical assignment. Hermes removes every line of a verified assignment, and an unterminated quoted value makes the whole prune fail closed.
 - Before rewriting, Hermes creates a local backup named like `.env.bak-pre-bitwarden-prune-<timestamp>` and tightens it to mode `0600`.
 
 ## Failure modes
 
-Bitwarden never blocks Hermes startup. If anything goes wrong, you'll see a one-line warning in stderr and Hermes continues with whatever credentials `.env` already had:
+Bitwarden never blocks Hermes startup. If anything goes wrong, you'll see a one-line warning in stderr and Hermes continues with whatever credentials `.env` already had. Raw backend responses are not printed because they can include access tokens or secret values:
 
 | Symptom | Cause | Fix |
 |---|---|---|
 | `BWS_ACCESS_TOKEN is not set` | Enabled in config but token cleared from `.env` | Re-run `hermes secrets bitwarden setup` |
-| `bws exited 1: invalid access token` | Token revoked or wrong | Generate a new token, re-run setup |
-| `[400 Bad Request] {"error":"invalid_client"}` | Token is for a Bitwarden region other than the one `bws` is calling (e.g. EU token hitting the US identity endpoint) | Re-run setup and pick the right region, or set `secrets.bitwarden.server_url` to `https://vault.bitwarden.eu` (or your self-hosted URL) |
-| `bws timed out` | Network blocked or Bitwarden API slow | Check connectivity to `api.bitwarden.com` (or your `server_url`) |
+| Bitwarden authentication failed (backend details redacted) | Token revoked or wrong | Generate a new token, then re-run setup |
+| Bitwarden verification failed after a region or endpoint change | Token is for a Bitwarden region other than the one `bws` is calling (e.g. EU token hitting the US identity endpoint) | Re-run setup and pick the right region, or set `secrets.bitwarden.server_url` to `https://vault.bitwarden.eu` (or your self-hosted URL) |
+| Bitwarden request timed out | Network blocked or Bitwarden API slow | Check connectivity to `api.bitwarden.com` (or your `server_url`) |
 | `bws binary not available` | `auto_install: false` and `bws` not on PATH | Install manually from [github.com/bitwarden/sdk-sm/releases](https://github.com/bitwarden/sdk-sm/releases) or flip `auto_install` back on |
 | `Checksum mismatch` | Download corrupted or tampered | Re-run, will retry; if it persists, file an issue |
 

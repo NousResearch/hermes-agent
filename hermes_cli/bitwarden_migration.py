@@ -32,6 +32,15 @@ BOOTSTRAP_CLASS = "bootstrap-secret"
 SECRET_CLASS = "secret"
 NON_SECRET_CLASS = "non-secret"
 
+_VERIFICATION_FAILURE = (
+    "Bitwarden verification failed; no plaintext secrets were removed. "
+    "Check Bitwarden configuration and credentials, then retry."
+)
+_ENV_PARSE_FAILURE = (
+    "Could not safely parse .env; no plaintext secrets were removed. "
+    "Fix unterminated quoted values, then retry."
+)
+
 _SECRET_MARKERS = (
     "API_KEY",
     "ACCESS_TOKEN",
@@ -50,6 +59,15 @@ class BitwardenSettings:
     access_token_env: str
     project_id: str
     server_url: str
+
+
+@dataclass(frozen=True)
+class _EnvAssignment:
+    key: str
+    value: str
+    start_line: int
+    end_line: int
+    complete: bool
 
 
 @dataclass(frozen=True)
@@ -117,8 +135,8 @@ def _read_yaml_mapping(config_path: Path) -> tuple[dict[str, object], list[str]]
 
     try:
         loaded = yaml.safe_load(config_path.read_text(encoding="utf-8"))
-    except Exception as exc:  # noqa: BLE001 - surfaced as a warning for the CLI
-        return {}, [f"could not read {config_path.name}: {exc}"]
+    except Exception:  # noqa: BLE001 - config errors must not expose file contents
+        return {}, [f"could not read {config_path.name}; fix its YAML syntax and retry"]
 
     if loaded is None:
         return {}, warnings
@@ -159,26 +177,75 @@ def load_bitwarden_settings(profile_home: Path) -> tuple[BitwardenSettings, list
     )
 
 
-def _read_env_assignments(env_path: Path) -> list[tuple[str, str]]:
-    """Parse a .env file into ordered ``(key, value)`` assignments.
-
-    The parser is intentionally conservative: it only recognizes top-level
-    assignments (with optional ``export``) and treats everything after the first
-    ``=`` as value text.  That is enough for inventory and pruning without
-    needing to load the file into ``os.environ``.
-    """
+def _read_env_assignment_spans(env_path: Path) -> tuple[list[str], list[_EnvAssignment]]:
     if not env_path.exists():
-        return []
+        return [], []
 
-    assignments: list[tuple[str, str]] = []
-    for line in env_path.read_text(encoding="utf-8", errors="replace").splitlines():
-        match = ENV_ASSIGNMENT_RE.match(line)
+    lines = env_path.read_text(
+        encoding="utf-8",
+        errors="replace",
+    ).splitlines(keepends=True)
+    assignments: list[_EnvAssignment] = []
+    line_index = 0
+    while line_index < len(lines):
+        match = ENV_ASSIGNMENT_RE.match(lines[line_index])
         if not match:
+            line_index += 1
             continue
-        key = match.group("key")
-        raw_value = line[match.end() :]
-        assignments.append((key, _normalize_env_value(raw_value)))
-    return assignments
+
+        raw_parts = [lines[line_index][match.end() :]]
+        end_line = line_index + 1
+        complete = True
+        quote_info = _opening_quote(raw_parts[0])
+        if quote_info is not None:
+            quote, content_start = quote_info
+            complete = _find_closing_quote(raw_parts[0][content_start:], quote) is not None
+            while not complete and end_line < len(lines):
+                continuation = lines[end_line]
+                raw_parts.append(continuation)
+                end_line += 1
+                complete = _find_closing_quote(continuation, quote) is not None
+
+        assignments.append(
+            _EnvAssignment(
+                key=match.group("key"),
+                value=_normalize_env_value("".join(raw_parts)),
+                start_line=line_index,
+                end_line=end_line,
+                complete=complete,
+            )
+        )
+        line_index = end_line
+
+    return lines, assignments
+
+
+def _read_env_assignments(env_path: Path) -> list[tuple[str, str]]:
+    """Parse ordered assignments without loading values into ``os.environ``."""
+    _lines, assignments = _read_env_assignment_spans(env_path)
+    return [(assignment.key, assignment.value) for assignment in assignments]
+
+
+def _opening_quote(raw_value: str) -> tuple[str, int] | None:
+    leading_space = len(raw_value) - len(raw_value.lstrip())
+    if leading_space >= len(raw_value):
+        return None
+    quote = raw_value[leading_space]
+    if quote not in {'"', "'"}:
+        return None
+    return quote, leading_space + 1
+
+
+def _find_closing_quote(text: str, quote: str) -> int | None:
+    escaped = False
+    for index, character in enumerate(text):
+        if character == quote and not escaped:
+            return index
+        if character == "\\":
+            escaped = not escaped
+        else:
+            escaped = False
+    return None
 
 
 def _normalize_env_value(raw_value: str) -> str:
@@ -186,9 +253,12 @@ def _normalize_env_value(raw_value: str) -> str:
     if not value:
         return ""
 
-    # Strip one layer of matching quotes if present.
-    if len(value) >= 2 and value[0] == value[-1] and value[0] in {'"', "'"}:
-        return value[1:-1]
+    quote_info = _opening_quote(value)
+    if quote_info is not None:
+        quote, content_start = quote_info
+        content = value[content_start:]
+        closing_quote = _find_closing_quote(content, quote)
+        return content if closing_quote is None else content[:closing_quote]
 
     # Drop a simple inline comment for unquoted values.
     if " #" in value:
@@ -271,7 +341,10 @@ def prune_plan_for_profile(
     env_path = profile_home / ".env"
     config_path = profile_home / "config.yaml"
     settings, warnings = load_bitwarden_settings(profile_home)
-    assignments = _read_env_assignments(env_path)
+    _lines, assignment_spans = _read_env_assignment_spans(env_path)
+    assignments = [
+        (assignment.key, assignment.value) for assignment in assignment_spans
+    ]
     values = _assignment_map(assignments)
     fetcher = fetcher or fetch_bitwarden_secrets
 
@@ -291,7 +364,9 @@ def prune_plan_for_profile(
             verification_error=None,
         )
 
-    if not settings.enabled:
+    if any(not assignment.complete for assignment in assignment_spans):
+        verification_error = _ENV_PARSE_FAILURE
+    elif not settings.enabled:
         verification_error = "Bitwarden is disabled in config.yaml"
     else:
         token = (
@@ -314,10 +389,14 @@ def prune_plan_for_profile(
                     use_cache=False,
                     home_path=profile_home,
                 )
-                warnings.extend(fetch_warnings)
+                if fetch_warnings:
+                    warnings.append(
+                        "Bitwarden verification returned "
+                        f"{len(fetch_warnings)} warning(s); backend details were redacted."
+                    )
                 secret_names = set(fetched)
-            except Exception as exc:  # noqa: BLE001 - surfaced to the CLI
-                verification_error = f"Bitwarden verification failed: {exc}"
+            except Exception:  # noqa: BLE001 - backend details may contain secrets
+                verification_error = _VERIFICATION_FAILURE
 
     seen: set[str] = set()
     for key, value in assignments:
@@ -458,17 +537,27 @@ def apply_prune_plan(plan: PrunePlan) -> PruneResult:
             changed=False,
         )
 
-    original_lines = plan.env_path.read_text(encoding="utf-8", errors="replace").splitlines(
-        keepends=True
-    )
-    kept_lines: list[str] = []
+    original_lines, assignments = _read_env_assignment_spans(plan.env_path)
+    if any(not assignment.complete for assignment in assignments):
+        return PruneResult(
+            profile=plan.profile,
+            env_path=plan.env_path,
+            backup_path=None,
+            removed_keys=[],
+            changed=False,
+        )
+
+    removed_line_indexes: set[int] = set()
     removed_keys: list[str] = []
-    for line in original_lines:
-        match = ENV_ASSIGNMENT_RE.match(line)
-        if match and match.group("key") in remove_keys:
-            removed_keys.append(match.group("key"))
+    for assignment in assignments:
+        if assignment.key not in remove_keys:
             continue
-        kept_lines.append(line)
+        removed_keys.append(assignment.key)
+        removed_line_indexes.update(range(assignment.start_line, assignment.end_line))
+
+    kept_lines = [
+        line for index, line in enumerate(original_lines) if index not in removed_line_indexes
+    ]
 
     if not removed_keys:
         return PruneResult(

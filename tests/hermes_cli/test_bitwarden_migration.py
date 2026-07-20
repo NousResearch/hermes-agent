@@ -18,6 +18,12 @@ from hermes_cli import bitwarden_migration as bwm  # noqa: E402
 from hermes_cli import secrets_cli  # noqa: E402
 
 
+ACCESS_TOKEN_SENTINEL = "ACCESS_TOKEN_SENTINEL_12345"
+SECRET_VALUE_SENTINEL = "SECRET_VALUE_SENTINEL_12345"
+STDERR_SENTINEL = "STDERR_SENTINEL_12345"
+EXCEPTION_SENTINEL = "EXCEPTION_SENTINEL_12345"
+
+
 @pytest.fixture
 def make_profile(tmp_path: Path):
     def _make_profile(name: str, env_text: str, config_text: str) -> Path:
@@ -39,8 +45,8 @@ class TestInventory:
     ) -> None:
         coding_home = make_profile(
             "coding",
-            """BWS_ACCESS_TOKEN=0.coding-token
-OPENAI_API_KEY=sk-coding-secret
+            f"""BWS_ACCESS_TOKEN={ACCESS_TOKEN_SENTINEL}
+OPENAI_API_KEY={SECRET_VALUE_SENTINEL}
 PATH=/usr/local/bin
 """,
             """secrets:
@@ -83,13 +89,158 @@ GITHUB_TOKEN=ghp_ops_secret
         assert "coding | .env | secret | set | OPENAI_API_KEY" in out
         assert "coding | .env | non-secret | set | PATH" in out
         assert "ops | .env | non-secret | set | DISCORD_CHANNEL_ID" in out
-        assert "sk-coding-secret" not in out
-        assert "0.coding-token" not in out
+        assert SECRET_VALUE_SENTINEL not in out
+        assert ACCESS_TOKEN_SENTINEL not in out
         assert "ghp_ops_secret" not in out
         assert "0.ops-token" not in out
 
 
 class TestPrunePlanning:
+    @pytest.mark.parametrize(("apply", "expected_rc"), [(False, 0), (True, 1)])
+    def test_verification_exception_is_redacted_and_never_mutates_env(
+        self,
+        apply: bool,
+        expected_rc: int,
+        make_profile,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys,
+    ) -> None:
+        profile_home = make_profile(
+            "coding",
+            f"""BWS_ACCESS_TOKEN={ACCESS_TOKEN_SENTINEL}
+OPENAI_API_KEY={SECRET_VALUE_SENTINEL}
+PATH=/usr/local/bin
+""",
+            """secrets:
+  bitwarden:
+    enabled: true
+    access_token_env: BWS_ACCESS_TOKEN
+    project_id: coding-project
+""",
+        )
+        env_path = profile_home / ".env"
+        original_env = env_path.read_text(encoding="utf-8")
+
+        def failing_fetch(**kwargs):
+            assert kwargs["access_token"] == ACCESS_TOKEN_SENTINEL
+            raise RuntimeError(
+                f"{EXCEPTION_SENTINEL}: backend stderr {STDERR_SENTINEL}; "
+                f"token={ACCESS_TOKEN_SENTINEL}; value={SECRET_VALUE_SENTINEL}"
+            )
+
+        monkeypatch.setattr(bwm, "fetch_bitwarden_secrets", failing_fetch)
+        monkeypatch.setattr(
+            "hermes_cli.profiles.resolve_profile_env",
+            lambda _profile_name: str(profile_home),
+        )
+
+        rc = secrets_cli.cmd_prune(Namespace(profile="coding", apply=apply))
+        out = capsys.readouterr().out
+
+        assert rc == expected_rc
+        assert (
+            "Bitwarden verification failed; no plaintext secrets were removed. "
+            "Check Bitwarden configuration and credentials, then retry."
+        ) in out
+        assert EXCEPTION_SENTINEL not in out
+        assert STDERR_SENTINEL not in out
+        assert ACCESS_TOKEN_SENTINEL not in out
+        assert SECRET_VALUE_SENTINEL not in out
+        assert env_path.read_text(encoding="utf-8") == original_env
+        assert not list(profile_home.glob(".env.bak-pre-bitwarden-prune-*"))
+
+    def test_config_parse_exception_is_redacted_and_never_mutates_env(
+        self,
+        make_profile,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys,
+    ) -> None:
+        profile_home = make_profile(
+            "coding",
+            f"""BWS_ACCESS_TOKEN={ACCESS_TOKEN_SENTINEL}
+OPENAI_API_KEY={SECRET_VALUE_SENTINEL}
+""",
+            "secrets: ignored-by-failing-parser\n",
+        )
+        env_path = profile_home / ".env"
+        original_env = env_path.read_text(encoding="utf-8")
+
+        def failing_yaml_load(_contents):
+            raise RuntimeError(
+                f"{EXCEPTION_SENTINEL}: {STDERR_SENTINEL}; "
+                f"token={ACCESS_TOKEN_SENTINEL}; value={SECRET_VALUE_SENTINEL}"
+            )
+
+        monkeypatch.setattr(bwm.yaml, "safe_load", failing_yaml_load)
+        monkeypatch.setattr(
+            "hermes_cli.profiles.resolve_profile_env",
+            lambda _profile_name: str(profile_home),
+        )
+
+        rc = secrets_cli.cmd_prune(Namespace(profile="coding", apply=True))
+        out = capsys.readouterr().out
+
+        assert rc == 1
+        assert "could not read config.yaml; fix its YAML syntax and retry" in out
+        assert EXCEPTION_SENTINEL not in out
+        assert STDERR_SENTINEL not in out
+        assert ACCESS_TOKEN_SENTINEL not in out
+        assert SECRET_VALUE_SENTINEL not in out
+        assert env_path.read_text(encoding="utf-8") == original_env
+        assert not list(profile_home.glob(".env.bak-pre-bitwarden-prune-*"))
+
+    @pytest.mark.parametrize("apply", [False, True])
+    def test_fetch_warnings_are_redacted_from_prune_output(
+        self,
+        apply: bool,
+        make_profile,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys,
+    ) -> None:
+        profile_home = make_profile(
+            "coding",
+            f"""BWS_ACCESS_TOKEN={ACCESS_TOKEN_SENTINEL}
+OPENAI_API_KEY={SECRET_VALUE_SENTINEL}
+PATH=/usr/local/bin
+""",
+            """secrets:
+  bitwarden:
+    enabled: true
+    access_token_env: BWS_ACCESS_TOKEN
+    project_id: coding-project
+""",
+        )
+
+        def warning_fetch(**kwargs):
+            assert kwargs["access_token"] == ACCESS_TOKEN_SENTINEL
+            return (
+                {"OPENAI_API_KEY": SECRET_VALUE_SENTINEL},
+                [f"backend stderr {STDERR_SENTINEL}: {SECRET_VALUE_SENTINEL}"],
+            )
+
+        monkeypatch.setattr(bwm, "fetch_bitwarden_secrets", warning_fetch)
+        monkeypatch.setattr(
+            "hermes_cli.profiles.resolve_profile_env",
+            lambda _profile_name: str(profile_home),
+        )
+
+        rc = secrets_cli.cmd_prune(Namespace(profile="coding", apply=apply))
+        out = capsys.readouterr().out
+
+        assert rc == 0
+        assert (
+            "warning: Bitwarden verification returned 1 warning(s); "
+            "backend details were redacted."
+        ) in out
+        assert STDERR_SENTINEL not in out
+        assert ACCESS_TOKEN_SENTINEL not in out
+        assert SECRET_VALUE_SENTINEL not in out
+        rewritten = (profile_home / ".env").read_text(encoding="utf-8")
+        if apply:
+            assert "OPENAI_API_KEY=" not in rewritten
+        else:
+            assert f"OPENAI_API_KEY={SECRET_VALUE_SENTINEL}" in rewritten
+
     def test_disabled_bitwarden_config_stays_read_only(
         self,
         make_profile,
@@ -208,7 +359,9 @@ UNVERIFIED_SECRET=keep-me
             fetcher=fake_fetch,
         )
         assert plan.verification_error is None
-        assert plan.warnings == ["verified project"]
+        assert plan.warnings == [
+            "Bitwarden verification returned 1 warning(s); backend details were redacted."
+        ]
         assert [row.action for row in plan.rows if row.key == "OPENAI_API_KEY"] == ["remove"]
         assert [row.action for row in plan.rows if row.key == "GITHUB_TOKEN"] == ["remove"]
         assert [row.action for row in plan.rows if row.key == "UNVERIFIED_SECRET"] == ["keep"]
@@ -238,6 +391,116 @@ UNVERIFIED_SECRET=keep-me
         assert "DISCORD_CHANNEL_ID=1234567890" in rewritten
         assert "UNVERIFIED_SECRET=keep-me" in rewritten
         assert config_path.read_text(encoding="utf-8") == original_config
+
+    @pytest.mark.skipif(sys.platform.startswith("win"), reason="POSIX mode bits not enforced on Windows")
+    def test_apply_prunes_complete_multiline_assignment_atomically(
+        self,
+        make_profile,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        original_env = """# keep leading comment
+BWS_ACCESS_TOKEN=0.coding-token
+API_URL=https://api.example.test/v1
+PRIVATE_KEY="line-one
+line-two"
+# keep middle comment
+PORT=8443
+CHANNEL_ID=1234567890
+UNVERIFIED_SECRET=keep-me
+"""
+        profile_home = make_profile(
+            "coding",
+            original_env,
+            """secrets:
+  bitwarden:
+    enabled: true
+    access_token_env: BWS_ACCESS_TOKEN
+    project_id: coding-project
+""",
+        )
+        env_path = profile_home / ".env"
+
+        def fake_fetch(**_kwargs):
+            return ({"PRIVATE_KEY": "line-one\nline-two"}, [])
+
+        atomic_calls: list[tuple[Path, Path]] = []
+        real_atomic_replace = bwm.atomic_replace
+
+        def tracking_atomic_replace(source, destination):
+            source_path = Path(source)
+            destination_path = Path(destination)
+            assert source_path.exists()
+            assert source_path.parent == env_path.parent
+            atomic_calls.append((source_path, destination_path))
+            real_atomic_replace(source, destination)
+
+        monkeypatch.setattr(bwm, "atomic_replace", tracking_atomic_replace)
+
+        plan = bwm.prune_plan_for_profile(
+            "coding",
+            profile_home,
+            fetcher=fake_fetch,
+        )
+        result = bwm.apply_prune_plan(plan)
+
+        assert plan.verification_error is None
+        assert plan.removable_keys() == ["PRIVATE_KEY"]
+        assert result.changed is True
+        assert result.removed_keys == ["PRIVATE_KEY"]
+        assert len(atomic_calls) == 1
+        assert atomic_calls[0][1] == env_path
+        assert result.backup_path is not None
+        assert result.backup_path.read_text(encoding="utf-8") == original_env
+        assert stat.S_IMODE(result.backup_path.stat().st_mode) == 0o600
+        assert stat.S_IMODE(env_path.stat().st_mode) == 0o600
+        assert env_path.read_text(encoding="utf-8") == (
+            "# keep leading comment\n"
+            "BWS_ACCESS_TOKEN=0.coding-token\n"
+            "API_URL=https://api.example.test/v1\n"
+            "# keep middle comment\n"
+            "PORT=8443\n"
+            "CHANNEL_ID=1234567890\n"
+            "UNVERIFIED_SECRET=keep-me\n"
+        )
+
+    def test_unterminated_multiline_assignment_fails_closed(
+        self,
+        make_profile,
+    ) -> None:
+        original_env = """BWS_ACCESS_TOKEN=0.coding-token
+PRIVATE_KEY="line-one
+line-two
+OPENAI_API_KEY=must-not-be-removed
+"""
+        profile_home = make_profile(
+            "coding",
+            original_env,
+            """secrets:
+  bitwarden:
+    enabled: true
+    access_token_env: BWS_ACCESS_TOKEN
+    project_id: coding-project
+""",
+        )
+
+        plan = bwm.prune_plan_for_profile(
+            "coding",
+            profile_home,
+            fetcher=lambda **_kwargs: (
+                {"PRIVATE_KEY": "resolved", "OPENAI_API_KEY": "resolved"},
+                [],
+            ),
+        )
+        result = bwm.apply_prune_plan(plan)
+
+        assert plan.verification_error == (
+            "Could not safely parse .env; no plaintext secrets were removed. "
+            "Fix unterminated quoted values, then retry."
+        )
+        assert plan.removable_keys() == []
+        assert result.changed is False
+        assert (profile_home / ".env").read_text(encoding="utf-8") == original_env
+        assert not list(profile_home.glob(".env.bak-pre-bitwarden-prune-*"))
 
 
 class TestCliWrappers:

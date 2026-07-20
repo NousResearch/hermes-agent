@@ -1409,6 +1409,20 @@ DEFAULT_CONFIG = {
     # small so a slow/dead server adds little to first-response latency.
     "mcp_discovery_timeout": 1.5,
 
+    # MCP runtime behavior (distinct from the per-server definitions in
+    # mcp_servers: and from the auxiliary.mcp side-LLM task settings).
+    "mcp": {
+        # Auto-reload MCP connections when config.yaml's mcp_servers section
+        # changes at runtime (CLI file watcher, default on).
+        # Set to false to stop the automatic reload: every automatic reload
+        # rebuilds the agent tool surface and INVALIDATES the provider
+        # prompt cache (the next message re-sends the full input prefix),
+        # which is expensive on long-context / high-reasoning models.
+        # When disabled, the watcher still detects the change and prints
+        # guidance to apply it deliberately via /reload-mcp.
+        "auto_reload_on_config_change": True,
+    },
+
     # Tool-output truncation thresholds. When terminal output or a
     # single read_file page exceeds these limits, Hermes truncates the
     # payload sent to the model (keeping head + tail for terminal,
@@ -1670,14 +1684,6 @@ DEFAULT_CONFIG = {
             "timeout": 30,
             "extra_body": {},
             "reasoning_effort": "",  # per-task thinking level: none|minimal|low|medium|high|xhigh|max|ultra (empty = provider default)
-            # Auto-reload MCP connections when config.yaml's mcp_servers section
-            # changes at runtime (default on, matches pre-#1474 behaviour).
-            # Set to False to stop the automatic reload: every automatic reload
-            # rebuilds the agent tool surface and INVALIDATES the provider
-            # prompt cache (the next message re-sends the full input prefix),
-            # which is expensive on long-context / high-reasoning models.
-            # MCP servers can still be reloaded manually via /reload-mcp.
-            "auto_reload_on_config_change": True,
         },
         "title_generation": {
             "enabled": True,

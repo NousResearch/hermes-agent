@@ -62,6 +62,20 @@ class TestParseResponse:
         assert shell_hooks._parse_response("pre_tool_call", "") is None
         assert shell_hooks._parse_response("pre_tool_call", "   ") is None
 
+    @pytest.mark.parametrize("event", sorted(shell_hooks._TRANSFORM_EVENTS))
+    @pytest.mark.parametrize("stdout, expected", [
+        ('"replaced text"\n', "replaced text"),
+        ('{"text": "via text"}', "via text"),
+        ('{"content": "via content"}', "via content"),
+        ('{"context": "not a replacement"}', None),
+        ("{}", None),
+        ('""', None),
+    ])
+    def test_transform_events_return_the_replacement_string(self, event, stdout, expected):
+        """transform_* consumers replace their text only with a ``str``; main pushed these through the
+        ``{"context": ...}`` parser, so every shell transform hook ran and was silently ignored (#67890)."""
+        assert shell_hooks._parse_response(event, stdout) == expected
+
 
 # ── _serialize_payload ────────────────────────────────────────────────────
 

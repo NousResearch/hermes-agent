@@ -220,7 +220,7 @@ export const zh: Translations = {
       'nav.agents': '打开智能体',
       'session.new': '新建会话',
       'session.newTab': '新建会话标签',
-      'session.newWindow': '在新窗口中新建会话',
+      'session.newWindow': '新建窗口',
       'session.next': '下一个会话',
       'session.prev': '上一个会话',
       'session.slot.1': '切换到最近会话 1',

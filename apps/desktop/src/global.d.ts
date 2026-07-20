@@ -31,8 +31,10 @@ declare global {
       // a spectator window (lazy resume — no agent build) for live-streaming
       // a running subagent's session.
       openSessionWindow: (sessionId: string, opts?: { watch?: boolean }) => Promise<{ ok: boolean; error?: string }>
-      // Open (or focus) a compact secondary window on the new-session draft.
-      openNewSessionWindow: () => Promise<{ ok: boolean; error?: string }>
+      // Open a new full-chrome app window — a peer instance of the primary that
+      // renders the complete app against the shared backend, so the user can run
+      // multiple GUI windows at once.
+      openWindow: () => Promise<{ ok: boolean; error?: string }>
       // The pop-out pet overlay: a transparent always-on-top window hosting only
       // the mascot. The main renderer drives it (open/close/drag + state push);
       // the overlay sends control messages back (pop-in, composer submit).

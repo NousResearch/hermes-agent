@@ -1012,8 +1012,8 @@ class TestRunAgentMultimodalHelpers:
             for p in cleaned["content"]
         )
 
-    def test_computer_use_image_result_becomes_error_for_text_only_model(self):
-        from run_agent import AIAgent
+    def test_computer_use_image_result_uses_text_summary_for_text_only_model(self):
+        from run_agent import AIAgent, _multimodal_text_summary
 
         agent = object.__new__(AIAgent)
         agent.provider = "deepseek"
@@ -1030,9 +1030,10 @@ class TestRunAgentMultimodalHelpers:
         with patch.object(agent, "_model_supports_vision", return_value=False):
             content = agent._tool_result_content_for_active_model("computer_use", result)
 
-        parsed = json.loads(content)
-        assert "computer_use returned screenshot/image content" in parsed["error"]
-        assert parsed["text_summary"] == "screen captured"
+        # Non-vision computer_use now falls through to the plain text summary,
+        # matching every other image-returning tool (no JSON error block).
+        assert content == _multimodal_text_summary(result)
+        assert content == "screen captured"
         assert "image_url" not in content
 
     def test_computer_use_image_result_preserved_for_vision_model(self):

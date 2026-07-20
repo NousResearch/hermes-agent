@@ -2181,7 +2181,9 @@ DEFAULT_CONFIG = {
         "openai": {
             "model": "gpt-4o-mini-tts",
             "voice": "alloy",
-            # Voices: alloy, echo, fable, onyx, nova, shimmer
+            # Voices: alloy, ash, ballad, cedar, coral, echo, fable, marin,
+            # nova, onyx, sage, shimmer, verse (gpt-4o-mini-tts; the tts-1
+            # era stopped at alloy/echo/fable/onyx/nova/shimmer)
         },
         "gemini": {
             "model": "gemini-2.5-flash-preview-tts",
@@ -2208,6 +2210,14 @@ DEFAULT_CONFIG = {
         "mistral": {
             "model": "voxtral-mini-tts-2603",
             "voice_id": "c69964a6-ab8b-4f8a-9465-ec0925096ec8",  # Paul - Neutral
+        },
+        "minimax": {
+            "model": "speech-02-hd",
+            "voice_id": "English_expressive_narrator",
+        },
+        "kittentts": {
+            "model": "KittenML/kitten-tts-nano-0.8-int8",  # nano 25MB; micro 41MB; mini 80MB
+            "voice": "Jasper",
         },
         "neutts": {
             "ref_audio": "",  # Path to reference voice audio (empty = bundled default)

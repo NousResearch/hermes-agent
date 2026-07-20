@@ -15011,6 +15011,12 @@ async def get_toolset_config(name: str, profile: Optional[str] = None):
                     # the GUI can offer per-capability selection.
                     row["web_backend"] = prov["web_backend"]
                     row["capabilities"] = web_provider_capabilities(prov["web_backend"])
+                if name == "tts" and prov.get("tts_provider"):
+                    # The provider key written to tts.provider on selection.
+                    # Doubles as the config section holding the provider's
+                    # voice/model settings (tts.<key>.*) so the GUI can render
+                    # those fields inline in the Capabilities panel.
+                    row["tts_provider"] = prov["tts_provider"]
                 providers.append(row)
         if name == "web":
             # Resolve the per-capability active backends exactly the way the

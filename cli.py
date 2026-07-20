@@ -15972,9 +15972,11 @@ def main(
                         cli.agent.suppress_status_output = True
                         # Suppress streaming display callbacks so stdout stays
                         # machine-readable (no styled "Hermes" box, no tool-gen
-                        # status lines).  The response is printed once below.
+                        # status lines, no reasoning box).  The response is
+                        # printed once below.
                         cli.agent.stream_delta_callback = None
                         cli.agent.tool_gen_callback = None
+                        cli.agent.reasoning_callback = None
                         try:
                             result = cli.agent.run_conversation(
                                 user_message=effective_query,

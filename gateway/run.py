@@ -1959,6 +1959,41 @@ from gateway.whatsapp_identity import (
 logger = logging.getLogger(__name__)
 
 
+def _schedule_clarify_after_stream_drain(
+    *,
+    stream_consumer: Any,
+    adapter: Any,
+    chat_id: str,
+    question: str,
+    choices: Any,
+    clarify_id: str,
+    session_key: str,
+    metadata: Any,
+    loop: Any,
+    schedule: Callable[..., Any] = safe_schedule_threadsafe,
+):
+    """Drain pending stream output before scheduling a clarify card."""
+    if stream_consumer is not None:
+        try:
+            stream_consumer.drain(timeout=2.0)
+        except Exception:
+            logger.debug("Stream consumer drain before clarify failed", exc_info=True)
+
+    return schedule(
+        adapter.send_clarify(
+            chat_id=chat_id,
+            question=question,
+            choices=choices,
+            clarify_id=clarify_id,
+            session_key=session_key,
+            metadata=metadata,
+        ),
+        loop,
+        logger=logger,
+        log_message="Clarify send failed to schedule",
+    )
+
+
 _OWN_POLICY_OPEN_ENV = {
     Platform.WECOM: ("WECOM_DM_POLICY", "WECOM_GROUP_POLICY", "WECOM_ALLOW_ALL_USERS"),
     Platform.WEIXIN: ("WEIXIN_DM_POLICY", "WEIXIN_GROUP_POLICY", "WEIXIN_ALLOW_ALL_USERS"),
@@ -20460,32 +20495,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 except Exception:
                     pass
 
-                # Drain the stream consumer before sending the clarify card.
-                # Without this, streamed text from the same model turn can
-                # arrive AFTER the clarify card on platforms with async
-                # delivery (Telegram), making the card appear above the
-                # question text.  drain() blocks until the background task
-                # has flushed all queued deltas/segment-breaks.
                 _sc = stream_consumer_holder[0] if stream_consumer_holder else None
-                if _sc is not None:
-                    try:
-                        _sc.drain(timeout=2.0)
-                    except Exception:
-                        logger.debug("Stream consumer drain before clarify failed", exc_info=True)
-
                 send_ok = False
-                fut = safe_schedule_threadsafe(
-                    _status_adapter.send_clarify(
-                        chat_id=_status_chat_id,
-                        question=question,
-                        choices=list(choices) if choices else None,
-                        clarify_id=clarify_id,
-                        session_key=session_key or "",
-                        metadata=_status_thread_metadata,
-                    ),
-                    _loop_for_step,
-                    logger=logger,
-                    log_message="Clarify send failed to schedule",
+                fut = _schedule_clarify_after_stream_drain(
+                    stream_consumer=_sc,
+                    adapter=_status_adapter,
+                    chat_id=_status_chat_id,
+                    question=question,
+                    choices=list(choices) if choices else None,
+                    clarify_id=clarify_id,
+                    session_key=session_key or "",
+                    metadata=_status_thread_metadata,
+                    loop=_loop_for_step,
                 )
                 if fut is None:
                     send_ok = False

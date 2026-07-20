@@ -402,6 +402,14 @@ def _run_agent(
     # os._exit and skips finalizers, so an un-closed connection here would leak.
     agent = None
     try:
+        # Wait for background MCP discovery to finish before snapshotting the
+        # tool registry.  Without this, slow MCP servers (e.g. Python-based
+        # servers that take 2-12s to boot) are silently dropped — the agent
+        # runs without their tools, with no error anywhere. (#68137)
+        from hermes_cli.mcp_startup import wait_for_mcp_discovery
+
+        wait_for_mcp_discovery()
+
         # Read the effective fallback chain from profile config so oneshot
         # workers honour the same merge semantics as interactive CLI and
         # gateway sessions.

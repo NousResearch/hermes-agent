@@ -1,11 +1,17 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   firstImageFromClipboard,
   imageFilesFromTransfer,
   runOrderedUploads,
   transferMayContainImage,
+  uploadChatFile,
 } from "./chatImagePaste";
+
+afterEach(() => {
+  vi.restoreAllMocks();
+  vi.unstubAllGlobals();
+});
 
 // Minimal DataTransfer stand-ins. jsdom's DataTransfer doesn't let us seed
 // items/files, so we hand-roll the shape the helpers read.
@@ -96,6 +102,54 @@ describe("transferMayContainImage", () => {
       items: [makeItem("string", "text/plain", null)],
     });
     expect(transferMayContainImage(data)).toBe(false);
+  });
+});
+
+describe("uploadChatFile", () => {
+  it("streams the file as multipart form data, not base64 JSON", async () => {
+    const fetchMock = vi.fn<typeof fetch>(
+      async () =>
+        new Response(
+          JSON.stringify({
+            ok: true,
+            path: "/home/user/.hermes/uploads/dashboard_x_report.pdf",
+            name: "dashboard_x_report.pdf",
+            bytes: 4,
+            mime_type: "application/pdf",
+          }),
+          { headers: { "Content-Type": "application/json" }, status: 200 },
+        ),
+    );
+    vi.stubGlobal("window", {});
+    vi.stubGlobal("fetch", fetchMock);
+
+    const pdf = new File(["%PDF"], "report.pdf", { type: "application/pdf" });
+    const uploaded = await uploadChatFile(pdf, "worker");
+
+    expect(uploaded.path).toBe(
+      "/home/user/.hermes/uploads/dashboard_x_report.pdf",
+    );
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(String(url)).toContain("/api/chat/file-upload?profile=worker");
+    expect(init?.method).toBe("POST");
+    expect(init?.body).toBeInstanceOf(FormData);
+    const sent = (init?.body as FormData).get("file");
+    expect(sent).toBeInstanceOf(File);
+    expect((sent as File).name).toBe("report.pdf");
+    // The browser must set the multipart boundary itself — an explicit
+    // Content-Type header would break the request.
+    expect(new Headers(init?.headers).has("Content-Type")).toBe(false);
+  });
+
+  it("rejects empty files client-side", async () => {
+    const fetchMock = vi.fn<typeof fetch>();
+    vi.stubGlobal("window", {});
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      uploadChatFile(new File([], "empty.pdf", { type: "application/pdf" })),
+    ).rejects.toThrow(/empty/);
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });
 

@@ -971,10 +971,7 @@ class TestWebServerEndpoints:
 
         resp = self.client.post(
             "/api/chat/file-upload",
-            json={
-                "data_url": "data:application/pdf;base64,JVBERi0xLjQK",
-                "filename": "../../report.pdf",
-            },
+            files={"file": ("../../report.pdf", b"%PDF-1.4\n", "application/pdf")},
         )
 
         assert resp.status_code == 200
@@ -982,6 +979,7 @@ class TestWebServerEndpoints:
         target = Path(data["path"])
         assert data["ok"] is True
         assert data["mime_type"] == "application/pdf"
+        assert data["bytes"] == len(b"%PDF-1.4\n")
         assert target.parent == get_hermes_home() / "uploads"
         assert target.name.startswith("dashboard_")
         assert target.name.endswith("_report.pdf")
@@ -996,10 +994,7 @@ class TestWebServerEndpoints:
 
         resp = self.client.post(
             "/api/chat/file-upload?profile=worker",
-            json={
-                "data_url": "data:text/csv;base64,YSxiLGMK",
-                "filename": "leads.csv",
-            },
+            files={"file": ("leads.csv", b"a,b,c\n", "text/csv")},
         )
 
         assert resp.status_code == 200
@@ -1011,7 +1006,7 @@ class TestWebServerEndpoints:
     def test_chat_file_upload_accepts_non_image_mime(self):
         resp = self.client.post(
             "/api/chat/file-upload",
-            json={"data_url": "data:text/plain;base64,aGVsbG8=", "filename": "note.txt"},
+            files={"file": ("note.txt", b"hello", "text/plain")},
         )
 
         assert resp.status_code == 200
@@ -1020,34 +1015,37 @@ class TestWebServerEndpoints:
     def test_chat_file_upload_rejects_empty_payload(self):
         resp = self.client.post(
             "/api/chat/file-upload",
-            json={"data_url": "data:application/pdf;base64,", "filename": "empty.pdf"},
+            files={"file": ("empty.pdf", b"", "application/pdf")},
         )
 
         assert resp.status_code == 400
         assert "empty" in resp.json()["detail"].lower()
 
     def test_chat_file_upload_enforces_size_cap(self, monkeypatch):
+        from hermes_constants import get_hermes_home
+
         import hermes_cli.web_server as web_server
 
         monkeypatch.setattr(web_server, "_CHAT_FILE_UPLOAD_MAX_BYTES", 4)
 
         resp = self.client.post(
             "/api/chat/file-upload",
-            json={
-                "data_url": "data:application/pdf;base64,JVBERi0xLjQK",
-                "filename": "large.pdf",
-            },
+            files={"file": ("large.pdf", b"%PDF-1.4\n", "application/pdf")},
         )
 
         assert resp.status_code == 413
         assert "too large" in resp.json()["detail"].lower()
+        # The streaming path must not leave a partial temp file behind.
+        up_dir = get_hermes_home() / "uploads"
+        leftovers = [p for p in up_dir.iterdir() if "large" in p.name]
+        assert leftovers == []
 
     def test_chat_file_upload_requires_auth(self):
         from hermes_cli.web_server import _SESSION_HEADER_NAME
 
         resp = self.client.post(
             "/api/chat/file-upload",
-            json={"data_url": "data:text/plain;base64,aGVsbG8="},
+            files={"file": ("note.txt", b"hello", "text/plain")},
             headers={_SESSION_HEADER_NAME: "wrong-token"},
         )
 

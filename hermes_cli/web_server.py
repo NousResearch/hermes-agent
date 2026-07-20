@@ -1860,48 +1860,90 @@ _CHAT_FILE_UPLOAD_MAX_BYTES = 50 * 1024 * 1024
 
 
 @app.post("/api/chat/file-upload")
-async def upload_chat_file(payload: ChatImageUpload, profile: Optional[str] = None):
+async def upload_chat_file(
+    file: UploadFile = File(...),
+    profile: Optional[str] = None,
+):
     """Persist a browser-provided chat file (PDF, docs, any type) for the TUI.
 
-    Same mechanism as ``/api/chat/image-upload`` but without the image-only
-    constraint. Non-image drops/pastes in the dashboard chat upload here, then
-    the page types the gateway-visible path into the TUI input so the agent
-    can read the file with its file tools. Files land under
-    ``HERMES_HOME/uploads/``.
-    """
-    data, mime_type = _decode_data_url(payload.data_url)
-    if not data:
-        raise HTTPException(status_code=400, detail="Uploaded file is empty")
-    if len(data) > _CHAT_FILE_UPLOAD_MAX_BYTES:
-        mb = _CHAT_FILE_UPLOAD_MAX_BYTES // (1024 * 1024)
-        raise HTTPException(status_code=413, detail=f"File is too large; cap is {mb} MB")
+    Non-image drops/pastes in the dashboard chat upload here, then the page
+    types the gateway-visible path into the TUI input so the agent can read
+    the file with its file tools. Files land under ``HERMES_HOME/uploads/``.
 
-    name = _sanitize_chat_image_filename(payload.filename)
+    Streams the multipart body to disk in fixed-size chunks like
+    ``/api/files/upload-stream`` — the base64-data-URL-in-JSON pattern is
+    banned here for the same reasons documented on that endpoint (NS-501):
+    ~33% payload inflation, whole file buffered in memory twice, proxy
+    body-size/timeout 502s on large uploads.
+    """
+    name = _sanitize_chat_image_filename(file.filename)
     name = re.sub(r"[^A-Za-z0-9_.-]+", "_", name).strip("._-") or "upload"
+
+    # Resolve the profile home up front and exit the scope before any await:
+    # _profile_scope swaps process-global skill-module state under a lock, so
+    # it must never be held across the streaming reads below.
     with _profile_scope(profile) as scoped_home:
         home = scoped_home or get_hermes_home()
-        up_dir = Path(home) / "uploads"
-        try:
-            up_dir.mkdir(parents=True, exist_ok=True)
-        except PermissionError:
-            raise HTTPException(status_code=403, detail="Upload directory is not writable")
-        except OSError as exc:
-            raise HTTPException(status_code=500, detail=f"Could not create upload directory: {exc}")
 
-        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        target = up_dir / f"dashboard_{ts}_{secrets.token_hex(4)}_{name}"
-        try:
-            target.write_bytes(data)
-        except PermissionError:
-            raise HTTPException(status_code=403, detail="Upload directory is not writable")
-        except OSError as exc:
-            raise HTTPException(status_code=500, detail=f"Could not write file: {exc}")
+    up_dir = Path(home) / "uploads"
+    try:
+        up_dir.mkdir(parents=True, exist_ok=True)
+    except PermissionError:
+        raise HTTPException(status_code=403, detail="Upload directory is not writable")
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"Could not create upload directory: {exc}")
 
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    target = up_dir / f"dashboard_{ts}_{secrets.token_hex(4)}_{name}"
+
+    # Write to a sibling temp file, then atomically rename into place so a
+    # partial/aborted upload never leaves a half-written file at the final path.
+    tmp_fd, tmp_name = tempfile.mkstemp(
+        prefix=f".{target.name}.", suffix=".upload", dir=str(up_dir)
+    )
+    tmp_path = Path(tmp_name)
+    total = 0
+    renamed = False
+    try:
+        with os.fdopen(tmp_fd, "wb") as out:
+            while True:
+                chunk = await file.read(_UPLOAD_CHUNK_BYTES)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > _CHAT_FILE_UPLOAD_MAX_BYTES:
+                    mb = _CHAT_FILE_UPLOAD_MAX_BYTES // (1024 * 1024)
+                    raise HTTPException(
+                        status_code=413, detail=f"File is too large; cap is {mb} MB"
+                    )
+                out.write(chunk)
+        if total == 0:
+            raise HTTPException(status_code=400, detail="Uploaded file is empty")
+        os.replace(tmp_path, target)
+        renamed = True
+    except HTTPException:
+        raise
+    except PermissionError:
+        raise HTTPException(status_code=403, detail="Upload directory is not writable")
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"Could not write file: {exc}")
+    finally:
+        # Covers every non-success exit, including asyncio.CancelledError when
+        # the browser aborts mid-stream. os.replace clears tmp_path on success.
+        if not renamed:
+            tmp_path.unlink(missing_ok=True)
+        await file.close()
+
+    mime_type = (
+        file.content_type
+        or mimetypes.guess_type(name)[0]
+        or "application/octet-stream"
+    )
     return {
         "ok": True,
         "path": str(target),
         "name": target.name,
-        "bytes": len(data),
+        "bytes": total,
         "mime_type": mime_type,
     }
 

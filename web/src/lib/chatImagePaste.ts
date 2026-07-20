@@ -123,6 +123,11 @@ export function transferMayContainFile(data: DataTransfer | null): boolean {
  * chat upload endpoint and return the absolute gateway path. The caller
  * types the path into the TUI input so the agent can read the file with
  * its file tools.
+ *
+ * Streams the raw bytes as multipart/form-data (same rationale as the
+ * managed-files upload-stream path, NS-501): base64 JSON inflates the body
+ * ~33%, buffers the whole file in memory, and trips proxy limits on large
+ * files. Do NOT set Content-Type — the browser adds the multipart boundary.
  */
 export async function uploadChatFile(
   file: File,
@@ -134,15 +139,12 @@ export async function uploadChatFile(
     throw new Error(`file too large (max ${mb} MB)`);
   }
 
-  const dataUrl = await fileToDataUrl(file);
+  const form = new FormData();
+  form.append("file", file, file.name);
   const qs = profile ? `?profile=${encodeURIComponent(profile)}` : "";
   const res = await authedFetch(`/api/chat/file-upload${qs}`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      data_url: dataUrl,
-      filename: file.name,
-    }),
+    body: form,
   });
 
   if (!res.ok) {

@@ -937,6 +937,94 @@ class TestSaveConfigAtomicity:
             assert raw["agent"]["max_turns"] == 77
 
 
+class TestSaveEnvValueDeduplication:
+    """Regression coverage for #8270 — duplicate KEY= lines must not survive a write.
+
+    python-dotenv resolves duplicate keys with last-occurrence-wins. Several
+    users reported that adding an OpenRouter key via the model picker (which
+    appends to .env) didn't take effect because a stale entry from a prior
+    setup attempt lingered later in the file. save_env_value must replace the
+    first match and strip the rest so the freshly written value is the one
+    that loads at startup.
+    """
+
+    def test_dedupe_collapses_existing_duplicates(self, tmp_path):
+        env_file = tmp_path / ".env"
+        env_file.write_text(
+            "OPENROUTER_API_KEY=old-broken\n"
+            "FAL_KEY=keepme\n"
+            "OPENROUTER_API_KEY=stale-bottom\n"
+        )
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            save_env_value("OPENROUTER_API_KEY", "fresh-good")
+
+            content = env_file.read_text()
+            lines = [ln for ln in content.splitlines() if ln.strip()]
+
+            assert lines.count("OPENROUTER_API_KEY=fresh-good") == 1
+            assert "OPENROUTER_API_KEY=old-broken" not in content
+            assert "OPENROUTER_API_KEY=stale-bottom" not in content
+            assert "FAL_KEY=keepme" in content
+
+            assert load_env()["OPENROUTER_API_KEY"] == "fresh-good"
+
+    def test_first_position_preserved_when_deduping(self, tmp_path):
+        env_file = tmp_path / ".env"
+        env_file.write_text(
+            "FOO=top\n"
+            "OPENROUTER_API_KEY=first\n"
+            "BAR=middle\n"
+            "OPENROUTER_API_KEY=second\n"
+            "BAZ=bottom\n"
+        )
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            save_env_value("OPENROUTER_API_KEY", "winner")
+
+            lines = [ln for ln in env_file.read_text().splitlines() if ln.strip()]
+            assert lines == [
+                "FOO=top",
+                "OPENROUTER_API_KEY=winner",
+                "BAR=middle",
+                "BAZ=bottom",
+            ]
+
+    def test_dedupe_no_op_when_no_duplicates(self, tmp_path):
+        env_file = tmp_path / ".env"
+        env_file.write_text("FOO=a\nOPENROUTER_API_KEY=existing\nBAR=b\n")
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            save_env_value("OPENROUTER_API_KEY", "updated")
+
+            lines = [ln for ln in env_file.read_text().splitlines() if ln.strip()]
+            assert lines == ["FOO=a", "OPENROUTER_API_KEY=updated", "BAR=b"]
+
+    def test_dedupe_retains_quoted_serialization_and_round_trips(self, tmp_path):
+        # The retained first entry must be written through the same quoting the
+        # append path uses (serialized_value), not the raw value — otherwise a
+        # value needing dotenv quoting (spaces, a '#' comment char) would be
+        # corrupted on load while the stale duplicate is dropped.
+        needs_quoting = "sk live#not-a-comment with spaces"
+        env_file = tmp_path / ".env"
+        env_file.write_text(
+            "OPENROUTER_API_KEY=old\n"
+            "KEEP=x\n"
+            "OPENROUTER_API_KEY=stale\n"
+        )
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            save_env_value("OPENROUTER_API_KEY", needs_quoting)
+
+            content = env_file.read_text()
+            lines = [ln for ln in content.splitlines() if ln.strip()]
+            # Exactly one retained OPENROUTER_API_KEY line, stale copy gone.
+            assert sum(ln.startswith("OPENROUTER_API_KEY=") for ln in lines) == 1
+            assert "OPENROUTER_API_KEY=old" not in content
+            assert "OPENROUTER_API_KEY=stale" not in content
+            # The retained line is serialized (quoted), so the raw form doesn't
+            # appear verbatim...
+            assert f"OPENROUTER_API_KEY={needs_quoting}\n" not in content
+            # ...and a dotenv round trip recovers the exact original value.
+            assert load_env()["OPENROUTER_API_KEY"] == needs_quoting
+
+
 class TestSanitizeEnvLines:
     """Tests for .env file corruption repair."""
 

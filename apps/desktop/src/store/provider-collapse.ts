@@ -19,18 +19,10 @@ const STORAGE_KEY = 'hermes.desktop.collapsed-providers'
  *  the render loop only visits providers present in the active `groups`, and
  *  `collapsedProviders.includes(slug)` against an absent slug is a no-op.
  */
-export const $collapsedProviders = persistentAtom<string[]>(
-  STORAGE_KEY,
-  [],
-  Codecs.stringArray
-)
+export const $collapsedProviders = persistentAtom<string[]>(STORAGE_KEY, [], Codecs.stringArray)
 
 /** Toggle a provider slug in/out of the collapsed set. */
 export function toggleCollapsedProvider(slug: string): void {
   const current = $collapsedProviders.get()
-  $collapsedProviders.set(
-    current.includes(slug)
-      ? current.filter(s => s !== slug)
-      : [...current, slug]
-  )
+  $collapsedProviders.set(current.includes(slug) ? current.filter(s => s !== slug) : [...current, slug])
 }

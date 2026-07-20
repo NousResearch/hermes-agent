@@ -2570,6 +2570,15 @@ class MCPServerTask:
                 _oauth_auth = get_manager().get_or_build_provider(
                     self.name, url, config.get("oauth"),
                 )
+                # Every _run_http entry is a (re)connect. Reusing the cached
+                # provider means an access token that expired while the session
+                # sat idle is still in memory with _initialized=True, so the SDK
+                # never re-checks expiry and never refreshes — the server parks
+                # on 401 until an external disk write nudges it. Reset the flag
+                # so _initialize re-runs, re-seeds expiry from storage, and the
+                # SDK refreshes on this handshake. No-op on the very first
+                # connect (freshly built provider is already _initialized=False).
+                get_manager().reset_initialized(self.name)
             except Exception as exc:
                 logger.warning("MCP OAuth setup failed for '%s': %s", self.name, exc)
                 raise

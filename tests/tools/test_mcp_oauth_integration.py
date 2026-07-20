@@ -201,3 +201,141 @@ async def test_provider_is_reused_across_reconnects(tmp_path, monkeypatch):
     p2 = mgr.get_or_build_provider("srv", "https://example.com/mcp", None)
 
     assert p1 is p2, "manager must cache the provider across reconnects"
+
+
+@pytest.mark.asyncio
+async def test_idle_expired_token_self_heals_on_reconnect_without_disk_write(
+    tmp_path, monkeypatch
+):
+    """An OAuth token that expires while the session sits idle must refresh on
+    reconnect — with NO external disk write and NO tokens-file mtime change.
+
+    Repro of the linear-MCP outage: a live streamable-HTTP OAuth session sits
+    idle, its ~24h access token expires in memory, the connection drops, and
+    the run loop's reconnect/parked-revival path rebuilds the transport reusing
+    the SAME cached provider. Disk-watch (invalidate_if_disk_changed) can NOT
+    save it — the tokens file was never rewritten, so its mtime is unchanged.
+    Unless the reconnect path resets ``_initialized``, ``_initialize`` never
+    re-runs, ``token_expiry_time`` is never re-seeded, ``is_token_valid()``
+    keeps reporting the dead token valid, and the SDK's refresh branch never
+    fires — the server parks forever on 401.
+
+    ``reset_initialized`` is the reconnect-path hook that fixes this: it flips
+    ``_initialized`` so the next ``_initialize`` re-reads the (unchanged-on-disk
+    but now-expired) token, re-seeds expiry, and ``can_refresh_token()`` reports
+    True so the SDK refreshes on the reconnect handshake.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    from tools.mcp_oauth_manager import MCPOAuthManager, reset_manager_for_tests
+    reset_manager_for_tests()
+
+    token_dir = tmp_path / "mcp-tokens"
+    token_dir.mkdir(parents=True)
+    tokens_file = token_dir / "srv.json"
+    (token_dir / "srv.client.json").write_text(json.dumps({
+        "client_id": "test-client",
+        "redirect_uris": ["http://127.0.0.1:12345/callback"],
+        "grant_types": ["authorization_code", "refresh_token"],
+        "response_types": ["code"],
+        "token_endpoint_auth_method": "none",
+    }))
+
+    # Token that is ALREADY EXPIRED on disk (absolute expires_at in the past),
+    # but with a live refresh_token — exactly the idle-drop state.
+    tokens_file.write_text(json.dumps({
+        "access_token": "EXPIRED_ACCESS",
+        "token_type": "Bearer",
+        "expires_at": time.time() - 60,
+        "refresh_token": "LIVE_REFRESH",
+    }))
+
+    mgr = MCPOAuthManager()
+    provider = mgr.get_or_build_provider("srv", "https://example.com/mcp", None)
+    assert provider is not None
+
+    # Record the baseline mtime first (first call flips zero -> real mtime and
+    # resets _initialized as a side effect), then run _initialize so the
+    # provider ends up in the steady "connected" state: _initialized True with
+    # the (already-expired) token loaded — exactly the idle-past-expiry state.
+    await mgr.invalidate_if_disk_changed("srv")
+    await provider._initialize()
+    assert provider._initialized is True
+
+    # Disk-watch alone cannot help — the tokens file was never rewritten, so
+    # its mtime is unchanged.
+    assert await mgr.invalidate_if_disk_changed("srv") is False
+    assert provider._initialized is True, "disk-watch must NOT have reset it"
+
+    # The reconnect path resets _initialized so the SDK re-reads + refreshes.
+    assert mgr.reset_initialized("srv") is True
+    assert provider._initialized is False
+
+    # Next auth flow re-runs _initialize, re-seeds expiry from the expired
+    # on-disk token, and the SDK now knows it must refresh.
+    await provider._initialize()
+    assert provider.context.can_refresh_token() is True, (
+        "after reconnect reset, the SDK must recognise the token as refreshable"
+    )
+
+
+@pytest.mark.asyncio
+async def test_run_http_resets_provider_initialized_on_oauth_path(
+    tmp_path, monkeypatch
+):
+    """_run_http must call reset_initialized after fetching the OAuth provider.
+
+    This is the wiring that makes an idle-expired token self-heal on reconnect:
+    every _run_http entry (each reconnect re-enters it) resets the cached
+    provider's _initialized flag so the SDK re-reads storage, re-seeds expiry,
+    and refreshes on the reconnect handshake. Without this call the cached
+    provider keeps _initialized=True and the dead token is reused forever.
+
+    We drive _run_http far enough to fetch the provider, then let the transport
+    step fail (no real server) — reset_initialized must already have fired.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    # Pre-seed cached tokens so provider construction does not fail-fast in the
+    # non-interactive test env (mcp_oauth_manager guard).
+    token_dir = tmp_path / "mcp-tokens"
+    token_dir.mkdir(parents=True)
+    (token_dir / "srv.json").write_text(json.dumps({
+        "access_token": "TOK",
+        "token_type": "Bearer",
+        "expires_at": time.time() - 60,
+        "refresh_token": "R",
+    }))
+
+    from tools import mcp_tool
+    from tools.mcp_oauth_manager import get_manager, reset_manager_for_tests
+    reset_manager_for_tests()
+
+    reset_calls = []
+    mgr = get_manager()
+    real_reset = mgr.reset_initialized
+
+    def spy_reset(name, **kwargs):
+        reset_calls.append(name)
+        return real_reset(name, **kwargs)
+
+    monkeypatch.setattr(mgr, "reset_initialized", spy_reset)
+
+    task = mcp_tool.MCPServerTask("srv")
+    task._auth_type = "oauth"
+
+    config = {
+        "url": "https://example.com/mcp",
+        "oauth": None,
+        # a short connect timeout so the transport step fails fast
+        "connect_timeout": 0.1,
+    }
+
+    # The transport connection will fail (no server); we only care that the
+    # provider was fetched and reset_initialized fired before that.
+    with pytest.raises(Exception):
+        await task._run_http(config)
+
+    assert "srv" in reset_calls, (
+        "_run_http must call reset_initialized('srv') on the OAuth path so a "
+        "reconnect forces the SDK to re-read + refresh an idle-expired token"
+    )

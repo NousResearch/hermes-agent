@@ -190,3 +190,62 @@ def test_build_anthropic_vertex_client_shape():
     beta = client._custom_headers.get("anthropic-beta", "")
     assert "context-1m" not in beta
     assert "interleaved-thinking-2025-05-14" in beta
+
+
+# ── /model picker visibility (list_authenticated_providers) ─────────────────
+#
+# Vertex has auth_type "vertex" and env_vars=() — no API key to detect — so
+# without a dedicated credential check (mirroring bedrock's aws_sdk special
+# case) the picker omits the provider row entirely whenever vertex isn't the
+# configured model.provider. Regression: switching model.provider to `moa`
+# made "Google Vertex AI" vanish from the desktop picker despite working ADC.
+
+def test_picker_lists_vertex_when_credentials_present(monkeypatch):
+    import agent.vertex_adapter as va
+    from hermes_cli import model_switch as ms
+
+    monkeypatch.setattr(va, "has_vertex_credentials", lambda: True)
+    rows = ms.list_authenticated_providers(current_provider="moa")
+    vertex_rows = [r for r in rows if r.get("slug") == "vertex"]
+    assert vertex_rows, "vertex row missing from picker despite credentials"
+    models = vertex_rows[0].get("models") or []
+    assert "claude-fable-5" in models
+
+
+def test_picker_hides_vertex_without_credentials(monkeypatch):
+    import agent.vertex_adapter as va
+    from hermes_cli import model_switch as ms
+
+    monkeypatch.setattr(va, "has_vertex_credentials", lambda: False)
+    rows = ms.list_authenticated_providers(current_provider="moa")
+    assert not [r for r in rows if r.get("slug") == "vertex"]
+
+
+def test_vertex_explicitly_configured_via_config_section(monkeypatch):
+    """A `vertex:` config section with project_id is the explicit opt-in
+    signal (vertex has no API key for check 3 to find)."""
+    import hermes_cli.auth as auth
+    import hermes_cli.config as config
+
+    monkeypatch.setattr(auth, "_load_auth_store", lambda: {})
+    monkeypatch.setattr(
+        config, "load_config",
+        lambda *a, **k: {"model": {"provider": "moa"}, "vertex": {"project_id": "my-proj"}},
+    )
+    monkeypatch.delenv("VERTEX_CREDENTIALS_PATH", raising=False)
+    monkeypatch.delenv("GOOGLE_APPLICATION_CREDENTIALS", raising=False)
+    assert auth.is_provider_explicitly_configured("vertex") is True
+
+
+def test_vertex_not_explicitly_configured_when_unset(monkeypatch):
+    import hermes_cli.auth as auth
+    import hermes_cli.config as config
+
+    monkeypatch.setattr(auth, "_load_auth_store", lambda: {})
+    monkeypatch.setattr(
+        config, "load_config",
+        lambda *a, **k: {"model": {"provider": "moa"}},
+    )
+    monkeypatch.delenv("VERTEX_CREDENTIALS_PATH", raising=False)
+    monkeypatch.delenv("GOOGLE_APPLICATION_CREDENTIALS", raising=False)
+    assert auth.is_provider_explicitly_configured("vertex") is False

@@ -1858,6 +1858,32 @@ class TestChildCredentialPoolResolution(unittest.TestCase):
         result = _resolve_child_credential_pool("openrouter", parent)
         self.assertIs(result, mock_pool)
 
+    def test_same_provider_different_endpoint_refuses_parent_pool(self):
+        """An Azure child must not lease an openai-api pool for api.openai.com."""
+        parent = _make_mock_parent()
+        parent.provider = "openai-api"
+        parent.base_url = "https://anima-resource.cognitiveservices.azure.com/openai/v1"
+        parent_pool = MagicMock()
+        parent_pool.provider = "openai-api"
+        parent_entry = MagicMock()
+        parent_entry.runtime_base_url = "https://api.openai.com/v1"
+        parent_pool.entries.return_value = [parent_entry]
+        parent._credential_pool = parent_pool
+
+        loaded_pool = MagicMock()
+        loaded_pool.provider = "openai-api"
+        loaded_pool.has_credentials.return_value = True
+        loaded_entry = MagicMock()
+        loaded_entry.runtime_base_url = "https://api.openai.com/v1"
+        loaded_pool.entries.return_value = [loaded_entry]
+
+        with patch("agent.credential_pool.load_pool", return_value=loaded_pool):
+            result = _resolve_child_credential_pool(
+                "openai-api", parent, parent.base_url
+            )
+
+        self.assertIsNone(result)
+
     def test_no_provider_inherits_parent_pool(self):
         parent = _make_mock_parent()
         mock_pool = MagicMock()
@@ -2071,13 +2097,86 @@ class TestChildCredentialLeasing(unittest.TestCase):
         child._swap_credential.assert_called_once_with(leased_entry)
         child._credential_pool.release_lease.assert_called_once_with("cred-b")
 
+    def test_run_single_child_skips_same_provider_wrong_endpoint_pool(self):
+        """Lease binding must not overwrite an Azure child with api.openai.com."""
+        from tools.delegate_tool import _run_single_child
+
+        child = MagicMock()
+        child.provider = "openai-api"
+        child.base_url = "https://anima-resource.cognitiveservices.azure.com/openai/v1"
+        child._credential_pool = MagicMock()
+        pool = child._credential_pool
+        pool.provider = "openai-api"
+        pool.acquire_lease.return_value = "cred-a"
+        leased_entry = MagicMock(id="cred-a")
+        leased_entry.runtime_base_url = "https://api.openai.com/v1"
+        pool.current.return_value = leased_entry
+        pool.entries.return_value = [leased_entry]
+        child.run_conversation.return_value = {
+            "final_response": "done",
+            "completed": True,
+            "interrupted": False,
+            "api_calls": 1,
+            "messages": [],
+        }
+
+        result = _run_single_child(
+            task_index=0,
+            goal="Keep Azure endpoint",
+            child=child,
+            parent_agent=_make_mock_parent(),
+        )
+
+        self.assertEqual(result["status"], "completed")
+        pool.acquire_lease.assert_not_called()
+        child._swap_credential.assert_not_called()
+
+    def test_run_single_child_allows_matching_named_custom_pool(self):
+        """Provider coherence must retain current named custom-pool behavior."""
+        from tools.delegate_tool import _run_single_child
+
+        child = MagicMock()
+        child.provider = "custom"
+        child.base_url = "https://endpoint.example.com/v1"
+        child._credential_pool = MagicMock()
+        pool = child._credential_pool
+        pool.provider = "custom:example"
+        pool.acquire_lease.return_value = "cred-a"
+        leased_entry = MagicMock(id="cred-a")
+        leased_entry.runtime_base_url = child.base_url
+        pool.current.return_value = leased_entry
+        pool.entries.return_value = [leased_entry]
+        child.run_conversation.return_value = {
+            "final_response": "done",
+            "completed": True,
+            "interrupted": False,
+            "api_calls": 1,
+            "messages": [],
+        }
+
+        with patch(
+            "agent.credential_pool.get_custom_provider_pool_key",
+            return_value="custom:example",
+        ):
+            result = _run_single_child(
+                task_index=0,
+                goal="Use named custom pool",
+                child=child,
+                parent_agent=_make_mock_parent(),
+            )
+
+        self.assertEqual(result["status"], "completed")
+        pool.acquire_lease.assert_called_once_with()
+        child._swap_credential.assert_called_once_with(leased_entry)
+
     def test_run_single_child_releases_lease_after_failure(self):
         from tools.delegate_tool import _run_single_child
 
         child = MagicMock()
         child._credential_pool = MagicMock()
-        child._credential_pool.acquire_lease.return_value = "cred-a"
-        child._credential_pool.current.return_value = MagicMock(id="cred-a")
+        pool = child._credential_pool
+        pool.acquire_lease.return_value = "cred-a"
+        pool.current.return_value = MagicMock(id="cred-a")
         child.run_conversation.side_effect = RuntimeError("boom")
 
         result = _run_single_child(
@@ -2088,7 +2187,7 @@ class TestChildCredentialLeasing(unittest.TestCase):
         )
 
         self.assertEqual(result["status"], "error")
-        child._credential_pool.release_lease.assert_called_once_with("cred-a")
+        pool.release_lease.assert_called_once_with("cred-a")
 
 
 class TestDelegateHeartbeat(unittest.TestCase):

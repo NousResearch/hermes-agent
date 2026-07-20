@@ -5655,6 +5655,37 @@ def _git_branch_exists(repo_root: Path, branch_name: str) -> bool:
     return result.returncode == 0
 
 
+def _git_default_base(repo_root: Path) -> str:
+    """Resolve the commit a new worktree branch should be cut from.
+
+    Prefers the remote default branch (``origin/HEAD``, e.g. ``origin/main``)
+    so worker branches are based on the integration branch rather than
+    whatever the primary checkout happens to be parked on. If the operator or
+    another session leaves the repo on an unmerged feature branch, cutting new
+    worktree branches from that parked ``HEAD`` would contaminate every worker
+    branch with unrelated commits (see issue #68201).
+
+    Falls back to ``HEAD`` when no remote default is configured (e.g. a fresh
+    clone with no upstream, or an offline box), preserving the previous
+    behavior.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(repo_root), "rev-parse", "--abbrev-ref", "origin/HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+    except Exception:
+        return "HEAD"
+    if result.returncode == 0:
+        ref = (result.stdout or "").strip()
+        if ref and ref != "HEAD":
+            return ref
+    return "HEAD"
+
+
 def _git_common_dir(path: Path) -> Optional[Path]:
     try:
         result = subprocess.run(
@@ -5748,9 +5779,13 @@ def _ensure_git_worktree(repo_root: Path, target: Path, branch_name: str) -> Non
     if _git_branch_exists(repo_root, branch_name):
         cmd = ["git", "-C", str(repo_root), "worktree", "add", str(target), branch_name]
     else:
+        # Cut the new branch from the remote default (origin/HEAD) when
+        # available, falling back to HEAD. Basing on a parked local HEAD can
+        # contaminate the worker branch with unrelated commits (#68201).
+        base = _git_default_base(repo_root)
         cmd = [
             "git", "-C", str(repo_root), "worktree", "add", "-b", branch_name,
-            str(target), "HEAD",
+            str(target), base,
         ]
     result = subprocess.run(
         cmd,

@@ -4959,3 +4959,75 @@ def test_bare_connect_does_not_close_on_context_exit(tmp_path):
     # Still usable after with-block exit (the leak).
     conn.execute("SELECT 1").fetchone()
     conn.close()  # explicit close to avoid leaking THIS test
+
+
+# ---------------------------------------------------------------------------
+# Worktree base resolution (issue #68201)
+# ---------------------------------------------------------------------------
+
+def _add_remote_default(repo: Path, branch: str = "main") -> None:
+    """Point origin/HEAD at the given branch so _git_default_base can resolve it."""
+    subprocess.run(
+        ["git", "-C", str(repo), "symbolic-ref", "refs/remotes/origin/HEAD",
+         f"refs/remotes/origin/{branch}"],
+        check=True, capture_output=True, text=True,
+    )
+
+
+def test_git_default_base_prefers_origin_head(tmp_path):
+    """_git_default_base resolves origin/HEAD when the remote default exists."""
+    repo = tmp_path / "repo"
+    _init_git_repo(repo)
+    subprocess.run(["git", "-C", str(repo), "update-ref", "refs/remotes/origin/main", "HEAD"],
+                   check=True, capture_output=True, text=True)
+    _add_remote_default(repo, "main")
+    assert kb._git_default_base(repo) == "origin/main"
+
+
+def test_git_default_base_falls_back_to_head_without_remote(tmp_path):
+    """With no origin/HEAD configured, _git_default_base falls back to HEAD."""
+    repo = tmp_path / "repo"
+    _init_git_repo(repo)
+    assert kb._git_default_base(repo) == "HEAD"
+
+
+def test_ensure_git_worktree_bases_new_branch_on_origin_head(tmp_path):
+    """A new worktree branch is cut from origin/HEAD, not a parked local HEAD (#68201).
+
+    Regression for #68201: if the primary checkout is left parked on an
+    unmerged feature branch, every worker worktree created during that window
+    inherited that branch's commits. We now base new branches on the remote
+    default branch when it resolves.
+    """
+    repo = tmp_path / "repo"
+    _init_git_repo(repo)  # default branch 'main', one commit on README.md
+    # Simulate a "parked" primary checkout: a feature branch with extra files.
+    subprocess.run(["git", "-C", str(repo), "checkout", "-b", "feature/parked"],
+                   check=True, capture_output=True, text=True)
+    (repo / "feature_only.txt").write_text("should not leak\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo), "add", "feature_only.txt"],
+                   check=True, capture_output=True, text=True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-m", "feature work"],
+                   check=True, capture_output=True, text=True)
+    # Leave the primary checkout parked on the feature branch.
+    subprocess.run(["git", "-C", str(repo), "update-ref", "refs/remotes/origin/main", "main"],
+                   check=True, capture_output=True, text=True)
+    _add_remote_default(repo, "main")
+
+    target = tmp_path / "worktrees" / "wt1"
+    kb._ensure_git_worktree(repo, target, "wt/issue-68201")
+
+    # The new worktree branch must NOT contain the parked feature's file.
+    listing = subprocess.run(
+        ["git", "-C", str(target), "ls-files"],
+        check=True, capture_output=True, text=True,
+    ).stdout
+    assert "feature_only.txt" not in listing
+    assert "README.md" in listing
+    # And it must actually be based on origin/main (the parked commit is absent).
+    contained = subprocess.run(
+        ["git", "-C", str(repo), "merge-base", "--is-ancestor", "feature/parked",
+         "wt/issue-68201"],
+        capture_output=True, text=True,
+    )
+    assert contained.returncode != 0, "worker branch should not descend from parked feature branch"

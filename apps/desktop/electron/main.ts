@@ -130,6 +130,7 @@ import {
 import { isOfficialSshRemote, OFFICIAL_REPO_HTTPS_URL } from './update-remote'
 import { spawnUpdaterProcess } from './updater-process'
 import { fetchMarketplaceThemes, searchMarketplaceThemes } from './vscode-marketplace'
+import { registerWindowControlIpc, windowControlState } from './window-controls'
 import {
   computeWindowOptions,
   debounce,
@@ -4614,7 +4615,8 @@ function getWindowState() {
   return {
     isFullscreen: Boolean(mainWindow?.isFullScreen?.()),
     nativeOverlayWidth: getNativeOverlayWidth(),
-    windowButtonPosition: getWindowButtonPosition()
+    windowButtonPosition: getWindowButtonPosition(),
+    ...windowControlState(mainWindow, IS_WSL)
   }
 }
 
@@ -7758,6 +7760,7 @@ ipcMain.handle('hermes:window:openNewSession', async () => {
 
   return { ok: true }
 })
+registerWindowControlIpc(ipcMain, sender => BrowserWindow.fromWebContents(sender))
 
 // --- Text size (zoom) -------------------------------------------------------
 // The settings UI drives the same clamped zoom scale as the Ctrl/Cmd

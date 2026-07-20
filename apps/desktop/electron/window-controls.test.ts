@@ -2,7 +2,12 @@ import assert from 'node:assert/strict'
 
 import { describe, test } from 'vitest'
 
-import { customWindowControlsEnabled, performWindowControl, windowControlState } from './window-controls'
+import {
+  customWindowControlsEnabled,
+  performWindowControl,
+  registerWindowControlIpc,
+  windowControlState
+} from './window-controls'
 
 class FakeWindow {
   closed = false
@@ -97,4 +102,65 @@ test('custom window controls use the same WSL kernel fallback as the main proces
     customWindowControlsEnabled({ env: {}, kernelRelease: '6.6.87.2-microsoft-standard-WSL2', platform: 'linux' }),
     true
   )
+})
+
+test('custom window controls read WSL env vars without touching the filesystem', () => {
+  assert.equal(customWindowControlsEnabled({ env: { WSL_INTEROP: '/run/WSL/1_interop' }, platform: 'linux' }), true)
+  assert.equal(customWindowControlsEnabled({ env: {}, platform: 'linux' }), false)
+  assert.equal(customWindowControlsEnabled({ env: { WSL_DISTRO_NAME: 'Ubuntu' }, platform: 'darwin' }), false)
+})
+
+describe('registerWindowControlIpc', () => {
+  function fakeIpc() {
+    const handlers = new Map<string, (event: { sender: unknown }, action: unknown) => void>()
+
+    return {
+      handlers,
+      on(channel: string, listener: (event: { sender: unknown }, action: unknown) => void) {
+        handlers.set(channel, listener)
+      }
+    }
+  }
+
+  test('registers the hermes:window-control channel', () => {
+    const ipc = fakeIpc()
+
+    registerWindowControlIpc(ipc as Parameters<typeof registerWindowControlIpc>[0], () => new FakeWindow())
+
+    assert.equal(ipc.handlers.has('hermes:window-control'), true)
+  })
+
+  test('dispatches the incoming action to performWindowControl on the resolved window', () => {
+    const ipc = fakeIpc()
+    const win = new FakeWindow()
+    const senders: unknown[] = []
+
+    registerWindowControlIpc(ipc as Parameters<typeof registerWindowControlIpc>[0], sender => {
+      senders.push(sender)
+
+      return win
+    })
+
+    const handler = ipc.handlers.get('hermes:window-control')
+
+    assert.ok(handler)
+
+    const sender = { id: 7 }
+
+    handler({ sender }, 'toggle-maximize')
+    assert.equal(win.maximized, true)
+    assert.deepEqual(senders, [sender])
+
+    handler({ sender }, 'minimize')
+    assert.equal(win.minimized, true)
+  })
+
+  test('ignores non-string actions instead of dispatching them', () => {
+    const ipc = fakeIpc()
+    const win = new FakeWindow()
+
+    registerWindowControlIpc(ipc as Parameters<typeof registerWindowControlIpc>[0], () => win)
+    ipc.handlers.get('hermes:window-control')({ sender: {} }, { action: 'minimize' })
+    assert.equal(win.minimized, false)
+  })
 })

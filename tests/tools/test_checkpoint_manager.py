@@ -22,6 +22,8 @@ from tools.checkpoint_manager import (
     _ref_name,
     _project_meta_path,
     _touch_project,
+    _parse_volume_specs,
+    _map_logical_to_physical,
     format_checkpoint_list,
     prune_checkpoints,
     maybe_auto_prune_checkpoints,
@@ -1049,3 +1051,216 @@ class TestClearFunctions:
         result = clear_all()
         assert result["deleted"] is False
         assert result["bytes_freed"] == 0
+
+
+# =========================================================================
+# Docker bind-mount: logical key (container path) ↔ physical dir (host path)
+#
+# Regression coverage for the checkpoint/rollback workdir-key mismatch:
+# checkpoint creation snapshotted the host bind-mount path while /rollback
+# looked checkpoints up under the container runtime workdir (TERMINAL_CWD),
+# so rollback reported no checkpoints for the active workdir.
+# =========================================================================
+
+class TestVolumeSpecParsing:
+    def test_parses_host_container_pairs(self):
+        mounts = _parse_volume_specs([
+            "/Users/dev/hermes-work/repos:/workspace/repos",
+            "/etc/localtime:/etc/localtime:ro",
+        ])
+        assert ("/Users/dev/hermes-work/repos", "/workspace/repos") in mounts
+        # Options (``:ro``) are stripped; host/container still captured.
+        assert ("/etc/localtime", "/etc/localtime") in mounts
+
+    def test_accepts_json_string_from_env(self):
+        raw = '["/Users/dev/hermes-work/repos:/workspace/repos"]'
+        assert _parse_volume_specs(raw) == [
+            ("/Users/dev/hermes-work/repos", "/workspace/repos"),
+        ]
+
+    def test_ignores_malformed_entries(self):
+        assert _parse_volume_specs(["no-colon", 123, ""]) == []
+        assert _parse_volume_specs("not json") == []
+        assert _parse_volume_specs(None) == []
+
+
+class TestLogicalToPhysicalMapping:
+    def test_maps_subpath_under_mount(self):
+        mounts = [("/Users/dev/hermes-work/repos", "/workspace/repos")]
+        assert _map_logical_to_physical("/workspace/repos/myrepo", mounts) == (
+            "/Users/dev/hermes-work/repos/myrepo"
+        )
+
+    def test_maps_mount_root_exactly(self):
+        mounts = [("/Users/dev/hermes-work/repos", "/workspace/repos")]
+        assert _map_logical_to_physical("/workspace/repos", mounts) == (
+            "/Users/dev/hermes-work/repos"
+        )
+
+    def test_unmapped_path_returns_none(self):
+        mounts = [("/Users/dev/hermes-work/repos", "/workspace/repos")]
+        assert _map_logical_to_physical("/some/other/path", mounts) is None
+
+    def test_most_specific_mount_wins(self):
+        mounts = [
+            ("/host/all", "/workspace"),
+            ("/host/repos", "/workspace/repos"),
+        ]
+        assert _map_logical_to_physical("/workspace/repos/x", mounts) == (
+            "/host/repos/x"
+        )
+
+
+class TestDockerBindMountCheckpoints:
+    """End-to-end: container logical key, host physical git I/O."""
+
+    @pytest.fixture()
+    def docker_repo(self, tmp_path):
+        """A host bind-mount source standing in for ``docker_volumes``."""
+        host_repos = tmp_path / "hermes-work" / "repos"
+        repo = host_repos / "myrepo"
+        repo.mkdir(parents=True)
+        (repo / ".git").mkdir()  # repo marker
+        (repo / "README.md").write_text("# docs v1\n")
+        container_target = "/workspace/repos"
+        logical = "/workspace/repos/myrepo"
+        return host_repos, repo, container_target, logical
+
+    def _mgr(self, host_repos, container_target, checkpoint_base, monkeypatch):
+        monkeypatch.setattr(
+            "tools.checkpoint_manager.CHECKPOINT_BASE", checkpoint_base,
+        )
+        return CheckpointManager(
+            enabled=True,
+            max_snapshots=50,
+            docker_volumes=[f"{host_repos}:{container_target}"],
+        )
+
+    def test_create_under_logical_key_lists_under_logical_key(
+        self, docker_repo, checkpoint_base, monkeypatch,
+    ):
+        host_repos, repo, container_target, logical = docker_repo
+        mgr = self._mgr(host_repos, container_target, checkpoint_base, monkeypatch)
+
+        # File-tool preflight checkpoints the *logical* container workdir.
+        assert mgr.ensure_checkpoint(logical, "before write_file") is True
+
+        # /rollback lists under the same logical key (TERMINAL_CWD) and finds it.
+        listed = mgr.list_checkpoints(logical)
+        assert len(listed) == 1
+        assert listed[0]["reason"] == "before write_file"
+
+    def test_metadata_records_existing_host_path_not_container_path(
+        self, docker_repo, checkpoint_base, monkeypatch,
+    ):
+        host_repos, repo, container_target, logical = docker_repo
+        mgr = self._mgr(host_repos, container_target, checkpoint_base, monkeypatch)
+        mgr.ensure_checkpoint(logical, "before write_file")
+
+        # Project metadata is keyed by the logical hash but stores the physical
+        # host path, so the orphan sweep (which checks workdir existence) does
+        # not flag the live checkpoint just because the container path is absent
+        # on the host.
+        store = _store_path(checkpoint_base)
+        meta_path = _project_meta_path(store, _project_hash(logical))
+        assert meta_path.exists()
+        recorded = json.loads(meta_path.read_text())["workdir"]
+        assert recorded == str(repo.resolve())
+        assert Path(recorded).exists()
+
+    def test_diff_and_restore_round_trip_via_logical_key(
+        self, docker_repo, checkpoint_base, monkeypatch,
+    ):
+        host_repos, repo, container_target, logical = docker_repo
+        mgr = self._mgr(host_repos, container_target, checkpoint_base, monkeypatch)
+
+        mgr.ensure_checkpoint(logical, "before write_file")
+        cps = mgr.list_checkpoints(logical)
+        first_hash = cps[0]["hash"]
+
+        # Edit the file on the host (as the in-container tool would, via mount).
+        mgr.new_turn()
+        (repo / "README.md").write_text("# docs v2 — edited\n")
+
+        # Diff against the checkpoint, looked up by the logical key.
+        diff = mgr.diff(logical, first_hash)
+        assert diff["success"] is True
+        assert "README.md" in diff["diff"]
+
+        # Restore by the logical key writes back to the physical host file.
+        result = mgr.restore(logical, first_hash)
+        assert result["success"] is True
+        assert result["directory"] == logical  # user-facing identity is logical
+        assert (repo / "README.md").read_text() == "# docs v1\n"
+
+    def test_relative_edit_keys_off_terminal_cwd(
+        self, docker_repo, checkpoint_base, monkeypatch,
+    ):
+        """A relative write_file in a Docker runtime keys off TERMINAL_CWD,
+        matching exactly what /rollback uses — the core issue scenario."""
+        host_repos, repo, container_target, logical = docker_repo
+        monkeypatch.setattr(
+            "tools.checkpoint_manager.CHECKPOINT_BASE", checkpoint_base,
+        )
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+        monkeypatch.setenv("TERMINAL_CWD", logical)
+        monkeypatch.setenv(
+            "TERMINAL_DOCKER_VOLUMES",
+            json.dumps([f"{host_repos}:{container_target}"]),
+        )
+
+        # No constructor override — mounts come from the runtime env, exactly
+        # like the agent/gateway-constructed managers.
+        mgr = CheckpointManager(enabled=True, max_snapshots=50)
+
+        # Preflight resolves a relative file edit to the runtime cwd.
+        assert mgr.checkpoint_dir_for_file("README.md") == logical
+        mgr.ensure_checkpoint(
+            mgr.checkpoint_dir_for_file("README.md"), "before write_file",
+        )
+
+        # A second manager (e.g. the /rollback handler) reads the same env and
+        # finds the checkpoint under TERMINAL_CWD.
+        rollback_mgr = CheckpointManager(enabled=True, max_snapshots=50)
+        listed = rollback_mgr.list_checkpoints(os.environ["TERMINAL_CWD"])
+        assert len(listed) == 1
+        assert listed[0]["reason"] == "before write_file"
+
+    def test_rollback_resolves_via_metadata_when_mounts_absent(
+        self, docker_repo, checkpoint_base, monkeypatch,
+    ):
+        """A /rollback handler with no live docker_volumes still resolves the
+        host tree from project metadata recorded at creation time."""
+        host_repos, repo, container_target, logical = docker_repo
+        creator = self._mgr(host_repos, container_target, checkpoint_base, monkeypatch)
+        creator.ensure_checkpoint(logical, "before write_file")
+
+        # A second manager with NO mount override and no Docker env — it must
+        # still find and operate on the checkpoint via the recorded host path.
+        monkeypatch.delenv("TERMINAL_ENV", raising=False)
+        monkeypatch.delenv("TERMINAL_DOCKER_VOLUMES", raising=False)
+        rollback_mgr = CheckpointManager(enabled=True, max_snapshots=50)
+
+        listed = rollback_mgr.list_checkpoints(logical)
+        assert len(listed) == 1
+
+        result = rollback_mgr.restore(logical, listed[0]["hash"])
+        assert result["success"] is True
+        assert (repo / "README.md").read_text() == "# docs v1\n"
+
+    def test_local_backend_relative_edit_walks_to_repo_root(
+        self, work_dir, checkpoint_base, monkeypatch,
+    ):
+        """Without Docker mounts, relative edits keep the local walk-up
+        behavior (no regression for the common case)."""
+        monkeypatch.setattr(
+            "tools.checkpoint_manager.CHECKPOINT_BASE", checkpoint_base,
+        )
+        monkeypatch.delenv("TERMINAL_ENV", raising=False)
+        monkeypatch.delenv("TERMINAL_DOCKER_VOLUMES", raising=False)
+        (work_dir / ".git").mkdir()
+        mgr = CheckpointManager(enabled=True, max_snapshots=50)
+        monkeypatch.chdir(work_dir)
+
+        # Falls through to get_working_dir_for_path → the repo root.
+        assert mgr.checkpoint_dir_for_file("main.py") == str(work_dir.resolve())

@@ -119,9 +119,9 @@ Describe the approved scope before execution starts.
 
 ## Stop conditions
 
-- Pause on secrets/OAuth/API key access.
-- Pause before destructive/admin actions, Gateway/Desktop restarts, external publish, or uncapped paid/network calls.
-- Pause if success criteria or evidence paths become ambiguous.
+- Stop on system-enforced blocks, raw secret exposure risk, an explicit user stop, or an external action outside the approved task contract.
+- For approved destructive/admin, restart, external, or paid/network work: continue within scope while recording impact, mitigation, recovery path, and evidence.
+- Pause only when success criteria, scope, budget, priority, or evidence paths are materially ambiguous.
 
 ## Evidence rule
 

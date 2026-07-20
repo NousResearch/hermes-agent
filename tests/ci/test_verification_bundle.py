@@ -65,23 +65,6 @@ def _init_git_repo(path: Path) -> None:
     )
 
 
-def _bash_or_skip() -> str:
-    bash = shutil.which("bash")
-    if not bash or not shutil.which("git") or not shutil.which("python"):
-        pytest.skip("bash, git, and python are required to smoke-test generated shell commands")
-    probe = subprocess.run(
-        [bash, "-lc", "printf ok"],
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        capture_output=True,
-        check=False,
-    )
-    if probe.returncode != 0 or probe.stdout != "ok":
-        pytest.skip("bash is present but unavailable in this environment")
-    return bash
-
-
 def test_gateway_and_desktop_store_paths_get_focused_checks():
     mod = _load_bundle()
 
@@ -102,6 +85,17 @@ def test_gateway_and_desktop_store_paths_get_focused_checks():
     assert "conflict-marker-scan" in ids
     assert "added-line-security-scan" in ids
     assert bundle.risk_level == "medium"
+
+    commands = {command.id: command.command for command in bundle.commands}
+    assert commands["desktop-store-vitest"].endswith("run test:ui -- src/store")
+    assert "layout.test.ts" not in commands["desktop-store-vitest"]
+
+
+def test_npm_executable_uses_cmd_shim_on_windows():
+    mod = _load_bundle()
+
+    assert mod._npm_executable("nt") == "npm.cmd"
+    assert mod._npm_executable("posix") == "npm"
 
 
 def test_traversal_like_changed_path_is_canonicalized_before_classification():
@@ -435,19 +429,8 @@ def test_added_line_security_scan_ignores_pattern_text_and_flags_lhs_assignments
 
 def test_generated_added_line_security_scan_command_redacts_and_uses_lhs(tmp_path):
     mod = _load_bundle()
-    bash = shutil.which("bash")
-    if not bash or not shutil.which("git") or not shutil.which("python"):
-        pytest.skip("bash, git, and python are required to smoke-test the generated shell command")
-    bash_probe = subprocess.run(
-        [bash, "-lc", "printf ok"],
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        capture_output=True,
-        check=False,
-    )
-    if bash_probe.returncode != 0 or bash_probe.stdout != "ok":
-        pytest.skip("bash is present but unavailable in this environment")
+    if not shutil.which("git"):
+        pytest.skip("git is required to smoke-test the generated scanner")
 
     subprocess.run(["git", "init"], cwd=tmp_path, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     subprocess.run(
@@ -479,11 +462,13 @@ def test_generated_added_line_security_scan_command_redacts_and_uses_lhs(tmp_pat
     )
 
     command = mod._added_line_security_scan_command()
+    assert command == "python scripts/ci/verification_bundle.py --added-line-security-scan"
+    assert "<<" not in command
     term_a = "api" + "_key"
 
     sample.write_text('pattern = r"api_key|secret|password|token|passwd\\\\s*="\n', encoding="utf-8")
     harmless = subprocess.run(
-        [bash, "-lc", command],
+        [sys.executable, str(BUNDLE_PATH), "--added-line-security-scan"],
         cwd=tmp_path,
         text=True,
         encoding="utf-8",
@@ -496,7 +481,7 @@ def test_generated_added_line_security_scan_command_redacts_and_uses_lhs(tmp_pat
 
     sample.write_text(f'{term_a} = "dummy-value"\n', encoding="utf-8")
     risky = subprocess.run(
-        [bash, "-lc", command],
+        [sys.executable, str(BUNDLE_PATH), "--added-line-security-scan"],
         cwd=tmp_path,
         text=True,
         encoding="utf-8",
@@ -520,7 +505,7 @@ def test_generated_added_line_security_scan_command_redacts_and_uses_lhs(tmp_pat
     untracked = tmp_path / "untracked.py"
     untracked.write_text(f'{term_a} = "untracked-dummy-value"\n', encoding="utf-8")
     untracked_risky = subprocess.run(
-        [bash, "-lc", command],
+        [sys.executable, str(BUNDLE_PATH), "--added-line-security-scan"],
         cwd=tmp_path,
         text=True,
         encoding="utf-8",
@@ -538,7 +523,6 @@ def test_generated_security_scan_rejects_untracked_windows_junction_ancestor(tmp
     if os.name != "nt":
         pytest.skip("Windows junction coverage only applies on Windows")
     mod = _load_bundle()
-    bash = _bash_or_skip()
     repo = tmp_path / "repo"
     outside = tmp_path / "outside"
     _init_git_repo(repo)
@@ -560,7 +544,7 @@ def test_generated_security_scan_rejects_untracked_windows_junction_ancestor(tmp
         assert junction.is_symlink() is False
         command = mod._added_line_security_scan_command()
         scanned = subprocess.run(
-            [bash, "-lc", command],
+        [sys.executable, str(BUNDLE_PATH), "--added-line-security-scan"],
             cwd=repo,
             text=True,
             encoding="utf-8",
@@ -584,7 +568,6 @@ def test_generated_security_scan_rejects_untracked_windows_junction_ancestor(tmp
 
 def test_generated_security_scan_fails_closed_for_staged_and_untracked_utf16(tmp_path):
     mod = _load_bundle()
-    bash = _bash_or_skip()
     command = mod._added_line_security_scan_command()
     term = "api" + "_key"
     marker = "utf16-dummy-value"
@@ -602,7 +585,7 @@ def test_generated_security_scan_fails_closed_for_staged_and_untracked_utf16(tmp
         text=True,
     )
     staged = subprocess.run(
-        [bash, "-lc", command],
+        [sys.executable, str(BUNDLE_PATH), "--added-line-security-scan"],
         cwd=staged_repo,
         text=True,
         encoding="utf-8",
@@ -619,7 +602,7 @@ def test_generated_security_scan_fails_closed_for_staged_and_untracked_utf16(tmp
     _init_git_repo(untracked_repo)
     (untracked_repo / "untracked.py").write_text(f'{term} = "{marker}"\n', encoding="utf-16")
     untracked = subprocess.run(
-        [bash, "-lc", command],
+        [sys.executable, str(BUNDLE_PATH), "--added-line-security-scan"],
         cwd=untracked_repo,
         text=True,
         encoding="utf-8",
@@ -635,7 +618,6 @@ def test_generated_security_scan_fails_closed_for_staged_and_untracked_utf16(tmp
 
 def test_generated_security_scan_redacts_staged_and_unstaged_undecodable_bytes(tmp_path):
     mod = _load_bundle()
-    bash = _bash_or_skip()
     command = mod._added_line_security_scan_command()
     term = "api" + "_key"
     marker = "undecodable-dummy-value"
@@ -677,7 +659,7 @@ def test_generated_security_scan_redacts_staged_and_unstaged_undecodable_bytes(t
 
     for repo in (staged_repo, unstaged_repo):
         scanned = subprocess.run(
-            [bash, "-lc", command],
+        [sys.executable, str(BUNDLE_PATH), "--added-line-security-scan"],
             cwd=repo,
             text=True,
             encoding="utf-8",
@@ -694,7 +676,6 @@ def test_generated_security_scan_redacts_staged_and_unstaged_undecodable_bytes(t
 
 def test_generated_security_scan_disables_external_diff_bypass(tmp_path):
     mod = _load_bundle()
-    bash = _bash_or_skip()
     command = mod._added_line_security_scan_command()
     repo = tmp_path / "repo"
     _init_git_repo(repo)
@@ -730,7 +711,7 @@ def test_generated_security_scan_disables_external_diff_bypass(tmp_path):
     sample.write_text(f'{term} = "{marker}"\n', encoding="utf-8")
 
     scanned = subprocess.run(
-        [bash, "-lc", command],
+        [sys.executable, str(BUNDLE_PATH), "--added-line-security-scan"],
         cwd=repo,
         text=True,
         encoding="utf-8",
@@ -746,7 +727,6 @@ def test_generated_security_scan_disables_external_diff_bypass(tmp_path):
 
 def test_generated_security_scan_disables_textconv_bypass(tmp_path):
     mod = _load_bundle()
-    bash = _bash_or_skip()
     command = mod._added_line_security_scan_command()
     repo = tmp_path / "repo"
     _init_git_repo(repo)
@@ -773,7 +753,7 @@ def test_generated_security_scan_disables_textconv_bypass(tmp_path):
     )
 
     scanned = subprocess.run(
-        [bash, "-lc", command],
+        [sys.executable, str(BUNDLE_PATH), "--added-line-security-scan"],
         cwd=repo,
         text=True,
         encoding="utf-8",
@@ -789,7 +769,6 @@ def test_generated_security_scan_disables_textconv_bypass(tmp_path):
 
 def test_generated_security_scan_ignores_repository_selection_environment(tmp_path):
     mod = _load_bundle()
-    bash = _bash_or_skip()
     command = mod._added_line_security_scan_command()
     candidate_repo = tmp_path / "candidate"
     shadow_repo = tmp_path / "shadow"
@@ -821,7 +800,7 @@ def test_generated_security_scan_ignores_repository_selection_environment(tmp_pa
     env["GIT_WORK_TREE"] = str(shadow_repo)
 
     scanned = subprocess.run(
-        [bash, "-lc", command],
+        [sys.executable, str(BUNDLE_PATH), "--added-line-security-scan"],
         cwd=candidate_repo,
         env=env,
         text=True,
@@ -839,7 +818,6 @@ def test_generated_security_scan_ignores_repository_selection_environment(tmp_pa
 
 def test_generated_security_scan_rejects_active_clean_filter_without_executing_it(tmp_path):
     mod = _load_bundle()
-    bash = _bash_or_skip()
     command = mod._added_line_security_scan_command()
     repo = tmp_path / "repo"
     _init_git_repo(repo)
@@ -878,7 +856,7 @@ def test_generated_security_scan_rejects_active_clean_filter_without_executing_i
     sample.write_text(f'{term} = "{marker}"\n', encoding="utf-8")
 
     scanned = subprocess.run(
-        [bash, "-lc", command],
+        [sys.executable, str(BUNDLE_PATH), "--added-line-security-scan"],
         cwd=repo,
         text=True,
         encoding="utf-8",
@@ -896,7 +874,6 @@ def test_generated_security_scan_rejects_active_clean_filter_without_executing_i
 
 def test_generated_security_scan_rejects_ident_attribute_transform(tmp_path):
     mod = _load_bundle()
-    bash = _bash_or_skip()
     command = mod._added_line_security_scan_command()
     repo = tmp_path / "repo"
     _init_git_repo(repo)
@@ -924,7 +901,7 @@ def test_generated_security_scan_rejects_ident_attribute_transform(tmp_path):
     sample.write_text(f'{term} = "$Id: {marker} $"\n', encoding="utf-8")
 
     scanned = subprocess.run(
-        [bash, "-lc", command],
+        [sys.executable, str(BUNDLE_PATH), "--added-line-security-scan"],
         cwd=repo,
         text=True,
         encoding="utf-8",
@@ -942,7 +919,6 @@ def test_generated_security_scan_rejects_ident_attribute_transform(tmp_path):
 @pytest.mark.parametrize("attribute_line", ["sample.py text eol=lf", "sample.py -diff"])
 def test_generated_security_scan_handles_eol_and_binary_diff_attributes(tmp_path, attribute_line):
     mod = _load_bundle()
-    bash = _bash_or_skip()
     command = mod._added_line_security_scan_command()
     repo = tmp_path / "repo"
     _init_git_repo(repo)
@@ -970,7 +946,7 @@ def test_generated_security_scan_handles_eol_and_binary_diff_attributes(tmp_path
     sample.write_text(f'{term} = "{marker}"\n', encoding="utf-8")
 
     scanned = subprocess.run(
-        [bash, "-lc", command],
+        [sys.executable, str(BUNDLE_PATH), "--added-line-security-scan"],
         cwd=repo,
         text=True,
         encoding="utf-8",
@@ -987,7 +963,6 @@ def test_generated_security_scan_handles_eol_and_binary_diff_attributes(tmp_path
 
 def test_generated_security_scan_rejects_gitlink_entries(tmp_path):
     mod = _load_bundle()
-    bash = _bash_or_skip()
     command = mod._added_line_security_scan_command()
     repo = tmp_path / "repo"
     _init_git_repo(repo)
@@ -1027,7 +1002,7 @@ def test_generated_security_scan_rejects_gitlink_entries(tmp_path):
     )
 
     scanned = subprocess.run(
-        [bash, "-lc", command],
+        [sys.executable, str(BUNDLE_PATH), "--added-line-security-scan"],
         cwd=repo,
         text=True,
         encoding="utf-8",
@@ -1043,7 +1018,6 @@ def test_generated_security_scan_rejects_gitlink_entries(tmp_path):
 
 def test_generated_security_scan_rejects_untracked_nested_repository(tmp_path):
     mod = _load_bundle()
-    bash = _bash_or_skip()
     command = mod._added_line_security_scan_command()
     parent = tmp_path / "parent"
     nested = parent / "vendor" / "nested"
@@ -1102,7 +1076,7 @@ def test_generated_security_scan_rejects_untracked_nested_repository(tmp_path):
     secret_file.write_text(f'{term} = "{marker}"\n', encoding="utf-8")
 
     scanned = subprocess.run(
-        [bash, "-lc", command],
+        [sys.executable, str(BUNDLE_PATH), "--added-line-security-scan"],
         cwd=parent,
         text=True,
         encoding="utf-8",
@@ -1121,7 +1095,6 @@ def test_generated_security_scan_rejects_untracked_nested_repository(tmp_path):
 @pytest.mark.parametrize("index_flag", ["--assume-unchanged", "--skip-worktree"])
 def test_generated_security_scan_rejects_hidden_index_flags(tmp_path, index_flag):
     mod = _load_bundle()
-    bash = _bash_or_skip()
     command = mod._added_line_security_scan_command()
     repo = tmp_path / "repo"
     _init_git_repo(repo)
@@ -1156,7 +1129,7 @@ def test_generated_security_scan_rejects_hidden_index_flags(tmp_path, index_flag
     sample.write_text(f'{term} = "{marker}"\n', encoding="utf-8")
 
     scanned = subprocess.run(
-        [bash, "-lc", command],
+        [sys.executable, str(BUNDLE_PATH), "--added-line-security-scan"],
         cwd=repo,
         text=True,
         encoding="utf-8",
@@ -1173,7 +1146,6 @@ def test_generated_security_scan_rejects_hidden_index_flags(tmp_path, index_flag
 
 def test_generated_security_scan_disables_fsmonitor_hook(tmp_path):
     mod = _load_bundle()
-    bash = _bash_or_skip()
     command = mod._added_line_security_scan_command()
     repo = tmp_path / "repo"
     _init_git_repo(repo)
@@ -1209,7 +1181,7 @@ def test_generated_security_scan_disables_fsmonitor_hook(tmp_path):
     sample.write_text(f'{term} = "{marker}"\n', encoding="utf-8")
 
     scanned = subprocess.run(
-        [bash, "-lc", command],
+        [sys.executable, str(BUNDLE_PATH), "--added-line-security-scan"],
         cwd=repo,
         text=True,
         encoding="utf-8",
@@ -1227,15 +1199,13 @@ def test_generated_security_scan_disables_fsmonitor_hook(tmp_path):
 
 def test_generated_security_scan_converts_git_timeout_to_redacted_exit(monkeypatch, capsys):
     mod = _load_bundle()
-    command = mod._added_line_security_scan_command()
-    source = command.split("<<'PY'\n", 1)[1].rsplit("\nPY", 1)[0]
 
     def timeout(*_args, **_kwargs):
         raise subprocess.TimeoutExpired(cmd=["git"], timeout=30)
 
     monkeypatch.setattr(subprocess, "run", timeout)
     with pytest.raises(SystemExit) as exc_info:
-        exec(compile(source, "<generated-security-scan>", "exec"), {})
+        mod._run_added_line_security_scan()
 
     captured = capsys.readouterr()
     assert exc_info.value.code == 1

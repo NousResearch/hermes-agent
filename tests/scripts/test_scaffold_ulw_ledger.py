@@ -106,6 +106,12 @@ def test_normal_run_creates_parseable_scaffold(tmp_path):
     assert (run_dir / "ledger.jsonl").exists()
     assert (run_dir / "evidence" / "README.md").exists()
 
+    brief = (run_dir / "brief.md").read_text(encoding="utf-8")
+    assert "continue within scope" in brief
+    assert "outside the approved task contract" in brief
+    assert "scope, budget, priority, or evidence paths" in brief
+    assert "Pause before destructive/admin actions" not in brief
+
     goals = json.loads((run_dir / "goals.json").read_text(encoding="utf-8"))
     assert goals["run_id"] == "demo-run"
     assert goals["goal"] == "demo goal"

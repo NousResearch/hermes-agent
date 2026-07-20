@@ -8,9 +8,12 @@ state. Unknown inputs fail open by recommending broader hygiene.
 
 from __future__ import annotations
 
+import argparse
 import json
+import os
 import posixpath
 import shlex
+from pathlib import Path
 from typing import Iterable, Literal, NamedTuple
 
 RiskLevel = Literal["low", "medium", "high"]
@@ -146,9 +149,8 @@ def scan_added_line_security_hits(diff: str, terms: Iterable[str] = _CREDENTIAL_
     return hits
 
 
-def _added_line_security_scan_command() -> str:
+def _added_line_security_scan_source() -> str:
     return (
-        "python - <<'PY'\n"
         "import codecs\n"
         "import os\n"
         "import stat\n"
@@ -293,8 +295,43 @@ def _added_line_security_scan_command() -> str:
         "        scan_body(body)\n"
         "print('credential_like_added_assignments=', hits)\n"
         "raise SystemExit(1 if hits else 0)\n"
-        "PY"
     )
+
+
+def _npm_executable(os_name: str | None = None) -> str:
+    """Avoid Windows PowerShell's npm.ps1 execution-policy shim."""
+    return "npm.cmd" if (os.name if os_name is None else os_name) == "nt" else "npm"
+
+
+def _added_line_security_scan_command() -> str:
+    return "python scripts/ci/verification_bundle.py --added-line-security-scan"
+
+
+def _conflict_marker_scan_command() -> str:
+    return "python scripts/ci/verification_bundle.py --conflict-marker-scan"
+
+
+def _run_added_line_security_scan() -> None:
+    """Run the existing hardened scanner source without a POSIX shell."""
+    exec(compile(_added_line_security_scan_source(), "<added-line-security-scan>", "exec"), {})
+
+
+def _run_conflict_marker_scan() -> int:
+    suffixes = {".py", ".md", ".toml", ".yaml", ".yml", ".json", ".ts", ".tsx", ".cjs"}
+    bad: list[str] = []
+    for path in Path(".").rglob("*"):
+        if not path.is_file() or path.suffix not in suffixes:
+            continue
+        try:
+            text = path.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            bad.append(f"unreadable:{path}")
+            continue
+        for line_no, line in enumerate(text.splitlines(), start=1):
+            if line.startswith("<" * 7 + " ") or line.startswith(">" * 7 + " "):
+                bad.append(f"{path}:{line_no}")
+    print("conflict_markers=", bad)
+    return 1 if bad else 0
 
 
 def _add_global_hygiene(commands: dict[str, VerificationCommand]) -> None:
@@ -307,7 +344,7 @@ def _add_global_hygiene(commands: dict[str, VerificationCommand]) -> None:
     _add(
         commands,
         "conflict-marker-scan",
-        "python - <<'PY'\nfrom pathlib import Path\nbad=[]\nfor p in Path('.').rglob('*'):\n    if p.is_file() and p.suffix in {'.py','.md','.toml','.yaml','.yml','.json','.ts','.tsx','.cjs'}:\n        text=p.read_text(encoding='utf-8', errors='ignore')\n        for line_no, line in enumerate(text.splitlines(), start=1):\n            if line.startswith('<' * 7 + ' ') or line.startswith('>' * 7 + ' '):\n                bad.append(f'{p}:{line_no}')\nprint('conflict_markers=', bad)\nraise SystemExit(1 if bad else 0)\nPY",
+        _conflict_marker_scan_command(),
         "Ensure no merge-conflict markers remain in text changes.",
     )
     _add(
@@ -342,7 +379,7 @@ def suggest_bundle(paths: Iterable[str]) -> VerificationBundle:
         _add(
             commands,
             "desktop-typecheck",
-            "npm --workspace apps/desktop run typecheck",
+            f"{_npm_executable()} --workspace apps/desktop run typecheck",
             "No path scope was provided; include Desktop type checking as a broad guard.",
         )
         _add_global_hygiene(commands)
@@ -369,7 +406,7 @@ def suggest_bundle(paths: Iterable[str]) -> VerificationBundle:
             _add(
                 commands,
                 "desktop-typecheck",
-                "npm --workspace apps/desktop run typecheck",
+                f"{_npm_executable()} --workspace apps/desktop run typecheck",
                 "CI config can affect frontend lanes; run Desktop type checking.",
             )
             _add(
@@ -405,19 +442,19 @@ def suggest_bundle(paths: Iterable[str]) -> VerificationBundle:
             _add(
                 commands,
                 "desktop-store-vitest",
-                "npm --workspace apps/desktop run test:ui -- src/store/layout.test.ts",
-                "Desktop store changes should exercise related store tests when present.",
+                f"{_npm_executable()} --workspace apps/desktop run test:ui -- src/store",
+                "Desktop store changes should exercise the current store test directory.",
             )
             _add(
                 commands,
                 "desktop-typecheck",
-                "npm --workspace apps/desktop run typecheck",
+                f"{_npm_executable()} --workspace apps/desktop run typecheck",
                 "Desktop TypeScript changes require type checking.",
             )
             _add(
                 commands,
                 "desktop-eslint",
-                "npm --workspace apps/desktop run lint",
+                f"{_npm_executable()} --workspace apps/desktop run lint",
                 "Desktop TypeScript changes should pass lint if the package script is available.",
                 required=False,
             )
@@ -428,7 +465,7 @@ def suggest_bundle(paths: Iterable[str]) -> VerificationBundle:
             _add(
                 commands,
                 "desktop-typecheck",
-                "npm --workspace apps/desktop run typecheck",
+                f"{_npm_executable()} --workspace apps/desktop run typecheck",
                 "Electron/Desktop changes should keep package type checks green.",
             )
 
@@ -585,3 +622,18 @@ def format_markdown(bundle: VerificationBundle) -> str:
     lines.append("")
     lines.append("_This helper only suggests checks; it does not execute them._")
     return "\n".join(lines) + "\n"
+
+
+def _main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Run platform-neutral verification hygiene scanners.")
+    group = parser.add_mutually_exclusive_group(required=True)
+    group.add_argument("--added-line-security-scan", action="store_true")
+    group.add_argument("--conflict-marker-scan", action="store_true")
+    args = parser.parse_args(argv)
+    if args.added_line_security_scan:
+        _run_added_line_security_scan()
+    return _run_conflict_marker_scan()
+
+
+if __name__ == "__main__":
+    raise SystemExit(_main())

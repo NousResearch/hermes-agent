@@ -220,6 +220,63 @@ class TestHandleReasoningCommand(unittest.TestCase):
         self.assertEqual(agent.reasoning_config, {"enabled": True, "effort": "medium"})
         agent.reset_session_state.assert_called_once()
 
+    def test_new_session_resets_service_tier_and_model_from_config(self):
+        """/new re-derives service tier and model from config.yaml — session
+        /fast and /model switches do not carry forward (#48055, #23131)."""
+        from cli import CLI_CONFIG, HermesCLI
+
+        agent = SimpleNamespace(
+            reasoning_config=None,
+            reset_session_state=MagicMock(),
+            switch_model=MagicMock(),
+        )
+        stub = SimpleNamespace(
+            agent=agent,
+            conversation_history=[],
+            session_id="old-session",
+            _session_db=None,
+            _pending_title=None,
+            _resumed=False,
+            reasoning_config=None,
+            _notify_session_boundary=MagicMock(),
+            # Session had switched to fast + a session-only model.
+            service_tier="priority",
+            _pending_one_turn_model_restore={"model": "stale"},
+            model="session-switched-model",
+            provider="openrouter",
+            requested_provider="openrouter",
+            api_key="k",
+            base_url="",
+            api_mode="",
+        )
+
+        fake_result = SimpleNamespace(
+            success=True,
+            new_model="config-default-model",
+            target_provider="openrouter",
+            api_key="k2",
+            base_url="https://openrouter.ai/api/v1",
+            api_mode="chat_completions",
+        )
+        with patch.dict(
+            CLI_CONFIG.setdefault("agent", {}),
+            {"reasoning_effort": "medium", "service_tier": "normal"},
+        ), patch.dict(
+            CLI_CONFIG,
+            {"model": {"default": "config-default-model", "provider": "openrouter"}},
+        ), patch(
+            "hermes_cli.model_switch.switch_model", return_value=fake_result
+        ):
+            HermesCLI.new_session(stub, silent=True)
+
+        # Fast override cleared back to config default (normal → None).
+        self.assertIsNone(stub.service_tier)
+        # One-turn restore snapshot cleared.
+        self.assertIsNone(stub._pending_one_turn_model_restore)
+        # Model reset to the config default via the live agent swap.
+        self.assertEqual(stub.model, "config-default-model")
+        agent.switch_model.assert_called_once()
+
 
 # ---------------------------------------------------------------------------
 # Reasoning extraction and result dict

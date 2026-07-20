@@ -4765,25 +4765,22 @@ def _preview_restart_callbacks(parent: str, task_id: str) -> dict:
 def _reset_session_agent(sid: str, session: dict) -> dict:
     tokens = _set_session_context(session["session_key"])
     try:
-        # Preserve this session's chosen model AND reasoning across /new so a
-        # reset doesn't silently revert to global config (or to a model
-        # another session set). See the cross-session-contamination note in
-        # _apply_model_switch.
-        reset_kw = {"model_override": session.get("model_override")}
-        old_reasoning = getattr(session.get("agent"), "reasoning_config", None)
-        if old_reasoning is None:
-            old_reasoning = session.get("create_reasoning_override")
-        if isinstance(old_reasoning, dict):
-            reset_kw["reasoning_config_override"] = old_reasoning
-        create_service_tier_override = session.get("create_service_tier_override")
-        if create_service_tier_override is not None:
-            reset_kw["service_tier_override"] = create_service_tier_override
+        # /new is a full conversation boundary: session-scoped runtime
+        # overrides (/model, /reasoning, /fast) do NOT carry forward — the
+        # fresh agent re-derives model/provider, reasoning, and service tier
+        # from config.yaml (#48055, #23131). Session pins are cleared below so
+        # a rebuild can't resurrect them. (Global process state is still never
+        # touched — see the cross-session-contamination note in
+        # _apply_model_switch.)
+        session.pop("model_override", None)
+        session.pop("create_reasoning_override", None)
+        session.pop("create_service_tier_override", None)
+        session.pop("one_turn_model_restore", None)
         new_agent = _make_agent(
             sid,
             session["session_key"],
             session_id=session["session_key"],
             platform_override=_session_source(session),
-            **reset_kw,
         )
     finally:
         _clear_session_context(tokens)

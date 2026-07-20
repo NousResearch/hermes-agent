@@ -8,11 +8,28 @@ from agent.anthropic_adapter import (
     _read_claude_code_credentials_from_keychain,
     read_claude_code_credentials,
     _refresh_oauth_token,
+    resolve_anthropic_token,
 )
 
 
 class TestReadClaudeCodeCredentialsFromKeychain:
     """Bug 4: macOS Keychain support for Claude Code >=2.1.114."""
+
+    def test_runtime_resolver_skips_suppressed_claude_code_source(self):
+        creds = {
+            "accessToken": "claude-code-token",
+            "refreshToken": "refresh-token",
+            "expiresAt": 4102444800000,
+        }
+
+        with (
+            patch("agent.anthropic_adapter.read_claude_code_credentials", return_value=creds),
+            patch("hermes_cli.auth.is_source_suppressed", return_value=True),
+            patch("agent.anthropic_adapter._resolve_claude_code_token_from_credentials", wraps=lambda value: value and value["accessToken"]),
+            patch("agent.anthropic_adapter._resolve_anthropic_pool_token", return_value=None),
+            patch.dict("os.environ", {}, clear=True),
+        ):
+            assert resolve_anthropic_token() is None
 
     def test_returns_none_on_linux(self):
         """Keychain reading is Darwin-only; must return None on other platforms."""

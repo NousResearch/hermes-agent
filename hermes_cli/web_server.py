@@ -8387,6 +8387,13 @@ def _claude_code_only_status() -> Dict[str, Any]:
     when they also have a separate Hermes-managed PKCE login.
     """
     try:
+        from hermes_cli.auth import is_source_suppressed
+        if is_source_suppressed("anthropic", "claude_code"):
+            return {"logged_in": False, "source": None}
+    except Exception:
+        pass
+
+    try:
         from agent.anthropic_adapter import read_claude_code_credentials
         creds = read_claude_code_credentials()
     except Exception:
@@ -8607,37 +8614,20 @@ def _resolve_provider_status(provider_id: str, status_fn) -> Dict[str, Any]:
 
 
 def _oauth_provider_disconnect_command(provider: Dict[str, Any]) -> Optional[str]:
-    """Shell command that clears an external provider's credentials.
+    """Return no shell command for external credential removal.
 
-    External providers store their credentials outside Hermes, so the disconnect
-    API deliberately refuses them (we never delete files another CLI owns on the
-    user's behalf via a silent API call). For the ones we know how to clear we
-    instead hand the GUI a command it can *run in the embedded terminal* — the
-    user sees exactly what executes, and Hermes then stops resolving the token.
-
-    Claude Code has no scriptable logout (only the interactive ``/logout``), so
-    we remove the credential the same way logout does: the macOS Keychain entry
-    (``Claude Code-credentials``) and/or the ``~/.claude/.credentials.json``
-    file — the two sources ``read_claude_code_credentials()`` consults. Returns
-    None for providers we can't safely clear (the GUI shows a manual hint).
+    External providers own their credential stores. Claude Code is unlinked
+    non-destructively through the API; other external providers continue to
+    show their provider-managed removal hint.
     """
-    if provider.get("flow") != "external":
-        return None
-    if provider.get("id") == "claude-code":
-        rm_file = "rm -f ~/.claude/.credentials.json"
-        if sys.platform == "darwin":
-            return f'security delete-generic-password -s "Claude Code-credentials" 2>/dev/null; {rm_file}'
-        return rm_file
     return None
 
 
 def _oauth_provider_disconnect_hint(provider: Dict[str, Any], status: Dict[str, Any]) -> Optional[str]:
     """Return the manual disconnect path when the API cannot clear this provider."""
+    if provider.get("id") == "claude-code":
+        return None
     if provider.get("flow") == "external":
-        if _oauth_provider_disconnect_command(provider):
-            # The GUI offers a one-click "run in terminal" path; this hint is the
-            # fallback wording for surfaces that only show text.
-            return "Managed outside Hermes — run the disconnect command to remove it."
         return "Managed by that provider's CLI; remove it there."
     if status.get("source") == "env_var":
         return "Remove the API key from Settings → Keys instead."
@@ -8755,6 +8745,20 @@ async def disconnect_oauth_provider(
                 detail=f"Unknown provider: {provider_id}. "
                        f"Available: {', '.join(sorted(catalog_by_id))}",
             )
+
+        if provider_id == "claude-code":
+            from hermes_cli.auth import suppress_credential_source
+
+            try:
+                suppress_credential_source("anthropic", "claude_code")
+            except Exception as exc:
+                _log.exception("oauth/disconnect: failed to suppress %s", provider_id)
+                raise HTTPException(
+                    status_code=500,
+                    detail="Could not unlink Claude Code from Hermes.",
+                ) from exc
+            _log.info("oauth/disconnect: %s (suppressed external source)", provider_id)
+            return {"ok": True, "provider": provider_id}
 
         disconnect_hint = _oauth_provider_disconnect_hint(provider, {})
         if disconnect_hint:

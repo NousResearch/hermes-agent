@@ -125,6 +125,40 @@ describe('ProvidersSettings', () => {
     expect(screen.getByText(/managed by its own CLI/)).toBeTruthy()
   })
 
+  it('unlinks Claude Code through the provider API without a terminal command', async () => {
+    listOAuthProviders.mockResolvedValueOnce({
+      providers: [
+        provider('claude-code', true, {
+          cli_command: 'claude logout',
+          disconnect_command: null,
+          disconnect_hint: null,
+          disconnectable: true,
+          flow: 'external',
+          name: 'Claude Code'
+        })
+      ]
+    })
+    listOAuthProviders.mockResolvedValueOnce({
+      providers: [
+        provider('claude-code', false, {
+          cli_command: 'claude logout',
+          disconnect_command: null,
+          disconnect_hint: null,
+          disconnectable: true,
+          flow: 'external',
+          name: 'Claude Code'
+        })
+      ]
+    })
+    disconnectOAuthProvider.mockResolvedValue({ ok: true, provider: 'claude-code' })
+
+    await renderProvidersSettings()
+    fireEvent.click(await screen.findByRole('button', { name: /Remove .*OAuth/ }))
+
+    await waitFor(() => expect(disconnectOAuthProvider).toHaveBeenCalledWith('claude-code'))
+    expect(listOAuthProviders).toHaveBeenCalledTimes(2)
+  })
+
   it('renders a Keys card for a backend-tagged provider with no PROVIDER_GROUPS prefix', async () => {
     // A provider the backend catalog tags (provider/provider_label) but that has
     // no desktop PROVIDER_GROUPS prefix row must still render its own card —

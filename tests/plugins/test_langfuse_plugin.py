@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import importlib
+import json
 import logging
 import sys
 from decimal import Decimal
@@ -24,7 +25,9 @@ PLUGIN_DIR = REPO_ROOT / "plugins" / "observability" / "langfuse"
 class TestManifest:
 
     def test_manifest_fields(self):
-        data = yaml.safe_load((PLUGIN_DIR / "plugin.yaml").read_text())
+        data = yaml.safe_load(
+            (PLUGIN_DIR / "plugin.yaml").read_text(encoding="utf-8")
+        )
         assert data["name"] == "langfuse"
         assert data["version"]
         # All eleven hooks the plugin implements.
@@ -2373,3 +2376,301 @@ class TestCanonicalCostExport:
         # explicit zeros are treated as authoritative by Langfuse and block
         # its own model-based estimation (#43129).
         assert response_cost == {}
+
+
+# ---------------------------------------------------------------------------
+# Auxiliary request lifecycle: auxiliary attempts must trace under their own
+# per-attempt state (never the outer turn's), seed one Langfuse trace per
+# auxiliary call id across retries, and release state at post/error so
+# concurrent auxiliary calls and main-loop turns stay isolated.
+# ---------------------------------------------------------------------------
+
+
+class _RecordingObservation:
+    def __init__(self, **kwargs):
+        self.kwargs = kwargs
+        self.children = []
+        self.updates = []
+        self.end_count = 0
+
+    def start_observation(self, **kwargs):
+        child = _RecordingObservation(**kwargs)
+        self.children.append(child)
+        return child
+
+    def update(self, **kwargs):
+        self.updates.append(kwargs)
+
+    def end(self):
+        self.end_count += 1
+
+
+class _RecordingRootContext:
+    def __init__(self, root):
+        self.root = root
+
+    def __enter__(self):
+        return self.root
+
+    def __exit__(self, *exc):
+        return False
+
+
+class _RecordingLangfuseClient:
+    def __init__(self):
+        self.roots = []
+        self.trace_seeds = []
+        self.flush_count = 0
+
+    def create_trace_id(self, seed=None):
+        self.trace_seeds.append(seed)
+        return f"trace-{len(self.trace_seeds)}"
+
+    def start_as_current_observation(self, **kwargs):
+        root = _RecordingObservation(**kwargs)
+        self.roots.append(root)
+        return _RecordingRootContext(root)
+
+    def flush(self):
+        self.flush_count += 1
+
+
+class TestAuxiliaryRequestLifecycle:
+    def _setup(self, monkeypatch):
+        sys.modules.pop("plugins.observability.langfuse", None)
+        plugin = importlib.import_module("plugins.observability.langfuse")
+        client = _RecordingLangfuseClient()
+        monkeypatch.setattr(plugin, "_get_langfuse", lambda: client)
+        monkeypatch.setattr(plugin, "propagate_attributes", None)
+        plugin._TRACE_STATE.clear()
+        return plugin, client
+
+    @staticmethod
+    def _event(api_request_id, *, attempt_index, attempt_reason):
+        return {
+            "task_id": "title_generation",
+            "session_id": "session-1",
+            "turn_id": "aux-call-1",
+            "platform": "gateway",
+            "api_request_id": api_request_id,
+            "api_call_count": attempt_index + 1,
+            "request_kind": "auxiliary",
+            "auxiliary_task": "title_generation",
+            "auxiliary_call_id": "aux-call-1",
+            "attempt_index": attempt_index,
+            "attempt_reason": attempt_reason,
+            "provider": "openrouter",
+            "model": "demo-model",
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_mode": "chat_completions",
+        }
+
+    def test_auxiliary_success_propagates_metadata_and_releases_trace(self, monkeypatch):
+        plugin, client = self._setup(monkeypatch)
+        event = self._event(
+            "request-success",
+            attempt_index=0,
+            attempt_reason="initial",
+        )
+
+        plugin.on_pre_llm_request(
+            **event,
+            request_messages=[{"role": "user", "content": "title this"}],
+        )
+        generation = client.roots[0].children[0]
+        plugin.on_post_llm_call(
+            **event,
+            assistant_content_chars=12,
+            finish_reason="stop",
+            response={
+                "assistant_message": {
+                    "role": "assistant",
+                    "content": "concise title",
+                    "tool_calls": [],
+                }
+            },
+            usage={"input_tokens": 5, "output_tokens": 2},
+        )
+
+        assert generation.kwargs["name"] == "Auxiliary title_generation attempt 1"
+        assert generation.kwargs["metadata"] == {
+            "provider": "openrouter",
+            "platform": "gateway",
+            "api_mode": "chat_completions",
+            "base_url": "https://openrouter.ai/api/v1",
+            "request_kind": "auxiliary",
+            "auxiliary_task": "title_generation",
+            "auxiliary_call_id": "aux-call-1",
+            "attempt_index": 0,
+            "attempt_reason": "initial",
+        }
+        assert generation.updates[0]["output"]["content"] == "concise title"
+        assert generation.updates[0]["metadata"]["auxiliary_call_id"] == "aux-call-1"
+        assert generation.end_count == 1
+        assert client.roots[0].end_count == 1
+        assert plugin._TRACE_STATE == {}
+
+    def test_auxiliary_error_closes_once_with_sanitized_metadata(self, monkeypatch):
+        plugin, client = self._setup(monkeypatch)
+        event = self._event(
+            "request-error",
+            attempt_index=0,
+            attempt_reason="initial",
+        )
+        secret = "sk-abcdefghijklmnopqrstuvwxyz123456"
+
+        plugin.on_pre_llm_request(
+            **event,
+            request_messages=[{"role": "user", "content": "title this"}],
+        )
+        generation = client.roots[0].children[0]
+        error_event = {
+            **event,
+            "api_duration": 0.5,
+            "status_code": 429,
+            "retryable": True,
+            "reason": "rate_limit",
+            "error": {
+                "type": "RateLimitError",
+                "message": f"Authorization: Bearer {secret}",
+            },
+        }
+        plugin.on_api_request_error(**error_event)
+        plugin.on_api_request_error(**error_event)
+
+        serialized_updates = json.dumps(generation.updates)
+        assert secret not in serialized_updates
+        assert "Authorization: Bearer ***" in serialized_updates
+        assert generation.updates[0] == {
+            "level": "ERROR",
+            "status_message": "RateLimitError",
+        }
+        error_metadata = generation.updates[-1]["metadata"]
+        assert error_metadata["error"] is True
+        assert error_metadata["platform"] == "gateway"
+        assert error_metadata["status_code"] == 429
+        assert error_metadata["auxiliary_call_id"] == "aux-call-1"
+        assert error_metadata["attempt_reason"] == "initial"
+        assert generation.end_count == 1
+        assert client.roots[0].end_count == 1
+        assert plugin._TRACE_STATE == {}
+
+    def test_auxiliary_retry_api_request_ids_are_isolated(self, monkeypatch):
+        plugin, client = self._setup(monkeypatch)
+        first = self._event(
+            "request-first",
+            attempt_index=0,
+            attempt_reason="initial",
+        )
+        second = self._event(
+            "request-second",
+            attempt_index=1,
+            attempt_reason="retry:transient_transport",
+        )
+
+        plugin.on_pre_llm_request(**first, request_messages=[])
+        plugin.on_api_request_error(
+            **first,
+            error={"type": "ConnectionError", "message": "connection reset"},
+        )
+        plugin.on_pre_llm_request(**second, request_messages=[])
+        plugin.on_post_llm_call(
+            **second,
+            assistant_content_chars=2,
+            finish_reason="stop",
+        )
+
+        assert len(client.roots) == 2
+        assert client.trace_seeds == [
+            "session-1::aux-call-1",
+            "session-1::aux-call-1",
+        ]
+        assert [root.children[0].end_count for root in client.roots] == [1, 1]
+        assert [root.end_count for root in client.roots] == [1, 1]
+        assert plugin._TRACE_STATE == {}
+
+    def test_concurrent_auxiliary_calls_are_correlated_independently(self, monkeypatch):
+        plugin, client = self._setup(monkeypatch)
+        first = self._event(
+            "request-first",
+            attempt_index=0,
+            attempt_reason="initial",
+        )
+        second = {
+            **self._event(
+                "request-second",
+                attempt_index=0,
+                attempt_reason="initial",
+            ),
+            "turn_id": "aux-call-2",
+            "auxiliary_call_id": "aux-call-2",
+        }
+
+        plugin.on_pre_llm_request(**first, request_messages=[])
+        plugin.on_pre_llm_request(**second, request_messages=[])
+        assert len(plugin._TRACE_STATE) == 2
+
+        plugin.on_post_llm_call(
+            **second,
+            response={
+                "assistant_message": {
+                    "role": "assistant",
+                    "content": "second",
+                }
+            },
+        )
+        plugin.on_post_llm_call(
+            **first,
+            response={
+                "assistant_message": {
+                    "role": "assistant",
+                    "content": "first",
+                }
+            },
+        )
+
+        assert client.trace_seeds == [
+            "session-1::aux-call-1",
+            "session-1::aux-call-2",
+        ]
+        assert client.roots[0].children[0].updates[0]["output"]["content"] == "first"
+        assert client.roots[1].children[0].updates[0]["output"]["content"] == "second"
+        assert [root.end_count for root in client.roots] == [1, 1]
+        assert plugin._TRACE_STATE == {}
+
+    def test_main_turn_keeps_multi_request_trace_behavior(self, monkeypatch):
+        plugin, client = self._setup(monkeypatch)
+        base = {
+            "task_id": "task-1",
+            "session_id": "session-1",
+            "turn_id": "turn-1",
+            "provider": "openrouter",
+            "model": "demo-model",
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_mode": "chat_completions",
+        }
+        first = {**base, "api_request_id": "main-request-1", "api_call_count": 1}
+        second = {**base, "api_request_id": "main-request-2", "api_call_count": 2}
+
+        plugin.on_pre_llm_request(**first, request_messages=[])
+        plugin.on_post_llm_call(
+            **first,
+            assistant_content_chars=0,
+            assistant_tool_call_count=1,
+            finish_reason="tool_calls",
+        )
+        assert len(plugin._TRACE_STATE) == 1
+
+        plugin.on_pre_llm_request(**second, request_messages=[])
+        plugin.on_post_llm_call(
+            **second,
+            assistant_content_chars=5,
+            assistant_tool_call_count=0,
+            finish_reason="stop",
+        )
+
+        assert len(client.roots) == 1
+        assert len(client.roots[0].children) == 2
+        assert [child.end_count for child in client.roots[0].children] == [1, 1]
+        assert client.roots[0].end_count == 1
+        assert plugin._TRACE_STATE == {}

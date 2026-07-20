@@ -84,6 +84,14 @@ _LANGFUSE_CLIENT_LOCK = threading.Lock()
 _READ_FILE_LINE_RE = re.compile(r"^\s*(\d+)\|(.*)$")
 _READ_FILE_HEAD_LINES = 25
 _READ_FILE_TAIL_LINES = 15
+_AUXILIARY_REQUEST_KIND = "auxiliary"
+_AUXILIARY_METADATA_KEYS = (
+    "request_kind",
+    "auxiliary_task",
+    "auxiliary_call_id",
+    "attempt_index",
+    "attempt_reason",
+)
 
 # Langfuse-issued keys always carry these prefixes (cloud or self-hosted —
 # the prefix is baked into the server-side issuance flow, not a UI hint).
@@ -394,6 +402,37 @@ def _trace_key(
     if task_id:
         return task_id
     return _scope_prefix(task_id, session_id)
+
+
+def _request_trace_key(
+    task_id: str,
+    session_id: str,
+    *,
+    turn_id: str = "",
+    api_request_id: str = "",
+    request_kind: str = "",
+) -> str:
+    """Trace key for the API-request hooks, auxiliary-aware.
+
+    Auxiliary attempts must not share trace state with the outer turn:
+    keying them under ``turn_id`` would let an auxiliary completion pop the
+    turn's generations or finish the turn's root trace mid-turn. Scope them
+    by their per-attempt ``api_request_id`` instead; the Langfuse trace id
+    is seeded from ``auxiliary_call_id`` so retries still export into one
+    trace (see ``_start_root_trace``).
+    """
+    if request_kind == _AUXILIARY_REQUEST_KIND and api_request_id:
+        return _trace_key(
+            task_id,
+            session_id,
+            api_request_id=api_request_id,
+        )
+    return _trace_key(
+        task_id,
+        session_id,
+        turn_id=turn_id,
+        api_request_id=api_request_id,
+    )
 
 
 def _state_for_turn(turn_id: str) -> Optional[str]:
@@ -877,8 +916,17 @@ def _usage_and_cost(response: Any, *, provider: str, api_mode: str, model: str, 
 
 def _start_root_trace(task_key: str, *, task_id: str, session_id: str, platform: str, provider: str, model: str,
                       api_mode: str, messages: Any, client: Langfuse,
-                      turn_id: str = "", api_request_id: str = "") -> TraceState:
-    trace_id = client.create_trace_id(seed=f"{session_id or 'sessionless'}::{task_id or task_key}")
+                      turn_id: str = "", api_request_id: str = "",
+                      request_kind: str = "", auxiliary_call_id: str = "") -> TraceState:
+    # Auxiliary attempts each carry their own in-process state (keyed per
+    # attempt), but seed the trace id from the auxiliary call id so every
+    # retry of one auxiliary call exports into the same Langfuse trace.
+    trace_scope = (
+        auxiliary_call_id or api_request_id
+        if request_kind == _AUXILIARY_REQUEST_KIND
+        else task_id or task_key
+    )
+    trace_id = client.create_trace_id(seed=f"{session_id or 'sessionless'}::{trace_scope}")
     trace_input = _extract_last_user_message(messages)
     metadata = {
         "source": "hermes",
@@ -1138,6 +1186,100 @@ def _request_key(api_call_count: Any) -> str:
     return str(api_call_count or 0)
 
 
+def _generation_key(
+    api_call_count: Any,
+    *,
+    api_request_id: str = "",
+    request_kind: str = "",
+) -> str:
+    """Generation-slot key, auxiliary-aware.
+
+    Auxiliary attempts key by their unique per-attempt ``api_request_id``
+    (concurrent attempts must never share a slot); main-loop requests keep
+    the ``api_call_count`` key so the turn-level ``post_llm_call`` hook,
+    which carries no ``api_request_id``, still resolves the same slot.
+    """
+    if request_kind == _AUXILIARY_REQUEST_KIND and api_request_id:
+        return str(api_request_id)
+    return _request_key(api_call_count)
+
+
+def _generation_name(
+    *,
+    request_kind: str,
+    auxiliary_task: str,
+    attempt_index: Any,
+    api_call_count: Any,
+) -> str:
+    if request_kind != _AUXILIARY_REQUEST_KIND:
+        return f"LLM call {api_call_count}"
+    attempt_number = (
+        attempt_index + 1
+        if isinstance(attempt_index, int)
+        else api_call_count or 1
+    )
+    return f"Auxiliary {auxiliary_task or 'request'} attempt {attempt_number}"
+
+
+def _auxiliary_metadata(
+    *,
+    request_kind: str = "",
+    auxiliary_task: str = "",
+    auxiliary_call_id: str = "",
+    attempt_index: Any = None,
+    attempt_reason: str = "",
+) -> Dict[str, Any]:
+    """Correlation fields for auxiliary attempts.
+
+    For auxiliary events every key is included (empty values are still
+    meaningful there); for main-loop events only non-empty values pass
+    through, so pre-auxiliary payload shapes stay untouched.
+    """
+    values = {
+        "request_kind": request_kind,
+        "auxiliary_task": auxiliary_task,
+        "auxiliary_call_id": auxiliary_call_id,
+        "attempt_index": attempt_index,
+        "attempt_reason": attempt_reason,
+    }
+    metadata: Dict[str, Any] = {}
+    for key in _AUXILIARY_METADATA_KEYS:
+        value = values[key]
+        if request_kind == _AUXILIARY_REQUEST_KIND or (
+            value is not None and value != ""
+        ):
+            metadata[key] = _safe_value(value)
+    return metadata
+
+
+def _generation_metadata(
+    *,
+    provider: str,
+    platform: str,
+    api_mode: str,
+    base_url: str,
+    request_kind: str = "",
+    auxiliary_task: str = "",
+    auxiliary_call_id: str = "",
+    attempt_index: Any = None,
+    attempt_reason: str = "",
+) -> Dict[str, Any]:
+    metadata: Dict[str, Any] = {
+        "provider": provider,
+        "platform": platform,
+        "api_mode": api_mode,
+        "base_url": base_url,
+    }
+    metadata.update(_auxiliary_metadata(
+        request_kind=request_kind,
+        auxiliary_task=auxiliary_task,
+        auxiliary_call_id=auxiliary_call_id,
+        attempt_index=attempt_index,
+        attempt_reason=attempt_reason,
+    ))
+    return metadata
+
+
 def on_pre_llm_call(*, task_id: str = "", session_id: str = "", platform: str = "", model: str = "",
                     provider: str = "", base_url: str = "", api_mode: str = "",
                     api_call_count: int = 0, messages: Any = None, turn_type: str = "user",
@@ -1282,6 +1424,11 @@ def on_pre_llm_request(
     api_request_id: str = "",
     request: Any = None,
     system_prompt: Any = None,
+    request_kind: str = "",
+    auxiliary_task: str = "",
+    auxiliary_call_id: str = "",
+    attempt_index: Any = None,
+    attempt_reason: str = "",
     **_: Any,
 ) -> None:
     client = _get_langfuse()
@@ -1317,13 +1464,18 @@ def on_pre_llm_request(
     if langfuse_input and langfuse_input[0].get("role") == "system":
         system_chars = len(str(langfuse_input[0].get("content") or ""))
 
-    task_key = _trace_key(
+    task_key = _request_trace_key(
         task_id,
         session_id,
         turn_id=turn_id,
         api_request_id=api_request_id,
+        request_kind=request_kind,
     )
-    req_key = _request_key(api_call_count)
+    req_key = _generation_key(
+        api_call_count,
+        api_request_id=api_request_id,
+        request_kind=request_kind,
+    )
 
     with _STATE_LOCK:
         state = _TRACE_STATE.get(task_key)
@@ -1340,6 +1492,8 @@ def on_pre_llm_request(
                 client=client,
                 turn_id=turn_id,
                 api_request_id=api_request_id,
+                request_kind=request_kind,
+                auxiliary_call_id=auxiliary_call_id,
             )
             _evict_stale_locked()
             _TRACE_STATE[task_key] = state
@@ -1347,20 +1501,38 @@ def on_pre_llm_request(
         previous = state.generations.pop(req_key, None)
         if previous is not None:
             _end_observation(previous)
-        gen_metadata = {
-            "provider": provider,
-            "platform": platform,
-            "api_mode": api_mode,
-            "base_url": base_url,
-            "message_count": message_count,
-            "approx_input_tokens": approx_input_tokens,
-        }
+        if request_kind == _AUXILIARY_REQUEST_KIND:
+            gen_metadata = _generation_metadata(
+                provider=provider,
+                platform=platform,
+                api_mode=api_mode,
+                base_url=base_url,
+                request_kind=request_kind,
+                auxiliary_task=auxiliary_task,
+                auxiliary_call_id=auxiliary_call_id,
+                attempt_index=attempt_index,
+                attempt_reason=attempt_reason,
+            )
+        else:
+            gen_metadata = {
+                "provider": provider,
+                "platform": platform,
+                "api_mode": api_mode,
+                "base_url": base_url,
+                "message_count": message_count,
+                "approx_input_tokens": approx_input_tokens,
+            }
         if system_chars:
             gen_metadata["system_prompt_chars"] = system_chars
         state.generations[req_key] = _start_child_observation(
             state,
             client=client,
-            name=f"LLM call {api_call_count}",
+            name=_generation_name(
+                request_kind=request_kind,
+                auxiliary_task=auxiliary_task,
+                attempt_index=attempt_index,
+                api_call_count=api_call_count,
+            ),
             as_type="generation",
             input_value=langfuse_input,
             metadata=gen_metadata,
@@ -1377,6 +1549,9 @@ def on_post_llm_call(*, task_id: str = "", session_id: str = "", provider: str =
                      assistant_tool_call_count: int = 0, assistant_response: Any = None,
                      turn_id: str = "", api_request_id: str = "",
                      response_model: Any = None, moa_references: Any = None,
+                     request_kind: str = "", auxiliary_task: str = "",
+                     auxiliary_call_id: str = "", attempt_index: Any = None,
+                     attempt_reason: str = "",
                      **_: Any) -> None:
     client = _get_langfuse()
     if client is None:
@@ -1388,13 +1563,18 @@ def on_post_llm_call(*, task_id: str = "", session_id: str = "", provider: str =
     if isinstance(response_model, str) and response_model:
         model = response_model
 
-    task_key = _trace_key(
+    task_key = _request_trace_key(
         task_id,
         session_id,
         turn_id=turn_id,
         api_request_id=api_request_id,
+        request_kind=request_kind,
     )
-    req_key = _request_key(api_call_count)
+    req_key = _generation_key(
+        api_call_count,
+        api_request_id=api_request_id,
+        request_kind=request_kind,
+    )
 
     with _STATE_LOCK:
         state = _TRACE_STATE.get(task_key)
@@ -1410,6 +1590,20 @@ def on_post_llm_call(*, task_id: str = "", session_id: str = "", provider: str =
     # 2. post_llm_call: passes assistant_message (object), response (object), assistant_response (str)
     if assistant_message is not None:
         output = _serialize_assistant_message(assistant_message)
+    elif isinstance(response, dict) and isinstance(response.get("assistant_message"), dict):
+        # post_api_request sanitized-response shape: the real assistant
+        # message survives redaction as a plain dict — prefer it over the
+        # "[N chars]" summary reconstruction below.
+        observed_message = response["assistant_message"]
+        observed_tool_calls = _capture_content(
+            observed_message.get("tool_calls"),
+            parse_json_strings=True,
+        )
+        output = {
+            "content": _capture_content(observed_message.get("content")),
+            "reasoning": None,
+            "tool_calls": observed_tool_calls if isinstance(observed_tool_calls, list) else [],
+        }
     elif assistant_response is not None:
         # post_llm_call passes assistant_response as a plain string
         output = {"content": _capture_content(assistant_response), "reasoning": None, "tool_calls": []}
@@ -1471,7 +1665,14 @@ def on_post_llm_call(*, task_id: str = "", session_id: str = "", provider: str =
         usage_details, cost_details = {}, {}
 
     tool_count = len(output.get("tool_calls", [])) or assistant_tool_call_count
-    gen_metadata: Dict[str, Any] = {"tool_call_count": tool_count}
+    gen_metadata: Dict[str, Any] = _auxiliary_metadata(
+        request_kind=request_kind,
+        auxiliary_task=auxiliary_task,
+        auxiliary_call_id=auxiliary_call_id,
+        attempt_index=attempt_index,
+        attempt_reason=attempt_reason,
+    )
+    gen_metadata["tool_call_count"] = tool_count
     if api_duration and api_duration > 0:
         gen_metadata["api_duration_s"] = round(api_duration, 3)
     if finish_reason:
@@ -1483,6 +1684,13 @@ def on_post_llm_call(*, task_id: str = "", session_id: str = "", provider: str =
         cost_details=cost_details,
         metadata=gen_metadata,
     )
+
+    if request_kind == _AUXILIARY_REQUEST_KIND:
+        # An auxiliary call is complete when its attempt succeeds — release
+        # the per-attempt trace state immediately instead of waiting for the
+        # turn-level finish conditions below.
+        _finish_trace(task_key, output=output)
+        return
 
     has_tools = _assistant_has_tool_calls(assistant_message) if assistant_message else (assistant_tool_call_count > 0)
     has_content = bool(output.get("content"))
@@ -1579,12 +1787,16 @@ def on_post_tool_call(*, tool_name: str = "", args: Any = None, result: Any = No
     )
 
 
-def on_api_request_error(*, task_id: str = "", session_id: str = "", provider: str = "",
+def on_api_request_error(*, task_id: str = "", session_id: str = "", platform: str = "",
+                         provider: str = "", base_url: str = "",
                          model: str = "", api_mode: str = "", api_call_count: int = 0,
                          api_duration: float = 0.0, status_code: Any = None,
                          retry_count: Any = None, max_retries: Any = None,
                          retryable: Any = None, reason: Any = None, error: Any = None,
                          turn_id: str = "", api_request_id: str = "",
+                         request_kind: str = "", auxiliary_task: str = "",
+                         auxiliary_call_id: str = "", attempt_index: Any = None,
+                         attempt_reason: str = "",
                          **_: Any) -> None:
     """Close the open generation for a failed API request.
 
@@ -1593,18 +1805,25 @@ def on_api_request_error(*, task_id: str = "", session_id: str = "", provider: s
     to hang. Marks the generation with ERROR level and the error summary.
     If the request was not retryable (or retries are exhausted), the turn
     is finished too, since the agent loop is about to unwind.
+    Auxiliary attempts release their per-attempt trace state instead; a
+    retry re-opens a fresh state under the same auxiliary trace id.
     """
     client = _get_langfuse()
     if client is None:
         return
 
-    task_key = _trace_key(
+    task_key = _request_trace_key(
         task_id,
         session_id,
         turn_id=turn_id,
         api_request_id=api_request_id,
+        request_kind=request_kind,
     )
-    req_key = _request_key(api_call_count)
+    req_key = _generation_key(
+        api_call_count,
+        api_request_id=api_request_id,
+        request_kind=request_kind,
+    )
 
     with _STATE_LOCK:
         state = _TRACE_STATE.get(task_key)
@@ -1637,6 +1856,18 @@ def on_api_request_error(*, task_id: str = "", session_id: str = "", provider: s
         error_metadata["reason"] = str(reason)
     if api_duration and api_duration > 0:
         error_metadata["api_duration_s"] = round(api_duration, 3)
+    if request_kind == _AUXILIARY_REQUEST_KIND:
+        error_metadata.update(_generation_metadata(
+            provider=provider,
+            platform=platform,
+            api_mode=api_mode,
+            base_url=base_url,
+            request_kind=request_kind,
+            auxiliary_task=auxiliary_task,
+            auxiliary_call_id=auxiliary_call_id,
+            attempt_index=attempt_index,
+            attempt_reason=attempt_reason,
+        ))
 
     if generation is not None:
         try:
@@ -1647,6 +1878,12 @@ def on_api_request_error(*, task_id: str = "", session_id: str = "", provider: s
         except Exception as exc:  # pragma: no cover - fail-open
             _debug(f"error-level update failed: {exc}")
         _end_observation(generation, metadata=error_metadata)
+
+    if request_kind == _AUXILIARY_REQUEST_KIND:
+        # Per-attempt state: the failed attempt is over either way. A retry
+        # mints a new state under the same auxiliary trace id seed.
+        _finish_trace(task_key, output={"error": error_metadata})
+        return
 
     # A retryable failure will be followed by another pre_api_request on the
     # same trace; keep the turn open. A terminal failure ends the turn.

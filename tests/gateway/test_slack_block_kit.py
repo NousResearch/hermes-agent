@@ -250,6 +250,13 @@ class TestTables:
         assert _display_width("指标") == 4
         assert _display_width("p75 值") == 6
 
+    def test_display_width_ignores_zero_width_combiners(self):
+        # decomposed é (e + combining acute) is one printed column, not two;
+        # a ZWJ between two letters adds nothing.
+        assert _display_width("é") == 1
+        assert _display_width("café") == 4  # precomposed é stays one column
+        assert _display_width("a‍b") == 2  # ZWJ is zero-width
+
     def test_cjk_fallback_alignment_uses_display_width(self):
         rows = [
             "| 指标 | 判断 |",

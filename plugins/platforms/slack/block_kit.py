@@ -380,9 +380,21 @@ def _table_block(rows: List[str], sep_line: str) -> Optional[Block]:
 
 
 def _display_width(s: str) -> int:
-    """Monospace display width of ``s``: East Asian Wide/Fullwidth chars
-    occupy two columns in Slack's code font, everything else one."""
-    return sum(2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1 for ch in s)
+    """Monospace display width of ``s`` in Slack's code font.
+
+    East Asian Wide/Fullwidth chars occupy two columns; combining marks and
+    other zero-width formatting codepoints (accent marks, ZWJ, variation
+    selectors) occupy none; everything else one. Zeroing combiners keeps a
+    decomposed ``e`` + U+0301 from being counted as two columns and drifting
+    the table — full grapheme clustering (multi-codepoint ZWJ emoji) is still
+    approximate, since the stdlib can't cluster them.
+    """
+    width = 0
+    for ch in s:
+        if unicodedata.combining(ch) or unicodedata.category(ch) in ("Mn", "Me", "Cf"):
+            continue
+        width += 2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1
+    return width
 
 
 def _pad_display(s: str, width: int) -> str:

@@ -278,16 +278,28 @@ describe('createSlashHandler', () => {
     })
   })
 
-  it.each(['low', 'max', 'ultra'])('sends plain /reasoning %s as global config.set', effort => {
+  it.each(['low', 'max', 'ultra'])('sends plain /reasoning %s without a scope (session default)', effort => {
     patchUiState({ sid: 'sid-abc' })
     const ctx = buildCtx()
 
     expect(createSlashHandler(ctx)(`/reasoning ${effort}`)).toBe(true)
     expect(ctx.gateway.rpc).toHaveBeenCalledWith('config.set', {
       key: 'reasoning',
-      scope: 'global',
       session_id: 'sid-abc',
       value: effort
+    })
+  })
+
+  it('sends /reasoning <level> --global as global config.set', () => {
+    patchUiState({ sid: 'sid-abc' })
+    const ctx = buildCtx()
+
+    expect(createSlashHandler(ctx)('/reasoning high --global')).toBe(true)
+    expect(ctx.gateway.rpc).toHaveBeenCalledWith('config.set', {
+      key: 'reasoning',
+      scope: 'global',
+      session_id: 'sid-abc',
+      value: 'high'
     })
   })
 

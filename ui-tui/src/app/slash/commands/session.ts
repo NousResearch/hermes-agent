@@ -24,7 +24,7 @@ const USAGE_CTA = 'Run /subscription to change plan · /topup to add to your bal
 
 const TUI_SESSION_MODEL_RE = new RegExp(`(?:^|\\s)${TUI_SESSION_MODEL_FLAG}(?:\\s|$)`)
 const REASONING_SESSION_FLAGS = new Set(['--session'])
-const REASONING_EFFORT_VALUES = new Set(['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'])
+const REASONING_GLOBAL_FLAGS = new Set(['--global'])
 
 const modelValueForConfigSet = (arg: string) => {
   const trimmed = arg.trim()
@@ -47,17 +47,21 @@ const reasoningConfigPayload = (arg: string, sid: string) => {
 
   for (const part of parts) {
     const flag = part.toLowerCase()
+    if (REASONING_GLOBAL_FLAGS.has(flag)) {
+      scope = 'global'
+      continue
+    }
     if (REASONING_SESSION_FLAGS.has(flag)) {
-      scope = 'session'
+      // Session scope is the default; accept the flag for parity with /model.
+      if (!scope) {
+        scope = 'session'
+      }
       continue
     }
     valueParts.push(part)
   }
 
   const value = valueParts.join(' ')
-  if (!scope && REASONING_EFFORT_VALUES.has(value.toLowerCase())) {
-    scope = 'global'
-  }
 
   return {
     key: 'reasoning',

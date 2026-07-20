@@ -260,12 +260,20 @@ class TestUnknownTopLevelKeys:
             "known_plugin_toolsets": {"cli": ["spotify"]},
             "group_sessions_per_user": True,
             "thread_sessions_per_user": False,
+            "stt_echo_transcripts": True,
+            "reset_triggers": ["/new"],
+            "always_log_local": True,
+            "filter_silence_narration": True,
         })
         unknown = [i for i in issues if "Unknown top-level config key" in i.message]
         messages = " ".join(i.message for i in unknown)
         assert "known_plugin_toolsets" not in messages
         assert "group_sessions_per_user" not in messages
         assert "thread_sessions_per_user" not in messages
+        assert "stt_echo_transcripts" not in messages
+        assert "reset_triggers" not in messages
+        assert "always_log_local" not in messages
+        assert "filter_silence_narration" not in messages
 
     def test_provider_like_unknown_root_keeps_misplaced_message(self):
         """Preserve existing base_url/api_key root-level guidance (not generic unknown)."""

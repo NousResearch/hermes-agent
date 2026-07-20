@@ -2563,6 +2563,7 @@ class GatewaySlashCommandsMixin:
                 chat_id=str(chat_id),
                 name=chat_name,
                 thread_id=str(thread_id) if thread_id else None,
+                owner_user_id=str(source.user_id) if source.user_id else None,
             )
 
         return t("gateway.set_home.success", name=chat_name, chat_id=chat_id)

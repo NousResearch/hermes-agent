@@ -8169,6 +8169,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         try:
             new_thread_id = await adapter.create_handoff_thread(
                 str(home.chat_id), thread_name,
+                owner_user_id=getattr(home, "owner_user_id", None),
             )
         except Exception as exc:
             logger.debug(

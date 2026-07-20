@@ -3039,6 +3039,8 @@ class BasePlatformAdapter(ABC):
         self,
         parent_chat_id: str,
         name: str,
+        *,
+        owner_user_id: Optional[str] = None,
     ) -> Optional[str]:
         """Create a fresh thread under ``parent_chat_id`` for a session handoff.
 
@@ -3046,6 +3048,11 @@ class BasePlatformAdapter(ABC):
         session to a thread-capable platform — the new thread isolates the
         handed-off conversation from any pre-existing chat in the home
         channel and gives users a clean per-handoff scrollback.
+
+        ``owner_user_id`` is the user who ran ``/sethome``.  Adapters for
+        platforms where private threads require explicit membership (Discord)
+        should add this user to the newly created thread so it is visible
+        to them.
 
         Returns the new thread/topic id (as a string) on success, or
         ``None`` if the platform doesn't support threading or the

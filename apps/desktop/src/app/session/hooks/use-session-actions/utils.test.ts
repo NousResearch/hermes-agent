@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it } from 'vitest'
 import type { ChatMessage } from '@/lib/chat-messages'
 import { $approvalModes, approvalModeForProfile } from '@/store/approval-mode'
 import { $activeGatewayProfile } from '@/store/profile'
-import type { SessionInfo } from '@/types/hermes'
+import type { SessionInfo, SessionResumeResponse } from '@/types/hermes'
 
 import {
   appendLiveSessionProjection,
@@ -11,6 +11,7 @@ import {
   chatMessageArraysEquivalent,
   chatMessagesEquivalent,
   chatPartsEquivalent,
+  dedupeInflightUserAgainstTranscript,
   isSessionGoneError,
   preserveLocalPendingTurnMessages,
   reconcileResumeMessages,
@@ -358,5 +359,68 @@ describe('appendLiveSessionProjection', () => {
     const stored = [msg('stored-user', 'user', 'earlier')]
 
     expect(appendLiveSessionProjection(stored, { session_id: 'runtime-1' })).toBe(stored)
+  })
+})
+
+const runningProjection = (user: string): SessionResumeResponse =>
+  ({
+    session_id: 'runtime-1',
+    session_key: 'stored-1',
+    resumed: 'stored-1',
+    message_count: 2,
+    messages: [],
+    running: true,
+    inflight: { user, assistant: 'partial answer', streaming: true }
+  }) as SessionResumeResponse
+
+describe('dedupeInflightUserAgainstTranscript', () => {
+  it('removes the in-flight user only when it already exists after the runtime anchor', () => {
+    const runtime = [
+      msg('runtime-user', 'user', 'earlier prompt', { timestamp: 1 }),
+      msg('runtime-assistant', 'assistant', 'earlier answer', { timestamp: 2 })
+    ]
+
+    const persisted = [...runtime, msg('persisted-current', 'user', 'current prompt', { timestamp: 3 })]
+
+    const deduped = dedupeInflightUserAgainstTranscript(
+      persisted,
+      runtime,
+      runtime,
+      runningProjection('current prompt')
+    )
+
+    expect(deduped.inflight?.user).toBeUndefined()
+    expect(deduped.inflight?.assistant).toBe('partial answer')
+  })
+
+  it('preserves an intentionally repeated prompt when the match is before the runtime anchor', () => {
+    const runtime = [
+      msg('runtime-user', 'user', 'repeat this', { timestamp: 1 }),
+      msg('runtime-assistant', 'assistant', 'finished answer', { timestamp: 2 })
+    ]
+
+    const projection = runningProjection('repeat this')
+    const unchanged = dedupeInflightUserAgainstTranscript(runtime, runtime, runtime, projection)
+
+    expect(unchanged).toBe(projection)
+    expect(unchanged.inflight?.user).toBe('repeat this')
+  })
+
+  it('ignores old optimistic ids before the last completed assistant boundary', () => {
+    const runtime = [
+      msg('runtime-user', 'user', 'repeat this', { timestamp: 1 }),
+      msg('runtime-assistant', 'assistant', 'finished answer', { timestamp: 2 })
+    ]
+
+    const previous = [
+      msg('user-old-optimistic', 'user', 'repeat this'),
+      msg('assistant-complete', 'assistant', 'finished answer')
+    ]
+
+    const projection = runningProjection('repeat this')
+    const unchanged = dedupeInflightUserAgainstTranscript(runtime, runtime, previous, projection)
+
+    expect(unchanged).toBe(projection)
+    expect(unchanged.inflight?.user).toBe('repeat this')
   })
 })

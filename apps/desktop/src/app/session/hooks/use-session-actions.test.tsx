@@ -1133,6 +1133,169 @@ describe('resumeSession warm-cache mapping integrity', () => {
     expect(renderedMessages).not.toContain('stale runtime answer')
   })
 
+  it('keeps the complete persisted transcript when activating a compressed running session', async () => {
+    const runtimeIdByStoredSessionIdRef: MutableRefObject<Map<string, string>> = {
+      current: new Map([['stored-A', 'rt-A']])
+    }
+
+    const state = clientState('stored-A')
+    state.messages = [
+      {
+        id: 'runtime-user',
+        role: 'user',
+        parts: [{ type: 'text', text: 'recent prompt' }]
+      },
+      {
+        id: 'runtime-assistant',
+        role: 'assistant',
+        parts: [{ type: 'text', text: 'recent answer' }]
+      }
+    ]
+
+    const sessionStateByRuntimeIdRef: MutableRefObject<Map<string, ClientSessionState>> = {
+      current: new Map([['rt-A', state]])
+    }
+
+    const persistedMessages = [
+      { content: 'older prompt that compression removed', role: 'user', timestamp: 1 },
+      { content: 'older answer that compression removed', role: 'assistant', timestamp: 2 },
+      { content: 'recent prompt', role: 'user', timestamp: 3 },
+      { content: 'recent answer', role: 'assistant', timestamp: 4 }
+    ]
+
+    const compressedRuntimeMessages = persistedMessages.slice(2)
+
+    vi.mocked(getSessionMessages).mockResolvedValue({
+      messages: persistedMessages,
+      session_id: 'stored-A'
+    } as never)
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'session.activate') {
+        return {
+          session_id: 'rt-A',
+          session_key: 'stored-A',
+          resumed: 'stored-A',
+          message_count: compressedRuntimeMessages.length,
+          messages: compressedRuntimeMessages,
+          running: true,
+          inflight: {
+            user: 'current prompt',
+            assistant: 'partial answer',
+            streaming: true
+          },
+          info: {}
+        } as never
+      }
+
+      return {} as never
+    })
+
+    let resumedState: ClientSessionState | undefined
+    let resume: ((storedSessionId: string, replaceRoute?: boolean) => Promise<unknown>) | null = null
+
+    render(
+      <ResumeHarness
+        onReady={ready => (resume = ready)}
+        onStateUpdate={(_sessionId, next) => (resumedState = next)}
+        requestGateway={requestGateway}
+        runtimeIdByStoredSessionIdRef={runtimeIdByStoredSessionIdRef}
+        sessionStateByRuntimeIdRef={sessionStateByRuntimeIdRef}
+      />
+    )
+    await waitFor(() => expect(resume).not.toBeNull())
+    await resume!('stored-A', true)
+
+    const renderedMessages = resumedState?.messages ?? []
+    const renderedText = JSON.stringify(renderedMessages)
+
+    expect(renderedText).toContain('older prompt that compression removed')
+    expect(renderedText).toContain('older answer that compression removed')
+    expect(renderedText).toContain('recent prompt')
+    expect(renderedText).toContain('recent answer')
+    expect(renderedText).toContain('partial answer')
+    expect(renderedMessages.filter(message => JSON.stringify(message).includes('current prompt'))).toHaveLength(1)
+  })
+
+  it('does not duplicate an in-flight user prompt already present in the persisted suffix', async () => {
+    const runtimeIdByStoredSessionIdRef: MutableRefObject<Map<string, string>> = {
+      current: new Map([['stored-A', 'rt-A']])
+    }
+
+    const state = clientState('stored-A')
+    state.messages = [
+      {
+        id: 'runtime-user',
+        role: 'user',
+        parts: [{ type: 'text', text: 'earlier prompt' }]
+      },
+      {
+        id: 'runtime-assistant',
+        role: 'assistant',
+        parts: [{ type: 'text', text: 'earlier answer' }]
+      }
+    ]
+
+    const sessionStateByRuntimeIdRef: MutableRefObject<Map<string, ClientSessionState>> = {
+      current: new Map([['rt-A', state]])
+    }
+
+    const compressedRuntimeMessages = [
+      { content: 'earlier prompt', role: 'user', timestamp: 1 },
+      { content: 'earlier answer', role: 'assistant', timestamp: 2 }
+    ]
+
+    const persistedMessages = [...compressedRuntimeMessages, { content: 'current prompt', role: 'user', timestamp: 3 }]
+
+    vi.mocked(getSessionMessages).mockResolvedValue({
+      messages: persistedMessages,
+      session_id: 'stored-A'
+    } as never)
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'session.activate') {
+        return {
+          session_id: 'rt-A',
+          session_key: 'stored-A',
+          resumed: 'stored-A',
+          message_count: compressedRuntimeMessages.length,
+          messages: compressedRuntimeMessages,
+          running: true,
+          inflight: {
+            user: 'current prompt',
+            assistant: 'partial answer',
+            streaming: true
+          },
+          info: {}
+        } as never
+      }
+
+      return {} as never
+    })
+
+    let resumedState: ClientSessionState | undefined
+    let resume: ((storedSessionId: string, replaceRoute?: boolean) => Promise<unknown>) | null = null
+
+    render(
+      <ResumeHarness
+        onReady={ready => (resume = ready)}
+        onStateUpdate={(_sessionId, next) => (resumedState = next)}
+        requestGateway={requestGateway}
+        runtimeIdByStoredSessionIdRef={runtimeIdByStoredSessionIdRef}
+        sessionStateByRuntimeIdRef={sessionStateByRuntimeIdRef}
+      />
+    )
+    await waitFor(() => expect(resume).not.toBeNull())
+    await resume!('stored-A', true)
+
+    const currentPromptRows = (resumedState?.messages ?? []).filter(message =>
+      JSON.stringify(message).includes('current prompt')
+    )
+
+    expect(currentPromptRows).toHaveLength(1)
+    expect(JSON.stringify(resumedState?.messages)).toContain('partial answer')
+  })
+
   it('keeps a warm runtime and optimistic turn on a transient activation timeout', async () => {
     const runtimeIdByStoredSessionIdRef: MutableRefObject<Map<string, string>> = {
       current: new Map([['stored-A', 'rt-A']])

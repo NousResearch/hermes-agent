@@ -342,6 +342,108 @@ export function appendLiveSessionProjection(
   return projected.length ? [...messages, ...projected] : messages
 }
 
+function normalizedMessageText(message: ChatMessage): string {
+  return chatMessageText(message).replace(/\s+/g, ' ').trim()
+}
+
+function transcriptAnchorMatches(a: ChatMessage, b: ChatMessage): boolean {
+  if (a.role !== b.role) {
+    return false
+  }
+
+  const aText = normalizedMessageText(a)
+  const bText = normalizedMessageText(b)
+
+  if (a.timestamp !== undefined && b.timestamp !== undefined) {
+    return a.timestamp === b.timestamp && aText === bText
+  }
+
+  return Boolean(aText) && aText === bText
+}
+
+/**
+ * Remove only an already-materialized `inflight.user` from a live projection.
+ *
+ * A running gateway returns two independent truths: its compressed runtime
+ * history plus the current in-flight turn, while REST may already have flushed
+ * that user row into the complete persisted transcript. Global text dedupe is
+ * unsafe because users may intentionally submit the same prompt twice. Instead,
+ * find the last runtime message inside the persisted transcript and inspect only
+ * the newer persisted suffix. A matching optimistic renderer row is also proof
+ * that the current prompt is already represented locally.
+ *
+ * If the histories have no safe common anchor, keep the projection unchanged —
+ * a duplicate is recoverable, but dropping a real accepted prompt is not.
+ */
+export function dedupeInflightUserAgainstTranscript(
+  persistedMessages: ChatMessage[],
+  runtimeMessages: ChatMessage[],
+  previousMessages: ChatMessage[],
+  projection: SessionResumeResponse
+): SessionResumeResponse {
+  const inflightUser = projection.inflight?.user?.replace(/\s+/g, ' ').trim() ?? ''
+
+  if (!inflightUser) {
+    return projection
+  }
+
+  let optimisticTailStart = 0
+
+  for (let index = previousMessages.length - 1; index >= 0; index -= 1) {
+    const message = previousMessages[index]
+
+    if (message.role === 'assistant' && !message.pending) {
+      optimisticTailStart = index + 1
+
+      break
+    }
+  }
+
+  const optimisticUserPresent = previousMessages
+    .slice(optimisticTailStart)
+    .some(
+      message =>
+        message.role === 'user' && message.id.startsWith('user-') && normalizedMessageText(message) === inflightUser
+    )
+
+  let suffixStart = 0
+
+  if (runtimeMessages.length) {
+    const runtimeAnchor = runtimeMessages[runtimeMessages.length - 1]
+    let persistedAnchorIndex = -1
+
+    for (let index = persistedMessages.length - 1; index >= 0; index -= 1) {
+      if (transcriptAnchorMatches(persistedMessages[index], runtimeAnchor)) {
+        persistedAnchorIndex = index
+
+        break
+      }
+    }
+
+    if (persistedAnchorIndex < 0 && !optimisticUserPresent) {
+      return projection
+    }
+
+    suffixStart = persistedAnchorIndex + 1
+  }
+
+  const persistedUserPresent = persistedMessages
+    .slice(suffixStart)
+    .some(message => message.role === 'user' && normalizedMessageText(message) === inflightUser)
+
+  if (!optimisticUserPresent && !persistedUserPresent) {
+    return projection
+  }
+
+  return {
+    ...projection,
+    inflight: {
+      ...projection.inflight,
+      user: undefined
+    }
+  }
+}
+
 export interface BranchMessage {
   content: string
   role: ChatMessage['role']

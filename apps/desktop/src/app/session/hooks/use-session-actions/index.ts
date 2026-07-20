@@ -69,6 +69,7 @@ import {
   applyStoredSessionPreviewRuntimeInfo,
   type BranchMessage,
   chatMessageArraysEquivalent,
+  dedupeInflightUserAgainstTranscript,
   isSessionGoneError,
   patchSessionWorkspace,
   preserveLocalPendingTurnMessages,
@@ -122,17 +123,27 @@ function applyStoredUsage(stored: { input_tokens?: number | null; output_tokens?
   setCurrentUsage(current => ({ ...current, input, output, total: input + output }))
 }
 
+function reconcileAuthoritativeChatMessages(
+  authoritativeMessages: ChatMessage[],
+  previousMessages: ChatMessage[],
+  liveProjection?: Pick<SessionResumeResponse, 'inflight' | 'queued' | 'session_id'>
+): ChatMessage[] {
+  const withLiveProjection = liveProjection
+    ? appendLiveSessionProjection(authoritativeMessages, liveProjection)
+    : authoritativeMessages
+
+  const reconciled = reconcileResumeMessages(withLiveProjection, previousMessages)
+  const withPendingTurn = preserveLocalPendingTurnMessages(reconciled, previousMessages)
+
+  return preserveLocalAssistantErrors(withPendingTurn, previousMessages)
+}
+
 function reconcileAuthoritativeMessages(
   authoritativeMessages: SessionResumeResponse['messages'],
   previousMessages: ChatMessage[],
   liveProjection?: Pick<SessionResumeResponse, 'inflight' | 'queued' | 'session_id'>
 ): ChatMessage[] {
-  const authoritative = toChatMessages(authoritativeMessages)
-  const withLiveProjection = liveProjection ? appendLiveSessionProjection(authoritative, liveProjection) : authoritative
-  const reconciled = reconcileResumeMessages(withLiveProjection, previousMessages)
-  const withPendingTurn = preserveLocalPendingTurnMessages(reconciled, previousMessages)
-
-  return preserveLocalAssistantErrors(withPendingTurn, previousMessages)
+  return reconcileAuthoritativeChatMessages(toChatMessages(authoritativeMessages), previousMessages, liveProjection)
 }
 
 // `session.create` params from the current profile + sticky-UI model/effort/fast,
@@ -656,12 +667,12 @@ export function useSessionActions({
 
               const running = Boolean(activated.running ?? cachedViewState.busy)
 
-              // While idle, the persisted REST transcript is the display
-              // authority: session.activate returns the runtime's compressed
-              // context projection, not necessarily the complete conversation.
-              // During a live turn, keep the runtime/cache projection so an
-              // accepted but not-yet-persisted prompt or stream is never lost.
-              if (!running && persistedTranscriptPromise) {
+              // The persisted REST transcript is the display authority: a live
+              // runtime may carry only the agent's compressed context projection,
+              // which is intentionally smaller than the user-visible conversation.
+              // Reconcile its in-flight/queued tail onto the complete transcript
+              // instead of replacing durable history while the turn is running.
+              if (persistedTranscriptPromise) {
                 const persisted = await persistedTranscriptPromise
 
                 if (!isCurrentResume()) {
@@ -676,7 +687,21 @@ export function useSessionActions({
                   persisted.session_id === activatedStoredSessionId
 
                 if (persisted && persistedMatchesActivatedSession) {
-                  activatedMessages = reconcileAuthoritativeMessages(persisted.messages, activatedMessages)
+                  const persistedMessages = toChatMessages(persisted.messages)
+                  const runtimeMessages = toChatMessages(activated.messages)
+
+                  const liveProjection = dedupeInflightUserAgainstTranscript(
+                    persistedMessages,
+                    runtimeMessages,
+                    cachedViewState.messages,
+                    activated
+                  )
+
+                  activatedMessages = reconcileAuthoritativeChatMessages(
+                    persistedMessages,
+                    cachedViewState.messages,
+                    liveProjection
+                  )
                 }
               }
 

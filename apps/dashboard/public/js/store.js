@@ -4,6 +4,12 @@ import { uid } from "./utils.js";
 
 const KEY = "hermesHub.v1";
 
+// Bump whenever a new default PAGE is added, so existing states backfill it
+// once. (This is about pages, not widgets — deleted pages stay deleted only
+// until the next bump; that's an acceptable trade for never stranding users
+// on a stale single-"Main" layout.)
+const PAGES_SEED = 4;
+
 const w = (type, size) => ({ id: uid(), type, size });
 
 function defaultPages() {
@@ -44,7 +50,7 @@ function defaultState() {
     editMode: false,
     pages,
     activePage: pages[0].id,
-    pagesSeed: 3, // fresh states already have every default page
+    pagesSeed: PAGES_SEED, // fresh states already have every default page
 
     launcher: {
       links: [
@@ -157,12 +163,12 @@ function migrate(parsed) {
  * by pagesSeed so pages a user deliberately deletes later are NOT re-added.
  * Fixes early single-"Main" states that predate the multi-page defaults. */
 function backfillDefaultPages(state) {
-  if (state.pagesSeed >= 2) return;
+  if (state.pagesSeed >= PAGES_SEED) return;
   const have = new Set((state.pages || []).map((p) => (p.name || "").toLowerCase()));
   for (const dp of defaultPages()) {
     if (!have.has(dp.name.toLowerCase())) state.pages.push(dp);
   }
-  state.pagesSeed = 2;
+  state.pagesSeed = PAGES_SEED;
 }
 
 /** Ensure pages is a non-empty array and activePage points at a real page. */

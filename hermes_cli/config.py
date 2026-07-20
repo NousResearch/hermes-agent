@@ -27,11 +27,22 @@ import sys
 import tempfile
 import threading
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Any, Optional, List, Tuple, Set
 
 from hermes_cli.secret_prompt import masked_secret_prompt
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - Windows
+    fcntl = None  # type: ignore[assignment]
+
+try:
+    import msvcrt
+except ImportError:  # pragma: no cover - POSIX
+    msvcrt = None  # type: ignore[assignment]
 
 logger = logging.getLogger(__name__)
 
@@ -257,6 +268,158 @@ _RAW_CONFIG_CACHE: Dict[str, Tuple[int, int, Dict[str, Any]]] = {}
 # calls read_raw_config. Also covers mutation of the module-level cache
 # dicts above.
 _CONFIG_LOCK = threading.RLock()
+_CONFIG_FILE_LOCK_HOLDERS: Dict[str, threading.local] = {}
+_CONFIG_ACTIVE_LOCK_FILES: Set[Any] = set()
+_CONFIG_FILE_LOCK_HOLDERS_GUARD = threading.Lock()
+_CONFIG_FILE_LOCK_TIMEOUT_SECONDS = 10.0
+
+
+def _config_lock_key(config_path: Path) -> str:
+    try:
+        return str(config_path.resolve(strict=False))
+    except Exception:
+        return str(config_path)
+
+
+def _config_lock_holder(config_path: Path) -> threading.local:
+    key = _config_lock_key(config_path)
+    with _CONFIG_FILE_LOCK_HOLDERS_GUARD:
+        return _CONFIG_FILE_LOCK_HOLDERS.setdefault(key, threading.local())
+
+
+def _prepare_config_file_locks_for_fork() -> None:
+    """Freeze descriptor registration while another thread forks."""
+    _CONFIG_FILE_LOCK_HOLDERS_GUARD.acquire()
+
+
+def _restore_config_file_locks_after_fork_parent() -> None:
+    _CONFIG_FILE_LOCK_HOLDERS_GUARD.release()
+
+
+def _reset_config_file_locks_after_fork_child() -> None:
+    """Close inherited descriptors and replace process-local child locks."""
+    global _CONFIG_LOCK
+    global _CONFIG_FILE_LOCK_HOLDERS
+    global _CONFIG_ACTIVE_LOCK_FILES
+    global _CONFIG_FILE_LOCK_HOLDERS_GUARD
+
+    # The before-fork callback owns the old guard, so the active descriptor set
+    # is stable and complete here. Never acquire inherited application locks in
+    # the child: their owning threads may no longer exist.
+    for lock_file in tuple(_CONFIG_ACTIVE_LOCK_FILES):
+        try:
+            lock_file.close()
+        except (OSError, ValueError):
+            pass
+    _CONFIG_ACTIVE_LOCK_FILES = set()
+    _CONFIG_FILE_LOCK_HOLDERS = {}
+    _CONFIG_LOCK = threading.RLock()
+    _CONFIG_FILE_LOCK_HOLDERS_GUARD = threading.Lock()
+
+
+if hasattr(os, "register_at_fork"):
+    os.register_at_fork(
+        before=_prepare_config_file_locks_for_fork,
+        after_in_parent=_restore_config_file_locks_after_fork_parent,
+        after_in_child=_reset_config_file_locks_after_fork_child,
+    )
+
+
+@contextmanager
+def _config_file_lock(config_path: Path):
+    """Serialize config read/merge/write transactions across processes."""
+    holder = _config_lock_holder(config_path)
+    current_pid = os.getpid()
+    if (
+        getattr(holder, "depth", 0) > 0
+        and getattr(holder, "owner_pid", None) == current_pid
+    ):
+        holder.depth += 1
+        try:
+            yield
+        finally:
+            holder.depth -= 1
+        return
+
+    # Defensive fallback for platforms without register_at_fork or lock state
+    # inherited before this module registered its callback.
+    inherited_lock_file = getattr(holder, "lock_file", None)
+    if getattr(holder, "owner_pid", current_pid) != current_pid:
+        if inherited_lock_file is not None:
+            try:
+                inherited_lock_file.close()
+            except (OSError, ValueError):
+                pass
+        holder.depth = 0
+        holder.owner_pid = current_pid
+        holder.lock_file = None
+
+    lock_path = config_path.with_suffix(".lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    if fcntl is None and msvcrt is None:
+        holder.depth = 1
+        holder.owner_pid = current_pid
+        try:
+            yield
+        finally:
+            holder.depth = 0
+            holder.lock_file = None
+        return
+
+    if msvcrt and (not lock_path.exists() or lock_path.stat().st_size == 0):
+        lock_path.write_text(" ", encoding="utf-8")
+
+    # Opening, registering, unregistering, and closing the descriptor all
+    # happen behind the guard used by register_at_fork's before callback. This
+    # leaves no open-but-unregistered window for a multithreaded fork.
+    with _CONFIG_FILE_LOCK_HOLDERS_GUARD:
+        lock_file = lock_path.open(
+            "r+" if msvcrt else "a+",
+            encoding="utf-8",
+        )
+        _CONFIG_ACTIVE_LOCK_FILES.add(lock_file)
+    try:
+        deadline = time.monotonic() + _CONFIG_FILE_LOCK_TIMEOUT_SECONDS
+        while True:
+            try:
+                if fcntl:
+                    fcntl.flock(
+                        lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB
+                    )
+                else:
+                    lock_file.seek(0)
+                    msvcrt.locking(lock_file.fileno(), msvcrt.LK_NBLCK, 1)
+                break
+            except (BlockingIOError, OSError, PermissionError):
+                if time.monotonic() >= deadline:
+                    raise TimeoutError("Timed out waiting for config file lock")
+                time.sleep(0.05)
+
+        holder.depth = 1
+        holder.owner_pid = current_pid
+        holder.lock_file = lock_file
+        try:
+            yield
+        finally:
+            holder.depth = 0
+            holder.lock_file = None
+            if fcntl:
+                try:
+                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+                except (OSError, IOError, ValueError):
+                    pass
+            elif msvcrt:
+                try:
+                    lock_file.seek(0)
+                    msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
+                except (OSError, IOError, ValueError):
+                    pass
+    finally:
+        with _CONFIG_FILE_LOCK_HOLDERS_GUARD:
+            _CONFIG_ACTIVE_LOCK_FILES.discard(lock_file)
+            lock_file.close()
+
+
 # Env var names written to .env that aren't in OPTIONAL_ENV_VARS
 # (managed by setup/provider flows directly).
 _EXTRA_ENV_KEYS = frozenset({
@@ -1000,6 +1163,10 @@ DEFAULT_CONFIG = {
     "providers": {},
     "fallback_providers": [],
     "credential_pool_strategies": {},
+    "credential_pool": {
+        "prune_dead_manual_entries": True,
+        "dead_manual_prune_ttl_hours": 24,
+    },
     "toolsets": ["hermes-cli"],
     # Global active chat session cap across CLI, TUI/dashboard, and messaging.
     # None/0 = unbounded.
@@ -7498,10 +7665,13 @@ def save_config(
     Full-document replacement callers (dashboard raw YAML editor, callers that
     already deep-merge) must leave this False so intentional deletions survive.
     """
-    with _CONFIG_LOCK:
-        if is_managed():
-            managed_error("save configuration")
-            return
+    if is_managed():
+        managed_error("save configuration")
+        return
+
+    ensure_hermes_home()
+    config_path = get_config_path()
+    with _CONFIG_LOCK, _config_file_lock(config_path):
         # Managed scope: strip any leaf the managed layer pins, so a bulk write
         # (wizard / programmatic save) never persists a user value that would
         # silently lose to managed on the next load. Single-key `config set`
@@ -7520,8 +7690,6 @@ def save_config(
                 )
         from utils import atomic_yaml_write
 
-        ensure_hermes_home()
-        config_path = get_config_path()
         require_readable_config_before_write(config_path)
         # Compute explicit user paths BEFORE any normalisation --------
         # _normalize_max_turns_config may inject agent.max_turns from

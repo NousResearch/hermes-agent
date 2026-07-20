@@ -2240,3 +2240,175 @@ class TestCodexAppServerAutoConfig:
             assert raw["compression"]["codex_app_server_auto"] == "hermes"
 
 
+def test_save_config_managed_read_only_home_returns_before_lock(
+    tmp_path, monkeypatch, capsys
+):
+    import hermes_cli.config as config_mod
+
+    home = tmp_path / "managed-home"
+    home.mkdir()
+    config_file = home / "config.yaml"
+    original = "model: managed/model\n"
+    config_file.write_text(original, encoding="utf-8")
+    home.chmod(0o555)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(config_mod, "is_managed", lambda: True)
+    try:
+        config_mod.save_config({"model": "user/override"})
+    finally:
+        home.chmod(0o755)
+
+    assert config_file.read_text(encoding="utf-8") == original
+    assert not (home / "config.lock").exists()
+    assert "managed" in capsys.readouterr().err.lower()
+
+
+@pytest.mark.skipif(not hasattr(os, "fork"), reason="requires POSIX fork")
+def test_save_config_forked_child_reacquires_file_lock(tmp_path, monkeypatch):
+    import multiprocessing
+
+    import hermes_cli.config as config_mod
+
+    home = tmp_path / "fork-home"
+    home.mkdir()
+    (home / "config.yaml").write_text("base:\n  keep: true\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    config_mod._LOAD_CONFIG_CACHE.clear()
+    config_mod._RAW_CONFIG_CACHE.clear()
+
+    ctx = multiprocessing.get_context("fork")
+    started = ctx.Event()
+    completed = ctx.Event()
+
+    def child_save():
+        started.set()
+        config_mod.save_config(
+            {"writer_b": {"value": 1}},
+            merge_existing=True,
+        )
+        completed.set()
+
+    process = None
+    try:
+        with config_mod._config_file_lock(home / "config.yaml"):
+            process = ctx.Process(target=child_save)
+            process.start()
+            assert started.wait(timeout=2)
+            assert not completed.wait(timeout=0.3)
+            config_mod.save_config(
+                {"writer_a": {"value": 1}},
+                merge_existing=True,
+            )
+
+        assert completed.wait(timeout=5)
+        process.join(timeout=5)
+        assert process.exitcode == 0
+    finally:
+        if process is not None and process.is_alive():
+            process.terminate()
+            process.join(timeout=5)
+
+    saved = config_mod.read_raw_config()
+    assert saved["base"]["keep"] is True
+    assert saved["writer_a"]["value"] == 1
+    assert saved["writer_b"]["value"] == 1
+
+
+@pytest.mark.skipif(not hasattr(os, "fork"), reason="requires POSIX fork")
+def test_save_config_reinitializes_process_locks_after_multithreaded_fork(
+    tmp_path, monkeypatch
+):
+    import multiprocessing
+    import threading
+
+    import hermes_cli.config as config_mod
+
+    home = tmp_path / "thread-fork-home"
+    home.mkdir()
+    (home / "config.yaml").write_text("base:\n  keep: true\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    lock_held = threading.Event()
+    release_lock = threading.Event()
+
+    def hold_process_lock():
+        with config_mod._CONFIG_LOCK:
+            lock_held.set()
+            release_lock.wait(timeout=5)
+
+    holder_thread = threading.Thread(target=hold_process_lock)
+    holder_thread.start()
+    assert lock_held.wait(timeout=2)
+
+    ctx = multiprocessing.get_context("fork")
+    completed = ctx.Event()
+
+    def child_save():
+        config_mod.save_config(
+            {"child_writer": {"value": 1}},
+            merge_existing=True,
+        )
+        completed.set()
+
+    process = ctx.Process(target=child_save)
+    try:
+        process.start()
+        assert completed.wait(timeout=3)
+        process.join(timeout=3)
+        assert process.exitcode == 0
+    finally:
+        release_lock.set()
+        holder_thread.join(timeout=3)
+        if process.is_alive():
+            process.terminate()
+            process.join(timeout=3)
+
+    saved = config_mod.read_raw_config()
+    assert saved["base"]["keep"] is True
+    assert saved["child_writer"]["value"] == 1
+
+
+@pytest.mark.skipif(not hasattr(os, "fork"), reason="requires POSIX fork")
+def test_fork_waits_for_descriptor_registration_guard():
+    import multiprocessing
+    import threading
+
+    import hermes_cli.config as config_mod
+
+    guard_held = threading.Event()
+    release_guard = threading.Event()
+
+    def hold_registration_guard():
+        with config_mod._CONFIG_FILE_LOCK_HOLDERS_GUARD:
+            guard_held.set()
+            release_guard.wait(timeout=5)
+
+    holder_thread = threading.Thread(target=hold_registration_guard)
+    holder_thread.start()
+    assert guard_held.wait(timeout=2)
+
+    ctx = multiprocessing.get_context("fork")
+    process = ctx.Process(target=lambda: None)
+    start_returned = threading.Event()
+
+    def start_process():
+        process.start()
+        start_returned.set()
+
+    starter_thread = threading.Thread(target=start_process)
+    starter_thread.start()
+    try:
+        assert not start_returned.wait(timeout=0.2)
+        release_guard.set()
+        assert start_returned.wait(timeout=3)
+        starter_thread.join(timeout=3)
+        process.join(timeout=3)
+        assert process.exitcode == 0
+    finally:
+        release_guard.set()
+        holder_thread.join(timeout=3)
+        starter_thread.join(timeout=3)
+        if process.is_alive():
+            process.terminate()
+            process.join(timeout=3)
+

@@ -616,6 +616,121 @@ def test_generic_401_without_terminal_reason_still_uses_exhausted(tmp_path, monk
     assert persisted["last_error_code"] == 401
 
 
+@pytest.mark.parametrize(
+    ("pool_config", "dead_age_hours", "expected_ids"),
+    [
+        (
+            {"prune_dead_manual_entries": False, "dead_manual_prune_ttl_hours": 24},
+            48,
+            {"credential-a", "credential-b"},
+        ),
+        (
+            {"prune_dead_manual_entries": True, "dead_manual_prune_ttl_hours": 48},
+            25,
+            {"credential-a", "credential-b"},
+        ),
+        (
+            {"prune_dead_manual_entries": True, "dead_manual_prune_ttl_hours": 48},
+            49,
+            {"credential-b"},
+        ),
+    ],
+)
+def test_dead_manual_prune_policy_honors_enabled_and_ttl(
+    tmp_path, monkeypatch, pool_config, dead_age_hours, expected_ids
+):
+    """The cleanup toggle and TTL control whether old tombstones persist."""
+    hermes_home = tmp_path / "hermes"
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    (hermes_home / "config.yaml").write_text(
+        "credential_pool:\n"
+        f"  prune_dead_manual_entries: {str(pool_config['prune_dead_manual_entries']).lower()}\n"
+        f"  dead_manual_prune_ttl_hours: {pool_config['dead_manual_prune_ttl_hours']}\n",
+        encoding="utf-8",
+    )
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "credential_pool": {
+                "openai-codex": [
+                    {
+                        "id": "credential-a",
+                        "label": "account-a",
+                        "auth_type": "oauth",
+                        "priority": 0,
+                        "source": "manual:device_code",
+                        "access_token": "sentinel-access-a",
+                        "refresh_token": "sentinel-refresh-a",
+                        "last_status": "dead",
+                        "last_status_at": time.time() - (dead_age_hours * 3600),
+                        "last_error_code": 401,
+                        "last_error_reason": "token_invalidated",
+                    },
+                    {
+                        "id": "credential-b",
+                        "label": "account-b",
+                        "auth_type": "oauth",
+                        "priority": 1,
+                        "source": "manual:device_code",
+                        "access_token": "sentinel-access-b",
+                        "refresh_token": "sentinel-refresh-b",
+                    },
+                ]
+            },
+        },
+    )
+
+    from agent.credential_pool import load_pool
+
+    selected = load_pool("openai-codex").select()
+    assert selected is not None and selected.id == "credential-b"
+    persisted = json.loads((hermes_home / "auth.json").read_text())["credential_pool"]["openai-codex"]
+    assert {entry["id"] for entry in persisted} == expected_ids
+
+
+def test_dead_manual_prune_settings_reject_invalid_ttls(monkeypatch):
+    from agent import credential_pool as pool_mod
+
+    invalid_values = (-1, "nan", "inf", True, 8761, 1e308, object())
+    for bad_ttl in invalid_values:
+        monkeypatch.setattr(
+            pool_mod,
+            "_load_config_safe",
+            lambda value=bad_ttl: {
+                "credential_pool": {
+                    "prune_dead_manual_entries": True,
+                    "dead_manual_prune_ttl_hours": value,
+                }
+            },
+        )
+        assert pool_mod.get_dead_manual_prune_settings() == (
+            True,
+            float(pool_mod.DEAD_MANUAL_PRUNE_TTL_SECONDS),
+        )
+
+
+def test_display_safe_dead_reason_canonicalizes_provider_text():
+    from agent.credential_pool import display_safe_dead_reason
+
+    assert display_safe_dead_reason("token_invalidated") == "token_invalidated"
+    assert display_safe_dead_reason(" account identifier: sentinel-access-a ") == (
+        "permanent_auth_failure"
+    )
+    assert display_safe_dead_reason(None) is None
+
+
+def test_display_safe_status_timestamp_rejects_unrepresentable_values():
+    from agent.credential_pool import display_safe_status_timestamp
+
+    assert display_safe_status_timestamp(1000) == 1000.0
+    assert display_safe_status_timestamp(True) is None
+    assert display_safe_status_timestamp(float("inf")) is None
+    assert display_safe_status_timestamp(1e308) is None
+    assert display_safe_status_timestamp(-1e308) is None
+
+
 def test_dead_manual_entry_pruned_after_24h(tmp_path, monkeypatch):
     """A DEAD manual entry is removed from the pool after the prune TTL.
 

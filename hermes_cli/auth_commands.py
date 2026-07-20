@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 import sys
 import time
+from datetime import datetime, timezone
 from types import SimpleNamespace
 import uuid
 
@@ -14,6 +15,7 @@ from agent.credential_pool import (
     CUSTOM_POOL_PREFIX,
     SOURCE_MANUAL,
     SOURCE_MANUAL_DEVICE_CODE,
+    STATUS_DEAD,
     STATUS_EXHAUSTED,
     STRATEGY_FILL_FIRST,
     STRATEGY_ROUND_ROBIN,
@@ -22,6 +24,8 @@ from agent.credential_pool import (
     PooledCredential,
     _exhausted_until,
     _normalize_custom_pool_name,
+    display_safe_dead_reason,
+    display_safe_status_timestamp,
     get_pool_strategy,
     label_from_token,
     list_custom_pool_providers,
@@ -159,6 +163,26 @@ def _format_exhausted_status(entry) -> str:
     else:
         wait = f"{seconds}s"
     return f" {label}{reason_text}{code} ({wait} left)"
+
+
+def _format_credential_status(entry) -> str:
+    if entry.last_status == STATUS_EXHAUSTED:
+        return _format_exhausted_status(entry)
+    if entry.last_status != STATUS_DEAD:
+        return ""
+
+    reason = display_safe_dead_reason(getattr(entry, "last_error_reason", None))
+    reason_text = f" {reason}" if reason else ""
+    code = f" ({entry.last_error_code})" if entry.last_error_code else ""
+    marked_at = display_safe_status_timestamp(
+        getattr(entry, "last_status_at", None)
+    )
+    if marked_at is not None:
+        marked_text = datetime.fromtimestamp(marked_at, tz=timezone.utc).strftime(
+            "%Y-%m-%dT%H:%M:%SZ"
+        )
+        return f" dead{reason_text}{code} (marked {marked_text}, re-auth or remove)"
+    return f" dead{reason_text}{code} (re-auth or remove)"
 
 
 def auth_add_command(args) -> None:
@@ -455,7 +479,7 @@ def auth_list_command(args) -> None:
             marker = "  "
             if current is not None and entry.id == current.id:
                 marker = "← "
-            status = _format_exhausted_status(entry)
+            status = _format_credential_status(entry)
             source = _display_source(entry.source)
             print(f"  #{idx}  {entry.label:<20} {entry.auth_type:<7} {source}{status} {marker}".rstrip())
         print()

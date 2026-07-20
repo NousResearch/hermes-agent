@@ -71,6 +71,7 @@ const PROFILE_SCOPED_PREFIXES = [
   "/api/tools/toolsets",
   "/api/config",
   "/api/env",
+  "/api/credentials",
   "/api/mcp",
   "/api/messaging/platforms",
   "/api/messaging/telegram/onboarding",
@@ -1085,7 +1086,19 @@ export const api = {
 
   // ── Admin: Credential pool ──────────────────────────────────────────
   getCredentialPool: () =>
-    fetchJSON<{ providers: CredentialPoolProvider[] }>("/api/credentials/pool"),
+    fetchJSON<{
+      providers: CredentialPoolProvider[];
+      settings: CredentialPoolSettings;
+    }>("/api/credentials/pool"),
+  updateCredentialPoolSettings: (settings: CredentialPoolSettings) =>
+    fetchJSON<{ ok: boolean; settings: CredentialPoolSettings }>(
+      "/api/credentials/pool/settings",
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(settings),
+      },
+    ),
   addCredentialPoolEntry: (
     provider: string,
     api_key: string,
@@ -1597,9 +1610,16 @@ export interface CredentialPoolEntry {
   source: string | null;
   priority: number;
   last_status: string | null;
+  last_status_at: number | null;
+  last_error_reason: string | null;
   request_count: number;
   token_preview: string;
   has_refresh: boolean;
+}
+
+export interface CredentialPoolSettings {
+  prune_dead_manual_entries: boolean;
+  dead_manual_prune_ttl_hours: number;
 }
 
 export interface CredentialPoolProvider {

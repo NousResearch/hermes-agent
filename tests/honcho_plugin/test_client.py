@@ -1347,68 +1347,66 @@ class TestGetHonchoClientBaseUrlDoublePrefixFix:
 class TestResolveSessionNamePinnedGatewayKey:
     """Regression tests for MC-7827.
 
-    When strict single-user pinning is on (``pin_peer_name`` + ``peer_name``),
-    the Honcho session NAME derived from a gateway session key must replace the
+    Under strict single-user pinning (``pin_peer_name is True`` + ``peer_name``)
+    the Honcho session NAME derived from a gateway session key must swap the
     platform-native runtime user segment (Telegram UID, Discord snowflake, ...)
-    with the pinned peer, while preserving every other discriminator (platform,
-    chat kind, thread/topic IDs, profile). Only exact, ':'-delimited identity
-    segments equal to a supplied runtime user id are swapped -- never a numeric
-    substring inside another discriminator. Multi-user (non-pinned) behavior is
-    unchanged.
+    for the pinned peer while preserving every other discriminator. The swap is
+    grammar/position-aware (mirrors ``gateway.session.build_session_key``): only
+    the DM identity slot or a real trailing group participant is replaced. A
+    chat/thread/topic id that coincidentally equals the UID is never rewritten,
+    and multi-user (non-pinned) behavior is unchanged.
 
-    Synthetic numeric IDs stand in for the real Telegram UID: the reproduction
-    is structural, so a synthetic UID proves the bug without committing the real
-    identifier. The real-world repro is recorded in MC-7827-IMPLEMENTATION.md.
+    Keys are structurally identical to real ``build_session_key`` output:
+      - DM:            ``agent:main:<platform>:dm:<identity>[:<thread>]``
+      - group per-user ``agent:main:<platform>:group:<chat_id>[:<thread>]:<uid>``
+      - shared thread  ``agent:main:<platform>:group:<chat_id>:<thread>``
+    Synthetic numeric IDs stand in for real identifiers; the bug is structural.
     """
 
-    # Structurally identical to the real repro (agent:main:telegram:dm:<uid>:<thread>).
     UID = "918273645"
     THREAD = "1245684"
 
     def _pinned(self):
         return HonchoClientConfig(peer_name="elmar", pin_peer_name=True)
 
-    def test_pinned_telegram_dm_replaces_uid_with_peer(self):
-        """Exact Telegram DM case: UID segment -> pinned peer, thread preserved."""
+    # ---- DM ---------------------------------------------------------------
+    def test_pinned_dm_replaces_uid_retains_following_thread(self):
+        """DM identity slot -> pinned peer; the following thread is preserved."""
         result = self._pinned().resolve_session_name(
             gateway_session_key=f"agent:main:telegram:dm:{self.UID}:{self.THREAD}",
             user_id=self.UID,
+            thread_id=self.THREAD,
         )
-        assert result == "agent-main-telegram-dm-elmar-1245684"
-        assert "elmar" in result
-        assert self.THREAD in result
+        assert result == f"agent-main-telegram-dm-elmar-{self.THREAD}"
         assert self.UID not in result
 
-    def test_non_pinned_preserves_uid(self):
-        """Multi-user (pin off): UID is retained so memory forks per user."""
-        cfg = HonchoClientConfig(peer_name="elmar", pin_peer_name=False)
-        result = cfg.resolve_session_name(
-            gateway_session_key=f"agent:main:telegram:dm:{self.UID}:{self.THREAD}",
+    def test_pinned_dm_thread_value_equal_to_uid_retained(self):
+        """DM thread whose value equals the UID is retained; only slot 4 swaps."""
+        result = self._pinned().resolve_session_name(
+            # chat_id == UID (identity) AND thread == UID (following discriminator)
+            gateway_session_key=f"agent:main:telegram:dm:{self.UID}:{self.UID}",
+            user_id=self.UID,
+            thread_id=self.UID,
+        )
+        # Identity slot replaced, trailing thread (== UID) kept verbatim.
+        assert result == f"agent-main-telegram-dm-elmar-{self.UID}"
+
+    def test_pinned_dm_no_thread_replaces_identity(self):
+        """DM with only an identity segment (no thread) is swapped."""
+        result = self._pinned().resolve_session_name(
+            gateway_session_key=f"agent:main:telegram:dm:{self.UID}",
             user_id=self.UID,
         )
-        assert result == f"agent-main-telegram-dm-{self.UID}-{self.THREAD}"
+        assert result == "agent-main-telegram-dm-elmar"
 
     def test_uid_substring_of_thread_not_replaced(self):
         """A UID that only appears as a substring of another segment is intact."""
-        # UID '42' also is a prefix of thread '4212' -- only the bounded segment swaps.
-        result = HonchoClientConfig(
-            peer_name="elmar", pin_peer_name=True
-        ).resolve_session_name(
+        result = self._pinned().resolve_session_name(
             gateway_session_key="agent:main:telegram:dm:42:4212",
             user_id="42",
+            thread_id="4212",
         )
         assert result == "agent-main-telegram-dm-elmar-4212"
-        assert "4212" in result
-
-    def test_pinned_group_thread_preserves_topic(self):
-        """Group/topic discriminators survive the UID swap."""
-        result = self._pinned().resolve_session_name(
-            gateway_session_key=f"agent:main:telegram:group:{self.UID}:topic:9988",
-            user_id=self.UID,
-        )
-        assert result == "agent-main-telegram-group-elmar-topic-9988"
-        assert "9988" in result
-        assert self.UID not in result
 
     def test_pinned_uses_alt_runtime_id(self):
         """The alternate runtime identity is also matched and replaced."""
@@ -1416,10 +1414,63 @@ class TestResolveSessionNamePinnedGatewayKey:
             gateway_session_key=f"agent:main:discord:dm:{self.UID}:{self.THREAD}",
             user_id=None,
             user_id_alt=self.UID,
+            thread_id=self.THREAD,
         )
-        assert self.UID not in result
-        assert "elmar" in result
-        assert self.THREAD in result
+        assert result == f"agent-main-discord-dm-elmar-{self.THREAD}"
+
+    # ---- Group / channel --------------------------------------------------
+    def test_pinned_group_replaces_only_trailing_participant(self):
+        """Real per-user group layout: parent chat kept, trailing participant swapped."""
+        result = self._pinned().resolve_session_name(
+            gateway_session_key=f"agent:main:telegram:group:100200:{self.UID}",
+            user_id=self.UID,
+            chat_id="100200",
+        )
+        assert result == "agent-main-telegram-group-100200-elmar"
+        assert "100200" in result  # parent chat id untouched
+
+    def test_pinned_group_parent_chat_equal_to_uid_not_replaced(self):
+        """Parent chat id equal to the UID is preserved; only participant swaps."""
+        result = self._pinned().resolve_session_name(
+            gateway_session_key=f"agent:main:telegram:group:{self.UID}:{self.UID}",
+            user_id=self.UID,
+            chat_id=self.UID,
+        )
+        # chat_id slot (== UID) retained, trailing participant -> pinned peer.
+        assert result == f"agent-main-telegram-group-{self.UID}-elmar"
+
+    def test_pinned_shared_group_thread_ending_in_uid_no_replacement(self):
+        """Shared thread ending in an id equal to the UID: no participant, no swap."""
+        result = self._pinned().resolve_session_name(
+            gateway_session_key=f"agent:main:telegram:group:100200:{self.UID}",
+            user_id=self.UID,
+            chat_id="100200",
+            thread_id=self.UID,  # trailing slot is the shared thread, not a participant
+        )
+        assert result == f"agent-main-telegram-group-100200-{self.UID}"
+        assert "elmar" not in result
+
+    # ---- Guards -----------------------------------------------------------
+    def test_non_pinned_preserves_uid(self):
+        """Multi-user (pin off): UID is retained so memory forks per user."""
+        cfg = HonchoClientConfig(peer_name="elmar", pin_peer_name=False)
+        result = cfg.resolve_session_name(
+            gateway_session_key=f"agent:main:telegram:dm:{self.UID}:{self.THREAD}",
+            user_id=self.UID,
+            thread_id=self.THREAD,
+        )
+        assert result == f"agent-main-telegram-dm-{self.UID}-{self.THREAD}"
+
+    def test_strict_pin_gate_ignores_truthy_non_bool(self):
+        """A truthy non-bool pin_peer_name (MagicMock) must not trigger a swap."""
+        cfg = HonchoClientConfig(peer_name="elmar", pin_peer_name=MagicMock())
+        result = cfg.resolve_session_name(
+            gateway_session_key=f"agent:main:telegram:dm:{self.UID}:{self.THREAD}",
+            user_id=self.UID,
+            thread_id=self.THREAD,
+        )
+        assert result == f"agent-main-telegram-dm-{self.UID}-{self.THREAD}"
+        assert "elmar" not in result
 
     def test_pinned_without_runtime_id_is_noop(self):
         """No runtime id supplied -> key sanitized unchanged (no false swap)."""
@@ -1433,6 +1484,7 @@ class TestResolveSessionNamePinnedGatewayKey:
         result = self._pinned().resolve_session_name(
             gateway_session_key=f"agent:main:telegram:dm:{self.UID}:{self.THREAD}",
             user_id="555000111",
+            thread_id=self.THREAD,
         )
         assert result == f"agent-main-telegram-dm-{self.UID}-{self.THREAD}"
         assert "elmar" not in result
@@ -1443,8 +1495,12 @@ class TestResolveSessionNamePinnedGatewayKey:
         key_a = f"agent:main:telegram:dm:{self.UID}:{long_thread}"
         key_b = f"agent:main:telegram:dm:555000111:{long_thread}"
         cfg = self._pinned()
-        res_a = cfg.resolve_session_name(gateway_session_key=key_a, user_id=self.UID)
-        res_b = cfg.resolve_session_name(gateway_session_key=key_b, user_id="555000111")
+        res_a = cfg.resolve_session_name(
+            gateway_session_key=key_a, user_id=self.UID, thread_id=long_thread
+        )
+        res_b = cfg.resolve_session_name(
+            gateway_session_key=key_b, user_id="555000111", thread_id=long_thread
+        )
         # Same pinned identity + same thread -> same Honcho session, even truncated.
         assert res_a == res_b
         assert len(res_a) == 100

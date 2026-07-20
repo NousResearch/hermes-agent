@@ -789,29 +789,63 @@ class HonchoClientConfig:
         gateway_session_key: str,
         runtime_user_ids: list[str],
         pinned_identity: str,
+        chat_id: str | None = None,
+        thread_id: str | None = None,
     ) -> str:
-        """Replace platform-native runtime user segments with the pinned peer.
+        """Swap the platform-native runtime user segment for the pinned peer.
 
-        Gateway session keys are ``:``-delimited (e.g.
-        ``agent:main:telegram:dm:<uid>:<thread>``).  Under strict single-user
-        pinning the runtime user segment (Telegram UID, Discord snowflake, …)
-        is redundant with the pinned peer, so it's swapped out while every
-        other discriminator (platform, chat kind, thread/topic id, profile) is
-        preserved.  Only a whole, delimiter-bounded segment equal to a supplied
-        runtime user id is replaced — a UID that merely appears as a substring
-        of another id (a thread/topic number) is left intact.
+        Position-aware, driven by the ``build_session_key`` grammar
+        (``gateway/session.py``) rather than a blind across-all-segments regex,
+        so a chat/thread/topic id that *coincidentally* equals the runtime UID
+        is never rewritten.  Keys are ``:``-delimited with a fixed prefix
+        ``agent:<ns>:<platform>:<chat_type>`` (indices 0-3):
+
+          - DM (``…:dm:<identity>[:<thread>]``): only the identity slot right
+            after ``dm`` is swapped.  A following thread discriminator is
+            preserved even when its value equals the UID.
+          - Group/channel: the per-user participant is a single trailing
+            segment appended after the ``chat_id``/``thread_id`` prefix, and
+            only under per-user isolation.  It is swapped only when the key has
+            exactly one segment beyond the known prefix; a shared thread/topic
+            id sitting in the last slot is left intact.
+
+        If the identity position cannot be proven, the key is returned
+        unchanged (no-op beats rewriting another discriminator).
         """
-        import re
+        uids = {u for u in runtime_user_ids if u}
+        if not uids:
+            return gateway_session_key
 
-        result = gateway_session_key
-        for uid in runtime_user_ids:
-            if not uid:
-                continue
-            # (?<![^:]) -> preceded by ':' or start; (?![^:]) -> followed by ':'
-            # or end.  Bounds the match to a full identity segment only.
-            pattern = r"(?<![^:])" + re.escape(uid) + r"(?![^:])"
-            result = re.sub(pattern, pinned_identity, result)
-        return result
+        parts = gateway_session_key.split(":")
+        # parts[0]=agent parts[1]=namespace parts[2]=platform parts[3]=chat_type
+        if len(parts) < 5:
+            return gateway_session_key
+        chat_type = parts[3]
+
+        if chat_type == "dm":
+            idx = 4  # identity/chat slot immediately after "dm"
+            # Fallback DM key (no chat_id, no participant) carries thread_id in
+            # this slot — not an identity, so never rewrite it.
+            if (
+                thread_id is not None
+                and idx == len(parts) - 1
+                and parts[idx] == str(thread_id)
+            ):
+                return gateway_session_key
+            if parts[idx] in uids:
+                parts[idx] = pinned_identity
+            return ":".join(parts)
+
+        # Group/channel: participant is the lone trailing segment appended after
+        # the chat_id/thread_id prefix. Prove its position from the known grammar.
+        prefix_len = 4  # agent, namespace, platform, chat_type
+        if chat_id:
+            prefix_len += 1
+        if thread_id:
+            prefix_len += 1
+        if len(parts) == prefix_len + 1 and parts[-1] in uids:
+            parts[-1] = pinned_identity
+        return ":".join(parts)
 
     def resolve_session_name(
         self,
@@ -821,6 +855,8 @@ class HonchoClientConfig:
         gateway_session_key: str | None = None,
         user_id: str | None = None,
         user_id_alt: str | None = None,
+        chat_id: str | None = None,
+        thread_id: str | None = None,
     ) -> str | None:
         """Resolve Honcho session name.
 
@@ -849,7 +885,10 @@ class HonchoClientConfig:
             # kind discriminators (MC-7827).  Peer resolution (session.py) and
             # the gateway's own routing keys are untouched — only the Honcho
             # session name changes.  Multi-user (pin off) keeps the raw UID.
-            if self.pin_peer_name and self.peer_name:
+            # Strict gate: only a real boolean True enables pinning, matching the
+            # peer resolver (session.py::_resolve_user_peer_id) so a MagicMock or
+            # other truthy non-bool config never silently rewrites identity.
+            if self.pin_peer_name is True and self.peer_name:
                 runtime_ids = [
                     str(u).strip()
                     for u in (user_id, user_id_alt)
@@ -857,7 +896,11 @@ class HonchoClientConfig:
                 ]
                 if runtime_ids:
                     key = self._pin_runtime_user_segment(
-                        key, runtime_ids, self.peer_name.strip()
+                        key,
+                        runtime_ids,
+                        self.peer_name.strip(),
+                        chat_id=chat_id,
+                        thread_id=thread_id,
                     )
             sanitized = re.sub(r'[^a-zA-Z0-9_-]+', '-', key).strip('-')
             if sanitized:

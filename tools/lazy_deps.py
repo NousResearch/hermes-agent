@@ -239,7 +239,16 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
         "starlette==1.0.1",  # CVE-2026-48710 — keep in sync with pyproject [computer-use]
     ),
     # HF Agent Trace Viewer upload (hermes trace upload / /upload-trace).
-    "tool.trace_upload": ("huggingface-hub==1.2.3",),
+    # RANGE, not an exact pin, ON PURPOSE: huggingface-hub is also a shared
+    # transitive dependency of the embedding stack (transformers /
+    # sentence_transformers) that local/local_embedded Hindsight needs. An exact
+    # "==" pin here satisfies nothing but itself, so on every `hermes update` the
+    # lazy-refresh pass reinstalls (DOWNGRADES) it to the pinned version — even
+    # when the core already installed a newer one it depends on — which silently
+    # breaks that unrelated core feature. Track the compatibility range the
+    # trace-upload client actually needs. (See also the no-downgrade guard in
+    # _is_satisfied, which backstops this for any shared-dep pin.)
+    "tool.trace_upload": ("huggingface-hub>=1.5,<2.0",),
 }
 
 
@@ -544,10 +553,50 @@ def _is_satisfied(spec: str) -> bool:
         return True
 
     try:
-        return Version(installed) in SpecifierSet(spec_tail)
+        iv = Version(installed)
+        ss = SpecifierSet(spec_tail)
+        if iv in ss:
+            return True
+        # No-downgrade guard. The installed version is outside the spec — but if
+        # installing this spec would move the package BACKWARDS, refuse. A lazy,
+        # opt-in backend must never downgrade a package that the core (or another
+        # backend) already installed at a higher version: that is exactly how an
+        # exact "==" pin on a SHARED transitive dependency (e.g. huggingface-hub,
+        # pulled by transformers) silently bricks an unrelated core feature on
+        # `hermes update`. Treat "already newer than this pin allows" as
+        # satisfied, leave the higher version in place, and warn the maintainer
+        # to widen the pin instead of churning a shared dependency.
+        if _would_downgrade(iv, ss):
+            logger.warning(
+                "Lazy spec %r would DOWNGRADE already-installed %s==%s; leaving the "
+                "installed version in place. Widen this pin to a range that includes "
+                "the installed version if the downgrade is not intended.",
+                spec, pkg, installed,
+            )
+            return True
+        return False
     except (InvalidSpecifier, InvalidVersion, Exception):
         # Malformed spec or installed version we can't parse — don't churn.
         return True
+
+
+def _would_downgrade(installed, spec_set) -> bool:
+    """True if ``spec_set`` permits no version >= ``installed``.
+
+    ``installed`` is already known to fall outside ``spec_set``. If every
+    upper-bounding operator (``==``, ``<``, ``<=``, ``~=``) in the spec sits
+    below the installed version, the only way to satisfy the spec is to install
+    something older — a downgrade. Purely local version arithmetic; no network.
+    """
+    try:
+        from packaging.version import Version
+        for s in spec_set:
+            if s.operator in ("==", "<", "<=", "~="):
+                if installed > Version(s.version):
+                    return True
+        return False
+    except Exception:
+        return False
 
 
 def _is_present(spec: str) -> bool:

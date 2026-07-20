@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated_at": "2026-07-16T19:45:30Z",
+  "updated_at": "2026-07-20T08:23:45Z",
   "metadata": {
     "source": "hermes-agent repo",
     "docs": "https://hermes-agent.nousresearch.com/docs/reference/model-catalog"
@@ -23,10 +23,6 @@
         {
           "id": "anthropic/claude-opus-4.8-fast",
           "description": "2x price, higher output speed"
-        },
-        {
-          "id": "anthropic/claude-sonnet-5",
-          "description": ""
         },
         {
           "id": "anthropic/claude-sonnet-5",
@@ -186,9 +182,6 @@
         },
         {
           "id": "anthropic/claude-opus-4.8"
-        },
-        {
-          "id": "anthropic/claude-sonnet-5"
         },
         {
           "id": "anthropic/claude-sonnet-5"

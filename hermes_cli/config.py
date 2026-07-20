@@ -5512,6 +5512,14 @@ _EXTRA_KNOWN_ROOT_KEYS = {
     "plugins",           # plugin enable/disable lists (hermes_cli/plugins_cmd.py)
     "smart_model_routing",   # written by the setup wizard (hermes_cli/setup.py)
     "platform_toolsets",     # written by the setup wizard (hermes_cli/setup.py)
+    "known_plugin_toolsets", # written by hermes tools to preserve explicit plugin toggles
+    "group_sessions_per_user",  # documented top-level gateway session-isolation policy
+    "thread_sessions_per_user",  # documented sibling policy read by gateway/config.py
+    "reset_triggers",       # documented top-level gateway reset command list
+    "write_sessions_json",  # top-level gateway legacy-mirror policy
+    "always_log_local",     # top-level gateway delivery persistence policy
+    "filter_silence_narration",  # top-level outbound message filter
+    "stt_echo_transcripts", # top-level gateway STT echo policy
     "session_reset",         # top-level form read by gateway/config.py + setup
     "multiplex_profiles",    # top-level form accepted alongside gateway.multiplex_profiles
     "profile_routes",        # top-level form accepted alongside gateway.profile_routes

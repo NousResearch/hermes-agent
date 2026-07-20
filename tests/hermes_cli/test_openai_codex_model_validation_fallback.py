@@ -9,14 +9,15 @@ behavior so it doesn't regress.
 
 Note: gpt-5.3-codex-spark itself is now in the curated catalog (PR #22991),
 so the real-world Spark request takes the `recognized=True` fast path. This
-test still uses Spark as the example slug but explicitly mocks
-``provider_model_ids`` to omit it, exercising the soft-accept path generically
-for any future entitlement-gated Codex slug that ships before Hermes catalogs
-it.
+test still uses Spark as the example slug but explicitly mocks an unavailable
+live discovery plus an offline fallback that omits it. That exercises the
+soft-accept path generically for a future entitlement-gated Codex slug while
+preserving successful-live account authority.
 """
 
 from unittest.mock import patch
 
+from hermes_cli.codex_models import CodexModelDiscovery
 from hermes_cli.model_switch import switch_model
 from hermes_cli.models import validate_requested_model
 
@@ -26,8 +27,11 @@ def test_openai_codex_unknown_but_plausible_model_is_accepted_with_warning():
     with a warning instead of hard-rejecting it.
     """
     with patch(
-        "hermes_cli.models.provider_model_ids",
-        return_value=["gpt-5.5", "gpt-5.4", "gpt-5.3-codex"],
+        "hermes_cli.models._resolve_codex_model_discovery",
+        return_value=CodexModelDiscovery(
+            ["gpt-5.5", "gpt-5.4", "gpt-5.3-codex"],
+            False,
+        ),
     ):
         result = validate_requested_model("gpt-5.3-codex-spark", "openai-codex")
 
@@ -45,8 +49,11 @@ def test_switch_model_allows_openai_codex_model_missing_from_listing():
     even when the listing has not caught up yet.
     """
     with patch(
-        "hermes_cli.models.provider_model_ids",
-        return_value=["gpt-5.5", "gpt-5.4", "gpt-5.3-codex"],
+        "hermes_cli.models._resolve_codex_model_discovery",
+        return_value=CodexModelDiscovery(
+            ["gpt-5.5", "gpt-5.4", "gpt-5.3-codex"],
+            False,
+        ),
     ):
         result = switch_model(
             "gpt-5.3-codex-spark",

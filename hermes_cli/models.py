@@ -104,12 +104,11 @@ _openrouter_catalog_cache: list[tuple[str, str]] | None = None
 def _codex_curated_models() -> list[str]:
     """Derive the openai-codex curated list from codex_models.py.
 
-    Single source of truth: DEFAULT_CODEX_MODELS + forward-compat synthesis.
-    This keeps the gateway /model picker in sync with the CLI `hermes model`
-    flow without maintaining a separate static list.
+    The static picker fallback intentionally contains only models that the
+    Codex OAuth route is known to accept. Live discovery may expose more.
     """
-    from hermes_cli.codex_models import DEFAULT_CODEX_MODELS, _add_forward_compat_models
-    return _add_forward_compat_models(list(DEFAULT_CODEX_MODELS))
+    from hermes_cli.codex_models import DEFAULT_CODEX_MODELS
+    return list(DEFAULT_CODEX_MODELS)
 
 
 # Static fallback for xAI when the models.dev disk cache is empty (fresh
@@ -1915,6 +1914,13 @@ def curated_models_for_provider(
     if normalized == "openrouter":
         return fetch_openrouter_models(force_refresh=force_refresh)
 
+    # provider_model_ids() already performs the complete Codex resolution:
+    # authoritative live catalog (including an empty one), then offline
+    # fallbacks only when live discovery failed. Do not re-synthesize the
+    # static catalog when that authoritative result is empty.
+    if normalized == "openai-codex":
+        return [(m, "") for m in provider_model_ids(normalized)]
+
     # Try live API first (Codex, Nous, etc. all support /models)
     live = provider_model_ids(normalized)
     if live:
@@ -2408,6 +2414,23 @@ def _merge_with_models_dev(provider: str, curated: list[str]) -> list[str]:
     return merged
 
 
+def _resolve_codex_model_discovery(access_token: Optional[str] = None):
+    """Resolve Codex models together with successful-live provenance."""
+
+    from hermes_cli.codex_models import discover_codex_models
+
+    token = access_token
+    if not token:
+        try:
+            from hermes_cli.auth import resolve_codex_runtime_credentials
+
+            creds = resolve_codex_runtime_credentials(refresh_if_expiring=True)
+            token = creds.get("api_key")
+        except Exception:
+            token = None
+    return discover_codex_models(access_token=token)
+
+
 def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) -> list[str]:
     """Return the best known model catalog for a provider.
 
@@ -2421,21 +2444,10 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
     if normalized == "openrouter":
         return model_ids(force_refresh=force_refresh)
     if normalized == "openai-codex":
-        from hermes_cli.codex_models import get_codex_model_ids
-
-        # Pass the live OAuth access token so the picker matches whatever
-        # ChatGPT lists for this account right now (new models appear without
-        # a Hermes release). Falls back to the hardcoded catalog if no token
-        # or the endpoint is unreachable.
-        access_token = None
-        try:
-            from hermes_cli.auth import resolve_codex_runtime_credentials
-
-            creds = resolve_codex_runtime_credentials(refresh_if_expiring=True)
-            access_token = creds.get("api_key")
-        except Exception:
-            access_token = None
-        return get_codex_model_ids(access_token=access_token)
+        # The discovery object preserves whether an empty result came from a
+        # successful live account catalog. The list-only provider API returns
+        # it verbatim; callers must not layer another static fallback on top.
+        return list(_resolve_codex_model_discovery().model_ids)
     if normalized == "xai-oauth":
         return list(_PROVIDER_MODELS.get("xai-oauth", _PROVIDER_MODELS.get("xai", [])))
     if normalized in {"copilot", "copilot-acp"}:
@@ -2793,6 +2805,13 @@ def cached_provider_model_ids(
     normalized = normalize_provider(provider) or (provider or "")
     if not normalized:
         return []
+
+    # Codex has an account-scoped authoritative catalog and its own explicit
+    # live->offline resolver. The generic cache stores only a bare non-empty
+    # list, so it cannot distinguish live failure from authoritative empty and
+    # could resurrect stale models. Bypass it completely for this provider.
+    if normalized == "openai-codex":
+        return provider_model_ids(normalized, force_refresh=force_refresh)
 
     cache = _load_provider_models_cache()
     fp = _credential_fingerprint(normalized)
@@ -4348,10 +4367,18 @@ def validate_requested_model(
 
     # Providers with non-standard catalog validation — /v1/models probing is not the right path.
     if normalized in {"openai-codex", "xai-oauth"}:
+        live_authoritative = False
         try:
-            catalog_models = provider_model_ids(normalized)
+            if normalized == "openai-codex":
+                discovery = _resolve_codex_model_discovery(access_token=api_key)
+                catalog_models = list(discovery.model_ids)
+                live_authoritative = discovery.live_authoritative
+            else:
+                catalog_models = provider_model_ids(normalized)
         except Exception:
             catalog_models = []
+
+        suggestions: list[str] = []
         if catalog_models:
             if requested_for_lookup in set(catalog_models):
                 return {
@@ -4371,51 +4398,63 @@ def validate_requested_model(
                     "message": f"Auto-corrected `{requested}` → `{auto[0]}`",
                 }
             suggestions = get_close_matches(requested_for_lookup, catalog_models, n=3, cutoff=0.5)
-            suggestion_text = ""
-            if suggestions:
-                suggestion_text = "\n  Similar models: " + ", ".join(f"`{s}`" for s in suggestions)
-            provider_label = "OpenAI Codex" if normalized == "openai-codex" else "xAI Grok OAuth (SuperGrok / Premium+)"
-            # Plausibility gate (#45006): the soft-accept (#16172 / #19729) exists
-            # for entitlement-gated *hidden* slugs the curated listing hasn't
-            # caught up with — but those are always the provider's own family
-            # (openai-codex -> gpt-*; xai-oauth -> grok-*). Accepting an
-            # unrelated typed name (e.g. `qwen3.5-4b`, `llama-3.1-8b`) here turns
-            # what should be an actionable "did you mean --provider <x>?" error
-            # into a confusing success that 400s on the next turn. Only soft-
-            # accept names that share the provider's family prefix; reject the
-            # rest with guidance to pin the right provider.
-            _family_prefixes = {
-                "openai-codex": ("gpt-", "codex-", "o1", "o3", "o4"),
-                "xai-oauth": ("grok-",),
-            }.get(normalized, ())
-            _lower = requested_for_lookup.strip().lower()
-            _plausible = (not _family_prefixes) or any(
-                _lower.startswith(p) for p in _family_prefixes
-            )
-            if not _plausible:
-                return {
-                    "accepted": False,
-                    "persist": False,
-                    "recognized": False,
-                    "message": (
-                        f"`{requested}` doesn't look like a {provider_label} model "
-                        f"and isn't in its listing, so it was not accepted. If it "
-                        f"belongs to another configured provider, switch with "
-                        f"`--provider <slug>` (or select it from the `/model` "
-                        f"picker)."
-                        f"{suggestion_text}"
-                    ),
-                }
+
+        suggestion_text = ""
+        if suggestions:
+            suggestion_text = "\n  Similar models: " + ", ".join(f"`{s}`" for s in suggestions)
+        provider_label = "OpenAI Codex" if normalized == "openai-codex" else "xAI Grok OAuth (SuperGrok / Premium+)"
+
+        # A successful account-scoped Codex catalog is exact authority. A slug
+        # absent from it is rejected even when it looks plausible; soft-accept
+        # is reserved for discovery failure/offline operation.
+        if normalized == "openai-codex" and live_authoritative:
             return {
-                "accepted": True,
-                "persist": True,
+                "accepted": False,
+                "persist": False,
                 "recognized": False,
                 "message": (
-                    f"Note: `{requested}` was not found in the {provider_label} model listing. "
-                    "It may still work if your account has access to a newer or hidden model ID."
+                    f"`{requested}` was not advertised by this account's successful "
+                    f"{provider_label} model listing, so it was not accepted."
                     f"{suggestion_text}"
                 ),
             }
+
+        # Plausibility gate (#45006): during offline/failure fallback, accept
+        # only provider-family names that may be entitlement-gated or newer
+        # than the curated snapshot.
+        _family_prefixes = {
+            "openai-codex": ("gpt-", "codex-", "o1", "o3", "o4"),
+            "xai-oauth": ("grok-",),
+        }.get(normalized, ())
+        _lower = requested_for_lookup.strip().lower()
+        _plausible = (not _family_prefixes) or any(
+            _lower.startswith(p) for p in _family_prefixes
+        )
+        if not _plausible:
+            return {
+                "accepted": False,
+                "persist": False,
+                "recognized": False,
+                "message": (
+                    f"`{requested}` doesn't look like a {provider_label} model "
+                    f"and isn't in its listing, so it was not accepted. If it "
+                    f"belongs to another configured provider, switch with "
+                    f"`--provider <slug>` (or select it from the `/model` "
+                    f"picker)."
+                    f"{suggestion_text}"
+                ),
+            }
+        return {
+            "accepted": True,
+            "persist": True,
+            "recognized": False,
+            "message": (
+                f"Note: `{requested}` was not found in the {provider_label} model listing. "
+                "Live discovery was unavailable; it may still work if your account "
+                "has access to a newer or hidden model ID."
+                f"{suggestion_text}"
+            ),
+        }
 
     # MiniMax providers don't expose a /models endpoint — validate against
     # the static catalog instead, similar to openai-codex.

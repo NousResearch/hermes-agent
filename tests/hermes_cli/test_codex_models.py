@@ -1,7 +1,14 @@
 import json
 from unittest.mock import patch
 
-from hermes_cli.codex_models import DEFAULT_CODEX_MODELS, get_codex_model_ids
+import pytest
+
+from hermes_cli.codex_models import (
+    DEFAULT_CODEX_MODELS,
+    CodexModelDiscovery,
+    discover_codex_models,
+    get_codex_model_ids,
+)
 
 
 def test_get_codex_model_ids_prioritizes_default_and_cache(tmp_path, monkeypatch):
@@ -25,7 +32,8 @@ def test_get_codex_model_ids_prioritizes_default_and_cache(tmp_path, monkeypatch
 
     models = get_codex_model_ids()
 
-    assert models[0] == "gpt-5.2-codex"
+    assert models[0] == "gpt-5.4"
+    assert "gpt-5.2-codex" not in models
     assert "gpt-5.1-codex" in models
     assert "gpt-5.3-codex" in models
     # Codex CLI marks Spark unsupported in the public API, but the Codex
@@ -57,24 +65,238 @@ def test_get_codex_model_ids_falls_back_to_curated_defaults(tmp_path, monkeypatc
     assert "gpt-5.3-codex-spark" in models
 
 
-def test_get_codex_model_ids_adds_forward_compat_models_from_templates(monkeypatch):
+def test_get_codex_model_ids_uses_live_api_as_exact_authority(monkeypatch):
     monkeypatch.setattr(
         "hermes_cli.codex_models._fetch_models_from_api",
-        lambda access_token: ["gpt-5.3-codex"],
+        lambda access_token: ["gpt-5.3-codex", "gpt-5.3-codex"],
     )
 
     models = get_codex_model_ids(access_token="codex-access-token")
 
-    # When live discovery only returns gpt-5.3-codex, forward-compat synthesis
-    # should surface gpt-5.5, gpt-5.4, gpt-5.4-mini, and gpt-5.3-codex-spark
-    # (each is templated off gpt-5.3-codex).
-    assert models == [
-        "gpt-5.3-codex",
-        "gpt-5.5",
-        "gpt-5.4-mini",
-        "gpt-5.4",
-        "gpt-5.3-codex-spark",
+    assert models == ["gpt-5.3-codex"]
+
+
+def test_successful_empty_live_catalog_does_not_fall_back(monkeypatch):
+    import sys
+
+    class _Response:
+        status_code = 200
+
+        @staticmethod
+        def json():
+            return {"models": []}
+
+    class _Httpx:
+        @staticmethod
+        def get(*_args, **_kwargs):
+            return _Response()
+
+    monkeypatch.setitem(sys.modules, "httpx", _Httpx)
+    discovery = discover_codex_models(access_token="codex-access-token")
+    assert discovery.model_ids == []
+    assert discovery.live_authoritative is True
+
+
+def test_successful_all_hidden_live_catalog_does_not_fall_back(monkeypatch):
+    import sys
+
+    class _Response:
+        status_code = 200
+
+        @staticmethod
+        def json():
+            return {"models": [{"slug": "gpt-hidden", "visibility": "hidden"}]}
+
+    class _Httpx:
+        @staticmethod
+        def get(*_args, **_kwargs):
+            return _Response()
+
+    monkeypatch.setitem(sys.modules, "httpx", _Httpx)
+    discovery = discover_codex_models(access_token="codex-access-token")
+    assert discovery.model_ids == []
+    assert discovery.live_authoritative is True
+
+
+def test_all_malformed_live_entries_use_offline_fallback(tmp_path, monkeypatch):
+    import sys
+
+    class _Response:
+        status_code = 200
+
+        @staticmethod
+        def json():
+            return {"models": [None, {}, {"slug": ""}]}
+
+    class _Httpx:
+        @staticmethod
+        def get(*_args, **_kwargs):
+            return _Response()
+
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+    monkeypatch.setitem(sys.modules, "httpx", _Httpx)
+    discovery = discover_codex_models(access_token="codex-access-token")
+    assert discovery.model_ids == DEFAULT_CODEX_MODELS
+    assert discovery.live_authoritative is False
+
+
+def test_mixed_valid_and_malformed_live_entries_keep_valid_authority(monkeypatch):
+    import sys
+
+    class _Response:
+        status_code = 200
+
+        @staticmethod
+        def json():
+            return {
+                "models": [
+                    None,
+                    {"slug": ""},
+                    {"slug": "gpt-5.6-sol", "priority": 1},
+                ]
+            }
+
+    class _Httpx:
+        @staticmethod
+        def get(*_args, **_kwargs):
+            return _Response()
+
+    monkeypatch.setitem(sys.modules, "httpx", _Httpx)
+    discovery = discover_codex_models(access_token="codex-access-token")
+    assert discovery.model_ids == ["gpt-5.6-sol"]
+    assert discovery.live_authoritative is True
+
+
+def test_non_200_live_catalog_uses_offline_fallback(tmp_path, monkeypatch):
+    import sys
+
+    class _Response:
+        status_code = 503
+
+    class _Httpx:
+        @staticmethod
+        def get(*_args, **_kwargs):
+            return _Response()
+
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+    monkeypatch.setitem(sys.modules, "httpx", _Httpx)
+    assert get_codex_model_ids(access_token="codex-access-token") == DEFAULT_CODEX_MODELS
+
+
+def test_live_catalog_transport_failure_uses_offline_fallback(tmp_path, monkeypatch):
+    import sys
+
+    class _Httpx:
+        @staticmethod
+        def get(*_args, **_kwargs):
+            raise OSError("fixture transport failure")
+
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+    monkeypatch.setitem(sys.modules, "httpx", _Httpx)
+    assert get_codex_model_ids(access_token="codex-access-token") == DEFAULT_CODEX_MODELS
+
+
+def test_offline_fallback_suppresses_live_only_pro_models(tmp_path, monkeypatch):
+    codex_home = tmp_path / "codex-home"
+    codex_home.mkdir(parents=True, exist_ok=True)
+    (codex_home / "config.toml").write_text('model = "gpt-5.6-sol-pro"\n')
+    (codex_home / "models_cache.json").write_text(
+        json.dumps(
+            {
+                "models": [
+                    {"slug": "gpt-5.6-sol-pro", "priority": 0},
+                    {"slug": "gpt-5.2-codex", "priority": 0},
+                    {"slug": "gpt-5.1-codex-max", "priority": 0},
+                    {"slug": "gpt-5.1-codex-mini", "priority": 0},
+                    {"slug": "gpt-5.6-sol", "priority": 1},
+                ]
+            }
+        )
+    )
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+
+    models = get_codex_model_ids()
+
+    assert "gpt-5.6-sol" in models
+    assert "gpt-5.6-sol-pro" not in models
+    assert "gpt-5.6-terra-pro" not in models
+    assert "gpt-5.6-luna-pro" not in models
+    assert "gpt-5.2-codex" not in models
+    assert "gpt-5.1-codex-max" not in models
+    assert "gpt-5.1-codex-mini" not in models
+
+
+def test_live_api_can_reenable_a_live_only_model(monkeypatch):
+    monkeypatch.setattr(
+        "hermes_cli.codex_models._fetch_models_from_api",
+        lambda access_token: ["gpt-5.6-sol-pro", "gpt-5.6-sol"],
+    )
+
+    assert get_codex_model_ids(access_token="codex-access-token") == [
+        "gpt-5.6-sol-pro",
+        "gpt-5.6-sol",
     ]
+
+
+def test_curated_picker_preserves_authoritative_empty_catalog(monkeypatch):
+    from hermes_cli.models import curated_models_for_provider
+
+    monkeypatch.setattr(
+        "hermes_cli.models._resolve_codex_model_discovery",
+        lambda access_token=None: CodexModelDiscovery([], True),
+    )
+
+    assert curated_models_for_provider("openai-codex") == []
+
+
+def test_generic_disk_cache_cannot_resurrect_stale_codex_models(monkeypatch):
+    from hermes_cli.models import cached_provider_model_ids
+
+    monkeypatch.setattr(
+        "hermes_cli.models.provider_model_ids",
+        lambda provider, force_refresh=False: [],
+    )
+    monkeypatch.setattr(
+        "hermes_cli.models._load_provider_models_cache",
+        lambda: (_ for _ in ()).throw(
+            AssertionError("generic disk cache must be bypassed for Codex")
+        ),
+    )
+
+    assert cached_provider_model_ids("openai-codex") == []
+
+
+def test_validation_rejects_slug_absent_from_successful_live_catalog(monkeypatch):
+    from hermes_cli.models import validate_requested_model
+
+    monkeypatch.setattr(
+        "hermes_cli.models._resolve_codex_model_discovery",
+        lambda access_token=None: CodexModelDiscovery(["gpt-5.6-sol"], True),
+    )
+
+    result = validate_requested_model(
+        "gpt-5.6-sol-pro",
+        "openai-codex",
+        api_key="codex-access-token",
+    )
+    assert result["accepted"] is False
+    assert result["persist"] is False
+    assert "not advertised" in result["message"]
+
+
+def test_validation_soft_accepts_plausible_slug_only_offline(monkeypatch):
+    from hermes_cli.models import validate_requested_model
+
+    monkeypatch.setattr(
+        "hermes_cli.models._resolve_codex_model_discovery",
+        lambda access_token=None: CodexModelDiscovery(["gpt-5.6-sol"], False),
+    )
+
+    result = validate_requested_model("gpt-future-codex", "openai-codex")
+    assert result["accepted"] is True
+    assert result["persist"] is True
+    assert result["recognized"] is False
+    assert "Live discovery was unavailable" in result["message"]
 
 
 def test_fetch_from_api_keeps_supported_in_api_false_models(monkeypatch):
@@ -108,9 +330,7 @@ def test_fetch_from_api_keeps_supported_in_api_false_models(monkeypatch):
 
     models = codex_models._fetch_models_from_api(access_token="tok")
 
-    assert "gpt-5.5" in models
-    assert "gpt-5.3-codex-spark" in models
-    assert "gpt-5-internal" not in models
+    assert models == ["gpt-5.5", "gpt-5.3-codex-spark"]
 
 
 def test_model_command_uses_runtime_access_token_for_codex_list(monkeypatch):
@@ -260,13 +480,21 @@ def _make_cli(model="anthropic/claude-opus-4.6", **kwargs):
 
 
 class TestNormalizeModelForProvider:
-    """_normalize_model_for_provider() trusts user-selected models.
+    """_normalize_model_for_provider() trusts explicit models only offline.
 
-    Only two things happen:
-    1. Provider prefixes are stripped (API needs bare slugs)
-    2. The *untouched default* model is swapped for a Codex model
-    Everything else passes through — the API is the judge.
+    Provider prefixes are stripped, untouched defaults use the resolved Codex
+    catalog, and a successful account catalog rejects absent explicit slugs.
     """
+
+    @pytest.fixture(autouse=True)
+    def _offline_discovery(self, monkeypatch):
+        monkeypatch.setattr(
+            "hermes_cli.codex_models.discover_codex_models",
+            lambda access_token=None: CodexModelDiscovery(
+                model_ids=list(DEFAULT_CODEX_MODELS),
+                live_authoritative=False,
+            ),
+        )
 
     def test_non_codex_provider_is_noop(self):
         cli = _make_cli(model="gpt-5.4")
@@ -356,16 +584,19 @@ class TestNormalizeModelForProvider:
 
         assert cli._model_is_default is True
         with patch(
-            "hermes_cli.codex_models.get_codex_model_ids",
-            return_value=["gpt-5.3-codex", "gpt-5.4"],
+            "hermes_cli.codex_models.discover_codex_models",
+            return_value=CodexModelDiscovery(
+                model_ids=["gpt-5.3-codex", "gpt-5.4"],
+                live_authoritative=True,
+            ),
         ):
             changed = cli._normalize_model_for_provider("openai-codex")
         assert changed is True
         # Uses first from available list
         assert cli.model == "gpt-5.3-codex"
 
-    def test_default_fallback_when_api_fails(self):
-        """No model configured falls back to gpt-5.3-codex when API unreachable."""
+    def test_default_uses_offline_discovery_when_api_fails(self):
+        """Offline discovery may choose a fallback; CLI never invents one."""
         import cli as _cli_mod
         _clean_config = {
             "model": {
@@ -386,9 +617,29 @@ class TestNormalizeModelForProvider:
             cli = HermesCLI()
 
         with patch(
-            "hermes_cli.codex_models.get_codex_model_ids",
-            side_effect=Exception("offline"),
+            "hermes_cli.codex_models.discover_codex_models",
+            return_value=CodexModelDiscovery(
+                model_ids=["gpt-5.6-sol"],
+                live_authoritative=False,
+            ),
         ):
             changed = cli._normalize_model_for_provider("openai-codex")
         assert changed is True
-        assert cli.model == "gpt-5.3-codex"
+        assert cli.model == "gpt-5.6-sol"
+
+    def test_successful_empty_catalog_rejects_synthetic_default(self):
+        cli = _make_cli()
+        cli._model_is_default = True
+        with patch(
+            "hermes_cli.codex_models.discover_codex_models",
+            return_value=CodexModelDiscovery([], True),
+        ), pytest.raises(RuntimeError, match="contains no selectable models"):
+            cli._normalize_model_for_provider("openai-codex")
+
+    def test_successful_live_catalog_rejects_absent_explicit_slug(self):
+        cli = _make_cli(model="gpt-5.6-sol-pro")
+        with patch(
+            "hermes_cli.codex_models.discover_codex_models",
+            return_value=CodexModelDiscovery(["gpt-5.6-sol"], True),
+        ), pytest.raises(RuntimeError, match="was not advertised"):
+            cli._normalize_model_for_provider("openai-codex")

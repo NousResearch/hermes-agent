@@ -5360,23 +5360,44 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             current_model = slug
             changed = True
 
-        # 2. Replace untouched default with a Codex model
-        if self._model_is_default:
-            fallback_model = "gpt-5.3-codex"
-            try:
-                from hermes_cli.codex_models import get_codex_model_ids
+        # 2. Resolve the account catalog once per runtime credential. A
+        # successful live response is exact authority even when empty; only
+        # discovery failure is allowed to expose offline fallback IDs.
+        try:
+            from hermes_cli.codex_models import discover_codex_models
 
-                available = get_codex_model_ids(
+            discovery = None
+            if getattr(self, "_codex_discovery_api_key", object()) == self.api_key:
+                discovery = getattr(self, "_codex_model_discovery", None)
+            if discovery is None:
+                discovery = discover_codex_models(
                     access_token=self.api_key if self.api_key else None,
                 )
-                if available:
-                    fallback_model = available[0]
-            except Exception:
-                pass
+                self._codex_discovery_api_key = self.api_key
+                self._codex_model_discovery = discovery
+        except Exception as exc:
+            raise RuntimeError(
+                "Could not resolve the OpenAI Codex model catalog; refusing to "
+                "synthesize a model ID."
+            ) from exc
 
-            if current_model != fallback_model:
-                self.model = fallback_model
+        available = list(discovery.model_ids)
+        if self._model_is_default:
+            if not available:
+                raise RuntimeError(
+                    "The OpenAI Codex account catalog was fetched successfully but "
+                    "contains no selectable models."
+                )
+            selected_model = available[0]
+            if current_model != selected_model:
+                self.model = selected_model
+                current_model = selected_model
                 changed = True
+        elif discovery.live_authoritative and current_model not in set(available):
+            raise RuntimeError(
+                f"OpenAI Codex model '{current_model}' was not advertised by this "
+                "account's successful live catalog."
+            )
 
         return changed
 

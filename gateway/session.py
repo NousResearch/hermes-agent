@@ -308,6 +308,7 @@ class SessionContext:
     source: SessionSource
     connected_platforms: List[Platform]
     home_channels: Dict[Platform, HomeChannel]
+    workspace_binding: Optional[Any] = None
     shared_multi_user_session: bool = False
     
     # Session metadata
@@ -323,6 +324,9 @@ class SessionContext:
             "home_channels": {
                 p.value: hc.to_dict() for p, hc in self.home_channels.items()
             },
+            "workspace_binding": (
+                self.workspace_binding.to_dict() if self.workspace_binding else None
+            ),
             "shared_multi_user_session": self.shared_multi_user_session,
             "session_key": self.session_key,
             "session_id": self.session_id,
@@ -491,6 +495,31 @@ def build_session_context_prompt(
             "Matrix room/thread only. Do not assume unresolved references are "
             "about other Matrix rooms or projects unless the user explicitly says so."
         )
+
+    if context.source.platform != Platform.LOCAL:
+        binding = context.workspace_binding
+        lines.append("")
+        if binding is None:
+            lines.append(
+                "**Current Project Binding:** No authoritative project binding was found "
+                "for this gateway room. For repository or project side effects, "
+                "continue read-only until the room is explicitly bound in workspaces.yaml."
+            )
+        else:
+            lines.append("**Current Project Binding:**")
+            lines.append(f"  - Project: {binding.name} (`{binding.slug}`)")
+            if binding.repo_path:
+                lines.append(f"  - Repo path: `{binding.repo_path}`")
+            if binding.canonical_repo_url:
+                lines.append(f"  - Canonical repo: `{binding.canonical_repo_url}`")
+            if binding.default_branch:
+                lines.append(f"  - Default branch: `{binding.default_branch}`")
+            lines.append(
+                "This binding is authoritative for side-effecting project work. "
+                "Treat it as session-local operational metadata: use it for tool "
+                "targeting, but do not log, quote, screenshot, or expose it outside "
+                "this session unless the user explicitly asks."
+            )
 
     # User identity.
     # In shared multi-user sessions (shared threads OR shared non-thread groups
@@ -2805,6 +2834,13 @@ def build_session_context(
             thread_sessions_per_user=getattr(config, "thread_sessions_per_user", False),
         ),
     )
+
+    try:
+        from .workspace_registry import resolve_workspace_binding
+
+        context.workspace_binding = resolve_workspace_binding(source)
+    except Exception:
+        logger.warning("Failed to resolve workspace binding", exc_info=True)
     
     if session_entry:
         context.session_key = session_entry.session_key

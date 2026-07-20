@@ -3390,6 +3390,51 @@ def _has_sticky_block(conn: sqlite3.Connection, task_id: str) -> bool:
     return bool(row) and row["kind"] == "blocked"
 
 
+def _parent_gates_children(conn: sqlite3.Connection, parent_id: str) -> bool:
+    """Whether ``parent_id`` should hold back its dependency children.
+
+    A parent *gates* (delays promotion of) its children unless it has
+    reached a terminal state or is merely self-parked awaiting review:
+
+    * ``done`` / ``archived`` → does **not** gate (normal completion).
+    * ``blocked`` with a ``review-required:`` reason → does **not** gate.
+      This is a transient worker self-park (the common pattern where a
+      worker parks via ``kanban_block(reason="review-required: ...")`` and
+      then spawns the follow-up review task as a dependency child). Treating
+      it like a hard failure would deadlock the child in ``todo`` forever
+      (#67963).
+    * any other state (``running``, ``ready``, ``todo``, ``blocked`` for a
+      genuine external blocker, ``failed``, …) → gates.
+
+    Reads the most-recent ``blocked`` event's ``reason`` to recognise the
+    ``review-required:`` park; returns False for non-blocked parents.
+    """
+    row = conn.execute(
+        "SELECT status FROM tasks WHERE id = ?", (parent_id,)
+    ).fetchone()
+    if not row:
+        # Unknown parent — fail safe and gate (don't silently promote).
+        return True
+    status = row["status"]
+    if status in ("done", "archived"):
+        return False
+    if status != "blocked":
+        # running/ready/todo/failed/etc. — still in progress or terminal-fail.
+        return True
+    # status == "blocked": only the review-required self-park is non-gating.
+    ev = conn.execute(
+        "SELECT payload FROM task_events "
+        "WHERE task_id = ? AND kind = 'blocked' "
+        "ORDER BY id DESC LIMIT 1",
+        (parent_id,),
+    ).fetchone()
+    if ev and (json.loads(ev["payload"] or "{}").get("reason") or "").startswith(
+        "review-required:"
+    ):
+        return False
+    return True
+
+
 def recompute_ready(
     conn: sqlite3.Connection, failure_limit: int = None,
 ) -> int:
@@ -3439,12 +3484,12 @@ def recompute_ready(
                 # this predicate back).
                 continue
             parents = conn.execute(
-                "SELECT t.status FROM tasks t "
+                "SELECT t.id, t.status FROM tasks t "
                 "JOIN task_links l ON l.parent_id = t.id "
                 "WHERE l.child_id = ?",
                 (task_id,),
             ).fetchall()
-            if all(p["status"] in ("done", "archived") for p in parents):
+            if all(not _parent_gates_children(conn, p["id"]) for p in parents):
                 if cur_status == "blocked":
                     # Don't auto-recover tasks that have hit the
                     # circuit-breaker failure limit.  Without this
@@ -3498,19 +3543,32 @@ def claim_task(
     expires = now + _resolve_claim_ttl_seconds(ttl_seconds)
     with write_txn(conn):
         # Structural invariant: never transition ready -> running while any
-        # parent is not yet 'done'. This is the single enforcement point
-        # regardless of which writer (create_task, link_tasks, unblock_task,
-        # release_stale_claims, manual SQL) set status='ready'. If a racy
-        # writer promoted a task with undone parents, demote it back to
-        # 'todo' here — recompute_ready will re-promote when the parents
-        # actually finish. See RCA at
-        # kanban/boards/cookai/workspaces/t_a6acd07d/root-cause.md.
+        # parent is still a genuine blocker. A `done`/`archived` parent, or a
+        # parent merely self-parked with `review-required:` (a transient wait,
+        # not a hard failure — see _parent_gates_children / #67963), does not
+        # hold the child back, so it is excluded from the "undone" check.
         undone = conn.execute(
             "SELECT 1 FROM task_links l "
             "JOIN tasks p ON p.id = l.parent_id "
-            "WHERE l.child_id = ? AND p.status NOT IN ('done', 'archived') LIMIT 1",
+            "WHERE l.child_id = ? AND p.status NOT IN ('done', 'archived') "
+            "LIMIT 1",
             (task_id,),
         ).fetchone()
+        if undone:
+            # A non-done parent exists; only demote if at least one of
+            # those parents actually gates the child (a genuinely-blocked
+            # parent, not a `review-required:` self-park — see
+            # _parent_gates_children / #67963).
+            non_terminal = conn.execute(
+                "SELECT p.id FROM task_links l "
+                "JOIN tasks p ON p.id = l.parent_id "
+                "WHERE l.child_id = ? AND p.status NOT IN ('done', 'archived')",
+                (task_id,),
+            ).fetchall()
+            if non_terminal and not any(
+                _parent_gates_children(conn, row["id"]) for row in non_terminal
+            ):
+                undone = None
         if undone:
             conn.execute(
                 "UPDATE tasks SET status = 'todo' "

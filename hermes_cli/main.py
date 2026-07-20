@@ -111,10 +111,26 @@ def _exit_after_oneshot(rc: object) -> None:
 def _cleanup_oneshot_runtime() -> None:
     """Best-effort process-global cleanup before one-shot hard exit.
 
-    ``run_oneshot`` owns the agent-local cleanup. This mirrors the lightweight,
-    process-global pieces from the interactive CLI shutdown path that would
-    otherwise be skipped by ``os._exit``.
+    ``run_oneshot`` owns the agent-local cleanup (memory provider, agent.close,
+    session_db.close — all in ``_run_agent``'s finally block). This mirrors the
+    process-global pieces from ``cli.py:_run_cleanup()`` that would otherwise
+    be skipped by ``os._exit``.
     """
+    try:
+        from tools.terminal_tool import cleanup_all_environments
+        cleanup_all_environments()
+    except Exception:
+        pass
+    try:
+        from tools.async_delegation import interrupt_all
+        interrupt_all(reason="oneshot shutdown")
+    except Exception:
+        pass
+    try:
+        from tools.browser_tool import _emergency_cleanup_all_sessions
+        _emergency_cleanup_all_sessions()
+    except Exception:
+        pass
     try:
         from tools.mcp_tool import shutdown_mcp_servers
         shutdown_mcp_servers()

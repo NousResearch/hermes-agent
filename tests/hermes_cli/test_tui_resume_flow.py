@@ -857,6 +857,12 @@ def test_run_and_exit_oneshot_cleans_global_runtime_before_hard_exit(
 ):
     events = []
 
+    def _mod(name, **attrs):
+        fake = types.ModuleType(name)
+        for key, value in attrs.items():
+            setattr(fake, key, value)
+        return fake
+
     monkeypatch.setitem(
         sys.modules,
         "hermes_cli.oneshot",
@@ -864,13 +870,28 @@ def test_run_and_exit_oneshot_cleans_global_runtime_before_hard_exit(
     )
     monkeypatch.setitem(
         sys.modules,
+        "tools.terminal_tool",
+        _mod("tools.terminal_tool", cleanup_all_environments=lambda: events.append("terminal")),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "tools.async_delegation",
+        _mod("tools.async_delegation", interrupt_all=lambda **kw: events.append("delegation")),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "tools.browser_tool",
+        _mod("tools.browser_tool", _emergency_cleanup_all_sessions=lambda: events.append("browser")),
+    )
+    monkeypatch.setitem(
+        sys.modules,
         "tools.mcp_tool",
-        types.SimpleNamespace(shutdown_mcp_servers=lambda: events.append("mcp")),
+        _mod("tools.mcp_tool", shutdown_mcp_servers=lambda: events.append("mcp")),
     )
     monkeypatch.setitem(
         sys.modules,
         "agent.auxiliary_client",
-        types.SimpleNamespace(shutdown_cached_clients=lambda: events.append("aux")),
+        _mod("agent.auxiliary_client", shutdown_cached_clients=lambda: events.append("aux")),
     )
     monkeypatch.setattr(
         main_mod, "_exit_after_oneshot", lambda rc: events.append(f"exit:{rc}")
@@ -878,7 +899,7 @@ def test_run_and_exit_oneshot_cleans_global_runtime_before_hard_exit(
 
     main_mod._run_and_exit_oneshot("hello")
 
-    assert events == ["run", "mcp", "aux", "exit:0"]
+    assert events == ["run", "terminal", "delegation", "browser", "mcp", "aux", "exit:0"]
 
 
 def test_run_and_exit_oneshot_still_exits_when_global_cleanup_raises(
@@ -896,6 +917,21 @@ def test_run_and_exit_oneshot_still_exits_when_global_cleanup_raises(
     )
     monkeypatch.setitem(
         sys.modules,
+        "tools.terminal_tool",
+        types.SimpleNamespace(cleanup_all_environments=lambda: events.append("terminal")),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "tools.async_delegation",
+        types.SimpleNamespace(interrupt_all=lambda **kw: events.append("delegation")),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "tools.browser_tool",
+        types.SimpleNamespace(_emergency_cleanup_all_sessions=lambda: events.append("browser")),
+    )
+    monkeypatch.setitem(
+        sys.modules,
         "tools.mcp_tool",
         types.SimpleNamespace(shutdown_mcp_servers=_raise_mcp),
     )
@@ -910,7 +946,7 @@ def test_run_and_exit_oneshot_still_exits_when_global_cleanup_raises(
 
     main_mod._run_and_exit_oneshot("hello")
 
-    assert events == ["aux", "exit:0"]
+    assert events == ["terminal", "delegation", "browser", "aux", "exit:0"]
 
 
 def test_run_and_exit_oneshot_hard_exits_when_cleanup_is_interrupted(

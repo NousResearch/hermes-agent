@@ -45,6 +45,13 @@ export interface DesktopThemeColors {
   sidebarBorder?: string
   userBubble?: string
   userBubbleBorder?: string
+  /**
+   * Optional assistant-message bubble background. When unset, the assistant
+   * bubble renders with no surface (current default behavior). Set per-theme or
+   * via user theme overrides to give the assistant a distinct bubble. Opt-in:
+   * existing users see no change until a value is provided.
+   */
+  assistantBubble?: string
 }
 
 export interface DesktopThemeTypography {

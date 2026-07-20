@@ -220,6 +220,7 @@ function applyTheme(theme: DesktopTheme, mode: 'light' | 'dark') {
     '--dt-destructive-foreground': c.destructiveForeground,
     '--dt-sidebar-border': c.sidebarBorder ?? c.border,
     '--dt-user-bubble-border': c.userBubbleBorder ?? c.border,
+    '--dt-assistant-bubble': c.assistantBubble ?? '',
     '--dt-font-sans': typo.fontSans,
     '--dt-font-mono': typo.fontMono,
     '--noise-opacity-mul': isDark ? 'calc(0.04 / 0.21)' : 'calc(0.34 / 0.21)'

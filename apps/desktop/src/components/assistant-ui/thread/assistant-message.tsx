@@ -91,7 +91,7 @@ export const AssistantMessage: FC<{
 
   return (
     <MessagePrimitive.Root
-      className="group flex w-full min-w-0 max-w-full flex-col gap-0 self-start overflow-hidden"
+      className="group flex w-full min-w-0 max-w-full flex-col gap-0 self-start overflow-hidden bg-(--dt-assistant-bubble)"
       data-role="assistant"
       data-slot="aui_assistant-message-root"
       data-streaming={isRunning ? 'true' : undefined}

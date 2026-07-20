@@ -1487,7 +1487,7 @@ export const ja = defineLocale({
     groupTitleGrouped: 'セッションのグループ化を解除',
     groupTitleUngrouped: 'ワークスペースでグループ化',
     allPinned: 'ここにあるものはすべてピン留めされています。チャットのピン留めを解除すると最近のものに表示されます。',
-    shiftClickHint: 'Shift クリックでピン留め · ドラッグで並べ替え',
+    shiftClickHint: 'Ctrl クリックでピン留め · Shift クリックで複数選択 · ドラッグで並べ替え',
     noWorkspace: 'ワークスペースなし',
     noProject: 'プロジェクトなし',
     projectEmpty: 'セッションはまだありません',

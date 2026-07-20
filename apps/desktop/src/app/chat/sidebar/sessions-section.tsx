@@ -135,6 +135,11 @@ interface SidebarSessionsSectionProps {
   // Rendered atop the entered-project body (a "back to overview" row).
   projectBackRow?: React.ReactNode
   dndSensors?: ReturnType<typeof useSensors>
+  // Multi-select for batch archive.
+  selectedMultiSessionIds?: ReadonlySet<string>
+  onToggleMultiSelect?: (sessionId: string) => void
+  onArchiveSelected?: () => void
+  onClearMultiSelect?: () => void
 }
 
 export function SidebarSessionsSection({
@@ -174,7 +179,11 @@ export function SidebarSessionsSection({
   onReorderSessions,
   onReorderProjects,
   projectBackRow,
-  dndSensors
+  dndSensors,
+  selectedMultiSessionIds,
+  onToggleMultiSelect,
+  onArchiveSelected,
+  onClearMultiSelect
 }: SidebarSessionsSectionProps) {
   const sectionOpen = collapsible ? open : true
   const hasGroupedSessions = Boolean(groups?.some(group => group.sessions.length > 0))
@@ -197,11 +206,13 @@ export function SidebarSessionsSection({
       isPinned: pinned,
       isSelected: session.id === activeSessionId,
       isWorking: workingSessionIdSet.has(session.id),
+      isMultiSelected: selectedMultiSessionIds?.has(session.id) ?? false,
       onArchive: () => onArchiveSession(session.id),
       onBranch: onBranchSession ? () => onBranchSession(session.id, session.profile) : undefined,
       onDelete: () => onDeleteSession(session.id),
       onPin: () => onTogglePin(sessionPinId(session)),
       onResume: () => onResumeSession(session.id),
+      onToggleMultiSelect: onToggleMultiSelect ? () => onToggleMultiSelect(session.id) : () => {},
       reorderable: draggable && !branchStem,
       session
     }
@@ -310,6 +321,8 @@ export function SidebarSessionsSection({
         onDeleteSession={onDeleteSession}
         onResumeSession={onResumeSession}
         onTogglePin={onTogglePin}
+        onToggleMultiSelect={onToggleMultiSelect}
+        selectedMultiSessionIds={selectedMultiSessionIds}
         pinned={pinned}
         sortable={sessionsDraggable}
         workingSessionIdSet={workingSessionIdSet}
@@ -334,7 +347,8 @@ export function SidebarSessionsSection({
     inner = displayEntries.map(({ branchStem, session }) => renderRow(session, false, branchStem))
   }
 
-  // The virtualizer owns its own scroller, so suppress the wrapper's overflow
+  const hasSelection = (selectedMultiSessionIds?.size ?? 0) > 0
+  const selectionCount = selectedMultiSessionIds?.size ?? 0
   // to avoid a double scroll container.
   const resolvedContentClassName = cn(contentClassName, flatVirtualized && 'overflow-y-visible')
 
@@ -353,6 +367,29 @@ export function SidebarSessionsSection({
         <SidebarGroupContent className={resolvedContentClassName}>
           {inner}
           {footer}
+          {hasSelection && onArchiveSelected && onClearMultiSelect && (
+            <div className="sticky bottom-0 z-10 flex items-center justify-between gap-2 border-t border-(--ui-border) bg-(--ui-surface-background) px-2 py-1.5">
+              <span className="text-[0.6875rem] text-(--ui-text-tertiary)">
+                {selectionCount} selected
+              </span>
+              <div className="flex items-center gap-1">
+                <button
+                  className="cursor-pointer rounded-md px-2 py-1 text-[0.6875rem] font-medium text-(--ui-text-secondary) transition-colors hover:bg-(--ui-control-active-background)"
+                  onClick={onClearMultiSelect}
+                  type="button"
+                >
+                  Clear
+                </button>
+                <button
+                  className="cursor-pointer rounded-md bg-(--ui-destructive) px-2 py-1 text-[0.6875rem] font-medium text-(--ui-destructive-foreground) transition-colors hover:opacity-90"
+                  onClick={onArchiveSelected}
+                  type="button"
+                >
+                  Archive {selectionCount > 1 ? `(${selectionCount})` : ''}
+                </button>
+              </div>
+            </div>
+          )}
         </SidebarGroupContent>
       )}
     </SidebarGroup>
@@ -364,10 +401,12 @@ interface SortableSessionRowProps {
   isPinned: boolean
   isSelected: boolean
   isWorking: boolean
+  isMultiSelected: boolean
   onArchive: () => void
   onDelete: () => void
   onPin: () => void
   onResume: () => void
+  onToggleMultiSelect: () => void
 }
 
 function SortableSidebarSessionRow(props: SortableSessionRowProps) {

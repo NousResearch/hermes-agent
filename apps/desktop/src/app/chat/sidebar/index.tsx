@@ -326,6 +326,45 @@ export function ChatSidebar({
   const searchInputRef = useRef<HTMLInputElement>(null)
   const trimmedQuery = searchQuery.trim()
 
+  // ── Multi-select for batch archive ────────────────────────────────────────
+  const [selectedMultiSessionIds, setSelectedMultiSessionIds] = useState<Set<string>>(new Set())
+
+  const onToggleMultiSelect = useCallback((sessionId: string) => {
+    setSelectedMultiSessionIds(prev => {
+      const next = new Set(prev)
+      if (next.has(sessionId)) {
+        next.delete(sessionId)
+      } else {
+        next.add(sessionId)
+      }
+      return next
+    })
+  }, [])
+
+  const onClearMultiSelect = useCallback(() => setSelectedMultiSessionIds(new Set()), [])
+
+  const onArchiveSelected = useCallback(() => {
+    const ids = [...selectedMultiSessionIds]
+    onClearMultiSelect()
+    // Batch-archive sequentially; each call optimistically removes its row,
+    // so later iterations skip already-archived entries.
+    for (const id of ids) {
+      onArchiveSession(id)
+    }
+  }, [selectedMultiSessionIds, onArchiveSession, onClearMultiSelect])
+
+  // Clear multi-select on Escape.
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && selectedMultiSessionIds.size > 0) {
+        onClearMultiSelect()
+      }
+    }
+
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [selectedMultiSessionIds, onClearMultiSelect])
+
   // Hotkey (session.focusSearch) → focus the field once it's mounted.
   useEffect(() => {
     const onFocus = () => searchInputRef.current?.focus({ preventScroll: true })
@@ -1369,6 +1408,10 @@ export function ChatSidebar({
                 onResumeSession={onResumeSession}
                 onToggle={() => setSidebarRecentsOpen(!agentsOpen)}
                 onTogglePin={pinSession}
+                onArchiveSelected={onArchiveSelected}
+                onClearMultiSelect={onClearMultiSelect}
+                onToggleMultiSelect={onToggleMultiSelect}
+                selectedMultiSessionIds={selectedMultiSessionIds}
                 open={agentsOpen}
                 pinned={false}
                 projectBackRow={

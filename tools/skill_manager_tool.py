@@ -150,6 +150,22 @@ import yaml
 # All skills live in ~/.hermes/skills/ (single source of truth)
 HERMES_HOME = get_hermes_home()
 SKILLS_DIR = HERMES_HOME / "skills"
+_SKILLS_DIR_AT_IMPORT = SKILLS_DIR
+
+
+def _skills_dir() -> Path:
+    """Return the active profile's skills directory at call time.
+
+    Long-lived multi-profile runtimes (Dashboard/TUI/Desktop backend, cron,
+    kanban workers) import this module once under the launch HERMES_HOME and
+    later bind a different profile per session (#40677). Honor an explicitly
+    patched module-level ``SKILLS_DIR`` (tests), otherwise resolve from the
+    live profile-scoped HERMES_HOME on every call.
+    """
+    configured = Path(SKILLS_DIR)
+    if configured != _SKILLS_DIR_AT_IMPORT:
+        return configured
+    return get_hermes_home() / "skills"
 
 MAX_NAME_LENGTH = 64
 MAX_DESCRIPTION_LENGTH = 1024
@@ -174,7 +190,7 @@ def _containing_skills_root(skill_path: Path) -> Path:
             return root
         except (ValueError, OSError):
             continue
-    return SKILLS_DIR
+    return _skills_dir()
 
 
 def _is_path_redirect(path: Path) -> bool:
@@ -358,6 +374,23 @@ def _background_review_write_guard(
                     f"skill '{name}'."
                 ),
             }
+        # Manually authored skills (created_by != "agent") are off-limits
+        # to autonomous curation. This prevents the LLM consolidation pass
+        # from archiving skills the user placed manually (e.g. via URL
+        # install or direct SKILL.md authoring), which lack the
+        # `created_by: "agent"` marker.
+        usage_data = skill_usage.load_usage()
+        usage_rec = usage_data.get(name)
+        if isinstance(usage_rec, dict) and not skill_usage._is_curator_managed_record(usage_rec):
+            return {
+                "success": False,
+                "error": (
+                    f"Refusing background curator {action} for skill "
+                    f"'{name}': the skill records show it is not agent-created "
+                    f"(created_by={usage_rec.get('created_by')!r}). Manually authored "
+                    f"skills are off-limits to autonomous curation."
+                ),
+            }
     except Exception:
         logger.debug("owned skill guard lookup failed for %s", name, exc_info=True)
     return None
@@ -513,6 +546,9 @@ def _validate_frontmatter(content: str) -> Optional[str]:
     if not content.strip():
         return "Content cannot be empty."
 
+    # Tolerate a leading UTF-8 BOM (Windows editors) before the fence.
+    content = content.lstrip("\ufeff")
+
     if not content.startswith("---"):
         return "SKILL.md must start with YAML frontmatter (---). See existing skills for format."
 
@@ -562,8 +598,8 @@ def _validate_content_size(content: str, label: str = "SKILL.md") -> Optional[st
 def _resolve_skill_dir(name: str, category: str = None) -> Path:
     """Build the directory path for a new skill, optionally under a category."""
     if category:
-        return SKILLS_DIR / category / name
-    return SKILLS_DIR / name
+        return _skills_dir() / category / name
+    return _skills_dir() / name
 
 
 def _find_skill(name: str) -> Optional[Dict[str, Any]]:
@@ -608,8 +644,9 @@ def _find_skill_in_other_profiles(name: str) -> List[Tuple[str, Path]]:
         return matches
 
     # Collect (profile_name, skills_dir) for every profile EXCEPT the
-    # one whose SKILLS_DIR we already searched in _find_skill().
-    active_dir = SKILLS_DIR.resolve() if SKILLS_DIR.exists() else SKILLS_DIR
+    # one whose skills dir we already searched in _find_skill().
+    _active = _skills_dir()
+    active_dir = _active.resolve() if _active.exists() else _active
     candidates: List[Tuple[str, Path]] = []
 
     # Default profile (~/.hermes/skills) — only consider when active is non-default.
@@ -828,7 +865,7 @@ def _create_skill(name: str, content: str, category: str = None) -> Dict[str, An
     result = {
         "success": True,
         "message": f"Skill '{name}' created.",
-        "path": str(skill_dir.relative_to(SKILLS_DIR)),
+        "path": str(skill_dir.relative_to(_skills_dir())),
         "skill_md": str(skill_md),
         "_change": {"description": _desc},
     }

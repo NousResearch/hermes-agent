@@ -597,7 +597,15 @@ def worktree_add(cwd: str, options: dict) -> dict:
     target = _unique_dir(os.path.join(root, ".worktrees", slug))
     args = ["worktree", "add", "-b", branch, target]
     if options.get("base"):
-        args.append(str(options["base"]))
+        base = str(options["base"])
+        # Remote-tracking branches may be stale or missing; fetch just that
+        # branch so the local ref is up to date before branching. Ignore fetch
+        # failures (offline / no remote) — git will use whatever local ref
+        # exists, or raise a clear error below if the ref is entirely missing.
+        if base.startswith("origin/"):
+            remote_branch = base[len("origin/"):]
+            _git(root, ["fetch", "origin", remote_branch])
+        args.append(base)
     code, _, err = _git(root, args)
     if code != 0:
         if "already exists" in (err or "").lower():
@@ -644,3 +652,46 @@ def branch_switch(cwd: str, branch: str) -> dict:
         raise RuntimeError("Branch name is required.")
     _git_ok(cwd, ["switch", target])
     return {"branch": target}
+
+
+def base_branch_list(cwd: str) -> list[dict]:
+    """Local heads + remote-tracking refs for the base-branch picker.
+
+    The remote default (origin/HEAD) is flagged so the UI can preselect it.
+    """
+    out = _git_out(
+        cwd,
+        [
+            "for-each-ref",
+            "--format=%(refname:short)\t%(committerdate:iso)",
+            "--sort=-committerdate",
+            "refs/heads",
+            "refs/remotes",
+        ],
+    )
+    if not out:
+        return []
+    remote_default = _git_out(
+        cwd, ["symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"]
+    ).strip()
+    local_default = _default_branch(cwd) if not remote_default else ""
+    result: list[dict] = []
+    for line in out.split("\n"):
+        line = line.strip()
+        if not line:
+            continue
+        name = line.split("\t")[0]
+        result.append(
+            {
+                "name": name,
+                "isRemote": name.startswith("origin/"),
+                # origin/HEAD when a remote exists; otherwise the local
+                # default (main/master/init.defaultBranch) so a no-remote
+                # repo still flags its trunk.
+                "isDefault": bool(
+                    (remote_default and name == remote_default)
+                    or (not remote_default and local_default and name == local_default)
+                ),
+            }
+        )
+    return result

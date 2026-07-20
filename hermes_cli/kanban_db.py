@@ -135,6 +135,7 @@ BLOCK_RECURRENCE_LIMIT = 2
 VALID_WORKSPACE_KINDS = {"scratch", "worktree", "dir"}
 KNOWN_TOOLSET_NAMES = frozenset(name.casefold() for name in get_toolset_names())
 _IS_WINDOWS = sys.platform == "win32"
+KANBAN_ATTACHMENT_MAX_BYTES = 25 * 1024 * 1024
 
 
 def _fire_kanban_lifecycle_hook(event: str, task_id: str, **fields: Any) -> None:
@@ -2962,6 +2963,117 @@ def list_comments(conn: sqlite3.Connection, task_id: str) -> list[Comment]:
 # Attachments
 # ---------------------------------------------------------------------------
 
+# The attachment size cap is the module-level ``KANBAN_ATTACHMENT_MAX_BYTES``
+# (defined near the top of this file) — one constant shared by the dashboard
+# HTTP endpoint, the agent toolset, and the CLI so the limit cannot drift
+# between surfaces.
+
+
+class AttachmentTooLarge(ValueError):
+    """Raised when an attachment exceeds the configured size cap.
+
+    Subclasses :class:`ValueError` so generic ``except ValueError`` handlers
+    (e.g. the dashboard's 400 fallback) still catch it, while callers that
+    want a distinct user-facing message (the tool/CLI 413-equivalent) can
+    catch it specifically.
+    """
+
+
+def _safe_attachment_name(raw: str) -> str:
+    """Reduce a client-supplied filename to a safe basename.
+
+    Strips any directory components (both separators) so a malicious
+    ``../../etc/passwd`` or ``C:\\x`` collapses to its leaf. Drops control
+    chars and leading dots so we never write a dotfile or a name with
+    embedded NULs/newlines. Rejects empty / dotfile-only names. The result
+    is only ever joined under the per-task attachments dir, never used
+    verbatim as a path from the client.
+
+    Raises :class:`ValueError` on an unusable name; HTTP callers map that
+    to a 400.
+    """
+    name = (raw or "").replace("\\", "/").split("/")[-1].strip()
+    name = "".join(ch for ch in name if ch.isprintable() and ch not in "\x00").strip()
+    name = name.lstrip(".").strip()
+    if not name:
+        raise ValueError("invalid attachment filename")
+    return name[:200]
+
+
+def _collision_free_path(dest_dir: Path, safe_name: str) -> Path:
+    """Return a path under ``dest_dir`` that doesn't clobber an existing file.
+
+    ``foo.pdf`` → ``foo.pdf``, then ``foo (1).pdf``, ``foo (2).pdf``, …
+    ``safe_name`` must already be sanitised via :func:`_safe_attachment_name`.
+    """
+    stem, dot, ext = safe_name.partition(".")
+    candidate = safe_name
+    n = 1
+    while (dest_dir / candidate).exists():
+        candidate = f"{stem} ({n}){dot}{ext}"
+        n += 1
+    return dest_dir / candidate
+
+
+def store_attachment_bytes(
+    conn: sqlite3.Connection,
+    task_id: str,
+    filename: str,
+    data: bytes,
+    *,
+    content_type: Optional[str] = None,
+    uploaded_by: Optional[str] = None,
+    board: Optional[str] = None,
+    max_bytes: Optional[int] = None,
+) -> int:
+    """Validate, size-check, persist a blob, and record its metadata row.
+
+    This is the single write path shared by the dashboard endpoint, the
+    agent toolset (``kanban_attach`` / ``kanban_attach_url``), and the CLI
+    (``hermes kanban attach``) so name-sanitisation, the size cap, and the
+    collision-resolution all behave identically everywhere.
+
+    Steps: enforce ``max_bytes``, sanitise ``filename`` to a safe basename,
+    write the bytes under :func:`task_attachments_dir` with a
+    collision-free name, then insert the ``task_attachments`` row via
+    :func:`add_attachment`. Returns the new attachment id.
+
+    Raises :class:`AttachmentTooLarge` when ``data`` exceeds ``max_bytes``,
+    or :class:`ValueError` for a bad filename / unknown task. On any failure
+    after the blob is written (e.g. the task disappeared) the orphaned blob
+    is removed before re-raising.
+    """
+    if max_bytes is None:
+        max_bytes = KANBAN_ATTACHMENT_MAX_BYTES
+    if len(data) > max_bytes:
+        raise AttachmentTooLarge(
+            f"attachment exceeds {max_bytes // (1024 * 1024)} MB limit"
+        )
+    safe_name = _safe_attachment_name(filename)
+    dest_dir = task_attachments_dir(task_id, board=board)
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest_path = _collision_free_path(dest_dir, safe_name)
+    dest_path.write_bytes(data)
+    try:
+        return add_attachment(
+            conn,
+            task_id,
+            filename=dest_path.name,
+            stored_path=str(dest_path.resolve()),
+            content_type=content_type,
+            size=len(data),
+            uploaded_by=uploaded_by,
+        )
+    except Exception:
+        # Don't leave an orphan blob if the metadata insert fails (most
+        # commonly: the task id doesn't exist).
+        try:
+            dest_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
+
+
 def add_attachment(
     conn: sqlite3.Connection,
     task_id: str,
@@ -3975,6 +4087,10 @@ class HallucinatedCardsError(ValueError):
         )
 
 
+class ArtifactPreservationError(RuntimeError):
+    """Raised when a declared scratch deliverable cannot be preserved."""
+
+
 def complete_task(
     conn: sqlite3.Connection,
     task_id: str,
@@ -4042,6 +4158,9 @@ def complete_task(
     else:
         verified_cards = []
 
+    metadata = _merge_completion_prose_artifacts(
+        conn, task_id, metadata, summary=summary, result=result,
+    )
     with write_txn(conn):
         if expected_run_id is None:
             cur = conn.execute(
@@ -4080,6 +4199,18 @@ def complete_task(
             )
         if cur.rowcount != 1:
             return False
+        if isinstance(metadata, dict):
+            _persist_scratch_completion_artifacts(conn, task_id, metadata)
+            for stored_path in metadata.pop("_staged_artifacts", []):
+                path = Path(stored_path)
+                _insert_completion_attachment(
+                    conn,
+                    task_id,
+                    filename=path.name,
+                    stored_path=str(path),
+                    size=path.stat().st_size,
+                    created_at=now,
+                )
         run_id = _end_run(
             conn, task_id,
             outcome="completed", status="done",
@@ -4174,6 +4305,256 @@ def complete_task(
 # Workspace / tmux cleanup
 # ---------------------------------------------------------------------------
 
+
+def _merge_completion_prose_artifacts(
+    conn: sqlite3.Connection,
+    task_id: str,
+    metadata: Optional[dict],
+    *,
+    summary: Optional[str],
+    result: Optional[str],
+) -> Optional[dict]:
+    """Promote existing scratch files named in legacy completion prose.
+
+    ``artifacts=[...]`` is preferred. Older workers only wrote an absolute
+    deliverable path in ``summary``/``result``; discover it while scratch still
+    exists so cleanup cannot erase the file the user was promised.
+    """
+    row = conn.execute(
+        "SELECT workspace_kind, workspace_path FROM tasks WHERE id = ?",
+        (task_id,),
+    ).fetchone()
+    if not row or row["workspace_kind"] != "scratch" or not row["workspace_path"]:
+        return metadata
+    workspace = Path(row["workspace_path"]).expanduser()
+    if not _is_managed_scratch_path(workspace):
+        return metadata
+    text = "\n".join(part for part in (summary, result) if part)
+    if not text:
+        return metadata
+    prefix = re.escape(str(workspace))
+    discovered: list[str] = []
+    for match in re.finditer(prefix + r"(?:[/\\][^\s`\"'<>]+)", text):
+        raw = match.group(0).rstrip(".,;:!?)]}")
+        candidate = Path(raw)
+        if candidate.is_file():
+            discovered.append(str(candidate))
+    if not discovered:
+        return metadata
+    updated = dict(metadata) if isinstance(metadata, dict) else {}
+    existing = updated.get("artifacts")
+    merged = list(existing) if isinstance(existing, (list, tuple)) else []
+    seen = {str(path) for path in merged}
+    for path in discovered:
+        if path not in seen:
+            merged.append(path)
+            seen.add(path)
+    updated["artifacts"] = merged
+    return updated
+
+
+def _persist_scratch_completion_artifacts(
+    conn: sqlite3.Connection,
+    task_id: str,
+    metadata: dict,
+) -> None:
+    """Copy scratch-workspace completion artifacts before cleanup removes them."""
+    raw_artifacts = metadata.get("artifacts")
+    if not isinstance(raw_artifacts, (list, tuple)):
+        return
+
+    row = conn.execute(
+        "SELECT workspace_kind, workspace_path FROM tasks WHERE id = ?",
+        (task_id,),
+    ).fetchone()
+    if not row or row["workspace_kind"] != "scratch" or not row["workspace_path"]:
+        return
+
+    workspace = Path(row["workspace_path"]).expanduser()
+    is_managed, board = _managed_scratch_path_info(workspace)
+    if not is_managed:
+        return
+
+    try:
+        workspace_root = workspace.resolve()
+    except OSError:
+        return
+
+    attachment_dir = task_attachments_dir(task_id, board=board)
+    persisted: list[str] = []
+    used_destinations: set[Path] = set()
+    changed = False
+
+    def _discard_copies() -> None:
+        for copied in used_destinations:
+            try:
+                copied.unlink(missing_ok=True)
+            except OSError:
+                pass
+        try:
+            attachment_dir.rmdir()
+        except OSError:
+            pass
+
+    for item in raw_artifacts:
+        artifact = str(item).strip() if isinstance(item, str) else ""
+        if not artifact:
+            continue
+        src = Path(artifact).expanduser()
+        try:
+            resolved_src = src.resolve()
+        except OSError:
+            persisted.append(artifact)
+            continue
+
+        if not resolved_src.is_relative_to(workspace_root):
+            persisted.append(artifact)
+            continue
+
+        if not src.is_file():
+            _discard_copies()
+            raise ArtifactPreservationError(
+                f"declared scratch artifact is unavailable or not a regular file: {artifact}"
+            )
+
+        size = resolved_src.stat().st_size
+        if size > KANBAN_ATTACHMENT_MAX_BYTES:
+            _discard_copies()
+            raise ArtifactPreservationError(
+                f"declared scratch artifact exceeds the "
+                f"{KANBAN_ATTACHMENT_MAX_BYTES}-byte limit: {artifact}"
+            )
+
+        dest: Optional[Path] = None
+        try:
+            attachment_dir.mkdir(parents=True, exist_ok=True)
+            dest = _unique_attachment_path(attachment_dir, resolved_src.name, used_destinations)
+            with resolved_src.open("rb") as source_file, dest.open("xb") as destination_file:
+                copied = 0
+                while chunk := source_file.read(1024 * 1024):
+                    copied += len(chunk)
+                    if copied > KANBAN_ATTACHMENT_MAX_BYTES:
+                        raise ArtifactPreservationError(
+                            f"declared scratch artifact grew beyond the size limit: {artifact}"
+                        )
+                    destination_file.write(chunk)
+        except Exception as exc:
+            if dest is not None:
+                try:
+                    dest.unlink(missing_ok=True)
+                except OSError:
+                    pass
+            _discard_copies()
+            if isinstance(exc, ArtifactPreservationError):
+                raise
+            raise ArtifactPreservationError(
+                f"could not preserve declared scratch artifact {artifact}: {exc}"
+            ) from exc
+
+        used_destinations.add(dest)
+        persisted.append(str(dest.resolve()))
+        changed = True
+
+    if changed:
+        metadata["artifacts"] = persisted
+        metadata["_staged_artifacts"] = [
+            path for path in persisted if path.startswith(str(attachment_dir.resolve()))
+        ]
+
+
+def _insert_completion_attachment(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    filename: str,
+    stored_path: str,
+    size: int,
+    created_at: int,
+) -> None:
+    """Record a worker-produced artifact in the existing attachment table."""
+    conn.execute(
+        "INSERT INTO task_attachments "
+        "(task_id, filename, stored_path, content_type, size, uploaded_by, created_at) "
+        "VALUES (?, ?, ?, NULL, ?, 'kanban_complete', ?)",
+        (task_id, filename, stored_path, size, created_at),
+    )
+    _append_event(
+        conn,
+        task_id,
+        "attached",
+        {"filename": filename, "size": size, "by": "kanban_complete"},
+    )
+
+
+def _unique_attachment_path(directory: Path, filename: str, used: set[Path]) -> Path:
+    """Return a non-conflicting path under ``directory`` for ``filename``."""
+    safe_name = Path(filename).name or "artifact"
+    candidate = directory / safe_name
+    if candidate not in used and not candidate.exists():
+        return candidate
+
+    stem = Path(safe_name).stem or "artifact"
+    suffix = Path(safe_name).suffix
+    idx = 1
+    while True:
+        candidate = directory / f"{stem}_{idx}{suffix}"
+        if candidate not in used and not candidate.exists():
+            return candidate
+        idx += 1
+
+
+def _managed_scratch_path_info(p: Path) -> tuple[bool, Optional[str]]:
+    """Return whether *p* is managed scratch storage and the matching board."""
+    try:
+        p_abs = p.resolve(strict=False)
+    except OSError:
+        return False, None
+    roots: list[tuple[Path, Optional[str]]] = []
+    override = os.environ.get("HERMES_KANBAN_WORKSPACES_ROOT", "").strip()
+    if override:
+        try:
+            roots.append((Path(override).expanduser().resolve(strict=False), None))
+        except OSError:
+            pass
+    try:
+        home = kanban_home()
+    except OSError:
+        home = None
+    if home is not None:
+        try:
+            roots.append(((home / "kanban" / "workspaces").resolve(strict=False), DEFAULT_BOARD))
+        except OSError:
+            pass
+        try:
+            boards_parent = (home / "kanban" / "boards").resolve(strict=False)
+        except OSError:
+            boards_parent = None
+        if boards_parent is not None:
+            try:
+                entries = list(boards_parent.iterdir())
+            except OSError:
+                entries = []
+            for entry in entries:
+                try:
+                    if not entry.is_dir():
+                        continue
+                except OSError:
+                    continue
+                try:
+                    roots.append(((entry / "workspaces").resolve(strict=False), entry.name))
+                except OSError:
+                    continue
+    for root, board in roots:
+        if p_abs == root:
+            continue
+        try:
+            if p_abs.is_relative_to(root):
+                return True, board
+        except ValueError:
+            continue
+    return False, None
+
+
 def _is_managed_scratch_path(p: Path) -> bool:
     """Return True iff *p* is a strict descendant of a kanban-managed scratch root.
 
@@ -4199,54 +4580,8 @@ def _is_managed_scratch_path(p: Path) -> bool:
     real source tree can otherwise pair with ``workspace_kind='scratch'`` and
     cause task completion to delete user data (#28818).
     """
-    try:
-        p_abs = p.resolve(strict=False)
-    except OSError:
-        return False
-    roots: list[Path] = []
-    override = os.environ.get("HERMES_KANBAN_WORKSPACES_ROOT", "").strip()
-    if override:
-        try:
-            roots.append(Path(override).expanduser().resolve(strict=False))
-        except OSError:
-            pass
-    try:
-        home = kanban_home()
-    except OSError:
-        home = None
-    if home is not None:
-        try:
-            roots.append((home / "kanban" / "workspaces").resolve(strict=False))
-        except OSError:
-            pass
-        try:
-            boards_parent = (home / "kanban" / "boards").resolve(strict=False)
-        except OSError:
-            boards_parent = None
-        if boards_parent is not None:
-            try:
-                entries = list(boards_parent.iterdir())
-            except OSError:
-                entries = []
-            for entry in entries:
-                try:
-                    if not entry.is_dir():
-                        continue
-                except OSError:
-                    continue
-                try:
-                    roots.append((entry / "workspaces").resolve(strict=False))
-                except OSError:
-                    continue
-    for root in roots:
-        if p_abs == root:
-            continue
-        try:
-            if p_abs.is_relative_to(root):
-                return True
-        except ValueError:
-            continue
-    return False
+    is_managed, _board = _managed_scratch_path_info(p)
+    return is_managed
 
 
 def _cleanup_workspace(conn: sqlite3.Connection, task_id: str) -> None:
@@ -6343,6 +6678,77 @@ def _error_fingerprint(error_text: str) -> str:
     return fp.lower().strip()
 
 
+# Empirically ~96% of "clean exit without a terminal tool call" tasks complete
+# on a later run (a goal-mode finalize nudge, or the model simply emitting the
+# tool call next time), so a protocol violation is NOT deterministic — give it a
+# bounded retry before the breaker trips instead of blocking on the first hit.
+#
+# The budget is a violation-only STREAK, not a share of the unified
+# ``consecutive_failures`` counter: it counts consecutive clean-exit protocol
+# violations (derived from run history by ``_protocol_violation_streak``), so
+# earlier timeouts / nonzero exits neither consume nor extend it, and a
+# below-budget violation does not tick the unified counter either. A per-task
+# ``max_retries`` overrides this bound — the same "task override wins"
+# precedence ``_record_task_failure`` documents for every other failure kind.
+_PROTOCOL_VIOLATION_FAILURE_LIMIT = 3
+
+# How far back to walk a task's closed runs when counting the violation
+# streak. The streak trips at a handful of violations, so anything beyond a
+# few dozen rows (violations interleaved with neutral rate-limited requeues)
+# can only mean "way past the bound" anyway.
+_PROTOCOL_VIOLATION_SCAN_LIMIT = 50
+
+
+def _protocol_violation_streak(conn: sqlite3.Connection, task_id: str) -> int:
+    """Count the task's trailing run of clean-exit protocol violations.
+
+    Walks the task's closed runs newest-first — including the violation run
+    ``detect_crashed_workers`` just closed — and counts how many in a row were
+    clean-exit protocol violations:
+
+    * ``rate_limited`` runs are neutral and skipped: a quota wall says nothing
+      about the task, exactly as it is neutral for the unified
+      ``consecutive_failures`` counter.
+    * Any other closed run (completed, plain crash, timeout, spawn failure,
+      reclaim, …) breaks the streak, so the bounded retry budget counts ONLY
+      protocol violations — mixed failure kinds can neither consume nor
+      extend it.
+
+    Violation runs are recognized by the ``protocol_violation`` marker that
+    ``detect_crashed_workers`` stamps into the run metadata; the violation
+    error text is matched as a fallback for runs recorded before the marker
+    existed.
+    """
+    streak = 0
+    rows = conn.execute(
+        "SELECT outcome, error, metadata FROM task_runs "
+        "WHERE task_id = ? AND ended_at IS NOT NULL "
+        "ORDER BY id DESC LIMIT ?",
+        (task_id, _PROTOCOL_VIOLATION_SCAN_LIMIT),
+    ).fetchall()
+    for row in rows:
+        outcome = row["outcome"] or ""
+        if outcome == "rate_limited":
+            continue
+        if outcome == "crashed":
+            is_violation = False
+            raw_meta = row["metadata"]
+            if raw_meta:
+                try:
+                    is_violation = bool(
+                        json.loads(raw_meta).get("protocol_violation")
+                    )
+                except (ValueError, TypeError):
+                    is_violation = False
+            if not is_violation:
+                is_violation = "protocol violation" in (row["error"] or "")
+            if is_violation:
+                streak += 1
+                continue
+        break
+    return streak
+
+
 def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
     """Reclaim ``running`` tasks whose worker PID is no longer alive.
 
@@ -6376,8 +6782,9 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
     # Per-crash details collected inside the main txn, used after it
     # closes to run ``_record_task_failure`` (which needs its own
     # write_txn so can't nest). ``protocol_violation`` flags the
-    # clean-exit-but-still-running case so we can trip the breaker
-    # immediately instead of incrementing by 1.
+    # clean-exit-but-still-running case, which is accounted against its
+    # own bounded violation streak instead of the unified failure
+    # counter (see the post-txn loop below).
     crash_details: list[tuple[str, int, str, bool, str]] = []
     # (task_id, pid, claimer, protocol_violation, error_text)
     with write_txn(conn):
@@ -6408,18 +6815,29 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
             if kind == "clean_exit":
                 # Worker subprocess returned 0 but its task is still
                 # ``running`` in the DB — it exited without calling
-                # ``kanban_complete`` / ``kanban_block``. Retrying won't
-                # help.
+                # ``kanban_complete`` / ``kanban_block``. Overwhelmingly the
+                # work itself succeeded and only the paperwork was skipped, so
+                # a retry usually completes; the corrective sentence below is
+                # surfaced to the retry worker via the prior-attempt error in
+                # ``build_worker_context`` (guidance approach from #61817).
                 protocol_violation = True
                 error_text = (
                     "worker exited cleanly (rc=0) without calling "
-                    "kanban_complete or kanban_block — protocol violation"
+                    "kanban_complete or kanban_block — protocol violation. "
+                    "If the prior run already did the work, verify it and "
+                    "report the result via kanban_complete; a run that ends "
+                    "without a terminal kanban call counts as failed no "
+                    "matter what it did."
                 )
                 event_kind = "protocol_violation"
                 event_payload = {
                     "pid": pid,
                     "claimer": row["claim_lock"],
                     "exit_code": code,
+                    # Durable marker for _protocol_violation_streak: _end_run
+                    # copies this payload into the run metadata, which is how
+                    # the violation-only retry budget is derived later.
+                    "protocol_violation": True,
                 }
             elif kind == "rate_limited":
                 # Worker bailed because the provider rate-limited / exhausted
@@ -6490,21 +6908,39 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                     )
                     rate_limited.append(row["id"])
                 else:
+                    if protocol_violation:
+                        # Stamp the failure error now: a below-budget
+                        # violation never reaches ``_record_task_failure``
+                        # (which stamps this column for every other failure
+                        # kind), yet the board UI and the retry worker's
+                        # context still need the violation message + the
+                        # corrective guidance it carries.
+                        conn.execute(
+                            "UPDATE tasks SET last_failure_error = ? "
+                            "WHERE id = ?",
+                            (error_text[:500], row["id"]),
+                        )
                     crashed.append(row["id"])
                     crash_details.append(
                         (row["id"], pid, row["claim_lock"],
                          protocol_violation, error_text)
                     )
-    # Outside the main txn: increment the unified failure counter for
-    # each crashed task. If the breaker trips, the task transitions
-    # ready → blocked with a ``gave_up`` event on top of the ``crashed``
-    # event we already emitted.
+    # Outside the main txn: account each crashed task and maybe trip the
+    # breaker (the task transitions ready → blocked with a ``gave_up`` event
+    # on top of the event we already emitted).
     #
-    # Protocol-violation crashes force an immediate trip (failure_limit=1)
-    # because clean-exit-without-transition is deterministic: the next
-    # respawn will do exactly the same thing. Better to surface to a
-    # human with a clear reason than to loop ``DEFAULT_FAILURE_LIMIT``
-    # times first.
+    # Protocol-violation crashes (clean exit, no terminal tool call) get a
+    # BOUNDED retry, not an immediate trip: empirically ~96% of these tasks
+    # complete on a later run (a goal-mode finalize nudge, or the model simply
+    # emitting kanban_complete/kanban_block next time), so blocking on the first
+    # occurrence just churned them through the respawn cycle. The retry budget
+    # is a violation-only streak (``_protocol_violation_streak``): earlier
+    # timeouts / nonzero exits neither consume nor extend it, and a
+    # below-budget violation does not tick the unified
+    # ``consecutive_failures`` counter, so the two budgets stay independent.
+    # A per-task ``max_retries`` overrides the violation bound with the same
+    # top precedence it has for every other failure kind. Systemic same-error
+    # crashes still trip immediately.
     auto_blocked: list[str] = []
     if crash_details:
         # Fingerprint errors to detect systemic failures.
@@ -6513,16 +6949,59 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
             fp = _error_fingerprint(err_text)
             _fp_counts[fp] = _fp_counts.get(fp, 0) + 1
         for tid, pid, claimer, protocol_violation, error_text in crash_details:
+            if protocol_violation:
+                streak = _protocol_violation_streak(conn, tid)
+                trow = conn.execute(
+                    "SELECT max_retries FROM tasks WHERE id = ?", (tid,),
+                ).fetchone()
+                if trow is None:
+                    continue  # task deleted mid-loop
+                task_override = (
+                    trow["max_retries"] if "max_retries" in trow.keys() else None
+                )
+                violation_limit = (
+                    int(task_override)
+                    if task_override is not None
+                    else _PROTOCOL_VIOLATION_FAILURE_LIMIT
+                )
+                if streak < violation_limit:
+                    # Below budget: the task is already back at ``ready``
+                    # (respawn allowed) with ``last_failure_error`` stamped.
+                    # Deliberately no ``_record_task_failure`` call — a
+                    # below-budget violation must not consume the unified
+                    # failure budget, just as other failure kinds don't
+                    # consume this one.
+                    continue
+                # Streak reached the bound: trip the breaker. ``force_trip``
+                # skips the threshold resolution inside
+                # ``_record_task_failure`` because the decision — including
+                # the per-task ``max_retries`` override — was already made
+                # against the violation streak above.
+                tripped = _record_task_failure(
+                    conn, tid,
+                    error=error_text,
+                    outcome="crashed",
+                    failure_limit=violation_limit,
+                    force_trip=True,
+                    release_claim=False,
+                    end_run=False,
+                    event_payload_extra={
+                        "pid": pid,
+                        "claimer": claimer,
+                        "protocol_violations": streak,
+                        "protocol_violation_limit": violation_limit,
+                    },
+                )
+                if tripped:
+                    auto_blocked.append(tid)
+                continue
             fp = _error_fingerprint(error_text)
-            is_systemic = (
-                not protocol_violation
-                and _fp_counts.get(fp, 0) >= 3
-            )
+            is_systemic = _fp_counts.get(fp, 0) >= 3
             tripped = _record_task_failure(
                 conn, tid,
                 error=error_text,
                 outcome="crashed",
-                failure_limit=1 if (protocol_violation or is_systemic) else None,
+                failure_limit=1 if is_systemic else None,
                 release_claim=False,
                 end_run=False,
                 event_payload_extra={"pid": pid, "claimer": claimer},
@@ -6547,6 +7026,7 @@ def _record_task_failure(
     *,
     outcome: str,
     failure_limit: int = None,
+    force_trip: bool = False,
     release_claim: bool = False,
     end_run: bool = False,
     event_payload_extra: Optional[dict] = None,
@@ -6584,6 +7064,15 @@ def _record_task_failure(
       2. caller-supplied ``failure_limit`` (gateway passes the config
          value from ``kanban.failure_limit``; tests pass fixed values)
       3. ``DEFAULT_FAILURE_LIMIT``
+
+    ``force_trip=True`` trips the breaker unconditionally, skipping the
+    counter-vs-threshold comparison (the resolution order above is then
+    only reported in the ``gave_up`` payload, not re-evaluated). Callers
+    use it when they have already applied their own bounded-retry policy
+    — e.g. the clean-exit protocol-violation streak in
+    ``detect_crashed_workers``, which resolves the per-task
+    ``max_retries`` override against the violation streak itself. The
+    failure is still counted into ``consecutive_failures``.
     """
     if failure_limit is None:
         failure_limit = DEFAULT_FAILURE_LIMIT
@@ -6610,7 +7099,7 @@ def _record_task_failure(
             effective_limit = int(failure_limit)
             limit_source = "dispatcher"
 
-        if failures >= effective_limit:
+        if force_trip or failures >= effective_limit:
             # Trip the breaker.
             if release_claim:
                 # Spawn path: still running, also clear claim state.
@@ -6789,7 +7278,9 @@ def check_respawn_guard(conn: sqlite3.Connection, task_id: str) -> Optional[str]
     ``"recent_success"``
         A completed run exists within ``_RESPAWN_GUARD_SUCCESS_WINDOW``
         seconds.  Useful work already succeeded for this task; wait for
-        human review rather than immediately re-spawning.
+        human review rather than immediately re-spawning. Bypassed when an
+        explicit re-queue event (status change, promote, unblock, reclaim)
+        arrives AFTER that completion — that's a deliberate re-run request.
 
     ``"active_pr"``
         A GitHub PR URL appears in a recent task comment (within
@@ -6852,13 +7343,29 @@ def check_respawn_guard(conn: sqlite3.Connection, task_id: str) -> Optional[str]
         return "blocker_auth"
 
     # 3. Completed run within guard window — proof of recent success.
+    #    Exception: an explicit re-queue AFTER that success (an operator
+    #    dragging done→ready, a dependency re-promotion, an unblock, a
+    #    reclaim) is a deliberate "run it again" — honor it instead of
+    #    deferring. Without this, a manual done→ready just sits there,
+    #    silently held by the guard, until the window elapses.
     cutoff = now - _RESPAWN_GUARD_SUCCESS_WINDOW
-    if conn.execute(
-        "SELECT id FROM task_runs "
-        "WHERE task_id = ? AND outcome = 'completed' AND ended_at >= ?",
+    recent_completed = conn.execute(
+        "SELECT ended_at FROM task_runs "
+        "WHERE task_id = ? AND outcome = 'completed' AND ended_at >= ? "
+        "ORDER BY ended_at DESC LIMIT 1",
         (task_id, cutoff),
-    ).fetchone():
-        return "recent_success"
+    ).fetchone()
+    if recent_completed:
+        completed_at = int(recent_completed["ended_at"] or 0)
+        requeued_after = conn.execute(
+            "SELECT 1 FROM task_events "
+            "WHERE task_id = ? AND created_at >= ? "
+            "AND kind IN ('status', 'promoted', 'unblocked', 'reclaimed') "
+            "LIMIT 1",
+            (task_id, completed_at),
+        ).fetchone()
+        if not requeued_after:
+            return "recent_success"
 
     # 4. GitHub PR URL in a recent comment — prior worker already opened a PR.
     pr_cutoff = now - _RESPAWN_GUARD_PR_WINDOW
@@ -7768,9 +8275,18 @@ def _default_spawn(
     # attributed correctly regardless of how the child loads config.
     env["HERMES_PROFILE"] = profile_arg
 
+    # A worker must NEVER boot the interactive TUI: an inherited HERMES_TUI=1
+    # or a `display.interface: tui` in the profile's config would send the
+    # quiet chat run into the Ink TUI, whose no-TTY bail-out exits 0 without
+    # doing the task → "protocol violation" on every attempt. `--cli` is the
+    # highest-precedence interface override; dropping the env var covers
+    # older hermes builds on PATH that predate the flag's precedence.
+    env.pop("HERMES_TUI", None)
+
     cmd = [
         *_resolve_hermes_argv(),
         "-p", profile_arg,
+        "--cli",
         # Worker subprocesses switch to a profile-scoped HERMES_HOME above,
         # so they see that profile's shell-hook allowlist instead of the
         # dispatcher's root allowlist. Pass --accept-hooks explicitly so
@@ -7795,6 +8311,13 @@ def _default_spawn(
         "chat",
         "-q", prompt,
     ])
+    if task.goal_mode:
+        # Goal-mode workers must take the fully-quiet single-query path:
+        # the kanban goal-loop hook (_run_kanban_goal_loop_q) only runs in
+        # cli.py's quiet branch. Without -Q the worker gets exactly one
+        # turn, prints text, exits rc=0, and the dispatcher records a
+        # protocol violation (incident 2026-06-09 t_d9cbe312).
+        cmd.append("-Q")
     # Redirect output to a per-task log under <board-root>/logs/.
     # Anchored at the board root (not the shared kanban root), so
     # `hermes kanban log` on a specific board reads its own file and

@@ -198,6 +198,24 @@ class TestProviderListFlag:
         prov = {p["name"]: p for p in resp.json()["providers"]}
         assert prov["testpw"]["supports_password"] is True
 
+    def test_password_provider_html_redirects_to_login_form(self, gated_app):
+        resp = gated_app.get("/", follow_redirects=False)
+        assert resp.status_code == 302
+        assert resp.headers["location"] == "/login?next=%2F"
+
+        login = gated_app.get(resp.headers["location"])
+        assert login.status_code == 200
+        assert '<form class="provider-form" data-provider="testpw"' in login.text
+        assert "/auth/password-login" in login.text
+
+    def test_password_provider_auth_login_redirects_to_login_form(self, gated_app):
+        resp = gated_app.get(
+            "/auth/login?provider=testpw&next=%2F",
+            follow_redirects=False,
+        )
+        assert resp.status_code == 302
+        assert resp.headers["location"] == "/login?next=%2F"
+
     def test_oauth_provider_reports_false(self):
         clear_providers()
         register_provider(StubAuthProvider())

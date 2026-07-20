@@ -8,6 +8,47 @@ import pytest
 from hermes_cli import runtime_provider as rp
 
 
+def test_configured_api_key_provider_without_key_fails_closed(monkeypatch):
+    """A saved provider must not resolve as another authenticated provider."""
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {"provider": "deepseek", "default": "deepseek-v4-pro"},
+    )
+    monkeypatch.setattr(rp, "load_pool", lambda _provider: SimpleNamespace(has_credentials=lambda: False))
+    monkeypatch.setattr(
+        "hermes_cli.auth.resolve_api_key_provider_credentials",
+        lambda _provider: {
+            "provider": "deepseek",
+            "api_key": "",
+            "base_url": "https://api.deepseek.com/v1",
+            "source": "default",
+        },
+    )
+
+    with pytest.raises(rp.AuthError, match="No usable credentials.*deepseek"):
+        rp.resolve_runtime_provider()
+
+
+def test_noauth_lmstudio_still_resolves(monkeypatch):
+    """The fail-closed key guard preserves LM Studio's no-auth contract."""
+    monkeypatch.setattr(rp, "load_pool", lambda _provider: SimpleNamespace(has_credentials=lambda: False))
+    monkeypatch.setattr(
+        "hermes_cli.auth.resolve_api_key_provider_credentials",
+        lambda _provider: {
+            "provider": "lmstudio",
+            "api_key": "lmstudio-noauth",
+            "base_url": "http://localhost:1234/v1",
+            "source": "default",
+        },
+    )
+
+    resolved = rp.resolve_runtime_provider(requested="lmstudio")
+
+    assert resolved["provider"] == "lmstudio"
+    assert resolved["api_key"]
+
+
 def _fake_invoke_jwt(ttl_seconds=3600):
     header = base64.urlsafe_b64encode(b'{"alg":"none","typ":"JWT"}').decode().rstrip("=")
     payload = base64.urlsafe_b64encode(
@@ -1270,6 +1311,33 @@ def test_resolve_requested_provider_precedence(monkeypatch):
 
     monkeypatch.delenv("HERMES_INFERENCE_PROVIDER", raising=False)
     assert rp.resolve_requested_provider() == "auto"
+
+
+def test_resolve_runtime_provider_named_custom_with_builtin_slug(monkeypatch):
+    monkeypatch.setenv("MINIMAX_CN_PROXY_KEY", "proxy-secret")
+    monkeypatch.setattr(
+        rp,
+        "load_config",
+        lambda: {
+            "model": {"provider": "custom:minimax-cn"},
+            "providers": {
+                "minimax-cn": {
+                    "name": "MiniMax CN Proxy",
+                    "api": "https://mimimax.cn/v1",
+                    "key_env": "MINIMAX_CN_PROXY_KEY",
+                    "transport": "chat_completions",
+                    "default_model": "MiniMax-M3",
+                }
+            },
+        },
+    )
+
+    resolved = rp.resolve_runtime_provider()
+
+    assert resolved["provider"] == "custom"
+    assert resolved["base_url"] == "https://mimimax.cn/v1"
+    assert resolved["api_key"] == "proxy-secret"
+    assert resolved["api_mode"] == "chat_completions"
 
 
 # ── api_mode config override tests ──────────────────────────────────────

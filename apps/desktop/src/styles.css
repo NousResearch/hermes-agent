@@ -349,6 +349,10 @@
     /* Tight gap between tool rows inside a single action group, so a back-to-back
        run still reads as one cohesive sequence. */
     --tool-row-gap: 0.375rem;
+    /* Height of the bounded, auto-scrolling window a long adjacent tool-call run
+       collapses into (see `.tool-group-scroll`). Sized to show a few rows before
+       the scroll + top fade kick in. */
+    --tool-group-scroll-max-h: 6.75rem;
     /* Paragraph spacing — vertical gap between prose paragraphs, both inside a
        markdown block and between consecutive prose parts. Single knob; tweak
        freely. */
@@ -518,6 +522,13 @@
   pointer-events: none;
 }
 
+/* A pane's self-naming label ("REVIEW" atop the review pane) is redundant
+   when its zone header is showing a tab with the same name — hide it there.
+   Headerless zones (and the pane used outside the tree) keep the label. */
+[data-tree-group][data-zone-header] [data-pane-self-label] {
+  display: none;
+}
+
 :root:not([style*='--theme-asset-bg:']) .theme-default-filler {
   display: block;
 }
@@ -549,6 +560,21 @@
   [class*='rounded-full'],
   [class*=':rounded-full'] {
     border-radius: calc(var(--radius-scalar) * 9999rem);
+  }
+}
+
+/* Interactive list-row hover — the sessions-list interaction, shared by every
+   row list (sessions, capabilities, messaging, file trees, timeline): the
+   highlight lands instantly on hover-in and fades out over 100ms on leave. */
+@utility row-hover {
+  cursor: pointer;
+  transition:
+    color 100ms ease-out,
+    background-color 100ms ease-out;
+
+  &:hover {
+    background-color: var(--ui-row-hover-background);
+    transition: none;
   }
 }
 
@@ -1430,6 +1456,34 @@ text-* variant utilities. */ .btn-arc {
 .thinking-preview {
   -webkit-mask-image: linear-gradient(to bottom, transparent 0%, black 28%, black 100%);
   mask-image: linear-gradient(to bottom, transparent 0%, black 28%, black 100%);
+}
+
+/* Long adjacent tool-call run collapsed into a fixed, auto-scrolling window.
+   ToolGroupSlot pins the newest call to the bottom (unless the user scrolls
+   up), so a back-to-back run stays compact instead of pushing the reply off
+   screen. A thin scrollbar keeps the affordance discoverable. */
+.tool-group-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: var(--ui-stroke-tertiary) transparent;
+}
+
+/* Break out of the fixed window the moment any row inside is expanded: the
+   user is now reading a diff/output, so let it grow to full height instead of
+   peering at it through a ~2-row viewport. Collapsing the row drops it back
+   into the compact, auto-scrolling window. Beats a larger fixed cap since an
+   open row already bounds its own payload with an inner scroll. */
+.tool-group-scroll:has([data-tool-row][data-tool-open]) {
+  max-height: none;
+  -webkit-mask-image: none;
+  mask-image: none;
+}
+
+/* Top gradient — only applied once the user is scrolled down off the top, so
+   the oldest visible call fades up under the fade while the first row stays
+   fully legible when scrolled all the way up. */
+.tool-group-scroll--faded {
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0, black 2rem, black 100%);
+  mask-image: linear-gradient(to bottom, transparent 0, black 2rem, black 100%);
 }
 
 @keyframes code-card-stream-enter {

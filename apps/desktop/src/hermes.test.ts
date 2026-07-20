@@ -10,7 +10,8 @@ import {
   getSessionMessages,
   getStatus,
   listAllProfileSessions,
-  listSessions
+  listSessions,
+  listSidebarSessions
 } from './hermes'
 import { refreshActiveProfile } from './store/profile'
 
@@ -59,6 +60,45 @@ describe('Hermes REST session helpers', () => {
     )
   })
 
+  it('batches the sidebar slices into a single request with per-slice limits + excludes', async () => {
+    api.mockResolvedValue({ recents: { sessions: [] }, cron: { sessions: [] }, messaging: { sessions: [] } })
+
+    await listSidebarSessions({
+      recentsProfile: 'work',
+      recentsLimit: 30,
+      recentsExclude: ['cron', 'tool'],
+      cronLimit: 50,
+      messagingLimit: 100,
+      messagingExclude: ['cron', 'desktop']
+    })
+
+    expect(api).toHaveBeenCalledWith(
+      expect.objectContaining({
+        path:
+          '/api/profiles/sessions/sidebar?recents_profile=work&recents_limit=30&cron_limit=50' +
+          '&messaging_limit=100&recents_exclude=cron%2Ctool&messaging_exclude=cron%2Cdesktop',
+        timeoutMs: 60_000
+      })
+    )
+  })
+
+  it('defaults missing sidebar slices to empty session arrays', async () => {
+    api.mockResolvedValue({})
+
+    const result = await listSidebarSessions({
+      recentsProfile: 'all',
+      recentsLimit: 20,
+      recentsExclude: [],
+      cronLimit: 50,
+      messagingLimit: 100,
+      messagingExclude: []
+    })
+
+    expect(result.recents.sessions).toEqual([])
+    expect(result.cron.sessions).toEqual([])
+    expect(result.messaging.sessions).toEqual([])
+  })
+
   it('uses a longer timeout for profile listing during desktop startup', async () => {
     api.mockResolvedValue({ profiles: [] })
 
@@ -73,9 +113,7 @@ describe('Hermes REST session helpers', () => {
   })
 
   it('uses a longer timeout for active profile refresh during desktop startup', async () => {
-    api
-      .mockResolvedValueOnce({ current: 'default' })
-      .mockResolvedValueOnce({ profiles: [] })
+    api.mockResolvedValueOnce({ current: 'default' }).mockResolvedValueOnce({ profiles: [] })
 
     await refreshActiveProfile()
 
@@ -102,7 +140,7 @@ describe('Hermes REST session helpers', () => {
       [getHermesConfig, '/api/config'],
       [getHermesConfigDefaults, '/api/config/defaults'],
       [getGlobalModelInfo, '/api/model/info'],
-      [() => getGlobalModelOptions(), '/api/model/options'],
+      [() => getGlobalModelOptions(), '/api/model/options?explicit_only=1'],
       [getCronJobs, '/api/cron/jobs']
     ]
 
@@ -135,5 +173,25 @@ describe('Hermes REST session helpers', () => {
       path: '/api/sessions/session-1/messages?profile=xiaoxuxu',
       profile: 'xiaoxuxu'
     })
+  })
+
+  it('defaults model options to configured providers only', async () => {
+    await getGlobalModelOptions()
+
+    expect(api).toHaveBeenCalledWith(
+      expect.objectContaining({
+        path: '/api/model/options?explicit_only=1'
+      })
+    )
+  })
+
+  it('can opt into unconfigured providers for onboarding flows', async () => {
+    await getGlobalModelOptions({ includeUnconfigured: true, refresh: true, explicitOnly: false })
+
+    expect(api).toHaveBeenCalledWith(
+      expect.objectContaining({
+        path: '/api/model/options?refresh=1&include_unconfigured=1'
+      })
+    )
   })
 })

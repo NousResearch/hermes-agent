@@ -156,14 +156,13 @@ def test_bundled_plugin_manifests_ship_in_both_wheel_and_sdist():
     )
 
 
-# Minimum non-vulnerable Starlette: CVE-2026-48710 ("BadHost") was fixed in
-# 1.0.1. Anything below that lets a malformed Host header desync
-# ``request.url.path`` from the dispatched ASGI path, bypassing path-based
-# authz in middleware/endpoints that gate on ``request.url``. Starlette is a
-# transitive dep (fastapi in [web]; sse-starlette/mcp in [mcp]/[computer-use]/
-# [dev]) so we pin it directly in every extra that exposes a server surface and
-# enforce the floor in both pyproject and the committed lockfile.
-_STARLETTE_CVE_FLOOR = (1, 0, 1)
+# Minimum Starlette covering the complete current HIGH-advisory set. Earlier
+# 1.0.1 fixed CVE-2026-48710 ("BadHost"), while later request parsing and DoS
+# fixes require 1.3.1. Anything below the floor leaves at least one HIGH open.
+# Starlette is transitive through fastapi and mcp, so pin it directly in every
+# extra that exposes a server surface and enforce the floor in pyproject and
+# the committed lockfile.
+_STARLETTE_SECURITY_FLOOR = (1, 3, 1)
 
 
 def _version_tuple(spec: str) -> tuple[int, ...]:
@@ -206,9 +205,9 @@ def test_starlette_pinned_above_cve_2026_48710_floor_in_pyproject():
         )
 
     for extra, ver in found.items():
-        assert _version_tuple(ver) >= _STARLETTE_CVE_FLOOR, (
-            f"[{extra}] pins starlette=={ver}, below the CVE-2026-48710 fix "
-            f"floor {'.'.join(map(str, _STARLETTE_CVE_FLOOR))}"
+        assert _version_tuple(ver) >= _STARLETTE_SECURITY_FLOOR, (
+            f"[{extra}] pins starlette=={ver}, below the complete security "
+            f"floor {'.'.join(map(str, _STARLETTE_SECURITY_FLOOR))}"
         )
 
 
@@ -234,11 +233,66 @@ def test_locked_starlette_is_not_vulnerable_to_cve_2026_48710():
 
     assert versions, "starlette not found in uv.lock"
     for ver in versions:
-        assert _version_tuple(ver) >= _STARLETTE_CVE_FLOOR, (
-            f"uv.lock resolves starlette=={ver}, below the CVE-2026-48710 fix "
-            f"floor {'.'.join(map(str, _STARLETTE_CVE_FLOOR))} — regenerate the "
+        assert _version_tuple(ver) >= _STARLETTE_SECURITY_FLOOR, (
+            f"uv.lock resolves starlette=={ver}, below the complete security "
+            f"floor {'.'.join(map(str, _STARLETTE_SECURITY_FLOOR))} — regenerate the "
             f"lockfile after bumping the pin"
         )
+
+
+# Minimum versions fixing every currently HIGH-severity advisory reported for
+# these packages by the project's OSV audit.  The test below checks every
+# declared exact pin plus the committed lockfile so eager, lazy, and locked
+# installs cannot silently diverge onto a vulnerable version.
+_HIGH_ADVISORY_FLOORS = {
+    "cbor2": (5, 9, 0),
+    "click": (8, 3, 3),
+    "cryptography": (48, 0, 1),  # GHSA-537c-gmf6-5ccf
+    "httplib2": (0, 32, 0),
+    # GHSA-hvrp-rf83-w775, GHSA-jpw9-pfvf-9f58, GHSA-vj7q-gjh5-988w
+    "mcp": (1, 28, 1),
+    "msgpack": (1, 2, 1),
+    "pillow": (12, 3, 0),
+    "python-multipart": (0, 0, 31),  # GHSA-5rvq-cxj2-64vf
+    "starlette": (1, 3, 1),  # GHSA-82w8-qh3p-5jfq, GHSA-wqp7-x3pw-xc5r
+    "tornado": (6, 5, 7),
+}
+
+
+def test_high_advisory_dependency_pins_meet_patched_floors():
+    """Security-critical pins and uv.lock must cover all known HIGH fixes."""
+    pyproject_pins = _pins_from_specs(_pyproject_pinned_specs())
+    constraint_pins = _constraint_floor_pins(_uv_constraint_specs())
+    lazy_pins = _pins_from_specs(_lazy_deps_pinned_specs())
+    lock_data = tomllib.loads((REPO_ROOT / "uv.lock").read_text(encoding="utf-8"))
+    locked: dict[str, set[str]] = {}
+    for locked_package in lock_data["package"]:
+        locked.setdefault(_canonical(locked_package["name"]), set()).add(
+            locked_package["version"]
+        )
+
+    for package, floor in _HIGH_ADVISORY_FLOORS.items():
+        canonical = _canonical(package)
+        assert canonical in pyproject_pins or canonical in constraint_pins, (
+            f"{package} must be pinned directly or constrained in pyproject.toml "
+            "so the patched version cannot drift between installs"
+        )
+        assert canonical in locked, f"{package} not found in uv.lock"
+
+        versions_by_source = {"uv.lock": locked[canonical]}
+        if canonical in pyproject_pins:
+            versions_by_source["pyproject.toml"] = pyproject_pins[canonical]
+        if canonical in lazy_pins:
+            versions_by_source["tools/lazy_deps.py"] = lazy_pins[canonical]
+        if canonical in constraint_pins:
+            versions_by_source["pyproject.toml [tool.uv]"] = constraint_pins[canonical]
+
+        for source, versions in versions_by_source.items():
+            for version in versions:
+                assert _version_tuple(version) >= floor, (
+                    f"{source} pins {package}=={version}, below the complete "
+                    f"HIGH-advisory fix floor {'.'.join(map(str, floor))}"
+                )
 
 
 def test_locale_catalogs_ship_in_both_wheel_and_sdist():
@@ -314,6 +368,22 @@ def _pyproject_pinned_specs():
     for extra in data["project"].get("optional-dependencies", {}).values():
         specs.extend(extra)
     return specs
+
+
+def _uv_constraint_specs():
+    data = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    return data["tool"]["uv"]["constraint-dependencies"]
+
+
+def _constraint_floor_pins(specs):
+    """Map constrained packages to their explicit inclusive lower floors."""
+    pins: dict[str, set[str]] = {}
+    for spec in specs:
+        name = re.split(r"[=<>!~]", spec, maxsplit=1)[0].strip()
+        match = re.search(r">=\s*([^\s,;]+)", spec)
+        if match:
+            pins.setdefault(_canonical(name), set()).add(match.group(1))
+    return pins
 
 
 def _lazy_deps_pinned_specs():
@@ -433,6 +503,9 @@ _REQUIRED_SECURITY_PINS = {
         "platform.matrix",
         "platform.teams",
     },
+    "mcp": {"tool.computer_use"},
+    "python-multipart": {"tool.dashboard"},
+    "starlette": {"tool.computer_use", "tool.dashboard"},
 }
 
 

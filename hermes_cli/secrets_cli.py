@@ -379,7 +379,14 @@ def cmd_prune(args: argparse.Namespace) -> int:
         print(f"error: {plan.verification_error}")
         return 1
 
-    result = bwm.apply_prune_plan(plan)
+    try:
+        result = bwm.apply_prune_plan(plan)
+    except Exception:  # noqa: BLE001 - filesystem errors may contain secret values
+        print(
+            "error: Secret pruning could not complete safely. "
+            "Check .env and parent-directory permissions, then retry."
+        )
+        return 1
     if not result.changed:
         print("No plaintext secret entries were eligible for removal.")
         return 0

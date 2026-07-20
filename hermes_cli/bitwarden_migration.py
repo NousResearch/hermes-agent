@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import os
 import re
-import shutil
 import stat
 import tempfile
 from dataclasses import dataclass
@@ -40,6 +39,14 @@ _VERIFICATION_FAILURE = (
 _ENV_PARSE_FAILURE = (
     "Could not safely parse .env; no plaintext secrets were removed. "
     "Fix unterminated quoted values, then retry."
+)
+_ENV_ENCODING_FAILURE = (
+    "Could not safely decode .env as UTF-8; no plaintext secrets were removed. "
+    "Convert the file to UTF-8 without data loss, then retry."
+)
+_ENV_READ_FAILURE = (
+    "Could not safely read .env; no plaintext secrets were removed. "
+    "Check the file permissions, then retry."
 )
 
 _SECRET_MARKERS = (
@@ -118,6 +125,10 @@ class PruneResult:
     changed: bool
 
 
+class PruneRollbackError(RuntimeError):
+    """Raised when pruning fails and the original file cannot be fully restored."""
+
+
 def classify_env_key(key: str, *, bootstrap_key: str = "BWS_ACCESS_TOKEN") -> str:
     """Return a conservative secret classification for a single env var name."""
     if key == bootstrap_key:
@@ -178,14 +189,10 @@ def load_bitwarden_settings(profile_home: Path) -> tuple[BitwardenSettings, list
     )
 
 
-def _read_env_assignment_spans(env_path: Path) -> tuple[list[str], list[_EnvAssignment]]:
-    if not env_path.exists():
-        return [], []
-
-    lines = env_path.read_text(
-        encoding="utf-8",
-        errors="replace",
-    ).splitlines(keepends=True)
+def _parse_env_assignment_spans(
+    contents: bytes,
+) -> tuple[list[str], list[_EnvAssignment]]:
+    lines = contents.decode("utf-8").splitlines(keepends=True)
     assignments: list[_EnvAssignment] = []
     line_index = 0
     while line_index < len(lines):
@@ -219,6 +226,12 @@ def _read_env_assignment_spans(env_path: Path) -> tuple[list[str], list[_EnvAssi
         line_index = end_line
 
     return lines, assignments
+
+
+def _read_env_assignment_spans(env_path: Path) -> tuple[list[str], list[_EnvAssignment]]:
+    if not env_path.exists():
+        return [], []
+    return _parse_env_assignment_spans(env_path.read_bytes())
 
 
 def _read_env_assignments(env_path: Path) -> list[tuple[str, str]]:
@@ -342,17 +355,6 @@ def prune_plan_for_profile(
     env_path = profile_home / ".env"
     config_path = profile_home / "config.yaml"
     settings, warnings = load_bitwarden_settings(profile_home)
-    _lines, assignment_spans = _read_env_assignment_spans(env_path)
-    assignments = [
-        (assignment.key, assignment.value) for assignment in assignment_spans
-    ]
-    values = _assignment_map(assignments)
-    fetcher = fetcher or fetch_bitwarden_secrets
-
-    rows: list[PruneRow] = []
-    verification_error: str | None = None
-    secret_names: set[str] = set()
-
     if not env_path.exists():
         return PrunePlan(
             profile=profile_name,
@@ -365,39 +367,63 @@ def prune_plan_for_profile(
             verification_error=None,
         )
 
-    if any(not assignment.complete for assignment in assignment_spans):
-        verification_error = _ENV_PARSE_FAILURE
-    elif not settings.enabled:
-        verification_error = "Bitwarden is disabled in config.yaml"
-    else:
-        token = (
-            values.get(settings.access_token_env, "").strip()
-            or os.environ.get(settings.access_token_env, "").strip()
-        )
-        if not token:
-            verification_error = (
-                f"{settings.access_token_env} is not set in {env_path.name} "
-                "or the process environment"
-            )
-        elif not settings.project_id:
-            verification_error = "Bitwarden project_id is not configured"
+    verification_error: str | None = None
+    try:
+        _lines, assignment_spans = _read_env_assignment_spans(env_path)
+    except UnicodeDecodeError:
+        assignment_spans = []
+        verification_error = _ENV_ENCODING_FAILURE
+    except OSError:
+        assignment_spans = []
+        verification_error = _ENV_READ_FAILURE
+
+    assignments = [
+        (assignment.key, assignment.value) for assignment in assignment_spans
+    ]
+    values = _assignment_map(assignments)
+    fetcher = fetcher or fetch_bitwarden_secrets
+
+    rows: list[PruneRow] = []
+    secret_names: set[str] = set()
+
+    if verification_error is None:
+        if any(not assignment.complete for assignment in assignment_spans):
+            verification_error = _ENV_PARSE_FAILURE
+        elif not settings.enabled:
+            verification_error = "Bitwarden is disabled in config.yaml"
         else:
-            try:
-                fetched, fetch_warnings = fetcher(
-                    access_token=token,
-                    project_id=settings.project_id,
-                    server_url=settings.server_url,
-                    use_cache=False,
-                    home_path=profile_home,
+            token = (
+                values.get(settings.access_token_env, "").strip()
+                or os.environ.get(settings.access_token_env, "").strip()
+            )
+            if not token:
+                verification_error = (
+                    f"{settings.access_token_env} is not set in {env_path.name} "
+                    "or the process environment"
                 )
-                if fetch_warnings:
-                    warnings.append(
-                        "Bitwarden verification returned "
-                        f"{len(fetch_warnings)} warning(s); backend details were redacted."
+            elif not settings.project_id:
+                verification_error = "Bitwarden project_id is not configured"
+            else:
+                try:
+                    fetched, fetch_warnings = fetcher(
+                        access_token=token,
+                        project_id=settings.project_id,
+                        server_url=settings.server_url,
+                        use_cache=False,
+                        home_path=profile_home,
                     )
-                secret_names = set(fetched)
-            except Exception:  # noqa: BLE001 - backend details may contain secrets
-                verification_error = _VERIFICATION_FAILURE
+                    if fetch_warnings:
+                        warnings.append(
+                            "Bitwarden verification returned "
+                            f"{len(fetch_warnings)} warning(s); backend details were redacted."
+                        )
+                    secret_names = {
+                        key
+                        for key, value in fetched.items()
+                        if isinstance(value, str) and bool(value.strip())
+                    }
+                except Exception:  # noqa: BLE001 - backend details may contain secrets
+                    verification_error = _VERIFICATION_FAILURE
 
     seen: set[str] = set()
     for key, value in assignments:
@@ -527,7 +553,7 @@ def prune_plan_for_current_profile(
 
 
 def apply_prune_plan(plan: PrunePlan) -> PruneResult:
-    """Apply a prune plan to ``plan.env_path`` and create a local backup."""
+    """Apply a prune plan to ``plan.env_path`` and create a private backup."""
     remove_keys = {row.key for row in plan.rows if row.action == "remove"}
     if not remove_keys:
         return PruneResult(
@@ -538,8 +564,10 @@ def apply_prune_plan(plan: PrunePlan) -> PruneResult:
             changed=False,
         )
 
-    original_mode = stat.S_IMODE(plan.env_path.stat().st_mode)
-    original_lines, assignments = _read_env_assignment_spans(plan.env_path)
+    with plan.env_path.open("rb") as source:
+        original_mode = stat.S_IMODE(os.fstat(source.fileno()).st_mode)
+        original_bytes = source.read()
+    original_lines, assignments = _parse_env_assignment_spans(original_bytes)
     if any(not assignment.complete for assignment in assignments):
         return PruneResult(
             profile=plan.profile,
@@ -557,10 +585,6 @@ def apply_prune_plan(plan: PrunePlan) -> PruneResult:
         removed_keys.append(assignment.key)
         removed_line_indexes.update(range(assignment.start_line, assignment.end_line))
 
-    kept_lines = [
-        line for index, line in enumerate(original_lines) if index not in removed_line_indexes
-    ]
-
     if not removed_keys:
         return PruneResult(
             profile=plan.profile,
@@ -570,24 +594,38 @@ def apply_prune_plan(plan: PrunePlan) -> PruneResult:
             changed=False,
         )
 
+    kept_bytes = "".join(
+        line
+        for index, line in enumerate(original_lines)
+        if index not in removed_line_indexes
+    ).encode("utf-8")
     backup_path = _make_backup_path(plan.env_path)
-    shutil.copy2(plan.env_path, backup_path)
-    _tighten_mode(backup_path)
+    tmp_path: Path | None = None
 
-    fd, tmp_path = tempfile.mkstemp(
-        dir=str(plan.env_path.parent),
-        prefix=f".{plan.env_path.name}_",
-        suffix=".tmp",
-    )
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            fh.write("".join(kept_lines))
-            fh.flush()
-            os.fsync(fh.fileno())
-        os.chmod(tmp_path, original_mode)
-        atomic_replace(tmp_path, plan.env_path)
-    except Exception:
+        _create_private_backup(backup_path, original_bytes)
+        _verify_private_path(backup_path)
+        tmp_path = _create_private_temp(plan.env_path, kept_bytes)
+        replace_result = atomic_replace(tmp_path, plan.env_path)
+        replaced_path = Path(replace_result or plan.env_path)
+        tmp_path = None
+        os.chmod(replaced_path, original_mode)
+    except BaseException:
+        restored = _restore_original_if_needed(
+            plan.env_path,
+            original_bytes,
+            original_mode,
+        )
+        if restored:
+            _remove_artifact(backup_path)
+        else:
+            raise PruneRollbackError(
+                "Secret pruning failed and automatic rollback did not complete. "
+                "Inspect the private .env backup and active .env before retrying."
+            ) from None
         raise
+    finally:
+        _remove_artifact(tmp_path)
 
     return PruneResult(
         profile=plan.profile,
@@ -596,6 +634,131 @@ def apply_prune_plan(plan: PrunePlan) -> PruneResult:
         removed_keys=removed_keys,
         changed=True,
     )
+
+
+def _write_all(fd: int, contents: bytes) -> None:
+    remaining = memoryview(contents)
+    while remaining:
+        try:
+            written = os.write(fd, remaining)
+        except InterruptedError:
+            continue
+        if written <= 0:
+            raise OSError("could not complete private file write")
+        remaining = remaining[written:]
+
+
+def _prepare_private_fd(fd: int) -> None:
+    if hasattr(os, "fchmod"):
+        os.fchmod(fd, 0o600)
+    if os.name != "nt" and stat.S_IMODE(os.fstat(fd).st_mode) != 0o600:
+        raise PermissionError("private file mode verification failed")
+
+
+def _write_private_fd(fd: int, contents: bytes) -> None:
+    _prepare_private_fd(fd)
+    _write_all(fd, contents)
+    os.fsync(fd)
+    if os.name != "nt" and stat.S_IMODE(os.fstat(fd).st_mode) != 0o600:
+        raise PermissionError("private file mode changed during write")
+
+
+def _create_private_backup(path: Path, contents: bytes) -> None:
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    if hasattr(os, "O_BINARY"):
+        flags |= os.O_BINARY
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+
+    fd = os.open(path, flags, 0o600)
+    try:
+        _write_private_fd(fd, contents)
+        os.close(fd)
+        fd = -1
+    except BaseException:
+        if fd >= 0:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        _remove_artifact(path)
+        raise
+
+
+def _create_private_temp(env_path: Path, contents: bytes) -> Path:
+    fd, raw_path = tempfile.mkstemp(
+        dir=str(env_path.parent),
+        prefix=f".{env_path.name}_",
+        suffix=".tmp",
+    )
+    path = Path(raw_path)
+    try:
+        _write_private_fd(fd, contents)
+        os.close(fd)
+        fd = -1
+        _verify_private_path(path)
+        return path
+    except BaseException:
+        if fd >= 0:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        _remove_artifact(path)
+        raise
+
+
+def _verify_private_path(path: Path) -> None:
+    if os.name != "nt" and stat.S_IMODE(path.stat().st_mode) != 0o600:
+        raise PermissionError("private file mode verification failed")
+
+
+def _restore_original_if_needed(
+    env_path: Path,
+    original_bytes: bytes,
+    original_mode: int,
+) -> bool:
+    try:
+        current_bytes = env_path.read_bytes()
+    except OSError:
+        return False
+
+    if current_bytes != original_bytes:
+        rollback_path: Path | None = None
+        try:
+            rollback_path = _create_private_temp(env_path, original_bytes)
+            replace_result = atomic_replace(rollback_path, env_path)
+            restored_path = Path(replace_result or env_path)
+            rollback_path = None
+            try:
+                os.chmod(restored_path, original_mode)
+            except OSError:
+                pass
+        except BaseException:
+            pass
+        finally:
+            _remove_artifact(rollback_path)
+    else:
+        try:
+            os.chmod(env_path, original_mode)
+        except OSError:
+            pass
+
+    try:
+        if env_path.read_bytes() != original_bytes:
+            return False
+        return os.name == "nt" or stat.S_IMODE(env_path.stat().st_mode) == original_mode
+    except OSError:
+        return False
+
+
+def _remove_artifact(path: Path | None) -> None:
+    if path is None:
+        return
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        pass
 
 
 def _make_backup_path(env_path: Path) -> Path:
@@ -610,10 +773,3 @@ def _make_backup_path(env_path: Path) -> Path:
             f"{env_path.name}.bak-pre-bitwarden-prune-{stamp}-{suffix}"
         )
     return candidate
-
-
-def _tighten_mode(path: Path) -> None:
-    try:
-        os.chmod(path, 0o600)
-    except OSError:
-        pass

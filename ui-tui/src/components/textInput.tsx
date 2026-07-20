@@ -125,6 +125,27 @@ export function applyPrintableInsert(
 
 export const shouldRouteMultiCharInputAsPaste = (text: string): boolean => text.includes('\n')
 
+/**
+ * Transactional cut. Writes `text` to the clipboard and only invokes
+ * `removeSelection` once the write actually succeeds. On failure (e.g. a
+ * headless/SSH box with no clipboard backend) the selection is left untouched
+ * so the text is never destroyed without a copy to paste back. Returns whether
+ * the clipboard write succeeded.
+ */
+export async function cutSelection(
+  text: string,
+  write: (text: string) => Promise<boolean>,
+  removeSelection: () => void
+): Promise<boolean> {
+  const ok = await write(text)
+
+  if (ok) {
+    removeSelection()
+  }
+
+  return ok
+}
+
 export function shouldPreserveCtrlJNewline(env: MinimalEnv = process.env): boolean {
   if (env.WT_SESSION) {
     return true
@@ -202,6 +223,16 @@ function wordRight(s: string, p: number) {
   }
 
   return i
+}
+
+/**
+ * Delete the word to the RIGHT of the cursor (readline meta+d / kill-word).
+ * The cursor stays put; the text from the cursor to the next word boundary is
+ * removed. Callers guard against `cursor >= value.length` themselves; when the
+ * cursor is already at the end this is a no-op.
+ */
+export function deleteWordForward(value: string, cursor: number): TextInsertResult {
+  return { cursor, value: value.slice(0, cursor) + value.slice(wordRight(value, cursor)) }
 }
 
 /**
@@ -615,8 +646,24 @@ export function TextInput({
           return
         }
 
-        void writeClipboardText(vRef.current.slice(range.start, range.end))
-        commit(vRef.current.slice(0, range.start) + vRef.current.slice(range.end), range.start)
+        // Transactional cut: only remove the selection once the clipboard
+        // write actually succeeds. A fire-and-forget write on a headless/SSH
+        // box (no clipboard backend) would otherwise destroy the text with no
+        // copy to paste back. On failure the selection is left intact.
+        const text = vRef.current.slice(range.start, range.end)
+
+        void cutSelection(text, writeClipboardText, () => {
+          // Re-read the selection: the awaited clipboard write opens a window
+          // in which the user could have moved/changed the selection. Only
+          // remove when it still matches what we copied.
+          const current = selRange()
+
+          if (!current || current.start !== range.start || current.end !== range.end) {
+            return
+          }
+
+          commit(vRef.current.slice(0, current.start) + vRef.current.slice(current.end), current.start)
+        })
       },
       end: selected?.end ?? curRef.current,
       start: selected?.start ?? curRef.current,
@@ -1088,6 +1135,21 @@ export function TextInput({
       } else if (wordMod && inp === 'f') {
         clearSel()
         c = wordRight(v, c)
+      } else if (wordMod && inp === 'd') {
+        // meta+d (readline kill-word). The web dashboard maps Ctrl+Delete to
+        // ESC d, which hermes-ink decodes as meta+'d'; without this branch it
+        // fell through to the printable path and typed a literal "d".
+        if (range) {
+          v = v.slice(0, range.start) + v.slice(range.end)
+          c = range.start
+        } else if (c < v.length) {
+          clearSel()
+          const next = deleteWordForward(v, c)
+          v = next.value
+          c = next.cursor
+        } else {
+          return
+        }
       } else if (range && (k.backspace || delFwd)) {
         v = v.slice(0, range.start) + v.slice(range.end)
         c = range.start
@@ -1117,8 +1179,7 @@ export function TextInput({
         }
       } else if (delFwd && c < v.length) {
         if (wordMod) {
-          const t = wordRight(v, c)
-          v = v.slice(0, c) + v.slice(t)
+          v = deleteWordForward(v, c).value
         } else {
           v = v.slice(0, c) + v.slice(nextPos(v, c))
         }

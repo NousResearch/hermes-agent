@@ -787,13 +787,49 @@ def register(ctx):
 
 After registration, users can type `/mystatus` in any session. The command appears in autocomplete, `/help` output, and the Telegram bot menu.
 
-**Signature:** `ctx.register_command(name: str, handler: Callable, description: str = "", args_hint: str = "")`
+**Signature:** `ctx.register_command(name: str, handler: Callable, description: str = "", args_hint: str = "", *, gateway_context: bool = False)`
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `name` | `str` | Command name without the leading slash (e.g. `"lcm"`, `"mystatus"`) |
 | `handler` | `Callable[[str], str \| None]` | Called with the raw argument string. May also be `async`. |
 | `description` | `str` | Shown in `/help`, autocomplete, and Telegram bot menu |
+| `args_hint` | `str` | Optional argument hint shown in command discovery surfaces. |
+| `gateway_context` | `bool` | Opt in to an immutable gateway provenance snapshot. Defaults to `False`. |
+
+#### Opt in to gateway provenance
+
+Gateway-only commands that need normalized transport identity can opt in to a
+frozen `GatewayCommandContext`. Existing handlers remain unchanged because the
+option is keyword-only and defaults to `False`.
+
+```python
+async def _handle_gateway_status(raw_args: str, *, context=None) -> str:
+    if context is None:
+        return "This command is available only through a gateway."
+    return f"Received {context.platform} message {context.message_id}"
+
+def register(ctx):
+    ctx.register_command(
+        "gateway-status",
+        handler=_handle_gateway_status,
+        description="Show gateway delivery status",
+        gateway_context=True,
+    )
+```
+
+The context contains copied scalar provenance: schema version, platform, user,
+chat, chat type, thread, message and platform-update identifiers, bot/internal
+flags, receive timestamp, and normalized command name. It deliberately excludes
+the mutable message event, raw platform payload, message text, display/profile
+data, arbitrary metadata, credentials, and gateway configuration.
+
+The context is available only after the gateway's existing transport
+authorization and slash-command ACL checks. It is evidence about the inbound
+transport, not application-level authorization; plugins remain responsible for
+their own policy and replay handling. CLI and TUI callers still use the
+one-argument form, so gateway-only handlers should accept `context=None` and
+fail closed when it is absent.
 
 **Key differences from `register_cli_command()`:**
 

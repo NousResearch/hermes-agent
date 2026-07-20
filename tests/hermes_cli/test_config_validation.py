@@ -251,6 +251,7 @@ class TestUnknownTopLevelKeys:
         """Gateway isolation and saved plugin-toolset roots are valid user config."""
         issues = validate_config_structure({
             "group_sessions_per_user": True,
+            "thread_sessions_per_user": True,
             "known_plugin_toolsets": {"cli": ["spotify"]},
         })
         assert not any("Unknown top-level config key" in issue.message for issue in issues)

@@ -76,8 +76,8 @@ def _dedupe_model_ids(
     return ordered
 
 
-def _fetch_models_from_api(access_token: str) -> List[str]:
-    """Fetch available models from the Codex API. Returns visible models sorted by priority."""
+def _fetch_models_from_api(access_token: str) -> Optional[List[str]]:
+    """Fetch the live catalog; ``None`` means the fetch was not authoritative."""
     try:
         import httpx
         resp = httpx.get(
@@ -86,12 +86,14 @@ def _fetch_models_from_api(access_token: str) -> List[str]:
             timeout=10,
         )
         if resp.status_code != 200:
-            return []
+            return None
         data = resp.json()
-        entries = data.get("models", []) if isinstance(data, dict) else []
+        if not isinstance(data, dict) or not isinstance(data.get("models"), list):
+            return None
+        entries = data["models"]
     except Exception as exc:
         logger.debug("Failed to fetch Codex models from API: %s", exc)
-        return []
+        return None
 
     sortable = []
     for item in entries:
@@ -186,7 +188,7 @@ def get_codex_model_ids(access_token: Optional[str] = None) -> List[str]:
     # Try live API if we have a token
     if access_token:
         api_models = _fetch_models_from_api(access_token)
-        if api_models:
+        if api_models is not None:
             return _dedupe_model_ids(api_models)
 
     # Fall back to local sources

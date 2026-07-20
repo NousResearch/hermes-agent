@@ -5514,6 +5514,7 @@ _EXTRA_KNOWN_ROOT_KEYS = {
     "platform_toolsets",     # written by the setup wizard (hermes_cli/setup.py)
     "known_plugin_toolsets", # written by hermes tools to preserve explicit plugin toggles
     "group_sessions_per_user",  # documented top-level gateway session-isolation policy
+    "thread_sessions_per_user",  # documented sibling policy read by gateway/config.py
     "session_reset",         # top-level form read by gateway/config.py + setup
     "multiplex_profiles",    # top-level form accepted alongside gateway.multiplex_profiles
     "profile_routes",        # top-level form accepted alongside gateway.profile_routes

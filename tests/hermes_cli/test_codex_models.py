@@ -68,6 +68,73 @@ def test_get_codex_model_ids_uses_live_api_as_exact_authority(monkeypatch):
     assert models == ["gpt-5.3-codex"]
 
 
+def test_successful_empty_live_catalog_does_not_fall_back(monkeypatch):
+    import sys
+
+    class _Response:
+        status_code = 200
+
+        @staticmethod
+        def json():
+            return {"models": []}
+
+    class _Httpx:
+        @staticmethod
+        def get(*_args, **_kwargs):
+            return _Response()
+
+    monkeypatch.setitem(sys.modules, "httpx", _Httpx)
+    assert get_codex_model_ids(access_token="codex-access-token") == []
+
+
+def test_successful_all_hidden_live_catalog_does_not_fall_back(monkeypatch):
+    import sys
+
+    class _Response:
+        status_code = 200
+
+        @staticmethod
+        def json():
+            return {"models": [{"slug": "gpt-hidden", "visibility": "hidden"}]}
+
+    class _Httpx:
+        @staticmethod
+        def get(*_args, **_kwargs):
+            return _Response()
+
+    monkeypatch.setitem(sys.modules, "httpx", _Httpx)
+    assert get_codex_model_ids(access_token="codex-access-token") == []
+
+
+def test_non_200_live_catalog_uses_offline_fallback(tmp_path, monkeypatch):
+    import sys
+
+    class _Response:
+        status_code = 503
+
+    class _Httpx:
+        @staticmethod
+        def get(*_args, **_kwargs):
+            return _Response()
+
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+    monkeypatch.setitem(sys.modules, "httpx", _Httpx)
+    assert get_codex_model_ids(access_token="codex-access-token") == DEFAULT_CODEX_MODELS
+
+
+def test_live_catalog_transport_failure_uses_offline_fallback(tmp_path, monkeypatch):
+    import sys
+
+    class _Httpx:
+        @staticmethod
+        def get(*_args, **_kwargs):
+            raise OSError("fixture transport failure")
+
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+    monkeypatch.setitem(sys.modules, "httpx", _Httpx)
+    assert get_codex_model_ids(access_token="codex-access-token") == DEFAULT_CODEX_MODELS
+
+
 def test_offline_fallback_suppresses_live_only_pro_models(tmp_path, monkeypatch):
     codex_home = tmp_path / "codex-home"
     codex_home.mkdir(parents=True, exist_ok=True)

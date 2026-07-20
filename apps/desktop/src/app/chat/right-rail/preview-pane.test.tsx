@@ -5,6 +5,10 @@ import { $connection } from '@/store/session'
 
 import { PreviewPane } from './preview-pane'
 
+vi.mock('./sandboxed-html-preview', () => ({
+  SandboxedHtmlPreview: () => <div data-testid="sandboxed-html-preview" />
+}))
+
 describe('PreviewPane console state', () => {
   beforeEach(() => {
     vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) =>
@@ -85,5 +89,25 @@ describe('PreviewPane console state', () => {
     })
 
     expect(setTitlebarToolGroup).toHaveBeenCalledTimes(initialCalls)
+  })
+
+  it('routes local runnable HTML through the sandbox instead of a webview', async () => {
+    const rendered = render(
+      <PreviewPane
+        setTitlebarToolGroup={vi.fn()}
+        target={{
+          kind: 'file',
+          label: 'view.html',
+          path: '/workspace/view.html',
+          previewKind: 'html',
+          renderMode: 'preview',
+          source: '/workspace/view.html',
+          url: 'file:///workspace/view.html'
+        }}
+      />
+    )
+
+    expect(rendered.getByTestId('sandboxed-html-preview')).not.toBeNull()
+    expect(rendered.container.querySelector('webview')).toBeNull()
   })
 })

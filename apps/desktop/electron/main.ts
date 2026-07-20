@@ -106,6 +106,7 @@ import { createLinkTitleWindow, guardLinkTitleSession, readLinkTitleWindowTitle 
 import { ensureMainWindow } from './main-window-lifecycle'
 import { serializeJsonBody, setJsonRequestHeaders } from './oauth-net-request'
 import { decideProfileDeleteAction, profileNameFromDeleteRequest, resolveRouteProfile } from './profile-delete-routing'
+import { createSandboxedHtmlNetworkGuard } from './sandboxed-html-network'
 import {
   buildSessionWindowUrl,
   chatWindowWebPreferences,
@@ -5171,6 +5172,15 @@ function installMediaPermissions() {
   })
 }
 
+const sandboxedHtmlNetworkGuard = createSandboxedHtmlNetworkGuard()
+const sandboxedHtmlCleanupOwners = new Set<number>()
+
+function installSandboxedHtmlNetworkGuard() {
+  session.defaultSession.webRequest.onBeforeRequest((details, callback) => {
+    callback({ cancel: sandboxedHtmlNetworkGuard.shouldBlock(details.frame, details.url) })
+  })
+}
+
 // ---------------------------------------------------------------------------
 // OAuth remote-gateway auth.
 //
@@ -8583,6 +8593,31 @@ ipcMain.handle('hermes:watchPreviewFile', (_event, url) => watchPreviewFile(Stri
 
 ipcMain.handle('hermes:stopPreviewFileWatch', (_event, id) => stopPreviewFileWatch(String(id || '')))
 
+ipcMain.handle('hermes:sandboxed-html:register-frame', (event, rawFrameName) => {
+  const senderFrame = event.senderFrame
+
+  if (senderFrame.frameTreeNodeId !== event.sender.mainFrame.frameTreeNodeId) {
+    return false
+  }
+
+  const ownerWebContentsId = event.sender.id
+  const registered = sandboxedHtmlNetworkGuard.register(ownerWebContentsId, senderFrame, String(rawFrameName || ''))
+
+  if (registered && !sandboxedHtmlCleanupOwners.has(ownerWebContentsId)) {
+    sandboxedHtmlCleanupOwners.add(ownerWebContentsId)
+    event.sender.once('destroyed', () => {
+      sandboxedHtmlNetworkGuard.unregisterOwner(ownerWebContentsId)
+      sandboxedHtmlCleanupOwners.delete(ownerWebContentsId)
+    })
+  }
+
+  return registered
+})
+
+ipcMain.handle('hermes:sandboxed-html:unregister-frame', (event, rawFrameName) =>
+  sandboxedHtmlNetworkGuard.unregister(event.sender.id, String(rawFrameName || ''))
+)
+
 ipcMain.on('hermes:titlebar-theme', (_event, payload) => {
   if (!payload || !isHexColor(payload.background) || !isHexColor(payload.foreground)) {
     return
@@ -9618,6 +9653,7 @@ app.whenReady().then(() => {
   }
 
   installMediaPermissions()
+  installSandboxedHtmlNetworkGuard()
   registerMediaProtocol()
   installEmbedReferer()
   registerDeepLinkProtocol()

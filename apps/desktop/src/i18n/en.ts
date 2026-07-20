@@ -2300,6 +2300,29 @@ export const en: Translations = {
       'This file changed since you opened it. Overwrite it with your version, or discard your edits and reload?',
     overwrite: 'Overwrite',
     discardReload: 'Discard & reload',
+    sandboxedHtml: {
+      loading: 'Checking HTML preview...',
+      unavailableTitle: 'Sandboxed preview unavailable',
+      binaryBody: 'Hermes will not run a file that appears to contain binary data.',
+      truncatedBody: 'Hermes will not run a partial file. Open the source or reduce the file below 512 KB.',
+      invalidBody: 'The file reader returned an invalid HTML source.',
+      tooLargeBody: 'Hermes will not run HTML previews larger than 512 KB.',
+      readFailedBody: 'Hermes could not read this HTML file.',
+      tryAgain: 'Try again',
+      isolationTitle: 'Preview isolation unavailable',
+      isolationBody: 'Hermes could not install the network guard, so the authored HTML was not loaded.',
+      approvalTitle: 'Run this HTML preview?',
+      approvalBody:
+        'HTML can execute scripts. Approval applies only to this exact file content and is revoked when the content changes.',
+      fileLabel: 'File',
+      digestLabel: 'Content',
+      permissionsLabel: 'Permissions',
+      permissionsBody:
+        'Inline scripts and styles may run. Network access, forms, popups, downloads, navigation, nested frames, and device access are blocked.',
+      runAction: 'Run sandboxed preview',
+      showSource: 'Show source',
+      hideSource: 'Hide source'
+    },
     console: {
       deselect: 'Deselect entry',
       select: 'Select entry',

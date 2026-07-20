@@ -3001,16 +3001,20 @@ DEFAULT_CONFIG = {
     # openclaw-tool-search-report PDF in this PR for the rationale.
     "tools": {
         "tool_search": {
-            # "auto" (default) — activate only when deferrable tool schemas
-            #   exceed ``threshold_pct`` of the active model's context length,
-            #   so small toolsets pay no overhead.
-            # "on"  — always activate when there is at least one deferrable
-            #   tool. Use when you have many MCP servers and want maximum
-            #   token reduction unconditionally.
+            # Tiered disclosure: any deferrable (MCP/plugin) tool activates
+            # the bridge; the listing then scales with catalog size.
+            #   Tier 0 — no MCP/plugin tools: everything stays eager.
+            #   Tier 1 — catalog listing fits the budget: bridge + skills-style
+            #     name+description manifest (degrades to names-only).
+            #   Tier 2 — listing over budget even names-only (e.g. Cloudflare's
+            #     ~3,300-tool flat API surface): bare bridge, discovery through
+            #     tool_search only.
+            # "auto"/"on" — activate when at least one deferrable tool exists.
             # "off" — disable entirely. Tools-array assembly is a pass-through.
             "enabled": "auto",
-            # Percentage of context length at which "auto" mode kicks in.
-            # 10 matches the Claude Code default. Range 0..100.
+            # Listing budget as a percentage of the active model's context
+            # length. Effective budget = min(this % of context,
+            # listing_max_tokens). 10 matches the Claude Code default. Range 0..100.
             "threshold_pct": 10,
             # When the model calls tool_search without a ``limit`` argument,
             # how many hits to return. Range 1..max_search_limit.
@@ -3021,14 +3025,14 @@ DEFAULT_CONFIG = {
             # description: every deferred tool's name + first sentence of its
             # description (≤60 chars), grouped by MCP server / toolset. Keeps
             # capabilities discoverable while schemas stay deferred.
-            # "auto" (default) — include when the listing fits listing_max_tokens
-            #   (falls back to names-only, then to the bare count).
+            # "auto" (default) — include when the listing fits the budget
+            #   (falls back to names-only, then to the bare tier-2 bridge).
             # "on"  — same rendering, but explicit intent to always list.
-            # "off" — legacy bare-count bridge description.
+            # "off" — always the bare bridge (tier 2 for every catalog).
             "listing": "auto",
-            # Token budget for the embedded listing (chars/4 estimate).
-            # Range 200..20000.
-            "listing_max_tokens": 4000,
+            # Absolute cap on the embedded listing in tokens (chars/4
+            # estimate), regardless of context size. Range 200..60000.
+            "listing_max_tokens": 20000,
         },
     },
 

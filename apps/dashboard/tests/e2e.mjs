@@ -122,7 +122,7 @@ const WIDGET_PAGES = {
   Markets: ["markets", "stocks", "commodities"],
   Feeds: ["news", "reading", "socials", "gaming", "podcasts"],
   Sports: ["scores"],
-  Intel: ["worldclock", "quakes", "fx", "convert", "air", "space", "alerts", "flights"],
+  Intel: ["worldclock", "quakes", "fx", "convert", "air", "marine", "space", "alerts", "flights"],
   Health: ["medbot", "pubmed", "trials", "drug", "calc", "meded"],
   "AI Lab": ["codelab", "ailearn", "snippets", "repos", "papers", "ainews", "aidaily"],
 };
@@ -653,6 +653,13 @@ check("air quality gauge shows an AQI", /\d/.test(await page.locator(".widget-ai
 check("air quality band labeled", (await page.locator(".widget-air .aq-band").innerText()).length > 2);
 check("air quality lists pollutants", (await page.locator(".widget-air .aq-cell").count()) >= 3);
 check("air quality shows pollen rows", (await page.locator(".widget-air .aq-pollen-row").count()) >= 1);
+
+// ---- marine & surf (Open-Meteo Marine) -------------------------------------------
+await gotoWidget("marine");
+await page.waitForSelector(".widget-marine .mar-wave", { timeout: 5000 });
+check("marine shows a wave height", /\d/.test(await page.locator(".widget-marine .mar-wave").innerText()));
+check("marine labels a sea state", (await page.locator(".widget-marine .mar-state").innerText()).length > 2);
+check("marine lists conditions", (await page.locator(".widget-marine .mar-cell").count()) >= 5);
 
 // ---- space weather (NOAA SWPC) ---------------------------------------------------
 await gotoWidget("space");

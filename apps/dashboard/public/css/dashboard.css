@@ -1302,6 +1302,23 @@ a.aid-card:hover { border-color: var(--accent); background: var(--surface); }
 .aq-pollen-level.pl-high, .aq-pollen-level.pl-very { color: var(--status-critical); }
 .aq-nopollen { margin-top: 8px; }
 
+/* ---------- marine & surf ---------- */
+.mar-gauge { border-radius: 8px; padding: 12px; text-align: center; border: 1px solid var(--hairline); }
+.mar-gauge.tone-up { background: color-mix(in srgb, var(--status-stable) 16%, transparent); border-color: color-mix(in srgb, var(--status-stable) 45%, transparent); }
+.mar-gauge.tone-neutral { background: color-mix(in srgb, var(--accent) 12%, transparent); border-color: color-mix(in srgb, var(--accent) 40%, transparent); }
+.mar-gauge.tone-warn { background: color-mix(in srgb, var(--status-elevated, orange) 16%, transparent); border-color: color-mix(in srgb, var(--status-elevated, orange) 45%, transparent); }
+.mar-gauge.tone-down { background: color-mix(in srgb, var(--status-critical) 16%, transparent); border-color: color-mix(in srgb, var(--status-critical) 45%, transparent); }
+.mar-wave { font-size: 34px; font-weight: 700; line-height: 1; font-variant-numeric: tabular-nums; }
+.mar-unit { font-size: 15px; font-weight: 500; }
+.mar-state { font-size: 13px; letter-spacing: 0.04em; margin-top: 2px; }
+.mar-loc { margin-top: 3px; }
+.mar-section-label { font-size: 10px; letter-spacing: 0.12em; color: var(--muted); margin: 12px 0 6px; }
+.mar-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+.mar-cell { border: 1px solid var(--hairline); border-radius: 5px; padding: 6px 4px; text-align: center; }
+.mar-cell-label { display: block; font-size: 11px; color: var(--ink-2); }
+.mar-cell-val { display: block; font-size: 16px; font-variant-numeric: tabular-nums; }
+.mar-cell-unit { font-size: 9px; }
+
 /* ---------- flights overhead ---------- */
 .fl-head { margin-bottom: 8px; }
 .fl-list { display: flex; flex-direction: column; max-height: 340px; overflow-y: auto; }

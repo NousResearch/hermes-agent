@@ -156,6 +156,32 @@ class SampleFallbackTests(unittest.TestCase):
             self.assertIsNotNone(p["value"])
         self.assertTrue(d["pollen"])
 
+    def test_marine_offline_shape(self):
+        d = self.api.marine({"lat": ["-33.92"], "lon": ["18.42"], "name": ["Cape Town"]})
+        self.assertEqual(d["source"], "sample")
+        for k in ("waveHeight", "swellHeight", "seaTemp", "seaState"):
+            self.assertIn(k, d)
+        self.assertIsInstance(d["waveHeight"], (int, float))
+        self.assertTrue(d["waveDirText"])
+
+    def test_marine_normalizer_and_sea_state(self):
+        self.assertEqual(server._sea_state(0.3), "Calm")
+        self.assertEqual(server._sea_state(3.0), "Rough")
+        self.assertEqual(server._compass(0), "N")
+        self.assertEqual(server._compass(180), "S")
+        import unittest.mock as mock
+        payload = json.dumps({
+            "current": {"wave_height": 1.4, "wave_period": 9.0, "wave_direction": 225,
+                        "sea_surface_temperature": 16.2, "swell_wave_height": 1.1,
+                        "swell_wave_period": 11.0, "wind_wave_height": 0.6},
+            "daily": {"wave_height_max": [2.0]},
+        }).encode()
+        with mock.patch.object(server, "fetch_url", return_value=payload):
+            out = server.live_marine(-33.92, 18.42, "Cape Town")
+        self.assertEqual(out["waveDirText"], "SW")
+        self.assertEqual(out["seaState"], "Moderate")
+        self.assertEqual(out["waveMax"], 2.0)
+
     def test_flights_offline_shape(self):
         d = self.api.flights({"lat": ["40.71"], "lon": ["-74.01"]})
         self.assertEqual(d["source"], "sample")

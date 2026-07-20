@@ -2220,6 +2220,60 @@ def sample_air(name: str | None = None) -> dict:
     }
 
 
+# ---------------------------------------------------------------------------
+# Marine conditions — Open-Meteo Marine API (no key): waves, swell, sea temp.
+# ---------------------------------------------------------------------------
+MARINE_TTL = 30 * 60
+_COMPASS = ["N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE",
+            "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW"]
+
+
+def _compass(deg) -> str | None:
+    if deg is None:
+        return None
+    return _COMPASS[int((deg % 360) / 22.5 + 0.5) % 16]
+
+
+def _sea_state(h) -> str:
+    if h is None:
+        return "—"
+    return ("Calm" if h < 0.5 else "Smooth" if h < 1.25 else "Moderate"
+            if h < 2.5 else "Rough" if h < 4 else "Very rough" if h < 6 else "High")
+
+
+def live_marine(lat: float, lon: float, name: str | None) -> dict:
+    fields = ("wave_height,wave_direction,wave_period,sea_surface_temperature,"
+              "swell_wave_height,swell_wave_period,wind_wave_height")
+    q = urllib.parse.urlencode({"latitude": f"{lat:.4f}", "longitude": f"{lon:.4f}",
+                                "current": fields, "daily": "wave_height_max",
+                                "timezone": "auto"})
+    raw = json.loads(fetch_url(f"https://marine-api.open-meteo.com/v1/marine?{q}", timeout=8))
+    cur = raw.get("current") or {}
+    wh = cur.get("wave_height")
+    daily = raw.get("daily") or {}
+    peak = (daily.get("wave_height_max") or [None])[0]
+    return {
+        "source": "live",
+        "location": {"name": name or f"{lat:.2f}, {lon:.2f}", "lat": lat, "lon": lon},
+        "waveHeight": wh, "wavePeriod": cur.get("wave_period"),
+        "waveDir": cur.get("wave_direction"), "waveDirText": _compass(cur.get("wave_direction")),
+        "swellHeight": cur.get("swell_wave_height"), "swellPeriod": cur.get("swell_wave_period"),
+        "windWaveHeight": cur.get("wind_wave_height"),
+        "seaTemp": cur.get("sea_surface_temperature"),
+        "seaState": _sea_state(wh), "waveMax": peak,
+    }
+
+
+def sample_marine(name: str | None = None) -> dict:
+    return {
+        "source": "sample",
+        "location": {"name": name or "Cape Town", "lat": -33.92, "lon": 18.42},
+        "waveHeight": 1.6, "wavePeriod": 11.2, "waveDir": 205, "waveDirText": "SSW",
+        "swellHeight": 1.3, "swellPeriod": 12.4, "windWaveHeight": 0.7,
+        "seaTemp": 15.8, "seaState": _sea_state(1.6), "waveMax": 2.1,
+    }
+
+
 def live_markets(ids: list[str] | None = None) -> dict:
     joined = ",".join(ids or DEFAULT_CRYPTO_IDS)
     url = (
@@ -2745,6 +2799,16 @@ class Api:
             AIR_TTL,
             lambda: live_air(lat, lon, name),
             lambda: sample_air(name),
+        )
+
+    def marine(self, params: dict) -> dict:
+        lat, lon = self._latlon(params)
+        name = params.get("name", [None])[0]
+        return self._cached(
+            f"marine:{lat:.3f}:{lon:.3f}",
+            MARINE_TTL,
+            lambda: live_marine(lat, lon, name),
+            lambda: sample_marine(name),
         )
 
     def flights(self, params: dict) -> dict:
@@ -3393,6 +3457,7 @@ class HubHandler(BaseHTTPRequestHandler):
         "/api/news": "news",
         "/api/weather": "weather",
         "/api/air": "air",
+        "/api/marine": "marine",
         "/api/spaceweather": "spaceweather",
         "/api/alerts": "alerts",
         "/api/flights": "flights",

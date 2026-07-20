@@ -212,6 +212,13 @@ def cron_list(show_all: bool = False):
                 )
             rich.print(Text.assemble("    Last run:  ", last_run, "  ", status_display))
 
+        latest_execution = job.get("latest_execution")
+        if latest_execution:
+            print(
+                f"    Execution: {latest_execution.get('status', '?')}  "
+                f"{latest_execution.get('id', '?')}"
+            )
+
         delivery_err = job.get("last_delivery_error")
         if delivery_err:
             rich.print(Text.assemble("    ", rich_color('⚠ Delivery failed:', RichColors.YELLOW), " ", delivery_err))

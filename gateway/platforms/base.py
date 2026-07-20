@@ -4398,6 +4398,34 @@ class BasePlatformAdapter(ABC):
         incoming_sender = _identity(event)
         return existing_sender is not None and existing_sender == incoming_sender
 
+    async def _dispatch_text_event(self, event: MessageEvent) -> None:
+        """Bypass platform text batching when the session is already active.
+
+        Some adapters batch inbound plain-text fragments to repair client-side
+        splits. When a session is already active, gateway-level busy handling
+        should see the follow-up immediately so interrupt/queue/steer decisions
+        are not delayed behind an adapter-side quiet-period timer.
+        """
+        key = self._text_batch_key(event)
+        if key in self._active_sessions:
+            pending = self._pending_text_batches.pop(key, None)
+            prior_task = self._pending_text_batch_tasks.pop(key, None)
+            if prior_task and not prior_task.done():
+                prior_task.cancel()
+            if pending is not None:
+                if pending.text:
+                    event.text = (
+                        f"{pending.text}\n{event.text}"
+                        if event.text
+                        else pending.text
+                    )
+                if pending.media_urls:
+                    event.media_urls = [*pending.media_urls, *event.media_urls]
+                    event.media_types = [*pending.media_types, *event.media_types]
+            await self.handle_message(event)
+            return
+        self._enqueue_text_event(event)
+
     def _text_debounce_delay(self, session_key: str) -> float:
         """Return bounded busy-text debounce delay for ``session_key``."""
         state = self._text_debounce_store().get(session_key)

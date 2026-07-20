@@ -747,6 +747,28 @@ class TestChatCompletionsKimi:
         )
         assert kw["tools"][0]["function"]["parameters"]["properties"]["q"]["type"] == "string"
 
+    def test_moonshot_outgoing_schema_carries_required_array(self, transport):
+        """Moonshot 400s on object schemas without an explicit `required` array
+        (#66835). Assert the wire-level tool schema — what actually leaves the
+        transport — carries `required: []` on a zero-required-param tool."""
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "browser_snapshot",
+                    "description": "Snapshot",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            },
+        ]
+        kw = transport.build_kwargs(
+            model="moonshotai/kimi-k3",
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=tools,
+            max_tokens_param_fn=lambda n: {"max_tokens": n},
+        )
+        assert kw["tools"][0]["function"]["parameters"]["required"] == []
+
     def test_non_moonshot_tools_are_not_mutated(self, transport):
         """Other models don't go through the Moonshot sanitizer."""
         original_params = {

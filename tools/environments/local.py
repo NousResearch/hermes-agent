@@ -16,7 +16,7 @@ from pathlib import Path
 from tools.environments.base import BaseEnvironment, _pipe_stdin
 from hermes_cli._subprocess_compat import windows_hide_flags
 
-_IS_WINDOWS = platform.system() == "Windows"
+_IS_WINDOWS = sys.platform == "win32"
 
 logger = logging.getLogger(__name__)
 

@@ -25,7 +25,7 @@ from pathlib import Path
 from hermes_constants import agent_browser_runnable
 from tools.environments.local import hermes_subprocess_env
 
-_IS_WINDOWS = platform.system() == "Windows"
+_IS_WINDOWS = sys.platform == "win32"
 
 _DEP_CHECKS = {
     "node": lambda: shutil.which("node") is not None,

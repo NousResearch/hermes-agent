@@ -44,7 +44,7 @@ import threading
 import time
 import uuid
 
-_IS_WINDOWS = platform.system() == "Windows"
+_IS_WINDOWS = sys.platform == "win32"
 from typing import Any, Dict, List, Optional, Tuple
 
 from hermes_cli.windows_env import (

@@ -20,6 +20,7 @@ import {
   nativeTheme,
   Notification,
   powerMonitor,
+  powerSaveBlocker,
   protocol,
   safeStorage,
   screen,
@@ -108,6 +109,7 @@ import {
 import { createBoundedLinkTitleQueue, fetchPinnedLinkTitle } from './link-title-fetch'
 import { ensureMainWindow } from './main-window-lifecycle'
 import { serializeJsonBody, setJsonRequestHeaders } from './oauth-net-request'
+import { createKeepAwake } from './power-save'
 import { decideProfileDeleteAction, profileNameFromDeleteRequest, resolveRouteProfile } from './profile-delete-routing'
 import {
   buildSessionWindowUrl,
@@ -569,6 +571,7 @@ const DESKTOP_LOG_BACKUP_COUNT = 3
 const DESKTOP_LOG_DISCARD_BYTES = DESKTOP_LOG_MAX_BYTES * 4
 const desktopLogBackupPath = n => `${DESKTOP_LOG_PATH}.${n}`
 const BOOT_FAKE_MODE = process.env.HERMES_DESKTOP_BOOT_FAKE === '1'
+const BOOT_FAKE_ERROR = process.env.HERMES_DESKTOP_BOOT_FAKE_ERROR || ''
 
 const BOOT_FAKE_STEP_MS = (() => {
   const raw = Number.parseInt(String(process.env.HERMES_DESKTOP_BOOT_FAKE_STEP_MS || ''), 10)
@@ -6973,6 +6976,16 @@ async function startHermes() {
     throw backendStartFailure
   }
 
+  // E2E: simulate a boot failure without breaking the real backend. The boot
+  // progresses a few steps, then fails with the given error message.
+  if (BOOT_FAKE_ERROR) {
+    await advanceBootProgress('backend.resolve', 'Resolving Hermes backend', 8)
+    const error = new Error(BOOT_FAKE_ERROR) as any
+    error.isBootstrapFailure = true
+    bootstrapFailure = error
+    throw error
+  }
+
   const existingConnectionPromise = backendConnectionState.getPromise()
 
   if (existingConnectionPromise) {
@@ -7619,6 +7632,14 @@ function createWindow() {
       }
     }
   })
+
+  // Under Playright testing, instantly show the window.
+  // `ready-to-show` doesn't fire in some testing envs.
+  if (process.env.TEST_WORKER_INDEX !== undefined) {
+    if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.isVisible()) {
+      mainWindow.show()
+    }
+  }
 
   mainWindow.on('will-enter-full-screen', () => sendWindowStateChanged(true))
   mainWindow.on('enter-full-screen', () => sendWindowStateChanged(true))
@@ -8636,6 +8657,33 @@ ipcMain.on('hermes:translucency', (_event, payload) => {
   }
 })
 
+// Keep-awake: hold the machine awake for long/overnight runs. Main owns the one
+// blocker and its persisted state so a cold launch restores it (applied on
+// ready — powerSaveBlocker needs the app ready). The renderer toggles it from
+// Settings → Advanced over IPC. See store/keep-awake.
+const KEEP_AWAKE_CONFIG_PATH = path.join(app.getPath('userData'), 'keep-awake.json')
+const keepAwake = createKeepAwake(powerSaveBlocker)
+
+function readPersistedKeepAwake() {
+  try {
+    return JSON.parse(fs.readFileSync(KEEP_AWAKE_CONFIG_PATH, 'utf8')).on === true
+  } catch {
+    return false
+  }
+}
+
+ipcMain.on('hermes:keep-awake', (_event, on) => {
+  const enabled = Boolean(on)
+  keepAwake.set(enabled)
+
+  try {
+    fs.mkdirSync(path.dirname(KEEP_AWAKE_CONFIG_PATH), { recursive: true })
+    fs.writeFileSync(KEEP_AWAKE_CONFIG_PATH, JSON.stringify({ on: enabled }, null, 2), 'utf8')
+  } catch (error) {
+    rememberLog(`[keep-awake] write failed: ${error.message}`)
+  }
+})
+
 ipcMain.handle('hermes:openExternal', (_event, url) => {
   if (!openExternalUrl(url)) {
     throw new Error('Invalid external URL')
@@ -9636,6 +9684,7 @@ app.whenReady().then(() => {
   ensureWslWindowsFonts()
   configureSpellChecker()
   registerPowerResumeListeners()
+  keepAwake.set(readPersistedKeepAwake())
   createWindow()
 
   // Win/Linux cold start: the launching hermes:// URL is in our own argv.

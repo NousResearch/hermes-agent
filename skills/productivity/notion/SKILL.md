@@ -1,7 +1,7 @@
 ---
 name: notion
 description: "Notion API + ntn CLI: pages, databases, markdown, Workers."
-version: 2.0.0
+version: 2.1.0
 author: community
 license: MIT
 platforms: [linux, macos, windows]
@@ -67,6 +67,40 @@ Windows users: skip step 2 entirely until native `ntn` ships — Path B works fi
 ## API Basics
 
 `Notion-Version: 2025-09-03` is required on all HTTP requests. `ntn` handles this for you. In this version, what users call "databases" are called **data sources** in the API.
+
+## Look things up before guessing
+
+When `ntn` is installed, prefer asking the CLI for the exact shape of an endpoint instead of guessing:
+
+```bash
+ntn api ls                       # list public endpoints
+ntn api <path> --help            # usage and methods
+ntn api <path> --docs            # full official docs for that endpoint
+ntn api <path> --spec            # reduced OpenAPI fragment
+ntn pages get <page-id>          # read a page as Markdown
+```
+
+## Notion object model, short version
+
+Think in four objects:
+- **Page**: the core object, both normal docs and rows in a structured collection.
+- **Block**: content inside a page body, including paragraphs, toggles, lists, and `child_page` entries.
+- **Data source**: the API term for what users still call a database.
+- **Page in a data source**: still a page, just with typed properties.
+
+Useful rule:
+- `GET /pages/{id}` = properties / metadata
+- `GET /blocks/{id}/children` = body content and child pages
+- `POST /data_sources/{id}/query` = structured records
+
+In the sampled Alpic workspace, Notion is a hybrid of:
+- top-level hub pages like `Marketing`, `Sales`, and `Welcome to Alpic`
+- nested doc pages like `Skybridge weekly`
+- structured data sources like `People` and `Event calendar`
+- record pages inside those data sources, like people, events, and meeting entries
+
+Read `references/workspace-structure.md` when the task depends on how a real workspace is likely organized, not just on the raw API.
+Read `references/troubleshooting.md` for the common confusions, especially page-vs-block and `database_id` vs `data_source_id`.
 
 ## Path A — `ntn` CLI (preferred, macOS / Linux)
 
@@ -395,37 +429,7 @@ When asked to build a Worker, scaffold with `ntn workers new`, write the code in
 
 ## Notion-Flavored Markdown (used by `/markdown` endpoints)
 
-Standard CommonMark plus XML-like tags for Notion-specific blocks. Use **tabs** for indentation.
-
-**Blocks beyond CommonMark:**
-```
-<callout icon="🎯" color="blue_bg">
-	Ship the MVP by **Friday**.
-</callout>
-
-<details color="gray">
-<summary>Toggle title</summary>
-	Children indented one tab
-</details>
-
-<columns>
-	<column>Left side</column>
-	<column>Right side</column>
-</columns>
-
-<table_of_contents color="gray"/>
-```
-
-**Inline:**
-- Mentions: `<mention-user url="..."/>`, `<mention-page url="...">Title</mention-page>`, `<mention-date start="2026-05-15"/>`
-- Underline: `<span underline="true">text</span>`
-- Color: `<span color="blue">text</span>` or block-level `{color="blue"}` on the first line
-- Math: inline `$x^2$`, block `$$ ... $$`
-- Citations: `[^https://example.com]`
-
-**Colors:** `gray brown orange yellow green blue purple pink red`, plus `*_bg` variants for backgrounds.
-
-Headings 5/6 collapse to H4. Multiple `>` lines render as separate quote blocks — use `<br>` inside a single `>` for multi-line quotes.
+Notion's Markdown support is strong, but the edge cases are not worth carrying inline in the main skill. Use standard CommonMark first, then load `references/notion-flavored-markdown.md` when you need Notion-specific tags like callouts, toggles, columns, mentions, colors, or table-of-contents blocks.
 
 ## Choosing the Right Path
 

@@ -238,7 +238,7 @@ Use HTTP servers when:
 
 ### OAuth-authenticated HTTP servers
 
-Most hosted MCP servers (Linear, Sentry, Atlassian, Asana, Figma, Stripe, …) require OAuth 2.1 instead of a static bearer token. Set `auth: oauth` and Hermes handles discovery, client identification, PKCE, token exchange, refresh, and step-up auth via the MCP Python SDK.
+Most hosted MCP servers (Cloudflare, Linear, Sentry, Atlassian, Asana, Figma, Stripe, …) require OAuth 2.1 instead of a static bearer token. Set `auth: oauth` and Hermes handles discovery, client identification, PKCE, token exchange, refresh, and step-up auth via the MCP Python SDK.
 
 Hermes identifies itself with a [Client ID Metadata Document](../../reference/mcp-config-reference.md#client-identification-cimd-and-dcr) on servers that support one, and falls back to Dynamic Client Registration on those that don't. Both are automatic; there is nothing to configure.
 

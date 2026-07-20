@@ -1,0 +1,65 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: cloudflare
+description: Manage your Cloudflare account via the official API MCP.
+source: https://developers.cloudflare.com/agents/model-context-protocol/cloudflare/servers-for-cloudflare/
+
+# Cloudflare's official API MCP server (github.com/cloudflare/mcp) is a
+# managed remote server — nothing to install locally. It fronts the entire
+# Cloudflare API (2,500+ endpoints: DNS, Workers, R2, KV, D1, Zero Trust,
+# WAF, Pages, Queues, ...) through just TWO tools, search() and execute(),
+# using the search-and-execute Code Mode pattern: the model searches a typed
+# representation of the OpenAPI spec, then writes JavaScript against the
+# Cloudflare API client, which runs in an isolated Dynamic Worker sandbox on
+# Cloudflare's side. Cloudflare's published numbers: ~1,000 tokens of tool
+# schema regardless of endpoint count, vs ~1,170,000 tokens if every
+# endpoint were a native MCP tool. That tiny fixed footprint is why this
+# entry is safe to leave enabled — it costs about as much context as one
+# ordinary tool.
+transport:
+  type: http
+  url: https://mcp.cloudflare.com/mcp
+
+auth:
+  type: oauth
+  # Native MCP OAuth 2.1 (case 1) — the server publishes AS metadata with
+  # Dynamic Client Registration at https://mcp.cloudflare.com/register.
+  # Hermes's MCP client + mcp_oauth_manager handle discovery, DCR, PKCE,
+  # token exchange, and refresh. During authorization Cloudflare lets you
+  # scope exactly which account permissions the agent gets.
+
+# Tool selection at install time:
+# The server intentionally exposes a minimal surface (search/execute-style
+# Code Mode tools), so there is nothing to prune. Leave default_enabled
+# unset — the install-time probe pre-checks whatever the server advertises.
+
+post_install: |
+  On first connection, Hermes opens a browser to authorize with Cloudflare.
+  You pick the account and the permissions to grant — scope the token to
+  what you want the agent to touch. After auth, restart your Hermes session
+  so the Cloudflare tools are loaded.
+
+  Headless / CI alternative: instead of OAuth, create a Cloudflare API token
+  at https://dash.cloudflare.com/profile/api-tokens and configure the server
+  with a bearer header in ~/.hermes/config.yaml:
+
+    mcp_servers:
+      cloudflare:
+        url: https://mcp.cloudflare.com/mcp
+        headers:
+          Authorization: "Bearer ${CLOUDFLARE_API_TOKEN}"
+
+  Cloudflare also runs product-specific MCP servers (same OAuth flow, add
+  manually via `hermes mcp add <name> --url <url>` if you want a narrower
+  surface): docs search (https://docs.mcp.cloudflare.com/mcp, no auth),
+  Workers observability (https://observability.mcp.cloudflare.com/mcp),
+  Browser Rendering (https://browser.mcp.cloudflare.com/mcp), Radar
+  (https://radar.mcp.cloudflare.com/mcp), GraphQL analytics
+  (https://graphql.mcp.cloudflare.com/mcp), audit logs
+  (https://auditlogs.mcp.cloudflare.com/mcp), and more — full list at the
+  source URL above.
+
+  Re-run the tool checklist any time with:
+    hermes mcp configure cloudflare

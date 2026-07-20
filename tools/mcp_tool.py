@@ -141,6 +141,33 @@ _OSV_MALWARE_CHECK_TIMEOUT_S = 12.0
 _mcp_stderr_log_fh: Optional[Any] = None
 _mcp_stderr_log_lock = threading.Lock()
 
+# Maximum size of the shared MCP stderr log before rotation (50 MB).
+# A single retained ".log.1" backup is kept to bound disk usage.
+# Rotation is checked at gateway startup (first open) and before every
+# server spawn (_write_stderr_log_header), so long-running servers that
+# never reconnect are still capped when the gateway next starts or the
+# server is re-spawned.  The cap prevents runaway MCP servers from
+# filling the disk through stderr (observed: 74 GB in 34 days from a
+# server with an unbounded reconnect loop).
+_MAX_MCP_STDERR_LOG_BYTES = 50 * 1024 * 1024
+
+
+def _rotate_mcp_stderr_log(log_path: PurePath) -> None:
+    """Rename ``log_path`` -> ``log_path.1``, keeping at most one backup."""
+    rotated = log_path.with_suffix(".log.1")
+    try:
+        rotated.unlink(missing_ok=True)
+    except TypeError:
+        # Python < 3.8: missing_ok not available
+        try:
+            rotated.unlink()
+        except FileNotFoundError:
+            pass
+    try:
+        log_path.rename(rotated)
+    except (OSError, FileNotFoundError):
+        pass
+
 
 def _get_mcp_stderr_log() -> Any:
     """Return a shared append-mode file handle for MCP subprocess stderr.
@@ -159,6 +186,12 @@ def _get_mcp_stderr_log() -> Any:
             log_dir = get_hermes_home() / "logs"
             log_dir.mkdir(parents=True, exist_ok=True)
             log_path = log_dir / "mcp-stderr.log"
+            # Rotate if the log from a previous run is already oversized.
+            try:
+                if log_path.stat().st_size >= _MAX_MCP_STDERR_LOG_BYTES:
+                    _rotate_mcp_stderr_log(log_path)
+            except (OSError, FileNotFoundError):
+                pass
             # Line-buffered so server output lands on disk promptly; errors=
             # "replace" tolerates garbled binary output from misbehaving
             # servers.
@@ -183,8 +216,28 @@ def _write_stderr_log_header(server_name: str) -> None:
     Gives operators a way to find each server's output in the shared
     ``mcp-stderr.log`` file without needing per-line prefixes (which would
     require a pipe + reader thread and complicate shutdown).
+
+    Also checks the log size before writing; if the shared log has grown
+    beyond the configured cap (50 MB), a warning is emitted -- the log
+    will be rotated on the next gateway restart.
     """
     fh = _get_mcp_stderr_log()
+    try:
+        from hermes_constants import get_hermes_home
+        log_path = get_hermes_home() / "logs" / "mcp-stderr.log"
+        try:
+            if log_path.stat().st_size >= _MAX_MCP_STDERR_LOG_BYTES:
+                logger.warning(
+                    "MCP stderr log has reached %d MB (cap=%d MB). "
+                    "It will be rotated on next gateway restart. "
+                    "Check MCP servers for excessive stderr output.",
+                    log_path.stat().st_size // (1024 * 1024),
+                    _MAX_MCP_STDERR_LOG_BYTES // (1024 * 1024),
+                )
+        except (OSError, FileNotFoundError):
+            pass
+    except Exception:
+        pass
     try:
         ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         fh.write(f"\n===== [{ts}] starting MCP server '{server_name}' =====\n")
@@ -3651,6 +3704,8 @@ _mcp_tool_server_names: Dict[str, str] = {}
 # Dedicated event loop running in a background daemon thread.
 _mcp_loop: Optional[asyncio.AbstractEventLoop] = None
 _mcp_thread: Optional[threading.Thread] = None
+# One-time startup orphan sweep guard (Linux only).
+_mcp_startup_sweep_done: bool = False
 
 # Protects _mcp_loop, _mcp_thread, _servers, MCP connection status maps,
 # _parallel_safe_servers, _mcp_tool_server_names, and _stdio_pids.
@@ -3777,10 +3832,15 @@ def _mcp_loop_exception_handler(loop, context):
 
 def _ensure_mcp_loop():
     """Start the background event loop thread if not already running."""
-    global _mcp_loop, _mcp_thread
+    global _mcp_loop, _mcp_thread, _mcp_startup_sweep_done
     with _lock:
         if _mcp_loop is not None and _mcp_loop.is_running():
             return
+        # One-time startup sweep: reap orphaned MCP processes from a
+        # previous gateway instance before spawning any new servers.
+        if not _mcp_startup_sweep_done:
+            _mcp_startup_sweep_done = True
+            _sweep_startup_mcp_orphans()
         _mcp_loop = asyncio.new_event_loop()
         _mcp_loop.set_exception_handler(_mcp_loop_exception_handler)
         _mcp_thread = threading.Thread(
@@ -5745,6 +5805,96 @@ def shutdown_mcp_servers():
                 logger.debug("Error during MCP shutdown: %s", exc)
 
     _stop_mcp_loop()
+
+
+def _sweep_startup_mcp_orphans() -> None:
+    """Detect and reap MCP stdio orphans from a previous gateway instance.
+
+    When the gateway crashes or is forcefully killed (SIGKILL, OOM, power
+    loss), the in-memory ``_orphan_stdio_pids`` / ``_stdio_pids`` tracking
+    is lost.  Any MCP stdio subprocesses that were still running survive as
+    reparented orphans (parent PID = 1).  This function scans ``/proc`` for
+    processes whose command line contains the MCP watchdog marker and whose
+    parent is init, signalling them to exit before new MCP servers are
+    spawned.
+
+    Only runs on Linux (/proc).  Returns immediately on other platforms
+    or if ``/proc`` is not available.  Best-effort: failures to read a
+    particular process's metadata are silently skipped.
+    """
+    if not os.path.isdir("/proc"):
+        return
+
+    import signal as _signal
+
+    watchdog_marker = "mcp_stdio_watchdog.py"
+    orphans: list[tuple[int, str]] = []  # (pid, description)
+
+    try:
+        for entry in os.listdir("/proc"):
+            if not entry.isdigit():
+                continue
+            pid_dir = os.path.join("/proc", entry)
+            try:
+                # Read parent PID from /proc/<pid>/status (simpler than
+                # parsing /proc/<pid>/stat with its embedded-space comm field).
+                status_path = os.path.join(pid_dir, "status")
+                ppid: Optional[int] = None
+                with open(status_path, "r", encoding="utf-8", errors="replace") as f:
+                    for line in f:
+                        if line.startswith("PPid:"):
+                            ppid = int(line.split(":")[1].strip())
+                            break
+                if ppid is None or ppid != 1:
+                    continue
+
+                # Read cmdline (NUL-separated)
+                cmdline_path = os.path.join(pid_dir, "cmdline")
+                with open(cmdline_path, "rb") as f:
+                    raw = f.read()
+                cmdline = raw.replace(b"\x00", b" ").decode("utf-8", errors="replace")
+
+                if watchdog_marker not in cmdline:
+                    continue
+
+                pid = int(entry)
+                orphans.append((pid, cmdline.strip()[:120]))
+            except (OSError, ValueError, PermissionError):
+                continue
+    except (OSError, PermissionError):
+        return
+
+    if not orphans:
+        return
+
+    logger.warning(
+        "Found %d MCP stdio orphans from a previous gateway instance -- reaping.",
+        len(orphans),
+    )
+
+    _sigkill = getattr(_signal, "SIGKILL", _signal.SIGTERM)
+
+    for pid, desc in orphans:
+        try:
+            os.kill(pid, _signal.SIGTERM)
+            logger.debug("Sent SIGTERM to orphaned MCP process %d (%s)", pid, desc)
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
+
+    # Brief grace period
+    time.sleep(1)
+
+    from gateway.status import _pid_exists
+    for pid, desc in orphans:
+        if _pid_exists(pid):
+            try:
+                os.kill(pid, _sigkill)
+                logger.warning(
+                    "Force-killed orphaned MCP process %d after SIGTERM timeout (%s)",
+                    pid, desc,
+                )
+            except (ProcessLookupError, PermissionError, OSError):
+                pass
 
 
 def _kill_orphaned_mcp_children(

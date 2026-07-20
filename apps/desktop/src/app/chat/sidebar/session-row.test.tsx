@@ -1,5 +1,7 @@
+import type * as React from 'react'
+
 import { atom } from 'nanostores'
-import { cleanup, render, screen } from '@testing-library/react'
+import { cleanup, render } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { SessionInfo } from '@/hermes'
@@ -30,11 +32,10 @@ vi.mock('@/i18n', () => ({
 
 vi.mock('@/app/chat/profile-tag', () => ({ ProfileTag: () => null }))
 vi.mock('@/app/chat/session-drag', () => ({ startSessionDrag: vi.fn() }))
-vi.mock('@/app/messaging/platform-icon', () => ({
-  PlatformAvatar: ({ platformName, ...rest }: { platformName: string } & Record<string, unknown>) => (
-    <span {...rest}>{platformName}</span>
-  )
-}))
+// PlatformAvatar is intentionally NOT mocked here (unlike before): it forwards
+// ref/props for real now (#67500), so this file exercises the actual
+// production component to verify its Tip wiring, instead of a stand-in that
+// spreads props the real component didn't.
 vi.mock('@/lib/chat-runtime', () => ({ sessionTitle: (s: SessionInfo) => (s as unknown as { title: string }).title }))
 vi.mock('@/lib/haptics', () => ({ triggerHaptic: vi.fn() }))
 vi.mock('@/lib/session-source', () => ({
@@ -62,10 +63,22 @@ vi.mock('@/store/windows', () => ({
 }))
 
 // SessionActionsMenu/SessionContextMenu carry their own menu-item deps
-// (archive/pin/delete wiring) that are irrelevant here — this file only
-// exercises the Tip fix, so pass their children straight through.
+// (archive/pin/delete wiring, plus a dozen unrelated stores) that are
+// irrelevant here — this file only exercises the Tip fix, so pass their
+// children straight through. The Tip-wraps-DropdownMenuTrigger composition
+// itself (and that the menu still opens) is covered directly against the
+// real component in session-actions-menu.test.tsx (#67500) — that test would
+// have caught the original regression; this passthrough mock intentionally
+// does NOT re-verify it, to avoid masking a future regression the way the
+// old inline <Tip> mock here once did.
+const sessionActionsMenuCalls: Array<{ tooltip?: React.ReactNode }> = []
+
 vi.mock('./session-actions-menu', () => ({
-  SessionActionsMenu: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+  SessionActionsMenu: (props: { children: React.ReactNode; tooltip?: React.ReactNode }) => {
+    sessionActionsMenuCalls.push({ tooltip: props.tooltip })
+
+    return <>{props.children}</>
+  },
   SessionContextMenu: ({ children }: { children: React.ReactNode }) => <>{children}</>
 }))
 
@@ -90,7 +103,9 @@ const tipTrigger = (el: HTMLElement) => el.closest('[data-slot="tooltip-trigger"
 const noop = vi.fn()
 
 describe('SidebarSessionRow', () => {
-  it('wraps the actions kebab in a Tip with the session title', () => {
+  it('passes the actions-kebab tooltip label through to SessionActionsMenu', () => {
+    sessionActionsMenuCalls.length = 0
+
     render(
       <SidebarSessionRow
         isPinned={false}
@@ -104,12 +119,15 @@ describe('SidebarSessionRow', () => {
       />
     )
 
-    const button = screen.getByRole('button', { name: 'Actions for Hermes doctor health check results' })
-    expect(tipTrigger(button)).toBeTruthy()
+    // The Tip itself now lives INSIDE SessionActionsMenu (composed around
+    // DropdownMenuTrigger, not around the children it receives) — see
+    // session-actions-menu.test.tsx for proof the menu still opens with it
+    // there. This just confirms session-row hands over the right label.
+    expect(sessionActionsMenuCalls[0]?.tooltip).toBe('Actions for Hermes doctor health check results')
   })
 
   it('does not render a handoff avatar for a locally-started session', () => {
-    render(
+    const { container } = render(
       <SidebarSessionRow
         isPinned={false}
         isSelected={false}
@@ -122,11 +140,15 @@ describe('SidebarSessionRow', () => {
       />
     )
 
-    expect(screen.queryByText('telegram')).toBeNull()
+    // PlatformAvatar's span is the only aria-hidden SPAN this row ever
+    // renders (idle dot / arc-border / branch-stem are all inactive here) —
+    // Codicon icons (e.g. the kebab trigger) are also aria-hidden but render
+    // as <i>, not <span>, so this selector doesn't accidentally match them.
+    expect(container.querySelector('span[aria-hidden="true"]')).toBeNull()
   })
 
   it('wraps the handoff platform avatar in a Tip for a session started on another platform', () => {
-    render(
+    const { container } = render(
       <SidebarSessionRow
         isPinned={false}
         isSelected={false}
@@ -143,10 +165,14 @@ describe('SidebarSessionRow', () => {
       />
     )
 
-    // PlatformAvatar is stubbed to render its platformName as text, and
-    // sessionSourceLabel is mocked as an identity function, so the visible
-    // text is the raw platform id.
-    const avatar = screen.getByText('telegram')
-    expect(tipTrigger(avatar)).toBeTruthy()
+    // PlatformAvatar is now the REAL component (see the note above the
+    // vi.mock block), which renders the Telegram brand SVG rather than the
+    // platform name as text — so query the avatar span itself (it's the row's
+    // only aria-hidden element in this state) rather than text content, and
+    // confirm its tooltip trigger actually attaches to it, not to a mock that
+    // faked the wiring (#67500).
+    const avatar = container.querySelector('span[aria-hidden="true"]')
+    expect(avatar).toBeTruthy()
+    expect(tipTrigger(avatar as HTMLElement)).toBeTruthy()
   })
 })

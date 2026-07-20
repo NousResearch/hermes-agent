@@ -1686,7 +1686,7 @@ async function cmdAudit(args) {
 }
 
 async function renderReport(audit, outputPath) {
-  const templatePath = path.join(__dirname, "..", "assets", "report-template.html");
+  const templatePath = path.join(__dirname, "..", "templates", "report-template.html");
   const template = await readFile(templatePath, "utf8");
   const reportModel = buildReportModel(audit);
   const safeReportJson = JSON.stringify(reportModel)

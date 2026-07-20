@@ -26,3 +26,5 @@ def test_mutations_are_review_first():
     script = (SKILL / "scripts" / "shopify-markets-localization-auditor.mjs").read_text(encoding="utf-8")
     assert "userErrors" in script
     assert "--execute" in (SKILL / "SKILL.md").read_text(encoding="utf-8")
+    assert (SKILL / "templates" / "report-template.html").exists()
+    assert '"templates", "report-template.html"' in script

@@ -6,7 +6,7 @@ import {
   useAuiState,
   useMessageRuntime
 } from '@assistant-ui/react'
-import { useStore } from '@nanostores/react'
+import { useStore as useNanostore } from '@nanostores/react'
 import { type FC, useCallback, useMemo, useState } from 'react'
 
 import {
@@ -18,6 +18,7 @@ import { MESSAGE_PARTS_COMPONENTS } from '@/components/assistant-ui/thread/messa
 import { StreamStallIndicator } from '@/components/assistant-ui/thread/status'
 import { formatMessageTimestamp } from '@/components/assistant-ui/thread/timestamp'
 import { TooltipIconButton } from '@/components/assistant-ui/tooltip-icon-button'
+import { MessageAvatar } from '@/components/chat/message-avatar'
 import { PreviewAttachment } from '@/components/chat/preview-attachment'
 import { Codicon } from '@/components/ui/codicon'
 import { CopyButton } from '@/components/ui/copy-button'
@@ -37,6 +38,7 @@ import { cn } from '@/lib/utils'
 import { playSpeechText, stopVoicePlayback } from '@/lib/voice-playback'
 import { notifyError } from '@/store/notifications'
 import { $voicePlayback } from '@/store/voice-playback'
+import { $avatarNames, DEFAULT_NAMES } from '@/store/avatar'
 
 interface MessageActionProps {
   messageId: string
@@ -85,18 +87,26 @@ export const AssistantMessage: FC<{
 
   const enterRef = useEnterAnimation(isRunning, `assistant-message:${messageId}`)
 
+  const assistantName = useNanostore($avatarNames).assistant || DEFAULT_NAMES.assistant
+
   if (isPlaceholder) {
     return null
   }
 
   return (
-    <MessagePrimitive.Root
-      className="group flex w-full min-w-0 max-w-full flex-col gap-0 self-start overflow-hidden"
-      data-role="assistant"
-      data-slot="aui_assistant-message-root"
-      data-streaming={isRunning ? 'true' : undefined}
-      ref={enterRef}
-    >
+    <div className="message-row message-row-assistant flex w-full min-w-0 items-start justify-start gap-2" data-slot="message-row">
+      <MessageAvatar clickToEdit role="assistant" />
+      <div className="flex min-w-0 flex-1 flex-col items-start">
+        <span className="message-name-label mb-0.5 ml-1 text-[0.6875rem] leading-4 text-(--ui-text-tertiary) select-none">
+          {assistantName}
+        </span>
+        <MessagePrimitive.Root
+          className="group flex w-full min-w-0 max-w-full flex-col gap-0 self-start overflow-hidden"
+          data-role="assistant"
+          data-slot="aui_assistant-message-root"
+          data-streaming={isRunning ? 'true' : undefined}
+          ref={enterRef}
+        >
       <div
         className="wrap-anywhere min-w-0 max-w-full overflow-hidden text-pretty text-[length:var(--conversation-text-font-size)] leading-(--dt-line-height) text-foreground"
         data-slot="aui_assistant-message-content"
@@ -134,6 +144,8 @@ export const AssistantMessage: FC<{
         <AssistantFooter getMessageText={getMessageText} messageId={messageId} onBranchInNewChat={onBranchInNewChat} />
       )}
     </MessagePrimitive.Root>
+      </div>
+    </div>
   )
 }
 
@@ -187,7 +199,7 @@ const AssistantActionBar: FC<MessageActionProps> = ({ messageId, getMessageText,
 const ReadAloudItem: FC<{ getText: () => string; messageId: string }> = ({ getText, messageId }) => {
   const { t } = useI18n()
   const copy = t.assistant.thread
-  const voicePlayback = useStore($voicePlayback)
+  const voicePlayback = useNanostore($voicePlayback)
 
   const readAloudStatus =
     voicePlayback.source === 'read-aloud' && voicePlayback.messageId === messageId ? voicePlayback.status : 'idle'

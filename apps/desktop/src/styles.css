@@ -1834,3 +1834,38 @@ text-* variant utilities. */ .btn-arc {
     opacity: 0.4;
   }
 }
+
+/* ------------------------------------------------------------------ */
+/*  Message avatars                                                   */
+/* ------------------------------------------------------------------ */
+
+.message-avatar {
+  border-radius: 9999px;
+  overflow: hidden;
+}
+
+.avatar-fallback-ring {
+  box-shadow: 0 0 0 1px var(--ui-stroke-tertiary, rgba(255, 255, 255, 0.1));
+}
+
+.message-avatar-editable:focus-visible {
+  outline: 2px solid var(--dt-midground, var(--dt-primary));
+  outline-offset: 2px;
+}
+
+/* Fade the name label in on hover — subtle, not distracting. */
+[data-slot="message-row"] .message-name-label {
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+
+[data-slot="message-row"]:hover .message-name-label,
+[data-slot="message-row"]:focus-within .message-name-label {
+  opacity: 1;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .message-name-label {
+    transition: none;
+  }
+}

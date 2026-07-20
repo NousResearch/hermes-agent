@@ -9655,6 +9655,95 @@ def _discard_lockfile_churn(git_cmd, repo_root):
         pass
 
 
+def _restore_feature_branch_after_update(
+    git_cmd, project_root, current_branch: str, target_branch: str
+) -> None:
+    """Return the checkout to the user's own branch after a successful update.
+
+    The no-updates path in ``_cmd_update_impl`` already switches back to the
+    branch the user was on; the successful-pull path historically left HEAD
+    on the update target, silently dropping any local feature branch from the
+    working tree (2026-07-19 incident: an update mid-session swapped a
+    running install from a user's feature branch to stock main, breaking the
+    features that branch carried). Rebase the user's branch onto the freshly
+    updated target and return to it; on any failure, abort cleanly, stay on
+    the target, and print the manual recovery command. Never raises — a
+    branch-restore failure must not fail the update itself.
+    """
+    if not current_branch or current_branch in (target_branch, "HEAD"):
+        return
+    try:
+        print(
+            f"→ Returning to your branch '{current_branch}' "
+            f"(rebasing onto {target_branch})..."
+        )
+        checkout = subprocess.run(
+            git_cmd + ["checkout", current_branch],
+            cwd=project_root,
+            capture_output=True,
+            text=True,
+        )
+        if checkout.returncode != 0:
+            print(
+                f"  ⚠ Could not check out '{current_branch}' — staying on "
+                f"{target_branch}."
+            )
+            return
+        # --autostash: the update flow may have re-applied the user's stashed
+        # local edits above; rebase refuses to run on a dirty tree otherwise.
+        rebase = subprocess.run(
+            git_cmd + ["rebase", "--autostash", target_branch],
+            cwd=project_root,
+            capture_output=True,
+            text=True,
+        )
+        if rebase.returncode != 0:
+            subprocess.run(
+                git_cmd + ["rebase", "--abort"],
+                cwd=project_root,
+                capture_output=True,
+                text=True,
+            )
+            subprocess.run(
+                git_cmd + ["checkout", target_branch],
+                cwd=project_root,
+                capture_output=True,
+                text=True,
+            )
+            print(
+                f"  ⚠ Rebasing '{current_branch}' onto {target_branch} hit "
+                f"conflicts — staying on {target_branch}."
+            )
+            print("  Your branch is untouched. Rebase manually when ready:")
+            print(f"    git checkout {current_branch} && git rebase {target_branch}")
+            return
+        # Same critical-file syntax guarantee the pulled target got: if the
+        # rebased tree can't bootstrap the CLI, prefer stock code over a
+        # bricked install.
+        syntax_ok, failing_path, _err = _validate_critical_files_syntax(project_root)
+        if not syntax_ok:
+            print(
+                f"  ⚠ Rebased tree fails the critical-file syntax check "
+                f"({failing_path}) — returning to {target_branch}."
+            )
+            print(
+                f"  Fix the branch, then check it out manually: "
+                f"git checkout {current_branch}"
+            )
+            subprocess.run(
+                git_cmd + ["checkout", target_branch],
+                cwd=project_root,
+                capture_output=True,
+                text=True,
+            )
+            return
+        print(
+            f"  ✓ '{current_branch}' rebased onto {target_branch} and checked out."
+        )
+    except Exception as exc:  # pragma: no cover — defensive: never fail the update
+        print(f"  ⚠ Branch restore skipped ({exc}) — staying on {target_branch}.")
+
+
 def cmd_update(args):
     """Update Hermes Agent to the latest version.
 
@@ -10236,6 +10325,16 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # Fork upstream sync logic (only for main branch on forks)
         if is_fork and branch == "main":
             _sync_with_upstream_if_needed(git_cmd, PROJECT_ROOT)
+
+        # Return the checkout to the user's own branch, rebased onto the
+        # updated target. The no-updates path above already switches back;
+        # without this, a successful pull strands the install on the target
+        # branch and silently drops the user's feature branch from the
+        # working tree. Runs BEFORE the dependency sync so the venv is built
+        # against the tree that will actually run.
+        _restore_feature_branch_after_update(
+            git_cmd, PROJECT_ROOT, current_branch, branch
+        )
 
         # Reinstall Python dependencies. Prefer .[all], but if one optional extra
         # breaks on this machine, keep base deps and reinstall the remaining extras

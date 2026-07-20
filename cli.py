@@ -10062,18 +10062,16 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         # next message re-sends the full input prefix, which is expensive on
         # long-context / high-reasoning models).
         #
-        # The toggle lives under ``auxiliary.mcp.auto_reload_on_config_change``
-        # in DEFAULT_CONFIG (same section as the MCP aux-task provider
-        # settings), so resolve it through that path, not a top-level ``mcp``
-        # key that does not exist in the loaded config shape.
-        try:
-            from hermes_cli.config import load_config as _load_cfg
-            _cfg = _load_cfg()
-            _aux = _cfg.get("auxiliary") if isinstance(_cfg, dict) else None
-            _mcp = _aux.get("mcp") if isinstance(_aux, dict) else None
-            _auto = _mcp.get("auto_reload_on_config_change", True) if isinstance(_mcp, dict) else True
-        except Exception:
-            _auto = True
+        # The toggle is the top-level ``mcp.auto_reload_on_config_change``
+        # key (see DEFAULT_CONFIG).  Read it from the config we just parsed
+        # so the user can flip it in the same edit that changes mcp_servers;
+        # missing key means default-on.
+        _mcp_cfg = new_cfg.get("mcp")
+        _auto = (
+            _mcp_cfg.get("auto_reload_on_config_change", True)
+            if isinstance(_mcp_cfg, dict)
+            else True
+        )
 
         self._config_mcp_servers = new_mcp
 

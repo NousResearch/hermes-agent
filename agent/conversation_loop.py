@@ -32,9 +32,12 @@ from agent.conversation_compression import conversation_history_after_compressio
 from agent.display import KawaiiSpinner
 from agent.error_classifier import FailoverReason, classify_api_error
 from agent.iteration_budget import IterationBudget
-from agent.turn_context import build_turn_context
+from agent.turn_context import (
+    build_turn_context,
+    compose_user_api_content,
+    reanchor_current_turn_user_idx,
+)
 from agent.turn_retry_state import TurnRetryState
-from agent.memory_manager import build_memory_context_block
 from agent.message_sanitization import (
     close_interrupted_tool_sequence,
     _repair_tool_call_arguments,
@@ -49,6 +52,7 @@ from agent.message_sanitization import (
 )
 from agent.model_metadata import (
     MINIMUM_CONTEXT_LENGTH,
+    _estimate_tools_tokens_rough,
     estimate_messages_tokens_rough,
     estimate_request_tokens_rough,
     get_context_length_from_provider_error,
@@ -629,8 +633,8 @@ def run_conversation(
     # ── Per-turn setup (the prologue) ──
     # All once-per-turn setup — stdio guarding, retry-counter resets, user
     # message sanitization, todo/nudge hydration, system-prompt restore-or-
-    # build, crash-resilience persistence, preflight compression, the
-    # ``pre_llm_call`` plugin hook, and external-memory prefetch — lives in
+    # build, preflight compression, the ``pre_llm_call`` plugin hook,
+    # external-memory prefetch, and crash-resilience persistence — lives in
     # ``build_turn_context``.  It mutates ``agent`` exactly as the inline code
     # did and returns the locals the loop below reads back.  See
     # ``agent/turn_context.py``.
@@ -650,6 +654,9 @@ def run_conversation(
         set_session_context=set_session_context,
         set_current_write_origin=set_current_write_origin,
         ra=_ra,
+        # MoA turns append per-call aggregated context to the API copy of the
+        # user message, so no byte-stable api_content sidecar can be stamped.
+        moa_active=bool(moa_config),
     )
     user_message = _ctx.user_message
     original_user_message = _ctx.original_user_message
@@ -683,6 +690,12 @@ def run_conversation(
     # user-facing result available; it must not be confused with error or
     # recovery text produced by unrelated exit paths.
     _pending_verification_response = None
+    # Tracks whether the pending verification candidate was already streamed
+    # to the user as interim content. The finalizer uses this to set
+    # ``_response_was_previewed`` ONLY when the pending candidate is actually
+    # reused as the final response — not merely because any interim was
+    # streamed. (#65919 review: response-loss blocker)
+    _pending_verification_response_previewed = False
 
     # Per-turn tally of consecutive successful credential-pool token refreshes,
     # keyed by (provider, pool-entry-id). A persistent upstream 401 lets
@@ -858,23 +871,51 @@ def run_conversation(
         for idx, msg in enumerate(messages):
             api_msg = msg.copy()
 
+            # api_content is the persistence sidecar carrying the exact bytes
+            # sent to the API for this message when they differ from the clean
+            # stored content (see compose_user_api_content in turn_context).
+            # It is bookkeeping, never a provider field — pop it from EVERY
+            # outgoing copy.
+            _api_content = api_msg.pop("api_content", None)
+
             # Inject ephemeral context into the current turn's user message.
             # Sources: memory manager prefetch + plugin pre_llm_call hooks
             # with target="user_message" (the default).  Both are
             # API-call-time only — the original message in `messages` is
-            # never mutated, so nothing leaks into session persistence.
+            # never mutated beyond the api_content stamp, so nothing leaks
+            # into the clean transcript content.
             if idx == current_turn_user_idx and msg.get("role") == "user":
-                _injections = []
-                if _ext_prefetch_cache:
-                    _fenced = build_memory_context_block(_ext_prefetch_cache)
-                    if _fenced:
-                        _injections.append(_fenced)
-                if _plugin_user_context:
-                    _injections.append(_plugin_user_context)
-                if _injections:
-                    _base = api_msg.get("content", "")
-                    if isinstance(_base, str):
-                        api_msg["content"] = _base + "\n\n" + "\n\n".join(_injections)
+                if isinstance(_api_content, str) and _api_content:
+                    # Stamped by the prologue from the same composition —
+                    # reuse it so the persisted sidecar and the wire cannot
+                    # drift, and so every pass this turn sends identical
+                    # bytes (composed from msg["content"], never from a
+                    # previously-injected copy).
+                    api_msg["content"] = _api_content
+                else:
+                    # Callers that bypass the prologue stamping: compose live.
+                    _composed = compose_user_api_content(
+                        api_msg.get("content", ""),
+                        _ext_prefetch_cache,
+                        _plugin_user_context,
+                    )
+                    if _composed is not None:
+                        api_msg["content"] = _composed
+            elif (
+                isinstance(_api_content, str)
+                and _api_content
+                and msg.get("role") in ("user", "assistant")
+            ):
+                # Historical message: replay the exact bytes sent when it was
+                # live, so the provider prompt-cache prefix stays byte-stable
+                # instead of diverging at the injection point and
+                # re-prefilling everything after it. User rows carry the
+                # prefetch/plugin injection sidecar; user AND assistant rows
+                # can carry a sanitize-divergence sidecar (content that
+                # ``get_messages_as_conversation``'s sanitize_context/strip
+                # would rewrite on reload — see the capture in
+                # ``_flush_messages_to_session_db``).
+                api_msg["content"] = _api_content
 
             # For ALL assistant messages, pass reasoning back to the API
             # This ensures multi-turn reasoning context is preserved
@@ -1038,17 +1079,16 @@ def run_conversation(
         # the OpenAI SDK. Sanitizing here prevents the 3-retry cycle.
         _sanitize_messages_surrogates(api_messages)
 
-        # Calculate approximate request size for logging and pressure checks.
-        # estimate_messages_tokens_rough(api_messages) includes the system
-        # prompt copy but not the tool schema payload, which is sent as a
-        # separate field. Add tools back for compression decisions so long
-        # tool-heavy turns do not creep up to the context ceiling and leave
-        # no room for the model's final answer.
-        total_chars = sum(len(str(msg)) for msg in api_messages)
+        # One image-stripped message estimate feeds both figures. Was: a
+        # str(msg) char walk (re-serialized base64 every call) + a second
+        # messages walk inside estimate_request_tokens_rough. Tools added
+        # separately (compression needs them: 50+ tools = 20-30K tokens).
+        # total_chars is a rough (~) proxy — verbose log + hook metric only.
         approx_tokens = estimate_messages_tokens_rough(api_messages)
-        request_pressure_tokens = estimate_request_tokens_rough(
-            api_messages, tools=agent.tools or None
+        request_pressure_tokens = approx_tokens + (
+            _estimate_tools_tokens_rough(agent.tools) if agent.tools else 0
         )
+        total_chars = approx_tokens * 4
 
         _runtime_context_error = _ollama_context_limit_error(
             agent, request_pressure_tokens
@@ -4352,6 +4392,16 @@ def run_conversation(
             # to fit the context window.
             retry_count += 1
             _retry.restart_with_compressed_messages = False
+            # In-loop compression rebuilt `messages` with fresh compaction
+            # copies, so the pre-compression current-turn index is stale.
+            # Re-anchor exactly like the prologue does: a stale index that
+            # lands on a historical user message would make the live-compose
+            # fallback inject this turn's prefetch into that message on the
+            # wire only, diverging the next turn's replayed prefix there.
+            current_turn_user_idx = reanchor_current_turn_user_idx(
+                messages, user_message
+            )
+            agent._persist_user_message_idx = current_turn_user_idx
             continue
 
         if _retry.restart_with_rebuilt_messages:
@@ -5478,17 +5528,17 @@ def run_conversation(
                         getattr(agent, "_verification_stop_nudges", 0) + 1
                     )
                     final_msg["finish_reason"] = "verification_required"
-                    final_msg["_verification_stop_synthetic"] = True
+                    # The assistant response is real content — persist it and
+                    # emit to the UI as an interim message so the user sees the
+                    # attempted final answer before the verification loop runs.
+                    # Only the nudge is flagged synthetic so it gets stripped
+                    # from the durable transcript (#65919 §7).
+                    agent._emit_interim_assistant_message(final_msg)
                     messages.append(final_msg)
-                    # Keep the attempted final answer in model history so the
-                    # synthetic user nudge preserves role alternation, but do
-                    # not surface it to the user as an interim answer. The
-                    # whole point of this guard is to prevent premature
-                    # "done" claims before checks run. Both the attempted
-                    # answer and the nudge are flagged synthetic so neither
-                    # persists — otherwise the resumed transcript keeps a
-                    # premature "done" with the nudge stripped, producing an
-                    # assistant→assistant adjacency. (#55733)
+                    try:
+                        agent._flush_messages_to_session_db(messages, conversation_history)
+                    except Exception:
+                        logger.debug("verify-on-stop interim flush failed", exc_info=True)
                     messages.append({
                         "role": "user",
                         "content": _verify_nudge,
@@ -5504,7 +5554,13 @@ def run_conversation(
                     # continuation-budget exhaustion.  ``final_response`` itself
                     # must be cleared so the finalizer can distinguish this gate
                     # from unrelated error/recovery exits. (#61631)
+                    # Track whether this candidate was already streamed so the
+                    # finalizer can mark the turn previewed only if the
+                    # candidate is actually reused as the final response.
                     _pending_verification_response = final_response
+                    _pending_verification_response_previewed = (
+                        agent._interim_content_was_streamed(final_response or "")
+                    )
                     final_response = None
                     continue
 
@@ -5543,12 +5599,17 @@ def run_conversation(
                 if _verify_nudge2:
                     agent._pre_verify_nudges = _attempt + 1
                     final_msg["finish_reason"] = "verify_hook_continue"
-                    final_msg["_pre_verify_synthetic"] = True
-                    # Same alternation contract as verify-on-stop: keep the
-                    # attempted answer in history, follow it with a synthetic
-                    # user nudge, and don't surface the premature answer. Both
-                    # are flagged synthetic so neither persists. (#55733)
+                    # The assistant response is real content — persist it and
+                    # emit to the UI as an interim message so the user sees the
+                    # attempted final answer before the pre_verify loop runs.
+                    # Only the nudge is flagged synthetic so it gets stripped
+                    # from the durable transcript (#65919 §7).
+                    agent._emit_interim_assistant_message(final_msg)
                     messages.append(final_msg)
+                    try:
+                        agent._flush_messages_to_session_db(messages, conversation_history)
+                    except Exception:
+                        logger.debug("pre_verify interim flush failed", exc_info=True)
                     messages.append({
                         "role": "user",
                         "content": _verify_nudge2,
@@ -5558,6 +5619,9 @@ def run_conversation(
                     logger.debug("pre_verify nudge issued (attempt %d)",
                                  agent._pre_verify_nudges)
                     _pending_verification_response = final_response
+                    _pending_verification_response_previewed = (
+                        agent._interim_content_was_streamed(final_response or "")
+                    )
                     final_response = None
                     continue
 
@@ -5605,6 +5669,9 @@ def run_conversation(
                     # exhaustion path does not treat the narrated stop as
                     # a completed answer.
                     _pending_verification_response = final_response
+                    _pending_verification_response_previewed = (
+                        agent._interim_content_was_streamed(final_response or "")
+                    )
                     final_response = None
                     continue
 
@@ -5729,6 +5796,7 @@ def run_conversation(
         _should_review_memory=_should_review_memory,
         _turn_exit_reason=_turn_exit_reason,
         _pending_verification_response=_pending_verification_response,
+        _pending_verification_response_previewed=_pending_verification_response_previewed,
     )
 
 

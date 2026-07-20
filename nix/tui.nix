@@ -1,7 +1,16 @@
 # nix/tui.nix — Hermes TUI (Ink/React) compiled with tsc and bundled
 { pkgs, hermesNpmLib, ... }:
 let
+<<<<<<< fix/nix-tui-source-filter
   npm = hermesNpmLib.mkNpmPassthru { dirs = [ "ui-tui" "apps/shared" ]; };
+=======
+  npm = hermesNpmLib.mkNpmPassthru {
+    dirs = [
+      "ui-tui"
+      "apps/shared"
+    ];
+  };
+>>>>>>> main
 
   packageJson = builtins.fromJSON (builtins.readFile (npm.src + "/ui-tui/package.json"));
   version = packageJson.version;

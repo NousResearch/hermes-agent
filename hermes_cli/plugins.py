@@ -1919,10 +1919,13 @@ class PluginManager:
                     results.append(ret)
             except Exception as exc:
                 logger.warning(
-                    "Hook '%s' callback %s raised: %s",
+                    "Hook '%s' callback %s (module: %s) raised: %s",
                     hook_name,
                     getattr(cb, "__name__", repr(cb)),
+                    getattr(getattr(cb, "__module__", None), "__name__", None)
+                    or getattr(cb, "__module__", "unknown"),
                     exc,
+                    exc_info=True,
                 )
         return results
 

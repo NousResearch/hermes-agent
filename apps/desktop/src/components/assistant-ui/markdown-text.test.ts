@@ -60,6 +60,34 @@ describe('preprocessMarkdown', () => {
     expect(output).toContain('- Pure white (`#ffffff`)')
   })
 
+  it('does not leak bare text/plain fence labels when demoting prose', () => {
+    const fence = '```'
+    const metrics = [
+      `${fence}text`,
+      'turns: 31 (max-turns stop)',
+      'cost: ~$1.31',
+      'duration: ~205s',
+      fence
+    ].join('\n')
+    const evidence = [
+      `${fence}text`,
+      "pytest -k 'location_device_status or resolve_location'",
+      '10 passed',
+      'EXIT:0',
+      fence
+    ].join('\n')
+
+    for (const input of [metrics, evidence]) {
+      const output = preprocessMarkdown(input)
+      expect(output).not.toMatch(/^text\s*$/m)
+      expect(output.split('\n').some(line => line.trim() === 'text')).toBe(false)
+      expect(output).not.toContain('```text')
+    }
+
+    expect(preprocessMarkdown(metrics)).toContain('turns: 31 (max-turns stop)')
+    expect(preprocessMarkdown(evidence)).toContain('10 passed')
+  })
+
   it('keeps valid code fences intact', () => {
     const fence = '```'
     const input = [`${fence}ts`, 'const value = 1;', fence].join('\n')

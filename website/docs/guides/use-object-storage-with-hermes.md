@@ -91,9 +91,9 @@ A dedicated bucket per agent keeps the blast radius small: a confused agent
 can only rearrange the bucket it works in.
 
 Tigris adds two operator-side controls that extend this. Bucket
-[snapshots](https://www.tigrisdata.com/docs/buckets/snapshots/) capture the
-bucket at a point in time, so an agent mistake is a rollback rather than a
-loss. [Forks](https://www.tigrisdata.com/docs/buckets/forking/) create a
+[snapshots](https://www.tigrisdata.com/docs/snapshots/) capture the bucket at
+a point in time, so an agent mistake is a rollback rather than a loss.
+[Forks](https://www.tigrisdata.com/docs/forks/) create a
 zero-copy branch of a bucket, so you can point an experimental agent, or a
 new version of your prompts, at a fork of the real artifact history and throw
 it away afterwards — testing against real accumulated state instead of

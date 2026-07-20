@@ -116,9 +116,10 @@ class TestSecureDirHomeModeWarning:
         import hermes_cli.config as config_module
         config_module._HERMES_HOME_MODE_WARNED = False
 
-    def test_warns_when_mode_grants_group_or_other_access(self, tmp_path, caplog):
+    @pytest.mark.parametrize("mode", ["0755", "0720", "0702"])
+    def test_warns_when_mode_grants_group_or_other_access(self, tmp_path, caplog, mode):
         self._reset_warned_flag()
-        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path), "HERMES_HOME_MODE": "0755"}):
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path), "HERMES_HOME_MODE": mode}):
             with caplog.at_level("WARNING", logger="hermes_cli.config"):
                 ensure_hermes_home()
         assert any("HERMES_HOME_MODE" in r.message for r in caplog.records)

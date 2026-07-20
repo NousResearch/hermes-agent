@@ -164,7 +164,9 @@ class TestHandleReasoningCommand(unittest.TestCase):
 
         save_config.assert_not_called()
         self.assertEqual(stub.reasoning_config, {"enabled": True, "effort": "high"})
-        self.assertIsNone(stub.agent)
+        # Agent is updated in-place, not destroyed (prompt cache preserved).
+        self.assertIsNotNone(stub.agent)
+        self.assertEqual(stub.agent.reasoning_config, {"enabled": True, "effort": "high"})
 
     def test_effort_global_flag_persists_config(self):
         """--global opts into persisting the effort to config.yaml."""
@@ -180,7 +182,9 @@ class TestHandleReasoningCommand(unittest.TestCase):
 
         save_config.assert_called_once_with("agent.reasoning_effort", "high")
         self.assertEqual(stub.reasoning_config, {"enabled": True, "effort": "high"})
-        self.assertIsNone(stub.agent)
+        # Agent is updated in-place, not destroyed (prompt cache preserved).
+        self.assertIsNotNone(stub.agent)
+        self.assertEqual(stub.agent.reasoning_config, {"enabled": True, "effort": "high"})
 
     def test_effort_session_flag_does_not_persist_config(self):
         """--session (explicit no-op alias for the default) stays session-only."""
@@ -192,7 +196,9 @@ class TestHandleReasoningCommand(unittest.TestCase):
 
         save_config.assert_not_called()
         self.assertEqual(stub.reasoning_config, {"enabled": True, "effort": "high"})
-        self.assertIsNone(stub.agent)
+        # Agent is updated in-place, not destroyed (prompt cache preserved).
+        self.assertIsNotNone(stub.agent)
+        self.assertEqual(stub.agent.reasoning_config, {"enabled": True, "effort": "high"})
 
     def test_new_session_clears_session_reasoning_override(self):
         """/new and /clear must not carry a session-only effort override forward."""

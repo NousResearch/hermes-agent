@@ -86,7 +86,9 @@ class TestHandleFastCommand(unittest.TestCase):
         # Session-scoped by default: no config write.
         mock_save.assert_not_called()
         self.assertIsNone(stub.service_tier)
-        self.assertIsNone(stub.agent)
+        # Agent is updated in-place, not destroyed (prompt cache preserved).
+        self.assertIsNotNone(stub.agent)
+        self.assertEqual(stub.agent.service_tier, stub.service_tier)
 
     def test_global_flag_persists_service_tier(self):
         cli_mod = _import_cli()
@@ -99,7 +101,9 @@ class TestHandleFastCommand(unittest.TestCase):
 
         mock_save.assert_called_once_with("agent.service_tier", "normal")
         self.assertIsNone(stub.service_tier)
-        self.assertIsNone(stub.agent)
+        # Agent is updated in-place, not destroyed (prompt cache preserved).
+        self.assertIsNotNone(stub.agent)
+        self.assertEqual(stub.agent.service_tier, stub.service_tier)
 
     def test_unsupported_model_does_not_expose_fast(self):
         cli_mod = _import_cli()

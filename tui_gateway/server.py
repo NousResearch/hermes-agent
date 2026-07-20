@@ -242,6 +242,12 @@ _LONG_HANDLERS = frozenset(
         # the WS read loop and causing false "needs setup" (#50005 family).
         "setup.runtime_check",
         "setup.status",
+        # Desktop also polls the in-memory live-session registry every 15s.
+        # The handler is normally cheap, but under heavy agent GIL pressure it
+        # can still stall for tens of seconds. Keep it off the WS reader thread
+        # so a delayed status rehydrate cannot block runtime readiness, prompt
+        # submission, or interrupts queued behind it on the same socket.
+        "session.active_list",
         "session.branch",
         "session.compress",
         "session.list",

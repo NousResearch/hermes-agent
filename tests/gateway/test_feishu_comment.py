@@ -256,5 +256,113 @@ class TestWikiReverseLookup(unittest.TestCase):
         self.assertEqual(second_call_kwargs[1].get("wiki_token") or second_call_kwargs[0][3], "WIKI123")
 
 
+
+# ---------------------------------------------------------------------------
+# gather exception isolation — return_exceptions=True regression coverage
+# ---------------------------------------------------------------------------
+
+
+class TestGatherExceptionIsolation(unittest.TestCase):
+    """When one of the parallel fetches raises, the handler must not crash
+    and must retain the successful result from the other fetch."""
+
+    def _run(self, coro):
+        loop = asyncio.new_event_loop()
+        try:
+            return loop.run_until_complete(coro)
+        finally:
+            loop.close()
+
+    @patch("plugins.platforms.feishu.feishu_comment.deliver_comment_reply",
+           new_callable=AsyncMock, return_value=True)
+    @patch("plugins.platforms.feishu.feishu_comment.delete_comment_reaction",
+           new_callable=AsyncMock)
+    @patch.object(asyncio, "get_running_loop")
+    @patch("plugins.platforms.feishu.feishu_comment_rules.has_wiki_keys", return_value=False)
+    @patch("plugins.platforms.feishu.feishu_comment_rules.is_user_allowed", return_value=True)
+    @patch("plugins.platforms.feishu.feishu_comment_rules.resolve_rule",
+           return_value=Mock(exact_key=None, wiki_token=None))
+    @patch("plugins.platforms.feishu.feishu_comment_rules.load_config")
+    @patch("plugins.platforms.feishu.feishu_comment.list_comment_replies", new_callable=AsyncMock,
+           return_value=[])
+    @patch("plugins.platforms.feishu.feishu_comment._run_comment_agent", return_value="Test reply")
+    @patch("plugins.platforms.feishu.feishu_comment.add_comment_reaction", new_callable=AsyncMock)
+    @patch("plugins.platforms.feishu.feishu_comment.batch_query_comment", new_callable=AsyncMock)
+    @patch("plugins.platforms.feishu.feishu_comment.query_document_meta", new_callable=AsyncMock)
+    def test_meta_fetch_fails_comment_retained(
+        self, mock_meta, mock_batch, mock_reaction, mock_agent, mock_replies,
+        mock_load, mock_resolve, mock_allowed, mock_wiki_keys,
+        mock_get_loop, mock_del_reaction, mock_deliver,
+    ):
+        """query_document_meta raises → doc_meta defaults to {}, comment_detail retained,
+        handler does not crash and continues to deliver a reply."""
+        from plugins.platforms.feishu.feishu_comment import handle_drive_comment_event
+
+        mock_meta.side_effect = RuntimeError("network error")
+        mock_batch.return_value = {"is_whole": False, "quote": ""}
+        mock_load.return_value = Mock()
+
+        # Mock the executor so _run_comment_agent is called directly (not in a thread)
+        mock_loop = Mock()
+        async def fake_run_in_executor(executor, fn, *args):
+            return fn(*args)
+        mock_loop.run_in_executor = fake_run_in_executor
+        mock_get_loop.return_value = mock_loop
+
+        evt = _make_event()
+        # Must not propagate the exception from meta_task
+        self._run(handle_drive_comment_event(Mock(), evt, self_open_id="ou_bot"))
+
+        # comment fetch was called
+        mock_batch.assert_called_once()
+        # Agent was called and reply was delivered
+        mock_deliver.assert_called_once()
+
+    @patch("plugins.platforms.feishu.feishu_comment.deliver_comment_reply",
+           new_callable=AsyncMock, return_value=True)
+    @patch("plugins.platforms.feishu.feishu_comment.delete_comment_reaction",
+           new_callable=AsyncMock)
+    @patch.object(asyncio, "get_running_loop")
+    @patch("plugins.platforms.feishu.feishu_comment_rules.has_wiki_keys", return_value=False)
+    @patch("plugins.platforms.feishu.feishu_comment_rules.is_user_allowed", return_value=True)
+    @patch("plugins.platforms.feishu.feishu_comment_rules.resolve_rule",
+           return_value=Mock(exact_key=None, wiki_token=None))
+    @patch("plugins.platforms.feishu.feishu_comment_rules.load_config")
+    @patch("plugins.platforms.feishu.feishu_comment.list_comment_replies", new_callable=AsyncMock,
+           return_value=[])
+    @patch("plugins.platforms.feishu.feishu_comment._run_comment_agent", return_value="Test reply")
+    @patch("plugins.platforms.feishu.feishu_comment.add_comment_reaction", new_callable=AsyncMock)
+    @patch("plugins.platforms.feishu.feishu_comment.batch_query_comment", new_callable=AsyncMock)
+    @patch("plugins.platforms.feishu.feishu_comment.query_document_meta", new_callable=AsyncMock)
+    def test_comment_fetch_fails_meta_retained(
+        self, mock_meta, mock_batch, mock_reaction, mock_agent, mock_replies,
+        mock_load, mock_resolve, mock_allowed, mock_wiki_keys,
+        mock_get_loop, mock_del_reaction, mock_deliver,
+    ):
+        """batch_query_comment raises → comment_detail defaults to {}, doc_meta retained,
+        handler does not crash and continues to deliver a reply."""
+        from plugins.platforms.feishu.feishu_comment import handle_drive_comment_event
+
+        mock_meta.return_value = {"title": "TestDoc", "url": "https://feishu.cn/doc/xxx"}
+        mock_batch.side_effect = RuntimeError("rate limit")
+        mock_load.return_value = Mock()
+
+        # Mock the executor so _run_comment_agent is called directly (not in a thread)
+        mock_loop = Mock()
+        async def fake_run_in_executor(executor, fn, *args):
+            return fn(*args)
+        mock_loop.run_in_executor = fake_run_in_executor
+        mock_get_loop.return_value = mock_loop
+
+        evt = _make_event()
+        # Must not propagate the exception from comment_task
+        self._run(handle_drive_comment_event(Mock(), evt, self_open_id="ou_bot"))
+
+        # meta fetch was called
+        mock_meta.assert_called_once()
+        # Agent was called and reply was delivered
+        mock_deliver.assert_called_once()
+
+
 if __name__ == "__main__":
     unittest.main()

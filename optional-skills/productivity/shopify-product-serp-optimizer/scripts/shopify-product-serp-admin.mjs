@@ -16,7 +16,7 @@ const MAX_SCAN_PRODUCTS = 250;
 const execFileAsync = promisify(execFile);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SKILL_ROOT = path.resolve(__dirname, "..");
-const REPORT_TEMPLATE = path.join(SKILL_ROOT, "assets", "report-template.html");
+const REPORT_TEMPLATE = path.join(SKILL_ROOT, "templates", "report-template.html");
 
 function fail(message) {
   console.error(JSON.stringify({ ok: false, error: message }, null, 2));

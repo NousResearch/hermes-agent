@@ -28,3 +28,5 @@ def test_custom_domain_is_described_as_public_storefront_mode():
     script = (SKILL / "scripts" / "shopify-product-serp-admin.mjs").read_text(encoding="utf-8")
     assert "public_storefront" in skill and "public_storefront" in script
     assert "media?.nodes" in script or "Array.isArray(product?.media)" in script
+    assert (SKILL / "templates" / "report-template.html").exists()
+    assert '"templates", "report-template.html"' in script

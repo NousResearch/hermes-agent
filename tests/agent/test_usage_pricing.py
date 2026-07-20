@@ -80,6 +80,78 @@ def test_normalize_usage_openai_reads_top_level_anthropic_cache_fields():
 
 
 
+def _openrouter_flat_pricing(monkeypatch):
+    """Pin an OpenRouter route to $1/M prompt, $5/M completion (no cache rates)."""
+    monkeypatch.setattr(
+        "agent.usage_pricing.fetch_model_metadata",
+        lambda: {
+            "deepseek/deepseek-v4-pro": {
+                "pricing": {
+                    "prompt": "0.000001",
+                    "completion": "0.000005",
+                }
+            }
+        },
+    )
+
+
+def test_estimate_usage_cost_prices_reasoning_tokens_at_output_rate(monkeypatch):
+    """Reasoning tokens are billed as completion tokens and must be priced at the
+    output rate, not silently dropped (#68081)."""
+    _openrouter_flat_pricing(monkeypatch)
+
+    result = estimate_usage_cost(
+        "deepseek/deepseek-v4-pro",
+        CanonicalUsage(input_tokens=1000, output_tokens=1000, reasoning_tokens=5000),
+        provider="openrouter",
+        base_url="https://openrouter.ai/api/v1",
+    )
+
+    assert result.status == "estimated"
+    # (1000 × $1/M) + (1000 × $5/M) + (5000 reasoning × $5/M) = $0.031
+    assert float(result.amount_usd) == 0.031
+
+
+def test_estimate_usage_cost_reasoning_only_marks_unknown_without_output_rate(monkeypatch):
+    """A reasoning-only response must not be priced at $0 when the route has no
+    output rate — it should report unknown, mirroring the output-token guard."""
+    monkeypatch.setattr(
+        "agent.usage_pricing.fetch_model_metadata",
+        lambda: {"some/model": {"pricing": {"prompt": "0.000001"}}},
+    )
+
+    result = estimate_usage_cost(
+        "some/model",
+        CanonicalUsage(reasoning_tokens=5000),
+        provider="openrouter",
+        base_url="https://openrouter.ai/api/v1",
+    )
+
+    assert result.status == "unknown"
+
+
+def test_custom_endpoint_models_api_pricing_is_supported(monkeypatch):
+    monkeypatch.setattr(
+        "agent.usage_pricing.fetch_endpoint_model_metadata",
+        lambda base_url, api_key=None: {
+            "zai-org/GLM-5-TEE": {
+                "pricing": {
+                    "prompt": "0.0000005",
+                    "completion": "0.000002",
+                }
+            }
+        },
+    )
+
+    entry = get_pricing_entry(
+        "zai-org/GLM-5-TEE",
+        provider="custom",
+        base_url="https://llm.chutes.ai/v1",
+        api_key="test-key",
+    )
+
+    assert float(entry.input_cost_per_million) == 0.5
+    assert float(entry.output_cost_per_million) == 2.0
 
 
 

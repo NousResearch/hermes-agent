@@ -19,6 +19,7 @@ Improvements over v2:
 import hashlib
 import json
 import logging
+import os
 import sqlite3
 import re
 import time
@@ -2222,6 +2223,32 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
         else:
             _temporal_anchoring_rule = ""
 
+        # Git ground truth: inject recent commit log so the summarizer can
+        # cross-reference claims about completed work against actual git history.
+        # Graceful fallback when not in a git repo or git is unavailable.
+        _git_ground_truth = ""
+        try:
+            import subprocess
+            _git_log = subprocess.run(
+                ["git", "log", "--oneline", "-10", "--no-decorate"],
+                capture_output=True, text=True, timeout=5,
+                cwd=os.getcwd(),
+            )
+            if _git_log.returncode == 0 and _git_log.stdout.strip():
+                _git_ground_truth = (
+                    "\nGIT GROUND TRUTH (recent commits — cross-reference claims "
+                    "about completed work against these):\n"
+                    f"{_git_log.stdout.rstrip()}\n"
+                    "When summarizing, check claims of 'committed', 'fixed', or "
+                    "'completed work' against the log above. If a commit matches "
+                    "the described work, note the abbreviated hash. If the log "
+                    "does NOT contain a matching commit, flag the claim as "
+                    "UNVERIFIED (the work may still be uncommitted locally).\n"
+                )
+        except Exception:
+            # git not available, not a repo, or timeout — skip gracefully
+            pass
+
         # Shared structured template (used by both paths).
         _template_sections = f"""{HISTORICAL_TASK_HEADING}
 [THE SINGLE MOST IMPORTANT FIELD. Capture the user's most recent unfulfilled
@@ -2296,6 +2323,7 @@ Be specific with file paths, commands, line numbers, and results.]
 
 Target ~{summary_budget} tokens. Be CONCRETE — include file paths, command outputs, error messages, line numbers, and specific values. Avoid vague descriptions like "made some changes" — say exactly what changed.
 {_temporal_anchoring_rule}
+{_git_ground_truth}
 Write only the summary body. Do not include any preamble or prefix."""
 
         if self._previous_summary:

@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 
 import type { AuxiliaryModelsResponse } from '@/types/hermes'
 
-import { buildModelRoutingLanes, ModelRoutingOverview } from './model-routing-overview'
+import { AUX_MODEL_TASK_KEYS, buildModelRoutingLanes, ModelRoutingOverview } from './model-routing-overview'
 
 afterEach(cleanup)
 
@@ -64,7 +64,7 @@ describe('ModelRoutingOverview', () => {
 
     const overview = screen.getByRole('region', { name: 'Model routing' })
 
-    expect(overview.querySelectorAll('[data-routing-lane]')).toHaveLength(12)
+    expect(overview.querySelectorAll('[data-routing-lane]')).toHaveLength(AUX_MODEL_TASK_KEYS.length + 1)
     expect(screen.getByText('Main chat')).toBeTruthy()
     expect(screen.getAllByText('Kanban decomposer').length).toBeGreaterThan(0)
     expect(screen.getAllByText('nous').length).toBeGreaterThan(1)

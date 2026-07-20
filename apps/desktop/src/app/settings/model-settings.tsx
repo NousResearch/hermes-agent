@@ -63,6 +63,25 @@ export function ModelSettingsSkeleton() {
           <Skeleton className="size-4" />
           <Skeleton className="h-4 w-36" />
         </div>
+        <Skeleton className="mb-2.5 h-3 w-72 max-w-full" />
+        <div className="divide-y divide-(--ui-stroke-tertiary) overflow-hidden rounded-md border border-(--ui-stroke-secondary) bg-background/45">
+          {Array.from({ length: AUX_MODEL_TASK_KEYS.length + 1 }, (_, row) => (
+            <div className="flex min-h-11 items-center justify-between gap-3 px-3 py-2" key={row}>
+              <div className="min-w-0 space-y-1.5">
+                <Skeleton className="h-3 w-28" />
+                <Skeleton className="h-3 w-44 max-w-full" />
+              </div>
+              <Skeleton className="h-5 w-16" />
+            </div>
+          ))}
+        </div>
+      </section>
+
+      <section>
+        <div className="mb-2.5 flex items-center gap-2 pt-2">
+          <Skeleton className="size-4" />
+          <Skeleton className="h-4 w-36" />
+        </div>
         <div className="grid gap-1">
           {[0, 1, 2, 3].map(row => (
             <div

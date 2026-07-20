@@ -1056,7 +1056,7 @@ def recover_with_credential_pool(
         # Subscription/entitlement 403s look like auth failures on the wire
         # but refresh cannot fix them — the OAuth token is already valid,
         # the account simply lacks the entitlement.  Without this guard,
-        # ``try_refresh_current()`` keeps minting fresh tokens against the
+        # the refresh path keeps minting fresh tokens against the
         # same unsubscribed account and the main agent loop spins re-issuing
         # the same 403 until the user Ctrl+C's.
         #
@@ -1109,9 +1109,13 @@ def recover_with_credential_pool(
                 agent.provider or "provider",
             )
             return False, has_retried_429
-        refreshed = pool.try_refresh_current()
+        # Refresh the entry that supplied the failing key, not current():
+        # the shared pointer can reference a different, healthy entry, and
+        # refreshing it would consume that entry's single-use refresh token
+        # (or mark it exhausted on failure) for a failure it never had.
+        refreshed = pool.try_refresh_matching(api_key_hint=_api_key_hint)
         if refreshed is not None:
-            # ``try_refresh_current()`` re-mints a fresh OAuth token and reports
+            # ``try_refresh_matching()`` re-mints a fresh OAuth token and reports
             # success even when the upstream keeps rejecting it — a single-entry
             # pool (common for OAuth/Max subscribers) has nothing to rotate to,
             # so a bare "refreshed → retry" loop spins forever on the same dead
@@ -1139,7 +1143,7 @@ def recover_with_credential_pool(
             agent._swap_credential(refreshed)
             return True, has_retried_429
         # Refresh failed — rotate to next credential instead of giving up.
-        # The failed entry is already marked exhausted by try_refresh_current().
+        # The failed entry is already marked exhausted by the refresh attempt.
         rotate_status = status_code if status_code is not None else 401
         next_entry = pool.mark_exhausted_and_rotate(
             status_code=rotate_status,

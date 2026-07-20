@@ -225,3 +225,39 @@ class TestDreamingPluginContracts:
         monkeypatch.setattr(plugin._diary, "last_entry", lambda: "last dream")
 
         assert plugin._handle_slash("diary") == "last dream"
+
+
+class TestDreamingBundledDiscovery:
+    def test_loads_via_plugin_manager_when_opted_in(self, _isolate_env, monkeypatch):
+        """E2E: enable in config.yaml + dreaming config, verify PluginManager path."""
+        import sys
+
+        import yaml
+
+        cfg_mod = _load_config_mod()
+        cfg_mod.ensure_user_config(_isolate_env)
+        user_cfg = cfg_mod.user_config_path(_isolate_env)
+        user_cfg.write_text(
+            yaml.safe_dump({"enabled": True}),
+            encoding="utf-8",
+        )
+        (_isolate_env / "config.yaml").write_text(
+            yaml.safe_dump({"plugins": {"enabled": ["dreaming"]}}),
+            encoding="utf-8",
+        )
+
+        for key in list(sys.modules):
+            if key.startswith(("hermes_plugins", "hermes_cli.plugins")):
+                del sys.modules[key]
+
+        from hermes_cli.plugins import PluginManager
+
+        mgr = PluginManager()
+        mgr.discover_and_load()
+
+        loaded = mgr._plugins["dreaming"]
+        assert loaded.enabled
+        assert "post_llm_call" in loaded.hooks_registered
+        assert "on_session_end" in loaded.hooks_registered
+        assert "dream" in loaded.commands_registered
+        assert "dream" in mgr._plugin_commands

@@ -19,19 +19,20 @@ function defaultPages() {
       w("weather", "m"), w("launcher", "m"), w("tasks", "m"), w("calendar", "m"),
       w("notes", "m"), w("focus", "s"), w("system", "m"),
     ] },
-    { id: uid(), name: "Markets", layout: [w("markets", "l"), w("stocks", "l"), w("commodities", "m")] },
+    { id: uid(), name: "Markets", layout: [w("markets", "l"), w("stocks", "l"), w("commodities", "m"), w("marketsnews", "m")] },
     { id: uid(), name: "Feeds", layout: [
       w("news", "l"), w("reading", "m"), w("socials", "m"), w("gaming", "m"),
       w("podcasts", "m"),
     ] },
-    { id: uid(), name: "Sports", layout: [w("scores", "l"), w("racing", "m")] },
+    { id: uid(), name: "Sports", layout: [w("scores", "l"), w("racing", "m"), w("sportsnews", "m")] },
     { id: uid(), name: "Intel", layout: [
       w("worldclock", "m"), w("quakes", "m"), w("fx", "m"), w("convert", "m"),
       w("air", "m"), w("marine", "m"), w("space", "m"), w("alerts", "m"), w("flights", "m"),
+      w("worldnews", "m"),
     ] },
     { id: uid(), name: "Health", layout: [
       w("medbot", "l"), w("pubmed", "m"), w("trials", "m"), w("drug", "m"), w("calc", "m"),
-      w("meded", "l"),
+      w("meded", "l"), w("healthnews", "m"),
     ] },
     { id: uid(), name: "AI Lab", layout: [
       w("aidaily", "xl"), w("ailearn", "l"), w("codelab", "l"),
@@ -171,12 +172,31 @@ function backfillDefaultPages(state) {
   state.pagesSeed = PAGES_SEED;
 }
 
+// Targeted one-time backfill: push each tab's topic-news widget into the
+// matching existing page (by name) if it isn't already there. Guarded by
+// newsSeed so it runs once and respects later manual removals.
+const TAB_NEWS = {
+  markets: "marketsnews", sports: "sportsnews", intel: "worldnews", health: "healthnews",
+};
+function backfillTabNews(state) {
+  if (state.newsSeed >= 1) return;
+  for (const page of state.pages || []) {
+    const type = TAB_NEWS[(page.name || "").toLowerCase()];
+    if (!type || !Array.isArray(page.layout)) continue;
+    if (!page.layout.some((wd) => wd.type === type)) {
+      page.layout.push({ id: uid(), type, size: "m" });
+    }
+  }
+  state.newsSeed = 1;
+}
+
 /** Ensure pages is a non-empty array and activePage points at a real page. */
 function normalizePages(state) {
   if (!Array.isArray(state.pages) || !state.pages.length) {
     state.pages = defaultPages();
   }
   backfillDefaultPages(state);
+  backfillTabNews(state);
   for (const p of state.pages) {
     if (!p.id) p.id = uid();
     if (!Array.isArray(p.layout)) p.layout = [];

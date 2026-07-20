@@ -119,11 +119,11 @@ check("dark theme default", await page.evaluate(() => document.documentElement.d
 // interacting with it. gotoPage clicks the page tab and settles.
 const WIDGET_PAGES = {
   Main: ["glance", "clock", "worldstate", "agent", "weather", "launcher", "tasks", "calendar", "notes", "focus", "system"],
-  Markets: ["markets", "stocks", "commodities"],
+  Markets: ["markets", "stocks", "commodities", "marketsnews"],
   Feeds: ["news", "reading", "socials", "gaming", "podcasts"],
-  Sports: ["scores", "racing"],
-  Intel: ["worldclock", "quakes", "fx", "convert", "air", "marine", "space", "alerts", "flights"],
-  Health: ["medbot", "pubmed", "trials", "drug", "calc", "meded"],
+  Sports: ["scores", "racing", "sportsnews"],
+  Intel: ["worldclock", "quakes", "fx", "convert", "air", "marine", "space", "alerts", "flights", "worldnews"],
+  Health: ["medbot", "pubmed", "trials", "drug", "calc", "meded", "healthnews"],
   "AI Lab": ["codelab", "ailearn", "snippets", "repos", "papers", "ainews", "aidaily", "changelog", "tracker"],
 };
 const pageOf = (type) => Object.keys(WIDGET_PAGES).find((p) => WIDGET_PAGES[p].includes(type)) || "Main";
@@ -804,6 +804,13 @@ await page.waitForSelector(".widget-commodities .commod-row", { timeout: 5000 })
 check("commodities lists priced rows", (await page.locator(".widget-commodities .commod-row").count()) >= 5);
 check("commodities groups metals & rates",
   (await page.locator(".widget-commodities .commod-group-label").count()) >= 3);
+// per-tab topic news
+await gotoWidget("marketsnews");
+await page.waitForSelector(".widget-marketsnews .news-item", { timeout: 5000 });
+check("markets news lists headlines", (await page.locator(".widget-marketsnews .news-item").count()) >= 1);
+await gotoWidget("healthnews");
+await page.waitForSelector(".widget-healthnews .news-item", { timeout: 5000 });
+check("health news lists headlines", (await page.locator(".widget-healthnews .news-item").count()) >= 1);
 await gotoWidget("papers");
 await page.waitForSelector(".widget-papers .paper-item", { timeout: 5000 });
 check("arxiv papers list renders", (await page.locator(".widget-papers .paper-item").count()) >= 2);

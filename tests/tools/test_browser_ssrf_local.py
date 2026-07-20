@@ -369,8 +369,13 @@ class TestAllowPrivateUrlsConfig:
 
         assert browser_tool._allow_private_urls() is False
 
+    @pytest.mark.parametrize(
+        "profile_order",
+        [("allowed", "blocked"), ("blocked", "allowed")],
+        ids=["allowed-then-blocked", "blocked-then-allowed"],
+    )
     def test_profile_scoped_config_does_not_reuse_another_profiles_opt_out(
-        self, tmp_path
+        self, tmp_path, profile_order
     ):
         """The browser's independent guard must follow the active profile."""
         from hermes_constants import (
@@ -396,5 +401,7 @@ class TestAllowPrivateUrlsConfig:
             finally:
                 reset_hermes_home_override(token)
 
-        assert under_profile(allowed_home) is True
-        assert under_profile(blocked_home) is False
+        homes = {"allowed": allowed_home, "blocked": blocked_home}
+        expected = {"allowed": True, "blocked": False}
+        for profile in profile_order:
+            assert under_profile(homes[profile]) is expected[profile]

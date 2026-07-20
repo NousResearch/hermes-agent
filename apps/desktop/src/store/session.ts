@@ -27,15 +27,51 @@ const COMPOSER_FAST_KEY = 'hermes.desktop.composer.fast'
 // empty new-chat. Stored (not runtime) id — the route is keyed by stored id.
 const LAST_SESSION_KEY = 'hermes.desktop.lastSessionId'
 
-export const getRememberedSessionId = (): null | string => storedString(LAST_SESSION_KEY)
-export const setRememberedSessionId = (id: null | string) => persistString(LAST_SESSION_KEY, id)
+function profileNavigationKey(base: string, profile: string): string {
+  const key = profile.trim() || 'default'
+
+  return `${base}.profile.${encodeURIComponent(key)}`
+}
 
 // The last non-overlay route (a page like /skills, or a session route), so a
 // relaunch lands back where you were instead of a bare new-chat.
 const LAST_ROUTE_KEY = 'hermes.desktop.lastRoute'
 
-export const getRememberedRoute = (): null | string => storedString(LAST_ROUTE_KEY)
-export const setRememberedRoute = (path: null | string) => persistString(LAST_ROUTE_KEY, path)
+function discardLegacyRememberedNavigation(): void {
+  // Ownership of the old global values is unknowable. Never migrate them into
+  // a profile: guessing is exactly the cross-profile corruption this storage
+  // boundary prevents. Re-check because an older concurrently open window can
+  // still write the legacy keys after this renderer has started.
+  if (storedString(LAST_SESSION_KEY) !== null) {
+    persistString(LAST_SESSION_KEY, null)
+  }
+
+  if (storedString(LAST_ROUTE_KEY) !== null) {
+    persistString(LAST_ROUTE_KEY, null)
+  }
+}
+
+export function getRememberedSessionId(profile: string): null | string {
+  discardLegacyRememberedNavigation()
+
+  return storedString(profileNavigationKey(LAST_SESSION_KEY, profile))
+}
+
+export function setRememberedSessionId(id: null | string, profile: string): void {
+  discardLegacyRememberedNavigation()
+  persistString(profileNavigationKey(LAST_SESSION_KEY, profile), id)
+}
+
+export function getRememberedRoute(profile: string): null | string {
+  discardLegacyRememberedNavigation()
+
+  return storedString(profileNavigationKey(LAST_ROUTE_KEY, profile))
+}
+
+export function setRememberedRoute(path: null | string, profile: string): void {
+  discardLegacyRememberedNavigation()
+  persistString(profileNavigationKey(LAST_ROUTE_KEY, profile), path)
+}
 
 let configuredDefaultProjectDir = ''
 

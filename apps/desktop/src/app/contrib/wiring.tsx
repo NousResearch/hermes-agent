@@ -27,6 +27,7 @@ import { type ChatMessage, chatMessageText, preserveLocalAssistantErrors, toChat
 import { sessionMessagesSignature } from '@/lib/session-signatures'
 import { isMessagingSource } from '@/lib/session-source'
 import { latestSessionTodos } from '@/lib/todos'
+import { $desktopBoot } from '@/store/boot'
 import { setCronFocusJobId } from '@/store/cron'
 import { $pinnedSessionIds, pinSession, restoreWorktree, unpinSession } from '@/store/layout'
 import { $filePreviewTarget, $previewTarget } from '@/store/preview'
@@ -130,6 +131,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   const actionsRef = useRef<WiringActions | null>(null)
 
   const gatewayState = useStore($gatewayState)
+  const desktopBoot = useStore($desktopBoot)
   const activeSessionId = useStore($activeSessionId)
   const currentCwd = useStore($currentCwd)
   const freshDraftReady = useStore($freshDraftReady)
@@ -137,6 +139,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   const resumeExhaustedSessionId = useStore($resumeExhaustedSessionId)
   const selectedStoredSessionId = useStore($selectedStoredSessionId)
   const messagingSessions = useStore($messagingSessions)
+  const sessions = useStore($sessions)
   const profileScope = useStore($profileScope)
 
   const routedSessionId = routeSessionId(location.pathname)
@@ -672,14 +675,17 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   const filePreviewTarget = useStore($filePreviewTarget)
 
   useDesktopIntegrations({
+    activeProfile: activeGatewayProfile,
     chatOpen,
     hasPreview: Boolean(filePreviewTarget || previewTarget),
     locationPathname: location.pathname,
     navigate,
+    profileReady: desktopBoot.phase === 'renderer.ready',
     refreshSessions,
     resumeExhaustedSessionId,
     routedSessionId,
-    runtimeIdByStoredSessionId: runtimeIdByStoredSessionIdRef
+    runtimeIdByStoredSessionId: runtimeIdByStoredSessionIdRef,
+    sessions
   })
 
   // Pin/unpin the selected session (statusbar keybind + chat header) — pinned

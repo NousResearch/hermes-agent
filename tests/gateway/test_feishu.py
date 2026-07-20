@@ -1560,6 +1560,81 @@ class TestAdapterBehavior(unittest.TestCase):
         self.assertEqual(media_types, ["video/mp4"])
 
     @patch.dict(os.environ, {}, clear=True)
+    def test_drive_file_tokens_are_deduplicated_and_bounded(self):
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        text = " ".join(
+            [
+                "https://tenant.feishu.cn/file/token_a",
+                "https://tenant.feishu.cn/file/token_a",
+                "https://tenant.larksuite.com/file/token_b",
+                "https://tenant.feishu.cn/file/token_c",
+                "https://tenant.feishu.cn/file/token_d",
+                "https://tenant.feishu.cn/file/token_e",
+            ]
+        )
+
+        self.assertEqual(
+            FeishuAdapter._drive_file_tokens(text),
+            ["token_a", "token_b", "token_c", "token_d"],
+        )
+        concatenated = (
+            "https://tenant.feishu.cn/file/token_a"
+            "https://tenant.feishu.cn/file/token_b"
+            "https://tenant.feishu.cn/file/token_c"
+        )
+        self.assertEqual(
+            FeishuAdapter._drive_file_tokens(concatenated),
+            ["token_a", "token_b", "token_c"],
+        )
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_extract_text_message_downloads_drive_link_and_injects_document_text(self):
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        adapter._download_feishu_message_resources = AsyncMock(return_value=([], []))
+        adapter._download_feishu_drive_links = AsyncMock(
+            return_value=(["/tmp/cached-report.pdf"], ["application/pdf"])
+        )
+        adapter._maybe_extract_text_document = AsyncMock(
+            return_value="[Content of report.pdf]:\nQuarterly result"
+        )
+        message = SimpleNamespace(
+            message_type="text",
+            content=json.dumps(
+                {"text": "请读取 https://tenant.feishu.cn/file/file_token_123"}
+            ),
+            message_id="om_drive_link",
+        )
+
+        text, msg_type, media_urls, media_types, _mentions = asyncio.run(
+            adapter._extract_message_content(message)
+        )
+
+        self.assertIn("请读取", text)
+        self.assertIn("Quarterly result", text)
+        self.assertEqual(msg_type.value, "text")
+        self.assertEqual(media_urls, [])
+        self.assertEqual(media_types, [])
+        adapter._download_feishu_drive_links.assert_awaited_once()
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_filename_from_content_disposition_prefers_utf8_filename(self):
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        disposition = (
+            'attachment; filename="fallback.pdf"; '
+            "filename*=UTF-8''%E9%A2%84%E7%AE%97%E6%8A%A5%E5%91%8A.pdf"
+        )
+
+        self.assertEqual(
+            FeishuAdapter._filename_from_content_disposition(disposition),
+            "预算报告.pdf",
+        )
+
+    @patch.dict(os.environ, {}, clear=True)
     def test_extract_text_from_raw_content_uses_relation_message_fallbacks(self):
         from gateway.config import PlatformConfig
         from plugins.platforms.feishu.adapter import FeishuAdapter

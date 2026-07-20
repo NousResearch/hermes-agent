@@ -68,7 +68,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Dict, List, Literal, Optional, Sequence
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlencode
+from urllib.parse import unquote, urlencode
 from urllib.request import Request, urlopen
 
 # aiohttp/websockets are independent optional deps — import outside lark_oapi
@@ -158,6 +158,11 @@ _MARKDOWN_HINT_RE = re.compile(
 # Detect markdown tables: a line starting with | followed by a separator line.
 # Feishu post-type 'md' elements do not render tables, so we force text mode.
 _MARKDOWN_TABLE_RE = re.compile(r"^\|.*\|\n\|[-|: ]+\|", re.MULTILINE)
+_FEISHU_DRIVE_FILE_LINK_RE = re.compile(
+    r"https?://[^\s<>()]+?\.(?:feishu\.cn|larksuite\.com)/file/"
+    r"([A-Za-z0-9_-]+?)(?=https?://|[\s<>()\]]|$)",
+    re.IGNORECASE,
+)
 _MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
 _MARKDOWN_FENCE_OPEN_RE = re.compile(r"^```([^\n`]*)\s*$")
 _MARKDOWN_FENCE_CLOSE_RE = re.compile(r"^```\s*$")
@@ -190,6 +195,9 @@ _FEISHU_DOC_UPLOAD_TYPES = {
 # ---------------------------------------------------------------------------
 
 _MAX_TEXT_INJECT_BYTES = 100 * 1024
+_MAX_DOCUMENT_DOWNLOAD_BYTES = 25 * 1024 * 1024
+_MAX_DOCUMENT_TEXT_CHARS = 80_000
+_MAX_DRIVE_FILES_PER_MESSAGE = 4
 _FEISHU_CONNECT_ATTEMPTS = 3
 _FEISHU_SEND_ATTEMPTS = 3
 _FEISHU_APP_LOCK_SCOPE = "feishu-app-id"
@@ -3765,19 +3773,126 @@ class FeishuAdapter(BasePlatformAdapter):
             message_id=message_id,
             normalized=normalized,
         )
+        drive_urls, drive_types = await self._download_feishu_drive_links(
+            normalized.text_content,
+        )
+        media_urls.extend(drive_urls)
+        media_types.extend(drive_types)
         inbound_type = self._resolve_normalized_message_type(normalized, media_types)
         text = normalized.text_content
 
-        if (
-            inbound_type in {MessageType.DOCUMENT, MessageType.AUDIO, MessageType.VIDEO, MessageType.PHOTO}
-            and len(media_urls) == 1
-            and normalized.preferred_message_type in {"document", "audio"}
-        ):
-            injected = await self._maybe_extract_text_document(media_urls[0], media_types[0])
+        retained_urls: List[str] = []
+        retained_types: List[str] = []
+        extracted_documents: List[str] = []
+        remaining_text_chars = _MAX_DOCUMENT_TEXT_CHARS
+        for index, cached_path in enumerate(media_urls):
+            media_type = media_types[index] if index < len(media_types) else ""
+            injected = await self._maybe_extract_text_document(
+                cached_path,
+                media_type,
+                max_chars=remaining_text_chars,
+            )
             if injected:
-                text = injected
+                extracted_documents.append(injected)
+                remaining_text_chars = max(0, remaining_text_chars - len(injected))
+            else:
+                retained_urls.append(cached_path)
+                retained_types.append(media_type)
+
+        if extracted_documents:
+            text = "\n\n".join(part for part in [text, *extracted_documents] if part)
+            media_urls = retained_urls
+            media_types = retained_types
+            if not media_urls and inbound_type == MessageType.DOCUMENT:
+                inbound_type = MessageType.TEXT
 
         return text, inbound_type, media_urls, media_types, list(normalized.mentions)
+
+    @staticmethod
+    def _drive_file_tokens(text: str) -> List[str]:
+        tokens: List[str] = []
+        for match in _FEISHU_DRIVE_FILE_LINK_RE.finditer(text or ""):
+            token = match.group(1)
+            if token not in tokens:
+                tokens.append(token)
+            if len(tokens) >= _MAX_DRIVE_FILES_PER_MESSAGE:
+                break
+        return tokens
+
+    async def _download_feishu_drive_links(self, text: str) -> tuple[List[str], List[str]]:
+        media_urls: List[str] = []
+        media_types: List[str] = []
+        for file_token in self._drive_file_tokens(text):
+            cached_path, media_type = await self._run_blocking(
+                self._download_feishu_drive_file_sync,
+                file_token,
+            )
+            if cached_path:
+                media_urls.append(cached_path)
+                media_types.append(media_type)
+        return media_urls, media_types
+
+    def _download_feishu_drive_file_sync(self, file_token: str) -> tuple[str, str]:
+        if not file_token or not self._app_id or not self._app_secret:
+            return "", ""
+        base_url = _onboard_open_base_url(self._domain_name)
+        try:
+            token_request = Request(
+                f"{base_url}/open-apis/auth/v3/tenant_access_token/internal",
+                data=json.dumps(
+                    {"app_id": self._app_id, "app_secret": self._app_secret}
+                ).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+            )
+            with urlopen(token_request, timeout=20) as response:
+                token_payload = json.loads(response.read().decode("utf-8"))
+            access_token = str(token_payload.get("tenant_access_token") or "")
+            if not access_token:
+                return "", ""
+
+            download_request = Request(
+                f"{base_url}/open-apis/drive/v1/files/{file_token}/download",
+                headers={"Authorization": f"Bearer {access_token}"},
+            )
+            with urlopen(download_request, timeout=60) as response:
+                content_length = int(response.headers.get("Content-Length") or 0)
+                if content_length > _MAX_DOCUMENT_DOWNLOAD_BYTES:
+                    logger.warning(
+                        "[Feishu] Drive file %s exceeds the %d-byte download limit",
+                        file_token,
+                        _MAX_DOCUMENT_DOWNLOAD_BYTES,
+                    )
+                    return "", ""
+                raw_bytes = response.read(_MAX_DOCUMENT_DOWNLOAD_BYTES + 1)
+                if len(raw_bytes) > _MAX_DOCUMENT_DOWNLOAD_BYTES:
+                    logger.warning(
+                        "[Feishu] Drive file %s exceeded the download limit while streaming",
+                        file_token,
+                    )
+                    return "", ""
+                content_type = str(response.headers.get("Content-Type") or "").split(";", 1)[0]
+                disposition = str(response.headers.get("Content-Disposition") or "")
+            filename = self._filename_from_content_disposition(disposition) or file_token
+            if not Path(filename).suffix and content_type in _DOCUMENT_MIME_TO_EXT:
+                filename = f"{filename}{_DOCUMENT_MIME_TO_EXT[content_type]}"
+            cached_path = cache_document_from_bytes(raw_bytes, filename)
+            media_type = self._normalize_media_type(
+                content_type,
+                default=self._guess_document_media_type(filename),
+            )
+            logger.info("[Feishu] Cached Drive file %s at %s", file_token, cached_path)
+            return cached_path, media_type
+        except (HTTPError, URLError, OSError, ValueError, json.JSONDecodeError):
+            logger.warning("[Feishu] Failed to download Drive file %s", file_token, exc_info=True)
+            return "", ""
+
+    @staticmethod
+    def _filename_from_content_disposition(value: str) -> str:
+        encoded = re.search(r"filename\*=UTF-8''([^;]+)", value or "", re.IGNORECASE)
+        if encoded:
+            return Path(unquote(encoded.group(1).strip())).name
+        plain = re.search(r'filename="?([^";]+)"?', value or "", re.IGNORECASE)
+        return Path(plain.group(1).strip()).name if plain else ""
 
     async def _download_feishu_message_resources(
         self,
@@ -3835,21 +3950,73 @@ class FeishuAdapter(BasePlatformAdapter):
             return self._resolve_media_message_type(media_types[0] if media_types else "", default=MessageType.DOCUMENT)
         return MessageType.TEXT
 
-    async def _maybe_extract_text_document(self, cached_path: str, media_type: str) -> str:
-        if not cached_path or not media_type.startswith("text/"):
+    async def _maybe_extract_text_document(
+        self,
+        cached_path: str,
+        media_type: str,
+        *,
+        max_chars: int = _MAX_DOCUMENT_TEXT_CHARS,
+    ) -> str:
+        if not cached_path or max_chars <= 0:
+            return ""
+        if not Path(cached_path).is_file():
             return ""
         try:
-            if os.path.getsize(cached_path) > _MAX_TEXT_INJECT_BYTES:
-                return ""
             ext = Path(cached_path).suffix.lower()
-            if ext not in {".txt", ".md"} and media_type not in {"text/plain", "text/markdown"}:
+            if media_type.startswith("text/"):
+                if os.path.getsize(cached_path) > _MAX_TEXT_INJECT_BYTES:
+                    return ""
+                if ext not in {".txt", ".md"} and media_type not in {"text/plain", "text/markdown"}:
+                    return ""
+                content = Path(cached_path).read_text(encoding="utf-8")[:max_chars]
+            elif ext in {".pdf", ".docx"}:
+                if os.path.getsize(cached_path) > _MAX_DOCUMENT_DOWNLOAD_BYTES:
+                    return ""
+                content = await self._run_blocking(
+                    self._extract_binary_document_text_sync,
+                    cached_path,
+                    max_chars,
+                )
+            else:
                 return ""
-            content = Path(cached_path).read_text(encoding="utf-8")
+            if not content.strip():
+                return ""
             display_name = self._display_name_from_cached_path(cached_path)
             return f"[Content of {display_name}]:\n{content}"
         except (OSError, UnicodeDecodeError):
             logger.warning("[Feishu] Failed to inject text document content from %s", cached_path, exc_info=True)
             return ""
+
+    @staticmethod
+    def _extract_binary_document_text_sync(cached_path: str, max_chars: int) -> str:
+        ext = Path(cached_path).suffix.lower()
+        if ext == ".pdf":
+            from pypdf import PdfReader
+
+            chunks: List[str] = []
+            total = 0
+            for page in PdfReader(cached_path).pages:
+                page_text = (page.extract_text() or "").strip()
+                if not page_text:
+                    continue
+                remaining = max_chars - total
+                if remaining <= 0:
+                    break
+                chunks.append(page_text[:remaining])
+                total += min(len(page_text), remaining)
+            return "\n\n".join(chunks)
+        if ext == ".docx":
+            from docx import Document
+
+            document = Document(cached_path)
+            blocks: List[str] = [p.text.strip() for p in document.paragraphs if p.text.strip()]
+            for table in document.tables:
+                for row in table.rows:
+                    cells = [cell.text.strip() for cell in row.cells]
+                    if any(cells):
+                        blocks.append(" | ".join(cells))
+            return "\n".join(blocks)[:max_chars]
+        return ""
 
     async def _download_feishu_image(self, *, message_id: str, image_key: str) -> tuple[str, str]:
         if not self._client or not message_id:

@@ -66,6 +66,7 @@ In the Feishu developer console, go to **Permission Management** and add the fol
 | `im:message` | Receive and read messages |
 | `im:message:send_as_bot` | Send messages as the bot |
 | `im:resource` | Access images, files, and audio sent by users |
+| `drive:file:download` | Download shared `/file/{token}` links |
 | `im:chat` | Access chat/group metadata |
 | `im:chat:readonly` | Read chat list and membership |
 
@@ -166,6 +167,20 @@ hermes gateway
 ```
 
 Then message the bot from Feishu/Lark to confirm that the connection is live.
+
+## Reading Files
+
+Hermes can read files attached directly to a message and Feishu/Lark Drive links
+whose path is `/file/{token}`. Drive links require the application-identity
+`drive:file:download` permission and access to the shared file.
+
+Text files, text-based PDFs, and DOCX files are extracted into the agent turn.
+Scanned PDFs without a text layer remain regular attachments. To bound memory and
+prompt usage, Hermes downloads at most four Drive files per message, accepts up to
+25 MB per file, and injects up to 80,000 extracted characters across the message.
+
+After adding `drive:file:download`, publish a new app version and obtain tenant
+administrator approval before testing the link again.
 
 ## Home Chat
 

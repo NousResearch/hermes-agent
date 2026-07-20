@@ -233,7 +233,11 @@ async function revalidateTree(cwd: string): Promise<void> {
   }
 
   const rootPath = state.resolvedCwd || cwd
-  clearProjectDirCache()
+  // Don't wipe the gitroot/gitignore caches here. Listings are read fresh
+  // (readProjectDir never caches them), so new/deleted files surface anyway;
+  // wiping forced a full re-read of every ancestor .gitignore on every edit
+  // tick (~500ms), which made the tree sticky mid-burst. A .gitignore edit is
+  // picked up on the next full refresh (cwd/connection change / manual refresh).
 
   const reconcile = async (dirPath: string, existing: TreeNode[]): Promise<TreeNode[]> => {
     const { entries, error } = await readProjectDir(dirPath, rootPath)
@@ -243,22 +247,21 @@ async function revalidateTree(cwd: string): Promise<void> {
     }
 
     const byId = new Map(existing.filter(node => !node.placeholder).map(node => [node.id, node]))
-    const merged: TreeNode[] = []
 
-    for (const entry of entries) {
-      const prev = byId.get(entry.path)
+    // Reconcile siblings concurrently (Promise.all preserves order); loaded
+    // subfolders recurse so deep edits surface without a re-expand. Awaiting
+    // each child serially crawled a wide/deep tree one dir at a time per tick.
+    return Promise.all(
+      entries.map(async entry => {
+        const prev = byId.get(entry.path)
 
-      if (prev?.isDirectory && prev.children) {
-        // Loaded folder: recurse so deep edits surface without a re-expand.
-        merged.push({ ...prev, children: await reconcile(prev.id, prev.children) })
-      } else if (prev) {
-        merged.push(prev)
-      } else {
-        merged.push(makeNode(entry.path, entry.name, entry.isDirectory))
-      }
-    }
+        if (prev?.isDirectory && prev.children) {
+          return { ...prev, children: await reconcile(prev.id, prev.children) }
+        }
 
-    return merged
+        return prev ?? makeNode(entry.path, entry.name, entry.isDirectory)
+      })
+    )
   }
 
   const nextData = await reconcile(rootPath, state.data)

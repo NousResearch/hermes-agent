@@ -6,6 +6,7 @@ import { rpcErrorMessage } from '../lib/rpc.js'
 import type { Theme } from '../theme.js'
 
 import { OverlayHint, useOverlayKeys, windowItems, windowOffset } from './overlayControls.js'
+import { chipRowProps } from './overlayPrimitives.js'
 
 const VISIBLE = 12
 const MIN_WIDTH = 44
@@ -209,9 +210,8 @@ export function PluginsHub({ gw, maxWidth, onClose, t }: PluginsHubProps) {
 
         return (
           <Text
-            bold={active}
-            color={active ? t.color.accent : t.color.muted}
-            inverse={active}
+            color={t.color.muted}
+            {...chipRowProps(t, active)}
             key={effectiveRows[lineIdx]?.name ?? row}
             wrap="truncate-end"
           >

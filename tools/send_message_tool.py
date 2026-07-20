@@ -49,6 +49,13 @@ _WHATSAPP_JID_RE = re.compile(
     r"^\s*[\w-]+@(?:g\.us|s\.whatsapp\.net|lid|broadcast|newsletter)\s*$",
     re.IGNORECASE,
 )
+# Teams-native conversation IDs use an ``a:`` or ``19:`` prefix. Channel
+# discovery appends the root activity as ``;messageid=<id>``; parse that
+# suffix here so copied/directory-resolved targets reach the adapter instead
+# of being mistaken for human-friendly channel names.
+_TEAMS_TARGET_RE = re.compile(
+    r"^\s*((?:a|19):[A-Za-z0-9:@\-_.]+)(?:;messageid=([A-Za-z0-9:@\-_.]+))?\s*$"
+)
 # Email addresses — a valid email like "user@domain.com" should be treated as
 # an explicit target for the email platform, not fall through to channel-name
 # resolution which has no way to resolve a raw address.
@@ -594,6 +601,10 @@ def _parse_target_ref(platform_name: str, target_ref: str):
         # through to the _PHONE_PLATFORMS handler below.
         if _WHATSAPP_JID_RE.fullmatch(target_ref):
             return target_ref.strip(), None, True
+    if platform_name == "teams":
+        match = _TEAMS_TARGET_RE.fullmatch(target_ref)
+        if match:
+            return match.group(1), match.group(2), True
     stripped_target = target_ref.strip()
     if platform_name == "signal" and stripped_target.startswith("group:"):
         group_id = stripped_target[len("group:"):].strip()

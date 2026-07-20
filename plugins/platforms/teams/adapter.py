@@ -472,6 +472,26 @@ _ALLOWED_TEAMS_SERVICE_HOSTS = frozenset({
 # value cannot path-traverse out of ``/v3/conversations/<id>/activities``.
 import re as _re_teams
 _TEAMS_CONV_ID_RE = _re_teams.compile(r"^[A-Za-z0-9:@\-_.]+$")
+_TEAMS_MESSAGE_ID_MARKER = ";messageid="
+
+
+def _split_teams_conversation_target(chat_id: str) -> tuple[str, Optional[str]]:
+    """Split a validated Teams thread artifact from a conversation ID.
+
+    Teams session discovery can persist channel IDs as
+    ``<conversation>;messageid=<activity>``.  Bot Framework proactive-send
+    replies require both portions.  Only split when each independently
+    satisfies the existing conservative ID guard; malformed values must
+    continue to fail validation in ``_standalone_send``.
+    """
+    conversation_id, marker, message_id = chat_id.rpartition(_TEAMS_MESSAGE_ID_MARKER)
+    if (
+        marker
+        and _TEAMS_CONV_ID_RE.fullmatch(conversation_id)
+        and _TEAMS_CONV_ID_RE.fullmatch(message_id)
+    ):
+        return conversation_id, message_id
+    return chat_id, None
 
 
 def _validate_teams_service_url(raw: str) -> Optional[str]:
@@ -553,12 +573,19 @@ async def _standalone_send(
     # the URL path.
     if not chat_id:
         return {"error": "Teams standalone send: chat_id (conversation ID) is required"}
-    if not _TEAMS_CONV_ID_RE.match(chat_id):
+    chat_id, discovered_thread_id = _split_teams_conversation_target(chat_id)
+    if not _TEAMS_CONV_ID_RE.fullmatch(chat_id):
         return {"error": "Teams standalone send: chat_id contains characters outside the Bot Framework conversation ID set"}
-    if not _TEAMS_CONV_ID_RE.match(tenant_id):
+    explicit_thread_id = str(thread_id).strip() if thread_id is not None else None
+    effective_thread_id = explicit_thread_id or discovered_thread_id
+    if effective_thread_id and not _TEAMS_CONV_ID_RE.fullmatch(effective_thread_id):
+        return {"error": "Teams standalone send: thread_id contains characters outside the Bot Framework activity ID set"}
+    if not _TEAMS_CONV_ID_RE.fullmatch(tenant_id):
         return {"error": "Teams standalone send: TEAMS_TENANT_ID contains characters outside the expected set"}
 
     token_url = f"https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/token"
+    if effective_thread_id:
+        chat_id = f"{chat_id}{_TEAMS_MESSAGE_ID_MARKER}{effective_thread_id}"
     activities_url = f"{service_url}v3/conversations/{chat_id}/activities"
 
     if not AIOHTTP_AVAILABLE:
@@ -1161,16 +1188,27 @@ class TeamsAdapter(BasePlatformAdapter):
         if not self._app:
             return SendResult(success=False, error="Teams app not initialized")
 
+        metadata_thread_id = (metadata or {}).get("thread_id")
+        effective_reply_to = reply_to if reply_to is not None else metadata_thread_id
+        effective_reply_to = str(effective_reply_to).strip() if effective_reply_to is not None else None
+        if effective_reply_to == "0":
+            effective_reply_to = None
+        if effective_reply_to and not _TEAMS_CONV_ID_RE.fullmatch(effective_reply_to):
+            return SendResult(success=False, error="Invalid Teams thread activity ID")
+        metadata_thread_requested = reply_to is None and bool(effective_reply_to)
+
         formatted = self.format_message(content)
         chunks = self.truncate_message(formatted)
         last_message_id = None
 
         for chunk in chunks:
             try:
-                if reply_to and reply_to.isdigit() and reply_to != "0":
+                if effective_reply_to:
                     try:
-                        result = await self._app.reply(chat_id, reply_to, chunk)
+                        result = await self._app.reply(chat_id, effective_reply_to, chunk)
                     except Exception as reply_err:
+                        if metadata_thread_requested:
+                            raise
                         # Group chats 400 on threaded sends; the Teams SDK
                         # doesn't expose typed HTTP errors, so fall back on
                         # any exception and log for diagnostics.

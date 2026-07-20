@@ -5167,7 +5167,9 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
     is a no-op. If a future or external write left the pointer dangling,
     the leaked run is closed as ``reclaimed`` inside the same txn so the
     runs invariant (``current_run_id IS NULL`` ⇔ run row in terminal
-    state) holds for the rest of this function's lifetime.
+    state) holds for the rest of this function's lifetime. Task-level claim
+    metadata is cleared in the same transaction so the ready task can be
+    claimed again after invariant recovery.
     """
     now = int(time.time())
     with write_txn(conn):
@@ -5212,6 +5214,7 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
         # start for the dispatcher's retry budget.
         cur = conn.execute(
             "UPDATE tasks SET status = ?, current_run_id = NULL, "
+            "claim_lock = NULL, claim_expires = NULL, worker_pid = NULL, "
             "consecutive_failures = 0, last_failure_error = NULL "
             "WHERE id = ? AND status IN ('blocked', 'scheduled')",
             (new_status, task_id),

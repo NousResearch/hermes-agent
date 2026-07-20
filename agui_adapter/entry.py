@@ -16,8 +16,27 @@ Environment (secrets only):
     HERMES_AGUI_SESSION_TOKEN  required off-loopback; optional loopback defense-in-depth
 """
 
-from __future__ import annotations
+# IMPORTANT: hermes_bootstrap must be the very first import — UTF-8 stdio
+# on Windows.  No-op on POSIX.  See hermes_bootstrap.py for full rationale.
+try:
+    import hermes_bootstrap  # noqa: F401
+except ModuleNotFoundError:
+    # Graceful fallback when hermes_bootstrap isn't registered in the venv
+    # yet — happens during partial ``hermes update`` where git-reset landed
+    # new code but ``uv pip install -e .`` didn't finish.  Missing bootstrap
+    # means UTF-8 stdio setup is skipped on Windows; POSIX is unaffected.
+    pass
+else:
+    # Stop a ``utils/``/``proxy/``/``ui/`` package in the launch directory from
+    # shadowing Hermes's own modules — ``hermes agui`` can be started from any
+    # cwd, including a project that has same-named packages on its path.
+    hermes_bootstrap.harden_import_path()
 
+# No ``from __future__ import annotations`` here: a future statement must
+# precede every other import, which would displace hermes_bootstrap and break
+# the entry-point contract (tests/test_hermes_bootstrap.py). It is unnecessary
+# anyway — requires-python is >=3.11, so PEP 604/585 annotations are native.
+# None of the other Hermes entry points carry one either.
 import logging
 import os
 import sys

@@ -243,6 +243,7 @@ class TestEntryPointsImportBootstrap:
         "hermes_cli/main.py",   # hermes CLI (console_script)
         "run_agent.py",          # hermes-agent (console_script)
         "acp_adapter/entry.py",  # hermes-acp (console_script)
+        "agui_adapter/entry.py", # hermes-agui (console_script)
         "gateway/run.py",        # gateway
         "batch_runner.py",       # batch mode
         "cli.py",                # legacy direct-launch CLI

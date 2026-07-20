@@ -302,6 +302,7 @@ Discord behavior is controlled through two files: **`~/.hermes/.env`** for crede
 | `DISCORD_IGNORE_NO_MENTION` | No | `true` | When `true`, the bot stays silent if a message `@mentions` other users but does **not** mention the bot. Prevents the bot from jumping into conversations directed at other people. Only applies in server channels, not DMs. |
 | `DISCORD_AUTO_THREAD` | No | `true` | When `true`, automatically creates a new thread for every `@mention` in a text channel, so each conversation is isolated (similar to Slack behavior). Messages already inside threads or DMs are unaffected. |
 | `DISCORD_ALLOW_BOTS` | No | `"none"` | Controls how the bot handles messages from other Discord bots. `"none"` — ignore all other bots. `"mentions"` — only accept bot messages that `@mention` Hermes. `"all"` — accept all bot messages. |
+| `DISCORD_BOTS_REQUIRE_INLINE_MENTION` | No | `false` | Legacy fallback for `discord.bots_require_inline_mention` when that config key is absent. When `true`, an admitted bot-authored message must contain a literal raw inline personal mention of this bot (`<@BOT_ID>` or `<@!BOT_ID>`). A Discord reply-ping, quote, or role-only mention is insufficient. |
 | `DISCORD_REACTIONS` | No | `true` | When `true`, the bot adds emoji reactions to messages during processing (👀 when starting, ✅ on success, ❌ on error). Set to `false` to disable reactions entirely. |
 | `DISCORD_IGNORED_CHANNELS` | No | — | Comma-separated channel IDs where the bot **never** responds, even when `@mentioned`. Takes priority over all other channel settings. |
 | `DISCORD_ALLOWED_CHANNELS` | No | — | Comma-separated channel IDs. When set, the bot **only** responds in these channels (plus DMs if allowed). Overrides `config.yaml` `discord.allowed_channels`. Combine with `DISCORD_IGNORED_CHANNELS` to express allow/deny rules. |
@@ -319,6 +320,8 @@ Discord behavior is controlled through two files: **`~/.hermes/.env`** for crede
 | `HERMES_DISCORD_TEXT_BATCH_DELAY_SECONDS` | No | `0.6` | Grace window the adapter waits before flushing a queued text chunk. Useful for smoothing streamed output. |
 | `HERMES_DISCORD_TEXT_BATCH_SPLIT_DELAY_SECONDS` | No | `2.0` | Delay between split chunks when a single message exceeds Discord's length limit. |
 
+`DISCORD_ALLOW_BOTS` and `DISCORD_BOTS_REQUIRE_INLINE_MENTION` are legacy environment fallbacks: their `config.yaml` counterparts, when present, are authoritative. The group-role settings below are config-only; `DISCORD_GROUP_MENTION_ROLE_IDS` and `DISCORD_GROUP_MENTION_CHANNEL_IDS` are not supported environment variables.
+
 :::warning Bot-to-bot conversation is not supported
 `DISCORD_ALLOW_BOTS` exists to accept input from a specific trusted bot (e.g. a relay or webhook bot), not to let two Hermes profiles talk to each other. The default, `"none"`, ignores all other bots and is the safe setting.
 
@@ -333,6 +336,10 @@ The `discord` section in `~/.hermes/config.yaml` mirrors the env vars above. Con
 # Discord-specific settings
 discord:
   require_mention: true           # Require @mention in server channels
+  allow_bots: "mentions"          # Admit bot-authored messages only when they address this bot
+  bots_require_inline_mention: false  # If true, bot messages need a raw inline personal mention
+  group_mention_role_ids: []      # Human-only role mentions that can trigger the bot
+  group_mention_channel_ids: []   # Where those role mentions apply; ["*"] means every server channel
   thread_require_mention: false   # If true, bots admitted via allow_bots:"all" also need @mention in threads
   free_response_channels: ""      # Comma-separated channel IDs (or YAML list)
   auto_thread: true               # Auto-create threads on @mention
@@ -377,6 +384,37 @@ discord:
   require_mention: true
   allow_bots: "all"               # only then does this setting matter
   thread_require_mention: true    # bots need explicit @mention even in shared threads
+```
+
+#### `discord.bots_require_inline_mention`
+
+**Type:** boolean — **Default:** `false`
+
+This is an additional admission gate for **bot-authored** Discord messages; it does not affect human messages. Set it to `true` in a trusted multi-bot room to require the sending bot to type a literal raw inline personal mention of this bot in its message content (`<@BOT_ID>` or `<@!BOT_ID>`). A Discord reply-ping/quote can add this bot to the resolved mentions list without that raw token, so it is not enough; a role-only mention is not enough either.
+
+The config key is authoritative when present. For legacy deployments that omit it, `DISCORD_BOTS_REQUIRE_INLINE_MENTION` is the fallback. This gate does not itself admit bots: configure `allow_bots` as `"mentions"` or `"all"` as appropriate.
+
+```yaml
+discord:
+  allow_bots: "mentions"
+  bots_require_inline_mention: true
+```
+
+#### `discord.group_mention_role_ids` and `discord.group_mention_channel_ids`
+
+**Type:** string or list — **Default:** `[]` for both
+
+These settings let a configured inline Discord role mention satisfy the normal server-channel mention gate for **human-authored messages only**. `group_mention_role_ids` is the allowlist of role IDs; `group_mention_channel_ids` scopes where those role mentions work. Use `"*"` in the channel scope to allow the configured role mention in every reachable server channel. Bot-authored messages cannot use a group-role mention to pass admission, and these settings have no environment-variable fallback.
+
+```yaml
+discord:
+  require_mention: true
+  group_mention_role_ids:
+    - "ROLE_ID"
+  group_mention_channel_ids:
+    - "CHANNEL_ID"
+  # Or scope the configured role mention to every server channel:
+  # group_mention_channel_ids: ["*"]
 ```
 
 #### `discord.free_response_channels`

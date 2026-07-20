@@ -299,6 +299,7 @@ Discord 行为通过两个文件控制：**`~/.hermes/.env`** 用于凭据和环
 | `DISCORD_IGNORE_NO_MENTION` | 否 | `true` | 为 `true` 时，如果消息 `@提及` 了其他用户但**未**提及机器人，机器人保持沉默。防止机器人介入针对其他人的对话。仅适用于服务器频道，不适用于私信。 |
 | `DISCORD_AUTO_THREAD` | 否 | `true` | 为 `true` 时，自动为文本频道中的每次 `@提及` 创建新线程，使每个对话相互隔离（类似 Slack 行为）。已在线程或私信中的消息不受影响。 |
 | `DISCORD_ALLOW_BOTS` | 否 | `"none"` | 控制机器人如何处理来自其他 Discord 机器人的消息。`"none"` — 忽略所有其他机器人。`"mentions"` — 仅接受 `@提及` Hermes 的机器人消息。`"all"` — 接受所有机器人消息。 |
+| `DISCORD_BOTS_REQUIRE_INLINE_MENTION` | 否 | `false` | 当 `discord.bots_require_inline_mention` 未设置时，作为其旧环境变量兜底。为 `true` 时，已放行的机器人消息必须包含对本机器人的字面原始内联个人提及（`<@BOT_ID>` 或 `<@!BOT_ID>`）。Discord 的回复 ping、引用或仅提及角色均不足以满足条件。 |
 | `DISCORD_REACTIONS` | 否 | `true` | 为 `true` 时，机器人在处理过程中为消息添加 emoji 反应（开始时 👀，成功时 ✅，出错时 ❌）。设置为 `false` 可完全禁用反应。 |
 | `DISCORD_IGNORED_CHANNELS` | 否 | — | 机器人**永不**响应的频道 ID，逗号分隔，即使被 `@提及` 也不响应。优先于所有其他频道设置。 |
 | `DISCORD_ALLOWED_CHANNELS` | 否 | — | 频道 ID，逗号分隔。设置后，机器人**仅**在这些频道（以及允许的私信）中响应。覆盖 `config.yaml` 中的 `discord.allowed_channels`。与 `DISCORD_IGNORED_CHANNELS` 结合使用可表达允许/拒绝规则。 |
@@ -316,6 +317,8 @@ Discord 行为通过两个文件控制：**`~/.hermes/.env`** 用于凭据和环
 | `HERMES_DISCORD_TEXT_BATCH_DELAY_SECONDS` | 否 | `0.6` | 适配器在刷新排队文本块之前等待的宽限窗口。用于平滑流式输出。 |
 | `HERMES_DISCORD_TEXT_BATCH_SPLIT_DELAY_SECONDS` | 否 | `2.0` | 当单条消息超过 Discord 长度限制时，分割块之间的延迟。 |
 
+`DISCORD_ALLOW_BOTS` 与 `DISCORD_BOTS_REQUIRE_INLINE_MENTION` 是旧环境变量兜底：对应的 `config.yaml` 配置存在时，配置文件具有权威性。下面的群组角色设置仅支持配置文件；`DISCORD_GROUP_MENTION_ROLE_IDS` 和 `DISCORD_GROUP_MENTION_CHANNEL_IDS` 不是受支持的环境变量。
+
 ### 配置文件（`config.yaml`）
 
 `~/.hermes/config.yaml` 中的 `discord` 部分与上述环境变量对应。config.yaml 设置作为默认值应用——如果已设置等效的环境变量，则环境变量优先。例外：`allow_bots`、`bots_require_inline_mention` 和 `thread_require_mention` 以 config.yaml 为准：在 config.yaml 中设置时会覆盖对应环境变量，环境变量仅作为兜底。
@@ -324,6 +327,10 @@ Discord 行为通过两个文件控制：**`~/.hermes/.env`** 用于凭据和环
 # Discord 特定设置
 discord:
   require_mention: true           # 在服务器频道中需要 @提及
+  allow_bots: "mentions"          # 仅在机器人消息明确指向本机器人时放行
+  bots_require_inline_mention: false  # 为 true 时，机器人消息需要原始内联个人提及
+  group_mention_role_ids: []      # 可触发机器人的、仅限人类消息的角色提及
+  group_mention_channel_ids: []   # 这些角色提及的生效范围；["*"] 表示所有服务器频道
   thread_require_mention: false   # 为 true 时，经 allow_bots:"all" 放行的机器人在线程中也需要 @提及
   free_response_channels: ""      # 逗号分隔的频道 ID（或 YAML 列表）
   auto_thread: true               # 在 @提及 时自动创建线程
@@ -368,6 +375,37 @@ discord:
   require_mention: true
   allow_bots: "all"               # 只有此时该设置才有意义
   thread_require_mention: true    # 机器人在共享线程中也需要显式 @提及
+```
+
+#### `discord.bots_require_inline_mention`
+
+**类型：** 布尔值 — **默认值：** `false`
+
+这是针对**机器人作者** Discord 消息的额外放行门控；不影响人类消息。在受信任的多机器人频道中，将其设为 `true`，以要求发送机器人在消息内容中键入对本机器人的字面原始内联个人提及（`<@BOT_ID>` 或 `<@!BOT_ID>`）。Discord 的回复 ping/引用可能在没有原始 token 的情况下把本机器人加入解析后的提及列表，因此不满足条件；仅提及角色同样不满足条件。
+
+配置键存在时具有权威性。对于未设置该键的旧部署，`DISCORD_BOTS_REQUIRE_INLINE_MENTION` 是兜底。此门控本身不会放行机器人：请按需要将 `allow_bots` 配置为 `"mentions"` 或 `"all"`。
+
+```yaml
+discord:
+  allow_bots: "mentions"
+  bots_require_inline_mention: true
+```
+
+#### `discord.group_mention_role_ids` 和 `discord.group_mention_channel_ids`
+
+**类型：** 字符串或列表 — **默认值：** 两者均为 `[]`
+
+这些设置允许已配置的内联 Discord 角色提及满足普通服务器频道的提及门控，且**只适用于人类作者的消息**。`group_mention_role_ids` 是角色 ID 允许列表；`group_mention_channel_ids` 限定这些角色提及生效的频道范围。在频道范围中使用 `"*"`，可让已配置的角色提及在每个可访问的服务器频道中生效。机器人作者的消息不能通过群组角色提及放行，并且这些设置没有环境变量兜底。
+
+```yaml
+discord:
+  require_mention: true
+  group_mention_role_ids:
+    - "ROLE_ID"
+  group_mention_channel_ids:
+    - "CHANNEL_ID"
+  # 或将已配置角色提及的范围设为所有服务器频道：
+  # group_mention_channel_ids: ["*"]
 ```
 
 #### `discord.free_response_channels`

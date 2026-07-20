@@ -3603,39 +3603,43 @@ class SessionDB:
         Returns the latest continuation tip, or the input id when no
         continuation exists.
         """
+        with self._lock:
+            return self._get_compression_tip_locked(session_id)
+
+    def _get_compression_tip_locked(self, session_id: str) -> Optional[str]:
+        """Resolve a compression tip while ``self._lock`` is already held."""
         current = session_id
         seen = {current} if current else set()
         # Bound the walk defensively — compression chains this deep are
         # pathological and shouldn't happen in practice. 100 = plenty.
         for _ in range(100):
-            with self._lock:
-                cursor = self._conn.execute(
-                    """
-                    SELECT child.id
-                    FROM sessions parent
-                    JOIN sessions child ON child.parent_session_id = parent.id
-                    WHERE parent.id = ?
-                      AND parent.end_reason = 'compression'
-                      AND json_extract(COALESCE(child.model_config, '{}'), '$._branched_from') IS NULL
-                      AND json_extract(COALESCE(child.model_config, '{}'), '$._delegate_from') IS NULL
-                      AND COALESCE(child.source, '') != 'tool'
-                    ORDER BY
-                      CASE
-                        WHEN child.end_reason = 'compression' THEN 0
-                        WHEN child.ended_at IS NULL THEN 1
-                        ELSE 2
-                      END,
-                      COALESCE(
-                        (SELECT MAX(m.timestamp) FROM messages m WHERE m.session_id = child.id),
-                        child.started_at
-                      ) DESC,
-                      child.started_at DESC,
-                      child.id DESC
-                    LIMIT 1
-                    """,
-                    (current,),
-                )
-                row = cursor.fetchone()
+            cursor = self._conn.execute(
+                """
+                SELECT child.id
+                FROM sessions parent
+                JOIN sessions child ON child.parent_session_id = parent.id
+                WHERE parent.id = ?
+                  AND parent.end_reason = 'compression'
+                  AND json_extract(COALESCE(child.model_config, '{}'), '$._branched_from') IS NULL
+                  AND json_extract(COALESCE(child.model_config, '{}'), '$._delegate_from') IS NULL
+                  AND COALESCE(child.source, '') != 'tool'
+                ORDER BY
+                  CASE
+                    WHEN child.end_reason = 'compression' THEN 0
+                    WHEN child.ended_at IS NULL THEN 1
+                    ELSE 2
+                  END,
+                  COALESCE(
+                    (SELECT MAX(m.timestamp) FROM messages m WHERE m.session_id = child.id),
+                    child.started_at
+                  ) DESC,
+                  child.started_at DESC,
+                  child.id DESC
+                LIMIT 1
+                """,
+                (current,),
+            )
+            row = cursor.fetchone()
             if row is None:
                 return current
             child_id = row["id"]
@@ -4838,6 +4842,49 @@ class SessionDB:
                 current = child_id
 
             return best if best is not None else session_id
+
+    def get_continuation_snapshot(
+        self, session_id: str
+    ) -> Optional[Tuple[str, List[Dict[str, Any]], List[int]]]:
+        """Return one atomic, model-fed snapshot for exact HTTP continuation.
+
+        The resolved compression tip and its active conversation rows are read
+        while holding the same SessionDB lock. Callers can therefore bind a
+        revision to the exact history they will pass to the agent instead of
+        resolving a tip and loading its messages in two raceable reads.
+
+        Returns ``None`` when the requested session does not exist. The
+        returned conversation is alternation-repaired in memory, matching the
+        live resume path without changing durable transcript rows. Message row
+        IDs are returned separately so a delete-and-recreate with identical
+        prose still changes the continuation revision.
+        """
+        if not session_id:
+            return None
+
+        with self._lock:
+            exists = self._conn.execute(
+                "SELECT 1 FROM sessions WHERE id = ? LIMIT 1",
+                (session_id,),
+            ).fetchone()
+            if exists is None:
+                return None
+
+            resolved_id = self._get_compression_tip_locked(session_id) or session_id
+            rows = self._conn.execute(
+                f"SELECT id, {self._CONVERSATION_ROW_COLUMNS} "
+                "FROM messages WHERE session_id = ? AND active = 1 ORDER BY id",
+                (resolved_id,),
+            ).fetchall()
+            message_ids = [int(row["id"]) for row in rows]
+
+        history = self._rows_to_conversation(
+            rows,
+            session_id=resolved_id,
+            include_ancestors=False,
+            repair_alternation=True,
+        )
+        return resolved_id, history, message_ids
 
     def get_messages_as_conversation(
         self,

@@ -1596,6 +1596,7 @@ def handle_request(req: dict) -> dict | None:
         return normalized
 
     rid, method, params = normalized
+    _merge_plugin_rpc_methods()
     fn = _methods.get(method)
     if not fn:
         return _err(rid, -32601, f"unknown method: {method}")

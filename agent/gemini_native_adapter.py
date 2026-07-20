@@ -678,7 +678,6 @@ def translate_stream_event(event: Dict[str, Any], model: str, tool_call_indices:
     cand = candidates[0] if isinstance(candidates[0], dict) else {}
     parts = ((cand.get("content") or {}).get("parts") or []) if isinstance(cand, dict) else []
     chunks: List[_GeminiStreamChunk] = []
-    _seen_name_sigs: Dict[Tuple[str, str], int] = {}
 
     for part_index, part in enumerate(parts):
         if not isinstance(part, dict):
@@ -696,24 +695,33 @@ def translate_stream_event(event: Dict[str, Any], model: str, tool_call_indices:
             except (TypeError, ValueError):
                 args_str = "{}"
             thought_signature = part.get("thoughtSignature") if isinstance(part.get("thoughtSignature"), str) else ""
-            # Use the occurrence count of this (name, thought_signature) pair
-            # within this SSE event to disambiguate parallel calls to the same
-            # tool.  Gemini can fan out two read_file calls in one event, each
-            # with part_index=0 and the same name — keying on part_index alone
-            # merged them into a single slot, concatenating their arguments into
-            # un-parseable JSON (fixes #57939).
-            _name_sig = (name, thought_signature)
-            _occurrence = _seen_name_sigs.get(_name_sig, 0)
-            _seen_name_sigs[_name_sig] = _occurrence + 1
             call_key = json.dumps(
                 {
-                    "occurrence": _occurrence,
+                    "part_index": part_index,
                     "name": name,
                     "thought_signature": thought_signature,
                 },
                 sort_keys=True,
             )
             slot = tool_call_indices.get(call_key)
+            # Distinct parallel calls to the SAME tool collide on the same
+            # call_key: each arrives in its own SSE event with part_index=0,
+            # the same name, and (usually) no thoughtSignature. Without this
+            # guard the second call's arguments get appended to the first
+            # slot, producing concatenated JSON ('{"a":1}{"b":2}') that fails
+            # to parse downstream.
+            # If the existing slot already holds complete arguments and the
+            # new args_str is neither identical (re-send dedup) nor an
+            # extension (incremental streaming), treat it as a NEW call:
+            # walk a "#next" key chain until we find a compatible or empty slot.
+            while slot is not None:
+                prev_args = str(slot.get("last_arguments") or "")
+                if prev_args and args_str != prev_args and not args_str.startswith(prev_args):
+                    call_key += "#next"
+                    slot = tool_call_indices.get(call_key)
+                else:
+                    break
+
             if slot is None:
                 slot = {
                     "index": len(tool_call_indices),

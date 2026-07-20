@@ -2064,6 +2064,7 @@ class TestAdapterBehavior(unittest.TestCase):
 
         event = adapter._dispatch_inbound_event.await_args.args[0]
         self.assertEqual(event.source.chat_type, "group")
+        self.assertEqual(event.source.message_id, "om_group_text")
 
     @patch.dict(os.environ, {}, clear=True)
     def test_process_inbound_message_fetches_reply_to_text(self):

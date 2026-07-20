@@ -1087,6 +1087,18 @@ DEFAULT_CONFIG = {
         # identity slot (SOUL.md). Empty by default. The HERMES_ENVIRONMENT_HINT
         # env var overrides this (build-time/container mechanism).
         "environment_hint": "",
+        # Freeze environment hints (date, CWD) so the stable system-prompt
+        # prefix is byte-identical across sessions.  This enables cross-session
+        # prefix caching on providers like DeepSeek that cache KV state by the
+        # prompt's leading tokens — every session that shares the same system
+        # prompt prefix reuses the cached KV, cutting TTFT on subsequent
+        # sessions to near zero.
+        #   false (default) — emit real date and CWD every session.
+        #   true            — freeze date to "---" and CWD to "(working
+        #                     directory)" so the stable tier is identical
+        #                     across sessions.  The agent can still get the
+        #                     real date and path via `date` / `pwd` tools.
+        "freeze_environment_hints": False,
         # Coding posture — on interactive coding surfaces (CLI, TUI, desktop
         # app, ACP) in a code workspace, Hermes adds a coding operating brief
         # + a live git/workspace snapshot to the system prompt. See
@@ -1441,6 +1453,19 @@ DEFAULT_CONFIG = {
         "max_bytes": 50_000,
         "max_lines": 2000,
         "max_line_length": 2000,
+    },
+
+    # ACP (Agent Client Protocol) adapter settings for editor integration
+    # (VS Code, Zed, JetBrains).  Controls truncation limits for tool-result
+    # display and tool-call titles in the editor UI.
+    # - tool_output_max_chars: max chars for tool-result display in the
+    #   editor (default 5000).  Larger results are head-truncated with a
+    #   "... (N chars total, truncated)" suffix.
+    # - title_max_chars: max chars for tool-call titles such as terminal
+    #   command previews and steer-text previews (default 80).
+    "acp": {
+        "tool_output_max_chars": 5000,
+        "title_max_chars": 80,
     },
 
     # Tool loop guardrails nudge models when they repeat failed or
@@ -1937,13 +1962,15 @@ DEFAULT_CONFIG = {
         # spinner), or ascii.  Live-swappable via `/indicator <style>`.
         "tui_status_indicator": "kaomoji",
         # Seconds between prompt_toolkit redraws in the classic CLI when idle.
-        # Default 1.0 keeps the wall-clock status-bar read-outs (idle-since-
-        # last-turn) ticking and keeps the bottom chrome alive during idle —
-        # without it prompt_toolkit stops repainting the status bar after a
-        # turn and it can go stale/disappear (#45592).
-        # Set 0 to disable the background refresh if it fights terminal
-        # auto-scroll in non-fullscreen mode on some emulators (#48309).
-        "cli_refresh_interval": 1.0,
+        # Default 0 (disabled) avoids fighting terminal auto-scroll in
+        # non-fullscreen mode on some emulators (Xshell, iTerm2, Windows
+        # Terminal) — with a positive value the periodic redraw pulls the
+        # viewport back to the bottom when the user has scrolled up to
+        # review history (#48309, #63895).
+        # Set to a positive value (e.g. 1.0) if the idle status-bar clock
+        # going stale bothers you — users on emulators without the
+        # auto-scroll issue can opt in.
+        "cli_refresh_interval": 0,
         "user_message_preview": {  # CLI: how many submitted user-message lines to echo back in scrollback
             "first_lines": 2,
             "last_lines": 2,
@@ -2357,8 +2384,8 @@ DEFAULT_CONFIG = {
                                      # (API, tools, iteration budget), never a delegation
                                      # stopwatch. Set a positive number of seconds
                                      # (floor 30s) to enforce a hard cap.
-        "reasoning_effort": "",  # subagent effort: "ultra", "max", "xhigh", "high",
-                                 # "medium", "low", "minimal", "none" (empty = inherit)
+        "reasoning_effort": "",  # reasoning effort for subagents: "xhigh", "high", "medium",
+                                 # "low", "minimal", "none" (empty = inherit parent's level)
         "max_concurrent_children": 3,  # unified concurrency cap: max parallel children per batch
                                        # AND max concurrent background (background=true)
                                        # delegation units. New async dispatches beyond the cap
@@ -2655,15 +2682,15 @@ DEFAULT_CONFIG = {
     },
 
     # Approval mode for dangerous commands:
-    #   manual — always prompt the user
-    #   smart  — use auxiliary LLM to auto-approve low-risk commands (default)
+    #   manual — always prompt the user (default)
+    #   smart  — use auxiliary LLM to auto-approve low-risk commands, prompt for high-risk
     #   off    — skip all approval prompts (equivalent to --yolo)
     #
     # cron_mode — what to do when a cron job hits a dangerous command:
     #   deny    — block the command and let the agent find another way (default, safe)
     #   approve — auto-approve all dangerous commands in cron jobs
     "approvals": {
-        "mode": "smart",
+        "mode": "manual",
         "timeout": 60,
         "cron_mode": "deny",
         # User-defined deny rules: fnmatch globs matched against terminal
@@ -8495,20 +8522,6 @@ def edit_config():
     subprocess.run([editor, str(config_path)])
 
 
-def _default_value_for_key(dotted_key: str):
-    """Return the leaf value declared for *dotted_key* in ``DEFAULT_CONFIG``.
-
-    Unknown keys and non-leaf paths return ``None`` so they retain the legacy
-    best-effort coercion used by ``config set``.
-    """
-    node = DEFAULT_CONFIG
-    for part in dotted_key.split("."):
-        if not isinstance(node, dict) or part not in node:
-            return None
-        node = node[part]
-    return node if not isinstance(node, dict) else None
-
-
 def set_config_value(key: str, value: str):
     """Set a configuration value."""
     if is_managed():
@@ -8558,21 +8571,28 @@ def set_config_value(key: str, value: str):
     # _set_nested which preserves list-typed nodes; before #17876 the
     # inline navigation here silently overwrote lists with dicts.
 
-    # Preserve values for string-typed settings.  In particular, enum members
-    # such as approvals.mode="off" must not become YAML booleans.  Unknown keys
-    # retain the historical best-effort coercion behavior.
-    coerced_value: Any = value
-    if not isinstance(_default_value_for_key(key), str):
-        if value.lower() in {'true', 'yes', 'on'}:
-            coerced_value = True
-        elif value.lower() in {'false', 'no', 'off'}:
-            coerced_value = False
-        elif value.isdigit():
-            coerced_value = int(value)
-        elif value.replace('.', '', 1).isdigit():
-            coerced_value = float(value)
+    # Try to parse as YAML list/dict — fixes #64323 where
+    # `hermes config set docker_volumes '["/a:/a"]'` stored the
+    # literal string instead of a proper YAML list.
+    if value and value[0] in ('[', '{'):
+        try:
+            parsed = yaml.safe_load(value)
+            if isinstance(parsed, (list, dict)):
+                value = parsed
+        except Exception:
+            pass
 
-    value = coerced_value
+    # Convert value to appropriate type (only for non-list/dict values)
+    if not isinstance(value, (list, dict)):
+        if value.lower() in {'true', 'yes', 'on'}:
+            value = True
+        elif value.lower() in {'false', 'no', 'off'}:
+            value = False
+        elif value.isdigit():
+            value = int(value)
+        elif value.replace('.', '', 1).isdigit():
+            value = float(value)
+
     _set_nested(user_config, key, value)
     # Normalize the api_base → base_url alias at set-time too (issue #8919),
     # so a fresh `hermes config set model.api_base ...` lands on the canonical

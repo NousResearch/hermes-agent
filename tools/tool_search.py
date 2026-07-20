@@ -305,11 +305,17 @@ def should_activate(
     (as long as there is at least one deferrable tool — there's no point
     swapping a no-op). ``"auto"`` activates when the deferrable schemas
     would consume ``threshold_pct`` of context or more.
+
+    ``defer_always_core`` is an override for deterministic "fully lazy" mode:
+    when set, activation bypasses the ``auto`` threshold gate (while still
+    honoring ``enabled: off``).
     """
     if config.enabled == "off":
         return False
     if deferrable_tokens <= 0:
         return False
+    if config.defer_always_core:
+        return True
     if config.enabled == "on":
         return True
     # auto

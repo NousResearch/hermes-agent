@@ -1181,11 +1181,14 @@ display:
   #         cleanup_progress: true
   cleanup_progress: false
 
-  # Gateway-only natural mid-turn assistant updates.
-  # When true, completed assistant status messages are sent as separate chat
-  # messages. This is independent of tool_progress and gateway streaming.
-  #   true:  Send mid-turn assistant updates as separate messages (default)
-  #   false: Only send the final response
+  # Natural mid-turn assistant updates.
+  # On gateway platforms, when true, completed assistant status messages are
+  # sent as separate chat messages. On the Desktop app, when true, mid-turn
+  # assistant narration streamed between tool calls is kept in the transcript
+  # instead of the bubble collapsing to only the final message on completion.
+  # Independent of tool_progress and gateway streaming.
+  #   true:  Keep/send mid-turn assistant updates (default)
+  #   false: Only keep/send the final response
   interim_assistant_messages: true
 
   # Gateway-only long-running status heartbeats.

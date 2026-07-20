@@ -229,11 +229,12 @@ _EPHEMERAL_SCAFFOLDING_FLAGS = (
     "_empty_recovery_synthetic",
     "_empty_terminal_sentinel",
     "_thinking_prefill",
-    # verify-on-stop and pre_verify nudges append a synthetic assistant
-    # "done" plus a synthetic user nudge to keep the agent going one more
-    # turn before it can claim completion. Those messages exist only to
-    # drive the verification loop; persisting them poisons the resumed
-    # transcript and breaks prompt-prefix cache reuse on later turns. (#55733)
+    # verify-on-stop and pre_verify nudges append a synthetic user nudge to
+    # keep the agent going one more turn before it can claim completion.
+    # The nudge exists only to drive the verification loop; persisting it
+    # poisons the resumed transcript and breaks prompt-prefix cache reuse
+    # on later turns. The assistant candidate is NOT synthetic — it is
+    # persisted and emitted as an interim message (#65919).
     "_verification_stop_synthetic",
     "_pre_verify_synthetic",
     # kanban worker stop-guard: narrated exit without kanban_complete/block
@@ -4914,7 +4915,16 @@ class AIAgent:
         streamed = self._normalize_interim_visible_text(
             self._strip_think_blocks(getattr(self, "_current_streamed_assistant_text", "") or "")
         )
-        return bool(streamed) and streamed == visible_content
+        # Prefix match (not exact equality): the final response may be the
+        # streamed text plus a trailing delta, or the stream may have been
+        # partial when the verify nudge fired.  In both cases the streamed
+        # content is a prefix of the final — that's enough to mark it
+        # previewed (fails safe to a benign duplicate, never loses text).
+        # The reverse direction (streamed longer than final) is NOT matched:
+        # that could suppress a needed resend in the gateway path where
+        # already_streamed=True calls on_segment_break() instead of
+        # on_commentary() (#65919 review).
+        return bool(streamed) and visible_content.startswith(streamed)
 
     def _extract_codex_interim_visible_parts(
         self,
@@ -5019,8 +5029,19 @@ class AIAgent:
         except Exception:
             logger.debug("interim_assistant_callback error", exc_info=True)
 
-    def _emit_interim_assistant_message(self, assistant_msg: Dict[str, Any]) -> None:
-        """Surface a real mid-turn assistant commentary message to the UI layer."""
+    def _emit_interim_assistant_message(
+        self, assistant_msg: Dict[str, Any]
+    ) -> None:
+        """Surface a real mid-turn assistant commentary message to the UI layer.
+
+        Does NOT set ``_response_was_previewed`` — that flag means "the final
+        response was already shown to the user," but this helper is called for
+        ordinary tool-call narration, intermediate acknowledgements, and
+        verification candidates alike. Setting it here would cause the CLI to
+        suppress a *different* final summary (e.g. from ``_handle_max_iterations``)
+        when the only streamed text was unrelated mid-turn commentary. (#65919
+        review: response-loss blocker)
+        """
         cb = getattr(self, "interim_assistant_callback", None)
         if cb is None or not isinstance(assistant_msg, dict):
             return

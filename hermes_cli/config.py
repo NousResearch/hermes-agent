@@ -1948,7 +1948,7 @@ DEFAULT_CONFIG = {
             "first_lines": 2,
             "last_lines": 2,
         },
-        "interim_assistant_messages": True,  # Gateway: show natural mid-turn assistant status messages
+        "interim_assistant_messages": True,  # Gateway: send natural mid-turn assistant status messages. Desktop: keep mid-turn narration between tool calls instead of collapsing to the final message.
         # Codex Responses models narrate progress in a dedicated commentary
         # channel. When true (default), completed commentary messages are
         # delivered as visible mid-turn updates via the interim message path.

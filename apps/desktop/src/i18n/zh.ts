@@ -1211,6 +1211,7 @@ export const zh: Translations = {
     running: '运行中',
     failed: '失败',
     done: '完成',
+    verificationRequired: '需要验证',
     streaming: '流式传输',
     files: '文件',
     moreFiles: count => `还有 ${count} 个文件`,

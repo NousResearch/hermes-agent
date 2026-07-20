@@ -9,6 +9,7 @@ import {
   fmtTokens,
   formatSummary,
   hotnessBucket,
+  isFailedSubagent,
   peakHotness,
   sparkline,
   topLevelSubagents,
@@ -28,6 +29,15 @@ const makeItem = (overrides: Partial<SubagentProgress> & Pick<SubagentProgress, 
   toolCount: 0,
   tools: [],
   ...overrides
+})
+
+describe('isFailedSubagent', () => {
+  it('keeps interrupted partial outcomes neutral while retaining hard failures', () => {
+    expect(isFailedSubagent(makeItem({ id: 'partial', index: 0, outcome: 'partial', status: 'interrupted' }))).toBe(false)
+    expect(isFailedSubagent(makeItem({ id: 'failed', index: 1, outcome: 'failed', status: 'interrupted' }))).toBe(true)
+    expect(isFailedSubagent(makeItem({ id: 'error', index: 2, status: 'error' }))).toBe(true)
+    expect(isFailedSubagent(makeItem({ id: 'timeout', index: 3, status: 'timeout' }))).toBe(true)
+  })
 })
 
 describe('aggregate: tokens, cost, files, hotness', () => {

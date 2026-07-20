@@ -901,6 +901,7 @@ export interface Translations {
     running: string
     failed: string
     done: string
+    verificationRequired: string
     streaming: string
     files: string
     moreFiles: (count: number) => string

@@ -4214,6 +4214,17 @@ def _on_tool_progress(
             payload["text"] = str(preview)
         if _kwargs.get("status"):
             payload["status"] = str(_kwargs["status"])
+        if _kwargs.get("outcome"):
+            payload["outcome"] = str(_kwargs["outcome"])
+        if _kwargs.get("exit_reason"):
+            payload["exit_reason"] = str(_kwargs["exit_reason"])
+        if _kwargs.get("interrupted") is not None:
+            payload["interrupted"] = bool(_kwargs["interrupted"])
+        if _kwargs.get("tool_error_count") is not None:
+            try:
+                payload["tool_error_count"] = int(_kwargs["tool_error_count"])
+            except (TypeError, ValueError):
+                pass
         if _kwargs.get("summary"):
             payload["summary"] = str(_kwargs["summary"])
         if _kwargs.get("duration_seconds") is not None:

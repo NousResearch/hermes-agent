@@ -80,7 +80,13 @@ describe('subagent store', () => {
     )
     upsertSubagent(
       's1',
-      { status: 'completed', subagent_id: 'a1', summary: 'search complete', task_index: 0 },
+      {
+        outcome: 'unverified',
+        status: 'completed',
+        subagent_id: 'a1',
+        summary: 'search complete',
+        task_index: 0
+      },
       false,
       'subagent.complete'
     )
@@ -90,6 +96,45 @@ describe('subagent store', () => {
     expect(item?.stream.find(e => e.kind === 'tool')?.text).toContain('Search Files')
     expect(item?.stream.find(e => e.kind === 'thinking')?.text).toBe('plan the search order')
     expect(item?.stream.find(e => e.kind === 'summary')?.text).toBe('search complete')
+    expect(item?.stream.find(e => e.kind === 'summary')?.isUnverified).toBe(true)
+    expect(item?.outcome).toBe('unverified')
+  })
+
+  it.each(['error', 'timeout'] as const)('keeps %s completions terminal and failed', status => {
+    upsertSubagent('s1', { goal: 'terminal child', status: 'running', subagent_id: 'a1', task_index: 0 })
+    upsertSubagent(
+      's1',
+      { outcome: 'failed', status, subagent_id: 'a1', summary: 'did not finish', task_index: 0 },
+      false,
+      'subagent.complete'
+    )
+
+    const item = listFor('s1')[0]
+    expect(item?.status).toBe(status)
+    expect(activeSubagentCount(listFor('s1'))).toBe(0)
+    expect(failedSubagentCount(listFor('s1'))).toBe(1)
+  })
+
+  it('keeps interrupted partial outcomes terminal without counting them as failed', () => {
+    upsertSubagent('s1', { goal: 'partial child', status: 'running', subagent_id: 'a1', task_index: 0 })
+    upsertSubagent(
+      's1',
+      {
+        outcome: 'partial',
+        status: 'interrupted',
+        subagent_id: 'a1',
+        summary: 'partial progress captured',
+        task_index: 0
+      },
+      false,
+      'subagent.complete'
+    )
+
+    const item = listFor('s1')[0]
+    expect(item?.status).toBe('interrupted')
+    expect(activeSubagentCount(listFor('s1'))).toBe(0)
+    expect(failedSubagentCount(listFor('s1'))).toBe(0)
+    expect(item?.stream.find(e => e.kind === 'summary')?.isUnverified).toBe(true)
   })
 
   it('prunes delegate fallback rows once native events arrive', () => {

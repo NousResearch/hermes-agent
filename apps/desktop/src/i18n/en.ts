@@ -1024,6 +1024,7 @@ export const en: Translations = {
     running: 'Running',
     failed: 'Failed',
     done: 'Done',
+    verificationRequired: 'Verification required',
     streaming: 'Streaming',
     files: 'Files',
     moreFiles: count => `+${count} more files`,

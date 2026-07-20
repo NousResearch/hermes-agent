@@ -1030,6 +1030,28 @@ describe('createGatewayEventHandler', () => {
     expect(getTurnState().subagents.find(s => s.id === 'sa-weird')?.status).toBe('completed')
   })
 
+  it('preserves logical delegation outcome on subagent.complete', () => {
+    const appended: Msg[] = []
+    const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+    onEvent({
+      payload: { goal: 'verify me', subagent_id: 'sa-unverified', task_index: 3 },
+      type: 'subagent.start'
+    } as any)
+    onEvent({
+      payload: {
+        goal: 'verify me',
+        outcome: 'unverified',
+        status: 'completed',
+        subagent_id: 'sa-unverified',
+        task_index: 3
+      },
+      type: 'subagent.complete'
+    } as any)
+
+    expect(getTurnState().subagents.find(s => s.id === 'sa-unverified')?.outcome).toBe('unverified')
+  })
+
   it('nudges toward /agents on the first spawn_requested of a turn', () => {
     const appended: Msg[] = []
     const onEvent = createGatewayEventHandler(buildCtx(appended))

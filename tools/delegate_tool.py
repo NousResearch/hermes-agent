@@ -32,6 +32,7 @@ from concurrent.futures import (
 from typing import Any, Dict, List, Optional
 
 from toolsets import TOOLSETS
+from tools.delegation_outcome import is_fatal_delegation_exit_reason
 
 # Sentinel value used by the runtime provider system for providers that are
 # not natively known (named custom providers, third-party aggregators, etc.).
@@ -2068,6 +2069,10 @@ def _run_single_child(
                             else str(_timeout_exc)
                         ),
                         status="timeout" if is_timeout else "error",
+                        outcome="failed",
+                        exit_reason="timeout" if is_timeout else "error",
+                        interrupted=False,
+                        tool_error_count=0,
                         duration_seconds=duration,
                         summary="",
                     )
@@ -2096,9 +2101,13 @@ def _run_single_child(
             return {
                 "task_index": task_index,
                 "status": "timeout" if is_timeout else "error",
+                # No usable output => logical failure, regardless of transport.
+                "outcome": "failed",
                 "summary": None,
                 "error": _err,
                 "exit_reason": "timeout" if is_timeout else "error",
+                "interrupted": False,
+                "tool_error_count": 0,
                 "api_calls": child_api_calls,
                 "duration_seconds": duration,
                 "_child_role": getattr(child, "_delegate_role", None),
@@ -2120,8 +2129,18 @@ def _run_single_child(
 
         summary = result.get("final_response") or ""
         completed = result.get("completed", False)
+        failed = bool(result.get("failed", False))
+        partial = bool(result.get("partial", False))
+        runtime_error = result.get("error")
         interrupted = result.get("interrupted", False)
         api_calls = result.get("api_calls", 0)
+        turn_exit_reason = str(result.get("turn_exit_reason") or "").strip()
+        runtime_failed = (
+            failed
+            or bool(runtime_error)
+            or is_fatal_delegation_exit_reason(turn_exit_reason)
+        )
+        runtime_partial = partial or turn_exit_reason == "partial_stream_recovery"
 
         # The child emits the literal "(empty)" sentinel (see run_agent.py) when
         # it gives up after repeated empty-LLM-response retries — typically a
@@ -2130,7 +2149,13 @@ def _run_single_child(
         # it instead of silently accepting zero-content "success".
         _empty_sentinel = summary.strip() == "(empty)"
 
-        if interrupted:
+        # ``status`` is the child *lifecycle* signal, kept exactly as before for
+        # backward compatibility with existing consumers (formatter icons, hooks,
+        # batch aggregation). It says how the subagent process ended, NOT whether
+        # the delegated task is logically done.
+        if runtime_failed:
+            status = "failed"
+        elif interrupted:
             status = "interrupted"
         elif summary and not _empty_sentinel:
             # A summary means the subagent produced usable output.
@@ -2139,6 +2164,29 @@ def _run_single_child(
             status = "completed"
         else:
             status = "failed"
+
+        # ``outcome`` is the machine-readable LOGICAL result, decoupled from the
+        # lifecycle status above. A non-empty summary alone is never treated as
+        # verified success — the strongest value here is ``unverified``, which
+        # requires the parent to independently confirm the returned evidence
+        # before claiming the task succeeded.
+        #   unverified: child loop completed and produced usable output, but no
+        #               parent verification exists yet.
+        #   partial:    usable output exists but the loop exhausted its budget
+        #               (max_iterations) or was interrupted mid-flight.
+        #   failed:     no usable output — empty sentinel, blank summary,
+        #               or interruption/error without a response.
+        # Whitespace-only output is not usable evidence either, so strip before
+        # deciding — a blank summary must classify as failed, not unverified.
+        _usable_summary = bool(summary.strip()) and not _empty_sentinel
+        if runtime_failed:
+            outcome = "failed"
+        elif interrupted:
+            outcome = "partial" if _usable_summary else "failed"
+        elif _usable_summary:
+            outcome = "unverified" if completed and not runtime_partial else "partial"
+        else:
+            outcome = "failed"
 
         # Build tool trace from conversation messages (already in memory).
         # Uses tool_call_id to correctly pair parallel tool calls with results.
@@ -2176,8 +2224,20 @@ def _run_single_child(
                         # Fallback for messages without tool_call_id
                         tool_trace[-1].update(result_meta)
 
-        # Determine exit reason
-        if interrupted:
+        # Deterministic tool-error evidence derived from the actual tool
+        # messages (never from child prose): how many tool results looked like
+        # errors. Lets the parent gauge child reliability without trusting the
+        # summary's self-report.
+        tool_error_count = sum(
+            1 for t in tool_trace if t.get("status") == "error"
+        )
+
+        # Preserve the agent runtime's detailed exit reason whenever available.
+        if turn_exit_reason:
+            exit_reason = turn_exit_reason
+        elif runtime_failed:
+            exit_reason = str(result.get("exit_reason") or "error")
+        elif interrupted:
             exit_reason = "interrupted"
         elif completed:
             exit_reason = "completed"
@@ -2192,11 +2252,18 @@ def _run_single_child(
         entry: Dict[str, Any] = {
             "task_index": task_index,
             "status": status,
+            # Logical task outcome, decoupled from lifecycle status. Parents
+            # must verify returned evidence before treating unverified/partial
+            # as success.
+            "outcome": outcome,
             "summary": summary,
             "api_calls": api_calls,
             "duration_seconds": duration,
             "model": _model if isinstance(_model, str) else None,
             "exit_reason": exit_reason,
+            # Runtime-derived evidence for parent verification (not child prose).
+            "interrupted": bool(interrupted),
+            "tool_error_count": tool_error_count,
             "tokens": {
                 "input": (
                     _input_tokens if isinstance(_input_tokens, (int, float)) else 0
@@ -2225,7 +2292,11 @@ def _run_single_child(
             ),
         }
         if status == "failed":
-            entry["error"] = result.get("error", "Subagent did not produce a response.")
+            entry["error"] = (
+                runtime_error
+                or (summary if _usable_summary else None)
+                or "Subagent did not produce a response."
+            )
 
         # Cross-agent file-state reminder.  If this subagent wrote any
         # files the parent had already read, surface it so the parent
@@ -2291,6 +2362,10 @@ def _run_single_child(
         complete_kwargs: Dict[str, Any] = {
             "preview": summary[:160] if summary else entry.get("error", ""),
             "status": status,
+            "outcome": outcome,
+            "exit_reason": exit_reason,
+            "interrupted": bool(interrupted),
+            "tool_error_count": tool_error_count,
             "duration_seconds": duration,
             "summary": summary[:500] if summary else entry.get("error", ""),
             "input_tokens": (
@@ -2332,6 +2407,10 @@ def _run_single_child(
                     "subagent.complete",
                     preview=str(exc),
                     status="failed",
+                    outcome="failed",
+                    exit_reason="error",
+                    interrupted=False,
+                    tool_error_count=0,
                     duration_seconds=duration,
                     summary=str(exc),
                 )
@@ -2340,8 +2419,12 @@ def _run_single_child(
         return {
             "task_index": task_index,
             "status": "error",
+            "outcome": "failed",
             "summary": None,
             "error": str(exc),
+            "exit_reason": "error",
+            "interrupted": False,
+            "tool_error_count": 0,
             "api_calls": 0,
             "duration_seconds": duration,
             "_child_role": getattr(child, "_delegate_role", None),
@@ -2685,8 +2768,12 @@ def delegate_task(
                                     entry = {
                                         "task_index": idx,
                                         "status": "error",
+                                        "outcome": "failed",
                                         "summary": None,
                                         "error": str(exc),
+                                        "exit_reason": "error",
+                                        "interrupted": False,
+                                        "tool_error_count": 0,
                                         "api_calls": 0,
                                         "duration_seconds": 0,
                                         "_child_role": getattr(
@@ -2697,8 +2784,12 @@ def delegate_task(
                                 entry = {
                                     "task_index": idx,
                                     "status": "interrupted",
+                                    "outcome": "failed",
                                     "summary": None,
                                     "error": "Parent agent interrupted — child did not finish in time",
+                                    "exit_reason": "interrupted",
+                                    "interrupted": True,
+                                    "tool_error_count": 0,
                                     "api_calls": 0,
                                     "duration_seconds": 0,
                                     "_child_role": getattr(
@@ -2722,8 +2813,12 @@ def delegate_task(
                             entry = {
                                 "task_index": idx,
                                 "status": "error",
+                                "outcome": "failed",
                                 "summary": None,
                                 "error": str(exc),
+                                "exit_reason": "error",
+                                "interrupted": False,
+                                "tool_error_count": 0,
                                 "api_calls": 0,
                                 "duration_seconds": 0,
                                 "_child_role": getattr(
@@ -2740,7 +2835,17 @@ def delegate_task(
                         )
                         dur = entry.get("duration_seconds", 0)
                         status = entry.get("status", "?")
-                        icon = "✓" if status == "completed" else "✗"
+                        outcome = entry.get("outcome")
+                        if outcome == "partial":
+                            icon = "◐"
+                        elif outcome == "unverified":
+                            icon = "⚠"
+                        elif outcome == "failed" or status != "completed":
+                            icon = "✗"
+                        else:
+                            # Legacy completed result without a logical outcome:
+                            # output exists, but parent verification has not happened.
+                            icon = "⚠" if entry.get("summary") else "✗"
                         remaining = n_tasks - completed_count
                         completion_line = f"{icon} [{idx+1}/{n_tasks}] {label}  ({dur}s)"
                         if spinner_ref:
@@ -3419,6 +3524,15 @@ def _build_top_level_description() -> str:
         "(e.g. \"respond in Chinese\", \"return output in Japanese\"). "
         "Otherwise subagents default to English and their summaries will "
         "contaminate your final reply with the wrong language.\n"
+        "- Each result carries both a lifecycle 'status' and a logical "
+        "'outcome'. status='completed' ONLY means the child loop ended and "
+        "produced output — it is NOT task acceptance. outcome='unverified' "
+        "means a usable summary exists but nothing has verified it; "
+        "outcome='partial' means the child ran out of iterations or was "
+        "interrupted; outcome='failed' means no usable output. There is no "
+        "'success' outcome: you MUST verify the returned handles/evidence "
+        "(exit_reason, interrupted, tool_error_count, and any URL/ID/path in "
+        "the summary) yourself before claiming the task succeeded.\n"
         "- Subagent summaries are SELF-REPORTS, not verified facts. A subagent "
         "that claims \"uploaded successfully\" or \"file written\" may be wrong. "
         "For operations with external side-effects (HTTP POST/PUT, remote "

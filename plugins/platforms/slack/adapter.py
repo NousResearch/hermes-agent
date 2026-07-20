@@ -858,6 +858,90 @@ class SlackAdapter(BasePlatformAdapter):
         # Non-fatal — the user saw the initial ack already.
         return SendResult(success=True, message_id=None)
 
+    def _slash_public_echo_text(
+        self,
+        slash_name: str,
+        routed_text: str,
+        user_id: str,
+    ) -> str:
+        """Return a public mirror for prompt-bearing Slack slash inputs.
+
+        Slack slash invocations are otherwise only visible to the user who ran
+        them. Mirror natural-language prompt payloads into the channel so the
+        human request is visible, while keeping operational commands private.
+        """
+        prompt_text = ""
+        label = "asked Hermes"
+        slash_key = slash_name.lower().lstrip("/")
+
+        if (
+            slash_key in {"hermes", ""}
+            and routed_text
+            and not routed_text.startswith("/")
+        ):
+            prompt_text = routed_text.strip()
+        elif routed_text.startswith("/"):
+            try:
+                from hermes_cli.commands import resolve_command
+
+                command_token, _, args = routed_text[1:].partition(" ")
+                cmd = resolve_command(command_token)
+                canonical = cmd.name if cmd else command_token.lower()
+                if canonical in {"background", "queue", "steer", "moa"}:
+                    prompt_text = args.strip()
+                    label = {
+                        "background": "started a background request",
+                        "queue": "queued a request",
+                        "steer": "steered Hermes",
+                        "moa": "asked Hermes",
+                    }.get(canonical, label)
+            except Exception as exc:  # pragma: no cover - defensive
+                logger.debug(
+                    "[Slack] Could not classify slash input for public echo: %s",
+                    exc,
+                )
+
+        if not prompt_text:
+            return ""
+
+        prompt_text = self.format_message(prompt_text)
+        actor = f"<@{user_id}>" if user_id else "A user"
+        return f"*{actor} {label}:*\n{prompt_text}"
+
+    async def _echo_slash_input_publicly(
+        self,
+        command: dict,
+        *,
+        routed_text: str,
+        slash_name: str,
+        user_id: str,
+        channel_id: str,
+        team_id: str,
+    ) -> None:
+        """Best-effort public Slack mirror for hidden slash prompt inputs."""
+        echo_text = self._slash_public_echo_text(
+            slash_name=slash_name,
+            routed_text=routed_text,
+            user_id=user_id,
+        )
+        if not echo_text or not channel_id:
+            return
+
+        kwargs: Dict[str, Any] = {
+            "channel": channel_id,
+            "text": echo_text,
+            "mrkdwn": True,
+        }
+        thread_ts = command.get("thread_ts")
+        if thread_ts:
+            kwargs["thread_ts"] = thread_ts
+        try:
+            await self._get_client(
+                channel_id, team_id=team_id
+            ).chat_postMessage(**kwargs)
+        except Exception as exc:  # pragma: no cover - best-effort visibility
+            logger.warning("[Slack] Failed to echo slash input publicly: %s", exc)
+
     def _warn_if_missing_group_dm_scopes(self, auth_response, team_name: str) -> None:
         """Nudge existing installs to reinstall when group-DM scopes are absent.
 
@@ -4572,6 +4656,15 @@ class SlackAdapter(BasePlatformAdapter):
             ),
             source=source,
             raw_message=command,
+        )
+
+        await self._echo_slash_input_publicly(
+            command,
+            routed_text=text,
+            slash_name=slash_name,
+            user_id=user_id,
+            channel_id=channel_id,
+            team_id=team_id,
         )
 
         # Stash the Slack response_url so the first reply for this

@@ -4719,6 +4719,7 @@ class TestSlashEphemeralAck:
     @pytest.mark.asyncio
     async def test_freeform_hermes_question_does_not_stash_context(self, adapter):
         """Free-form /hermes <question> must NOT route agent reply ephemeral."""
+        adapter._app.client.chat_postMessage = AsyncMock(return_value={"ts": "echo-ts"})
         command = {
             "command": "/hermes",
             "text": "what's the weather",
@@ -4735,6 +4736,89 @@ class TestSlashEphemeralAck:
         assert event.text == "what's the weather"
         # Context must NOT be stashed — agent reply should be public
         assert len(adapter._slash_command_contexts) == 0
+
+    @pytest.mark.asyncio
+    async def test_freeform_hermes_question_echoes_public_input(self, adapter):
+        """Free-form /hermes prompts are hidden by Slack, so mirror them publicly."""
+        adapter._app.client.chat_postMessage = AsyncMock(return_value={"ts": "echo-ts"})
+        command = {
+            "command": "/hermes",
+            "text": "summarize the launch plan",
+            "user_id": "U_FREE",
+            "channel_id": "C_FREE",
+            "team_id": "T_FREE",
+            "response_url": "https://hooks.slack.com/commands/T1/4/free",
+        }
+
+        await adapter._handle_slash_command(command)
+
+        adapter._app.client.chat_postMessage.assert_awaited_once()
+        kwargs = adapter._app.client.chat_postMessage.call_args.kwargs
+        assert kwargs["channel"] == "C_FREE"
+        assert kwargs["mrkdwn"] is True
+        assert "<@U_FREE> asked Hermes" in kwargs["text"]
+        assert "summarize the launch plan" in kwargs["text"]
+
+    @pytest.mark.asyncio
+    async def test_freeform_hermes_command_like_request_echoes_public_input(self, adapter):
+        """Command-like natural language under /hermes still needs visibility."""
+        adapter._app.client.chat_postMessage = AsyncMock(return_value={"ts": "echo-ts"})
+        command = {
+            "command": "/hermes",
+            "text": "list plugins",
+            "user_id": "U_FREE",
+            "channel_id": "C_FREE",
+            "team_id": "T_FREE",
+            "response_url": "https://hooks.slack.com/commands/T1/4/free",
+        }
+
+        await adapter._handle_slash_command(command)
+
+        adapter._app.client.chat_postMessage.assert_awaited_once()
+        kwargs = adapter._app.client.chat_postMessage.call_args.kwargs
+        assert kwargs["channel"] == "C_FREE"
+        assert "<@U_FREE> asked Hermes" in kwargs["text"]
+        assert "list plugins" in kwargs["text"]
+
+    @pytest.mark.asyncio
+    async def test_prompt_bearing_native_slash_echoes_public_input(self, adapter):
+        """Native prompt slash commands such as /q also need a visible request."""
+        adapter._app.client.chat_postMessage = AsyncMock(return_value={"ts": "echo-ts"})
+        command = {
+            "command": "/q",
+            "text": "follow up with risks",
+            "user_id": "U_Q",
+            "channel_id": "C_Q",
+            "team_id": "T_Q",
+            "response_url": "https://hooks.slack.com/commands/T1/2/q",
+        }
+
+        await adapter._handle_slash_command(command)
+
+        adapter._app.client.chat_postMessage.assert_awaited_once()
+        kwargs = adapter._app.client.chat_postMessage.call_args.kwargs
+        assert kwargs["channel"] == "C_Q"
+        assert "<@U_Q> queued a request" in kwargs["text"]
+        assert "follow up with risks" in kwargs["text"]
+        assert ("C_Q", "U_Q") in adapter._slash_command_contexts
+
+    @pytest.mark.asyncio
+    async def test_operational_native_slash_does_not_echo_public_input(self, adapter):
+        """Control-plane commands stay private instead of creating channel noise."""
+        adapter._app.client.chat_postMessage = AsyncMock(return_value={"ts": "echo-ts"})
+        command = {
+            "command": "/stop",
+            "text": "",
+            "user_id": "U_STOP",
+            "channel_id": "C_STOP",
+            "team_id": "T_STOP",
+            "response_url": "https://hooks.slack.com/commands/T1/5/stop",
+        }
+
+        await adapter._handle_slash_command(command)
+
+        adapter._app.client.chat_postMessage.assert_not_awaited()
+        assert ("C_STOP", "U_STOP") in adapter._slash_command_contexts
 
     @pytest.mark.asyncio
     async def test_concurrent_users_same_channel_isolates_contexts(self, adapter):

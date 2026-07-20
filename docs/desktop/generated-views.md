@@ -68,6 +68,14 @@ existing webview path for full multi-file development workflows.
 
 ## Desktop walkthrough
 
+This 16-second loop is captured from the real desktop implementation. It shows
+discovery, exact-content approval, the running pane, and the automatic return to
+the approval gate after authored bytes change.
+
+![Generated views: discover, approve, run, and revoke](images/generated-views/generated-views-demo.gif)
+
+[Open the same walkthrough as MP4](images/generated-views/generated-views-demo.mp4)
+
 Artifacts discovers valid documents independently of recent-session artifact
 indexing and makes their declared authority visible before they are opened.
 

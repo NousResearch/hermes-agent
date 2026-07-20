@@ -462,17 +462,13 @@ export function playCompletionSound(dedupeKey?: string) {
     return
   }
 
-  if (!dedupeKey) {
-    playVariant($completionSoundVariantId.get())
+  const play = () => playVariant($completionSoundVariantId.get())
 
-    return
+  if (!dedupeKey) {
+    return play()
   }
 
-  void ownsAmbientCue(`sound:${dedupeKey}`).then(owns => {
-    if (owns) {
-      playVariant($completionSoundVariantId.get())
-    }
-  })
+  void ownsAmbientCue(`sound:${dedupeKey}`).then(owns => owns && play())
 }
 
 interface AirPuffSpec {

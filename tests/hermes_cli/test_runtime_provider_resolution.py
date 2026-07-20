@@ -889,6 +889,60 @@ def test_named_custom_provider_uses_saved_credentials(monkeypatch):
     assert resolved["source"] == "custom_provider:Local"
 
 
+def test_named_custom_provider_returns_provider_name(monkeypatch):
+    """Named custom providers keep ``provider="custom"`` as the internal type
+    marker but must also expose the entry's name as ``provider_name`` so
+    user-facing surfaces (system prompt header, footer, session metadata) can
+    show the label the user actually configured instead of the bare "custom"."""
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.setattr(
+        rp,
+        "load_config",
+        lambda: {
+            "custom_providers": [
+                {
+                    "name": "Local",
+                    "base_url": "http://1.2.3.4:1234/v1",
+                    "api_key": "local-provider-key",
+                }
+            ]
+        },
+    )
+
+    resolved = rp.resolve_runtime_provider(requested="local")
+
+    assert resolved["provider"] == "custom"
+    assert resolved["provider_name"] == "Local"
+
+
+def test_providers_dict_entry_returns_provider_name(monkeypatch):
+    """Same contract for new-style ``providers:`` dict entries (e.g. a user's
+    ``providers.kimi`` pointing at api.kimi.com/coding): the dict key becomes
+    the display label via the entry's resolved ``name``."""
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.setattr(
+        rp,
+        "load_config",
+        lambda: {
+            "providers": {
+                "kimi": {
+                    "api": "https://api.kimi.com/coding/",
+                    "api_key": "sk-kimi-test",
+                    "api_mode": "anthropic_messages",
+                }
+            }
+        },
+    )
+
+    resolved = rp.resolve_runtime_provider(requested="kimi")
+
+    assert resolved["provider"] == "custom"
+    assert resolved["provider_name"] == "kimi"
+    assert resolved["api_mode"] == "anthropic_messages"
+
+
 def test_bare_custom_resolves_providers_dict_entry_named_custom(monkeypatch):
     """A request for bare ``provider="custom"`` must resolve a literal
     ``providers.custom`` entry (e.g. a cliproxy endpoint) instead of falling

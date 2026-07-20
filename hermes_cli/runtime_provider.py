@@ -579,6 +579,7 @@ def _try_resolve_from_custom_pool(
             return None
         return {
             "provider": provider_label,
+            "provider_name": (provider_name or "").strip() or None,
             "api_mode": api_mode_override or _detect_api_mode_for_url(base_url) or "chat_completions",
             "base_url": base_url,
             "api_key": pool_api_key,
@@ -1030,6 +1031,12 @@ def _resolve_named_custom_runtime(
 
     result = {
         "provider": "custom",
+        # Display label for the user-facing surfaces (system prompt header,
+        # footer, session metadata).  ``provider`` stays the internal type
+        # marker ("custom") so existing type checks keep working; the entry's
+        # own name (e.g. "kimi") is what users actually configured and expect
+        # to see reported back.  None when the entry has no name.
+        "provider_name": str(custom_provider.get("name") or requested_provider).strip() or None,
         "api_mode": custom_provider.get("api_mode")
         or _detect_api_mode_for_url(base_url)
         or "chat_completions",

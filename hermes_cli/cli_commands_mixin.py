@@ -2520,6 +2520,8 @@ class CLICommandsMixin:
             /reasoning hide|off     Hide model thinking/reasoning from output
             /reasoning full         Show complete thinking (no 10-line clamp)
             /reasoning clamp        Collapse long thinking to the first 10 lines
+            /reasoning reveal       Show reasoning from the last turn
+            /reasoning reveal --limit N  Show only the last N reasoning blocks
         """
         from cli import _ACCENT, _DIM, _RST, _cprint, _parse_reasoning_config, save_config_value
         parts = cmd.strip().split(maxsplit=1)
@@ -2537,7 +2539,7 @@ class CLICommandsMixin:
             full_state = "full" if getattr(self, "reasoning_full", False) else "clamped to 10 lines"
             _cprint(f"  {_ACCENT}Reasoning effort:  {level}{_RST}")
             _cprint(f"  {_ACCENT}Reasoning display: {display_state} ({full_state}){_RST}")
-            _cprint(f"  {_DIM}Usage: /reasoning <none|minimal|low|medium|high|xhigh|max|ultra|show|hide|full|clamp>{_RST}")
+            _cprint(f"  {_DIM}Usage: /reasoning <none|minimal|low|medium|high|xhigh|max|ultra|show|hide|full|clamp|reveal [--limit N]>{_RST}")
             return
 
         arg = parts[1].strip().lower()
@@ -2572,6 +2574,65 @@ class CLICommandsMixin:
             self.reasoning_full = False
             save_config_value("display.reasoning_full", False)
             _cprint(f"  {_ACCENT}✓ Reasoning display: CLAMPED to 10 lines (saved){_RST}")
+            return
+
+        # Post-hoc reasoning reveal — show stored reasoning from last turn
+        if arg == "reveal" or arg.startswith("reveal "):
+            import shutil
+            import re as _re
+            rtext = getattr(self, "_last_reasoning", "")
+            if not rtext:
+                _cprint(f"  {_DIM}(._.) No reasoning stored from the last turn.{_RST}")
+                return
+            # Parse and validate --limit N
+            limit = None
+            if arg.startswith("reveal "):
+                rest = arg[len("reveal "):].strip()
+                if rest.startswith("--limit"):
+                    m = _re.match(r"^--limit\s+(\d+)$", rest)
+                    if not m:
+                        _cprint(f"  {_DIM}(._.) Invalid --limit usage. Expected: /reasoning reveal --limit <N>{_RST}")
+                        return
+                    limit = int(m.group(1))
+                    if limit <= 0:
+                        _cprint(f"  {_DIM}(._.) --limit must be a positive integer.{_RST}")
+                        return
+                else:
+                    _cprint(f"  {_DIM}(._.) Unknown argument: {rest}{_RST}")
+                    _cprint(f"  {_DIM}Usage: /reasoning reveal [--limit N]{_RST}")
+                    return
+            w = shutil.get_terminal_size().columns
+            r_label = " Thinking "
+            r_fill = w - 2 - len(r_label)
+            _cprint(f"\n{_DIM}┌─{r_label}{'─' * max(r_fill - 1, 0)}┐{_RST}")
+            lines = rtext.strip().splitlines()
+            if limit and limit > 0:
+                # Find block boundaries (blank lines or separator lines)
+                blocks = []
+                current_block = []
+                for line in lines:
+                    stripped = line.strip()
+                    if not stripped or stripped == "---":
+                        if current_block:
+                            blocks.append(current_block)
+                            current_block = []
+                    else:
+                        current_block.append(line)
+                if current_block:
+                    blocks.append(current_block)
+                total = len(blocks)
+                blocks = blocks[-limit:]
+                output_lines = []
+                for i, block in enumerate(blocks):
+                    if i > 0:
+                        output_lines.append("")
+                    output_lines.extend(block)
+                lines = output_lines
+                if total > len(blocks):
+                    _cprint(f"  {_DIM}(showing last {len(blocks)} of {total} reasoning blocks){_RST}")
+            for line in lines:
+                _cprint(f"{_DIM}{line}{_RST}")
+            _cprint(f"{_DIM}└{'─' * (w - 2)}┘{_RST}")
             return
 
         # Effort level change

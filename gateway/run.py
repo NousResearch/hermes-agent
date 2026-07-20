@@ -7354,9 +7354,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             pass
         try:
             from hermes_cli.profiles import get_active_profile_name
-            _profile = get_active_profile_name()
-            if _profile and _profile != "default":
-                logger.info("Active profile: %s", _profile)
+            _profile = get_active_profile_name() or "default"
+            from hermes_constants import get_hermes_home
+            _resolved_home = get_hermes_home()
+            # Always log the resolved profile + config/log paths, even for
+            # "default" — users editing ~/.hermes/config.yaml while a profile
+            # is active need to see which file is live (#32624 Trap 2 & 3).
+            logger.info(
+                "Active profile: %s (config: %s, logs: %s, %s)",
+                _profile,
+                _resolved_home / "config.yaml",
+                _resolved_home / "logs" / "gateway.log",
+                _resolved_home / "logs" / "agent.log",
+            )
         except Exception:
             pass
         try:

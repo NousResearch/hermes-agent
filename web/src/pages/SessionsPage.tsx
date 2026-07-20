@@ -31,7 +31,12 @@ import {
   Archive,
 } from "lucide-react";
 import { api } from "@/lib/api";
-import { shouldRefreshSessions } from "@/lib/session-refresh";
+import {
+  getSessionMessageRefreshMode,
+  hasSessionActivityChanged,
+  reconcileSessionActivity,
+  shouldRefreshSessions,
+} from "@/lib/session-refresh";
 import {
   importSummary,
   parseImportSessions,
@@ -398,22 +403,44 @@ function SessionRow({
   const [renameSaving, setRenameSaving] = useState(false);
   const { t } = useI18n();
   const navigate = useNavigate();
+  const hasMessagesRef = useRef(false);
+  const wasActiveRef = useRef(session.is_active);
 
   useEffect(() => {
-    if (!isExpanded || messages !== null) return;
+    if (!isExpanded) return;
+    const refreshMode = getSessionMessageRefreshMode({
+      isExpanded,
+      hasMessages: hasMessagesRef.current,
+      wasActive: wasActiveRef.current,
+      isActive: session.is_active,
+    });
+    wasActiveRef.current = session.is_active;
+    if (refreshMode === "none") return;
+
     let cancelled = false;
-    api
-      .getSessionMessages(session.id)
-      .then((resp) => {
-        if (!cancelled) setMessages(resp.messages);
-      })
-      .catch((err) => {
-        if (!cancelled) setError(String(err));
-      });
+    const refreshMessages = () => {
+      api
+        .getSessionMessages(session.id)
+        .then((resp) => {
+          if (!cancelled) {
+            hasMessagesRef.current = true;
+            setMessages(resp.messages);
+            setError(null);
+          }
+        })
+        .catch((err) => {
+          if (!cancelled) setError(String(err));
+        });
+    };
+
+    refreshMessages();
+    const intervalId =
+      refreshMode === "poll" ? setInterval(refreshMessages, 3000) : null;
     return () => {
       cancelled = true;
+      if (intervalId !== null) clearInterval(intervalId);
     };
-  }, [isExpanded, session.id, messages]);
+  }, [isExpanded, session.id, session.is_active]);
 
   const sourceInfo = (session.source
     ? SOURCE_CONFIG[session.source]
@@ -883,6 +910,7 @@ export default function SessionsPage() {
   // stale values. ``newestSeenRef`` starts null so the first poll sets a
   // baseline without triggering a redundant reload (mount already loads).
   const newestSeenRef = useRef<string | null>(null);
+  const overviewSessionsRef = useRef<SessionInfo[]>([]);
   const pageRef = useRef(page);
 
   useEffect(() => {
@@ -919,10 +947,27 @@ export default function SessionsPage() {
           // silently refresh the paginated list so the new session shows
           // up in real time without a visible loading flicker.
           const newest = r.sessions[0]?.id ?? null;
-          if (shouldRefreshSessions(newestSeenRef.current, newest)) {
+          const newestChanged = shouldRefreshSessions(
+            newestSeenRef.current,
+            newest,
+          );
+          if (newestChanged) {
             loadSessions(pageRef.current, true);
+          } else if (
+            hasSessionActivityChanged(
+              overviewSessionsRef.current,
+              r.sessions,
+            )
+          ) {
+            // Preserve row order and the active FTS result/snippet set while
+            // reconciling same-ID activity metadata (for example Live ->
+            // complete). Replacing the list here would erase searched rows.
+            setSessions((current) =>
+              reconcileSessionActivity(current, r.sessions),
+            );
           }
           newestSeenRef.current = newest;
+          overviewSessionsRef.current = r.sessions;
         })
         .catch(() => {});
     };

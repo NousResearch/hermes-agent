@@ -11,7 +11,10 @@ on:
       - "package-lock.json"
       - "packages/hermes-dashboard-kit/**"
       - "playwright.dashboard.config.ts"
+      - "playwright.v8-production.config.ts"
       - "scripts/audit-dashboard-usage.mjs"
+      - "scripts/design-system-status.mjs"
+      - "scripts/validate-v8-dashboard-migrations.mjs"
       - "scripts/validate-dashboard-registry.mjs"
       - "tests/dashboard/**"
       - "web/**"
@@ -25,7 +28,10 @@ on:
       - "package-lock.json"
       - "packages/hermes-dashboard-kit/**"
       - "playwright.dashboard.config.ts"
+      - "playwright.v8-production.config.ts"
       - "scripts/audit-dashboard-usage.mjs"
+      - "scripts/design-system-status.mjs"
+      - "scripts/validate-v8-dashboard-migrations.mjs"
       - "scripts/validate-dashboard-registry.mjs"
       - "tests/dashboard/**"
       - "web/**"
@@ -60,6 +66,12 @@ jobs:
       - name: Audit dashboard design-system usage
         run: npm run dashboard:usage:audit
 
+      - name: Validate canonical design-system registry
+        run: npm run dashboard:design-system:status -- --allow-missing-external
+
+      - name: Score dashboard recipe compliance
+        run: npm run dashboard:recipe:score:strict
+
       - name: Typecheck dashboard kit
         run: npm run typecheck --workspace @hermes/dashboard-kit
 
@@ -72,8 +84,17 @@ jobs:
       - name: Install Playwright browser
         run: npx playwright install chromium
 
+      - name: Validate V8 package-native migration
+        run: npm run dashboard:v8:validate
+
       - name: Run visual dashboard checks
         run: npm run dashboard:visual:check
+
+      - name: Run V8 production cutover check
+        run: npm run dashboard:v8:production:check
+        env:
+          HERMES_AGENT_DASHBOARD_USERNAME: ${{ secrets.HERMES_AGENT_DASHBOARD_USERNAME }}
+          HERMES_AGENT_DASHBOARD_PASSWORD: ${{ secrets.HERMES_AGENT_DASHBOARD_PASSWORD }}
 
       - name: Upload dashboard screenshots
         if: always()

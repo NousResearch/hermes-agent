@@ -1,0 +1,51 @@
+{
+  "schemaVersion": 1,
+  "source": {
+    "package": "@hermes/dashboard-kit",
+    "version": "0.1.0",
+    "cssPath": "packages/hermes-dashboard-kit/static/hermes-dashboard-kit.css",
+    "designContractPath": "packages/hermes-dashboard-kit/DESIGN.md"
+  },
+  "dashboards": [
+    {
+      "project": "khashi-vc",
+      "name": "Khashi VC ROC",
+      "type": "static-adapter",
+      "targetPath": "../khashi-vc/public/roc/hermes-dashboard-kit.css",
+      "status": "synced",
+      "targetState": "package-native or controlled static adapter"
+    },
+    {
+      "project": "media-engine",
+      "name": "Media Engine Operations",
+      "type": "static-adapter",
+      "targetPath": "../media-engine/core/operations/hermes-dashboard-kit.css",
+      "status": "synced",
+      "targetState": "package-native or controlled static adapter"
+    },
+    {
+      "project": "media-business-operations",
+      "name": "Media Business Operations Dashboard",
+      "type": "static-adapter",
+      "targetPath": "../media-business-operations/public/dashboard/hermes-dashboard-kit.css",
+      "status": "synced",
+      "targetState": "controlled static adapter, then package-native dashboard shell"
+    },
+    {
+      "project": "business-mapper",
+      "name": "Business Mapper Dashboard",
+      "type": "static-adapter",
+      "targetPath": "../business-mapper/business_mapper/static/hermes-dashboard-kit.css",
+      "status": "synced",
+      "targetState": "controlled static adapter, then package-native dashboard shell"
+    },
+    {
+      "project": "Meal-assistant",
+      "name": "Meal Assistant Dashboard",
+      "type": "static-adapter",
+      "targetPath": "../Meal-assistant/src/hermes-dashboard-kit.css",
+      "status": "synced",
+      "targetState": "controlled static adapter, then package-native dashboard shell"
+    }
+  ]
+}

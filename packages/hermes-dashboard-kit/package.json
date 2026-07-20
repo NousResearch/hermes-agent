@@ -15,6 +15,7 @@
   "files": [
     "dist",
     "static",
+    "DESIGN.md",
     "README.md",
     "CHANGELOG.md"
   ],

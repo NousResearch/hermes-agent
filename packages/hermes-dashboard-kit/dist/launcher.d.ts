@@ -8,6 +8,7 @@ export interface DashboardRegistryEntry {
     localUrl?: string;
     productionUrl?: string;
     healthUrl?: string;
+    snapshotUrl?: string;
     status?: DashboardHealthStatus;
     category?: string;
     owner?: string;

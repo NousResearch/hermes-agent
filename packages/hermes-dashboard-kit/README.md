@@ -2,6 +2,12 @@
 
 Shared React dashboard primitives for Hermes/TLC operational dashboards.
 
+## Canonical Role
+
+This package is the source of truth for the Hermes/TLC dashboard design system. The machine-readable and human-readable design contract lives in `DESIGN.md`.
+
+Hermes OS should enforce and report adoption of this package. It should not maintain a competing dashboard component system.
+
 ## Install From This Workspace
 
 Inside a workspace project:
@@ -64,3 +70,9 @@ import {
 ## Migration Rule
 
 Do not copy components into a project. Consume the package and extend the package when two or more dashboards need the same behavior.
+
+Static dashboards may use `static/hermes-dashboard-kit.css` as a bridge, but copied CSS must be tracked in `docs/design/dashboard-kit-adoption.json` and checked with:
+
+```bash
+npm run dashboard:design-system:status
+```

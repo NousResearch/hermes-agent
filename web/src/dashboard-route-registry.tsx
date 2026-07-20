@@ -48,6 +48,8 @@ const CronPage = lazy(() => import("@/pages/CronPage"));
 const HermesOsPage = lazy(() => import("@/pages/HermesOsPage"));
 const DesignSystemPage = lazy(() => import("@/pages/DesignSystemPage"));
 const PackageNativeMigrationsPage = lazy(() => import("@/pages/PackageNativeMigrationsPage"));
+const MediaEnginePackageNativePage = lazy(() => import("@/pages/ProjectSnapshotDashboardPage").then((module) => ({ default: module.MediaEnginePackageNativePage })));
+const KhashiVcPackageNativePage = lazy(() => import("@/pages/ProjectSnapshotDashboardPage").then((module) => ({ default: module.KhashiVcPackageNativePage })));
 const ExecutiveSummaryPage = lazy(() => import("@/pages/ExecutiveSummaryPage"));
 const CentralCommandPage = lazy(() => import("@/pages/CentralCommandPage"));
 const ThemeSystemPage = lazy(() => import("@/pages/ThemeSystemPage"));
@@ -157,6 +159,8 @@ export const BUILTIN_ROUTES_CORE: Record<string, RouteComponent> = {
   "/central-command": CentralCommandPage,
   "/executive-summary": ExecutiveSummaryPage,
   "/dashboard-migrations": PackageNativeMigrationsPage,
+  "/package-native/media-engine": MediaEnginePackageNativePage,
+  "/package-native/khashi-vc": KhashiVcPackageNativePage,
   "/theme-system": ThemeSystemPage,
   "/dashboard-marketplace": DashboardMarketplacePage,
   "/live-signals": LiveSignalsPage,
@@ -251,6 +255,8 @@ export const BUILTIN_NAV_REST: BuiltinNavItem[] = [
   { path: "/central-command", label: "Central Command", icon: Building2 },
   { path: "/executive-summary", label: "Executive", icon: Building2 },
   { path: "/dashboard-migrations", label: "Dashboard Migrations", icon: Code2 },
+  { path: "/package-native/media-engine", label: "Media Native", icon: Activity },
+  { path: "/package-native/khashi-vc", label: "Khashi Native", icon: Activity },
   { path: "/theme-system", label: "Theme System", icon: Palette },
   { path: "/dashboard-marketplace", label: "Marketplace", icon: Plug },
   { path: "/live-signals", label: "Live Signals", icon: Radio },

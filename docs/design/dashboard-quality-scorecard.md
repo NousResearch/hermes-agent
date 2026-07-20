@@ -39,6 +39,27 @@ Every priority dashboard should have:
 - Production URL or documented local-only reason.
 - Owner and category.
 
+High-impact dashboard releases must also pass `docs/design/dashboard-release-review-checklist.md`.
+
+## Automated Recipe Compliance
+
+Run:
+
+```bash
+npm run dashboard:recipe:score:strict
+```
+
+The automated score is a metadata gate, not a replacement for visual review. It fails governed routes below `80/100` using the same minimum score as this scorecard.
+
+Current scored categories:
+
+- Approved V7 recipe.
+- Data contract coverage.
+- Required state coverage including mobile.
+- Version validator, visual check, and web build commands.
+- Owner, category, title, and production/local evidence.
+- Design-system governance defaults.
+
 ## Initial Priority Dashboards
 
 - `/executive-summary`

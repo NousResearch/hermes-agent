@@ -1,0 +1,72 @@
+{
+  "schemaVersion": 1,
+  "targets": [
+    {
+      "id": "media-engine.ops",
+      "dashboard": "Media Engine Ops",
+      "currentSurface": "static-adapter",
+      "targetSurface": "package-native-react",
+      "recipe": "pipeline-workflow-dashboard",
+      "packageNativeRoute": "/package-native/media-engine",
+      "snapshotEndpoint": "https://media.tlccapitalgroup.com/dashboard-snapshot",
+      "healthEndpoint": "https://media.tlccapitalgroup.com/health",
+      "adapterPath": "../media-engine/core/operations/hermes-dashboard-kit.css",
+      "parity": {
+        "authPreserved": true,
+        "commandsPreserved": true,
+        "apiBehaviorPreserved": true,
+        "snapshotEndpointExists": true,
+        "packageNativeShadowRoute": true,
+        "playwrightCoverage": true,
+        "productionScreenshotEvidence": false,
+        "rollbackPath": true
+      },
+      "retirementAllowed": false,
+      "nextStep": "Capture live production screenshot parity before adapter retirement."
+    },
+    {
+      "id": "khashi-vc.roc",
+      "dashboard": "Khashi VC ROC",
+      "currentSurface": "static-adapter",
+      "targetSurface": "package-native-react",
+      "recipe": "operations-control-room + market-asset-explorer",
+      "packageNativeRoute": "/package-native/khashi-vc",
+      "snapshotEndpoint": "https://roc.tlccapitalgroup.com/api/dashboard-snapshot",
+      "healthEndpoint": "https://roc.tlccapitalgroup.com/readyz",
+      "adapterPath": "../khashi-vc/public/roc/hermes-dashboard-kit.css",
+      "parity": {
+        "authPreserved": true,
+        "commandsPreserved": true,
+        "apiBehaviorPreserved": true,
+        "snapshotEndpointExists": true,
+        "packageNativeShadowRoute": true,
+        "playwrightCoverage": true,
+        "productionScreenshotEvidence": false,
+        "rollbackPath": true
+      },
+      "retirementAllowed": false,
+      "nextStep": "Capture live production screenshot parity and validate command behavior before adapter retirement."
+    },
+    {
+      "id": "media-business-operations.main",
+      "dashboard": "Media Business Operations",
+      "currentSurface": "static-adapter",
+      "targetSurface": "package-native-react",
+      "recipe": "brand-business-performance",
+      "snapshotEndpoint": "",
+      "healthEndpoint": "https://media-business-operations.tlccapitalgroup.com/health",
+      "adapterPath": "../media-business-operations/public/dashboard/hermes-dashboard-kit.css",
+      "parity": {
+        "authPreserved": false,
+        "commandsPreserved": false,
+        "apiBehaviorPreserved": false,
+        "snapshotEndpointExists": false,
+        "playwrightCoverage": false,
+        "productionScreenshotEvidence": false,
+        "rollbackPath": false
+      },
+      "retirementAllowed": false,
+      "nextStep": "Define source analytics contract and project-owned dashboard snapshot endpoint."
+    }
+  ]
+}

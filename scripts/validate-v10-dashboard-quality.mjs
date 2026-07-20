@@ -30,11 +30,38 @@ check("quality metadata exists", () => {
   }
 });
 
+check("automated recipe compliance scoring exists", () => {
+  const script = read("scripts/score-dashboard-recipe-compliance.mjs");
+  requireIncludes(script, "minimumPassingScore = 80", "minimum passing score");
+  requireIncludes(script, "approvedRecipes", "approved recipe check");
+  requireIncludes(script, "dashboardGovernanceDefaults", "governance defaults scoring");
+  const pkg = JSON.parse(read("package.json"));
+  if (pkg.scripts?.["dashboard:recipe:score:strict"] !== "node scripts/score-dashboard-recipe-compliance.mjs --strict") {
+    throw new Error("missing dashboard:recipe:score:strict script");
+  }
+});
+
 check("visual tests cover V10 routes", () => {
   const text = read("tests/dashboard/design-system.spec.ts");
   requireIncludes(text, "/dashboard-migrations", "dashboard migrations visual route");
+  requireIncludes(text, "/production-screenshot-runner", "production screenshot runner visual route");
   requireIncludes(text, "V7 Full-Page Dashboard Recipes", "recipe gallery assertion");
   requireIncludes(text, "Package-Native Dashboard Migrations", "migration dashboard assertion");
+});
+
+check("release review checklist gate exists", () => {
+  const checklist = read("docs/design/dashboard-release-review-checklist.md");
+  for (const phrase of [
+    "Required Release Evidence",
+    "dashboard:recipe:score:strict",
+    "dashboard:design-system:status -- --strict",
+    "dashboard:visual:check",
+    "Production screenshot evidence",
+    "Rollback path",
+    "documented design-system exception",
+  ]) {
+    requireIncludes(checklist, phrase, phrase);
+  }
 });
 
 check("package script", () => {

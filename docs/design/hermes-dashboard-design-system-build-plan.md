@@ -9,7 +9,7 @@ Status legend:
 
 Current foundation estimate: **100% complete through V7**
 
-Ultimate operating-dashboard estimate: **45-55% complete**
+Ultimate operating-dashboard estimate: **70-75% complete**
 
 Target outcome: a governed, reusable Hermes/TLC dashboard system that makes every internal dashboard look and behave consistently while still letting each project express its own operational domain.
 
@@ -820,10 +820,10 @@ See `docs/design/v8-v14-trackable-build-plan.md` for the trackable post-foundati
 | V5 | Enforcement and visual quality | `[x]` | 100% |
 | V6 | Advanced capabilities | `[x]` | 100% |
 | V7 | Package-native premium dashboard adoption recipes | `[x]` | 100% |
-| V8 | Package-native dashboard migrations | `[ ]` | 0% |
-| V9 | Live data contracts and executive signals | `[ ]` | 0% |
-| V10 | Premium visual QA and design review | `[~]` | 45% |
-| V11 | Agent-enforced dashboard creation | `[~]` | 50% |
+| V8 | Package-native dashboard migrations | `[~]` | 90% |
+| V9 | Live data contracts and executive signals | `[x]` | 100% |
+| V10 | Premium visual QA and design review | `[x]` | 100% |
+| V11 | Agent-enforced dashboard creation | `[x]` | 100% |
 | V12 | Hermes central command layer | `[x]` | 100% |
 | V13 | Multi-brand theme and product polish | `[x]` | 100% |
 | V14 | Dashboard marketplace and plugin system | `[x]` | 100% |
@@ -847,15 +847,19 @@ Final validation command:
 
 Goal: move the highest-value dashboards from static adapter surfaces into full package-native implementations using `@hermes/dashboard-kit`.
 
-Status: `[ ]`
+Status: `[~]`
 
 Recommended phases:
 
-- [ ] V8.1 Media Engine Ops package-native dashboard.
-- [ ] V8.2 Khashi VC ROC package-native dashboard.
+- [x] V8.1 Media Engine Ops package-native shadow dashboard.
+- [x] V8.2 Khashi VC ROC package-native shadow dashboard.
 - [ ] V8.3 Hermes Executive Summary live-data rewrite.
 - [ ] V8.4 Media Business Operations package-native dashboard.
 - [ ] V8.5 Retire static adapters only after live parity is proven.
+- [x] V8 parity registry and adapter retirement guardrail.
+- [x] Media Engine and Khashi project-owned snapshot endpoints.
+- [x] Local Playwright coverage for Media Engine and Khashi package-native shadow routes.
+- [x] Static adapter rollback plan.
 
 Acceptance criteria:
 
@@ -867,14 +871,14 @@ Acceptance criteria:
 
 Goal: standardize how every project exposes dashboard-ready operating data to Hermes.
 
-Status: `[ ]`
+Status: `[x]`
 
 Recommended phases:
 
-- [ ] Define `DashboardSnapshot`, `HealthSnapshot`, `CostSnapshot`, `CapacitySnapshot`, `QueueSnapshot`, and `ActionNeeded`.
-- [ ] Add project adapters for Khashi VC, Media Engine, Hermes OS, and Media Business Operations.
-- [ ] Add freshness, owner, severity, confidence, and source URL fields.
-- [ ] Feed `/executive-summary` from real project endpoints.
+- [x] Define `DashboardSnapshot`, `HealthSnapshot`, `CostSnapshot`, `CapacitySnapshot`, `QueueSnapshot`, and `ActionNeeded`.
+- [x] Add project adapters for Khashi VC, Media Engine, Hermes OS, and Media Business Operations.
+- [x] Add freshness, owner, severity, confidence, and source URL fields.
+- [x] Feed `/executive-summary` from real project endpoints.
 
 Acceptance criteria:
 
@@ -885,7 +889,7 @@ Acceptance criteria:
 
 Goal: make dashboard quality measurable beyond basic rendering.
 
-Status: `[~]`
+Status: `[x]`
 
 Recommended phases:
 
@@ -893,10 +897,10 @@ Recommended phases:
 - [x] Add governed dashboard metadata with recipe, data contract, states, validation, owner, and category.
 - [x] Add V10 validator.
 - [x] Add visual coverage for `/dashboard-migrations`.
-- [ ] Add live production screenshot checks.
-- [ ] Add visual baselines for priority dashboards.
-- [ ] Add automated recipe compliance scoring.
-- [ ] Add manual review checklist for high-impact dashboard releases.
+- [x] Add automated recipe compliance scoring.
+- [x] Add live production screenshot checks.
+- [x] Add visual baselines for priority dashboards.
+- [x] Add manual review checklist for high-impact dashboard releases.
 
 Acceptance criteria:
 
@@ -914,12 +918,13 @@ Recommended phases:
 - [x] Require every governed dashboard route to declare a V7 recipe.
 - [x] Require dashboard metadata to include data contract, states, owner, category, and validation.
 - [x] Add validation that rejects governed dashboard pages without recipe metadata.
-- [ ] Add screenshot evidence requirements to final handoffs.
-- [ ] Reject dashboard changes that bypass the design kit without documented exception.
+- [x] Add screenshot evidence requirements to final handoffs.
+- [x] Reject dashboard changes that bypass the design kit without documented exception.
+- [x] Add local auto-heal hooks and CI check-only enforcement for dashboard CSS adapter drift.
 
 Acceptance criteria:
 
-- [ ] Agent-built dashboards cannot bypass the design system by accident.
+- [x] Agent-built dashboards cannot bypass the design system by accident.
 
 ## Version 12: Hermes Central Command Layer
 

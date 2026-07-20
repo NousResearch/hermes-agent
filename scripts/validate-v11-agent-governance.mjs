@@ -44,9 +44,38 @@ check("metadata enforces data, states, and validation", () => {
     for (const field of ["dataContracts", "requiredStates", "validation"]) {
       requireIncludes(entry, `${field}: [`, `${field} array`);
     }
-    if (!entry.includes("normal")) throw new Error("metadata entry missing normal state");
+    const states = entry.match(/requiredStates: \[([^\]]+)\]/)?.[1]?.match(/"[^"]+"/g) ?? [];
+    if (states.length < 4) throw new Error("metadata entry needs at least four required states");
     if (!entry.includes("mobile")) throw new Error("metadata entry missing mobile state");
   }
+});
+
+check("metadata enforces design-system and handoff evidence defaults", () => {
+  const metadata = read("web/src/dashboard-page-metadata.ts");
+  for (const phrase of [
+    "dashboardGovernanceDefaults",
+    "sourcePackage: \"@hermes/dashboard-kit\"",
+    "designContract: \"packages/hermes-dashboard-kit/DESIGN.md\"",
+    "adoptionRegistry: \"docs/design/dashboard-kit-adoption.json\"",
+    "documented design-system exception",
+    "finalHandoffEvidence",
+    "Screenshot evidence or explicit local-only reason",
+    "Design-system status output",
+  ]) {
+    requireIncludes(metadata, phrase, phrase);
+  }
+});
+
+check("dashboard design-system drift controls exist", () => {
+  const pkg = JSON.parse(read("package.json"));
+  if (pkg.scripts?.["dashboard:design-system:status"] !== "node scripts/design-system-status.mjs") {
+    throw new Error("missing dashboard:design-system:status script");
+  }
+  if (pkg.scripts?.["dashboard:design-system:hooks:install"] !== "node scripts/install-design-system-hooks.mjs") {
+    throw new Error("missing dashboard:design-system:hooks:install script");
+  }
+  requireIncludes(read("docs/design/dashboard-kit-adoption.md"), "CI remains check-only", "CI check-only rule");
+  requireIncludes(read("docs/design/dashboard-kit-adoption.md"), "auto-heal", "local auto-heal rule");
 });
 
 check("agent guidance references V11 governance", () => {
@@ -54,6 +83,7 @@ check("agent guidance references V11 governance", () => {
   requireIncludes(plan, "Require recipe metadata for every governed dashboard route", "recipe metadata requirement");
   requireIncludes(plan, "Require data contract metadata before dashboard implementation", "data contract requirement");
   requireIncludes(plan, "Require screenshot evidence in final handoff", "screenshot evidence requirement");
+  requireIncludes(plan, "documented design-system exception", "documented exception requirement");
 });
 
 check("package script", () => {

@@ -11,6 +11,33 @@ export interface DashboardPageMetadata {
   localOnlyReason?: string;
 }
 
+export interface DashboardGovernanceDefaults {
+  designSystem: {
+    sourcePackage: string;
+    designContract: string;
+    adoptionRegistry: string;
+    bypassPolicy: string;
+  };
+  finalHandoffEvidence: string[];
+}
+
+export const dashboardGovernanceDefaults: DashboardGovernanceDefaults = {
+  designSystem: {
+    sourcePackage: "@hermes/dashboard-kit",
+    designContract: "packages/hermes-dashboard-kit/DESIGN.md",
+    adoptionRegistry: "docs/design/dashboard-kit-adoption.json",
+    bypassPolicy: "Dashboard work must use the package or static adapter unless a documented design-system exception is approved.",
+  },
+  finalHandoffEvidence: [
+    "V7 recipe id",
+    "Data contracts used",
+    "Required states checked",
+    "Validation commands run",
+    "Screenshot evidence or explicit local-only reason",
+    "Design-system status output",
+  ],
+};
+
 export const dashboardPageMetadata: DashboardPageMetadata[] = [
   {
     route: "/central-command",
@@ -55,6 +82,30 @@ export const dashboardPageMetadata: DashboardPageMetadata[] = [
     requiredStates: ["normal", "planned", "ready", "in-progress", "blocked", "disabled command", "mobile"],
     validation: ["dashboard:v8:validate", "dashboard:visual:check", "build --workspace web"],
     localOnlyReason: "Governance workbench route served by the Hermes dashboard app.",
+  },
+  {
+    route: "/package-native/media-engine",
+    title: "Media Engine Package-Native Ops",
+    recipe: "pipeline-workflow-dashboard",
+    owner: "Media Engine",
+    category: "media-operations",
+    dataContracts: ["DashboardSnapshot", "HealthSnapshot", "CostSnapshot", "CapacitySnapshot", "QueueSnapshot", "ActionNeeded[]"],
+    requiredStates: ["normal", "fallback", "warning", "critical", "stale", "disabled command", "mobile"],
+    validation: ["dashboard:v8:validate", "dashboard:visual:check", "build --workspace web"],
+    productionUrl: "https://media.tlccapitalgroup.com/dashboard",
+    localOnlyReason: "Shadow package-native route used for V8 parity before replacing the production static adapter.",
+  },
+  {
+    route: "/package-native/khashi-vc",
+    title: "Khashi VC Package-Native ROC",
+    recipe: "operations-control-room",
+    owner: "Khashi VC",
+    category: "research-operations",
+    dataContracts: ["DashboardSnapshot", "HealthSnapshot", "CostSnapshot", "CapacitySnapshot", "QueueSnapshot", "ActionNeeded[]"],
+    requiredStates: ["normal", "fallback", "warning", "critical", "stale", "disabled command", "mobile"],
+    validation: ["dashboard:v8:validate", "dashboard:visual:check", "build --workspace web"],
+    productionUrl: "https://roc.tlccapitalgroup.com/",
+    localOnlyReason: "Shadow package-native route used for V8 parity before replacing the production static adapter.",
   },
   {
     route: "/theme-system",

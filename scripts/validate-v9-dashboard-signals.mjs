@@ -64,6 +64,24 @@ check("server snapshot endpoints", () => {
   requireIncludes(adapter, "health_for_dashboard", "health snapshot adapter");
 });
 
+check("project-owned snapshot endpoints", () => {
+  const mediaServer = read("../media-engine/tasks/ops-dashboard-server.js");
+  const mediaSnapshot = read("../media-engine/core/operations/unified-publishing-dashboard.js");
+  requireIncludes(mediaServer, "/dashboard-snapshot", "Media Engine dashboard snapshot route");
+  requireIncludes(mediaSnapshot, "sourceDashboardId", "Media Engine action source dashboard");
+  for (const field of ["amountUsd", "tokenCount", "apiCalls", "storageBytes", "capacity", "queue", "actions", "research", "deployment"]) {
+    requireIncludes(mediaSnapshot, field, `Media Engine ${field}`);
+  }
+
+  const khashiServer = read("../khashi-vc/src/web/server.ts");
+  const khashiApi = read("../khashi-vc/src/web/roc-api.ts");
+  requireIncludes(khashiServer, "/dashboard-snapshot", "Khashi dashboard snapshot route");
+  requireIncludes(khashiApi, "dashboardSnapshot()", "Khashi dashboard snapshot method");
+  for (const field of ["tokenCount", "apiCalls", "storageBytes", "capacity", "queue", "actions", "research", "deployment"]) {
+    requireIncludes(khashiApi, field, `Khashi ${field}`);
+  }
+});
+
 check("package script", () => {
   const pkg = JSON.parse(read("package.json"));
   if (pkg.scripts?.["dashboard:v9:validate"] !== "node scripts/validate-v9-dashboard-signals.mjs") {

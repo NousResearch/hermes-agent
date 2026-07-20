@@ -24,6 +24,7 @@ interface MigrationTarget {
   completion: number;
   status: "ready" | "in-progress" | "blocked" | "planned";
   nextStep: string;
+  packageNativeRoute?: string;
 }
 
 const targets: MigrationTarget[] = [
@@ -33,9 +34,10 @@ const targets: MigrationTarget[] = [
     recipe: "pipeline-workflow-dashboard",
     current: "Generated static HTML with hdk adapter classes.",
     target: "Package-native React dashboard consuming a dashboard snapshot API.",
-    completion: 20,
-    status: "ready",
-    nextStep: "Split snapshot JSON API from generated HTML concerns.",
+    completion: 65,
+    status: "in-progress",
+    nextStep: "Capture live screenshot parity and rollback notes before adapter retirement.",
+    packageNativeRoute: "/package-native/media-engine",
   },
   {
     id: "khashi-vc",
@@ -43,9 +45,10 @@ const targets: MigrationTarget[] = [
     recipe: "operations-control-room + market-asset-explorer",
     current: "Static HTML and vanilla JavaScript ROC with hdk adapter classes.",
     target: "Package-native React ROC with typed API client, query layer, and recipe-based views.",
-    completion: 15,
-    status: "ready",
-    nextStep: "Extract current ROC API client and migrate Run Monitor first.",
+    completion: 60,
+    status: "in-progress",
+    nextStep: "Capture live screenshot parity and validate command behavior before adapter retirement.",
+    packageNativeRoute: "/package-native/khashi-vc",
   },
   {
     id: "executive-summary",
@@ -53,7 +56,7 @@ const targets: MigrationTarget[] = [
     recipe: "executive-command-center",
     current: "Package-native reference route with partial signal data.",
     target: "Live TLC central command backed by project signal contracts.",
-    completion: 45,
+    completion: 65,
     status: "in-progress",
     nextStep: "Wire project Health/Cost/Capacity/Queue/ActionNeeded endpoints.",
   },
@@ -74,6 +77,14 @@ const columns: DataTableColumn<MigrationTarget>[] = [
   { id: "recipe", header: "V7 Recipe", accessor: (row) => <span className="font-mono-ui text-xs">{row.recipe}</span>, sortValue: (row) => row.recipe },
   { id: "status", header: "Status", accessor: (row) => <StatusPill tone={toneForStatus(row.status)}>{row.status}</StatusPill>, sortValue: (row) => row.status },
   { id: "completion", header: "Complete", accessor: (row) => `${row.completion}%`, sortValue: (row) => row.completion },
+  {
+    id: "route",
+    header: "Native Route",
+    accessor: (row) => row.packageNativeRoute
+      ? <a className="font-mono-ui text-xs text-primary hover:underline" href={row.packageNativeRoute}>{row.packageNativeRoute}</a>
+      : <span className="text-muted-foreground">not ready</span>,
+    sortValue: (row) => row.packageNativeRoute ?? "",
+  },
   { id: "next", header: "Next Step", accessor: (row) => row.nextStep, sortValue: (row) => row.nextStep },
 ];
 

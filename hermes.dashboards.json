@@ -29,7 +29,7 @@
       "owner": "Khashi VC",
       "url": "https://roc.tlccapitalgroup.com/",
       "healthUrl": "https://roc.tlccapitalgroup.com/readyz",
-      "snapshotUrl": "https://roc.tlccapitalgroup.com/dashboard-snapshot",
+      "snapshotUrl": "https://roc.tlccapitalgroup.com/api/dashboard-snapshot",
       "projectPath": "/Users/hq/Workspace/projects/khashi-vc",
       "projectName": "Khashi VC",
       "command": []

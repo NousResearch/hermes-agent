@@ -186,11 +186,39 @@ test.describe("Hermes dashboard design system", () => {
     await expect(page.getByRole("heading", { name: /Package-Native Dashboard Migrations/i }).first()).toBeVisible();
     await expect(page.getByRole("cell", { name: "Media Engine Ops" })).toBeVisible();
     await expect(page.getByRole("cell", { name: "Khashi VC ROC" })).toBeVisible();
+    await expect(page.getByRole("link", { name: "/package-native/media-engine" })).toBeVisible();
+    await expect(page.getByRole("link", { name: "/package-native/khashi-vc" })).toBeVisible();
     await expect(page.getByText("Retire Adapter")).toBeVisible();
     await expectNoHorizontalOverflow(page);
     await expectKeyboardFocus(page);
     await expectNoAxeViolations(page);
     await captureDashboardScreenshot(page, testInfo, "package-native-migrations-dashboard");
+  });
+
+  test("Media Engine package-native shadow dashboard preserves V8 signal surface", async ({ page }, testInfo) => {
+    await page.goto("/package-native/media-engine");
+    await expect(page.getByRole("heading", { name: /Media Engine Package-Native Ops/i }).first()).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Dashboard Snapshot Signals" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "V8 Parity Position" })).toBeVisible();
+    await expect(page.getByText("Adapter Retirement Gate")).toBeVisible();
+    await expect(page.getByRole("cell", { name: "CostSnapshot" })).toBeVisible();
+    await expectNoHorizontalOverflow(page);
+    await expectKeyboardFocus(page);
+    await expectNoAxeViolations(page);
+    await captureDashboardScreenshot(page, testInfo, "media-engine-package-native");
+  });
+
+  test("Khashi VC package-native shadow dashboard preserves V8 signal surface", async ({ page }, testInfo) => {
+    await page.goto("/package-native/khashi-vc");
+    await expect(page.getByRole("heading", { name: /Khashi VC Package-Native ROC/i }).first()).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Dashboard Snapshot Signals" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "V8 Parity Position" })).toBeVisible();
+    await expect(page.getByText("Adapter Retirement Gate")).toBeVisible();
+    await expect(page.getByRole("cell", { name: "QueueSnapshot" })).toBeVisible();
+    await expectNoHorizontalOverflow(page);
+    await expectKeyboardFocus(page);
+    await expectNoAxeViolations(page);
+    await captureDashboardScreenshot(page, testInfo, "khashi-vc-package-native");
   });
 
   test("central command route keeps V12 executive layer visible", async ({ page }, testInfo) => {
@@ -277,7 +305,7 @@ test.describe("Hermes dashboard design system", () => {
     test(`${routeConfig.route} keeps V15-V21 operating-system layer visible`, async ({ page }, testInfo) => {
       await page.goto(routeConfig.route);
       await expect(page.getByRole("heading", { name: routeConfig.heading }).first()).toBeVisible();
-      await expect(page.getByRole("heading", { name: routeConfig.secondary, exact: true })).toBeVisible();
+      await expect(page.getByRole("heading", { name: routeConfig.secondary, exact: true }).first()).toBeVisible();
       await expectNoHorizontalOverflow(page);
       await expectKeyboardFocus(page);
       await expectNoAxeViolations(page);
@@ -346,7 +374,7 @@ test.describe("Hermes dashboard design system", () => {
     test(`${routeConfig.route} keeps V22-V30 autonomy-readiness layer visible`, async ({ page }, testInfo) => {
       await page.goto(routeConfig.route);
       await expect(page.getByRole("heading", { name: routeConfig.heading }).first()).toBeVisible();
-      await expect(page.getByRole("heading", { name: routeConfig.secondary, exact: true })).toBeVisible();
+      await expect(page.getByRole("heading", { name: routeConfig.secondary, exact: true }).first()).toBeVisible();
       await expect(page.getByRole("heading", { name: "Runtime Evidence" })).toBeVisible();
       await expect(page.getByRole("button", { name: /Run readiness check/i })).toBeVisible();
       await expectNoHorizontalOverflow(page);
@@ -423,7 +451,7 @@ test.describe("Hermes dashboard design system", () => {
     test(`${routeConfig.route} keeps V31-V40 executive operating-system layer visible`, async ({ page }, testInfo) => {
       await page.goto(routeConfig.route);
       await expect(page.getByRole("heading", { name: routeConfig.heading }).first()).toBeVisible();
-      await expect(page.getByRole("heading", { name: routeConfig.secondary, exact: true })).toBeVisible();
+      await expect(page.getByRole("heading", { name: routeConfig.secondary, exact: true }).first()).toBeVisible();
       await expect(page.getByRole("heading", { name: "Runtime Evidence" })).toBeVisible();
       await expect(page.getByRole("button", { name: /Run readiness check/i })).toBeVisible();
       await expectNoHorizontalOverflow(page);
@@ -500,7 +528,7 @@ test.describe("Hermes dashboard design system", () => {
     test(`${routeConfig.route} keeps V41-V50 live operations layer visible`, async ({ page }, testInfo) => {
       await page.goto(routeConfig.route);
       await expect(page.getByRole("heading", { name: routeConfig.heading }).first()).toBeVisible();
-      await expect(page.getByRole("heading", { name: routeConfig.secondary, exact: true })).toBeVisible();
+      await expect(page.getByRole("heading", { name: routeConfig.secondary, exact: true }).first()).toBeVisible();
       await expect(page.getByRole("heading", { name: "Runtime Evidence" })).toBeVisible();
       await expect(page.getByRole("button", { name: /Run readiness check/i })).toBeVisible();
       await expectNoHorizontalOverflow(page);
@@ -577,7 +605,7 @@ test.describe("Hermes dashboard design system", () => {
     test(`${routeConfig.route} keeps V51-V60 boundary closure layer visible`, async ({ page }, testInfo) => {
       await page.goto(routeConfig.route);
       await expect(page.getByRole("heading", { name: routeConfig.heading }).first()).toBeVisible();
-      await expect(page.getByRole("heading", { name: routeConfig.secondary, exact: true })).toBeVisible();
+      await expect(page.getByRole("heading", { name: routeConfig.secondary, exact: true }).first()).toBeVisible();
       await expect(page.getByRole("heading", { name: "Runtime Evidence" })).toBeVisible();
       await expect(page.getByRole("button", { name: /Run readiness check/i })).toBeVisible();
       await expectNoHorizontalOverflow(page);
@@ -604,7 +632,7 @@ test.describe("Hermes dashboard design system", () => {
     test(`${routeConfig.route} keeps V61-V70 live adapter layer visible`, async ({ page }, testInfo) => {
       await page.goto(routeConfig.route);
       await expect(page.getByRole("heading", { name: routeConfig.heading }).first()).toBeVisible();
-      await expect(page.getByRole("heading", { name: routeConfig.secondary, exact: true })).toBeVisible();
+      await expect(page.getByRole("heading", { name: routeConfig.secondary, exact: true }).first()).toBeVisible();
       await expect(page.getByRole("heading", { name: "Runtime Evidence" })).toBeVisible();
       await expect(page.getByRole("button", { name: /Run readiness check/i })).toBeVisible();
       await expectNoHorizontalOverflow(page);
@@ -631,7 +659,7 @@ test.describe("Hermes dashboard design system", () => {
     test(`${routeConfig.route} keeps V71-V80 operational readiness layer visible`, async ({ page }, testInfo) => {
       await page.goto(routeConfig.route);
       await expect(page.getByRole("heading", { name: routeConfig.heading }).first()).toBeVisible();
-      await expect(page.getByRole("heading", { name: routeConfig.secondary, exact: true })).toBeVisible();
+      await expect(page.getByRole("heading", { name: routeConfig.secondary, exact: true }).first()).toBeVisible();
       await expect(page.getByRole("heading", { name: "Runtime Evidence" })).toBeVisible();
       await expect(page.getByRole("button", { name: /Run readiness check/i })).toBeVisible();
       await expectNoHorizontalOverflow(page);

@@ -11,6 +11,8 @@ Current state:
 - Static HTML and vanilla JavaScript dashboard.
 - Uses `hdk-*` static adapter classes.
 - Keeps existing auth, API calls, scheduler controls, experiment views, and operational workflows.
+- Standard `/dashboard-snapshot` API exists in the project.
+- Hermes now has a package-native shadow route at `/package-native/khashi-vc` consuming the standard snapshot contract.
 
 Package-native target:
 
@@ -24,8 +26,8 @@ Package-native target:
 Recommended phases:
 
 - K1: Extract current ROC API client from `public/roc/app.js`.
-- K2: Build React shell and routing while embedding existing views behind a compatibility adapter.
-- K3: Convert summary, command, and run monitor views first.
+- K2: Build React shell and routing while embedding existing views behind a compatibility adapter. `[shadow route complete]`
+- K3: Convert summary, command, and run monitor views first. `[snapshot summary complete; live view conversion remains]`
 - K4: Convert table-heavy views.
 - K5: Convert research intelligence, cost intelligence, and findings views.
 - K6: Remove static compatibility adapter after feature parity.
@@ -37,6 +39,8 @@ Current state:
 - Generated static HTML from `core/operations/unified-publishing-dashboard.js`.
 - Uses `hdk-*` static adapter classes.
 - Keeps autopilot controls, dashboard registry, generated dashboard output, Discord delivery, approval, publishing, storage, and production-run behavior.
+- Standard `/dashboard-snapshot` API exists in the project.
+- Hermes now has a package-native shadow route at `/package-native/media-engine` consuming the standard snapshot contract.
 
 Package-native target:
 
@@ -50,10 +54,10 @@ Package-native target:
 
 Recommended phases:
 
-- M1: Split snapshot JSON API from generated HTML concerns.
-- M2: Add package-native React dashboard shell consuming the same snapshot.
-- M3: Convert operations and autopilot controls.
-- M4: Convert tables and queues.
+- M1: Split snapshot JSON API from generated HTML concerns. `[complete]`
+- M2: Add package-native React dashboard shell consuming the same snapshot. `[shadow route complete]`
+- M3: Convert operations and autopilot controls. `[retirement gate complete; live controls remain]`
+- M4: Convert tables and queues. `[snapshot table complete; production history tables remain]`
 - M5: Convert storage, Discord output, and approval views.
 - M6: Retire generated static HTML once deployed React dashboard reaches parity.
 
@@ -63,3 +67,5 @@ Recommended phases:
 - Package-native routes have Playwright visual coverage.
 - Each converted dashboard preserves existing auth, APIs, commands, and production behavior.
 - Static HTML renderers are removed only after live parity is proven.
+
+The machine-readable parity registry is `docs/design/package-native-parity-registry.json`.

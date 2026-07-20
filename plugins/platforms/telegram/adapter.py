@@ -5609,6 +5609,66 @@ class TelegramAdapter(BasePlatformAdapter):
                     )
             return
 
+        # --- Temperature alert callbacks (temp:sleep, temp:avoid) ---
+        #
+        # Contract:
+        #   Auth:    Caller MUST pass _is_callback_user_authorized() check.
+        #            Unauthorized callers receive "⛔ ..." answer and are dropped.
+        #   Valid:   temp:sleep  — puts PC to sleep for 15 min via rtcwake.
+        #            temp:avoid  — snoozes temp alerts for 1 hour
+        #                          (writes /tmp/temp_avoid_until).
+        #   Invalid: temp:<unknown> — caller receives "❌ Unknown command"
+        #            answer and is dropped.
+        #   Errors:  edit_message_text / subprocess failures are non-fatal
+        #            (logged via pass / DEVNULL).
+        #   Timeout: N/A — fire-and-forget, no external endpoint call.
+        if data.startswith("temp:"):
+            # Auth gate: only authorized users may control temperature alerts.
+            caller_id = str(getattr(query.from_user, "id", ""))
+            if not self._is_callback_user_authorized(
+                caller_id,
+                chat_id=query_chat_id,
+                chat_type=str(query_chat_type) if query_chat_type is not None else None,
+                thread_id=str(query_thread_id) if query_thread_id is not None else None,
+                user_name=query_user_name,
+            ):
+                await query.answer(text="⛔ You are not authorized to control temperature alerts.")
+                return
+
+            from hermes_constants import get_hermes_home
+            import subprocess, time
+            home = get_hermes_home()
+            if data == "temp:sleep":
+                await query.answer(text="😴 Going to sleep for 15 min...")
+                try:
+                    await query.edit_message_text(
+                        text=self.format_message("😴 *PC sleeping now... waking in 15 minutes*"),
+                        parse_mode=ParseMode.MARKDOWN_V2,
+                        reply_markup=None,
+                    )
+                except Exception:
+                    pass
+                subprocess.Popen(
+                    ["sudo", "rtcwake", "-m", "mem", "-s", "900"],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                )
+            elif data == "temp:avoid":
+                await query.answer(text="⏰ Alerts avoided for 1 hour")
+                try:
+                    await query.edit_message_text(
+                        text=self.format_message("⏰ *Temperature alerts snoozed for 1 hour*"),
+                        parse_mode=ParseMode.MARKDOWN_V2,
+                        reply_markup=None,
+                    )
+                except Exception:
+                    pass
+                avoid_until = int(time.time()) + 3600
+                with open("/tmp/temp_avoid_until", "w") as f:
+                    f.write(str(avoid_until))
+            else:
+                await query.answer(text="❌ Unknown temperature alert command.")
+            return
+
         # --- Update prompt callbacks ---
         if not data.startswith("update_prompt:"):
             return
@@ -5646,40 +5706,6 @@ class TelegramAdapter(BasePlatformAdapter):
                         answer, getattr(query.from_user, "id", "unknown"))
         except Exception as exc:
             logger.error("Failed to write update response from callback: %s", exc)
-
-        # --- Temperature alert callbacks (temp:sleep, temp:avoid) ---
-        if data.startswith("temp:"):
-            from hermes_constants import get_hermes_home
-            import subprocess, time
-            home = get_hermes_home()
-            if data == "temp:sleep":
-                await query.answer(text="😴 Going to sleep for 15 min...")
-                try:
-                    await query.edit_message_text(
-                        text=self.format_message("😴 *PC sleeping now... waking in 15 minutes*"),
-                        parse_mode=ParseMode.MARKDOWN_V2,
-                        reply_markup=None,
-                    )
-                except Exception:
-                    pass
-                subprocess.Popen(
-                    ["sudo", "rtcwake", "-m", "mem", "-s", "900"],
-                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                )
-            elif data == "temp:avoid":
-                await query.answer(text="⏰ Alerts avoided for 1 hour")
-                try:
-                    await query.edit_message_text(
-                        text=self.format_message("⏰ *Temperature alerts snoozed for 1 hour*"),
-                        parse_mode=ParseMode.MARKDOWN_V2,
-                        reply_markup=None,
-                    )
-                except Exception:
-                    pass
-                avoid_until = int(time.time()) + 3600
-                with open("/tmp/temp_avoid_until", "w") as f:
-                    f.write(str(avoid_until))
-            return
 
     # Maps `gt:<verb>` -> (script-name, extra-args, success-label, is_state).
     # Scripts live in ~/.hermes/scripts/gmail-triage/. `arg` from the callback

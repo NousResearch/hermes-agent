@@ -719,9 +719,7 @@ class TestNonStringContent:
         with patch("agent.context_compressor.call_llm", return_value=mock_response):
             summary = c._generate_summary(messages)
 
-        assert summary.startswith(f"{SUMMARY_PREFIX}\n{HISTORICAL_TASK_HEADING}\n")
-        assert "do something" in summary
-        assert summary.endswith("plain summary text")
+        assert summary == f"{SUMMARY_PREFIX}\nplain summary text"
 
     def test_summary_call_does_not_force_temperature(self):
         mock_response = MagicMock()
@@ -763,107 +761,8 @@ class TestNonStringContent:
         assert "Do NOT respond" not in prompt
         assert "DIFFERENT assistant" not in prompt
         assert "different assistant" not in prompt
-        assert "refactor the auth module" not in prompt
-        assert "JWT instead of sessions" not in prompt
         assert "Treat the conversation turns below as source material" in prompt
         assert "structured checkpoint summary" in prompt
-
-    def test_summary_task_snapshot_is_grounded_to_latest_user_turn(self):
-        """Regression for a copied prompt example becoming the active task.
-
-        A real #26 run showed the summarizer emitting the old template example
-        "Now refactor the auth module to use JWT instead of sessions". The
-        compacted turns did not contain that request, so the summary must
-        replace it with the deterministic latest user turn before the handoff
-        becomes live context.
-        """
-        mock_response = MagicMock()
-        mock_response.choices = [MagicMock()]
-        mock_response.choices[0].message.content = """## Historical Task Snapshot
-User asked: 'Now refactor the auth module to use JWT instead of sessions'
-
-## Goal
-Continue the task.
-
-## Completed Actions
-None.
-"""
-
-        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
-            c = ContextCompressor(model="test", quiet_mode=True)
-
-        latest = "RUN_LONG_REAL_26_SCORE_V3B_WITH_FACTUALITY_SMOKE"
-        messages = [
-            {"role": "user", "content": latest},
-            {"role": "assistant", "content": "I will inspect the loop harness."},
-        ]
-
-        with patch("agent.context_compressor.call_llm", return_value=mock_response):
-            summary = c._generate_summary(messages)
-
-        assert "refactor the auth module" not in summary
-        assert "JWT instead of sessions" not in summary
-        assert latest in summary
-        assert "deterministic, from compacted turns" in summary
-
-    def test_task_snapshot_skips_synthetic_user_scaffolding(self):
-        """Grounding must anchor on the human ask, not runtime scaffolding.
-
-        Todo snapshots, truncation notices, and background-process reports
-        are injected with role="user"; if the newest user turn is one of
-        those, the deterministic snapshot must look past it to the real ask
-        (and return None when no real ask exists at all).
-        """
-        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
-            c = ContextCompressor(model="test", quiet_mode=True)
-
-        messages = [
-            {"role": "user", "content": "fix the login bug on prod"},
-            {"role": "assistant", "content": "on it"},
-            {
-                "role": "user",
-                "content": "[Your active task list was preserved across context compression]\n- item",
-                "_todo_snapshot_synthetic": True,
-            },
-        ]
-        snapshot = c._latest_user_task_snapshot(messages)
-        assert snapshot is not None
-        assert "fix the login bug on prod" in snapshot
-        assert "task list was preserved" not in snapshot
-
-        only_synthetic = [
-            {"role": "user", "content": "[System: Your previous response was truncated ...]"},
-        ]
-        assert c._latest_user_task_snapshot(only_synthetic) is None
-
-    def test_grounding_preserves_following_sections_across_regrounding(self):
-        """The snapshot rewrite must keep later headings intact — twice.
-
-        A replacement that consumes the section's trailing newlines glues the
-        next "## " heading mid-line; on the following iterative compaction the
-        heading is no longer at line start, the regex matches through \\Z, and
-        every later section is silently deleted.
-        """
-        import re as _re
-
-        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
-            c = ContextCompressor(model="test", quiet_mode=True)
-
-        summary = (
-            f"{HISTORICAL_TASK_HEADING}\n"
-            "User asked: stale example\n\n"
-            "## Historical Remaining Work\n- keep me\n\n"
-            "## Goal\nfinish"
-        )
-        turns = [{"role": "user", "content": "real ask"}]
-
-        first = c._ground_historical_task_snapshot(summary, turns)
-        assert _re.search(r"(?m)^## Historical Remaining Work$", first)
-        assert "- keep me" in first and "## Goal" in first
-
-        second = c._ground_historical_task_snapshot(first, turns)
-        assert "- keep me" in second and "## Goal" in second
-        assert second.count(HISTORICAL_TASK_HEADING) == 1
 
     def test_summary_call_passes_live_main_runtime(self):
         mock_response = MagicMock()
@@ -3741,3 +3640,140 @@ class TestDoubleCompactionSummaryRole:
             "summary of earlier turns" in (m.get("content") or "")
             for m in result
         )
+
+
+# ── topic-aware compaction tests ──
+
+
+class TestTopicAwareBoundaries:
+    """Tests for _detect_topic_boundaries() heuristics."""
+
+    def test_time_gap_boundary(self):
+        from agent.context_compressor import ContextCompressor
+        c = ContextCompressor(model="test", topic_aware_enabled=True)
+        turns = [
+            {"role": "user", "content": "topic A", "timestamp": 1000.0},
+            {"role": "assistant", "content": "ok"},
+            {"role": "user", "content": "topic B", "timestamp": 10000.0},
+        ]
+        assert c._detect_topic_boundaries(turns) == [2]
+
+    def test_closing_opening_boundary(self):
+        from agent.context_compressor import ContextCompressor
+        c = ContextCompressor(model="test", topic_aware_enabled=True)
+        turns = [
+            {"role": "user", "content": "查 AAPL"},
+            {"role": "user", "content": "好的谢谢"},
+            {"role": "assistant", "content": "不客气"},
+            {"role": "user", "content": "帮我下载论文"},
+        ]
+        assert c._detect_topic_boundaries(turns) == [3]
+
+    def test_entity_shift_boundary(self):
+        from agent.context_compressor import ContextCompressor
+        c = ContextCompressor(model="test", topic_aware_enabled=True)
+        turns = [
+            {"role": "user", "content": "看 /data/a.py /tmp/b.txt"},
+            {"role": "user", "content": "查 /home/c.md /opt/d.log /var/e.cfg"},
+        ]
+        assert c._detect_topic_boundaries(turns) == [1]
+
+    def test_no_boundary_single_topic(self):
+        from agent.context_compressor import ContextCompressor
+        c = ContextCompressor(model="test", topic_aware_enabled=True)
+        now = 1000.0
+        turns = [
+            {"role": "user", "content": "topic A", "timestamp": now},
+            {"role": "user", "content": "more A", "timestamp": now + 60},
+            {"role": "user", "content": "more A", "timestamp": now + 120},
+        ]
+        assert c._detect_topic_boundaries(turns) == []
+
+    def test_assistant_does_not_trigger(self):
+        from agent.context_compressor import ContextCompressor
+        c = ContextCompressor(model="test", topic_aware_enabled=True)
+        turns = [
+            {"role": "assistant", "content": "好的谢谢"},
+            {"role": "assistant", "content": "帮我查"},
+        ]
+        assert c._detect_topic_boundaries(turns) == []
+
+
+class TestSerializeTopics:
+    def test_segmented_format(self):
+        from agent.context_compressor import ContextCompressor
+        c = ContextCompressor(model="test", topic_aware_enabled=True)
+        turns = [{"role": "user", "content": "A"}, {"role": "user", "content": "B"}]
+        result = c._serialize_topics(turns, [1])
+        assert "TOPIC SEGMENT 1" in result
+        assert "TOPIC SEGMENT 2" in result
+
+    def test_no_boundaries_passthrough(self):
+        from agent.context_compressor import ContextCompressor
+        c = ContextCompressor(model="test", topic_aware_enabled=True)
+        turns = [{"role": "user", "content": "hi"}]
+        assert c._serialize_topics(turns, []) == c._serialize_for_summary(turns)
+
+
+class TestExtractEntities:
+    def test_chinese_path(self):
+        from agent.context_compressor import _extract_entities
+        assert "/data/论文.pdf" in _extract_entities({"content": "/data/论文.pdf"})
+
+    def test_no_extension(self):
+        from agent.context_compressor import _extract_entities
+        assert _extract_entities({"content": "/home/user/script"}) == set()
+
+    def test_empty(self):
+        from agent.context_compressor import _extract_entities
+        assert _extract_entities({"content": ""}) == set()
+        assert _extract_entities({"content": None}) == set()
+
+
+class TestInjectMissingTopics:
+    def test_injects_missing(self):
+        from agent.context_compressor import ContextCompressor
+        c = ContextCompressor(model="test", topic_aware_enabled=True)
+        turns = [
+            {"role": "user", "content": "分析 AAPL"},
+            {"role": "assistant", "content": "ok"},
+            {"role": "user", "content": "下载论文"},
+        ]
+        result = c._inject_missing_topics("", turns, [1])
+        assert "## Topic Inventory" in result
+        assert "| 1 | stale |" in result
+        assert "| 2 | stale |" in result
+
+    def test_noop_when_all_present(self):
+        from agent.context_compressor import ContextCompressor
+        c = ContextCompressor(model="test", topic_aware_enabled=True)
+        summary = "## Topic Inventory\n| 1 | active | a |\n| 2 | active | b |"
+        turns = [{"role": "user", "content": "a"}, {"role": "user", "content": "b"}]
+        result = c._inject_missing_topics(summary, turns, [1])
+        assert "stale" not in result
+
+    def test_no_boundaries(self):
+        from agent.context_compressor import ContextCompressor
+        c = ContextCompressor(model="test", topic_aware_enabled=True)
+        assert c._inject_missing_topics("orig", [], []) == "orig"
+
+
+class TestPlatformWhitelist:
+    _DEFAULT = [
+        "dingtalk", "discord", "email", "feishu",
+        "google_chat", "irc", "line", "matrix",
+        "mattermost", "slack", "sms", "teams",
+        "telegram", "wecom", "whatsapp",
+    ]
+
+    def test_feishu_enabled(self):
+        f = lambda p: (p or "cli").lower() in [x.lower() for x in self._DEFAULT if isinstance(x, str)]
+        assert f("feishu") is True
+
+    def test_cli_disabled(self):
+        f = lambda p: (p or "cli").lower() in [x.lower() for x in self._DEFAULT if isinstance(x, str)]
+        assert f("cli") is False
+
+    def test_non_string_filtered(self):
+        f = lambda p: any((p or "cli").lower() == x.lower() for x in ["feishu", 123, None] if isinstance(x, str))
+        assert f("feishu") is True

@@ -22,7 +22,7 @@ import logging
 import sqlite3
 import re
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 
 from agent.auxiliary_client import call_llm, _is_connection_error, aux_interrupt_protection
 from agent.context_engine import ContextEngine
@@ -33,7 +33,6 @@ from agent.model_metadata import (
     estimate_messages_tokens_rough,
 )
 from agent.redact import redact_sensitive_text
-from agent.turn_context import drop_stale_api_content
 
 logger = logging.getLogger(__name__)
 
@@ -299,7 +298,6 @@ _FALLBACK_TURN_MAX_CHARS = 700
 _AUTO_FOCUS_MAX_TURNS = 3
 _AUTO_FOCUS_TURN_MAX_CHARS = 260
 _AUTO_FOCUS_MAX_CHARS = 700
-_ACTIVE_TASK_MAX_CHARS = 1400
 # Keep a short run of recent messages verbatim even when the token budget is
 # already exhausted.  The public ``protect_last_n`` default is intentionally
 # high for small/light tails, but using all 20 as a hard floor here would bring
@@ -323,9 +321,6 @@ _PATH_MENTION_RE = re.compile(r"(?:/|~/?|[A-Za-z]:\\)[^\s`'\")\]}<>]+")
 # the summary, the downstream model may re-emit it as an active directive on
 # the next turn, triggering bogus attachment sends (#14665).
 _MEDIA_DIRECTIVE_RE = re.compile(r"MEDIA:\S+")
-_HISTORICAL_TASK_SECTION_RE = re.compile(
-    rf"(?ms)^{re.escape(HISTORICAL_TASK_HEADING)}\s*\n.*?(?=^## |\Z)"
-)
 
 
 def _dedupe_append(items: list[str], value: str, *, limit: int) -> None:
@@ -388,6 +383,60 @@ def _content_length_for_budget(raw_content: Any) -> int:
             # dicts — dimensions don't matter, only whether it's an image.
             total += len(p.get("text", "") or "")
     return total
+
+
+# ── topic-aware compaction helpers ──
+
+_CLOSING_WORDS = frozenset({
+    "好的", "谢谢", "thanks", "done", "got it", "明白了",
+    "先这样", "了解了", "ok", "okay", "好的谢谢",
+})
+_OPENING_SIGNAL_WORDS = frozenset({
+    "帮我", "查一下", "分析", "看一下", "check", "review",
+    "download", "pull", "push", "run", "帮我查", "帮我看",
+})
+
+
+def _normalize_timestamp(ts: Any) -> Optional[float]:
+    """Normalize timestamp to epoch float, or None."""
+    if ts is None:
+        return None
+    if isinstance(ts, (int, float)):
+        return float(ts)
+    if isinstance(ts, str):
+        try:
+            from datetime import datetime
+            return datetime.fromisoformat(ts.replace("Z", "+00:00")).timestamp()
+        except Exception:
+            return None
+    try:
+        return ts.timestamp()
+    except Exception:
+        return None
+
+
+def _user_content(msg: Dict[str, Any]) -> str:
+    """Safe string extraction from user message content."""
+    c = msg.get("content")
+    if c is None:
+        return ""
+    if isinstance(c, str):
+        return c
+    if isinstance(c, list):
+        return " ".join(
+            part.get("text", "") if isinstance(part, dict) else str(part)
+            for part in c
+        )
+    return str(c)
+
+
+def _extract_entities(msg: Dict[str, Any]) -> Set[str]:
+    """Extract file paths and URLs from a message."""
+    content = _user_content(msg)
+    entities: Set[str] = set()
+    entities.update(re.findall(r'(?:/~|/[\w\u4e00-\u9fff])[/\w\u4e00-\u9fff.-]+\.\w+', content))
+    entities.update(re.findall(r'https?://\S+', content))
+    return entities
 
 
 def _serialized_length_for_budget(value: Any) -> int:
@@ -660,9 +709,6 @@ def _strip_historical_media(messages: List[Dict[str, Any]]) -> List[Dict[str, An
             continue
         new_msg = msg.copy()
         new_msg["content"] = _strip_images_from_content(content)
-        # Content rewritten → the api_content sidecar (exact bytes previously
-        # sent) is stale; drop it so replay can't resend the pre-rewrite bytes.
-        drop_stale_api_content(new_msg)
         result.append(new_msg)
         changed = True
 
@@ -889,7 +935,6 @@ class ContextCompressor(ContextEngine):
         self._verify_compaction_cleared_threshold = False
         self._last_compression_made_progress = False
         self._summary_failure_cooldown_until = 0.0  # transient errors must not block a fresh session
-        self._cooldown_persist_failed = False
         self._last_summary_error = None
         self._last_compress_aborted = False
         self.last_real_prompt_tokens = 0
@@ -929,7 +974,6 @@ class ContextCompressor(ContextEngine):
         self._verify_compaction_cleared_threshold = False
         self._last_compression_made_progress = False
         self._summary_failure_cooldown_until = 0.0
-        self._cooldown_persist_failed = False
         self._last_compress_aborted = False
         self._context_probed = False
         self._context_probe_persistable = False
@@ -943,7 +987,6 @@ class ContextCompressor(ContextEngine):
         self._session_db = session_db
         self._session_id = session_id or ""
         self._summary_failure_cooldown_until = 0.0
-        self._cooldown_persist_failed = False
         self._last_summary_error = None
         self._consecutive_timeout_failures = 0
         self._fallback_compression_streak = 0
@@ -1025,66 +1068,42 @@ class ContextCompressor(ContextEngine):
             self._fallback_compression_streak = 0
         self._persist_fallback_compression_streak()
 
-    def get_active_compression_failure_cooldown(
-        self,
-        *,
-        refresh: bool = False,
-    ) -> Optional[Dict[str, Any]]:
+    def get_active_compression_failure_cooldown(self) -> Optional[Dict[str, Any]]:
         """Return the live compression-failure cooldown for the bound session."""
         now_mono = time.monotonic()
-        local_state = None
         if self._summary_failure_cooldown_until > now_mono:
-            local_state = {
+            return {
                 "cooldown_until": time.time() + (
                     self._summary_failure_cooldown_until - now_mono
                 ),
                 "remaining_seconds": self._summary_failure_cooldown_until - now_mono,
                 "error": self._last_summary_error,
             }
-            if not refresh:
-                return local_state
 
         session_db = getattr(self, "_session_db", None)
         session_id = getattr(self, "_session_id", "")
         if not session_db or not session_id:
-            return local_state
+            return None
 
         getter = getattr(session_db, "get_compression_failure_cooldown", None)
         if getter is None:
-            return local_state
+            return None
         try:
             state = getter(session_id)
         except sqlite3.Error as exc:
             logger.debug("compression failure cooldown lookup failed: %s", exc)
-            return local_state
+            return None
         except Exception:
-            return local_state
+            return None
         if not state:
-            if refresh:
-                if local_state is not None and self._cooldown_persist_failed:
-                    # The live local cooldown never made it to the DB (persist
-                    # failed), so the empty row is not evidence that another
-                    # agent cleared it. Honouring the DB here would re-enable
-                    # auto-compress mid-cooldown and reopen the #11529 thrash
-                    # window. Keep the local timer authoritative until it
-                    # expires or a successful DB read supersedes it.
-                    return local_state
-                self._summary_failure_cooldown_until = 0.0
-                self._last_summary_error = None
             return None
 
         remaining_seconds = float(state.get("remaining_seconds") or 0.0)
         if remaining_seconds <= 0:
-            if refresh:
-                if local_state is not None and self._cooldown_persist_failed:
-                    return local_state
-                self._summary_failure_cooldown_until = 0.0
-                self._last_summary_error = None
             return None
 
         self._summary_failure_cooldown_until = now_mono + remaining_seconds
         self._last_summary_error = state.get("error")
-        self._cooldown_persist_failed = False
         return {
             "cooldown_until": float(state.get("cooldown_until") or 0.0),
             "remaining_seconds": remaining_seconds,
@@ -1107,23 +1126,18 @@ class ContextCompressor(ContextEngine):
 
         recorder = getattr(session_db, "record_compression_failure_cooldown", None)
         if recorder is None:
-            self._cooldown_persist_failed = True
             return
         try:
             recorder(session_id, cooldown_until, error)
-            self._cooldown_persist_failed = False
         except sqlite3.Error as exc:
-            self._cooldown_persist_failed = True
             logger.debug("compression failure cooldown persist failed: %s", exc)
         except Exception as exc:
-            self._cooldown_persist_failed = True
             logger.debug("compression failure cooldown persist failed (non-sqlite): %s", exc)
 
     def _clear_compression_failure_cooldown(self) -> None:
         self._summary_failure_cooldown_until = 0.0
         self._last_summary_error = None
         self._consecutive_timeout_failures = 0
-        self._cooldown_persist_failed = False
 
         session_db = getattr(self, "_session_db", None)
         session_id = getattr(self, "_session_id", "")
@@ -1319,6 +1333,7 @@ class ContextCompressor(ContextEngine):
         api_mode: str = "",
         abort_on_summary_failure: bool = False,
         max_tokens: int | None = None,
+        topic_aware_enabled: bool = False,
     ):
         self.model = model
         self.base_url = base_url
@@ -1342,7 +1357,7 @@ class ContextCompressor(ContextEngine):
         # When False (default = historical behavior), insert a
         # deterministic "summary unavailable" handoff and drop the middle window.
         self.abort_on_summary_failure = abort_on_summary_failure
-
+        self._topic_aware_enabled = topic_aware_enabled
         self.context_length = get_model_context_length(
             model, base_url=base_url, api_key=api_key,
             config_context_length=config_context_length,
@@ -1417,10 +1432,6 @@ class ContextCompressor(ContextEngine):
         # no-op/abort without inferring progress from message-list length.
         self._last_compression_made_progress: bool = False
         self._summary_failure_cooldown_until: float = 0.0
-        # True while the live local cooldown failed to persist to the DB;
-        # a refresh must then treat an empty durable row as unknown, not
-        # cleared (see get_active_compression_failure_cooldown).
-        self._cooldown_persist_failed: bool = False
         self._last_summary_error: Optional[str] = None
         # When summary generation fails and a static fallback is inserted,
         # record how many turns were unrecoverably dropped so callers
@@ -1566,48 +1577,8 @@ class ContextCompressor(ContextEngine):
             return False
         return not self._automatic_compression_blocked()
 
-    def _refresh_durable_guards(self) -> None:
-        """Re-read durable cooldown + fallback-streak state from the DB.
-
-        Cheap, best-effort, and only called when a gate is about to say
-        "blocked": another agent on the same session may have cleared the
-        durable rows (successful boundary, forced retry) after this
-        compressor was bound, and a fallback streak has no timer — without
-        a re-read the stale in-memory snapshot blocks forever.
-        """
-        try:
-            self.get_active_compression_failure_cooldown(refresh=True)
-        except Exception as exc:
-            logger.debug("compression cooldown refresh failed: %s", exc)
-        try:
-            self._load_fallback_compression_streak()
-        except Exception as exc:
-            logger.debug("compression fallback-streak refresh failed: %s", exc)
-
     def _automatic_compression_blocked(self) -> bool:
         """Return whether automatic compaction is in cooldown or tripped."""
-        if not self._automatic_compression_blocked_locally():
-            return False
-        # Blocked on the in-memory snapshot. Durable guard rows may have
-        # been cleared by another agent since bind_session_state(); refresh
-        # and re-evaluate so a stale local block cannot outlive the durable
-        # state that justified it. The unblocked hot path above never pays
-        # for the DB reads.
-        if (
-            self._summary_failure_cooldown_until <= time.monotonic()
-            and self._fallback_compression_streak < 2
-        ):
-            # Blocked solely by the in-memory ineffective-compression
-            # counter, which is not durable — there is nothing in the DB
-            # that could unblock it, so skip the refresh (otherwise this
-            # branch would re-read the DB on every gate check for the rest
-            # of the session).
-            return True
-        self._refresh_durable_guards()
-        return self._automatic_compression_blocked_locally()
-
-    def _automatic_compression_blocked_locally(self) -> bool:
-        """Evaluate the automatic-compaction gate on in-memory state only."""
         # Do not trigger compression while the summary LLM is in cooldown.
         # On a 429/transient failure _generate_summary() sets a cooldown and
         # returns None; compress() then inserts a static fallback marker and
@@ -2141,6 +2112,141 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
         self.summary_model = ""  # empty = use main model
         self._clear_compression_failure_cooldown()  # no cooldown — retry immediately
 
+    # ── topic-aware compaction methods ──
+
+    _TOPIC_AWARE_DIRECTIVE = (
+        "\n## Topic Inventory\n"
+        "If the conversation spans MULTIPLE unrelated topics (stock analysis, "
+        "literature downloads, system maintenance, code review, etc.), list "
+        "each distinct topic with key facts and unresolved items.\n"
+        "Format per topic: - **<Topic Name>**: <key facts>. Pending: <items>.\n"
+        "If the conversation is a single continuous topic, omit this section."
+    )
+
+    def _detect_topic_boundaries(
+        self, turns: List[Dict[str, Any]]
+    ) -> List[int]:
+        """Return sorted unique turn indices where a new user topic starts.
+
+        Only user messages are considered as topic-start candidates.
+        Uses three low-cost heuristics (no LLM call):
+          1. Time gap > 2 hours since last user message.
+          2. Closing phrase in preceding user msg + opening signal in this one.
+          3. Entity set shift > 80% when pool >= 5 entities.
+        """
+        boundaries: List[int] = []
+        prev_ts: Optional[float] = None
+        prev_entities: Set[str] = set()
+        user_indices = [i for i, m in enumerate(turns) if m.get("role") == "user"]
+
+        for idx, i in enumerate(user_indices):
+            msg = turns[i]
+            ts = _normalize_timestamp(msg.get("timestamp"))
+
+            if idx == 0:
+                prev_ts = ts
+                prev_entities = _extract_entities(msg)
+                continue
+
+            # Rule 1 — time gap
+            if prev_ts is not None and ts is not None and ts - prev_ts > 7200:
+                boundaries.append(i)
+                prev_ts = ts
+                prev_entities = _extract_entities(msg)
+                continue
+
+            # Rule 2 — closing + opening spanning assistant/tool messages
+            prev_user_idx = user_indices[idx - 1]
+            prev_content = _user_content(turns[prev_user_idx])[-100:].lower()
+            cur_content = _user_content(msg)[:100].lower()
+            if any(kw in prev_content for kw in _CLOSING_WORDS) and any(
+                kw in cur_content for kw in _OPENING_SIGNAL_WORDS
+            ):
+                boundaries.append(i)
+                prev_ts = ts
+                prev_entities = set()
+                continue
+
+            # Rule 3 — entity shift (weak signal, high threshold)
+            cur_entities = _extract_entities(msg)
+            if prev_entities and cur_entities:
+                overlap = len(prev_entities & cur_entities)
+                total = len(prev_entities | cur_entities)
+                if total >= 3 and overlap / total < 0.2:
+                    boundaries.append(i)
+                    prev_ts = ts
+                    prev_entities = cur_entities
+                    continue
+
+            prev_ts = ts
+            prev_entities = cur_entities
+
+        return sorted(set(boundaries))
+
+    def _serialize_topics(
+        self, turns: List[Dict[str, Any]], boundaries: List[int]
+    ) -> str:
+        """Serialize turns grouped by topic segments."""
+        if not boundaries:
+            return self._serialize_for_summary(turns)
+        parts = []
+        start = 0
+        for seg, boundary in enumerate(boundaries, 1):
+            if boundary > start:
+                parts.append(f"\n=== TOPIC SEGMENT {seg} ===\n")
+                parts.append(self._serialize_for_summary(turns[start:boundary]))
+            start = boundary
+        if start < len(turns):
+            parts.append(f"\n=== TOPIC SEGMENT {len(boundaries)+1} ===\n")
+            parts.append(self._serialize_for_summary(turns[start:]))
+        return "".join(parts)
+
+    def _inject_missing_topics(
+        self,
+        summary: str,
+        turns_to_summarize: List[Dict[str, Any]],
+        boundaries: List[int],
+    ) -> str:
+        """Post-process: inject table rows for topics detected by boundaries
+        but missing from the summary.  Only covers topics from the *current*
+        batch of turns — historical topics are the summarizer's responsibility.
+
+        Appends or extends a ``## Topic Inventory`` markdown table so that
+        every detected topic has at least one row in the final summary.
+        """
+        if not boundaries:
+            return summary
+        n_topics = len(boundaries) + 1
+        missing: list[str] = []
+        for i in range(n_topics):
+            # Check whether topic row exists in the table (any format)
+            if f"| {i+1} |" in summary or f"Topic {i+1}" in summary:
+                continue
+            start = 0 if i == 0 else boundaries[i - 1]
+            end = boundaries[i] if i < len(boundaries) else len(turns_to_summarize)
+            segment = turns_to_summarize[start:end]
+            user_msgs = [t for t in segment if t.get("role") == "user"]
+            info = (
+                _user_content(user_msgs[0])[:100].replace("\n", " ").strip()
+                if user_msgs
+                else "(no user messages)"
+            )
+            missing.append(f"| {i+1} | stale | {info} |")
+        if not missing:
+            return summary
+        header = "| # | Status | Summary |\n|---|--------|--------|"
+        if "## Topic Inventory" in summary:
+            summary += "\n" + "\n".join(missing) + "\n"
+        else:
+            summary += (
+                "\n\n## Topic Inventory\n"
+                + header
+                + "\n"
+                + "\n".join(missing)
+                + "\n"
+            )
+        return summary
+
     def _generate_summary(
         self,
         turns_to_summarize: List[Dict[str, Any]],
@@ -2173,6 +2279,17 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
 
         summary_budget = self._compute_summary_budget(turns_to_summarize)
         content_to_summarize = self._serialize_for_summary(turns_to_summarize)
+
+        # Topic-aware compaction: detect multi-topic conversations and segment
+        # the serialized content so the summarizer sees each topic group.
+        # Gated behind config flag — default off for prompt-cache safety.
+        boundaries: List[int] = []
+        if self._topic_aware_enabled:
+            boundaries = self._detect_topic_boundaries(turns_to_summarize)
+            if boundaries:
+                content_to_summarize = self._serialize_topics(
+                    turns_to_summarize, boundaries
+                )
 
         # Current date for temporal anchoring (see ## Temporal Anchoring below).
         # Date-only granularity matches system_prompt.py:337 (PR #20451) and the
@@ -2226,9 +2343,9 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
         _template_sections = f"""{HISTORICAL_TASK_HEADING}
 [THE SINGLE MOST IMPORTANT FIELD. Capture the user's most recent unfulfilled
 input verbatim — the exact words they used. This includes:
-- Explicit task assignments ("<specific user task>")
-- Questions awaiting an answer ("<specific user question>")
-- Decisions awaiting input ("<option A or B?>")
+- Explicit task assignments ("refactor the auth module")
+- Questions awaiting an answer ("waarom staat X op Y?", "wat zijn de volgende stappen?")
+- Decisions awaiting input ("optie A of B?")
 - Ongoing discussions where the assistant owes the next substantive reply
 A conversation where the user just asked a question IS an active task — the
 task is "answer that question with full context". Do NOT write "None" merely
@@ -2236,15 +2353,15 @@ because the user did not issue an imperative command; reserve "None" for the
 rare case where the last exchange was fully resolved and the user said
 something like "thanks, that's all".
 If multiple items are outstanding, list only the ones NOT yet completed.
-This historical snapshot must identify the latest unresolved user input precisely. Examples:
-"User asked: '<exact latest user request>'"
-"User asked: '<exact latest user question>' — needs investigation + answer"
-"User chose <option>; awaiting implementation of <specific next step>"
+Continuation should pick up exactly here. Examples:
+"User asked: 'Now refactor the auth module to use JWT instead of sessions'"
+"User asked: 'Waarom stond provider ineens op openrouter?' — needs investigation + answer"
+"User chose option A; awaiting implementation of step 2"
 If the user's most recent message was a reverse signal (stop, undo, roll
 back, never mind, just verify, change of topic) that supersedes earlier
 work, write the reverse signal verbatim and DO NOT carry forward the
-cancelled task. Example: "User asked: '<exact reverse signal>' — earlier
-in-flight work is cancelled."
+cancelled task. Example: "User asked: 'Stop the i18n refactor and just
+verify the current diff' — earlier i18n in-flight work is cancelled."
 If no outstanding task exists, write "None."]
 
 ## Goal
@@ -2298,6 +2415,20 @@ Target ~{summary_budget} tokens. Be CONCRETE — include file paths, command out
 {_temporal_anchoring_rule}
 Write only the summary body. Do not include any preamble or prefix."""
 
+        # When topic-aware compaction is enabled, inject the
+        # topic-inventory directive into the summarizer template.
+        if self._topic_aware_enabled:
+            _template_sections += self._TOPIC_AWARE_DIRECTIVE
+
+        _topic_preserve = ""
+        if self._topic_aware_enabled:
+            _topic_preserve = (
+                "PRESERVE the ## Topic Inventory table verbatim. "
+                "Add new rows for topics detected in NEW TURNS. "
+                "Mark topics not mentioned in NEW TURNS as 'stale' "
+                "instead of deleting them. "
+            )
+
         if self._previous_summary:
             # Iterative update: preserve existing info, add new progress
             prompt = f"""{_summarizer_preamble}
@@ -2310,7 +2441,7 @@ PREVIOUS SUMMARY:
 NEW TURNS TO INCORPORATE:
 {content_to_summarize}
 
-Update the summary using this exact structure. PRESERVE all existing information that is still relevant. ADD new completed actions to the numbered list (continue numbering). Move items from "In Progress" to "Completed Actions" when done. Move answered questions to "Resolved Questions". Update "Active State" to reflect current state. Remove information only if it is clearly obsolete. CRITICAL: Update "## Active Task" to reflect the user's most recent unfulfilled input — this includes any question, decision request, or discussion turn that the assistant has not yet answered. Only write "None" if the last exchange was fully resolved.
+Update the summary using this exact structure. PRESERVE all existing information that is still relevant. {_topic_preserve}ADD new completed actions to the numbered list (continue numbering). Move items from "In Progress" to "Completed Actions" when done. Move answered questions to "Resolved Questions". Update "Active State" to reflect current state. Remove information only if it is clearly obsolete. CRITICAL: Update "## Active Task" to reflect the user's most recent unfulfilled input — this includes any question, decision request, or discussion turn that the assistant has not yet answered. Only write "None" if the last exchange was fully resolved.
 
 {_template_sections}"""
         else:
@@ -2406,7 +2537,12 @@ This compaction should PRIORITISE preserving all information related to the focu
             # Redact the summary output as well — the summarizer LLM may
             # ignore prompt instructions and echo back secrets verbatim.
             summary = redact_sensitive_text(content.strip())
-            summary = self._ground_historical_task_snapshot(summary, turns_to_summarize)
+            # Topic-aware fallback: inject rows for topics detected but
+            # missing from the LLM-produced summary.
+            if self._topic_aware_enabled and boundaries:
+                summary = self._inject_missing_topics(
+                    summary, turns_to_summarize, boundaries
+                )
             # Store for iterative updates on next compaction
             self._previous_summary = summary
             self._clear_compression_failure_cooldown()
@@ -2677,69 +2813,6 @@ This compaction should PRIORITISE preserving all information related to the focu
         if len(focus) > _AUTO_FOCUS_MAX_CHARS:
             focus = focus[: _AUTO_FOCUS_MAX_CHARS - 1].rstrip() + "…"
         return focus
-
-    @classmethod
-    def _latest_user_task_snapshot(
-        cls,
-        messages: List[Dict[str, Any]],
-    ) -> Optional[str]:
-        """Return a deterministic task-snapshot line from the newest real user turn.
-
-        The LLM summarizer is allowed to compress prose, but it must not invent
-        the "what is the active task?" anchor from a prompt example or stale
-        prior summary.  This helper extracts the anchor locally from the exact
-        compacted turns so the summary can be grounded before it becomes live
-        context.
-        """
-        # Reuse the runtime's real-user predicate so the deterministic
-        # snapshot can never anchor on user-role scaffolding (todo
-        # snapshots, truncation notices, background-process reports) —
-        # the exact class of turn this grounding exists to bypass.
-        from agent.conversation_compression import _is_real_user_message
-
-        for msg in reversed(messages):
-            if msg.get("role") != "user":
-                continue
-            if not _is_real_user_message(msg):
-                continue
-            content = msg.get("content")
-            text = redact_sensitive_text(_content_text_for_contains(content).strip())
-            if not text:
-                continue
-            text = re.sub(r"\s+", " ", text)
-            if len(text) > _ACTIVE_TASK_MAX_CHARS:
-                text = text[: _ACTIVE_TASK_MAX_CHARS - 15].rstrip() + " ...[truncated]"
-            return (
-                f"User asked (deterministic, from compacted turns): {text!r}\n"
-                "Historical only; newer protected-tail messages after this summary win."
-            )
-        return None
-
-    @classmethod
-    def _ground_historical_task_snapshot(
-        cls,
-        summary: str,
-        messages: List[Dict[str, Any]],
-    ) -> str:
-        """Force the task snapshot section to match a real user turn when possible."""
-        snapshot = cls._latest_user_task_snapshot(messages)
-        if not snapshot:
-            return summary
-
-        body = cls._strip_summary_prefix(summary)
-        # Keep the section terminated with a blank line: re.sub consumes the
-        # section's trailing newlines, and without restoring them the next
-        # "## " heading is glued onto the snapshot line — corrupting the
-        # markdown and making the heading invisible to this same regex on the
-        # next iterative compaction (which would then delete every following
-        # section via the \Z branch).
-        replacement = f"{HISTORICAL_TASK_HEADING}\n{snapshot}\n\n"
-        if _HISTORICAL_TASK_SECTION_RE.search(body):
-            grounded = _HISTORICAL_TASK_SECTION_RE.sub(
-                lambda _m: replacement, body, count=1
-            )
-            return grounded.strip()
-        return f"{replacement}{body}".strip()
 
     @classmethod
     def _find_latest_context_summary(
@@ -3612,10 +3685,6 @@ This compaction should PRIORITISE preserving all information related to the focu
                 # Mark the merged message so frontends can identify it as
                 # containing a compression summary prefix.
                 msg[COMPRESSED_SUMMARY_METADATA_KEY] = True
-                # Content rewritten → the api_content sidecar (exact bytes
-                # previously sent) is stale; drop it so replay can't resend
-                # the pre-merge bytes without the summary.
-                drop_stale_api_content(msg)
                 _merge_summary_into_tail = False
             compressed.append(msg)
 

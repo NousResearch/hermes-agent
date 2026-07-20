@@ -83,8 +83,9 @@ export const zhHant = defineLocale({
     failure: {
       title: 'Hermes 無法啟動',
       description: '背景閘道未啟動。請嘗試下面的復原步驟。這裡的操作不會刪除您的聊天或設定。',
-      remoteTitle: '需要重新登入遠端閘道',
-      remoteDescription: '您的遠端閘道工作階段已過期。請重新登入以重新連線。這裡的操作不會刪除您的聊天或設定。',
+      remoteTitle: '需要登入遠端閘道',
+      remoteDescription:
+        'Hermes Desktop 尚未登入此遠端閘道，或先前的工作階段已過期。請登入以重新連線。這裡的操作不會刪除您的聊天或設定。',
       retry: '重試',
       repairInstall: '修復安裝',
       useLocalGateway: '使用本機閘道',
@@ -645,7 +646,8 @@ export const zhHant = defineLocale({
       defaultConnection: '預設連線適用於所有沒有自訂覆寫的設定檔。',
       profileConnection: profile => `僅當「${profile}」為作用中設定檔時使用此連線。設為本機可繼承預設連線。`,
       envOverrideTitle: '環境變數正在控制此桌面工作階段。',
-      envOverrideDesc: '取消設定 HERMES_DESKTOP_REMOTE_URL 和 HERMES_DESKTOP_REMOTE_TOKEN 後才會使用下方儲存的設定。',
+      envOverrideDesc:
+        '閘道 URL 和選用權杖來自 HERMES_DESKTOP_REMOTE_URL 與 HERMES_DESKTOP_REMOTE_TOKEN。使用工作階段驗證的閘道仍可在下方登入或登出。',
       localTitle: '本機閘道',
       localDesc: '在 localhost 啟動私有 Hermes 後端。這是預設方式，可離線使用。',
       remoteTitle: '遠端閘道',

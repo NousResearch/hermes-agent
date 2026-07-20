@@ -251,6 +251,57 @@ function authModeFromStatus(statusBody) {
   return statusBody && statusBody.auth_required ? 'oauth' : 'token'
 }
 
+export function effectiveRemoteToken(envOverride, rawEnvToken, savedToken) {
+  const envToken = String(rawEnvToken || '').trim()
+
+  return envOverride ? envToken : savedToken
+}
+
+export function resolveInitialDisplayedRemoteAuthMode(
+  envOverride,
+  rawEnvToken,
+  savedAuthMode
+): 'oauth' | 'token' {
+  if (!envOverride) {
+    return normAuthMode(savedAuthMode)
+  }
+
+  if (String(rawEnvToken || '').trim()) {
+    return 'token'
+  }
+
+  // Return immediately with the only tokenless mode that can connect. The
+  // renderer's existing async probe may switch the control to token auth, and
+  // the connect path independently probes again to enforce the contract.
+  return 'oauth'
+}
+
+export function resolveEnvRemoteAuth(rawToken, probe: any = null) {
+  const token = String(rawToken || '').trim()
+
+  if (token) {
+    return { authMode: 'token', token }
+  }
+
+  if (!probe || probe.reachable !== true) {
+    const detail = probe?.error ? `: ${probe.error}` : ''
+
+    throw new Error(
+      'HERMES_DESKTOP_REMOTE_URL is set without HERMES_DESKTOP_REMOTE_TOKEN, ' +
+        `but Desktop could not determine the gateway authentication mode${detail}`
+    )
+  }
+
+  if (probe.authMode === 'oauth') {
+    return { authMode: 'oauth', token: null }
+  }
+
+  throw new Error(
+    'HERMES_DESKTOP_REMOTE_TOKEN is required because the configured gateway ' +
+      'does not advertise session authentication.'
+  )
+}
+
 /**
  * Resolve the effective auth mode for a coerce/save operation.
  * Explicit input wins; otherwise inherit the saved value; default 'token'.

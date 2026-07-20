@@ -83,8 +83,9 @@ export const zh: Translations = {
     failure: {
       title: 'Hermes 无法启动',
       description: '后台网关没有启动。请尝试下面的恢复步骤；这里不会删除你的对话或设置。',
-      remoteTitle: '需要重新登录远程网关',
-      remoteDescription: '你的远程网关会话已过期。请重新登录以恢复连接。这些操作不会删除你的对话或设置。',
+      remoteTitle: '需要登录远程网关',
+      remoteDescription:
+        'Hermes Desktop 尚未登录此远程网关，或之前的会话已过期。请登录以恢复连接。这些操作不会删除你的对话或设置。',
       retry: '重试',
       repairInstall: '修复安装',
       useLocalGateway: '使用本地网关',
@@ -756,7 +757,8 @@ export const zh: Translations = {
       defaultConnection: '默认连接会用于所有没有自定义覆盖的 profile。',
       profileConnection: profile => `仅当“${profile}”是当前 profile 时使用此连接。设为本地即可继承默认连接。`,
       envOverrideTitle: '环境变量正在控制此桌面会话。',
-      envOverrideDesc: '取消设置 HERMES_DESKTOP_REMOTE_URL 和 HERMES_DESKTOP_REMOTE_TOKEN 后才会使用下面保存的设置。',
+      envOverrideDesc:
+        '网关 URL 和可选令牌来自 HERMES_DESKTOP_REMOTE_URL 与 HERMES_DESKTOP_REMOTE_TOKEN。使用会话认证的网关仍可在下方登录或退出。',
       modeTitle: '连接模式',
       localTitle: '本地网关',
       localDesc: '在 localhost 启动私有 Hermes 后端。这是默认方式，并且可离线工作。',

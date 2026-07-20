@@ -48,6 +48,16 @@ export function savedCloudConnectionUrl(config: Pick<GatewaySettingsState, 'mode
   return config.mode === 'cloud' ? config.remoteUrl.trim().replace(/\/+$/, '').toLowerCase() : ''
 }
 
+export function remoteAuthControlsVisible(config: Pick<GatewaySettingsState, 'mode' | 'envOverride'>): boolean {
+  // Environment overrides lock the URL/token fields but must not hide the
+  // session sign-in controls needed by tokenless remote URLs.
+  return config.mode === 'remote'
+}
+
+export function shouldPersistRemoteBeforeSignIn(envOverride: boolean): boolean {
+  return !envOverride
+}
+
 function ModeCard({
   active,
   description,
@@ -404,16 +414,20 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
     setSigningIn(true)
 
     try {
-      // Save (don't apply/restart) so the login window has a URL to use and the
-      // oauth mode is persisted, without yet flipping the live connection.
-      const saved = await window.hermesDesktop.saveConnectionConfig({
-        mode: state.mode,
-        profile: scope ?? undefined,
-        remoteAuthMode: 'oauth',
-        remoteUrl: trimmedUrl
-      })
+      if (shouldPersistRemoteBeforeSignIn(state.envOverride)) {
+        // Save (don't apply/restart) so the login window has a URL to use and
+        // the OAuth mode is persisted, without yet flipping the live
+        // connection. Env-controlled connections already have an authoritative
+        // URL and must not overwrite the saved fallback configuration.
+        const saved = await window.hermesDesktop.saveConnectionConfig({
+          mode: state.mode,
+          profile: scope ?? undefined,
+          remoteAuthMode: 'oauth',
+          remoteUrl: trimmedUrl
+        })
 
-      acceptSavedConfig(saved)
+        acceptSavedConfig(saved)
+      }
 
       const result = await window.hermesDesktop.oauthLoginConnectionConfig(trimmedUrl)
 
@@ -944,7 +958,7 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
         </div>
       ) : null}
 
-      {state.mode === 'remote' && !state.envOverride ? (
+      {remoteAuthControlsVisible(state) ? (
         <div className="mt-5 grid gap-1">
           <ListRow
             action={
@@ -983,13 +997,13 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
                     <Pill tone="primary">
                       <Check className="size-3" /> {g.signedIn}
                     </Pill>
-                    <Button disabled={signingIn || state.envOverride} onClick={() => void signOut()} variant="outline">
+                    <Button disabled={signingIn} onClick={() => void signOut()} variant="outline">
                       {signingIn ? <Loader2 className="animate-spin" /> : null}
                       {g.signOut}
                     </Button>
                   </div>
                 ) : (
-                  <Button disabled={signingIn || state.envOverride || !trimmedUrl} onClick={() => void signIn()}>
+                  <Button disabled={signingIn || !trimmedUrl} onClick={() => void signIn()}>
                     {signingIn ? <Loader2 className="animate-spin" /> : <LogIn />}
                     {isPasswordProvider ? g.signIn : g.signInWith(providerLabel)}
                   </Button>

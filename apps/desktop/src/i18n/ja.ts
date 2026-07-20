@@ -86,7 +86,7 @@ export const ja = defineLocale({
         'バックグラウンドゲートウェイが起動しませんでした。以下の回復手順をお試しください。チャットや設定は削除されません。',
       remoteTitle: 'リモートゲートウェイへのサインインが必要です',
       remoteDescription:
-        'リモートゲートウェイのセッションが期限切れです。再接続するにはもう一度サインインしてください。チャットや設定は削除されません。',
+        'Hermes Desktop がリモートゲートウェイに未サインインか、以前のセッションが期限切れです。再接続するにはサインインしてください。チャットや設定は削除されません。',
       retry: '再試行',
       repairInstall: 'インストールを修復',
       useLocalGateway: 'ローカルゲートウェイを使用',
@@ -659,7 +659,7 @@ export const ja = defineLocale({
         `"${profile}" がアクティブプロファイルのときのみ使用される接続。ローカルに設定するとデフォルトを継承します。`,
       envOverrideTitle: '環境変数がこのデスクトップセッションを制御しています。',
       envOverrideDesc:
-        '保存された設定を使用するには HERMES_DESKTOP_REMOTE_URL と HERMES_DESKTOP_REMOTE_TOKEN の設定を解除してください。',
+        'ゲートウェイURLと任意のトークンは HERMES_DESKTOP_REMOTE_URL と HERMES_DESKTOP_REMOTE_TOKEN から読み込まれます。セッション認証のゲートウェイは以下からサインイン・サインアウトできます。',
       localTitle: 'ローカルゲートウェイ',
       localDesc:
         'ローカルホストでプライベートな Hermes バックエンドを起動します。これがデフォルトで、オフラインでも動作します。',

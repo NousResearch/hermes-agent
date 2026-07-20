@@ -136,6 +136,47 @@ VALID_WORKSPACE_KINDS = {"scratch", "worktree", "dir"}
 KNOWN_TOOLSET_NAMES = frozenset(name.casefold() for name in get_toolset_names())
 _IS_WINDOWS = sys.platform == "win32"
 KANBAN_ATTACHMENT_MAX_BYTES = 25 * 1024 * 1024
+MAX_RESOURCE_KEYS = 16
+MAX_RESOURCE_KEY_LENGTH = 128
+_RESOURCE_KEY_RE = re.compile(r"^[a-z0-9][a-z0-9._:/-]*$")
+
+
+def normalize_resource_keys(keys: Optional[Iterable[str]]) -> list[str]:
+    """Return canonical sorted resource keys or raise on unsafe input."""
+    if keys is None:
+        return []
+    if isinstance(keys, (str, bytes)):
+        raise ValueError("resource_keys must be a list, not a string")
+    cleaned: set[str] = set()
+    for raw in keys:
+        if not isinstance(raw, str):
+            raise ValueError("resource keys must be strings")
+        key = raw.strip().casefold()
+        if not key:
+            continue
+        if len(key) > MAX_RESOURCE_KEY_LENGTH:
+            raise ValueError(
+                f"resource key exceeds {MAX_RESOURCE_KEY_LENGTH} characters: {key!r}"
+            )
+        if not _RESOURCE_KEY_RE.fullmatch(key):
+            raise ValueError(
+                f"invalid resource key {key!r}; use lowercase letters, numbers, "
+                "and . _ : / -"
+            )
+        cleaned.add(key)
+    if len(cleaned) > MAX_RESOURCE_KEYS:
+        raise ValueError(f"resource_keys accepts at most {MAX_RESOURCE_KEYS} keys")
+    return sorted(cleaned)
+
+
+def _parse_resource_keys_json(raw: Any) -> list[str]:
+    if not raw:
+        return []
+    try:
+        parsed = json.loads(raw) if isinstance(raw, str) else raw
+        return normalize_resource_keys(parsed if isinstance(parsed, list) else [])
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return []
 
 
 def _fire_kanban_lifecycle_hook(event: str, task_id: str, **fields: Any) -> None:
@@ -915,6 +956,8 @@ class Task:
     # Unblock-loop counter. See the column comment in SCHEMA_SQL and
     # ``BLOCK_RECURRENCE_LIMIT``. Reset only on successful completion.
     block_recurrences: int = 0
+    # Optional cross-board exclusive resources held for one claimed run.
+    resource_keys: list[str] = field(default_factory=list)
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Task":
@@ -999,7 +1042,32 @@ class Task:
                 if "block_recurrences" in keys and row["block_recurrences"] is not None
                 else 0
             ),
+            resource_keys=_parse_resource_keys_json(
+                row["resource_keys"] if "resource_keys" in keys else None
+            ),
         )
+
+
+@dataclass(frozen=True)
+class ResourceLease:
+    resource_key: str
+    holder_board: str
+    holder_db_path: str
+    holder_task_id: str
+    owner_token: str
+    run_id: Optional[int]
+    claim_expires: int
+    acquired_at: int
+
+
+@dataclass(frozen=True)
+class ResourceConflict:
+    resource_key: str
+    holder_board: str
+    holder_task_id: str
+    owner_token: str
+    run_id: Optional[int]
+    claim_expires: int
 
 
 @dataclass
@@ -1176,7 +1244,10 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- ``blocked`` so a cron can't spin it forever. Reset to 0 only on a
     -- successful completion — NOT on unblock (resetting on unblock is exactly
     -- the amnesia that let the loop run unbounded).
-    block_recurrences    INTEGER NOT NULL DEFAULT 0
+    block_recurrences    INTEGER NOT NULL DEFAULT 0,
+    -- Optional normalized JSON array of cross-board exclusive resources.
+    -- NULL/[] means no lease and preserves legacy dispatch behavior.
+    resource_keys        TEXT
 );
 
 CREATE TABLE IF NOT EXISTS task_links (
@@ -1393,7 +1464,7 @@ def _cross_process_init_lock(path: Path):
                 "able to block this connect indefinitely (#36644).",
                 lock_path, _INIT_LOCK_TIMEOUT_SECONDS,
             )
-        yield
+        yield acquired
     finally:
         try:
             if acquired:
@@ -1987,6 +2058,9 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
             "block_recurrences INTEGER NOT NULL DEFAULT 0",
         )
 
+    if "resource_keys" not in cols:
+        _add_column_if_missing(conn, "tasks", "resource_keys", "resource_keys TEXT")
+
     # Indexes over additive ``tasks`` columns must be created after the
     # columns exist. Keeping them in SCHEMA_SQL breaks legacy boards: SQLite
     # parses each statement in ``executescript`` against the live schema, so a
@@ -2408,6 +2482,7 @@ def create_task(
     session_id: Optional[str] = None,
     board: Optional[str] = None,
     project_id: Optional[str] = None,
+    resource_keys: Optional[Iterable[str]] = None,
 ) -> str:
     """Create a new task and optionally link it under parent tasks.
 
@@ -2433,6 +2508,7 @@ def create_task(
     translation skill regardless of the profile's default config).
     """
     assignee = _canonical_assignee(assignee)
+    normalized_resource_keys = normalize_resource_keys(resource_keys)
     if not title or not title.strip():
         raise ValueError("title is required")
     if initial_status not in VALID_INITIAL_STATUSES:
@@ -2636,8 +2712,9 @@ def create_task(
                         created_by, created_at, workspace_kind, workspace_path,
                         branch_name, project_id, tenant, idempotency_key,
                         max_runtime_seconds,
-                        skills, max_retries, goal_mode, goal_max_turns, session_id
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        skills, max_retries, goal_mode, goal_max_turns, session_id,
+                        resource_keys
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         task_id,
@@ -2660,6 +2737,7 @@ def create_task(
                         1 if goal_mode else 0,
                         int(goal_max_turns) if goal_max_turns is not None else None,
                         session_id,
+                        json.dumps(normalized_resource_keys) if normalized_resource_keys else None,
                     ),
                 )
                 for pid in parents:
@@ -2679,6 +2757,7 @@ def create_task(
                         "branch_name": branch_name,
                         "skills": list(skills_list) if skills_list else None,
                         "goal_mode": bool(goal_mode) or None,
+                        "resource_keys": normalized_resource_keys or None,
                     },
                 )
             return task_id
@@ -3481,12 +3560,417 @@ def recompute_ready(
 # Claim / complete / block
 # ---------------------------------------------------------------------------
 
+
+def _resource_leases_path() -> Path:
+    return kanban_home() / "kanban" / "resource_leases.db"
+
+
+def _resource_lease_connect() -> sqlite3.Connection:
+    path = _resource_leases_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    conn = _sqlite_connect(path)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA synchronous=FULL")
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS resource_leases (
+            resource_key       TEXT PRIMARY KEY,
+            holder_board       TEXT NOT NULL,
+            holder_db_path     TEXT NOT NULL,
+            holder_task_id     TEXT NOT NULL,
+            owner_token        TEXT NOT NULL,
+            run_id             INTEGER,
+            claim_expires      INTEGER NOT NULL,
+            acquired_at        INTEGER NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_resource_leases_owner "
+        "ON resource_leases(holder_db_path, holder_task_id, owner_token, run_id)"
+    )
+    return conn
+
+
+def _connection_db_path(conn: sqlite3.Connection) -> Path:
+    row = conn.execute("PRAGMA database_list").fetchone()
+    return Path(row[2]).resolve()
+
+
+def _board_for_db_path(path: Path, board: Optional[str] = None) -> str:
+    if board:
+        return _normalize_board_slug(board) or DEFAULT_BOARD
+    if path == kanban_db_path(board=DEFAULT_BOARD).resolve():
+        return DEFAULT_BOARD
+    if path.name == "kanban.db" and path.parent.parent == boards_root().resolve():
+        return path.parent.name
+    return get_current_board()
+
+
+def _lease_from_row(row: sqlite3.Row) -> ResourceLease:
+    return ResourceLease(
+        resource_key=row["resource_key"],
+        holder_board=row["holder_board"],
+        holder_db_path=row["holder_db_path"],
+        holder_task_id=row["holder_task_id"],
+        owner_token=row["owner_token"],
+        run_id=int(row["run_id"]) if row["run_id"] is not None else None,
+        claim_expires=int(row["claim_expires"]),
+        acquired_at=int(row["acquired_at"]),
+    )
+
+
+def _lease_holder_is_active(lease: ResourceLease, now: int) -> bool:
+    if not Path(lease.holder_db_path).is_file():
+        # A temporarily unavailable/renamed board must fail closed. The lease
+        # becomes reclaimable at its bounded expiry instead of creating an
+        # empty SQLite file at a stale path or allowing overlapping work.
+        return lease.claim_expires >= now
+    try:
+        holder = sqlite3.connect(lease.holder_db_path, timeout=1.0)
+        holder.row_factory = sqlite3.Row
+        row = holder.execute(
+            "SELECT status, claim_lock, current_run_id, claim_expires, worker_pid "
+            "FROM tasks WHERE id = ?",
+            (lease.holder_task_id,),
+        ).fetchone()
+        holder.close()
+    except (OSError, sqlite3.Error):
+        # Fail closed only for the bounded lease while a holder DB is
+        # temporarily unreadable.
+        return lease.claim_expires >= now
+    if row is None or row["status"] != "running":
+        return False
+    if row["claim_lock"] != lease.owner_token:
+        return False
+    if lease.run_id is not None and row["current_run_id"] != lease.run_id:
+        return False
+    board_claim_live = (
+        row["claim_expires"] is not None and int(row["claim_expires"]) >= now
+    )
+    worker_live = row["worker_pid"] is not None and _pid_alive(row["worker_pid"])
+    # The board row is authoritative. A live exact task/run generation must
+    # remain exclusive even when the registry TTL lags a heartbeat or the
+    # live-PID stale-claim extension path.
+    return board_claim_live or worker_live
+
+
+def list_resource_leases() -> list[ResourceLease]:
+    with contextlib.closing(_resource_lease_connect()) as conn:
+        return [
+            _lease_from_row(row)
+            for row in conn.execute(
+                "SELECT * FROM resource_leases ORDER BY resource_key"
+            ).fetchall()
+        ]
+
+
+def prune_inactive_resource_leases() -> int:
+    """Remove expired or fenced-out holders after crashes/reclaims/restarts."""
+    path = _resource_leases_path()
+    if not path.exists():
+        return 0
+    now = int(time.time())
+    removed = 0
+    with _cross_process_init_lock(path) as held:
+        if not held:
+            return 0
+        with contextlib.closing(_resource_lease_connect()) as conn:
+            rows = conn.execute("SELECT * FROM resource_leases").fetchall()
+            stale = [
+                lease for row in rows
+                if not _lease_holder_is_active(
+                    lease := _lease_from_row(row), now
+                )
+            ]
+            if stale:
+                with write_txn(conn):
+                    for lease in stale:
+                        cur = conn.execute(
+                            "DELETE FROM resource_leases WHERE resource_key = ? "
+                            "AND owner_token = ? AND run_id IS ?",
+                            (lease.resource_key, lease.owner_token, lease.run_id),
+                        )
+                        removed += max(0, cur.rowcount)
+    return removed
+
+
+def _acquire_resource_leases(
+    *,
+    keys: list[str],
+    board: str,
+    db_path: Path,
+    task_id: str,
+    owner_token: str,
+    claim_expires: int,
+) -> Optional[ResourceConflict]:
+    now = int(time.time())
+    with contextlib.closing(_resource_lease_connect()) as leases:
+        leases.execute("BEGIN IMMEDIATE")
+        try:
+            for key in keys:
+                row = leases.execute(
+                    "SELECT * FROM resource_leases WHERE resource_key = ?", (key,)
+                ).fetchone()
+                if row is None:
+                    continue
+                existing = _lease_from_row(row)
+                if _lease_holder_is_active(existing, now):
+                    leases.rollback()
+                    return ResourceConflict(
+                        resource_key=key,
+                        holder_board=existing.holder_board,
+                        holder_task_id=existing.holder_task_id,
+                        owner_token=existing.owner_token,
+                        run_id=existing.run_id,
+                        claim_expires=existing.claim_expires,
+                    )
+                leases.execute(
+                    "DELETE FROM resource_leases WHERE resource_key = ? "
+                    "AND owner_token = ?",
+                    (key, existing.owner_token),
+                )
+            for key in keys:
+                leases.execute(
+                    "INSERT INTO resource_leases "
+                    "(resource_key, holder_board, holder_db_path, holder_task_id, "
+                    " owner_token, run_id, claim_expires, acquired_at) "
+                    "VALUES (?, ?, ?, ?, ?, NULL, ?, ?)",
+                    (
+                        key, board, str(db_path), task_id, owner_token,
+                        claim_expires, now,
+                    ),
+                )
+            leases.commit()
+            return None
+        except Exception:
+            leases.rollback()
+            raise
+
+
+def release_resource_leases(
+    *,
+    task_id: str,
+    owner_token: Optional[str],
+    run_id: Optional[int],
+    board: Optional[str] = None,
+    holder_db_path: Optional[Path] = None,
+) -> bool:
+    """Fenced release: only the exact task/run generation can delete leases."""
+    if not owner_token:
+        return False
+    if holder_db_path is None and board is not None:
+        holder_db_path = kanban_db_path(board=board).resolve()
+    db_clause = " AND holder_db_path = ?" if holder_db_path is not None else ""
+    db_params = (str(holder_db_path),) if holder_db_path is not None else ()
+    with contextlib.closing(_resource_lease_connect()) as conn:
+        with write_txn(conn):
+            if run_id is None:
+                cur = conn.execute(
+                    "DELETE FROM resource_leases WHERE holder_task_id = ? "
+                    "AND owner_token = ? AND run_id IS NULL" + db_clause,
+                    (task_id, owner_token, *db_params),
+                )
+            else:
+                cur = conn.execute(
+                    "DELETE FROM resource_leases WHERE holder_task_id = ? "
+                    "AND owner_token = ? AND run_id = ?" + db_clause,
+                    (task_id, owner_token, int(run_id), *db_params),
+                )
+        return cur.rowcount > 0
+
+
+def release_task_resource_leases(task: Task, conn: sqlite3.Connection) -> None:
+    if task.resource_keys:
+        release_resource_leases(
+            task_id=task.id,
+            owner_token=task.claim_lock,
+            run_id=task.current_run_id,
+            holder_db_path=_connection_db_path(conn),
+        )
+
+
+def _renew_task_resource_leases(
+    task: Task,
+    conn: sqlite3.Connection,
+    claim_expires: int,
+) -> bool:
+    """Renew every lease for the exact task/run generation."""
+    if not task.resource_keys:
+        return True
+    with contextlib.closing(_resource_lease_connect()) as leases:
+        with write_txn(leases):
+            cur = leases.execute(
+                "UPDATE resource_leases SET claim_expires = ? "
+                "WHERE holder_db_path = ? AND holder_task_id = ? "
+                "AND owner_token = ? AND run_id = ?",
+                (
+                    claim_expires,
+                    str(_connection_db_path(conn)),
+                    task.id,
+                    task.claim_lock,
+                    task.current_run_id,
+                ),
+            )
+        return cur.rowcount == len(task.resource_keys)
+
+
+def _bind_resource_lease_run(task: Task, task_conn: sqlite3.Connection) -> None:
+    db_path = _connection_db_path(task_conn)
+    try:
+        with contextlib.closing(_resource_lease_connect()) as conn:
+            with write_txn(conn):
+                cur = conn.execute(
+                    "UPDATE resource_leases SET run_id = ?, claim_expires = ? "
+                    "WHERE holder_db_path = ? AND holder_task_id = ? "
+                    "AND owner_token = ? AND run_id IS NULL",
+                    (
+                        task.current_run_id, task.claim_expires,
+                        str(db_path), task.id, task.claim_lock,
+                    ),
+                )
+                if cur.rowcount != len(task.resource_keys):
+                    raise RuntimeError("resource lease bind lost one or more keys")
+    except Exception:
+        # Fail closed: never leave a runnable board claim without every shared
+        # lease if the second-phase run binding cannot commit.
+        with write_txn(task_conn):
+            task_conn.execute(
+                "UPDATE tasks SET status='ready', claim_lock=NULL, "
+                "claim_expires=NULL, worker_pid=NULL WHERE id=? "
+                "AND status='running' AND claim_lock=? AND current_run_id IS ?",
+                (task.id, task.claim_lock, task.current_run_id),
+            )
+            _end_run(
+                task_conn, task.id, outcome="reclaimed", status="reclaimed",
+                error="resource lease bind failed",
+            )
+        release_resource_leases(
+            task_id=task.id, owner_token=task.claim_lock, run_id=None,
+            holder_db_path=db_path,
+        )
+        raise
+
+
+def get_resource_conflict(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    board: Optional[str] = None,
+) -> Optional[ResourceConflict]:
+    task = get_task(conn, task_id)
+    if task is None or not task.resource_keys:
+        return None
+    now = int(time.time())
+    with contextlib.closing(_resource_lease_connect()) as leases:
+        for key in task.resource_keys:
+            row = leases.execute(
+                "SELECT * FROM resource_leases WHERE resource_key = ?", (key,)
+            ).fetchone()
+            if row is None:
+                continue
+            lease = _lease_from_row(row)
+            if _lease_holder_is_active(lease, now):
+                return ResourceConflict(
+                    key, lease.holder_board, lease.holder_task_id,
+                    lease.owner_token, lease.run_id, lease.claim_expires,
+                )
+    return None
+
+
+def set_resource_keys(
+    conn: sqlite3.Connection,
+    task_id: str,
+    keys: Optional[Iterable[str]],
+) -> bool:
+    normalized = normalize_resource_keys(keys)
+    with write_txn(conn):
+        row = conn.execute(
+            "SELECT status FROM tasks WHERE id = ?", (task_id,)
+        ).fetchone()
+        if row is None:
+            return False
+        if row["status"] == "running":
+            raise RuntimeError("cannot change resource_keys while a task is running")
+        conn.execute(
+            "UPDATE tasks SET resource_keys = ? WHERE id = ?",
+            (json.dumps(normalized) if normalized else None, task_id),
+        )
+        _append_event(
+            conn, task_id, "resource_keys_updated", {"resource_keys": normalized}
+        )
+    return True
+
+
 def claim_task(
     conn: sqlite3.Connection,
     task_id: str,
     *,
     ttl_seconds: Optional[int] = None,
     claimer: Optional[str] = None,
+    board: Optional[str] = None,
+) -> Optional[Task]:
+    task = get_task(conn, task_id)
+    if task is None or not task.resource_keys:
+        return _claim_task_without_resources(
+            conn, task_id, ttl_seconds=ttl_seconds, claimer=claimer,
+            expected_resource_keys=task.resource_keys if task is not None else [],
+        )
+    now = int(time.time())
+    owner_token = claimer or _claimer_id()
+    expires = now + _resolve_claim_ttl_seconds(ttl_seconds)
+    db_path = _connection_db_path(conn)
+    board_slug = _board_for_db_path(db_path, board)
+    # The host-wide lock covers the short lease-acquire + board-CAS boundary.
+    # Workers run outside it, so independent resources retain full parallelism.
+    with _cross_process_init_lock(_resource_leases_path()) as held:
+        if not held:
+            return None
+        conflict = _acquire_resource_leases(
+            keys=task.resource_keys,
+            board=board_slug,
+            db_path=db_path,
+            task_id=task_id,
+            owner_token=owner_token,
+            claim_expires=expires,
+        )
+        if conflict is not None:
+            with write_txn(conn):
+                _append_event(
+                    conn, task_id, "resource_conflict",
+                    {
+                        "resource_key": conflict.resource_key,
+                        "holder_board": conflict.holder_board,
+                        "holder_task_id": conflict.holder_task_id,
+                        "holder_run_id": conflict.run_id,
+                        "claim_expires": conflict.claim_expires,
+                    },
+                )
+            return None
+        claimed = _claim_task_without_resources(
+            conn, task_id, ttl_seconds=ttl_seconds, claimer=owner_token,
+            expected_resource_keys=task.resource_keys,
+        )
+        if claimed is None:
+            release_resource_leases(
+                task_id=task_id,
+                owner_token=owner_token,
+                run_id=None,
+                board=board_slug,
+            )
+            return None
+        _bind_resource_lease_run(claimed, conn)
+        return claimed
+
+
+def _claim_task_without_resources(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    ttl_seconds: Optional[int] = None,
+    claimer: Optional[str] = None,
+    expected_resource_keys: Optional[Iterable[str]] = None,
 ) -> Optional[Task]:
     """Atomically transition ``ready -> running``.
 
@@ -3552,8 +4036,12 @@ def claim_task(
              WHERE id = ?
                AND status = 'ready'
                AND claim_lock IS NULL
+               AND COALESCE(resource_keys, '[]') = ?
             """,
-            (lock, expires, now, task_id),
+            (
+                lock, expires, now, task_id,
+                json.dumps(normalize_resource_keys(expected_resource_keys)),
+            ),
         )
         if cur.rowcount != 1:
             return None
@@ -3603,12 +4091,13 @@ def claim_task(
     return claimed
 
 
-def claim_review_task(
+def _claim_review_task_without_resources(
     conn: sqlite3.Connection,
     task_id: str,
     *,
     ttl_seconds: Optional[int] = None,
     claimer: Optional[str] = None,
+    expected_resource_keys: Optional[Iterable[str]] = None,
 ) -> Optional[Task]:
     """Atomically transition ``review -> running``.
 
@@ -3636,8 +4125,12 @@ def claim_review_task(
              WHERE id = ?
                AND status = 'review'
                AND claim_lock IS NULL
+               AND COALESCE(resource_keys, '[]') = ?
             """,
-            (lock, expires, now, task_id),
+            (
+                lock, expires, now, task_id,
+                json.dumps(normalize_resource_keys(expected_resource_keys)),
+            ),
         )
         if cur.rowcount != 1:
             return None
@@ -3678,6 +4171,63 @@ def claim_review_task(
         return get_task(conn, task_id)
 
 
+def claim_review_task(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    ttl_seconds: Optional[int] = None,
+    claimer: Optional[str] = None,
+    board: Optional[str] = None,
+) -> Optional[Task]:
+    """Claim a review task while honoring the same cross-board leases."""
+    task = get_task(conn, task_id)
+    if task is None or not task.resource_keys:
+        return _claim_review_task_without_resources(
+            conn, task_id, ttl_seconds=ttl_seconds, claimer=claimer,
+            expected_resource_keys=task.resource_keys if task is not None else [],
+        )
+    owner_token = claimer or _claimer_id()
+    expires = int(time.time()) + _resolve_claim_ttl_seconds(ttl_seconds)
+    board_db_path = _connection_db_path(conn)
+    board_slug = _board_for_db_path(board_db_path, board)
+    with _cross_process_init_lock(_resource_leases_path()) as held:
+        if not held:
+            return None
+        conflict = _acquire_resource_leases(
+            keys=task.resource_keys,
+            board=board_slug,
+            db_path=board_db_path,
+            task_id=task_id,
+            owner_token=owner_token,
+            claim_expires=expires,
+        )
+        if conflict is not None:
+            with write_txn(conn):
+                _append_event(
+                    conn, task_id, "resource_conflict",
+                    {
+                        "resource_key": conflict.resource_key,
+                        "holder_board": conflict.holder_board,
+                        "holder_task_id": conflict.holder_task_id,
+                        "holder_run_id": conflict.run_id,
+                        "claim_expires": conflict.claim_expires,
+                    },
+                )
+            return None
+        claimed = _claim_review_task_without_resources(
+            conn, task_id, ttl_seconds=ttl_seconds, claimer=owner_token,
+            expected_resource_keys=task.resource_keys,
+        )
+        if claimed is None:
+            release_resource_leases(
+                task_id=task_id, owner_token=owner_token, run_id=None,
+                board=board_slug,
+            )
+            return None
+        _bind_resource_lease_run(claimed, conn)
+        return claimed
+
+
 def heartbeat_claim(
     conn: sqlite3.Connection,
     task_id: str,
@@ -3692,21 +4242,40 @@ def heartbeat_claim(
     """
     expires = int(time.time()) + _resolve_claim_ttl_seconds(ttl_seconds)
     lock = claimer or _claimer_id()
-    with write_txn(conn):
-        cur = conn.execute(
-            "UPDATE tasks SET claim_expires = ? "
-            "WHERE id = ? AND status = 'running' AND claim_lock = ?",
-            (expires, task_id, lock),
-        )
-        if cur.rowcount == 1:
-            run_id = _current_run_id(conn, task_id)
-            if run_id is not None:
-                conn.execute(
-                    "UPDATE task_runs SET claim_expires = ? WHERE id = ?",
-                    (expires, run_id),
-                )
-            return True
+    owned_task = get_task(conn, task_id)
+    if (
+        owned_task is None
+        or owned_task.status != "running"
+        or owned_task.claim_lock != lock
+    ):
         return False
+    # Preserve the legacy direct heartbeat path for ordinary tasks. Only
+    # leased tasks need the host-wide lock that closes the registry/board
+    # expiry race; making every task wait on it would couple unrelated work.
+    lease_lock = (
+        _cross_process_init_lock(_resource_leases_path())
+        if owned_task.resource_keys
+        else contextlib.nullcontext(True)
+    )
+    with lease_lock as held:
+        if not held or not _renew_task_resource_leases(owned_task, conn, expires):
+            return False
+        with write_txn(conn):
+            cur = conn.execute(
+                "UPDATE tasks SET claim_expires = ? "
+                "WHERE id = ? AND status = 'running' AND claim_lock = ? "
+                "AND current_run_id IS ?",
+                (expires, task_id, lock, owned_task.current_run_id),
+            )
+            if cur.rowcount == 1:
+                run_id = _current_run_id(conn, task_id)
+                if run_id is not None:
+                    conn.execute(
+                        "UPDATE task_runs SET claim_expires = ? WHERE id = ?",
+                        (expires, run_id),
+                    )
+                return True
+            return False
 
 
 def release_stale_claims(
@@ -3768,39 +4337,59 @@ def release_stale_claims(
             and not heartbeat_stale
         ):
             new_expires = now + _resolve_claim_ttl_seconds()
-            with write_txn(conn):
-                cur = conn.execute(
-                    "UPDATE tasks SET claim_expires = ? "
-                    "WHERE id = ? AND status = 'running' "
-                    "  AND claim_lock IS ? "
-                    "  AND claim_expires IS NOT NULL "
-                    "  AND claim_expires < ?",
-                    (new_expires, row["id"], row["claim_lock"], now),
-                )
-                if cur.rowcount != 1:
+            owned_task = get_task(conn, row["id"])
+            if owned_task is None:
+                continue
+            lease_lock = (
+                _cross_process_init_lock(_resource_leases_path())
+                if owned_task.resource_keys
+                else contextlib.nullcontext(True)
+            )
+            with lease_lock as held:
+                if not held or not _renew_task_resource_leases(
+                    owned_task, conn, new_expires
+                ):
                     continue
-                run_id = _current_run_id(conn, row["id"])
-                if run_id is not None:
-                    conn.execute(
-                        "UPDATE task_runs SET claim_expires = ? WHERE id = ?",
-                        (new_expires, run_id),
-                    )
-                _append_event(
-                    conn, row["id"], "claim_extended",
-                    {
-                        "reason": "pid_alive",
-                        "worker_pid": int(row["worker_pid"]),
-                        "claim_lock": row["claim_lock"],
-                        "claim_expires_was": int(row["claim_expires"]),
-                        "claim_expires_now": new_expires,
-                        "last_heartbeat_at": (
-                            int(row["last_heartbeat_at"])
-                            if row["last_heartbeat_at"] is not None
-                            else None
+                with write_txn(conn):
+                    cur = conn.execute(
+                        "UPDATE tasks SET claim_expires = ? "
+                        "WHERE id = ? AND status = 'running' "
+                        "  AND claim_lock IS ? "
+                        "  AND current_run_id IS ? "
+                        "  AND claim_expires IS NOT NULL "
+                        "  AND claim_expires < ?",
+                        (
+                            new_expires,
+                            row["id"],
+                            row["claim_lock"],
+                            owned_task.current_run_id,
+                            now,
                         ),
-                    },
-                    run_id=run_id,
-                )
+                    )
+                    if cur.rowcount != 1:
+                        continue
+                    run_id = _current_run_id(conn, row["id"])
+                    if run_id is not None:
+                        conn.execute(
+                            "UPDATE task_runs SET claim_expires = ? WHERE id = ?",
+                            (new_expires, run_id),
+                        )
+                    _append_event(
+                        conn, row["id"], "claim_extended",
+                        {
+                            "reason": "pid_alive",
+                            "worker_pid": int(row["worker_pid"]),
+                            "claim_lock": row["claim_lock"],
+                            "claim_expires_was": int(row["claim_expires"]),
+                            "claim_expires_now": new_expires,
+                            "last_heartbeat_at": (
+                                int(row["last_heartbeat_at"])
+                                if row["last_heartbeat_at"] is not None
+                                else None
+                            ),
+                        },
+                        run_id=run_id,
+                    )
             continue
 
         termination = _terminate_reclaimed_worker(
@@ -3814,6 +4403,7 @@ def release_stale_claims(
                 reason="ttl_expired_worker_alive",
             )
             continue
+        lease_owner = get_task(conn, row["id"])
         with write_txn(conn):
             cur = conn.execute(
                 "UPDATE tasks SET status = 'ready', claim_lock = NULL, "
@@ -3852,6 +4442,8 @@ def release_stale_claims(
                 run_id=run_id,
             )
             reclaimed += 1
+        if lease_owner is not None:
+            release_task_resource_leases(lease_owner, conn)
     return reclaimed
 
 
@@ -3873,6 +4465,7 @@ def reclaim_task(
     Returns True if a reclaim happened, False if the task isn't in a
     reclaimable state (not running, or doesn't exist).
     """
+    lease_owner = get_task(conn, task_id)
     row = conn.execute(
         "SELECT status, claim_lock, worker_pid FROM tasks WHERE id = ?",
         (task_id,),
@@ -3920,6 +4513,8 @@ def reclaim_task(
     # consecutive-failures counter is now stale. Give the next retry
     # a fresh budget. (_clear_failure_counter opens its own write_txn,
     # so it runs after the enclosing one commits.)
+    if lease_owner is not None:
+        release_task_resource_leases(lease_owner, conn)
     _clear_failure_counter(conn, task_id)
     return True
 
@@ -4130,6 +4725,7 @@ def complete_task(
     and never blocks.
     """
     now = int(time.time())
+    lease_owner = get_task(conn, task_id)
 
     # Gate: verify created_cards BEFORE the main write txn. A rejected
     # completion still needs an auditable event, so we emit it in a
@@ -4288,6 +4884,8 @@ def complete_task(
     # Recompute ready status for dependents (separate txn so children see done).
     recompute_ready(conn)
     # Clean up the scratch workspace and any stale tmux session for the worker.
+    if lease_owner is not None:
+        release_task_resource_leases(lease_owner, conn)
     _cleanup_workspace(conn, task_id)
     _done_task = get_task(conn, task_id)
     _fire_kanban_lifecycle_hook(
@@ -4908,32 +5506,13 @@ def block_task(
     Returns True on any successful transition (to ``blocked``, ``todo``, or
     ``triage``), False when the task wasn't in a blockable state.
     """
+    lease_owner = get_task(conn, task_id)
     if kind is not None and kind not in VALID_BLOCK_KINDS:
         raise ValueError(
             f"block kind must be one of {sorted(VALID_BLOCK_KINDS)} or None"
         )
-    routed_to = "blocked"
-    recurrences = 0
-    with write_txn(conn):
-        cur_row = conn.execute(
-            "SELECT status, block_kind, block_recurrences FROM tasks WHERE id = ?",
-            (task_id,),
-        ).fetchone()
-        if cur_row is None:
-            return False
-        prev_kind = cur_row["block_kind"] if "block_kind" in cur_row.keys() else None
-        prev_recurrences = (
-            int(cur_row["block_recurrences"])
-            if "block_recurrences" in cur_row.keys()
-            and cur_row["block_recurrences"] is not None
-            else 0
-        )
-
-        # Dependency blocks never enter the human ``blocked`` bucket — they
-        # wait in ``todo`` and let ``recompute_ready`` gate on parents. Routing
-        # here (rather than ``blocked``) is what keeps a cron from ever seeing
-        # a dependency-wait as something to "unblock".
-        if kind == "dependency":
+    if kind == "dependency":
+        with write_txn(conn):
             cur = conn.execute(
                 """
                 UPDATE tasks
@@ -4951,9 +5530,7 @@ def block_task(
             if cur.rowcount != 1:
                 return False
             run_id = _end_run(
-                conn, task_id,
-                outcome="blocked", status="blocked",
-                summary=reason,
+                conn, task_id, outcome="blocked", status="blocked", summary=reason,
             )
             if run_id is None and reason:
                 run_id = _synthesize_ended_run(
@@ -4963,17 +5540,35 @@ def block_task(
                 conn, task_id, "dependency_wait",
                 {"reason": reason, "kind": kind}, run_id=run_id,
             )
-            routed_to = "todo"
-            _blocked_task = get_task(conn, task_id)
-            _fire_kanban_lifecycle_hook(
-                "kanban_task_blocked",
-                task_id,
-                board=get_current_board(),
-                assignee=_blocked_task.assignee if _blocked_task else None,
-                run_id=run_id,
-                reason=reason,
-            )
-            return True
+        if lease_owner is not None:
+            release_task_resource_leases(lease_owner, conn)
+        _blocked_task = get_task(conn, task_id)
+        _fire_kanban_lifecycle_hook(
+            "kanban_task_blocked",
+            task_id,
+            board=get_current_board(),
+            assignee=_blocked_task.assignee if _blocked_task else None,
+            run_id=run_id,
+            reason=reason,
+        )
+        return True
+    routed_to = "blocked"
+    recurrences = 0
+    with write_txn(conn):
+        cur_row = conn.execute(
+            "SELECT status, block_kind, block_recurrences FROM tasks WHERE id = ?",
+            (task_id,),
+        ).fetchone()
+        if cur_row is None:
+            return False
+        prev_kind = cur_row["block_kind"] if "block_kind" in cur_row.keys() else None
+        prev_recurrences = (
+            int(cur_row["block_recurrences"])
+            if "block_recurrences" in cur_row.keys()
+            and cur_row["block_recurrences"] is not None
+            else 0
+        )
+
 
         # Truly-blocked kinds. Increment the unblock-loop counter when this is a
         # re-block for the SAME reason after a prior unblock. block_task only
@@ -5077,6 +5672,8 @@ def block_task(
                 run_id=run_id,
             )
         _blocked_task = get_task(conn, task_id)
+    if lease_owner is not None:
+        release_task_resource_leases(lease_owner, conn)
     _fire_kanban_lifecycle_hook(
         "kanban_task_blocked",
         task_id,
@@ -5540,6 +6137,7 @@ def decompose_triage_task(
 
 
 def archive_task(conn: sqlite3.Connection, task_id: str) -> bool:
+    lease_owner = get_task(conn, task_id)
     with write_txn(conn):
         cur = conn.execute(
             "UPDATE tasks SET status = 'archived', "
@@ -5558,6 +6156,8 @@ def archive_task(conn: sqlite3.Connection, task_id: str) -> bool:
             summary="task archived with run still active",
         )
         _append_event(conn, task_id, "archived", None, run_id=run_id)
+    if lease_owner is not None:
+        release_task_resource_leases(lease_owner, conn)
     # ``archived`` parents no longer block children, same as ``done``.
     # Promote newly-unblocked dependents immediately instead of waiting
     # for a later dispatcher tick.
@@ -5601,6 +6201,7 @@ def delete_task(conn: sqlite3.Connection, task_id: str) -> bool:
     Returns ``True`` if the task existed and was deleted, ``False``
     if the task was not found.
     """
+    lease_owner = get_task(conn, task_id)
     with write_txn(conn):
         cur = conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
         if cur.rowcount != 1:
@@ -5610,6 +6211,8 @@ def delete_task(conn: sqlite3.Connection, task_id: str) -> bool:
         conn.execute("DELETE FROM task_events WHERE task_id = ?", (task_id,))
         conn.execute("DELETE FROM task_runs WHERE task_id = ?", (task_id,))
         conn.execute("DELETE FROM kanban_notify_subs WHERE task_id = ?", (task_id,))
+    if lease_owner is not None:
+        release_task_resource_leases(lease_owner, conn)
     recompute_ready(conn)
     return True
 
@@ -5933,6 +6536,7 @@ def schedule_task(
     human action, or automation can later call ``unblock_task`` to re-gate them
     to ``ready`` (or ``todo`` if parents are still incomplete).
     """
+    lease_owner = get_task(conn, task_id)
     with write_txn(conn):
         params: list[Any] = [task_id]
         sql = """
@@ -5962,7 +6566,9 @@ def schedule_task(
                 summary=reason,
             )
         _append_event(conn, task_id, "scheduled", {"reason": reason}, run_id=run_id)
-        return True
+    if lease_owner is not None:
+        release_task_resource_leases(lease_owner, conn)
+    return True
 
 
 # Dispatcher (one-shot pass)
@@ -6053,6 +6659,10 @@ class DispatchResult:
     subsequent tick when the assignee has capacity. Separate bucket so
     telemetry / dashboards can show "this profile is busy" vs
     "task is genuinely stuck"."""
+    resource_conflicts: list[tuple[str, str, str, str]] = field(default_factory=list)
+    """Ready tasks deferred by a cross-board lease, as
+    ``(task_id, resource_key, holder_board, holder_task_id)``. Conflicts are
+    scheduling deferrals, never task failures, and consume no profile slot."""
     crashed: list[str] = field(default_factory=list)
     """Task ids reclaimed because their worker PID disappeared."""
     auto_blocked: list[str] = field(default_factory=list)
@@ -6343,27 +6953,39 @@ def _defer_reclaim_for_live_worker(
     duplicate is what lets the throttled worker finally die.
     """
     grace = now + RECLAIM_DEFER_GRACE_SECONDS
-    with write_txn(conn):
-        cur = conn.execute(
-            "UPDATE tasks SET claim_expires = ? "
-            "WHERE id = ? AND status = 'running' AND claim_lock IS ?",
-            (grace, task_id, claim_lock),
-        )
-        if cur.rowcount != 1:
+    owned_task = get_task(conn, task_id)
+    if owned_task is None or owned_task.claim_lock != claim_lock:
+        return
+    lease_lock = (
+        _cross_process_init_lock(_resource_leases_path())
+        if owned_task.resource_keys
+        else contextlib.nullcontext(True)
+    )
+    with lease_lock as held:
+        if not held or not _renew_task_resource_leases(owned_task, conn, grace):
             return
-        run_id = _current_run_id(conn, task_id)
-        if run_id is not None:
-            conn.execute(
-                "UPDATE task_runs SET claim_expires = ? WHERE id = ?",
-                (grace, run_id),
+        with write_txn(conn):
+            cur = conn.execute(
+                "UPDATE tasks SET claim_expires = ? "
+                "WHERE id = ? AND status = 'running' AND claim_lock IS ? "
+                "AND current_run_id IS ?",
+                (grace, task_id, claim_lock, owned_task.current_run_id),
             )
-        payload = {
-            "reason": reason,
-            "claim_lock": claim_lock,
-            "claim_expires_now": grace,
-        }
-        payload.update(termination)
-        _append_event(conn, task_id, "reclaim_deferred", payload, run_id=run_id)
+            if cur.rowcount != 1:
+                return
+            run_id = _current_run_id(conn, task_id)
+            if run_id is not None:
+                conn.execute(
+                    "UPDATE task_runs SET claim_expires = ? WHERE id = ?",
+                    (grace, run_id),
+                )
+            payload = {
+                "reason": reason,
+                "claim_lock": claim_lock,
+                "claim_expires_now": grace,
+            }
+            payload.update(termination)
+            _append_event(conn, task_id, "reclaim_deferred", payload, run_id=run_id)
 
 
 def heartbeat_worker(
@@ -6462,6 +7084,7 @@ def enforce_max_runtime(
 
         pid = int(row["worker_pid"])
         tid = row["id"]
+        lease_owner = get_task(conn, tid)
         # SIGTERM then SIGKILL. Keep it simple: 5 s grace. Workers that
         # want a cleaner shutdown can install their own SIGTERM handler
         # before the grace expires.
@@ -6520,6 +7143,8 @@ def enforce_max_runtime(
         # emits a ``gave_up`` event on top of the ``timed_out`` we
         # already emitted.
         if cur.rowcount == 1:
+            if lease_owner is not None:
+                release_task_resource_leases(lease_owner, conn)
             _record_task_failure(
                 conn, tid,
                 error=f"elapsed {int(elapsed)}s > limit {int(row['max_runtime_seconds'])}s",
@@ -6614,6 +7239,7 @@ def detect_stale_running(
             )
             continue
 
+        lease_owner = get_task(conn, tid)
         with write_txn(conn):
             cur = conn.execute(
                 "UPDATE tasks SET status = 'ready', claim_lock = NULL, "
@@ -6653,6 +7279,8 @@ def detect_stale_running(
                 conn, tid, "stale", payload, run_id=run_id,
             )
             reclaimed.append(tid)
+        if lease_owner is not None:
+            release_task_resource_leases(lease_owner, conn)
 
         # Intentionally NOT calling _record_task_failure here. Stale reclaim
         # is dispatcher-side detection of an absent heartbeat; the task is
@@ -6787,6 +7415,7 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
     # counter (see the post-txn loop below).
     crash_details: list[tuple[str, int, str, bool, str]] = []
     # (task_id, pid, claimer, protocol_violation, error_text)
+    lease_owners: list[Task] = []
     with write_txn(conn):
         rows = conn.execute(
             "SELECT id, worker_pid, claim_lock, started_at FROM tasks "
@@ -6810,6 +7439,7 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                 continue
 
             pid = int(row["worker_pid"])
+            lease_owner = get_task(conn, row["id"])
             kind, code = _classify_worker_exit(pid)
             rate_limited_exit = False
             if kind == "clean_exit":
@@ -6881,6 +7511,8 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                 (row["id"], pid, row["claim_lock"]),
             )
             if cur.rowcount == 1:
+                if lease_owner is not None:
+                    lease_owners.append(lease_owner)
                 # Rate-limited requeues are a clean release, not a crash —
                 # record the run outcome as ``rate_limited`` so the board
                 # history doesn't show a phantom crash for a quota wall.
@@ -6925,6 +7557,8 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                         (row["id"], pid, row["claim_lock"],
                          protocol_violation, error_text)
                     )
+    for lease_owner in lease_owners:
+        release_task_resource_leases(lease_owner, conn)
     # Outside the main txn: account each crashed task and maybe trip the
     # breaker (the task transitions ready → blocked with a ``gave_up`` event
     # on top of the event we already emitted).
@@ -7077,6 +7711,7 @@ def _record_task_failure(
     if failure_limit is None:
         failure_limit = DEFAULT_FAILURE_LIMIT
     blocked = False
+    lease_owner = get_task(conn, task_id) if release_claim else None
     with write_txn(conn):
         row = conn.execute(
             "SELECT consecutive_failures, status, max_retries "
@@ -7180,6 +7815,8 @@ def _record_task_failure(
                     run_id=run_id,
                 )
             # Timeout/crash path's caller already emitted its own event.
+    if lease_owner is not None:
+        release_task_resource_leases(lease_owner, conn)
     return blocked
 
 
@@ -7571,6 +8208,10 @@ def _dispatch_once_locked(
     if _crash_rate_limited:
         result.rate_limited.extend(_crash_rate_limited)
     result.timed_out = enforce_max_runtime(conn)
+    # Crash/timeout/reclaim paths clear claims through several legacy helpers.
+    # A fenced host-wide sweep releases those shared leases before this tick
+    # considers new ready work.
+    prune_inactive_resource_leases()
     result.promoted = recompute_ready(conn, failure_limit=failure_limit)
 
     # Count tasks already running so max_spawn enforces concurrency rather
@@ -7749,6 +8390,16 @@ def _dispatch_once_locked(
                     )
             continue
         if dry_run:
+            resource_conflict = get_resource_conflict(conn, row["id"], board=board)
+            if resource_conflict is not None:
+                result.resource_conflicts.append(
+                    (
+                        row["id"], resource_conflict.resource_key,
+                        resource_conflict.holder_board,
+                        resource_conflict.holder_task_id,
+                    )
+                )
+                continue
             result.spawned.append((row["id"], row_assignee, ""))
             # Increment per-profile counter even in dry_run so the cap
             # check sees the would-be spawn on subsequent iterations.
@@ -7759,8 +8410,19 @@ def _dispatch_once_locked(
                     _per_profile_running.get(row_assignee, 0) + 1
                 )
             continue
-        claimed = claim_task(conn, row["id"], ttl_seconds=ttl_seconds)
+        claimed = claim_task(
+            conn, row["id"], ttl_seconds=ttl_seconds, board=board
+        )
         if claimed is None:
+            resource_conflict = get_resource_conflict(conn, row["id"], board=board)
+            if resource_conflict is not None:
+                result.resource_conflicts.append(
+                    (
+                        row["id"], resource_conflict.resource_key,
+                        resource_conflict.holder_board,
+                        resource_conflict.holder_task_id,
+                    )
+                )
             continue
         try:
             resolved_branch_name = None
@@ -7849,10 +8511,31 @@ def _dispatch_once_locked(
             result.skipped_nonspawnable.append(row["id"])
             continue
         if dry_run:
+            resource_conflict = get_resource_conflict(conn, row["id"], board=board)
+            if resource_conflict is not None:
+                result.resource_conflicts.append(
+                    (
+                        row["id"], resource_conflict.resource_key,
+                        resource_conflict.holder_board,
+                        resource_conflict.holder_task_id,
+                    )
+                )
+                continue
             result.spawned.append((row["id"], row["assignee"], ""))
             continue
-        claimed = claim_review_task(conn, row["id"], ttl_seconds=ttl_seconds)
+        claimed = claim_review_task(
+            conn, row["id"], ttl_seconds=ttl_seconds, board=board
+        )
         if claimed is None:
+            resource_conflict = get_resource_conflict(conn, row["id"], board=board)
+            if resource_conflict is not None:
+                result.resource_conflicts.append(
+                    (
+                        row["id"], resource_conflict.resource_key,
+                        resource_conflict.holder_board,
+                        resource_conflict.holder_task_id,
+                    )
+                )
             continue
         try:
             resolved_branch_name = None

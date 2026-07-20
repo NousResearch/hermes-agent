@@ -346,6 +346,7 @@ def _task_summary_dict(kb, conn, task) -> dict[str, Any]:
         "tenant": task.tenant,
         "workspace_kind": task.workspace_kind,
         "workspace_path": task.workspace_path,
+        "resource_keys": list(task.resource_keys),
         "project_id": task.project_id,
         "created_by": task.created_by,
         "created_at": task.created_at,
@@ -1104,6 +1105,7 @@ def _handle_create(args: dict, **kw) -> str:
     idempotency_key = args.get("idempotency_key")
     max_runtime_seconds = args.get("max_runtime_seconds")
     initial_status = args.get("initial_status") or "running"
+    resource_keys = args.get("resource_keys")
     skills = args.get("skills")
     if isinstance(skills, str):
         # Accept a single skill name as a string for convenience.
@@ -1164,6 +1166,7 @@ def _handle_create(args: dict, **kw) -> str:
                 initial_status=str(initial_status),
                 created_by=os.environ.get("HERMES_PROFILE") or "worker",
                 session_id=session_id,
+                resource_keys=resource_keys,
             )
             new_task = kb.get_task(conn, new_tid)
             subscribed = _maybe_auto_subscribe(conn, new_tid)
@@ -1774,6 +1777,16 @@ KANBAN_CREATE_SCHEMA = {
                 "description": (
                     "Dispatcher tiebreaker. Higher = picked sooner "
                     "when multiple ready tasks share an assignee."
+                ),
+            },
+            "resource_keys": {
+                "type": "array",
+                "items": {"type": "string"},
+                "maxItems": 16,
+                "description": (
+                    "Optional normalized cross-board exclusive resource keys. "
+                    "A claimed task holds every key until its run terminates; "
+                    "conflicting ready tasks remain deferred without failure."
                 ),
             },
             "workspace_kind": {

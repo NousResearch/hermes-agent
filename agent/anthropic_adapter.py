@@ -790,6 +790,12 @@ def build_anthropic_client(
             kwargs["default_query"] = {"api-version": "2025-04-15"}
         else:
             kwargs["base_url"] = normalized_base_url
+        # System proxies (e.g. macOS system proxy on 127.0.0.1:26001) can
+        # intercept internal/private API traffic and return spurious 502s.
+        # Only trust the environment proxy for the official Anthropic API.
+        if "anthropic.com" not in normalized_base_url.lower():
+            import httpx as _hx
+            kwargs["http_client"] = _hx.Client(trust_env=False)
     common_betas = _common_betas_for_base_url(
         normalized_base_url,
         drop_context_1m_beta=drop_context_1m_beta,

@@ -247,13 +247,18 @@ export const $sessionProfileTotals = atom<Record<string, number>>({})
 export const $sessionsLoading = atom(true)
 export const $activeSessionId = atom<string | null>(null)
 export const $selectedStoredSessionId = atom<string | null>(null)
-// Reactive signal for when the active session's stored id rotates (auto-
-// compression ends the SessionDB session and forks a continuation). The
-// route + selection must follow the rotation so the next send doesn't
-// trigger a full thread reload (getRuntimeIdForStoredSession would return
-// null for the old stored id, forcing resumeStoredSession). Set in
-// ensureSessionState when the cache entry's storedSessionId changes.
-export const $activeSessionStoredId = atom<string | null>(null)
+export interface ActiveSessionStoredIdRotation {
+  nextStoredSessionId: string
+  previousStoredSessionId: string
+  runtimeSessionId: string
+}
+
+// One-shot event for when auto-compression rotates the active runtime's stored
+// id. Carrying the runtime + previous id is load-bearing: a bare next id cannot
+// tell whether the user has already navigated away while React is waiting to
+// run the route-following effect, which lets a background session steal the
+// foreground route.
+export const $activeSessionStoredIdRotation = atom<ActiveSessionStoredIdRotation | null>(null)
 export const $messages = atom<ChatMessage[]>([])
 
 // Streaming-stable derivations of $messages. During a token stream the array
@@ -326,7 +331,8 @@ export const setSessionProfileTotals = (next: Updater<Record<string, number>>) =
   updateAtom($sessionProfileTotals, next)
 export const setSessionsLoading = (next: Updater<boolean>) => updateAtom($sessionsLoading, next)
 export const setActiveSessionId = (next: Updater<string | null>) => updateAtom($activeSessionId, next)
-export const setActiveSessionStoredId = (next: Updater<string | null>) => updateAtom($activeSessionStoredId, next)
+export const setActiveSessionStoredIdRotation = (next: Updater<ActiveSessionStoredIdRotation | null>) =>
+  updateAtom($activeSessionStoredIdRotation, next)
 
 // Transient: a background session finished and the user hasn't opened it since.
 // Written by session-states.ts (handleTransition), cleared here on session open.
@@ -373,6 +379,19 @@ export const $currentModelSource = atom<ComposerModelSource>(getCurrentModelSour
 export const setCurrentModelSource = (source: ComposerModelSource) => {
   persistString(COMPOSER_MODEL_SOURCE_KEY, source || null)
   $currentModelSource.set(source)
+}
+
+// Monotonic intent token for async default refreshes. A profile/config request
+// may start before the user opens the picker and finish after their click; the
+// token lets that older response stand down even when the selected value is
+// unchanged (value comparisons alone cannot detect re-selecting the same row).
+let composerSelectionGeneration = 0
+
+export const getComposerSelectionGeneration = (): number => composerSelectionGeneration
+
+export const markComposerSelectionManual = (): void => {
+  composerSelectionGeneration += 1
+  setCurrentModelSource('manual')
 }
 
 export const setCurrentReasoningEffort = (next: Updater<string>) => {

@@ -272,6 +272,7 @@ export interface Translations {
       providers: string
       providerAccounts: string
       providerApiKeys: string
+      providerCustomEndpoints: string
       gateway: string
       apiKeys: string
       keybinds: string
@@ -424,6 +425,7 @@ export interface Translations {
     config: {
       none: string
       noneParen: string
+      builtinOnly: string
       notSet: string
       commaSeparated: string
       loading: string
@@ -447,6 +449,7 @@ export interface Translations {
     envActions: {
       actionsFor: (label: string) => string
       credentialActions: string
+      manageInKeys: string
       docs: string
       hideValue: string
       revealValue: string
@@ -708,10 +711,21 @@ export interface Translations {
       noProviderOptions: string
       noProviders: string
       ready: string
+      needsSignIn: string
+      needsSetup: string
       nousIncluded: string
+      nousAuthNeededTitle: string
+      nousAuthNeededMessage: (provider: string) => string
+      nousAuthSignIn: string
+      nousAuthDoneTitle: string
+      nousAuthDoneMessage: string
+      nousAuthFailed: string
       noApiKeyRequired: string
       postSetupHint: (step: string) => string
+      postSetupInstalledHint: string
       postSetupRun: string
+      postSetupRerun: string
+      postSetupInstalled: string
       postSetupRunning: string
       postSetupStarting: string
       postSetupCompleteTitle: string
@@ -719,6 +733,15 @@ export interface Translations {
       postSetupErrorTitle: string
       postSetupErrorMessage: (step: string) => string
       postSetupFailed: (step: string) => string
+      webSearchActive: (backend: string) => string
+      webExtractActive: (backend: string) => string
+      webCapabilityUnset: string
+      webUseForSearch: string
+      webUseForExtract: string
+      webUsedForSearch: string
+      webUsedForExtract: string
+      webCapabilitySelectedMessage: (provider: string, capability: string) => string
+      failedSelectCapability: (provider: string) => string
       loadingModels: string
       modelSectionTitle: string
       modelCount: (count: number) => string
@@ -728,6 +751,19 @@ export interface Translations {
       modelSelectedTitle: string
       modelSelectedMessage: (model: string) => string
       failedSelectModel: (model: string) => string
+      terminalBackend: {
+        sectionTitle: string
+        loading: string
+        failedLoad: string
+        ready: string
+        needsSetup: string
+        unavailable: string
+        inUse: string
+        selectedTitle: string
+        selectedMessage: (backend: string) => string
+        failedSelect: (backend: string) => string
+        needsSetupHint: string
+      }
     }
   }
 
@@ -749,6 +785,8 @@ export interface Translations {
     noDescription: string
     configured: string
     needsKeys: string
+    visionModelHint: string
+    visionModelLink: string
     toolsetsEnabled: (enabled: number, total: number) => string
     configureToolset: (label: string) => string
     toggleToolset: (label: string) => string
@@ -1233,6 +1271,8 @@ export interface Translations {
     promptPlaceholder: string
     frequencyLabel: string
     deliverLabel: string
+    modelLabel: string
+    modelDefault: string
     customScheduleLabel: string
     customPlaceholder: string
     customHint: string

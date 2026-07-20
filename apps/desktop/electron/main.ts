@@ -5212,6 +5212,50 @@ function getOauthSession() {
   return oauthSession
 }
 
+// Cold-start cookie-jar warm-up. A `persist:` partition materialized via
+// session.fromPartition() loads its on-disk cookie store LAZILY: the very first
+// cookies.get() on a fresh cold start can resolve BEFORE the jar has finished
+// hydrating from disk and return an empty array — even though the user is
+// signed in. That false-negative used to make hasLiveOauthSession() report
+// "not signed in", which on the initial boot path (startHermes → the renderer's
+// single-shot boot() with no retry) surfaced as the "Hermes couldn't start"
+// OAuth overlay that vanishes the instant the user clicks Retry.
+//
+// We force the store to hydrate once, up front: flushStorageData() then a
+// throwaway cookies.get(). The promise is memoized so every caller awaits the
+// same single warm-up. Best-effort — any error resolves so we fall back to the
+// live read (which then does its own bounded re-check).
+let oauthCookieWarmup: Promise<void> | null = null
+
+function warmOauthCookieStore() {
+  if (oauthCookieWarmup) {
+    return oauthCookieWarmup
+  }
+
+  oauthCookieWarmup = (async () => {
+    const sess = getOauthSession()
+
+    if (!sess) {
+      // App not ready yet — don't memoize a no-op; let a later call retry.
+      oauthCookieWarmup = null
+
+      return
+    }
+
+    try {
+      // flushStorageData() forces Chromium to reconcile the in-memory cookie
+      // monster with the on-disk SQLite store; the subsequent get() then reads
+      // a populated jar rather than racing the lazy first-access load.
+      sess.flushStorageData?.()
+      await sess.cookies.get({})
+    } catch {
+      // Best effort; the real read below re-checks with bounded retries.
+    }
+  })()
+
+  return oauthCookieWarmup
+}
+
 // Bare + prefixed variants of the session cookies live in
 // connection-config.ts (cookiesHaveSession / cookiesHaveLiveSession). See
 // that module for details.
@@ -5258,19 +5302,45 @@ async function hasLiveOauthSession(baseUrl) {
 
   const parsed = new URL(baseUrl)
 
-  try {
-    const cookies = await sess.cookies.get({ url: baseUrl })
-
-    return cookiesHaveLiveSession(cookies)
-  } catch {
+  const readLive = async () => {
     try {
-      const cookies = await sess.cookies.get({ domain: parsed.hostname })
+      const cookies = await sess.cookies.get({ url: baseUrl })
 
       return cookiesHaveLiveSession(cookies)
     } catch {
-      return false
+      try {
+        const cookies = await sess.cookies.get({ domain: parsed.hostname })
+
+        return cookiesHaveLiveSession(cookies)
+      } catch {
+        return false
+      }
     }
   }
+
+  // First read against the (possibly still-hydrating) jar.
+  if (await readLive()) {
+    return true
+  }
+
+  // Cold-start false-negative guard. A `persist:` partition's cookie store
+  // loads lazily, so the FIRST read on a fresh boot can come back empty even
+  // for a signed-in user — the exact race that produced the transient "Hermes
+  // couldn't start / not signed in" overlay that Retry always cleared. Before
+  // trusting a negative, force the store to hydrate and re-read a couple of
+  // times with a short backoff. A genuinely signed-out user still resolves
+  // false quickly (≤ ~180ms); a signed-in user racing the load now wins.
+  await warmOauthCookieStore()
+
+  for (const delayMs of [30, 60, 90]) {
+    if (await readLive()) {
+      return true
+    }
+
+    await new Promise(resolve => setTimeout(resolve, delayMs))
+  }
+
+  return readLive()
 }
 
 async function clearOauthSession(baseUrl) {
@@ -7655,12 +7725,20 @@ function createWindow() {
     mainWindow.loadURL(pathToFileURL(resolveRendererIndex()).toString())
   }
 
+  // Start the Python backend NOW, in parallel with the renderer load — not on
+  // did-finish-load. The backend cold boot (spawn → port announce → /api/status)
+  // is the dominant startup cost, and serializing it behind Chromium's load
+  // added the whole renderer load time to first-usable-composer. The promise is
+  // shared (backendConnectionState), so the renderer's getConnection() joins
+  // this in-flight boot instead of duplicating it; early boot-progress events
+  // the renderer misses are recovered by its getBootProgress() pull on mount.
+  startHermes().catch(error => rememberLog(error.stack || error.message))
+
   mainWindow.webContents.once('did-finish-load', () => {
     // Zoom restore is handled by wireCommonWindowHandlers (shared with session
     // windows); no need to reapply it here.
     broadcastBootProgress()
     sendWindowStateChanged()
-    startHermes().catch(error => rememberLog(error.stack || error.message))
   })
 }
 
@@ -8081,6 +8159,71 @@ async function interceptSessionRequestForRemote(request) {
     return mergeRemoteProfileSessions(searchParams, remoteProfiles)
   }
 
+  // Batched sidebar slices. With no remote profiles the local batched endpoint
+  // (one DB open per profile) serves it directly — take the fast path. When
+  // remotes exist, fan the three slices back out to the per-slice
+  // /api/profiles/sessions path (which already merges remote rows correctly) and
+  // reassemble; local profiles fall back to three primary reads there, but
+  // remote correctness is preserved.
+  if (method === 'GET' && pathname === '/api/profiles/sessions/sidebar') {
+    const remoteProfiles = configuredRemoteProfileNames()
+
+    if (remoteProfiles.length === 0) {
+      return undefined // local fast path → batched endpoint's single DB open
+    }
+
+    const recentsProfile = (searchParams.get('recents_profile') || 'all').trim() || 'all'
+
+    const sliceParams = (limitKey, defaultLimit, extra) => {
+      const sp = new URLSearchParams({
+        limit: searchParams.get(limitKey) || defaultLimit,
+        offset: '0',
+        min_messages: '1',
+        archived: 'exclude',
+        order: 'recent',
+        ...extra
+      })
+
+      return sp
+    }
+
+    const recentsSp = sliceParams('recents_limit', '20', { profile: recentsProfile })
+    const recentsExclude = searchParams.get('recents_exclude')
+
+    if (recentsExclude) {
+      recentsSp.set('exclude_sources', recentsExclude)
+    }
+
+    const cronSp = sliceParams('cron_limit', '50', { profile: 'all', source: 'cron' })
+
+    const messagingSp = sliceParams('messaging_limit', '100', { profile: 'all' })
+    const messagingExclude = searchParams.get('messaging_exclude')
+
+    if (messagingExclude) {
+      messagingSp.set('exclude_sources', messagingExclude)
+    }
+
+    const [recents, cron, messaging] = await Promise.all([
+      fetchProfilesSessionSlice(recentsSp, remoteProfiles),
+      fetchProfilesSessionSlice(cronSp, remoteProfiles),
+      fetchProfilesSessionSlice(messagingSp, remoteProfiles)
+    ])
+
+    return {
+      recents: {
+        sessions: rowsOf(recents),
+        total: Number(recents?.total) || 0,
+        profile_totals: recents?.profile_totals || {}
+      },
+      cron: { sessions: rowsOf(cron) },
+      messaging: {
+        sessions: rowsOf(messaging),
+        total: Number(messaging?.total) || rowsOf(messaging).length
+      },
+      errors: []
+    }
+  }
+
   // Per-session read/mutation. Owner is in ?profile= (reads) or request.profile
   // (mutations). Two remote shapes:
   //  - per-profile override: route to that profile's own remote, sans profile
@@ -8143,6 +8286,30 @@ async function remoteSessionList(profile, searchParams) {
   }
 
   return { ...(data as any), sessions: rowsOf(data) }
+}
+
+// Resolve one /api/profiles/sessions slice with remote profiles spliced in —
+// the same branch logic as the GET /api/profiles/sessions intercept, but always
+// returns data (never `undefined`) so a batched caller can compose slices. A
+// specific local profile reads from the local primary; a remote-override profile
+// reads from its remote; 'all' merges every remote into the primary aggregate.
+async function fetchProfilesSessionSlice(searchParams, remoteProfiles) {
+  const requested = (searchParams.get('profile') || 'all').trim() || 'all'
+
+  if (requested !== 'all') {
+    if (profileHasRemoteOverride(requested)) {
+      return remoteSessionList(requested, searchParams)
+    }
+
+    const primary = await ensureBackend(null)
+
+    return fetchJson(`${primary.baseUrl}/api/profiles/sessions?${searchParams}`, primary.token, {
+      method: 'GET',
+      timeoutMs: DEFAULT_FETCH_TIMEOUT_MS
+    }).catch(() => ({ sessions: [], total: 0, profile_totals: {} }))
+  }
+
+  return mergeRemoteProfileSessions(searchParams, remoteProfiles)
 }
 
 // Unified list: primary's local aggregate, with each remote profile's stale local

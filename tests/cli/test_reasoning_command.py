@@ -154,6 +154,72 @@ class TestHandleReasoningCommand(unittest.TestCase):
         level = rc.get("effort", "medium")
         self.assertEqual(level, "xhigh")
 
+    def test_effort_defaults_to_session_only(self):
+        """Plain /reasoning <level> is session-scoped — no config write."""
+        from hermes_cli.cli_commands_mixin import CLICommandsMixin
+
+        stub = self._make_cli(reasoning_config={"enabled": True, "effort": "medium"})
+        with patch("cli.save_config_value") as save_config, patch("cli._cprint"):
+            CLICommandsMixin._handle_reasoning_command(stub, "/reasoning high")
+
+        save_config.assert_not_called()
+        self.assertEqual(stub.reasoning_config, {"enabled": True, "effort": "high"})
+        self.assertIsNone(stub.agent)
+
+    def test_effort_global_flag_persists_config(self):
+        """--global opts into persisting the effort to config.yaml."""
+        from cli import CLI_CONFIG
+        from hermes_cli.cli_commands_mixin import CLICommandsMixin
+
+        stub = self._make_cli(reasoning_config={"enabled": True, "effort": "medium"})
+        with patch.dict(CLI_CONFIG.setdefault("agent", {}), {"reasoning_effort": "medium"}), \
+             patch("cli.save_config_value", return_value=True) as save_config, \
+             patch("cli._cprint"):
+            CLICommandsMixin._handle_reasoning_command(stub, "/reasoning high --global")
+            self.assertEqual(CLI_CONFIG["agent"]["reasoning_effort"], "high")
+
+        save_config.assert_called_once_with("agent.reasoning_effort", "high")
+        self.assertEqual(stub.reasoning_config, {"enabled": True, "effort": "high"})
+        self.assertIsNone(stub.agent)
+
+    def test_effort_session_flag_does_not_persist_config(self):
+        """--session (explicit no-op alias for the default) stays session-only."""
+        from hermes_cli.cli_commands_mixin import CLICommandsMixin
+
+        stub = self._make_cli(reasoning_config={"enabled": True, "effort": "medium"})
+        with patch("cli.save_config_value") as save_config, patch("cli._cprint"):
+            CLICommandsMixin._handle_reasoning_command(stub, "/reasoning high --session")
+
+        save_config.assert_not_called()
+        self.assertEqual(stub.reasoning_config, {"enabled": True, "effort": "high"})
+        self.assertIsNone(stub.agent)
+
+    def test_new_session_clears_session_reasoning_override(self):
+        """/new and /clear must not carry a session-only effort override forward."""
+        from cli import CLI_CONFIG, HermesCLI
+
+        agent = SimpleNamespace(
+            reasoning_config={"enabled": True, "effort": "high"},
+            reset_session_state=MagicMock(),
+        )
+        stub = SimpleNamespace(
+            agent=agent,
+            conversation_history=[],
+            session_id="old-session",
+            _session_db=None,
+            _pending_title=None,
+            _resumed=False,
+            reasoning_config={"enabled": True, "effort": "high"},
+            _notify_session_boundary=MagicMock(),
+        )
+
+        with patch.dict(CLI_CONFIG.setdefault("agent", {}), {"reasoning_effort": "medium"}):
+            HermesCLI.new_session(stub, silent=True)
+
+        self.assertEqual(stub.reasoning_config, {"enabled": True, "effort": "medium"})
+        self.assertEqual(agent.reasoning_config, {"enabled": True, "effort": "medium"})
+        agent.reset_session_state.assert_called_once()
+
 
 # ---------------------------------------------------------------------------
 # Reasoning extraction and result dict

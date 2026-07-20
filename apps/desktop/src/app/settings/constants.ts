@@ -247,7 +247,10 @@ export const ENUM_OPTIONS: Record<string, string[]> = {
   'code_execution.mode': ['project', 'strict'],
   'context.engine': ['compressor', 'default', 'custom'],
   'delegation.reasoning_effort': ['', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
-  'memory.provider': ['', 'builtin', 'hindsight', 'honcho'],
+  // Built-in memory is not a provider plugin: the empty sentinel renders as
+  // "Built-in only" and a legacy literal `builtin` value is only kept visible
+  // via enumOptionsFor's current-value passthrough (#49513).
+  'memory.provider': ['', 'honcho', 'hindsight'],
   // Terminal execution backends — kept in sync with the dispatch ladder in
   // tools/terminal_tool.py::_create_environment (local/docker/singularity/
   // modal/daytona/ssh). Remote backends need extra env (image, tokens, host).
@@ -381,7 +384,12 @@ export const FIELD_LABELS: Record<string, string> = defineFieldCopy({
     },
     xai: {
       voiceId: 'xAI (Grok) Voice',
-      language: 'xAI Language'
+      language: 'xAI Language',
+      speed: 'xAI Playback Speed',
+      autoSpeechTags: 'xAI Auto Speech Tags',
+      optimizeStreamingLatency: 'xAI Streaming Latency Optimization',
+      sampleRate: 'xAI Sample Rate',
+      bitRate: 'xAI Bit Rate'
     },
     minimax: {
       model: 'MiniMax TTS Model',
@@ -488,7 +496,12 @@ export const FIELD_DESCRIPTIONS: Record<string, string> = defineFieldCopy({
   tts: {
     xai: {
       voiceId: 'xAI voice ID (e.g. eve) or a custom voice ID.',
-      language: 'Spoken language code, e.g. en.'
+      language: 'Spoken language code (e.g. en, pt-BR) or "auto" for auto-detection.',
+      speed: 'Playback speed. 0.7 = slower, 1.0 = normal, 1.5 = faster.',
+      autoSpeechTags: 'Let an LLM insert expressive audio tags ([laughing], [sighs]) into the script before synthesis.',
+      optimizeStreamingLatency: 'Latency vs. quality trade-off. 0 = best quality, 2 = lowest latency.',
+      sampleRate: 'Audio sample rate in Hz. Higher = better quality, larger files.',
+      bitRate: 'MP3 bitrate in bps. Only applies when codec is mp3.'
     },
     neutts: {
       device: 'Local inference device for NeuTTS.'
@@ -589,6 +602,11 @@ export const SECTIONS: DesktopConfigSection[] = [
       'tts.elevenlabs.model_id',
       'tts.xai.voice_id',
       'tts.xai.language',
+      'tts.xai.speed',
+      'tts.xai.auto_speech_tags',
+      'tts.xai.optimize_streaming_latency',
+      'tts.xai.sample_rate',
+      'tts.xai.bit_rate',
       'tts.minimax.model',
       'tts.minimax.voice_id',
       'tts.mistral.model',

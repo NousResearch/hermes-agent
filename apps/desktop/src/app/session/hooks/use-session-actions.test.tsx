@@ -5,22 +5,35 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { getSessionMessages, type SessionInfo } from '@/hermes'
 import { createClientSessionState } from '@/lib/chat-runtime'
-import { $activeGatewayProfile, $newChatProfile } from '@/store/profile'
+import { $activeGatewayProfile, $newChatProfile, ensureGatewayProfile } from '@/store/profile'
 import { $projectScope, $projectTree, ALL_PROJECTS } from '@/store/projects'
 import {
   $activeSessionId,
+  $activeSessionStoredIdRotation,
   $currentCwd,
+  $currentFastMode,
+  $currentModel,
+  $currentProvider,
+  $currentReasoningEffort,
   $messages,
   $newChatWorkspaceTarget,
   $resumeFailedSessionId,
+  $selectedStoredSessionId,
   setActiveSessionId,
+  setActiveSessionStoredIdRotation,
   setCurrentCwd,
+  setCurrentFastMode,
+  setCurrentModel,
+  setCurrentProvider,
+  setCurrentReasoningEffort,
   setMessages,
   setNewChatWorkspaceTarget,
   setResumeFailedSessionId,
+  setSelectedStoredSessionId,
   setSessions
 } from '@/store/session'
 
+import { sessionRoute } from '../../routes'
 import type { ClientSessionState } from '../../types'
 
 import { useSessionActions } from './use-session-actions'
@@ -34,7 +47,23 @@ vi.mock('@/hermes', async importOriginal => ({
   setSessionArchived: vi.fn()
 }))
 
+vi.mock('@/store/profile', async importOriginal => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  ensureGatewayProfile: vi.fn().mockResolvedValue(undefined)
+}))
+
 const RUNTIME_SESSION_ID = 'rt-new-001'
+
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void
+
+  const promise = new Promise<T>(done => {
+    resolve = done
+  })
+
+  return { promise, resolve }
+}
+
 type HarnessHandle = Pick<
   ReturnType<typeof useSessionActions>,
   'createBackendSessionForSend' | 'startFreshSessionDraft'
@@ -75,6 +104,7 @@ function Harness({
     creatingSessionRef: ref(false),
     ensureSessionState: () => ({}) as ClientSessionState,
     getRouteToken: () => 'token',
+    getRoutedStoredSessionId: () => null,
     navigate: vi.fn() as never,
     requestGateway,
     resetViewSync: vi.fn(),
@@ -92,6 +122,166 @@ function Harness({
 
   return null
 }
+
+function StoredIdRotationHarness({
+  activeSessionIdRef,
+  getRoutedStoredSessionId,
+  navigate,
+  selectedStoredSessionIdRef
+}: {
+  activeSessionIdRef: MutableRefObject<string | null>
+  getRoutedStoredSessionId: () => null | string
+  navigate: (to: string, options?: { replace?: boolean }) => void
+  selectedStoredSessionIdRef: MutableRefObject<string | null>
+}) {
+  const ref = <T,>(value: T): MutableRefObject<T> => ({ current: value })
+
+  useSessionActions({
+    activeSessionId: activeSessionIdRef.current,
+    activeSessionIdRef,
+    busyRef: ref(false),
+    creatingSessionRef: ref(false),
+    ensureSessionState: () => ({}) as ClientSessionState,
+    getRouteToken: () => 'token',
+    getRoutedStoredSessionId,
+    navigate: navigate as never,
+    requestGateway: async () => ({}) as never,
+    resetViewSync: vi.fn(),
+    runtimeIdByStoredSessionIdRef: ref(new Map<string, string>()),
+    selectedStoredSessionId: selectedStoredSessionIdRef.current,
+    selectedStoredSessionIdRef,
+    sessionStateByRuntimeIdRef: ref(new Map<string, ClientSessionState>()),
+    syncSessionStateToView: vi.fn(),
+    updateSessionState: () => ({}) as ClientSessionState
+  })
+
+  return null
+}
+
+describe('active stored-session id rotation routing', () => {
+  afterEach(() => {
+    cleanup()
+    setActiveSessionId(null)
+    setActiveSessionStoredIdRotation(null)
+    setSelectedStoredSessionId(null)
+    vi.restoreAllMocks()
+  })
+
+  it('follows a rotation while the same conversation still owns the foreground route', async () => {
+    const activeSessionIdRef: MutableRefObject<string | null> = { current: 'runtime-A' }
+    const selectedStoredSessionIdRef: MutableRefObject<string | null> = { current: 'stored-A' }
+    const navigate = vi.fn()
+
+    setSelectedStoredSessionId('stored-A')
+    render(
+      <StoredIdRotationHarness
+        activeSessionIdRef={activeSessionIdRef}
+        getRoutedStoredSessionId={() => 'stored-A'}
+        navigate={navigate}
+        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
+      />
+    )
+
+    act(() => {
+      setActiveSessionStoredIdRotation({
+        nextStoredSessionId: 'stored-A-next',
+        previousStoredSessionId: 'stored-A',
+        runtimeSessionId: 'runtime-A'
+      })
+    })
+
+    await waitFor(() => expect(selectedStoredSessionIdRef.current).toBe('stored-A-next'))
+    expect($selectedStoredSessionId.get()).toBe('stored-A-next')
+    expect(navigate).toHaveBeenCalledWith(sessionRoute('stored-A-next'), { replace: true })
+    expect($activeSessionStoredIdRotation.get()).toBeNull()
+  })
+
+  it('does not overwrite a newer route intent before its resume effect has synchronized selection', async () => {
+    const activeSessionIdRef: MutableRefObject<string | null> = { current: 'runtime-A' }
+    const selectedStoredSessionIdRef: MutableRefObject<string | null> = { current: 'stored-A' }
+    const navigate = vi.fn()
+
+    setSelectedStoredSessionId('stored-A')
+    render(
+      <StoredIdRotationHarness
+        activeSessionIdRef={activeSessionIdRef}
+        getRoutedStoredSessionId={() => 'stored-C'}
+        navigate={navigate}
+        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
+      />
+    )
+
+    act(() => {
+      setActiveSessionStoredIdRotation({
+        nextStoredSessionId: 'stored-A-next',
+        previousStoredSessionId: 'stored-A',
+        runtimeSessionId: 'runtime-A'
+      })
+    })
+
+    await waitFor(() => expect($activeSessionStoredIdRotation.get()).toBeNull())
+    expect(selectedStoredSessionIdRef.current).toBe('stored-A')
+    expect($selectedStoredSessionId.get()).toBe('stored-A')
+    expect(navigate).not.toHaveBeenCalled()
+  })
+
+  it('does not let the previous runtime jump back after selection already moved', async () => {
+    const activeSessionIdRef: MutableRefObject<string | null> = { current: 'runtime-A' }
+    const selectedStoredSessionIdRef: MutableRefObject<string | null> = { current: 'stored-C' }
+    const navigate = vi.fn()
+
+    setSelectedStoredSessionId('stored-C')
+    render(
+      <StoredIdRotationHarness
+        activeSessionIdRef={activeSessionIdRef}
+        getRoutedStoredSessionId={() => 'stored-C'}
+        navigate={navigate}
+        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
+      />
+    )
+
+    act(() => {
+      setActiveSessionStoredIdRotation({
+        nextStoredSessionId: 'stored-A-next',
+        previousStoredSessionId: 'stored-A',
+        runtimeSessionId: 'runtime-A'
+      })
+    })
+
+    await waitFor(() => expect($activeSessionStoredIdRotation.get()).toBeNull())
+    expect(selectedStoredSessionIdRef.current).toBe('stored-C')
+    expect($selectedStoredSessionId.get()).toBe('stored-C')
+    expect(navigate).not.toHaveBeenCalled()
+  })
+
+  it('updates the underlying selection without navigating out of an overlay or page', async () => {
+    const activeSessionIdRef: MutableRefObject<string | null> = { current: 'runtime-A' }
+    const selectedStoredSessionIdRef: MutableRefObject<string | null> = { current: 'stored-A' }
+    const navigate = vi.fn()
+
+    setSelectedStoredSessionId('stored-A')
+    render(
+      <StoredIdRotationHarness
+        activeSessionIdRef={activeSessionIdRef}
+        getRoutedStoredSessionId={() => null}
+        navigate={navigate}
+        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
+      />
+    )
+
+    act(() => {
+      setActiveSessionStoredIdRotation({
+        nextStoredSessionId: 'stored-A-next',
+        previousStoredSessionId: 'stored-A',
+        runtimeSessionId: 'runtime-A'
+      })
+    })
+
+    await waitFor(() => expect(selectedStoredSessionIdRef.current).toBe('stored-A-next'))
+    expect($selectedStoredSessionId.get()).toBe('stored-A-next')
+    expect(navigate).not.toHaveBeenCalled()
+  })
+})
 
 async function createWith(
   profileSetup: () => void,
@@ -138,6 +328,10 @@ describe('createBackendSessionForSend profile routing', () => {
     $projectScope.set(ALL_PROJECTS)
     $projectTree.set([])
     $currentCwd.set('')
+    $currentFastMode.set(false)
+    $currentModel.set('')
+    $currentProvider.set('')
+    $currentReasoningEffort.set('')
     setNewChatWorkspaceTarget(undefined)
     vi.restoreAllMocks()
   })
@@ -185,6 +379,57 @@ describe('createBackendSessionForSend profile routing', () => {
     })
 
     expect(params).toMatchObject({ cwd: '/remote/worktree' })
+  })
+
+  it('freezes the visible selector state before profile readiness and sends fast: false explicitly', async () => {
+    const profileReady = deferred<void>()
+    vi.mocked(ensureGatewayProfile).mockReturnValueOnce(profileReady.promise)
+
+    setCurrentModel('anthropic/claude-sonnet-4.6')
+    setCurrentProvider('anthropic')
+    setCurrentReasoningEffort('high')
+    setCurrentFastMode(false)
+
+    let createParams: Record<string, unknown> | undefined
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'session.create') {
+        createParams = params
+
+        return { session_id: RUNTIME_SESSION_ID, stored_session_id: null } as never
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    render(<Harness onReady={next => (handle = next)} requestGateway={requestGateway} />)
+    await waitFor(() => expect(handle).not.toBeNull())
+
+    let createPromise!: Promise<null | string>
+    act(() => {
+      createPromise = handle!.createBackendSessionForSend()
+    })
+    await waitFor(() => expect(ensureGatewayProfile).toHaveBeenCalled())
+
+    // A background refresh or a second click can mutate the sticky atoms while
+    // the profile is waking. This send must still use what was visible at Enter.
+    setCurrentModel('openai/gpt-5.5')
+    setCurrentProvider('openai-codex')
+    setCurrentReasoningEffort('low')
+    setCurrentFastMode(true)
+    profileReady.resolve()
+
+    await act(async () => {
+      await createPromise
+    })
+
+    expect(createParams).toMatchObject({
+      fast: false,
+      model: 'anthropic/claude-sonnet-4.6',
+      provider: 'anthropic',
+      reasoning_effort: 'high'
+    })
   })
 
   it('falls back to the entered project cwd when the current cwd is blank', async () => {
@@ -235,6 +480,7 @@ function ResumeHarness({
     creatingSessionRef: ref(false),
     ensureSessionState: () => ({}) as ClientSessionState,
     getRouteToken: () => 'token',
+    getRoutedStoredSessionId: () => null,
     navigate: vi.fn() as never,
     requestGateway,
     resetViewSync: vi.fn(),
@@ -638,6 +884,7 @@ function BranchHarness({
     creatingSessionRef: ref(false),
     ensureSessionState: () => ({}) as ClientSessionState,
     getRouteToken: () => 'token',
+    getRoutedStoredSessionId: () => null,
     navigate: vi.fn() as never,
     requestGateway,
     resetViewSync: vi.fn(),

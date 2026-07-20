@@ -261,6 +261,7 @@ class CompactionStats:
 
 # Identifies an LCM summary message in a compressed/active context.
 _LCM_SUMMARY_RE = None  # lazy-compiled below
+_BUILTIN_SUMMARY_RE = None  # lazy-compiled alongside _LCM_SUMMARY_RE
 
 
 def hygiene_eligible_msgs(history: List[dict]) -> List[dict]:
@@ -346,19 +347,32 @@ def _content_to_text(content) -> str:
 
 
 def _is_summary_message(content) -> bool:
-    global _LCM_SUMMARY_RE
+    global _LCM_SUMMARY_RE, _BUILTIN_SUMMARY_RE
     if _LCM_SUMMARY_RE is None:
         import re
+        # LINE-ANCHORED (`(?m)^`) on purpose: a real summary row always carries
+        # its marker at start-of-line (LCM joins summary parts with "\n\n---\n\n";
+        # the built-in prefix opens the message). A row that merely QUOTES summary
+        # text — a session_search/execute_code tool result embedding a past
+        # summary inside a JSON string — carries the marker mid-line (inside an
+        # escaped string), so the anchor rejects it. Un-anchored matching here
+        # was the root cause of recurring false COMPACTION_STATS_TAG_MISSING
+        # fires on transcript-grepping sessions (daedalus cluster, 2026-07-14..18:
+        # 41/41 offending rows were mid-line quotes; 0 matched anchored).
         _LCM_SUMMARY_RE = re.compile(
-            r"\[(?:Recent|Session Arc|Durable|Depth-\d+) Summary \(d\d+, node \d+\)\]"
+            r"(?m)^\[(?:Recent|Session Arc|Durable|Depth-\d+) Summary \(d\d+, node \d+\)\]"
+        )
+        # Built-in compressor summary marker (context_compressor.SUMMARY_PREFIX).
+        # Without this, a built-in-engine summary row classifies as "kept chat"
+        # and the Messages line miscounts (kept N instead of kept N-1 + 1
+        # summary). Same anchoring rationale as above.
+        _BUILTIN_SUMMARY_RE = re.compile(
+            r"(?m)^\[CONTEXT COMPACTION — REFERENCE ONLY\]"
         )
     text = _content_to_text(content)
     if not text:
         return False
-    # Built-in compressor summary marker (context_compressor.SUMMARY_PREFIX).
-    # Without this, a built-in-engine summary row classifies as "kept chat"
-    # and the Messages line miscounts (kept N instead of kept N-1 + 1 summary).
-    if "[CONTEXT COMPACTION — REFERENCE ONLY]" in text:
+    if _BUILTIN_SUMMARY_RE.search(text):
         return True
     return bool(_LCM_SUMMARY_RE.search(text))
 

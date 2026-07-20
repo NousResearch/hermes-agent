@@ -1335,3 +1335,91 @@ def test_inturn_kept_pre_tokens_matches_comp_side_on_clean_tail():
 
 
 
+
+
+# ── Quoted-summary false-positive class (daedalus TAG_MISSING cluster, 2026-07) ──
+# Root cause of the recurring COMPACTION_STATS_TAG_MISSING watcher pages: a tool
+# result (session_search / execute_code) that QUOTES a past summary inside a JSON
+# string regex-matched as a "summary row" (marker mid-line, inside an escaped
+# string), had no _lcm_summary tag (correctly — it isn't one), and tripped the
+# wire. Fixture shapes below are byte-faithful to the offending rows recovered
+# from daedalus's LCM store (sessions 20260718_174819_9f18a0 et al.).
+
+_QUOTED_SESSION_SEARCH = (
+    '{"success": true, "results": [{"id": 189821, "role": "assistant", '
+    '"content": "[Current user objective preserved from compacted history]'
+    '\\nwork kanban task t_b1156bad\\n\\n---\\n\\n[Recent Summary (d0, node 566)]'
+    '\\n# Conversation summary: work Kanban task `t_b1156bad`"}]}'
+)
+
+_QUOTED_EXECUTE_CODE = (
+    'SESSION 20260718_155908_033a84\n'
+    'bookend_start 198902 [Current user objective preserved from compacted '
+    'history] work kanban task t_c85755ee  ---  [Recent Summary (d0, node 587)] '
+    'This conversation initiates task **t_c85755ee** (CAPTURE-BENCH-RUN)'
+)
+
+
+def test_quoted_summary_in_tool_result_does_not_classify_or_fire():
+    # A session_search tool result quoting a summary (marker mid-line inside a
+    # JSON string) must classify as a KEPT row, not a summary row, and must not
+    # fire the tag-missing tripwire.
+    from agent.compaction_stats import build_inturn_stats
+    fires = []
+    anchor = {"role": "system", "content": "SYS " * 50}
+    tagged = {"role": "assistant", "content": "[Recent Summary (d0, node 1)] z",
+              "_lcm_summary": True}
+    quoted = {"role": "tool", "tool_name": "session_search",
+              "content": _QUOTED_SESSION_SEARCH}
+    body = [_blockmsg("assistant", f"chat {i}") for i in range(10)]
+    msgs = [anchor] + body + [quoted]
+    compressed = [anchor, tagged] + msgs[-3:]
+    stats = build_inturn_stats(
+        messages=msgs, compressed=compressed, estimator=_est,
+        engine_is_lcm=True, on_tag_missing=lambda: fires.append(1),
+    )
+    assert sum(fires) == 0, "quoted summary text must not fire the tripwire"
+    assert stats.summary_messages == 1, "only the tagged real summary row counts"
+
+
+def test_quoted_summary_plaintext_grep_output_does_not_fire():
+    # Same class, execute_code/grep-style plain-text quote (marker mid-line, no
+    # JSON escaping). Recovered verbatim from the offending sessions.
+    from agent.compaction_stats import _is_summary_message
+    assert _is_summary_message(_QUOTED_EXECUTE_CODE) is False
+
+
+def test_real_summary_rows_still_classify_after_anchoring():
+    # The anchored regex must still match every real producer shape:
+    from agent.compaction_stats import _is_summary_message
+    # 1. LCM engine row: objective preface + "\n\n---\n\n" + marker at line start
+    lcm_row = (
+        "[Current user objective preserved from compacted history]\nfix the bug"
+        "\n\n---\n\n[Recent Summary (d0, node 566)]\n# Conversation summary\n"
+        "[Expand for details: stuff]"
+    )
+    assert _is_summary_message(lcm_row) is True
+    # 2. Marker-first row (single-part summary)
+    assert _is_summary_message("[Session Arc Summary (d1, node 38)]\nbody") is True
+    # 3. Depth-N variant
+    assert _is_summary_message("[Depth-3 Summary (d3, node 9)]\nbody") is True
+    # 4. Built-in compressor prefix (context_compressor.SUMMARY_PREFIX opens the
+    #    message) still detected; quoted mid-line built-in prefix rejected.
+    from agent.context_compressor import SUMMARY_PREFIX
+    assert _is_summary_message(SUMMARY_PREFIX + "\nsummary body") is True
+    assert _is_summary_message(
+        'log line: {"content": "' + SUMMARY_PREFIX.replace("\n", " ") + ' ..."}'
+    ) is False
+
+
+def test_list_content_parts_keep_line_anchoring():
+    # _content_to_text joins list parts with "\n" — a part-initial marker must
+    # still anchor-match after the join.
+    from agent.compaction_stats import _is_summary_message
+    parts = [
+        {"type": "text", "text": "[Current user objective preserved from compacted history]\nx"},
+        {"type": "text", "text": "[Recent Summary (d0, node 7)]\nbody"},
+    ]
+    assert _is_summary_message(parts) is True
+    quoted_parts = [{"type": "text", "text": 'prefix {"c": "[Recent Summary (d0, node 7)] q"}'}]
+    assert _is_summary_message(quoted_parts) is False

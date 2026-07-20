@@ -22,6 +22,8 @@ def _make_adapter(
     group_allowed_chats=None,
     guest_mode=None,
     observe_unmentioned_group_messages=None,
+    bot_message_policies=None,
+    group_stop_authorities=None,
     bot_username="hermes_bot",
 ):
     from plugins.platforms.telegram.adapter import TelegramAdapter
@@ -65,6 +67,10 @@ def _make_adapter(
         extra["guest_mode"] = guest_mode
     if observe_unmentioned_group_messages is not None:
         extra["observe_unmentioned_group_messages"] = observe_unmentioned_group_messages
+    if bot_message_policies is not None:
+        extra["bot_message_policies"] = bot_message_policies
+    if group_stop_authorities is not None:
+        extra["group_stop_authorities"] = group_stop_authorities
 
     adapter = object.__new__(TelegramAdapter)
     adapter.platform = Platform.TELEGRAM
@@ -94,6 +100,7 @@ def _group_message(
     chat_id=-100,
     from_user_id=111,
     from_user_name="Alice Example",
+    from_user_is_bot=False,
     thread_id=None,
     reply_to_bot=False,
     entities=None,
@@ -112,7 +119,12 @@ def _group_message(
         message_thread_id=thread_id,
         is_topic_message=thread_id is not None,
         chat=SimpleNamespace(id=chat_id, type="group", title="Test Group", is_forum=thread_id is not None),
-        from_user=SimpleNamespace(id=from_user_id, full_name=from_user_name, first_name=from_user_name.split()[0]),
+        from_user=SimpleNamespace(
+            id=from_user_id,
+            full_name=from_user_name,
+            first_name=from_user_name.split()[0],
+            is_bot=from_user_is_bot,
+        ),
         reply_to_message=reply_to_message,
         date=None,
     )
@@ -157,6 +169,506 @@ def test_group_messages_can_be_opened_via_config():
     adapter = _make_adapter(require_mention=False)
 
     assert adapter._should_process_message(_group_message("hello everyone")) is True
+
+
+def test_group_bot_observe_policy_blocks_dispatch_even_when_directly_mentioned():
+    adapter = _make_adapter(
+        require_mention=False,
+        free_response_chats=["-200"],
+        bot_message_policies={"-200": "observe"},
+    )
+    text = "@hermes_bot please continue"
+    peer = _group_message(
+        text,
+        chat_id=-200,
+        from_user_id=555,
+        from_user_is_bot=True,
+        entities=[_mention_entity(text)],
+    )
+
+    assert adapter._should_process_message(peer) is False
+    assert adapter._should_observe_unmentioned_group_message(peer) is True
+
+
+def test_group_bot_observe_policy_preserves_human_dispatch():
+    adapter = _make_adapter(
+        require_mention=False,
+        free_response_chats=["-200"],
+        bot_message_policies={"-200": "observe"},
+    )
+    owner = _group_message("What should we do next?", chat_id=-200)
+
+    assert adapter._should_process_message(owner) is True
+    assert adapter._should_observe_unmentioned_group_message(owner) is False
+
+
+def test_group_bot_observe_policy_can_pass_auth_only_for_passive_observation():
+    async def _run():
+        adapter = _make_adapter(
+            require_mention=False,
+            free_response_chats=["-200"],
+            bot_message_policies={"-200": "observe"},
+        )
+        adapter._is_user_authorized_from_message = lambda _message: False
+        store = _FakeSessionStore()
+        adapter._session_store = store
+        peer = _group_message(
+            "peer bot update",
+            chat_id=-200,
+            from_user_id=555,
+            from_user_is_bot=True,
+        )
+        update = SimpleNamespace(update_id=5001, message=peer, effective_message=None)
+
+        await adapter._handle_text_message(update, SimpleNamespace())
+
+        adapter._message_handler.assert_not_awaited()
+        assert len(store.messages) == 1
+        assert store.messages[0][1]["observed"] is True
+
+    asyncio.run(_run())
+
+
+def test_group_bot_observe_policy_does_not_bypass_auth_for_humans():
+    async def _run():
+        adapter = _make_adapter(
+            require_mention=False,
+            free_response_chats=["-200"],
+            bot_message_policies={"-200": "observe"},
+        )
+        adapter._is_user_authorized_from_message = lambda _message: False
+        store = _FakeSessionStore()
+        adapter._session_store = store
+        owner = _group_message("owner update", chat_id=-200)
+        update = SimpleNamespace(update_id=5002, message=owner, effective_message=None)
+
+        await adapter._handle_text_message(update, SimpleNamespace())
+
+        adapter._message_handler.assert_not_awaited()
+        assert store.messages == []
+
+    asyncio.run(_run())
+
+
+def test_group_bot_observe_policy_never_bypasses_auth_in_dms():
+    adapter = _make_adapter(bot_message_policies={"111": "observe"})
+    direct = _dm_message(from_user_id=111)
+    direct.from_user.is_bot = True
+
+    assert adapter._is_policy_observed_bot_message(direct) is False
+
+
+def test_group_security_maps_accept_numeric_chat_ids():
+    adapter = _make_adapter(
+        require_mention=False,
+        free_response_chats=["-200"],
+        bot_message_policies={-200: "observe"},
+        group_stop_authorities={-200: "dart_look_for_bot"},
+        bot_username="dart_look_for_bot",
+    )
+    peer = _group_message(
+        "peer update",
+        chat_id=-200,
+        from_user_id=555,
+        from_user_is_bot=True,
+    )
+    stop = _group_message("/stop@all", chat_id=-200)
+
+    assert adapter._telegram_group_bot_message_policy(peer) == "observe"
+    assert adapter._should_process_message(peer) is False
+    assert adapter._should_observe_unmentioned_group_message(peer) is True
+    assert adapter._telegram_group_stop_authority(stop) is True
+
+
+def test_invalid_group_security_values_fail_closed_without_enabling_dedupe():
+    peer_adapter = _make_adapter(
+        require_mention=False,
+        free_response_chats=["-200"],
+        bot_message_policies={"-200": "obesrve"},
+    )
+    peer = _group_message(
+        "peer update",
+        chat_id=-200,
+        from_user_id=555,
+        from_user_is_bot=True,
+    )
+    peer_adapter._is_user_authorized_from_message = Mock(return_value=True)
+
+    assert peer_adapter._telegram_group_bot_message_policy(peer) == "drop"
+    assert peer_adapter._should_process_message(peer) is False
+    assert peer_adapter._claim_team_group_update(4900, peer) is True
+    assert peer_adapter._claim_team_group_update(4900, peer) is True
+
+    stop_adapter = _make_adapter(
+        require_mention=False,
+        free_response_chats=["-200"],
+        group_stop_authorities={"-200": ""},
+        bot_username="cronbuster_bot",
+    )
+    stop = _group_message("/stop", chat_id=-200)
+
+    assert stop_adapter._telegram_group_stop_authority(stop) is False
+    assert stop_adapter._should_process_message(stop, is_command=True) is False
+    assert stop_adapter._claim_team_group_update(4901, stop) is True
+    assert stop_adapter._claim_team_group_update(4901, stop) is True
+
+    malformed_policy = _make_adapter(
+        require_mention=False,
+        free_response_chats=["-200"],
+        bot_message_policies=["not-a-map"],
+    )
+    assert malformed_policy._telegram_group_bot_message_policy(peer) == "drop"
+    assert malformed_policy._should_process_message(peer) is False
+
+    malformed_authority = _make_adapter(
+        require_mention=False,
+        free_response_chats=["-200"],
+        group_stop_authorities=["not-a-map"],
+        bot_username="cronbuster_bot",
+    )
+    assert malformed_authority._telegram_group_stop_authority(stop) is False
+    assert malformed_authority._should_process_message(stop, is_command=True) is False
+
+
+def test_group_bot_observe_policy_observes_peer_commands_without_dispatch():
+    async def _run():
+        adapter = _make_adapter(bot_message_policies={"-200": "observe"})
+        adapter._is_user_authorized_from_message = lambda _message: False
+        store = _FakeSessionStore()
+        adapter._session_store = store
+        command = "/status@hermes_bot"
+        peer = _group_message(
+            command,
+            chat_id=-200,
+            from_user_id=555,
+            from_user_is_bot=True,
+            entities=[_bot_command_entity(command, command)],
+        )
+        update = SimpleNamespace(update_id=5003, message=peer, effective_message=None)
+
+        await adapter._handle_command(update, SimpleNamespace())
+
+        adapter._message_handler.assert_not_awaited()
+        assert len(store.messages) == 1
+        assert store.messages[0][1]["observed"] is True
+        assert store.messages[0][1]["content"] == "[Alice Example|555]\n/status@hermes_bot"
+
+    asyncio.run(_run())
+
+
+def test_group_bot_observe_policy_shares_context_with_later_human_turn():
+    adapter = _make_adapter(bot_message_policies={"-200": "observe"})
+    human = _group_message("What did the team say?", chat_id=-200)
+    event = adapter._build_message_event(human, MessageType.TEXT, update_id=5004)
+
+    attributed = adapter._apply_telegram_group_observe_attribution(event)
+
+    assert attributed.source.user_id is None
+    assert attributed.source.user_name is None
+    assert attributed.text == "[Alice Example|111]\nWhat did the team say?"
+    assert "observed Telegram group context" in attributed.channel_prompt
+
+
+def test_unauthorized_team_update_does_not_claim_dedupe_state():
+    async def _run():
+        adapter = _make_adapter(bot_message_policies={"-200": "observe"})
+        adapter._is_user_authorized_from_message = lambda _message: False
+        owner = _group_message("unauthorized", chat_id=-200)
+        update = SimpleNamespace(update_id=5005, message=owner, effective_message=None)
+
+        await adapter._handle_text_message(update, SimpleNamespace())
+
+        assert adapter._claim_team_group_update(5005, owner) is True
+
+    asyncio.run(_run())
+
+
+def test_group_bot_observe_policy_preserves_peer_location_payload():
+    async def _run():
+        adapter = _make_adapter(bot_message_policies={"-200": "observe"})
+        adapter._is_user_authorized_from_message = lambda _message: False
+        store = _FakeSessionStore()
+        adapter._session_store = store
+        peer = _group_message(
+            None,
+            chat_id=-200,
+            from_user_id=555,
+            from_user_is_bot=True,
+        )
+        peer.location = SimpleNamespace(latitude=23.1291, longitude=113.2644)
+        peer.venue = None
+        update = SimpleNamespace(update_id=5006, message=peer, effective_message=None)
+
+        await adapter._handle_location_message(update, SimpleNamespace())
+
+        adapter._message_handler.assert_not_awaited()
+        assert len(store.messages) == 1
+        observed = store.messages[0][1]
+        assert observed["observed"] is True
+        assert "latitude: 23.1291" in observed["content"]
+        assert "longitude: 113.2644" in observed["content"]
+        assert "maps/search/?api=1&query=23.1291,113.2644" in observed["content"]
+
+    asyncio.run(_run())
+
+
+def test_self_and_service_updates_do_not_claim_dedupe_in_any_handler():
+    async def _run():
+        handlers = (
+            "_handle_text_message",
+            "_handle_command",
+            "_handle_location_message",
+            "_handle_media_message",
+        )
+        for handler_offset, handler_name in enumerate(handlers):
+            for sender_offset, sender_kind in enumerate(("self", "service")):
+                adapter = _make_adapter(
+                    require_mention=False,
+                    free_response_chats=["-200"],
+                    bot_message_policies={"-200": "observe"},
+                )
+                adapter._bot.id = 999
+                adapter._is_user_authorized_from_message = Mock(return_value=True)
+                message = _group_message(
+                    "/status",
+                    chat_id=-200,
+                    from_user_id=999,
+                    from_user_is_bot=True,
+                )
+                if sender_kind == "service":
+                    message.from_user = None
+                update = SimpleNamespace(
+                    update_id=5100 + handler_offset * 10 + sender_offset,
+                    message=message,
+                    effective_message=None,
+                )
+
+                await getattr(adapter, handler_name)(update, SimpleNamespace())
+
+                assert getattr(adapter, "_telegram_team_group_update_ids", {}) == {}
+
+    asyncio.run(_run())
+
+
+def test_group_bot_observe_policy_is_scoped_to_configured_chat():
+    adapter = _make_adapter(
+        require_mention=False,
+        free_response_chats=["-200", "-201"],
+        bot_message_policies={"-200": "observe"},
+    )
+    peer_elsewhere = _group_message(
+        "peer update",
+        chat_id=-201,
+        from_user_id=555,
+        from_user_is_bot=True,
+    )
+
+    assert adapter._should_process_message(peer_elsewhere) is True
+
+
+def test_group_bot_observe_policy_drops_service_messages_without_observing():
+    adapter = _make_adapter(
+        require_mention=False,
+        free_response_chats=["-200"],
+        bot_message_policies={"-200": "observe"},
+    )
+    service = _group_message("Alice pinned a message", chat_id=-200)
+    service.from_user = None
+
+    assert adapter._should_process_message(service) is False
+    assert adapter._should_observe_unmentioned_group_message(service) is False
+
+
+def test_group_stop_authority_accepts_stop_and_stop_all_only_on_coordinator():
+    authority = {"-200": "dart_look_for_bot"}
+    coordinator = _make_adapter(
+        require_mention=False,
+        free_response_chats=["-200"],
+        group_stop_authorities=authority,
+        bot_username="dart_look_for_bot",
+    )
+    worker = _make_adapter(
+        require_mention=False,
+        free_response_chats=["-200"],
+        group_stop_authorities=authority,
+        bot_username="cronbuster_bot",
+    )
+
+    for command in ("/stop", "/stop@all"):
+        message = _group_message(command, chat_id=-200)
+        assert coordinator._should_process_message(message, is_command=True) is True
+        assert worker._should_process_message(message, is_command=True) is False
+
+
+def test_group_stop_all_normalizes_to_stop_for_authority():
+    adapter = _make_adapter(
+        group_stop_authorities={"-200": "dart_look_for_bot"},
+        bot_username="dart_look_for_bot",
+    )
+    message = _group_message("/stop@all now", chat_id=-200)
+
+    assert adapter._normalize_group_stop_command_text(message, message.text) == "/stop now"
+
+
+def test_group_stop_authority_does_not_change_other_groups():
+    adapter = _make_adapter(
+        require_mention=False,
+        free_response_chats=["-201"],
+        group_stop_authorities={"-200": "dart_look_for_bot"},
+        bot_username="cronbuster_bot",
+    )
+
+    assert adapter._should_process_message(
+        _group_message("/stop", chat_id=-201),
+        is_command=True,
+    ) is True
+
+
+def test_group_stop_and_dedupe_helpers_ignore_dms_and_channels():
+    adapter = _make_adapter(
+        bot_message_policies={"111": "observe", "-200": "observe"},
+        group_stop_authorities={"111": "dart_look_for_bot", "-200": "dart_look_for_bot"},
+        bot_username="dart_look_for_bot",
+    )
+    direct = _dm_message("/stop@all", from_user_id=111)
+    channel = _group_message("/stop@all", chat_id=-200)
+    channel.chat.type = "channel"
+
+    for update_id, message in enumerate((direct, channel), start=6100):
+        assert adapter._telegram_group_stop_authority(message) is None
+        assert adapter._normalize_group_stop_command_text(message, message.text) == "/stop@all"
+        assert adapter._claim_team_group_update(update_id, message) is True
+        assert adapter._claim_team_group_update(update_id, message) is True
+
+
+def test_group_stop_all_handler_dispatches_once_only_from_authority():
+    async def _run():
+        authority = {"-200": "dart_look_for_bot"}
+        coordinator = _make_adapter(
+            require_mention=False,
+            free_response_chats=["-200"],
+            group_stop_authorities=authority,
+            bot_username="dart_look_for_bot",
+        )
+        worker = _make_adapter(
+            require_mention=False,
+            free_response_chats=["-200"],
+            group_stop_authorities=authority,
+            bot_username="cronbuster_bot",
+        )
+        coordinator.handle_message = AsyncMock()
+        worker.handle_message = AsyncMock()
+        command = "/stop@all"
+        message = _group_message(
+            command,
+            chat_id=-200,
+            entities=[_bot_command_entity(command, command)],
+        )
+        update = SimpleNamespace(update_id=6001, message=message, effective_message=None)
+
+        await coordinator._handle_command(update, SimpleNamespace())
+        await worker._handle_command(update, SimpleNamespace())
+
+        coordinator.handle_message.assert_awaited_once()
+        dispatched = coordinator.handle_message.await_args.args[0]
+        assert dispatched.text == "/stop"
+        worker.handle_message.assert_not_awaited()
+
+    asyncio.run(_run())
+
+
+def test_team_group_update_ids_are_deduplicated_without_affecting_other_chats():
+    adapter = _make_adapter(
+        bot_message_policies={"-200": "observe"},
+        group_stop_authorities={"-200": "dart_look_for_bot"},
+    )
+    team_message = _group_message("owner turn", chat_id=-200)
+    other_message = _group_message("other turn", chat_id=-201)
+
+    assert adapter._claim_team_group_update(7001, team_message) is True
+    assert adapter._claim_team_group_update(7001, team_message) is False
+    assert adapter._claim_team_group_update(7001, other_message) is True
+    assert adapter._claim_team_group_update(7001, other_message) is True
+
+
+def test_duplicate_team_update_reaches_text_ingress_only_once():
+    async def _run():
+        adapter = _make_adapter(
+            require_mention=False,
+            free_response_chats=["-200"],
+            bot_message_policies={"-200": "observe"},
+        )
+        adapter._enqueue_text_event = Mock()
+        message = _group_message("owner turn", chat_id=-200)
+        update = SimpleNamespace(update_id=7002, message=message, effective_message=None)
+
+        await adapter._handle_text_message(update, SimpleNamespace())
+        await adapter._handle_text_message(update, SimpleNamespace())
+
+        adapter._enqueue_text_event.assert_called_once()
+
+    asyncio.run(_run())
+
+
+def test_team_group_command_location_and_media_handlers_drop_duplicate_updates():
+    async def _run():
+        handlers = (
+            "_handle_command",
+            "_handle_location_message",
+            "_handle_media_message",
+        )
+        for offset, handler_name in enumerate(handlers, start=1):
+            adapter = _make_adapter(
+                require_mention=False,
+                free_response_chats=["-200"],
+                bot_message_policies={"-200": "observe"},
+            )
+            adapter._should_process_message = Mock(return_value=False)
+            adapter._should_observe_unmentioned_group_message = Mock(return_value=False)
+            message = _group_message("/status", chat_id=-200)
+            if handler_name == "_handle_location_message":
+                message.location = SimpleNamespace(latitude=23.1291, longitude=113.2644)
+                message.venue = None
+            update = SimpleNamespace(
+                update_id=7100 + offset,
+                message=message,
+                effective_message=None,
+            )
+
+            handler = getattr(adapter, handler_name)
+            await handler(update, None)
+            await handler(update, None)
+
+            adapter._should_process_message.assert_called_once()
+
+    asyncio.run(_run())
+
+
+def test_team_group_update_claim_has_one_async_winner():
+    async def _run():
+        adapter = _make_adapter(bot_message_policies={"-200": "observe"})
+        message = _group_message("hello", chat_id=-200)
+
+        async def _claim():
+            return adapter._claim_team_group_update(7201, message)
+
+        results = await asyncio.gather(*(_claim() for _ in range(16)))
+        assert results.count(True) == 1
+        assert results.count(False) == 15
+
+    asyncio.run(_run())
+
+
+def test_team_group_update_cache_is_bounded_to_2048_entries():
+    adapter = _make_adapter(bot_message_policies={"-200": "observe"})
+    message = _group_message("owner turn", chat_id=-200)
+
+    for update_id in range(2049):
+        assert adapter._claim_team_group_update(update_id, message) is True
+
+    assert len(adapter._telegram_team_group_update_ids) == 2048
+    assert adapter._claim_team_group_update(2048, message) is False
+    assert adapter._claim_team_group_update(0, message) is True
 
 
 def test_unmentioned_group_messages_can_be_observed_without_dispatching():
@@ -798,6 +1310,10 @@ def test_config_bridges_telegram_group_settings(monkeypatch, tmp_path):
         "  require_mention: true\n"
         "  guest_mode: true\n"
         "  exclusive_bot_mentions: true\n"
+        "  bot_message_policies:\n"
+        "    -1004326833898: observe\n"
+        "  group_stop_authorities:\n"
+        "    -1004326833898: dart_look_for_bot\n"
         "  observe_unmentioned_group_messages: true\n"
         "  mention_patterns:\n"
         "    - \"^\\\\s*chompy\\\\b\"\n"
@@ -846,6 +1362,8 @@ def test_config_bridges_telegram_group_settings(monkeypatch, tmp_path):
     assert tg_cfg.extra.get("require_mention") is True
     assert tg_cfg.extra.get("guest_mode") is True
     assert tg_cfg.extra.get("exclusive_bot_mentions") is True
+    assert tg_cfg.extra.get("bot_message_policies") == {"-1004326833898": "observe"}
+    assert tg_cfg.extra.get("group_stop_authorities") == {"-1004326833898": "dart_look_for_bot"}
     assert tg_cfg.extra.get("observe_unmentioned_group_messages") is True
     assert tg_cfg.extra.get("mention_patterns") == [r"^\s*chompy\b"]
     assert tg_cfg.extra.get("allowed_chats") == ["-100"]

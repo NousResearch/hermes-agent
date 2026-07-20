@@ -7289,6 +7289,126 @@ class TelegramAdapter(BasePlatformAdapter):
             return bool(configured)
         return os.getenv("TELEGRAM_OBSERVE_UNMENTIONED_GROUP_MESSAGES", "false").lower() in {"true", "1", "yes", "on"}
 
+    def _telegram_group_config_map(self, key: str) -> dict[str, Any]:
+        """Return a chat-id map with YAML keys normalized to strings.
+
+        A configured non-mapping value is represented by a wildcard invalid
+        entry so security-sensitive routing fails closed instead of reverting
+        to the legacy dispatch path.
+        """
+        raw = self.config.extra.get(key)
+        if raw is None:
+            return {}
+        if not isinstance(raw, dict):
+            warned = getattr(self, "_telegram_invalid_group_map_warnings", set())
+            if key not in warned:
+                logger.warning("[%s] Invalid Telegram %s mapping; failing closed", self.name, key)
+                warned.add(key)
+                self._telegram_invalid_group_map_warnings = warned
+            return {"*": None}
+        return {
+            str(chat_id).strip(): value
+            for chat_id, value in raw.items()
+            if str(chat_id).strip()
+        }
+
+    def _telegram_group_bot_message_policy(self, message: Message) -> str:
+        """Return ``observe``, ``drop``, or empty for an unconfigured chat.
+
+        Any explicit but unsupported value fails closed to ``drop`` so a typo
+        cannot restore dispatch-capable legacy bot routing.
+        """
+        policies = self._telegram_group_config_map("bot_message_policies")
+        chat_id = str(getattr(getattr(message, "chat", None), "id", ""))
+        if chat_id not in policies and "*" not in policies:
+            return ""
+        policy = str(policies.get(chat_id, policies.get("*"))).lower().strip()
+        return "observe" if policy == "observe" else "drop"
+
+    def _is_policy_observed_bot_message(self, message: Message) -> bool:
+        """Return True only for peer-bot input explicitly scoped to observation."""
+        from_user = getattr(message, "from_user", None)
+        return bool(
+            self._is_group_chat(message)
+            and from_user is not None
+            and getattr(from_user, "is_bot", False)
+            and not self._is_own_message(message)
+            and self._telegram_group_bot_message_policy(message) == "observe"
+        )
+
+    def _is_self_group_message(self, message: Message) -> bool:
+        """Reject a bot's own group update before it can claim dedupe state."""
+        return self._is_group_chat(message) and self._is_own_message(message)
+
+    def _telegram_group_stop_authority(self, message: Message) -> Optional[bool]:
+        """Return whether this bot owns a shared ``/stop`` command in the group.
+
+        ``None`` means the message is not a centrally-routed stop command and
+        normal Telegram routing must continue.  Bare ``/stop`` and ``/stop@all``
+        are equivalent; explicitly bot-addressed variants keep legacy routing.
+        """
+        if not self._is_group_chat(message):
+            return None
+        text = (getattr(message, "text", None) or "").strip()
+        match = re.match(r"^/stop(?:@([a-z0-9_]+))?(?=\s|$)", text, re.IGNORECASE)
+        if not match:
+            return None
+        target = (match.group(1) or "").lower()
+        if target not in {"", "all"}:
+            return None
+
+        authorities = self._telegram_group_config_map("group_stop_authorities")
+        chat_id = str(getattr(getattr(message, "chat", None), "id", ""))
+        if chat_id not in authorities and "*" not in authorities:
+            return None
+        authority = str(authorities.get(chat_id, authorities.get("*")) or "").lstrip("@").lower().strip()
+        if not authority:
+            # An explicit but invalid entry suppresses shared stop routing.
+            return False
+        own_username = str(getattr(getattr(self, "_bot", None), "username", "") or "").lstrip("@").lower()
+        return bool(own_username and own_username == authority)
+
+    def _normalize_group_stop_command_text(self, message: Message, text: Optional[str]) -> Optional[str]:
+        """Normalize the shared ``/stop@all`` alias before command dispatch."""
+        if not text or self._telegram_group_stop_authority(message) is not True:
+            return text
+        return re.sub(r"^/stop@all(?=\s|$)", "/stop", text, count=1, flags=re.IGNORECASE)
+
+    def _claim_team_group_update(self, update_id: Optional[int], message: Message) -> bool:
+        """Claim one Telegram update for configured team-group processing.
+
+        PTB normally advances offsets exactly once, but a restart or failed ACK
+        can redeliver an update.  Keep a small process-local cache so the team
+        group cannot create a second agent turn from the same update.  Other
+        chats preserve the existing behavior.
+        """
+        if (
+            update_id is None
+            or not self._is_group_chat(message)
+            or getattr(message, "from_user", None) is None
+        ):
+            return True
+        chat_id = str(getattr(getattr(message, "chat", None), "id", ""))
+        policies = self._telegram_group_config_map("bot_message_policies")
+        authorities = self._telegram_group_config_map("group_stop_authorities")
+        policy_active = str(policies.get(chat_id, "")).lower().strip() == "observe"
+        authority_active = bool(
+            str(authorities.get(chat_id, "")).lstrip("@").lower().strip()
+        )
+        if not policy_active and not authority_active:
+            return True
+
+        seen = getattr(self, "_telegram_team_group_update_ids", None)
+        if seen is None:
+            seen = {}
+            self._telegram_team_group_update_ids = seen
+        if update_id in seen:
+            return False
+        seen[update_id] = None
+        while len(seen) > 2048:
+            seen.pop(next(iter(seen)))
+        return True
+
     def _telegram_guest_mode(self) -> bool:
         """Return whether non-allowlisted groups may trigger via direct @mention."""
         configured = self.config.extra.get("guest_mode")
@@ -7658,9 +7778,18 @@ class TelegramAdapter(BasePlatformAdapter):
         """Return True when a group message should be stored but not dispatched."""
         if self._is_own_message(message):
             return False
-        if not self._telegram_observe_unmentioned_group_messages():
-            return False
         if not self._is_group_chat(message):
+            return False
+
+        from_user = getattr(message, "from_user", None)
+        policy_observe = bool(
+            from_user is not None
+            and getattr(from_user, "is_bot", False)
+            and self._telegram_group_bot_message_policy(message) == "observe"
+        )
+        if from_user is None:
+            return False
+        if not policy_observe and not self._telegram_observe_unmentioned_group_messages():
             return False
 
         thread_id = getattr(message, "message_thread_id", None)
@@ -7678,15 +7807,21 @@ class TelegramAdapter(BasePlatformAdapter):
                 return False
 
         chat_id_str = str(getattr(getattr(message, "chat", None), "id", ""))
-        if self._telegram_exclusive_bot_mentions() and self._explicit_bot_mentions_exclude_self(message):
+        if (
+            not policy_observe
+            and self._telegram_exclusive_bot_mentions()
+            and self._explicit_bot_mentions_exclude_self(message)
+        ):
             return False
 
+        if policy_observe:
+            return True
+
         allowed = self._telegram_observe_allowed_chats()
-        # Observed context is shared at chat/topic scope so a later trigger from
-        # another user can see it.  Require an explicit chat allowlist; that
-        # keeps shared observed history limited to operator-approved groups and
-        # lets gateway authorization pass even after the shared session source
-        # drops the per-sender user_id.
+        # Ordinary observed human context is shared at chat/topic scope so a
+        # later trigger from another user can see it. Require an explicit chat
+        # allowlist for that broader mode. A bot_message_policies entry is itself
+        # the exact-chat allow for passive peer-bot observation and returned above.
         if not allowed or chat_id_str not in allowed:
             return False
 
@@ -7730,15 +7865,18 @@ class TelegramAdapter(BasePlatformAdapter):
 
     def _apply_telegram_group_observe_attribution(self, event: MessageEvent) -> MessageEvent:
         """Align triggered group turns with observed-history attribution."""
-        if not self._telegram_observe_unmentioned_group_messages():
-            return event
         raw_message = getattr(event, "raw_message", None)
         if not raw_message or not self._is_group_chat(raw_message):
             return event
-        chat_id_str = str(getattr(getattr(raw_message, "chat", None), "id", ""))
-        allowed = self._telegram_observe_allowed_chats()
-        if not allowed or chat_id_str not in allowed:
+        policy_observe = self._telegram_group_bot_message_policy(raw_message) == "observe"
+        ordinary_observe = self._telegram_observe_unmentioned_group_messages()
+        if not policy_observe and not ordinary_observe:
             return event
+        chat_id_str = str(getattr(getattr(raw_message, "chat", None), "id", ""))
+        if not policy_observe:
+            allowed = self._telegram_observe_allowed_chats()
+            if not allowed or chat_id_str not in allowed:
+                return event
         shared_source = self._telegram_group_observe_shared_source(event.source)
         observe_prompt = self._telegram_group_observe_channel_prompt()
         channel_prompt = f"{event.channel_prompt}\n\n{observe_prompt}" if event.channel_prompt else observe_prompt
@@ -8044,6 +8182,12 @@ class TelegramAdapter(BasePlatformAdapter):
 
         chat_id_str = str(getattr(getattr(message, "chat", None), "id", ""))
 
+        bot_policy = self._telegram_group_bot_message_policy(message)
+        if bot_policy in {"observe", "drop"}:
+            from_user = getattr(message, "from_user", None)
+            if from_user is None or getattr(from_user, "is_bot", False):
+                return False
+
         if self._telegram_exclusive_bot_mentions() and self._explicit_bot_mentions_exclude_self(message):
             return False
 
@@ -8057,6 +8201,10 @@ class TelegramAdapter(BasePlatformAdapter):
         allowed = self._telegram_allowed_chats()
         if allowed and chat_id_str not in allowed:
             return guest_mention
+
+        stop_authority = self._telegram_group_stop_authority(message)
+        if stop_authority is not None:
+            return stop_authority
 
         if guest_mention:
             return True
@@ -8120,15 +8268,22 @@ class TelegramAdapter(BasePlatformAdapter):
         if not msg or not msg.text:
             return
         # Early user-level auth check: reject unauthorized users before any
-        # text batching, observe-buffer persistence, event building, or response
-        # generation. This prevents removed/blocked users from injecting prompts
-        # into the agent path or the observed transcript context (#40863).
-        if not self._is_user_authorized_from_message(msg):
+        # text batching, dedupe state, observe-buffer persistence, event building,
+        # or response generation. This prevents removed/blocked users from
+        # injecting prompts or evicting valid dedupe claims (#40863).
+        if (
+            not self._is_user_authorized_from_message(msg)
+            and not self._is_policy_observed_bot_message(msg)
+        ):
             logger.warning(
                 "[Telegram] Blocked unauthorized user %s in chat %s",
                 getattr(getattr(msg, "from_user", None), "id", None),
                 getattr(getattr(msg, "chat", None), "id", None),
             )
+            return
+        if self._is_self_group_message(msg):
+            return
+        if not self._claim_team_group_update(getattr(update, "update_id", None), msg):
             return
         if not self._should_process_message(msg):
             if self._should_observe_unmentioned_group_message(msg):
@@ -8147,19 +8302,29 @@ class TelegramAdapter(BasePlatformAdapter):
         msg = self._effective_update_message(update)
         if not msg or not msg.text:
             return
-        if not self._should_process_message(msg, is_command=True):
-            return
-        if not self._is_user_authorized_from_message(msg):
+        if (
+            not self._is_user_authorized_from_message(msg)
+            and not self._is_policy_observed_bot_message(msg)
+        ):
             logger.warning(
                 "[Telegram] Blocked unauthorized user %s in chat %s",
                 getattr(getattr(msg, "from_user", None), "id", None),
                 getattr(getattr(msg, "chat", None), "id", None),
             )
             return
+        if self._is_self_group_message(msg):
+            return
+        if not self._claim_team_group_update(getattr(update, "update_id", None), msg):
+            return
+        if not self._should_process_message(msg, is_command=True):
+            if self._should_observe_unmentioned_group_message(msg):
+                self._observe_unmentioned_group_message(msg, MessageType.COMMAND, update_id=update.update_id)
+            return
         await self._ensure_forum_commands(msg)
 
         event = self._build_message_event(msg, MessageType.COMMAND, update_id=update.update_id)
         event.text = self._clean_bot_trigger_text(event.text)
+        event.text = self._normalize_group_stop_command_text(msg, event.text)
         await self._cache_replied_media(msg, event)
         event = self._apply_telegram_group_observe_attribution(event)
         await self.handle_message(event)
@@ -8169,21 +8334,20 @@ class TelegramAdapter(BasePlatformAdapter):
         msg = self._effective_update_message(update)
         if not msg:
             return
-        if not self._is_user_authorized_from_message(msg):
+        if (
+            not self._is_user_authorized_from_message(msg)
+            and not self._is_policy_observed_bot_message(msg)
+        ):
             logger.warning(
                 "[Telegram] Blocked unauthorized user %s in chat %s",
                 getattr(getattr(msg, "from_user", None), "id", None),
                 getattr(getattr(msg, "chat", None), "id", None),
             )
             return
-        if not self._should_process_message(msg):
-            if self._should_observe_unmentioned_group_message(msg):
-                self._observe_unmentioned_group_message(msg, MessageType.LOCATION, update_id=update.update_id)
+        if self._is_self_group_message(msg):
             return
-
         venue = getattr(msg, "venue", None)
         location = getattr(venue, "location", None) if venue else getattr(msg, "location", None)
-
         if not location:
             return
 
@@ -8192,7 +8356,7 @@ class TelegramAdapter(BasePlatformAdapter):
         if lat is None or lon is None:
             return
 
-        # Build a text message with coordinates and context
+        # Build the payload before branching so passive observation retains it.
         parts = ["[The user shared a location pin.]"]
         if venue:
             title = getattr(venue, "title", None)
@@ -8208,6 +8372,18 @@ class TelegramAdapter(BasePlatformAdapter):
 
         event = self._build_message_event(msg, MessageType.LOCATION, update_id=update.update_id)
         event.text = "\n".join(parts)
+        if not self._claim_team_group_update(getattr(update, "update_id", None), msg):
+            return
+        if not self._should_process_message(msg):
+            if self._should_observe_unmentioned_group_message(msg):
+                self._observe_unmentioned_group_message(
+                    msg,
+                    MessageType.LOCATION,
+                    update_id=update.update_id,
+                    event=event,
+                )
+            return
+
         event = self._apply_telegram_group_observe_attribution(event)
         await self.handle_message(event)
 
@@ -8373,12 +8549,19 @@ class TelegramAdapter(BasePlatformAdapter):
         """Handle incoming media messages, downloading images to local cache."""
         if not update.message:
             return
-        if not self._is_user_authorized_from_message(update.message):
+        if (
+            not self._is_user_authorized_from_message(update.message)
+            and not self._is_policy_observed_bot_message(update.message)
+        ):
             logger.info(
                 "[Telegram] Blocked media from unauthorized user %s in chat %s",
                 getattr(getattr(update.message, "from_user", None), "id", None),
                 getattr(getattr(update.message, "chat", None), "id", None),
             )
+            return
+        if self._is_self_group_message(update.message):
+            return
+        if not self._claim_team_group_update(getattr(update, "update_id", None), update.message):
             return
         if not self._should_process_message(update.message):
             if self._should_observe_unmentioned_group_message(update.message):
@@ -9372,9 +9555,26 @@ def _apply_yaml_config(yaml_cfg: dict, telegram_cfg: dict) -> dict | None:
         if isinstance(group_allowed_chats, list):
             group_allowed_chats = ",".join(str(v) for v in group_allowed_chats)
         os.environ["TELEGRAM_GROUP_ALLOWED_CHATS"] = str(group_allowed_chats)
-    for _key in ("guest_mode", "disable_link_previews", "observe_unmentioned_group_messages", "free_response_topics"):
+    for _key in (
+        "guest_mode",
+        "disable_link_previews",
+        "observe_unmentioned_group_messages",
+        "free_response_topics",
+        "bot_message_policies",
+        "group_stop_authorities",
+    ):
         if _key in telegram_cfg:
             extras.setdefault(_key, telegram_cfg[_key])
+    for _map_key in ("bot_message_policies", "group_stop_authorities"):
+        _map_value = extras.get(_map_key)
+        if isinstance(_map_value, dict):
+            extras[_map_key] = {
+                str(_chat_id).strip(): _value
+                for _chat_id, _value in _map_value.items()
+                if str(_chat_id).strip()
+            }
+        elif _map_value is not None:
+            logger.warning("Invalid Telegram %s mapping in config; runtime will fail closed", _map_key)
     # Pass through telegram-specific extra keys (e.g. base_url proxy override),
     # but EXCLUDE the generic shared-config keys that _merge_platform_map in
     # gateway/config.py already merges with correct top-level-over-nested

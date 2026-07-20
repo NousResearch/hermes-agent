@@ -353,6 +353,24 @@ def test_request_device_code_parses_response_and_sends_identity(fake_as):
     assert _FakeAS.last_device_form["source"] == "hermes-cli"
 
 
+def test_request_device_code_defaults_interval_when_omitted(monkeypatch):
+    # RFC 8628 §3.2: interval is optional; a compliant AS may omit it, and the
+    # client must fall back to 5s rather than treating the response as malformed.
+    endpoints = oauth_flow.resolve_endpoints(environment="local")
+    monkeypatch.setattr(
+        oauth,
+        "_http_post_form_status",
+        lambda *a, **k: (200, {
+            "device_code": "dev-code-1",
+            "user_code": "ABCD-EFGH",
+            "verification_uri": "http://localhost:3000/device",
+            "expires_in": 600,
+        }),
+    )
+    device = oauth_flow.request_device_code(endpoints)
+    assert device.interval == 5
+
+
 def test_full_device_flow_pending_then_approved(tmp_path, fake_as):
     _FakeAS.device_responses = ["authorization_pending", "authorization_pending", "ok"]
     config_path = tmp_path / "honcho.json"

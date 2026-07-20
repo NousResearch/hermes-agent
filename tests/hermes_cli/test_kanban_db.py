@@ -1944,6 +1944,67 @@ def test_respawn_guard_old_pr_comment_not_guarded(kanban_home):
     assert reason is None
 
 
+def test_respawn_guard_pr_window_env_override_zero_disables_guard(kanban_home, monkeypatch):
+    """HERMES_KANBAN_PR_GUARD_WINDOW_SECONDS=0 disables the active-PR guard.
+
+    Mirrors the rate-limit sibling (``HERMES_KANBAN_RATE_LIMIT_COOLDOWN_SECONDS``);
+    an operator whose deployment never opens PRs must be able to tune/disable
+    the 24h park without patching the installed file (#67249).
+    """
+    monkeypatch.setenv("HERMES_KANBAN_PR_GUARD_WINDOW_SECONDS", "0")
+    assert kb._resolve_pr_guard_window_seconds() == 0
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="pr-override", assignee="alice")
+        kb.add_comment(
+            conn, t, "worker",
+            "PR created: https://github.com/totemx-AI/subsidysmart/pull/42",
+        )
+        reason = kb.check_respawn_guard(conn, t)
+    assert reason is None
+
+
+def test_respawn_guard_pr_window_env_override_custom(kanban_home, monkeypatch):
+    """The env override shrinks the effective PR-guard window."""
+    monkeypatch.setenv("HERMES_KANBAN_PR_GUARD_WINDOW_SECONDS", "60")
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="pr-custom", assignee="alice")
+        # A comment just inside the default 24h window but outside the 60s
+        # override must no longer trip the guard.
+        recent_ts = int(time.time()) - 120
+        conn.execute(
+            "INSERT INTO task_comments (task_id, author, body, created_at) "
+            "VALUES (?, 'worker', "
+            "'https://github.com/totemx-AI/subsidysmart/pull/7', ?)",
+            (t, recent_ts),
+        )
+        reason = kb.check_respawn_guard(conn, t)
+    assert reason is None
+
+
+def test_respawn_guard_pr_window_env_override_invalid_falls_back(kanban_home, monkeypatch):
+    """A non-integer override falls back to the built-in 24h default."""
+    monkeypatch.setenv("HERMES_KANBAN_PR_GUARD_WINDOW_SECONDS", "not-a-number")
+    assert kb._resolve_pr_guard_window_seconds() == kb._RESPAWN_GUARD_PR_WINDOW
+
+
+def test_respawn_guard_pr_url_regex_still_matches_evidence(kanban_home):
+    """The PR-guard regex still trips on a real PR-creation comment.
+
+    The guard's text-match semantics are unchanged by the operator override;
+    this test pins that an actual PR URL in a comment still parks the card
+    within the default 24h window (regression guard so a future tidy-up
+    can't silently weaken the duplicate-PR protection).
+    """
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="pr-evidence", assignee="alice")
+        kb.add_comment(
+            conn, t, "worker",
+            "PR created: https://github.com/totemx-AI/subsidysmart/pull/42",
+        )
+        reason = kb.check_respawn_guard(conn, t)
+    assert reason == "active_pr"
+
+
 def test_dispatch_respawn_guard_defers_auth_error_without_auto_block(
     kanban_home, all_assignees_spawnable
 ):

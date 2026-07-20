@@ -6,6 +6,20 @@ import { Dialog, DialogContent, DialogTitle, preventCloseButtonAutoFocus } from 
 afterEach(cleanup)
 
 describe('DialogContent close button', () => {
+  it('keeps long content from widening the dialog grid and clipping footer actions', () => {
+    render(
+      <Dialog open>
+        <DialogContent>
+          <DialogTitle>New project</DialogTitle>
+          <div>{'/Users/example/Developer/Projects/a-very-long-folder-name-that-must-not-widen-the-dialog'}</div>
+          <button type="button">Create</button>
+        </DialogContent>
+      </Dialog>
+    )
+
+    expect(screen.getByRole('dialog').className).toContain('grid-cols-[minmax(0,1fr)]')
+  })
+
   it('closes the dialog when clicked', () => {
     const onOpenChange = vi.fn()
     render(

@@ -8355,11 +8355,12 @@ def test_session_activate_switches_live_session_without_closing_siblings(monkeyp
         server._sessions.pop("sid-b", None)
 
 
-def test_prompt_submit_surfaces_zero_api_interrupt_as_visible_text(monkeypatch):
+def test_prompt_submit_synthesizes_text_for_zero_api_interrupt(monkeypatch):
     """Compaction/interruption races can end a turn before any model call.
 
-    The TUI should not receive a blank interrupted message.complete payload,
-    because that looks like the send got stuck until the user types again.
+    The gateway should not emit a blank interrupted message.complete payload.
+    Ink decides whether to display this text based on whether it already
+    recorded the user's local interrupt.
     """
 
     class _Agent:

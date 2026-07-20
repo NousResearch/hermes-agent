@@ -139,6 +139,24 @@ describe('createGatewayEventHandler', () => {
     expect(ctx.system.sys).toHaveBeenCalledWith('compressing 968 messages (~123,400 tok)…')
   })
 
+  it('prints automatic compacting lifecycle status into the transcript', () => {
+    const appended: Msg[] = []
+    const ctx = buildCtx(appended)
+    const onEvent = createGatewayEventHandler(ctx)
+
+    onEvent({
+      payload: {
+        kind: 'compacting',
+        text: '🗜️ Compacting context — summarizing earlier conversation so I can continue...'
+      },
+      type: 'status.update'
+    } as any)
+
+    expect(ctx.system.sys).toHaveBeenCalledWith(
+      '🗜️ Compacting context — summarizing earlier conversation so I can continue...'
+    )
+  })
+
   it('keeps goal verdict text in transcript but shows a brief idle status (#goal statusbar)', () => {
     const appended: Msg[] = []
     const ctx = buildCtx(appended)
@@ -1223,10 +1241,10 @@ describe('createGatewayEventHandler', () => {
     }
   })
 
-  it('keepBusy interrupt holds busy until the gateway settles and suppresses the cancelled turn’s final_response', () => {
+  it('keeps a user interrupt visible while suppressing the gateway’s duplicate zero-call completion', () => {
     // Force-send: interrupt holds busy so the drain waits for the real settle
     // instead of racing it (the race duplicated the bubble, leaked a "queued: …"
-    // note, and surfaced the cancelled turn's "Operation interrupted…" reply).
+    // note, and surfaced the gateway's duplicate interrupted reply).
     const appended: Msg[] = []
     const ctx = buildCtx(appended)
     ctx.gateway.gw.request = vi.fn(async () => ({ status: 'interrupted' }))
@@ -1244,19 +1262,27 @@ describe('createGatewayEventHandler', () => {
 
     // Held busy: the drain effect keys off busy→false, so it must not fire yet.
     expect(getUiState().busy).toBe(true)
+    expect(ctx.system.sys).toHaveBeenCalledWith('interrupted')
 
-    // The cancelled turn settles with a backend interrupted final_response.
+    // The cancelled turn settles with the zero-API response synthesized by
+    // tui_gateway. TurnController must suppress this duplicate because the
+    // local interrupt above already recorded a visible transcript line.
     const before = appended.length
     onEvent({
-      payload: { text: 'Operation interrupted: waiting for model response (4.1s elapsed).' },
+      payload: {
+        status: 'interrupted',
+        text: 'Interrupted before the model call; no assistant response was generated.'
+      },
       type: 'message.complete'
     } as any)
 
-    // Settle flips busy false (the single drain edge) and the backend
-    // "Operation interrupted…" line is suppressed (not appended).
+    // Settle flips busy false (the single drain edge), while the gateway's
+    // duplicate completion text is not appended.
     expect(getUiState().busy).toBe(false)
     expect(
-      appended.slice(before).some(m => typeof m.text === 'string' && m.text.includes('Operation interrupted'))
+      appended
+        .slice(before)
+        .some(m => typeof m.text === 'string' && m.text.includes('Interrupted before the model call'))
     ).toBe(false)
   })
 

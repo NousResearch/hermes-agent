@@ -113,6 +113,15 @@ _KEY_ALIASES = {
     "windows": "win", "super": "win", "meta": "win",
 }
 
+_POINTER_ACTIONS_WITH_MODIFIERS = frozenset({
+    "click", "double_click", "right_click", "middle_click", "drag",
+})
+_ALLOWED_POINTER_MODIFIERS = frozenset({
+    "cmd", "shift", "option", "alt", "ctrl", "fn", "win", "windows", "super", "meta",
+})
+
+
+
 
 def _canon_key_combo(keys: str) -> frozenset:
     # Split on both "+" and "-": the cua-driver backend's _parse_key_combo
@@ -122,6 +131,29 @@ def _canon_key_combo(keys: str) -> frozenset:
     parts = [p.strip().lower() for p in re.split(r"\s*[+\-]\s*", keys) if p.strip()]
     parts = [_KEY_ALIASES.get(p, p) for p in parts]
     return frozenset(parts)
+
+
+def _normalize_pointer_modifiers(raw: Any) -> List[str]:
+    """Validate held pointer modifiers at the runtime boundary.
+
+    Tool schemas are advisory for some providers and direct callers, so do
+    not rely on the schema's array/enum constraints before forwarding values
+    to cua-driver.
+    """
+    if not isinstance(raw, list):
+        raise ValueError("modifiers must be a list of strings")
+
+    normalized: List[str] = []
+    for modifier in raw:
+        if not isinstance(modifier, str):
+            raise ValueError("modifiers must be a list of strings")
+        value = modifier.strip().lower()
+        if value not in _ALLOWED_POINTER_MODIFIERS:
+            expected = ", ".join(sorted(_ALLOWED_POINTER_MODIFIERS))
+            raise ValueError(f"unknown modifier {modifier!r} — expected one of {expected}")
+        normalized.append(value)
+    return normalized
+
 
 
 # Dangerous text patterns for the `type` action. Same list as #4562.
@@ -475,6 +507,13 @@ def handle_computer_use(args: Dict[str, Any], **kwargs) -> Any:
             "error": "bring_to_front requires delivery_mode='foreground'",
             "code": "bring_to_front_requires_foreground",
         })
+
+    if action in _POINTER_ACTIONS_WITH_MODIFIERS and "modifiers" in args:
+        try:
+            modifiers = _normalize_pointer_modifiers(args["modifiers"])
+        except ValueError as exc:
+            return json.dumps({"error": str(exc)})
+        args = {**args, "modifiers": modifiers}
 
     # Approval gate (destructive actions only).
     if action in _DESTRUCTIVE_ACTIONS:

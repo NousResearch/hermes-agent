@@ -307,29 +307,44 @@ class TestExtractText:
         )
 
     @pytest.mark.asyncio
-    async def test_extracts_media_from_quoted_appmsg(self):
+    @pytest.mark.parametrize(
+        ("kind", "url", "cached_path", "media_type"),
+        [
+            (
+                "file",
+                "https://example.com/quoted.pdf",
+                "/tmp/quoted.pdf",
+                "application/pdf",
+            ),
+            (
+                "image",
+                "https://example.com/quoted.png",
+                "/tmp/quoted.png",
+                "image/png",
+            ),
+        ],
+    )
+    async def test_extracts_media_from_quoted_appmsg(
+        self, kind, url, cached_path, media_type
+    ):
         from plugins.platforms.wecom.adapter import WeComAdapter
 
         adapter = WeComAdapter(PlatformConfig(enabled=True))
-        adapter._cache_media = AsyncMock(
-            return_value=("/tmp/quoted.pdf", "application/pdf")
-        )
+        adapter._cache_media = AsyncMock(return_value=(cached_path, media_type))
         body = {
             "msgtype": "text",
             "text": {"content": "Review this"},
             "quote": {
                 "msgtype": "appmsg",
-                "appmsg": {"file": {"url": "https://example.com/quoted.pdf"}},
+                "appmsg": {kind: {"url": url}},
             },
         }
 
         paths, media_types = await adapter._extract_media(body)
 
-        adapter._cache_media.assert_awaited_once_with(
-            "file", {"url": "https://example.com/quoted.pdf"}
-        )
-        assert paths == ["/tmp/quoted.pdf"]
-        assert media_types == ["application/pdf"]
+        adapter._cache_media.assert_awaited_once_with(kind, {"url": url})
+        assert paths == [cached_path]
+        assert media_types == [media_type]
 
 
 class TestCallbackDispatch:

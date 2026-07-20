@@ -215,13 +215,21 @@ const storedIds = (states: Record<string, ClientSessionState>, pred: (s: ClientS
 let workingIds: readonly string[] = []
 export const $workingSessionIds = computed(
   $sessionStates,
-  states => (workingIds = stableArray(workingIds, storedIds(states, s => s.busy)))
+  states =>
+    (workingIds = stableArray(
+      workingIds,
+      storedIds(states, s => s.busy)
+    ))
 )
 
 let attentionIds: readonly string[] = []
 export const $attentionSessionIds = computed(
   $sessionStates,
-  states => (attentionIds = stableArray(attentionIds, storedIds(states, s => s.needsInput)))
+  states =>
+    (attentionIds = stableArray(
+      attentionIds,
+      storedIds(states, s => s.needsInput)
+    ))
 )
 
 // ---------------------------------------------------------------------------

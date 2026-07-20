@@ -52,6 +52,7 @@ from agent.message_sanitization import (
 )
 from agent.model_metadata import (
     MINIMUM_CONTEXT_LENGTH,
+    _estimate_tools_tokens_rough,
     estimate_messages_tokens_rough,
     estimate_request_tokens_rough,
     get_context_length_from_provider_error,
@@ -1072,17 +1073,16 @@ def run_conversation(
         # the OpenAI SDK. Sanitizing here prevents the 3-retry cycle.
         _sanitize_messages_surrogates(api_messages)
 
-        # Calculate approximate request size for logging and pressure checks.
-        # estimate_messages_tokens_rough(api_messages) includes the system
-        # prompt copy but not the tool schema payload, which is sent as a
-        # separate field. Add tools back for compression decisions so long
-        # tool-heavy turns do not creep up to the context ceiling and leave
-        # no room for the model's final answer.
-        total_chars = sum(len(str(msg)) for msg in api_messages)
+        # One image-stripped message estimate feeds both figures. Was: a
+        # str(msg) char walk (re-serialized base64 every call) + a second
+        # messages walk inside estimate_request_tokens_rough. Tools added
+        # separately (compression needs them: 50+ tools = 20-30K tokens).
+        # total_chars is a rough (~) proxy — verbose log + hook metric only.
         approx_tokens = estimate_messages_tokens_rough(api_messages)
-        request_pressure_tokens = estimate_request_tokens_rough(
-            api_messages, tools=agent.tools or None
+        request_pressure_tokens = approx_tokens + (
+            _estimate_tools_tokens_rough(agent.tools) if agent.tools else 0
         )
+        total_chars = approx_tokens * 4
 
         _runtime_context_error = _ollama_context_limit_error(
             agent, request_pressure_tokens

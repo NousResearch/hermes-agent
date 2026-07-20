@@ -632,11 +632,15 @@ describe('resumeSession failure recovery', () => {
     expect($messages.get().map(message => message.id)).toContain('user-optimistic')
   })
 
-  it('restores the in-flight turn and queued user prompt after a full renderer restart', async () => {
+  it('keeps the complete transcript with the live tail after a full renderer restart', async () => {
     const storedMessages = [
-      { content: 'earlier question', role: 'user', timestamp: 1 },
-      { content: 'earlier answer', role: 'assistant', timestamp: 2 }
+      { content: 'older question removed by compression', role: 'user', timestamp: 1 },
+      { content: 'older answer removed by compression', role: 'assistant', timestamp: 2 },
+      { content: 'recent question', role: 'user', timestamp: 3 },
+      { content: 'recent answer', role: 'assistant', timestamp: 4 }
     ]
+
+    const compressedRuntimeMessages = storedMessages.slice(-2)
 
     vi.mocked(getSessionMessages).mockResolvedValue({ messages: storedMessages, session_id: 'stored-1' } as never)
 
@@ -646,8 +650,8 @@ describe('resumeSession failure recovery', () => {
           session_id: 'runtime-1',
           session_key: 'stored-1',
           resumed: 'stored-1',
-          message_count: storedMessages.length,
-          messages: storedMessages,
+          message_count: compressedRuntimeMessages.length,
+          messages: compressedRuntimeMessages,
           running: true,
           inflight: {
             user: 'current prompt',
@@ -675,6 +679,7 @@ describe('resumeSession failure recovery', () => {
     await resume!('stored-1', true)
 
     const renderedMessages = JSON.stringify(resumedState?.messages)
+    expect(renderedMessages).toContain('older question removed by compression')
     expect(renderedMessages).toContain('current prompt')
     expect(renderedMessages).toContain('partial answer')
     expect(renderedMessages).toContain('newest prompt')

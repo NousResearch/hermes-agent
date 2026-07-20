@@ -1109,7 +1109,9 @@ class TestSubagentCostRollup(unittest.TestCase):
         """If the parent already has its own cost billed (cost_source != 'none'),
         adding subagent cost must not clobber the existing source label."""
         parent = self._make_parent_with_cost_counters(starting_cost=0.20)
-        parent.session_cost_status = "exact"
+        # Use a valid CostStatus literal. The previous "exact" was a stale
+        # placeholder predating the priority-ladder enum (issue #67764).
+        parent.session_cost_status = "actual"
         parent.session_cost_source = "openrouter"
 
         with patch("tools.delegate_tool._run_single_child") as mock_run:
@@ -1127,7 +1129,10 @@ class TestSubagentCostRollup(unittest.TestCase):
         self.assertAlmostEqual(parent.session_estimated_cost_usd, 0.50, places=6)
         # Real source label preserved.
         self.assertEqual(parent.session_cost_source, "openrouter")
-        self.assertEqual(parent.session_cost_status, "exact")
+        # Real (more-confident) status preserved — subagent fold upgrades
+        # from "unknown"/missing to "estimated" but never downgrades a
+        # more-confident existing status (issue #67764).
+        self.assertEqual(parent.session_cost_status, "actual")
 
     def test_rollup_tolerates_missing_cost_fields(self):
         """Older fixtures / fabricated error entries may not carry

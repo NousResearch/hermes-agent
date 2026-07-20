@@ -2872,6 +2872,23 @@ class SessionDB:
         # initial create_session() may have failed due to SQLite locking.
         # INSERT OR IGNORE is cheap and idempotent.
         self._insert_session_row(session_id, "unknown", model=model)
+        # Sticky aggregation for cost_status (issue #67764). Max-rank wins
+        # — ``actual`` > ``included`` > ``estimated`` > ``unknown``. Mirrors
+        # ``sticky_cost_status`` in ``agent/usage_pricing.py``. The new value
+        # is matched against a Literal-validated allow-list before SQL
+        # embedding so untrusted input cannot reach the SQL string.
+        _VALID_COST_STATUSES = ("actual", "estimated", "included", "unknown")
+        _safe_new_status = (
+            cost_status if cost_status in _VALID_COST_STATUSES else "estimated"
+        )
+        _cost_status_sticky_sql = (
+            "cost_status = CASE "
+            "WHEN cost_status = 'actual' OR '{new}' = 'actual' THEN 'actual' "
+            "WHEN cost_status = 'included' OR '{new}' = 'included' THEN 'included' "
+            "WHEN cost_status = 'estimated' OR '{new}' = 'estimated' THEN 'estimated' "
+            "WHEN cost_status = 'unknown' OR '{new}' = 'unknown' THEN 'unknown' "
+            "END"
+        ).format(new=_safe_new_status)
         if absolute:
             sql = """UPDATE sessions SET
                    input_tokens = ?,
@@ -2884,7 +2901,7 @@ class SessionDB:
                        WHEN ? IS NULL THEN actual_cost_usd
                        ELSE ?
                    END,
-                   cost_status = COALESCE(?, cost_status),
+                   """ + _cost_status_sticky_sql + """,
                    cost_source = COALESCE(?, cost_source),
                    pricing_version = COALESCE(?, pricing_version),
                    billing_provider = COALESCE(billing_provider, ?),
@@ -2905,7 +2922,7 @@ class SessionDB:
                        WHEN ? IS NULL THEN actual_cost_usd
                        ELSE COALESCE(actual_cost_usd, 0) + ?
                    END,
-                   cost_status = COALESCE(?, cost_status),
+                   """ + _cost_status_sticky_sql + """,
                    cost_source = COALESCE(?, cost_source),
                    pricing_version = COALESCE(?, pricing_version),
                    billing_provider = COALESCE(billing_provider, ?),
@@ -2919,6 +2936,10 @@ class SessionDB:
             or cache_write_tokens or reasoning_tokens or api_call_count
             or estimated_cost_usd or actual_cost_usd
         )
+        # `cost_status` is interpolated into the SQL as a validated Literal
+        # (see ``_cost_status_sticky_sql``), not bound, so it does not
+        # appear in this tuple. Same for `cost_source` which retains the
+        # most-recent-wins rule and is bound as before.
         params = (
             input_tokens,
             output_tokens,
@@ -2928,7 +2949,6 @@ class SessionDB:
             estimated_cost_usd,
             actual_cost_usd,
             actual_cost_usd,
-            cost_status,
             cost_source,
             pricing_version,
             billing_provider if has_accounted_usage else None,
@@ -3032,6 +3052,7 @@ class SessionDB:
 
         Runs inside the caller's write transaction (after the ``sessions``
         UPDATE) so the per-model rows stay consistent with the summary row.
+
         When the caller omits the model/provider (some paths only pass token
         deltas), fall back to the values already recorded on the session row —
         the same COALESCE-from-session behaviour the summary update uses.
@@ -3050,6 +3071,24 @@ class SessionDB:
         sess_provider = row["billing_provider"] if row is not None else None
         sess_base_url = row["billing_base_url"] if row is not None else None
         sess_billing_mode = row["billing_mode"] if row is not None else None
+
+        # Sticky aggregation for cost_status (issue #67764). Max-rank wins
+        # — ``actual`` > ``included`` > ``estimated`` > ``unknown``. Mirrors
+        # ``sticky_cost_status`` in ``agent/usage_pricing.py``. The new value
+        # is matched against a Literal-validated allow-list before SQL
+        # embedding so untrusted input cannot reach the SQL string.
+        _VALID_COST_STATUSES = ("actual", "estimated", "included", "unknown")
+        _safe_new_status = (
+            cost_status if cost_status in _VALID_COST_STATUSES else "estimated"
+        )
+        _cost_status_sticky_sql = (
+            "cost_status = CASE "
+            "WHEN cost_status = 'actual' OR '{new}' = 'actual' THEN 'actual' "
+            "WHEN cost_status = 'included' OR '{new}' = 'included' THEN 'included' "
+            "WHEN cost_status = 'estimated' OR '{new}' = 'estimated' THEN 'estimated' "
+            "WHEN cost_status = 'unknown' OR '{new}' = 'unknown' THEN 'unknown' "
+            "END"
+        ).format(new=_safe_new_status)
 
         # Aux-task rows (task != '') must NOT inherit the session's main-loop
         # route: an aux call may use a completely different provider/model
@@ -3084,7 +3123,7 @@ class SessionDB:
                    reasoning_tokens = reasoning_tokens + excluded.reasoning_tokens,
                    estimated_cost_usd = estimated_cost_usd + excluded.estimated_cost_usd,
                    actual_cost_usd = actual_cost_usd + excluded.actual_cost_usd,
-                   cost_status = COALESCE(excluded.cost_status, cost_status),
+                   """ + _cost_status_sticky_sql + """,
                    cost_source = COALESCE(excluded.cost_source, cost_source),
                    last_seen = excluded.last_seen""",
             (

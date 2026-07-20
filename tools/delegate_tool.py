@@ -32,6 +32,7 @@ from concurrent.futures import (
 from typing import Any, Dict, List, Optional
 
 from toolsets import TOOLSETS
+from agent.usage_pricing import sticky_cost_status
 
 # Sentinel value used by the runtime provider system for providers that are
 # not natively known (named custom providers, third-party aggregators, etc.).
@@ -2858,8 +2859,15 @@ def delegate_task(
                 # was delegate_task).
                 if getattr(parent_agent, "session_cost_source", "none") in {None, "", "none"}:
                     parent_agent.session_cost_source = "subagent"
-                if getattr(parent_agent, "session_cost_status", "unknown") in {None, "", "unknown"}:
-                    parent_agent.session_cost_status = "estimated"
+                # Sticky aggregation (issue #67764): a parent whose only
+                # contribution was subagent spend gets a floor of
+                # "estimated" if it has no status yet, but never
+                # downgrades a more-confident existing status (e.g.
+                # "actual" from a direct API call).
+                parent_agent.session_cost_status = sticky_cost_status(
+                    getattr(parent_agent, "session_cost_status", "unknown"),
+                    "estimated",
+                )
             except Exception:
                 logger.debug("Subagent cost rollup failed", exc_info=True)
 

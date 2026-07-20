@@ -145,3 +145,60 @@ class TestTelegramRichMessagesHint:
             stable = _stable_prompt(agent)
         assert "Standard Markdown is automatically converted" in stable
         assert "lean into it" not in stable
+
+
+class TestBlockedSoulFallback:
+    def test_blocked_soul_still_falls_back_to_default_identity(self):
+        agent = _make_agent(load_soul_identity=True, skip_context_files=True)
+
+        with (
+            patch(
+                "run_agent.load_soul_md",
+                return_value=(
+                    "[BLOCKED: SOUL.md contained potential prompt injection "
+                    "(role-hijack). Content not loaded.]"
+                ),
+            ),
+            patch("run_agent.build_nous_subscription_prompt", return_value=""),
+            patch("run_agent.build_environment_hints", return_value=""),
+            patch("run_agent.build_context_files_prompt", return_value=""),
+        ):
+            stable = build_system_prompt_parts(agent)["stable"]
+
+        from agent.prompt_builder import DEFAULT_AGENT_IDENTITY
+
+        assert DEFAULT_AGENT_IDENTITY in stable
+
+    def test_blocked_soul_notice_is_not_duplicated_in_normal_path(self):
+        agent = _make_agent(load_soul_identity=True, skip_context_files=False)
+        blocked = (
+            "[BLOCKED: SOUL.md contained potential prompt injection "
+            "(role-hijack). Content not loaded.]"
+        )
+
+        captured = {}
+
+        def fake_context_files(
+            cwd=None,
+            skip_soul=False,
+            context_length=None,
+            allow_install_tree_fallback=False,
+        ):
+            captured["skip_soul"] = skip_soul
+            return "" if skip_soul else blocked
+
+        with (
+            patch("run_agent.load_soul_md", return_value=blocked),
+            patch("run_agent.build_nous_subscription_prompt", return_value=""),
+            patch("run_agent.build_environment_hints", return_value=""),
+            patch("run_agent.build_context_files_prompt", side_effect=fake_context_files),
+        ):
+            parts = build_system_prompt_parts(agent)
+
+        from agent.prompt_builder import DEFAULT_AGENT_IDENTITY
+
+        stable = parts["stable"]
+        context = parts["context"]
+        assert captured["skip_soul"] is True
+        assert DEFAULT_AGENT_IDENTITY in stable
+        assert stable.count("[BLOCKED:") + context.count("[BLOCKED:") == 1

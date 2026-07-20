@@ -888,3 +888,53 @@ async def test_compress_command_true_noop_still_says_preserved_not_failure():
     assert "No changes: transcript preserved (7 messages: 4 chat + 3 tool/system)" in result
     assert "could not be saved" not in result.lower()
     assert "database" not in result.lower()
+
+
+@pytest.mark.asyncio
+async def test_compress_command_granular_model_line_shows_session_reasoning():
+    """The /compress granular Model line carries the session-truthful r:<effort>
+    — the session /reasoning override, not the global config default (and not
+    nothing at all: the manual path historically omitted r: entirely, unlike
+    the auto-compaction announce)."""
+    history = _make_tool_heavy_history()
+    chat = _tool_heavy_chat(history)
+    compressed = [
+        dict(chat[0]),
+        {"role": "assistant", "content": "[CONTEXT COMPACTION — REFERENCE ONLY] summary of older turns"},
+        dict(chat[-1]),
+    ]
+    runner = _make_runner(history)
+    # Session-scoped /reasoning override — must appear as r:high on the Model line.
+    _skey = runner._session_key_for_source(_make_source())
+    runner._session_reasoning_overrides = {_skey: {"enabled": True, "effort": "high"}}
+    session_entry = runner.session_store.get_or_create_session.return_value
+    session_entry.last_prompt_tokens = 453_542
+    agent_instance = MagicMock()
+    agent_instance.shutdown_memory_provider = MagicMock()
+    agent_instance.close = MagicMock()
+    agent_instance._cached_system_prompt = ""
+    agent_instance.tools = None
+    agent_instance.context_compressor.has_content_to_compress.return_value = True
+    agent_instance.context_compressor.name = "builtin"
+    agent_instance.context_compressor._last_compress_aborted = False
+    agent_instance.context_compressor._last_summary_error = None
+    agent_instance.context_compressor._last_aux_model_failure_model = None
+    agent_instance.context_compressor._last_aux_model_failure_error = None
+    agent_instance.compression_in_place = False
+    agent_instance._last_compaction_in_place = False
+    agent_instance.session_id = "sess-1"
+
+    def _compress(messages, *_args, **_kwargs):
+        agent_instance.session_id = "sess-2"
+        return compressed, ""
+
+    agent_instance._compress_context.side_effect = _compress
+
+    with (
+        patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "k", "provider": "test-prov"}),
+        patch("gateway.run._resolve_gateway_model", return_value="test-model"),
+        patch("run_agent.AIAgent", return_value=agent_instance),
+    ):
+        result = await runner._handle_compress_command(_make_event())
+
+    assert "Model: test-prov/test-model · r:high" in result

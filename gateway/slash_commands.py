@@ -4113,6 +4113,33 @@ class GatewaySlashCommandsMixin:
                             _model_part = (
                                 format_provider_model(_prov, model) if model else ""
                             )
+                            # Reasoning level — session-truthful (same
+                            # override-aware resolver as the footer/auto-
+                            # announce; the manual path never showed r: at
+                            # all, an inconsistency vs the auto-compaction
+                            # banner). No live agent config here (the temp
+                            # compression agent isn't the resident agent), so
+                            # resolve session override > per-model > global.
+                            try:
+                                _rcfg = self._resolve_session_reasoning_config(
+                                    source=source, model=model or "",
+                                )
+                                _r = ""
+                                if isinstance(_rcfg, dict) and _rcfg:
+                                    if not _rcfg.get("enabled", True):
+                                        _r = "none"
+                                    else:
+                                        _r = str(
+                                            _rcfg.get("effort", "") or ""
+                                        ).strip()
+                                if _r and _r not in {"default", "none"}:
+                                    _model_part = (
+                                        f"{_model_part} · r:{_r}"
+                                        if _model_part
+                                        else f"r:{_r}"
+                                    )
+                            except Exception:
+                                pass
                             if _engine_name == "lcm":
                                 _model_part = (
                                     f"{_model_part} · engine: lcm"

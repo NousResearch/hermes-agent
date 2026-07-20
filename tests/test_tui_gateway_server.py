@@ -5879,6 +5879,35 @@ def test_session_compress_uses_compress_helper(monkeypatch):
     emit.assert_any_call("status.update", "sid", {"kind": "status", "text": "ready"})
 
 
+def test_session_compress_returns_compute_host_history(monkeypatch):
+    session = _session(agent=None, _compute_host_active=True)
+    server._sessions["sid"] = session
+    ack = {
+        "type": "control.ack",
+        "output": "Compressed 4 → 2 messages",
+        "messages": [{"role": "user", "content": "compressed context"}],
+        "session_info": {"usage": {"total": 42}},
+    }
+    monkeypatch.setattr(server, "_session_uses_compute_host", lambda _session: True)
+    monkeypatch.setattr(server, "_send_compute_host_control", lambda *args, **kwargs: ack)
+
+    try:
+        resp = server.handle_request(
+            {"id": "1", "method": "session.compress", "params": {"session_id": "sid"}}
+        )
+    finally:
+        server._sessions.pop("sid", None)
+
+    assert resp["result"] == {
+        "status": "compressed",
+        "turn_isolation": True,
+        "host_ack": {key: value for key, value in ack.items() if key != "messages"},
+        "info": {"usage": {"total": 42}},
+        "messages": [{"role": "user", "content": "compressed context"}],
+        "usage": {"total": 42},
+    }
+
+
 def test_session_compress_reports_aborted_summary_without_success(monkeypatch):
     compression_state = types.SimpleNamespace(
         _last_compress_aborted=True,
@@ -10275,6 +10304,27 @@ def test_session_save_writes_under_hermes_home_with_system_prompt(monkeypatch, t
     assert payload["session_start"] == "2026-01-01T12:00:00"
     assert payload["system_prompt"] == "You are Hermes."
     assert payload["messages"] == history
+
+
+def test_session_save_proxies_to_compute_host_history(monkeypatch):
+    """Isolated turns own history in the host; /save must not export the stale parent mirror."""
+    sid = "save-host-sid"
+    server._sessions[sid] = _session(agent=None, _compute_host_active=True)
+    calls = []
+
+    def send_control(control_sid, **kwargs):
+        calls.append((control_sid, kwargs))
+        return {"type": "control.ack", "result": {"file": "/tmp/host-save.json"}}
+
+    monkeypatch.setattr(server, "_session_uses_compute_host", lambda _session: True)
+    monkeypatch.setattr(server, "_send_compute_host_control", send_control)
+    try:
+        resp = server._methods["session.save"]("1", {"session_id": sid})
+    finally:
+        server._sessions.pop(sid, None)
+
+    assert resp["result"] == {"file": "/tmp/host-save.json"}
+    assert calls == [(sid, {"route_name": "session.save", "wait": True})]
 
 
 def test_notification_event_dedup_key_preserves_distinct_watch_matches():

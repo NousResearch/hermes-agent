@@ -9007,7 +9007,23 @@ def _(rid, params: dict) -> dict:
         if ack.get("type") in {"control.error", "error"}:
             return _err(rid, 4009, str(ack.get("message") or "compute-host compress failed"))
         _apply_compute_host_metadata_mirror(session, ack)
-        return _ok(rid, {"status": "compressed", "turn_isolation": True, "host_ack": ack})
+        host_info = ack.get("session_info") if isinstance(ack.get("session_info"), dict) else {}
+        host_messages = ack.get("messages") if isinstance(ack.get("messages"), list) else []
+        # `messages` is returned at top level for the desktop transcript
+        # replacement. Keep the host acknowledgement metadata, but do not send
+        # the same (potentially large) transcript a second time inside it.
+        host_ack = {key: value for key, value in ack.items() if key != "messages"}
+        return _ok(
+            rid,
+            {
+                "status": "compressed",
+                "turn_isolation": True,
+                "host_ack": host_ack,
+                "info": host_info,
+                "messages": host_messages,
+                "usage": host_info.get("usage") if isinstance(host_info.get("usage"), dict) else {},
+            },
+        )
     session, err = _sess(params, rid)
     if err:
         return err
@@ -9123,6 +9139,23 @@ def _(rid, params: dict) -> dict:
     session, err = _sess(params, rid)
     if err:
         return err
+
+    if _session_uses_compute_host(session):
+        sid = str(params.get("session_id") or "")
+        try:
+            ack = _send_compute_host_control(
+                sid,
+                route_name="session.save",
+                wait=True,
+            )
+        except Exception as exc:
+            return _err(rid, 5011, f"compute-host session save failed: {exc}")
+        if ack.get("type") in {"control.error", "error"}:
+            return _err(rid, 5011, str(ack.get("message") or "compute-host session save failed"))
+        result = ack.get("result")
+        if not isinstance(result, dict):
+            return _err(rid, 5011, "compute-host session save returned an invalid response")
+        return _ok(rid, result)
 
     agent = session["agent"]
     # Mirror the classic CLI /save: snapshot under the Hermes profile home

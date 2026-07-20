@@ -2166,15 +2166,25 @@ class ShellFileOperations(FileOperations):
             result = self._exec(cmd_simple, timeout=60)
             stdout, limit_reason = _search_stdout_and_limit(result)
 
+        # Import locally so non-local environment backends do not acquire a
+        # module-level dependency on the Windows/MSYS adapter.
+        from tools.environments.local import _msys_to_windows_path
+
         files = []
         for line in stdout.strip().split('\n'):
             if not line:
                 continue
             parts = line.split(' ', 1)
             if len(parts) == 2 and parts[0].replace('.', '').isdigit():
-                files.append(parts[1])
+                file_path = parts[1]
             else:
-                files.append(line)
+                file_path = line
+            # Git Bash ``find`` prints /c/... paths even when Hermes is
+            # running under native Windows Python.  Convert at the shell
+            # boundary so callers receive the same native path form they
+            # supplied, and so hidden-root filtering can compare paths
+            # correctly with ``Path.resolve()`` below.
+            files.append(_msys_to_windows_path(file_path))
 
         # For explicit hidden roots, find's path-based filtering excludes every
         # file under the hidden path. Apply descendant filtering after command

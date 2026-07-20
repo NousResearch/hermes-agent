@@ -2048,6 +2048,11 @@ class TestNormalConversationRuntimeBoundary:
         import run_agent
 
         self._patch_bootstrap(monkeypatch)
+        # These boundary tests exercise provider-call ledger persistence, not
+        # the worker terminal-tool policy.  Keep the real Kanban identity so
+        # the ledger is enabled, but suppress the unrelated stop-loop nudges
+        # that newer runtimes add after a plain-text fixture response.
+        monkeypatch.setenv("HERMES_KANBAN_STOP_NUDGE", "0")
 
         class _Agent(run_agent.AIAgent):
             def __init__(self, *a, **kw):

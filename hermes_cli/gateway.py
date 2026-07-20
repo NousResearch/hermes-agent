@@ -2834,6 +2834,7 @@ KillSignal=SIGTERM
 ExecReload=/bin/kill -USR1 $MAINPID
 ExecStopPost=-{python_path} -m gateway.cgroup_cleanup
 TimeoutStopSec={restart_timeout}
+UMask=0077
 StandardOutput=journal
 StandardError=journal
 
@@ -2872,6 +2873,7 @@ KillSignal=SIGTERM
 ExecReload=/bin/kill -USR1 $MAINPID
 ExecStopPost=-{python_path} -m gateway.cgroup_cleanup
 TimeoutStopSec={restart_timeout}
+UMask=0077
 StandardOutput=journal
 StandardError=journal
 

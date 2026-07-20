@@ -3,6 +3,7 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { fetchPublic } from "./lib/public-fetch.mjs";
 
 function parseArgs(argv) {
   const args = {
@@ -214,13 +215,13 @@ async function downloadImage(image, outputDir) {
   } catch (e) {
     throw new Error(`Image download blocked: ${e.message}`);
   }
-  const response = await fetch(image.url, {
+  const response = await fetchPublic(image.url, {
     headers: {
       "User-Agent":
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36",
       Referer: "https://mp.weixin.qq.com/",
     },
-  });
+  }, { allowedHosts: ["qpic.cn", "mp.weixin.qq.com"], timeoutMs: 30000 });
   if (!response.ok) throw new Error(`Image ${image.index} failed with HTTP ${response.status}`);
   const mimeType = response.headers.get("content-type")?.split(";")[0] || "application/octet-stream";
   const ext = extensionFromMime(mimeType);
@@ -233,14 +234,13 @@ async function downloadImage(image, outputDir) {
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
-  const response = await fetch(args.url, {
-    redirect: "follow",
+  const response = await fetchPublic(args.url, {
     headers: {
       "User-Agent":
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36",
       Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
     },
-  });
+  }, { allowedHosts: ["mp.weixin.qq.com"], timeoutMs: 30000 });
   if (!response.ok) throw new Error(`WeChat request failed with HTTP ${response.status}`);
 
   const html = await response.text();

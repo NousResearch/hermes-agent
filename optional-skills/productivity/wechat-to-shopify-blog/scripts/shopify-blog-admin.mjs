@@ -315,7 +315,7 @@ function normalizeArticleInput(draft, includeBlogId = false) {
     body: draft.body,
     image,
     metafields: draft.metafields,
-    isPublished: false,
+    ...(includeBlogId ? { isPublished: false } : {}),
   };
   for (const key of Object.keys(article)) if (article[key] === undefined) delete article[key];
   return article;
@@ -360,9 +360,25 @@ async function commandUpdateDraft(env, args) {
     return;
   }
 
+  const current = await graphql(env, ARTICLE_VERIFY, { id: args.articleId });
+  if (!current.article) throw new Error("ARTICLE_NOT_FOUND: the requested article could not be loaded.");
+  if (current.article.isPublished) {
+    throw new Error("PUBLISHED_ARTICLE_UPDATE_BLOCKED: refusing to update an article that is already published.");
+  }
+
   const updated = await graphql(env, ARTICLE_UPDATE, { id: args.articleId, article });
   assertNoUserErrors("articleUpdate", updated.articleUpdate.userErrors);
-  console.log(JSON.stringify(updated.articleUpdate.article, null, 2));
+  const verified = await graphql(env, ARTICLE_VERIFY, { id: args.articleId });
+  if (verified.article?.isPublished) {
+    throw new Error("PUBLISHED_ARTICLE_UPDATE_BLOCKED: refusing to update an article that is already published.");
+  }
+  console.log(JSON.stringify({
+    article: updated.articleUpdate.article,
+    verification: {
+      id: verified.article?.id,
+      isPublished: verified.article?.isPublished,
+    },
+  }, null, 2));
 }
 
 async function commandVerify(env, args) {

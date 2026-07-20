@@ -488,7 +488,14 @@ def _print_progress(
             msg = msg[: cols - 1] + "…"
     except OSError:
         pass
-    print(msg, flush=True)
+    try:
+        print(msg, flush=True)
+    except UnicodeEncodeError:
+        # Native Windows consoles can default to cp1252 even when the runner
+        # requests UTF-8 locales. Progress reporting must not break a test
+        # run, so degrade only the display characters on those consoles.
+        encoding = sys.stdout.encoding or "ascii"
+        print(msg.encode(encoding, errors="replace").decode(encoding), flush=True)
 
 
 def _print_inline_failure(

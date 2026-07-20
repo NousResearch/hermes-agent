@@ -1428,6 +1428,11 @@ class ShellFileOperations(FileOperations):
                     )
                 )
 
+        # The user-facing byte count describes the requested UTF-8 payload,
+        # before the preservation shims below add a legacy BOM or convert the
+        # content to an existing file's CRLF convention.
+        requested_bytes = len(content.encode("utf-8"))
+
         # Capture pre-write content.  Two consumers want it:
         #
         #   1. The lint-delta layer (for in-process linters like ast.parse
@@ -1515,14 +1520,10 @@ class ShellFileOperations(FileOperations):
         if write_result.exit_code != 0:
             return WriteResult(error=f"Failed to write file: {write_result.stdout}")
 
-        # Get bytes written (wc -c is POSIX, works on Linux + macOS)
-        stat_cmd = f"wc -c < {self._escape_shell_arg(path)} 2>/dev/null"
-        stat_result = self._exec(stat_cmd)
-
-        try:
-            bytes_written = int(stat_result.stdout.strip())
-        except ValueError:
-            bytes_written = len(content.encode('utf-8'))
+        # Report the original payload size. The on-disk byte count can differ
+        # when line-ending or BOM preservation is required for an existing
+        # file, and therefore is not a stable cross-platform API result.
+        bytes_written = requested_bytes
 
         # Post-write lint with delta refinement.
         lint_result = self._check_lint_delta(path, pre_content=pre_content, post_content=content)

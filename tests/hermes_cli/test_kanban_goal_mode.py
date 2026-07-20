@@ -347,10 +347,10 @@ class TestCLIJudgeGate:
             lambda name: _aux_client,
         )
         # Match the real judge_goal contract:
-        # (verdict, reason, parse_failed, wait_directive)
+        # (verdict, reason, parse_failed, wait_directive, transport_failed)
         monkeypatch.setattr(
             "hermes_cli.goals.judge_goal",
-            lambda **kw: (verdict, reason, False, None),
+            lambda **kw: (verdict, reason, False, None, False),
         )
 
         args = argparse.Namespace(task_ids=["t1"], summary=summary, result=None, metadata=None)

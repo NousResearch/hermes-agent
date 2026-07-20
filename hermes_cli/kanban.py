@@ -2016,10 +2016,11 @@ def _cmd_complete(args: argparse.Namespace) -> int:
                     reason = ""
                     try:
                         # judge_goal returns (verdict, reason, parse_failed,
-                        # wait_directive) — see hermes_cli/goals.py. Unpacking
-                        # fewer raises ValueError into the fail-open handler
-                        # below, silently disabling the gate.
-                        verdict, reason, _, _ = judge_goal(
+                        # wait_directive, transport_failed) — see
+                        # hermes_cli/goals.py. Unpacking fewer raises
+                        # ValueError into the fail-open handler below,
+                        # silently disabling the gate.
+                        verdict, reason, _, _, _ = judge_goal(
                             goal=f"{task.title}\n\n{task.body or ''}".strip(),
                             last_response=(summary or args.result or "").strip(),
                         )

@@ -34,6 +34,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 from typing import Optional
 
@@ -75,77 +76,46 @@ _REMOTE_BACKENDS = frozenset({
 })
 
 
-def _kill_process_tree(proc: "subprocess.Popen") -> None:
-    """Best-effort kill of ``proc`` and its descendants.
-
-    On Windows, killing only the direct child leaves any descendants it
-    spawned (e.g. the ``python.exe`` a ``pip.exe`` console-script launcher
-    starts) alive and holding inherited stdout/stderr write handles, which
-    is exactly what wedges pipe readers (#67964).  ``taskkill /T`` sweeps
-    the tree while it is still intact; it cannot catch descendants that
-    were already orphaned, which is why ``_run`` must additionally never
-    perform an unbounded pipe read after a timeout.
-    """
-    if sys.platform == "win32":
-        try:
-            # No pipes → this call cannot itself deadlock on captured output.
-            subprocess.run(
-                ["taskkill", "/T", "/F", "/PID", str(proc.pid)],
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                timeout=2,
-                check=False,
-            )
-        except Exception:
-            pass
-    try:
-        proc.kill()
-    except Exception:
-        pass
-
-
 def _run(cmd: list[str], timeout: float = 3.0) -> tuple[int, str, str]:
     """Run a short subprocess.  Returns (returncode, stdout, stderr).
 
     Failures (binary missing, timeout, OSError) return (-1, "", "<reason>").
 
-    Deliberately NOT ``subprocess.run``: on Windows, ``run()`` reacts to a
-    ``TimeoutExpired`` by calling ``communicate()`` a second time with **no
-    timeout** to collect partial output.  That second call joins the pipe
-    reader threads unboundedly — and if the child spawned a descendant that
-    inherited the stdout/stderr write handles and outlives it (an orphaned
-    ``pip --version`` grandchild in incident #67964), the pipes never hit
-    EOF and the join blocks forever.  Here a timeout kills the process tree
-    and abandons the (daemon) reader threads instead: bounded always, at
-    the cost of discarding partial output we don't need anyway.
+    Output is captured through temporary files rather than ``capture_output``
+    pipes so ``timeout`` bounds the *whole* call — even on native Windows.  A
+    console-script launcher (e.g. ``pip.exe``) can spawn a descendant that
+    inherits the captured stdout/stderr handles and outlives its parent.  With
+    OS pipes, the reader threads inside ``subprocess.communicate()`` then block
+    until that descendant closes the write end — which the timeout does *not*
+    cover, because killing the direct child leaves the grandchild holding the
+    pipe.  A whole warm probe could hang for ~28 min this way while holding
+    ``_CACHE_LOCK``, wedging every new session's system-prompt build.
+
+    Temp files have no reader threads, so ``wait()`` only ever waits on the
+    direct child; a lingering grandchild holding the handle can't block us, and
+    the probe genuinely fails open on timeout.
     """
-    proc = None
     try:
-        proc = subprocess.Popen(
-            cmd,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-        )
-        stdout, stderr = proc.communicate(timeout=timeout)
-        return proc.returncode, (stdout or "").strip(), (stderr or "").strip()
+        with tempfile.TemporaryFile() as out_f, tempfile.TemporaryFile() as err_f:
+            try:
+                result = subprocess.run(
+                    cmd,
+                    stdout=out_f,
+                    stderr=err_f,
+                    timeout=timeout,
+                    check=False,
+                    stdin=subprocess.DEVNULL,
+                )
+            except subprocess.TimeoutExpired:
+                return -1, "", "timeout"
+            out_f.seek(0)
+            err_f.seek(0)
+            out = out_f.read().decode("utf-8", "replace").strip()
+            err = err_f.read().decode("utf-8", "replace").strip()
+            return result.returncode, out, err
     except FileNotFoundError:
         return -1, "", "not found"
-    except subprocess.TimeoutExpired:
-        if proc is not None:
-            _kill_process_tree(proc)
-            try:
-                # Bounded reap of the direct child.  Does NOT read the pipes,
-                # so an orphaned descendant holding them open cannot block us.
-                proc.wait(timeout=1)
-            except Exception:
-                pass
-        return -1, "", "timeout"
     except OSError as exc:
-        if proc is not None:
-            _kill_process_tree(proc)
         return -1, "", f"oserror: {exc}"
 
 

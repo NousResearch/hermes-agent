@@ -1830,22 +1830,14 @@ class CLICommandsMixin:
                 print("   Session reset. New tool configuration is active.")
                 print()
             else:
-                browser_cfg.pop("backend", None)
+                from tools.browser_use_cli import BACKEND_DISABLED
+
+                browser_cfg["backend"] = BACKEND_DISABLED
                 save_config(config)
                 invalidate_check_fn_cache()
                 self.new_session()
                 print()
                 print("🌐 Browser Use mode disabled — built-in browser tools restored")
-                try:
-                    from tools.browser_use_cli import is_browser_use_cli_mode
-                    if is_browser_use_cli_mode():
-                        print(
-                            "   ⚠ Still active via auto-detection: BROWSER_USE_API_KEY is set "
-                            "with no other cloud provider configured."
-                        )
-                        print("   Pick another provider via `hermes tools`, or unset the key.")
-                except Exception:
-                    pass
                 print("   Session reset. New tool configuration is active.")
                 print()
             return

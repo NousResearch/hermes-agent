@@ -18,6 +18,7 @@ from utils import is_truthy_value
 logger = logging.getLogger(__name__)
 
 _BACKEND_KEY = "browser-use"
+BACKEND_DISABLED = "off"
 
 # Cloud daemon names become the BU_NAME env var
 _SESSION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
@@ -32,6 +33,12 @@ _TASK_ID_SAFE_RE = re.compile(r"[^A-Za-z0-9._-]+")
 
 # Screenshot paths printed by capture_screenshot() in the exec output
 _IMAGE_PATH_RE = re.compile(r"(/[^\s\"']+?\.(?:png|jpe?g|webp))", re.IGNORECASE)
+
+
+def _base_subprocess_env() -> dict:
+    from tools.browser_tool import _build_browser_env
+
+    return _build_browser_env()
 
 
 def _read_browser_cfg() -> dict:
@@ -177,7 +184,7 @@ def browser_exec(
             "to verify the setup."
         )
 
-    env = os.environ.copy()
+    env = _base_subprocess_env()
     if session:
         if not _SESSION_RE.match(session):
             return tool_error(
@@ -200,6 +207,19 @@ def browser_exec(
     except (TypeError, ValueError):
         timeout = _DEFAULT_TIMEOUT_S
 
+    # Windows: hide the console the .cmd shim would flash (as browser_tool does)
+    popen_extra: dict = {}
+    if os.name == "nt":
+        try:
+            from hermes_cli._subprocess_compat import windows_hide_flags
+
+            popen_extra["creationflags"] = windows_hide_flags()
+            _si = subprocess.STARTUPINFO()
+            _si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            popen_extra["startupinfo"] = _si
+        except Exception as e:
+            logger.debug("Windows hide-flags unavailable: %s", e)
+
     started = time.time()
     try:
         proc = subprocess.run(
@@ -209,6 +229,7 @@ def browser_exec(
             text=True,
             timeout=timeout,
             env=env,
+            **popen_extra,
         )
     except subprocess.TimeoutExpired:
         return tool_error(

@@ -647,6 +647,8 @@ export function OpenVikingConfigPanel() {
   const canStartLocal = mode === 'custom' && values ? isLocalUrl(values.url) : false
   const rootIdentityRequired = requiresRootIdentity(values, mode)
   const hasRootIdentity = Boolean(values?.account.trim()) && Boolean(values?.user.trim())
+  const apiKeyRequired = mode !== 'profile' && (mode === 'service' || values?.api_key_type !== 'none')
+  const hasRequiredApiKey = !apiKeyRequired || Boolean(values?.api_key.trim())
   const profileNameError = mode === 'profile' ? '' : profileNameIssue(profileName)
   const agentIdError = values ? agentIdIssue(values.actor_peer_id) : ''
 
@@ -657,6 +659,7 @@ export function OpenVikingConfigPanel() {
         !profileNameError &&
         Boolean(values?.url.trim()) &&
         Boolean(values?.actor_peer_id.trim()) &&
+        hasRequiredApiKey &&
         !agentIdError &&
         (!rootIdentityRequired || hasRootIdentity)
 
@@ -720,6 +723,23 @@ export function OpenVikingConfigPanel() {
       resetValidation()
       markWizardDirty()
       setValues(current => (current ? { ...current, [key]: value } : current))
+    },
+    [markWizardDirty, resetValidation]
+  )
+
+  const updateUrl = useCallback(
+    (url: string) => {
+      resetValidation()
+      markWizardDirty()
+      setValues(current =>
+        current
+          ? {
+              ...current,
+              api_key_type: current.api_key_type === 'none' && !isLocalUrl(url) ? 'user' : current.api_key_type,
+              url
+            }
+          : current
+      )
     },
     [markWizardDirty, resetValidation]
   )
@@ -849,7 +869,11 @@ export function OpenVikingConfigPanel() {
           })
         }
 
-        notify({ kind: 'success', title: 'OpenViking saved', message: 'Memory provider configuration updated.' })
+        notify({
+          kind: 'success',
+          title: 'OpenViking setup saved',
+          message: 'New chats will use this setup. Chats already open will keep their current OpenViking connection.'
+        })
         setWizardOpen(false)
         const refreshed = await refresh()
 
@@ -1119,7 +1143,7 @@ export function OpenVikingConfigPanel() {
                       <Input
                         className="font-mono"
                         id="openviking-url"
-                        onChange={event => updateValue('url', event.target.value)}
+                        onChange={event => updateUrl(event.target.value)}
                         readOnly={mode === 'service'}
                         value={mode === 'service' ? setup.defaults.service_url : values.url}
                       />
@@ -1135,11 +1159,13 @@ export function OpenVikingConfigPanel() {
                             <SelectValue />
                           </SelectTrigger>
                           <SelectContent>
-                            {CREDENTIAL_OPTIONS.map(option => (
-                              <SelectItem key={option.value} value={option.value}>
-                                {option.label}
-                              </SelectItem>
-                            ))}
+                            {CREDENTIAL_OPTIONS.filter(option => option.value !== 'none' || canStartLocal).map(
+                              option => (
+                                <SelectItem key={option.value} value={option.value}>
+                                  {option.label}
+                                </SelectItem>
+                              )
+                            )}
                           </SelectContent>
                         </Select>
                       </Field>

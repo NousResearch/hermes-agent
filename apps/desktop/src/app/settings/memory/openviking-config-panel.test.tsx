@@ -6,6 +6,7 @@ import type { OpenVikingSetup } from '@/types/hermes'
 
 const getOpenVikingSetup = vi.fn()
 const getOpenVikingHealth = vi.fn()
+const notify = vi.fn()
 const saveOpenVikingSetup = vi.fn()
 const validateOpenVikingSetup = vi.fn()
 const startOpenVikingLocal = vi.fn()
@@ -21,7 +22,7 @@ vi.mock('@/hermes', () => ({
 }))
 
 vi.mock('@/store/notifications', () => ({
-  notify: vi.fn(),
+  notify,
   notifyError: vi.fn()
 }))
 
@@ -429,6 +430,11 @@ describe('OpenVikingConfigPanel', () => {
         values: {}
       })
     )
+    expect(notify).toHaveBeenCalledWith({
+      kind: 'success',
+      title: 'OpenViking setup saved',
+      message: 'New chats will use this setup. Chats already open will keep their current OpenViking connection.'
+    })
   })
 
   it('explains when the selected existing profile no longer exists', async () => {
@@ -722,6 +728,20 @@ describe('OpenVikingConfigPanel', () => {
     expect((screen.getByRole('button', { name: 'Continue' }) as HTMLButtonElement).disabled).toBe(false)
   })
 
+  it('requires an API key before reviewing credentialed setups', async () => {
+    await renderPanel()
+    await openWizard()
+
+    fireEvent.click(screen.getByRole('button', { name: 'OpenViking Service' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Next' }))
+
+    expect((screen.getByRole('button', { name: 'Continue' }) as HTMLButtonElement).disabled).toBe(true)
+
+    fireEvent.change(screen.getByLabelText('OpenViking API key'), { target: { value: 'service-secret' } })
+
+    expect((screen.getByRole('button', { name: 'Continue' }) as HTMLButtonElement).disabled).toBe(false)
+  })
+
   it('saves custom root API keys with root profile metadata', async () => {
     validateOpenVikingSetup.mockResolvedValueOnce({ ok: true, message: '', role: 'root' })
 
@@ -819,6 +839,25 @@ describe('OpenVikingConfigPanel', () => {
     fireEvent.change(screen.getByLabelText('OpenViking URL'), { target: { value: 'https://custom.example' } })
 
     expect(screen.queryByRole('button', { name: 'Start local server' })).toBeNull()
+  })
+
+  it('only offers no-key access for local custom servers', async () => {
+    await renderPanel()
+    await openWizard()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Custom Server' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Next' }))
+
+    fireEvent.click(screen.getByRole('combobox', { name: 'Credential' }))
+    fireEvent.click(await screen.findByRole('option', { name: 'No API key' }))
+
+    fireEvent.change(screen.getByLabelText('OpenViking URL'), { target: { value: 'https://custom.example' } })
+
+    expect(screen.getByLabelText('OpenViking API key')).toBeTruthy()
+    fireEvent.click(screen.getByRole('combobox', { name: 'Credential' }))
+    expect(screen.queryByRole('option', { name: 'No API key' })).toBeNull()
+    expect(screen.getByRole('option', { name: 'User API key' })).toBeTruthy()
+    expect(screen.getByRole('option', { name: 'Root API key' })).toBeTruthy()
   })
 
   it('disables save while local server startup is in flight', async () => {

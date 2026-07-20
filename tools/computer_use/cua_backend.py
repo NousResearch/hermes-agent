@@ -2263,6 +2263,10 @@ class CuaDriverBackend(ComputerUseBackend):
         if pid is None:
             return ActionResult(ok=False, action="drag",
                                 message="No active window — call capture() first.")
+        button_norm = (button or "left").lower()
+        if button_norm not in {"left", "right", "middle"}:
+            return ActionResult(ok=False, action="drag",
+                                message=f"unknown button {button!r} — expected left, right, middle.")
         args: Dict[str, Any] = {"pid": pid}
         if from_element is not None and to_element is not None:
             if self._active_window_id is None:
@@ -2281,6 +2285,13 @@ class CuaDriverBackend(ComputerUseBackend):
         else:
             return ActionResult(ok=False, action="drag",
                                 message="drag requires from_element/to_element or from_coordinate/to_coordinate.")
+        # Preserve the legacy default payload for older cua-driver builds while
+        # forwarding options that would otherwise silently degrade to a plain
+        # left-button drag.
+        if button_norm != "left":
+            args["button"] = button_norm
+        if modifiers:
+            args["modifier"] = modifiers
         refusal = self._apply_delivery("drag", args, delivery_mode, bring_to_front)
         if refusal is not None:
             return refusal

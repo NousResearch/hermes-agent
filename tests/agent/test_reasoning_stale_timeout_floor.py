@@ -46,10 +46,15 @@ import pytest
     ("nvidia/nemotron-3-ultra-550b-a55b", 600.0),
     ("nvidia/nemotron-3-super-120b-a12b", 600.0),
     ("nvidia/nemotron-3-nano-30b-a3b", 300.0),
-    # DeepSeek R1 + DeepSeek reasoner.
+    # DeepSeek R1 + DeepSeek reasoner + V4 reasoning series.
+    # V4 emits reasoning_content in a separate delta before final
+    # content (same shape as R1), so it needs the same 600s floor.
     ("deepseek/deepseek-r1", 600.0),
     ("deepseek/deepseek-r1-distill-llama-70b", 600.0),
     ("deepseek/deepseek-reasoner", 600.0),
+    ("deepseek/deepseek-v4-flash", 600.0),
+    ("deepseek/deepseek-v4-pro", 600.0),
+    ("deepseek-v4-flash-free", 600.0),   # catalog -free variant inherits via separator anchor
     # Qwen QwQ + Qwen3 thinking variants (qwen3 family entry matches all).
     ("qwen/qwq-32b-preview", 300.0),
     ("qwen/qwen3-235b-a22b-thinking", 180.0),
@@ -72,6 +77,7 @@ import pytest
     # xAI Grok reasoning variants — explicit, not bare `grok`.
     ("x-ai/grok-4-fast-reasoning", 300.0),
     ("x-ai/grok-4.20-reasoning", 300.0),
+    ("x-ai/grok-4.5", 300.0),
     ("x-ai/grok-4-fast-non-reasoning", 180.0),
 ])
 def test_reasoning_stale_timeout_floor_positive_cases(model, expected):
@@ -104,6 +110,10 @@ def test_reasoning_stale_timeout_floor_positive_cases(model, expected):
     "x-ai/grok-code-fast-1",
     # Qwen2 must not match Qwen3 (different family).
     "qwen2-72b-instruct",
+    # Non-reasoning DeepSeek chat must not match the v4 reasoning entries.
+    "deepseek-chat",
+    "deepseek/deepseek-chat",
+    "some-deepseek-v4-flash",     # embedded v4 slug, NOT start of slug
     # Empty / None / non-string inputs — must return None, not raise.
     "",
     None,

@@ -41,18 +41,19 @@ def _mock_client_returning(content: str):
 
 
 def _patch_aux_client(content: str, *, model: str = "test-model"):
-    client = _mock_client_returning(content)
+    # decompose_task now routes through call_llm (see #35566) — mock it at
+    # the source module so task config, extra_body, and retries stay out of
+    # unit-test scope.
     return patch(
-        "agent.auxiliary_client.get_text_auxiliary_client",
-        return_value=(client, model),
+        "agent.auxiliary_client.call_llm",
+        return_value=_fake_aux_response(content),
     )
 
 
 def _patch_extra_body():
-    return patch(
-        "agent.auxiliary_client.get_auxiliary_extra_body",
-        return_value={},
-    )
+    # No-op shim retained for call-site compatibility: extra_body plumbing
+    # now lives inside call_llm, which _patch_aux_client already mocks.
+    return patch("agent.auxiliary_client.get_auxiliary_extra_body", return_value={})
 
 
 def _patch_list_profiles(names: list[str]):
@@ -334,9 +335,11 @@ def test_decompose_no_aux_client_configured(kanban_home):
     for p in patches:
         p.start()
     try:
+        # call_llm raises RuntimeError when no provider is configured; the
+        # decomposer must convert that into a failed outcome, not a crash.
         with patch(
-            "agent.auxiliary_client.get_text_auxiliary_client",
-            return_value=(None, ""),
+            "agent.auxiliary_client.call_llm",
+            side_effect=RuntimeError("No LLM provider configured"),
         ):
             outcome = decomp.decompose_task(tid, author="me")
     finally:
@@ -344,4 +347,5 @@ def test_decompose_no_aux_client_configured(kanban_home):
             p.stop()
 
     assert outcome.ok is False
-    assert "no auxiliary client" in outcome.reason
+    # call_llm's no-provider RuntimeError surfaces via the LLM-error branch.
+    assert "LLM error" in outcome.reason

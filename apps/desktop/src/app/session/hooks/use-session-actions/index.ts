@@ -7,6 +7,7 @@ import { deleteSession, getSessionMessages, setSessionArchived } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { type ChatMessage, preserveLocalAssistantErrors, toChatMessages } from '@/lib/chat-messages'
 import { isMissingRpcMethod } from '@/lib/gateway-rpc'
+import { normalizeSessionSource } from '@/lib/session-source'
 import { setSessionYolo } from '@/lib/yolo-session'
 import { clearQueuedPrompts } from '@/store/composer-queue'
 import { $pinnedSessionIds } from '@/store/layout'
@@ -15,14 +16,18 @@ import { $activeGatewayProfile, $newChatProfile, ensureGatewayProfile, normalize
 import { resolveNewSessionCwd, tombstoneSessions, untombstoneSessions } from '@/store/projects'
 import {
   $activeSessionStoredIdRotation,
+  $cronSessions,
   $currentCwd,
   $currentFastMode,
   $currentModel,
   $currentProvider,
   $currentReasoningEffort,
   $messages,
+  $messagingPlatformTotals,
+  $messagingSessions,
   $newChatWorkspaceTarget,
   $sessions,
+  $sessionsTotal,
   $yoloActive,
   type NewChatWorkspaceTarget,
   sessionPinId,
@@ -30,6 +35,7 @@ import {
   setActiveSessionStoredIdRotation,
   setAwaitingResponse,
   setBusy,
+  setCronSessions,
   setCurrentBranch,
   setCurrentCwd,
   setCurrentCwdTransient,
@@ -38,6 +44,8 @@ import {
   setFreshDraftReady,
   setIntroSeed,
   setMessages,
+  setMessagingPlatformTotals,
+  setMessagingSessions,
   setNewChatWorkspaceTarget,
   setResumeExhaustedSessionId,
   setResumeFailedSessionId,
@@ -58,7 +66,7 @@ import {
 } from '@/store/session-states'
 import { broadcastSessionsChanged } from '@/store/session-sync'
 import { isWatchWindow } from '@/store/windows'
-import type { SessionCreateResponse, SessionResumeResponse, UsageStats } from '@/types/hermes'
+import type { SessionCreateResponse, SessionInfo, SessionResumeResponse, UsageStats } from '@/types/hermes'
 
 import { NEW_CHAT_ROUTE, sessionRoute, SETTINGS_ROUTE } from '../../../routes'
 import type { ClientSessionState, SidebarNavItem } from '../../../types'
@@ -91,6 +99,7 @@ interface SessionActionsOptions {
   navigate: NavigateFunction
   onFreshDraftRouteIntent?: () => void
   requestGateway: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
+  refreshSessionsAfterRemoval?: () => Promise<void>
   resetViewSync: () => void
   runtimeIdByStoredSessionIdRef: MutableRefObject<Map<string, string>>
   selectedStoredSessionId: string | null
@@ -112,6 +121,16 @@ interface SessionActionsOptions {
 // bounded retry rebinds it when the backend returns. Boot-into-a-stale-last-id
 // (NOT in this set) still legitimately drops to a draft.
 const createdThisRun = new Set<string>()
+
+function findListedSession(storedSessionId: string): SessionInfo | undefined {
+  return [...$sessions.get(), ...$cronSessions.get(), ...$messagingSessions.get()].find(session =>
+    sessionMatchesStoredId(session, storedSessionId)
+  )
+}
+
+function sessionRemovalIds(storedSessionId: string, session?: SessionInfo): string[] {
+  return [...new Set([storedSessionId, session?.id, session?._lineage_root_id].filter(Boolean) as string[])]
+}
 
 // Reflect a stored row's persisted token counts into the live usage atom
 // (total is derived, so callers can't drift it out of sync with input/output).
@@ -194,6 +213,7 @@ export function useSessionActions({
   navigate,
   onFreshDraftRouteIntent,
   requestGateway,
+  refreshSessionsAfterRemoval,
   resetViewSync,
   runtimeIdByStoredSessionIdRef,
   selectedStoredSessionId,
@@ -1139,7 +1159,18 @@ export function useSessionActions({
     async (storedSessionId: string) => {
       clearNotifications()
 
-      const removed = $sessions.get().find(session => sessionMatchesStoredId(session, storedSessionId))
+      const removedFromRecents = $sessions.get().some(session => sessionMatchesStoredId(session, storedSessionId))
+      const removedFromCron = $cronSessions.get().some(session => sessionMatchesStoredId(session, storedSessionId))
+
+      const removedFromMessaging = $messagingSessions
+        .get()
+        .some(session => sessionMatchesStoredId(session, storedSessionId))
+
+      const removed = findListedSession(storedSessionId)
+      const removalIds = sessionRemovalIds(storedSessionId, removed)
+      const messagingSource = normalizeSessionSource(removed?.source)
+      const previousMessagingPlatformTotals = $messagingPlatformTotals.get()
+      const previousSessionsTotal = $sessionsTotal.get()
       const wasSelected = selectedStoredSessionId === storedSessionId
       const closingRuntimeId = wasSelected ? activeSessionId : null
       const previousMessages = $messages.get()
@@ -1149,13 +1180,25 @@ export function useSessionActions({
       const removedPinId = removed ? sessionPinId(removed) : storedSessionId
 
       setSessions(prev => prev.filter(session => !sessionMatchesStoredId(session, storedSessionId)))
+
       // Evict from the project tree's optimistic layer too (the backend snapshot
       // still lists it until its next refresh), so grouped + flat views drop the
       // row in lockstep.
-      tombstoneSessions([storedSessionId, removed?.id, removed?._lineage_root_id])
+      tombstoneSessions(removalIds)
+
       // Keep $sessionsTotal in sync so the sidebar's "Load N more" footer
       // doesn't keep claiming the removed row is still on the server.
-      setSessionsTotal(prev => Math.max(0, prev - 1))
+      if (removedFromRecents) {
+        setSessionsTotal(prev => Math.max(0, prev - 1))
+      }
+
+      if (removedFromMessaging && messagingSource && previousMessagingPlatformTotals[messagingSource] !== undefined) {
+        setMessagingPlatformTotals({
+          ...previousMessagingPlatformTotals,
+          [messagingSource]: Math.max(0, previousMessagingPlatformTotals[messagingSource] - 1)
+        })
+      }
+
       $pinnedSessionIds.set(previousPinned.filter(id => id !== storedSessionId && id !== removedPinId))
 
       // Tear down before awaiting so the route effect can't resume the
@@ -1170,6 +1213,16 @@ export function useSessionActions({
         }
 
         await deleteSession(storedSessionId, removed?.profile)
+        await refreshSessionsAfterRemoval?.().catch(() => undefined)
+
+        if (removedFromMessaging && messagingSource && previousMessagingPlatformTotals[messagingSource] !== undefined) {
+          setMessagingPlatformTotals(prev => ({
+            ...prev,
+            [messagingSource]: Math.max(0, previousMessagingPlatformTotals[messagingSource] - 1)
+          }))
+        }
+
+        broadcastSessionsChanged()
         clearQueuedPrompts(storedSessionId)
 
         if (closingRuntimeId) {
@@ -1188,12 +1241,35 @@ export function useSessionActions({
           dropSessionState(tiledRuntimeId)
         }
       } catch (err) {
-        if (removed) {
-          setSessions(prev => [removed, ...prev])
-          setSessionsTotal(prev => prev + 1)
+        if (removed && removedFromRecents) {
+          setSessions(prev =>
+            prev.some(session => sessionMatchesStoredId(session, storedSessionId)) ? prev : [removed, ...prev]
+          )
         }
 
-        untombstoneSessions([storedSessionId, removed?.id, removed?._lineage_root_id])
+        if (removed && removedFromCron) {
+          setCronSessions(prev =>
+            prev.some(session => sessionMatchesStoredId(session, storedSessionId)) ? prev : [removed, ...prev]
+          )
+        }
+
+        if (removed && removedFromMessaging) {
+          setMessagingSessions(prev =>
+            prev.some(session => sessionMatchesStoredId(session, storedSessionId)) ? prev : [removed, ...prev]
+          )
+        }
+
+        setSessionsTotal(previousSessionsTotal)
+
+        if (removedFromMessaging && messagingSource && previousMessagingPlatformTotals[messagingSource] !== undefined) {
+          setMessagingPlatformTotals(prev => ({
+            ...prev,
+            [messagingSource]: previousMessagingPlatformTotals[messagingSource]
+          }))
+        }
+
+        untombstoneSessions(removalIds)
+        await refreshSessionsAfterRemoval?.().catch(() => undefined)
         $pinnedSessionIds.set(previousPinned)
 
         if (wasSelected) {
@@ -1224,6 +1300,7 @@ export function useSessionActions({
       copy,
       navigate,
       requestGateway,
+      refreshSessionsAfterRemoval,
       runtimeIdByStoredSessionIdRef,
       selectedStoredSessionId,
       selectedStoredSessionIdRef,
@@ -1236,7 +1313,18 @@ export function useSessionActions({
     async (storedSessionId: string) => {
       clearNotifications()
 
-      const archived = $sessions.get().find(session => sessionMatchesStoredId(session, storedSessionId))
+      const archivedFromRecents = $sessions.get().some(session => sessionMatchesStoredId(session, storedSessionId))
+      const archivedFromCron = $cronSessions.get().some(session => sessionMatchesStoredId(session, storedSessionId))
+
+      const archivedFromMessaging = $messagingSessions
+        .get()
+        .some(session => sessionMatchesStoredId(session, storedSessionId))
+
+      const archived = findListedSession(storedSessionId)
+      const removalIds = sessionRemovalIds(storedSessionId, archived)
+      const messagingSource = normalizeSessionSource(archived?.source)
+      const previousMessagingPlatformTotals = $messagingPlatformTotals.get()
+      const previousSessionsTotal = $sessionsTotal.get()
       const wasSelected = selectedStoredSessionId === storedSessionId
       const previousPinned = $pinnedSessionIds.get()
       // Pins are keyed on the durable lineage-root id; the stored id may be the
@@ -1245,11 +1333,22 @@ export function useSessionActions({
 
       // Soft-hide: drop from the sidebar immediately, keep the data.
       setSessions(prev => prev.filter(session => !sessionMatchesStoredId(session, storedSessionId)))
-      tombstoneSessions([storedSessionId, archived?.id, archived?._lineage_root_id])
+      tombstoneSessions(removalIds)
+
       // Archived sessions are hidden by the listSessions(min_messages=1) query
       // on the next refresh, so they count as "removed" for the load-more
       // footer math.
-      setSessionsTotal(prev => Math.max(0, prev - 1))
+      if (archivedFromRecents) {
+        setSessionsTotal(prev => Math.max(0, prev - 1))
+      }
+
+      if (archivedFromMessaging && messagingSource && previousMessagingPlatformTotals[messagingSource] !== undefined) {
+        setMessagingPlatformTotals({
+          ...previousMessagingPlatformTotals,
+          [messagingSource]: Math.max(0, previousMessagingPlatformTotals[messagingSource] - 1)
+        })
+      }
+
       $pinnedSessionIds.set(previousPinned.filter(id => id !== storedSessionId && id !== archivedPinId))
 
       if (wasSelected) {
@@ -1258,6 +1357,20 @@ export function useSessionActions({
 
       try {
         await setSessionArchived(storedSessionId, true, archived?.profile)
+        await refreshSessionsAfterRemoval?.().catch(() => undefined)
+
+        if (
+          archivedFromMessaging &&
+          messagingSource &&
+          previousMessagingPlatformTotals[messagingSource] !== undefined
+        ) {
+          setMessagingPlatformTotals(prev => ({
+            ...prev,
+            [messagingSource]: Math.max(0, previousMessagingPlatformTotals[messagingSource] - 1)
+          }))
+        }
+
+        broadcastSessionsChanged()
         // A sidebar refresh can race the optimistic removal while the PATCH is
         // in flight and briefly reinsert the still-unarchived backend row. Win
         // that race after the mutation succeeds so right-click → Archive does
@@ -1276,17 +1389,51 @@ export function useSessionActions({
 
         notify({ durationMs: 2_000, kind: 'success', message: copy.archived })
       } catch (err) {
-        if (archived) {
-          setSessions(prev => [archived, ...prev.filter(session => !sessionMatchesStoredId(session, storedSessionId))])
-          setSessionsTotal(prev => prev + 1)
+        if (archived && archivedFromRecents) {
+          setSessions(prev =>
+            prev.some(session => sessionMatchesStoredId(session, storedSessionId)) ? prev : [archived, ...prev]
+          )
         }
 
-        untombstoneSessions([storedSessionId, archived?.id, archived?._lineage_root_id])
+        if (archived && archivedFromCron) {
+          setCronSessions(prev =>
+            prev.some(session => sessionMatchesStoredId(session, storedSessionId)) ? prev : [archived, ...prev]
+          )
+        }
+
+        if (archived && archivedFromMessaging) {
+          setMessagingSessions(prev =>
+            prev.some(session => sessionMatchesStoredId(session, storedSessionId)) ? prev : [archived, ...prev]
+          )
+        }
+
+        setSessionsTotal(previousSessionsTotal)
+
+        if (
+          archivedFromMessaging &&
+          messagingSource &&
+          previousMessagingPlatformTotals[messagingSource] !== undefined
+        ) {
+          setMessagingPlatformTotals(prev => ({
+            ...prev,
+            [messagingSource]: previousMessagingPlatformTotals[messagingSource]
+          }))
+        }
+
+        untombstoneSessions(removalIds)
+        await refreshSessionsAfterRemoval?.().catch(() => undefined)
         $pinnedSessionIds.set(previousPinned)
         notifyError(err, copy.archiveFailed)
       }
     },
-    [copy, runtimeIdByStoredSessionIdRef, selectedStoredSessionId, sessionStateByRuntimeIdRef, startFreshSessionDraft]
+    [
+      copy,
+      refreshSessionsAfterRemoval,
+      runtimeIdByStoredSessionIdRef,
+      selectedStoredSessionId,
+      sessionStateByRuntimeIdRef,
+      startFreshSessionDraft
+    ]
   )
 
   return {

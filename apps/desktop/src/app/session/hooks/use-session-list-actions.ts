@@ -11,6 +11,7 @@ import {
 import { setCronJobs } from '@/store/cron'
 import { $pinnedSessionIds, $sessionsLimit, bumpSessionsLimit, SIDEBAR_SESSIONS_PAGE_SIZE } from '@/store/layout'
 import { ALL_PROFILES, normalizeProfileKey } from '@/store/profile'
+import { filterTombstonedSessions } from '@/store/projects'
 import {
   $messagingSessions,
   $selectedStoredSessionId,
@@ -73,6 +74,7 @@ interface UseSessionListActionsArgs {
  *  and the per-platform messaging slices. Returns the callbacks the controller
  *  wires into the sidebar and refresh effects. */
 export function useSessionListActions({ profileScope }: UseSessionListActionsArgs) {
+  const refreshMessagingRequestRef = useRef(0)
   const refreshSessionsRequestRef = useRef(0)
 
   // Messaging-platform sessions as their own slice, fetched separately from
@@ -80,14 +82,20 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
   // competes with local chats for the recents page budget. One combined fetch
   // seeds every platform; the sidebar splits the rows per source.
   const refreshMessagingSessions = useCallback(async () => {
+    const requestId = ++refreshMessagingRequestRef.current
+
     try {
       const result = await listAllProfileSessions(MESSAGING_SECTION_LIMIT, 1, 'exclude', 'recent', 'all', {
         excludeSources: MESSAGING_EXCLUDED_SOURCES
       })
 
+      if (refreshMessagingRequestRef.current !== requestId) {
+        return
+      }
+
       // Drop any non-messaging source the broad exclude didn't catch (custom
       // sources) — those stay in local recents, not a platform section.
-      const rows = result.sessions.filter(s => isMessagingSource(s.source))
+      const rows = filterTombstonedSessions(result.sessions).filter(s => isMessagingSource(s.source))
 
       setMessagingSessions(prev => (sameCronSignature(prev, rows) ? prev : rows))
       // Hit the cap → at least one platform may have more on disk than loaded,
@@ -102,6 +110,7 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
   // pager): fetch that source's next window and merge it back in place, leaving
   // every other platform's rows untouched. Resolves the platform's exact total.
   const loadMoreMessagingForPlatform = useCallback(async (platform: string) => {
+    const requestId = ++refreshMessagingRequestRef.current
     const inPlatform = (s: SessionInfo) => normalizeSessionSource(s.source) === platform
     const loaded = $messagingSessions.get().filter(inPlatform).length
 
@@ -109,7 +118,13 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
       source: platform
     })
 
-    const incoming = result.sessions.filter(s => normalizeSessionSource(s.source) === platform)
+    if (refreshMessagingRequestRef.current !== requestId) {
+      return
+    }
+
+    const incoming = filterTombstonedSessions(result.sessions).filter(
+      s => normalizeSessionSource(s.source) === platform
+    )
 
     setMessagingSessions(prev => [
       ...prev.filter(s => !inPlatform(s)),
@@ -140,6 +155,7 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
   const refreshSessions = useCallback(async () => {
     const requestId = refreshSessionsRequestRef.current + 1
     refreshSessionsRequestRef.current = requestId
+    const messagingRequestId = ++refreshMessagingRequestRef.current
     // The loading flag exists to drive the initial skeletons (they only render
     // while the list is empty). Turn-complete / reconnect refreshes over a
     // populated list used to flip it true→false anyway, churning every
@@ -179,13 +195,14 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
 
       if (refreshSessionsRequestRef.current === requestId) {
         const recents = result.recents
+        const visibleRecents = filterTombstonedSessions(recents.sessions)
 
         // Signature-gate the swap (same pattern as cron/messaging): a refresh
         // that returns content-identical rows must keep the previous array
         // identity, or every sidebar memo keyed on $sessions recomputes and the
         // whole list re-renders once per turn/broadcast for nothing.
         setSessions(prev => {
-          const next = mergeSessionPage(prev, recents.sessions, sessionsToKeep())
+          const next = mergeSessionPage(prev, visibleRecents, sessionsToKeep())
 
           return sameCronSignature(prev, next) ? prev : next
         })
@@ -201,16 +218,22 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
 
         // Cron section: latest N cron sessions (kept so a pinned cron run still
         // resolves via sessionByAnyId), signature-gated like above.
-        setCronSessions(prev => (sameCronSignature(prev, result.cron.sessions) ? prev : result.cron.sessions))
+        const visibleCron = filterTombstonedSessions(result.cron.sessions)
+
+        setCronSessions(prev => (sameCronSignature(prev, visibleCron) ? prev : visibleCron))
 
         // Messaging sections: drop any non-messaging source the broad exclude
         // didn't catch (custom sources stay in local recents), then split per
         // platform in the UI.
-        const messagingRows = result.messaging.sessions.filter(s => isMessagingSource(s.source))
+        const messagingRows = filterTombstonedSessions(result.messaging.sessions).filter(s =>
+          isMessagingSource(s.source)
+        )
 
-        setMessagingSessions(prev => (sameCronSignature(prev, messagingRows) ? prev : messagingRows))
-        // Hit the cap → at least one platform may have more on disk than loaded.
-        setMessagingTruncated(result.messaging.sessions.length >= MESSAGING_SECTION_LIMIT)
+        if (refreshMessagingRequestRef.current === messagingRequestId) {
+          setMessagingSessions(prev => (sameCronSignature(prev, messagingRows) ? prev : messagingRows))
+          // Hit the cap → at least one platform may have more on disk than loaded.
+          setMessagingTruncated(result.messaging.sessions.length >= MESSAGING_SECTION_LIMIT)
+        }
       }
     } finally {
       if (showLoading && refreshSessionsRequestRef.current === requestId) {
@@ -230,6 +253,8 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
   // ALL-profiles view pages one profile at a time: fetch that profile's next
   // page and merge it in place, leaving every other profile's rows untouched.
   const loadMoreSessionsForProfile = useCallback(async (profile: string) => {
+    const requestId = refreshSessionsRequestRef.current + 1
+    refreshSessionsRequestRef.current = requestId
     const key = normalizeProfileKey(profile)
     const inKey = (s: SessionInfo) => normalizeProfileKey(s.profile) === key
     const loaded = $sessions.get().filter(inKey).length
@@ -238,12 +263,14 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
       excludeSources: SIDEBAR_EXCLUDED_SOURCES
     })
 
-    const keep = sessionsToKeep(key)
+    if (refreshSessionsRequestRef.current !== requestId) {
+      return
+    }
 
-    setSessions(prev => [
-      ...prev.filter(s => !inKey(s)),
-      ...mergeSessionPage(prev.filter(inKey), result.sessions, keep)
-    ])
+    const keep = sessionsToKeep(key)
+    const incoming = filterTombstonedSessions(result.sessions)
+
+    setSessions(prev => [...prev.filter(s => !inKey(s)), ...mergeSessionPage(prev.filter(inKey), incoming, keep)])
 
     const total = result.profile_totals?.[key] ?? result.total ?? result.sessions.length
     setSessionProfileTotals(prev => ({ ...prev, [key]: Math.max(total, result.sessions.length) }))

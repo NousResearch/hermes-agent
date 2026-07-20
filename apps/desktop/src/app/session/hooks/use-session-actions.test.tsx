@@ -3,10 +3,10 @@ import type { MutableRefObject } from 'react'
 import { useEffect } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { getSessionMessages, type SessionInfo } from '@/hermes'
+import { deleteSession, getSessionMessages, type SessionInfo, setSessionArchived } from '@/hermes'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { $activeGatewayProfile, $newChatProfile, ensureGatewayProfile } from '@/store/profile'
-import { $projectScope, $projectTree, ALL_PROJECTS } from '@/store/projects'
+import { $projectScope, $projectTree, $removedSessionIds, ALL_PROJECTS } from '@/store/projects'
 import {
   $activeSessionId,
   $activeSessionStoredIdRotation,
@@ -16,9 +16,12 @@ import {
   $currentProvider,
   $currentReasoningEffort,
   $messages,
+  $messagingPlatformTotals,
+  $messagingSessions,
   $newChatWorkspaceTarget,
   $resumeFailedSessionId,
   $selectedStoredSessionId,
+  $sessionsTotal,
   setActiveSessionId,
   setActiveSessionStoredIdRotation,
   setCurrentCwd,
@@ -27,10 +30,13 @@ import {
   setCurrentProvider,
   setCurrentReasoningEffort,
   setMessages,
+  setMessagingPlatformTotals,
+  setMessagingSessions,
   setNewChatWorkspaceTarget,
   setResumeFailedSessionId,
   setSelectedStoredSessionId,
-  setSessions
+  setSessions,
+  setSessionsTotal
 } from '@/store/session'
 
 import { sessionRoute } from '../../routes'
@@ -55,18 +61,20 @@ vi.mock('@/store/profile', async importOriginal => ({
 const RUNTIME_SESSION_ID = 'rt-new-001'
 
 function deferred<T>() {
+  let reject!: (reason?: unknown) => void
   let resolve!: (value: T | PromiseLike<T>) => void
 
-  const promise = new Promise<T>(done => {
+  const promise = new Promise<T>((done, fail) => {
+    reject = fail
     resolve = done
   })
 
-  return { promise, resolve }
+  return { promise, reject, resolve }
 }
 
 type HarnessHandle = Pick<
   ReturnType<typeof useSessionActions>,
-  'createBackendSessionForSend' | 'startFreshSessionDraft'
+  'archiveSession' | 'createBackendSessionForSend' | 'removeSession' | 'startFreshSessionDraft'
 >
 
 function storedSession(overrides: Partial<SessionInfo> = {}): SessionInfo {
@@ -90,10 +98,12 @@ function storedSession(overrides: Partial<SessionInfo> = {}): SessionInfo {
 
 function Harness({
   onReady,
-  requestGateway
+  requestGateway,
+  refreshSessionsAfterRemoval
 }: {
   onReady: (handle: HarnessHandle) => void
   requestGateway: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
+  refreshSessionsAfterRemoval?: () => Promise<void>
 }) {
   const ref = <T,>(value: T): MutableRefObject<T> => ({ current: value })
 
@@ -107,6 +117,7 @@ function Harness({
     getRoutedStoredSessionId: () => null,
     navigate: vi.fn() as never,
     requestGateway,
+    refreshSessionsAfterRemoval,
     resetViewSync: vi.fn(),
     runtimeIdByStoredSessionIdRef: ref(new Map<string, string>()),
     selectedStoredSessionId: null,
@@ -122,6 +133,116 @@ function Harness({
 
   return null
 }
+
+describe('session removal refresh', () => {
+  afterEach(() => {
+    cleanup()
+    setMessagingPlatformTotals({})
+    setMessagingSessions([])
+    setSessions([])
+    setSessionsTotal(0)
+    $removedSessionIds.set(new Set())
+    vi.restoreAllMocks()
+  })
+
+  it('starts delete confirmation only after the backend mutation succeeds', async () => {
+    const mutation = deferred<{ ok: boolean }>()
+    const refreshSessionsAfterRemoval = vi.fn(async () => undefined)
+    vi.mocked(deleteSession).mockReturnValue(mutation.promise)
+    setSessions([storedSession({ id: 'deleted' })])
+
+    let handle: HarnessHandle | null = null
+    render(
+      <Harness
+        onReady={actions => (handle = actions)}
+        refreshSessionsAfterRemoval={refreshSessionsAfterRemoval}
+        requestGateway={async () => ({}) as never}
+      />
+    )
+    await waitFor(() => expect(handle).not.toBeNull())
+
+    const pending = handle!.removeSession('deleted')
+
+    expect(refreshSessionsAfterRemoval).not.toHaveBeenCalled()
+    mutation.resolve({ ok: true })
+    await pending
+
+    expect(refreshSessionsAfterRemoval).toHaveBeenCalledTimes(1)
+  })
+
+  it('starts archive confirmation only after the backend mutation succeeds', async () => {
+    const mutation = deferred<{ ok: boolean }>()
+    const refreshSessionsAfterRemoval = vi.fn(async () => undefined)
+    vi.mocked(setSessionArchived).mockReturnValue(mutation.promise)
+    setSessions([storedSession({ id: 'archived' })])
+
+    let handle: HarnessHandle | null = null
+    render(
+      <Harness
+        onReady={actions => (handle = actions)}
+        refreshSessionsAfterRemoval={refreshSessionsAfterRemoval}
+        requestGateway={async () => ({}) as never}
+      />
+    )
+    await waitFor(() => expect(handle).not.toBeNull())
+
+    const pending = handle!.archiveSession('archived')
+
+    expect(refreshSessionsAfterRemoval).not.toHaveBeenCalled()
+    mutation.resolve({ ok: true })
+    await pending
+
+    expect(refreshSessionsAfterRemoval).toHaveBeenCalledTimes(1)
+  })
+
+  it('restores a messaging row removed by a racing refresh when delete fails', async () => {
+    const mutation = deferred<{ ok: boolean }>()
+    const refreshSessionsAfterRemoval = vi.fn(async () => undefined)
+    const deleted = storedSession({ id: 'deleted', source: 'telegram' })
+    vi.mocked(deleteSession).mockReturnValue(mutation.promise)
+    setMessagingPlatformTotals({ telegram: 5 })
+    setMessagingSessions([deleted])
+
+    let handle: HarnessHandle | null = null
+    render(
+      <Harness
+        onReady={actions => (handle = actions)}
+        refreshSessionsAfterRemoval={refreshSessionsAfterRemoval}
+        requestGateway={async () => ({}) as never}
+      />
+    )
+    await waitFor(() => expect(handle).not.toBeNull())
+
+    const pending = handle!.removeSession('deleted')
+    expect($messagingPlatformTotals.get()).toEqual({ telegram: 4 })
+    setMessagingSessions([])
+    mutation.reject(new Error('delete failed'))
+    await pending
+
+    expect($messagingSessions.get()).toEqual([deleted])
+    expect($messagingPlatformTotals.get()).toEqual({ telegram: 5 })
+    expect($removedSessionIds.get().has('deleted')).toBe(false)
+    expect(refreshSessionsAfterRemoval).toHaveBeenCalledTimes(1)
+  })
+
+  it('restores the pre-mutation total instead of incrementing a stale refresh total', async () => {
+    const mutation = deferred<{ ok: boolean }>()
+    vi.mocked(deleteSession).mockReturnValue(mutation.promise)
+    setSessions([storedSession({ id: 'deleted' })])
+    setSessionsTotal(10)
+
+    let handle: HarnessHandle | null = null
+    render(<Harness onReady={actions => (handle = actions)} requestGateway={async () => ({}) as never} />)
+    await waitFor(() => expect(handle).not.toBeNull())
+
+    const pending = handle!.removeSession('deleted')
+    setSessionsTotal(10)
+    mutation.reject(new Error('delete failed'))
+    await pending
+
+    expect($sessionsTotal.get()).toBe(10)
+  })
+})
 
 function StoredIdRotationHarness({
   activeSessionIdRef,

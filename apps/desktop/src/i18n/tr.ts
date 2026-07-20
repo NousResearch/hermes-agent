@@ -47,7 +47,7 @@ export const tr = defineLocale({
     revealInSidebar: 'Dosya Ağacında Göster',
     copyPath: 'Yolu Kopyala',
     copyRelativePath: 'Göreli Yolu Kopyala',
-    rename: 'Yeniden Adlandır',
+    rename: 'Yeniden Adlandır…',
     delete: 'Sil',
     renameTitle: 'Yeniden Adlandır',
     renameLabel: 'Yeni ad',
@@ -56,13 +56,13 @@ export const tr = defineLocale({
   },
 
   boot: {
-    ready: 'Hazır',
+    ready: 'Hermes Desktop hazır',
     steps: {
       connectingGateway: 'Masaüstü canlı ağ geçidine bağlanıyor',
       loadingSettings: 'Ayarlar yükleniyor',
       loadingSessions: 'Oturumlar yükleniyor',
       startingDesktopConnection: 'Masaüstü bağlantısı başlatılıyor',
-      startingHermesDesktop: 'Hermes Desktop başlatılıyor'
+      startingHermesDesktop: 'Hermes Desktop başlatılıyor…'
     },
     errors: {
       backgroundExited: 'Hermes arka plan işlemi sonlandı.',

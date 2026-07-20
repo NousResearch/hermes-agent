@@ -259,6 +259,7 @@ jobs:
   all-checks-pass:
     name: All required checks pass
     needs:
+      - detect
       - tests
       - lint
       - js-tests

@@ -70,11 +70,57 @@ def test_gui_installs_packages_and_launches_desktop_app(tmp_path, monkeypatch):
         cli_main.cmd_gui(_ns())
 
     assert exc.value.code == 0
-    mock_install.assert_called_once_with("/usr/bin/npm", root, capture_output=False, env=None)
+    # The install now runs with a resolved env (managed-Node PATH), never a bare
+    # ``env=None`` that would leave npm's child scripts unable to find ``node``.
+    mock_install.assert_called_once()
+    assert mock_install.call_args.args == ("/usr/bin/npm", root)
+    assert mock_install.call_args.kwargs["capture_output"] is False
+    install_env = mock_install.call_args.kwargs["env"]
+    assert install_env is not None and "PATH" in install_env
     assert mock_run.call_args_list[0].args[0] == ["/usr/bin/npm", "run", "pack"]
     assert mock_run.call_args_list[0].kwargs["cwd"] == desktop_dir
     assert mock_run.call_args_list[1].args[0] == [str(packaged_exe)]
     assert mock_run.call_args_list[1].kwargs["cwd"] == desktop_dir
+
+
+def test_gui_install_env_prepends_managed_node_on_bare_path(tmp_path, monkeypatch):
+    """Regression: npm's child scripts (electron-winstaller's select-7z-arch.js)
+    shell out to bare ``node``. When Desktop is launched from the updater chain
+    the parent PATH is stripped, so the install env MUST carry the Hermes-managed
+    Node ahead of that bare PATH or the install dies with ``node: not found``.
+    """
+    import os
+
+    from hermes_constants import iter_hermes_node_dirs
+
+    root = _make_desktop_tree(tmp_path)
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
+    _make_packaged_executable(root, monkeypatch, platform="win32")
+
+    # A managed Node tree on disk so with_hermes_node_path() actually prepends it.
+    home = tmp_path / "hermes-home"
+    (home / "node" / "bin").mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    # Simulate the stripped PATH the desktop updater chain hands us.
+    monkeypatch.setenv("PATH", os.pathsep.join(["/usr/bin", "/bin"]))
+
+    install_ok = subprocess.CompletedProcess(["npm", "ci"], 0)
+    launch_ok = subprocess.CompletedProcess(["hermes"], 0)
+
+    with patch("hermes_cli.main._resolve_node_runtime_npm", return_value="/usr/bin/npm"), \
+         patch("hermes_cli.main._run_npm_install_deterministic", return_value=install_ok) as mock_install, \
+         patch("hermes_cli.main._desktop_build_needed", return_value=True), \
+         patch("hermes_cli.main._write_desktop_build_stamp"), \
+         patch("hermes_cli.main.subprocess.run", side_effect=[subprocess.CompletedProcess([], 0), launch_ok]), \
+         pytest.raises(SystemExit):
+        cli_main.cmd_gui(_ns(skip_build=False))
+
+    managed_dirs = [str(p) for p in iter_hermes_node_dirs() if p.is_dir()]
+    assert managed_dirs, "managed node tree not discovered"
+    install_env = mock_install.call_args.kwargs["env"]
+    path_parts = install_env["PATH"].split(os.pathsep)
+    assert path_parts[: len(managed_dirs)] == managed_dirs
+    assert "/usr/bin" in path_parts  # the bare updater PATH is preserved, just after managed Node
 
 
 def test_gui_forwards_desktop_environment_overrides(tmp_path, monkeypatch):

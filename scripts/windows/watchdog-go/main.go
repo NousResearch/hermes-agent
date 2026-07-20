@@ -172,11 +172,20 @@ func detectRepoRoot() string {
 		return ""
 	}
 	dir := filepath.Dir(exe)
-	candidate := filepath.Clean(filepath.Join(dir, "..", "..", ".."))
-	if fileExists(filepath.Join(candidate, "pyproject.toml")) {
-		return candidate
+	// dist → watchdog-go → windows → scripts → <repo>
+	candidates := []string{
+		filepath.Clean(filepath.Join(dir, "..", "..", "..", "..")),
+		filepath.Clean(filepath.Join(dir, "..", "..", "..")),
 	}
-	return candidate
+	for _, candidate := range candidates {
+		if fileExists(filepath.Join(candidate, "pyproject.toml")) {
+			return candidate
+		}
+	}
+	if len(candidates) > 0 {
+		return candidates[0]
+	}
+	return ""
 }
 
 // sanitizePathFlag strips accidental shell quotes and trims space so CreateProcess

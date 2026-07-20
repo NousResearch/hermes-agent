@@ -85,8 +85,7 @@ if ($ForceRestart -or $Once) {
     exit 0
 }
 
-# Quote paths with spaces ("New project") so ShellExecute does not split
-# -hermes-root at the space (that yielded Dir=...\Documents\New → ERROR_DIRECTORY).
+# Quote values with whitespace for the UseShellExecute fallback only.
 function Format-WatchdogArg([string]$Name, [string]$Value) {
     if ($null -eq $Value) { $Value = "" }
     if ($Value -match '[\s"]') {
@@ -96,11 +95,14 @@ function Format-WatchdogArg([string]$Name, [string]$Value) {
     return ('{0}={1}' -f $Name, $Value)
 }
 
+# Pass flag name and value as separate argv entries so paths with spaces
+# ("New project") are not truncated by Start-Process command-line quoting.
+# Go's flag package accepts both -name=value and -name value.
 $argList = @(
     "-interval=$IntervalSec",
     "-fail-threshold=$FailThreshold",
-    (Format-WatchdogArg "-hermes-root" $RepoRoot),
-    (Format-WatchdogArg "-hermes-home" $HermesHome),
+    "-hermes-root", $RepoRoot,
+    "-hermes-home", $HermesHome,
     "-listen=$Listen"
 )
 if ($Once) { $argList += "-once" }
@@ -111,12 +113,8 @@ if (-not $NoTsnet -and ($env:HERMES_WATCHDOG_TS_AUTHKEY -or $env:TS_AUTHKEY)) {
 
 $env:HERMES_HOME = $HermesHome
 $workDir = Split-Path -Parent $Exe
-$argString = ($argList -join ' ')
-Write-Host "Starting Go watchdog detached: $Exe $argString"
+Write-Host "Starting Go watchdog detached: $Exe $($argList -join ' ')"
 
-# Prefer ArgumentList (CreateProcess) so each flag is one argv — spaces in
-# hermes-root stay intact. Fall back to UseShellExecute only if that fails
-# (job-object detach for Cursor/agent shells).
 $launched = $false
 try {
     $proc = Start-Process -FilePath $Exe -ArgumentList $argList -WorkingDirectory $workDir -WindowStyle Hidden -PassThru
@@ -125,10 +123,23 @@ try {
     Write-Warning "Start-Process ArgumentList failed: $($_.Exception.Message); trying UseShellExecute"
 }
 if (-not $launched) {
+    # ShellExecute fallback: quote only values that contain whitespace.
+    $shellArgs = @(
+        "-interval=$IntervalSec",
+        "-fail-threshold=$FailThreshold",
+        (Format-WatchdogArg "-hermes-root" $RepoRoot),
+        (Format-WatchdogArg "-hermes-home" $HermesHome),
+        "-listen=$Listen"
+    )
+    if ($Once) { $shellArgs += "-once" }
+    if ($NoPrewarm) { $shellArgs += "-prewarm-backend=false" }
+    if (-not $NoTsnet -and ($env:HERMES_WATCHDOG_TS_AUTHKEY -or $env:TS_AUTHKEY)) {
+        $shellArgs += "-tsnet"
+    }
     $startInfo = New-Object System.Diagnostics.ProcessStartInfo
     $startInfo.FileName = $Exe
     $startInfo.WorkingDirectory = $workDir
-    $startInfo.Arguments = $argString
+    $startInfo.Arguments = ($shellArgs -join ' ')
     $startInfo.WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Hidden
     $startInfo.UseShellExecute = $true
     [void][System.Diagnostics.Process]::Start($startInfo)

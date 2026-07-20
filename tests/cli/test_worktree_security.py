@@ -1,5 +1,6 @@
 """Security-focused integration tests for CLI worktree setup."""
 
+import os
 import subprocess
 from pathlib import Path
 
@@ -81,7 +82,12 @@ class TestWorktreeIncludeSecurity:
 
         outside_file = git_repo.parent / "linked-secret.txt"
         outside_file.write_text("LINKED SECRET")
-        (git_repo / "leak.txt").symlink_to(outside_file)
+        try:
+            (git_repo / "leak.txt").symlink_to(outside_file)
+        except OSError as exc:
+            if os.name == "nt" and getattr(exc, "winerror", None) == 1314:
+                pytest.skip("Windows symlink creation requires Developer Mode or elevated privilege")
+            raise
         (git_repo / ".worktreeinclude").write_text("leak.txt\n")
 
         info = None
@@ -124,7 +130,12 @@ class TestWorktreeIncludeSecurity:
             assert info is not None
 
             linked_dir = Path(info["path"]) / ".venv"
-            assert linked_dir.is_symlink()
+            if os.name == "nt":
+                # Windows may lack symlink privilege; production deliberately
+                # falls back to a local copy in that case.
+                assert linked_dir.is_symlink() or linked_dir.is_dir()
+            else:
+                assert linked_dir.is_symlink()
             assert (linked_dir / "lib" / "marker.txt").read_text() == "venv marker"
         finally:
             _force_remove_worktree(info)

@@ -784,12 +784,43 @@ class HonchoClientConfig:
         prefix = sanitized[:prefix_len].rstrip("-")
         return f"{prefix}-{digest}"
 
+    @staticmethod
+    def _pin_runtime_user_segment(
+        gateway_session_key: str,
+        runtime_user_ids: list[str],
+        pinned_identity: str,
+    ) -> str:
+        """Replace platform-native runtime user segments with the pinned peer.
+
+        Gateway session keys are ``:``-delimited (e.g.
+        ``agent:main:telegram:dm:<uid>:<thread>``).  Under strict single-user
+        pinning the runtime user segment (Telegram UID, Discord snowflake, …)
+        is redundant with the pinned peer, so it's swapped out while every
+        other discriminator (platform, chat kind, thread/topic id, profile) is
+        preserved.  Only a whole, delimiter-bounded segment equal to a supplied
+        runtime user id is replaced — a UID that merely appears as a substring
+        of another id (a thread/topic number) is left intact.
+        """
+        import re
+
+        result = gateway_session_key
+        for uid in runtime_user_ids:
+            if not uid:
+                continue
+            # (?<![^:]) -> preceded by ':' or start; (?![^:]) -> followed by ':'
+            # or end.  Bounds the match to a full identity segment only.
+            pattern = r"(?<![^:])" + re.escape(uid) + r"(?![^:])"
+            result = re.sub(pattern, pinned_identity, result)
+        return result
+
     def resolve_session_name(
         self,
         cwd: str | None = None,
         session_title: str | None = None,
         session_id: str | None = None,
         gateway_session_key: str | None = None,
+        user_id: str | None = None,
+        user_id_alt: str | None = None,
     ) -> str | None:
         """Resolve Honcho session name.
 
@@ -811,9 +842,29 @@ class HonchoClientConfig:
         # Gateway per-chat key wins everywhere — gateways (telegram/discord/…)
         # need per-chat isolation no cwd/strategy name can provide.
         if gateway_session_key:
-            sanitized = re.sub(r'[^a-zA-Z0-9_-]+', '-', gateway_session_key).strip('-')
+            key = gateway_session_key
+            # Strict single-user pinning: the runtime user segment is redundant
+            # with the pinned peer, so swap it for peerName to keep memory
+            # unified across platforms/DMs while preserving thread/topic/chat
+            # kind discriminators (MC-7827).  Peer resolution (session.py) and
+            # the gateway's own routing keys are untouched — only the Honcho
+            # session name changes.  Multi-user (pin off) keeps the raw UID.
+            if self.pin_peer_name and self.peer_name:
+                runtime_ids = [
+                    str(u).strip()
+                    for u in (user_id, user_id_alt)
+                    if u is not None and str(u).strip()
+                ]
+                if runtime_ids:
+                    key = self._pin_runtime_user_segment(
+                        key, runtime_ids, self.peer_name.strip()
+                    )
+            sanitized = re.sub(r'[^a-zA-Z0-9_-]+', '-', key).strip('-')
             if sanitized:
-                return self._enforce_session_id_limit(sanitized, gateway_session_key)
+                # Hash seed is the pinned key so two users pinned to the same
+                # peer on the same long thread collapse to one session even
+                # after truncation (unification is the point of pinning).
+                return self._enforce_session_id_limit(sanitized, key)
 
         # per-session: the run's session_id IS the identity — resolve before the
         # cwd map / title so an auto-generated title can't remap a live

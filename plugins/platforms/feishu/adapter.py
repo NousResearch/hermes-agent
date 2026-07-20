@@ -574,6 +574,170 @@ def _build_markdown_post_payload(content: str) -> str:
     )
 
 
+def _build_markdown_card_payload(content: str) -> str:
+    """Build a wide-screen Feishu interactive card with the entire markdown
+    body in a single ``markdown`` element.
+
+    This mirrors ``buildMarkdownCard`` in @larksuite/openclaw-lark: tables
+    only render with sensible column widths when the prose+table content
+    lives in ONE element AND the surrounding whitespace has ``<br>`` markers
+    (added by ``_optimize_markdown_style`` with ``card_version=2``).  Splitting
+    tables into separate elements breaks the wide-screen layout and produces
+    the cramped, narrow-column look seen in earlier attempts.
+    """
+    optimized = _optimize_markdown_style(content, card_version=2)
+    card = {
+        "schema": "2.0",
+        "config": {"wide_screen_mode": True},
+        "body": {
+            "elements": [
+                {
+                    "tag": "markdown",
+                    "content": optimized,
+                }
+            ]
+        },
+    }
+    return json.dumps(card, ensure_ascii=False)
+
+
+# ---------------------------------------------------------------------------
+# Markdown style optimization for Feishu post rendering
+# ---------------------------------------------------------------------------
+#
+# Ported from @larksuite/openclaw-lark ``src/card/markdown-style.js``. Feishu's
+# post-type ``md`` renderer is sensitive to surrounding whitespace and cell
+# padding: tables squeezed between paragraphs without a visual break get
+# rendered with overlapping column edges. This optimizer inserts ``<br>``
+# markers around tables, normalizes heading levels, and pads cells so the
+# narrow message column can render them as a real grid.
+
+_FENCE_PLACEHOLDER_PREFIX = "___HERMES_CB_"
+_IMAGE_RE = re.compile(r"!\[([^\]]*)\]\(([^)\s]+)\)")
+
+
+def _strip_invalid_image_keys(text: str) -> str:
+    """Drop ``![alt](value)`` references where ``value`` is not a Feishu
+    ``img_xxx`` key. Mirrors the upstream safety net that prevents CardKit
+    error 200570 when a stray URL slips through."""
+    if "![" not in text:
+        return text
+    return _IMAGE_RE.sub(
+        lambda m: m.group(0) if m.group(2).startswith("img_") else "",
+        text,
+    )
+
+
+def _optimize_markdown_style(text: str, card_version: int = 2) -> str:
+    """Apply Feishu-friendly markdown tweaks (port of optimizeMarkdownStyle).
+
+    Steps:
+      1. Park fenced code blocks behind placeholders so the rest of the
+         pipeline can mutate whitespace safely.
+      2. Downgrade H1->H4 and H2~H6->H5 (Feishu post renders ``####``/``#####``
+         as proper headings but mangled ``#`` ones).
+      3. If ``card_version >= 2``, add ``<br>`` markers around tables and
+         consecutive headings, then re-inject code blocks with their own
+         surrounding ``<br>`` so the post renderer treats them as separate
+         visual units.
+      4. Collapse 3+ consecutive newlines to 2.
+    """
+    if not text:
+        return text
+
+    # 1. Extract fenced code blocks
+    code_blocks: List[str] = []
+    fence_re = re.compile(r"(^|\n)(\`{3,})([^\n]*)\n[\s\S]*?\n\2(?=\n|$)")
+
+    def _park_fence(match):
+        idx = len(code_blocks)
+        code_blocks.append(match.group(0))
+        prefix = match.group(1) or ""
+        return f"{prefix}{_FENCE_PLACEHOLDER_PREFIX}{idx}__{idx}"
+
+    r = fence_re.sub(_park_fence, text)
+
+    # 2. Heading downgrade (only if H1~H3 present)
+    if re.search(r"^#{1,3} ", text, re.MULTILINE):
+        r = re.sub(r"^#{2,6} (.+)$", r"##### \1", r, flags=re.MULTILINE)
+        r = re.sub(r"^# (.+)$", r"#### \1", r, flags=re.MULTILINE)
+
+    if card_version >= 2:
+        # 3a. Spacing between consecutive H4/H5 headings
+        r = re.sub(
+            r"^(#{4,5} .+)\n{1,2}(#{4,5} )",
+            r"\1\n<br>\n\2",
+            r,
+            flags=re.MULTILINE,
+        )
+        # 3b. Pad non-table lines that immediately precede a table
+        r = re.sub(
+            r"^([^|\n].*)\n(\|.+\|)",
+            r"\1\n\n\2",
+            r,
+            flags=re.MULTILINE,
+        )
+        # 3c. Insert ``<br>`` before a table that follows blank lines
+        r = re.sub(
+            r"\n\n((?:\|.+\|[^\S\n]*\n?)+)",
+            r"\n\n<br>\n\n\1",
+            r,
+        )
+        # 3d. Append ``<br>`` after a table unless followed by a
+        # separator line, heading, or bold line
+        def _table_suffix(match):
+            offset = match.start()
+            after = r[offset + len(match.group(0)) :].lstrip("\n")
+            if not after or re.match(r"^(---|#{4,5} |\*\*)", after):
+                return match.group(0)
+            return match.group(0) + "\n<br>\n"
+
+        r = re.sub(
+            r"(?:^\|.+\|[^\S\n]*\n?)+",
+            _table_suffix,
+            r,
+            flags=re.MULTILINE,
+        )
+        # 3e. Trim redundant blank lines around ``<br>`` next to tables
+        r = re.sub(
+            r"^((?!#{4,5} )(?!\*\*).+)\n\n(<br>)\n\n(\|)",
+            r"\1\n\2\n\3",
+            r,
+            flags=re.MULTILINE,
+        )
+        r = re.sub(
+            r"^(\*\*.+)\n\n(<br>)\n\n(\|)",
+            r"\1\n\2\n\n\3",
+            r,
+            flags=re.MULTILINE,
+        )
+        r = re.sub(
+            r"(\|[^\n]*\n)\n(<br>\n)((?!#{4,5} )(?!\*\*))",
+            r"\1\2\3",
+            r,
+        )
+        # 3f. Re-inject code blocks with ``<br>`` padding
+        for i in range(len(code_blocks)):
+            r = r.replace(
+                f"{_FENCE_PLACEHOLDER_PREFIX}{i}__{i}",
+                f"\n<br>\n{code_blocks[i]}\n<br>\n",
+            )
+    else:
+        for i in range(len(code_blocks)):
+            r = r.replace(
+                f"{_FENCE_PLACEHOLDER_PREFIX}{i}__{i}",
+                code_blocks[i],
+            )
+
+    # 4. Collapse 3+ newlines to 2
+    r = re.sub(r"\n{3,}", "\n\n", r)
+    # Drop any leftover placeholders if the substitution somehow did not run
+    r = re.sub(r"___HERMES_CB_\d+__\d+", "", r)
+    # Drop any non-Feishu image references (URLs, paths)
+    r = _strip_invalid_image_keys(r)
+    return r
+
+
 def _build_markdown_post_rows(content: str) -> List[List[Dict[str, str]]]:
     """Build Feishu post rows while isolating fenced code blocks.
 
@@ -4533,14 +4697,17 @@ class FeishuAdapter(BasePlatformAdapter):
     # =========================================================================
 
     def _build_outbound_payload(self, content: str) -> tuple[str, str]:
-        # Feishu post-type 'md' elements do not render markdown tables; sending
-        # table content as post causes the message to appear blank on the client.
-        # Force plain text for anything that looks like a markdown table.
+        # Feishu post-type ``md`` elements do not render markdown tables with
+        # sane column widths in the narrow message column.  We follow the
+        # @larksuite/openclaw-lark ``buildMarkdownCard`` path: send a wide-screen
+        # interactive card whose single ``markdown`` element holds the whole
+        # reply.  ``_optimize_markdown_style`` (card_version=2) inserts ``<br>``
+        # markers around tables so the renderer treats them as separate visual
+        # units and gives them the full card width.
         if _MARKDOWN_TABLE_RE.search(content):
-            text_payload = {"text": content}
-            return "text", json.dumps(text_payload, ensure_ascii=False)
+            return "interactive", _build_markdown_card_payload(content)
         if _MARKDOWN_HINT_RE.search(content):
-            return "post", _build_markdown_post_payload(content)
+            return "post", _build_markdown_post_payload(_optimize_markdown_style(content, card_version=1))
         text_payload = {"text": content}
         return "text", json.dumps(text_payload, ensure_ascii=False)
 

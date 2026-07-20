@@ -811,24 +811,23 @@ def _collect_credential_env_vars() -> list[str]:
         for var in cfg.api_key_env_vars:
             if var:
                 env_vars.add(var)
-    # Well-known tool / auxiliary credential env vars
-    env_vars.update({
+    # Well-known tool / auxiliary credential env vars.
+    # Only include vars NOT already present in PROVIDER_REGISTRY
+    # to avoid duplication while keeping coverage broad.
+    extra: set[str] = {
         "OPENROUTER_API_KEY",
-        "DEEPSEEK_API_KEY",
-        "GLM_API_KEY",
-        "ANTHROPIC_API_KEY",
-        "GOOGLE_API_KEY",
-        "GEMINI_API_KEY",
-        "XAI_API_KEY",
         "FIRECRAWL_API_KEY",
         "FAL_KEY",
         "GROQ_API_KEY",
-        "KIMI_API_KEY",
         "MINIMAX_API_KEY",
         "DASHSCOPE_API_KEY",
         "HF_TOKEN",
         "COPILOT_GITHUB_TOKEN",
-    })
+    }
+    # Deduplicate against PROVIDER_REGISTRY (in case registry grows
+    # to cover these in the future)
+    extra -= env_vars
+    env_vars.update(extra)
     env_vars.discard("")
     return sorted(env_vars)
 
@@ -932,6 +931,16 @@ def auth_sync_command(args) -> None:
         print("No .env files found.")
         return
 
+    # The first entry from _discover_profile_envs is always the default
+    # ~/.hermes/.env (when it exists).  Validate it's actually the
+    # default to avoid using a named profile as source of truth.
+    if profile_envs[0][0] != "default":
+        print(
+            "No default ~/.hermes/.env found. "
+            "Create one first (e.g. with `hermes setup` or by placing "
+            "your API key in ~/.hermes/.env)."
+        )
+        return
     default_env_path = profile_envs[0][1]
     default_secrets = _read_env_file(default_env_path)
     if not default_secrets:

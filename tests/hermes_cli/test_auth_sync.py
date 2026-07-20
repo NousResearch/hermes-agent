@@ -207,3 +207,65 @@ def test_mask_key():
     assert _mask_key("short") == "sh…rt"
     assert _mask_key("sk-or-fresh-abcd1234") == "sk-o…1234"
     assert _mask_key("exactly12ch") == "ex…ch"
+
+
+def test_sync_no_default_env_aborts(tmp_path, monkeypatch, capsys):
+    """Should abort with clear message when no default .env exists."""
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir()
+    profiles_root = hermes_home / "profiles"
+    profiles_root.mkdir(parents=True)
+
+    # Create a profile .env WITHOUT a default .env
+    p = profiles_root / "orphan-profile"
+    p.mkdir()
+    (p / ".env").write_text("OPENROUTER_API_KEY=sk-orphan\n")
+
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setattr(
+        "hermes_cli.profiles._get_default_hermes_home", lambda: hermes_home
+    )
+    monkeypatch.setattr(
+        "hermes_cli.profiles._get_profiles_root", lambda: profiles_root
+    )
+
+    from hermes_cli.auth_commands import auth_sync_command
+
+    auth_sync_command(SimpleNamespace(fix=False))
+    out = capsys.readouterr().out
+
+    assert "No default" in out
+    assert ".hermes/.env" in out or "~/" in out
+
+    # Verify the orphan profile was NOT modified
+    assert "sk-orphan" in (p / ".env").read_text()
+
+
+def test_sync_no_default_env_with_fix_also_aborts(tmp_path, monkeypatch, capsys):
+    """--fix should also abort when no default .env exists."""
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir()
+    profiles_root = hermes_home / "profiles"
+    profiles_root.mkdir(parents=True)
+
+    p = profiles_root / "orphan"
+    p.mkdir()
+    (p / ".env").write_text("OPENROUTER_API_KEY=sk-orphan\n")
+
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setattr(
+        "hermes_cli.profiles._get_default_hermes_home", lambda: hermes_home
+    )
+    monkeypatch.setattr(
+        "hermes_cli.profiles._get_profiles_root", lambda: profiles_root
+    )
+
+    from hermes_cli.auth_commands import auth_sync_command
+
+    auth_sync_command(SimpleNamespace(fix=True))
+    out = capsys.readouterr().out
+
+    assert "No default" in out
+
+    # Verify files not modified
+    assert "sk-orphan" in (p / ".env").read_text()

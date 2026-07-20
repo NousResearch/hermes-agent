@@ -39,7 +39,7 @@ const GLYPH: Record<string, string> = {
   enabled: '✓'
 }
 
-export function PluginsHub({ gw, onClose, t }: PluginsHubProps) {
+export function PluginsHub({ gw, maxWidth, onClose, t }: PluginsHubProps) {
   const [rows, setRows] = useState<PluginRow[]>([])
   const [bundledCount, setBundledCount] = useState(0)
   const [userCount, setUserCount] = useState(0)
@@ -50,7 +50,9 @@ export function PluginsHub({ gw, onClose, t }: PluginsHubProps) {
   const [loading, setLoading] = useState(true)
 
   const { stdout } = useStdout()
-  const width = Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, (stdout?.columns ?? 80) - 6))
+  // Optional maxWidth lets grid layouts hand the hub its cell budget.
+  const preferredWidth = Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, (stdout?.columns ?? 80) - 6))
+  const width = Math.max(24, Math.min(preferredWidth, Math.trunc(maxWidth ?? preferredWidth)))
 
   const load = () => {
     gw.request<PluginsListResponse>('plugins.manage', { action: 'list' })
@@ -233,6 +235,7 @@ export function PluginsHub({ gw, onClose, t }: PluginsHubProps) {
 
 interface PluginsHubProps {
   gw: GatewayClient
+  maxWidth?: number
   onClose: () => void
   t: Theme
 }

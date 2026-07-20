@@ -19,7 +19,11 @@ export interface WidgetGridLayout {
 }
 
 export interface WidgetGridLayoutOptions {
-  columns?: number
+  /**
+   * Explicit column count (equal shares) or a grid-template-style track list
+   * (fixed cell counts / weighted `fr` shares). Omitted: auto from width.
+   */
+  columns?: GridTrackSize[] | number
   gap?: number
   items: WidgetGridItem[]
   maxColumns?: number
@@ -111,12 +115,18 @@ export function layoutWidgetGrid({
   const safeWidth = Math.max(1, toInt(width, 1))
   const maxDrawableColumns = safeGap > 0 ? Math.max(1, Math.floor((safeWidth + safeGap) / (safeGap + 1))) : safeWidth
 
-  const columnCount =
-    requestedColumns === undefined
+  const trackList = Array.isArray(requestedColumns) && requestedColumns.length ? requestedColumns : null
+
+  const columnCount = trackList
+    ? trackList.length
+    : requestedColumns === undefined || Array.isArray(requestedColumns)
       ? columnCountForWidth(safeWidth, minColumnWidth, safeGap, maxColumns)
       : clamp(toInt(requestedColumns, 1), 1, maxDrawableColumns)
 
-  const columns = buildColumnWidths(width, columnCount, safeGap)
+  const columns = trackList
+    ? resolveGridTracks(safeWidth, safeGap, trackList)
+    : buildColumnWidths(width, columnCount, safeGap)
+
   const rows: WidgetGridCell[][] = []
   let row: WidgetGridCell[] = []
   let occupied = Array.from({ length: columnCount }, () => false)

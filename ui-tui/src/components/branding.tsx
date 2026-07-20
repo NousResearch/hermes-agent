@@ -7,6 +7,8 @@ import { flat } from '../lib/text.js'
 import type { Theme } from '../theme.js'
 import type { PanelSection, SessionInfo } from '../types.js'
 
+import { WidgetGrid } from './widgetGrid.js'
+
 const LOADER_TICK_MS = 120
 
 function InlineLoader({ label, t }: { label: string; t: Theme }) {
@@ -94,19 +96,48 @@ export function Banner({ maxWidth, t }: { maxWidth?: number; t: Theme }) {
   const logoLines = logo(t.color, t.bannerLogo || undefined)
   const logoW = t.bannerLogo ? artWidth(logoLines) : LOGO_WIDTH
 
+  // Each tier renders its rows through a single-column WidgetGrid sized to
+  // the available columns — same visual output as the old plain flex column
+  // (cells clip where truncate-end used to), but the banner is now a
+  // layout-engine surface.
   if (cols >= logoW + 2) {
     return (
       <Box flexDirection="column" marginBottom={1}>
-        <ArtLines lines={logoLines} />
-        <Text color={t.color.muted} wrap="truncate-end">
-          {t.brand.icon} {TAG_FULL}
-        </Text>
+        <WidgetGrid
+          cols={cols}
+          columns={1}
+          gap={0}
+          paddingX={0}
+          paddingY={0}
+          rowGap={0}
+          widgets={[
+            { children: <ArtLines lines={logoLines} />, id: 'banner-art' },
+            {
+              children: (
+                <Text color={t.color.muted} wrap="truncate-end">
+                  {t.brand.icon} {TAG_FULL}
+                </Text>
+              ),
+              id: 'banner-tagline'
+            }
+          ]}
+        />
       </Box>
     )
   }
 
   if (cols >= COMPACT_FROM) {
-    return <CompactBanner cols={cols} t={t} />
+    return (
+      <WidgetGrid
+        cols={cols}
+        columns={1}
+        gap={0}
+        paddingX={0}
+        paddingY={0}
+        rowGap={0}
+        widgets={[{ children: <CompactBanner cols={cols} t={t} />, id: 'banner-compact' }]}
+      />
+    )
   }
 
   const name = cols >= 52 ? t.brand.name : (t.brand.name.split(' ')[0] ?? t.brand.name)
@@ -114,12 +145,32 @@ export function Banner({ maxWidth, t }: { maxWidth?: number; t: Theme }) {
 
   return (
     <Box flexDirection="column" marginBottom={1}>
-      <Text bold color={t.color.primary} wrap="truncate-end">
-        {t.brand.icon} {name}
-      </Text>
-      <Text color={t.color.muted} wrap="truncate-end">
-        {t.brand.icon} {tag}
-      </Text>
+      <WidgetGrid
+        cols={cols}
+        columns={1}
+        gap={0}
+        paddingX={0}
+        paddingY={0}
+        rowGap={0}
+        widgets={[
+          {
+            children: (
+              <Text bold color={t.color.primary} wrap="truncate-end">
+                {t.brand.icon} {name}
+              </Text>
+            ),
+            id: 'banner-name'
+          },
+          {
+            children: (
+              <Text color={t.color.muted} wrap="truncate-end">
+                {t.brand.icon} {tag}
+              </Text>
+            ),
+            id: 'banner-tag'
+          }
+        ]}
+      />
     </Box>
   )
 }
@@ -282,32 +333,36 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
     return <Text color={t.color.muted}>{info.system_prompt}</Text>
   }
 
-  return (
-    <Box borderColor={t.color.border} borderStyle="round" marginBottom={1} paddingX={2} paddingY={1}>
-      {wide && (
-        <Box flexDirection="column" marginRight={2} width={leftW}>
-          <ArtLines lines={heroLines} />
-          <Text />
+  // The wide layout is a real two-column grid: a fixed-width hero track and a
+  // flexible info track (grid-template-columns: <leftW> 1fr, gap 2) — the
+  // terminal equivalent of the desktop pane shell's fixed-vs-flex tracks.
+  // Narrow drops to a single flexible track. Track math reproduces the old
+  // hand-rolled widths exactly: usable = (leftW + 2 + w) - gap = leftW + w.
+  const heroColumn = wide ? (
+    <Box flexDirection="column" width="100%">
+      <ArtLines lines={heroLines} />
+      <Text />
 
-          <Text color={t.color.accent}>
-            {info.model.split('/').pop()}
-            <Text color={t.color.muted}> · Nous Research</Text>
-          </Text>
+      <Text color={t.color.accent}>
+        {info.model.split('/').pop()}
+        <Text color={t.color.muted}> · Nous Research</Text>
+      </Text>
 
-          <Text color={t.color.muted} wrap="truncate-end">
-            {info.cwd || process.cwd()}
-          </Text>
+      <Text color={t.color.muted} wrap="truncate-end">
+        {info.cwd || process.cwd()}
+      </Text>
 
-          {sid && (
-            <Text>
-              <Text color={t.color.sessionLabel}>Session: </Text>
-              <Text color={t.color.sessionBorder}>{sid}</Text>
-            </Text>
-          )}
-        </Box>
+      {sid && (
+        <Text>
+          <Text color={t.color.sessionLabel}>Session: </Text>
+          <Text color={t.color.sessionBorder}>{sid}</Text>
+        </Text>
       )}
+    </Box>
+  ) : null
 
-      <Box flexDirection="column" width={w}>
+  const infoColumn = (
+    <Box flexDirection="column" width="100%">
         {wide ? (
           <Box justifyContent="center" marginBottom={1}>
             <Text bold color={t.color.primary}>
@@ -418,7 +473,27 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
             ! {info.install_warning}
           </Text>
         )}
-      </Box>
+    </Box>
+  )
+
+  return (
+    <Box borderColor={t.color.border} borderStyle="round" marginBottom={1} paddingX={2} paddingY={1}>
+      <WidgetGrid
+        cols={wide ? leftW + 2 + w : w}
+        columns={wide ? [leftW, { fr: 1 }] : 1}
+        gap={2}
+        paddingX={0}
+        paddingY={0}
+        rowGap={0}
+        widgets={
+          wide
+            ? [
+                { children: heroColumn, id: 'session-hero' },
+                { children: infoColumn, id: 'session-info' }
+              ]
+            : [{ children: infoColumn, id: 'session-info' }]
+        }
+      />
     </Box>
   )
 }

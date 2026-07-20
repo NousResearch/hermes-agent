@@ -30,7 +30,7 @@ interface Gallery {
  * (install-on-demand). The mascot lights up live once `usePet` next polls —
  * no restart. This is the interactive sibling of the text `/pet <slug>` path.
  */
-export function PetPicker({ gw, onClose, t }: PetPickerProps) {
+export function PetPicker({ gw, maxWidth, onClose, t }: PetPickerProps) {
   const [gallery, setGallery] = useState<Gallery | null>(null)
   const [query, setQuery] = useState('')
   const [idx, setIdx] = useState(0)
@@ -39,7 +39,9 @@ export function PetPicker({ gw, onClose, t }: PetPickerProps) {
   const [loading, setLoading] = useState(true)
 
   const { stdout } = useStdout()
-  const width = Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, (stdout?.columns ?? 80) - 6))
+  // Optional maxWidth lets grid layouts hand the picker its cell budget.
+  const preferredWidth = Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, (stdout?.columns ?? 80) - 6))
+  const width = Math.max(24, Math.min(preferredWidth, Math.trunc(maxWidth ?? preferredWidth)))
 
   useEffect(() => {
     gw.request<Gallery>('pet.gallery')
@@ -178,6 +180,7 @@ export function PetPicker({ gw, onClose, t }: PetPickerProps) {
 
 interface PetPickerProps {
   gw: GatewayClient
+  maxWidth?: number
   onClose: () => void
   t: Theme
 }

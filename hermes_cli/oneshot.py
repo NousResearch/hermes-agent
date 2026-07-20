@@ -173,6 +173,7 @@ def run_oneshot(
     provider: Optional[str] = None,
     toolsets: object = None,
     usage_file: Optional[str] = None,
+    worktree: bool = False,
 ) -> int:
     """Execute a single prompt and print only the final content block.
 
@@ -187,6 +188,9 @@ def run_oneshot(
             cost, token counts, model, api_calls) is written there after the
             run — even when the run fails — so pipelines can account for
             spend per invocation.
+        worktree: When True, create an isolated git worktree so the agent's
+            commits don't land on the current branch (same as ``-w`` in
+            interactive mode).
 
     Returns the exit code.  Caller should sys.exit() with the return.
     """
@@ -230,6 +234,34 @@ def run_oneshot(
     # to its inline/synchronous path. See declare_stateless_channel().
     declare_stateless_channel()
 
+    # Set up isolated git worktree when -w/--worktree is requested.
+    _wt_info = None
+    if worktree:
+        try:
+            from cli import (
+                _cleanup_worktree,
+                _git_repo_root,
+                _prune_stale_worktrees,
+                _setup_worktree,
+            )
+
+            repo = _git_repo_root()
+            if repo:
+                _prune_stale_worktrees(repo)
+            _wt_info = _setup_worktree()
+            if not _wt_info:
+                sys.stderr.write(
+                    "hermes -z: --worktree failed (are you inside a git repo?).\n"
+                )
+                return 1
+            os.environ["HERMES_CWD"] = _wt_info["path"]
+            os.environ["TERMINAL_CWD"] = _wt_info["path"]
+        except Exception as exc:
+            sys.stderr.write(
+                f"hermes -z: --worktree setup failed: {exc}\n"
+            )
+            return 1
+
     # Redirect stderr AND stdout to devnull for the entire call tree.
     # We'll print the final response to the real stdout at the end.
     real_stdout = sys.stdout
@@ -263,6 +295,14 @@ def run_oneshot(
             devnull.close()
         except Exception:
             pass
+        # Clean up worktree on exit (unless it has unpushed commits — same
+        # policy as interactive mode).
+        if _wt_info is not None:
+            try:
+                from cli import _cleanup_worktree
+                _cleanup_worktree(_wt_info)
+            except Exception:
+                pass
 
     if failure is not None:
         # Re-raise control-flow exceptions so the parent handles them as usual

@@ -667,6 +667,7 @@ def _build_child_system_prompt(
     role: str = "leaf",
     max_spawn_depth: int = 2,
     child_depth: int = 1,
+    task_last: bool = False,
 ) -> str:
     """Build a focused system prompt for a child agent.
 
@@ -679,8 +680,9 @@ def _build_child_system_prompt(
     parts = [
         "You are a focused subagent working on a specific delegated task.",
         "",
-        f"YOUR TASK:\n{goal}",
     ]
+    if not task_last:
+        parts.append(f"YOUR TASK:\n{goal}")
     if context and context.strip():
         parts.append(f"\nCONTEXT:\n{context}")
     if workspace_path and str(workspace_path).strip():
@@ -734,6 +736,8 @@ def _build_child_system_prompt(
             f"NOTE: You are at depth {child_depth}. The delegation tree "
             f"is capped at max_spawn_depth={max_spawn_depth}. {child_note}"
         )
+    if task_last:
+        parts.append(f"\nYOUR TASK:\n{goal}")
     return "\n".join(parts)
 
 
@@ -1086,6 +1090,8 @@ def _build_child_agent(
     # 'leaf' (default) cannot; 'orchestrator' retains the delegation
     # toolset subject to depth/kill-switch bounds applied below.
     role: str = "leaf",
+    # Trusted live parent transcript supplied by the executor. Never model-facing.
+    parent_messages: Optional[List[Dict[str, Any]]] = None,
 ):
     """
     Build a child AIAgent on the main thread (thread-safe construction).
@@ -1188,13 +1194,25 @@ def _build_child_agent(
         child_toolsets.append("delegation")
 
     workspace_hint = _resolve_workspace_hint(parent_agent)
+    from tools.delegate_context import (
+        compile_delegation_context,
+        load_delegation_context_policy,
+    )
+
+    context_policy = load_delegation_context_policy(delegation_cfg)
+    child_context = compile_delegation_context(
+        explicit_context=context,
+        parent_messages=parent_messages,
+        policy=context_policy,
+    )
     child_prompt = _build_child_system_prompt(
         goal,
-        context,
+        child_context,
         workspace_path=workspace_hint,
         role=effective_role,
         max_spawn_depth=max_spawn,
         child_depth=child_depth,
+        task_last=context_policy.mode == "recent_projection",
     )
     # Extract parent's API key so subagents inherit auth (e.g. Nous Portal).
     parent_api_key = getattr(parent_agent, "api_key", None)
@@ -2431,6 +2449,7 @@ def delegate_task(
     role: Optional[str] = None,
     background: Optional[bool] = None,
     parent_agent=None,
+    parent_messages: Optional[List[Dict[str, Any]]] = None,
 ) -> str:
     """
     Spawn one or more child agents to handle delegated tasks.
@@ -2606,6 +2625,7 @@ def delegate_task(
                 override_acp_command=creds.get("command"),
                 override_acp_args=creds.get("args"),
                 role=effective_role,
+                parent_messages=parent_messages,
             )
             # Override with correct parent tool names (before child construction mutated global)
             child._delegate_saved_tool_names = _parent_tool_names
@@ -3536,8 +3556,10 @@ DELEGATE_TASK_SCHEMA = {
                 "type": "string",
                 "description": (
                     "What the subagent should accomplish. Be specific and "
-                    "self-contained -- the subagent knows nothing about your "
-                    "conversation history."
+                    "self-contained -- do not assume the subagent receives "
+                    "parent conversation history. Operators may enable a "
+                    "bounded recent projection, but explicit context remains "
+                    "the reliable way to pass required background."
                 ),
             },
             "context": {
@@ -3649,6 +3671,7 @@ registry.register(
         role=args.get("role"),
         background=_model_background_value(args, kw.get("parent_agent")),
         parent_agent=kw.get("parent_agent"),
+        parent_messages=kw.get("parent_messages"),
     ),
     check_fn=check_delegate_requirements,
     emoji="🔀",

@@ -3086,6 +3086,45 @@ class TestConcurrentToolExecution:
             )
             assert result == "result"
 
+    def test_delegate_dispatch_forwards_trusted_parent_messages(self, agent):
+        parent_messages = [{"role": "user", "content": "live"}]
+        with patch("tools.delegate_tool.delegate_task", return_value="ok") as delegated:
+            result = agent._dispatch_delegate_task(
+                {"goal": "work", "context": "explicit"},
+                parent_messages=parent_messages,
+            )
+        assert result == "ok"
+        assert delegated.call_args.kwargs["parent_messages"] is parent_messages
+
+    def test_sequential_delegate_path_forwards_live_messages(self, agent):
+        tool_call = _mock_tool_call(
+            name="delegate_task", arguments='{"goal":"work"}', call_id="c1"
+        )
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tool_call])
+        messages = [{"role": "user", "content": "live sequential"}]
+        captured = []
+        agent._dispatch_delegate_task = lambda args, parent_messages=None: (
+            captured.append(parent_messages) or '{"ok":true}'
+        )
+
+        agent._execute_tool_calls_sequential(mock_msg, messages, "task-1")
+
+        assert captured == [messages]
+
+    def test_concurrent_invoke_delegate_path_forwards_live_messages(self, agent):
+        messages = [{"role": "user", "content": "live concurrent"}]
+        captured = []
+        agent._dispatch_delegate_task = lambda args, parent_messages=None: (
+            captured.append(parent_messages) or '{"ok":true}'
+        )
+
+        result = agent._invoke_tool(
+            "delegate_task", {"goal": "work"}, "task-1", messages=messages
+        )
+
+        assert result == '{"ok":true}'
+        assert captured == [messages]
+
     def test_sequential_tool_callbacks_fire_in_order(self, agent):
         tool_call = _mock_tool_call(name="web_search", arguments='{"query":"hello"}', call_id="c1")
         mock_msg = _mock_assistant_msg(content="", tool_calls=[tool_call])

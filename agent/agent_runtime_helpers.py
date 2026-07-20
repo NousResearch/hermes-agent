@@ -2505,7 +2505,10 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
             )
     elif function_name == "delegate_task":
         def _execute(next_args: dict) -> Any:
-            return _finish_agent_tool(agent._dispatch_delegate_task(next_args), next_args)
+            return _finish_agent_tool(
+                agent._dispatch_delegate_task(next_args, parent_messages=messages),
+                next_args,
+            )
     else:
         def _execute(next_args: dict) -> Any:
             return _ra().handle_function_call(
@@ -2640,6 +2643,17 @@ def sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]
     is present — so orphans from session loading or manual message
     manipulation are always caught.
     """
+    # Runtime-authenticated steer metadata is internal context-projection state,
+    # never a provider field. Work on copies so the live transcript retains it.
+    from tools.delegate_context import AUTHENTICATED_OOB_KEY
+
+    messages = [
+        {key: value for key, value in message.items() if key != AUTHENTICATED_OOB_KEY}
+        if AUTHENTICATED_OOB_KEY in message
+        else message
+        for message in messages
+    ]
+
     # --- Role allowlist: drop messages with roles the API won't accept ---
     filtered = []
     for msg in messages:
@@ -3368,6 +3382,9 @@ def apply_pending_steer_to_tool_results(agent, messages: list, num_tool_msgs: in
             messages[target_idx]["content"] = f"{existing_content}{marker}"
     else:
         messages[target_idx]["content"] = existing_content + marker
+    from tools.delegate_context import attach_authenticated_oob
+
+    attach_authenticated_oob(messages[target_idx], steer_text)
     _ra().logger.info(
         "Delivered /steer to agent after tool batch (%d chars): %s",
         len(steer_text),

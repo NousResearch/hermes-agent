@@ -804,6 +804,9 @@ def run_conversation(
                             _sm["content"] = blocks
                         except Exception:
                             pass
+                    from tools.delegate_context import attach_authenticated_oob
+
+                    attach_authenticated_oob(_sm, _pre_api_steer)
                     _injected = True
                     logger.debug(
                         "Pre-API-call steer drain: injected into tool msg at index %d",

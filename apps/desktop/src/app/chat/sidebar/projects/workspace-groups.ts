@@ -533,6 +533,21 @@ export function overlayRepoLanes(
         (placed.isMain
           ? lanes.find(g => g.isMain && g.label.toLowerCase() === placed.label.toLowerCase())
           : undefined) ??
+        // Non-git backend heuristic (`project_tree._place_by_heuristic`): one
+        // isMain lane keyed by the folder path itself (id === path, label =
+        // basename) — not `::branch::<name>`. Live placement always emits
+        // `::branch::main` / label "main", so id+label miss and used to FORK a
+        // phantom second main lane with the same sessions. Prefer the existing
+        // path-keyed main lane when present.
+        (placed.isMain && placedKey
+          ? lanes.find(
+              g =>
+                g.isMain &&
+                pathKey(g.path) === placedKey &&
+                !g.id.includes('::branch::') &&
+                !g.id.includes('::kanban')
+            )
+          : undefined) ??
         (!placed.isMain && placedKey ? lanes.find(g => pathKey(g.path) === placedKey) : undefined)
 
       if (!lane) {

@@ -650,6 +650,77 @@ describe('overlayLiveLanes', () => {
     expect(overlaid.repos[0].groups.flatMap(g => g.sessions.map(s => s.id))).toEqual(['dup'])
   })
 
+  it('does not fork a phantom main lane for a non-git backend workspace lane', () => {
+    // Backend non-git heuristic (`project_tree._place_by_heuristic`): lane id =
+    // folder path, label = basename, isMain=true. Live overlay used to always
+    // place under `::branch::main` / label "main", miss that lane by id+label,
+    // and CREATE a second main lane with the same sessions — dual lanes in the
+    // project drill-in (e.g. main + codex-research-guardian).
+    const root = '/home/hermes/hermes-workspace/codex-research-guardian'
+    const a = makeSession(root, { id: 's1' }) // empty git_branch / git_repo_root
+    const b = makeSession(root, { id: 's2' })
+
+    const project = projectNode({
+      id: root,
+      isAuto: true,
+      path: root,
+      repos: [
+        {
+          id: root,
+          label: 'codex-research-guardian',
+          path: root,
+          sessionCount: 2,
+          groups: [
+            lane({
+              id: root,
+              label: 'codex-research-guardian',
+              isMain: true,
+              path: root,
+              sessions: [a, b]
+            })
+          ]
+        }
+      ]
+    })
+
+    const overlaid = overlayLiveLanes(project, [a, b])
+    const groups = overlaid.repos[0].groups
+
+    expect(groups).toHaveLength(1)
+    expect(groups[0].id).toBe(root)
+    expect(groups[0].label).toBe('codex-research-guardian')
+    expect(groups[0].sessions.map(s => s.id).sort()).toEqual(['s1', 's2'])
+    expect(groups.some(g => g.label === 'main' || g.id.endsWith('::branch::main'))).toBe(false)
+  })
+
+  it('joins a fresh live session into an existing non-git workspace lane (no branch id)', () => {
+    const root = '/work/notes'
+    const existing = makeSession(root, { id: 'old' })
+
+    const project = projectNode({
+      id: root,
+      isAuto: true,
+      path: root,
+      repos: [
+        {
+          id: root,
+          label: 'notes',
+          path: root,
+          sessionCount: 1,
+          groups: [lane({ id: root, label: 'notes', isMain: true, path: root, sessions: [existing] })]
+        }
+      ]
+    })
+
+    const fresh = makeSession(root, { id: 'fresh' })
+    const overlaid = overlayLiveLanes(project, [existing, fresh])
+    const groups = overlaid.repos[0].groups
+
+    expect(groups).toHaveLength(1)
+    expect(groups[0].id).toBe(root)
+    expect(groups[0].sessions.map(s => s.id).sort()).toEqual(['fresh', 'old'])
+  })
+
   it('adds a new session to an existing worktree lane keyed by a divergent id (matches by path)', () => {
     // Backend keyed the worktree lane off a branch-style id (no live git probe),
     // but the lane PATH is the worktree dir. A new session under that worktree

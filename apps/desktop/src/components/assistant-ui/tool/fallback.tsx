@@ -62,6 +62,7 @@ import {
   type ToolStatus,
   type ToolTitleAction
 } from './fallback-model'
+import { prettyJson } from './fallback-model/format'
 
 // `true` when a ToolEntry is rendered inside an embedding wrapper that owns
 // the per-row chrome (timer / preview). The flat ToolGroupSlot sets this
@@ -367,11 +368,15 @@ function ToolEntry({ part }: ToolEntryProps) {
   const hasSearchHits = Boolean(view.searchHits?.length)
   const searchResultsLabel = part.toolName === 'web_search' ? 'Search results' : view.detailLabel
 
+  // Only web_search renders the raw JSON drilldown, so serialize the result
+  // lazily here instead of prettyJson-ing every tool's result in buildToolView.
+  const rawResult = useMemo(
+    () => (part.toolName === 'web_search' && toolViewMode !== 'technical' ? prettyJson(part.result) : ''),
+    [part.toolName, part.result, toolViewMode]
+  )
+
   const showRawSearchDrilldown =
-    part.toolName === 'web_search' &&
-    part.result !== undefined &&
-    toolViewMode !== 'technical' &&
-    Boolean(view.rawResult.trim())
+    part.toolName === 'web_search' && part.result !== undefined && toolViewMode !== 'technical' && Boolean(rawResult.trim())
 
   const hasExpandableContent = Boolean(
     view.imageUrl || view.inlineDiff || showDetail || hasSearchHits || toolViewMode === 'technical'
@@ -587,7 +592,7 @@ function ToolEntry({ part }: ToolEntryProps) {
             <details className="max-w-full">
               <summary className={cn(TOOL_SECTION_LABEL_CLASS, 'mb-0')}>{copy.rawResponse}</summary>
               <pre className={cn(TOOL_SECTION_PRE_CLASS, 'mt-1 whitespace-pre-wrap wrap-anywhere')}>
-                {view.rawResult}
+                {rawResult}
               </pre>
             </details>
           )}

@@ -6,6 +6,7 @@ are made.
 """
 
 import ast
+import copy
 import inspect
 import io
 import json
@@ -6076,6 +6077,186 @@ class TestRetryExhaustion:
         # Crucial regression guard: a deterministic refusal is NOT retried —
         # exactly one API call, no empty-response retry loop.
         assert agent.client.chat.completions.create.call_count == 1
+
+    def test_sensitive_refusal_rewrites_before_fallback(self, agent):
+        self._setup_agent(agent)
+        agent.model = "anthropic/claude-fable-5"
+        agent._fallback_chain = [
+            {"provider": "openrouter", "model": "anthropic/claude-opus-4.8"},
+        ]
+        agent._fallback_index = 0
+        refusal = SimpleNamespace(
+            choices=[SimpleNamespace(
+                message=SimpleNamespace(
+                    content=None, tool_calls=None, reasoning=None,
+                    reasoning_content=None, refusal="blocked",
+                ),
+                finish_reason="stop",
+            )],
+            model=agent.model,
+            usage=None,
+            id="refusal",
+        )
+        recovered = _mock_response(content="fallback answer", finish_reason="stop")
+        request_snapshots = []
+
+        responses = iter([refusal, refusal, refusal, recovered])
+
+        def _create(**kwargs):
+            request_snapshots.append(copy.deepcopy(kwargs["messages"]))
+            return next(responses)
+
+        def _activate_fallback(reason=None):
+            agent._fallback_index = len(agent._fallback_chain)
+            return True
+
+        with (
+            patch(
+                "hermes_cli.config.load_config",
+                return_value={
+                    "sensitive_retry": {
+                        "enabled": True,
+                        "max_rewrites": 2,
+                        "models": ["claude-fable-5"],
+                        "strategy": "soften",
+                    },
+                },
+            ),
+            patch.object(
+                agent.client.chat.completions,
+                "create",
+                side_effect=_create,
+            ) as create,
+            patch.object(agent, "_try_activate_fallback", side_effect=_activate_fallback) as fallback,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("keep this task unchanged")
+
+        assert result["final_response"] == "fallback answer"
+        assert create.call_count == 4
+        fallback.assert_called_once_with()
+        retry_messages = request_snapshots[:3]
+        assert [msgs[-1]["content"] for msgs in retry_messages] == [
+            "keep this task unchanged",
+            "keep this task unchanged",
+            "keep this task unchanged",
+        ]
+        assert len({str(msgs[0]["content"]) for msgs in retry_messages}) == 3
+
+    def test_sensitive_policy_exception_rewrites_on_same_model(self, agent):
+        self._setup_agent(agent)
+        agent.model = "anthropic/claude-fable-5"
+        recovered = _mock_response(content="same model answer", finish_reason="stop")
+        request_snapshots = []
+        responses = iter([RuntimeError("content_filter"), recovered])
+
+        def _create(**kwargs):
+            request_snapshots.append(copy.deepcopy(kwargs["messages"]))
+            response = next(responses)
+            if isinstance(response, Exception):
+                raise response
+            return response
+
+        with (
+            patch(
+                "hermes_cli.config.load_config",
+                return_value={
+                    "sensitive_retry": {
+                        "enabled": True,
+                        "max_rewrites": 2,
+                        "models": ["claude-fable-5"],
+                        "strategy": "soften",
+                    },
+                },
+            ),
+            patch.object(agent.client.chat.completions, "create", side_effect=_create) as create,
+            patch.object(agent, "_try_activate_fallback") as fallback,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("keep this task unchanged")
+
+        assert result["final_response"] == "same model answer"
+        assert create.call_count == 2
+        fallback.assert_not_called()
+        assert request_snapshots[0][-1] == request_snapshots[1][-1]
+        assert request_snapshots[0][0] != request_snapshots[1][0]
+
+    @pytest.mark.parametrize(
+        ("retry_config", "model"),
+        [
+            (
+                {
+                    "enabled": False,
+                    "max_rewrites": 3,
+                    "models": ["claude-fable-5"],
+                    "strategy": "soften",
+                },
+                "anthropic/claude-fable-5",
+            ),
+            (
+                {
+                    "enabled": True,
+                    "max_rewrites": 3,
+                    "models": ["claude-fable-5"],
+                    "strategy": "soften",
+                },
+                "anthropic/claude-opus-4.8",
+            ),
+        ],
+        ids=["disabled", "model-filtered"],
+    )
+    def test_sensitive_refusal_immediately_reroutes_when_ineligible(
+        self, agent, retry_config, model
+    ):
+        self._setup_agent(agent)
+        agent.model = model
+        agent._fallback_chain = [
+            {"provider": "openrouter", "model": "anthropic/claude-sonnet-4.7"},
+        ]
+        agent._fallback_index = 0
+        refusal = SimpleNamespace(
+            choices=[SimpleNamespace(
+                message=SimpleNamespace(
+                    content=None, tool_calls=None, reasoning=None,
+                    reasoning_content=None, refusal="blocked",
+                ),
+                finish_reason="stop",
+            )],
+            model=model,
+            usage=None,
+            id="refusal",
+        )
+        recovered = _mock_response(content="fallback answer", finish_reason="stop")
+
+        def _activate_fallback(reason=None):
+            agent._fallback_index = len(agent._fallback_chain)
+            return True
+
+        with (
+            patch(
+                "hermes_cli.config.load_config",
+                return_value={"sensitive_retry": retry_config},
+            ),
+            patch.object(
+                agent.client.chat.completions,
+                "create",
+                side_effect=[refusal, recovered],
+            ) as create,
+            patch.object(agent, "_try_activate_fallback", side_effect=_activate_fallback) as fallback,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("keep this task unchanged")
+
+        assert result["final_response"] == "fallback answer"
+        assert create.call_count == 2
+        fallback.assert_called_once_with()
+        assert create.call_args_list[0].kwargs["messages"] == create.call_args_list[1].kwargs["messages"]
 
     def test_api_error_returns_gracefully_after_retries(self, agent):
         """Exhausted retries on API errors must return error result, not crash."""

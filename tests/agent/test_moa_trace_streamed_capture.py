@@ -16,6 +16,7 @@ with real file I/O against a temp HERMES_HOME — no mocks on the write path.
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 
 import pytest
 
@@ -153,3 +154,38 @@ def test_empty_fallback_string_treated_as_missing(tmp_path, monkeypatch):
     agg = rec["aggregator"]
     assert agg["output"] is None
     assert agg["output_location"] == "assistant_message_in_session_db"
+
+
+def test_trace_records_reference_retry_counters(tmp_path, monkeypatch):
+    trace_dir = _enable_traces(tmp_path, monkeypatch)
+    mc = _make_completions_with_pending(streamed=False, inline_output="acted")
+    accounting = SimpleNamespace(
+        usage=None,
+        model="anthropic/claude-fable-5",
+        provider="openrouter",
+        temperature=None,
+        messages=[],
+        output="advice",
+        cost_usd=None,
+        cost_status=None,
+        cost_source=None,
+        fable_refusals=2,
+        rewrite_attempts=2,
+        rewrite_successes=1,
+        rerouted_to_fallback=0,
+    )
+    mc._pending_trace["reference_outputs"] = [
+        ("openrouter:anthropic/claude-fable-5", "advice", accounting)
+    ]
+
+    mc.consume_and_save_trace("sess_retry", aggregator_output_fallback=None)
+
+    record = _read_single_trace(trace_dir, "sess_retry")
+    expected = {
+        "fable_refusals": 2,
+        "rewrite_attempts": 2,
+        "rewrite_successes": 1,
+        "rerouted_to_fallback": 0,
+    }
+    assert record["sensitive_retry"] == expected
+    assert record["references"][0]["sensitive_retry"] == expected

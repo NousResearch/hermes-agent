@@ -2411,6 +2411,13 @@ DEFAULT_CONFIG = {
         "max_turns": 20,
     },
 
+    "sensitive_retry": {
+        "enabled": False,
+        "max_rewrites": 3,
+        "models": ["claude-fable-5"],
+        "strategy": "soften",
+    },
+
     # Mixture of Agents — named presets used by /moa. A preset is an execution
     # mode around the main model, not a provider/model itself: references +
     # aggregator synthesize private guidance before each main-model iteration.
@@ -2425,6 +2432,10 @@ DEFAULT_CONFIG = {
         # override the output directory.
         "save_traces": False,
         "trace_dir": "",
+        "reference_retry": {
+            "enabled": False,
+            "max_rewrites": 2,
+        },
         "presets": {
             "default": {
                 "reference_models": [

@@ -47,6 +47,53 @@ def _normalize_trigger(value: str) -> str:
     return " ".join(value.split())
 
 
+def _relative_skill_path(skills_dir: Path, path: Path) -> Path:
+    try:
+        relative = path.relative_to(skills_dir)
+    except ValueError as exc:
+        raise _error(path, "skill is outside the bundled skills directory") from exc
+
+    if skills_dir.is_symlink():
+        raise _error(skills_dir, "symbolic links are not allowed in skill paths")
+
+    current = skills_dir
+    for segment in relative.parts:
+        current /= segment
+        if current.is_symlink():
+            raise _error(current, "symbolic links are not allowed in skill paths")
+
+    resolved_skills_dir = skills_dir.resolve()
+    try:
+        resolved_path = path.resolve(strict=True)
+    except OSError as exc:
+        raise _error(path, f"could not resolve skill path: {exc}") from exc
+    try:
+        resolved_path.relative_to(resolved_skills_dir)
+    except ValueError as exc:
+        raise _error(
+            path, "resolved skill path is outside the bundled skills directory"
+        ) from exc
+
+    return relative
+
+
+def _discover_skill_files(skills_dir: Path) -> list[Path]:
+    if skills_dir.is_symlink():
+        raise _error(skills_dir, "symbolic links are not allowed in skill paths")
+
+    skill_files: list[Path] = []
+    for candidate in sorted(skills_dir.rglob("*")):
+        if candidate.is_symlink():
+            if candidate.name == "SKILL.md" or candidate.is_dir():
+                raise _error(candidate, "symbolic links are not allowed in skill paths")
+            continue
+        if candidate.name == "SKILL.md":
+            if not candidate.is_file():
+                raise _error(candidate, "SKILL.md must be a regular file")
+            skill_files.append(candidate)
+    return skill_files
+
+
 def _load_frontmatter(path: Path) -> dict[str, object]:
     try:
         lines = path.read_text(encoding="utf-8").splitlines()
@@ -109,12 +156,12 @@ def _validated_triggers(
 def parse_skill(skills_dir: Path, path: Path) -> SkillEntry:
     """Parse one SKILL.md into its path-derived runtime contract entry."""
 
-    try:
-        relative = path.relative_to(skills_dir)
-    except ValueError as exc:
-        raise _error(path, "skill is outside the bundled skills directory") from exc
+    relative = _relative_skill_path(skills_dir, path)
     if relative.name != "SKILL.md" or len(relative.parts) < 2:
         raise _error(path, "skill must be nested below the bundled skills directory")
+    for segment in relative.parts[:-1]:
+        if not SKILL_NAME_PATTERN.fullmatch(segment):
+            raise _error(path, f"invalid skill path segment: {segment!r}")
 
     frontmatter = _load_frontmatter(path)
     name = frontmatter.get("name")
@@ -164,7 +211,7 @@ def build_contract(skills_dir: Path) -> Contract:
     """Build a deterministic contract from bundled SKILL.md files only."""
 
     skills_dir = Path(skills_dir)
-    skill_files = sorted(skills_dir.rglob("SKILL.md"))
+    skill_files = _discover_skill_files(skills_dir)
     entries = [parse_skill(skills_dir, path) for path in skill_files]
 
     identities: dict[str, Path] = {}

@@ -75,6 +75,57 @@ def test_contract_rejects_missing_description(tmp_path):
         build_contract(skills)
 
 
+def test_contract_rejects_outside_skill_symlink_before_reading(tmp_path, monkeypatch):
+    skills = tmp_path / "skills"
+    outside = tmp_path / "outside" / "SKILL.md"
+    write_skill(outside, name="outside")
+    linked_skill = skills / "linked" / "SKILL.md"
+    linked_skill.parent.mkdir(parents=True)
+    linked_skill.symlink_to(outside)
+
+    original_read_text = Path.read_text
+
+    def guarded_read_text(path, *args, **kwargs):
+        if path == linked_skill:
+            pytest.fail("symlinked SKILL.md was read before validation")
+        return original_read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", guarded_read_text)
+
+    with pytest.raises(ContractError, match="symbolic links are not allowed"):
+        build_contract(skills)
+
+
+def test_contract_rejects_symlinked_path_component(tmp_path):
+    skills = tmp_path / "skills"
+    outside_dir = tmp_path / "outside"
+    write_skill(outside_dir / "SKILL.md", name="outside")
+    skills.mkdir()
+    (skills / "linked").symlink_to(outside_dir, target_is_directory=True)
+
+    with pytest.raises(ContractError, match="symbolic links are not allowed"):
+        build_contract(skills)
+
+
+@pytest.mark.parametrize(
+    "unsafe_segment",
+    ["bad|segment", "bad segment", "..skill", "_hidden", "UPPER"],
+)
+@pytest.mark.parametrize("segment_position", ["category", "skill"])
+def test_contract_rejects_unsafe_manifest_path_segments(
+    tmp_path, unsafe_segment, segment_position
+):
+    skills = tmp_path / "skills"
+    if segment_position == "category":
+        skill = skills / unsafe_segment / "good-skill" / "SKILL.md"
+    else:
+        skill = skills / "good-category" / unsafe_segment / "SKILL.md"
+    write_skill(skill, name="good-skill")
+
+    with pytest.raises(ContractError, match="invalid skill path segment"):
+        build_contract(skills)
+
+
 @pytest.mark.parametrize(
     ("content", "message"),
     [

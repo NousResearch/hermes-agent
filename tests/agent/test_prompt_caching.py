@@ -271,3 +271,59 @@ class TestApplyAnthropicCacheControl:
         assert isinstance(result[1]["content"], list)
         assert result[1]["content"][0]["cache_control"] == {"type": "ephemeral"}
         assert "cache_control" not in result[1]
+
+
+class TestNormalizationOrdering:
+    """The conversation loop normalizes message text for prefix stability and
+    injects cache breakpoints. Marking must happen AFTER normalization.
+
+    ``_apply_cache_marker`` rewrites a plain-string ``content`` into a
+    ``[{"type": "text", ...}]`` block. The loop's whitespace pass is guarded
+    on ``isinstance(content, str)``, so anything marked first is skipped by
+    it — and a message is only marked while it sits in the last-3 window.
+    The same message would then be sent raw on one turn and stripped on the
+    next, breaking the prefix match the breakpoints exist to protect.
+    """
+
+    def test_marking_a_string_hides_it_from_string_normalization(self):
+        """The mechanism: marking changes content out of ``str`` shape."""
+        msgs = [{"role": "user", "content": "hello  \n"}]
+        marked = apply_anthropic_cache_control(msgs, native_anthropic=False)
+        assert not isinstance(marked[0]["content"], str)
+        # Raw whitespace survives, now unreachable by an isinstance(str) pass.
+        assert marked[0]["content"][0]["text"] == "hello  \n"
+
+    def test_normalized_then_marked_matches_the_unmarked_wire_text(self):
+        """Normalize-then-mark keeps a message byte-identical across the
+        turn where it rolls out of the cache window."""
+        raw = "file1\nfile2\n"  # trailing newline: every shell tool result
+
+        # Turn N+1, message has left the window: plain string, normalized.
+        out_of_window = raw.strip()
+
+        # Turn N, message is in the window: normalized first, then marked.
+        marked = apply_anthropic_cache_control(
+            [{"role": "tool", "content": raw.strip(), "tool_call_id": "t1"}],
+            native_anthropic=False,
+        )
+        in_window = marked[0]["content"][0]["text"]
+
+        assert in_window == out_of_window
+
+    def test_cache_marking_runs_after_every_message_mutation(self):
+        """Ordering invariant, locked against regression."""
+        import inspect
+
+        from agent import conversation_loop
+
+        src = inspect.getsource(conversation_loop)
+        mark = src.index("apply_anthropic_cache_control(\n")
+        for earlier in (
+            'am["content"].strip()',              # whitespace normalization
+            "_sanitize_api_messages(api_messages)",       # orphan sweep
+            "_drop_thinking_only_and_merge_users(",       # drop / merge
+            "_sanitize_messages_surrogates(api_messages)",
+        ):
+            assert src.index(earlier) < mark, (
+                f"{earlier!r} must run before cache breakpoints are injected"
+            )

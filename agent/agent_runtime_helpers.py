@@ -1510,6 +1510,19 @@ def extract_reasoning(agent, assistant_message) -> Optional[str]:
         Combined reasoning text, or None if no reasoning found
     """
     reasoning_parts = []
+
+    def _append_reasoning_part(value) -> None:
+        if isinstance(value, str):
+            if value and value not in reasoning_parts:
+                reasoning_parts.append(value)
+            return
+        if isinstance(value, list):
+            for item in value:
+                _append_reasoning_part(item)
+            return
+        if isinstance(value, dict):
+            for key in ("summary", "thinking", "content", "text"):
+                _append_reasoning_part(value.get(key))
     
     # Check direct reasoning field
     if hasattr(assistant_message, 'reasoning') and assistant_message.reasoning:
@@ -1527,14 +1540,12 @@ def extract_reasoning(agent, assistant_message) -> Optional[str]:
         for detail in assistant_message.reasoning_details:
             if isinstance(detail, dict):
                 # Extract summary from reasoning detail object
-                summary = (
+                _append_reasoning_part(
                     detail.get('summary')
                     or detail.get('thinking')
                     or detail.get('content')
                     or detail.get('text')
                 )
-                if summary and summary not in reasoning_parts:
-                    reasoning_parts.append(summary)
 
     # Some providers embed reasoning directly inside assistant content
     # instead of returning structured reasoning fields.  Only fall back

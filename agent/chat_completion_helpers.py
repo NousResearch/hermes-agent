@@ -1238,6 +1238,82 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
 
 
 
+# reasoning_details item fields that carry provider verification material.
+# Items with any of these set are replayed byte-exact: altering them breaks
+# the provider's signature/decryption check on the next turn, which forces
+# the strip-all-reasoning_details retry path and discards thinking
+# continuity (see error_classifier).
+_REASONING_DETAIL_OPAQUE_KEYS = ("signature", "encrypted_content")
+
+# Plain-text fields inside a reasoning_details item that are safe to redact.
+# ``thinking`` is the Anthropic block shape ({"type": "thinking",
+# "thinking": ...}); signed thinking blocks are excluded by the opaque-key
+# check above before this list is consulted.
+_REASONING_DETAIL_TEXT_KEYS = ("text", "summary", "thinking", "content")
+
+
+def _reasoning_detail_is_opaque(detail: dict) -> bool:
+    if any(detail.get(k) for k in _REASONING_DETAIL_OPAQUE_KEYS):
+        return True
+    dtype = detail.get("type")
+    return isinstance(dtype, str) and "encrypted" in dtype
+
+
+def _redact_reasoning_detail(detail: dict) -> dict:
+    """Redact credential-shaped values from unsigned reasoning_details text.
+
+    Signed or encrypted provider material is replayed without mutation. Unknown
+    details that merely contain a ``data`` field are not treated as fully opaque;
+    their plain text fields still get redacted.
+    """
+    if _reasoning_detail_is_opaque(detail):
+        return detail
+
+    from agent.redact import redact_sensitive_text
+
+    redacted = None
+    for key in _REASONING_DETAIL_TEXT_KEYS:
+        value = detail.get(key)
+        new_value = _redact_reasoning_value(value, redact_sensitive_text)
+        if new_value is not value:
+            if redacted is None:
+                redacted = dict(detail)
+            redacted[key] = new_value
+    return redacted if redacted is not None else detail
+
+
+def _redact_reasoning_value(value, redact_sensitive_text):
+    if isinstance(value, str):
+        if not value:
+            return value
+        new_value = redact_sensitive_text(value)
+        return new_value if new_value != value else value
+
+    if isinstance(value, list):
+        redacted = None
+        for idx, item in enumerate(value):
+            new_item = _redact_reasoning_value(item, redact_sensitive_text)
+            if new_item is not item:
+                if redacted is None:
+                    redacted = list(value)
+                redacted[idx] = new_item
+        return redacted if redacted is not None else value
+
+    if isinstance(value, dict):
+        redacted = None
+        for key, item in value.items():
+            if key not in _REASONING_DETAIL_TEXT_KEYS:
+                continue
+            new_item = _redact_reasoning_value(item, redact_sensitive_text)
+            if new_item is not item:
+                if redacted is None:
+                    redacted = dict(value)
+                redacted[key] = new_item
+        return redacted if redacted is not None else value
+
+    return value
+
+
 def build_assistant_message(agent, assistant_message, finish_reason: str) -> dict:
     """Build a normalized assistant message dict from an API response message.
 
@@ -1258,6 +1334,15 @@ def build_assistant_message(agent, assistant_message, finish_reason: str) -> dic
             combined = "\n\n".join(b.strip() for b in think_blocks if b.strip())
             reasoning_text = combined or None
 
+    # Same defence-in-depth for reasoning: a model quoting a credential in
+    # its thinking otherwise exposes it via callbacks/logging and persists it
+    # in plaintext via the reasoning / reasoning_content fields of state.db
+    # (#43666). Redacting before callbacks keeps every non-streaming surface
+    # aligned. No-op when redaction is disabled.
+    if isinstance(reasoning_text, str) and reasoning_text:
+        from agent.redact import redact_sensitive_text
+        reasoning_text = redact_sensitive_text(reasoning_text)
+
     if reasoning_text and agent.verbose_logging:
         logging.debug(f"Captured reasoning ({len(reasoning_text)} chars): {reasoning_text}")
 
@@ -1276,12 +1361,15 @@ def build_assistant_message(agent, assistant_message, finish_reason: str) -> dic
             except Exception:
                 pass
 
+    # Keep the callback contract aligned with current main when redaction is
+    # disabled, then make the persisted copy safe for JSON serialization.
+    if reasoning_text:
+        reasoning_text = _sanitize_surrogates(reasoning_text)
+
     # Sanitize surrogates from API response — some models (e.g. Kimi/GLM via Ollama)
     # can return invalid surrogate code points that crash json.dumps() on persist.
     _raw_content = flatten_message_text(getattr(assistant_message, "content", None))
     _san_content = _sanitize_surrogates(_raw_content)
-    if reasoning_text:
-        reasoning_text = _sanitize_surrogates(reasoning_text)
 
     # Strip inline reasoning tags (<think>…</think> etc.) from the stored
     # assistant content.  Reasoning was already captured into
@@ -1321,6 +1409,9 @@ def build_assistant_message(agent, assistant_message, finish_reason: str) -> dic
         if isinstance(model_extra, dict) and "reasoning_content" in model_extra:
             raw_reasoning_content = model_extra["reasoning_content"]
     if raw_reasoning_content is not None:
+        # This is a provider-native echo field. Keep its current sanitization
+        # behaviour, but never redact it: DeepSeek/Kimi/MiMo require the exact
+        # provider value on the next turn.
         msg["reasoning_content"] = _sanitize_surrogates(raw_reasoning_content)
     elif assistant_tool_calls and agent._needs_thinking_reasoning_pad():
         # DeepSeek v4 thinking mode and Kimi / Moonshot thinking mode
@@ -1362,19 +1453,24 @@ def build_assistant_message(agent, assistant_message, finish_reason: str) -> dic
         msg["reasoning_content"] = reasoning_text
 
     if hasattr(assistant_message, 'reasoning_details') and assistant_message.reasoning_details:
-        # Pass reasoning_details back unmodified so providers (OpenRouter,
-        # Anthropic, OpenAI) can maintain reasoning continuity across turns.
-        # Each provider may include opaque fields (signature, encrypted_content)
-        # that must be preserved exactly.
+        # Pass reasoning_details back so providers (OpenRouter, Anthropic,
+        # OpenAI) can maintain reasoning continuity across turns. Opaque
+        # fields (signature, encrypted_content) are preserved exactly;
+        # plain-text fields of unsigned items are credential-redacted
+        # before entering history/persistence (#43666) — see
+        # _redact_reasoning_detail for the field-level contract.
         raw_details = assistant_message.reasoning_details
         preserved = []
         for d in raw_details:
             if isinstance(d, dict):
-                preserved.append(d)
+                pass
             elif hasattr(d, "__dict__"):
-                preserved.append(d.__dict__)
+                d = d.__dict__
             elif hasattr(d, "model_dump"):
-                preserved.append(d.model_dump())
+                d = d.model_dump()
+            else:
+                continue
+            preserved.append(_redact_reasoning_detail(d))
         if preserved:
             msg["reasoning_details"] = preserved
 

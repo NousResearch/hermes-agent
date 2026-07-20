@@ -221,16 +221,22 @@ _PRIVATE_KEY_RE = re.compile(
     r"-----BEGIN[A-Z ]*PRIVATE KEY-----[\s\S]*?-----END[A-Z ]*PRIVATE KEY-----"
 )
 
-# Database connection strings: protocol://user:PASSWORD@host
-# Catches postgres, mysql, mongodb, redis, amqp URLs and redacts the password.
-# The userinfo and password groups forbid whitespace ([^:\s]+ / [^@\s]+) so the
+# Database connection strings: dialect[+driver]://[user]:PASSWORD@host
+# Catches postgres, mysql, mariadb, mongodb, mssql, oracle, clickhouse,
+# redis(s) and amqp(s) URLs and redacts the password. The optional
+# ``+driver`` segment covers SQLAlchemy-style schemes such as
+# postgresql+psycopg, mysql+pymysql or mongodb+srv. The username may be
+# empty for Redis/AMQP-style URIs.
+#
+# The userinfo and password groups forbid whitespace ([^:\s]* / [^@\s]+) so the
 # match can never span a line break. A real DSN password never contains
 # whitespace; without this bound the greedy [^@]+ would scan past the end of a
 # code line to the next stray "@" (e.g. a Python decorator), swallowing
 # intervening lines and corrupting tool OUTPUT for any source containing a
-# postgresql:// f-string template. See issue #33801.
+# postgresql:// f-string template. See issues #33801 and #43666.
 _DB_CONNSTR_RE = re.compile(
-    r"((?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis|amqp)://[^:\s]+:)([^@\s]+)(@)",
+    r"((?:postgres(?:ql)?|mysql|mariadb|mongodb|mssql|oracle|clickhouse|rediss?|amqps?)"
+    r"(?:\+[a-z0-9_]+)?://[^:/?#\s]*:)([^@/?#\s]+)(@)",
     re.IGNORECASE,
 )
 

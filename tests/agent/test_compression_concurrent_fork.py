@@ -78,6 +78,10 @@ def _build_agent_with_db(db: SessionDB, session_id: str):
     compressor._last_aux_model_failure_model = None
     compressor._last_aux_model_failure_error = None
     agent.context_compressor = compressor
+    # The compressor itself is stubbed in this regression; skip the real
+    # auxiliary-provider probe so the thread join below measures the lock
+    # lifecycle, not slow auth/network fallback timing.
+    agent._compression_feasibility_checked = True
     # These tests cover the ROTATION fallback path (forking, child sessions,
     # lock contention) — pin in_place=False so they keep exercising it
     # regardless of the global default (which flipped to True in #38763).

@@ -1,4 +1,5 @@
-import { memo, useMemo } from 'react'
+import type { FC } from 'react'
+import { useMemo } from 'react'
 
 import { ansiColorClass, hasAnsiCodes, parseAnsi } from '@/lib/ansi'
 import { cn } from '@/lib/utils'
@@ -11,7 +12,7 @@ interface AnsiTextProps {
 /** Renders text with embedded ANSI SGR codes as colored / bold spans. Falls
  *  back to a plain string node when no codes are present so the parser cost
  *  is paid only when there's something to colorize. */
-export const AnsiText = memo(({ className, text }: AnsiTextProps) => {
+export const AnsiText: FC<AnsiTextProps> = ({ className, text }) => {
   const segments = useMemo(() => (hasAnsiCodes(text) ? parseAnsi(text) : null), [text])
 
   if (!segments) {
@@ -30,4 +31,4 @@ export const AnsiText = memo(({ className, text }: AnsiTextProps) => {
       ))}
     </span>
   )
-})
+}

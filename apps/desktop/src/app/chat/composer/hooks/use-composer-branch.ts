@@ -1,8 +1,7 @@
 import { type MutableRefObject, useCallback } from 'react'
 
+import { clearComposerAttachments } from '@/store/composer'
 import { listRepoBranches, requestStartWorkSession, startWorkInRepo, switchBranchInRepo } from '@/store/projects'
-
-import { useComposerScope } from '../scope'
 
 interface UseComposerBranchOptions {
   clearDraft: () => void
@@ -18,8 +17,6 @@ interface UseComposerBranchOptions {
  * projects store) is the only dependency; nothing about ChatBar's render.
  */
 export function useComposerBranch({ clearDraft, cwd, draftRef }: UseComposerBranchOptions) {
-  const scope = useComposerScope()
-
   // Hand a worktree off to the controller: open a fresh session anchored there,
   // carrying the composer draft as its first turn. Clearing here means the draft
   // travels to the new session instead of getting stashed under this one.
@@ -27,7 +24,7 @@ export function useComposerBranch({ clearDraft, cwd, draftRef }: UseComposerBran
     (path: string) => {
       const text = draftRef.current
       clearDraft()
-      scope.attachments.clear()
+      clearComposerAttachments()
       requestStartWorkSession(path, text)
     },
     [clearDraft, draftRef]

@@ -174,10 +174,6 @@ def _reinstall_sidecar_deps() -> None:
     if not npm:
         logger.warning("[photon] cannot reinstall stale sidecar deps: npm not on PATH")
         return
-    # Windows: suppress the console flash these short-lived npm runs would
-    # otherwise pop (0 elsewhere). Same helper as the sidecar spawn below.
-    from hermes_cli._subprocess_compat import windows_hide_flags
-
     try:
         result = subprocess.run(  # noqa: S603
             [npm, "ci"],
@@ -186,7 +182,6 @@ def _reinstall_sidecar_deps() -> None:
             text=True,
             check=False,
             timeout=_NPM_REINSTALL_TIMEOUT,
-            creationflags=windows_hide_flags(),
         )
         if result.returncode != 0:
             logger.warning(
@@ -199,7 +194,6 @@ def _reinstall_sidecar_deps() -> None:
                 text=True,
                 check=False,
                 timeout=_NPM_REINSTALL_TIMEOUT,
-                creationflags=windows_hide_flags(),
             )
     except subprocess.TimeoutExpired:
         # A wedged npm (dead registry, network blackhole) must not stall the
@@ -950,10 +944,6 @@ class PhotonAdapter(BasePlatformAdapter):
         # never runs — can't leave it orphaned on the port.
         env["PHOTON_SIDECAR_WATCH_STDIN"] = "1"
 
-        # Windows: hide the child console (0 elsewhere). Same helper the
-        # discord/whatsapp adapters use for their sidecar spawns.
-        from hermes_cli._subprocess_compat import windows_hide_flags
-
         try:
             patch = subprocess.run(  # noqa: S603
                 [
@@ -965,9 +955,6 @@ class PhotonAdapter(BasePlatformAdapter):
                 text=True,
                 timeout=10,
                 check=False,
-                # Windows: suppress the brief console flash this short-lived
-                # node patch run would otherwise pop on every sidecar start.
-                creationflags=windows_hide_flags(),
             )
             if patch.returncode != 0:
                 raise RuntimeError((patch.stderr or patch.stdout or "").strip())
@@ -986,10 +973,6 @@ class PhotonAdapter(BasePlatformAdapter):
             stderr=subprocess.STDOUT,
             env=env,
             start_new_session=(sys.platform != "win32"),
-            # Windows: run the persistent sidecar headless so it does not open
-            # (or leave) a visible console window. CREATE_NO_WINDOW only (no
-            # DETACHED_PROCESS) so the stdin/stdout pipes above stay usable.
-            creationflags=windows_hide_flags(),
         )
 
         # Pump sidecar stderr/stdout into our logger so users see crashes.

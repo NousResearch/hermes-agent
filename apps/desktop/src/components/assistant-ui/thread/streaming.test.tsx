@@ -48,7 +48,6 @@ vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) =>
   window.setTimeout(() => callback(performance.now()), 0)
 )
 vi.stubGlobal('cancelAnimationFrame', (id: number) => window.clearTimeout(id))
-vi.stubGlobal('CSS', { escape: (str: string) => str })
 
 Element.prototype.scrollTo = function scrollTo() {}
 
@@ -243,12 +242,7 @@ function assistantImageMessage(running = false): ThreadMessage {
   } as ThreadMessage
 }
 
-interface StreamingControls {
-  emitSecond: () => void
-  complete: () => void
-}
-
-function StreamingHarness({ onControls }: { onControls?: (controls: StreamingControls) => void } = {}) {
+function StreamingHarness() {
   const [messages, setMessages] = useState<ThreadMessage[]>([userMessage()])
   const [isRunning, setIsRunning] = useState(true)
 
@@ -256,20 +250,6 @@ function StreamingHarness({ onControls }: { onControls?: (controls: StreamingCon
     const first = window.setTimeout(() => {
       setMessages([userMessage(), assistantMessage('first chunk')])
     }, 50)
-
-    if (onControls) {
-      onControls({
-        emitSecond: () => {
-          setMessages([userMessage(), assistantMessage('first chunk second chunk')])
-        },
-        complete: () => {
-          setMessages([userMessage(), assistantMessage('first chunk second chunk', false)])
-          setIsRunning(false)
-        }
-      })
-
-      return () => window.clearTimeout(first)
-    }
 
     const second = window.setTimeout(() => {
       setMessages([userMessage(), assistantMessage('first chunk second chunk')])
@@ -285,7 +265,7 @@ function StreamingHarness({ onControls }: { onControls?: (controls: StreamingCon
       window.clearTimeout(second)
       window.clearTimeout(complete)
     }
-  }, [onControls])
+  }, [])
 
   const runtime = useExternalStoreRuntime<ThreadMessage>({
     messages,
@@ -418,15 +398,11 @@ describe('assistant-ui streaming renderer', () => {
   })
 
   it('renders assistant text incrementally before completion', async () => {
-    let controls: StreamingControls | undefined
-
-    const registerControls = (next: StreamingControls) => {
-      controls = next
-    }
-
-    const { container } = render(<StreamingHarness onControls={registerControls} />)
+    const { container } = render(<StreamingHarness />)
 
     expect(screen.getByRole('status', { name: 'Hermes is loading a response' })).toBeTruthy()
+
+    await wait(80)
 
     await waitFor(() => {
       expect(container.textContent).toContain('first chunk')
@@ -434,16 +410,14 @@ describe('assistant-ui streaming renderer', () => {
     expect(container.textContent).not.toContain('second chunk')
     expect(screen.queryByRole('status', { name: 'Hermes is loading a response' })).toBeNull()
 
-    // Producer-gated, not wall-clock-gated: the old test slept 80ms and
-    // assumed a 500ms timer could not fire before the assertion. On a loaded
-    // runner the test thread could be descheduled for >500ms, so both chunks
-    // arrived and this clean behavior test flaked.
-    act(() => controls?.emitSecond())
+    await wait(500)
+
     await waitFor(() => {
       expect(container.textContent).toContain('first chunk second chunk')
     })
 
-    act(() => controls?.complete())
+    await wait(250)
+
     await waitFor(() => {
       expect(container.textContent).toContain('first chunk second chunk')
     })

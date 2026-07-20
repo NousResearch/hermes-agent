@@ -1,8 +1,7 @@
 'use client'
 
-import { type ReactNode, useCallback, useRef, useState } from 'react'
+import { type ReactNode, useLayoutEffect, useRef, useState } from 'react'
 
-import { useResizeObserver } from '@/hooks/use-resize-observer'
 import { ChevronDown } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 
@@ -16,18 +15,20 @@ export function ExpandableBlock({ children, className }: ExpandableBlockProps) {
   const [expanded, setExpanded] = useState(false)
   const [overflowing, setOverflowing] = useState(false)
 
-  // Measure inside ResizeObserver timing only (layout is clean there). A
-  // synchronous mount-time scrollHeight read forces a reflow per instance,
-  // and a tool-heavy transcript mounts dozens of these on a session switch.
-  const measure = useCallback(() => {
+  useLayoutEffect(() => {
     const el = innerRef.current
 
-    if (el) {
-      setOverflowing(el.scrollHeight > 121)
+    if (!el) {
+      return
     }
-  }, [])
 
-  useResizeObserver(measure, innerRef)
+    const measure = () => setOverflowing(el.scrollHeight > 121)
+    measure()
+    const observer = new ResizeObserver(measure)
+    observer.observe(el)
+
+    return () => observer.disconnect()
+  }, [])
 
   return (
     <div className="relative">

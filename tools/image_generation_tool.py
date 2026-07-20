@@ -1084,7 +1084,18 @@ def _build_no_backend_setup_message() -> str:
 
 
 def check_image_generation_requirements() -> bool:
-    """True if FAL or the explicitly configured image backend is available."""
+    """True if any image gen backend is available.
+
+    Providers are considered in this order:
+
+    1. The in-tree FAL backend (FAL_KEY or managed gateway).
+    2. Any plugin-registered provider whose ``is_available()`` returns True.
+
+    Plugins win only when the in-tree FAL path is NOT ready, which matches
+    the historical behavior: shipping hermes with a FAL key configured
+    should still expose the tool. The active selection among ready
+    providers is resolved per-call by ``image_gen.provider``.
+    """
     try:
         if check_fal_api_key():
             # Trigger the lazy fal_client import here as the SDK presence
@@ -1096,21 +1107,22 @@ def check_image_generation_requirements() -> bool:
     except ImportError:
         pass
 
-    configured = _read_configured_image_provider()
-    if not configured or configured == "fal":
-        return False
-
-    # Probe only the explicitly selected plugin. Merely possessing a cloud
-    # provider key must not opt a user into a paid image-generation backend.
+    # Probe plugin providers. Discovery is idempotent and cheap.
     try:
-        from agent.image_gen_registry import get_provider
+        from agent.image_gen_registry import list_providers
         from hermes_cli.plugins import _ensure_plugins_discovered
 
         _ensure_plugins_discovered()
-        provider = get_provider(configured)
-        return bool(provider and provider.is_available())
+        for provider in list_providers():
+            try:
+                if provider.is_available():
+                    return True
+            except Exception:
+                continue
     except Exception:
-        return False
+        pass
+
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -1236,7 +1248,7 @@ def _read_configured_image_model():
 
 
 def _read_configured_image_provider():
-    """Return ``image_gen.provider`` from config.yaml, or None.
+    """Return the value of ``image_gen.provider`` from config.yaml, or None.
 
     We only consult the plugin registry when this is explicitly set — an
     unset value keeps users on the in-tree FAL fallback even when other
@@ -1281,8 +1293,8 @@ def _dispatch_to_plugin_provider(
     route to its edit endpoint.
     """
     configured = _read_configured_image_provider()
-    if not configured or configured == "fal":
-        return None  # unset/explicit FAL keeps the legacy FAL path
+    if not configured:
+        return None
 
     # Also read configured model so we can pass it to the plugin
     configured_model = _read_configured_image_model()

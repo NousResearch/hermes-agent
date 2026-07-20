@@ -48,8 +48,8 @@ describe('preview store', () => {
     $previewServerRestart.set(null)
     $activeSessionId.set(null)
     $selectedStoredSessionId.set(null)
-    clearSessionPreviewRegistry()
     window.localStorage.clear()
+    clearSessionPreviewRegistry()
   })
 
   it('does not notify status subscribers for restart progress text', () => {

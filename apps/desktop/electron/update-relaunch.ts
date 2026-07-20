@@ -63,7 +63,6 @@ function resolveUnpackedRelease(execPath, updateRoot, platform) {
   if (!execPath || !updateRoot) {
     return null
   }
-
   const releaseDir = path.join(updateRoot, 'apps', 'desktop', 'release')
   const unpacked = path.join(releaseDir, unpackedDirName(platform))
   const normalizedExec = path.resolve(String(execPath))
@@ -117,7 +116,6 @@ function sandboxPreflight(unpackedDir, statSync) {
   if (!unpackedDir) {
     return { ok: false, reason: 'no-unpacked-dir', path: null }
   }
-
   const sandboxPath = path.join(unpackedDir, 'chrome-sandbox')
   let st
 

@@ -207,7 +207,7 @@ def test_call_llm_non_stream_still_validates(monkeypatch):
 
     validated = {"called": False}
 
-    def _validate(resp, task, provider=None, base_url=None):
+    def _validate(resp, task):
         validated["called"] = True
         return resp
 

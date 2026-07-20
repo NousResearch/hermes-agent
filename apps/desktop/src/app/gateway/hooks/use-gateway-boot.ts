@@ -28,16 +28,17 @@ import { notify, notifyError } from '@/store/notifications'
 import { $activeGatewayProfile, normalizeProfileKey, touchActiveGatewayBackend } from '@/store/profile'
 import {
   $activeSessionId,
+  $attentionSessionIds,
   $connection,
   $currentCwd,
   $sessions,
+  $workingSessionIds,
   ensureDefaultWorkspaceCwd,
   setConnection,
   setCurrentBranch,
   setCurrentCwd,
   setSessionsLoading
 } from '@/store/session'
-import { $attentionSessionIds, $workingSessionIds, resetTileRuntimeBindings } from '@/store/session-states'
 import type { RpcEvent } from '@/types/hermes'
 
 // After this many consecutive failed reconnects (≈45s with the 1→15s backoff)
@@ -166,9 +167,6 @@ export function useGatewayBoot({
         }
 
         reconnectAttempt = 0
-        // A respawned backend re-mints (recycles) runtime ids, so any tile's
-        // bound runtime id is now stale — drop them so each tile re-resumes.
-        resetTileRuntimeBindings()
         // Resync state that may have moved on the backend while we were asleep.
         await callbacksRef.current.refreshHermesConfig().catch(() => undefined)
         await callbacksRef.current.refreshSessions().catch(() => undefined)
@@ -284,14 +282,10 @@ export function useGatewayBoot({
           return
         }
 
-        // Same shape as boot(): profile first (session scope depends on it),
-        // then the independent fetches concurrently.
         await adoptPrimaryProfile()
-        await Promise.all([
-          seedDefaultCwd(),
-          callbacksRef.current.refreshHermesConfig().catch(() => undefined),
-          callbacksRef.current.refreshSessions().catch(() => undefined)
-        ])
+        await seedDefaultCwd()
+        await callbacksRef.current.refreshHermesConfig().catch(() => undefined)
+        await callbacksRef.current.refreshSessions().catch(() => undefined)
         completeDesktopBoot()
         bootCompleted = true
       } catch (err) {
@@ -364,10 +358,7 @@ export function useGatewayBoot({
     })
 
     const sourceProfile = normalizeProfileKey($activeGatewayProfile.get())
-
-    const offEvent = gateway.onEvent(event =>
-      callbacksRef.current.handleGatewayEvent({ ...event, profile: sourceProfile })
-    )
+    const offEvent = gateway.onEvent(event => callbacksRef.current.handleGatewayEvent({ ...event, profile: sourceProfile }))
 
     // Wake signals: power resume (macOS/Windows), network coming back, and the
     // window regaining focus/visibility. Each nudges an immediate reconnect.
@@ -464,11 +455,6 @@ export function useGatewayBoot({
           return
         }
 
-        // Profile adoption must land first: refreshSessions scopes its fetch by
-        // $profileScope ← $activeGatewayProfile. The remaining three fetches
-        // (cwd seed, config, sessions) are independent REST calls — running
-        // them serially added their sum to time-to-populated-sidebar when only
-        // the max is needed.
         await adoptPrimaryProfile()
 
         setDesktopBootStep({
@@ -476,17 +462,20 @@ export function useGatewayBoot({
           message: translateNow('boot.steps.loadingSettings'),
           progress: 97
         })
+        await seedDefaultCwd()
 
-        await Promise.all([
-          seedDefaultCwd(),
-          callbacksRef.current.refreshHermesConfig(),
-          callbacksRef.current.refreshSessions()
-        ])
+        await callbacksRef.current.refreshHermesConfig()
 
         if (cancelled) {
           return
         }
 
+        setDesktopBootStep({
+          phase: 'renderer.sessions',
+          message: translateNow('boot.steps.loadingSessions'),
+          progress: 99
+        })
+        await callbacksRef.current.refreshSessions()
         completeDesktopBoot()
         bootCompleted = true
       } catch (err) {

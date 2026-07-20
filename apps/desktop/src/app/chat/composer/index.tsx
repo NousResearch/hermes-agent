@@ -1,21 +1,21 @@
 import { ComposerPrimitive } from '@assistant-ui/react'
 import { useStore } from '@nanostores/react'
-import { type ClipboardEvent, type FormEvent, type KeyboardEvent, useCallback, useEffect, useRef } from 'react'
+import { type ClipboardEvent, type FormEvent, type KeyboardEvent, useEffect, useRef } from 'react'
 
 import { composerFill, composerSurfaceGlass } from '@/components/chat/composer-dock'
 import { Button } from '@/components/ui/button'
-import { Slot as ContribSlot } from '@/contrib/react/slot'
 import { useI18n } from '@/i18n'
 import { chatMessageText } from '@/lib/chat-messages'
-import { sanitizeComposerInput } from '@/lib/composer-input-sanitize'
 import { DATA_IMAGE_URL_RE } from '@/lib/embedded-images'
 import { triggerHaptic } from '@/lib/haptics'
 import { cn } from '@/lib/utils'
+import { $composerAttachments } from '@/store/composer'
 import { browseBackward, browseForward, deriveUserHistory, isBrowsingHistory } from '@/store/composer-input-history'
 import { POPOUT_WIDTH_REM } from '@/store/composer-popout'
 import { removeQueuedPrompt } from '@/store/composer-queue'
+import { $activeSessionAwaitingInput } from '@/store/prompts'
 import { toggleReview } from '@/store/review'
-import { $gatewayState } from '@/store/session'
+import { $gatewayState, $messages } from '@/store/session'
 import { $threadScrolledUp } from '@/store/thread-scroll'
 import { $autoSpeakReplies } from '@/store/voice-prefs'
 import { useTheme } from '@/themes'
@@ -23,7 +23,6 @@ import { useTheme } from '@/themes'
 import { AttachmentList } from './attachments'
 import { COMPOSER_FADE_BACKGROUND, type QueueEditState, slashArgStage } from './composer-utils'
 import { ContextMenu } from './context-menu'
-import { COMPOSER_AREAS, runComposerMiddleware } from './contrib'
 import { ComposerControls } from './controls'
 import { COMPOSER_DROP_ACTIVE_CLASS, COMPOSER_DROP_FADE_CLASS } from './drop-affordance'
 import { markActiveComposer } from './focus'
@@ -52,7 +51,6 @@ import {
   normalizeComposerEditorDom,
   RICH_INPUT_SLOT
 } from './rich-editor'
-import { useComposerScope } from './scope'
 import { ComposerStatusStack } from './status-stack'
 import { CodingStatusRow } from './status-stack/coding-row'
 import { extractClipboardImageBlobs } from './text-utils'
@@ -81,36 +79,17 @@ export function ChatBar({
   onPickImages,
   onRemoveAttachment,
   onSteer,
-  onSubmit: onSubmitProp,
+  onSubmit,
   onTranscribeAudio
 }: ChatBarProps) {
-  // Every send (typed, queued, voice) passes through the contributed
-  // middleware chain first — rewrite / pass-through / cancel. Empty chain =
-  // exact pass-through, so surfaces without contributions are byte-identical.
-  const onSubmit = useCallback<ChatBarProps['onSubmit']>(
-    async (value, options) => {
-      const draft = await runComposerMiddleware({ text: value, attachments: options?.attachments })
-
-      if (!draft) {
-        return false
-      }
-
-      return onSubmitProp(draft.text, { ...options, attachments: draft.attachments })
-    },
-    [onSubmitProp]
-  )
-
-  // Which live composer this instance IS (main | tile) — its attachment set,
-  // focus-bus key, and awaiting-input edge. Main scope = the legacy globals.
-  const scope = useComposerScope()
-  const attachments = useStore(scope.attachments.$attachments)
+  const attachments = useStore($composerAttachments)
   const scrolledUp = useStore($threadScrolledUp)
   const autoSpeak = useStore($autoSpeakReplies)
   // The turn is parked on the user (clarify / approval / sudo / secret). Esc must
   // not interrupt it — there's nothing actively running to stop, and stopping
   // would discard a question the user may want to come back to. The blocking
   // prompt owns its own dismissal (Skip, Reject, dialog close).
-  const awaitingInput = useStore(scope.$awaitingInput)
+  const awaitingInput = useStore($activeSessionAwaitingInput)
   const activeQueueSessionKey = queueSessionKey || sessionId || null
 
   // Status items (subagents, background processes) are keyed by the RUNTIME
@@ -209,7 +188,7 @@ export function ChatBar({
 
   const statusStackVisible = queuedPrompts.length > 0 || statusPresent
 
-  const { compactPill, stacked } = useComposerMetrics({ composerRef, composerSurfaceRef, editorRef, poppedOut })
+  const { stacked } = useComposerMetrics({ composerRef, composerSurfaceRef, editorRef, poppedOut })
   const hasComposerPayload = hasText || attachments.length > 0
   const canSubmit = busy || hasComposerPayload
   const busyAction = busy && hasComposerPayload ? 'queue' : 'stop'
@@ -217,6 +196,8 @@ export function ChatBar({
   // Steer only makes sense mid-turn, text-only (the gateway can't carry images
   // into a tool result) and never for a slash command (those execute inline).
   const canSteer = busy && !!onSteer && attachments.length === 0 && isSteerableText
+
+  const showHelpHint = isHelpHint
 
   // The submit engine — the orchestration seam where draft + queue meet. Owns
   // the submit decision tree, the send-with-restore primitive, and steer.
@@ -286,7 +267,7 @@ export function ChatBar({
 
     normalizeComposerEditorDom(editor)
 
-    const nextDraft = sanitizeComposerInput(composerPlainText(editor))
+    const nextDraft = composerPlainText(editor)
 
     if (nextDraft !== draftRef.current) {
       draftRef.current = nextDraft
@@ -351,7 +332,7 @@ export function ChatBar({
     // blank lines (common when selecting from terminals, code blocks, web pages)
     // doesn't dump multiline padding into the composer. Internal newlines are
     // preserved — only the edges are cleaned up.
-    const pastedText = sanitizeComposerInput(event.clipboardData.getData('text').trim())
+    const pastedText = event.clipboardData.getData('text').trim()
 
     if (!pastedText) {
       event.preventDefault()
@@ -525,11 +506,11 @@ export function ChatBar({
 
       // $messages is read imperatively (not subscribed) so the composer
       // doesn't re-render on every streaming delta flush.
-      const history = deriveUserHistory(scope.readMessages(), chatMessageText)
+      const history = deriveUserHistory($messages.get(), chatMessageText)
       const entry = browseBackward(sessionId, currentDraft, history)
 
       if (entry !== null) {
-        loadIntoComposer(entry, scope.attachments.$attachments.get())
+        loadIntoComposer(entry, $composerAttachments.get())
       }
 
       return
@@ -550,11 +531,11 @@ export function ChatBar({
         event.preventDefault()
         triggerKeyConsumedRef.current = true
 
-        const history = deriveUserHistory(scope.readMessages(), chatMessageText)
+        const history = deriveUserHistory($messages.get(), chatMessageText)
         const result = browseForward(sessionId, history)
 
         if (result !== null) {
-          loadIntoComposer(result.text, scope.attachments.$attachments.get())
+          loadIntoComposer(result.text, $composerAttachments.get())
         }
       }
 
@@ -662,7 +643,7 @@ export function ChatBar({
     useComposerBranch({ clearDraft, cwd, draftRef })
 
   // Global Esc-to-cancel when the chat (not the composer input) has focus.
-  useComposerEscCancel({ awaitingInput, busy, onCancel, target: scope.target })
+  useComposerEscCancel({ awaitingInput, busy, onCancel })
 
   const {
     conversation,
@@ -682,8 +663,7 @@ export function ChatBar({
     maxRecordingSeconds,
     onSubmit,
     onTranscribeAudio,
-    sessionId,
-    target: scope.target
+    sessionId
   })
 
   const contextMenu = (
@@ -705,7 +685,7 @@ export function ChatBar({
       busyAction={busyAction}
       canSteer={canSteer}
       canSubmit={canSubmit}
-      compactModelPill={poppedOut || compactPill}
+      compactModelPill={poppedOut}
       conversation={{
         active: voiceConversationActive,
         level: conversation.level,
@@ -761,7 +741,7 @@ export function ChatBar({
         }}
         onDragOver={handleInputDragOver}
         onDrop={handleInputDrop}
-        onFocus={() => markActiveComposer(scope.target)}
+        onFocus={() => markActiveComposer('main')}
         onInput={handleEditorInput}
         onKeyDown={handleEditorKeyDown}
         onKeyUp={handleEditorKeyUp}
@@ -865,7 +845,7 @@ export function ChatBar({
               : undefined
           }
         >
-          {isHelpHint && <HelpHint />}
+          {showHelpHint && <HelpHint />}
           {trigger && !argStageEmpty && (
             <ComposerTriggerPopover
               activeIndex={triggerActive}
@@ -945,7 +925,6 @@ export function ChatBar({
                 onOpen={toggleReview}
                 onOpenWorktree={openInWorktree}
                 onSwitchBranch={handleSwitchBranch}
-                repoPath={cwd}
               />
               <div
                 className={cn(
@@ -956,10 +935,6 @@ export function ChatBar({
                 )}
                 data-slot="composer-fade"
               >
-                {/* Contribution seams: banners above, a row below, inline
-                    additions beside the "+" menu and before the controls.
-                    All four render nothing until something contributes. */}
-                <ContribSlot area={COMPOSER_AREAS.top} />
                 <VoiceActivity state={voiceActivityState} />
                 <VoicePlaybackActivity />
                 {queueEdit && editingQueuedPrompt && (
@@ -995,17 +970,10 @@ export function ChatBar({
                       : 'grid-cols-[auto_1fr_auto] items-center gap-(--composer-control-gap) [grid-template-areas:"menu_input_controls"]'
                   )}
                 >
-                  <div className="flex translate-y-[3px] items-start gap-(--composer-control-gap) self-start [grid-area:menu]">
-                    {contextMenu}
-                    <ContribSlot area={COMPOSER_AREAS.leading} />
-                  </div>
+                  <div className="flex translate-y-[3px] items-start self-start [grid-area:menu]">{contextMenu}</div>
                   <div className="min-w-0 [grid-area:input]">{input}</div>
-                  <div className="flex items-center justify-end gap-(--composer-control-gap) [grid-area:controls]">
-                    <ContribSlot area={COMPOSER_AREAS.actions} />
-                    {controls}
-                  </div>
+                  <div className="flex items-center justify-end [grid-area:controls]">{controls}</div>
                 </div>
-                <ContribSlot area={COMPOSER_AREAS.bottom} />
               </div>
             </div>
           </div>

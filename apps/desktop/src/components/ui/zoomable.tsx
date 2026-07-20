@@ -3,7 +3,6 @@
 import { type ReactNode, useEffect, useState } from 'react'
 
 import { Dialog, DialogContent } from '@/components/ui/dialog'
-import { Tip } from '@/components/ui/tooltip'
 import { Check, Copy, Maximize, RefreshCw, X, ZoomIn, ZoomOut } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 
@@ -160,15 +159,14 @@ function Divider() {
 
 function ToolbarButton({ children, label, onClick }: { children: ReactNode; label: string; onClick: () => void }) {
   return (
-    <Tip label={label}>
-      <button
-        aria-label={label}
-        className="grid size-8 place-items-center rounded-full text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-        onClick={onClick}
-        type="button"
-      >
-        {children}
-      </button>
-    </Tip>
+    <button
+      aria-label={label}
+      className="grid size-8 place-items-center rounded-full text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+      onClick={onClick}
+      title={label}
+      type="button"
+    >
+      {children}
+    </button>
   )
 }

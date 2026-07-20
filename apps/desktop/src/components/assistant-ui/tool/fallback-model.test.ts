@@ -8,7 +8,6 @@ import {
   countDiffLineStats,
   inlineDiffFromResult,
   MAX_TOOL_RENDER_CHARS,
-  prettyJson,
   type ToolPart
 } from './fallback-model'
 
@@ -90,7 +89,7 @@ describe('buildToolView browser_navigate title', () => {
     )
 
     expect(view.status).toBe('error')
-    expect(view.title).toBe('Failed to open hermes-agent.nousresearch.com/docs')
+    expect(view.title).toBe('Failed to open hermes-agent.nousresearch.com')
   })
 
   it('shows opened title on success', () => {
@@ -104,7 +103,7 @@ describe('buildToolView browser_navigate title', () => {
     )
 
     expect(view.status).toBe('success')
-    expect(view.title).toBe('Opened hermes-agent.nousresearch.com/docs')
+    expect(view.title).toBe('Opened hermes-agent.nousresearch.com')
   })
 })
 
@@ -343,16 +342,15 @@ describe('clampForDisplay', () => {
 })
 
 // A large tool result (e.g. a 100KB read_file during a `/learn` run) must not
-// be serialized at full size — that JSON.stringify payload is what floods the
-// renderer. buildToolView no longer prettyJson's every result eagerly; the
-// web_search drilldown serializes lazily via prettyJson, which clamps.
-describe('prettyJson caps serialized result size', () => {
-  it('clamps an oversized result', () => {
+// be serialized into the rendered rawResult at full size — that JSON.stringify
+// payload is what floods the renderer when many rows stack up.
+describe('buildToolView caps serialized result size', () => {
+  it('clamps rawResult for an oversized result', () => {
     const huge = 'y'.repeat(MAX_TOOL_RENDER_CHARS * 3)
-    const out = prettyJson({ content: huge })
+    const view = buildToolView(part({ result: { content: huge }, toolName: 'read_file' }), '')
 
-    expect(out.length).toBeLessThanOrEqual(MAX_TOOL_RENDER_CHARS + 200)
-    expect(out).toContain('truncated')
+    expect(view.rawResult.length).toBeLessThanOrEqual(MAX_TOOL_RENDER_CHARS + 200)
+    expect(view.rawResult).toContain('truncated')
   })
 })
 

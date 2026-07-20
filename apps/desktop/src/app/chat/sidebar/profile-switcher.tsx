@@ -35,12 +35,6 @@ import { getProfileSoul, updateProfileSoul } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { PROFILE_SWATCHES, profileColorSoft, resolveProfileColor } from '@/lib/profile-color'
-import {
-  REORDER_DRAG_TRANSITION_CSS,
-  REORDER_RAIL_TRANSITION,
-  reorderCommitHaptic,
-  reorderStepHaptic
-} from '@/lib/reorder'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
 import {
@@ -66,8 +60,6 @@ import { DeleteProfileDialog } from '../../profiles/delete-profile-dialog'
 import { RenameProfileDialog } from '../../profiles/rename-profile-dialog'
 import { PROFILES_ROUTE } from '../../routes'
 
-import { useProfilePrewarm } from './use-profile-prewarm'
-
 const RAIL_GAP = 4 // px — matches gap-1 between squares.
 
 // Past this many profiles the strip of colored squares stops scaling (tiny
@@ -75,11 +67,12 @@ const RAIL_GAP = 4 // px — matches gap-1 between squares.
 // select. Drag-reorder and long-press-recolor live only on the squares path.
 const PROFILE_DROPDOWN_THRESHOLD = 13
 
-// Neighbors reflow on RAIL_TRANSITION; the dragged square glides between
-// snapped cells on the snappier DRAG_TRANSITION. Both come from the SHARED
-// reorder primitive (lib/reorder.ts) so every reorder strip feels identical.
-const RAIL_TRANSITION = REORDER_RAIL_TRANSITION
-const DRAG_TRANSITION = REORDER_DRAG_TRANSITION_CSS
+// easeOutBack — a little overshoot so squares spring into their new slot rather
+// than sliding in flat. Neighbors reflow on RAIL_TRANSITION; the dragged square
+// glides between snapped cells on the snappier DRAG_TRANSITION.
+const SPRING = 'cubic-bezier(0.34, 1.56, 0.64, 1)'
+const RAIL_TRANSITION = { duration: 300, easing: SPRING }
+const DRAG_TRANSITION = `transform 200ms ${SPRING}`
 
 // The rail is a single horizontal strip of fixed cells. Pin drags to the x-axis
 // (no cross-axis scrollbar), snap to whole cells so a square steps slot-to-slot
@@ -181,7 +174,7 @@ export function ProfileRail() {
 
     if (id && id !== lastOverRef.current) {
       lastOverRef.current = id
-      reorderStepHaptic()
+      triggerHaptic('selection')
     }
   }
 
@@ -198,7 +191,7 @@ export function ProfileRail() {
 
     if (from >= 0 && to >= 0) {
       setProfileOrder(arrayMove(ids, from, to))
-      reorderCommitHaptic()
+      triggerHaptic('success')
     }
   }
 
@@ -459,37 +452,27 @@ function ProfileDropdown({
         <SelectValue placeholder={p.title} />
       </SelectTrigger>
       <SelectContent collisionPadding={{ bottom: 44, left: 8, right: 8, top: 8 }} side="top">
-        {profiles.map(profile => (
-          <ProfileDropdownItem
-            color={resolveProfileColor(profile.name, colors)}
-            key={profile.name}
-            name={profile.name}
-          />
-        ))}
+        {profiles.map(profile => {
+          const color = resolveProfileColor(profile.name, colors)
+          const hue = color ?? 'var(--ui-text-quaternary)'
+
+          return (
+            <SelectItem key={profile.name} value={profile.name}>
+              <span className="flex min-w-0 items-center gap-1.5">
+                <span
+                  aria-hidden="true"
+                  className="grid size-4 shrink-0 place-items-center rounded-[3px] text-[0.5rem] font-semibold uppercase leading-none"
+                  style={{ backgroundColor: profileColorSoft(hue, 22), color: color ?? undefined }}
+                >
+                  {profile.name.replace(/[^a-z0-9]/gi, '').charAt(0) || '?'}
+                </span>
+                <span className="truncate">{profile.name}</span>
+              </span>
+            </SelectItem>
+          )
+        })}
       </SelectContent>
     </Select>
-  )
-}
-
-// One dropdown row per profile — its own component so each row can own a
-// hover-intent prewarm timer (see useProfilePrewarm).
-function ProfileDropdownItem({ color, name }: { color: null | string; name: string }) {
-  const hue = color ?? 'var(--ui-text-quaternary)'
-  const { cancelPrewarm, startPrewarm } = useProfilePrewarm(name)
-
-  return (
-    <SelectItem onPointerEnter={startPrewarm} onPointerLeave={cancelPrewarm} value={name}>
-      <span className="flex min-w-0 items-center gap-1.5">
-        <span
-          aria-hidden="true"
-          className="grid size-4 shrink-0 place-items-center rounded-[3px] text-[0.5rem] font-semibold uppercase leading-none"
-          style={{ backgroundColor: profileColorSoft(hue, 22), color: color ?? undefined }}
-        >
-          {name.replace(/[^a-z0-9]/gi, '').charAt(0) || '?'}
-        </span>
-        <span className="truncate">{name}</span>
-      </span>
-    </SelectItem>
   )
 }
 
@@ -560,9 +543,6 @@ function ProfileSquare({
   const [pickerOpen, setPickerOpen] = useState(false)
   const pressTimer = useRef<null | number>(null)
   const suppressClick = useRef(false)
-  // Hovering a square telegraphs the switch — start that profile's backend
-  // spawn now so a cold click doesn't pay the full boot.
-  const { cancelPrewarm, startPrewarm } = useProfilePrewarm(label)
 
   const { attributes, isDragging, listeners, setNodeRef, transform, transition } = useSortable({
     id: label,
@@ -652,11 +632,7 @@ function ProfileSquare({
                         setPickerOpen(true)
                       }, LONG_PRESS_MS)
                     }}
-                    onPointerEnter={startPrewarm}
-                    onPointerLeave={() => {
-                      clearPress()
-                      cancelPrewarm()
-                    }}
+                    onPointerLeave={clearPress}
                     onPointerUp={clearPress}
                   >
                     {label.replace(/[^a-z0-9]/gi, '').charAt(0) || '?'}

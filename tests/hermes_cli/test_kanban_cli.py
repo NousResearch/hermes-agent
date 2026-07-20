@@ -465,10 +465,11 @@ def test_run_slash_specify_end_to_end(kanban_home, monkeypatch):
     resp.choices[0].message.content = (
         '{"title": "Spec: rough idea", "body": "**Goal**\\nShip it."}'
     )
-    # specify_task routes through call_llm now (#35566) — mock it directly.
+    fake_client = MagicMock()
+    fake_client.chat.completions.create = MagicMock(return_value=resp)
     monkeypatch.setattr(
-        "agent.auxiliary_client.call_llm",
-        MagicMock(return_value=resp),
+        "agent.auxiliary_client.get_text_auxiliary_client",
+        lambda *a, **kw: (fake_client, "test-model"),
     )
 
     # Specify via slash.

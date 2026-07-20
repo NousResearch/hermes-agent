@@ -1,5 +1,5 @@
-import type { ToolCallMessagePartProps } from '@assistant-ui/react'
 import { cleanup, render, screen } from '@testing-library/react'
+import type { ToolCallMessagePartProps } from '@assistant-ui/react'
 import type { ReactNode } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
@@ -29,7 +29,6 @@ function settledClarifyProps(
     args,
     argsText: JSON.stringify(args),
     isError: false,
-    respondToApproval: vi.fn(),
     result,
     resume: vi.fn(),
     status: { type: 'complete' },
@@ -103,11 +102,7 @@ describe('ClarifyTool settled view', () => {
   it('labels an empty response as Skipped', () => {
     renderClarify(
       <ClarifyTool
-        {...settledClarifyProps(
-          { question: 'Anything else?' },
-          { question: 'Anything else?', user_response: '' },
-          'clarify-2'
-        )}
+        {...settledClarifyProps({ question: 'Anything else?' }, { question: 'Anything else?', user_response: '' }, 'clarify-2')}
       />
     )
 

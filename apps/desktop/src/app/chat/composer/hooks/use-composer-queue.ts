@@ -3,12 +3,11 @@ import { type RefObject, useCallback, useEffect, useRef, useState } from 'react'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { useSessionSlice } from '@/lib/use-session-slice'
-import { type ComposerAttachment } from '@/store/composer'
+import { clearComposerAttachments, type ComposerAttachment } from '@/store/composer'
 import { resetBrowseState } from '@/store/composer-input-history'
 import {
   $queuedPromptsBySession,
   enqueueQueuedPrompt,
-  getQueuedPrompts,
   MAX_AUTO_DRAIN_ATTEMPTS,
   migrateQueuedPrompts,
   promoteQueuedPrompt,
@@ -20,7 +19,6 @@ import {
 import { notify } from '@/store/notifications'
 
 import { cloneAttachments, type QueueEditState } from '../composer-utils'
-import { useComposerScope } from '../scope'
 import type { ChatBarProps } from '../types'
 
 interface UseComposerQueueArgs {
@@ -62,7 +60,6 @@ export function useComposerQueue({
   sessionId
 }: UseComposerQueueArgs) {
   const { t } = useI18n()
-  const scope = useComposerScope()
 
   // Per-session slice (edge): re-renders only when THIS session's queue changes,
   // not on cross-session queue churn (the plain atom's map ref changes on every
@@ -176,11 +173,11 @@ export function useComposerQueue({
     }
 
     clearDraft()
-    scope.attachments.clear()
+    clearComposerAttachments()
     triggerHaptic('selection')
 
     return true
-  }, [activeQueueSessionKey, attachments, clearDraft, draftRef, scope.attachments])
+  }, [activeQueueSessionKey, attachments, clearDraft, draftRef])
 
   // All queue drain paths share one lock + send-then-remove sequence.
   // `pickEntry` lets each caller choose head, by-id, or skip-edited.
@@ -190,9 +187,7 @@ export function useComposerQueue({
         return false
       }
 
-      const drainQueueSessionKey = activeQueueSessionKey
-      const drainRuntimeSessionId = sessionId ?? null
-      const entry = pickEntry(getQueuedPrompts(drainQueueSessionKey))
+      const entry = pickEntry(queuedPrompts)
 
       if (!entry) {
         return false
@@ -202,12 +197,7 @@ export function useComposerQueue({
 
       try {
         const accepted = await Promise.resolve(
-          onSubmit(entry.text, {
-            attachments: entry.attachments,
-            fromQueue: true,
-            sessionId: drainRuntimeSessionId,
-            storedSessionId: drainQueueSessionKey
-          })
+          onSubmit(entry.text, { attachments: entry.attachments, fromQueue: true })
         )
 
         if (accepted === false) {
@@ -215,15 +205,15 @@ export function useComposerQueue({
         }
 
         drainFailuresRef.current.delete(entry.id)
-        removeQueuedPrompt(drainQueueSessionKey, entry.id)
-        resetBrowseState(drainRuntimeSessionId)
+        removeQueuedPrompt(activeQueueSessionKey, entry.id)
+        resetBrowseState(sessionId)
 
         return true
       } finally {
         drainingQueueRef.current = false
       }
     },
-    [activeQueueSessionKey, onSubmit, sessionId]
+    [activeQueueSessionKey, onSubmit, queuedPrompts, sessionId]
   )
 
   const pickDrainHead = useCallback(

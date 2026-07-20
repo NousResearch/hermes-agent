@@ -1,18 +1,17 @@
-import { useStore } from '@nanostores/react'
-import clsx from 'clsx'
-import { Check, ChevronRight, FileText, X } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
-
-import { BrandMark } from '../components/brand-mark'
+import { useStore } from '@nanostores/react'
 import { Button } from '../components/button'
-import { Loader } from '../components/loader'
 import {
+  cancelInstall,
   $mode,
   $progress,
   type BootstrapStateModel,
-  cancelInstall,
   type StageState
 } from '../store'
+import { Check, X, ChevronRight, FileText } from 'lucide-react'
+import clsx from 'clsx'
+import { BrandMark } from '../components/brand-mark'
+import { Loader } from '../components/loader'
 
 interface ProgressProps {
   bootstrap: BootstrapStateModel
@@ -43,19 +42,15 @@ export default function ProgressScreen({ bootstrap }: ProgressProps) {
     if (bootstrap.status !== 'running') {
       return
     }
-
     const id = window.setInterval(() => setNow(Date.now()), 1000)
-
     return () => window.clearInterval(id)
   }, [bootstrap.status])
 
   const isUpdate = mode === 'update'
   const title = bootstrap.status === 'completed' ? 'Done' : isUpdate ? 'Updating Hermes' : 'Setting up Hermes Agent'
-
   const description = isUpdate
     ? 'Hermes is updating to the latest version — this only takes a moment.'
     : 'This is a one-time setup. The Hermes installer is downloading dependencies and configuring your machine. Subsequent launches will skip this step.'
-
   const pct = Math.round(progress.fraction * 100)
 
   return (
@@ -95,25 +90,22 @@ export default function ProgressScreen({ bootstrap }: ProgressProps) {
           <ol className="space-y-0.5">
             {bootstrap.stageOrder.map((name) => {
               const rec = bootstrap.stages[name]
-
-              if (!rec) {return null}
-
+              if (!rec) return null
               const meta =
                 rec.state === 'running' && rec.startedAt != null
                   ? formatElapsed(now - rec.startedAt)
                   : rec.durationMs != null && rec.state !== 'failed'
                     ? formatDuration(rec.durationMs)
                     : null
-
               return (
                 <li
+                  key={name}
                   className={clsx(
                     'flex items-center gap-2.5 px-3 py-1.5 text-sm',
                     rec.state === 'running'
                       ? 'font-medium text-foreground'
                       : 'text-muted-foreground'
                   )}
-                  key={name}
                 >
                   {rec.state === 'running' && <Loader className="-ml-2 size-6 shrink-0" />}
                   <span className="flex-1 truncate">{rec.info.title}</span>
@@ -134,11 +126,11 @@ export default function ProgressScreen({ bootstrap }: ProgressProps) {
             <div className="flex-1 overflow-y-auto px-3 py-2 font-mono text-[10.5px] leading-relaxed">
               {bootstrap.logs.map((entry, idx) => (
                 <div
+                  key={idx}
                   className={clsx(
                     'whitespace-pre-wrap',
                     entry.stream === 'stderr' ? 'text-foreground/45' : 'text-foreground/70'
                   )}
-                  key={idx}
                 >
                   {entry.line}
                 </div>
@@ -151,17 +143,17 @@ export default function ProgressScreen({ bootstrap }: ProgressProps) {
 
       <div className="flex shrink-0 items-center justify-between border-t border-(--stroke-nous) px-6 py-3">
         <button
-          className="inline-flex cursor-pointer items-center gap-1.5 text-xs text-muted-foreground transition-colors hover:text-foreground"
-          onClick={() => setShowLogs((v) => !v)}
           type="button"
+          onClick={() => setShowLogs((v) => !v)}
+          className="inline-flex cursor-pointer items-center gap-1.5 text-xs text-muted-foreground transition-colors hover:text-foreground"
         >
           <FileText size={14} />
           {showLogs ? 'Hide details' : 'Show details'}
-          <ChevronRight className={clsx('transition-transform', showLogs && 'rotate-90')} size={12} />
+          <ChevronRight size={12} className={clsx('transition-transform', showLogs && 'rotate-90')} />
         </button>
 
         {bootstrap.status === 'running' && (
-          <Button onClick={() => void cancelInstall()} size="sm" variant="outline">
+          <Button variant="outline" size="sm" onClick={() => void cancelInstall()}>
             Cancel
           </Button>
         )}
@@ -175,36 +167,29 @@ export default function ProgressScreen({ bootstrap }: ProgressProps) {
 // spinner on the left; pending stays icon-less.
 function StateIcon({ state }: { state: StageState | null }) {
   if (state === 'succeeded') {
-    return <Check className="shrink-0 text-muted-foreground" size={13} />
+    return <Check size={13} className="shrink-0 text-muted-foreground" />
   }
-
   if (state === 'skipped') {
-    return <Check className="shrink-0 text-muted-foreground/50" size={13} />
+    return <Check size={13} className="shrink-0 text-muted-foreground/50" />
   }
-
   if (state === 'failed') {
-    return <X className="shrink-0 text-destructive" size={13} />
+    return <X size={13} className="shrink-0 text-destructive" />
   }
-
   return null
 }
 
 function formatDuration(ms: number): string {
-  if (ms < 1000) {return `${ms}ms`}
-
-  if (ms < 60000) {return `${(ms / 1000).toFixed(1)}s`}
+  if (ms < 1000) return `${ms}ms`
+  if (ms < 60000) return `${(ms / 1000).toFixed(1)}s`
   const m = Math.floor(ms / 60000)
   const s = Math.round((ms % 60000) / 1000)
-
   return `${m}m ${s}s`
 }
 
 // Live elapsed for a running stage: bare seconds under a minute, then m:ss.
 function formatElapsed(ms: number): string {
   const s = Math.max(0, Math.floor(ms / 1000))
-
-  if (s < 60) {return `${s}s`}
+  if (s < 60) return `${s}s`
   const m = Math.floor(s / 60)
-
   return `${m}:${String(s - m * 60).padStart(2, '0')}`
 }

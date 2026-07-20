@@ -20,7 +20,6 @@ from aiohttp.test_utils import TestClient, TestServer
 from gateway.config import PlatformConfig
 from gateway.platforms.api_server import (
     APIServerAdapter,
-    _approval_event_choices,
     cors_middleware,
     security_headers_middleware,
 )
@@ -30,24 +29,6 @@ from tools import approval as approval_mod
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    ("smart_denied", "allow_permanent", "expected"),
-    [
-        (False, True, ["once", "session", "always", "deny"]),
-        (False, False, ["once", "session", "deny"]),
-        (True, True, ["once", "deny"]),
-        (True, False, ["once", "deny"]),
-    ],
-)
-def test_approval_event_choices_follow_backend_capabilities(
-    smart_denied, allow_permanent, expected
-):
-    assert _approval_event_choices(
-        smart_denied=smart_denied,
-        allow_permanent=allow_permanent,
-    ) == expected
 
 
 def _make_adapter(api_key: str = "") -> APIServerAdapter:

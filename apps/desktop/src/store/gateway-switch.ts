@@ -1,10 +1,10 @@
 import { atom } from 'nanostores'
 
-import { invalidateProfileScopedQueries } from '@/lib/query-client'
+import { queryClient } from '@/lib/query-client'
 import { resetSessionsLimit } from '@/store/layout'
 import {
-  $unreadFinishedSessionIds,
   setActiveSessionId,
+  setAttentionSessionIds,
   setCronSessions,
   setFreshDraftReady,
   setMessages,
@@ -15,9 +15,9 @@ import {
   setSessionProfileTotals,
   setSessions,
   setSessionsLoading,
-  setSessionsTotal
+  setSessionsTotal,
+  setWorkingSessionIds
 } from '@/store/session'
-import { clearAllSessionStates } from '@/store/session-states'
 
 // True while a soft gateway-mode apply is mid-flight (wipe → re-dial). Lets the
 // boot hook suppress the backend-exit toast and keeps the cold-boot CONNECTING
@@ -44,11 +44,8 @@ export function wipeSessionListsForGatewaySwitch(): void {
   setMessagingSessions([])
   setMessagingPlatformTotals({})
   setMessagingTruncated(false)
-  // Clearing $sessionStates automatically clears $workingSessionIds and
-  // $attentionSessionIds (they're computed from it). $unreadFinishedSessionIds
-  // is separate (transient, not computable) so wipe it explicitly.
-  clearAllSessionStates()
-  $unreadFinishedSessionIds.set([])
+  setWorkingSessionIds([])
+  setAttentionSessionIds([])
   setSessionsLoading(true)
   resetSessionsLimit()
 
@@ -57,7 +54,5 @@ export function wipeSessionListsForGatewaySwitch(): void {
   setMessages([])
   setFreshDraftReady(true)
 
-  // Narrowed: account/marketplace/onboarding caches are global, not gateway-
-  // scoped, so a mode swap must not refetch them.
-  invalidateProfileScopedQueries()
+  void queryClient.invalidateQueries()
 }

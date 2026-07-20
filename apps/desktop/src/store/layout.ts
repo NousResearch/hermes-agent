@@ -1,8 +1,5 @@
-import { atom, computed, type ReadableAtom, type WritableAtom } from 'nanostores'
+import { atom, computed, type ReadableAtom } from 'nanostores'
 
-import { SIDEBAR_COLLAPSE_MEDIA_QUERY } from '@/app/layout-constants'
-import { PANE_TOGGLE_REVEAL_EVENT } from '@/components/pane-shell'
-import { matchesQuery } from '@/hooks/use-media-query'
 import { Codecs, persistentAtom } from '@/lib/persisted'
 import { arraysEqual, insertUniqueId } from '@/lib/storage'
 
@@ -121,6 +118,11 @@ export const $dismissedWorktreeIds = persistentAtom(
   Codecs.stringArray
 )
 export const $sidebarPinsOpen = atom(true)
+// Set by the PaneShell hover-reveal overlay while the sidebar is collapsed; kept
+// true the whole time it's a floating overlay (not just while shown) so the
+// consumer mounts contents off-screen, ready to slide. ChatSidebar mounts its
+// rows on `sidebarOpen || this`.
+export const $sidebarOverlayMounted = atom(false)
 export const $sidebarRecentsOpen = atom(true)
 // Cron-job sessions live in their own section below recents, collapsed by
 // default (it only renders at all when cron sessions exist) so the
@@ -181,41 +183,20 @@ export function setSidebarWidth(width: number) {
   setPaneWidthOverride(CHAT_SIDEBAR_PANE_ID, bounded)
 }
 
-// Below the collapse breakpoint a collapsible rail leaves the grid and lives as
-// a hover/pin overlay, so open/toggle must route through the reveal event — the
-// docked `open` flag renders a 0px track invisibly. Centralised here so every
-// caller (titlebar, keybinds, session-search, reveal-file) inherits it instead
-// of re-deriving the narrow branch. Returns true when it handled the intent.
-function revealNarrowPane(id: string, mode: 'close' | 'open' | 'toggle'): boolean {
-  if (typeof window === 'undefined' || !matchesQuery(SIDEBAR_COLLAPSE_MEDIA_QUERY)) {
-    return false
-  }
-
-  window.dispatchEvent(new CustomEvent(PANE_TOGGLE_REVEAL_EVENT, { detail: { id, mode } }))
-
-  return true
-}
-
 export function setSidebarOpen(open: boolean) {
   setPaneOpen(CHAT_SIDEBAR_PANE_ID, open)
-  revealNarrowPane(CHAT_SIDEBAR_PANE_ID, open ? 'open' : 'close')
 }
 
 export function toggleSidebarOpen() {
-  if (!revealNarrowPane(CHAT_SIDEBAR_PANE_ID, 'toggle')) {
-    togglePane(CHAT_SIDEBAR_PANE_ID)
-  }
+  togglePane(CHAT_SIDEBAR_PANE_ID)
 }
 
 export function toggleFileBrowserOpen() {
-  if (!revealNarrowPane(FILE_BROWSER_PANE_ID, 'toggle')) {
-    togglePane(FILE_BROWSER_PANE_ID)
-  }
+  togglePane(FILE_BROWSER_PANE_ID)
 }
 
 export function setFileBrowserOpen(open: boolean) {
   setPaneOpen(FILE_BROWSER_PANE_ID, open)
-  revealNarrowPane(FILE_BROWSER_PANE_ID, open ? 'open' : 'close')
 }
 
 // "Reveal this file in the file-browser tree" — an absolute path the tree
@@ -252,6 +233,10 @@ export function setSidebarPinsOpen(open: boolean) {
   $sidebarPinsOpen.set(open)
 }
 
+export function setSidebarOverlayMounted(mounted: boolean) {
+  $sidebarOverlayMounted.set(mounted)
+}
+
 export function setSidebarRecentsOpen(open: boolean) {
   $sidebarRecentsOpen.set(open)
 }
@@ -272,16 +257,10 @@ export function setSidebarAgentsGrouped(grouped: boolean) {
   $sidebarAgentsGrouped.set(grouped)
 }
 
-// Write an order list only when it actually changed, so an identical drag
-// result keeps the same array reference and subscribers don't churn.
-function setOrderIds($atom: WritableAtom<string[]>, ids: string[]) {
-  if (!arraysEqual($atom.get(), ids)) {
-    $atom.set(ids)
-  }
-}
-
 export function setSidebarSessionOrderIds(ids: string[]) {
-  setOrderIds($sidebarSessionOrderIds, ids)
+  if (!arraysEqual($sidebarSessionOrderIds.get(), ids)) {
+    $sidebarSessionOrderIds.set(ids)
+  }
 }
 
 export function setSidebarSessionOrderManual(manual: boolean) {
@@ -291,15 +270,21 @@ export function setSidebarSessionOrderManual(manual: boolean) {
 }
 
 export function setSidebarWorkspaceOrderIds(ids: string[]) {
-  setOrderIds($sidebarWorkspaceOrderIds, ids)
+  if (!arraysEqual($sidebarWorkspaceOrderIds.get(), ids)) {
+    $sidebarWorkspaceOrderIds.set(ids)
+  }
 }
 
 export function setSidebarWorkspaceParentOrderIds(ids: string[]) {
-  setOrderIds($sidebarWorkspaceParentOrderIds, ids)
+  if (!arraysEqual($sidebarWorkspaceParentOrderIds.get(), ids)) {
+    $sidebarWorkspaceParentOrderIds.set(ids)
+  }
 }
 
 export function setSidebarProjectOrderIds(ids: string[]) {
-  setOrderIds($sidebarProjectOrderIds, ids)
+  if (!arraysEqual($sidebarProjectOrderIds.get(), ids)) {
+    $sidebarProjectOrderIds.set(ids)
+  }
 }
 
 export function setSidebarResizing(resizing: boolean) {
@@ -308,15 +293,20 @@ export function setSidebarResizing(resizing: boolean) {
 
 export function pinSession(sessionId: string, index?: number) {
   const prev = $pinnedSessionIds.get()
+  const next = insertUniqueId(prev, sessionId, index ?? prev.filter(id => id !== sessionId).length)
 
-  setOrderIds($pinnedSessionIds, insertUniqueId(prev, sessionId, index ?? prev.filter(id => id !== sessionId).length))
+  if (!arraysEqual(prev, next)) {
+    $pinnedSessionIds.set(next)
+  }
 }
 
 export function unpinSession(sessionId: string) {
-  setOrderIds(
-    $pinnedSessionIds,
-    $pinnedSessionIds.get().filter(id => id !== sessionId)
-  )
+  const prev = $pinnedSessionIds.get()
+  const next = prev.filter(id => id !== sessionId)
+
+  if (!arraysEqual(prev, next)) {
+    $pinnedSessionIds.set(next)
+  }
 }
 
 // Replace the whole pinned order at once (drag-reorder hands back the new order

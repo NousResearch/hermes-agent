@@ -40,14 +40,12 @@ logger = logging.getLogger(__name__)
 
 
 def check_ha_requirements() -> bool:
-    """Check if Home Assistant runtime dependencies are available."""
-    return AIOHTTP_AVAILABLE
-
-
-def validate_ha_config(config: PlatformConfig) -> bool:
-    """Return True when Home Assistant has enough credential config to connect."""
-    token = (getattr(config, "token", None) or os.getenv("HASS_TOKEN", "")).strip()
-    return bool(token)
+    """Check if Home Assistant dependencies are available and configured."""
+    if not AIOHTTP_AVAILABLE:
+        return False
+    if not os.getenv("HASS_TOKEN"):
+        return False
+    return True
 
 
 class HomeAssistantAdapter(BasePlatformAdapter):
@@ -562,7 +560,6 @@ def register(ctx) -> None:
         label="Home Assistant",
         adapter_factory=_build_adapter,
         check_fn=check_ha_requirements,
-        validate_config=validate_ha_config,
         is_connected=_is_connected,
         required_env=["HASS_TOKEN"],
         install_hint="pip install aiohttp",

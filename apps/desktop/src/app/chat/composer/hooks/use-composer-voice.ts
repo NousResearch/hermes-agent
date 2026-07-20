@@ -8,7 +8,6 @@ import { notifyError } from '@/store/notifications'
 import { $messages } from '@/store/session'
 import { $autoSpeakReplies, setAutoSpeakReplies } from '@/store/voice-prefs'
 
-import type { ComposerTarget } from '../focus'
 import { onComposerVoiceToggleRequest } from '../focus'
 import type { ChatBarProps } from '../types'
 
@@ -26,9 +25,6 @@ interface UseComposerVoiceArgs {
   onSubmit: ChatBarProps['onSubmit']
   onTranscribeAudio: ChatBarProps['onTranscribeAudio']
   sessionId: string | null | undefined
-  /** This composer's focus-bus key — voice toggles targeting another
-   *  composer (or the active one, when not us) are ignored. */
-  target: ComposerTarget
 }
 
 /**
@@ -46,8 +42,7 @@ export function useComposerVoice({
   maxRecordingSeconds,
   onSubmit,
   onTranscribeAudio,
-  sessionId,
-  target
+  sessionId
 }: UseComposerVoiceArgs) {
   const { t } = useI18n()
   const [voiceConversationActive, setVoiceConversationActive] = useState(false)
@@ -127,10 +122,7 @@ export function useComposerVoice({
     }
   }, [conversation, disabled, voiceConversationActive])
 
-  useEffect(
-    () => onComposerVoiceToggleRequest(toggled => toggled === target && toggleVoiceConversation()),
-    [target, toggleVoiceConversation]
-  )
+  useEffect(() => onComposerVoiceToggleRequest(toggleVoiceConversation), [toggleVoiceConversation])
 
   // Explicit start/end for the on-screen conversation controls (the hotkey uses
   // the gated toggle above).

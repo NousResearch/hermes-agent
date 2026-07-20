@@ -5,8 +5,7 @@
  */
 
 import assert from 'node:assert/strict'
-
-import { test, vi } from 'vitest'
+import test from 'node:test'
 
 import {
   computeWindowOptions,
@@ -119,8 +118,8 @@ test('computeWindowOptions does not clamp when displays are unknown', () => {
 
 // ─── debounce ──────────────────────────────────────────────────────────────
 
-test('debounce coalesces a burst into one trailing run', () => {
-  vi.useFakeTimers()
+test('debounce coalesces a burst into one trailing run', t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
   let calls = 0
 
   const d = debounce(() => {
@@ -131,16 +130,14 @@ test('debounce coalesces a burst into one trailing run', () => {
   d()
   d()
   assert.equal(calls, 0)
-  vi.advanceTimersByTime(249)
+  t.mock.timers.tick(249)
   assert.equal(calls, 0)
-  vi.advanceTimersByTime(1)
+  t.mock.timers.tick(1)
   assert.equal(calls, 1)
-
-  vi.useRealTimers()
 })
 
-test('debounce.flush runs now and cancels the pending timer', () => {
-  vi.useFakeTimers()
+test('debounce.flush runs now and cancels the pending timer', t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
   let calls = 0
 
   const d = debounce(() => {
@@ -150,8 +147,6 @@ test('debounce.flush runs now and cancels the pending timer', () => {
   d()
   d.flush()
   assert.equal(calls, 1)
-  vi.advanceTimersByTime(1000)
+  t.mock.timers.tick(1000)
   assert.equal(calls, 1)
-
-  vi.useRealTimers()
 })

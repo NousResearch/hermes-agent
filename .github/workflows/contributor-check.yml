@@ -9,7 +9,6 @@ permissions:
 jobs:
   check-attribution:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
         with:
@@ -28,9 +27,7 @@ jobs:
             exit 0
           fi
 
-          # An email is mapped if it has a file in contributors/emails/
-          # (one file per email — conflict-free) or an entry in the frozen
-          # legacy AUTHOR_MAP in scripts/release.py.
+          # Check each email against AUTHOR_MAP in release.py
           MISSING=""
           while IFS= read -r email; do
             # Skip teknium and bot emails
@@ -39,12 +36,9 @@ jobs:
                 continue ;;
             esac
 
+            # Check if email is in AUTHOR_MAP (either as a key or matches noreply pattern)
             if echo "$email" | grep -qP '\+.*@users\.noreply\.github\.com'; then
-              continue  # GitHub id+login noreply emails auto-resolve
-            fi
-
-            if [ -f "contributors/emails/${email}" ]; then
-              continue  # mapped via the contributors directory
+              continue  # GitHub noreply emails auto-resolve
             fi
 
             if ! grep -qF "\"${email}\"" scripts/release.py 2>/dev/null; then
@@ -55,19 +49,19 @@ jobs:
 
           if [ -n "$MISSING" ]; then
             echo ""
-            echo "⚠️  New contributor email(s) without a mapping:"
+            echo "⚠️  New contributor email(s) not in AUTHOR_MAP:"
             echo -e "$MISSING"
             echo ""
-            echo "Add a mapping file (do NOT edit AUTHOR_MAP in release.py):"
+            echo "Please add mappings to scripts/release.py AUTHOR_MAP:"
             echo -e "$MISSING" | while read -r line; do
               email=$(echo "$line" | sed 's/^ *//' | cut -d' ' -f1)
               [ -z "$email" ] && continue
-              echo "    python3 scripts/add_contributor.py ${email} <github-username>"
+              echo "    \"${email}\": \"<github-username>\","
             done
             echo ""
             echo "To find the GitHub username for an email:"
             echo "  gh api 'search/users?q=EMAIL+in:email' --jq '.items[0].login'"
             exit 1
           else
-            echo "✅ All contributor emails are mapped."
+            echo "✅ All contributor emails are mapped in AUTHOR_MAP."
           fi

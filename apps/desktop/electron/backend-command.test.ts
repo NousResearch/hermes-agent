@@ -1,6 +1,7 @@
-import assert from 'node:assert/strict'
+'use strict'
 
-import { test } from 'vitest'
+import assert from 'node:assert/strict'
+import test from 'node:test'
 
 import { dashboardFallbackArgs, serveBackendArgs, sourceDeclaresServe } from './backend-command'
 

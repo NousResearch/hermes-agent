@@ -86,6 +86,7 @@ describe('App.handleReadable error recovery (issue #31486)', () => {
 
       void chunk
     })
+
     ;(app as any).handleReadable()
 
     // First handler run threw mid-loop. The remaining chunk is still in
@@ -109,6 +110,7 @@ describe('App.handleReadable error recovery (issue #31486)', () => {
       ;(app as any).rawModeEnabledCount = 0
       throw new Error('synthetic')
     })
+
     ;(app as any).handleReadable()
     vi.runAllTimers()
 

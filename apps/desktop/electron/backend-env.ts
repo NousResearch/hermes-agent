@@ -44,14 +44,12 @@ function appendUniquePathEntries(entries, { delimiter = path.delimiter } = {}) {
     if (!entry) {
       continue
     }
-
     const parts = Array.isArray(entry) ? entry : String(entry).split(delimiter)
 
     for (const part of parts) {
       if (!part || seen.has(part)) {
         continue
       }
-
       seen.add(part)
       ordered.push(part)
     }
@@ -79,7 +77,6 @@ function normalizeHermesHomeRoot(hermesHome, { pathModule = pathModuleForPlatfor
   if (!hermesHome) {
     return hermesHome
   }
-
   const resolved = pathModule.resolve(String(hermesHome))
   const parent = pathModule.dirname(resolved)
 

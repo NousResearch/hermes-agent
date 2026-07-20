@@ -6,7 +6,6 @@ import { Codicon } from '@/components/ui/codicon'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { RowButton } from '@/components/ui/row-button'
 import { Switch } from '@/components/ui/switch'
-import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
 import { $paneHeightOverride, $paneState, setPaneHeightOverride } from '@/store/panes'
@@ -197,24 +196,20 @@ export function DetailPane({
         <span className="min-w-0 truncate text-xs font-medium text-foreground">{title}</span>
         <div className="ml-auto flex shrink-0 items-center gap-1.5">
           {actions}
-          <Tip label={collapsed ? t.common.expand : t.common.collapse}>
-            <Button
-              aria-expanded={!collapsed}
-              aria-label={collapsed ? t.common.expand : t.common.collapse}
-              className={ICON_BUTTON}
-              onClick={() => setPaneHeightOverride(id, collapsed ? undefined : 0)}
-              size="icon"
-              variant="ghost"
-            >
-              <Codicon name={collapsed ? 'chevron-up' : 'chevron-down'} size="0.8125rem" />
-            </Button>
-          </Tip>
+          <Button
+            aria-expanded={!collapsed}
+            aria-label={collapsed ? t.common.expand : t.common.collapse}
+            className={ICON_BUTTON}
+            onClick={() => setPaneHeightOverride(id, collapsed ? undefined : 0)}
+            size="icon"
+            variant="ghost"
+          >
+            <Codicon name={collapsed ? 'chevron-up' : 'chevron-down'} size="0.8125rem" />
+          </Button>
           {onClose && (
-            <Tip label={t.common.close}>
-              <Button aria-label={t.common.close} className={ICON_BUTTON} onClick={onClose} size="icon" variant="ghost">
-                <Codicon name="close" size="0.8125rem" />
-              </Button>
-            </Tip>
+            <Button aria-label={t.common.close} className={ICON_BUTTON} onClick={onClose} size="icon" variant="ghost">
+              <Codicon name="close" size="0.8125rem" />
+            </Button>
           )}
         </div>
       </header>
@@ -271,6 +266,7 @@ export function ListStripMenu({
             'data-[state=open]:bg-(--ui-control-active-background) data-[state=open]:text-foreground'
           )}
           size="icon"
+          title={label}
           variant="ghost"
         >
           <Codicon name="kebab-vertical" size="0.8125rem" />

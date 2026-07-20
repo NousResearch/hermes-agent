@@ -6347,7 +6347,12 @@ def test_rollback_list_uses_checkpoint_reason_as_display_message():
                     "hash": "aaa111",
                     "timestamp": "2026-05-08T12:34:56+00:00",
                     "reason": "before risky edit",
-                }
+                },
+                {
+                    "hash": "bbb222",
+                    "timestamp": "2026-05-08T12:30:00+00:00",
+                    "message": "legacy checkpoint label",
+                },
             ]
 
     server._sessions["sid"] = _session(
@@ -6367,8 +6372,12 @@ def test_rollback_list_uses_checkpoint_reason_as_display_message():
             "hash": "aaa111",
             "timestamp": "2026-05-08T12:34:56+00:00",
             "message": "before risky edit",
-            "reason": "before risky edit",
-        }
+        },
+        {
+            "hash": "bbb222",
+            "timestamp": "2026-05-08T12:30:00+00:00",
+            "message": "legacy checkpoint label",
+        },
     ]
 
 

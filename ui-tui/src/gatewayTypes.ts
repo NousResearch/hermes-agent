@@ -437,7 +437,6 @@ export interface BrowserManageResponse {
 export interface RollbackCheckpoint {
   hash: string
   message?: string
-  reason?: string
   timestamp?: string
 }
 

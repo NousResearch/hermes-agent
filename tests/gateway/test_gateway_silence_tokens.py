@@ -10,6 +10,8 @@ from gateway.config import GatewayConfig, Platform
 from gateway.platforms.base import MessageEvent
 from gateway.session import SessionEntry, SessionSource
 from gateway.response_filters import (
+    BACKGROUND_NOTIFICATION_METADATA_KEY,
+    SILENT_REPLY_TOKEN,
     is_intentional_silence_agent_result,
     is_intentional_silence_response,
 )
@@ -90,6 +92,33 @@ def test_blank_and_prose_mentions_are_not_silence():
 def test_failed_agent_result_never_counts_as_intentional_silence():
     assert is_intentional_silence_agent_result({"failed": False}, "NO_REPLY")
     assert not is_intentional_silence_agent_result({"failed": True}, "NO_REPLY")
+
+
+@pytest.mark.asyncio
+async def test_background_notification_injection_marks_turn_and_adds_silence_contract():
+    # Given: a routed Slack process-completion notification.
+    runner = object.__new__(gateway_run.GatewayRunner)
+    adapter = MagicMock()
+    adapter.handle_message = AsyncMock(return_value=None)
+    runner.adapters = {Platform.SLACK: adapter}
+    event_data = {
+        "type": "completion",
+        "session_id": "proc_123",
+        "platform": "slack",
+        "chat_type": "group",
+        "chat_id": "C123",
+        "thread_id": "123.456",
+    }
+
+    # When: the gateway injects the synthetic turn.
+    accepted = await runner._inject_watch_notification("process finished", event_data)
+
+    # Then: provenance and the machine-consumed silence token reach the agent turn.
+    injected = adapter.handle_message.await_args.args[0]
+    assert accepted is True
+    assert injected.internal is True
+    assert injected.metadata[BACKGROUND_NOTIFICATION_METADATA_KEY] is True
+    assert SILENT_REPLY_TOKEN in injected.text
 
 
 @pytest.mark.asyncio

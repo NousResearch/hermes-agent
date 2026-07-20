@@ -58,6 +58,11 @@ from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX
 from agent.i18n import t
 from hermes_cli.config import cfg_get
 from hermes_cli.fallback_config import get_fallback_chain
+from gateway.response_filters import (
+    BACKGROUND_NOTIFICATION_METADATA_KEY,
+    add_background_notification_silent_ack_contract,
+    is_background_notification_silent_ack,
+)
 
 # --- Agent cache tuning ---------------------------------------------------
 # Bounds the per-session AIAgent cache to prevent unbounded growth in
@@ -12953,6 +12958,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 moa_config=getattr(event, "_moa_config", None),
                 persist_user_message=persist_user_message,
                 persist_user_timestamp=persist_user_timestamp,
+                background_notification=bool(
+                    event.internal
+                    and (event.metadata or {}).get(BACKGROUND_NOTIFICATION_METADATA_KEY)
+                ),
             )
 
             # Stop persistent typing indicator now that the agent is done.
@@ -16906,12 +16915,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if not adapter:
             return None
         try:
-            metadata = {}
+            metadata = {BACKGROUND_NOTIFICATION_METADATA_KEY: True}
             parent_session_id = str(evt.get("parent_session_id") or "").strip()
             if parent_session_id:
                 metadata["gateway_session_id"] = parent_session_id
             synth_event = MessageEvent(
-                text=synth_text,
+                text=add_background_notification_silent_ack_contract(synth_text),
                 message_type=MessageType.TEXT,
                 source=source,
                 internal=True,
@@ -18783,6 +18792,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         moa_config: Optional[dict] = None,
         persist_user_message: Optional[Any] = None,
         persist_user_timestamp: Optional[float] = None,
+        background_notification: bool = False,
     ) -> Dict[str, Any]:
         """Profile-scoping wrapper around the agent run.
 
@@ -18801,6 +18811,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 channel_prompt=channel_prompt, moa_config=moa_config,
                 persist_user_message=persist_user_message,
                 persist_user_timestamp=persist_user_timestamp,
+                background_notification=background_notification,
             )
 
         profile_home = self._resolve_profile_home_for_source(source)
@@ -18812,6 +18823,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 channel_prompt=channel_prompt, moa_config=moa_config,
                 persist_user_message=persist_user_message,
                 persist_user_timestamp=persist_user_timestamp,
+                background_notification=background_notification,
             )
 
     def _profile_name_for_source(self, source: SessionSource) -> Optional[str]:
@@ -18933,6 +18945,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         moa_config: Optional[dict] = None,
         persist_user_message: Optional[Any] = None,
         persist_user_timestamp: Optional[float] = None,
+        background_notification: bool = False,
     ) -> Dict[str, Any]:
         """
         Run the agent with the given message and context.
@@ -21866,6 +21879,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _delivery_result = response if isinstance(response, dict) else (result or {})
                     _previewed = bool(_delivery_result.get("response_previewed"))
                     first_response = _delivery_result.get("final_response", "")
+                    _silent_background_ack = is_background_notification_silent_ack(
+                        _delivery_result,
+                        is_background_notification=background_notification,
+                    )
                     _already_streamed = _stream_confirmed_final_delivery(
                         _sc,
                         first_response,
@@ -21886,7 +21903,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             "Queued follow-up for session %s: suppressing intentional silence marker before continuing.",
                             session_key or "?",
                         )
-                    elif first_response and not _already_streamed:
+                    elif first_response and not _already_streamed and not _silent_background_ack:
                         try:
                             logger.info(
                                 "Queued follow-up for session %s: final stream delivery not confirmed; sending first response before continuing.",
@@ -21901,8 +21918,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             logger.warning("Failed to send first response before queued message: %s", e)
                     elif first_response:
                         logger.info(
-                            "Queued follow-up for session %s: skipping resend because final streamed delivery was confirmed.",
-                            session_key or "?",
+                            "Queued follow-up for session %s: skipping first response delivery (streamed=%s silent_background_ack=%s).",
+                            session_key or "?", _already_streamed, _silent_background_ack,
                         )
                     # Release deferred bg-review notifications now that the
                     # first response has been delivered.  Pop from the
@@ -22086,6 +22103,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # final answer.  Suppressing delivery here leaves the user staring
         # at silence.  (#10xxx — "agent stops after web search")
         _sc = stream_consumer_holder[0]
+        if is_background_notification_silent_ack(
+            response if isinstance(response, dict) else None,
+            is_background_notification=background_notification,
+        ):
+            response["already_sent"] = True
         if isinstance(response, dict) and not response.get("failed"):
             _final = response.get("final_response") or ""
             _is_empty_sentinel = not _final or _final == "(empty)"

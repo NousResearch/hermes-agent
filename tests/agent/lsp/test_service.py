@@ -7,12 +7,166 @@ on.
 """
 from __future__ import annotations
 
+import asyncio
 import sys
+import threading
+import time
 from pathlib import Path
 
 import pytest
 
 from agent.lsp.manager import LSPService
+
+
+class _IdleClient:
+    def __init__(self):
+        self.shutdown_calls = 0
+        self.shutdown_event = threading.Event()
+
+    async def shutdown(self):
+        self.shutdown_calls += 1
+        self.shutdown_event.set()
+
+
+def test_reap_idle_clients_closes_and_forgets_stale_workspaces(monkeypatch):
+    """Long-lived gateways must not retain one server per old workspace."""
+    svc = LSPService(
+        enabled=False,
+        wait_mode="document",
+        wait_timeout=1,
+        install_strategy="manual",
+        idle_timeout=10,
+    )
+    stale = _IdleClient()
+    fresh = _IdleClient()
+    stale_key = ("typescript", "/old/project")
+    fresh_key = ("typescript", "/active/project")
+    svc._clients = {stale_key: stale, fresh_key: fresh}
+    svc._last_used = {stale_key: 80, fresh_key: 95}
+    monkeypatch.setattr("agent.lsp.manager.time.time", lambda: 100)
+
+    reaped = __import__("asyncio").run(svc._reap_idle_async())
+
+    assert reaped == 1
+    assert stale.shutdown_calls == 1
+    assert fresh.shutdown_calls == 0
+    assert stale_key not in svc._clients
+    assert stale_key not in svc._last_used
+    assert fresh_key in svc._clients
+
+
+def test_background_reaper_runs_without_a_later_tool_call():
+    """An abandoned workspace is reaped while the gateway is otherwise idle."""
+    svc = LSPService(
+        enabled=True,
+        wait_mode="document",
+        wait_timeout=1,
+        install_strategy="manual",
+        idle_timeout=0.02,
+    )
+    client = _IdleClient()
+    key = ("typescript", "/abandoned/project")
+    with svc._state_lock:
+        svc._clients[key] = client
+        svc._last_used[key] = 0
+    try:
+        assert client.shutdown_event.wait(1.0), "background reaper did not run"
+        assert client.shutdown_calls == 1
+        assert key not in svc._clients
+    finally:
+        svc.shutdown()
+
+
+def test_reap_idle_clients_does_not_hold_state_lock_during_shutdown(monkeypatch):
+    """A slow language-server exit must not block unrelated client lookups."""
+    svc = LSPService(
+        enabled=False,
+        wait_mode="document",
+        wait_timeout=1,
+        install_strategy="manual",
+        idle_timeout=10,
+    )
+
+    class _LockCheckingClient(_IdleClient):
+        async def shutdown(self):
+            assert svc._state_lock.acquire(blocking=False)
+            svc._state_lock.release()
+            await super().shutdown()
+
+    client = _LockCheckingClient()
+    key = ("typescript", "/old/project")
+    svc._clients[key] = client
+    svc._last_used[key] = 0
+    monkeypatch.setattr("agent.lsp.manager.time.time", lambda: 100)
+
+    asyncio.run(svc._reap_idle_async())
+    assert client.shutdown_calls == 1
+
+
+def test_request_crossing_idle_timeout_is_not_reaped(monkeypatch):
+    """The timeout measures completed idle time, not request duration."""
+    svc = LSPService(enabled=False, wait_mode="document", wait_timeout=1,
+                     install_strategy="manual", idle_timeout=10)
+
+    class _BusyClient(_IdleClient):
+        server_id = "typescript"
+        workspace_root = "/project"
+        def __init__(self):
+            super().__init__()
+            self.started = asyncio.Event()
+            self.finish = asyncio.Event()
+        async def open_file(self, *_args, **_kwargs):
+            self.started.set()
+            await self.finish.wait()
+            return 1
+        async def wait_for_diagnostics(self, *_args, **_kwargs):
+            pass
+        def diagnostics_for(self, _file_path):
+            return []
+
+    client = _BusyClient()
+    key = (client.server_id, client.workspace_root)
+    svc._clients[key] = client
+    svc._last_used[key] = 80
+
+    async def fake_get_or_spawn(_file_path):
+        return client
+
+    monkeypatch.setattr(svc, "_get_or_spawn", fake_get_or_spawn)
+    monkeypatch.setattr("agent.lsp.manager.time.time", lambda: 100)
+
+    async def exercise():
+        request = asyncio.create_task(svc._snapshot_async("/project/a.ts"))
+        await client.started.wait()
+        assert await svc._reap_idle_async() == 0
+        assert client.shutdown_calls == 0
+        client.finish.set()
+        await request
+        assert svc._last_used[key] == 100
+
+    asyncio.run(exercise())
+
+
+def test_shutdown_waits_for_reaper_critical_section():
+    svc = LSPService(enabled=True, wait_mode="document", wait_timeout=1,
+                     install_strategy="manual", idle_timeout=60)
+    client = _IdleClient()
+    key = ("typescript", "/project")
+    with svc._state_lock:
+        svc._clients[key] = client
+        svc._last_used[key] = 0
+    svc._reaper_run_lock.acquire()
+    thread = threading.Thread(target=svc.shutdown)
+    thread.start()
+    time.sleep(0.05)
+    assert thread.is_alive()
+    assert client.shutdown_calls == 0
+    svc._reaper_run_lock.release()
+    thread.join(2)
+    assert not thread.is_alive()
+    assert client.shutdown_calls == 1
+
+
 from agent.lsp.servers import (
     SERVERS,
     ServerContext,

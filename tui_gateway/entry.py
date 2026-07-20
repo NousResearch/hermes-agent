@@ -10,13 +10,13 @@ import hermes_bootstrap
 
 hermes_bootstrap.harden_import_path()
 
-import fcntl
 import json
 import logging
 import signal
-import socket
 import time
 import traceback
+
+from tui_gateway._stdin_recovery import handle_spurious_eof
 
 from tui_gateway import server
 from tui_gateway.server import _CRASH_LOG, dispatch, resolve_skin, write_json
@@ -294,36 +294,6 @@ def join_mcp_discovery(timeout: float | None = None) -> bool:
 
 # Spurious stdin-EOF recovery tracker (shared open-file-description O_NONBLOCK flip).
 _recovery_times: list[float] = []
-_MAX_RECOVERIES_PER_MINUTE = 10
-
-
-def _diagnose_stdin_state() -> str:
-    """Return a diagnostic string about stdin's current state.
-
-    Used for crash-log forensics when stdin iteration falls through.
-    Distinguishes genuine peer-close (flag clear) from spurious EOF
-    caused by a child setting O_NONBLOCK on the shared file description.
-    """
-    parts: list[str] = []
-    try:
-        flags = fcntl.fcntl(0, fcntl.F_GETFL)
-        parts.append(f"O_NONBLOCK={'1' if flags & os.O_NONBLOCK else '0'}")
-    except Exception as e:
-        parts.append(f"F_GETFL error: {e}")
-    # SO_RCVTIMEO is a socket option (not a file-status flag), equally shared
-    # on the open file description. A child setting it via setsockopt launders
-    # into the same spurious-EOF path with O_NONBLOCK clear, so we report it
-    # alongside the flag.
-    try:
-        s = socket.fromfd(0, socket.AF_UNIX, socket.SOCK_STREAM)
-        try:
-            tv = s.getsockopt(socket.SOL_SOCKET, socket.SO_RCVTIMEO)
-            parts.append(f"SO_RCVTIMEO={tv}")
-        finally:
-            s.detach()
-    except Exception:
-        pass
-    return ", ".join(parts) if parts else "unknown"
 
 
 def main():
@@ -393,40 +363,10 @@ def main():
     while True:
         raw = sys.stdin.readline()
         if not raw:
-            # Stdin iteration fell through — check if spurious (O_NONBLOCK flip
-            # by a child on the shared open file description) or genuine EOF.
-            try:
-                flags = fcntl.fcntl(0, fcntl.F_GETFL)
-                is_nonblock = bool(flags & os.O_NONBLOCK)
-            except Exception:
-                is_nonblock = False
-
-            if not is_nonblock:
-                # Genuine peer-close — no subprocess flag tampering detected.
-                _log_exit("stdin EOF (peer closed)")
+            # Stdin fell through — check if spurious (O_NONBLOCK flip by a
+            # child on the shared open file description) or genuine EOF.
+            if not handle_spurious_eof(_recovery_times, _log_exit):
                 break
-
-            # Spurious EOF: a child set O_NONBLOCK (or SO_RCVTIMEO) on the
-            # shared file description, laundered into b''/EAGAIN by CPython's
-            # buffered layer. Restore blocking mode and resume.
-            now = time.time()
-            _recovery_times.append(now)
-            _recovery_times[:] = [t for t in _recovery_times if t > now - 60]
-            if len(_recovery_times) > _MAX_RECOVERIES_PER_MINUTE:
-                _log_exit(
-                    f"stdin spurious-EOF recovery rate exceeded "
-                    f"({len(_recovery_times)}/min, cap {_MAX_RECOVERIES_PER_MINUTE})"
-                )
-                break
-
-            diag = _diagnose_stdin_state()
-            _log_exit(
-                f"stdin spurious EOF (subprocess O_NONBLOCK flip), recovering: {diag}"
-            )
-            os.set_blocking(0, True)
-            # _io.TextIOWrapper readline returns empty string on EAGAIN but
-            # does NOT stick EOF; after restoring blocking, the next call
-            # will block until data arrives or the peer truly closes.
             continue
 
         line = raw.strip()

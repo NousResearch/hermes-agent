@@ -236,3 +236,153 @@ def test_no_plugins_returns_empty_results(tmp_path, monkeypatch):
             hook, command="quit", raw="/quit", session_id="", cli=object(),
         )
         assert results == []
+
+
+# ---------------------------------------------------------------------------
+# process_command() integration tests
+# ---------------------------------------------------------------------------
+
+
+def test_process_command_fires_pre_command_for_help():
+    """process_command /help fires pre_command with the canonical command name."""
+    from unittest.mock import MagicMock, patch
+
+    from cli import HermesCLI
+
+    cli = HermesCLI.__new__(HermesCLI)
+    cli._pre_command_fired = False
+    cli.session_id = "test-session"
+    cli._pending_resume_sessions = None
+
+    mock_invoke = MagicMock()
+    with (
+        patch("hermes_cli.plugins.has_hook", return_value=True),
+        patch("hermes_cli.plugins.invoke_hook", mock_invoke),
+        patch.object(cli, "show_help"),
+    ):
+        result = cli.process_command("/help")
+
+    assert result is True, "process_command should return True (continue)"
+    mock_invoke.assert_any_call(
+        "pre_command",
+        command="help",
+        raw="/help",
+        session_id="test-session",
+        cli=cli,
+    )
+
+
+def test_process_command_fires_post_command_for_help():
+    """process_command /help fires post_command after the handler completes."""
+    from unittest.mock import MagicMock, patch
+
+    from cli import HermesCLI
+
+    cli = HermesCLI.__new__(HermesCLI)
+    cli._pre_command_fired = False
+    cli.session_id = "test-session"
+    cli._pending_resume_sessions = None
+
+    mock_invoke = MagicMock()
+    with (
+        patch("hermes_cli.plugins.has_hook", return_value=True),
+        patch("hermes_cli.plugins.invoke_hook", mock_invoke),
+        patch.object(cli, "show_help"),
+    ):
+        cli.process_command("/help")
+
+    mock_invoke.assert_any_call(
+        "post_command",
+        command="help",
+        raw="/help",
+        session_id="test-session",
+        cli=cli,
+    )
+
+
+def test_process_command_fires_on_quit_for_exit():
+    """process_command /exit fires on_quit and returns False."""
+    from unittest.mock import MagicMock, patch
+
+    from cli import HermesCLI
+
+    cli = HermesCLI.__new__(HermesCLI)
+    cli._pre_command_fired = False
+    cli.session_id = "test-session"
+    cli._pending_resume_sessions = None
+
+    mock_invoke = MagicMock()
+    with (
+        patch("hermes_cli.plugins.has_hook", return_value=True),
+        patch("hermes_cli.plugins.invoke_hook", mock_invoke),
+        patch("cli._cprint"),
+    ):
+        result = cli.process_command("/exit")
+
+    assert result is False, "process_command should return False (exit)"
+    mock_invoke.assert_any_call(
+        "on_quit",
+        command="quit",
+        raw="/exit",
+        session_id="test-session",
+        cli=cli,
+    )
+
+
+def test_process_command_skips_post_command_for_quit():
+    """process_command /quit fires on_quit but NOT post_command."""
+    from unittest.mock import MagicMock, patch
+
+    from cli import HermesCLI
+
+    cli = HermesCLI.__new__(HermesCLI)
+    cli._pre_command_fired = False
+    cli.session_id = "test-session"
+    cli._pending_resume_sessions = None
+
+    mock_invoke = MagicMock()
+    with (
+        patch("hermes_cli.plugins.has_hook", return_value=True),
+        patch("hermes_cli.plugins.invoke_hook", mock_invoke),
+        patch("cli._cprint"),
+    ):
+        cli.process_command("/quit")
+
+    on_quit_calls = [
+        c for c in mock_invoke.call_args_list
+        if c.args[0] == "on_quit"
+    ]
+    post_calls = [
+        c for c in mock_invoke.call_args_list
+        if c.args[0] == "post_command"
+    ]
+    assert len(on_quit_calls) == 1, "on_quit should fire once for /quit"
+    assert len(post_calls) == 0, "post_command should NOT fire for /quit"
+
+
+def test_pre_command_anti_reentry():
+    """process_command fires pre_command at most once even if called again."""
+    from unittest.mock import MagicMock, patch
+
+    from cli import HermesCLI
+
+    cli = HermesCLI.__new__(HermesCLI)
+    cli._pre_command_fired = True  # simulate prior fire
+    cli.session_id = "test-session"
+    cli._pending_resume_sessions = None
+
+    mock_invoke = MagicMock()
+    with (
+        patch("hermes_cli.plugins.has_hook", return_value=True),
+        patch("hermes_cli.plugins.invoke_hook", mock_invoke),
+        patch.object(cli, "show_help"),
+    ):
+        cli.process_command("/help")
+
+    pre_calls = [
+        c for c in mock_invoke.call_args_list
+        if c.args[0] == "pre_command"
+    ]
+    assert len(pre_calls) == 0, (
+        "pre_command must not fire when _pre_command_fired is already True"
+    )

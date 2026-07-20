@@ -52,6 +52,7 @@ from agent.message_sanitization import (
 )
 from agent.model_metadata import (
     MINIMUM_CONTEXT_LENGTH,
+    _estimate_tools_tokens_rough,
     estimate_messages_tokens_rough,
     estimate_request_tokens_rough,
     get_context_length_from_provider_error,
@@ -1072,17 +1073,19 @@ def run_conversation(
         # the OpenAI SDK. Sanitizing here prevents the 3-retry cycle.
         _sanitize_messages_surrogates(api_messages)
 
-        # Calculate approximate request size for logging and pressure checks.
-        # estimate_messages_tokens_rough(api_messages) includes the system
-        # prompt copy but not the tool schema payload, which is sent as a
-        # separate field. Add tools back for compression decisions so long
-        # tool-heavy turns do not creep up to the context ceiling and leave
-        # no room for the model's final answer.
-        total_chars = sum(len(str(msg)) for msg in api_messages)
+        # Approximate request size for logging + pressure checks, from ONE
+        # message-token estimate. Tool schemas ship as a separate field, so add
+        # them back for compression decisions (50+ tools = 20-30K tokens).
+        # (estimate_messages_tokens_rough already image-strips base64.) This
+        # replaces a `str(msg)` char walk that re-serialized the whole history
+        # incl. base64 every call, plus estimate_request_tokens_rough re-walking
+        # the messages a second time. total_chars stays a rough (~) proxy — it
+        # only feeds a verbose log + the pre-api-request hook metric.
         approx_tokens = estimate_messages_tokens_rough(api_messages)
-        request_pressure_tokens = estimate_request_tokens_rough(
-            api_messages, tools=agent.tools or None
+        request_pressure_tokens = approx_tokens + (
+            _estimate_tools_tokens_rough(agent.tools) if agent.tools else 0
         )
+        total_chars = approx_tokens * 4
 
         _runtime_context_error = _ollama_context_limit_error(
             agent, request_pressure_tokens

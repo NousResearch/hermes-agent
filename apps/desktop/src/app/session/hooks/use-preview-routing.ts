@@ -10,7 +10,7 @@ import {
   getSessionPreviewRecord,
   progressPreviewServerRestart,
   requestPreviewReload,
-  setPreviewTarget
+  restorePreviewTarget
 } from '@/store/preview'
 import { $currentCwd } from '@/store/session'
 import type { RpcEvent } from '@/types/hermes'
@@ -57,14 +57,14 @@ export function usePreviewRouting({
   // open on their own.
   useEffect(() => {
     if (currentView !== 'chat' || !previewSessionId) {
-      setPreviewTarget(null)
+      restorePreviewTarget(null)
 
       return
     }
 
     const record = getSessionPreviewRecord(previewSessionId)
 
-    setPreviewTarget(record?.normalized ?? null)
+    restorePreviewTarget(record?.normalized ?? null)
   }, [currentView, previewRegistry, previewSessionId])
 
   const restartPreviewServer = useCallback(

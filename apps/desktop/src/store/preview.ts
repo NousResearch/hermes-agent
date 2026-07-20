@@ -4,11 +4,13 @@ import { persistentAtom } from '@/lib/persisted'
 import { normalize } from '@/lib/text'
 
 import {
+  $fileBrowserOpen,
   $rightRailActiveTabId,
   PREVIEW_PANE_ID,
   RIGHT_RAIL_PREVIEW_TAB_ID,
   type RightRailTabId,
-  selectRightRailTab
+  selectRightRailTab,
+  setFileBrowserOpen
 } from './layout'
 import { setPaneOpen } from './panes'
 import { $activeSessionId, $selectedStoredSessionId } from './session'
@@ -137,6 +139,19 @@ export function setPreviewTarget(target: PreviewTarget | null) {
 
   if (target) {
     showLivePreviewTab()
+  }
+}
+
+/** Restore session-owned preview content without treating restoration as an
+ * explicit request to expand a side the user collapsed. Synchronous preview
+ * listeners may reveal the pane, so restore the prior side state afterwards. */
+export function restorePreviewTarget(target: PreviewTarget | null) {
+  const sideWasOpen = $fileBrowserOpen.get()
+
+  setPreviewTarget(target)
+
+  if (!sideWasOpen) {
+    setFileBrowserOpen(false)
   }
 }
 

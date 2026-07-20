@@ -149,6 +149,51 @@ class TestParseJudgeResponse:
 
 
 class TestJudgeGoal:
+    def test_return_contract_is_a_4_tuple(self):
+        """Pin judge_goal's signature so an arity change fails loudly here.
+
+        Every completion gate unpacks this function's return positionally
+        (``verdict, reason, _, _ = judge_goal(...)``). When the return went to
+        four values, two gates kept unpacking three; the resulting ValueError
+        was swallowed by a broad handler that left a pre-initialised
+        ``verdict = "done"``, so goal-mode completions were approved without
+        ever being evaluated. It shipped twice, 23 minutes apart.
+
+        The unit suite stayed green through all of it because the gate tests
+        mock ``judge_goal`` and therefore assert the mock's shape, not this
+        one. This test talks to the real function so the next signature edit
+        breaks a test instead of silently disabling the gate in production.
+        """
+        import inspect
+        import typing
+
+        from hermes_cli.goals import judge_goal
+
+        sig = inspect.signature(judge_goal)
+        params = list(sig.parameters.values())
+
+        positional = [p.name for p in params if p.kind is p.POSITIONAL_OR_KEYWORD]
+        keyword_only = {p.name for p in params if p.kind is p.KEYWORD_ONLY}
+        assert positional == ["goal", "last_response"]
+        assert keyword_only == {
+            "timeout",
+            "subgoals",
+            "background_processes",
+            "contract",
+        }
+
+        # The load-bearing assertion: what callers actually unpack. Both of
+        # these hit guard clauses that return before the auxiliary-client
+        # import, so neither touches the network.
+        assert len(judge_goal("", "x")) == 4
+        assert len(judge_goal("x", "")) == 4
+
+        # Cheap tripwire on the declared type. goals.py uses
+        # `from __future__ import annotations`, so the raw annotation is a
+        # string — resolve it before inspecting, or get_args() returns ().
+        hints = typing.get_type_hints(judge_goal)
+        assert len(typing.get_args(hints["return"])) == 4
+
     def test_empty_goal_skipped(self):
         from hermes_cli.goals import judge_goal
 

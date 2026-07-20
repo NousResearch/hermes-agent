@@ -58,6 +58,32 @@ behavior-affecting hooks:
 Telemetry plugins should treat these behavior-affecting returns as optional
 compatibility features, not as observability requirements.
 
+### Required Tool Policies
+
+`pre_tool_call` hooks remain fail-open by default. Operators can require a
+specific plugin to return a policy decision for selected tool-name globs:
+
+```yaml
+plugins:
+  enabled:
+    - github-policy
+  entries:
+    github-policy:
+      required_pre_tool_call:
+        tools:
+          - "github_*"
+          - terminal
+```
+
+`required_pre_tool_call: true` protects every tool. For a matching tool, each
+`pre_tool_call` callback registered by that plugin must return an explicit
+`{"action": "allow"}`, a valid `block` directive, or a valid `approve`
+directive. Hermes blocks the call when the plugin is unavailable, a callback
+raises, or a callback returns an empty or malformed decision. Other plugins
+and unprotected tools keep the ordinary fail-open behavior. A malformed
+`required_pre_tool_call` configuration cannot identify its intended tool
+scope, so Hermes blocks tool dispatch until the entry is corrected or removed.
+
 ## Correlation IDs
 
 Observer payloads use stable IDs so plugins can join events without relying on

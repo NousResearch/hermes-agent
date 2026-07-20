@@ -1,5 +1,6 @@
 """Tests for the Hermes plugin system (hermes_cli.plugins)."""
 
+import json
 import logging
 import sys
 import types
@@ -1022,6 +1023,201 @@ class TestResolvePreToolBlock:
         monkeypatch.setattr("tools.approval.request_tool_approval", _boom)
         msg = resolve_pre_tool_block("terminal", {})
         assert msg is not None and "gate failed" in msg  # fail-closed
+
+    @staticmethod
+    def _configure_required_policy(home, plugin_id, tools):
+        config_path = home / "config.yaml"
+        config = yaml.safe_load(config_path.read_text()) if config_path.exists() else {}
+        config = config or {}
+        plugins = config.setdefault("plugins", {})
+        plugins.setdefault("enabled", [])
+        plugins.setdefault("entries", {})[plugin_id] = {
+            "required_pre_tool_call": {"tools": tools}
+        }
+        config_path.write_text(yaml.safe_dump(config))
+
+    def test_required_policy_callback_exception_blocks_with_sanitized_reason(
+        self, tmp_path, monkeypatch
+    ):
+        import hermes_cli.plugins as plugins_mod
+
+        home = tmp_path / "hermes"
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        _make_plugin_dir(
+            home / "plugins",
+            "required_guard",
+            register_body=(
+                'ctx.register_hook("pre_tool_call", '
+                'lambda **kw: (_ for _ in ()).throw(RuntimeError("secret detail")))'
+            ),
+        )
+        self._configure_required_policy(home, "required_guard", ["terminal"])
+        manager = PluginManager()
+        monkeypatch.setattr(plugins_mod, "_plugin_manager", manager)
+        manager.discover_and_load()
+
+        message = plugins_mod.resolve_pre_tool_block("terminal", {"command": "pwd"})
+
+        assert message is not None
+        assert "required_guard" in message
+        assert "secret detail" not in message
+
+    def test_missing_required_policy_plugin_blocks(self, tmp_path, monkeypatch):
+        import hermes_cli.plugins as plugins_mod
+
+        home = tmp_path / "hermes"
+        home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        self._configure_required_policy(home, "missing_guard", ["github_*"])
+        manager = PluginManager()
+        monkeypatch.setattr(plugins_mod, "_plugin_manager", manager)
+        manager.discover_and_load()
+
+        message = plugins_mod.resolve_pre_tool_block("github_merge", {})
+
+        assert message is not None
+        assert "missing_guard" in message
+
+    def test_required_policy_malformed_result_blocks_but_unprotected_tool_allows(
+        self, tmp_path, monkeypatch
+    ):
+        import hermes_cli.plugins as plugins_mod
+
+        home = tmp_path / "hermes"
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        _make_plugin_dir(
+            home / "plugins",
+            "malformed_guard",
+            register_body=(
+                'ctx.register_hook("pre_tool_call", '
+                'lambda **kw: {"action": "maybe"})'
+            ),
+        )
+        self._configure_required_policy(home, "malformed_guard", ["terminal"])
+        manager = PluginManager()
+        monkeypatch.setattr(plugins_mod, "_plugin_manager", manager)
+        manager.discover_and_load()
+
+        assert plugins_mod.resolve_pre_tool_block("terminal", {}) is not None
+        assert plugins_mod.resolve_pre_tool_block("read_file", {}) is None
+
+    def test_required_policy_explicit_allow_permits_matching_tool(
+        self, tmp_path, monkeypatch
+    ):
+        import hermes_cli.plugins as plugins_mod
+
+        home = tmp_path / "hermes"
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        _make_plugin_dir(
+            home / "plugins",
+            "allow_guard",
+            register_body=(
+                'ctx.register_hook("pre_tool_call", '
+                'lambda **kw: {"action": "allow"})'
+            ),
+        )
+        self._configure_required_policy(home, "allow_guard", ["github_*"])
+        manager = PluginManager()
+        monkeypatch.setattr(plugins_mod, "_plugin_manager", manager)
+        manager.discover_and_load()
+
+        assert plugins_mod.resolve_pre_tool_block("github_merge", {}) is None
+
+    def test_required_policy_approve_uses_fail_closed_gate(
+        self, tmp_path, monkeypatch
+    ):
+        import hermes_cli.plugins as plugins_mod
+
+        home = tmp_path / "hermes"
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        _make_plugin_dir(
+            home / "plugins",
+            "approval_guard",
+            register_body=(
+                'ctx.register_hook("pre_tool_call", '
+                'lambda **kw: {"action": "approve", "message": "review"})'
+            ),
+        )
+        self._configure_required_policy(home, "approval_guard", ["terminal"])
+        manager = PluginManager()
+        monkeypatch.setattr(plugins_mod, "_plugin_manager", manager)
+        manager.discover_and_load()
+        monkeypatch.setattr(
+            "tools.approval.request_tool_approval",
+            lambda *args, **kwargs: {"approved": False, "message": "denied"},
+        )
+
+        assert plugins_mod.resolve_pre_tool_block("terminal", {}) == "denied"
+
+    def test_required_policy_plugin_load_failure_blocks(self, tmp_path, monkeypatch):
+        import hermes_cli.plugins as plugins_mod
+
+        home = tmp_path / "hermes"
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        _make_plugin_dir(
+            home / "plugins",
+            "broken_guard",
+            register_body=(
+                'ctx.register_hook("pre_tool_call", '
+                'lambda **kw: {"action": "allow"}); '
+                'raise RuntimeError("load secret")'
+            ),
+        )
+        self._configure_required_policy(home, "broken_guard", ["terminal"])
+        manager = PluginManager()
+        monkeypatch.setattr(plugins_mod, "_plugin_manager", manager)
+        manager.discover_and_load()
+
+        message = plugins_mod.resolve_pre_tool_block("terminal", {})
+
+        assert message is not None
+        assert "broken_guard" in message
+        assert "load secret" not in message
+
+    def test_required_policy_resolver_crash_fails_closed_only_for_protected_tool(
+        self, tmp_path, monkeypatch
+    ):
+        import hermes_cli.plugins as plugins_mod
+
+        home = tmp_path / "hermes"
+        home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        self._configure_required_policy(home, "guard", ["terminal"])
+        monkeypatch.setattr(
+            plugins_mod,
+            "_resolve_pre_tool_block",
+            lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("secret")),
+        )
+
+        message = plugins_mod.resolve_pre_tool_block("terminal", {})
+        assert message is not None
+        assert "secret" not in message
+        with pytest.raises(RuntimeError, match="secret"):
+            plugins_mod.resolve_pre_tool_block("read_file", {})
+
+    def test_malformed_required_policy_configuration_fails_closed(
+        self, tmp_path, monkeypatch
+    ):
+        import hermes_cli.plugins as plugins_mod
+
+        home = tmp_path / "hermes"
+        home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        config = {
+            "plugins": {
+                "entries": {
+                    "guard": {
+                        "required_pre_tool_call": {"tools": "terminal"}
+                    }
+                }
+            }
+        }
+        (home / "config.yaml").write_text(yaml.safe_dump(config))
+
+        message = plugins_mod.resolve_pre_tool_block("read_file", {})
+
+        assert message is not None
+        assert "invalid configuration" in message
 
 
 class TestGetPreVerifyContinueMessage:
@@ -2099,6 +2295,200 @@ class TestPluginCommandResultResolution:
 
 class TestPluginDispatchTool:
     """Tests for PluginContext.dispatch_tool() — tool dispatch with agent context."""
+
+    @staticmethod
+    def _configure_required_policy(home: Path, plugin_id: str = "guard") -> None:
+        config_path = home / "config.yaml"
+        config = yaml.safe_load(config_path.read_text()) if config_path.exists() else {}
+        config = config or {}
+        plugins = config.setdefault("plugins", {})
+        plugins.setdefault("enabled", []).append(plugin_id)
+        plugins.setdefault("entries", {})[plugin_id] = {
+            "required_pre_tool_call": {"tools": ["terminal"]}
+        }
+        plugins["enabled"] = list(dict.fromkeys(plugins["enabled"]))
+        config_path.write_text(yaml.safe_dump(config))
+
+    @pytest.mark.parametrize("has_cli_ref", [False, True])
+    @pytest.mark.parametrize(
+        ("outcome", "register_body", "approval_result"),
+        [
+            (
+                "block",
+                'ctx.register_hook("pre_tool_call", '
+                'lambda **kw: {"action": "block", "message": "denied"})',
+                None,
+            ),
+            (
+                "callback_failure",
+                'ctx.register_hook("pre_tool_call", lambda **kw: '
+                '(_ for _ in ()).throw(RuntimeError("callback secret")))',
+                None,
+            ),
+            (
+                "malformed_result",
+                'ctx.register_hook("pre_tool_call", '
+                'lambda **kw: {"action": "maybe"})',
+                None,
+            ),
+            ("unavailable", None, None),
+            (
+                "approval_denial",
+                'ctx.register_hook("pre_tool_call", '
+                'lambda **kw: {"action": "approve", "message": "review"})',
+                {"approved": False, "message": "denied"},
+            ),
+            (
+                "approval_error",
+                'ctx.register_hook("pre_tool_call", '
+                'lambda **kw: {"action": "approve", "message": "review"})',
+                RuntimeError("approval secret"),
+            ),
+            (
+                "approval_timeout",
+                'ctx.register_hook("pre_tool_call", '
+                'lambda **kw: {"action": "approve", "message": "review"})',
+                {"approved": False, "message": "timed out"},
+            ),
+        ],
+    )
+    def test_dispatch_tool_enforces_required_policy_failures(
+        self,
+        tmp_path,
+        monkeypatch,
+        has_cli_ref,
+        outcome,
+        register_body,
+        approval_result,
+    ):
+        import hermes_cli.plugins as plugins_mod
+
+        home = tmp_path / f"hermes-{outcome}-{has_cli_ref}"
+        home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        if register_body is not None:
+            _make_plugin_dir(
+                home / "plugins",
+                "guard",
+                register_body=register_body,
+            )
+        self._configure_required_policy(home)
+
+        manager = PluginManager()
+        manager.discover_and_load()
+        if has_cli_ref:
+            manager._cli_ref = types.SimpleNamespace(
+                agent=types.SimpleNamespace(session_id="cli-session")
+            )
+        monkeypatch.setattr(plugins_mod, "_plugin_manager", manager)
+        hook_spy = MagicMock(wraps=manager.invoke_hook_detailed)
+        monkeypatch.setattr(manager, "invoke_hook_detailed", hook_spy)
+
+        if isinstance(approval_result, Exception):
+            approval = MagicMock(side_effect=approval_result)
+        else:
+            approval = MagicMock(return_value=approval_result)
+        monkeypatch.setattr("tools.approval.request_tool_approval", approval)
+
+        context = PluginContext(
+            PluginManifest(name="command-plugin", source="user"), manager
+        )
+        mock_registry = MagicMock()
+        with patch("tools.registry.registry", mock_registry):
+            result = context.dispatch_tool("terminal", {"command": "rm target"})
+
+        error = json.loads(result)["error"]
+        assert error
+        assert "secret" not in error
+        mock_registry.dispatch.assert_not_called()
+        hook_spy.assert_called_once()
+        if outcome.startswith("approval_"):
+            approval.assert_called_once()
+        else:
+            approval.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "config_text",
+        [
+            "plugins:\n  entries: [unterminated\n",
+            yaml.safe_dump({"plugins": {"entries": []}}),
+        ],
+    )
+    def test_dispatch_tool_blocks_invalid_existing_config(
+        self, tmp_path, monkeypatch, config_text
+    ):
+        home = tmp_path / "hermes"
+        home.mkdir()
+        (home / "config.yaml").write_text(config_text)
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        context = PluginContext(
+            PluginManifest(name="command-plugin", source="user"), PluginManager()
+        )
+        mock_registry = MagicMock()
+
+        with patch("tools.registry.registry", mock_registry):
+            result = context.dispatch_tool("terminal", {"command": "rm target"})
+
+        assert "configuration is unavailable" in json.loads(result)["error"]
+        mock_registry.dispatch.assert_not_called()
+
+    def test_dispatch_tool_blocks_unreadable_existing_config(
+        self, tmp_path, monkeypatch
+    ):
+        home = tmp_path / "hermes"
+        home.mkdir()
+        (home / "config.yaml").write_text("plugins: {}\n")
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        context = PluginContext(
+            PluginManifest(name="command-plugin", source="user"), PluginManager()
+        )
+        mock_registry = MagicMock()
+
+        with patch("tools.registry.registry", mock_registry):
+            with patch("builtins.open", side_effect=PermissionError("denied")):
+                result = context.dispatch_tool("terminal", {"command": "rm target"})
+
+        assert "configuration is unavailable" in json.loads(result)["error"]
+        mock_registry.dispatch.assert_not_called()
+
+    def test_dispatch_tool_blocks_when_valid_config_becomes_malformed(
+        self, tmp_path, monkeypatch
+    ):
+        import hermes_cli.plugins as plugins_mod
+
+        home = tmp_path / "hermes"
+        home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        _make_plugin_dir(
+            home / "plugins",
+            "guard",
+            register_body=(
+                'ctx.register_hook("pre_tool_call", '
+                'lambda **kw: {"action": "allow"})'
+            ),
+        )
+        self._configure_required_policy(home)
+        manager = PluginManager()
+        manager.discover_and_load()
+        monkeypatch.setattr(plugins_mod, "_plugin_manager", manager)
+        context = PluginContext(
+            PluginManifest(name="command-plugin", source="user"), manager
+        )
+        mock_registry = MagicMock()
+        mock_registry.dispatch.return_value = '{"ok": true}'
+
+        with patch("tools.registry.registry", mock_registry):
+            assert context.dispatch_tool("terminal", {"command": "pwd"}) == '{"ok": true}'
+            mock_registry.dispatch.assert_called_once()
+            mock_registry.reset_mock()
+
+            (home / "config.yaml").write_text(
+                "plugins:\n  entries: [now malformed and deliberately longer\n"
+            )
+            result = context.dispatch_tool("terminal", {"command": "rm target"})
+
+        assert "configuration is unavailable" in json.loads(result)["error"]
+        mock_registry.dispatch.assert_not_called()
 
     def test_dispatch_tool_calls_registry(self):
         """dispatch_tool() delegates to registry.dispatch()."""

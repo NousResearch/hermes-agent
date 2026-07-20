@@ -140,3 +140,18 @@ def test_gateway_env_bridge_honors_managed(homes, monkeypatch):
     raw = yaml.safe_load((home / "config.yaml").read_text())
     bridged = managed_scope.apply_managed_overlay(raw)
     assert bridged.get("timezone") == "Asia/Tokyo"
+
+
+def test_strict_config_read_rejects_malformed_managed_source(homes):
+    home, managed = homes
+    _seed(
+        home,
+        managed,
+        user="plugins:\n  entries: {}\n",
+        mgd="plugins:\n  entries: [unterminated\n",
+    )
+    from hermes_cli.config import load_config_readonly, load_config_readonly_strict
+
+    assert isinstance(load_config_readonly(), dict)
+    with pytest.raises(Exception):
+        load_config_readonly_strict()

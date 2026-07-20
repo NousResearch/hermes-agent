@@ -154,6 +154,16 @@ VALID_HOOKS: Set[str] = {
     # verification-stop nudge; this hook is for user/plugin policy and is
     # bounded by agent.max_verify_nudges.
     "pre_verify",
+    # Goal verdict provider. Fired after an active goal turn and before the
+    # built-in auxiliary-model judge. A plugin may return a verdict mapping:
+    #   {"verdict": "done" | "continue", "reason": "..."}
+    # or a bounded wait verdict with exactly one target:
+    #   {"verdict": "wait", "reason": "...", "wait_on_pid": 123}
+    #   {"verdict": "wait", "reason": "...", "wait_on_session": "id"}
+    #   {"verdict": "wait", "reason": "...", "wait_for_seconds": 30}
+    # Invalid/None results are ignored and the built-in judge remains the
+    # fallback. Hermes core still owns state, budgets, waiting, and prompts.
+    "goal_judge",
     "pre_api_request",
     "post_api_request",
     "api_request_error",

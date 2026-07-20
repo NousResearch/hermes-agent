@@ -371,7 +371,7 @@ def register(ctx):
 
 - Callbacks receive **keyword arguments**. Always accept `**kwargs` for forward compatibility — new parameters may be added in future versions without breaking your plugin.
 - If a callback **crashes**, it's logged and skipped. Other hooks and the agent continue normally. A misbehaving plugin can never break the agent.
-- Two hooks' return values affect behavior: [`pre_tool_call`](#pre_tool_call) can **block** the tool, and [`pre_llm_call`](#pre_llm_call) can **inject context** into the LLM call. All other hooks are fire-and-forget observers.
+- Some hooks have explicitly documented behavior-changing return contracts — for example, [`pre_tool_call`](#pre_tool_call) can **block** a tool, [`pre_llm_call`](#pre_llm_call) can **inject context**, and [`goal_judge`](#goal_judge) can supply a Goal verdict. Hooks without a documented return contract are fire-and-forget observers.
 - Observer callbacks receive `telemetry_schema_version` automatically. When present, `turn_id`, `api_request_id`, `task_id`, `session_id`, and `api_call_count` are separate correlation fields. Treat `api_request_id` as an opaque identifier; do not parse its string format.
 
 ### Quick reference
@@ -383,6 +383,7 @@ def register(ctx):
 | [`pre_llm_call`](#pre_llm_call) | Once per turn, before the tool-calling loop | `{"context": str}` to prepend context to the user message |
 | [`post_llm_call`](#post_llm_call) | Once per turn, after the tool-calling loop | ignored |
 | [`pre_verify`](#pre_verify) | Once per turn when the agent edited code, before it verifies/finishes | `{"action": "continue", "message": str}` to keep going |
+| [`goal_judge`](#goal_judge) | After an active Goal turn, before the built-in auxiliary-model judge | A bounded Goal verdict mapping, or `None` to use the built-in judge |
 | [`on_session_start`](#on_session_start) | New session created (first turn only) | ignored |
 | [`on_session_end`](#on_session_end) | Session ends | ignored |
 | [`on_session_finalize`](#on_session_finalize) | CLI/gateway tears down an active session (flush, save, stats) | ignored |
@@ -715,6 +716,46 @@ def register(ctx):
 ```
 
 For standing guidance that should shape the built-in missing-evidence nudge, use `agent.verify_guidance`. For broader coding posture rules that don't need to *gate* verification, prefer `agent.coding_instructions` in `config.yaml` — it rides the coding brief and costs no extra turn.
+
+---
+
+### `goal_judge`
+
+Fires after a turn for an active `/goal`, after Hermes has enforced any existing wait barrier and counted the completed turn, but before the built-in auxiliary-model judge runs. It lets a plugin provide an external verification verdict without replacing the Goal state machine.
+
+**Callback signature:**
+
+```python
+def my_callback(session_id: str, goal: str, last_response: str,
+                user_initiated: bool, background_processes: list | None,
+                subgoals: list, contract: dict | None, **kwargs):
+```
+
+Return `None` when the plugin does not handle this Goal. To supply a verdict, return one of these mappings:
+
+```python
+{"verdict": "done", "reason": "external checks passed"}
+{"verdict": "continue", "reason": "deployment is not healthy yet"}
+{"verdict": "wait", "reason": "CI is still running", "wait_on_session": "proc-123"}
+{"verdict": "wait", "reason": "build is still running", "wait_on_pid": 4242}
+{"verdict": "wait", "reason": "rate limited", "wait_for_seconds": 30}
+```
+
+For `wait`, provide exactly one positive target. Numeric PID/seconds targets must be integers no greater than `2147483647`; booleans, non-positive values, and larger integers are invalid. Invalid values are ignored. The first valid plugin result wins; if no plugin returns one, Hermes calls its built-in Goal judge.
+
+The hook supplies **only the verdict**. `subgoals`, `contract`, and `background_processes` are snapshots; mutating them does not alter the Goal or the built-in judge fallback input. Hermes core still owns turn-budget enforcement, wait barriers, Goal state transitions, persistence, and continuation prompts. A plugin cannot bypass those controls by returning extra fields. Hook exceptions are logged and skipped, so the built-in judge remains the safe fallback.
+
+```python
+def verify_goal(goal, last_response, **kwargs):
+    if goal != "Deploy the service":
+        return None
+    if "health check: passed" in last_response.lower():
+        return {"verdict": "done", "reason": "health check passed"}
+    return {"verdict": "continue", "reason": "health check evidence missing"}
+
+def register(ctx):
+    ctx.register_hook("goal_judge", verify_goal)
+```
 
 ---
 

@@ -13,6 +13,12 @@ describe('model-status-label', () => {
     expect(displayModelName('openai/gpt-5.5-fast')).toBe('GPT-5.5')
     expect(displayModelName('deepseek/deepseek-v4-pro-thinking')).toBe('Deepseek V4 Pro')
     expect(displayModelName('openai/gpt-5.5')).toBe('GPT-5.5')
+    expect(displayModelName('openai/gpt-5.6-sol')).toBe('GPT-5.6-Sol')
+    expect(displayModelName('openai/gpt-5.6-terra')).toBe('GPT-5.6-Terra')
+    expect(displayModelName('openai/gpt-5.6-luna')).toBe('GPT-5.6-Luna')
+    expect(displayModelName('openai/gpt-5.6-sol-pro')).toBe('GPT-5.6-Sol-pro')
+    expect(displayModelName('openai/gpt-4o-mini')).toBe('GPT-4o-mini')
+    expect(displayModelName('openai/gpt-5.5-pro')).toBe('GPT-5.5-pro')
   })
 
   it('strips trailing date-pin snapshots from the display name', () => {

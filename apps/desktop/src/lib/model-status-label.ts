@@ -63,7 +63,14 @@ function prettifyBase(base: string): string {
   }
 
   if (/^gpt-/i.test(base)) {
-    return base.replace(/^gpt-/i, 'GPT-')
+    // Keep the GPT-id shape (`GPT-5.6`) but title-case only the known
+    // codename segments sol/terra/luna, leaving mini/pro/oss/chat/etc alone.
+    return base
+      .replace(/^gpt-/i, 'GPT-')
+      .replace(
+        /-(sol|terra|luna)(?=-|$)/gi,
+        (_, seg: string) => `-${seg.charAt(0).toUpperCase()}${seg.slice(1).toLowerCase()}`
+      )
   }
 
   if (/^gemini-/i.test(base)) {

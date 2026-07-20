@@ -8203,9 +8203,14 @@ def test_session_activate_returns_inflight_stream_before_completion(monkeypatch)
             {"role": "user", "text": "write a long answer"},
             {"role": "assistant", "text": "partial answer complete"},
         ]
+        run_thread = server._sessions["sid-live"]["_run_thread"]
+        run_thread.join(2)
+        assert not run_thread.is_alive(), "prompt worker outlived test monkeypatches"
     finally:
         release.set()
-        done.wait(2)
+        run_thread = server._sessions.get("sid-live", {}).get("_run_thread")
+        if run_thread is not None:
+            run_thread.join(2)
         server._sessions.pop("sid-live", None)
 
 

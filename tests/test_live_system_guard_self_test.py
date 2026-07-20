@@ -28,6 +28,11 @@ import pytest
 FOREIGN_PID = 1
 
 
+def test_voice_tts_is_disabled_for_every_test_process():
+    assert os.environ.get("HERMES_VOICE") == "0"
+    assert os.environ.get("HERMES_VOICE_TTS") == "0"
+
+
 # ──────────────────── kill primitives ─────────────────────────
 
 

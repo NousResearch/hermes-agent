@@ -26,6 +26,12 @@ from pathlib import Path
 
 import pytest
 
+# Tests must never inherit interactive voice/TTS state from the Hermes TUI that
+# launched them. Set these before test modules import gateway code; per-test
+# monkeypatches are too late for background threads that can outlive teardown.
+os.environ["HERMES_VOICE"] = "0"
+os.environ["HERMES_VOICE_TTS"] = "0"
+
 # Ensure project root is importable
 PROJECT_ROOT = Path(__file__).parent.parent
 if str(PROJECT_ROOT) not in sys.path:

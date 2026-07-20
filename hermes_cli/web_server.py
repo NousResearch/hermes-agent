@@ -779,6 +779,11 @@ _CATEGORY_MERGE: Dict[str, str] = {
     # with the other messaging-platform config (discord) so it isn't an
     # orphan tab of one field.
     "telegram": "discord",
+    # `mcp.auto_reload_on_config_change` is the only schema-surfaced mcp
+    # runtime field (server definitions live under mcp_servers, edited via
+    # the MCP tab) — fold it into the agent tab rather than spawning a
+    # one-field orphan category.
+    "mcp": "agent",
     # `computer_use.cua_telemetry` is the only schema-surfaced computer_use
     # field — fold it into the agent tab rather than spawning a one-field
     # orphan category.

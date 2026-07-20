@@ -2985,6 +2985,18 @@ async def get_ssh_ownership(request: Request):
     return {"ok": True, "sshOwnerNonce": _SSH_OWNER_NONCE, "protocolVersion": 1}
 
 
+@app.get("/api/ready")
+async def get_ready():
+    """Authenticated, side-effect-free readiness probe for local Desktop.
+
+    ``/api/status`` remains the rich public operational snapshot. Desktop only
+    needs proof that the freshly spawned server can service requests, so this
+    endpoint deliberately avoids gateway/plugin discovery, session reads, and
+    host topology collection on the startup-critical path.
+    """
+    return {"ready": True, "version": __version__}
+
+
 @app.get("/api/status")
 async def get_status(profile: Optional[str] = None):
     status_scope = None

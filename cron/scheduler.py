@@ -3366,6 +3366,12 @@ def run_job(
             load_soul_identity=True,
             skip_memory=True,  # Cron system prompts would corrupt user representations
             platform="cron",
+            # OpenRouter exposes the top-level `user` field as the
+            # `external_user` Analytics dimension. Keep it stable across runs so
+            # all spend for one job groups into the same bucket.
+            request_overrides=(
+                {"user": f"cron:{job_id}"} if runtime_provider == "openrouter" else None
+            ),
             session_id=_cron_session_id,
             session_db=_session_db,
         )

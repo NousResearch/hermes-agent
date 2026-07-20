@@ -3,6 +3,8 @@ import type { ReactNode } from 'react'
 import { PageLoader } from '@/components/page-loader'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { Switch } from '@/components/ui/switch'
+import { triggerHaptic } from '@/lib/haptics'
 import type { IconComponent } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 
@@ -105,6 +107,39 @@ export function ListRow({
         {action && <div className={cn('min-w-0', !wide && '@2xl:justify-self-end')}>{action}</div>}
       </div>
     </div>
+  )
+}
+
+// A labelled on/off row — the canonical device-pref switch (haptic baked in).
+export function ToggleRow({
+  checked,
+  description,
+  disabled,
+  label,
+  onChange
+}: {
+  checked: boolean
+  description?: string
+  disabled?: boolean
+  label: string
+  onChange: (on: boolean) => void
+}) {
+  return (
+    <ListRow
+      action={
+        <Switch
+          aria-label={label}
+          checked={checked}
+          disabled={disabled}
+          onCheckedChange={on => {
+            triggerHaptic('selection')
+            onChange(on)
+          }}
+        />
+      }
+      description={description}
+      title={label}
+    />
   )
 }
 

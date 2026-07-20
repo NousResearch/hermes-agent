@@ -1,7 +1,6 @@
 import { useStore } from '@nanostores/react'
 
 import { SegmentedControl } from '@/components/ui/segmented-control'
-import { Switch } from '@/components/ui/switch'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { Cpu } from '@/lib/icons'
@@ -10,7 +9,7 @@ import { $keepAwake, setKeepAwake } from '@/store/keep-awake'
 import { $translucency, setTranslucency } from '@/store/translucency'
 import { $zoomPercent, setZoomPercent } from '@/store/zoom'
 
-import { ListRow, SectionHeading, SettingsContent } from './primitives'
+import { ListRow, SectionHeading, SettingsContent, ToggleRow } from './primitives'
 
 // UI scale presets as zoom percentages (100 = browser default); the ids double
 // as the percent sent to main. A Cmd/Ctrl +/- step between presets highlights
@@ -18,25 +17,6 @@ import { ListRow, SectionHeading, SettingsContent } from './primitives'
 const UI_SCALE_PRESETS = ['90', '100', '110', '125', '150', '175'] as const
 
 type UiScalePreset = (typeof UI_SCALE_PRESETS)[number]
-
-function ToggleRow(props: { checked: boolean; description: string; label: string; onChange: (on: boolean) => void }) {
-  return (
-    <ListRow
-      action={
-        <Switch
-          aria-label={props.label}
-          checked={props.checked}
-          onCheckedChange={on => {
-            triggerHaptic('selection')
-            props.onChange(on)
-          }}
-        />
-      }
-      description={props.description}
-      title={props.label}
-    />
-  )
-}
 
 export function SystemSettings() {
   const { t } = useI18n()

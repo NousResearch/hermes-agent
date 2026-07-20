@@ -45,6 +45,26 @@ class TestModelIds:
         assert len(ids) == len(set(ids)), "Duplicate model IDs found"
 
 
+class TestAlibabaStaticCatalog:
+    def test_payg_catalog_is_curated_and_excludes_token_plan_preview(self):
+        assert _models_mod._PROVIDER_MODELS["alibaba"] == [
+            "qwen3.7-max",
+            "qwen3.7-plus",
+            "qwen3.6-plus",
+            "qwen3.6-flash",
+            "qwen3.5-plus",
+            "qwen3.5-flash",
+            "qwen3-coder-plus",
+            "qwen3-coder-flash",
+            "qwen3-coder-next",
+        ]
+        assert "qwen3.8-max-preview" not in _models_mod._PROVIDER_MODELS["alibaba"]
+
+    def test_payg_aliases_are_known_to_model_syntax(self):
+        for alias in ("qwen-cloud", "qwencloud", "qwen-dashscope"):
+            assert _models_mod._PROVIDER_ALIASES[alias] == "alibaba"
+
+
 
 
 

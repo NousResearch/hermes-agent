@@ -284,6 +284,37 @@ class TestQwenParity:
         assert "metadata" not in kw.get("extra_body", {})
 
 
+class TestQwenCloudPaygParity:
+    """Qwen Cloud PAYG: native hybrid-thinking toggle only when configured."""
+
+    def test_thinking_defaults_to_provider_behavior(self, transport):
+        kw = transport.build_kwargs(
+            model="qwen3.7-plus",
+            messages=_simple_messages(),
+            tools=None,
+            provider_profile=get_provider_profile("alibaba"),
+        )
+        assert "extra_body" not in kw
+
+    @pytest.mark.parametrize(
+        ("reasoning_config", "expected"),
+        [
+            ({"enabled": True, "effort": "high"}, True),
+            ({"enabled": False}, False),
+        ],
+    )
+    def test_thinking_maps_to_enable_thinking(self, transport, reasoning_config, expected):
+        kw = transport.build_kwargs(
+            model="qwen3.7-plus",
+            messages=_simple_messages(),
+            tools=None,
+            provider_profile=get_provider_profile("alibaba"),
+            reasoning_config=reasoning_config,
+        )
+        assert kw["extra_body"] == {"enable_thinking": expected}
+        assert "reasoning_effort" not in kw
+
+
 class TestCustomOllamaParity:
     """Custom/Ollama: num_ctx, thinking controls — now tested via profile."""
 

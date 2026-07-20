@@ -31,8 +31,9 @@ You need at least one way to connect to an LLM. Use `hermes model` to switch pro
 | **MiniMax China** | `MINIMAX_CN_API_KEY` in `~/.hermes/.env` (provider: `minimax-cn`) |
 | **xAI (Grok) — Responses API** | `XAI_API_KEY` in `~/.hermes/.env` (provider: `xai`) |
 | **xAI Grok OAuth (SuperGrok)** | `hermes model` → "xAI Grok OAuth (SuperGrok / Premium+)" — browser login, no API key. See [guide](../guides/xai-grok-oauth.md) |
-| **Qwen Cloud (Alibaba DashScope)** | `DASHSCOPE_API_KEY` in `~/.hermes/.env` (provider: `alibaba`) |
-| **Alibaba Cloud (Coding Plan)** | `DASHSCOPE_API_KEY` (provider: `alibaba-coding-plan`, alias: `alibaba_coding`) — separate billing SKU, different endpoint |
+| **Qwen Cloud PAYG (Alibaba DashScope)** | `DASHSCOPE_API_KEY` in `~/.hermes/.env` (provider: `alibaba`; aliases: `qwen-cloud`, `qwencloud`) |
+| **Alibaba Cloud Coding Plan** | Prefer `ALIBABA_CODING_PLAN_API_KEY` in `~/.hermes/.env` (provider: `alibaba-coding-plan`; legacy `DASHSCOPE_API_KEY` fallback retained) |
+| **Qwen Cloud Token Plan** | Standalone third-party provider only. Install a compatible plugin through Hermes' [model-provider plugin mechanism](../developer-guide/model-provider-plugin.md) and use its dedicated key and URL. |
 | **Kilo Code** | `KILOCODE_API_KEY` in `~/.hermes/.env` (provider: `kilocode`) |
 | **Xiaomi MiMo** | `XIAOMI_API_KEY` in `~/.hermes/.env` (provider: `xiaomi`, aliases: `mimo`, `xiaomi-mimo`) |
 | **Tencent TokenHub** | `TOKENHUB_API_KEY` in `~/.hermes/.env` (provider: `tencent-tokenhub`, aliases: `tencent`, `tokenhub`, `tencentmaas`) |
@@ -243,8 +244,8 @@ hermes chat --provider minimax --model MiniMax-M2.7
 hermes chat --provider minimax-cn --model MiniMax-M2.7
 # Requires: MINIMAX_CN_API_KEY in ~/.hermes/.env
 
-# Qwen Cloud / DashScope (Qwen models)
-hermes chat --provider alibaba --model qwen3.5-plus
+# Qwen Cloud PAYG / DashScope (Qwen models)
+hermes chat --provider alibaba --model qwen3.7-plus
 # Requires: DASHSCOPE_API_KEY in ~/.hermes/.env
 
 # Xiaomi MiMo
@@ -274,7 +275,7 @@ model:
   default: "zai-org/GLM-5.1-FP8"
 ```
 
-Base URLs can be overridden with `NOVITA_BASE_URL`, `GLM_BASE_URL`, `KIMI_BASE_URL`, `MINIMAX_BASE_URL`, `MINIMAX_CN_BASE_URL`, `DASHSCOPE_BASE_URL`, `XIAOMI_BASE_URL`, `GMI_BASE_URL`, or `TOKENHUB_BASE_URL` environment variables.
+Base URLs can be overridden with `NOVITA_BASE_URL`, `GLM_BASE_URL`, `KIMI_BASE_URL`, `MINIMAX_BASE_URL`, `MINIMAX_CN_BASE_URL`, `DASHSCOPE_BASE_URL`, `XIAOMI_BASE_URL`, `GMI_BASE_URL`, or `TOKENHUB_BASE_URL` environment variables. `DASHSCOPE_BASE_URL` is for the Qwen Cloud PAYG lane; do not use a Token Plan or Coding Plan URL with `provider: alibaba`.
 
 :::note Z.AI Endpoint Auto-Detection
 When using the Z.AI / GLM provider, Hermes automatically probes multiple endpoints (global, China, coding variants) to find one that accepts your API key. You don't need to set `GLM_BASE_URL` manually — the working endpoint is detected and cached automatically.
@@ -428,26 +429,93 @@ model:
 Set `HERMES_QWEN_BASE_URL` only if the portal endpoint relocates (default: `https://portal.qwen.ai/v1`).
 
 :::tip Qwen OAuth vs Qwen Cloud (Alibaba DashScope)
-`qwen-oauth` uses the consumer-facing Qwen Portal with OAuth login — ideal for individual users. The `alibaba` provider uses Qwen Cloud (Alibaba DashScope) with a `DASHSCOPE_API_KEY` — ideal for programmatic / production workloads. Both route to Qwen-family models but live at different endpoints.
+`qwen-oauth` uses the consumer-facing Qwen Portal with OAuth login — ideal for individual users. The `alibaba` provider is Qwen Cloud PAYG (Alibaba DashScope) with a `DASHSCOPE_API_KEY` — ideal for programmatic / production workloads. Both route to Qwen-family models but live at different endpoints and billing surfaces.
 :::
 
-### Alibaba Cloud (Coding Plan)
+### Qwen Cloud PAYG (Alibaba DashScope)
 
-If you're subscribed to Alibaba's **Coding Plan** (a pricing SKU separate from standard DashScope API access), Hermes exposes it as its own first-class provider: `alibaba-coding-plan`. Endpoint: `https://coding-intl.dashscope.aliyuncs.com/v1`. It's OpenAI-compatible like the regular `alibaba` provider but with a different base URL and billing surface.
+Qwen Cloud PAYG is Hermes' canonical `alibaba` provider. It uses Alibaba Model Studio / DashScope's OpenAI-compatible Chat Completions endpoint and is independent of Qwen Portal OAuth, Token Plan, and Coding Plan subscriptions.
+
+#### Setup and region pairing
+
+Create or select the Model Studio workspace that owns your Qwen Cloud PAYG access, create a PAYG API key, and save it in the Hermes home `.env` file. The key and endpoint must belong to the same region:
+
+| Region | Key | Base URL |
+|---|---|---|
+| International (default) | `DASHSCOPE_API_KEY` | `https://dashscope-intl.aliyuncs.com/compatible-mode/v1` |
+| Mainland China | `DASHSCOPE_API_KEY` | `https://dashscope.aliyuncs.com/compatible-mode/v1` |
+
+```dotenv
+# ~/.hermes/.env — keep the key local and out of source control
+DASHSCOPE_API_KEY=replace-with-your-payg-key
+# Optional mainland-China override; omit this line for international PAYG.
+DASHSCOPE_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
+```
+
+The international endpoint is the default, so an international setup only needs `DASHSCOPE_API_KEY`. `DASHSCOPE_BASE_URL` is an endpoint override, not a second credential. You can also set `model.base_url` in `config.yaml` when you need a per-configuration override.
+
+Select it interactively with `hermes model`, or configure it directly:
+
+```bash
+hermes model
+# → pick "Qwen Cloud (PAYG)"
+# → enter DASHSCOPE_API_KEY when prompted
+
+hermes chat --provider alibaba --model qwen3.7-plus
+```
 
 ```yaml
 model:
-  provider: alibaba_coding     # alias for alibaba-coding-plan
-  model: qwen3-coder-plus
+  provider: alibaba
+  default: qwen3.7-plus
 ```
 
-Or from the CLI:
+The `alibaba` aliases `dashscope`, `alibaba-cloud`, `qwen-dashscope`, `qwen-cloud`, and `qwencloud` stay on this PAYG lane. Hermes' offline agentic fallback catalog is `qwen3.7-max`, `qwen3.7-plus`, `qwen3.6-plus`, `qwen3.6-flash`, `qwen3.5-plus`, `qwen3.5-flash`, `qwen3-coder-plus`, `qwen3-coder-flash`, and `qwen3-coder-next`. `qwen3.8-max-preview` is Token Plan-only and is intentionally not a PAYG fallback.
+
+#### Chat, streaming, tools, and thinking
+
+Qwen Cloud PAYG speaks the OpenAI-compatible Chat Completions protocol. Hermes uses it for normal chat, streamed responses, tool/function calling, and tool continuations. Qwen reasoning traces returned as `reasoning_content` remain reasoning metadata; they do not replace the visible `content` response.
+
+Qwen3.7, Qwen3.6, and Qwen3.5 hybrid-thinking models accept the provider-specific boolean in `extra_body`:
+
+```json
+{"extra_body": {"enable_thinking": true}}
+```
+
+Hermes omits `enable_thinking` when no reasoning setting is configured, preserving Qwen's server-side default. An explicit Hermes reasoning enable/disable setting maps to `true`/`false`. Hermes does not invent a `reasoning_effort` mapping for these Qwen generations. Tools and streaming use the same PAYG endpoint; no alternate Coding Plan or Token Plan URL is required or implied.
+
+#### Workspace scope, errors, and limits
+
+API keys are workspace/account credentials for Qwen Cloud PAYG. Model availability, quota, and rate limits are evaluated by the workspace and region associated with the key. Keep the key, workspace, model access, and endpoint region aligned; a key from another workspace or region can look like an authentication, entitlement, or model-not-found failure.
+
+- **401/403:** missing, invalid, revoked, or wrong-lane key; verify `DASHSCOPE_API_KEY` and the workspace entitlement.
+- **400:** unsupported model or request field; verify the model is available to the workspace and that `extra_body.enable_thinking` is supported by that model.
+- **404:** wrong host/path or a billing-lane mismatch; the PAYG default must end in `/compatible-mode/v1`.
+- **429:** workspace quota or provider rate limit; reduce concurrency, wait for the retry window, or review the Qwen Cloud quota for that workspace. Hermes cannot raise a provider-side limit.
+
+These limits are enforced by Qwen Cloud and may vary by model, workspace, region, and account tier. Check the current Model Studio quota/error response for the authoritative limit rather than assuming a fixed Hermes-side value.
+
+#### Security and billing-lane isolation
+
+Keep `DASHSCOPE_API_KEY` in `~/.hermes/.env` or another secret manager, never commit it to a repository, and do not paste it into tickets or chat logs. Restrict file permissions on the secret file and rotate/revoke the key through Model Studio if it leaks. `DASHSCOPE_BASE_URL` is not a secret, but it still selects a billing lane and region, so review it before use.
+
+PAYG, Token Plan, and Coding Plan are separate products with distinct URLs and billing semantics. Never use a Token Plan key or URL with `provider: alibaba`. Hermes retains the existing `DASHSCOPE_API_KEY` compatibility fallback for the bundled Coding Plan provider, but `ALIBABA_CODING_PLAN_API_KEY` is clearer and preferred. Hermes core intentionally does not bundle a Token Plan provider or token-specific plumbing. If you use Token Plan (or another vendor-only lane), install and review a compatible standalone model-provider plugin via the generic [model-provider plugin mechanism](../developer-guide/model-provider-plugin.md); do not assume a plugin's key, URL, catalog, or quota behavior matches PAYG.
+
+### Alibaba Cloud Coding Plan
+
+Coding Plan remains a bundled provider under `alibaba-coding-plan` (alias `alibaba_coding`). It uses its own credential and OpenAI-compatible endpoint:
+
+```dotenv
+ALIBABA_CODING_PLAN_API_KEY=replace-with-your-coding-plan-key
+# Optional override; normally omit it.
+# ALIBABA_CODING_PLAN_BASE_URL=https://coding-intl.dashscope.aliyuncs.com/v1
+```
 
 ```bash
-hermes chat --provider alibaba_coding --model qwen3-coder-plus
+hermes chat --provider alibaba-coding-plan --model qwen3-coder-plus
 ```
 
-`alibaba_coding` uses the same `DASHSCOPE_API_KEY` your `alibaba` entry already uses — no separate key needed, just a different routing target. Before this provider was registered, users who set `provider: alibaba_coding` in `config.yaml` silently fell through to OpenRouter routing.
+The default endpoint is `https://coding-intl.dashscope.aliyuncs.com/v1`. Configure `ALIBABA_CODING_PLAN_API_KEY` explicitly when possible; the historical `DASHSCOPE_API_KEY` fallback remains for backward compatibility. Token Plan is a different product again and remains a standalone plugin under current Hermes integration policy.
 
 ### MiniMax (OAuth)
 

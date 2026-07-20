@@ -13172,6 +13172,45 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if _footer_line and response and not agent_result.get("already_sent") and not _intentional_silence:
                 response = f"{response}\n\n{_footer_line}"
 
+            # Append compact token usage footer if enabled
+            try:
+                from gateway.display_config import resolve_display_setting as _rds2
+                _show_usage_footer = _rds2(
+                    _load_gateway_config(),
+                    _platform_config_key(source.platform),
+                    "token_usage_footer",
+                    False,  # default off — opt-in to avoid surprising users
+                )
+            except Exception:
+                _show_usage_footer = False
+
+            if _show_usage_footer and response and not agent_result.get("failed"):
+                _input_toks = agent_result.get("input_tokens", 0) or 0
+                _output_toks = agent_result.get("output_tokens", 0) or 0
+                _model = agent_result.get("model", "") or ""
+                _cost_str = ""
+                try:
+                    from agent.usage_pricing import estimate_usage_cost, CanonicalUsage
+                    _cost = estimate_usage_cost(
+                        _model,
+                        CanonicalUsage(input_tokens=_input_toks, output_tokens=_output_toks),
+                    )
+                    if _cost.amount_usd is not None:
+                        _prefix = "~" if _cost.status == "estimated" else ""
+                        _cost_str = f" · {_prefix}${float(_cost.amount_usd):.4f}"
+                except Exception:
+                    pass
+                _model_short = _model.split("/")[-1] if "/" else _model
+
+                def _fmt(n):
+                    return f"{n/1000:.1f}k" if n >= 1000 else str(n)
+
+                response = (
+                    f"{response}\n\n"
+                    f"📊 {_fmt(_input_toks)} in · {_fmt(_output_toks)} out"
+                    f"{_cost_str} · `{_model_short}`"
+                )
+
             # Emit agent:end hook
             await self.hooks.emit("agent:end", {
                 **hook_ctx,

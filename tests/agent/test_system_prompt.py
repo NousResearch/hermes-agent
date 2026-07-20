@@ -1,5 +1,6 @@
 """Tests for agent/system_prompt.py — context-file cwd wiring."""
 
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -145,3 +146,45 @@ class TestTelegramRichMessagesHint:
             stable = _stable_prompt(agent)
         assert "Standard Markdown is automatically converted" in stable
         assert "lean into it" not in stable
+
+
+class TestActiveProfileHint:
+    """Named-profile prompt must use HERMES_HOME as the active profile dir,
+    not as if it were the Hermes root (which would invent a nested
+    ``.../profiles/<name>/profiles/<name>/`` path and mislabel the active
+    profile's own skills/plugins/cron/memories as the default profile's).
+    """
+
+    def _profile_layout(self, tmp_path: Path):
+        root = tmp_path / "hermes-root"
+        named = root / "profiles" / "hermes-security"
+        named.mkdir(parents=True)
+        (root / "skills").mkdir()
+        (named / "skills").mkdir()
+        return root, named
+
+    def test_named_profile_paths_are_not_nested(self, monkeypatch, tmp_path):
+        root, named = self._profile_layout(tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(named))
+
+        stable = _stable_prompt(_make_agent())
+        assert "Active Hermes profile: hermes-security" in stable
+        # Active session home is HERMES_HOME itself — not a nested profiles/ path.
+        assert f"reads and writes {named}/" in stable
+        assert f"{named}/profiles/hermes-security/" not in stable
+        # Default profile data lives at the Hermes root, not under the named home.
+        default_clause = stable.split("The default profile's data lives at ")[1]
+        default_paths = default_clause.split(" — ")[0]
+        assert f"{root}/skills/" in default_paths
+        assert f"{root}/plugins/" in default_paths
+        assert f"{root}/cron/" in default_paths
+        assert f"{root}/memories/" in default_paths
+        assert str(named) not in default_paths
+
+    def test_default_profile_points_at_sibling_profiles_dir(self, monkeypatch, tmp_path):
+        root, _named = self._profile_layout(tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(root))
+
+        stable = _stable_prompt(_make_agent())
+        assert "Active Hermes profile: default" in stable
+        assert f"{root}/profiles/<name>/" in stable

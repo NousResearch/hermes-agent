@@ -32,6 +32,8 @@ def main_mod(monkeypatch):
     import hermes_cli.main as mod
 
     monkeypatch.setattr(mod, "_has_any_provider_configured", lambda: True)
+    # Reset the idempotency guard so each test starts fresh.
+    monkeypatch.setattr(mod, "_oneshot_cleanup_done", False)
     return mod
 
 

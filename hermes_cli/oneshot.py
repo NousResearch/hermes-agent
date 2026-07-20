@@ -442,6 +442,9 @@ def _run_agent(
         result = agent.run_conversation(prompt)
         return (result.get("final_response") or "", result)
     finally:
+        # Ordering deliberately mirrors gateway/run.py:_cleanup_agent_resources,
+        # NOT cli.py:_run_cleanup — oneshot has no _active_agent_ref and must
+        # close the agent explicitly because the hard-exit path skips finalizers.
         if agent is not None:
             try:
                 session_messages = getattr(agent, "_session_messages", None)
@@ -455,11 +458,9 @@ def _run_agent(
                 agent.close()
             except Exception:
                 logging.debug("oneshot agent cleanup failed", exc_info=True)
-        # Close the recall SQLite store we opened for this run. Message rows
-        # are committed synchronously during the turn, so nothing is lost, but
-        # the one-shot exit path hard-exits via os._exit and skips finalizers
-        # — close here so the connection (and its WAL) is checkpointed cleanly
-        # instead of relying on interpreter teardown.
+        # agent.close() calls session_db.end_session() but leaves the connection
+        # open; close it here to checkpoint the WAL before os._exit skips
+        # finalizers.
         if session_db is not None:
             try:
                 session_db.close()

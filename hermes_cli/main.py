@@ -68,26 +68,13 @@ import sys
 def _exit_after_oneshot(rc: object) -> None:
     """Exit one-shot mode without letting late native finalizers change rc.
 
-    Once ``run_oneshot`` has returned, it has emitted any response or diagnostic
-    and ``_run_agent`` has already run the stateful agent cleanup
-    (memory-provider shutdown, ``agent.close()``, recall-store close). The
-    SIGABRT this guards against (#43055) fires in a native-extension finalizer
-    during CPython's ``Py_FinalizeEx``, *after* the response has printed, so we
-    flush user-visible streams, shut down file logging, then ``os._exit`` past
-    the interpreter finalization that aborts.
-
-    We deliberately do *not* drain the Python ``atexit`` chain here. The
-    aborting finalizer has not been confirmed on the reporter's AL2023 host,
-    and several registered handlers (browser/LSP emergency sweeps) re-enter
-    native code and subprocess teardown — the exact class of code that may be
-    the abort source — so running them just before the hard exit risks
-    re-arming the crash this routine exists to contain. The stateful cleanup
-    that actually matters for one-shot is closed explicitly in ``_run_agent``:
-    the agent owns its task-scoped processes, terminal/browser sessions, child
-    agents, and clients, while the recall SQLite store is checkpointed there as
-    well. Process-wide orphan sweeps and other general ``atexit`` handlers are
-    intentionally left to a later normal interpreter lifetime; daemon workers
-    and remaining file descriptors are reclaimed when this process exits.
+    The SIGABRT this guards against (#30387, #43055) fires in a
+    native-extension finalizer during CPython's ``Py_FinalizeEx``, *after*
+    the response has printed. Flush streams, shut down file logging, then
+    ``os._exit`` past interpreter finalization. The ``atexit`` chain is
+    deliberately skipped — several handlers re-enter native code that may
+    be the abort source. Stateful cleanup is handled in ``_run_agent`` and
+    ``_cleanup_oneshot_runtime``.
     """
     for stream in (sys.stdout, sys.stderr):
         try:
@@ -108,6 +95,9 @@ def _exit_after_oneshot(rc: object) -> None:
     os._exit(exit_code)
 
 
+_oneshot_cleanup_done = False
+
+
 def _cleanup_oneshot_runtime() -> None:
     """Best-effort process-global cleanup before one-shot hard exit.
 
@@ -116,6 +106,10 @@ def _cleanup_oneshot_runtime() -> None:
     process-global pieces from ``cli.py:_run_cleanup()`` that would otherwise
     be skipped by ``os._exit``.
     """
+    global _oneshot_cleanup_done
+    if _oneshot_cleanup_done:
+        return
+    _oneshot_cleanup_done = True
     try:
         from tools.terminal_tool import cleanup_all_environments
         cleanup_all_environments()

@@ -1,8 +1,26 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { isSessionBusyError, markSubmitting, submitPrompt, type SubmitPromptDeps } from '../app/submissionCore.js'
+import { turnController } from '../app/turnController.js'
 import { getUiState, patchUiState, resetUiState } from '../app/uiStore.js'
 import type { GatewayClient } from '../gatewayClient.js'
+
+function deferred<T = unknown>() {
+  let reject!: (reason?: unknown) => void
+  let resolve!: (value: T) => void
+
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res
+    reject = rej
+  })
+
+  return { promise, reject, resolve }
+}
+
+const flushPromises = async () => {
+  await Promise.resolve()
+  await Promise.resolve()
+}
 
 // A gateway double whose `input.detect_drop` resolution we control, so we can
 // observe UI state DURING the async gap — the exact window the queue-mode race
@@ -44,13 +62,37 @@ function makeDeps(gw: GatewayClient, over: Partial<SubmitPromptDeps> = {}): Subm
   }
 }
 
+function makeLifecycleGateway() {
+  const calls: Array<{ method: string; params?: Record<string, unknown> }> = []
+  const drops: ReturnType<typeof deferred>[] = []
+  const submits: ReturnType<typeof deferred>[] = []
+
+  const gw = {
+    request: vi.fn((method: string, params?: Record<string, unknown>) => {
+      calls.push({ method, params })
+      const pending = deferred()
+
+      if (method === 'input.detect_drop') {
+        drops.push(pending)
+      } else if (method === 'prompt.submit') {
+        submits.push(pending)
+      }
+
+      return pending.promise
+    })
+  } as unknown as GatewayClient
+
+  return { calls, drops, gw, submits }
+}
+
 describe('submissionCore.submitPrompt — synchronous busy (queue-race fix)', () => {
   beforeEach(() => {
+    turnController.reset()
     resetUiState()
     patchUiState({ sid: 'sess-1' })
   })
 
-  it('flips busy=true SYNCHRONOUSLY, before input.detect_drop resolves', () => {
+  it('flips busy=true SYNCHRONOUSLY, before input.detect_drop resolves', async () => {
     const { gw, resolveDrop } = makeDeferredGateway()
 
     expect(getUiState().busy).toBe(false)
@@ -65,6 +107,7 @@ describe('submissionCore.submitPrompt — synchronous busy (queue-race fix)', ()
     expect(getUiState().status).toBe('running…')
 
     resolveDrop()
+    await flushPromises()
   })
 
   it('regression: two back-to-back sends — the SECOND sees busy=true in the gap', async () => {
@@ -103,10 +146,123 @@ describe('submissionCore.submitPrompt — synchronous busy (queue-race fix)', ()
     expect(calls).toEqual(['input.detect_drop'])
 
     resolveDrop({ matched: false })
-    await Promise.resolve()
-    await Promise.resolve()
+    await flushPromises()
 
     expect(calls).toContain('prompt.submit')
+  })
+})
+
+describe('submissionCore.submitPrompt — asynchronous ownership', () => {
+  beforeEach(() => {
+    turnController.reset()
+    resetUiState()
+    patchUiState({ sid: 'sess-1' })
+  })
+
+  it('drops an old detect-drop completion after interrupt', async () => {
+    const { drops, gw, submits } = makeLifecycleGateway()
+    const appendMessage = vi.fn()
+
+    submitPrompt('old prompt', makeDeps(gw, { appendMessage }))
+
+    turnController.interruptTurn({
+      appendMessage: vi.fn(),
+      gw: { request: vi.fn(() => Promise.resolve({})) },
+      sid: 'sess-1',
+      sys: vi.fn()
+    })
+    drops[0]!.reject(new Error('old detect failure'))
+    await flushPromises()
+
+    expect(submits).toHaveLength(0)
+    expect(appendMessage).not.toHaveBeenCalled()
+  })
+
+  it('does not resurrect an old preflight in a switched session after a newer submit', async () => {
+    const { calls, drops, gw, submits } = makeLifecycleGateway()
+    const appendMessage = vi.fn()
+    const deps = makeDeps(gw, { appendMessage })
+
+    submitPrompt('old prompt', deps)
+    patchUiState({ sid: 'sess-2' })
+    submitPrompt('new prompt', deps)
+
+    drops[0]!.resolve({ matched: false })
+    await flushPromises()
+    expect(submits).toHaveLength(0)
+
+    drops[1]!.resolve({ matched: false })
+    await flushPromises()
+
+    expect(submits).toHaveLength(1)
+    expect(calls.filter(call => call.method === 'prompt.submit')).toEqual([
+      { method: 'prompt.submit', params: { session_id: 'sess-2', text: 'new prompt' } }
+    ])
+    expect(appendMessage).toHaveBeenCalledTimes(1)
+    expect(appendMessage).toHaveBeenCalledWith({ role: 'user', text: 'new prompt' })
+
+    submits[0]!.resolve({ status: 'streaming' })
+    await flushPromises()
+  })
+
+  it('ignores a stale prompt rejection while a newer prompt owns busy state', async () => {
+    const { drops, gw, submits } = makeLifecycleGateway()
+    const enqueue = vi.fn()
+    const sys = vi.fn()
+    const deps = makeDeps(gw, { enqueue, sys })
+
+    submitPrompt('old prompt', deps)
+    drops[0]!.resolve({ matched: false })
+    await flushPromises()
+
+    submitPrompt('new prompt', deps)
+    drops[1]!.resolve({ matched: false })
+    await flushPromises()
+
+    submits[0]!.reject(new Error('old failure'))
+    await flushPromises()
+
+    expect(getUiState()).toMatchObject({ busy: true, sid: 'sess-1', status: 'running…' })
+    expect(enqueue).not.toHaveBeenCalled()
+    expect(sys).not.toHaveBeenCalled()
+
+    submits[1]!.resolve({ status: 'streaming' })
+    await flushPromises()
+  })
+
+  it.each([
+    {
+      busy: false,
+      error: new Error('provider failed'),
+      expectedStatus: 'ready',
+      expectedSys: 'error: provider failed',
+      queued: false
+    },
+    {
+      busy: true,
+      error: new Error('session busy'),
+      expectedStatus: 'queued for next turn',
+      expectedSys: 'queued: "current prompt"',
+      queued: true
+    }
+  ])('lets the current rejection perform its expected error/queue behavior', async scenario => {
+    const { drops, gw, submits } = makeLifecycleGateway()
+    const enqueue = vi.fn()
+    const sys = vi.fn()
+
+    submitPrompt('current prompt', makeDeps(gw, { enqueue, sys }))
+    drops[0]!.resolve({ matched: false })
+    await flushPromises()
+    submits[0]!.reject(scenario.error)
+    await flushPromises()
+
+    expect(getUiState()).toMatchObject({ busy: scenario.busy, status: scenario.expectedStatus })
+    expect(sys).toHaveBeenCalledWith(scenario.expectedSys)
+    expect(enqueue).toHaveBeenCalledTimes(scenario.queued ? 1 : 0)
+
+    if (scenario.queued) {
+      expect(enqueue).toHaveBeenCalledWith('current prompt')
+    }
   })
 })
 

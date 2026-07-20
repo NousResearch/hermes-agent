@@ -78,20 +78,40 @@ def test_safe_cwd_tolerates_deleted_process_cwd(server, monkeypatch, tmp_path):
     assert server._safe_cwd() == str(tmp_path)
 
 
-def test_prompt_submit_dispatch_failure_clears_running(server, monkeypatch):
+def test_prompt_submit_pre_worker_failure_clears_turn_state(server, monkeypatch):
     emitted = []
     monkeypatch.setattr(server, "_emit", lambda event, sid, payload=None: emitted.append((event, sid, payload)))
+    monkeypatch.setattr(server, "_load_dashboard_process_isolation_config", lambda: {})
+    monkeypatch.setattr(server, "_session_uses_compute_host", lambda session, cfg=None: False)
+    monkeypatch.setattr(server, "_ensure_session_db_row", lambda session: None)
+    monkeypatch.setattr(server, "_persist_branch_seed", lambda session: None)
+    monkeypatch.setattr(server, "_start_agent_build", lambda sid, session: None)
+    failed_thread = MagicMock()
+    failed_thread.start.side_effect = RuntimeError("thread start failed")
+    monkeypatch.setattr(server.threading, "Thread", MagicMock(return_value=failed_thread))
+
+    sid = "sid1"
     session = {
+        "agent": MagicMock(),
+        "agent_ready": threading.Event(),
         "attached_images": [],
         "history": [],
         "history_lock": threading.Lock(),
         "history_version": 0,
-        "running": True,
+        "inflight_turn": None,
+        "running": False,
+        "session_key": "session-key",
     }
+    server._sessions[sid] = session
 
-    server._run_prompt_submit("r1", "sid1", session, "hello")
+    response = server._methods["prompt.submit"](
+        "r1", {"session_id": sid, "text": "hello"}
+    )
 
+    assert response["result"] == {"status": "streaming"}
     assert session["running"] is False
+    assert session["inflight_turn"] is None
+    assert session["_run_thread"] is None
     assert emitted
     assert emitted[-1][0] == "error"
     assert "prompt dispatch failed" in emitted[-1][2]["message"]

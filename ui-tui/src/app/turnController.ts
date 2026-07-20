@@ -130,6 +130,8 @@ class TurnController {
   private activityId = 0
   private reasoningStreamingTimer: Timer = null
   private reasoningTimer: Timer = null
+  private promptAcceptGeneration = 0
+  private promptAcceptTimer: Timer = null
   private streamTimer: Timer = null
   private streamDelay = STREAM_IDLE_BATCH_MS
   private toolProgressTimer: Timer = null
@@ -295,6 +297,7 @@ class TurnController {
   // duplicated the user bubble, leaked a "queued: …" note, and surfaced the
   // cancelled turn's "[interrupted]" reply.
   interruptTurn({ appendMessage, gw, sid, sys }: InterruptDeps, opts: { keepBusy?: boolean } = {}) {
+    this.invalidatePromptSubmission()
     this.interrupted = true
     gw.request<SessionInterruptResponse>('session.interrupt', { session_id: sid }).catch(() => {})
 
@@ -542,12 +545,56 @@ class TurnController {
     })
   }
 
-  resetForSubmit() {
+  resetForSubmit(): number {
+    this.invalidatePromptSubmission()
     this.bufRef = ''
     this.interrupted = false
+
+    return this.promptAcceptGeneration
+  }
+
+  ownsPromptSubmission(generation: number): boolean {
+    return generation === this.promptAcceptGeneration
+  }
+
+  acceptPromptSubmission(generation: number, timeoutMs: number, onTimeout: () => void): boolean {
+    if (!this.ownsPromptSubmission(generation)) {
+      return false
+    }
+
+    this.promptAcceptTimer = clear(this.promptAcceptTimer)
+    const acceptedGeneration = ++this.promptAcceptGeneration
+
+    this.promptAcceptTimer = setTimeout(() => {
+      if (this.promptAcceptGeneration !== acceptedGeneration) {
+        return
+      }
+
+      this.promptAcceptTimer = null
+      this.promptAcceptGeneration += 1
+      onTimeout()
+    }, timeoutMs)
+
+    return true
+  }
+
+  rejectPromptSubmission(generation: number): boolean {
+    if (!this.ownsPromptSubmission(generation)) {
+      return false
+    }
+
+    this.invalidatePromptSubmission()
+
+    return true
+  }
+
+  invalidatePromptSubmission() {
+    this.promptAcceptGeneration += 1
+    this.promptAcceptTimer = clear(this.promptAcceptTimer)
   }
 
   recordError() {
+    this.invalidatePromptSubmission()
     this.eventSeq += 1
     this.idle()
     this.clearReasoning()
@@ -562,6 +609,7 @@ class TurnController {
   }
 
   recordMessageComplete(payload: { rendered?: string; reasoning?: string; text?: string }) {
+    this.invalidatePromptSubmission()
     this.eventSeq += 1
     this.closeReasoningSegment()
 
@@ -885,6 +933,7 @@ class TurnController {
   }
 
   reset() {
+    this.invalidatePromptSubmission()
     this.clearReasoning()
     this.clearStatusTimer()
     this.idle()
@@ -946,6 +995,7 @@ class TurnController {
   }
 
   startMessage() {
+    this.invalidatePromptSubmission()
     this.eventSeq += 1
     this.endReasoningPhase()
     this.clearReasoning()

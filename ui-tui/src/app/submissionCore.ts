@@ -15,6 +15,7 @@ export interface SubmitPromptDeps {
   enqueue: (text: string) => void
   expand: (text: string) => string
   gw: GatewayClient
+  onPromptAccepted?: (sid: string, eventSeq: number, generation: number) => void
   setLastUserMsg: (value: string) => void
   sys: (text: string) => void
 }
@@ -49,14 +50,15 @@ export function submitPrompt(text: string, deps: SubmitPromptDeps, showUserMessa
     return deps.sys('session not ready yet')
   }
 
-  // Close the async-busy gap up front, before the detect_drop round-trip.
+  // Give this submit its own lifecycle identity and close the async-busy gap
+  // up front, before the detect_drop round-trip.
+  const generation = turnController.resetForSubmit()
+  const ownsSubmission = () => getUiState().sid === sid && turnController.ownsPromptSubmission(generation)
   markSubmitting()
 
   const startSubmit = (displayText: string, submitText: string, show = true) => {
-    const liveSid = getUiState().sid
-
-    if (!liveSid) {
-      return deps.sys('session not ready yet')
+    if (!ownsSubmission()) {
+      return
     }
 
     turnController.clearStatusTimer()
@@ -67,12 +69,20 @@ export function submitPrompt(text: string, deps: SubmitPromptDeps, showUserMessa
     }
 
     patchUiState({ busy: true, status: 'running…' })
-    turnController.bufRef = ''
-    turnController.interrupted = false
+    const eventSeq = turnController.eventSeq
 
     deps.gw
-      .request<PromptSubmitResponse>('prompt.submit', { session_id: liveSid, text: submitText })
+      .request<PromptSubmitResponse>('prompt.submit', { session_id: sid, text: submitText })
+      .then(r => {
+        if (r?.status === 'streaming' && ownsSubmission()) {
+          deps.onPromptAccepted?.(sid, eventSeq, generation)
+        }
+      })
       .catch((e: Error) => {
+        if (!ownsSubmission() || !turnController.rejectPromptSubmission(generation)) {
+          return
+        }
+
         // Defensive: prompt.submit no longer rejects a mid-turn send with
         // "session busy" (the gateway queues it and returns success), but keep
         // the re-queue path as a safety net for any future/legacy gateway that
@@ -95,6 +105,10 @@ export function submitPrompt(text: string, deps: SubmitPromptDeps, showUserMessa
   deps.gw
     .request<InputDetectDropResponse>('input.detect_drop', { session_id: sid, text })
     .then(r => {
+      if (!ownsSubmission()) {
+        return
+      }
+
       if (!r?.matched) {
         return startSubmit(text, deps.expand(text), showUserMessage)
       }
@@ -107,5 +121,9 @@ export function submitPrompt(text: string, deps: SubmitPromptDeps, showUserMessa
 
       startSubmit(r.text || text, deps.expand(r.text || text), showUserMessage)
     })
-    .catch(() => startSubmit(text, deps.expand(text), showUserMessage))
+    .catch(() => {
+      if (ownsSubmission()) {
+        startSubmit(text, deps.expand(text), showUserMessage)
+      }
+    })
 }

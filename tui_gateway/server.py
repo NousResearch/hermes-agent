@@ -44,6 +44,37 @@ load_hermes_dotenv(
 )
 
 
+def _safe_cwd(preferred: str | os.PathLike[str] | None = None) -> str:
+    """Return an existing local cwd even if the process cwd was deleted."""
+    candidates: list[str | os.PathLike[str] | None] = [
+        preferred,
+        os.environ.get("TERMINAL_CWD"),
+    ]
+    try:
+        candidates.append(os.getcwd())
+    except OSError:
+        pass
+    candidates.extend(
+        [
+            os.environ.get("PWD"),
+            _hermes_home,
+            os.path.expanduser("~"),
+            os.path.abspath(os.sep),
+        ]
+    )
+
+    for candidate in candidates:
+        if not candidate:
+            continue
+        try:
+            resolved = os.path.abspath(os.path.expanduser(os.fspath(candidate)))
+            if os.path.isdir(resolved):
+                return resolved
+        except (OSError, TypeError, ValueError):
+            continue
+    return os.path.abspath(os.sep)
+
+
 # ── Panic logger ─────────────────────────────────────────────────────
 # Gateway crashes in a TUI session leave no forensics: stdout is the
 # JSON-RPC pipe (TUI side parses it, doesn't log raw), the root logger
@@ -338,7 +369,7 @@ class _SlashWorker:
             stderr=subprocess.PIPE,
             text=True,
             bufsize=1,
-            cwd=os.getcwd(),
+            cwd=_safe_cwd(),
             env=env,
             creationflags=windows_hide_flags(),
             start_new_session=True,
@@ -1160,7 +1191,7 @@ def _default_session_cwd() -> str:
     than ``os.getcwd()`` when the in-memory gateway's process env has no bridged
     ``TERMINAL_CWD``.
     """
-    return _launch_configured_cwd() or os.getenv("TERMINAL_CWD") or os.getcwd()
+    return _safe_cwd(_launch_configured_cwd())
 
 
 def write_json(obj: dict) -> bool:
@@ -1310,6 +1341,7 @@ def _on_compute_host_turn_done(rid: str, sid: str, session: dict, frame: dict) -
         session["running"] = False
         session["last_active"] = time.time()
         _clear_inflight_turn(session)
+        session["_run_thread"] = None
     if is_error:
         message = str(frame.get("message") or "compute host turn failed")
         _emit("message.complete", sid, {"text": f"Error: {message}", "status": "error"})
@@ -1745,15 +1777,8 @@ def _completion_cwd(params: dict | None = None) -> str:
         # configured terminal.cwd wins over a stale process env / launch dir.
         or _launch_configured_cwd()
         or os.environ.get("TERMINAL_CWD")
-        or os.getcwd()
     )
-    try:
-        resolved = os.path.abspath(os.path.expanduser(str(raw)))
-        if os.path.isdir(resolved):
-            return resolved
-    except Exception:
-        pass
-    return os.getcwd()
+    return _safe_cwd(raw)
 
 
 def _terminal_task_cwd(session: dict | None) -> str:
@@ -5554,6 +5579,37 @@ def _clear_inflight_turn(session: dict) -> None:
     session["inflight_turn"] = None
 
 
+def _clear_prompt_turn(
+    session: dict, *, owner: threading.Thread | None = None
+) -> bool:
+    """Release a claimed turn if ``owner`` still owns its run-thread slot."""
+    with session["history_lock"]:
+        current_owner = session.get("_run_thread")
+        if owner is not None and current_owner not in (None, owner):
+            return False
+        session["running"] = False
+        session["last_active"] = time.time()
+        _clear_inflight_turn(session)
+        session["_run_thread"] = None
+    return True
+
+
+def _emit_prompt_failure(
+    sid: str,
+    session: dict,
+    message: str,
+    *,
+    owner: threading.Thread | None = None,
+) -> None:
+    """Surface a pre-worker failure and release the matching turn claim."""
+    try:
+        _emit("error", sid, {"message": message or "prompt dispatch failed"})
+    except Exception:
+        logger.exception("failed to emit prompt dispatch error for session %s", sid)
+    finally:
+        _clear_prompt_turn(session, owner=owner)
+
+
 def _enqueue_prompt(session: dict, text: Any, transport: Any) -> None:
     """Stash a message to run as the very next turn once the live one ends.
 
@@ -5668,6 +5724,7 @@ def _drain_queued_prompt(rid, sid: str, session: dict) -> bool:
             return False
         session["queued_prompt"] = None
         session["running"] = True
+        session["_run_thread"] = threading.current_thread()
         if queued.get("transport") is not None:
             session["transport"] = queued["transport"]
     try:
@@ -5675,9 +5732,7 @@ def _drain_queued_prompt(rid, sid: str, session: dict) -> bool:
             resp = _submit_prompt_to_compute_host(rid, sid, session, queued["text"])
             if resp.get("error"):
                 message = str(((resp.get("error") or {}).get("message")) or "queued prompt failed")
-                with session["history_lock"]:
-                    session["running"] = False
-                    _clear_inflight_turn(session)
+                _clear_prompt_turn(session, owner=threading.current_thread())
                 _emit("error", sid, {"message": message})
         else:
             _run_prompt_submit(rid, sid, session, queued["text"])
@@ -5687,8 +5742,7 @@ def _drain_queued_prompt(rid, sid: str, session: dict) -> bool:
             f"{type(exc).__name__}: {exc}",
             file=sys.stderr,
         )
-        with session["history_lock"]:
-            session["running"] = False
+        _clear_prompt_turn(session, owner=threading.current_thread())
     return True
 
 
@@ -9067,11 +9121,8 @@ def _(rid, params: dict) -> dict:
     with session["history_lock"]:
         session["_turn_cancel_requested"] = True
         session["queued_prompt"] = None
-    if not run_thread_alive:
-        with session["history_lock"]:
-            if session.get("running"):
-                session["running"] = False
-                _clear_inflight_turn(session)
+    if not run_thread_alive and session.get("running"):
+        _clear_prompt_turn(session, owner=run_thread)
 
     # Stop = stop the TURN (cooperative interrupt above also kills the in-flight
     # foreground subprocess). Background processes the agent started (dev servers,
@@ -9366,6 +9417,7 @@ def _(rid, params: dict) -> dict:
         return err
     isolation_cfg = _load_dashboard_process_isolation_config()
     turn_isolation = _session_uses_compute_host(session, isolation_cfg)
+    dispatch_owner = threading.current_thread()
     # Re-bind to the current client transport for this request. This keeps
     # streaming events on the active websocket even if an earlier disconnect
     # or fallback moved the session transport to stdio.
@@ -9422,53 +9474,81 @@ def _(rid, params: dict) -> dict:
         session["running"] = True
         session["_turn_cancel_requested"] = False
         session["last_active"] = time.time()
+        session["_run_thread"] = dispatch_owner
         _start_inflight_turn(session, text)
 
-    if turn_isolation:
-        isolated_response = _submit_prompt_to_compute_host(rid, sid, session, text)
-        if not isolated_response.get("error"):
-            return isolated_response
-        logger.warning(
-            "compute-host dispatch failed for session %s; falling back inline: %s",
-            sid,
-            isolated_response["error"].get("message", "unknown error"),
-        )
+    try:
+        if turn_isolation:
+            isolated_response = _submit_prompt_to_compute_host(rid, sid, session, text)
+            if not isolated_response.get("error"):
+                return isolated_response
+            logger.warning(
+                "compute-host dispatch failed for session %s; falling back inline: %s",
+                sid,
+                isolated_response["error"].get("message", "unknown error"),
+            )
 
-    # Persist the DB row lazily, now that the user has actually sent a message.
-    _ensure_session_db_row(session)
-    # A branch becomes real here: copy its parent's transcript into the row so it
-    # resumes with full context (the agent won't persist the seed itself).
-    _persist_branch_seed(session)
-    _start_agent_build(sid, session)
+        # Persist the DB row lazily, now that the user has actually sent a message.
+        _ensure_session_db_row(session)
+        # A branch becomes real here: copy its parent's transcript into the row so it
+        # resumes with full context (the agent won't persist the seed itself).
+        _persist_branch_seed(session)
+        _start_agent_build(sid, session)
+    except Exception as exc:
+        _emit_prompt_failure(
+            sid,
+            session,
+            f"prompt dispatch failed: {exc}",
+            owner=dispatch_owner,
+        )
+        return _ok(rid, {"status": "streaming"})
+
+    run_thread = None
 
     def run_after_agent_ready() -> None:
-        err = _wait_agent(session, rid)
-        if err:
-            _emit(
-                "error",
-                sid,
-                {
-                    "message": err.get("error", {}).get(
-                        "message", "agent initialization failed"
-                    )
-                },
-            )
+        owner = run_thread or threading.current_thread()
+        try:
+            err = _wait_agent(session, rid)
             with session["history_lock"]:
-                session["running"] = False
-                _clear_inflight_turn(session)
-            return
-        with session["history_lock"]:
-            if session.get("_turn_cancel_requested") or not session.get("running"):
-                session["running"] = False
-                _clear_inflight_turn(session)
+                if session.get("_run_thread") is not owner:
+                    return
+                cancelled = session.get("_turn_cancel_requested") or not session.get(
+                    "running"
+                )
+            if err:
+                message = err.get("error", {}).get(
+                    "message", "agent initialization failed"
+                )
+                _emit_prompt_failure(sid, session, message, owner=owner)
                 return
-        _run_prompt_submit(rid, sid, session, text)
+            if cancelled:
+                _clear_prompt_turn(session, owner=owner)
+                return
+            _run_prompt_submit(rid, sid, session, text)
+        except Exception as exc:
+            _emit_prompt_failure(
+                sid,
+                session,
+                f"prompt dispatch failed: {exc}",
+                owner=owner,
+            )
 
-    run_thread = threading.Thread(target=run_after_agent_ready, daemon=True)
-    # Keep a handle so session.interrupt can tell a live turn from a stuck
-    # `running` flag (a turn that died without clearing it) and recover the latter.
-    session["_run_thread"] = run_thread
-    run_thread.start()
+    try:
+        run_thread = threading.Thread(target=run_after_agent_ready, daemon=True)
+        # Keep a handle so session.interrupt can tell a live turn from a stuck
+        # `running` flag (a turn that died without clearing it) and recover the latter.
+        with session["history_lock"]:
+            if session.get("_run_thread") is not dispatch_owner:
+                return _ok(rid, {"status": "streaming"})
+            session["_run_thread"] = run_thread
+        run_thread.start()
+    except Exception as exc:
+        _emit_prompt_failure(
+            sid,
+            session,
+            f"prompt dispatch failed: {exc}",
+            owner=run_thread,
+        )
     return _ok(rid, {"status": "streaming"})
 
 
@@ -9654,6 +9734,11 @@ def _notification_poller_loop(
     events whose owner is gone; ownerless legacy notifications remain global.
     """
     from tools.process_registry import process_registry, format_process_notification
+    from tools.async_delegation import (
+        claim_event_delivery,
+        complete_event_delivery,
+        release_event_delivery,
+    )
 
     _emitted = set()  # dedup re-queued events so same completion isn't emitted 50 times while session is busy
     while not stop_event.is_set() and not session.get("_finalized"):
@@ -9718,6 +9803,7 @@ def _notification_poller_loop(
                 _requeued = True
             else:
                 session["running"] = True
+                session["_run_thread"] = threading.current_thread()
         if _requeued:
             # Back off before re-polling: the re-queued event keeps the queue
             # non-empty, so without a sleep this loop spins at full speed
@@ -9726,11 +9812,14 @@ def _notification_poller_loop(
             continue
 
         rid = f"__notif__{int(time.time() * 1000)}"
-        from tools.async_delegation import (
-            claim_event_delivery, complete_event_delivery, release_event_delivery,
-        )
-        _claim = claim_event_delivery(evt, "tui-poller")
+        try:
+            _claim = claim_event_delivery(evt, "tui-poller")
+        except Exception as exc:
+            _clear_prompt_turn(session, owner=threading.current_thread())
+            logger.warning("notification claim failed for session %s: %s", sid, exc)
+            continue
         if _claim is None:
+            _clear_prompt_turn(session, owner=threading.current_thread())
             continue
         try:
             _emit("message.start", sid)
@@ -9743,8 +9832,7 @@ def _notification_poller_loop(
                 f"{type(exc).__name__}: {exc}",
                 file=sys.stderr,
             )
-            with session["history_lock"]:
-                session["running"] = False
+            _clear_prompt_turn(session, owner=threading.current_thread())
 
     # Drain any remaining events after stop signal (process all pending
     # before exiting so nothing is lost on shutdown). Events owned by other
@@ -9792,13 +9880,17 @@ def _notification_poller_loop(
                 process_registry.completion_queue.put(evt)
                 break
             session["running"] = True
+            session["_run_thread"] = threading.current_thread()
 
         rid = f"__notif__{int(time.time() * 1000)}"
-        from tools.async_delegation import (
-            claim_event_delivery, complete_event_delivery, release_event_delivery,
-        )
-        _claim = claim_event_delivery(evt, "tui-poller")
+        try:
+            _claim = claim_event_delivery(evt, "tui-poller")
+        except Exception as exc:
+            _clear_prompt_turn(session, owner=threading.current_thread())
+            logger.warning("notification claim failed for session %s: %s", sid, exc)
+            continue
         if _claim is None:
+            _clear_prompt_turn(session, owner=threading.current_thread())
             continue
         try:
             _emit("message.start", sid)
@@ -9811,8 +9903,7 @@ def _notification_poller_loop(
                 f"{type(exc).__name__}: {exc}",
                 file=sys.stderr,
             )
-            with session["history_lock"]:
-                session["running"] = False
+            _clear_prompt_turn(session, owner=threading.current_thread())
 
     # Hand any other sessions' events back to the shared queue.
     for evt in deferred:
@@ -9878,22 +9969,48 @@ def _start_notification_poller(sid: str, session: dict) -> threading.Event:
 
 
 def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
-    with session["history_lock"]:
-        history = list(session["history"])
-        history_version = int(session.get("history_version", 0))
-        images = list(session.get("attached_images", []))
-        session["attached_images"] = []
-        if not isinstance(session.get("inflight_turn"), dict):
-            _start_inflight_turn(session, text)
-    agent = session["agent"]
-    if hasattr(agent, "clear_interrupt"):
-        try:
-            agent.clear_interrupt()
-        except Exception:
-            pass
-    _emit("message.start", sid)
+    dispatch_owner = threading.current_thread()
+    try:
+        with session["history_lock"]:
+            # The calling thread owns pre-worker initialization. Ownership moves
+            # to the actual turn thread immediately before it starts.
+            dispatch_owner = session.get("_run_thread") or dispatch_owner
+            session["_run_thread"] = dispatch_owner
+            history = list(session["history"])
+            history_version = int(session.get("history_version", 0))
+            images = list(session.get("attached_images", []))
+            session["attached_images"] = []
+            if not isinstance(session.get("inflight_turn"), dict):
+                _start_inflight_turn(session, text)
+        agent = session["agent"]
+        if hasattr(agent, "clear_interrupt"):
+            try:
+                agent.clear_interrupt()
+            except Exception:
+                pass
+        _emit("message.start", sid)
+    except Exception as exc:
+        _emit_prompt_failure(
+            sid,
+            session,
+            f"prompt dispatch failed: {exc}",
+            owner=dispatch_owner,
+        )
+        return
+
+    run_thread = None
 
     def run():
+        worker_owner = run_thread or threading.current_thread()
+        with session["history_lock"]:
+            if session.get("_run_thread") is not worker_owner:
+                return
+            cancelled = session.get("_turn_cancel_requested") or not session.get(
+                "running"
+            )
+        if cancelled:
+            _clear_prompt_turn(session, owner=worker_owner)
+            return
         approval_token = None
         session_tokens = []
         home_token = None  # per-turn HERMES_HOME override for a resumed remote profile
@@ -10332,10 +10449,7 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
             if home_token is not None:
                 reset_hermes_home_override(home_token)
             _clear_session_context(session_tokens)
-            with session["history_lock"]:
-                session["running"] = False
-                session["last_active"] = time.time()
-                _clear_inflight_turn(session)
+            _clear_prompt_turn(session, owner=worker_owner)
             _emit("session.info", sid, _session_info(agent, session))
 
         # A user prompt that arrived mid-turn (interrupt + queue) wins over
@@ -10357,6 +10471,7 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                     # the judge will re-run on the next turn anyway.
                     return
                 session["running"] = True
+                session["_run_thread"] = threading.current_thread()
             try:
                 _emit("message.start", sid)
                 _run_prompt_submit(rid, sid, session, goal_followup)
@@ -10366,8 +10481,7 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                     f"{type(_cont_exc).__name__}: {_cont_exc}",
                     file=sys.stderr,
                 )
-                with session["history_lock"]:
-                    session["running"] = False
+                _clear_prompt_turn(session, owner=threading.current_thread())
 
         # Drain completion notifications that arrived during this turn.
         # The background poller handles between-turn delivery; this is
@@ -10379,6 +10493,11 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
         # the poller then delivers it to a live owner or drops an orphan.
         try:
             from tools.process_registry import process_registry
+            from tools.async_delegation import (
+                claim_event_delivery,
+                complete_event_delivery,
+                release_event_delivery,
+            )
 
             # Positive-proof ownership (compression-chain aware) — the same
             # fail-closed gate the poller uses, so the post-turn drain can't
@@ -10397,11 +10516,19 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                             process_registry.completion_queue.put(pending_evt)
                         break
                     session["running"] = True
-                from tools.async_delegation import (
-                    claim_event_delivery, complete_event_delivery, release_event_delivery,
-                )
-                _claim = claim_event_delivery(_evt, "tui-post-turn")
+                    session["_run_thread"] = threading.current_thread()
+                try:
+                    _claim = claim_event_delivery(_evt, "tui-post-turn")
+                except Exception as _claim_exc:
+                    _clear_prompt_turn(session, owner=threading.current_thread())
+                    logger.warning(
+                        "post-turn notification claim failed for session %s: %s",
+                        sid,
+                        _claim_exc,
+                    )
+                    continue
                 if _claim is None:
+                    _clear_prompt_turn(session, owner=threading.current_thread())
                     continue
                 try:
                     _emit("message.start", sid)
@@ -10414,8 +10541,7 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                         f"{type(_n_exc).__name__}: {_n_exc}",
                         file=sys.stderr,
                     )
-                    with session["history_lock"]:
-                        session["running"] = False
+                    _clear_prompt_turn(session, owner=threading.current_thread())
         except Exception as _drain_exc:
             print(
                 f"[tui_gateway] completion queue drain failed: "
@@ -10423,9 +10549,20 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                 file=sys.stderr,
             )
 
-    run_thread = threading.Thread(target=run, daemon=True)
-    session["_run_thread"] = run_thread
-    run_thread.start()
+    try:
+        run_thread = threading.Thread(target=run, daemon=True)
+        with session["history_lock"]:
+            if session.get("_run_thread") is not dispatch_owner:
+                return
+            session["_run_thread"] = run_thread
+        run_thread.start()
+    except Exception as exc:
+        _emit_prompt_failure(
+            sid,
+            session,
+            f"prompt dispatch failed: {exc}",
+            owner=run_thread or dispatch_owner,
+        )
 
 
 @method("clipboard.paste")
@@ -12894,7 +13031,7 @@ def _(rid, params: dict) -> dict:
             capture_output=True,
             text=True,
             timeout=min(int(params.get("timeout", 240)), 600),
-            cwd=os.getcwd(),
+            cwd=_safe_cwd(),
             # cli.exec runs `python -m hermes_cli.main` (can drive the agent) →
             # needs provider credentials. Tier-1 secrets still stripped (#29157).
             env=hermes_subprocess_env(inherit_credentials=True),
@@ -15385,7 +15522,7 @@ def _(rid, params: dict) -> dict:
             {
                 "title": "Environment",
                 "rows": [
-                    ["Working Dir", os.getcwd()],
+                    ["Working Dir", _safe_cwd()],
                     ["Config File", str(_hermes_home / "config.yaml")],
                 ],
             },
@@ -15858,7 +15995,7 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 5001, "shell.exec unavailable: approval safety module not importable")
     try:
         r = subprocess.run(
-            cmd, shell=True, capture_output=True, text=True, timeout=30, cwd=os.getcwd(),
+            cmd, shell=True, capture_output=True, text=True, timeout=30, cwd=_safe_cwd(),
             stdin=subprocess.DEVNULL,
         )
         return _ok(

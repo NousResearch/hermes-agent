@@ -15,6 +15,14 @@ import { turnController } from './turnController.js'
 import { getUiState, patchUiState } from './uiStore.js'
 
 const DOUBLE_ENTER_MS = 450
+const PROMPT_ACCEPT_WATCHDOG_MS = 60000
+
+export const promptAcceptedWithoutEvents = (
+  ui: { busy: boolean; sid: null | string },
+  sid: string,
+  acceptedEventSeq: number,
+  currentEventSeq: number
+) => ui.sid === sid && ui.busy && currentEventSeq === acceptedEventSeq
 
 const expandSnips = (snips: PasteSnippet[]) => {
   const byLabel = new Map<string, string[]>()
@@ -36,6 +44,23 @@ export function useSubmission(opts: UseSubmissionOptions) {
 
   const lastEmptyAt = useRef(0)
   const typingIdleTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  const armPromptAcceptWatchdog = useCallback(
+    (sid: string, eventSeq: number, generation: number) => {
+      turnController.acceptPromptSubmission(generation, PROMPT_ACCEPT_WATCHDOG_MS, () => {
+        if (!promptAcceptedWithoutEvents(getUiState(), sid, eventSeq, turnController.eventSeq)) {
+          return
+        }
+
+        turnController.recordError()
+        sys('error: prompt accepted but no stream events arrived; cleared stuck busy state')
+        patchUiState({ busy: false, status: 'ready' })
+      })
+    },
+    [sys]
+  )
+
+  useEffect(() => () => turnController.invalidatePromptSubmission(), [])
 
   useEffect(() => {
     if (typingIdleTimer.current) {
@@ -77,17 +102,19 @@ export function useSubmission(opts: UseSubmissionOptions) {
           enqueue: composerActions.enqueue,
           expand,
           gw,
+          onPromptAccepted: armPromptAcceptWatchdog,
           setLastUserMsg,
           sys
         },
         showUserMessage
       )
     },
-    [appendMessage, composerActions, composerState.pasteSnips, gw, setLastUserMsg, sys]
+    [appendMessage, armPromptAcceptWatchdog, composerActions, composerState.pasteSnips, gw, setLastUserMsg, sys]
   )
 
   const shellExec = useCallback(
     (cmd: string) => {
+      turnController.invalidatePromptSubmission()
       appendMessage({ role: 'user', text: `!${cmd}` })
       patchUiState({ busy: true, status: 'running…' })
 
@@ -117,6 +144,7 @@ export function useSubmission(opts: UseSubmissionOptions) {
 
   const interpolate = useCallback(
     (text: string, then: (result: string) => void) => {
+      turnController.invalidatePromptSubmission()
       patchUiState({ status: 'interpolating…' })
       const matches = [...text.matchAll(new RegExp(INTERPOLATION_RE.source, 'g'))]
 

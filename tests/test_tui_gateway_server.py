@@ -6942,6 +6942,79 @@ def test_run_prompt_submit_registers_turn_thread_for_interrupt(monkeypatch):
         server._sessions.pop("sid", None)
 
 
+@pytest.mark.parametrize("handoff", ["direct", "queued"])
+def test_interrupt_after_worker_handoff_releases_same_owner_claim(
+    monkeypatch, handoff
+):
+    """A stop between Thread.start() and run() must release that worker's claim.
+
+    Both a normal dispatch and the queued-prompt drain transfer ownership through
+    _run_prompt_submit, so exercise the shared interleaving deterministically.
+    """
+    workers = []
+    calls = {"interrupted": False, "ran": False}
+
+    class _DeferredLiveThread:
+        def __init__(self, target=None, daemon=None):
+            self.target = target
+            workers.append(self)
+
+        def start(self):
+            return None
+
+        def is_alive(self):
+            return True
+
+    agent = types.SimpleNamespace(
+        interrupt=lambda: calls.__setitem__("interrupted", True),
+        run_conversation=lambda *args, **kwargs: calls.__setitem__("ran", True),
+    )
+    direct = handoff == "direct"
+    session = _session(
+        agent=agent,
+        running=direct,
+        queued_prompt=None
+        if direct
+        else {"text": "queued hello", "transport": None},
+        _run_thread=threading.current_thread() if direct else None,
+    )
+    server._sessions["sid"] = session
+
+    try:
+        monkeypatch.setattr(server.threading, "Thread", _DeferredLiveThread)
+        monkeypatch.setattr(server, "_emit", lambda *args, **kwargs: None)
+        monkeypatch.setattr(server, "_session_uses_compute_host", lambda session: False)
+
+        if direct:
+            server._run_prompt_submit("1", "sid", session, "hello")
+        else:
+            assert server._drain_queued_prompt("1", "sid", session) is True
+
+        worker = workers[-1]
+        assert session["_run_thread"] is worker
+        assert session["running"] is True
+        assert isinstance(session.get("inflight_turn"), dict)
+
+        stop = server.handle_request(
+            {"id": "2", "method": "session.interrupt", "params": {"session_id": "sid"}}
+        )
+
+        assert stop.get("result"), f"got error: {stop.get('error')}"
+        assert calls["interrupted"] is True
+        assert session["_turn_cancel_requested"] is True
+        assert session["running"] is True
+        assert session["_run_thread"] is worker
+
+        worker.target()
+
+        assert calls["ran"] is False
+        assert session["running"] is False
+        assert session.get("inflight_turn") is None
+        assert session.get("_run_thread") is None
+    finally:
+        server._sessions.pop("sid", None)
+
+
 def test_interrupt_drops_queued_prompt_for_session():
     """Explicit stop cancels a queued next turn instead of auto-draining it."""
     calls = {"interrupted": False}
@@ -8223,7 +8296,12 @@ def test_session_activate_returns_inflight_stream_before_completion(monkeypatch)
     monkeypatch.setattr(server, "make_stream_renderer", lambda cols: None)
     monkeypatch.setattr(server, "render_message", lambda raw, cols: None)
     monkeypatch.setattr(server, "_get_db", lambda: None)
-    monkeypatch.setattr(server, "_session_info", lambda agent: {"model": agent.model})
+    monkeypatch.setattr(server, "_config_model_target", lambda: ("model-live", ""))
+    monkeypatch.setattr(
+        server,
+        "_session_info",
+        lambda agent, _session=None: {"model": agent.model},
+    )
 
     def _emit(event, sid, payload=None):
         if event == "message.complete":

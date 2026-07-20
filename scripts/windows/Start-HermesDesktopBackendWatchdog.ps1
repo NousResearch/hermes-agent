@@ -135,7 +135,7 @@ function Find-HealthyDesktopBackend {
 }
 
 function Stop-OrphanDesktopBackends {
-    $desktop = Get-DesktopProcesses
+    $desktop = @(Get-DesktopProcesses)
     if ($desktop.Count -gt 0) { return 0 }
     $n = 0
     foreach ($proc in (Get-DesktopBackendCandidates)) {
@@ -186,7 +186,7 @@ function Save-WatchdogState($state) {
 }
 
 function Invoke-WatchdogCycle([ref]$failCount) {
-    $desktop = Get-DesktopProcesses
+    $desktop = @(Get-DesktopProcesses)
     $backend = Find-HealthyDesktopBackend
 
     if ($desktop.Count -eq 0) {

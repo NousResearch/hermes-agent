@@ -14,7 +14,27 @@ if (-not (Test-Path -LiteralPath $PythonExe)) {
     $PythonExe = Join-Path $ProjectRoot "venv\Scripts\python.exe"
 }
 $HermesHome = Join-Path $env:USERPROFILE ".hermes"
-$DesiredModel = "yuxinlu1/gemma-4-12B-coder-fable5-composer2.5-v1-GGUF:Q4_K_M"
+
+function Get-HermesDotEnvValue {
+    param([string]$Key)
+    $dotEnv = Join-Path $HermesHome ".env"
+    if (-not (Test-Path -LiteralPath $dotEnv)) { return $null }
+    foreach ($line in Get-Content -LiteralPath $dotEnv) {
+        $trimmed = $line.Trim()
+        if (-not $trimmed -or $trimmed.StartsWith('#')) { continue }
+        $eq = $trimmed.IndexOf('=')
+        if ($eq -lt 1) { continue }
+        $name = $trimmed.Substring(0, $eq).Trim().Trim([char]0xFEFF)
+        if ($name -ne $Key) { continue }
+        $value = $trimmed.Substring($eq + 1).Trim().Trim('"').Trim("'")
+        if ($value) { return $value }
+    }
+    return $null
+}
+
+$DesiredModel = Get-HermesDotEnvValue "HERMES_LLAMA_ALIAS"
+if (-not $DesiredModel) { $DesiredModel = Get-HermesDotEnvValue "HERMES_LLAMA_MODEL" }
+if (-not $DesiredModel) { $DesiredModel = "yuxinlu1/gemma-4-12B-coder-fable5-composer2.5-v1-GGUF:Q4_K_M" }
 $TailscaleScript = Join-Path $env:LOCALAPPDATA "HermesWebUI\Update-HermesTailscaleServe.ps1"
 $RepoTailscaleScript = Join-Path $PSScriptRoot "Update-HermesTailscaleServe.ps1"
 $LlamaNgrokScript = Join-Path $env:LOCALAPPDATA "HermesWebUI\Start-HermesLlamaNgrok.ps1"

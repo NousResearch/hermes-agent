@@ -127,6 +127,12 @@ export function useVirtualHistory(
   const initialHeightsRef = useRef(initialHeights)
   const refs = useRef(new Map<string, (el: unknown) => void>())
   const onHeightsChangeRef = useRef(onHeightsChange)
+  // Track which keys have been measured by the current session (not just
+  // estimated from initialHeights or the estimate function). Clamp bounds are
+  // only safe once the effective range is fully measured and offsets have been
+  // rebuilt from those real heights.
+  const measuredKeys = useRef(new Set<string>())
+  const measuredOffsetVersion = useRef(-1)
   // Bump whenever heightCache mutates so offsets rebuild on next read.
   // Ref (not state) — checked during render phase, zero extra commits.
   const offsetVersion = useRef(0)
@@ -165,6 +171,10 @@ export function useVirtualHistory(
     initialHeightsRef.current = initialHeights
     heights.current = new Map(initialHeights)
     offsetVersion.current++
+    // Initial heights may be estimates from a stale session cache; require a
+    // fresh measurement pass before clamping on them.
+    measuredKeys.current.clear()
+    measuredOffsetVersion.current = -1
   }
 
   if (prevColumns.current !== columns && prevColumns.current > 0 && columns > 0) {
@@ -179,6 +189,9 @@ export function useVirtualHistory(
     offsetVersion.current++
     skipMeasurement.current = true
     freezeRenders.current = FREEZE_RENDERS
+    // Scaled heights are approximations; re-measure before clamping on them.
+    measuredKeys.current.clear()
+    measuredOffsetVersion.current = -1
   }
 
   useLayoutEffect(() => {
@@ -208,6 +221,7 @@ export function useVirtualHistory(
       if (!keep.has(k)) {
         heights.current.delete(k)
         nodes.current.delete(k)
+        measuredKeys.current.delete(k)
         refs.current.delete(k)
         dirty = true
       }
@@ -443,6 +457,7 @@ export function useVirtualHistory(
         }
 
         nodes.current.delete(key)
+        measuredKeys.current.delete(key)
       }
 
       refs.current.set(key, fn)
@@ -463,52 +478,10 @@ export function useVirtualHistory(
     // If clamp used immediate bounds, render-node-to-output's drain-gate
     // would drain past the deferred children's span → viewport lands in
     // spacer → white flash.
-    //
-    // Resume/cold-start guard: when many items in the mounted window still
-    // carry estimated heights, the offset array can be off by orders of
-    // magnitude from the real Yoga-measured total. Setting clamp bounds from
-    // those wrong offsets locks the viewport to a narrow span and leaves the
-    // top/bottom of a long transcript blank (#54587). Defer clamping until
-    // the mounted range has been measured, so clamp bounds reflect reality.
-    let allMountedHeightsMeasured = false
 
-    if (s && shouldSetVirtualClamp({ itemCount: n, liveTailActive, sticky, viewportHeight: vp })) {
-      allMountedHeightsMeasured = true
-
-      for (let i = effStart; i < effEnd; i++) {
-        const k = items[i]?.key
-
-        if (!k) {
-          continue
-        }
-
-        // A seeded estimate is indistinguishable from a cached estimate in
-        // heights.current; check whether this key has a live measured node.
-        if (!nodes.current.has(k)) {
-          allMountedHeightsMeasured = false
-          
-          break
-        }
-      }
-    }
-
-    if (s && allMountedHeightsMeasured) {
-      const effTopSpacer = offsets[effStart] ?? 0
-      const effBottom = offsets[effEnd] ?? total
-      // At effEnd=n there's no bottomSpacer — use Infinity so render-node-
-      // to-output's own Math.min(cur, maxScroll) governs. Using offsets[n]
-      // here would bake in heightCache (one render behind Yoga), and during
-      // streaming the tail item's cached height lags its real height —
-      // sticky-break would then clamp below the real max and push
-      // streaming text off-viewport.
-      const clampMin = effStart === 0 ? 0 : effTopSpacer
-      const clampMax = effEnd === n ? Infinity : Math.max(effTopSpacer, effBottom - vp)
-
-      s.setClampBounds(clampMin, clampMax)
-    } else {
-      s?.setClampBounds(undefined, undefined)
-    }
-
+    // Measure heights from the live Yoga nodes in the effective range. This
+    // also populates measuredKeys, so we can distinguish real measurements from
+    // seeded estimates.
     if (skipMeasurement.current) {
       skipMeasurement.current = false
       bumpMeasuredHeightVersion(n => n + 1)
@@ -527,7 +500,53 @@ export function useVirtualHistory(
           dirty = true
           heightDirty = true
         }
+
+        if (h > 0) {
+          measuredKeys.current.add(k)
+        }
       }
+    }
+
+    // Clamp bounds are only safe once every item in the effective range has a
+    // measured height AND the offsets used by this render were rebuilt from
+    // those measured heights. measuredOffsetVersion tracks the offset-version at
+    // which the last full measurement was committed; matching it means the
+    // offsets reflect reality rather than stale estimates.
+    let allMeasured = false
+
+    if (s && shouldSetVirtualClamp({ itemCount: n, liveTailActive, sticky, viewportHeight: vp })) {
+      allMeasured = true
+
+      for (let i = effStart; i < effEnd; i++) {
+        const k = items[i]?.key
+
+        if (!k) {
+          continue
+        }
+
+        if (!measuredKeys.current.has(k)) {
+          allMeasured = false
+
+          break
+        }
+      }
+    }
+
+    if (s && allMeasured && offsetsCache.current.version === measuredOffsetVersion.current) {
+      const effTopSpacer = offsets[effStart] ?? 0
+      const effBottom = offsets[effEnd] ?? total
+      // At effEnd=n there's no bottomSpacer — use Infinity so render-node-
+      // to-output's own Math.min(cur, maxScroll) governs. Using offsets[n]
+      // here would bake in heightCache (one render behind Yoga), and during
+      // streaming the tail item's cached height lags its real height —
+      // sticky-break would then clamp below the real max and push
+      // streaming text off-viewport.
+      const clampMin = effStart === 0 ? 0 : effTopSpacer
+      const clampMax = effEnd === n ? Infinity : Math.max(effTopSpacer, effBottom - vp)
+
+      s.setClampBounds(clampMin, clampMax)
+    } else {
+      s?.setClampBounds(undefined, undefined)
     }
 
     if (s) {
@@ -550,6 +569,10 @@ export function useVirtualHistory(
     if (dirty) {
       offsetVersion.current++
       onHeightsChangeRef.current?.(heights.current)
+    }
+
+    if (allMeasured) {
+      measuredOffsetVersion.current = offsetVersion.current
     }
 
     if (heightDirty) {

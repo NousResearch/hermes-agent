@@ -2138,6 +2138,231 @@ class GatewaySlashCommandsMixin:
 
         return await _finish_switch()
 
+    async def _handle_apikey_command(self, event: MessageEvent) -> Optional[str]:
+        """Handle /apikey — hot-swap the API key for the current provider.
+
+        Usage:
+            /apikey              — show current provider/model and masked key
+            /apikey <key>        — hotswap key for the current provider
+            /apikey --save <key> — hotswap and persist to ~/.hermes/.env
+            /apikey --reload     — reload .env and rebuild the client
+        """
+        from hermes_cli.apikey_switch import (
+            apply_api_key_switch,
+            format_apikey_status,
+            parse_apikey_args,
+            resolve_current_key,
+            resolve_provider_key_env,
+        )
+
+        raw_args = event.get_command_args().strip() if event else ""
+        args, errors = parse_apikey_args(raw_args)
+        if errors:
+            return "\n".join(f"✗ {err}" for err in errors)
+
+        source = event.source
+        source = self._normalize_source_for_session_key(source)
+        session_key = self._session_key_for_source(source)
+
+        # Read current provider/model from session override or config.
+        override = self._session_model_overrides.get(session_key, {})
+        provider = override.get("provider", "")
+        model = override.get("model", "")
+
+        if not provider or not model:
+            try:
+                from gateway.run import _load_gateway_config
+
+                cfg = _load_gateway_config()
+                if cfg:
+                    model_cfg = cfg.get("model", {})
+                    if isinstance(model_cfg, dict):
+                        model = model_cfg.get("default", model)
+                        provider = model_cfg.get("provider", provider)
+            except Exception:
+                pass
+
+        provider = provider or "openrouter"
+        model = model or ""
+
+        if args.reload:
+            from hermes_cli.config import reload_env
+
+            reload_env()
+            new_key = resolve_current_key(provider)
+            if not new_key:
+                return f"✗ No key found in {resolve_provider_key_env(provider)}"
+        else:
+            new_key = args.key
+
+        if not new_key:
+            current_key = override.get("api_key") or resolve_current_key(provider)
+            return format_apikey_status(provider, model, current_key)
+
+        # Try to apply to a live agent if one exists for this session.
+        agent = None
+        try:
+            running = self._running_agents.get(session_key)
+            if running is not None:
+                agent = running
+        except Exception:
+            pass
+
+        result = apply_api_key_switch(
+            agent=agent,
+            provider=provider,
+            model=model,
+            api_key=new_key,
+            save_to_env=args.save,
+        )
+
+        if not result.success:
+            return f"✗ {result.message}"
+
+        # Update session override so subsequent turns keep the new key.
+        self._session_model_overrides[session_key] = {
+            **override,
+            "provider": provider,
+            "model": model,
+            "api_key": new_key,
+            "base_url": override.get("base_url", ""),
+            "api_mode": override.get("api_mode", ""),
+        }
+
+        # Evict cached agent so the next turn rebuilds with the new credential.
+        self._evict_cached_agent(session_key)
+
+        lines = [f"✓ API key hotswapped for {result.provider}"]
+        if result.saved_to_env:
+            lines.append(f"Saved to {result.key_env}")
+        if result.model:
+            lines.append(f"Model: {result.model}")
+        return "\n".join(lines)
+
+    async def _handle_apikey_d_command(self, event: MessageEvent) -> Optional[str]:
+        """Handle /apikey-d — hot-swap credentials used by subagent delegation.
+
+        Usage:
+            /apikey-d                   — show current delegation provider/model/key
+            /apikey-d <key>             — hotswap delegation API key
+            /apikey-d --provider <slug> — change delegation provider
+            /apikey-d --model <name>    — change delegation model
+            /apikey-d --save <key>      — hotswap and persist to config.yaml
+            /apikey-d --reload          — reload .env and apply provider's key
+        """
+        from hermes_cli.apikey_switch import mask_api_key
+        from hermes_cli.delegation_switch import (
+            apply_api_d_switch,
+            format_api_d_status,
+            get_delegation_config,
+            parse_api_d_args,
+            reload_delegation_key_from_env,
+        )
+
+        raw_args = event.get_command_args().strip() if event else ""
+        args, errors = parse_api_d_args(raw_args)
+        if errors:
+            return "\n".join(f"✗ {err}" for err in errors)
+
+        cfg = get_delegation_config()
+        provider = str(cfg.get("provider") or "").strip()
+        model = str(cfg.get("model") or "").strip()
+
+        if args.reload:
+            new_key = reload_delegation_key_from_env(provider)
+            if not new_key:
+                from hermes_cli.apikey_switch import resolve_provider_key_env
+
+                key_env = resolve_provider_key_env(provider)
+                return f"✗ No key found in {key_env}"
+        else:
+            new_key = args.key
+
+        if not new_key and not args.provider and not args.model:
+            current_key = str(cfg.get("api_key") or "").strip()
+            return format_api_d_status(provider, model, current_key)
+
+        result = apply_api_d_switch(
+            provider=args.provider,
+            model=args.model,
+            api_key=new_key,
+            save_to_config=args.save,
+        )
+
+        if not result.success:
+            return f"✗ {result.message}"
+
+        lines = [
+            f"✓ Delegation key hotswapped for {result.provider}",
+        ]
+        if result.saved_to_config:
+            lines.append("Saved to config.yaml")
+        lines.append(f"Model: {result.model or '(inherit from parent)'}")
+        lines.append(f"Key:   {mask_api_key(result.api_key)}")
+        return "\n".join(lines)
+
+    async def _handle_apikey_c_command(self, event: MessageEvent) -> Optional[str]:
+        """Handle /apikey-c — hot-swap credentials used by context compression.
+
+        Usage:
+            /apikey-c                   — show current compression provider/model/key
+            /apikey-c <key>             — hotswap compression API key
+            /apikey-c --provider <slug> — change compression provider
+            /apikey-c --model <name>    — change compression model
+            /apikey-c --save <key>      — hotswap and persist to config.yaml
+            /apikey-c --reload          — reload .env and apply provider's key
+        """
+        from hermes_cli.apikey_switch import mask_api_key
+        from hermes_cli.compression_switch import (
+            apply_api_c_switch,
+            format_api_c_status,
+            get_compression_config,
+            parse_api_c_args,
+            reload_compression_key_from_env,
+        )
+
+        raw_args = event.get_command_args().strip() if event else ""
+        args, errors = parse_api_c_args(raw_args)
+        if errors:
+            return "\n".join(f"✗ {err}" for err in errors)
+
+        cfg = get_compression_config()
+        provider = str(cfg.get("provider") or "").strip()
+        model = str(cfg.get("model") or "").strip()
+
+        if args.reload:
+            new_key = reload_compression_key_from_env(provider)
+            if not new_key:
+                from hermes_cli.apikey_switch import resolve_provider_key_env
+
+                key_env = resolve_provider_key_env(provider)
+                return f"✗ No key found in {key_env}"
+        else:
+            new_key = args.key
+
+        if not new_key and not args.provider and not args.model:
+            current_key = str(cfg.get("api_key") or "").strip()
+            return format_api_c_status(provider, model, current_key)
+
+        result = apply_api_c_switch(
+            provider=args.provider,
+            model=args.model,
+            api_key=new_key,
+            save_to_config=args.save,
+        )
+
+        if not result.success:
+            return f"✗ {result.message}"
+
+        lines = [
+            f"✓ Compression key hotswapped for {result.provider}",
+        ]
+        if result.saved_to_config:
+            lines.append("Saved to config.yaml")
+        lines.append(f"Model: {result.model or '(use provider default)'}")
+        lines.append(f"Key:   {mask_api_key(result.api_key)}")
+        return "\n".join(lines)
+
     async def _handle_codex_runtime_command(self, event: MessageEvent) -> str:
         """Handle /codex-runtime command in the gateway.
 

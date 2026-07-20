@@ -2325,6 +2325,47 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
                 exc_info=True,
             )
 
+def switch_api_key(agent, api_key: str, provider: str = ""):
+    """Switch the API key in-place for a live agent while keeping model/provider.
+
+    This is the runtime half of the ``/apikey`` slash command.  It reuses the
+    same safe client-rebuild path as :func:`switch_model` but keeps the current
+    model and provider (or an explicitly-requested provider) so the user can
+    hotswap credentials mid-session without a ``/reset``.
+
+    Args:
+        agent: The live AIAgent instance.
+        api_key: The new API key to use.
+        provider: Optional provider slug.  If empty, the current provider is
+            kept.  If given, the agent switches to that provider with the same
+            model name ( callers that also want a model change should use
+            :func:`switch_model` instead).
+
+    Returns:
+        The result of :func:`switch_model`.
+    """
+    if not api_key:
+        raise ValueError("api_key is required")
+
+    target_provider = provider or getattr(agent, "provider", "")
+    target_model = getattr(agent, "model", "")
+
+    # Preserve base_url when staying on the same provider; let switch_model
+    # resolve it when moving providers.
+    if target_provider == getattr(agent, "provider", ""):
+        base_url = getattr(agent, "base_url", "")
+    else:
+        base_url = ""
+
+    return switch_model(
+        agent,
+        new_model=target_model,
+        new_provider=target_provider,
+        api_key=api_key,
+        base_url=base_url,
+        api_mode=getattr(agent, "api_mode", ""),
+    )
+
 
 def invoke_tool(agent, function_name: str, function_args: dict, effective_task_id: str,
                  tool_call_id: Optional[str] = None, messages: list = None,

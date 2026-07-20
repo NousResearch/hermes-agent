@@ -3656,42 +3656,21 @@ def _parse_skills_argument(skills: str | list[str] | tuple[str, ...] | None) -> 
 def save_config_value(key_path: str, value: any) -> bool:
     """
     Save a value to the active config file at the specified key path.
-    
+
     Respects the same lookup order as load_cli_config():
     1. ~/.hermes/config.yaml (user config - preferred, used if it exists)
     2. ./cli-config.yaml (project config - fallback)
-    
+
     Args:
         key_path: Dot-separated path like "agent.system_prompt"
         value: Value to save
-    
+
     Returns:
         True if successful, False otherwise
     """
-    # Use the same precedence as load_cli_config: user config first, then project config
-    user_config_path = _hermes_home / 'config.yaml'
-    project_config_path = Path(__file__).parent / 'cli-config.yaml'
-    config_path = user_config_path if user_config_path.exists() else project_config_path
-    
-    try:
-        # Ensure parent directory exists (for ~/.hermes/config.yaml on first use)
-        config_path.parent.mkdir(parents=True, exist_ok=True)
-        
-        # Save back atomically while preserving comments, ordering, quotes, and
-        # readable Unicode in user-edited config.yaml.
-        from utils import atomic_roundtrip_yaml_update
-        atomic_roundtrip_yaml_update(config_path, key_path, value)
-        
-        # Enforce owner-only permissions on config files (contain API keys)
-        try:
-            os.chmod(config_path, 0o600)
-        except (OSError, NotImplementedError):
-            pass
-        
-        return True
-    except Exception as e:
-        logger.error("Failed to save config: %s", e)
-        return False
+    from hermes_cli.config import save_config_value as _save_config_value
+
+    return _save_config_value(key_path, value)
 
 
 
@@ -8391,6 +8370,206 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         else:
             _cprint("    (session only — add --global to persist)")
 
+    def _handle_apikey_command(self, cmd_original: str) -> None:
+        """Handle /apikey — hot-swap the API key for the current provider.
+
+        Usage:
+            /apikey                  — show current provider/model and masked key
+            /apikey <key>            — hotswap key for the current provider
+            /apikey --save <key>     — hotswap and persist to ~/.hermes/.env
+            /apikey --reload         — reload .env and rebuild the client
+        """
+        from hermes_cli.apikey_switch import (
+            apply_api_key_switch,
+            format_apikey_status,
+            parse_apikey_args,
+            resolve_current_key,
+            resolve_provider_key_env,
+        )
+
+        parts = cmd_original.split(None, 1)
+        raw_args = parts[1].strip() if len(parts) > 1 else ""
+        args, errors = parse_apikey_args(raw_args)
+        if errors:
+            for err in errors:
+                _cprint(f"  ✗ {err}")
+            return
+
+        provider = getattr(self, "provider", "") or ""
+        model = getattr(self, "model", "") or ""
+
+        if args.reload:
+            from hermes_cli.config import reload_env
+
+            reload_env()
+            new_key = resolve_current_key(provider)
+            if not new_key:
+                key_env = resolve_provider_key_env(provider)
+                _cprint(f"  No key found in {key_env}")
+                return
+            # Fall through to apply the reloaded key.
+        else:
+            new_key = args.key
+
+        # No key and not a reload: just show status.
+        if not new_key:
+            current_key = getattr(self, "api_key", "") or resolve_current_key(provider)
+            _cprint(f"  {format_apikey_status(provider, model, current_key)}")
+            return
+
+        result = apply_api_key_switch(
+            agent=getattr(self, "agent", None),
+            provider=provider,
+            model=model,
+            api_key=new_key,
+            save_to_env=args.save,
+        )
+
+        if not result.success:
+            _cprint(f"  ✗ {result.message}")
+            return
+
+        # Update CLI runtime state so the next turn doesn't revert the swap.
+        self.api_key = new_key
+        self._explicit_api_key = new_key
+        if getattr(self, "agent", None) is not None:
+            self.requested_provider = provider
+
+        _cprint(f"  ✓ API key hotswapped for {result.provider}")
+        if result.saved_to_env:
+            _cprint(f"    Saved to {result.key_env}")
+        _cprint(f"    Model: {result.model or '(unknown)'}")
+
+    def _handle_apikey_d_command(self, cmd_original: str) -> None:
+        """Handle /apikey-d — hot-swap credentials used by subagent delegation.
+
+        Usage:
+            /apikey-d                   — show current delegation provider/model/key
+            /apikey-d <key>             — hotswap delegation API key
+            /apikey-d --provider <slug> — change delegation provider
+            /apikey-d --model <name>    — change delegation model
+            /apikey-d --save <key>      — hotswap and persist to config.yaml
+            /apikey-d --reload          — reload .env and apply provider's key
+        """
+        from hermes_cli.delegation_switch import (
+            apply_api_d_switch,
+            format_api_d_status,
+            get_delegation_config,
+            parse_api_d_args,
+            reload_delegation_key_from_env,
+        )
+        from hermes_cli.apikey_switch import mask_api_key
+
+        parts = cmd_original.split(None, 1)
+        raw_args = parts[1].strip() if len(parts) > 1 else ""
+        args, errors = parse_api_d_args(raw_args)
+        if errors:
+            for err in errors:
+                _cprint(f"  ✗ {err}")
+            return
+
+        cfg = get_delegation_config()
+        provider = str(cfg.get("provider") or "").strip()
+        model = str(cfg.get("model") or "").strip()
+
+        if args.reload:
+            new_key = reload_delegation_key_from_env(provider)
+            if not new_key:
+                from hermes_cli.apikey_switch import resolve_provider_key_env
+
+                key_env = resolve_provider_key_env(provider)
+                _cprint(f"  No key found in {key_env}")
+                return
+        else:
+            new_key = args.key
+
+        if not new_key and not args.provider and not args.model:
+            current_key = str(cfg.get("api_key") or "").strip()
+            _cprint(f"  {format_api_d_status(provider, model, current_key)}")
+            return
+
+        result = apply_api_d_switch(
+            provider=args.provider,
+            model=args.model,
+            api_key=new_key,
+            save_to_config=args.save,
+        )
+
+        if not result.success:
+            _cprint(f"  ✗ {result.message}")
+            return
+
+        _cprint(f"  ✓ Delegation key hotswapped for {result.provider}")
+        if result.saved_to_config:
+            _cprint("    Saved to config.yaml")
+        _cprint(f"    Model: {result.model or '(inherit from parent)'}")
+        _cprint(f"    Key:   {mask_api_key(result.api_key)}")
+
+    def _handle_apikey_c_command(self, cmd_original: str) -> None:
+        """Handle /apikey-c — hot-swap credentials used by context compression.
+
+        Usage:
+            /apikey-c                   — show current compression provider/model/key
+            /apikey-c <key>             — hotswap compression API key
+            /apikey-c --provider <slug> — change compression provider
+            /apikey-c --model <name>    — change compression model
+            /apikey-c --save <key>      — hotswap and persist to config.yaml
+            /apikey-c --reload          — reload .env and apply provider's key
+        """
+        from hermes_cli.compression_switch import (
+            apply_api_c_switch,
+            format_api_c_status,
+            get_compression_config,
+            parse_api_c_args,
+            reload_compression_key_from_env,
+        )
+        from hermes_cli.apikey_switch import mask_api_key
+
+        parts = cmd_original.split(None, 1)
+        raw_args = parts[1].strip() if len(parts) > 1 else ""
+        args, errors = parse_api_c_args(raw_args)
+        if errors:
+            for err in errors:
+                _cprint(f"  ✗ {err}")
+            return
+
+        cfg = get_compression_config()
+        provider = str(cfg.get("provider") or "").strip()
+        model = str(cfg.get("model") or "").strip()
+
+        if args.reload:
+            new_key = reload_compression_key_from_env(provider)
+            if not new_key:
+                from hermes_cli.apikey_switch import resolve_provider_key_env
+
+                key_env = resolve_provider_key_env(provider)
+                _cprint(f"  No key found in {key_env}")
+                return
+        else:
+            new_key = args.key
+
+        if not new_key and not args.provider and not args.model:
+            current_key = str(cfg.get("api_key") or "").strip()
+            _cprint(f"  {format_api_c_status(provider, model, current_key)}")
+            return
+
+        result = apply_api_c_switch(
+            provider=args.provider,
+            model=args.model,
+            api_key=new_key,
+            save_to_config=args.save,
+        )
+
+        if not result.success:
+            _cprint(f"  ✗ {result.message}")
+            return
+
+        _cprint(f"  ✓ Compression key hotswapped for {result.provider}")
+        if result.saved_to_config:
+            _cprint("    Saved to config.yaml")
+        _cprint(f"    Model: {result.model or '(use provider default)'}")
+        _cprint(f"    Key:   {mask_api_key(result.api_key)}")
+
     def _handle_codex_runtime(self, cmd_original: str) -> None:
         """Handle /codex-runtime — toggle the codex app-server runtime opt-in.
 
@@ -8757,6 +8936,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             self._handle_sessions_command(cmd_original)
         elif canonical == "model":
             self._handle_model_switch(cmd_original)
+        elif canonical == "apikey":
+            self._handle_apikey_command(cmd_original)
+        elif canonical == "apikey-d":
+            self._handle_apikey_d_command(cmd_original)
         elif canonical == "codex-runtime":
             self._handle_codex_runtime(cmd_original)
 

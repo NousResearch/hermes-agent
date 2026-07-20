@@ -3266,7 +3266,10 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
             f"Available providers: openrouter, nous, zai, kimi-coding, minimax."
         ) from exc
 
-    api_key = runtime.get("api_key", "")
+    # Prefer an explicitly-configured delegation.api_key over the provider's
+    # default env-var lookup.  This lets users hotswap subagent credentials
+    # mid-session with /api-d without needing to set the provider's env var.
+    api_key = configured_api_key or runtime.get("api_key", "")
     if not api_key:
         raise ValueError(
             f"Delegation provider '{configured_provider}' resolved but has no API key. "

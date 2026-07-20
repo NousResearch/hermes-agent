@@ -87,4 +87,37 @@ describe('terminal store persistence', () => {
     closeAllTerminals()
     expect(window.localStorage.getItem(STORAGE_KEY)).toBeNull()
   })
+
+  it('restores and persists the last observed cwd so a reopened tab lands where the user cd-d', async () => {
+    window.localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({
+        activeTerminalId: 'term-one',
+        terminals: [{ auto: false, cwd: '/repo', id: 'term-one', restoreCwd: '/repo/packages/api', title: 'zsh' }]
+      })
+    )
+
+    const { $terminals, updateTerminalRestoreCwd } = await loadTerminalStore()
+
+    expect($terminals.get()[0]?.restoreCwd).toBe('/repo/packages/api')
+
+    updateTerminalRestoreCwd('term-one', '/repo/packages/web')
+    expect($terminals.get()[0]?.restoreCwd).toBe('/repo/packages/web')
+    expect(JSON.parse(window.localStorage.getItem(STORAGE_KEY) ?? '{}').terminals[0].restoreCwd).toBe(
+      '/repo/packages/web'
+    )
+  })
+
+  it('never attaches a restore cwd to an agent tab and ignores empty values', async () => {
+    const { $terminals, createTerminal, ensureAgentTerminal, updateTerminalRestoreCwd } = await loadTerminalStore()
+
+    const userId = createTerminal('/repo')
+    const agentId = ensureAgentTerminal('proc-1', 'background task')!
+
+    updateTerminalRestoreCwd(agentId, '/somewhere')
+    updateTerminalRestoreCwd(userId, '   ')
+
+    expect($terminals.get().find(term => term.id === agentId)?.restoreCwd).toBeUndefined()
+    expect($terminals.get().find(term => term.id === userId)?.restoreCwd).toBeUndefined()
+  })
 })

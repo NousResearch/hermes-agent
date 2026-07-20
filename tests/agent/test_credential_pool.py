@@ -831,6 +831,70 @@ def test_load_pool_does_not_persist_env_seeded_secret_value(tmp_path, monkeypatc
     assert persisted["secret_fingerprint"].startswith("sha256:")
 
 
+def test_load_pool_collapses_duplicate_env_rows_to_active_key(tmp_path, monkeypatch):
+    """One env source is one credential, even if auth.json contains stale duplicates."""
+    key = "sk-or-active-main-key"
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.setenv("OPENROUTER_API_KEY", key)
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "credential_pool": {
+                "openrouter": [
+                    {
+                        "id": "current-row",
+                        "label": "OPENROUTER_API_KEY",
+                        "auth_type": "api_key",
+                        "priority": 0,
+                        "source": "env:OPENROUTER_API_KEY",
+                    },
+                    {
+                        "id": "stale-duplicate",
+                        "label": "OPENROUTER_API_KEY",
+                        "auth_type": "api_key",
+                        "priority": 1,
+                        "source": "env:OPENROUTER_API_KEY",
+                    },
+                ]
+            },
+        },
+    )
+
+    from agent.credential_pool import load_pool
+
+    pool = load_pool("openrouter")
+
+    assert [(entry.id, entry.runtime_api_key) for entry in pool.entries()] == [
+        ("current-row", key)
+    ]
+    persisted = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    assert [entry["id"] for entry in persisted["credential_pool"]["openrouter"]] == [
+        "current-row"
+    ]
+
+
+def test_credential_pool_never_selects_empty_borrowed_entry():
+    from agent.credential_pool import CredentialPool, PooledCredential
+
+    pool = CredentialPool(
+        "openrouter",
+        [
+            PooledCredential(
+                provider="openrouter",
+                id="metadata-only",
+                label="OPENROUTER_API_KEY",
+                auth_type="api_key",
+                priority=0,
+                source="env:OPENROUTER_API_KEY",
+                access_token="",
+            )
+        ],
+    )
+
+    assert pool.select() is None
+    assert pool.acquire_lease() is None
+
 
 def test_load_pool_persists_bitwarden_origin_metadata_without_secret(tmp_path, monkeypatch):
     """Bitwarden-injected env vars retain source metadata but not raw values."""
@@ -2906,6 +2970,78 @@ def test_xai_oauth_nonterminal_refresh_does_not_quarantine(tmp_path, monkeypatch
     assert tokens.get("refresh_token") == "old-refresh-token"
 
 
+def test_xai_oauth_concurrent_pool_instances_refresh_single_use_token_once(
+    tmp_path, monkeypatch
+):
+    import threading
+    import time
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.delenv("XAI_API_KEY", raising=False)
+    monkeypatch.delenv("XAI_OAUTH_ACCESS_TOKEN", raising=False)
+
+    _write_auth_store(tmp_path, {
+        "version": 1,
+        "providers": {},
+        "credential_pool": {
+            "xai-oauth": [{
+                "id": "manual-xai",
+                "label": "manual-xai",
+                "auth_type": "oauth",
+                "priority": 0,
+                "source": "manual:xai_pkce",
+                "access_token": "old-access-token",
+                "refresh_token": "one-time-refresh-token",
+                "base_url": "https://api.x.ai/v1",
+            }],
+        },
+    })
+
+    from agent.credential_pool import load_pool
+    import hermes_cli.auth as auth_mod
+
+    pools = [load_pool("xai-oauth"), load_pool("xai-oauth")]
+    start = threading.Barrier(2)
+    refresh_calls: list[tuple[str, str]] = []
+
+    def _refresh(access_token, refresh_token, **_kwargs):
+        refresh_calls.append((access_token, refresh_token))
+        time.sleep(0.1)
+        return {
+            "access_token": "fresh-access-token",
+            "refresh_token": "fresh-refresh-token",
+            "last_refresh": "2026-07-12T00:00:00+00:00",
+        }
+
+    monkeypatch.setattr(auth_mod, "refresh_xai_oauth_pure", _refresh)
+    results = []
+    errors = []
+
+    def _worker(pool):
+        try:
+            start.wait()
+            results.append(pool.try_refresh_matching("old-access-token"))
+        except Exception as exc:
+            errors.append(exc)
+
+    threads = [threading.Thread(target=_worker, args=(pool,)) for pool in pools]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert not errors
+    assert refresh_calls == [("old-access-token", "one-time-refresh-token")]
+    assert sorted(entry.access_token for entry in results) == [
+        "fresh-access-token",
+        "fresh-access-token",
+    ]
+    persisted = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    stored = persisted["credential_pool"]["xai-oauth"][0]
+    assert stored["access_token"] == "fresh-access-token"
+    assert stored["refresh_token"] == "fresh-refresh-token"
+
+
 # ---------------------------------------------------------------------------
 # Codex OAuth terminal error quarantine
 # ---------------------------------------------------------------------------
@@ -3050,6 +3186,11 @@ def test_codex_oauth_nonterminal_refresh_does_not_quarantine(tmp_path, monkeypat
 def test_persist_preserves_concurrent_disk_only_entry(tmp_path, monkeypatch):
     """Regression for #19566: stale rotation writes keep concurrent entries."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    # Block external-credential autodiscovery: a real ~/.claude/.credentials.json
+    # on a dev machine would seed an extra claude_code entry and break the
+    # exact-id assertions below (passes on CI where no such file exists).
+    monkeypatch.setattr("agent.anthropic_adapter.read_hermes_oauth_credentials", lambda: None)
+    monkeypatch.setattr("agent.anthropic_adapter.read_claude_code_credentials", lambda: None)
     _write_auth_store(
         tmp_path,
         {
@@ -3111,6 +3252,9 @@ def test_persist_preserves_concurrent_disk_only_entry(tmp_path, monkeypatch):
 
 def test_remove_index_does_not_resurrect_via_disk_merge(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    # Block external-credential autodiscovery (see note in the test above).
+    monkeypatch.setattr("agent.anthropic_adapter.read_hermes_oauth_credentials", lambda: None)
+    monkeypatch.setattr("agent.anthropic_adapter.read_claude_code_credentials", lambda: None)
     _write_auth_store(
         tmp_path,
         {

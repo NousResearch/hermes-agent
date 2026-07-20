@@ -2,22 +2,13 @@
 
 import { TextMessagePartProvider, useMessagePartText } from '@assistant-ui/react'
 import {
-  parseMarkdownIntoBlocks,
   type StreamdownTextComponents,
   StreamdownTextPrimitive,
-  type SyntaxHighlighterProps
+  type SyntaxHighlighterProps,
+  tailBoundedRemend
 } from '@assistant-ui/react-streamdown'
 import { code } from '@streamdown/code'
-import {
-  type ComponentProps,
-  memo,
-  type ReactNode,
-  useDeferredValue,
-  useEffect,
-  useMemo,
-  useRef,
-  useState
-} from 'react'
+import { type ComponentProps, memo, useEffect, useMemo, useState } from 'react'
 
 import { ExpandableBlock } from '@/components/chat/expandable-block'
 import { PreviewAttachment } from '@/components/chat/preview-attachment'
@@ -25,6 +16,7 @@ import { chunkByLines, SyntaxHighlighter } from '@/components/chat/shiki-highlig
 import { ZoomableImage } from '@/components/chat/zoomable-image'
 import { normalizeExternalUrl, openExternalLink, PrettyLink } from '@/lib/external-link'
 import { createMemoizedMathPlugin } from '@/lib/katex-memo'
+import { parseMarkdownIntoBlocksCached } from '@/lib/markdown-blocks'
 import { preprocessMarkdown } from '@/lib/markdown-preprocess'
 import {
   downloadGatewayMediaFile,
@@ -38,7 +30,6 @@ import {
   mediaStreamUrl
 } from '@/lib/media'
 import { previewTargetFromMarkdownHref } from '@/lib/preview-targets'
-import { tailBoundedRemend } from '@/lib/remend-tail'
 import { cn } from '@/lib/utils'
 
 import { detectEmbed, extractAlert, MarkdownAlert, RichCodeBlock, UrlEmbed } from './embeds'
@@ -58,52 +49,14 @@ import { detectEmbed, extractAlert, MarkdownAlert, RichCodeBlock, UrlEmbed } fro
 const mathPlugin = createMemoizedMathPlugin({ singleDollarTextMath: true })
 
 // Replaces Streamdown's `parseIncompleteMarkdown` (full-text remend per
-// flush) with a tail-bounded repair — see lib/remend-tail.ts. Must stay
-// module-scope so the prop identity is stable across renders.
+// flush) with a tail-bounded repair. Must stay module-scope so the prop
+// identity is stable across renders.
 function preprocessWithTailRepair(text: string): string {
   try {
     return tailBoundedRemend(preprocessMarkdown(text))
   } catch {
     return text
   }
-}
-
-// Memoized block splitter. Streamdown calls `parseMarkdownIntoBlocks` (a full
-// `marked` lex of the entire message, ~1.6ms per 28KB) inside a useMemo keyed
-// on the text — but the same text is re-lexed every time a message REMOUNTS
-// (virtualizer scroll, session switch) and whenever multiple surfaces render
-// the same content (deferred + smooth reveal republish). A small module-level
-// LRU keyed by the exact source string removes all of those repeat parses
-// with zero correctness risk (same input → same output). Streaming tail
-// growth misses the cache by design (every flush is a new string) — that
-// single lex is the irreducible cost.
-const BLOCK_CACHE_MAX = 64
-const BLOCK_CACHE_MIN_LENGTH = 1024
-const blockCache = new Map<string, string[]>()
-
-function parseMarkdownIntoBlocksCached(markdown: string): string[] {
-  if (markdown.length < BLOCK_CACHE_MIN_LENGTH) {
-    return parseMarkdownIntoBlocks(markdown)
-  }
-
-  const hit = blockCache.get(markdown)
-
-  if (hit) {
-    // Refresh recency (Map iteration order is insertion order).
-    blockCache.delete(markdown)
-    blockCache.set(markdown, hit)
-
-    return hit
-  }
-
-  const blocks = parseMarkdownIntoBlocks(markdown)
-  blockCache.set(markdown, blocks)
-
-  if (blockCache.size > BLOCK_CACHE_MAX) {
-    blockCache.delete(blockCache.keys().next().value as string)
-  }
-
-  return blocks
 }
 
 async function mediaSrc(path: string): Promise<string> {
@@ -348,150 +301,10 @@ function MarkdownImage({ className, src, alt, ...props }: ComponentProps<'img'>)
   )
 }
 
-// Steady character-reveal for streaming text: decouples visible cadence from
-// bursty arrival so text flows instead of popping (cf. assistant-ui's useSmooth,
-// reimplemented for a tunable rate). Proportional drain — each frame reveals a
-// slice of the backlog so the reveal converges within ~REVEAL_DRAIN_MS whatever
-// the size; the per-frame cap stops a huge dump rendering as one slab. The loop
-// is gated on backlog, not isRunning, so a stream that completes mid-reveal
-// keeps draining its tail instead of snapping.
-const REVEAL_DRAIN_MS = 500
-const REVEAL_MAX_CHARS_PER_FRAME = 30
-// Floor between reveal commits. Each commit republishes the text context and
-// re-runs the whole Streamdown pipeline (preprocess → remend → lex → micromark
-// on the open block) over the full accumulated text — at raw rAF cadence
-// that's 60 full parses/second and was the dominant streaming cost for
-// reasoning text. ~33ms keeps the reveal visually fluid (2 frames) while
-// halving the parse work.
-const REVEAL_MIN_COMMIT_MS = 33
-
-function useSmoothReveal(text: string, isRunning: boolean): string {
-  const [displayed, setDisplayed] = useState(isRunning ? '' : text)
-  const targetRef = useRef(text)
-  const shownRef = useRef(displayed)
-  const frameRef = useRef<number | null>(null)
-  const lastTickRef = useRef(0)
-
-  shownRef.current = displayed
-  targetRef.current = text
-
-  useEffect(() => {
-    if (typeof window === 'undefined') {
-      return
-    }
-
-    // Non-extending change (regenerate / branch / history swap): restart from
-    // empty while streaming, else snap to the replacement.
-    if (!text.startsWith(shownRef.current)) {
-      shownRef.current = isRunning ? '' : text
-      setDisplayed(shownRef.current)
-    }
-
-    if (shownRef.current.length >= text.length || frameRef.current !== null) {
-      return
-    }
-
-    lastTickRef.current = performance.now()
-
-    const tick = () => {
-      const now = performance.now()
-      const dt = now - lastTickRef.current
-
-      // Skip this frame if the floor hasn't elapsed — the backlog math below
-      // is dt-proportional, so delayed commits reveal proportionally more.
-      if (dt < REVEAL_MIN_COMMIT_MS) {
-        frameRef.current = requestAnimationFrame(tick)
-
-        return
-      }
-
-      lastTickRef.current = now
-
-      const remaining = targetRef.current.length - shownRef.current.length
-
-      const add = Math.min(
-        remaining,
-        // dt-scaled so the per-commit cap stays equivalent to the old
-        // per-frame cap at any commit cadence.
-        Math.ceil((REVEAL_MAX_CHARS_PER_FRAME * dt) / 16.7),
-        Math.max(1, Math.ceil((remaining * dt) / REVEAL_DRAIN_MS))
-      )
-
-      shownRef.current = targetRef.current.slice(0, shownRef.current.length + add)
-      setDisplayed(shownRef.current)
-
-      frameRef.current = shownRef.current.length < targetRef.current.length ? requestAnimationFrame(tick) : null
-    }
-
-    frameRef.current = requestAnimationFrame(tick)
-  }, [text, isRunning])
-
-  useEffect(
-    () => () => {
-      if (frameRef.current !== null && typeof window !== 'undefined') {
-        cancelAnimationFrame(frameRef.current)
-      }
-    },
-    []
-  )
-
-  return displayed
-}
-
-// Re-publish the part context with a smooth character-reveal, above
-// DeferStreamingText so the reveal feeds the deferred markdown pipeline. Status
-// stays running while revealing so the caret persists past the underlying part
-// settling.
-function SmoothStreamingText({ children }: { children: ReactNode }) {
-  const { text, status } = useMessagePartText()
-  const isRunning = status.type === 'running'
-  const revealed = useSmoothReveal(text, isRunning)
-
-  return (
-    <TextMessagePartProvider isRunning={isRunning || revealed !== text} text={revealed}>
-      {children}
-    </TextMessagePartProvider>
-  )
-}
-
-/**
- * Re-publish the active message-part context with React's `useDeferredValue`
- * applied to the streaming text and status. The outer wrapper still re-renders
- * on every token, but the work it does is trivial (one hook, one provider).
- *
- * The expensive subtree (Streamdown → micromark → mdast → hast → React) lives
- * inside `<TextMessagePartProvider>` and reads the deferred text via the
- * normal `useMessagePartText` hook. React's concurrent scheduler then has
- * permission to:
- *   - skip intermediate token states when the next token arrives mid-render
- *     (it abandons the in-flight deferred render and starts over)
- *   - deprioritize the markdown render when the main thread is busy with an
- *     urgent task (typing, scrolling, layout work elsewhere)
- *
- * Net effect: per-token CPU is unchanged but the *blocking* part of that work
- * goes away — typing-while-streaming stays a single-frame paint, scroll
- * stutter disappears, and the longtask histogram tightens because long
- * commits can be interrupted and discarded.
- *
- * Industry standard (Streamdown's own block-array setState already uses
- * `useTransition`); this just lifts the deferral up to the consumer text
- * boundary so it covers the whole pipeline, not just the inner setState.
- */
-function DeferStreamingText({ children }: { children: ReactNode }) {
-  const { text, status } = useMessagePartText()
-  const deferredText = useDeferredValue(text)
-  const isRunning = status.type === 'running'
-
-  return (
-    <TextMessagePartProvider isRunning={isRunning} text={deferredText}>
-      {children}
-    </TextMessagePartProvider>
-  )
-}
-
 interface MarkdownTextSurfaceProps {
   containerClassName?: string
   containerProps?: ComponentProps<'div'>
+  defer?: boolean
 }
 
 // Headings shrink to chat scale rather than the prose default (h1≈xl). Kept
@@ -540,7 +353,7 @@ function HugeTextFallback({ containerClassName, text }: { containerClassName?: s
   )
 }
 
-function MarkdownTextSurface({ containerClassName, containerProps }: MarkdownTextSurfaceProps) {
+function MarkdownTextSurface({ containerClassName, containerProps, defer }: MarkdownTextSurfaceProps) {
   const { status, text } = useMessagePartText()
   const isStreaming = status.type === 'running'
 
@@ -668,18 +481,14 @@ function MarkdownTextSurface({ containerClassName, containerProps }: MarkdownTex
       components={components}
       containerClassName={cn(MARKDOWN_CONTAINER_CLASS_NAME, containerClassName)}
       containerProps={containerProps}
+      defer={defer}
       lineNumbers={false}
       mode="streaming"
-      // Incomplete-markdown repair is handled by `preprocessWithTailRepair`
-      // below (tail-bounded remend) instead of Streamdown's built-in pass,
-      // which re-runs remend over the ENTIRE message on every flush — ~18%
-      // of streaming script time on 50KB+ messages. The repair itself stays
-      // always-on (even between flushes / for completed messages): an
-      // unclosed ```python ... ``` whose body contains `$` (shell snippets,
-      // JS template strings, dollar amounts) would otherwise leak those
-      // dollars to the math parser and render broken inline math. Shiki is
-      // independently deferred via `defer={isStreaming}` on the
-      // SyntaxHighlighter component.
+      // Incomplete-markdown repair runs in preprocessWithTailRepair on the
+      // full accumulated text; the built-in tail-bounded remend is disabled
+      // because a custom parseMarkdownIntoBlocksFn is supplied, and
+      // parseIncompleteMarkdown stays false to avoid a second full-text
+      // remend pass.
       parseIncompleteMarkdown={false}
       parseMarkdownIntoBlocksFn={parseMarkdownIntoBlocksCached}
       plugins={plugins}
@@ -694,23 +503,21 @@ interface MarkdownTextContentProps extends MarkdownTextSurfaceProps {
 }
 
 export function MarkdownTextContent({ isRunning, text, ...surfaceProps }: MarkdownTextContentProps) {
+  // No `smooth` on purpose — same as the assistant answer. `TextMessagePartProvider`
+  // mints a fresh part object on every `text` change, and useSmooth resets its
+  // reveal to empty whenever the part identity changes, so a smoothed reasoning
+  // stream re-types from the first character on every delta (the flash). Token-
+  // streaming reasoners (R1/Qwen/GLM/Claude thinking) hit it hardest; GPT-5's
+  // coarse summary updates too rarely to notice. Plain append matches the answer.
   return (
     <TextMessagePartProvider isRunning={isRunning} text={text}>
-      <SmoothStreamingText>
-        <DeferStreamingText>
-          <MarkdownTextSurface {...surfaceProps} />
-        </DeferStreamingText>
-      </SmoothStreamingText>
+      <MarkdownTextSurface defer {...surfaceProps} />
     </TextMessagePartProvider>
   )
 }
 
 const MarkdownTextImpl = () => {
-  return (
-    <DeferStreamingText>
-      <MarkdownTextSurface />
-    </DeferStreamingText>
-  )
+  return <MarkdownTextSurface defer />
 }
 
 export const MarkdownText = memo(MarkdownTextImpl)

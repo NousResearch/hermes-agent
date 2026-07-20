@@ -1,7 +1,13 @@
 """Tests for config.yaml structure validation (validate_config_structure)."""
 
 
-from hermes_cli.config import validate_config_structure, ConfigIssue
+from hermes_cli.config import (
+    DEFAULT_CONFIG,
+    _EXTRA_KNOWN_ROOT_KEYS,
+    _KNOWN_ROOT_KEYS,
+    validate_config_structure,
+    ConfigIssue,
+)
 
 
 class TestCustomProvidersValidation:
@@ -205,3 +211,93 @@ class TestConfigIssueDataclass:
         a = ConfigIssue("error", "msg", "hint")
         b = ConfigIssue("error", "msg", "hint")
         assert a == b
+
+
+class TestUnknownTopLevelKeys:
+    """Unknown top-level keys should warn (not error); known roots stay silent."""
+
+    def test_typo_top_level_key_warns_with_key_name(self):
+        """A typo like skillz: must surface as a warning naming the key."""
+        issues = validate_config_structure({
+            "model": {"provider": "openrouter"},
+            "skillz": {"enabled": True},
+            "secrity": {"redact": True},
+        })
+        warnings = [i for i in issues if i.severity == "warning"]
+        unknown = [i for i in warnings if "Unknown top-level config key" in i.message]
+        messages = " ".join(i.message for i in unknown)
+        assert "skillz" in messages
+        assert "secrity" in messages
+        assert all(i.severity == "warning" for i in unknown)
+        assert not any(i.severity == "error" for i in unknown)
+
+    def test_all_default_config_roots_accepted_without_unknown_warning(self):
+        """Every DEFAULT_CONFIG root (and legacy extras) must not warn as unknown."""
+        config = {key: {} if isinstance(DEFAULT_CONFIG.get(key), dict) else DEFAULT_CONFIG.get(key)
+                  for key in DEFAULT_CONFIG}
+        for key in _EXTRA_KNOWN_ROOT_KEYS:
+            if key == "custom_providers":
+                config[key] = [{"name": "x", "base_url": "https://example.com"}]
+                config.setdefault("model", {"provider": "custom", "default": "m"})
+            elif key == "fallback_model":
+                config[key] = {"provider": "openrouter", "model": "test"}
+            else:
+                config[key] = {}
+        issues = validate_config_structure(config)
+        unknown = [i for i in issues if "Unknown top-level config key" in i.message]
+        assert unknown == [], f"Unexpected unknown-key warnings: {[i.message for i in unknown]}"
+
+    def test_known_root_keys_derived_from_default_config(self):
+        """_KNOWN_ROOT_KEYS must be DEFAULT_CONFIG.keys() plus extras — single source of truth."""
+        assert set(DEFAULT_CONFIG.keys()).issubset(_KNOWN_ROOT_KEYS)
+        assert _EXTRA_KNOWN_ROOT_KEYS.issubset(_KNOWN_ROOT_KEYS)
+        assert _KNOWN_ROOT_KEYS == frozenset(DEFAULT_CONFIG.keys()) | _EXTRA_KNOWN_ROOT_KEYS
+
+    def test_hermes_written_roots_not_flagged_as_unknown(self):
+        """Roots Hermes itself writes/reads must not warn as unknown (#67397)."""
+        issues = validate_config_structure({
+            "model": {"provider": "openrouter"},
+            "known_plugin_toolsets": {"cli": ["spotify"]},
+            "group_sessions_per_user": True,
+            "thread_sessions_per_user": False,
+            "stt_echo_transcripts": True,
+            "reset_triggers": ["/new"],
+            "always_log_local": True,
+            "filter_silence_narration": True,
+        })
+        unknown = [i for i in issues if "Unknown top-level config key" in i.message]
+        messages = " ".join(i.message for i in unknown)
+        assert "known_plugin_toolsets" not in messages
+        assert "group_sessions_per_user" not in messages
+        assert "thread_sessions_per_user" not in messages
+        assert "stt_echo_transcripts" not in messages
+        assert "reset_triggers" not in messages
+        assert "always_log_local" not in messages
+        assert "filter_silence_narration" not in messages
+
+    def test_provider_like_unknown_root_keeps_misplaced_message(self):
+        """Preserve existing base_url/api_key root-level guidance (not generic unknown)."""
+        issues = validate_config_structure({
+            "base_url": "https://example.com/v1",
+            "api_key": "secret",
+        })
+        misplaced = [
+            i for i in issues
+            if i.severity == "warning" and "looks misplaced" in i.message
+        ]
+        generic_unknown = [
+            i for i in issues
+            if "Unknown top-level config key" in i.message
+        ]
+        assert any("base_url" in i.message for i in misplaced)
+        assert any("api_key" in i.message for i in misplaced)
+        assert generic_unknown == []
+
+    def test_private_underscore_keys_not_flagged(self):
+        """Internal keys starting with _ remain ignored (except known defaults)."""
+        issues = validate_config_structure({
+            "_internal_scratch": True,
+            "model": {"provider": "openrouter"},
+        })
+        assert not any("Unknown top-level" in i.message for i in issues)
+        assert not any("_internal_scratch" in i.message for i in issues)

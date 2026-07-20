@@ -9,9 +9,18 @@ called every tick, reading the current config.
 
 from __future__ import annotations
 
+import inspect
+
 import pytest
 
-from gateway.kanban_watchers import _resolve_auto_decompose_settings
+from gateway import kanban_watchers
+from gateway.kanban_watchers import (
+    _AUTO_DECOMPOSE_FAILURES,
+    MAX_AUTO_DECOMPOSE_FAILURES,
+    _auto_decompose_is_poisoned,
+    _auto_decompose_record_result,
+    _resolve_auto_decompose_settings,
+)
 
 
 def test_enabled_by_default_when_key_absent():
@@ -81,3 +90,85 @@ def test_live_toggle_takes_effect_between_calls():
     # User edits config.yaml mid-run.
     state["kanban"]["auto_decompose"] = False
     assert _resolve_auto_decompose_settings(lambda: state)[0] is False
+
+
+# ── Poison-card ceiling ────────────────────────────────────────────────────
+# A decompose failure that leaves the card in triage ("LLM error", "LLM
+# returned malformed JSON") is invisible to the block-loop circuit breaker,
+# which only sees terminal outcomes of tasks that actually ran. Without a
+# ceiling the dispatcher re-sends such a card to the aux model every tick,
+# forever, at debug log level.
+
+
+@pytest.fixture(autouse=True)
+def _clear_failure_ledger():
+    _AUTO_DECOMPOSE_FAILURES.clear()
+    yield
+    _AUTO_DECOMPOSE_FAILURES.clear()
+
+
+def test_card_is_retried_up_to_the_cap_then_skipped():
+    assert _auto_decompose_is_poisoned("t_poison") is False
+    for expected in range(1, MAX_AUTO_DECOMPOSE_FAILURES):
+        assert _auto_decompose_record_result("t_poison", False) == expected
+        # Still eligible — transient aux failures deserve another chance.
+        assert _auto_decompose_is_poisoned("t_poison") is False
+    assert (
+        _auto_decompose_record_result("t_poison", False)
+        == MAX_AUTO_DECOMPOSE_FAILURES
+    )
+    assert _auto_decompose_is_poisoned("t_poison") is True
+
+
+def test_success_clears_failure_history():
+    """A card that fails transiently then decomposes must not stay penalised."""
+    _auto_decompose_record_result("t_flaky", False)
+    _auto_decompose_record_result("t_flaky", False)
+    assert _auto_decompose_record_result("t_flaky", True) == 0
+    assert _auto_decompose_is_poisoned("t_flaky") is False
+    # And the next failure starts counting from scratch.
+    assert _auto_decompose_record_result("t_flaky", False) == 1
+
+
+def test_unconfigured_aux_client_never_poisons_a_card():
+    """"auxiliary client unavailable" is returned before any model call: it
+    spends nothing and is identical for every card. Counting it would leave a
+    user who configures an aux model later with an inert triage column."""
+    for _ in range(MAX_AUTO_DECOMPOSE_FAILURES * 2):
+        assert (
+            _auto_decompose_record_result(
+                "t_noaux", False, "auxiliary client unavailable",
+            )
+            == 0
+        )
+    assert _auto_decompose_is_poisoned("t_noaux") is False
+    # A genuine failure on the same card still counts from zero.
+    assert (
+        _auto_decompose_record_result(
+            "t_noaux", False, "LLM returned malformed JSON",
+        )
+        == 1
+    )
+
+
+def test_failure_counts_are_per_card():
+    for _ in range(MAX_AUTO_DECOMPOSE_FAILURES):
+        _auto_decompose_record_result("t_bad", False)
+    assert _auto_decompose_is_poisoned("t_bad") is True
+    assert _auto_decompose_is_poisoned("t_good") is False
+
+
+def test_poison_skip_precedes_the_per_tick_budget_spend():
+    """Ordering invariant: the poison check must run BEFORE ``attempted += 1``.
+
+    ``triage_ids`` is ordered, so if poisoned cards spent the per-tick budget
+    they would sit at the head of the column and starve every decomposable
+    card behind them — the cost bug would become a liveness bug.
+    """
+    src = inspect.getsource(kanban_watchers)
+    body = src.split("def _auto_decompose_tick(")[1]
+    skip = body.index("_auto_decompose_is_poisoned(tid)")
+    spend = body.index("attempted += 1")
+    assert skip < spend, (
+        "poisoned cards must be skipped before the per-tick budget is spent"
+    )

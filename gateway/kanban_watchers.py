@@ -57,6 +57,58 @@ def _resolve_auto_decompose_settings(
     return enabled, per_tick
 
 
+# Consecutive auto-decompose failures tolerated per triage card before the
+# dispatcher stops re-attempting it. Mirrors the attempt cap the delivery
+# ledger uses for the same reason ("poison rows cannot spin" —
+# ``gateway/delivery_ledger.py``): an automatic path that retries on a timer
+# needs a ceiling, or one permanently-undecomposable card retries forever.
+MAX_AUTO_DECOMPOSE_FAILURES = 3
+
+# task_id -> consecutive failure count. Process-local on purpose: the budget
+# this protects is aux-LLM spend by THIS gateway, and a restart is a natural
+# retry boundary (the same rationale the delivery ledger states for treating
+# a restart as a fresh attempt window).
+_AUTO_DECOMPOSE_FAILURES: "dict[str, int]" = {}
+
+
+def _auto_decompose_is_poisoned(task_id: str) -> bool:
+    """True once a card has failed auto-decomposition too many times.
+
+    Failures that leave the card in triage (``LLM error``, ``LLM returned
+    malformed JSON``) are invisible to the block-loop circuit breaker, which
+    only ever sees terminal outcomes of tasks that actually RAN. Without this
+    ceiling such a card is re-listed by ``list_triage_ids()`` on every tick
+    and re-sent to the aux model forever — silently, since the failure logs
+    at debug level.
+    """
+    return _AUTO_DECOMPOSE_FAILURES.get(task_id, 0) >= MAX_AUTO_DECOMPOSE_FAILURES
+
+
+# Outcomes that must NOT count toward the ceiling. "auxiliary client
+# unavailable" is returned BEFORE any model call, so it spends nothing, is
+# identical for every card, and clears globally the moment an aux model is
+# configured. Penalising cards for it would leave a user who configures aux
+# later with a triage column that stays inert until the gateway restarts.
+_UNPENALISED_DECOMPOSE_REASONS = frozenset({"auxiliary client unavailable"})
+
+
+def _auto_decompose_record_result(task_id: str, ok: bool, reason: str = "") -> int:
+    """Record one auto-decompose attempt; return the running failure count.
+
+    A success clears the card's history so a card that fails transiently
+    (aux provider blip) is not penalised once it finally decomposes.
+    """
+    if ok:
+        _AUTO_DECOMPOSE_FAILURES.pop(task_id, None)
+        return 0
+    if reason in _UNPENALISED_DECOMPOSE_REASONS:
+        # Not the card's fault and free to retry — leave the count untouched.
+        return _AUTO_DECOMPOSE_FAILURES.get(task_id, 0)
+    count = _AUTO_DECOMPOSE_FAILURES.get(task_id, 0) + 1
+    _AUTO_DECOMPOSE_FAILURES[task_id] = count
+    return count
+
+
 def _acquire_singleton_lock(lock_path) -> "tuple[Optional[object], str]":
     """Take an exclusive, non-blocking advisory lock for the sole dispatcher.
 
@@ -1171,6 +1223,13 @@ class GatewayKanbanWatchersMixin:
                     for tid in triage_ids:
                         if attempted >= auto_decompose_per_tick:
                             break
+                        # Checked BEFORE the per-tick budget is spent: a card
+                        # that can never decompose must not crowd out the ones
+                        # that can. ``triage_ids`` is ordered, so poisoned
+                        # cards at the head would otherwise consume the whole
+                        # budget every tick and starve the rest of the column.
+                        if _auto_decompose_is_poisoned(tid):
+                            continue
                         attempted += 1
                         try:
                             outcome = _decomp.decompose_task(
@@ -1181,7 +1240,11 @@ class GatewayKanbanWatchersMixin:
                                 "kanban auto-decompose: decompose_task crashed on %s",
                                 tid,
                             )
+                            _auto_decompose_record_result(tid, False)
                             continue
+                        failure_count = _auto_decompose_record_result(
+                            tid, outcome.ok, outcome.reason or "",
+                        )
                         if outcome.ok:
                             successes += 1
                             if outcome.fanout and outcome.child_ids:
@@ -1194,6 +1257,18 @@ class GatewayKanbanWatchersMixin:
                                     "kanban auto-decompose [%s]: %s → single task (no fanout)",
                                     slug, tid,
                                 )
+                        elif failure_count >= MAX_AUTO_DECOMPOSE_FAILURES:
+                            # Give-up is the one auto-decompose outcome that
+                            # must not be silent: the card stays in triage
+                            # looking merely un-processed, so say once, at
+                            # warning, that nothing further will retry it.
+                            logger.warning(
+                                "kanban auto-decompose [%s]: %s failed %d times "
+                                "(%s); not retrying automatically. Decompose it "
+                                "manually with `hermes kanban decompose %s` once "
+                                "the cause is addressed.",
+                                slug, tid, failure_count, outcome.reason, tid,
+                            )
                         else:
                             # Common no-op reasons (no aux client configured) shouldn't
                             # spam logs every tick. Log at debug.

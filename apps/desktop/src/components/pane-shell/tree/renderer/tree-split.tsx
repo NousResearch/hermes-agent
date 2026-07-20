@@ -234,9 +234,13 @@ export function TreeSplit({ node, root, rootRow }: { node: SplitNode; root?: boo
       document.body.style.cursor = horizontal ? 'col-resize' : 'row-resize'
       document.body.style.userSelect = 'none'
 
-      const onMove = (ev: PointerEvent) => {
-        const shiftPx = Math.max(lo, Math.min(hi, (horizontal ? ev.clientX : ev.clientY) - start))
+      // Coalesce store writes to one per frame: pointermove fires far faster than
+      // 60fps and each write relayouts the whole pane tree. Stash the latest
+      // clamped shift, apply it in a rAF (as drag-session / use-popout-drag do).
+      let raf: null | number = null
+      let pendingShift: null | number = null
 
+      const applyShift = (shiftPx: number) => {
         if (a.fixed) {
           a.paneIds.forEach(id => setOverride(id, Math.round(a0px + shiftPx)))
         }
@@ -247,15 +251,36 @@ export function TreeSplit({ node, root, rootRow }: { node: SplitNode; root?: boo
 
         if (!a.fixed && !b.fixed) {
           const weights = [...node.weights]
-          // Convert the CLAMPED pixel sizes back to weights so the persisted
-          // weights always agree with what's on screen.
+          // Clamped px → weights so persisted weights match what's on screen.
           weights[aIndex] = (a0px + shiftPx) / pxPerWeight
           weights[bIndex] = (b0px - shiftPx) / pxPerWeight
           setTreeSplitWeights(node.id, weights)
         }
       }
 
+      const flush = () => {
+        raf = null
+
+        if (pendingShift !== null) {
+          applyShift(pendingShift)
+        }
+      }
+
+      const onMove = (ev: PointerEvent) => {
+        pendingShift = Math.max(lo, Math.min(hi, (horizontal ? ev.clientX : ev.clientY) - start))
+        raf ??= requestAnimationFrame(flush)
+      }
+
       const cleanup = () => {
+        if (raf !== null) {
+          cancelAnimationFrame(raf)
+          raf = null
+        }
+
+        if (pendingShift !== null) {
+          applyShift(pendingShift) // commit the final position
+        }
+
         document.body.style.cursor = restoreCursor
         document.body.style.userSelect = restoreSelect
 

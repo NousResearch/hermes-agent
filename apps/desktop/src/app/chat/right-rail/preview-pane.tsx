@@ -172,12 +172,26 @@ export function PreviewPane({
       document.body.style.cursor = 'row-resize'
       document.body.style.userSelect = 'none'
 
+      // Coalesce height writes to one per frame — pointermove outpaces 60fps and
+      // each setHeight reflows the webview + console split.
+      let raf: null | number = null
+      let pendingHeight: null | number = null
+
+      const flushHeight = () => {
+        raf = null
+
+        if (pendingHeight !== null) {
+          consoleState.setHeight(pendingHeight)
+        }
+      }
+
       const handleMove = (moveEvent: PointerEvent) => {
         if (!active) {
           return
         }
 
-        consoleState.setHeight(clampConsoleHeight(startHeight + startY - moveEvent.clientY))
+        pendingHeight = clampConsoleHeight(startHeight + startY - moveEvent.clientY)
+        raf ??= requestAnimationFrame(flushHeight)
       }
 
       const cleanup = () => {
@@ -186,6 +200,16 @@ export function PreviewPane({
         }
 
         active = false
+
+        if (raf !== null) {
+          cancelAnimationFrame(raf)
+          raf = null
+        }
+
+        if (pendingHeight !== null) {
+          consoleState.setHeight(pendingHeight) // commit the final height
+        }
+
         document.body.style.cursor = previousCursor
         document.body.style.userSelect = previousUserSelect
         handle.releasePointerCapture?.(pointerId)

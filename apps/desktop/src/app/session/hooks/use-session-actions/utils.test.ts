@@ -15,6 +15,7 @@ import {
   isSessionGoneError,
   preserveLocalPendingTurnMessages,
   reconcileResumeMessages,
+  removeRepresentedLocalLiveProjection,
   sessionMatchesStoredId,
   sessionShouldHaveTranscript,
   toBranchMessages
@@ -382,12 +383,7 @@ describe('dedupeInflightUserAgainstTranscript', () => {
 
     const persisted = [...runtime, msg('persisted-current', 'user', 'current prompt', { timestamp: 3 })]
 
-    const deduped = dedupeInflightUserAgainstTranscript(
-      persisted,
-      runtime,
-      runtime,
-      runningProjection('current prompt')
-    )
+    const deduped = dedupeInflightUserAgainstTranscript(persisted, runtime, runningProjection('current prompt'))
 
     expect(deduped.inflight?.user).toBeUndefined()
     expect(deduped.inflight?.assistant).toBe('partial answer')
@@ -400,27 +396,31 @@ describe('dedupeInflightUserAgainstTranscript', () => {
     ]
 
     const projection = runningProjection('repeat this')
-    const unchanged = dedupeInflightUserAgainstTranscript(runtime, runtime, runtime, projection)
+    const unchanged = dedupeInflightUserAgainstTranscript(runtime, runtime, projection)
 
     expect(unchanged).toBe(projection)
     expect(unchanged.inflight?.user).toBe('repeat this')
   })
+})
 
-  it('ignores old optimistic ids before the last completed assistant boundary', () => {
-    const runtime = [
-      msg('runtime-user', 'user', 'repeat this', { timestamp: 1 }),
-      msg('runtime-assistant', 'assistant', 'finished answer', { timestamp: 2 })
-    ]
-
+describe('removeRepresentedLocalLiveProjection', () => {
+  it('removes only matched synthetic rows from the open local tail', () => {
     const previous = [
-      msg('user-old-optimistic', 'user', 'repeat this'),
-      msg('assistant-complete', 'assistant', 'finished answer')
+      msg('user-old-optimistic', 'user', 'current prompt'),
+      msg('assistant-complete', 'assistant', 'finished answer'),
+      msg('user-current', 'user', 'current prompt'),
+      msg('assistant-stream-current', 'assistant', 'partial answer', { pending: true }),
+      msg('user-queued', 'user', 'queued prompt'),
+      msg('user-racing', 'user', 'new racing prompt')
     ]
 
-    const projection = runningProjection('repeat this')
-    const unchanged = dedupeInflightUserAgainstTranscript(runtime, runtime, previous, projection)
+    const projection = {
+      ...runningProjection('current prompt'),
+      queued: { user: 'queued prompt' }
+    }
 
-    expect(unchanged).toBe(projection)
-    expect(unchanged.inflight?.user).toBe('repeat this')
+    const remaining = removeRepresentedLocalLiveProjection(previous, projection)
+
+    expect(remaining.map(message => message.id)).toEqual(['user-old-optimistic', 'assistant-complete', 'user-racing'])
   })
 })

@@ -369,8 +369,7 @@ function transcriptAnchorMatches(a: ChatMessage, b: ChatMessage): boolean {
  * that user row into the complete persisted transcript. Global text dedupe is
  * unsafe because users may intentionally submit the same prompt twice. Instead,
  * find the last runtime message inside the persisted transcript and inspect only
- * the newer persisted suffix. A matching optimistic renderer row is also proof
- * that the current prompt is already represented locally.
+ * the newer persisted suffix.
  *
  * If the histories have no safe common anchor, keep the projection unchanged —
  * a duplicate is recoverable, but dropping a real accepted prompt is not.
@@ -378,7 +377,6 @@ function transcriptAnchorMatches(a: ChatMessage, b: ChatMessage): boolean {
 export function dedupeInflightUserAgainstTranscript(
   persistedMessages: ChatMessage[],
   runtimeMessages: ChatMessage[],
-  previousMessages: ChatMessage[],
   projection: SessionResumeResponse
 ): SessionResumeResponse {
   const inflightUser = projection.inflight?.user?.replace(/\s+/g, ' ').trim() ?? ''
@@ -386,25 +384,6 @@ export function dedupeInflightUserAgainstTranscript(
   if (!inflightUser) {
     return projection
   }
-
-  let optimisticTailStart = 0
-
-  for (let index = previousMessages.length - 1; index >= 0; index -= 1) {
-    const message = previousMessages[index]
-
-    if (message.role === 'assistant' && !message.pending) {
-      optimisticTailStart = index + 1
-
-      break
-    }
-  }
-
-  const optimisticUserPresent = previousMessages
-    .slice(optimisticTailStart)
-    .some(
-      message =>
-        message.role === 'user' && message.id.startsWith('user-') && normalizedMessageText(message) === inflightUser
-    )
 
   let suffixStart = 0
 
@@ -420,7 +399,7 @@ export function dedupeInflightUserAgainstTranscript(
       }
     }
 
-    if (persistedAnchorIndex < 0 && !optimisticUserPresent) {
+    if (persistedAnchorIndex < 0) {
       return projection
     }
 
@@ -431,7 +410,7 @@ export function dedupeInflightUserAgainstTranscript(
     .slice(suffixStart)
     .some(message => message.role === 'user' && normalizedMessageText(message) === inflightUser)
 
-  if (!optimisticUserPresent && !persistedUserPresent) {
+  if (!persistedUserPresent) {
     return projection
   }
 
@@ -442,6 +421,83 @@ export function dedupeInflightUserAgainstTranscript(
       user: undefined
     }
   }
+}
+
+/**
+ * Drop only synthetic local tail rows that the activation snapshot replaces.
+ * Unmatched optimistic rows survive so a submit racing with activation is not
+ * lost; completed transcript rows before the open tail are never considered.
+ */
+export function removeRepresentedLocalLiveProjection(
+  previousMessages: ChatMessage[],
+  projection: Pick<SessionResumeResponse, 'inflight' | 'queued'>
+): ChatMessage[] {
+  const inflightUser = projection.inflight?.user?.replace(/\s+/g, ' ').trim() ?? ''
+  const queuedUser = projection.queued?.user?.replace(/\s+/g, ' ').trim() ?? ''
+
+  const hasAssistantProjection = Boolean(
+    projection.inflight?.assistant || projection.inflight?.streaming || (inflightUser && queuedUser)
+  )
+
+  if (!inflightUser && !queuedUser && !hasAssistantProjection) {
+    return previousMessages
+  }
+
+  let openTailStart = 0
+
+  for (let index = previousMessages.length - 1; index >= 0; index -= 1) {
+    const message = previousMessages[index]
+
+    if (message.role === 'assistant' && !message.pending) {
+      openTailStart = index + 1
+
+      break
+    }
+  }
+
+  let removedInflightUser = false
+  let removedAssistant = false
+  let removedQueuedUser = false
+  let changed = false
+
+  const remaining = previousMessages.filter((message, index) => {
+    if (index < openTailStart) {
+      return true
+    }
+
+    const text = normalizedMessageText(message)
+    const syntheticUser = message.role === 'user' && message.id.startsWith('user-')
+
+    if (!removedInflightUser && inflightUser && syntheticUser && text === inflightUser) {
+      removedInflightUser = true
+      changed = true
+
+      return false
+    }
+
+    if (
+      !removedAssistant &&
+      hasAssistantProjection &&
+      message.role === 'assistant' &&
+      message.id.startsWith('assistant-stream-')
+    ) {
+      removedAssistant = true
+      changed = true
+
+      return false
+    }
+
+    if (!removedQueuedUser && queuedUser && syntheticUser && text === queuedUser) {
+      removedQueuedUser = true
+      changed = true
+
+      return false
+    }
+
+    return true
+  })
+
+  return changed ? remaining : previousMessages
 }
 
 export interface BranchMessage {

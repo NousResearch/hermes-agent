@@ -74,6 +74,7 @@ import {
   patchSessionWorkspace,
   preserveLocalPendingTurnMessages,
   reconcileResumeMessages,
+  removeRepresentedLocalLiveProjection,
   resolveStoredSession,
   sessionMatchesStoredId,
   sessionShouldHaveTranscript,
@@ -689,17 +690,17 @@ export function useSessionActions({
                 if (persisted && persistedMatchesActivatedSession) {
                   const persistedMessages = toChatMessages(persisted.messages)
                   const runtimeMessages = toChatMessages(activated.messages)
+                  const previousMessages = removeRepresentedLocalLiveProjection(cachedViewState.messages, activated)
 
                   const liveProjection = dedupeInflightUserAgainstTranscript(
                     persistedMessages,
                     runtimeMessages,
-                    cachedViewState.messages,
                     activated
                   )
 
                   activatedMessages = reconcileAuthoritativeChatMessages(
                     persistedMessages,
-                    cachedViewState.messages,
+                    previousMessages,
                     liveProjection
                   )
                 }

@@ -1233,6 +1233,11 @@ describe('resumeSession warm-cache mapping integrity', () => {
         id: 'runtime-assistant',
         role: 'assistant',
         parts: [{ type: 'text', text: 'earlier answer' }]
+      },
+      {
+        id: 'user-optimistic',
+        role: 'user',
+        parts: [{ type: 'text', text: 'current prompt' }]
       }
     ]
 
@@ -1245,7 +1250,12 @@ describe('resumeSession warm-cache mapping integrity', () => {
       { content: 'earlier answer', role: 'assistant', timestamp: 2 }
     ]
 
-    const persistedMessages = [...compressedRuntimeMessages, { content: 'current prompt', role: 'user', timestamp: 3 }]
+    const persistedMessages = [
+      { content: 'older prompt removed by compression', role: 'user', timestamp: -1 },
+      { content: 'older answer removed by compression', role: 'assistant', timestamp: 0 },
+      ...compressedRuntimeMessages,
+      { content: 'current prompt', role: 'user', timestamp: 3 }
+    ]
 
     vi.mocked(getSessionMessages).mockResolvedValue({
       messages: persistedMessages,

@@ -27,6 +27,9 @@ jobs:
       - name: Get GitHub App token
         id: app-token
         uses: ./.github/actions/get-app-token
+        with:
+          client-id: ${{ secrets.APP_CLIENT_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
 
       - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
@@ -61,6 +64,9 @@ jobs:
       - name: Get GitHub App token
         id: app-token
         uses: ./.github/actions/get-app-token
+        with:
+          client-id: ${{ secrets.APP_CLIENT_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
       - name: Trigger Deploy Site workflow
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}

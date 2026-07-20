@@ -112,6 +112,9 @@ jobs:
         if: steps.probe.outputs.status != 'ok'
         id: app-token
         uses: ./.github/actions/get-app-token
+        with:
+          client-id: ${{ secrets.APP_CLIENT_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
 
       - name: Open issue on degraded / failed probe
         if: steps.probe.outputs.status != 'ok'

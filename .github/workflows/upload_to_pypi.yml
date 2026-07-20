@@ -146,6 +146,9 @@ jobs:
       - name: Get GitHub App token
         id: app-token
         uses: ./.github/actions/get-app-token
+        with:
+          client-id: ${{ secrets.APP_CLIENT_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
 
       - name: Wait for GitHub Release to exist
         env:

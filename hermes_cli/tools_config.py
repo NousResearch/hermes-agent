@@ -1833,8 +1833,16 @@ def _get_platform_tools(
         # through ``hermes tools`` to flip the toolset on. Only fires when
         # the user has not yet saved an explicit toolset list — once they
         # do, the saved list is authoritative.
+        #
+        # Gate on ``explicitly_configured`` (a list was saved for this
+        # platform), NOT on reaching this branch. This branch is also entered
+        # for a saved list that happens to contain no configurable keys —
+        # ``[]`` after disabling everything, or a composite-only list — and
+        # auto-enabling there resurrects a toolset the user explicitly turned
+        # off, making a genuinely no-tools profile impossible (#68001).
         x_search_auto_enabled = (
-            _toolset_allowed_for_platform("x_search", platform)
+            not explicitly_configured
+            and _toolset_allowed_for_platform("x_search", platform)
             and _xai_credentials_present()
         )
         if x_search_auto_enabled:

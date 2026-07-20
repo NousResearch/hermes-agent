@@ -5,6 +5,7 @@ import path from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { assertRequiredScopes, devDashboardGraphql, isDevDashboardMode, mergeRuntimeEnv } from "./lib/shopify-dev-dashboard-auth.mjs";
+import { fetchPublic } from "./lib/public-fetch.mjs";
 
 const DEFAULT_ENV = "skill-hub.env";
 const REQUIRED_SCOPES = "read_products,write_products,read_content,write_content,read_files,write_files";
@@ -218,7 +219,7 @@ async function resolveStoreDomain(rawInput) {
   const host = normalizeDomain(raw);
   if (host.endsWith(".myshopify.com")) return host;
 
-  const html = await fetch(`https://${host}`, { redirect: "follow" })
+  const html = await fetchPublic(`https://${host}`, {}, { timeoutMs: 15000 })
     .then((response) => response.ok ? response.text() : "")
     .catch(() => "");
   const match = html.match(/(?:Shopify\.shop|myshopify(?:_domain|Domain)|permanent(?:_domain|Domain))\s*[:=]\s*["']([^"']+\.myshopify\.com)["']/i)
@@ -1063,6 +1064,10 @@ async function applyPlan(args) {
   const env = await loadEnv(args.env || DEFAULT_ENV);
   const client = await resolveAdmin(env);
   const results = [];
+  const assertNoUserErrors = (payload, operation) => {
+    if (!payload || !Array.isArray(payload.userErrors)) fail(`${operation} did not return userErrors; refusing to report success.`);
+    if (payload.userErrors.length) fail(`${operation} failed: ${JSON.stringify(payload.userErrors)}`);
+  };
 
   const fileUpdates = plan.changes
     .filter((change) => change.type === "product_media")
@@ -1078,6 +1083,7 @@ async function applyPlan(args) {
       }`,
       { files: fileUpdates },
     );
+    assertNoUserErrors(data.fileUpdate, "product media update");
     results.push({ type: "product_media", response: data.fileUpdate });
   }
 
@@ -1094,6 +1100,7 @@ async function applyPlan(args) {
       }`,
       { input: { id: change.id, image: { src, altText: change.alt } } },
     );
+    assertNoUserErrors(data.collectionUpdate, "collection featured image update");
     results.push({ type: "collection_featured_image", id: change.id, response: data.collectionUpdate });
   }
 
@@ -1110,6 +1117,7 @@ async function applyPlan(args) {
       }`,
       { id: change.id, article: { image: { url, altText: change.alt } } },
     );
+    assertNoUserErrors(data.articleUpdate, "article featured image update");
     results.push({ type: "article_featured_image", id: change.id, response: data.articleUpdate });
   }
 
@@ -1142,6 +1150,7 @@ async function applyPlan(args) {
       }`,
       { id: articleId, article: { body } },
     );
+    assertNoUserErrors(data.articleUpdate, "article inline image update");
     results.push({ type: "article_inline_image", articleId, changed: changes.length, response: data.articleUpdate });
   }
 

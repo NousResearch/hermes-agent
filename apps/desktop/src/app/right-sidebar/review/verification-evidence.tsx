@@ -8,7 +8,7 @@ import { Codicon } from '@/components/ui/codicon'
 import { useI18n } from '@/i18n'
 import { relativeTime } from '@/lib/time'
 import { cn } from '@/lib/utils'
-import { $activeSessionId, $busy, $currentCwd } from '@/store/session'
+import { $activeSessionId, $busy, $currentCwd, $selectedStoredSessionId } from '@/store/session'
 import { $workspaceChangeTick } from '@/store/workspace-events'
 
 type VerificationStatus = 'failed' | 'loading' | 'not_applicable' | 'passed' | 'stale' | 'unknown' | 'unverified'
@@ -41,11 +41,17 @@ const STATUSES = new Set<VerificationStatus>(['failed', 'not_applicable', 'passe
 export function VerificationEvidencePanel() {
   const { requestGateway } = useGatewayRequest()
   const cwd = useStore($currentCwd)
-  const sessionId = useStore($activeSessionId)
+  const storedSessionId = useStore($selectedStoredSessionId)
+  const runtimeSessionId = useStore($activeSessionId)
   const busy = useStore($busy)
   const workspaceChangeTick = useStore($workspaceChangeTick)
   const [state, setState] = useState<VerificationState>(EMPTY_STATE)
   const requestSeq = useRef(0)
+
+  // The gateway's verification ledger is keyed by the durable STORED session id,
+  // not the runtime sid, so resolve stored-first with the runtime id as the
+  // fallback (same rule as currentPreviewSessionId in store/preview.ts).
+  const sessionId = storedSessionId || runtimeSessionId
 
   const refresh = useCallback(async () => {
     const seq = (requestSeq.current += 1)
@@ -55,8 +61,6 @@ export function VerificationEvidencePanel() {
 
       return
     }
-
-    setState(EMPTY_STATE)
 
     try {
       const result = await requestGateway<VerificationStatusResponse>('verification.status', {
@@ -75,6 +79,10 @@ export function VerificationEvidencePanel() {
   }, [cwd, requestGateway, sessionId])
 
   useEffect(() => {
+    // New workspace or session: drop the old evidence and show the loading
+    // state. Background refreshes (workspace tick, turn settle) keep the
+    // previous content visible until the new response lands instead of
+    // flashing the skeleton; the seq guard drops any stale response.
     requestSeq.current += 1
     setState(EMPTY_STATE)
   }, [cwd, sessionId])
@@ -100,6 +108,7 @@ export function VerificationEvidenceCard({ state }: { state: VerificationState }
       aria-label={copy.verification}
       aria-live="polite"
       className="shrink-0 border-t border-(--ui-stroke-secondary) p-2"
+      data-suppress-pane-reveal-side=""
     >
       <div className="flex min-w-0 items-center gap-2">
         <Codicon

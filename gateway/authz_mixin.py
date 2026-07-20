@@ -357,6 +357,24 @@ class GatewayAuthorizationMixin:
                     if "*" in allowed_group_ids or source.chat_id in allowed_group_ids:
                         return True
 
+            # Fallback: also check adapter-level config (config.yaml)
+            # for platforms.<platform>.extra.group_allowed_chats.
+            # The Telegram observe-unmentioned mode strips user_id from
+            # triggered group messages (_apply_telegram_group_observe_attribution),
+            # so the env-var-only check above misses config.yaml-configured
+            # allowlists.  Read the live adapter's config.extra as a fallback.
+            try:
+                adapter = self._adapter_for_source(source)
+                if adapter is not None:
+                    extra = getattr(getattr(adapter, "config", None), "extra", None) or {}
+                    adapter_group_allowed = extra.get("group_allowed_chats")
+                    if adapter_group_allowed:
+                        allowed = {str(c).strip() for c in adapter_group_allowed if str(c).strip()}
+                        if "*" in allowed or source.chat_id in allowed:
+                            return True
+            except Exception:
+                pass
+
         # Bots admitted by {PLATFORM}_ALLOW_BOTS bypass the human allowlist (#4466).
         # Checked before the no-user-id guard below: some platforms deliver
         # bot/automation traffic with no user_id at all -- e.g. Slack Workflow
@@ -525,6 +543,21 @@ class GatewayAuthorizationMixin:
                     )
                 if effective_policy == "allowlist":
                     return True
+            # Some adapters (e.g. Telegram) gate access via config.extra.allow_from /
+            # group_allow_from at intake but do not override enforces_own_access_policy.
+            # Check their allowlist here so config.yaml-configured allow_from works
+            # without requiring a separate {PLATFORM}_ALLOWED_USERS env var.
+            adapter = self._adapter_for_source(source)
+            if adapter is not None:
+                extra = getattr(getattr(adapter, "config", None), "extra", None) or {}
+                if source.chat_type in {"group", "forum"}:
+                    adapter_allow = extra.get("group_allow_from")
+                else:
+                    adapter_allow = extra.get("allow_from")
+                if adapter_allow:
+                    allowed = {str(u).strip() for u in adapter_allow if str(u).strip()}
+                    if user_id in allowed or "*" in allowed:
+                        return True
             # No allowlists configured -- check global allow-all flag
             return _auth_env("GATEWAY_ALLOW_ALL_USERS").lower() in {"true", "1", "yes"}
 

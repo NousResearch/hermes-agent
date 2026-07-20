@@ -127,10 +127,16 @@ def get_secret(name: str, default: Optional[str] = None) -> Optional[str]:
 
     1. Genuinely-global vars (``_is_global_env``) always read ``os.environ`` —
        they are deployment settings, not profile secrets.
-    2. When a secret scope is installed (multiplexed turn), read from it; an
-       absent key returns ``default``. The scope is authoritative — we do NOT
-       fall through to ``os.environ``, because in a multiplexer ``os.environ``
-       may hold another profile's value.
+    2. When a secret scope is installed (multiplexed turn), read from it. Under
+       multiplexing the scope is authoritative — an absent key returns
+       ``default`` and we do NOT fall through to ``os.environ``, because in a
+       multiplexer ``os.environ`` may hold another profile's value. When
+       multiplexing is OFF, a scope miss falls through to ``os.environ``:
+       single-profile deployments legitimately provide credentials via the
+       process environment (systemd ``Environment=``, secret-manager wrappers
+       like ``pass-cli run`` / ``op run``, plain shell exports) rather than
+       ``<home>/.env``, and the scope — installed unconditionally around e.g.
+       every cron job — must stay a ``.env`` overlay, not a blindfold.
     3. No scope installed:
        - multiplex INACTIVE (default deployment): read ``os.environ`` —
          identical to the legacy ``os.getenv`` behavior every caller had before.
@@ -144,6 +150,17 @@ def get_secret(name: str, default: Optional[str] = None) -> Optional[str]:
     scope = _SECRET_SCOPE.get()
     if scope is not None:
         val = scope.get(name)
+        if val is not None:
+            return val
+        if _MULTIPLEX_ACTIVE:
+            return default
+        # Multiplex off: the scope is an overlay over the process environment,
+        # not an isolation boundary — there is no other profile to leak from.
+        # Without this fallthrough, credentials injected only into the process
+        # environment vanish inside any set_secret_scope(...) block (the cron
+        # scheduler installs one around every job), so cron jobs send a
+        # placeholder API key and 401 while interactive turns keep working.
+        val = os.environ.get(name)
         return val if val is not None else default
 
     if _MULTIPLEX_ACTIVE:

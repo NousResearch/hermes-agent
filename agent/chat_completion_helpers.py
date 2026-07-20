@@ -2753,6 +2753,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         role = "assistant"
         reasoning_parts: list = []
         usage_obj = None
+        provider_response_id: str = ""
         for chunk in stream:
             # Stop the moment a newer attempt has claimed the delta sink
             # (#65991): this attempt has been superseded, so it must neither
@@ -2768,6 +2769,16 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                 break
             last_chunk_time["t"] = time.time()
             agent._touch_activity("receiving stream response")
+
+            # Capture the provider-supplied response ID from the first
+            # chunk that carries one.  Providers (OpenAI, vLLM, etc.)
+            # send a stable ID across all chunks in one call; we
+            # preserve it so callers can correlate with provider-side
+            # logs and response records (#67957).
+            if not provider_response_id:
+                _chunk_id = getattr(chunk, "id", None)
+                if isinstance(_chunk_id, str) and _chunk_id:
+                    provider_response_id = _chunk_id
 
             # Update per-attempt diagnostic counters.  Best-effort —
             # failures are swallowed so the streaming hot path is never
@@ -3053,7 +3064,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             finish_reason=effective_finish_reason,
         )
         return SimpleNamespace(
-            id="stream-" + str(uuid.uuid4()),
+            id=provider_response_id or ("stream-" + str(uuid.uuid4())),
             model=model_name,
             choices=[mock_choice],
             usage=usage_obj,

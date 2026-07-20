@@ -90,6 +90,32 @@ class TestGenerateTitle:
 
         assert title == "Atlassian Migration"
 
+    def test_name_aliases_do_not_match_across_exchange_boundary(self):
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "Vajra"
+        config = {
+            "auxiliary": {
+                "title_generation": {
+                    "name_aliases": {
+                        "atlas app": "ProjectAtlas",
+                        "vajra": "Vajra",
+                    },
+                }
+            }
+        }
+
+        with (
+            patch("hermes_cli.config.load_config_readonly", return_value=config),
+            patch("agent.title_generator.call_llm", return_value=mock_response),
+        ):
+            title = generate_title(
+                "Please leave this as atlas",
+                "app support for Vajra is available",
+            )
+
+        assert title == "Vajra"
+
     def test_canonical_alias_takes_precedence_over_character_preference(self):
         mock_response = MagicMock()
         mock_response.choices = [MagicMock()]

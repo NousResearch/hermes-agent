@@ -3460,6 +3460,38 @@ class TelegramAdapter(BasePlatformAdapter):
             if self._post_connect_task is asyncio.current_task():
                 self._post_connect_task = None
 
+    def _register_handlers(self) -> None:
+        """Register Telegram update handlers on the built application."""
+        if self._app is None:
+            return
+
+        topic_status_filter = (
+            filters.StatusUpdate.FORUM_TOPIC_CREATED
+            | filters.StatusUpdate.FORUM_TOPIC_EDITED
+        ) & filters.ChatType.PRIVATE
+        self._app.add_handler(TelegramMessageHandler(
+            topic_status_filter,
+            self._handle_dm_topic_status_update,
+        ))
+        self._app.add_handler(TelegramMessageHandler(
+            filters.TEXT & ~filters.COMMAND,
+            self._handle_text_message
+        ))
+        self._app.add_handler(TelegramMessageHandler(
+            filters.COMMAND,
+            self._handle_command
+        ))
+        self._app.add_handler(TelegramMessageHandler(
+            filters.LOCATION | getattr(filters, "VENUE", filters.LOCATION),
+            self._handle_location_message
+        ))
+        self._app.add_handler(TelegramMessageHandler(
+            filters.PHOTO | filters.VIDEO | filters.AUDIO | filters.VOICE | filters.Document.ALL | filters.Sticker.ALL,
+            self._handle_media_message
+        ))
+        # Handle inline keyboard button callbacks (update prompts)
+        self._app.add_handler(CallbackQueryHandler(self._handle_callback_query))
+
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         """Connect to Telegram via polling or webhook.
 
@@ -3657,25 +3689,7 @@ class TelegramAdapter(BasePlatformAdapter):
             self._app = builder.build()
             self._bot = self._app.bot
             
-            # Register handlers
-            self._app.add_handler(TelegramMessageHandler(
-                filters.TEXT & ~filters.COMMAND,
-                self._handle_text_message
-            ))
-            self._app.add_handler(TelegramMessageHandler(
-                filters.COMMAND,
-                self._handle_command
-            ))
-            self._app.add_handler(TelegramMessageHandler(
-                filters.LOCATION | getattr(filters, "VENUE", filters.LOCATION),
-                self._handle_location_message
-            ))
-            self._app.add_handler(TelegramMessageHandler(
-                filters.PHOTO | filters.VIDEO | filters.AUDIO | filters.VOICE | filters.Document.ALL | filters.Sticker.ALL,
-                self._handle_media_message
-            ))
-            # Handle inline keyboard button callbacks (update prompts)
-            self._app.add_handler(CallbackQueryHandler(self._handle_callback_query))
+            self._register_handlers()
             
             # Start polling — retry initialize() for transient TLS resets.
             # Each attempt is capped by _init_timeout so a single unreachable
@@ -8214,6 +8228,67 @@ class TelegramAdapter(BasePlatformAdapter):
         """
         return getattr(update, "effective_message", None) or getattr(update, "message", None)
 
+    def _record_dm_topic_status_update(
+        self,
+        message: Message,
+        thread_id: Optional[str] = None,
+    ) -> Optional[str]:
+        """Record DM topic creation/edit state without dispatching a prompt."""
+        chat = getattr(message, "chat", None)
+        chat_type = (
+            str(getattr(chat, "type", "")).split(".")[-1].lower()
+            if chat is not None
+            else ""
+        )
+        if chat_type != "private":
+            return None
+
+        effective_thread_id = thread_id or self._effective_message_thread_id(message)
+        if not effective_thread_id:
+            return None
+        chat_id = str(getattr(chat, "id", ""))
+        if not chat_id:
+            return None
+
+        created_name = None
+        created = getattr(message, "forum_topic_created", None)
+        if created:
+            created_name = str(getattr(created, "name", "") or "").strip() or None
+            self._remember_dm_topic_creation_icon(
+                chat_id,
+                effective_thread_id,
+                getattr(created, "icon_custom_emoji_id", None),
+            )
+            if created_name:
+                self._cache_dm_topic_from_message(
+                    chat_id,
+                    effective_thread_id,
+                    created_name,
+                )
+
+        # Telegram uses None when only another field changed, and an empty
+        # string when the custom icon was explicitly removed.
+        edited = getattr(message, "forum_topic_edited", None)
+        if edited:
+            edited_icon = getattr(edited, "icon_custom_emoji_id", None)
+            if edited_icon is not None:
+                self._remember_dm_topic_creation_icon(
+                    chat_id,
+                    effective_thread_id,
+                    edited_icon,
+                )
+        return created_name
+
+    async def _handle_dm_topic_status_update(
+        self,
+        update: Update,
+        context: ContextTypes.DEFAULT_TYPE,
+    ) -> None:
+        """Observe forum topic service updates without dispatching them."""
+        message = self._effective_update_message(update)
+        if message is not None:
+            self._record_dm_topic_status_update(message)
+
     async def _handle_text_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming text messages.
 
@@ -9080,32 +9155,14 @@ class TelegramAdapter(BasePlatformAdapter):
                 chat_topic = topic_info.get("name")
                 topic_skill = topic_info.get("skill")
 
-            # Also check forum_topic_created service message for topic discovery
-            if hasattr(message, "forum_topic_created") and message.forum_topic_created:
-                created_name = message.forum_topic_created.name
-                self._remember_dm_topic_creation_icon(
-                    str(chat.id),
-                    thread_id_str,
-                    getattr(message.forum_topic_created, "icon_custom_emoji_id", None),
-                )
-                if created_name:
-                    self._cache_dm_topic_from_message(str(chat.id), thread_id_str, created_name)
-                    if not chat_topic:
-                        chat_topic = created_name
-
-            # If the user edits the icon before the first exchange finishes,
-            # update the creation-time state so auto-titling never replaces it.
-            # Telegram uses None when only another field changed, and an empty
-            # string when the custom icon was explicitly removed.
-            edited = getattr(message, "forum_topic_edited", None)
-            if edited:
-                edited_icon = getattr(edited, "icon_custom_emoji_id", None)
-                if edited_icon is not None:
-                    self._remember_dm_topic_creation_icon(
-                        str(chat.id),
-                        thread_id_str,
-                        edited_icon,
-                    )
+            # Status updates normally arrive through the dedicated observer,
+            # but keep this idempotent fallback for direct event builders.
+            created_name = self._record_dm_topic_status_update(
+                message,
+                thread_id=thread_id_str,
+            )
+            if created_name and not chat_topic:
+                chat_topic = created_name
 
         elif chat_type == "group" and thread_id_str:
             # Group/supergroup forum topic skill binding via config.extra['group_topics'].

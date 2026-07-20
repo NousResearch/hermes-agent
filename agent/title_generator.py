@@ -89,22 +89,25 @@ def _canonical_name_for_exchange(
     if not name_aliases:
         return None
 
-    exchange = re.sub(
-        r"\s+",
-        " ",
-        f"{str(user_message or '')}\n{str(assistant_response or '')}",
-    ).casefold()
-    matches: list[tuple[int, int, int, str]] = []
+    exchange_parts = [
+        re.sub(r"\s+", " ", str(message or "")).casefold()
+        for message in (user_message, assistant_response)
+    ]
+    matches: list[tuple[int, int, int, int, str]] = []
     for order, (raw_alias, raw_canonical) in enumerate(name_aliases.items()):
         alias = re.sub(r"\s+", " ", str(raw_alias or "").strip()).casefold()
         canonical = str(raw_canonical or "").strip()
         if not alias or not canonical:
             continue
-        match = re.search(rf"(?<!\w){re.escape(alias)}(?!\w)", exchange)
-        if match:
-            matches.append((match.start(), -len(alias), order, canonical))
+        pattern = rf"(?<!\w){re.escape(alias)}(?!\w)"
+        for message_order, exchange_part in enumerate(exchange_parts):
+            match = re.search(pattern, exchange_part)
+            if match:
+                matches.append(
+                    (message_order, match.start(), -len(alias), order, canonical)
+                )
 
-    return min(matches)[3] if matches else None
+    return min(matches)[4] if matches else None
 
 
 def _build_title_prompt(

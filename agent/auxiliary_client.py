@@ -3457,8 +3457,13 @@ def _retry_same_provider_sync(*, resolved_provider: str, resolved_api_mode: Opti
     retry_client, retry_kwargs = _prepare_same_provider_retry(
         task=task, resolved_provider=resolved_provider, resolved_api_mode=resolved_api_mode, async_mode=False, **prep,
     )
-    return _validate_llm_response(
-        _relay_sync_completion(retry_client, retry_kwargs, provider=resolved_provider, api_mode=resolved_api_mode), task,
+    return _execute_auxiliary_attempt_sync(
+        client=retry_client,
+        kwargs=retry_kwargs,
+        task=task,
+        provider=resolved_provider,
+        api_mode=resolved_api_mode,
+        attempt_reason="retry:refreshed_credentials",
     )
 
 
@@ -3466,9 +3471,13 @@ async def _retry_same_provider_async(*, resolved_provider: str, resolved_api_mod
     retry_client, retry_kwargs = _prepare_same_provider_retry(
         task=task, resolved_provider=resolved_provider, resolved_api_mode=resolved_api_mode, async_mode=True, **prep,
     )
-    return _validate_llm_response(
-        await _relay_async_completion(retry_client, retry_kwargs, provider=resolved_provider, api_mode=resolved_api_mode),
-        task,
+    return await _execute_auxiliary_attempt_async(
+        client=retry_client,
+        kwargs=retry_kwargs,
+        task=task,
+        provider=resolved_provider,
+        api_mode=resolved_api_mode,
+        attempt_reason="retry:refreshed_credentials",
     )
 
 
@@ -3779,16 +3788,23 @@ def _call_fallback_candidate_sync(
         reasoning_config=reasoning_config,
     )
 
-    def _send(client: Any, request_kwargs: Dict[str, Any], dest: _FallbackDestination) -> Any:
-        return _validate_llm_response(
-            _relay_sync_completion(
-                client, request_kwargs, provider=dest.provider, api_mode=dest.api_mode,
-                create=lambda request: _create_with_progress(
-                    client, request, task,
-                    force_stream=_provider_requires_stream(dest.provider, dest.base_url),
-                ),
+    def _send(
+        client: Any,
+        request_kwargs: Dict[str, Any],
+        dest: _FallbackDestination,
+        attempt_reason: str = "",
+    ) -> Any:
+        return _execute_auxiliary_attempt_sync(
+            client=client,
+            kwargs=request_kwargs,
+            task=task,
+            provider=dest.provider,
+            api_mode=dest.api_mode,
+            attempt_reason=attempt_reason or f"fallback:{fb_label}",
+            create=lambda request: _create_with_progress(
+                client, request, task,
+                force_stream=_provider_requires_stream(dest.provider, dest.base_url),
             ),
-            task,
         )
     try:
         return _send(fb_client, fb_kwargs, destination)
@@ -3801,7 +3817,7 @@ def _call_fallback_candidate_sync(
         if retry is not None:
             failed_destination = retry[2]
             try:
-                return _send(*retry)
+                return _send(*retry, attempt_reason="fallback_retry:refreshed_credentials")
             except Exception as retry_err:
                 if not _is_auth_error(retry_err):
                     raise
@@ -3824,10 +3840,19 @@ async def _call_fallback_candidate_async(
         reasoning_config=reasoning_config,
     )
 
-    async def _send(client: Any, request_kwargs: Dict[str, Any], dest: _FallbackDestination) -> Any:
-        return _validate_llm_response(
-            await _relay_async_completion(client, request_kwargs, provider=dest.provider, api_mode=dest.api_mode),
-            task,
+    async def _send(
+        client: Any,
+        request_kwargs: Dict[str, Any],
+        dest: _FallbackDestination,
+        attempt_reason: str = "",
+    ) -> Any:
+        return await _execute_auxiliary_attempt_async(
+            client=client,
+            kwargs=request_kwargs,
+            task=task,
+            provider=dest.provider,
+            api_mode=dest.api_mode,
+            attempt_reason=attempt_reason or f"fallback:{fb_label}",
         )
     try:
         return await _send(fb_client, fb_kwargs, destination)
@@ -3840,7 +3865,7 @@ async def _call_fallback_candidate_async(
         if retry is not None:
             failed_destination = retry[2]
             try:
-                return await _send(*retry)
+                return await _send(*retry, attempt_reason="fallback_retry:refreshed_credentials")
             except Exception as retry_err:
                 if not _is_auth_error(retry_err):
                     raise
@@ -7219,7 +7244,446 @@ def _stamp_latency_once(latency_info: Optional[Dict[str, int]], key: str, starte
         latency_info[key] = _elapsed_ms(started_at)
 
 
+class _AuxiliaryObserverContext:
+    def __init__(self):
+        self.auxiliary_call_id = str(uuid.uuid4())
+        self.attempt_index = 0
+
+    def next_attempt(self) -> int:
+        attempt_index = self.attempt_index
+        self.attempt_index += 1
+        return attempt_index
+
+
+_auxiliary_observer_context: contextvars.ContextVar[
+    Optional[_AuxiliaryObserverContext]
+] = contextvars.ContextVar("auxiliary_observer_context", default=None)
+
+_MAIN_LOOP_OBSERVED_AUXILIARY_TASKS = frozenset({"moa_aggregator"})
+
+
+def _auxiliary_observer_lifecycle(call):
+    if inspect.iscoroutinefunction(call):
+        @functools.wraps(call)
+        async def _async_wrapper(*args, **kwargs):
+            token = _auxiliary_observer_context.set(_AuxiliaryObserverContext())
+            try:
+                return await call(*args, **kwargs)
+            finally:
+                _auxiliary_observer_context.reset(token)
+
+        return _async_wrapper
+
+    @functools.wraps(call)
+    def _sync_wrapper(*args, **kwargs):
+        token = _auxiliary_observer_context.set(_AuxiliaryObserverContext())
+        try:
+            return call(*args, **kwargs)
+        finally:
+            _auxiliary_observer_context.reset(token)
+
+    return _sync_wrapper
+
+
+def _auxiliary_session_id() -> str:
+    try:
+        from agent.aux_accounting import get_accounting_context
+
+        accounting = get_accounting_context()
+        if accounting is not None:
+            return str(accounting[1] or "")
+    except Exception:
+        pass
+    return ""
+
+
+def _auxiliary_client_base_url(client: Any, fallback: Optional[str] = None) -> str:
+    for candidate in (
+        client,
+        getattr(client, "_real_client", None),
+        getattr(client, "_client", None),
+    ):
+        raw = getattr(candidate, "base_url", None)
+        if not raw:
+            continue
+        rendered = str(raw)
+        if "://" in rendered or rendered.startswith("acp"):
+            return rendered
+    return str(fallback or "")
+
+
+def _auxiliary_attempt_provider(provider: Optional[str], base_url: str) -> str:
+    candidate = str(provider or "").strip()
+    label_match = re.search(r"\(([^()]+)\)$", candidate)
+    if label_match:
+        candidate = label_match.group(1)
+    normalized = _normalize_aux_provider(candidate)
+    if normalized not in {"", "auto"}:
+        return normalized
+    try:
+        from agent.model_metadata import _infer_provider_from_url
+
+        inferred = _infer_provider_from_url(base_url)
+    except Exception:
+        inferred = None
+    if inferred == "openai" and base_url_host_matches(base_url, "chatgpt.com"):
+        return "openai-codex"
+    if inferred:
+        return _normalize_aux_provider(inferred)
+    if base_url:
+        return "custom"
+    return normalized or "unknown"
+
+
+def _initial_auxiliary_attempt_reason(provider: Optional[str]) -> str:
+    route = str(provider or "")
+    if (
+        route.startswith("fallback_chain[")
+        or route.startswith("fallback_providers[")
+        or route.startswith("main-agent(")
+    ):
+        return f"fallback:{route}"
+    return "initial"
+
+
+def _auxiliary_attempt_api_mode(
+    client: Any,
+    api_mode: Optional[str],
+    base_url: str,
+) -> str:
+    if api_mode:
+        return api_mode
+    if isinstance(client, (CodexAuxiliaryClient, AsyncCodexAuxiliaryClient)):
+        return "codex_responses"
+    if isinstance(client, (AnthropicAuxiliaryClient, AsyncAnthropicAuxiliaryClient)):
+        return "anthropic_messages"
+    if isinstance(client, (BedrockAuxiliaryClient, AsyncBedrockAuxiliaryClient)):
+        return "bedrock_converse"
+    if base_url_host_matches(base_url, "chatgpt.com"):
+        return "codex_responses"
+    if _endpoint_speaks_anthropic_messages(base_url):
+        return "anthropic_messages"
+    if "bedrock-runtime" in base_url:
+        return "bedrock_converse"
+    return "chat_completions"
+
+
+def _auxiliary_observers_enabled(task: Optional[str]) -> bool:
+    if task in _MAIN_LOOP_OBSERVED_AUXILIARY_TASKS:
+        return False
+    try:
+        from hermes_cli import plugins
+
+        plugins.discover_plugins()
+        return any(
+            plugins.has_hook(hook_name)
+            for hook_name in (
+                "pre_api_request",
+                "post_api_request",
+                "api_request_error",
+            )
+        )
+    except Exception:
+        return False
+
+
+def _auxiliary_attempt_metadata(
+    *,
+    client: Any,
+    kwargs: Dict[str, Any],
+    task: Optional[str],
+    provider: Optional[str],
+    api_mode: Optional[str],
+    attempt_reason: str,
+) -> Dict[str, Any]:
+    observer = _auxiliary_observer_context.get()
+    if observer is None:
+        observer = _AuxiliaryObserverContext()
+    attempt_index = observer.next_attempt()
+    base_url = _auxiliary_client_base_url(client)
+    try:
+        from agent.api_observer import sanitize_hook_payload
+
+        observer_base_url = sanitize_hook_payload(base_url)
+        if not isinstance(observer_base_url, str):
+            observer_base_url = ""
+    except Exception:
+        observer_base_url = ""
+    actual_provider = _auxiliary_attempt_provider(provider, base_url)
+    actual_api_mode = _auxiliary_attempt_api_mode(client, api_mode, base_url)
+    metadata = {
+        "request_kind": "auxiliary",
+        "auxiliary_task": task or "",
+        "auxiliary_call_id": observer.auxiliary_call_id,
+        "api_request_id": str(uuid.uuid4()),
+        "attempt_index": attempt_index,
+        "attempt_reason": attempt_reason,
+        "session_id": _auxiliary_session_id(),
+        "task_id": task or "auxiliary",
+        "turn_id": observer.auxiliary_call_id,
+        "platform": "",
+        "provider": actual_provider,
+        "model": str(kwargs.get("model") or ""),
+        "base_url": observer_base_url,
+        "api_mode": actual_api_mode,
+        "api_call_count": attempt_index + 1,
+    }
+    return metadata
+
+
+def _invoke_auxiliary_observer(hook_name: str, **kwargs: Any) -> None:
+    try:
+        from hermes_cli import plugins
+
+        plugins.invoke_hook(hook_name, **kwargs)
+    except Exception:
+        pass
+
+
+def _start_auxiliary_observer_attempt(
+    metadata: Dict[str, Any],
+    kwargs: Dict[str, Any],
+) -> Tuple[bool, float, Dict[str, Any]]:
+    started_at = time.time()
+    if not _auxiliary_observers_enabled(metadata.get("auxiliary_task")):
+        return False, started_at, {}
+    try:
+        from agent.api_observer import api_request_payload_for_hook
+
+        request = api_request_payload_for_hook(kwargs)
+        request_body = request.get("body", {}) if isinstance(request, dict) else {}
+        request_messages = request_body.get("messages") or request_body.get("input") or []
+        _invoke_auxiliary_observer(
+            "pre_api_request",
+            **metadata,
+            started_at=started_at,
+            request=request,
+            request_messages=request_messages if isinstance(request_messages, list) else [],
+            message_count=len(request_messages) if isinstance(request_messages, list) else 0,
+            tool_count=len(request_body.get("tools") or []) if isinstance(request_body, dict) else 0,
+            max_tokens=request_body.get("max_tokens") if isinstance(request_body, dict) else None,
+        )
+        return True, started_at, request
+    except Exception:
+        return False, started_at, {}
+
+
+def _finish_auxiliary_observer_error(
+    metadata: Dict[str, Any],
+    *,
+    started_at: float,
+    request: Dict[str, Any],
+    error: Exception,
+    attempt_reason: str,
+) -> None:
+    try:
+        from agent.api_observer import sanitize_hook_payload
+
+        error_payload = sanitize_hook_payload(
+            {
+                "type": type(error).__name__,
+                "message": str(error),
+            }
+        )
+    except Exception:
+        error_payload = {
+            "type": type(error).__name__,
+            "message": "<unavailable>",
+        }
+    try:
+        status_code = getattr(error, "status_code", None)
+    except Exception:
+        status_code = None
+    ended_at = time.time()
+    _invoke_auxiliary_observer(
+        "api_request_error",
+        **metadata,
+        started_at=started_at,
+        ended_at=ended_at,
+        api_duration=ended_at - started_at,
+        status_code=status_code,
+        reason=attempt_reason,
+        error=error_payload,
+        request=request,
+    )
+
+
+def _finish_auxiliary_observer_success(
+    metadata: Dict[str, Any],
+    *,
+    started_at: float,
+    response: Any,
+) -> None:
+    finish_reason = None
+    response_model = None
+    assistant_content = None
+    assistant_tool_calls = []
+    try:
+        from agent.api_observer import (
+            api_response_payload_for_hook,
+            usage_summary_for_api_request_hook,
+        )
+
+        choices = getattr(response, "choices", None) or []
+        choice = choices[0] if choices else None
+        assistant_message = getattr(choice, "message", None)
+        finish_reason = getattr(choice, "finish_reason", None)
+        response_model = getattr(response, "model", None)
+        assistant_content = getattr(assistant_message, "content", None)
+        assistant_tool_calls = getattr(assistant_message, "tool_calls", None) or []
+        usage = usage_summary_for_api_request_hook(
+            response,
+            provider=metadata["provider"],
+            api_mode=metadata["api_mode"],
+        )
+        response_payload = api_response_payload_for_hook(
+            response,
+            assistant_message,
+            finish_reason=finish_reason,
+            provider=metadata["provider"],
+            api_mode=metadata["api_mode"],
+        )
+    except Exception:
+        usage = None
+        response_payload = {"_serialization_error": True}
+    ended_at = time.time()
+    _invoke_auxiliary_observer(
+        "post_api_request",
+        **metadata,
+        started_at=started_at,
+        ended_at=ended_at,
+        api_duration=ended_at - started_at,
+        finish_reason=finish_reason,
+        response_model=response_model,
+        response=response_payload,
+        usage=usage,
+        assistant_content_chars=len(assistant_content) if isinstance(assistant_content, str) else 0,
+        assistant_tool_call_count=len(assistant_tool_calls),
+    )
+
+
+def _execute_auxiliary_attempt_sync(
+    *,
+    client: Any,
+    kwargs: Dict[str, Any],
+    task: Optional[str],
+    provider: Optional[str],
+    api_mode: Optional[str] = None,
+    attempt_reason: str,
+    create: Callable[[Dict[str, Any]], Any] | None = None,
+) -> Any:
+    metadata = _auxiliary_attempt_metadata(
+        client=client,
+        kwargs=kwargs,
+        task=task,
+        provider=provider,
+        api_mode=api_mode,
+        attempt_reason=attempt_reason,
+    )
+    is_observed, started_at, request = _start_auxiliary_observer_attempt(
+        metadata,
+        kwargs,
+    )
+    try:
+        response = _validate_llm_response(
+            _relay_sync_completion(
+                client,
+                kwargs,
+                provider=metadata["provider"],
+                api_mode=metadata["api_mode"],
+                create=create,
+            ),
+            task,
+            provider=metadata["provider"],
+            base_url=_auxiliary_client_base_url(client),
+        )
+    except BaseException as error:
+        if is_observed:
+            try:
+                _finish_auxiliary_observer_error(
+                    metadata,
+                    started_at=started_at,
+                    request=request,
+                    error=error,
+                    attempt_reason=attempt_reason,
+                )
+            except Exception:
+                pass
+        raise
+    if is_observed:
+        try:
+            _finish_auxiliary_observer_success(
+                metadata,
+                started_at=started_at,
+                response=response,
+            )
+        except Exception:
+            pass
+    return response
+
+
+async def _execute_auxiliary_attempt_async(
+    *,
+    client: Any,
+    kwargs: Dict[str, Any],
+    task: Optional[str],
+    provider: Optional[str],
+    api_mode: Optional[str] = None,
+    attempt_reason: str,
+    create: Callable[[Dict[str, Any]], Any] | None = None,
+) -> Any:
+    metadata = _auxiliary_attempt_metadata(
+        client=client,
+        kwargs=kwargs,
+        task=task,
+        provider=provider,
+        api_mode=api_mode,
+        attempt_reason=attempt_reason,
+    )
+    is_observed, started_at, request = _start_auxiliary_observer_attempt(
+        metadata,
+        kwargs,
+    )
+    try:
+        response = _validate_llm_response(
+            await _relay_async_completion(
+                client,
+                kwargs,
+                provider=metadata["provider"],
+                api_mode=metadata["api_mode"],
+                create=create,
+            ),
+            task,
+            provider=metadata["provider"],
+            base_url=_auxiliary_client_base_url(client),
+        )
+    except BaseException as error:
+        if is_observed:
+            try:
+                _finish_auxiliary_observer_error(
+                    metadata,
+                    started_at=started_at,
+                    request=request,
+                    error=error,
+                    attempt_reason=attempt_reason,
+                )
+            except Exception:
+                pass
+        raise
+    if is_observed:
+        try:
+            _finish_auxiliary_observer_success(
+                metadata,
+                started_at=started_at,
+                response=response,
+            )
+        except Exception:
+            pass
+    return response
+
+
 @_relay_auxiliary_call
+@_auxiliary_observer_lifecycle
 def call_llm(
     task: str = None, *, provider: str = None, model: str = None, base_url: str = None,
     api_key: str = None, main_runtime: Optional[Dict[str, Any]] = None, messages: list,
@@ -7387,7 +7851,7 @@ def _call_llm_impl(
             return client.chat.completions.create(**kwargs)
         return _relay_sync_stream(client, kwargs, provider=request_provider, api_mode=req.resolved_api_mode)
 
-    def _primary(**validate_kw: Any) -> Any:
+    def _primary(attempt_reason: str = "initial", **validate_kw: Any) -> Any:
         # Retry on the same provider for a transient transport blip (connection reset / streaming-close /
         # incomplete chunked read / 5xx / 408) before the except-chain below escalates to provider/model
         # fallback. A dropped connection shouldn't abandon an otherwise-healthy provider — this especially
@@ -7399,23 +7863,29 @@ def _call_llm_impl(
         # (default 2 retries → 3 total attempts); a second/third failure or any non-transient error falls
         # through to ``first_err`` and the existing fallback handling unchanged. Unified home for the
         # transient retry every auxiliary task shares. (PR #16587)
-        return _validate_llm_response(
-            _relay_sync_completion(
-                client, kwargs, provider=request_provider, api_mode=req.resolved_api_mode,
-                create=lambda request: _create_with_progress(
-                    client, request, task,
-                    force_stream=_provider_requires_stream(
-                        request_provider, req.base_info or req.resolved_base_url),
-                ),
+        return _execute_auxiliary_attempt_sync(
+            client=client,
+            kwargs=kwargs,
+            task=task,
+            provider=request_provider,
+            api_mode=req.resolved_api_mode,
+            attempt_reason=attempt_reason,
+            create=lambda request: _create_with_progress(
+                client, request, task,
+                force_stream=_provider_requires_stream(
+                    request_provider, req.base_info or req.resolved_base_url),
             ),
-            task, **validate_kw,
         )
     try:
         # Bounded same-provider retry (exponential backoff, auxiliary.transient_retries) for
         # transient blips before escalating to fallback — a dropped connection shouldn't
         # abandon a healthy provider (matters for pinned MoA advisors).
         try:
-            return _primary(provider=request_provider, base_url=req.base_info)
+            return _primary(
+                attempt_reason=_initial_auxiliary_attempt_reason(request_provider),
+                provider=request_provider,
+                base_url=req.base_info,
+            )
         except Exception as transient_err:
             if not _should_retry_same_provider(task, transient_err, ""):
                 raise
@@ -7428,7 +7898,7 @@ def _call_llm_impl(
                             task or "call", _attempt, _max_transient_retries, _backoff, _last_transient)
                 time.sleep(_backoff)
                 try:
-                    return _primary()
+                    return _primary(attempt_reason="retry:transient_transport")
                 except Exception as retry_transient:
                     if not _is_transient_transport_error(retry_transient):
                         raise
@@ -7438,7 +7908,15 @@ def _call_llm_impl(
         def _perform(step: _LadderStep) -> Any:
             kind, args, kw = _ladder_step_call(step, req, retry_kwargs, candidate_kwargs)
             if kind == "call":
-                return _validate_llm_response(_relay_sync_completion(*args, **kw), task)
+                call_client, call_kwargs = args
+                return _execute_auxiliary_attempt_sync(
+                    client=call_client,
+                    kwargs=call_kwargs,
+                    task=task,
+                    provider=kw.get("provider"),
+                    api_mode=kw.get("api_mode"),
+                    attempt_reason="retry:recovery_ladder",
+                )
             if kind == "retry":
                 return _retry_same_provider_sync(**kw)
             return _call_fallback_candidate_sync(*args, **kw)
@@ -7520,6 +7998,7 @@ def extract_content_or_reasoning(response, *, max_reasoning_chars: int | None = 
 
 
 @_relay_auxiliary_call_async
+@_auxiliary_observer_lifecycle
 async def async_call_llm(
     task: str = None, *, provider: str = None, model: str = None, base_url: str = None,
     api_key: str = None, main_runtime: Optional[Dict[str, Any]] = None, messages: list,
@@ -7568,26 +8047,42 @@ async def _async_call_llm_impl(
         async def _acreate(_kwargs: Dict[str, Any]) -> Any:
             return await _acreate_with_progress(client, _kwargs, task, force_stream=_force_stream_async)
 
-        async def _primary(**validate_kw: Any) -> Any:
-            return _validate_llm_response(
-                await _relay_async_completion(
-                    client, kwargs, provider=request_provider, api_mode=req.resolved_api_mode,
-                    create=_acreate),
-                task, **validate_kw)
+        async def _primary(attempt_reason: str = "initial", **validate_kw: Any) -> Any:
+            return await _execute_auxiliary_attempt_async(
+                client=client,
+                kwargs=kwargs,
+                task=task,
+                provider=request_provider,
+                api_mode=req.resolved_api_mode,
+                attempt_reason=attempt_reason,
+                create=_acreate,
+            )
         try:
-            return await _primary(provider=request_provider, base_url=req.base_info)
+            return await _primary(
+                attempt_reason=_initial_auxiliary_attempt_reason(request_provider),
+                provider=request_provider,
+                base_url=req.base_info,
+            )
         except Exception as transient_err:
             # The async Codex adapter wraps the sync stream via to_thread: same TimeoutError here.
             if not _should_retry_same_provider(task, transient_err, " (async)"):
                 raise
             logger.info("Auxiliary %s (async): transient transport error; retrying "
                         "once on the same provider before fallback: %s", task or "call", transient_err)
-            return await _primary()
+            return await _primary(attempt_reason="retry:transient_transport")
     except Exception as first_err:
         async def _perform(step: _LadderStep) -> Any:
             kind, args, kw = _ladder_step_call(step, req, retry_kwargs, candidate_kwargs)
             if kind == "call":
-                return _validate_llm_response(await _relay_async_completion(*args, **kw), task)
+                call_client, call_kwargs = args
+                return await _execute_auxiliary_attempt_async(
+                    client=call_client,
+                    kwargs=call_kwargs,
+                    task=task,
+                    provider=kw.get("provider"),
+                    api_mode=kw.get("api_mode"),
+                    attempt_reason="retry:recovery_ladder",
+                )
             if kind == "retry":
                 return await _retry_same_provider_async(**kw)
             fb_client, fb_model, fb_label = args

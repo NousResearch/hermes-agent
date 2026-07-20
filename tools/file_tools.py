@@ -1652,6 +1652,31 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
         return tool_error(str(e))
 
 
+# Guidance for a half-formed replace call. Shared so every layer that can reject
+# one says the same thing — acp_adapter/edit_approval.py raises this too, since it
+# builds its diff preview before patch_tool ever runs and would otherwise dead-end
+# with its own bare "old_string and new_string required".
+REPLACE_MODE_ARGS_HELP = (
+    "replace mode requires BOTH old_string and new_string. "
+    "Read the file first and copy the target text into old_string — "
+    "matching is fuzzy, so minor whitespace and indentation differences "
+    "are tolerated. If the region is hard to pin down uniquely, re-issue "
+    "this call with mode='patch' and a V4A diff, whose context lines "
+    "anchor the change:\n"
+    "*** Begin Patch\n"
+    "*** Update File: <path>\n"
+    "@@ context hint @@\n"
+    " unchanged line\n"
+    "-removed line\n"
+    "+added line\n"
+    "*** End Patch\n"
+    "Do not rewrite the whole file with write_file to work around a malformed "
+    "call — that discards formatting and unrelated content. (After repeated "
+    "genuine match failures on the same file the tool will offer that as a "
+    "last resort; this is not that case.)"
+)
+
+
 def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
                new_string: str = None, replace_all: bool = False, patch: str = None,
                task_id: str = "default", cross_profile: bool = False,
@@ -1764,7 +1789,15 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
                 if not path:
                     return tool_error("path required")
                 if old_string is None or new_string is None:
-                    return tool_error("old_string and new_string required")
+                    # The schema cannot enforce per-mode required params (schema_sanitizer
+                    # strips top-level anyOf/oneOf), so a model can reach here with a
+                    # half-formed replace call. A bare "required" error is a dead end: the
+                    # model retries, fails, and escapes by rewriting the whole file with
+                    # write_file — destroying indentation. Hand it the working alternative.
+                    return tool_error(REPLACE_MODE_ARGS_HELP)
+                # No old_string == new_string guard here: fuzzy_find_and_replace
+                # already rejects that (tools/fuzzy_match.py) and its result keeps
+                # the success=False envelope this layer's tool_error would drop.
                 # Pass the resolved ABSOLUTE path to the shell layer so it
                 # operates on the exact file the tool layer resolved — the
                 # shell's own cwd may differ (worktree-cwd bug), and a relative
@@ -1825,22 +1858,50 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
                 # same path.  Most common cause is a stale view of the file —
                 # the model is retrying with the same old_string against
                 # content that has since changed.  Surface the failure count
-                # so the model recognises it's in a loop and breaks out by
-                # re-reading or falling back to write_file.
+                # so the model recognises it's in a loop and breaks out.
+                #
+                # write_file stays in this list as the last resort (#507: the
+                # point of the escalation is to break an infinite retry loop,
+                # and a stuck agent is worse than a reformatted file). But it
+                # is now ordered AFTER mode='patch', because an anchored V4A
+                # hunk solves the common case — a region that is hard to pin
+                # down uniquely — without discarding the rest of the file.
+                # The replace-mode error above forbids a whole-file rewrite as
+                # a *workaround for a malformed call*; this is the different,
+                # narrower case of genuine repeated failure, so the two are
+                # consistent rather than contradictory.
                 result_dict["_hint"] = (
                     f"This is failure #{failure_count} patching {path!r}. "
                     "Stop retrying with variations of the same old_string. "
                     "Either: (1) re-read the file fresh to verify current "
                     "content, (2) use a longer / more unique old_string with "
-                    "surrounding context lines, or (3) use write_file to "
-                    "replace the entire file if the targeted region is hard "
-                    "to anchor."
+                    "surrounding context lines, (3) switch to mode='patch' and "
+                    "let the V4A context lines anchor the change, or — only if "
+                    "the region genuinely cannot be anchored — (4) use "
+                    "write_file to replace the entire file, accepting that it "
+                    "discards the file's existing formatting."
                 )
             elif "Did you mean one of these sections?" not in str(result_dict["error"]):
                 result_dict["_hint"] = (
                     "old_string not found. Use read_file to verify the current "
                     "content, or search_files to locate the text."
                 )
+        elif (mode == "replace"
+              and result_dict.get("error")
+              and "matches for old_string" in str(result_dict["error"])):
+            # Ambiguity — not staleness — so the "re-read the file" advice above
+            # does not apply. This is the one failure where patch mode has a real
+            # structural advantage: a V4A hunk carries surrounding context lines,
+            # which disambiguate a region that a short old_string cannot.
+            result_dict["_hint"] = (
+                "old_string matched more than once. Either extend it with "
+                "surrounding lines until it is unique, set replace_all=true if "
+                "every occurrence should change, or switch to mode='patch' and "
+                "include the surrounding source lines in the hunk as context "
+                "(prefixed with a space) — those are what anchor the edit to one "
+                "region. The '@@ ... @@' header alone is NOT enough: it is only a "
+                "hint, and a hunk relying on it will fail the same ambiguity check."
+            )
         return json.dumps(result_dict, ensure_ascii=False)
     except Exception as e:
         return tool_error(str(e))
@@ -1979,13 +2040,33 @@ WRITE_FILE_SCHEMA = {
 PATCH_SCHEMA = {
     "name": "patch",
     "description": (
-        "Targeted find-and-replace edits in files. Use this instead of sed/awk in terminal. "
-        "Uses fuzzy matching (9 strategies) so minor whitespace/indentation differences won't break it. "
-        "Returns a unified diff. Auto-runs syntax checks after editing.\n\n"
-        "REPLACE MODE (mode='replace', default): find a unique string and replace it. "
-        "REQUIRED PARAMETERS: mode, path, old_string, new_string.\n"
-        "PATCH MODE (mode='patch'): apply V4A multi-file patches for bulk changes. "
-        "REQUIRED PARAMETERS: mode, patch."
+        "Edit files. Use this instead of sed/awk in terminal. Returns a unified diff. "
+        "Auto-runs syntax checks after editing. Both modes use the same fuzzy matcher "
+        "(9 strategies), so minor whitespace and indentation differences are tolerated "
+        "either way.\n\n"
+        "REPLACE MODE (mode='replace', default) — for a single substring that appears "
+        "exactly once. Read the file first and copy the target text into old_string. "
+        "REQUIRED PARAMETERS: mode, path, old_string, new_string.\n\n"
+        "PATCH MODE (mode='patch') — PREFER THIS when the edit spans multiple files or "
+        "several regions of one file (a V4A patch applies atomically, all hunks or none), "
+        "or when the target region is hard to pin down uniquely: a hunk's context lines "
+        "anchor the change where a short old_string would match in several places. "
+        "REQUIRED PARAMETERS: mode, patch.\n"
+        "  *** Begin Patch\n"
+        "  *** Update File: path/to/file\n"
+        "  @@ context hint @@\n"
+        "   unchanged context line (leading space)\n"
+        "  -removed line\n"
+        "  +added line\n"
+        "  *** End Patch\n\n"
+        "An update hunk still has to reproduce the lines it removes and the context "
+        "around them — patch mode buys anchoring and atomicity, not freedom from "
+        "knowing the file.\n"
+        "Do not reach for write_file to work around a failing edit: rewriting a whole "
+        "file discards its formatting and any content you did not intend to touch. "
+        "Re-read the file, or switch to mode='patch', first. (After several genuine "
+        "failures on the same file this tool will offer a whole-file rewrite as an "
+        "explicit last resort — take it only when offered.)"
     ),
     "parameters": {
         "type": "object",
@@ -2002,7 +2083,7 @@ PATCH_SCHEMA = {
             },
             "old_string": {
                 "type": "string",
-                "description": "REQUIRED when mode='replace'. Exact text to find and replace. Must be unique in the file unless replace_all=true. Include surrounding context lines to ensure uniqueness.",
+                "description": "REQUIRED when mode='replace'. Text to find and replace, copied from the file. Matching is fuzzy, so minor whitespace and indentation differences are tolerated, but it must be unique in the file unless replace_all=true. Include surrounding context lines to ensure uniqueness.",
             },
             "new_string": {
                 "type": "string",
@@ -2023,6 +2104,11 @@ PATCH_SCHEMA = {
                 "default": False,
             },
         },
+        # NOTE: no anyOf/oneOf here — see tests/tools/test_file_tools.py::
+        # TestPatchSchemaShape. Per-mode required sets break Anthropic, Fireworks and the
+        # Moonshot/Kimi sanitizer. Description-level guidance (above) plus an actionable
+        # runtime error (in patch_tool) are the provider-safe way to steer a model that
+        # arrives here with a half-formed replace call.
         "required": ["mode"],
     },
 }

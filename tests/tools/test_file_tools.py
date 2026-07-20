@@ -236,6 +236,133 @@ class TestPatchHandler:
         assert "Unknown mode" in result["error"]
 
     @patch("tools.file_tools._get_file_ops")
+    def test_replace_mode_missing_strings_offers_patch_mode(self, mock_get):
+        """A half-formed replace call must be told what to do next.
+
+        The schema cannot express per-mode required params (anyOf/oneOf breaks
+        providers — see TestPatchSchemaShape), so the call lands here at runtime.
+        A bare "required" error is a dead end: the model retries blindly and
+        escapes by rewriting the whole file with write_file. The error must name
+        the working alternative and forbid the escape hatch.
+        """
+        from tools.file_tools import patch_tool
+
+        result = json.loads(patch_tool(mode="replace", path="f.py", old_string=None))
+        assert "error" in result
+        err = result["error"]
+        assert "mode='patch'" in err, "must point at the V4A alternative"
+        assert "*** Begin Patch" in err, "must show the format it is asking for"
+        assert "not rewrite" in err.lower(), "must forbid the whole-file escape hatch"
+        # The reason to reach for patch mode is anchoring, not exactness —
+        # replace mode is fuzzy too, so an "exactness" pitch would be false.
+        assert "fuzzy" in err.lower(), "must not imply replace mode needs exact text"
+
+    def test_repeated_failure_hint_prefers_patch_over_write_file(self, tmp_path):
+        """The escalating hint and the missing-args error must not conflict.
+
+        The hint keeps write_file as the last resort — #507 added it to break
+        an infinite retry loop, and a stuck agent is worse than a reformatted
+        file. But mode='patch' now comes first, because an anchored V4A hunk
+        solves the common case without discarding the rest of the file. The
+        error's prohibition is scoped to working around a malformed call, which
+        is a different situation from repeated genuine match failures.
+        """
+        from tools.file_tools import patch_tool
+
+        target = tmp_path / "sample.py"
+        target.write_text("def f():\n    return 1\n")
+        task = "hint-ordering"
+
+        hint = ""
+        for _ in range(4):
+            raw = patch_tool(mode="replace", path=str(target),
+                             old_string="nonexistent text", new_string="x",
+                             task_id=task)
+            hint = json.loads(raw).get("_hint", "") or hint
+
+        assert "failure #" in hint, f"escalating hint never fired: {hint!r}"
+        assert "mode='patch'" in hint, "hint should route to the anchored alternative"
+        assert "write_file" in hint, "#507's loop-breaker must survive"
+        assert hint.index("mode='patch'") < hint.index("write_file"), (
+            "patch mode must be offered before the whole-file rewrite"
+        )
+
+    def test_ambiguous_match_hint_offers_patch_mode(self, tmp_path):
+        """Ambiguity is where patch mode has a real structural advantage.
+
+        A short old_string that matches twice cannot be disambiguated by
+        re-reading the file, so the generic "verify current content" advice
+        does not apply. A V4A hunk's context lines can anchor it.
+        """
+        from tools.file_tools import patch_tool
+
+        target = tmp_path / "dup.py"
+        target.write_text("def f():\n    return 1\n\ndef g():\n    return 1\n")
+
+        result = json.loads(patch_tool(mode="replace", path=str(target),
+                                       old_string="    return 1",
+                                       new_string="    return 2",
+                                       task_id="ambig"))
+
+        assert result.get("error"), "duplicate match should not silently apply"
+        hint = result.get("_hint", "")
+        assert "mode='patch'" in hint, f"no patch-mode route offered: {hint!r}"
+        assert "replace_all" in hint, "replace_all is the other legitimate answer"
+        # The route must be described precisely enough to work. A hunk anchored
+        # only by the '@@ ... @@' header fails the SAME ambiguity check (the
+        # proximity fallback lives in the apply pass, which validation preempts),
+        # so pointing at patch mode without saying "context lines" would route the
+        # model into the dead end this tool exists to avoid.
+        assert "context" in hint.lower(), "must say what actually anchors the hunk"
+        assert "@@" in hint, "must warn that the header alone is not an anchor"
+
+    def test_v4a_context_lines_actually_resolve_ambiguity(self, tmp_path):
+        """The hint's advice must be true, not merely plausible.
+
+        Pins the behavioral difference the ambiguity hint depends on: a hunk
+        carrying a real context line succeeds on a region a short old_string
+        cannot disambiguate, while a hunk relying on the '@@ ... @@' header
+        alone fails.
+        """
+        from tools.file_tools import patch_tool
+
+        src = "def f():\n    return 1\n\ndef g():\n    return 1\n"
+
+        def fresh(name):
+            p = tmp_path / name
+            p.write_text(src)
+            return p
+
+        header_only = fresh("a.py")
+        result = json.loads(patch_tool(
+            mode="patch", task_id="v4a-hdr",
+            patch=("*** Begin Patch\n"
+                   f"*** Update File: {header_only}\n"
+                   "@@ def f(): @@\n"
+                   "-    return 1\n"
+                   "+    return 2\n"
+                   "*** End Patch\n"),
+        ))
+        assert result.get("error"), "header-only hunk should not be treated as anchored"
+        assert header_only.read_text() == src, "failed patch must not modify the file"
+
+        with_context = fresh("b.py")
+        result = json.loads(patch_tool(
+            mode="patch", task_id="v4a-ctx",
+            patch=("*** Begin Patch\n"
+                   f"*** Update File: {with_context}\n"
+                   "@@ context @@\n"
+                   " def f():\n"
+                   "-    return 1\n"
+                   "+    return 2\n"
+                   "*** End Patch\n"),
+        ))
+        assert not result.get("error"), f"context-anchored hunk should apply: {result}"
+        after = with_context.read_text()
+        assert "return 2" in after.split("def g")[0], "wrong region edited"
+        assert after.split("def g")[1].strip() == "():\n    return 1", "g() must be untouched"
+
+    @patch("tools.file_tools._get_file_ops")
     def test_patch_v4a_rejects_traversal_in_update_header(self, mock_get):
         """V4A '*** Update File:' headers come from patch content, which can
         carry prompt-injection-controlled paths (skill content, web extract).
@@ -666,6 +793,33 @@ class TestPatchSchemaShape:
         for name in ("path", "old_string", "new_string"):
             assert "REQUIRED when mode='replace'" in props[name]["description"]
         assert "REQUIRED when mode='patch'" in props["patch"]["description"]
+
+    def test_description_does_not_claim_v4a_needs_no_verbatim_text(self):
+        """patch_parser builds an update hunk's search pattern from its context
+        and removed lines, so a V4A hunk DOES need to reproduce them. The
+        description previously said the opposite, which sent a model that could
+        not anchor a region toward a whole-file rewrite instead.
+        """
+        desc = PATCH_SCHEMA["description"]
+        lowered = desc.lower()
+        assert "do not need to echo the old text" not in lowered
+        assert "reproduce the lines it removes" in lowered, (
+            "must state that an update hunk still needs its removed/context lines"
+        )
+
+    def test_description_pitches_patch_mode_on_anchoring_not_exactness(self):
+        """Both modes share one fuzzy matcher, so 'use patch mode when you cannot
+        reproduce the text exactly' is false. The real advantages are anchoring
+        and atomicity.
+        """
+        desc = PATCH_SCHEMA["description"]
+        lowered = desc.lower()
+        assert "anchor" in lowered, "must pitch patch mode on anchoring"
+        assert "atomic" in lowered, "must pitch patch mode on atomicity"
+        assert "fuzzy" in lowered, "must disclose that replace mode is fuzzy too"
+        assert "cannot construct old_string exactly" not in lowered
+        # The old_string property must not contradict the fuzzy claim above.
+        assert "Exact text to find" not in PATCH_SCHEMA["parameters"]["properties"]["old_string"]["description"]
 
     def test_no_anyof_required_stays_mode_only(self):
         # anyOf/oneOf at parameters level break Anthropic, Fireworks, and the

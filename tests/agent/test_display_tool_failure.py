@@ -133,6 +133,18 @@ class TestDetectToolFailureStructured:
         is_failure, _ = _detect_tool_failure("web_search", result)
         assert is_failure is False
 
+    def test_web_extract_empty_error_field_is_success(self):
+        result = json.dumps({
+            "results": [{"url": "https://example.com", "content": "Example", "error": ""}],
+        })
+        assert _detect_tool_failure("web_extract", result) == (False, "")
+
+    def test_web_extract_all_failed_is_failure(self):
+        result = json.dumps({
+            "results": [{"url": "https://example.com", "content": "", "error": "404"}],
+        })
+        assert _detect_tool_failure("web_extract", result) == (True, " [404]")
+
 
 class TestGetCuteToolMessageFailureSuffix:
     """End-to-end: failure suffix is appended by get_cute_tool_message."""

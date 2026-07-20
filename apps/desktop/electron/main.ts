@@ -66,6 +66,7 @@ import {
   shouldRemoveAppBundle,
   uninstallArgsForMode
 } from './desktop-uninstall'
+import { desktopPluginHome } from './desktop-plugin-home'
 import { installEmbedReferer } from './embed-referer'
 import { readDirForIpc } from './fs-read-dir'
 import { probeGatewayWebSocket } from './gateway-ws-probe'
@@ -8677,6 +8678,14 @@ ipcMain.handle('hermes:openExternal', (_event, url) => {
     throw new Error('Invalid external URL')
   }
 })
+
+// Disk plugins execute with full renderer authority, so they must always come
+// from the trusted desktop machine rather than a remote gateway's filesystem.
+ipcMain.handle('hermes:hermes-home:local', () =>
+  desktopPluginHome(HERMES_HOME, readActiveDesktopProfile(), () =>
+    fs.readFileSync(path.join(HERMES_HOME, 'active_profile'), 'utf8')
+  )
+)
 
 ipcMain.handle('hermes:openPreviewInBrowser', async (_event, url) => {
   if (!(await openPreviewInBrowser(url))) {

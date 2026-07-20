@@ -187,6 +187,14 @@ def build_models_payload(
 
     if explicit_only:
         rows = _filter_explicit_provider_rows(rows, ctx)
+        # Desktop chat pickers request the explicit subset without the full
+        # unconfigured provider universe. If the configured current provider
+        # has lost its credential, list_authenticated_providers() omits it;
+        # keep that one row visible so the UI can show the saved selection and
+        # a re-auth affordance instead of appearing to jump to another provider.
+        rows = list(rows) + _append_unconfigured_rows(
+            rows, ctx, current_only=True
+        )
 
     # --- Deduplicate: remove models from aggregators that overlap with
     # user-defined providers.  When a local proxy (e.g. litellm-proxy)
@@ -292,15 +300,61 @@ def _apply_capabilities(rows: list[dict]) -> None:
 # ─── Internal: row post-processing ──────────────────────────────────────
 
 
-def _append_unconfigured_rows(rows: list[dict], ctx: ConfigContext) -> list[dict]:
-    """Build skeleton rows for canonical providers missing from ``rows``."""
+def _append_unconfigured_rows(
+    rows: list[dict],
+    ctx: ConfigContext,
+    *,
+    current_only: bool = False,
+) -> list[dict]:
+    """Build fallback rows for canonical providers missing from ``rows``.
+
+    Most missing canonical providers become empty setup skeletons. The one
+    exception is the *current* configured provider: if config.yaml still points
+    at it but credentials are presently unavailable, keep a visible row carrying
+    the saved model so GUI pickers don't silently snap to some other provider.
+    """
+    from hermes_cli.auth import PROVIDER_REGISTRY
     from hermes_cli.models import CANONICAL_PROVIDERS, _PROVIDER_LABELS
 
     seen = {r["slug"].lower() for r in rows}
     cur = (ctx.current_provider or "").lower()
+    cur_model = str(ctx.current_model or "").strip()
     extras: list[dict] = []
     for entry in CANONICAL_PROVIDERS:
         if entry.slug.lower() in seen:
+            continue
+        if current_only and entry.slug.lower() != cur:
+            continue
+        if entry.slug.lower() == cur:
+            cfg = PROVIDER_REGISTRY.get(entry.slug)
+            auth_type = cfg.auth_type if cfg else "api_key"
+            key_env = (
+                cfg.api_key_env_vars[0]
+                if (cfg and cfg.api_key_env_vars)
+                else ""
+            )
+            warning = (
+                f"Configured provider missing usable credentials; paste {key_env} to reactivate. "
+                "Showing the saved model only."
+                if auth_type == "api_key" and key_env
+                else "Configured provider is not authenticated; run `hermes model` to reactivate. "
+                "Showing the saved model only."
+            )
+            extras.append(
+                {
+                    "slug": entry.slug,
+                    "name": _PROVIDER_LABELS.get(entry.slug, entry.label),
+                    "is_current": True,
+                    "is_user_defined": False,
+                    "models": [cur_model] if cur_model else [],
+                    "total_models": 1 if cur_model else 0,
+                    "source": "configured-current",
+                    "authenticated": False,
+                    "auth_type": auth_type,
+                    "key_env": key_env,
+                    "warning": warning,
+                }
+            )
             continue
         extras.append(
             {
@@ -340,11 +394,59 @@ def _filter_explicit_provider_rows(rows: list[dict], ctx: ConfigContext) -> list
         if slug == "moa":
             # MoA is a virtual routing mode, not an independently configured
             # provider. Hide it from explicit-only pickers unless it is the
-            # current provider (handled above).
+            # current provider (handled above) or the user explicitly wrote an
+            # enabled MoA preset into config.yaml. Use raw config so the
+            # DEFAULT_CONFIG preset does not make every desktop picker show MoA.
+            if _raw_config_has_enabled_moa_preset():
+                kept.append(row)
             continue
         if is_provider_explicitly_configured(slug):
             kept.append(row)
     return kept
+
+
+def _raw_config_has_enabled_moa_preset() -> bool:
+    """Return True when the user's raw config explicitly enables MoA.
+
+    ``load_config()`` includes ``DEFAULT_CONFIG["moa"].presets.default`` for
+    everyone. Explicit-only model pickers must not treat that default as a user
+    choice, but they should keep MoA visible once the user has saved at least
+    one enabled preset (or an older flat MoA config) in their own config.yaml.
+    """
+    try:
+        from hermes_cli.config import read_raw_config
+
+        raw = read_raw_config()
+    except Exception:
+        return False
+
+    if not isinstance(raw, dict):
+        return False
+    moa = raw.get("moa")
+    if not isinstance(moa, dict):
+        return False
+
+    presets = moa.get("presets")
+    if isinstance(presets, dict):
+        for name, preset in presets.items():
+            if not str(name or "").strip():
+                continue
+            if not isinstance(preset, dict):
+                return True
+            if preset.get("enabled", True):
+                return True
+        return False
+
+    legacy_keys = {
+        "reference_models",
+        "aggregator",
+        "reference_temperature",
+        "aggregator_temperature",
+        "max_tokens",
+        "reference_max_tokens",
+        "fanout",
+    }
+    return any(key in moa for key in legacy_keys) and bool(moa.get("enabled", True))
 
 
 def _apply_picker_hints(rows: list[dict]) -> None:

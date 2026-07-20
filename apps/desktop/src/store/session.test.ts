@@ -1,22 +1,28 @@
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import type { ClientSessionState } from '@/app/types'
+import { createClientSessionState } from '@/lib/chat-runtime'
 import type { SessionInfo } from '@/types/hermes'
 
 import {
   $activeSessionId,
-  $attentionSessionIds,
   $connection,
   $currentCwd,
-  $workingSessionIds,
+  $selectedStoredSessionId,
+  $unreadFinishedSessionIds,
   applyConfiguredDefaultProjectDir,
-  getRecentlySettledSessionIds,
   mergeSessionPage,
   sessionPinId,
   setCurrentCwd,
-  setSessionAttention,
-  setSessionWorking,
+  setSelectedStoredSessionId,
   workspaceCwdForNewSession
 } from './session'
+import {
+  $attentionSessionIds,
+  clearAllSessionStates,
+  getRecentlySettledSessionIds,
+  publishSessionState
+} from './session-states'
 
 const session = (over: Partial<SessionInfo>): SessionInfo => ({
   archived: false,
@@ -37,30 +43,32 @@ const session = (over: Partial<SessionInfo>): SessionInfo => ({
   ...over
 })
 
-describe('setSessionAttention', () => {
-  it('adds and removes a session id without duplicating it', () => {
-    $attentionSessionIds.set([])
-
-    setSessionAttention('s1', true)
-    setSessionAttention('s1', true)
-    expect($attentionSessionIds.get()).toEqual(['s1'])
-
-    setSessionAttention('s2', true)
-    expect($attentionSessionIds.get()).toEqual(['s1', 's2'])
-
-    setSessionAttention('s1', false)
-    expect($attentionSessionIds.get()).toEqual(['s2'])
-
-    $attentionSessionIds.set([])
+describe('computed $attentionSessionIds', () => {
+  beforeEach(() => {
+    clearAllSessionStates()
   })
 
-  it('ignores empty ids and no-op clears', () => {
-    $attentionSessionIds.set([])
+  afterEach(() => {
+    clearAllSessionStates()
+  })
 
-    setSessionAttention(null, true)
-    setSessionAttention(undefined, true)
-    setSessionAttention('', true)
-    setSessionAttention('missing', false)
+  it('reflects sessions with needsInput=true and a storedSessionId', () => {
+    publishSessionState('rt1', { ...createClientSessionState('s1'), needsInput: true })
+    publishSessionState('rt2', { ...createClientSessionState('s2'), needsInput: false })
+
+    expect($attentionSessionIds.get()).toEqual(['s1'])
+  })
+
+  it('updates when needsInput changes', () => {
+    publishSessionState('rt1', { ...createClientSessionState('s1'), needsInput: true })
+    expect($attentionSessionIds.get()).toEqual(['s1'])
+
+    publishSessionState('rt1', { ...createClientSessionState('s1'), needsInput: false })
+    expect($attentionSessionIds.get()).toEqual([])
+  })
+
+  it('ignores sessions without a storedSessionId', () => {
+    publishSessionState('rt1', { ...createClientSessionState(null), needsInput: true })
     expect($attentionSessionIds.get()).toEqual([])
   })
 })
@@ -240,25 +248,36 @@ describe('workspaceCwdForNewSession', () => {
   })
 })
 
+function makeState(over: Partial<ClientSessionState> = {}): ClientSessionState {
+  return { ...createClientSessionState('s1'), ...over }
+}
+
 describe('getRecentlySettledSessionIds', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+    vi.setSystemTime(0)
+    // clearAllSessionStates also drops settle-grace entries + watchdog timers,
+    // so nothing leaks in from a previous test.
+    clearAllSessionStates()
+    $selectedStoredSessionId.set(null)
+    $unreadFinishedSessionIds.set([])
+  })
+
   afterEach(() => {
     vi.useRealTimers()
-    $workingSessionIds.set([])
-
-    // Drain anything left in the grace map so tests stay isolated.
-    for (const id of getRecentlySettledSessionIds(Number.MAX_SAFE_INTEGER)) {
-      void id
-    }
+    clearAllSessionStates()
+    $selectedStoredSessionId.set(null)
+    $unreadFinishedSessionIds.set([])
   })
 
   it('keeps a session for the grace window after its turn settles, then drops it', () => {
-    vi.useFakeTimers()
-    vi.setSystemTime(0)
-    $workingSessionIds.set([])
-
     // A turn starts then ends: the working→idle transition grants grace.
-    setSessionWorking('s1', true)
-    setSessionWorking('s1', false)
+    const working = makeState({ busy: true, storedSessionId: 's1' })
+    publishSessionState('rt1', working)
+
+    const idle = { ...working, busy: false }
+    publishSessionState('rt1', idle)
+
     expect(getRecentlySettledSessionIds()).toEqual(['s1'])
 
     // Still inside the window.
@@ -271,29 +290,87 @@ describe('getRecentlySettledSessionIds', () => {
   })
 
   it('does not grant grace when the session was never working (idle re-asserts)', () => {
-    vi.useFakeTimers()
-    vi.setSystemTime(0)
-    $workingSessionIds.set([])
-
-    // updateSessionState re-asserts `false` for idle sessions on every tick;
-    // these must not pin an idle chat into the keep-set indefinitely.
-    setSessionWorking('idle', false)
-    setSessionWorking('idle', false)
+    const idle = makeState({ busy: false, storedSessionId: 'idle' })
+    publishSessionState('rt1', idle)
     expect(getRecentlySettledSessionIds()).toEqual([])
   })
 
   it('clears the grace timer when the session goes busy again', () => {
-    vi.useFakeTimers()
-    vi.setSystemTime(0)
-    $workingSessionIds.set([])
+    const working = makeState({ busy: true, storedSessionId: 's2' })
+    publishSessionState('rt1', working)
 
-    setSessionWorking('s2', true)
-    setSessionWorking('s2', false)
+    const idle = { ...working, busy: false }
+    publishSessionState('rt1', idle)
+
     expect(getRecentlySettledSessionIds()).toEqual(['s2'])
 
     // A new turn for the same session is "working" again — drop it from the
     // settled set so it's tracked as working, not recently-finished.
-    setSessionWorking('s2', true)
+    const workingAgain = { ...idle, busy: true }
+    publishSessionState('rt1', workingAgain)
+
     expect(getRecentlySettledSessionIds()).toEqual([])
+  })
+})
+
+describe('unread finished sessions', () => {
+  beforeEach(() => {
+    clearAllSessionStates()
+    $unreadFinishedSessionIds.set([])
+    $selectedStoredSessionId.set(null)
+  })
+
+  afterEach(() => {
+    clearAllSessionStates()
+    $unreadFinishedSessionIds.set([])
+    $selectedStoredSessionId.set(null)
+  })
+
+  it('marks a session unread when its turn finishes in the background', () => {
+    $selectedStoredSessionId.set('other-session')
+
+    const working = makeState({ busy: true, storedSessionId: 's1' })
+    publishSessionState('rt1', working)
+
+    const idle = { ...working, busy: false }
+    publishSessionState('rt1', idle)
+
+    expect($unreadFinishedSessionIds.get()).toEqual(['s1'])
+  })
+
+  it('does NOT mark unread when the finishing session is the active one', () => {
+    $selectedStoredSessionId.set('s1')
+
+    const working = makeState({ busy: true, storedSessionId: 's1' })
+    publishSessionState('rt1', working)
+
+    const idle = { ...working, busy: false }
+    publishSessionState('rt1', idle)
+
+    expect($unreadFinishedSessionIds.get()).toEqual([])
+  })
+
+  it('does NOT mark unread on idle→idle re-asserts (no prior working state)', () => {
+    $selectedStoredSessionId.set('other-session')
+
+    const idle = makeState({ busy: false, storedSessionId: 's1' })
+    publishSessionState('rt1', idle)
+
+    expect($unreadFinishedSessionIds.get()).toEqual([])
+  })
+
+  it('clears unread when the user opens the session', () => {
+    $selectedStoredSessionId.set('other')
+
+    const working = makeState({ busy: true, storedSessionId: 's1' })
+    publishSessionState('rt1', working)
+
+    const idle = { ...working, busy: false }
+    publishSessionState('rt1', idle)
+
+    expect($unreadFinishedSessionIds.get()).toEqual(['s1'])
+
+    setSelectedStoredSessionId('s1')
+    expect($unreadFinishedSessionIds.get()).toEqual([])
   })
 })

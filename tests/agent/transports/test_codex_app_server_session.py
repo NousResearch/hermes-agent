@@ -528,6 +528,24 @@ class TestCompactThread:
         assert r.token_usage_last["totalTokens"] == 12
         assert r.model_context_window == 200000
 
+    def test_compact_thread_interrupted_returns_non_success(self):
+        client = FakeClient()
+        client.queue_notification(
+            "turn/started",
+            threadId="thread-fake-001",
+            turn={"id": "compact-turn-1"},
+        )
+        client.queue_notification(
+            "turn/completed",
+            threadId="thread-fake-001",
+            turn={"id": "compact-turn-1", "status": "interrupted", "error": None},
+        )
+
+        result = make_session(client).compact_thread(turn_timeout=2.0)
+
+        assert result.interrupted is True
+        assert result.error == "compact turn interrupted"
+
     def test_compact_thread_failure_returns_error(self):
         client = FakeClient()
         from agent.transports.codex_app_server import CodexAppServerError
@@ -620,6 +638,64 @@ class TestServerRequestRouting:
         assert any(
             rid == "req-3" and code == -32601
             for (rid, code, _msg) in client.error_responses
+        )
+
+    def test_on_event_fires_during_approval_drain(self):
+        """When a server-initiated approval request arrives, the session
+        drains up to 8 pending notifications first so per-turn state
+        (e.g. _pending_file_changes for fileChange approvals) is current.
+        Those drained notifications must also reach the on_event display
+        hook — otherwise tool bubbles around approvals silently disappear.
+
+        Regression for the issue where item/started events that landed
+        in the queue alongside (or just before) an approval request got
+        projected into messages but never displayed.
+        """
+        client = FakeClient()
+        # An item/started notification is queued first, then a server
+        # request — the session sees both during a single drain loop.
+        client.queue_notification(
+            "item/started",
+            item={
+                "type": "commandExecution",
+                "id": "exec-1",
+                "command": "echo drained",
+                "cwd": "/tmp",
+            },
+        )
+        client.queue_server_request(
+            "item/commandExecution/requestApproval", request_id="req-d",
+            command="echo drained",
+            cwd="/tmp",
+        )
+        client.queue_notification(
+            "turn/completed", threadId="t",
+            turn={"id": "tu1", "status": "completed", "error": None},
+        )
+
+        events: list[dict] = []
+
+        def cb(command, description, *, allow_permanent=True):
+            return "once"
+
+        s = make_session(
+            client,
+            approval_callback=cb,
+            on_event=events.append,
+        )
+        s.run_turn("hi", turn_timeout=1.0)
+
+        # The on_event hook must have seen the item/started even though
+        # it was drained as part of the approval roundtrip — not just
+        # events that arrive on the main notification path.
+        item_started_events = [
+            e for e in events
+            if e.get("method") == "item/started"
+        ]
+        assert item_started_events, (
+            "item/started drained alongside the approval was not "
+            "forwarded to on_event — display will miss tool bubbles "
+            "around approvals"
         )
 
     def test_mcp_elicitation_for_hermes_tools_auto_accepts(self):

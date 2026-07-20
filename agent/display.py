@@ -27,6 +27,14 @@ logger = logging.getLogger(__name__)
 
 _ANSI_RESET = "\033[0m"
 
+
+def _display_url(value: Any) -> str:
+    """Extract a display-only URL without assuming model argument types."""
+    if isinstance(value, dict):
+        value = value.get("url") or value.get("href")
+    return value.strip() if isinstance(value, str) else ""
+
+
 # Diff colors — resolved lazily from the skin engine so they adapt
 # to light/dark themes.  Falls back to sensible defaults on import
 # failure.  We cache after first resolution for performance.
@@ -454,13 +462,14 @@ def build_tool_preview(tool_name: str, args: dict, max_len: int | None = None) -
         sid = args.get("session_id", "")
         data = args.get("data", "")
         timeout_val = args.get("timeout")
-        parts = [action]
+        parts = [str(action) if action else ""]
         if sid:
-            parts.append(sid[:16])
+            parts.append(str(sid)[:16])
         if data:
-            parts.append(f'"{_oneline(data[:20])}"')
+            parts.append(f'"{_oneline(str(data)[:20])}"')
         if timeout_val and action == "wait":
             parts.append(f"{timeout_val}s")
+        parts = [p for p in parts if p]
         return " ".join(parts) if parts else None
 
     if tool_name == "todo":
@@ -634,6 +643,52 @@ def tool_verb_connector(tool_name: str) -> str:
 def verb_drops_preview(tool_name: str) -> bool:
     """Whether the verb should render alone, without the argument preview."""
     return tool_name in _TOOL_VERBS_NO_PREVIEW
+
+
+def build_status_phrase(tool_name: str, args: dict | None, max_len: int = 49) -> str | None:
+    """Build a short present-tense status phrase for platform status surfaces.
+
+    Used by text-rendering "typing" indicators (Slack's
+    ``assistant.threads.setStatus`` line) to show what the agent is doing
+    right now: ``is running scripts/run_tests.sh…`` instead of a static
+    ``is thinking...``.  The phrase is phrased to follow the bot's display
+    name ("Hermes is running …"), so it starts lowercase with "is".
+
+    Pass ``args=None`` for a verb-only phrase (``is running…``) — used when
+    ``display.live_status`` is ``verb`` to keep argument previews out of
+    shared channels.
+
+    Returns None for the ``_thinking`` pseudo-tool and when friendly labels
+    are disabled (callers fall back to their static default).  ``max_len``
+    caps the total phrase length; Slack truncates its status line around 50
+    characters, so the default stays just under that.
+    """
+    if not tool_name or tool_name == "_thinking":
+        return None
+    if not _friendly_tool_labels:
+        return None
+
+    verb = _TOOL_VERBS.get(tool_name)
+    if verb:
+        head = f"is {verb[0].lower()}{verb[1:]}"
+    else:
+        # Custom / plugin / MCP tools: generic but still informative.
+        head = f"is using {tool_name}"
+
+    phrase = head
+    if args and verb and tool_name not in _TOOL_VERBS_NO_PREVIEW:
+        preview = build_tool_preview(tool_name, args, max_len=None)
+        if preview:
+            # Previews can contain newlines (terminal commands); keep the
+            # status to the first line.
+            preview = preview.splitlines()[0].strip()
+            phrase = f"{head}{tool_verb_connector(tool_name)}{preview}"
+
+    if len(phrase) > max_len - 1:
+        phrase = phrase[: max_len - 2].rstrip() + "…"
+    else:
+        phrase = phrase + "…"
+    return phrase
 
 
 def build_tool_label(tool_name: str, args: dict, max_len: int | None = None) -> str | None:
@@ -1259,7 +1314,7 @@ def _detect_tool_failure(tool_name: str, result: str | None) -> tuple[bool, str]
     return False, ""
 
 
-def get_cute_tool_message(
+def _get_cute_tool_message(
     tool_name: str, args: dict, duration: float, result: str | None = None,
 ) -> str:
     """Generate a formatted tool completion line for CLI quiet mode.
@@ -1301,9 +1356,11 @@ def get_cute_tool_message(
     if tool_name == "web_extract":
         urls = args.get("urls", [])
         if urls:
-            url = urls[0] if isinstance(urls, list) else str(urls)
+            url = _display_url(urls[0] if isinstance(urls, list) else urls)
+            if not url:
+                return _wrap(f"┊ 📄 fetch     pages  {dur}")
             domain = url.replace("https://", "").replace("http://", "").split("/")[0]
-            extra = f" +{len(urls)-1}" if len(urls) > 1 else ""
+            extra = f" +{len(urls)-1}" if isinstance(urls, list) and len(urls) > 1 else ""
             return _wrap(f"┊ 📄 fetch     {_trunc(domain, 35)}{extra}  {dur}")
         return _wrap(f"┊ 📄 fetch     pages  {dur}")
     if tool_name == "terminal":
@@ -1431,6 +1488,19 @@ def get_cute_tool_message(
 
     preview = build_tool_preview(tool_name, args) or ""
     return _wrap(f"┊ ⚡ {tool_name[:9]:9} {_trunc(preview, 35)}  {dur}")
+
+
+def get_cute_tool_message(
+    tool_name: str, args: dict, duration: float, result: str | None = None,
+) -> str:
+    """Render a completion label without letting cosmetic failures escape."""
+    try:
+        return _get_cute_tool_message(tool_name, args, duration, result=result)
+    except Exception as exc:  # noqa: BLE001 — display must never abort a turn
+        logger.debug("Tool completion label failed for %s: %s", tool_name, exc)
+        safe_name = tool_name[:9] if isinstance(tool_name, str) and tool_name else "tool"
+        safe_duration = f"{duration:.1f}s" if isinstance(duration, (int, float)) else "done"
+        return f"┊ ⚡ {safe_name:9} completed  {safe_duration}"
 
 
 # =========================================================================

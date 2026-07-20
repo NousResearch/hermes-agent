@@ -4,6 +4,8 @@ import logging
 import os
 from unittest.mock import patch
 
+import pytest
+
 from agent.secret_scope import reset_secret_scope, set_secret_scope
 from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 from gateway.config import (
@@ -92,6 +94,28 @@ class TestPlatformConfigRoundtrip:
         # extra; from_dict must honor it there too (mirrors _grn fallback).
         restored = PlatformConfig.from_dict({"extra": {"typing_indicator": False}})
         assert restored.typing_indicator is False
+
+    def test_typing_status_text_defaults_none(self):
+        assert PlatformConfig().typing_status_text is None
+        assert PlatformConfig.from_dict({}).typing_status_text is None
+
+    def test_typing_status_text_roundtrip(self):
+        pc = PlatformConfig(enabled=True, typing_status_text="is pouncing… 🐾")
+        restored = PlatformConfig.from_dict(pc.to_dict())
+        assert restored.typing_status_text == "is pouncing… 🐾"
+
+    def test_typing_status_text_resolved_from_extra(self):
+        # Same bridge route as typing_indicator: the shared-key loop copies a
+        # nested platforms.<plat> value into extra.
+        restored = PlatformConfig.from_dict(
+            {"extra": {"typing_status_text": "chasing yarn…"}}
+        )
+        assert restored.typing_status_text == "chasing yarn…"
+
+    def test_typing_status_text_omitted_from_to_dict_when_unset(self):
+        # None must not serialize — keeps existing config files byte-stable.
+        assert "typing_status_text" not in PlatformConfig().to_dict()
+
     def test_channel_overrides_roundtrip(self):
         pc = PlatformConfig(
             enabled=True,
@@ -140,6 +164,21 @@ class TestChannelOverride:
         assert d["model"] == "gpt-4"
         assert "provider" not in d
         assert d["system_prompt"] == "Hi"
+
+
+class TestPlatformConfigMalformedSections:
+    def test_from_dict_ignores_malformed_nested_sections(self):
+        restored = PlatformConfig.from_dict(
+            {
+                "enabled": True,
+                "home_channel": "telegram:123",
+                "extra": "oops",
+            }
+        )
+
+        assert restored.enabled is True
+        assert restored.home_channel is None
+        assert restored.extra == {}
 
 
 class TestGetConnectedPlatforms:
@@ -238,6 +277,12 @@ class TestSessionResetPolicy:
         restored = SessionResetPolicy.from_dict({"notify": "false"})
         assert restored.notify is False
 
+    def test_from_dict_malformed_section_falls_back_to_defaults(self):
+        restored = SessionResetPolicy.from_dict("oops")
+        assert restored.mode == SessionResetPolicy().mode
+        assert restored.at_hour == 4
+        assert restored.idle_minutes == 1440
+
 
 class TestStreamingConfig:
     def test_defaults_to_auto_transport(self):
@@ -263,6 +308,11 @@ class TestStreamingConfig:
         assert restored.buffer_threshold == 24
         assert restored.fresh_final_after_seconds == 0.0
 
+    def test_from_dict_malformed_section_falls_back_to_defaults(self):
+        restored = StreamingConfig.from_dict("enabled")
+        assert restored.enabled is False
+        assert restored.transport == "auto"
+
 
 class TestGatewayConfigRoundtrip:
     def test_full_roundtrip(self):
@@ -278,6 +328,7 @@ class TestGatewayConfigRoundtrip:
             quick_commands={"limits": {"type": "exec", "command": "echo ok"}},
             group_sessions_per_user=False,
             thread_sessions_per_user=True,
+            systemd_watchdog_seconds=120,
         )
         d = config.to_dict()
         restored = GatewayConfig.from_dict(d)
@@ -288,6 +339,33 @@ class TestGatewayConfigRoundtrip:
         assert restored.quick_commands == {"limits": {"type": "exec", "command": "echo ok"}}
         assert restored.group_sessions_per_user is False
         assert restored.thread_sessions_per_user is True
+        assert restored.systemd_watchdog_seconds == 120
+
+    def test_systemd_watchdog_from_dict_disables_invalid_values(self):
+        invalid_values = [
+            None,
+            0,
+            -1,
+            True,
+            1.5,
+            float("nan"),
+            float("inf"),
+            "120.0",
+            "1e3",
+            "bad",
+            2_147_483_648,
+        ]
+
+        for raw in invalid_values:
+            config = GatewayConfig.from_dict({"systemd_watchdog_seconds": raw})
+            assert config.systemd_watchdog_seconds == 0
+
+    def test_systemd_watchdog_from_dict_accepts_nested_positive_integer(self):
+        config = GatewayConfig.from_dict(
+            {"gateway": {"systemd_watchdog_seconds": "45"}}
+        )
+
+        assert config.systemd_watchdog_seconds == 45
 
     def test_max_concurrent_sessions_from_dict_normalizes_disabled_values(self):
         assert GatewayConfig.from_dict({}).max_concurrent_sessions is None
@@ -365,6 +443,27 @@ class TestGatewayConfigRoundtrip:
         restored = GatewayConfig.from_dict({"always_log_local": "false"})
         assert restored.always_log_local is False
 
+    def test_from_dict_ignores_malformed_nested_sections(self):
+        restored = GatewayConfig.from_dict(
+            {
+                "platforms": {
+                    "telegram": "enabled",
+                    "discord": {"enabled": True, "token": "tok"},
+                },
+                "default_reset_policy": "daily",
+                "reset_by_type": ["oops"],
+                "reset_by_platform": "oops",
+                "streaming": "enabled",
+            }
+        )
+
+        assert Platform.TELEGRAM not in restored.platforms
+        assert restored.platforms[Platform.DISCORD].enabled is True
+        assert restored.default_reset_policy.mode == SessionResetPolicy().mode
+        assert restored.reset_by_type == {}
+        assert restored.reset_by_platform == {}
+        assert restored.streaming.transport == "auto"
+
     def test_get_notice_delivery_defaults_to_public(self):
         config = GatewayConfig(
             platforms={Platform.SLACK: PlatformConfig(enabled=True, token="***")}
@@ -405,6 +504,45 @@ class TestLoadGatewayConfig:
 
         assert config.quick_commands == {"limits": {"type": "exec", "command": "echo ok"}}
 
+    def test_typing_status_text_from_toplevel_platform_block(self, tmp_path, monkeypatch):
+        """A top-level ``slack:`` block reaches PlatformConfig via the
+        shared-key bridge (bridged into extra, then the from_dict extra
+        fallback) — the route a bare ``hermes config set``-style YAML uses."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            'slack:\n  typing_status_text: "is pouncing… 🐾"\n',
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert (
+            config.platforms[Platform.SLACK].typing_status_text
+            == "is pouncing… 🐾"
+        )
+
+    def test_typing_status_text_from_nested_platforms_block(self, tmp_path, monkeypatch):
+        """``platforms.slack.typing_status_text`` reaches PlatformConfig via
+        _merge_platform_map + the from_dict top-level read."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "platforms:\n"
+            "  slack:\n"
+            "    enabled: true\n"
+            '    typing_status_text: "chasing yarn…"\n',
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert (
+            config.platforms[Platform.SLACK].typing_status_text == "chasing yarn…"
+        )
+
     def test_multiplex_profiles_from_nested_gateway_section(self, tmp_path, monkeypatch):
         """``gateway.multiplex_profiles: true`` (the nested form written by
         ``hermes config set gateway.multiplex_profiles true``) must enable
@@ -430,6 +568,32 @@ class TestLoadGatewayConfig:
         config = load_gateway_config()
 
         assert config.multiplex_profiles is True
+
+    def test_discord_websocket_health_settings_seed_platform_extra(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "discord:\n"
+            "  websocket_liveness_interval_seconds: 17\n"
+            "  websocket_liveness_failure_threshold: 4\n"
+            "  websocket_heartbeat_ack_max_age_seconds: 75\n"
+            "  websocket_max_latency_seconds: 30\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        for key in (
+            "HERMES_DISCORD_LIVENESS_INTERVAL_SECONDS",
+            "HERMES_DISCORD_LIVENESS_FAILURE_THRESHOLD",
+        ):
+            monkeypatch.delenv(key, raising=False)
+
+        config = load_gateway_config()
+
+        extra = config.platforms[Platform.DISCORD].extra
+        assert extra["websocket_liveness_interval_seconds"] == 17
+        assert extra["websocket_liveness_failure_threshold"] == 4
+        assert extra["websocket_heartbeat_ack_max_age_seconds"] == 75
+        assert extra["websocket_max_latency_seconds"] == 30
 
     def test_relay_platform_enabled_from_env_url(self, tmp_path, monkeypatch):
         """GATEWAY_RELAY_URL must enable Platform.RELAY in config.platforms so
@@ -560,6 +724,18 @@ class TestLoadGatewayConfig:
         config = load_gateway_config()
 
         assert config.max_concurrent_sessions == 2
+
+    def test_scalar_gateway_section_does_not_crash_streaming_fallback(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text("gateway: disabled\n", encoding="utf-8")
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.streaming.transport == "auto"
 
     def test_bridges_discord_thread_require_mention_from_config_yaml(self, tmp_path, monkeypatch):
         """discord.thread_require_mention in config.yaml should reach the runtime env var."""
@@ -1408,3 +1584,93 @@ class TestMultiplexProfilesEnvOverride:
         for noise in ("", "   ", "maybe", "2"):
             monkeypatch.setenv("GATEWAY_MULTIPLEX_PROFILES", noise)
             assert _env_multiplex_profiles_override() is None, repr(noise)
+
+
+class TestMultiplexProfilesConfig:
+    """Tests for parsing multiplex_profiles (top-level and nested forms)."""
+
+    def test_multiplex_profiles_top_level(self, tmp_path, monkeypatch):
+        """Top-level multiplex_profiles is honored."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "multiplex_profiles: true\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.multiplex_profiles is True
+
+    def test_multiplex_profiles_nested_under_gateway(self, tmp_path, monkeypatch):
+        """gateway.multiplex_profiles (the form written by `hermes config set
+        gateway.multiplex_profiles true`) must be honored. Regression test for
+        the silent-fallback bug where the loader only forwarded the top-level
+        key, so users who wrote it under gateway: got multiplex_profiles=False
+        with no warning."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "gateway:\n  multiplex_profiles: true\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.multiplex_profiles is True, (
+            "gateway.multiplex_profiles: true was silently ignored — "
+            "loader only forwarded the top-level form"
+        )
+
+    def test_multiplex_profiles_default_false(self, tmp_path, monkeypatch):
+        """Default is False when neither form is present."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text("", encoding="utf-8")
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.multiplex_profiles is False
+
+    def test_multiplex_profiles_top_level_overrides_nested(self, tmp_path, monkeypatch):
+        """When both forms are present, top-level wins (matches profile_routes
+        and other parity bridges in load_gateway_config)."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "multiplex_profiles: true\n"
+            "gateway:\n  multiplex_profiles: false\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.multiplex_profiles is True
+
+    def test_multiplex_profiles_explicit_top_level_false_not_consulting_nested(
+        self, tmp_path, monkeypatch
+    ):
+        """Lock in the `is None` vs `is False` distinction: when top-level is
+        explicitly false, the loader must forward False WITHOUT consulting the
+        nested form (so a stale `gateway.multiplex_profiles: true` cannot
+        silently re-enable multiplexing). Guards against a future regression
+        that flips the check to `not _mp`."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "multiplex_profiles: false\n"
+            "gateway:\n  multiplex_profiles: true\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.multiplex_profiles is False, (
+            "Explicit top-level false was overridden by nested true — "
+            "loader must respect top-level precedence when key is present"
+        )

@@ -40,6 +40,9 @@ status display, gateway setup, and more.
 - `plugin.yaml` `requires_env` / `optional_env` rich-dict entries —
   auto-populate `OPTIONAL_ENV_VARS` in `hermes_cli/config.py` so the setup
   wizard surfaces proper descriptions, prompts, password flags, and URLs.
+- `plugin.yaml` `pip_dependencies` — exact Python requirements installed when
+  the user selects the platform in `hermes gateway setup`, before its
+  `setup_fn` runs. Keep these plugin-scoped rather than adding them to core.
 
 **Subclassing for platform-specific UX.** When a platform has a hard
 time-window constraint that the base adapter can't anticipate (LINE's

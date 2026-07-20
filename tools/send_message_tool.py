@@ -594,6 +594,15 @@ def _parse_target_ref(platform_name: str, target_ref: str):
         # through to the _PHONE_PLATFORMS handler below.
         if _WHATSAPP_JID_RE.fullmatch(target_ref):
             return target_ref.strip(), None, True
+    try:
+        from gateway.platform_registry import platform_registry
+
+        entry = platform_registry.get(platform_name)
+        parsed = entry.target_parser_fn(target_ref) if entry and entry.target_parser_fn else None
+        if parsed:
+            return parsed[0], parsed[1], True
+    except Exception:
+        logger.debug("Plugin target parser failed for %s", platform_name, exc_info=True)
     stripped_target = target_ref.strip()
     if platform_name == "signal" and stripped_target.startswith("group:"):
         group_id = stripped_target[len("group:"):].strip()

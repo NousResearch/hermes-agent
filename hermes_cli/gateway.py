@@ -6122,6 +6122,25 @@ def _builtin_setup_fn(key: str):
     }.get(key)
 
 
+def _install_platform_dependencies(entry) -> bool:
+    """Install a platform plugin's declared requirements during setup."""
+    if not entry.pip_dependencies:
+        return True
+
+    from hermes_cli.tools_config import _pip_install
+
+    print_info(f"  Installing dependencies: {', '.join(entry.pip_dependencies)}")
+    try:
+        result = _pip_install(["--quiet", *entry.pip_dependencies], timeout=120)
+    except Exception as exc:
+        print_error(f"  Dependency install failed: {exc}")
+        return False
+    if result.returncode:
+        print_error(f"  Dependency install failed: {(result.stderr or result.stdout).strip()[:200]}")
+        return False
+    return True
+
+
 def _configure_platform(platform: dict) -> None:
     """Run the interactive setup flow for a single platform.
 
@@ -6136,6 +6155,9 @@ def _configure_platform(platform: dict) -> None:
     must already be in ``plugins.enabled`` before they appear in this menu.
     """
     entry = platform.get("_registry_entry")
+
+    if entry is not None and not _install_platform_dependencies(entry):
+        return
 
     if entry is not None and entry.setup_fn is not None:
         entry.setup_fn()

@@ -9,8 +9,38 @@ import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
+import pytest
+
 from gateway.config import Platform
 from tools.send_message_tool import _parse_target_ref, send_message_tool
+
+
+def _register_twitter_platform():
+    from gateway.platform_registry import PlatformEntry, platform_registry
+    from plugins.platforms.twitter import register
+
+    previous = platform_registry.get("twitter")
+
+    class Context:
+        @staticmethod
+        def register_platform(**kwargs):
+            platform_registry.register(PlatformEntry(source="plugin", **kwargs))
+
+        @staticmethod
+        def register_tool(**_kwargs):
+            return None
+
+    register(Context())
+    return previous
+
+
+def _restore_twitter_platform(previous):
+    from gateway.platform_registry import platform_registry
+
+    if previous is None:
+        platform_registry.unregister("twitter")
+    else:
+        platform_registry.register(previous)
 
 
 def _run_async_immediately(coro):
@@ -55,6 +85,67 @@ def test_whatsapp_friendly_name_still_uses_directory_resolution() -> None:
     assert _parse_target_ref("whatsapp", "general")[2] is False
 
 
+@pytest.mark.parametrize(
+    ("target", "chat_id", "interaction_id"),
+    [
+        ("tweet:100:101:102", "tweet:100:101", "102"),
+        ("dm:42-7:501", "dm:42-7", "501"),
+    ],
+)
+def test_twitter_plugin_parser_preserves_colon_route_and_interaction_id(
+    target, chat_id, interaction_id
+) -> None:
+    previous = _register_twitter_platform()
+    try:
+        assert _parse_target_ref("twitter", target) == (
+            chat_id,
+            interaction_id,
+            True,
+        )
+    finally:
+        _restore_twitter_platform(previous)
+
+
+def test_send_message_routes_twitter_reply_with_separate_interaction_id() -> None:
+    previous = _register_twitter_platform()
+    twitter = Platform("twitter")
+    twitter_cfg = SimpleNamespace(enabled=True, token=None, extra={})
+    config = SimpleNamespace(
+        platforms={twitter: twitter_cfg},
+        get_home_channel=lambda _platform: None,
+    )
+
+    try:
+        with patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch("gateway.channel_directory.resolve_channel_name", side_effect=AssertionError("explicit Twitter target must not use directory resolution")), \
+             patch("model_tools._run_async", side_effect=_run_async_immediately), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock, \
+             patch("gateway.mirror.mirror_to_session", return_value=True):
+            result = json.loads(
+                send_message_tool(
+                    {
+                        "action": "send",
+                        "target": "twitter:tweet:100:101:102",
+                        "message": "scheduled reply",
+                    }
+                )
+            )
+    finally:
+        _restore_twitter_platform(previous)
+
+    assert result["success"] is True
+    send_mock.assert_awaited_once_with(
+        twitter,
+        twitter_cfg,
+        "tweet:100:101",
+        "scheduled reply",
+        thread_id="102",
+        media_files=[],
+        force_document=False,
+    )
+
+
 def test_send_message_routes_whatsapp_group_jid_without_home_fallback() -> None:
     whatsapp_cfg = SimpleNamespace(enabled=True, token=None, extra={"api_url": "http://bridge"})
     config = SimpleNamespace(
@@ -89,4 +180,3 @@ def test_send_message_routes_whatsapp_group_jid_without_home_fallback() -> None:
         media_files=[],
         force_document=False,
     )
-

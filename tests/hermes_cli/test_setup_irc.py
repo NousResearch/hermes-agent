@@ -6,6 +6,7 @@ interactive setup menus.
 """
 
 import os
+from types import SimpleNamespace
 
 from gateway.platform_registry import PlatformEntry, platform_registry
 
@@ -163,6 +164,32 @@ class TestIRCInteractiveSetup:
         out = capsys.readouterr().out
         assert "IRC" in out
         assert "IRC_SERVER" in out
+
+    def test_configure_platform_installs_declared_plugin_dependencies_before_setup(
+        self, monkeypatch
+    ):
+        """Plugin manifest dependencies are installed by the generic setup path."""
+        import hermes_cli.gateway as gateway_mod
+
+        calls = []
+        monkeypatch.setattr(
+            "hermes_cli.tools_config._pip_install",
+            lambda args, **kwargs: calls.append((args, kwargs))
+            or SimpleNamespace(returncode=0, stdout="", stderr=""),
+        )
+
+        configured = []
+        plat = _register_irc_platform(
+            pip_dependencies=["fixture-platform-sdk==1.2.3"],
+            setup_fn=lambda: configured.append(True),
+        )
+        try:
+            gateway_mod._configure_platform(plat)
+        finally:
+            _unregister_irc_platform()
+
+        assert calls == [(["--quiet", "fixture-platform-sdk==1.2.3"], {"timeout": 120})]
+        assert configured == [True]
 
 
 # ── End-to-end fresh-install gateway setup ──────────────────────────────────

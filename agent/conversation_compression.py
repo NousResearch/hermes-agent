@@ -28,6 +28,7 @@ these paths see no behavioural change.
 
 from __future__ import annotations
 
+import copy
 import inspect
 import logging
 import os
@@ -1055,6 +1056,7 @@ def compress_context(
                     engine_name,
                 )
 
+        messages_before_compression = copy.deepcopy(messages)
         compressed = compress_fn(messages, **compress_kwargs)
     except BaseException:
         # ANY exception after lock acquisition — memory hook, capability
@@ -1097,10 +1099,13 @@ def compress_context(
             finally:
                 _release_lock()
 
-        # A compressor that returns the exact input object made no structural
-        # progress. Do not rotate/rewrite the session or arm post-compression
-        # deferral in that case; its own anti-thrash counter records the no-op.
-        if compressed is messages:
+        # Compare against the pre-dispatch semantic state, not object identity:
+        # legacy/plugin engines may return an equal copy for a no-op, or mutate
+        # the live list while returning an unchanged snapshot. Neither case may
+        # rotate or rewrite the session.
+        if compressed == messages_before_compression:
+            if messages != messages_before_compression:
+                messages[:] = copy.deepcopy(messages_before_compression)
             logger.info(
                 "Compression made no progress (session=%s) — skipping boundary rewrite.",
                 agent.session_id or "none",

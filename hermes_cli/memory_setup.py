@@ -456,8 +456,28 @@ def cmd_status(args) -> None:
             else:
                 print("  Status:    not available ✗")
                 schema = provider.get_config_schema() if hasattr(provider, "get_config_schema") else []
+                # Fields carry an optional "when" clause (e.g. {"mode": "cloud"})
+                # scoping them to one provider mode/branch. Evaluate against the
+                # provider's actual resolved config (display_config, which native
+                # get_status_config() overrides populate from the real config file
+                # — config.yaml's memory.<provider> is often empty/stale for
+                # providers with their own config store) so cloud-only fields
+                # don't show as "missing" while running in local_embedded mode,
+                # and vice versa.
+                when_context = display_config if isinstance(display_config, dict) else provider_config
+                if not isinstance(when_context, dict):
+                    when_context = {}
+
+                def _matches_when(field: dict) -> bool:
+                    when = field.get("when")
+                    if not when:
+                        return True
+                    return all(when_context.get(k) == v for k, v in when.items())
+
                 # Check all fields that have env_var (both secret and non-secret)
-                required_fields = [f for f in schema if f.get("env_var")]
+                required_fields = [
+                    f for f in schema if f.get("env_var") and _matches_when(f)
+                ]
                 if required_fields:
                     print("  Missing:")
                     for f in required_fields:

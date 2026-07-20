@@ -882,6 +882,26 @@ def run_doctor(args):
                 if name:
                     known_providers.add("custom:" + name.lower().replace(" ", "-"))
 
+            # Runtime model-provider plugins have their own lazy registry. Doctor
+            # must consult the same registry before rejecting a configured id;
+            # otherwise a loaded user plugin can appear in the printed known
+            # list while still being marked unknown by the static catalogs.
+            plugin_provider_ids: set[str] = set()
+            try:
+                from providers import list_providers as _list_plugin_providers
+                for profile in _list_plugin_providers():
+                    profile_name = str(getattr(profile, "name", "") or "").strip().lower()
+                    if profile_name:
+                        plugin_provider_ids.add(profile_name)
+                    plugin_provider_ids.update(
+                        str(alias).strip().lower()
+                        for alias in (getattr(profile, "aliases", ()) or ())
+                        if str(alias).strip()
+                    )
+            except Exception:
+                pass
+            known_providers.update(plugin_provider_ids)
+
             valid_provider_ids = set(known_providers)
             provider_ids_to_accept = {provider} if provider else set()
             if _normalize_catalog_provider is not None:
@@ -907,7 +927,7 @@ def run_doctor(args):
             if (
                 provider
                 and _resolve_provider_full is not None
-                and provider not in {"auto", "custom"}
+                and provider not in ({"auto", "custom"} | plugin_provider_ids)
             ):
                 provider_def = _resolve_provider_full(provider, user_providers, custom_providers)
                 catalog_provider = provider_def.id if provider_def is not None else None

@@ -90,7 +90,7 @@ class TestBundledPluginsRegister:
         "plugin_name,expected_search,expected_extract",
         [
             ("brave-free", True, False),
-            ("ddgs", True, False),
+            ("ddgs", True, True),  # extract enabled by fix/ddgs-web-extract
             ("searxng", True, False),
             ("exa", True, True),
             ("parallel", True, True),

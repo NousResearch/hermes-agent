@@ -10,8 +10,8 @@ export default defineConfig({
   },
   use: {
     baseURL: process.env.HERMES_AGENT_PRODUCTION_URL || "https://agent.tlccapitalgroup.com",
-    trace: "retain-on-failure",
-    screenshot: "only-on-failure",
+    trace: "off",
+    screenshot: "off",
   },
   projects: [
     {

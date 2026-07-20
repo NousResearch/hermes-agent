@@ -281,6 +281,53 @@ class TestFeishuAdapterMessaging(unittest.TestCase):
         "FEISHU_APP_ID": "cli_app",
         "FEISHU_APP_SECRET": "secret_app",
     }, clear=True)
+    def test_connect_registers_ws_future_supervisor_callback(self):
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        ws_client = SimpleNamespace()
+
+        class _Future:
+            def __init__(self):
+                self.callbacks = []
+
+            def add_done_callback(self, callback):
+                self.callbacks.append(callback)
+
+        future = _Future()
+
+        with (
+            patch("plugins.platforms.feishu.adapter.FEISHU_AVAILABLE", True),
+            patch("plugins.platforms.feishu.adapter.FEISHU_WEBSOCKET_AVAILABLE", True),
+            patch("plugins.platforms.feishu.adapter.lark", SimpleNamespace(LogLevel=SimpleNamespace(INFO="INFO", WARNING="WARNING"))),
+            patch("plugins.platforms.feishu.adapter.EventDispatcherHandler") as mock_handler_class,
+            patch("plugins.platforms.feishu.adapter.FeishuWSClient", return_value=ws_client),
+            patch("plugins.platforms.feishu.adapter._run_official_feishu_ws_client"),
+            patch("plugins.platforms.feishu.adapter.acquire_scoped_lock", return_value=(True, None)),
+            patch("plugins.platforms.feishu.adapter.release_scoped_lock"),
+            patch.object(adapter, "_hydrate_bot_identity", new=AsyncMock()),
+            patch.object(adapter, "_build_lark_client", return_value=SimpleNamespace()),
+        ):
+            _mock_event_dispatcher_builder(mock_handler_class)
+
+            class _Loop:
+                def run_in_executor(self, *_args, **_kwargs):
+                    return future
+
+                def is_closed(self):
+                    return False
+
+            with patch("plugins.platforms.feishu.adapter.asyncio.get_running_loop", return_value=_Loop()):
+                connected = asyncio.run(adapter.connect())
+
+        self.assertTrue(connected)
+        self.assertEqual(future.callbacks, [adapter._handle_ws_future_done])
+
+    @patch.dict(os.environ, {
+        "FEISHU_APP_ID": "cli_app",
+        "FEISHU_APP_SECRET": "secret_app",
+    }, clear=True)
     def test_connect_retries_transient_startup_failure(self):
         from gateway.config import PlatformConfig
         from plugins.platforms.feishu.adapter import FeishuAdapter
@@ -558,6 +605,182 @@ class TestAdapterModule(unittest.TestCase):
         self.assertEqual(fake_client._reconnect_nonce, 2)
         self.assertEqual(fake_client._reconnect_interval, 3)
         self.assertEqual(fake_client._ping_interval, 4)
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_ws_future_exit_sets_retryable_fatal_and_notifies_supervisor(self):
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        adapter._running = True
+        adapter._disconnecting = False
+        adapter._notify_fatal_error = AsyncMock()
+
+        class _Future:
+            def result(self):
+                raise RuntimeError("receive message loop exit")
+
+        scheduled = []
+
+        class _Loop:
+            def create_task(self, coro):
+                scheduled.append(coro)
+                return SimpleNamespace()
+
+        future = _Future()
+        adapter._ws_future = future
+
+        with patch("plugins.platforms.feishu.adapter.asyncio.get_running_loop", return_value=_Loop()):
+            adapter._handle_ws_future_done(future)
+
+        self.assertEqual(adapter.fatal_error_code, "feishu_websocket_exited")
+        self.assertTrue(adapter.fatal_error_retryable)
+        self.assertIn("receive message loop exit", adapter.fatal_error_message)
+        self.assertIsNone(adapter._ws_future)
+        self.assertEqual(len(scheduled), 1)
+        asyncio.run(scheduled[0])
+        adapter._notify_fatal_error.assert_awaited_once()
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_ws_future_normal_completion_sets_retryable_fatal(self):
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        adapter._running = True
+        adapter._disconnecting = False
+        adapter._notify_fatal_error = AsyncMock()
+
+        class _Future:
+            def result(self):
+                return None
+
+        scheduled = []
+
+        class _Loop:
+            def create_task(self, coro):
+                scheduled.append(coro)
+                return SimpleNamespace()
+
+        future = _Future()
+        adapter._ws_future = future
+
+        with patch("plugins.platforms.feishu.adapter.asyncio.get_running_loop", return_value=_Loop()):
+            adapter._handle_ws_future_done(future)
+
+        self.assertEqual(adapter.fatal_error_code, "feishu_websocket_exited")
+        self.assertTrue(adapter.fatal_error_retryable)
+        self.assertEqual(
+            adapter.fatal_error_message,
+            "Feishu websocket thread exited without an exception",
+        )
+        self.assertIsNone(adapter._ws_future)
+        self.assertEqual(len(scheduled), 1)
+        asyncio.run(scheduled[0])
+        adapter._notify_fatal_error.assert_awaited_once()
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_ws_future_exit_removes_adapter_and_queues_gateway_retry(self):
+        from gateway.config import GatewayConfig, Platform, PlatformConfig
+        from gateway.run import GatewayRunner
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        async def run_scenario():
+            platform_config = PlatformConfig(enabled=True, token="test")
+            runner = object.__new__(GatewayRunner)
+            runner.config = GatewayConfig(platforms={Platform.FEISHU: platform_config})
+            runner.adapters = {}
+            runner.delivery_router = SimpleNamespace(adapters=runner.adapters)
+            runner._failed_platforms = {}
+            runner._exit_reason = None
+            runner._exit_with_failure = False
+            runner._update_platform_runtime_status = Mock()
+            runner.stop = AsyncMock()
+
+            adapter = FeishuAdapter(platform_config)
+            adapter._running = True
+            adapter._disconnecting = False
+            adapter.disconnect = AsyncMock()
+            adapter.set_fatal_error_handler(runner._handle_adapter_fatal_error)
+            runner.adapters[Platform.FEISHU] = adapter
+
+            future = asyncio.get_running_loop().create_future()
+            future.set_exception(RuntimeError("receive message loop exit"))
+            adapter._ws_future = future
+
+            scheduled = []
+            real_loop = asyncio.get_running_loop()
+
+            class _Loop:
+                def create_task(self, coro):
+                    task = real_loop.create_task(coro)
+                    scheduled.append(task)
+                    return task
+
+            before = time.monotonic()
+            with patch(
+                "plugins.platforms.feishu.adapter.asyncio.get_running_loop",
+                return_value=_Loop(),
+            ):
+                adapter._handle_ws_future_done(future)
+            await scheduled[0]
+            after = time.monotonic()
+
+            self.assertNotIn(Platform.FEISHU, runner.adapters)
+            self.assertIs(runner.delivery_router.adapters, runner.adapters)
+            adapter.disconnect.assert_awaited_once()
+            retry = runner._failed_platforms[Platform.FEISHU]
+            self.assertIs(retry["config"], platform_config)
+            self.assertEqual(retry["attempts"], 0)
+            self.assertLessEqual(before, retry["next_retry"])
+            self.assertLessEqual(retry["next_retry"], after)
+            runner.stop.assert_not_awaited()
+
+        asyncio.run(run_scenario())
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_ws_future_exit_during_disconnect_does_not_raise_fatal(self):
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        adapter._running = False
+        adapter._disconnecting = True
+        adapter._notify_fatal_error = AsyncMock()
+
+        class _Future:
+            def result(self):
+                raise RuntimeError("disconnect race")
+
+        future = _Future()
+        adapter._ws_future = future
+
+        adapter._handle_ws_future_done(future)
+
+        self.assertIsNone(adapter.fatal_error_code)
+        adapter._notify_fatal_error.assert_not_called()
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_ws_future_cancel_during_disconnect_does_not_raise_fatal(self):
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        adapter._running = False
+        adapter._disconnecting = True
+        adapter._notify_fatal_error = AsyncMock()
+
+        class _Future:
+            def result(self):
+                raise asyncio.CancelledError()
+
+        future = _Future()
+        adapter._ws_future = future
+
+        adapter._handle_ws_future_done(future)
+
+        self.assertIsNone(adapter.fatal_error_code)
+        adapter._notify_fatal_error.assert_not_called()
 
 
 def _admits_group(adapter, message, sender_id, chat_id=""):

@@ -1434,6 +1434,7 @@ class FeishuAdapter(BasePlatformAdapter):
         self._ws_future: Optional[asyncio.Future] = None
         self._ws_thread_loop: Optional[asyncio.AbstractEventLoop] = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._disconnecting = False
         self._webhook_runner: Optional[Any] = None
         self._webhook_site: Optional[Any] = None
         self._event_handler: Optional[Any] = None
@@ -1662,6 +1663,7 @@ class FeishuAdapter(BasePlatformAdapter):
             return False
 
         try:
+            self._disconnecting = False
             self._app_lock_identity = self._app_id
             acquired, existing = acquire_scoped_lock(
                 _FEISHU_APP_LOCK_SCOPE,
@@ -1693,6 +1695,7 @@ class FeishuAdapter(BasePlatformAdapter):
 
     async def disconnect(self) -> None:
         """Disconnect from Feishu/Lark."""
+        self._disconnecting = True
         self._running = False
         await self._cancel_pending_tasks(self._pending_text_batch_tasks)
         await self._cancel_pending_tasks(self._pending_media_batch_tasks)
@@ -4507,6 +4510,54 @@ class FeishuAdapter(BasePlatformAdapter):
     def _response_succeeded(response: Any) -> bool:
         return bool(response and getattr(response, "success", lambda: False)())
 
+    def _handle_ws_future_done(self, future: Any) -> None:
+        """Bridge post-startup websocket exits into the gateway retry ladder."""
+        if future is not self._ws_future:
+            return
+
+        if self._disconnecting or not self._running:
+            try:
+                future.result()
+            except asyncio.CancelledError:
+                return
+            except Exception:
+                logger.debug("[Feishu] Websocket thread exited during shutdown", exc_info=True)
+            return
+
+        exc: Optional[BaseException] = None
+        try:
+            future.result()
+        except asyncio.CancelledError as err:
+            exc = err
+        except Exception as err:
+            exc = err
+
+        if exc is None:
+            message = "Feishu websocket thread exited without an exception"
+            exc_info: Any = False
+        else:
+            message = f"Feishu websocket thread exited: {exc}"
+            exc_info = exc
+
+        logger.error("[Feishu] %s", message, exc_info=exc_info)
+        self._set_fatal_error("feishu_websocket_exited", message, retryable=True)
+        self._ws_future = None
+
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        loop.create_task(self._notify_feishu_runtime_fatal())
+
+    async def _notify_feishu_runtime_fatal(self) -> None:
+        try:
+            await self._notify_fatal_error()
+        except Exception:
+            logger.warning(
+                "[Feishu] Failed to notify gateway supervisor about websocket exit",
+                exc_info=True,
+            )
+
     @staticmethod
     def _extract_response_field(response: Any, field_name: str) -> Any:
         if not FeishuAdapter._response_succeeded(response):
@@ -4590,6 +4641,7 @@ class FeishuAdapter(BasePlatformAdapter):
             self._ws_client,
             self,
         )
+        self._ws_future.add_done_callback(self._handle_ws_future_done)
 
     async def _connect_webhook(self) -> None:
         if not FEISHU_WEBHOOK_AVAILABLE:

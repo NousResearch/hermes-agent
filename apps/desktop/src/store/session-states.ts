@@ -540,12 +540,23 @@ export function openSessionTile(
   }
 }
 
+/** Whether the selected primary session is actually visible in the workspace.
+ * A full-page route can cover the workspace while leaving the prior selection
+ * intact; in that state a sidebar click must navigate back to the chat route. */
+export function mainSessionIsOnScreen(
+  storedSessionId: string,
+  selectedStoredSessionId: null | string,
+  workspaceIsPage: boolean
+): boolean {
+  return storedSessionId === selectedStoredSessionId && !workspaceIsPage
+}
+
 /** If a session is already ON SCREEN — an open tile OR the one loaded in main —
  *  front its tab (and focus its zone) and return true. A sidebar click on an
  *  already-open chat JUMPS to its tab instead of reloading it; `false` means the
  *  caller must load it into main. Covers the two dead clicks: an open tile, and
  *  the main session while focus sits on a tile (route unchanged → no reload). */
-export function focusOpenSession(storedSessionId: string): boolean {
+export function focusOpenSession(storedSessionId: string, workspaceIsPage = false): boolean {
   if ($sessionTiles.get().some(t => t.storedSessionId === storedSessionId)) {
     const paneId = `${TILE_PANE_PREFIX}${storedSessionId}`
     revealTreePane(paneId) // un-dismiss + adopt + front in its group
@@ -561,7 +572,9 @@ export function focusOpenSession(storedSessionId: string): boolean {
 
   // Already the main session: front the workspace tab and drop tile focus so
   // the readouts + sidebar highlight come home (a no-op when main is focused).
-  if (storedSessionId === $selectedStoredSessionId.get()) {
+  // A full-page utility route can leave this selection intact while covering
+  // the chat; return false there so the caller navigates back to its route.
+  if (mainSessionIsOnScreen(storedSessionId, $selectedStoredSessionId.get(), workspaceIsPage)) {
     revealTreePane('workspace')
     noteActiveTreeGroup(null)
 

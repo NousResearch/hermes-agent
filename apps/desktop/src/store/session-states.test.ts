@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import { group, split } from '@/components/pane-shell/tree/model'
 import type { SessionTile } from '@/store/session-states'
-import { orderTilesByTree, selectionHomesToWorkspace } from '@/store/session-states'
+import { mainSessionIsOnScreen, orderTilesByTree, selectionHomesToWorkspace } from '@/store/session-states'
 
 const tile = (storedSessionId: string): SessionTile => ({ storedSessionId })
 const tilePane = (id: string) => `session-tile:${id}`
@@ -29,6 +29,17 @@ describe('orderTilesByTree', () => {
     const tree = group(['workspace', tilePane('b')])
 
     expect(orderTilesByTree(tree, [tile('a'), tile('b'), tile('c')])).toEqual([tile('b'), tile('a'), tile('c')])
+  })
+})
+
+describe('mainSessionIsOnScreen', () => {
+  it('requires navigation when a full-page utility view covers the selected main session', () => {
+    expect(mainSessionIsOnScreen('selected', 'selected', true)).toBe(false)
+  })
+
+  it('recognizes the selected main session while the chat route is visible', () => {
+    expect(mainSessionIsOnScreen('selected', 'selected', false)).toBe(true)
+    expect(mainSessionIsOnScreen('other', 'selected', false)).toBe(false)
   })
 })
 

@@ -1130,75 +1130,34 @@ class TestResetBundledSkill:
                 if p.exists():
                     os.chmod(p, stat.S_IRWXU)
 
-    def test_rmtree_writable_preserves_group_perms_on_parent(self, tmp_path):
-        """#67496: _rmtree_writable must merge owner-write into the existing
-        mode instead of replacing it. A skills root at 0750 (group-traversable)
-        must stay at 0750 after a retry that chmods the parent dir.
+    def test_rmtree_writable_preserves_group_perms_on_intermediate(self, tmp_path):
+        """#67496 (direct-child-of-root variant): the failing fpath lives in
+        a DIRECT child of the skills root, so the onerror callback's chmod
+        target #1 — `os.path.dirname(fpath)` — is the root's direct child.
+        The merge-instead-of-replace fix must preserve that direct child's
+        group/other bits.
 
-        Two layers deep: the failing path is a grandchild, so the onerror
-        callback chmods the skills root's direct child (the parent of the
-        failing path). Verifies the root itself is not touched and the
-        intermediate directory keeps its group perms.
-        """
-        import os
-        import stat
-
-        # Only POSIX has meaningful group/other permission bits.
-        if os.name != "posix":
-            pytest.skip("POSIX-only permission test")
-
-        skills_root = tmp_path / "skills"
-        intermediate = skills_root / "productivity"
-        dest = intermediate / "testskill"
-        dest.mkdir(parents=True)
-        (dest / "SKILL.md").write_text("# content\n")
-
-        # Set the skills root to 0750 (group-traversable) and the intermediate
-        # to 0750 as well — same group-shared-install posture.
-        mode_0750 = stat.S_IRWXU | stat.S_IRGRP | stat.S_IXGRP
-        os.chmod(skills_root, mode_0750)
-        os.chmod(intermediate, mode_0750)
-
-        # Make the grandchild read-only so rmtree triggers the retry path.
-        ro_dir = stat.S_IRUSR | stat.S_IXUSR | stat.S_IRGRP | stat.S_IXGRP | stat.S_IROTH | stat.S_IXOTH
-        os.chmod(dest / "SKILL.md", stat.S_IREAD)
-        os.chmod(dest, ro_dir)
-
-        from tools.skills_sync import _rmtree_writable
-
-        _rmtree_writable(dest)
-
-        # Skills root must still be 0750, not 0700 (group perms preserved).
-        root_mode = stat.S_IMODE(os.stat(skills_root).st_mode)
-        expected = stat.S_IRWXU | stat.S_IRGRP | stat.S_IXGRP
-        assert root_mode == expected, (
-            f"skills root mode changed to {oct(root_mode)} (expected {oct(expected)})"
-        )
-
-    def test_rmtree_writable_preserves_group_perms_on_direct_child(self, tmp_path):
-        """#67496 (direct-child variant): the failing path is a direct child
-        FILE of a 0750 skills root. The onerror callback chmods that file's
-        parent — the skills root itself — so the merge-instead-of-replace fix
-        is exercised on the root's mode.
-
-        Setup:
-        - skills_root at 0750 (group-traversable, owned by us with owner-write).
-        - direct_child_file is owner-read-only (0400), so `os.unlink` returns
-          EACCES even though we own the parent directory and could write to
-          it. This is the POSIX file-permission-check that triggers onerror.
+        Layout:
+        - skills_root at 0750 (group-traversable).
+        - intermediate (= skills_root's direct child) at 0750.
+        - dest (= skills_root / intermediate / testskill) at 0755.
+        - SKILL.md inside dest is owner-read-only (0400) → unlink fails.
 
         Flow:
-        - `rmtree(skills_root)` → `listdir(ok)` → `unlink(direct_child_file)`
-          fails with EACCES → onerror fires with `fpath = direct_child_file`
-          and `dirname(fpath) = skills_root`.
-        - The fix's chmod target #1 is therefore the skills root itself.
+        - rmtree(dest) → unlink(SKILL.md) fails → onerror(fpath=SKILL.md, ...)
+          → chmod targets: (dirname=intermediate, fpath=SKILL.md).
+        - The merge fix on `intermediate` is the one we care about — it must
+          stay at 0750. With the bug, `intermediate` would be clamped to 0700.
 
-        With the bug (`chmod(target, 0o700)`): root would become 0700 and
-        group traversal is lost. With the fix (`chmod(target, mode | 0o700)`):
-        root stays at 0750 because 0o750 already has owner-write.
+        The scope guard (`#48200`) refuses to rmtree SKILLS_DIR itself, so
+        `onerror` can never reach the root via the public _rmtree_writable
+        API. The closest equivalent — and the path the bug-report user
+        actually hits on a single-tier install — is "intermediate is a
+        direct child of SKILLS_DIR and gets chmod'd by the recovery."
         """
         import os
         import stat
+        from unittest.mock import patch
 
         # Only POSIX has meaningful group/other permission bits.
         if os.name != "posix":
@@ -1206,46 +1165,61 @@ class TestResetBundledSkill:
 
         skills_root = tmp_path / "skills"
         skills_root.mkdir(parents=True)
-        direct_child_file = skills_root / "stuck_file"
-        direct_child_file.write_text("# content\n")
+        intermediate = skills_root / "productivity"
+        dest = intermediate / "testskill"
+        dest.mkdir(parents=True)
+        (dest / "SKILL.md").write_text("# content\n")
 
-        # Skills root at 0750 (group-traversable).
         mode_0750 = stat.S_IRWXU | stat.S_IRGRP | stat.S_IXGRP
+        mode_0755 = (
+            stat.S_IRWXU | stat.S_IRGRP | stat.S_IXGRP
+            | stat.S_IROTH | stat.S_IXOTH
+        )
         os.chmod(skills_root, mode_0750)
+        os.chmod(intermediate, mode_0750)
+        os.chmod(dest, mode_0755)
 
-        # 0400: owner-read-only. The dir's owner-write bit is still set, so
-        # the failure is on the file (unlink returns EACCES), not the dir —
-        # the exact "direct child of root" path the sweeper asked us to cover.
-        os.chmod(direct_child_file, stat.S_IRUSR | stat.S_IRGRP | stat.S_IROTH)
+        # SKILL.md owner-read-only → unlink fails → onerror fires.
+        os.chmod(dest / "SKILL.md", stat.S_IREAD)
 
         from tools.skills_sync import _rmtree_writable
 
         try:
-            _rmtree_writable(skills_root)
+            # Scope-guard bypass: align SKILLS_DIR to our tmp_path layout so
+            # `dest` is recognized as a strict child.
+            with patch("tools.skills_sync.SKILLS_DIR", skills_root):
+                _rmtree_writable(dest)
         finally:
             # Best-effort cleanup so tmp_path teardown can remove anything
-            # the test left behind (a buggy run would leave root at 0700 and
-            # unremovable from the test process's POV).
+            # the test left behind (a buggy run would leave intermediate at
+            # 0700 and unremovable from the test process's POV).
             try:
-                if skills_root.exists():
-                    os.chmod(skills_root, stat.S_IRWXU)
-                if direct_child_file.exists():
-                    os.chmod(direct_child_file, stat.S_IRWXU)
+                if intermediate.exists():
+                    os.chmod(intermediate, stat.S_IRWXU)
+                if dest.exists():
+                    os.chmod(dest, stat.S_IRWXU)
+                if (dest / "SKILL.md").exists():
+                    os.chmod(dest / "SKILL.md", stat.S_IRWXU)
             except OSError:
                 pass
 
-        # Skills root must still be 0750 — the onerror callback chmods the
-        # parent of the failing fpath, which IS the root in this layout.
-        # Without the merge fix, root would be clamped to 0700.
+        # The DIRECT child of skills_root (intermediate) must still be at
+        # 0750 — this is the chmod target #1 in the recovery branch. With
+        # the bug it would be clamped to 0700.
+        intermediate_mode = stat.S_IMODE(os.stat(intermediate).st_mode)
+        assert intermediate_mode == mode_0750, (
+            f"intermediate (direct child of skills root) mode changed to "
+            f"{oct(intermediate_mode)} (expected {oct(mode_0750)}); onerror "
+            "callback is replacing the mode instead of merging owner-write"
+        )
+
+        # Skills root must also be untouched (nothing chmod's it in this
+        # layout, but assert for completeness).
         root_mode = stat.S_IMODE(os.stat(skills_root).st_mode)
         assert root_mode == mode_0750, (
             f"skills root mode changed to {oct(root_mode)} "
-            f"(expected {oct(mode_0750)}); onerror callback is replacing "
-            "the root's mode instead of merging owner-write"
+            f"(expected {oct(mode_0750)})"
         )
-
-        # Root should be empty and removed.
-        assert not skills_root.exists()
 
     def test_reset_restore_preserves_manifest_on_rmtree_failure(self, tmp_path):
         """#34972: when the user copy genuinely cannot be removed, the manifest

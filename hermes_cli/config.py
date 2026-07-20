@@ -1571,8 +1571,7 @@ DEFAULT_CONFIG = {
     #   Set true where openrouter.ai is unreachable — corporate proxies that
     #   refuse the CONNECT tunnel (502), firewalls, or air-gapped hosts — to
     #   stop per-cold-start network stalls and log spam. Context/pricing then
-    #   resolve from the hardcoded tiers plus any cached data. The
-    #   HERMES_DISABLE_OPENROUTER_METADATA env var overrides this when set.
+    #   resolve from the hardcoded tiers plus any cached data.
     "openrouter": {
         "response_cache": True,
         "response_cache_ttl": 300,

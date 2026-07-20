@@ -895,10 +895,6 @@ def _add_model_aliases(cache: Dict[str, Dict[str, Any]], model_id: str, entry: D
         cache.setdefault(bare_model, entry)
 
 
-_OPENROUTER_DISABLE_TRUTHY = ("1", "true", "yes", "on")
-_OPENROUTER_DISABLE_FALSY = ("0", "false", "no", "off")
-
-
 def _openrouter_metadata_disabled() -> bool:
     """True when operators opt out of the OpenRouter model-metadata fetch.
 
@@ -911,18 +907,7 @@ def _openrouter_metadata_disabled() -> bool:
 
     The fetch is then skipped entirely; model context/pricing resolve from the
     hardcoded tiers plus any cached data, and the log stays clean.
-
-    The ``HERMES_DISABLE_OPENROUTER_METADATA`` environment variable overrides
-    the config value when set — ``1``/``true``/``yes``/``on`` to disable,
-    ``0``/``false``/``no``/``off`` to force-enable — as an ad-hoc ops toggle
-    that doesn't require editing ``config.yaml``.
     """
-    env = os.getenv("HERMES_DISABLE_OPENROUTER_METADATA", "").strip().lower()
-    if env in _OPENROUTER_DISABLE_TRUTHY:
-        return True
-    if env in _OPENROUTER_DISABLE_FALSY:
-        return False
-
     try:
         from hermes_cli.config import load_config_readonly
 
@@ -942,8 +927,7 @@ def fetch_model_metadata(force_refresh: bool = False) -> Dict[str, Dict[str, Any
     in-memory timestamp is refreshed and the disk cache is touched — so callers
     back off for the TTL instead of re-hitting a known-blocked endpoint on every
     request and cold start. Set ``openrouter.disable_metadata_fetch: true`` in
-    ``config.yaml`` (or the ``HERMES_DISABLE_OPENROUTER_METADATA`` env override)
-    to skip the network entirely.
+    ``config.yaml`` to skip the network entirely.
     """
     global _model_metadata_cache, _model_metadata_cache_time, _openrouter_fetch_warned
 

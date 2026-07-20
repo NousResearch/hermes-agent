@@ -2155,11 +2155,17 @@ class MCPServerTask:
         finally:
             for t in (shutdown_task, reconnect_task):
                 if not t.done():
-                    t.cancel()
                     try:
-                        await t
-                    except (asyncio.CancelledError, Exception):
+                        t.cancel()
+                    except RuntimeError:
+                        # Event loop is closed during shutdown — the outer
+                        # task was cancelled, these inner tasks are moot.
                         pass
+                    else:
+                        try:
+                            await t
+                        except (asyncio.CancelledError, Exception):
+                            pass
 
         if self._shutdown_event.is_set():
             return "shutdown"
@@ -5899,7 +5905,21 @@ def _stop_mcp_loop(*, only_if_idle: bool = False) -> bool:
         _mcp_loop = None
         _mcp_thread = None
     if loop is not None:
-        loop.call_soon_threadsafe(loop.stop)
+        # Cancel all pending tasks on the MCP loop before stopping and
+        # closing it, so that coroutines awaiting the shutdown event don't
+        # hit RuntimeError("Event loop is closed") when their cancel() or
+        # cleanup path calls call_soon() on the dead loop during GC.
+        # These unhandled exceptions print as "Exception ignored in:" to
+        # stderr — noisy but harmless.  Drain them here instead.
+        async def _cancel_and_drain():
+            """Cancel all tasks and wait for them to finish before stopping."""
+            _tasks = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
+            for _t in _tasks:
+                _t.cancel()
+            if _tasks:
+                await asyncio.wait(_tasks, timeout=3)
+            loop.stop()
+        loop.call_soon_threadsafe(lambda: asyncio.ensure_future(_cancel_and_drain()))
         if thread is not None:
             thread.join(timeout=5)
         try:

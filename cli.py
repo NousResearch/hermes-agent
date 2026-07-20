@@ -1321,6 +1321,18 @@ def _notify_single_query_session_finalize(cli, *, reason: str = "shutdown") -> N
 
 def _finalize_single_query(cli) -> None:
     """Close one-shot CLI resources before releasing the active session lease."""
+    # Install the closed-loop error suppressor for the single-query path
+    # (interactive mode does this in HermesCLI.run()). Without it, httpx/
+    # httpcore transport finalizers fire during Python interpreter teardown
+    # and hit the already-closed event loop, printing RuntimeError to stderr.
+    try:
+        import asyncio as _aio
+        _loop = _aio.get_running_loop()
+        _loop.set_exception_handler(_suppress_closed_loop_errors)
+    except RuntimeError:
+        pass  # No running loop — nothing to patch
+    except Exception:
+        pass
     try:
         _notify_single_query_session_finalize(cli)
         _run_cleanup(notify_session_finalize=False)

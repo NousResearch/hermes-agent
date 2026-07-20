@@ -5,6 +5,7 @@ import type { CSSProperties, ReactElement, PointerEvent as ReactPointerEvent } f
 import { PREVIEW_RAIL_MAX_WIDTH, PREVIEW_RAIL_MIN_WIDTH } from '@/app/chat/right-rail'
 import { PALETTE_AREA, type PaletteContribution } from '@/app/command-palette/contrib'
 import { type StatusbarItem } from '@/app/shell/statusbar-controls'
+import { IdleMount } from '@/components/idle-mount'
 import { toggleLayoutEditMode } from '@/components/pane-shell/edit-mode'
 import { allPaneIds, group, split } from '@/components/pane-shell/tree/model'
 import { LayoutTreeRoot } from '@/components/pane-shell/tree/renderer'
@@ -182,7 +183,11 @@ registry.registerMany([
       minWidth: FILE_BROWSER_MIN_WIDTH,
       maxWidth: FILE_BROWSER_MAX_WIDTH
     },
-    render: () => <FilesPane />
+    render: () => (
+      <IdleMount>
+        <FilesPane />
+      </IdleMount>
+    )
   },
   {
     id: 'preview',
@@ -200,7 +205,11 @@ registry.registerMany([
       minWidth: PREVIEW_RAIL_MIN_WIDTH,
       maxWidth: PREVIEW_RAIL_MAX_WIDTH
     },
-    render: () => <PreviewRailPane />
+    render: () => (
+      <IdleMount>
+        <PreviewRailPane />
+      </IdleMount>
+    )
   },
   {
     id: 'review',
@@ -216,7 +225,11 @@ registry.registerMany([
       minWidth: FILE_BROWSER_MIN_WIDTH,
       maxWidth: FILE_BROWSER_MAX_WIDTH
     },
-    render: () => <ReviewPaneContent />
+    render: () => (
+      <IdleMount>
+        <ReviewPaneContent />
+      </IdleMount>
+    )
   },
   {
     // Optional chrome — in NO default layout. Adoption stacks it with the
@@ -227,7 +240,11 @@ registry.registerMany([
     // revealOnPreset: the Quad layout places logs, so applying it turns the
     // logs pane on (like a ⌘K "Toggle logs") instead of leaving it collapsed.
     data: { placement: 'bottom', height: '20vh', minHeight: '7.5rem', maxHeight: '80vh', revealOnPreset: true },
-    render: () => <LogsPane />
+    render: () => (
+      <IdleMount>
+        <LogsPane />
+      </IdleMount>
+    )
   }
 ])
 

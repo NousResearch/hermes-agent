@@ -59,7 +59,10 @@ class TestAlibabaPaygIdentity:
         from hermes_cli.models import CANONICAL_PROVIDERS
 
         assert PROVIDER_REGISTRY["alibaba"].name == "Qwen Cloud"
-        assert next(p for p in CANONICAL_PROVIDERS if p.slug == "alibaba").label == "Qwen Cloud"
+        assert (
+            next(p for p in CANONICAL_PROVIDERS if p.slug == "alibaba").label
+            == "Qwen Cloud"
+        )
 
     @pytest.mark.parametrize("alias", PAYG_ALIASES)
     def test_alias_resolves_to_payg_canonical(self, alibaba_profile, alias):
@@ -76,9 +79,9 @@ class TestAlibabaPaygIdentity:
         assert alibaba_profile.base_url == PAYG_BASE_URL
         assert alibaba_profile.env_vars[0] == "DASHSCOPE_API_KEY"
         assert "DASHSCOPE_BASE_URL" in alibaba_profile.env_vars
-        assert alibaba_profile.env_vars.index("DASHSCOPE_API_KEY") < alibaba_profile.env_vars.index(
-            "DASHSCOPE_BASE_URL"
-        )
+        assert alibaba_profile.env_vars.index(
+            "DASHSCOPE_API_KEY"
+        ) < alibaba_profile.env_vars.index("DASHSCOPE_BASE_URL")
 
         from hermes_cli.auth import PROVIDER_REGISTRY
 
@@ -98,7 +101,9 @@ class TestAlibabaPaygIdentity:
         """
         fallback_models = tuple(alibaba_profile.fallback_models)
         assert fallback_models
-        assert all(isinstance(model, str) and model.strip() for model in fallback_models)
+        assert all(
+            isinstance(model, str) and model.strip() for model in fallback_models
+        )
         assert "qwen3.8-max-preview" not in {model.lower() for model in fallback_models}
 
         auxiliary = alibaba_profile.default_aux_model
@@ -165,7 +170,9 @@ class TestAlibabaPaygCredentials:
         assert runtime["base_url"] == "https://payg.example.test/v1"
         assert runtime["api_mode"] == "chat_completions"
 
-    def test_payg_does_not_cross_fallback_to_token_plan_key(self, monkeypatch, alibaba_profile):
+    def test_payg_does_not_cross_fallback_to_token_plan_key(
+        self, monkeypatch, alibaba_profile
+    ):
         monkeypatch.delenv("DASHSCOPE_API_KEY", raising=False)
         monkeypatch.delenv("DASHSCOPE_BASE_URL", raising=False)
         monkeypatch.setenv("QWEN_TOKEN_PLAN_API_KEY", "token-plan-key-canary")

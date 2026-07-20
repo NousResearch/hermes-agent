@@ -133,6 +133,11 @@ def _save_discovered_models_to_config(
             if entry_url.rstrip("/").lower() != norm_url:
                 continue
             existing = entry.get("models")
+            # Preserve per-model metadata: when ``models`` is a mapping
+            # (e.g. ``{"model-a": {"context_length": 8192}}``), the user
+            # has curated metadata per model — do not replace it.
+            if isinstance(existing, dict):
+                continue
             # Only update when models are stale — avoids unnecessary
             # config writes on every picker open.
             if isinstance(existing, list) and existing == model_ids:

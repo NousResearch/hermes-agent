@@ -570,7 +570,7 @@ describe('createBackendSessionForSend profile routing', () => {
     render(<Harness onReady={next => (handle = next)} requestGateway={requestGateway} />)
     await waitFor(() => expect(handle).not.toBeNull())
 
-    let createPromise!: Promise<null | string>
+    let createPromise!: Promise<{ routeToken: string | null; runtimeSessionId: string; storedSessionId: string | null } | null>
     act(() => {
       createPromise = handle!.createBackendSessionForSend()
     })

@@ -123,8 +123,8 @@ def show_status(args):
 
     env_path = get_env_path()
     rich.print(Text.assemble(
-        "  .env file:    ", check_mark(env_path.exists(), " "),
-        f"{'exists' if env_path.exists() else 'not found'}"
+        "  .env file:    ", check_mark(env_path.exists()),
+        f" {'exists' if env_path.exists() else 'not found'}"
     ))
 
     try:
@@ -540,7 +540,9 @@ def show_status(args):
     if jobs_file.exists():
         import json
         try:
-            with open(jobs_file, encoding="utf-8") as f:
+            # utf-8-sig: same dialect as cron/jobs.load_jobs — Windows editors
+            # may leave a UTF-8 BOM that plain utf-8 json.load rejects.
+            with open(jobs_file, encoding="utf-8-sig") as f:
                 data = json.load(f)
                 jobs = data.get("jobs", [])
                 enabled_jobs = [j for j in jobs if j.get("enabled", True)]

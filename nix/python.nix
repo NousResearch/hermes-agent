@@ -7,10 +7,13 @@
   pyproject-nix,
   pyproject-build-systems,
   stdenv,
+  # Filtered Python source (see lib.nix pythonSrc) — keeps JS/docs/skills
+  # edits from invalidating the venv derivation.
+  pythonSrc,
   dependency-groups ? [ "all" ],
 }:
 let
-  workspace = uv2nix.lib.workspace.loadWorkspace { workspaceRoot = ./..; };
+  workspace = uv2nix.lib.workspace.loadWorkspace { workspaceRoot = pythonSrc; };
   hacks = callPackage pyproject-nix.build.hacks { };
 
   overlay = workspace.mkPyprojectOverlay {
@@ -110,11 +113,18 @@ let
         ]
       );
 
-  editableOverlay = workspace.mkEditablePyprojectOverlay {
+  # The editable venv points at the live checkout, so it uses an
+  # UNFILTERED workspace rooted at a real path — mkEditablePyprojectOverlay
+  # computes relative paths via lib.path.splitRoot, which rejects the
+  # filtered pythonSrc (a cleanSourceWith set, not a path).  Filtering
+  # buys nothing here anyway: the editable install reads from
+  # $HERMES_PYTHON_SRC_ROOT at runtime.
+  workspaceRoot = ./..;
+  editableWorkspace = uv2nix.lib.workspace.loadWorkspace { inherit workspaceRoot; };
+  editableOverlay = editableWorkspace.mkEditablePyprojectOverlay {
     root = "$HERMES_PYTHON_SRC_ROOT"; # resolved at shellHook time
   };
 
-  workspaceRoot = ./..;
   editableSet = pythonSet.overrideScope (
     lib.composeManyExtensions [
       editableOverlay

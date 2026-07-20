@@ -1,11 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
+import type { SidebarProjectTree } from '@/app/chat/sidebar/projects/workspace-groups'
 import { $sidebarAgentsGrouped } from '@/store/layout'
 
 import {
   $activeProjectId,
   $projectScope,
   $projectsRpcAvailable,
+  $projectTree,
   $worktreeRefreshToken,
   ALL_PROJECTS,
   createProject,
@@ -13,6 +15,7 @@ import {
   exitProjectScope,
   openProjectCreate,
   pickProjectFolder,
+  projectNameForCwd,
   refreshProjects,
   refreshWorktrees
 } from './projects'
@@ -78,6 +81,68 @@ describe('project scope', () => {
   it('persists the scope to localStorage', () => {
     enterProject('p_abc')
     expect(window.localStorage.getItem('hermes.desktop.projectScope')).toBe('p_abc')
+  })
+})
+
+describe('projectNameForCwd', () => {
+  const treeNode = (
+    over: Partial<SidebarProjectTree> & Pick<SidebarProjectTree, 'id' | 'label'>
+  ): SidebarProjectTree => ({
+    path: null,
+    repos: [],
+    sessionCount: 0,
+    ...over
+  })
+
+  beforeEach(() => {
+    $projectTree.set([])
+  })
+
+  it('names the explicit project owning the cwd (longest path match)', () => {
+    $projectTree.set([
+      treeNode({ id: 'p_web', label: 'Website', path: '/repos/website' }),
+      treeNode({ id: 'p_api', label: 'API', path: '/repos/api' })
+    ])
+
+    expect(projectNameForCwd('/repos/website/src/app')).toBe('Website')
+  })
+
+  it('matches nested repo and worktree paths, not just the project root', () => {
+    $projectTree.set([
+      treeNode({
+        id: 'p_mono',
+        label: 'Monorepo',
+        path: '/repos/mono',
+        repos: [
+          {
+            id: 'r1',
+            label: 'mono',
+            path: '/repos/mono',
+            sessionCount: 0,
+            groups: [{ id: 'g1', label: 'feature', path: '/elsewhere/mono-feature', sessions: [] }]
+          }
+        ]
+      })
+    ])
+
+    // A linked worktree lives OUTSIDE the project root but still belongs to it.
+    expect(projectNameForCwd('/elsewhere/mono-feature/src')).toBe('Monorepo')
+  })
+
+  it('ignores auto-projects and the No-project bucket (no named identity)', () => {
+    $projectTree.set([
+      treeNode({ id: '/repos/loose', label: 'loose', path: '/repos/loose', isAuto: true }),
+      treeNode({ id: '__no_project__', label: 'No project', path: null, isNoProject: true })
+    ])
+
+    expect(projectNameForCwd('/repos/loose/src')).toBeNull()
+  })
+
+  it('returns null for a cwd in no project and for a blank cwd', () => {
+    $projectTree.set([treeNode({ id: 'p_web', label: 'Website', path: '/repos/website' })])
+
+    expect(projectNameForCwd('/somewhere/else')).toBeNull()
+    expect(projectNameForCwd('')).toBeNull()
   })
 })
 

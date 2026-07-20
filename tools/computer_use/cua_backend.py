@@ -59,6 +59,70 @@ from tools.computer_use.backend import (
 logger = logging.getLogger(__name__)
 
 
+def _action_result_from(
+    name: str,
+    ok: bool,
+    message: str,
+    meta: Dict[str, Any],
+    structured: Dict[str, Any],
+    *,
+    requested_delivery: Optional[str] = None,
+) -> ActionResult:
+    """Build an ActionResult, lifting cua-driver's structured verdict.
+
+    All structured fields are additive: a driver that omits
+    ``structuredContent`` (or any individual field) leaves the corresponding
+    ActionResult attribute ``None``, so callers and tests see unchanged
+    behavior on old drivers. See the action response shape in
+    cua-driver's mcp-tool-notes and NousResearch/hermes-agent#67052.
+    """
+    sc = structured if isinstance(structured, dict) else {}
+
+    def _pick(key: str) -> Any:
+        # structuredContent is canonical; fall back to a flattened meta copy.
+        if key in sc:
+            return sc.get(key)
+        return meta.get(key)
+
+    verified = _pick("verified")
+    if not isinstance(verified, bool):
+        verified = None
+    effect = _pick("effect")
+    if not isinstance(effect, str):
+        effect = None
+    escalation = _pick("escalation")
+    if not isinstance(escalation, dict):
+        escalation = None
+    path = _pick("path")
+    if not isinstance(path, str):
+        path = None
+    degraded = _pick("degraded")
+    if not isinstance(degraded, bool):
+        degraded = None
+    # Refusal/limitation code — drivers spell it "code" or "reason_code".
+    code = _pick("code") or _pick("reason_code")
+    if not isinstance(code, str):
+        code = None
+    # Echo the delivery mode the caller actually requested (the driver's
+    # `path` records the rung that ran; this records what we asked for).
+    delivery_mode = requested_delivery if isinstance(requested_delivery, str) else None
+
+    return ActionResult(
+        ok=ok,
+        action=name,
+        message=message,
+        meta=meta,
+        verified=verified,
+        effect=effect,
+        escalation=escalation,
+        path=path,
+        degraded=degraded,
+        delivery_mode=delivery_mode,
+        code=code,
+    )
+
+
+
 # ---------------------------------------------------------------------------
 # Update checking
 # ---------------------------------------------------------------------------
@@ -661,6 +725,16 @@ class _CuaDriverSession:
             # outer context-manager exits AFTER this block, so set to
             # None here is fine: stop() has already flipped _started.
             self._session = None
+            # Reset _started so a session that dies for ANY reason (MCP
+            # connection drop, driver crash, unexpected coro exit) is
+            # re-enterable: the next start()/call sees _started False and
+            # rebuilds the session instead of hanging forever on a dead one
+            # via _require_started(). On the normal stop() path this is a
+            # harmless idempotent no-op (stop() already set it False). A
+            # plain bool write is atomic in CPython, so this is safe from
+            # the bridge-loop thread without taking self._lock (which stop()
+            # may hold while awaiting this coro's future). See #55048 Bug 1.
+            self._started = False
 
     async def _populate_capabilities(self, session: Any) -> None:
         """Surface 4: cache per-tool capability sets + capability_version
@@ -960,7 +1034,12 @@ class _CuaDriverSession:
             images: List[str] = []
             data: Any = None
             structured: Optional[Dict] = parsed if isinstance(parsed, dict) else None
+            is_error = False
             if isinstance(parsed, dict):
+                # Current cua-driver CLI responses may report logical failures
+                # in-band even when the subprocess itself exits successfully.
+                # Preserve that bit so stateful callers can fail closed.
+                is_error = parsed.get("isError") is True or parsed.get("is_error") is True
                 shot = parsed.get("screenshot_png_b64")
                 if not shot:
                     # Screenshot was routed to a file (ours or the daemon's choice).
@@ -978,7 +1057,12 @@ class _CuaDriverSession:
                     ec = parsed.get("element_count")
                     summary = f"{ec} elements" if ec is not None else ""
                     data = f"{summary}\n{tree}" if summary else tree
-            return {"data": data, "images": images, "structuredContent": structured, "isError": False}
+            return {
+                "data": data,
+                "images": images,
+                "structuredContent": structured,
+                "isError": is_error,
+            }
         finally:
             if shot_file and os.path.exists(shot_file):
                 try:
@@ -986,7 +1070,24 @@ class _CuaDriverSession:
                 except OSError:
                     pass
 
+    # Lifecycle handshake calls issued BY start()/stop() themselves — these
+    # must not trigger the auto-restart guard below, or start() would recurse
+    # into start() when the session-start hasn't flipped _started yet.
+    _LIFECYCLE_CALLS = frozenset({"start_session", "end_session"})
+
     def call_tool(self, name: str, args: Dict[str, Any], timeout: float = 30.0) -> Dict[str, Any]:
+        # A prior session may have died (MCP drop / driver crash): its
+        # lifecycle coro reset _started to False in its finally (#55048
+        # Bug 1). Re-enter start() so we rebuild the session instead of
+        # calling _require_started() straight into a "not started" raise or
+        # a None session. start() is idempotent when already started. Skip
+        # this for the start_session/end_session handshake, which start()/
+        # stop() drive directly while _started is still in flux.
+        if not self._started and name not in self._LIFECYCLE_CALLS:
+            logger.warning(
+                "cua-driver session not active on %s; (re)starting before call", name
+            )
+            self.start()
         self._require_started()
         # The cua-driver daemon proxy returns POSIX EAGAIN ("Resource
         # temporarily unavailable") for heavier calls like get_window_state when
@@ -1042,7 +1143,9 @@ def _extract_tool_result(mcp_result: Any) -> Dict[str, Any]:
     data: Any = None
     images: List[str] = []
     image_mime_types: List[str] = []
-    is_error = bool(getattr(mcp_result, "isError", False))
+    # Use identity, not truthiness: unittest mocks and proxy objects commonly
+    # synthesize truthy attributes that were never present in the real result.
+    is_error = getattr(mcp_result, "isError", False) is True
     structured: Optional[Dict] = getattr(mcp_result, "structuredContent", None) or None
     text_chunks: List[str] = []
     for part in getattr(mcp_result, "content", []) or []:
@@ -1109,6 +1212,17 @@ def _image_from_tool_result(out: Dict[str, Any]) -> tuple[Optional[str], Optiona
     return None, None
 
 
+def _positive_int(value: Any) -> Optional[int]:
+    """Return a positive integer, rejecting booleans and malformed values."""
+    if isinstance(value, bool) or not isinstance(value, (int, str)):
+        return None
+    try:
+        parsed = int(value)
+    except ValueError:
+        return None
+    return parsed if parsed > 0 else None
+
+
 def _ingest_windows(raw_windows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Normalise cua-driver ``list_windows`` entries, dropping unusable ones.
 
@@ -1123,23 +1237,28 @@ def _ingest_windows(raw_windows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     (``int(w["pid"])``) let one such window abort enumeration of the real,
     targetable windows. We skip the unusable entries instead so capture()
     and focus_app() still find the windows that matter.
+
+    ``z_index`` follows CUA Driver semantics: higher = closer to front.
+    Wayland may return ``z_index: null`` (undefined stacking order); we
+    treat null as the lowest priority so real windows still sort above
+    desktop/root windows, and the backmost never ends up selected as the
+    capture target.
     """
     windows: List[Dict[str, Any]] = []
     for w in raw_windows:
-        pid, window_id = w.get("pid"), w.get("window_id")
-        if pid is None or window_id is None:
+        pid_int = _positive_int(w.get("pid"))
+        window_id_int = _positive_int(w.get("window_id"))
+        if pid_int is None or window_id_int is None:
             continue
-        try:
-            pid_int, window_id_int = int(pid), int(window_id)
-        except (TypeError, ValueError):
-            continue
+        z_raw = w.get("z_index")
+        z_index = z_raw if isinstance(z_raw, (int, float)) and not isinstance(z_raw, bool) else 0
         windows.append({
             "app_name": w.get("app_name", ""),
             "pid": pid_int,
             "window_id": window_id_int,
             "off_screen": not w.get("is_on_screen", True),
             "title": w.get("title", ""),
-            "z_index": w.get("z_index", 0),
+            "z_index": z_index,
         })
     return windows
 
@@ -1158,6 +1277,9 @@ class CuaDriverBackend(ComputerUseBackend):
         self._active_pid: Optional[int] = None
         self._active_window_id: Optional[int] = None
         self._last_app: Optional[str] = None  # last app name targeted via capture/focus_app
+        # Exact identity for capture_after. App names may be generic on Linux
+        # (for example, multiple unrelated Qt windows can say Qt6Application).
+        self._last_target: Optional[Dict[str, Optional[int]]] = None
         # Surface 6 of NousResearch/hermes-agent#47072: per-snapshot
         # `element_index -> element_token` map populated on capture().
         # Action tools (click/scroll/set_value/...) attach the matching
@@ -1243,9 +1365,174 @@ class CuaDriverBackend(ComputerUseBackend):
             return False
         return cua_driver_binary_available()
 
+    def _clear_active_target(self) -> None:
+        """Forget a capture/focus target so a failed lookup cannot misroute input."""
+        self._active_pid = None
+        self._active_window_id = None
+        self._last_app = None
+        self._last_target = None
+        self._snapshot_tokens = {}
+
+    def _failed_capture(self, mode: str, message: str = "") -> CaptureResult:
+        """Return an empty capture after disarming any prior target context."""
+        self._clear_active_target()
+        return CaptureResult(
+            mode=mode,
+            width=0,
+            height=0,
+            png_b64=None,
+            elements=[],
+            app="",
+            window_title=message,
+            png_bytes_len=0,
+        )
+
+    def _call_capture_tool(self, name: str, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Call a capture-stage tool and disarm state on transport or logical failure."""
+        try:
+            out = self._session.call_tool(name, args)
+        except Exception:
+            self._clear_active_target()
+            raise
+        if out.get("isError") is True:
+            message = out.get("data")
+            self._clear_active_target()
+            raise RuntimeError(
+                f"cua-driver {name} failed"
+                + (f": {message}" if isinstance(message, str) and message else "")
+            )
+        return out
+
+    def _load_windows(self) -> List[Dict[str, Any]]:
+        """Load normalized visible windows, with the shared CLI recovery path.
+
+        Windows are sorted by ``z_index`` **descending**: CUA Driver
+        defines higher values as closer to the front, so the frontmost
+        window ends up at index 0 — which is what ``capture()`` and
+        ``focus_app()`` pick as the default target.  ``_ingest_windows``
+        already normalised null ``z_index`` (Wayland) to 0, so those
+        windows sort to the back.
+        """
+        out = self._call_capture_tool(
+            "list_windows",
+            {"on_screen_only": True, "session": self._session_id},
+        )
+        raw_windows = (out.get("structuredContent") or {}).get("windows") or []
+        windows = _ingest_windows(raw_windows)
+        windows.sort(key=lambda w: w["z_index"], reverse=True)
+        if windows:
+            return windows
+
+        logger.warning(
+            "cua-driver list_windows returned no windows over MCP; "
+            "re-fetching via CLI transport",
+        )
+        try:
+            cli_out = self._session._call_tool_via_cli(
+                "list_windows",
+                {"on_screen_only": True, "session": self._session_id},
+                20.0,
+            )
+        except Exception as exc:
+            logger.error("cua-driver CLI re-fetch for list_windows failed: %s", exc)
+            return []
+        if cli_out.get("isError") is True:
+            logger.error("cua-driver CLI re-fetch for list_windows returned an error")
+            self._clear_active_target()
+            return []
+        raw_windows = (cli_out.get("structuredContent") or {}).get("windows") or []
+        windows = _ingest_windows(raw_windows)
+        windows.sort(key=lambda w: w["z_index"], reverse=True)
+        return windows
+
+    def _match_windows_for_app(
+        self, windows: List[Dict[str, Any]], app: str
+    ) -> List[Dict[str, Any]]:
+        """Resolve ``app=`` through exact names before convenience substrings.
+
+        Linux ``list_windows`` can omit an app name while ``list_apps`` retains
+        name/bundle-ID metadata. Exact direct names and exact metadata aliases
+        must win over substring matches: querying ``Code`` must not silently
+        select ``Visual Studio Code`` merely because it is frontmost.
+        """
+        app_lower = app.strip().lower()
+        if not app_lower:
+            return []
+
+        direct_exact = [
+            w for w in windows
+            if app_lower == str(w.get("app_name", "")).strip().lower()
+        ]
+        if direct_exact:
+            return direct_exact
+
+        try:
+            running_apps = self.list_apps()
+        except Exception as exc:
+            # A title can still be the only usable identity on X11 when app
+            # enumeration is unavailable, so retain the constrained title
+            # fallback below instead of treating this as a hard no-match.
+            logger.debug("computer_use list_apps fallback failed for %r: %s", app, exc)
+            running_apps = []
+
+        exact_pids: set[int] = set()
+        partial_pids: set[int] = set()
+        for raw_app in running_apps:
+            if not isinstance(raw_app, dict) or raw_app.get("running") is False:
+                continue
+            raw_pid = raw_app.get("pid")
+            if isinstance(raw_pid, bool) or not isinstance(raw_pid, (int, str)):
+                continue
+            try:
+                pid = int(raw_pid)
+            except ValueError:
+                continue
+            if pid <= 0:
+                continue
+
+            aliases = {
+                value.strip().lower()
+                for key in ("bundle_id", "bundleId", "name", "app_name", "display_name")
+                if isinstance((value := raw_app.get(key)), str) and value.strip()
+            }
+            if app_lower in aliases:
+                exact_pids.add(pid)
+            elif any(app_lower in alias for alias in aliases):
+                partial_pids.add(pid)
+
+        metadata_exact = [w for w in windows if w.get("pid") in exact_pids]
+        if metadata_exact:
+            return metadata_exact
+
+        direct_partial = [
+            w for w in windows
+            if app_lower in str(w.get("app_name", "")).lower()
+        ]
+        if direct_partial:
+            return direct_partial
+
+        metadata_partial = [w for w in windows if w.get("pid") in partial_pids]
+        if metadata_partial:
+            return metadata_partial
+
+        # Some X11 backends expose a title but no app name. Restrict this final
+        # fallback to nameless rows so a localized app name is not overridden
+        # merely because its title happens to be in the caller's language.
+        return [
+            w for w in windows
+            if not str(w.get("app_name", "")).strip()
+            and app_lower in str(w.get("title", "")).lower()
+        ]
+
     # ── Capture ────────────────────────────────────────────────────
-    def capture(self, mode: str = "som", app: Optional[str] = None) -> CaptureResult:
-        """Capture the frontmost on-screen window (optionally filtered by app name).
+    def capture(
+        self,
+        mode: str = "som",
+        app: Optional[str] = None,
+        pid: Optional[int] = None,
+        window_id: Optional[int] = None,
+    ) -> CaptureResult:
+        """Capture the frontmost on-screen window or an exact known target.
 
         Maps hermes `capture(mode, app)` → cua-driver `list_windows` +
         `get_window_state` (ax/som) or `screenshot` (vision).
@@ -1258,41 +1545,35 @@ class CuaDriverBackend(ComputerUseBackend):
         # PR's effective minimum (trycua/cua#1961 + #1908) is well past
         # that, so the fallback is gone — the wrapper now treats the
         # structured shape as the only contract.
-        lw_out = self._session.call_tool(
-            "list_windows",
-            {"on_screen_only": True, "session": self._session_id},
-        )
-
-        def _windows_from(out: Dict[str, Any]) -> List[Dict[str, Any]]:
-            raw_ = (out.get("structuredContent") or {}).get("windows") or []
-            wins_ = _ingest_windows(raw_)
-            # Sort by z_index descending (lowest z_index = frontmost on macOS).
-            wins_.sort(key=lambda w: w["z_index"])
-            return wins_
-
-        windows = _windows_from(lw_out)
-
-        # If the MCP bridge returned an empty/degenerate window list (flaky
-        # session), re-fetch over the CLI transport before giving up — otherwise
-        # the caller sees a silent 0x0 capture even though windows exist.
-        if not windows:
-            logger.warning(
-                "cua-driver list_windows returned no windows over MCP; "
-                "re-fetching via CLI transport",
-            )
-            try:
-                cli_lw = self._session._call_tool_via_cli(
-                    "list_windows",
-                    {"on_screen_only": True, "session": self._session_id},
-                    20.0,
+        # An exact pid/window pair is both the stable capture_after target and
+        # the escape hatch when app/window discovery is unavailable on X11.
+        if pid is not None or window_id is not None:
+            if pid is None or window_id is None:
+                return self._failed_capture(
+                    mode, "<capture targeting requires both pid and window_id>",
                 )
-                windows = _windows_from(cli_lw)
-            except Exception as cli_exc:
-                logger.error("cua-driver CLI re-fetch for list_windows failed: %s", cli_exc)
-
-        if not windows:
-            return CaptureResult(mode=mode, width=0, height=0, png_b64=None,
-                                 elements=[], app="", window_title="", png_bytes_len=0)
+            target_pid = _positive_int(pid)
+            target_window_id = _positive_int(window_id)
+            if target_pid is None or target_window_id is None:
+                return self._failed_capture(
+                    mode, "<capture targeting requires positive integer pid and window_id>",
+                )
+            windows = [{
+                "app_name": app or "",
+                "pid": target_pid,
+                "window_id": target_window_id,
+                "off_screen": False,
+                "title": "",
+                "z_index": 0,
+            }]
+        else:
+            try:
+                windows = self._load_windows()
+            except Exception:
+                self._clear_active_target()
+                raise
+            if not windows:
+                return self._failed_capture(mode)
 
         # Filter by app name (case-insensitive substring) if requested.
         # When the filter matches nothing, surface that explicitly instead of
@@ -1300,7 +1581,7 @@ class CuaDriverBackend(ComputerUseBackend):
         # returned by list_windows is the localized name (e.g. "計算機"), so
         # `app="Calculator"` legitimately matches no windows on a non-English
         # system and the caller needs to retry with the localized name.
-        if app and app.strip().lower() in _SCREEN_CAPTURE_SENTINELS:
+        if pid is None and window_id is None and app and app.strip().lower() in _SCREEN_CAPTURE_SENTINELS:
             # Whole-screen / desktop request. cua-driver has no virtual-desktop
             # capture tool, so resolve to the OS shell/desktop window (the
             # desktop backdrop or the taskbar/menu-bar), which list_windows
@@ -1313,10 +1594,9 @@ class CuaDriverBackend(ComputerUseBackend):
 
             desktop = [w for w in windows if _is_desktop_window(w)]
             if not desktop:
-                return CaptureResult(
-                    mode=mode, width=0, height=0, png_b64=None,
-                    elements=[], app="",
-                    window_title=(
+                return self._failed_capture(
+                    mode,
+                    (
                         f"<no desktop/shell window found for app={app!r}; "
                         f"cua-driver captures one window at a time and exposes "
                         f"no whole-virtual-desktop or per-monitor capture. "
@@ -1324,7 +1604,6 @@ class CuaDriverBackend(ComputerUseBackend):
                         f"specific window instead. On Windows the taskbar is "
                         f"'Shell_TrayWnd' and the desktop is 'Progman'.>"
                     ),
-                    png_bytes_len=0,
                 )
             # Prefer the desktop backdrop (Progman/WorkerW/Finder) over the
             # taskbar when both are present, so a bare "screen" capture shows
@@ -1336,20 +1615,18 @@ class CuaDriverBackend(ComputerUseBackend):
                     for n in ("progman", "workerw", "program manager", "finder", "desktop")
                 ) else 1,
             )
-        elif app:
-            app_lower = app.lower()
-            filtered = [w for w in windows if app_lower in w["app_name"].lower()]
+        elif pid is None and window_id is None and app:
+            filtered = self._match_windows_for_app(windows, app)
             if not filtered:
-                return CaptureResult(
-                    mode=mode, width=0, height=0, png_b64=None,
-                    elements=[], app="",
-                    window_title=(
+                return self._failed_capture(
+                    mode,
+                    (
                         f"<no on-screen window matched app={app!r}; "
-                        f"call list_apps to see available app names "
+                        f"call list_apps to see available app names or bundle IDs "
                         f"(macOS reports localized names, e.g. '計算機' "
-                        f"instead of 'Calculator')>"
+                        f"instead of 'Calculator'; some Linux/Qt apps only "
+                        f"resolve via list_apps metadata)>"
                     ),
-                    png_bytes_len=0,
                 )
             windows = filtered
 
@@ -1357,11 +1634,18 @@ class CuaDriverBackend(ComputerUseBackend):
         target = next((w for w in windows if not w["off_screen"]), windows[0])
         self._active_pid = target["pid"]
         self._active_window_id = target["window_id"]
+        # Tokens belong to the prior window snapshot. Disarm them before any
+        # capture call so an exception cannot pair old tokens with this target.
+        self._snapshot_tokens = {}
         app_name = target["app_name"]
         # Record the resolved app name so capture_after= follow-ups can re-target
         # the same app rather than falling back to the frontmost window.
         if app or not self._last_app:
             self._last_app = app_name
+        self._last_target = {
+            "pid": self._active_pid,
+            "window_id": self._active_window_id,
+        }
 
         # Step 2: capture.
         png_b64: Optional[str] = None
@@ -1390,7 +1674,7 @@ class CuaDriverBackend(ComputerUseBackend):
             )
             sc_out: Optional[Dict[str, Any]] = None
             if use_screenshot:
-                sc_out = self._session.call_tool(
+                sc_out = self._call_capture_tool(
                     "screenshot",
                     {
                         "window_id": self._active_window_id,
@@ -1407,7 +1691,7 @@ class CuaDriverBackend(ComputerUseBackend):
                     sc_out = None
 
             if sc_out is None:
-                gws_out = self._session.call_tool(
+                gws_out = self._call_capture_tool(
                     "get_window_state",
                     {
                         "pid": self._active_pid,
@@ -1444,7 +1728,9 @@ class CuaDriverBackend(ComputerUseBackend):
                         },
                         30.0,
                     )
-                    if cli_out.get("images"):
+                    if cli_out.get("isError") is True:
+                        self._clear_active_target()
+                    elif cli_out.get("images"):
                         png_b64 = cli_out["images"][0]
                         image_mime_type = "image/png"
                 except Exception as cli_exc:
@@ -1453,7 +1739,7 @@ class CuaDriverBackend(ComputerUseBackend):
                     )
         else:
             # get_window_state: AX tree + screenshot.
-            gws_out = self._session.call_tool(
+            gws_out = self._call_capture_tool(
                 "get_window_state",
                 {
                     "pid": self._active_pid,
@@ -1499,7 +1785,9 @@ class CuaDriverBackend(ComputerUseBackend):
                         },
                         30.0,
                     )
-                    if not _gws_is_empty(cli_out):
+                    if cli_out.get("isError") is True:
+                        self._clear_active_target()
+                    elif not _gws_is_empty(cli_out):
                         gws_out = cli_out
                 except Exception as cli_exc:
                     logger.error(
@@ -1569,6 +1857,48 @@ class CuaDriverBackend(ComputerUseBackend):
         )
 
     # ── Pointer ────────────────────────────────────────────────────
+    def _apply_delivery(
+        self,
+        action: str,
+        args: Dict[str, Any],
+        delivery_mode: Optional[str],
+        bring_to_front: bool,
+    ) -> Optional[ActionResult]:
+        """Attach delivery_mode to an input-action args dict.
+
+        Background is the default and never needs a flag. Foreground is only
+        sent when the driver advertises support for it; on an older driver
+        that lacks the capability we refuse with a structured
+        ``foreground_unsupported`` result instead of silently downgrading to
+        background (which would land the input somewhere the model didn't
+        expect). Returns an ActionResult to short-circuit on refusal, or None
+        to proceed. See NousResearch/hermes-agent#67052 phase B.
+        """
+        if not delivery_mode or delivery_mode == "background":
+            return None
+        if delivery_mode != "foreground":
+            return ActionResult(
+                ok=False, action=action, code="bad_delivery_mode",
+                message=f"unknown delivery_mode {delivery_mode!r} — use background|foreground.",
+            )
+        # Foreground requested. Only send it if the driver understands it.
+        if not self._session.supports_capability(
+            "input.delivery_mode", tool=action
+        ):
+            return ActionResult(
+                ok=False, action=action, code="foreground_unsupported",
+                delivery_mode="foreground",
+                message=(
+                    "This cua-driver build does not support foreground "
+                    "delivery (no `input.delivery_mode` capability). Update "
+                    "cua-driver to escalate to the foreground rung."
+                ),
+            )
+        args["delivery_mode"] = "foreground"
+        if bring_to_front:
+            args["bring_to_front"] = True
+        return None
+
     def click(
         self,
         *,
@@ -1578,6 +1908,8 @@ class CuaDriverBackend(ComputerUseBackend):
         button: str = "left",
         click_count: int = 1,
         modifiers: Optional[List[str]] = None,
+        delivery_mode: Optional[str] = None,
+        bring_to_front: bool = False,
     ) -> ActionResult:
         pid = self._active_pid
         if pid is None:
@@ -1606,14 +1938,21 @@ class CuaDriverBackend(ComputerUseBackend):
             args["element_index"] = element
             args["window_id"] = self._active_window_id
         elif x is not None and y is not None:
+            if self._active_window_id is None:
+                return ActionResult(ok=False, action=tool,
+                                    message="No active window_id for coordinate click.")
             args["x"] = x
             args["y"] = y
+            args["window_id"] = self._active_window_id
         else:
             return ActionResult(ok=False, action=tool,
                                 message="click requires element= or x/y.")
         if modifiers:
             args["modifier"] = modifiers
 
+        refusal = self._apply_delivery(tool, args, delivery_mode, bring_to_front)
+        if refusal is not None:
+            return refusal
         return self._action(tool, args)
 
     def drag(
@@ -1625,6 +1964,8 @@ class CuaDriverBackend(ComputerUseBackend):
         to_xy: Optional[Tuple[int, int]] = None,
         button: str = "left",
         modifiers: Optional[List[str]] = None,
+        delivery_mode: Optional[str] = None,
+        bring_to_front: bool = False,
     ) -> ActionResult:
         pid = self._active_pid
         if pid is None:
@@ -1639,11 +1980,18 @@ class CuaDriverBackend(ComputerUseBackend):
             args["to_element"] = to_element
             args["window_id"] = self._active_window_id
         elif from_xy is not None and to_xy is not None:
+            if self._active_window_id is None:
+                return ActionResult(ok=False, action="drag",
+                                    message="No active window_id for coordinate drag.")
             args["from_x"], args["from_y"] = int(from_xy[0]), int(from_xy[1])
             args["to_x"], args["to_y"] = int(to_xy[0]), int(to_xy[1])
+            args["window_id"] = self._active_window_id
         else:
             return ActionResult(ok=False, action="drag",
                                 message="drag requires from_element/to_element or from_coordinate/to_coordinate.")
+        refusal = self._apply_delivery("drag", args, delivery_mode, bring_to_front)
+        if refusal is not None:
+            return refusal
         return self._action("drag", args)
 
     def scroll(
@@ -1655,6 +2003,8 @@ class CuaDriverBackend(ComputerUseBackend):
         x: Optional[int] = None,
         y: Optional[int] = None,
         modifiers: Optional[List[str]] = None,
+        delivery_mode: Optional[str] = None,
+        bring_to_front: bool = False,
     ) -> ActionResult:
         pid = self._active_pid
         if pid is None:
@@ -1669,21 +2019,45 @@ class CuaDriverBackend(ComputerUseBackend):
             args["element_index"] = element
             args["window_id"] = self._active_window_id
         elif x is not None and y is not None:
-            args["x"] = x
-            args["y"] = y
+            if self._active_window_id is None:
+                return ActionResult(ok=False, action="scroll",
+                                    message="No active window_id for coordinate scroll.")
+            # CUA Driver 0.7.1 Linux schema rejects x/y on scroll. Only
+            # include them when the driver explicitly advertises support
+            # for coordinate scrolling; otherwise omit and let the driver
+            # scroll the targeted window (window_id is still sent for
+            # routing).  This is the safe default when capabilities
+            # haven't been discovered yet (older drivers).
+            if self._session.supports_capability(
+                "input.scroll.coordinates", tool="scroll"
+            ):
+                args["x"] = x
+                args["y"] = y
+            args["window_id"] = self._active_window_id
+        refusal = self._apply_delivery("scroll", args, delivery_mode, bring_to_front)
+        if refusal is not None:
+            return refusal
         return self._action("scroll", args)
 
     # ── Keyboard ───────────────────────────────────────────────────
-    def type_text(self, text: str) -> ActionResult:
+    def type_text(self, text: str, *, delivery_mode: Optional[str] = None,
+                  bring_to_front: bool = False) -> ActionResult:
         pid = self._active_pid
-        if pid is None:
+        window_id = self._active_window_id
+        if pid is None or window_id is None:
             return ActionResult(ok=False, action="type_text",
                                 message="No active window — call capture() first.")
-        return self._action("type_text", {"pid": pid, "text": text})
+        args: Dict[str, Any] = {"pid": pid, "window_id": window_id, "text": text}
+        refusal = self._apply_delivery("type_text", args, delivery_mode, bring_to_front)
+        if refusal is not None:
+            return refusal
+        return self._action("type_text", args)
 
-    def key(self, keys: str) -> ActionResult:
+    def key(self, keys: str, *, delivery_mode: Optional[str] = None,
+            bring_to_front: bool = False) -> ActionResult:
         pid = self._active_pid
-        if pid is None:
+        window_id = self._active_window_id
+        if pid is None or window_id is None:
             return ActionResult(ok=False, action="key",
                                 message="No active window — call capture() first.")
 
@@ -1694,9 +2068,18 @@ class CuaDriverBackend(ComputerUseBackend):
 
         if modifiers:
             # hotkey requires at least one modifier + one key.
-            return self._action("hotkey", {"pid": pid, "keys": modifiers + [key_name]})
+            args: Dict[str, Any] = {"pid": pid, "window_id": window_id,
+                                    "keys": modifiers + [key_name]}
+            refusal = self._apply_delivery("hotkey", args, delivery_mode, bring_to_front)
+            if refusal is not None:
+                return refusal
+            return self._action("hotkey", args)
         else:
-            return self._action("press_key", {"pid": pid, "key": key_name})
+            args = {"pid": pid, "window_id": window_id, "key": key_name}
+            refusal = self._apply_delivery("press_key", args, delivery_mode, bring_to_front)
+            if refusal is not None:
+                return refusal
+            return self._action("press_key", args)
 
     # ── Value setter ────────────────────────────────────────────────
     def set_value(self, value: str, element: Optional[int] = None) -> ActionResult:
@@ -1720,12 +2103,17 @@ class CuaDriverBackend(ComputerUseBackend):
     # ── Introspection ──────────────────────────────────────────────
     def list_apps(self) -> List[Dict[str, Any]]:
         out = self._session.call_tool("list_apps", {"session": self._session_id})
-        data = out["data"]
+        structured = out.get("structuredContent")
+        if isinstance(structured, dict) and isinstance(structured.get("apps"), list):
+            return structured["apps"]
+
+        # Older drivers and direct CLI fallbacks may put apps in data instead.
+        data = out.get("data")
         if isinstance(data, list):
             return data
-        if isinstance(data, dict):
-            return data.get("apps", [])
-        # list_apps returns plain text — parse app lines.
+        if isinstance(data, dict) and isinstance(data.get("apps"), list):
+            return data["apps"]
+        # Old text-only drivers retain a small, name/PID-only fallback.
         if isinstance(data, str):
             apps = []
             for line in data.splitlines():
@@ -1734,6 +2122,9 @@ class CuaDriverBackend(ComputerUseBackend):
                     apps.append({"name": m.group(1).strip(), "pid": int(m.group(2))})
             return apps
         return []
+
+    def list_windows(self) -> List[Dict[str, Any]]:
+        return self._load_windows()
 
     def focus_app(self, app: str, raise_window: bool = False) -> ActionResult:
         """Target an app for subsequent actions without stealing system focus.
@@ -1748,16 +2139,13 @@ class CuaDriverBackend(ComputerUseBackend):
         raise_window=True is intentionally ignored: stealing the user's focus
         is exactly what this backend is designed to avoid.
         """
-        lw_out = self._session.call_tool(
-            "list_windows",
-            {"on_screen_only": True, "session": self._session_id},
-        )
-        raw_windows = (lw_out.get("structuredContent") or {}).get("windows") or []
-        windows = _ingest_windows(raw_windows)
-        windows.sort(key=lambda w: w["z_index"])
+        try:
+            windows = self._load_windows()
+        except Exception:
+            self._clear_active_target()
+            raise
 
-        app_lower = app.lower()
-        matched = [w for w in windows if app_lower in w["app_name"].lower()]
+        matched = self._match_windows_for_app(windows, app)
         # Don't silently fall back to the frontmost window when the filter
         # matches nothing — that hides the real failure (often a localized
         # macOS app name mismatch, e.g. caller passed "Calculator" but
@@ -1766,12 +2154,18 @@ class CuaDriverBackend(ComputerUseBackend):
         if target:
             self._active_pid = target["pid"]
             self._active_window_id = target["window_id"]
-            self._last_app = target["app_name"]  # preserve for capture_after= follow-ups
+            self._snapshot_tokens = {}
+            self._last_app = target["app_name"]  # retained for back-compat diagnostics
+            self._last_target = {
+                "pid": self._active_pid,
+                "window_id": self._active_window_id,
+            }
             return ActionResult(
                 ok=True, action="focus_app",
                 message=f"Targeted {target['app_name']} (pid {self._active_pid}, "
                         f"window {self._active_window_id}) without raising window.",
             )
+        self._clear_active_target()
         return ActionResult(ok=False, action="focus_app",
                             message=f"No on-screen window found for app '{app}'.")
 
@@ -2092,11 +2486,22 @@ class CuaDriverBackend(ComputerUseBackend):
             logger.exception("cua-driver %s call failed", name)
             return ActionResult(ok=False, action=name, message=f"cua-driver error: {e}")
         ok = not out["isError"]
-        message = ""
         data = out["data"]
+        structured = out.get("structuredContent") or {}
+        message = ""
         if isinstance(data, dict):
             message = str(data.get("message", ""))
         elif isinstance(data, str):
             message = data
-        return ActionResult(ok=ok, action=name, message=message,
-                            meta=data if isinstance(data, dict) else {})
+        if not message and isinstance(structured, dict):
+            message = str(structured.get("message", ""))
+        # Merge data + structuredContent into meta for debugging, structured
+        # winning on key overlap (it is the canonical verdict surface).
+        meta: Dict[str, Any] = {}
+        if isinstance(data, dict):
+            meta.update(data)
+        if isinstance(structured, dict):
+            meta.update(structured)
+        return _action_result_from(name, ok, message, meta, structured,
+                                   requested_delivery=args.get("delivery_mode"))
+

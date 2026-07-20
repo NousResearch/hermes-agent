@@ -802,6 +802,21 @@ class TestGetModelContextLength:
         assert get_model_context_length("dashscope/qwen3.6-plus") == 1048576
 
     @patch("agent.model_metadata.fetch_model_metadata")
+    def test_qwen3_7_plus_context_length(self, mock_fetch):
+        """qwen3.7-plus has a 1M context window, not the generic 128K Qwen default.
+        
+        Regression test: ensures qwen3.7-plus resolves to its explicit 1M entry
+        rather than falling through to the generic 'qwen' 131072 fallback.
+        """
+        mock_fetch.return_value = {}
+        assert get_model_context_length("qwen3.7-plus") == 1048576
+        # Provider-prefixed variants must resolve to the same explicit entry
+        assert get_model_context_length("qwen/qwen3.7-plus") == 1048576
+        assert get_model_context_length("dashscope/qwen3.7-plus") == 1048576
+        # Verify it does NOT fall back to the generic qwen 131072
+        assert get_model_context_length("qwen3.7-plus") != 131072
+
+    @patch("agent.model_metadata.fetch_model_metadata")
     def test_qwen_generic_context_length(self, mock_fetch):
         """Generic qwen models still get the 128K default."""
         mock_fetch.return_value = {}

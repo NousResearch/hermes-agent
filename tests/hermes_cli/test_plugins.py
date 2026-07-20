@@ -17,6 +17,8 @@ from hermes_cli.plugins import (
     PluginManifest,
     get_plugin_command_handler,
     get_plugin_commands,
+    get_plugin_rpc_methods,
+    get_plugin_rpc_method_names,
     get_pre_tool_call_block_message,
     get_pre_verify_continue_message,
     has_middleware,
@@ -84,6 +86,43 @@ def _make_plugin_dir(base: Path, name: str, *, register_body: str = "pass",
         cfg_path.write_text(yaml.safe_dump(cfg))
 
     return plugin_dir
+
+
+class TestPluginRpcRegistration:
+    """Tests for plugin-owned gateway RPC registrations."""
+
+    def test_force_rediscovery_replaces_rpc_registry(self, tmp_path, monkeypatch):
+        plugins_dir = tmp_path / "hermes_test" / "plugins"
+        _make_plugin_dir(
+            plugins_dir,
+            "rpc_plugin",
+            register_body="ctx.register_rpc('sample.ping', lambda rid, params: {'ok': True})",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
+
+        manager = PluginManager()
+        manager.discover_and_load()
+        assert "sample.ping" in manager._rpc_methods
+
+        # Disable the plugin, then force a complete re-discovery.
+        (tmp_path / "hermes_test" / "config.yaml").write_text(
+            yaml.safe_dump({"plugins": {"enabled": []}})
+        )
+        manager.discover_and_load(force=True)
+
+        assert "sample.ping" not in manager._rpc_methods
+
+
+def test_rpc_accessor_returns_registry_copy(monkeypatch):
+    manager = types.SimpleNamespace(_rpc_methods={"sample.ping": object()})
+    monkeypatch.setattr("hermes_cli.plugins.get_plugin_manager", lambda: manager)
+
+    methods = get_plugin_rpc_methods()
+    names = get_plugin_rpc_method_names()
+    methods.clear()
+
+    assert manager._rpc_methods
+    assert names == {"sample.ping"}
 
 
 # ── TestPluginDiscovery ────────────────────────────────────────────────────

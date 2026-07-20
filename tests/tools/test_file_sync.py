@@ -236,7 +236,7 @@ class TestRateLimiting:
         from tools.environments import file_sync
 
         clock = {"t": 1000.0}
-        monkeypatch.setattr(file_sync.time, "monotonic", lambda: clock["t"])
+        monkeypatch.setattr(file_sync, "_monotonic", lambda: clock["t"])
 
         upload = MagicMock(side_effect=RuntimeError("transport down"))
         mgr = FileSyncManager(

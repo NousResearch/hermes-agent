@@ -40,6 +40,9 @@ from agent.turn_context import (
 from agent.turn_retry_state import TurnRetryState
 from agent.message_sanitization import (
     close_interrupted_tool_sequence,
+    finalize_local_failure_turn,
+    LOCAL_FAILURE_NOTE,
+    LOCAL_FAILURE_TOOL_NOTE,
     _repair_tool_call_arguments,
     _sanitize_messages_non_ascii,
     _sanitize_messages_surrogates,
@@ -2482,27 +2485,21 @@ def run_conversation(
                     # afterwards is Hermes-local and must NOT be reclassified
                     # into provider retry/fallback/continuation — and must not
                     # issue another model request, regardless of the
-                    # exception's type.
-                    _local_error_msg = (
-                        "Local post-response processing error after API call "
-                        f"#{api_call_count}: {type(api_error).__name__}: {api_error}"
-                    )
+                    # exception's type. The user-visible note is a fixed
+                    # generic string; the exception itself goes to the logs
+                    # only (never into final_response / transcript / stdout).
                     try:
-                        print(f"❌ {_local_error_msg}")
+                        print(f"❌ {LOCAL_FAILURE_NOTE}")
                     except (OSError, ValueError):
-                        logger.error(_local_error_msg)
+                        logger.error(LOCAL_FAILURE_NOTE)
                     logger.exception(
                         "Local post-response processing failed after API call #%d; "
                         "provider will not be requested again",
                         api_call_count,
                     )
-                    final_response = (
-                        "I apologize, but I encountered an error while processing "
-                        f"the model response: {_local_error_msg}"
-                    )
                     failed = True
                     _turn_exit_reason = "local_post_response_error"
-                    messages.append({"role": "assistant", "content": final_response})
+                    final_response = finalize_local_failure_turn(messages)
                     agent._persist_session(messages, conversation_history)
                     _local_post_response_failure = True
                     break
@@ -5773,10 +5770,14 @@ def run_conversation(
                 )
             else:
                 error_msg = f"Error during OpenAI-compatible API call #{api_call_count}: {str(e)}"
+            # User-facing surfaces (stdout, transcript, synthetic tool
+            # results, final_response) only ever carry the fixed generic
+            # note. The detailed error_msg stays in the logs.
             try:
-                print(f"❌ {error_msg}")
+                print(f"❌ {LOCAL_FAILURE_NOTE}")
             except (OSError, ValueError):
-                logger.error(error_msg)
+                logger.error(LOCAL_FAILURE_NOTE)
+            logger.error(error_msg)
 
             # Emit the full traceback at ERROR level so it lands in both
             # agent.log AND errors.log.  Previously this was logged at DEBUG,
@@ -5804,11 +5805,21 @@ def run_conversation(
                     for tc in msg["tool_calls"]:
                         if not tc or not isinstance(tc, dict): continue
                         if tc["id"] not in answered_ids:
+                            # Local post-response failures get the fixed
+                            # generic note (no exception text ever reaches
+                            # the transcript); retryable transport errors
+                            # keep their diagnostic text so the retry loop
+                            # can act on it.
+                            _tool_err_content = (
+                                LOCAL_FAILURE_TOOL_NOTE
+                                if _is_local_processing_error
+                                else f"Error executing tool: {error_msg}"
+                            )
                             err_msg = {
                                 "role": "tool",
                                 "name": _ra().AIAgent._get_tool_call_name_static(tc),
                                 "tool_call_id": tc["id"],
-                                "content": f"Error executing tool: {error_msg}",
+                                "content": _tool_err_content,
                             }
                             messages.append(err_msg)
                 break
@@ -5831,7 +5842,11 @@ def run_conversation(
                         _turn_exit_reason = "local_post_response_error"
                     else:
                         _turn_exit_reason = f"local_processing_error({error_msg[:80]})"
-                    final_response = f"I apologize, but I encountered an error while processing the model response: {error_msg}"
+                    # Role-safe terminal write: preserves an already
+                    # appended plain assistant answer, closes dangling
+                    # tool calls (done above), and only ever surfaces the
+                    # fixed generic note — never the exception text.
+                    final_response = finalize_local_failure_turn(messages)
                     # A deterministic local failure means the turn did not
                     # complete — keep failed/completed consistent with the
                     # exit reason for the finalizer and the transcript.
@@ -5839,9 +5854,9 @@ def run_conversation(
                 else:
                     _turn_exit_reason = f"error_near_max_iterations({error_msg[:80]})"
                     final_response = f"I apologize, but I encountered repeated errors: {error_msg}"
-                # Append as assistant so the history stays valid for
-                # session resume (avoids consecutive user messages).
-                messages.append({"role": "assistant", "content": final_response})
+                    # Append as assistant so the history stays valid for
+                    # session resume (avoids consecutive user messages).
+                    messages.append({"role": "assistant", "content": final_response})
                 break
     
     # Post-loop turn finalization extracted to agent/turn_finalizer.finalize_turn

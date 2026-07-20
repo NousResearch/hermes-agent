@@ -230,17 +230,17 @@ def test_feishu_extra_includes_qrcode_for_qr_login():
     assert any(dep.startswith("qrcode") for dep in feishu_extra)
 
 
-def test_nemo_relay_is_a_pinned_core_dependency():
+def test_nemo_relay_is_a_bounded_core_dependency():
     metadata = _load_project()
 
     relay_dependencies = [
         dependency
         for dependency in metadata["dependencies"]
-        if dependency.startswith("nemo-relay==")
+        if dependency.startswith("nemo-relay")
     ]
     assert len(relay_dependencies) == 1
     requirement = Requirement(relay_dependencies[0])
-    assert str(requirement.specifier) == "==0.5.0"
+    assert str(requirement.specifier) == "<0.7,>=0.5"
     assert requirement.marker is not None
     assert requirement.marker.evaluate(
         {"sys_platform": "darwin", "platform_machine": "arm64"}

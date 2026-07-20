@@ -1384,12 +1384,14 @@ def load_gateway_config() -> GatewayConfig:
                 if "free_response_channels" in platform_cfg:
                     bridged["free_response_channels"] = platform_cfg["free_response_channels"]
                 if plat == Platform.DISCORD:
-                    # Only allow_bots and bots_require_inline_mention have a
-                    # runtime env-var reader. group_mention_role_ids /
-                    # group_mention_channel_ids are consumed from
-                    # PlatformConfig.extra (see the discord adapter's
-                    # _discord_group_role_mentioned) and have no env reader, so
-                    # they are bridged into ``extra`` below but NOT to os.environ.
+                    # Force-sync to os.environ only the keys with env-only
+                    # cross-module consumers: allow_bots (authz_mixin bot
+                    # bypass, relay policy, history context) and
+                    # bots_require_inline_mention. thread_require_mention and
+                    # group_mention_role_ids / group_mention_channel_ids are
+                    # read from PlatformConfig.extra by the discord adapter
+                    # alone (config-extra-first), so they are bridged into
+                    # ``extra`` below but NOT forced into os.environ.
                     discord_env_bridge = {
                         "allow_bots": "DISCORD_ALLOW_BOTS",
                         "bots_require_inline_mention": "DISCORD_BOTS_REQUIRE_INLINE_MENTION",

@@ -704,75 +704,138 @@ async def test_discord_voice_linked_parent_thread_still_requires_mention(adapter
     adapter.handle_message.assert_not_awaited()
 
 
+def _arm_live_dispatch(adapter, monkeypatch):
+    """Arm the adapter for full live-path dispatch (_dispatch_discord_message).
+
+    The thread-gating tests below deliberately run the real ingress chain
+    (_discord_message_admission -> _handle_message) instead of calling
+    _handle_message directly: the direct call skips admission, which is where
+    human thread messages are actually gated, and previously masked the live
+    behavior.
+    """
+    adapter._ready_event.set()
+    adapter._allowed_user_ids = {"42"}
+    adapter._client.user.bot = True
+    for _var in (
+        "DISCORD_ALLOW_ALL_USERS",
+        "GATEWAY_ALLOW_ALL_USERS",
+        "DISCORD_ALLOWED_USERS",
+        "DISCORD_BOTS_REQUIRE_INLINE_MENTION",
+        "DISCORD_IGNORE_NO_MENTION",
+    ):
+        monkeypatch.delenv(_var, raising=False)
+
+
+def make_live_message(*, channel, content, mentions=None, bot=False):
+    """A make_message variant carrying the guild/bot fields admission reads."""
+    message = make_message(channel=channel, content=content, mentions=mentions)
+    message.guild = SimpleNamespace(id=1, name="Hermes Server")
+    message.author.bot = bot
+    if bot:
+        message.author.id = 555  # a sibling bot, not the allowed human
+    return message
+
+
+def _participated_thread(adapter):
+    """A thread under a non-free parent that the bot has already spoken in."""
+    thread = FakeThread(
+        channel_id=456,
+        name="follow-up",
+        parent=FakeTextChannel(channel_id=100, name="ops"),
+    )
+    adapter._threads.mark("456")
+    return thread
+
+
 @pytest.mark.asyncio
-async def test_discord_thread_default_keeps_responding_after_participation(adapter, monkeypatch):
-    """Default behavior: once the bot is in a thread, it auto-responds without @mention."""
+async def test_discord_thread_followup_without_mention_denied_on_live_path(adapter, monkeypatch):
+    """A human no-mention follow-up in a participated thread is denied.
+
+    Threads inherit the parent channel's mention policy at admission; bot
+    participation does not make a non-free parent's thread mention-free, and
+    thread_require_mention plays no part in the human decision.
+    """
     monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
-    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
-    monkeypatch.delenv("DISCORD_THREAD_REQUIRE_MENTION", raising=False)
+    _arm_live_dispatch(adapter, monkeypatch)
+    thread = _participated_thread(adapter)
 
-    thread = FakeThread(channel_id=456, name="follow-up")
-    adapter._threads.mark("456")  # bot has previously participated
+    message = make_live_message(channel=thread, content="follow-up without mention")
+    admitted = await adapter._dispatch_discord_message(message)
 
-    message = make_message(channel=thread, content="follow-up without mention")
-    await adapter._handle_message(message)
+    assert admitted is False
+    adapter.handle_message.assert_not_awaited()
 
+
+@pytest.mark.asyncio
+async def test_discord_bot_thread_followup_responds_by_default(adapter, monkeypatch):
+    """allow_bots=all: a mention-free bot follow-up in a participated thread responds.
+
+    This is the one live-reachable consumer of _handle_message's in_bot_thread
+    shortcut, and the behavioral contract that keeps thread_require_mention a
+    real config option.
+    """
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_ALLOW_BOTS", "all")
+    _arm_live_dispatch(adapter, monkeypatch)
+    thread = _participated_thread(adapter)
+
+    message = make_live_message(channel=thread, content="bot follow-up", bot=True)
+    admitted = await adapter._dispatch_discord_message(message)
+
+    assert admitted is True
     adapter.handle_message.assert_awaited_once()
 
 
 @pytest.mark.asyncio
-async def test_discord_thread_require_mention_gates_followups(adapter, monkeypatch):
-    """When thread_require_mention=true, even bot-participated threads need @mention."""
+async def test_discord_thread_require_mention_gates_bot_followups(adapter, monkeypatch):
+    """thread_require_mention=true closes the bot in-thread shortcut end-to-end."""
     monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_ALLOW_BOTS", "all")
     monkeypatch.setenv("DISCORD_THREAD_REQUIRE_MENTION", "true")
-    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+    _arm_live_dispatch(adapter, monkeypatch)
+    thread = _participated_thread(adapter)
 
-    thread = FakeThread(channel_id=456, name="multi-bot thread")
-    adapter._threads.mark("456")  # bot has previously participated
+    message = make_live_message(channel=thread, content="ambient bot chatter", bot=True)
+    admitted = await adapter._dispatch_discord_message(message)
 
-    message = make_message(channel=thread, content="ambient chatter — not for me")
-    await adapter._handle_message(message)
-
+    assert admitted is False
     adapter.handle_message.assert_not_awaited()
 
 
 @pytest.mark.asyncio
 async def test_discord_thread_require_mention_still_responds_when_mentioned(adapter, monkeypatch):
-    """thread_require_mention=true still lets explicit @mentions through in threads."""
+    """thread_require_mention=true still lets explicit @mentions through, full path."""
     monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
     monkeypatch.setenv("DISCORD_THREAD_REQUIRE_MENTION", "true")
-    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
-
-    thread = FakeThread(channel_id=456, name="multi-bot thread")
-    adapter._threads.mark("456")
+    _arm_live_dispatch(adapter, monkeypatch)
+    thread = _participated_thread(adapter)
     bot_user = adapter._client.user
 
-    message = make_message(
+    message = make_live_message(
         channel=thread,
         content=f"<@{bot_user.id}> hey, this one's for you",
         mentions=[bot_user],
     )
-    await adapter._handle_message(message)
+    admitted = await adapter._dispatch_discord_message(message)
 
+    assert admitted is True
     adapter.handle_message.assert_awaited_once()
 
 
 @pytest.mark.asyncio
 async def test_discord_thread_require_mention_via_config_extra(adapter, monkeypatch):
-    """thread_require_mention can also be set via config.extra (yaml)."""
+    """thread_require_mention via config.extra (yaml) gates the bot shortcut too."""
     monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
-    monkeypatch.delenv("DISCORD_THREAD_REQUIRE_MENTION", raising=False)
-    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+    _arm_live_dispatch(adapter, monkeypatch)
+    adapter.config.extra["allow_bots"] = "all"
     adapter.config.extra["thread_require_mention"] = True
+    thread = _participated_thread(adapter)
 
-    thread = FakeThread(channel_id=456, name="multi-bot thread")
-    adapter._threads.mark("456")
+    message = make_live_message(channel=thread, content="ambient, should be ignored", bot=True)
+    admitted = await adapter._dispatch_discord_message(message)
 
-    message = make_message(channel=thread, content="ambient — should be ignored")
-    await adapter._handle_message(message)
-
+    assert admitted is False
     adapter.handle_message.assert_not_awaited()
-
 
 
 @pytest.mark.asyncio

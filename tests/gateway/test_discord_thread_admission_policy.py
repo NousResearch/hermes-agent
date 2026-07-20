@@ -369,6 +369,23 @@ def test_admission_admits_bot_real_inline_mention(adapter):
     assert _admitted(adapter, message) is True
 
 
+
+def test_admission_admits_bot_ambient_followup_allow_bots_all(adapter):
+    """(7) Admission admits ambient allow_bots=all bot traffic in a thread.
+
+    The in-thread shortcut / thread_require_mention decision for this traffic
+    happens later, in _handle_message (pinned end-to-end in
+    test_discord_free_response.py); admission's job here is only the
+    allow_bots policy, so the message passes this gate.
+    """
+    _free_config(adapter)
+    adapter.config.extra["allow_bots"] = "all"
+    adapter._threads.mark("456")
+    message = make_message(channel=_ops_thread(), content="ambient bot chatter", bot=True)
+
+    assert _admitted(adapter, message) is True
+
+
 # ---------------------------------------------------------------------------
 # Bot-admission config-vs-env precedence. config.extra["allow_bots"] wins over
 # the DISCORD_ALLOW_BOTS env var when present; the env var is the fallback.
@@ -535,6 +552,28 @@ async def test_recovered_denies_group_role_mention_out_of_configured_scope(adapt
     message = make_message(
         channel=_ops_thread(),
         content=f"<@&{ROLE_ID}> hermes team, recovered handoff",
+    )
+
+    admitted = await adapter._dispatch_recovered_message(message)
+
+    assert admitted is False
+    adapter._handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_recovered_denies_bot_ambient_followup_even_with_allow_bots_all(adapter):
+    """(7, recovered) Backfill never rides the in-thread shortcut.
+
+    The recovered pre-gate is stricter than live dispatch: a mention-free bot
+    follow-up in a participated thread under a non-free parent is not
+    recovered even though allow_bots=all admits it live. As a consequence,
+    thread_require_mention has no effect at all on the recovered path.
+    """
+    _free_config(adapter)
+    adapter.config.extra["allow_bots"] = "all"
+    adapter._threads.mark("456")
+    message = make_message(
+        channel=_ops_thread(), content="recovered bot chatter", bot=True
     )
 
     admitted = await adapter._dispatch_recovered_message(message)

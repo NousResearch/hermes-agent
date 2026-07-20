@@ -1355,7 +1355,13 @@ class DiscordAdapter(BasePlatformAdapter):
         )
         if not admitted:
             if getattr(getattr(message, "author", None), "bot", False):
-                logger.info(
+                # A denied bot message that explicitly addressed us (an
+                # attempted handoff) is worth INFO; ambient bot chatter denied
+                # by the default policy would flood INFO on busy servers.
+                logger.log(
+                    logging.INFO
+                    if self._self_is_explicitly_mentioned(message)
+                    else logging.DEBUG,
                     "[Discord] Bot admission rejected: message_id=%s author_id=%s "
                     "allow_bots=%s explicit_mention=%s raw_inline_mention=%s",
                     getattr(message, "id", "-"),
@@ -5772,10 +5778,13 @@ class DiscordAdapter(BasePlatformAdapter):
         """
         content = getattr(message, "content", "") or ""
         ids = {match.group(1) for match in re.finditer(r"<@!?(\d+)>", content)}
-        # discord.py retains the parsed raw IDs even when an upstream relay
-        # normalizes message.content before this adapter sees it. Prefer the
-        # union so reply-pings still remain absent unless Discord recorded an
-        # actual mention token.
+        # discord.py's Message.raw_mentions is itself regex-parsed from
+        # message.content (and cached on first access), so on live objects the
+        # union is redundant but harmless. It matters for relayed or synthetic
+        # messages that carry raw_mentions as plain data while their content
+        # was normalized. Neither source ever contains a reply-ping (those
+        # only appear in the resolved mentions list), so the union can never
+        # loosen the inline-mention gate.
         raw_mentions = getattr(message, "raw_mentions", None)
         if isinstance(raw_mentions, (list, tuple, set)):
             ids.update(str(mention_id) for mention_id in raw_mentions)
@@ -5916,16 +5925,21 @@ class DiscordAdapter(BasePlatformAdapter):
         return keys
 
     def _discord_thread_require_mention(self) -> bool:
-        """Return whether thread participation requires @mention to follow up.
+        """Return whether the in-thread participation shortcut is disabled.
 
-        When ``False`` (default), once the bot has participated in a thread it
-        keeps responding to every message in that thread without needing to be
-        mentioned again — useful for one-on-one conversations.
+        This knob only governs the ``in_bot_thread`` bypass inside
+        ``_handle_message``. Since the admission hardening, that bypass is
+        live-reachable only by messages ``_discord_message_admission`` admits
+        WITHOUT a mention -- in practice bot-authored messages under
+        ``allow_bots: all`` (no inline-mention requirement). Human thread
+        messages are gated earlier, at admission, purely by the parent
+        channel's policy (free parent -> free thread; non-free parent ->
+        mention required), so this setting has no effect on humans.
 
-        When ``True``, the @mention requirement is enforced inside threads as
-        well.  Set this when multiple bots share a thread and you want each
-        one to only fire on explicit @mention, avoiding bot-to-bot loops or
-        unwanted cross-replies.
+        When ``False`` (default), an admitted mention-free bot message in a
+        thread this bot already participates in still gets a response. Set
+        ``True`` to close that residual shortcut so sibling bots must type an
+        explicit inline mention even inside participated threads.
         """
         configured = self.config.extra.get("thread_require_mention")
         if configured is not None:
@@ -7153,9 +7167,13 @@ class DiscordAdapter(BasePlatformAdapter):
         recovered: bool = False,
     ) -> bool:
         """Handle one Discord message and report whether it reached dispatch."""
-        # In server channels (not DMs), require the bot to be @mentioned
-        # UNLESS the channel is in the free-response list or the message is
-        # in a thread where the bot has already participated.
+        # Secondary, defense-in-depth mention gate. Live and recovered
+        # dispatch both ran _discord_message_admission first, which already
+        # gates human messages purely by the parent channel's policy (a
+        # non-free parent requires a mention even in threads the bot has
+        # participated in). The in_bot_thread shortcut below is therefore
+        # live-reachable without a mention only by bot-authored traffic
+        # admitted under allow_bots: all.
         #
         # Config (all settable via discord.* in config.yaml or DISCORD_* env vars):
         #   discord.require_mention: Require @mention in server channels (default: true)
@@ -7229,11 +7247,12 @@ class DiscordAdapter(BasePlatformAdapter):
                 or is_voice_linked_channel
             )
 
-            # Skip the mention check if the message is in a thread where
-            # the bot has previously participated (auto-created or replied in)
-            # — UNLESS thread_require_mention is enabled, in which case threads
-            # are gated the same as channels.  Useful when multiple bots share
-            # a thread.
+            # In-thread participation shortcut for THIS gate only: admission
+            # has already denied unmentioned human messages under a non-free
+            # parent, so the only live traffic that reaches this bypass
+            # without a mention is bot-authored (allow_bots: all).
+            # thread_require_mention=true closes that residual shortcut so
+            # sibling bots must mention explicitly even in shared threads.
             in_bot_thread = (
                 is_thread
                 and thread_id in self._threads

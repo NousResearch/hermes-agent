@@ -5918,6 +5918,46 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return "none"
         return str(cfg.get("effort", "") or "").strip()
 
+    def _footer_reasoning_label(
+        self,
+        *,
+        reasoning_config: "dict | None" = None,
+        source: Optional[SessionSource] = None,
+        session_key: Optional[str] = None,
+    ) -> str:
+        """Session-truthful reasoning label for the runtime footer.
+
+        Prefers the LIVE ``agent.reasoning_config`` captured from the completed
+        turn — a single value that already folds in the session ``/reasoning``
+        override, the per-model ``reasoning_overrides``, AND any active fallback
+        entry's per-entry ``reasoning_effort`` (fallback activation mutates the
+        live config). This closes two footer gaps the old
+        ``_reasoning_effort_for_footer`` path had: with no session override it
+        returned ``""`` and let ``build_footer_line`` fall back to the GLOBAL
+        ``agent.reasoning_effort``, which is blind to (a) per-model overrides and
+        (b) a mid-turn fallback's per-entry effort.
+
+        Falls back to the session-override resolver (then, via ``""``, the
+        footer's own global-config default) only when no live config was
+        captured — e.g. an errored turn with no agent.
+
+        ``{"enabled": False}`` → ``"none"``; a set effort → the bare effort
+        string; otherwise ``""`` (footer applies its config fallback).
+        """
+        if isinstance(reasoning_config, dict) and reasoning_config:
+            if not reasoning_config.get("enabled", True):
+                return "none"
+            effort = str(reasoning_config.get("effort", "") or "").strip()
+            if effort:
+                return effort
+            # {"enabled": True} with no effort: a shape parse_reasoning_effort
+            # never produces (enabled always carries an effort) — an ambiguous
+            # live value from a nonstandard writer. Deliberately fall through to
+            # the session resolver rather than guess a level.
+        return self._reasoning_effort_for_footer(
+            source=source, session_key=session_key,
+        )
+
     def _resolved_effort_label(
         self,
         *,
@@ -15223,8 +15263,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     context_length=agent_result.get("context_length") or None,
                     cwd=os.environ.get("TERMINAL_CWD", ""),
                     reasoning=(
-                        self._reasoning_effort_for_footer(
-                            source=source, session_key=session_key,
+                        self._footer_reasoning_label(
+                            reasoning_config=agent_result.get("reasoning_config"),
+                            source=source,
+                            session_key=session_key,
                         )
                         or None
                     ),
@@ -23663,6 +23705,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _context_length = getattr(_agent.context_compressor, "context_length", 0) or 0
             _resolved_model = getattr(_agent, "model", None) if _agent else None
             _resolved_provider = getattr(_agent, "provider", None) if _agent else None
+            # Live, session-truthful reasoning config for the runtime footer.
+            # This single value already folds in the session ``/reasoning``
+            # override, the per-model ``reasoning_overrides``, AND any active
+            # fallback entry's per-entry ``reasoning_effort`` (the gateway sets
+            # it per-message from ``_resolve_session_reasoning_config`` and
+            # fallback activation mutates it) — so it is strictly more correct
+            # than re-deriving from global config at the footer site.
+            _resolved_reasoning_config = (
+                getattr(_agent, "reasoning_config", None) if _agent else None
+            )
 
             # Persist the FINAL served route for the next turn's pre-run
             # comparison (persist-only — announces fire where the transitions
@@ -23803,6 +23855,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     "output_tokens": _output_toks,
                     "model": _resolved_model,
                     "provider": _resolved_provider,
+                    "reasoning_config": _resolved_reasoning_config,
                     "context_length": _context_length,
                 }
 
@@ -23910,6 +23963,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 "output_tokens": _output_toks,
                 "model": _resolved_model,
                 "provider": _resolved_provider,
+                "reasoning_config": _resolved_reasoning_config,
                 "context_length": _context_length,
                 "session_id": effective_session_id,
                 "response_previewed": result.get("response_previewed", False),

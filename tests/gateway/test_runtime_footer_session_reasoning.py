@@ -130,3 +130,126 @@ class TestReasoningEffortForFooter:
             reasoning=(resolved or None),
         )
         assert "r:xhigh" in line
+
+
+class TestFooterReasoningLabel:
+    """The live-config-preferring footer resolver (_footer_reasoning_label) and
+    the per-model/fallback-aware config fallback (_reasoning_from_config).
+
+    Closes two residual footer gaps in the same bug class as the /reasoning
+    session-override fix: (1) a per-model ``reasoning_overrides`` entry was
+    invisible to the footer (global-only fallback), and (2) a mid-turn
+    fallback entry's per-entry ``reasoning_effort`` was invisible. The live
+    ``agent.reasoning_config`` already folds in all three; prefer it.
+    """
+
+    def test_live_config_wins_over_session_and_global(self, tmp_path, monkeypatch):
+        # Session override says high, global says xhigh — but the LIVE config
+        # from the completed turn says max (e.g. a fallback entry raised it).
+        _write_config(tmp_path, monkeypatch, effort="xhigh")
+        runner = _make_runner()
+        source = _make_event().source
+        session_key = runner._session_key_for_source(source)
+        runner._session_reasoning_overrides[session_key] = {"enabled": True, "effort": "high"}
+
+        out = runner._footer_reasoning_label(
+            reasoning_config={"enabled": True, "effort": "max"},
+            source=source,
+            session_key=session_key,
+        )
+        assert out == "max"
+
+    def test_live_disabled_config_shows_none(self, tmp_path, monkeypatch):
+        _write_config(tmp_path, monkeypatch, effort="xhigh")
+        runner = _make_runner()
+        source = _make_event().source
+        session_key = runner._session_key_for_source(source)
+
+        out = runner._footer_reasoning_label(
+            reasoning_config={"enabled": False},
+            source=source,
+            session_key=session_key,
+        )
+        assert out == "none"
+
+    def test_no_live_config_falls_back_to_session_resolver(self, tmp_path, monkeypatch):
+        # No live config captured (e.g. errored turn) → session override still honored.
+        _write_config(tmp_path, monkeypatch, effort="xhigh")
+        runner = _make_runner()
+        source = _make_event().source
+        session_key = runner._session_key_for_source(source)
+        runner._session_reasoning_overrides[session_key] = {"enabled": True, "effort": "high"}
+
+        out = runner._footer_reasoning_label(
+            reasoning_config=None, source=source, session_key=session_key,
+        )
+        assert out == "high"
+
+    def test_empty_live_config_falls_back(self, tmp_path, monkeypatch):
+        _write_config(tmp_path, monkeypatch, effort="xhigh")
+        runner = _make_runner()
+        source = _make_event().source
+        session_key = runner._session_key_for_source(source)
+        # {} → no live value; no session override → "" (footer applies config fallback).
+        out = runner._footer_reasoning_label(
+            reasoning_config={}, source=source, session_key=session_key,
+        )
+        assert out == ""
+
+
+class TestReasoningFromConfigPerModel:
+    """_reasoning_from_config now routes through resolve_reasoning_config, so a
+    per-model reasoning_overrides entry is honored (was global-only)."""
+
+    def test_per_model_override_honored(self):
+        from gateway.runtime_footer import _reasoning_from_config
+
+        cfg = {
+            "agent": {
+                "reasoning_effort": "medium",
+                "reasoning_overrides": {"claude-opus-4-8": "xhigh"},
+            }
+        }
+        # With the model that has an override → xhigh, not the global medium.
+        assert _reasoning_from_config(cfg, "claude-opus-4-8") == "xhigh"
+        # A model without an override → falls through to global medium.
+        assert _reasoning_from_config(cfg, "gpt-5.6-sol") == "medium"
+
+    def test_global_used_when_no_per_model(self):
+        from gateway.runtime_footer import _reasoning_from_config
+
+        cfg = {"agent": {"reasoning_effort": "high"}}
+        assert _reasoning_from_config(cfg, "any-model") == "high"
+
+    def test_disabled_global_shows_none(self):
+        from gateway.runtime_footer import _reasoning_from_config
+
+        cfg = {"agent": {"reasoning_effort": False}}
+        assert _reasoning_from_config(cfg, "any-model") == "none"
+
+    def test_e2e_footer_per_model_override_without_session_override(self):
+        # No session override, no live config — footer's own fallback must still
+        # honor the per-model override (the gap this half fixes).
+        cfg = {
+            "agent": {
+                "reasoning_effort": "medium",
+                "reasoning_overrides": {"claude-opus-4-8": "xhigh"},
+            },
+            "display": {
+                "runtime_footer": {
+                    "enabled": True,
+                    "fields": ["provider_model", "reasoning"],
+                }
+            },
+        }
+        line = build_footer_line(
+            user_config=cfg,
+            platform_key="discord",
+            model="claude-opus-4-8",
+            provider="claude-app",
+            context_tokens=100_000,
+            context_length=1_000_000,
+            reasoning=None,  # force the config fallback path
+        )
+        assert "r:xhigh" in line
+        assert "r:medium" not in line

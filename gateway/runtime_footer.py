@@ -224,14 +224,42 @@ def format_runtime_footer(
     return _SEP.join(parts)
 
 
-def _reasoning_from_config(user_config: dict[str, Any] | None) -> str:
-    """Read ``agent.reasoning_effort`` from the user config (the canonical source
-    `/reasoning <level>` writes to). Empty string when unset."""
+def _reasoning_from_config(
+    user_config: dict[str, Any] | None, model: str | None = None
+) -> str:
+    """Resolve the effective reasoning-effort label from the user config.
+
+    Routes through the shared ``resolve_reasoning_config`` chokepoint so a
+    per-model ``agent.reasoning_overrides`` entry is honored (not just the
+    global ``agent.reasoning_effort``) — the same resolution every other
+    surface uses. ``model`` should be the session's effective model; when
+    absent the resolver derives it from ``model.default``. Empty string when
+    unset/unrecognized. This is only the FALLBACK path — the gateway already
+    passes the live session-truthful value in via ``reasoning=``.
+    """
     try:
-        agent_cfg = (user_config or {}).get("agent") or {}
-        if isinstance(agent_cfg, dict):
-            return str(agent_cfg.get("reasoning_effort", "") or "").strip()
+        from hermes_constants import resolve_reasoning_config
     except Exception:
+        # Import failure only — fall back to the raw global read so a packaging
+        # problem can never break the footer (it silently loses per-model
+        # awareness, which is the pre-existing behavior).
+        try:
+            agent_cfg = (user_config or {}).get("agent") or {}
+            if isinstance(agent_cfg, dict):
+                return str(agent_cfg.get("reasoning_effort", "") or "").strip()
+        except Exception:
+            pass
+        return ""
+    try:
+        cfg = resolve_reasoning_config(user_config, model or "")
+        if isinstance(cfg, dict):
+            if not cfg.get("enabled", True):
+                return "none"
+            return str(cfg.get("effort", "") or "").strip()
+    except Exception:
+        # Resolution failure (malformed config) — the resolver already
+        # tolerates bad shapes, so this is belt-and-suspenders; footer is
+        # decoration, never worth raising over.
         pass
     return ""
 
@@ -262,7 +290,7 @@ def build_footer_line(
     # Reasoning effort comes from config (agent.reasoning_effort); caller may
     # override with a live value if it ever has one.
     if reasoning is None:
-        reasoning = _reasoning_from_config(user_config)
+        reasoning = _reasoning_from_config(user_config, model)
     return format_runtime_footer(
         model=model,
         context_tokens=context_tokens,

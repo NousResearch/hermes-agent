@@ -94,9 +94,7 @@ describe('live session.info approval mode reconciliation', () => {
     await mountStream()
     $activeGatewayProfile.set('personal')
 
-    act(() =>
-      handleEvent!({ payload: { approval_mode: 'off' }, session_id: ACTIVE_SID, type: 'session.info' })
-    )
+    act(() => handleEvent!({ payload: { approval_mode: 'off' }, session_id: ACTIVE_SID, type: 'session.info' }))
 
     expect(approvalModeForProfile('personal')).toBe('smart')
     expect(approvalModeForProfile('work')).toBe('smart')

@@ -3,6 +3,7 @@
 import base64
 import json
 import logging
+import threading
 import time
 from types import SimpleNamespace
 from unittest.mock import patch, MagicMock, AsyncMock
@@ -1457,6 +1458,90 @@ class TestAuxiliaryPoolAwareness:
 
         assert client is not None
         assert model == "google/gemini-3-flash-preview"
+
+    def test_title_generation_auth_refresh_retries_same_provider_without_cache(self):
+        class _Auth401(Exception):
+            status_code = 401
+
+        stale_client = MagicMock()
+        stale_client.base_url = "https://api.example.test/v1"
+        stale_client.chat.completions.create.side_effect = _Auth401("stale token")
+
+        recovered = {"ok": True}
+
+        with (
+            patch("agent.auxiliary_client._resolve_task_provider_model", return_value=("openai-codex", "gpt-5.5", None, None, None)),
+            patch("agent.auxiliary_client._get_cached_client", return_value=(stale_client, "gpt-5.5")),
+            patch("agent.auxiliary_client._validate_llm_response", side_effect=lambda resp, _task: resp),
+            patch("agent.auxiliary_client._refresh_provider_credentials", return_value=True),
+            patch("agent.auxiliary_client._retry_same_provider_sync", return_value=recovered) as retry_same,
+        ):
+            result = call_llm(
+                task="title_generation",
+                messages=[{"role": "user", "content": "hi"}],
+            )
+
+        assert result == recovered
+        assert stale_client.chat.completions.create.call_count == 1
+        assert retry_same.call_args.kwargs["use_cache"] is False
+
+    def test_codex_timeout_close_path_claims_ownership_once(self):
+        real_client = MagicMock()
+        real_client.close = MagicMock()
+        event_stream = MagicMock()
+        real_client.responses.create.return_value = event_stream
+
+        barrier = threading.Barrier(2)
+
+        class _RacingTimer:
+            def __init__(self, _interval, fn):
+                self._fn = fn
+                self.daemon = False
+                self._thread = None
+
+            def start(self):
+                def _runner():
+                    barrier.wait()
+                    time.sleep(0.02)
+                    self._fn()
+
+                self._thread = threading.Thread(target=_runner, daemon=True)
+                self._thread.start()
+
+            def cancel(self):
+                if self._thread is not None:
+                    self._thread.join(timeout=1)
+
+        class _Monotonic:
+            def __init__(self):
+                self._calls = 0
+
+            def __call__(self):
+                self._calls += 1
+                return 0.0 if self._calls <= 2 else 1.0
+
+        def _consume(_stream, model=None, on_event=None):
+            barrier.wait()
+            on_event(SimpleNamespace(type="response.output_text.delta"))
+            raise AssertionError("on_event should have timed out before this line")
+
+        adapter = _CodexCompletionsAdapter(real_client, "gpt-5.5")
+
+        with (
+            patch("agent.auxiliary_client.threading.Timer", _RacingTimer),
+            patch("agent.auxiliary_client.time.monotonic", _Monotonic()),
+            patch("agent.codex_runtime._consume_codex_event_stream", side_effect=_consume),
+            patch("agent.auxiliary_client._evict_cached_client_instance") as evict,
+        ):
+            with pytest.raises(TimeoutError, match="Responses stream exceeded 0.1s total timeout"):
+                adapter.create(
+                    messages=[{"role": "user", "content": "hi"}],
+                    timeout=0.1,
+                )
+
+        assert real_client.responses.create.called
+        assert real_client.close.call_count == 1
+        assert evict.call_count == 1
 
     def test_call_llm_retries_nous_after_401(self):
         class _Auth401(Exception):

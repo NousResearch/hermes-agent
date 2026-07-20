@@ -4161,6 +4161,46 @@ def _mirror_subagent_to_child(event_type: str, payload: dict) -> None:
             _child_mirrors.pop(child_key, None)
 
 
+def _commentary_interim_cb(sid: str):
+    """Interim-assistant callback that streams Codex commentary into the
+    desktop "Working" lane. already_streamed means the text is the answer
+    already relayed via message.delta — skip it. Each call is one completed
+    commentary message; the trailing blank line separates messages that flush
+    in the same window."""
+    return lambda text, already_streamed=False: (
+        None
+        if already_streamed or not str(text or "").strip()
+        else _emit("commentary.delta", sid, {"text": f"{text}\n\n"})
+    )
+
+
+def _apply_commentary_lane_to_live_sessions(enabled: bool) -> None:
+    """Propagate a display.commentary_lane toggle to already-running sessions.
+
+    _agent_cbs only samples the setting when the agent is built, so without
+    this a toggle would only affect sessions created afterwards. The Codex
+    stream router re-reads agent.interim_assistant_callback on every LLM call
+    (codex_runtime picks on_commentary_message per stream), so flipping the
+    attribute on live agents makes the toggle take effect from the next model
+    call — set when enabling, back to None when disabling so the disabled
+    path stays byte-identical to upstream (commentary falls back onto the
+    reasoning channel)."""
+    with _sessions_lock:
+        records = list(_sessions.items())
+    for sid, rec in records:
+        agent = rec.get("agent")
+        if agent is None:
+            continue
+        try:
+            agent.interim_assistant_callback = (
+                _commentary_interim_cb(sid) if enabled else None
+            )
+        except Exception:
+            logger.debug(
+                "commentary_lane: failed to update live session %s", sid, exc_info=True
+            )
+
+
 def _agent_cbs(sid: str) -> dict:
     cbs = {
         "tool_start_callback": lambda tc_id, name, args: _on_tool_start(
@@ -4224,15 +4264,10 @@ def _agent_cbs(sid: str) -> dict:
     # to upstream. Upstream fires this via _fire_streamed_codex_commentary only
     # when the callback is set and show_commentary is on; the per-turn
     # _delivered_interim_texts dedup keeps the same text out of the final.
-    # already_streamed means the text is the answer already relayed via
-    # message.delta — skip it. Each call is one completed commentary message; the
-    # trailing blank line separates messages that flush in the same window.
+    # Live sessions are kept in sync on toggle by
+    # _apply_commentary_lane_to_live_sessions.
     if _load_commentary_lane():
-        cbs["interim_assistant_callback"] = lambda text, already_streamed=False: (
-            None
-            if already_streamed or not str(text or "").strip()
-            else _emit("commentary.delta", sid, {"text": f"{text}\n\n"})
-        )
+        cbs["interim_assistant_callback"] = _commentary_interim_cb(sid)
 
     return cbs
 
@@ -10862,6 +10897,9 @@ def _(rid, params: dict) -> dict:
     if key == "commentary_lane":
         nv = value if isinstance(value, bool) else str(value).strip().lower() in {"1", "true", "on", "yes"}
         _write_config_key("display.commentary_lane", nv)
+        # _agent_cbs only samples the setting at agent build time — flip the
+        # callback on live sessions too so the toggle acts immediately.
+        _apply_commentary_lane_to_live_sessions(nv)
         return _ok(rid, {"key": key, "value": nv})
 
     if key == "verbose":

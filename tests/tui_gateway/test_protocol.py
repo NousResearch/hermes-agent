@@ -1988,3 +1988,53 @@ def test_agent_cbs_omits_interim_callback_when_lane_disabled(server, monkeypatch
     cbs = server._agent_cbs("sid-1")
 
     assert "interim_assistant_callback" not in cbs
+
+
+def test_apply_commentary_lane_toggles_live_sessions(server, monkeypatch):
+    """Flipping the toggle must reach already-running sessions, not only new ones.
+
+    _agent_cbs samples the setting once at build time; codex_runtime re-reads
+    agent.interim_assistant_callback on every LLM call, so flipping the
+    attribute on live agents makes the toggle take effect from the next call.
+    """
+    emitted = []
+    monkeypatch.setattr(
+        server, "_emit", lambda event, sid, payload=None: emitted.append((event, sid, payload))
+    )
+
+    agent_a = MagicMock()
+    agent_a.interim_assistant_callback = None
+    agent_b = MagicMock()
+    agent_b.interim_assistant_callback = None
+    server._sessions["sid-a"] = {"agent": agent_a}
+    server._sessions["sid-b"] = {"agent": agent_b}
+    # A session with no agent yet must be skipped without raising.
+    server._sessions["sid-c"] = {"agent": None}
+
+    # Enable: every live agent gets a working callback wired to its own sid.
+    server._apply_commentary_lane_to_live_sessions(True)
+    assert callable(agent_a.interim_assistant_callback)
+    assert callable(agent_b.interim_assistant_callback)
+
+    agent_a.interim_assistant_callback("narrating A")
+    assert emitted == [("commentary.delta", "sid-a", {"text": "narrating A\n\n"})]
+
+    # Disable: callbacks go back to None so the disabled path stays
+    # byte-identical to upstream (commentary falls back onto reasoning).
+    server._apply_commentary_lane_to_live_sessions(False)
+    assert agent_a.interim_assistant_callback is None
+    assert agent_b.interim_assistant_callback is None
+
+
+def test_set_commentary_lane_propagates_to_live_sessions(server, monkeypatch):
+    """The set-config RPC must push the new value onto live sessions."""
+    calls = []
+    monkeypatch.setattr(server, "_write_config_key", lambda *a, **k: None)
+    monkeypatch.setattr(
+        server, "_apply_commentary_lane_to_live_sessions", lambda enabled: calls.append(enabled)
+    )
+
+    resp = server._methods["config.set"]("rid-1", {"key": "commentary_lane", "value": True})
+
+    assert resp["result"]["value"] is True
+    assert calls == [True]

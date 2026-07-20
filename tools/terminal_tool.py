@@ -2480,6 +2480,54 @@ def terminal_tool(
                 default_cwd=cwd,
                 session_key=session_key,
             )
+
+            # Resolve notification state BEFORE spawning. spawn_local()/
+            # spawn_via_env() start their reader/poller thread before
+            # returning, so a fast command (`true`, `printf ok`) can reach
+            # _move_to_finished() — which enqueues the completion event only
+            # when notify_on_complete is already set — before any post-spawn
+            # assignment runs. Setting the flag after spawn silently drops
+            # the completion for short-lived processes; it must be part of
+            # spawn-time initialization.
+            notify_unsupported_note = ""
+            if notify_on_complete or watch_patterns:
+                try:
+                    from gateway.session_context import (
+                        async_delivery_supported as _async_ok,
+                    )
+
+                    # Stateless request/response sessions (the API server /
+                    # WebUI path) cannot route a completion back to the agent
+                    # after the turn ends — there is no persistent channel and
+                    # send() is a no-op. Registering a watcher there silently
+                    # no-ops (issue #10760). Refuse the promise instead: drop
+                    # the flags and tell the agent to poll.
+                    if not _async_ok():
+                        notify_on_complete = False
+                        watch_patterns = None
+                        notify_unsupported_note = (
+                            "notify_on_complete / watch_patterns are not available on "
+                            "this endpoint (stateless HTTP API — no channel to deliver "
+                            "an async completion after the turn ends). The process is "
+                            "running in the background; retrieve its result with "
+                            "process(action='poll') or process(action='wait')."
+                        )
+                except Exception:
+                    pass
+
+            # Mutual exclusion: if both notify_on_complete and watch_patterns
+            # are set, drop watch_patterns. The combination produces duplicate
+            # notifications (one per match + one on exit) that deliver
+            # asynchronously and can spam the user long after the process ends.
+            # notify_on_complete is the more useful signal for "let me know
+            # when the task finishes"; watch_patterns should be reserved for
+            # standalone mid-process signals on long-lived processes.
+            watch_patterns, conflict_note = _resolve_notification_flag_conflict(
+                notify_on_complete=bool(notify_on_complete),
+                watch_patterns=watch_patterns,
+                background=bool(background),
+            )
+
             try:
                 if env_type == "local":
                     proc_session = process_registry.spawn_local(
@@ -2490,6 +2538,8 @@ def terminal_tool(
                         origin_ui_session_id=origin_ui_session_id,
                         env_vars=env.env if hasattr(env, 'env') else None,
                         use_pty=effective_pty,
+                        notify_on_complete=bool(notify_on_complete),
+                        watch_patterns=watch_patterns,
                     )
                 else:
                     proc_session = process_registry.spawn_via_env(
@@ -2499,6 +2549,8 @@ def terminal_tool(
                         task_id=effective_task_id,
                         session_key=session_key,
                         origin_ui_session_id=origin_ui_session_id,
+                        notify_on_complete=bool(notify_on_complete),
+                        watch_patterns=watch_patterns,
                     )
 
                 result_data = {

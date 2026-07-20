@@ -14,71 +14,81 @@ import time
 import pytest
 
 
-def test_spawn_local_stamps_origin_ui_session_id(tmp_path):
-    from tools.process_registry import ProcessRegistry
-
-    reg = ProcessRegistry()
-    sess = reg.spawn_local(
-        command="printf ok",
-        cwd=str(tmp_path),
-        session_key="child-task-key",
-        origin_ui_session_id="webui-tab-A",
-    )
-    assert sess.origin_ui_session_id == "webui-tab-A"
-    assert sess.spawn_session_id == "webui-tab-A"
-    assert sess.session_key == "child-task-key"
-
-    # Wait for exit + completion enqueue.
-    deadline = time.time() + 5
-    while not sess.exited and time.time() < deadline:
-        time.sleep(0.05)
-    # Force move if reader hasn't yet.
-    if not sess.exited:
-        sess.exited = True
-        sess.exit_code = 0
-        sess.notify_on_complete = True
-        reg._move_to_finished(sess)
-    else:
-        sess.notify_on_complete = True
-        # If already finished without notify, re-enqueue isn't automatic;
-        # inspect the finished session fields instead.
-        assert reg.get(sess.id) is not None
-
-    # Drain any completion event and assert origin is present when notify set
-    # before finish. For processes that finished before notify_on_complete was
-    # set, verify the persisted ProcessSession still carries the origin.
-    finished = reg.get(sess.id)
-    assert finished is not None
-    assert finished.origin_ui_session_id == "webui-tab-A"
-
-
-def test_completion_event_includes_origin_ui_session_id(tmp_path):
-    from tools.process_registry import ProcessRegistry
-
-    reg = ProcessRegistry()
-    sess = reg.spawn_local(
-        command="true",
-        cwd=str(tmp_path),
-        session_key="sess-key",
-        origin_ui_session_id="owner-tab",
-    )
-    sess.notify_on_complete = True
-    deadline = time.time() + 5
-    while sess.id in reg._running and time.time() < deadline:
-        time.sleep(0.05)
-    # Ensure finished path ran
-    if sess.id in reg._running:
-        sess.exited = True
-        sess.exit_code = 0
-        reg._move_to_finished(sess)
-
+def _drain_completion_events(reg):
     events = []
     while True:
         try:
             events.append(reg.completion_queue.get_nowait())
         except Exception:
             break
-    completion = [e for e in events if e.get("type") == "completion" and e.get("session_id") == sess.id]
+    return events
+
+
+def test_spawn_local_stamps_origin_ui_session_id(tmp_path):
+    from tools.process_registry import ProcessRegistry
+
+    reg = ProcessRegistry()
+    # notify_on_complete is passed at spawn time: the reader thread starts
+    # inside spawn_local(), so a post-spawn assignment races a fast command
+    # reaching _move_to_finished() and can silently drop the completion event.
+    sess = reg.spawn_local(
+        command="printf ok",
+        cwd=str(tmp_path),
+        session_key="child-task-key",
+        origin_ui_session_id="webui-tab-A",
+        notify_on_complete=True,
+    )
+    assert sess.origin_ui_session_id == "webui-tab-A"
+    assert sess.spawn_session_id == "webui-tab-A"
+    assert sess.session_key == "child-task-key"
+    assert sess.notify_on_complete is True
+
+    # Wait for exit + completion enqueue. Because the flag was set at spawn
+    # time, exactly one completion event is guaranteed regardless of how fast
+    # the process exits.
+    deadline = time.time() + 5
+    while sess.id in reg._running and time.time() < deadline:
+        time.sleep(0.05)
+    assert sess.id not in reg._running, "process did not finish within deadline"
+
+    finished = reg.get(sess.id)
+    assert finished is not None
+    assert finished.origin_ui_session_id == "webui-tab-A"
+
+    events = _drain_completion_events(reg)
+    completion = [
+        e
+        for e in events
+        if e.get("type") == "completion" and e.get("session_id") == sess.id
+    ]
+    assert completion, f"expected completion event, got {events!r}"
+    assert completion[0].get("origin_ui_session_id") == "webui-tab-A"
+
+
+def test_completion_event_includes_origin_ui_session_id(tmp_path):
+    from tools.process_registry import ProcessRegistry
+
+    reg = ProcessRegistry()
+    # Spawn-time initialization (not post-spawn assignment) makes this
+    # deterministic even for a command as fast as `true`.
+    sess = reg.spawn_local(
+        command="true",
+        cwd=str(tmp_path),
+        session_key="sess-key",
+        origin_ui_session_id="owner-tab",
+        notify_on_complete=True,
+    )
+    deadline = time.time() + 5
+    while sess.id in reg._running and time.time() < deadline:
+        time.sleep(0.05)
+    assert sess.id not in reg._running, "process did not finish within deadline"
+
+    events = _drain_completion_events(reg)
+    completion = [
+        e
+        for e in events
+        if e.get("type") == "completion" and e.get("session_id") == sess.id
+    ]
     assert completion, f"expected completion event, got {events!r}"
     assert completion[0].get("origin_ui_session_id") == "owner-tab"
 

@@ -3697,6 +3697,22 @@ OPTIONAL_ENV_VARS = {
         "category": "provider",
         "advanced": True,
     },
+    "FRIENDLI_API_KEY": {
+        "description": "Friendli API key",
+        "prompt": "Friendli API key",
+        "url": "https://friendli.ai/suite/~/setting/keys",
+        "password": True,
+        "category": "provider",
+        "advanced": True,
+    },
+    "FRIENDLI_BASE_URL": {
+        "description": "Friendli base URL override",
+        "prompt": "Friendli base URL (leave empty for default)",
+        "url": None,
+        "password": False,
+        "category": "provider",
+        "advanced": True,
+    },
     "MINIMAX_API_KEY": {
         "description": "MiniMax API key (international)",
         "prompt": "MiniMax API key",

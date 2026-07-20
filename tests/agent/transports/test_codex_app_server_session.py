@@ -139,6 +139,28 @@ class TestTurnInputCoercion:
 # ---- lifecycle ----
 
 class TestLifecycle:
+    def test_ensure_started_passes_process_local_config_overrides(self):
+        client = FakeClient()
+        captured: dict[str, Any] = {}
+
+        def factory(**kwargs):
+            captured.update(kwargs)
+            return client
+
+        overrides = [
+            "-c", 'model="gpt-5.6-terra"',
+            "-c", 'model_reasoning_effort="xhigh"',
+        ]
+        session = CodexAppServerSession(
+            cwd="/tmp",
+            extra_args=overrides,
+            client_factory=factory,
+        )
+
+        session.ensure_started()
+
+        assert captured["extra_args"] == overrides
+
     def test_ensure_started_is_idempotent(self):
         client = FakeClient()
         s = make_session(client)

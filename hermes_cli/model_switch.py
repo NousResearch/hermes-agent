@@ -1717,6 +1717,20 @@ def list_authenticated_providers(
         except Exception:
             pass
 
+    # Codex app-server reads the login from its own subprocess rather than
+    # Hermes auth.json, so retain the catalog in the picker without a duplicate
+    # Hermes OAuth record.
+    try:
+        from hermes_cli.config import load_config as _load_picker_config
+        _picker_model_cfg = (_load_picker_config() or {}).get("model", {})
+        _codex_app_server_runtime = (
+            isinstance(_picker_model_cfg, dict)
+            and str(_picker_model_cfg.get("openai_runtime") or "").strip().lower()
+            == "codex_app_server"
+        )
+    except Exception:
+        _codex_app_server_runtime = False
+
 
     results: List[dict] = []
     seen_slugs: set = set()  # lowercase-normalized to catch case variants (#9545)
@@ -2048,6 +2062,12 @@ def list_authenticated_providers(
                     has_creds = True
             except Exception as exc:
                 logger.debug("Anthropic external creds check failed: %s", exc)
+        if (
+            not has_creds
+            and hermes_slug == "openai-codex"
+            and _codex_app_server_runtime
+        ):
+            has_creds = True
         if not has_creds:
             continue
 

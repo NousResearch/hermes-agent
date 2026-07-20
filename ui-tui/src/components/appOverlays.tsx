@@ -1,4 +1,4 @@
-import { Box, Text } from '@hermes/ink'
+import { Box, stringWidth, Text } from '@hermes/ink'
 import { useStore } from '@nanostores/react'
 import type { ReactNode } from 'react'
 
@@ -354,37 +354,44 @@ export function FloatingOverlays({
               disagree with every other overlay). Only the ACTIVE row carries
               a selection chip, mirroring the session switcher. */}
           <Box flexDirection="column" width={Math.max(28, cols - 6)}>
-            {completions.slice(start, start + viewportSize).map((item, i) => {
-              const active = start + i === compIdx
-              const row = listRowStyle(theme, active)
+            {(() => {
+              const visible = completions.slice(start, start + viewportSize)
+              // Two-column grid: the name track auto-sizes to the widest
+              // visible command, so descriptions align — and wrapped
+              // description lines stay inside their own column instead of
+              // running under the names.
+              const nameW = Math.max(...visible.map(item => stringWidth(item.display))) + 2
 
-              return (
-                <Box
-                  backgroundColor={row.backgroundColor}
-                  flexDirection="row"
-                  key={`${start + i}:${item.text}:${item.display}:${item.meta ?? ''}`}
-                  width="100%"
-                >
-                  {/* flexShrink=0 — when meta overflows the row, Ink/Yoga
-                      otherwise shaves the last char off the display column
-                      (e.g. /goal renders as /goa). */}
-                  <Box flexShrink={0}>
-                    <Text bold color={theme.color.label}>
-                      {' '}
-                      {item.display}
-                    </Text>
+              return visible.map((item, i) => {
+                const active = start + i === compIdx
+                const row = listRowStyle(theme, active)
+
+                return (
+                  <Box
+                    backgroundColor={row.backgroundColor}
+                    flexDirection="row"
+                    key={`${start + i}:${item.text}:${item.display}:${item.meta ?? ''}`}
+                    width="100%"
+                  >
+                    <Box flexShrink={0} width={nameW}>
+                      <Text bold color={theme.color.label}>
+                        {' '}
+                        {item.display}
+                      </Text>
+                    </Box>
+                    {item.meta ? (
+                      // Descriptions in the neutral gray, NOT a gold-family
+                      // tone — label vs muted are near-twins on some skins,
+                      // which made command and description read as one run.
+                      // Active row: meta rides the chip, so it uses row ink.
+                      <Text backgroundColor={row.backgroundColor} color={active ? row.color : theme.color.statusFg}>
+                        {item.meta}
+                      </Text>
+                    ) : null}
                   </Box>
-                  {item.meta ? (
-                    // Active row: meta rides the chip, so it uses the row ink —
-                    // muted-on-chip can drop under 1.5:1 on dark accent chips.
-                    <Text backgroundColor={row.backgroundColor} color={active ? row.color : theme.color.muted}>
-                      {' '}
-                      {item.meta}
-                    </Text>
-                  ) : null}
-                </Box>
-              )
-            })}
+                )
+              })
+            })()}
           </Box>
         </FloatBox>
       )

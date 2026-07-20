@@ -46,7 +46,7 @@ AI 足迹是一个以 URL 为核心的结构化内容管理工具。用户用它
 
 如果你的 Agent 支持 MCP 协议（Claude Desktop、Cursor、Cherry Studio 等），直接接入我们的 MCP Server：
 
-**MCP Server 地址**：https://github.com/Piccolo123/url-manager（可在 ModelScope MCP 广场一键部署）
+**MCP Server 地址**：https://github.com/Piccolo123/url-manager-mcp（可在 ModelScope MCP 广场一键部署）
 
 ```
 # MCP 配置（本地使用）
@@ -65,7 +65,7 @@ AI 足迹是一个以 URL 为核心的结构化内容管理工具。用户用它
 
 **Token 为空时直接用 `agent_register` 工具帮用户创建账号**——这就是 Agent 先行的完整流程：注册 → 拿 Token → 操作数据，全由 Agent 完成。
 
-> 完整的 MCP 工具列表和使用方式见 MCP Server 的 [README](https://github.com/Piccolo123/url-manager/blob/main/README.md)。
+> 完整的 MCP 工具列表和使用方式见 MCP Server 的 [README](https://github.com/Piccolo123/url-manager-mcp/blob/main/README.md)。
 
 ### 路径 B：本地脚本接入
 

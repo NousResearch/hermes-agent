@@ -9,6 +9,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { createInterface } from "node:readline";
 import { assertRequiredScopes, devDashboardGraphql, isDevDashboardMode, mergeRuntimeEnv } from "./lib/shopify-dev-dashboard-auth.mjs";
+import { fetchPublic } from "./lib/public-fetch.mjs";
 
 const execFileAsync = promisify(execFile);
 const __filename = fileURLToPath(import.meta.url);
@@ -211,7 +212,7 @@ async function resolveStoreDomainFromHtml(hostname) {
   ];
   for (const url of candidates) {
     try {
-      const response = await fetch(url, { signal: AbortSignal.timeout(8000) });
+      const response = await fetchPublic(url, {}, { timeoutMs: 8000 });
       if (!response.ok) continue;
       const html = await response.text();
       const match = html.match(/Shopify\.shop\s*=\s*"([^"]+\.myshopify\.com)"/i);
@@ -503,14 +504,13 @@ async function fetchHtml(url, headers = {}) {
     return { ok: false, status: 0, url, html: "", error: `Request blocked: ${e.message}` };
   }
   try {
-    const response = await fetch(url, {
+    const response = await fetchPublic(url, {
       headers: {
         "User-Agent": "Selofy Skill Hub Markets Localization Auditor/1.0",
         "Accept-Language": "en-US,en;q=0.9",
         ...headers,
       },
-      redirect: "follow",
-    });
+    }, { timeoutMs: 15000 });
     const html = await response.text();
     return { ok: response.ok, status: response.status, url: response.url, html };
   } catch (error) {
@@ -1689,9 +1689,13 @@ async function renderReport(audit, outputPath) {
   const templatePath = path.join(__dirname, "..", "assets", "report-template.html");
   const template = await readFile(templatePath, "utf8");
   const reportModel = buildReportModel(audit);
+  const safeReportJson = JSON.stringify(reportModel)
+    .replaceAll("<", "\\u003c")
+    .replaceAll(">", "\\u003e")
+    .replaceAll("&", "\\u0026");
   const html = template
     .replaceAll("{{REPORT_TITLE}}", reportModel.title.replace(/</g, "&lt;"))
-    .replace("{{REPORT_DATA_JSON}}", JSON.stringify(reportModel));
+    .replace("{{REPORT_DATA_JSON}}", safeReportJson);
   await mkdir(path.dirname(path.resolve(outputPath)), { recursive: true });
   await writeFile(outputPath, html, "utf8");
 }

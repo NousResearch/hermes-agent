@@ -4308,6 +4308,87 @@ class TestWebServerEndpoints:
         # The sibling base_url fill is unaffected.
         assert model_cfg["base_url"] == "https://llm.acme.corp/v1"
 
+    def test_custom_endpoint_edit_preserves_hand_written_provider_fields(self):
+        """The panel edits a few fields; it does not own the whole entry.
+
+        A ``providers.<name>`` block can carry keys the dashboard has no field
+        for — ``api_mode``, ``key_env``, ``extra_headers`` (which may carry
+        credentials), ``request_overrides``. Rebuilding the entry from scratch
+        on an unrelated edit silently dropped all of them, leaving a provider
+        that no longer authenticates or speaks the right protocol.
+        """
+        from hermes_cli.config import load_config, save_config
+
+        cfg = load_config()
+        cfg["providers"] = {
+            "acme": {
+                "name": "Acme",
+                "base_url": "https://llm.acme.corp/v1",
+                "model": "acme/model-1",
+                "api_mode": "responses",
+                "key_env": "ACME_API_KEY",
+                "extra_headers": {"X-Org-Id": "org_123"},
+                "request_overrides": {"reasoning_effort": "high"},
+                "models": {
+                    "acme/model-1": {"context_length": 200000},
+                    "acme/model-2": {"context_length": 400000},
+                },
+            }
+        }
+        save_config(cfg)
+
+        # The user opens the panel and only switches the default model.
+        resp = self.client.post(
+            "/api/providers/custom-endpoints",
+            json={
+                "id": "acme",
+                "name": "Acme",
+                "base_url": "https://llm.acme.corp/v1",
+                "model": "acme/model-2",
+            },
+        )
+        assert resp.status_code == 200
+
+        entry = load_config()["providers"]["acme"]
+        assert entry["api_mode"] == "responses"
+        assert entry["key_env"] == "ACME_API_KEY"
+        assert entry["extra_headers"] == {"X-Org-Id": "org_123"}
+        assert entry["request_overrides"] == {"reasoning_effort": "high"}
+        # The edit still applies.
+        assert entry["model"] == "acme/model-2"
+
+    def test_custom_endpoint_edit_keeps_the_other_models(self):
+        """The panel names one default model; it doesn't enumerate the catalogue."""
+        from hermes_cli.config import load_config, save_config
+
+        cfg = load_config()
+        cfg["providers"] = {
+            "acme": {
+                "name": "Acme",
+                "base_url": "https://llm.acme.corp/v1",
+                "model": "acme/model-1",
+                "models": {
+                    "acme/model-1": {"context_length": 200000},
+                    "acme/model-2": {"context_length": 400000},
+                },
+            }
+        }
+        save_config(cfg)
+
+        self.client.post(
+            "/api/providers/custom-endpoints",
+            json={
+                "id": "acme",
+                "name": "Acme",
+                "base_url": "https://llm.acme.corp/v1",
+                "model": "acme/model-2",
+            },
+        )
+
+        models = load_config()["providers"]["acme"]["models"]
+        assert sorted(models) == ["acme/model-1", "acme/model-2"]
+        assert models["acme/model-1"]["context_length"] == 200000
+
     def test_set_model_main_preserves_base_url_for_named_custom_provider(self):
         """Selecting a named custom endpoint from the Desktop model picker
         should keep its endpoint URL attached to model config.

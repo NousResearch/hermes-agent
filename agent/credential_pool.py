@@ -2158,30 +2158,35 @@ def _seed_from_singletons(provider: str, entries: List[PooledCredential]) -> Tup
     return changed, active_sources
 
 
+# Prefer ~/.hermes/.env over os.environ — the user's config file is the
+# authoritative source for Hermes credentials. Stale env vars from parent
+# processes (Codex CLI, test scripts, etc.) should not override deliberate
+# changes to the .env file. load_env() memoizes on the .env mtime, so
+# per-call reads (pool seeding, per-turn credential refresh) cost a stat()
+# when the file is unchanged.
+def get_env_prefer_dotenv(key: str) -> str:
+    env_file = load_env()
+    raw = env_file.get(key, "").strip()
+    env_val = os.environ.get(key, "").strip()
+    # If .env contains an unresolved op:// reference, prefer the
+    # already-resolved value from os.environ (set by
+    # load_hermes_dotenv() -> apply_onepassword_secrets()).  The raw
+    # "op://Vault/Item/field" string would otherwise win and every
+    # provider auth attempt would receive a URL instead of a key.  This
+    # happens during a partial migration, or when the user wrote op://
+    # references straight into .env rather than the secrets.onepassword
+    # config block.  For every non-op:// value the original
+    # .env-takes-precedence behaviour is preserved unchanged.
+    if raw.startswith("op://") and env_val:
+        return env_val
+    return raw or _get_secret(key, "") or env_val
+
+
 def _seed_from_env(provider: str, entries: List[PooledCredential]) -> Tuple[bool, Set[str]]:
     changed = False
     active_sources: Set[str] = set()
 
-    # Prefer ~/.hermes/.env over os.environ — the user's config file is the
-    # authoritative source for Hermes credentials. Stale env vars from parent
-    # processes (Codex CLI, test scripts, etc.) should not override deliberate
-    # changes to the .env file.
-    def _get_env_prefer_dotenv(key: str) -> str:
-        env_file = load_env()
-        raw = env_file.get(key, "").strip()
-        env_val = os.environ.get(key, "").strip()
-        # If .env contains an unresolved op:// reference, prefer the
-        # already-resolved value from os.environ (set by
-        # load_hermes_dotenv() -> apply_onepassword_secrets()).  The raw
-        # "op://Vault/Item/field" string would otherwise win and every
-        # provider auth attempt would receive a URL instead of a key.  This
-        # happens during a partial migration, or when the user wrote op://
-        # references straight into .env rather than the secrets.onepassword
-        # config block.  For every non-op:// value the original
-        # .env-takes-precedence behaviour is preserved unchanged.
-        if raw.startswith("op://") and env_val:
-            return env_val
-        return raw or _get_secret(key, "") or env_val
+    _get_env_prefer_dotenv = get_env_prefer_dotenv
 
     # Honour user suppression — `hermes auth remove <provider> <N>` for an
     # env-seeded credential marks the env:<VAR> source as suppressed so it

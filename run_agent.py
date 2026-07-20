@@ -4372,6 +4372,110 @@ class AIAgent:
 
         return True
 
+    def _try_refresh_env_client_credentials(self) -> bool:
+        """Adopt ~/.hermes/.env credential/base-url edits at the turn boundary.
+
+        A Settings save (desktop ``PUT /api/env``, ``hermes setup``) updates
+        ``.env`` and the *saving* process's os.environ, but a live session
+        worker keeps the base_url/api_key captured at agent init until it
+        restarts — so an open chat silently keeps calling the old endpoint
+        (#67821). Called at the start of each conversation turn, this
+        re-resolves the provider's env-sourced credentials (load_env() is
+        mtime-memoized, so an unchanged file costs one stat()) and rebuilds
+        the client when the user edited them.
+
+        Reacts only to env *edits* (resolved values changed since the last
+        look), never to mere divergence from the agent's current values —
+        credential-pool rotation and failover legitimately move the session
+        off the env credential, and stomping those back every turn would
+        flap. A config.yaml ``model.base_url`` (or a pool entry with a
+        custom endpoint) also wins: edits are only adopted while the
+        session's current base_url is still the registry default or the
+        previously-seen env value.
+        """
+        if self.api_mode != "chat_completions":
+            return False
+        if getattr(self, "_fallback_activated", False):
+            return False
+        try:
+            from agent.credential_pool import get_env_prefer_dotenv
+            from hermes_cli.auth import PROVIDER_REGISTRY
+        except ImportError:
+            return False
+        pconfig = PROVIDER_REGISTRY.get(self.provider)
+        if (
+            not pconfig
+            or getattr(pconfig, "auth_type", "") != "api_key"
+            or not getattr(pconfig, "api_key_env_vars", ())
+        ):
+            return False
+
+        api_key = ""
+        for env_var in pconfig.api_key_env_vars:
+            api_key = get_env_prefer_dotenv(env_var).strip()
+            if api_key:
+                break
+        if not api_key:
+            return False
+
+        env_url = ""
+        if pconfig.base_url_env_var:
+            env_url = get_env_prefer_dotenv(pconfig.base_url_env_var).strip().rstrip("/")
+        default_base = (pconfig.inference_base_url or "").strip().rstrip("/")
+        base_url = env_url or default_base
+        if self.provider == "kimi-coding":
+            from hermes_cli.auth import _resolve_kimi_base_url
+
+            base_url = _resolve_kimi_base_url(
+                api_key, pconfig.inference_base_url, env_url
+            ).rstrip("/")
+        elif self.provider == "zai":
+            from hermes_cli.auth import _resolve_zai_base_url
+
+            base_url = _resolve_zai_base_url(
+                api_key, pconfig.inference_base_url, env_url
+            ).rstrip("/")
+        if not base_url:
+            return False
+
+        resolved = (base_url, api_key)
+        prev = getattr(self, "_env_creds_seen", None)
+        self._env_creds_seen = resolved
+        current_base = (self.base_url or "").strip().rstrip("/")
+
+        if prev is None:
+            # First look — no baseline to diff against. Adopt only the
+            # boot-default case (worker spawned before the user saved an
+            # override); anything else is unattributable on turn one.
+            if current_base != default_base:
+                return False
+            if base_url == current_base and api_key == self.api_key:
+                return False
+        else:
+            if resolved == prev:
+                # Env unchanged; any drift from self.* is rotation/failover
+                # or config precedence — leave it alone.
+                return False
+            if current_base not in {default_base, prev[0]}:
+                return False
+            if base_url == current_base and api_key == self.api_key:
+                return False
+
+        self.api_key = api_key
+        self.base_url = base_url
+        self._client_kwargs["api_key"] = self.api_key
+        self._client_kwargs["base_url"] = self.base_url
+
+        if not self._replace_primary_openai_client(reason="env_credential_refresh"):
+            return False
+
+        logger.info(
+            "Applied updated .env credentials for %s: endpoint %s",
+            self.provider,
+            self.base_url,
+        )
+        return True
+
     def _try_refresh_vertex_client_credentials(self) -> bool:
         """Re-mint the Vertex OAuth2 access token and rebuild the OpenAI client.
 

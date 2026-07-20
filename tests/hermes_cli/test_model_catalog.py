@@ -108,7 +108,7 @@ class TestFetchSuccess:
 
         cache_file = model_catalog._cache_path()
         assert cache_file.exists()
-        with open(cache_file) as fh:
+        with open(cache_file, encoding="utf-8") as fh:
             assert json.load(fh) == manifest
 
     def test_second_call_uses_in_process_cache(self, isolated_home):
@@ -159,7 +159,7 @@ class TestFetchFailure:
         # Write stale cache directly (mtime in the past).
         cache = model_catalog._cache_path()
         cache.parent.mkdir(parents=True, exist_ok=True)
-        with open(cache, "w") as fh:
+        with open(cache, "w", encoding="utf-8") as fh:
             json.dump(manifest, fh)
         old = time.time() - 30 * 24 * 3600  # 30 days ago
         import os as _os
@@ -550,6 +550,56 @@ class TestIntegrationWithModelsModule:
         assert zero_row["models"] == []
         assert zero_row["total_models"] == len(expected)
 
+    def test_picker_hides_env_only_builtin_providers_with_config_context(self, monkeypatch):
+        """A stray API-key env var must not expand /model beyond config.yaml.
+
+        ``user_providers={}`` means the caller loaded config and there is no
+        configured ``providers:`` entry for OpenRouter.  The picker should not
+        fall back to the static/OpenRouter catalog just because
+        OPENROUTER_API_KEY exists in the environment.
+        """
+        from hermes_cli.model_switch import list_authenticated_providers
+
+        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
+        monkeypatch.setattr(
+            "hermes_cli.models.cached_provider_model_ids",
+            lambda slug, **kw: ["anthropic/claude-opus-4.8"] if slug == "openrouter" else [],
+        )
+
+        providers = list_authenticated_providers(
+            current_provider="",
+            user_providers={},
+            custom_providers=[],
+            max_models=50,
+        )
+
+        assert all(p["slug"] != "openrouter" for p in providers)
+
+    def test_picker_configured_builtin_uses_discovery_path(self, monkeypatch):
+        """Configured built-ins should still use the shared model discovery path."""
+        from hermes_cli.model_switch import list_authenticated_providers
+
+        calls = []
+
+        def _models(slug, **kwargs):
+            calls.append((slug, kwargs))
+            return ["configured/live-model"]
+
+        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
+        monkeypatch.setattr("hermes_cli.models.cached_provider_model_ids", _models)
+
+        providers = list_authenticated_providers(
+            current_provider="",
+            user_providers={"openrouter": {"models": {"configured/live-model": {}}}},
+            custom_providers=[],
+            max_models=50,
+            refresh=True,
+        )
+
+        openrouter = next((p for p in providers if p["slug"] == "openrouter"), None)
+        assert openrouter is not None
+        assert openrouter["models"] == ["configured/live-model"]
+        assert ("openrouter", {"force_refresh": True}) in calls
 
 # -----------------------------------------------------------------------------
 # Drift guard — prevent the in-repo curated lists from going out of sync with

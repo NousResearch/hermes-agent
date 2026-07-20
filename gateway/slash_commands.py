@@ -1491,7 +1491,7 @@ class GatewaySlashCommandsMixin:
 
         # Read current model/provider from config
         current_model = ""
-        current_provider = "openrouter"
+        current_provider = ""
         current_base_url = ""
         current_api_key = ""
         user_provs = None
@@ -1506,7 +1506,8 @@ class GatewaySlashCommandsMixin:
                     current_model = model_cfg.get("default", "")
                     current_provider = model_cfg.get("provider", current_provider)
                     current_base_url = model_cfg.get("base_url", "")
-                user_provs = cfg.get("providers")
+                raw_user_provs = cfg.get("providers")
+                user_provs = raw_user_provs if isinstance(raw_user_provs, dict) else {}
                 try:
                     from hermes_cli.config import get_compatible_custom_providers
                     custom_provs = get_compatible_custom_providers(cfg)

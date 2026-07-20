@@ -1657,7 +1657,7 @@ def list_authenticated_providers(
     for_picker: bool = False,
     excluded_providers: list | None = None,
 ) -> List[dict]:
-    """Detect which providers have credentials and list their curated models.
+    """Detect which configured providers have credentials and list their models.
 
     Uses the curated model lists from hermes_cli/models.py (OPENROUTER_MODELS,
     _PROVIDER_MODELS) — NOT the full models.dev catalog.  These are hand-picked
@@ -1673,6 +1673,10 @@ def list_authenticated_providers(
       - source: str — "built-in", "models.dev", "user-config"
 
     Only includes providers that have API keys set or are user-defined endpoints.
+    When ``user_providers`` is a concrete dict, built-in provider rows are
+    limited to the active provider and providers explicitly present in that
+    config dict.  This keeps ambient API-key env vars from expanding the
+    in-session ``/model`` picker beyond what ``config.yaml`` set up.
     ``force_fresh_nous_tier`` bypasses the short Nous tier cache for explicit
     account-sensitive flows. UI picker opens should leave it false so they do
     not block on fresh Portal/account checks every time.
@@ -1724,6 +1728,34 @@ def list_authenticated_providers(
     _current_provider_norm = str(current_provider or "").strip().lower()
     _current_base_url_norm = str(current_base_url or "").strip().rstrip("/").lower()
 
+    _has_user_provider_context = isinstance(user_providers, dict)
+    _configured_provider_slugs: set[str] = set()
+    if _has_user_provider_context:
+        _configured_provider_slugs = {
+            str(slug).strip().lower()
+            for slug in user_providers
+            if str(slug).strip()
+        }
+
+    def _is_configured_builtin_provider(slug: str) -> bool:
+        """Return whether a built-in row belongs in the configured picker."""
+        if not _has_user_provider_context:
+            return True
+        normalized = str(slug or "").strip().lower()
+        if not normalized:
+            return False
+        return normalized == _current_provider_norm or normalized in _configured_provider_slugs
+
+    def _has_stored_credential_pool(slug: str) -> bool:
+        """Return whether a provider has stored credentials, even if exhausted."""
+        try:
+            from hermes_cli.auth import _load_auth_store
+
+            store = _load_auth_store()
+            return bool(store and store.get("credential_pool", {}).get(slug))
+        except Exception:
+            return False
+
     def _can_probe_custom_provider(*, row_is_current: bool) -> bool:
         return bool(probe_custom_providers or (probe_current_custom_provider and row_is_current))
 
@@ -1732,6 +1764,12 @@ def list_authenticated_providers(
     # (section 2) and canonical slug (section 2b) so a single entry like
     # ``copilot`` hides the provider regardless of which key it surfaces under.
     _excluded: set = {str(p).strip().lower() for p in (excluded_providers or []) if p}
+
+    def _cached_model_ids(slug: str) -> list[str]:
+        try:
+            return cached_provider_model_ids(slug, force_refresh=refresh)
+        except TypeError:
+            return cached_provider_model_ids(slug)
     # Effective base URLs of every built-in row we emit (normalized lower+rstrip).
     # Section 4 uses this to hide ``custom_providers`` entries that point at the
     # same endpoint as a built-in (e.g. a user-defined "my-dashscope" on
@@ -1873,6 +1911,8 @@ def list_authenticated_providers(
             continue
         if hermes_id.lower() in _excluded or mdev_id.lower() in _excluded:
             continue
+        if not _is_configured_builtin_provider(hermes_id):
+            continue
         pdata = data.get(mdev_id)
         if not isinstance(pdata, dict):
             continue
@@ -1920,7 +1960,7 @@ def list_authenticated_providers(
         # /model picker sees the SAME list `hermes model` would build, with
         # disk caching to keep the picker open snappy. Falls back to the
         # curated static list when the live fetcher returns nothing.
-        model_ids = cached_provider_model_ids(hermes_id)
+        model_ids = _cached_model_ids(hermes_id)
         if not model_ids:
             model_ids = curated.get(hermes_id, [])
             if hermes_id in _MODELS_DEV_PREFERRED:
@@ -1975,6 +2015,13 @@ def list_authenticated_providers(
         if hermes_slug.lower() in seen_slugs:
             continue
         if pid.lower() in _excluded or hermes_slug.lower() in _excluded:
+            continue
+        # A stored pool is intentional provider setup, unlike an ambient API
+        # key. Keep it in the interactive picker even while every entry is
+        # cooling down, since another model may still be selectable.
+        if not _is_configured_builtin_provider(hermes_slug) and not (
+            for_picker and _has_stored_credential_pool(hermes_slug)
+        ):
             continue
 
         # Check if credentials exist
@@ -2059,12 +2106,12 @@ def list_authenticated_providers(
             # catalog. ``cached_provider_model_ids()`` falls back to the
             # curated list when the live endpoint is unreachable, so this
             # is safe for unauthenticated and offline cases too.
-            model_ids = cached_provider_model_ids(hermes_slug)
+            model_ids = _cached_model_ids(hermes_slug)
         # For aws_sdk providers (bedrock), use live discovery so the list
         # reflects the active region (eu.*, ap.*) not the static us.* list.
         elif overlay.auth_type == "aws_sdk":
             try:
-                _ids = cached_provider_model_ids(hermes_slug)
+                _ids = _cached_model_ids(hermes_slug)
                 model_ids = _ids if _ids else (curated.get(hermes_slug, []) or curated.get(pid, []))
             except Exception:
                 model_ids = curated.get(hermes_slug, []) or curated.get(pid, [])
@@ -2109,7 +2156,7 @@ def list_authenticated_providers(
             # Unified pathway — see Section 1 rationale. Fall back to the
             # curated dict (with models.dev merge for preferred providers)
             # when the live fetcher comes up empty.
-            model_ids = cached_provider_model_ids(hermes_slug)
+            model_ids = _cached_model_ids(hermes_slug)
             if not model_ids:
                 model_ids = curated.get(hermes_slug, []) or curated.get(pid, [])
                 if hermes_slug in _MODELS_DEV_PREFERRED:
@@ -2147,6 +2194,8 @@ def list_authenticated_providers(
             continue
         if _cp.slug.lower() in _excluded:
             continue
+        if not _is_configured_builtin_provider(_cp.slug):
+            continue
 
         # Check credentials via PROVIDER_REGISTRY (auth.py)
         _cp_config = _auth_registry.get(_cp.slug)
@@ -2183,13 +2232,13 @@ def list_authenticated_providers(
         # region (eu.*, us.*, ap.*) instead of the hardcoded us.* static list.
         if _cp_config and getattr(_cp_config, "auth_type", "") == "aws_sdk":
             try:
-                _ids = cached_provider_model_ids(_cp.slug)
+                _ids = _cached_model_ids(_cp.slug)
                 _cp_model_ids = _ids if _ids else curated.get(_cp.slug, [])
             except Exception:
                 _cp_model_ids = curated.get(_cp.slug, [])
         else:
             # Unified pathway — same as sections 1 and 2.
-            _cp_model_ids = cached_provider_model_ids(_cp.slug)
+            _cp_model_ids = _cached_model_ids(_cp.slug)
             if not _cp_model_ids:
                 _cp_model_ids = curated.get(_cp.slug, [])
         _cp_total = len(_cp_model_ids)

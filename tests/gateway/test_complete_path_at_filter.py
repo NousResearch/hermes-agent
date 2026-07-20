@@ -222,16 +222,44 @@ def test_fuzzy_skipped_when_path_has_backslashes(tmp_path, monkeypatch):
 
 
 def test_fuzzy_skipped_when_path_has_drive_letter(tmp_path, monkeypatch):
-    r"""A `C:`-style drive prefix is navigation intent, not fuzzy search."""
+    """A `C:`-style drive prefix is navigation intent, not fuzzy search."""
     monkeypatch.chdir(tmp_path)
     _nested_fixture(tmp_path)
 
-    texts = [t for t, _, _ in _items(r"@file:C:\nonexistent")]
+    texts = [t for t, _, _ in _items("@file:C:nonexistent")]
 
-    # `C:\nonexistent` normalizes to `/mnt/c/nonexistent`, an absent dir on the
-    # test host, so the listing branch yields nothing.  The point is only that
-    # it must NOT fall into repo-wide fuzzy (which would leak useCompletion.ts).
+    # `C:nonexistent` carries no `/` or `\`, so the drive-letter clause in
+    # `_is_path_navigation` (`path_part[1] == ":"`) is the *sole* condition that
+    # routes it to navigation — distinct from the backslash form already covered
+    # by test_fuzzy_skipped_when_path_has_backslashes. With no separator there is
+    # nothing to normalize, and `C:nonexistent` matches no dir on the test host,
+    # so the listing branch yields nothing.  End-to-end, it must NOT fall into
+    # repo-wide fuzzy (which would leak useCompletion.ts).  Note: for this input
+    # the fuzzy path would also drop useCompletion.ts (its `:` matches no
+    # basename), so this assertion alone can't distinguish the branches — the
+    # unit test below pins the drive-letter clause so its removal fails loudly.
     assert not any("useCompletion.ts" in t for t in texts), texts
+
+
+def test_is_path_navigation_drive_letter_branch():
+    r"""Unit guard for the drive-letter clause in `_is_path_navigation`.
+
+    The integration test above routes a `C:`-prefixed query through the
+    navigation branch, but a `C:` drive prefix can never be told apart from
+    fuzzy by output alone (a bare `C:name` resolves to no real dir on POSIX,
+    and adding a separator would trip the `/` branch instead). Pin the clause
+    directly so deleting it — or the `/` and `\` clauses — fails a test.
+    """
+    # Drive prefix with no separator: only the drive-letter clause can match.
+    assert server._is_path_navigation("C:nonexistent")
+    assert server._is_path_navigation("d:foo")
+    # The `/` and `\` clauses stay covered here too.
+    assert server._is_path_navigation("ui-tui/src")
+    assert server._is_path_navigation(r"ui-tui\src")
+    # A bare basename carries no navigation intent.
+    assert not server._is_path_navigation("appChrome")
+    # A `:` that is not in the drive position is not a drive prefix.
+    assert not server._is_path_navigation("ab:cd")
 
 
 def test_fuzzy_skipped_when_folder_tag(tmp_path, monkeypatch):

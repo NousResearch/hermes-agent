@@ -11,6 +11,99 @@ from unittest.mock import MagicMock
 
 import pytest
 
+
+def test_manager_isolates_same_named_servers_by_profile_home(tmp_path, monkeypatch):
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from tools.mcp_oauth import HermesTokenStorage
+    from tools.mcp_oauth_manager import MCPOAuthManager
+
+    profile_a = tmp_path / "profile-a"
+    profile_b = tmp_path / "profile-b"
+    for home, access_token in ((profile_a, "TOKEN_A"), (profile_b, "TOKEN_B")):
+        token = set_hermes_home_override(home)
+        try:
+            storage = HermesTokenStorage("shared")
+            storage._tokens_path().parent.mkdir(parents=True, exist_ok=True)
+            storage._tokens_path().write_text(
+                '{"access_token":"%s","token_type":"Bearer","expires_in":3600}'
+                % access_token
+            )
+        finally:
+            reset_hermes_home_override(token)
+
+    manager = MCPOAuthManager()
+    providers = []
+    for home in (profile_a, profile_b):
+        token = set_hermes_home_override(home)
+        try:
+            provider = manager.get_or_build_provider("shared", "https://mcp.example/mcp", {})
+            asyncio.run(provider._initialize())
+            providers.append(provider)
+        finally:
+            reset_hermes_home_override(token)
+
+    assert providers[0] is not providers[1]
+    assert providers[0].context.current_tokens.access_token == "TOKEN_A"
+    assert providers[1].context.current_tokens.access_token == "TOKEN_B"
+
+
+def test_manager_explicit_home_removes_only_that_profiles_tokens(tmp_path):
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from tools.mcp_oauth import HermesTokenStorage
+    from tools.mcp_oauth_manager import MCPOAuthManager
+
+    profile_a = tmp_path / "profile-a"
+    profile_b = tmp_path / "profile-b"
+    paths = []
+    for home in (profile_a, profile_b):
+        token = set_hermes_home_override(home)
+        try:
+            storage = HermesTokenStorage("shared")
+            storage._tokens_path().parent.mkdir(parents=True, exist_ok=True)
+            storage._tokens_path().write_text('{"access_token":"x","token_type":"Bearer"}')
+            paths.append(storage._tokens_path())
+        finally:
+            reset_hermes_home_override(token)
+
+    token = set_hermes_home_override(profile_a)
+    try:
+        MCPOAuthManager().remove("shared", hermes_home=profile_b)
+    finally:
+        reset_hermes_home_override(token)
+
+    assert paths[0].exists()
+    assert not paths[1].exists()
+
+
+def test_manager_can_restore_removed_entry_after_failed_reauth(tmp_path, monkeypatch):
+    from tools.mcp_oauth_manager import MCPOAuthManager
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _set_interactive_stdin(monkeypatch)
+    manager = MCPOAuthManager()
+    provider = manager.get_or_build_provider("shared", "https://mcp.example", {})
+
+    entry = manager.remove("shared")
+    manager.restore_entry("shared", entry)
+
+    assert manager.get_or_build_provider("shared", "https://mcp.example", {}) is provider
+
+
+def test_manager_restore_entry_preserves_newer_concurrent_entry(tmp_path, monkeypatch):
+    from tools.mcp_oauth_manager import MCPOAuthManager
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _set_interactive_stdin(monkeypatch)
+    manager = MCPOAuthManager()
+    old_provider = manager.get_or_build_provider("shared", "https://old.example", {})
+    old_entry = manager.remove("shared")
+    new_provider = manager.get_or_build_provider("shared", "https://new.example", {})
+
+    manager.restore_entry("shared", old_entry)
+
+    assert manager.get_or_build_provider("shared", "https://new.example", {}) is new_provider
+    assert new_provider is not old_provider
+
 pytest.importorskip(
     "mcp.client.auth.oauth2",
     reason="MCP SDK 1.26.0+ required for OAuth support",
@@ -166,7 +259,7 @@ async def test_handle_401_tracks_inflight_task_to_prevent_gc(tmp_path, monkeypat
     class _DummyProvider:
         context = None  # forces the can_refresh=False branch
 
-    mgr._entries["srv"] = _ProviderEntry(
+    mgr._entries[mgr._key("srv")] = _ProviderEntry(
         server_url="https://example.com/mcp",
         oauth_config=None,
         provider=_DummyProvider(),
@@ -214,7 +307,7 @@ async def test_handle_401_dedup_survives_even_if_task_reference_dropped(tmp_path
     class _DummyProvider:
         context = None
 
-    mgr._entries["srv"] = _ProviderEntry(
+    mgr._entries[mgr._key("srv")] = _ProviderEntry(
         server_url="https://example.com/mcp",
         oauth_config=None,
         provider=_DummyProvider(),
@@ -266,7 +359,7 @@ def test_manager_fails_fast_noninteractive_without_cached_tokens(tmp_path, monke
     with pytest.raises(OAuthNonInteractiveError, match="non-interactive"):
         mgr.get_or_build_provider("linear", "https://mcp.linear.app/mcp", None)
 
-    assert mgr._entries["linear"].provider is None
+    assert mgr._entries[mgr._key("linear")].provider is None
 
 
 # ---------------------------------------------------------------------------

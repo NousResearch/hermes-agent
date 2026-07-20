@@ -364,3 +364,77 @@ def test_request_anthropic_client_keeps_plain_for_anthropic(monkeypatch):
     client = ra.AIAgent._create_request_anthropic_client(stub, reason="x")
     assert client == "CLIENT_FOR:anthropic"
     assert calls[0]["api_key"] == "sk-ant-z"
+
+
+# ── fallback activation for Claude-on-Vertex (the second live failure) ────────
+#
+# try_activate_fallback has its OWN api_mode detection block, separate from
+# determine_api_mode. It had no Claude-on-Vertex case, so a vertex fallback
+# model (e.g. fable-5 Overloaded → sonnet-5) defaulted to chat_completions,
+# skipped the anthropic_messages client build, and 404'd on {host}/v1/messages.
+
+class _FallbackStubAgent(_StubAgent):
+    def __init__(self):
+        super().__init__(provider="vertex")
+        self.model = "claude-fable-5"
+        self._fallback_index = 0
+        self._fallback_chain = [{"provider": "vertex", "model": "claude-sonnet-5"}]
+        self._unavailable_fallback_keys = None
+        self._rate_limited_until = 0
+        self.context_compressor = None  # skip the network-y context-length probe
+        self.reasoning_config = None
+        self._pending_fallback_notice = None
+
+    def _try_activate_fallback(self, reason=None):  # recursion guard: should not fire
+        raise AssertionError("unexpected chain recursion — happy path should not skip")
+
+    def _is_azure_openai_url(self, _u):
+        return False
+
+    def _is_direct_openai_url(self, _u):
+        return False
+
+    def _provider_model_requires_responses_api(self, *a, **k):
+        return False
+
+    def _buffer_status(self, *a, **k):
+        pass
+
+
+class _FakeFbClient:
+    base_url = "https://aiplatform.googleapis.com/v1"
+    api_key = "vertex-oauth"
+
+
+def test_fallback_to_vertex_claude_builds_anthropic_vertex(monkeypatch):
+    import agent.chat_completion_helpers as helpers
+    import agent.auxiliary_client as aux
+    import agent.anthropic_adapter as aa
+
+    calls = []
+
+    def _fake_choke(provider, api_key, base_url, *, timeout=None,
+                    drop_context_1m_beta=False, agent=None):
+        calls.append(provider)
+        return f"CLIENT_FOR:{provider}"
+
+    monkeypatch.setattr(aux, "resolve_provider_client",
+                        lambda *a, **k: (_FakeFbClient(), "claude-sonnet-5"))
+    monkeypatch.setattr(helpers, "_fallback_entry_unavailable_without_network",
+                        lambda *a, **k: None)
+    monkeypatch.setattr(aa, "build_anthropic_client_for_provider", _fake_choke)
+    monkeypatch.setattr(helpers, "rewrite_prompt_model_identity", lambda *a, **k: None)
+    monkeypatch.setattr(helpers, "_reset_stale_streak", lambda *a, **k: None)
+
+    agent = _FallbackStubAgent()
+    ok = helpers.try_activate_fallback(agent, reason=None)
+
+    assert ok is True
+    assert agent.model == "claude-sonnet-5"
+    assert agent.provider == "vertex"
+    # The core assertions: detected as anthropic_messages and built via the
+    # provider chokepoint (AnthropicVertex), NOT left on chat_completions.
+    assert agent.api_mode == "anthropic_messages"
+    assert agent._anthropic_client == "CLIENT_FOR:vertex"
+    assert agent.client is None
+    assert calls == ["vertex"]

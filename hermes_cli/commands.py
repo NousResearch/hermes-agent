@@ -24,6 +24,12 @@ from utils import is_truthy_value
 
 logger = logging.getLogger(__name__)
 
+# Telegram bot shortcuts for McpVex slash recipes (key → (input, description)).
+MCPVEX_TELEGRAM_SHORTCUTS: dict[str, tuple[str, str]] = {
+    "mcpvex_rollout": ("rollout status", "McpVex WA rollout status"),
+    "mcpvex_rollout_sync": ("rollout sync", "McpVex rollout state sync"),
+}
+
 # prompt_toolkit is an optional CLI dependency — only needed for
 # SlashCommandCompleter and SlashCommandAutoSuggest.  Gateway and test
 # environments that lack it must still be able to import this module
@@ -33,28 +39,31 @@ try:
     from prompt_toolkit.completion import Completer, Completion
 except ImportError:  # pragma: no cover
     AutoSuggest = object  # type: ignore[assignment,misc]
-    Completer = object    # type: ignore[assignment,misc]
-    Suggestion = None     # type: ignore[assignment]
-    Completion = None     # type: ignore[assignment]
+    Completer = object  # type: ignore[assignment,misc]
+    Suggestion = None  # type: ignore[assignment]
+    Completion = None  # type: ignore[assignment]
 
 
 # ---------------------------------------------------------------------------
 # CommandDef dataclass
 # ---------------------------------------------------------------------------
 
+
 @dataclass(frozen=True)
 class CommandDef:
     """Definition of a single slash command."""
 
-    name: str                          # canonical name without slash: "background"
-    description: str                   # human-readable description
-    category: str                      # "Session", "Configuration", etc.
-    aliases: tuple[str, ...] = ()      # alternative names: ("bg",)
-    args_hint: str = ""                # argument placeholder: "<prompt>", "[name]"
+    name: str  # canonical name without slash: "background"
+    description: str  # human-readable description
+    category: str  # "Session", "Configuration", etc.
+    aliases: tuple[str, ...] = ()  # alternative names: ("bg",)
+    args_hint: str = ""  # argument placeholder: "<prompt>", "[name]"
     subcommands: tuple[str, ...] = ()  # tab-completable subcommands
-    cli_only: bool = False             # only available in CLI
-    gateway_only: bool = False         # only available in gateway/messaging
-    gateway_config_gate: str | None = None  # config dotpath; when truthy, overrides cli_only for gateway
+    cli_only: bool = False  # only available in CLI
+    gateway_only: bool = False  # only available in gateway/messaging
+    gateway_config_gate: str | None = (
+        None  # config dotpath; when truthy, overrides cli_only for gateway
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -63,202 +72,829 @@ class CommandDef:
 
 COMMAND_REGISTRY: list[CommandDef] = [
     # Session
-    CommandDef("start", "Acknowledge platform start pings without a reply", "Session",
-               gateway_only=True),
-    CommandDef("new", "Start a new session (fresh session ID + history)", "Session",
-               aliases=("reset",), args_hint="[name]"),
-    CommandDef("topic", "Enable or inspect Telegram DM topic sessions", "Session",
-               gateway_only=True, args_hint="[off|help|session-id]"),
-    CommandDef("clear", "Clear screen and start a new session", "Session",
-               cli_only=True),
-    CommandDef("redraw", "Force a full UI repaint (recovers from terminal drift)", "Session",
-               cli_only=True),
-    CommandDef("history", "Show conversation history", "Session",
-               cli_only=True),
-    CommandDef("save", "Save the current conversation", "Session",
-               cli_only=True),
+    CommandDef(
+        "start",
+        "Acknowledge platform start pings without a reply",
+        "Session",
+        gateway_only=True,
+    ),
+    CommandDef(
+        "new",
+        "Start a new session (fresh session ID + history)",
+        "Session",
+        aliases=("reset",),
+        args_hint="[name]",
+    ),
+    CommandDef(
+        "topic",
+        "Enable or inspect Telegram DM topic sessions",
+        "Session",
+        gateway_only=True,
+        args_hint="[off|help|session-id]",
+    ),
+    CommandDef(
+        "clear", "Clear screen and start a new session", "Session", cli_only=True
+    ),
+    CommandDef(
+        "redraw",
+        "Force a full UI repaint (recovers from terminal drift)",
+        "Session",
+        cli_only=True,
+    ),
+    CommandDef("history", "Show conversation history", "Session", cli_only=True),
+    CommandDef("save", "Save the current conversation", "Session", cli_only=True),
     CommandDef("retry", "Retry the last message (resend to agent)", "Session"),
-    CommandDef("prompt", "Compose your next prompt in $EDITOR (markdown), then send it", "Session",
-               cli_only=True, args_hint="[initial text]", aliases=("compose",)),
-    CommandDef("undo", "Back up N user turns and re-prompt (default 1)", "Session",
-               args_hint="[N]"),
-    CommandDef("title", "Set a title for the current session", "Session",
-               args_hint="[name]"),
-    CommandDef("handoff", "Hand off this session to a messaging platform (Telegram, Discord, etc.)", "Session",
-               args_hint="<platform>", cli_only=True),
-    CommandDef("branch", "Branch the current session (explore a different path)", "Session",
-               aliases=("fork",), args_hint="[name]"),
-    CommandDef("compress", "Compress conversation context (add 'here [N]' to keep recent N turns; --preview shows what would happen)", "Session",
-               aliases=("compact",), args_hint="[here [N] | focus topic | --preview|--dry-run]"),
-    CommandDef("rollback", "List or restore filesystem checkpoints", "Session",
-               args_hint="[number]"),
-    CommandDef("snapshot", "Create or restore state snapshots of Hermes config/state", "Session",
-               cli_only=True, aliases=("snap",), args_hint="[create|restore <id>|prune]"),
+    CommandDef(
+        "prompt",
+        "Compose your next prompt in $EDITOR (markdown), then send it",
+        "Session",
+        cli_only=True,
+        args_hint="[initial text]",
+        aliases=("compose",),
+    ),
+    CommandDef(
+        "undo",
+        "Back up N user turns and re-prompt (default 1)",
+        "Session",
+        args_hint="[N]",
+    ),
+    CommandDef(
+        "title", "Set a title for the current session", "Session", args_hint="[name]"
+    ),
+    CommandDef(
+        "handoff",
+        "Hand off this session to a messaging platform (Telegram, Discord, etc.)",
+        "Session",
+        args_hint="<platform>",
+        cli_only=True,
+    ),
+    CommandDef(
+        "branch",
+        "Branch the current session (explore a different path)",
+        "Session",
+        aliases=("fork",),
+        args_hint="[name]",
+    ),
+    CommandDef(
+        "compress",
+        "Compress conversation context (add 'here [N]' to keep recent N turns)",
+        "Session",
+        args_hint="[here [N] | focus topic]",
+    ),
+    CommandDef(
+        "rollback",
+        "List or restore filesystem checkpoints",
+        "Session",
+        args_hint="[number]",
+    ),
+    CommandDef(
+        "snapshot",
+        "Create or restore state snapshots of Hermes config/state",
+        "Session",
+        cli_only=True,
+        aliases=("snap",),
+        args_hint="[create|restore <id>|prune]",
+    ),
     CommandDef("stop", "Kill all running background processes", "Session"),
-    CommandDef("approve", "Approve a pending dangerous command", "Session",
-               gateway_only=True, args_hint="[session|always]"),
-    CommandDef("deny", "Deny a pending dangerous command (optionally with a reason)", "Session",
-               gateway_only=True, args_hint="[all] [reason]"),
-    CommandDef("background", "Run a prompt in the background", "Session",
-               aliases=("bg", "btw"), args_hint="<prompt>"),
-    CommandDef("agents", "Show active agents and running tasks", "Session",
-               aliases=("tasks",)),
-    CommandDef("journey", "Open the learning journey timeline",
-               "Session", aliases=("learning", "memory-graph"), cli_only=True,
-               args_hint="[list|delete <id>|edit <id>]",
-               subcommands=("list", "delete", "edit")),
-    CommandDef("queue", "Queue a prompt for the next turn (doesn't interrupt)", "Session",
-               aliases=("q",), args_hint="<prompt>"),
-    CommandDef("steer", "Inject a message after the next tool call without interrupting", "Session",
-               args_hint="<prompt>"),
-    CommandDef("goal", "Set a standing goal Hermes works on across turns until achieved", "Session",
-               args_hint="[text | draft <text> | show | pause | resume | clear | status | wait <pid> | unwait]"),
-    CommandDef("moa", "Run one prompt through the default Mixture of Agents preset, then restore your model", "Session",
-               args_hint="<prompt>"),
-    CommandDef("subgoal", "Add or manage extra criteria on the active goal", "Session",
-               args_hint="[text | remove N | clear]"),
+    CommandDef(
+        "approve",
+        "Approve a pending dangerous command",
+        "Session",
+        gateway_only=True,
+        args_hint="[session|always]",
+    ),
+    CommandDef(
+        "deny", "Deny a pending dangerous command", "Session", gateway_only=True
+    ),
+    CommandDef(
+        "background",
+        "Run a prompt in the background",
+        "Session",
+        aliases=("bg", "btw"),
+        args_hint="<prompt>",
+    ),
+    CommandDef(
+        "agents", "Show active agents and running tasks", "Session", aliases=("tasks",)
+    ),
+    CommandDef(
+        "journey",
+        "Open the learning journey timeline",
+        "Session",
+        aliases=("learning", "memory-graph"),
+        args_hint="[list|delete <id>|edit <id>]",
+        subcommands=("list", "delete", "edit"),
+    ),
+    CommandDef(
+        "queue",
+        "Queue a prompt for the next turn (doesn't interrupt)",
+        "Session",
+        aliases=("q",),
+        args_hint="<prompt>",
+    ),
+    CommandDef(
+        "steer",
+        "Inject a message after the next tool call without interrupting",
+        "Session",
+        args_hint="<prompt>",
+    ),
+    CommandDef(
+        "goal",
+        "Set a standing goal Hermes works on across turns until achieved",
+        "Session",
+        args_hint="[text | draft <text> | show | pause | resume | clear | status | wait <pid> | unwait]",
+    ),
+    CommandDef(
+        "moa",
+        "Run one prompt through the default Mixture of Agents preset, then restore your model",
+        "Session",
+        args_hint="<prompt>",
+    ),
+    CommandDef(
+        "subgoal",
+        "Add or manage extra criteria on the active goal",
+        "Session",
+        args_hint="[text | remove N | clear]",
+    ),
     CommandDef("status", "Show session, model, token, and context info", "Session"),
     CommandDef("whoami", "Show your slash command access (admin / user)", "Info"),
     CommandDef("profile", "Show active profile name and home directory", "Info"),
-    CommandDef("sethome", "Set this chat as the home channel", "Session",
-               gateway_only=True, aliases=("set-home",)),
-    CommandDef("resume", "Resume a previously-named session", "Session",
-               args_hint="[name]"),
-
+    CommandDef(
+        "sethome",
+        "Set this chat as the home channel",
+        "Session",
+        gateway_only=True,
+        aliases=("set-home",),
+    ),
+    CommandDef(
+        "resume", "Resume a previously-named session", "Session", args_hint="[name]"
+    ),
     # Configuration
     CommandDef("sessions", "Browse and resume previous sessions", "Session"),
-
     # Configuration
-    CommandDef("config", "Show current configuration", "Configuration",
-               cli_only=True),
-    CommandDef("model", "Switch model (session-scoped; --global to persist)", "Configuration",
-               args_hint="[model] [--provider name] [--global|--session] [--refresh]"),
-    CommandDef("codex-runtime", "Toggle codex app-server runtime for OpenAI/Codex models",
-               "Configuration", aliases=("codex_runtime",),
-               args_hint="[auto|codex_app_server]"),
-
-    CommandDef("personality", "Set a predefined personality", "Configuration",
-               args_hint="[name]"),
-    CommandDef("statusbar", "Toggle the context/model status bar", "Configuration",
-               cli_only=True, aliases=("sb",)),
-    CommandDef("timestamps", "Toggle [HH:MM] timestamps on messages and /history", "Configuration",
-               cli_only=True, args_hint="[on|off|status]",
-               subcommands=("on", "off", "status"), aliases=("ts",)),
-    CommandDef("verbose", "Cycle tool progress display: off -> new -> all -> verbose -> log",
-               "Configuration", cli_only=True,
-               gateway_config_gate="display.tool_progress_command"),
-    CommandDef("footer", "Toggle gateway runtime-metadata footer on final replies",
-               "Configuration", args_hint="[on|off|status]",
-               subcommands=("on", "off", "status")),
-    CommandDef("yolo", "Toggle YOLO mode (skip all dangerous command approvals)",
-               "Configuration"),
-    CommandDef("reasoning", "Manage reasoning effort and display", "Configuration",
-               args_hint="[level|show|hide|full|clamp] [--global]",
-               subcommands=("none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra", "show", "hide", "on", "off", "full", "clamp", "--global")),
-    CommandDef("fast", "Toggle fast mode — OpenAI Priority Processing / Anthropic Fast Mode (Normal/Fast)", "Configuration",
-               args_hint="[normal|fast|status] [--global]",
-               subcommands=("normal", "fast", "status", "on", "off", "--global")),
-    CommandDef("skin", "Show or change the display skin/theme", "Configuration",
-               cli_only=True, args_hint="[name]"),
-    CommandDef("indicator", "Pick the TUI busy-indicator style", "Configuration",
-               cli_only=True, args_hint="[kaomoji|emoji|unicode|ascii]",
-               subcommands=("kaomoji", "emoji", "unicode", "ascii")),
-    CommandDef("voice", "Toggle voice mode", "Configuration",
-               args_hint="[on|off|tts|status]", subcommands=("on", "off", "tts", "status")),
-    CommandDef("busy", "Control what Enter does while Hermes is working", "Configuration",
-               cli_only=True, args_hint="[queue|steer|interrupt|status]",
-               subcommands=("queue", "steer", "interrupt", "status")),
-
+    CommandDef("config", "Show current configuration", "Configuration", cli_only=True),
+    CommandDef(
+        "model",
+        "Switch model (persists by default)",
+        "Configuration",
+        args_hint="[model] [--provider name] [--global|--session] [--refresh]",
+    ),
+    CommandDef(
+        "codex-runtime",
+        "Toggle codex app-server runtime for OpenAI/Codex models",
+        "Configuration",
+        aliases=("codex_runtime",),
+        args_hint="[auto|codex_app_server]",
+    ),
+    CommandDef(
+        "personality",
+        "Set a predefined personality",
+        "Configuration",
+        args_hint="[name]",
+    ),
+    CommandDef(
+        "statusbar",
+        "Toggle the context/model status bar",
+        "Configuration",
+        cli_only=True,
+        aliases=("sb",),
+    ),
+    CommandDef(
+        "timestamps",
+        "Toggle [HH:MM] timestamps on messages and /history",
+        "Configuration",
+        cli_only=True,
+        args_hint="[on|off|status]",
+        subcommands=("on", "off", "status"),
+        aliases=("ts",),
+    ),
+    CommandDef(
+        "verbose",
+        "Cycle tool progress display: off -> new -> all -> verbose",
+        "Configuration",
+        cli_only=True,
+        gateway_config_gate="display.tool_progress_command",
+    ),
+    CommandDef(
+        "footer",
+        "Toggle gateway runtime-metadata footer on final replies",
+        "Configuration",
+        args_hint="[on|off|status]",
+        subcommands=("on", "off", "status"),
+    ),
+    CommandDef(
+        "yolo",
+        "Toggle YOLO mode (skip all dangerous command approvals)",
+        "Configuration",
+    ),
+    CommandDef(
+        "reasoning",
+        "Manage reasoning effort and display",
+        "Configuration",
+        args_hint="[level|show|hide|full|clamp]",
+        subcommands=(
+            "none",
+            "minimal",
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "show",
+            "hide",
+            "on",
+            "off",
+            "full",
+            "clamp",
+        ),
+    ),
+    CommandDef(
+        "thinking",
+        "Toggle live thinking bubbles and style",
+        "Configuration",
+        args_hint="[on|off|status|blockquote|code|plain|collapse|persist]",
+        subcommands=(
+            "on",
+            "off",
+            "status",
+            "show",
+            "hide",
+            "blockquote",
+            "code",
+            "plain",
+            "collapse",
+            "persist",
+            "style",
+        ),
+    ),
+    CommandDef(
+        "fast",
+        "Toggle fast mode — OpenAI Priority Processing / Anthropic Fast Mode (Normal/Fast)",
+        "Configuration",
+        args_hint="[normal|fast|status]",
+        subcommands=("normal", "fast", "status", "on", "off"),
+    ),
+    CommandDef(
+        "skin",
+        "Show or change the display skin/theme",
+        "Configuration",
+        cli_only=True,
+        args_hint="[name]",
+    ),
+    CommandDef(
+        "indicator",
+        "Pick the TUI busy-indicator style",
+        "Configuration",
+        cli_only=True,
+        args_hint="[kaomoji|emoji|unicode|ascii]",
+        subcommands=("kaomoji", "emoji", "unicode", "ascii"),
+    ),
+    CommandDef(
+        "voice",
+        "Toggle voice mode",
+        "Configuration",
+        args_hint="[on|off|tts|status]",
+        subcommands=("on", "off", "tts", "status"),
+    ),
+    CommandDef(
+        "busy",
+        "Control what Enter does while Hermes is working",
+        "Configuration",
+        cli_only=True,
+        args_hint="[queue|steer|interrupt|status]",
+        subcommands=("queue", "steer", "interrupt", "status"),
+    ),
     # Tools & Skills
-    CommandDef("tools", "Manage tools: /tools [list|disable|enable] [name...]", "Tools & Skills",
-               args_hint="[list|disable|enable] [name...]", cli_only=True),
-    CommandDef("toolsets", "List available toolsets", "Tools & Skills",
-               cli_only=True),
-    CommandDef("skills", "Search, install, inspect, or manage skills",
-               "Tools & Skills", cli_only=True,
-               gateway_config_gate="skills.write_approval",
-               subcommands=("search", "browse", "inspect", "install", "audit",
-                            "pending", "approve", "reject", "diff", "approval")),
-    CommandDef("memory", "Review pending memory writes / toggle the approval gate",
-               "Tools & Skills",
-               args_hint="[pending|approve|reject|approval] [id|on|off]",
-               subcommands=("pending", "approve", "reject", "approval")),
-    CommandDef("bundles", "List skill bundles (aliases /<name> for multiple skills)",
-               "Tools & Skills"),
-    CommandDef("pet", "Toggle or adopt a petdex mascot (/pet, /pet list, /pet <slug>)", "Tools & Skills",
-               cli_only=True, args_hint="[toggle|list|scale <n>|<slug>]", subcommands=("toggle", "list", "scale", "off")),
-    CommandDef("hatch", "Generate a new petdex pet from a description",
-               "Tools & Skills", cli_only=True, aliases=("generate-pet",), args_hint="[description]"),
-    CommandDef("learn", "Learn a reusable skill from anything you describe (dirs, URLs, this chat, notes)",
-               "Tools & Skills", args_hint="<what to learn from>"),
-    CommandDef("cron", "Manage scheduled tasks", "Tools & Skills",
-               cli_only=True, args_hint="[subcommand]",
-               subcommands=("list", "add", "create", "edit", "pause", "resume", "run", "remove")),
-    CommandDef("suggestions", "Review suggested automations (accept/dismiss)",
-               "Tools & Skills", aliases=("suggest",), args_hint="[accept|dismiss N | catalog]",
-               subcommands=("accept", "dismiss", "catalog", "clear")),
-    CommandDef("blueprint", "Set up an automation from a blueprint template",
-               "Tools & Skills", aliases=("bp",), args_hint="[name] [slot=value ...]"),
-    CommandDef("curator", "Background skill maintenance (status, run, pin, archive, list-archived)",
-               "Tools & Skills", args_hint="[subcommand]",
-               subcommands=("status", "run", "pause", "resume", "pin", "unpin", "restore", "list-archived")),
-    CommandDef("kanban", "Multi-profile collaboration board (tasks, links, comments)",
-               "Tools & Skills", args_hint="[subcommand]",
-               subcommands=("init", "boards", "create", "list", "ls", "show", "assign",
-                            "reclaim", "reassign", "diagnostics", "diag", "link", "unlink",
-                            "claim", "comment", "complete", "edit", "block", "unblock",
-                            "archive", "tail", "dispatch", "stats", "notify-subscribe",
-                            "notify-list", "notify-unsubscribe", "log", "runs",
-                            "heartbeat", "assignees", "context", "specify", "gc")),
-    CommandDef("reload", "Reload .env variables into the running session", "Tools & Skills",
-               cli_only=True),
-    CommandDef("reload-mcp", "Reload MCP servers from config", "Tools & Skills",
-               aliases=("reload_mcp",)),
-    CommandDef("reload-skills", "Re-scan ~/.hermes/skills/ for newly installed or removed skills",
-               "Tools & Skills", aliases=("reload_skills",)),
-    CommandDef("browser", "Connect browser tools to your live Chromium-family browser via CDP", "Tools & Skills",
-               cli_only=True, args_hint="[connect|disconnect|status]",
-               subcommands=("connect", "disconnect", "status")),
-    CommandDef("plugins", "List installed plugins and their status",
-               "Tools & Skills", cli_only=True),
-
+    CommandDef(
+        "tools",
+        "Manage tools: /tools [list|disable|enable] [name...]",
+        "Tools & Skills",
+        args_hint="[list|disable|enable] [name...]",
+        cli_only=True,
+    ),
+    CommandDef("toolsets", "List available toolsets", "Tools & Skills", cli_only=True),
+    CommandDef(
+        "skills",
+        "Search, install, inspect, or manage skills",
+        "Tools & Skills",
+        cli_only=True,
+        gateway_config_gate="skills.write_approval",
+        subcommands=(
+            "search",
+            "browse",
+            "inspect",
+            "install",
+            "audit",
+            "pending",
+            "approve",
+            "reject",
+            "diff",
+            "approval",
+        ),
+    ),
+    CommandDef(
+        "memory",
+        "Review pending memory writes / toggle the approval gate",
+        "Tools & Skills",
+        args_hint="[pending|approve|reject|approval] [id|on|off]",
+        subcommands=("pending", "approve", "reject", "approval"),
+    ),
+    CommandDef(
+        "bundles",
+        "List skill bundles (aliases /<name> for multiple skills)",
+        "Tools & Skills",
+    ),
+    CommandDef(
+        "pet",
+        "Toggle or adopt a petdex mascot (/pet, /pet list, /pet <slug>)",
+        "Tools & Skills",
+        cli_only=True,
+        args_hint="[toggle|list|scale <n>|<slug>]",
+        subcommands=("toggle", "list", "scale", "off"),
+    ),
+    CommandDef(
+        "hatch",
+        "Generate a new petdex pet from a description",
+        "Tools & Skills",
+        cli_only=True,
+        aliases=("generate-pet",),
+        args_hint="[description]",
+    ),
+    CommandDef(
+        "learn",
+        "Learn a reusable skill from anything you describe (dirs, URLs, this chat, notes)",
+        "Tools & Skills",
+        args_hint="<what to learn from>",
+    ),
+    CommandDef(
+        "dream",
+        "Run an offline memory/dream consolidation pass",
+        "Tools & Skills",
+        args_hint="[now|status]",
+        subcommands=("now", "status"),
+    ),
+    CommandDef(
+        "focus",
+        "Pin, show, or clear persistent ECN task focus for this session",
+        "Session",
+        args_hint="[text | show | clear | status]",
+        subcommands=("show", "clear", "status"),
+    ),
+    CommandDef(
+        "suggest-skills",
+        "Suggest skills from high-confidence experience lessons",
+        "Tools & Skills",
+        aliases=("skill_suggestions",),
+        args_hint="[min-confidence]",
+    ),
+    CommandDef(
+        "plan",
+        "Herens Plan-Execute: set, view, or advance session plan",
+        "Tools & Skills",
+        args_hint="[set|get|phase <phase>|validate]",
+        subcommands=("set", "get", "phase", "validate"),
+    ),
+    CommandDef(
+        "herens",
+        "Herens autonomous OS: status, strategy, nudge, caduceus, handoffs",
+        "Tools & Skills",
+        aliases=("hn",),
+        args_hint="[status|strategy|nudge|caduceus|handoff|evolve|metrics|tools|errors|cot|tot|uncertainty|transfer|inbox|optimize|peers|enable] ...",
+        subcommands=(
+            "status",
+            "strategy",
+            "nudge",
+            "caduceus",
+            "handoff",
+            "evolve",
+            "metrics",
+            "enable",
+            # F2-F4 subcommands (New-25)
+            "tools",
+            "errors",
+            "cot",
+            "tot",
+            "uncertainty",
+            "transfer",
+            "inbox",
+            "optimize",
+            "peers",
+        ),
+    ),
+    CommandDef(
+        "rate",
+        "Rate the last response 1-10 to train Herens feedback loop",
+        "Tools & Skills",
+        args_hint="<1-10>",
+    ),
+    CommandDef(
+        "cron",
+        "Manage scheduled tasks",
+        "Tools & Skills",
+        cli_only=True,
+        args_hint="[subcommand]",
+        subcommands=(
+            "list",
+            "add",
+            "create",
+            "edit",
+            "pause",
+            "resume",
+            "run",
+            "remove",
+        ),
+    ),
+    CommandDef(
+        "suggestions",
+        "Review suggested automations (accept/dismiss)",
+        "Tools & Skills",
+        aliases=("suggest",),
+        args_hint="[accept|dismiss N | catalog]",
+        subcommands=("accept", "dismiss", "catalog", "clear"),
+    ),
+    CommandDef(
+        "blueprint",
+        "Set up an automation from a blueprint template",
+        "Tools & Skills",
+        aliases=("bp",),
+        args_hint="[name] [slot=value ...]",
+    ),
+    CommandDef(
+        "curator",
+        "Background skill maintenance (status, run, pin, archive, list-archived)",
+        "Tools & Skills",
+        args_hint="[subcommand]",
+        subcommands=(
+            "status",
+            "run",
+            "pause",
+            "resume",
+            "pin",
+            "unpin",
+            "restore",
+            "list-archived",
+        ),
+    ),
+    CommandDef(
+        "kanban",
+        "Multi-profile collaboration board (tasks, links, comments)",
+        "Tools & Skills",
+        args_hint="[subcommand]",
+        subcommands=(
+            "init",
+            "boards",
+            "create",
+            "list",
+            "ls",
+            "show",
+            "assign",
+            "reclaim",
+            "reassign",
+            "diagnostics",
+            "diag",
+            "link",
+            "unlink",
+            "claim",
+            "comment",
+            "complete",
+            "edit",
+            "block",
+            "unblock",
+            "archive",
+            "tail",
+            "dispatch",
+            "stats",
+            "notify-subscribe",
+            "notify-list",
+            "notify-unsubscribe",
+            "log",
+            "runs",
+            "heartbeat",
+            "assignees",
+            "context",
+            "specify",
+            "gc",
+        ),
+    ),
+    CommandDef(
+        "swarm",
+        "Coordinated N-agent swarm (start, status, read, kill, repair, doctor, list)",
+        "Tools & Skills",
+        args_hint="[<N> goal | start|execute|resume|status|read|kill|repair|doctor|list ...]",
+        subcommands=(
+            "start",
+            "execute",
+            "resume",
+            "status",
+            "read",
+            "kill",
+            "repair",
+            "doctor",
+            "list",
+            "export",
+            "export-jira",
+            "export-linear",
+            "gc",
+            "templates",
+            "schedule",
+            "poll",
+            "stream",
+            "metrics",
+            "approve",
+            "mcp-import",
+        ),
+    ),
+    CommandDef(
+        "pwnbox",
+        "PWNBOX CTF hunt on instance URL (accept or agent)",
+        "Tools & Skills",
+        aliases=("pb",),
+        args_hint="[accept|agent|status|metrics] <url>",
+        subcommands=(
+            "accept",
+            "agent",
+            "orchestrate",
+            "status",
+            "doctor",
+            "e2e",
+            "smoke",
+            "skill-qa",
+            "metrics",
+            "skills",
+            "webhook",
+            "spawn",
+            "spawn-clipboard",
+            "flush",
+        ),
+    ),
+    CommandDef(
+        "pentest",
+        "Strix-style pentest scans (run, resume, watch, list, status)",
+        "Tools & Skills",
+        aliases=("pt",),
+        args_hint="[run|resume|watch|list|status|export|doctor|stop|validate-scope] ...",
+        subcommands=(
+            "run",
+            "resume",
+            "watch",
+            "list",
+            "ls",
+            "status",
+            "export",
+            "doctor",
+            "skills",
+            "stop",
+            "teardown",
+            "prune",
+            "validate-scope",
+            "kanban-sync",
+            "autofix",
+            "import-program",
+            "engagement-init",
+            "worklog",
+            "chains",
+            "export-hackerone",
+            "submit",
+            "benchmark",
+            "smoke",
+            "cron-install",
+        ),
+    ),
+    CommandDef(
+        "hunt",
+        "Hunt Brain — engagement, recon, pentest stack, workflow",
+        "Tools & Skills",
+        aliases=("hb",),
+        args_hint="[init|stack|workflow|intake|status|doctor|...] [url]",
+        subcommands=(
+            "init",
+            "scope",
+            "start",
+            "stop",
+            "status",
+            "quick",
+            "doctor",
+            "heal",
+            "metrics",
+            "readiness",
+            "plan",
+            "tot",
+            "tot-plan",
+            "mutate",
+            "sessions",
+            "graph",
+            "promote",
+            "scope-ingest",
+            "scope-wizard",
+            "subdomain",
+            "intake",
+            "workflow",
+            "stack",
+            "panel",
+            "approve",
+            "deny",
+            "dedupe",
+            "recon",
+            "kanban",
+            "cron",
+            "gate",
+            "mcpvex-scope",
+            "fix-telegram",
+            "engagement",
+        ),
+    ),
+    CommandDef(
+        "ctx",
+        "Universal local GGUF context stack (status, doctor, bench, wire)",
+        "Tools & Skills",
+        args_hint="[status|doctor|bench|wire] [model_id]",
+        subcommands=("status", "doctor", "bench", "wire", "help"),
+    ),
+    CommandDef(
+        "up",
+        "One-command hunt box (compose + bootstrap)",
+        "Tools & Skills",
+        args_hint="[--apply]",
+        cli_only=False,
+    ),
+    CommandDef(
+        "mcpvex",
+        "McpVex security framework (doctor, status, scope, wiring, lab, ctf, bb)",
+        "Tools & Skills",
+        aliases=("mv",),
+        args_hint="[doctor|status|scope|wiring|lab|assess|ctf|bb|ops|ready|failures|scorecard ...]",
+        subcommands=(
+            "doctor",
+            "status",
+            "scope",
+            "wiring",
+            "lab",
+            "assess",
+            "ctf",
+            "bb",
+            "cron",
+            "modules",
+            "research",
+            "enterprise",
+            "sql-assess",
+            "deploy",
+            "siem",
+            "kanban",
+            "obsidian",
+            "postgres",
+            "ops",
+            "ready",
+            "failures",
+            "scorecard",
+            "desk",
+            "bootstrap",
+        ),
+    ),
+    CommandDef(
+        "sandbox",
+        "Isolated Docker/Kata/gVisor Kali sandbox (doctor, spawn, exec, ctf)",
+        "Tools & Skills",
+        aliases=("sbx",),
+        args_hint="[doctor|spawn|exec|teardown|put|get|download|ctf|poc ...]",
+        subcommands=(
+            "doctor",
+            "spawn",
+            "exec",
+            "teardown",
+            "status",
+            "put",
+            "get",
+            "download",
+            "artifacts",
+            "audit",
+            "gvisor",
+            "kata",
+            "config",
+            "reaper",
+            "poc",
+            "ctf",
+            "snapshot",
+            "compose",
+            "vpn",
+            "fleet",
+            "registry",
+            "browser-import",
+        ),
+    ),
+    CommandDef(
+        "reload",
+        "Reload .env variables into the running session",
+        "Tools & Skills",
+        cli_only=True,
+    ),
+    CommandDef(
+        "reload-mcp",
+        "Reload MCP servers from config",
+        "Tools & Skills",
+        aliases=("reload_mcp",),
+        args_hint="[--now]",
+    ),
+    CommandDef(
+        "reload-skills",
+        "Re-scan ~/.hermes/skills/ for newly installed or removed skills",
+        "Tools & Skills",
+        aliases=("reload_skills",),
+    ),
+    CommandDef(
+        "browser",
+        "Connect browser tools to your live Chromium-family browser via CDP",
+        "Tools & Skills",
+        cli_only=True,
+        args_hint="[connect|disconnect|status]",
+        subcommands=("connect", "disconnect", "status"),
+    ),
+    CommandDef(
+        "plugins",
+        "List installed plugins and their status",
+        "Tools & Skills",
+        cli_only=True,
+    ),
     # Info
-    CommandDef("commands", "Browse all commands and skills (paginated)", "Info",
-               gateway_only=True, args_hint="[page]"),
+    CommandDef(
+        "commands",
+        "Browse all commands and skills (paginated)",
+        "Info",
+        gateway_only=True,
+        args_hint="[page]",
+    ),
     CommandDef("help", "Show available commands", "Info"),
-    CommandDef("restart", "Gracefully restart the gateway after draining active runs", "Session",
-               gateway_only=True),
-    CommandDef("usage", "Show token usage and rate limits; `reset` redeems a banked Codex limit reset", "Info",
-               args_hint="[reset [--force]]"),
-    CommandDef("subscription", "View your Nous plan and change it in the browser", "Info",
-               cli_only=True, aliases=("upgrade",)),
-    CommandDef("topup", "Show your Nous balance and manage billing on the portal", "Info"),
-    CommandDef("insights", "Show usage insights and analytics", "Info",
-               args_hint="[days]"),
-    CommandDef("platforms", "Show gateway/messaging platform status", "Info",
-               cli_only=True, aliases=("gateway",)),
-    CommandDef("platform", "Pause, resume, or list a failing gateway platform", "Info",
-               gateway_only=True, args_hint="<pause|resume|list> [name]"),
-    CommandDef("copy", "Copy the last assistant response to clipboard", "Info",
-               cli_only=True, args_hint="[number]"),
-    CommandDef("paste", "Attach clipboard image from your clipboard", "Info",
-               cli_only=True),
-    CommandDef("image", "Attach a local image file for your next prompt", "Info",
-               cli_only=True, args_hint="<path>"),
+    CommandDef(
+        "restart",
+        "Gracefully restart the gateway after draining active runs",
+        "Session",
+        gateway_only=True,
+    ),
+    CommandDef(
+        "usage", "Show token usage and rate limits for the current session", "Info"
+    ),
+    CommandDef("credits", "Show Nous credit balance and top up", "Info"),
+    CommandDef(
+        "billing",
+        "Manage Nous terminal billing — buy credits, auto-reload, limits",
+        "Info",
+        cli_only=True,
+    ),
+    CommandDef(
+        "insights", "Show usage insights and analytics", "Info", args_hint="[days]"
+    ),
+    CommandDef(
+        "platforms",
+        "Show gateway/messaging platform status",
+        "Info",
+        cli_only=True,
+        aliases=("gateway",),
+    ),
+    CommandDef(
+        "platform",
+        "Pause, resume, or list a failing gateway platform",
+        "Info",
+        gateway_only=True,
+        args_hint="<pause|resume|list> [name]",
+    ),
+    CommandDef(
+        "copy",
+        "Copy the last assistant response to clipboard",
+        "Info",
+        cli_only=True,
+        args_hint="[number]",
+    ),
+    CommandDef(
+        "paste", "Attach clipboard image from your clipboard", "Info", cli_only=True
+    ),
+    CommandDef(
+        "image",
+        "Attach a local image file for your next prompt",
+        "Info",
+        cli_only=True,
+        args_hint="<path>",
+    ),
     CommandDef("update", "Update Hermes Agent to the latest version", "Info"),
     CommandDef("version", "Show Hermes Agent version", "Info", aliases=("v",)),
-    CommandDef("debug", "Upload debug report (system info + logs) and get shareable links", "Info",
-               args_hint="[nous|local]"),
-
+    CommandDef(
+        "debug",
+        "Upload debug report (system info + logs) and get shareable links",
+        "Info",
+        args_hint="[nous|local]",
+    ),
     # Exit
-    CommandDef("quit", "Exit the CLI (use --delete to also remove session history)", "Exit",
-               cli_only=True, aliases=("exit",), args_hint="[--delete]"),
+    CommandDef(
+        "quit",
+        "Exit the CLI (use --delete to also remove session history)",
+        "Exit",
+        cli_only=True,
+        aliases=("exit",),
+        args_hint="[--delete]",
+    ),
 ]
 
 
 # ---------------------------------------------------------------------------
 # Derived lookups -- rebuilt once at import time, refreshed by rebuild_lookups()
 # ---------------------------------------------------------------------------
+
 
 def _build_command_lookup() -> dict[str, CommandDef]:
     """Map every name and alias to its CommandDef."""
@@ -365,25 +1001,28 @@ def is_gateway_known_command(name: str | None) -> bool:
 # Listed here for introspection / tests; semantically a subset of
 # "all resolvable commands" — which is the real bypass set (see
 # should_bypass_active_session below).
-ACTIVE_SESSION_BYPASS_COMMANDS: frozenset[str] = frozenset(
-    {
-        "agents",
-        "approve",
-        "background",
-        "commands",
-        "deny",
-        "help",
-        "new",
-        "profile",
-        "queue",
-        "restart",
-        "status",
-        "steer",
-        "stop",
-        "update",
-        "version",
-    }
-)
+ACTIVE_SESSION_BYPASS_COMMANDS: frozenset[str] = frozenset({
+    "agents",
+    "approve",
+    "background",
+    "commands",
+    "deny",
+    "goal",
+    "help",
+    "kanban",
+    "new",
+    "profile",
+    "queue",
+    "restart",
+    "status",
+    "steer",
+    "stop",
+    "subgoal",
+    "update",
+    "verbose",
+    "version",
+    "yolo",
+})
 
 
 def should_bypass_active_session(command_name: str | None) -> bool:
@@ -421,6 +1060,7 @@ def _resolve_config_gates() -> set[str]:
         return set()
     try:
         from hermes_cli.config import read_raw_config
+
         cfg = read_raw_config()
     except Exception:
         return set()
@@ -438,7 +1078,9 @@ def _resolve_config_gates() -> set[str]:
     return result
 
 
-def _is_gateway_available(cmd: CommandDef, config_overrides: set[str] | None = None) -> bool:
+def _is_gateway_available(
+    cmd: CommandDef, config_overrides: set[str] | None = None
+) -> bool:
     """Check if *cmd* should appear in gateway surfaces (help, menus, mappings).
 
     Unconditionally available when ``cli_only`` is False.  When ``cli_only``
@@ -449,7 +1091,11 @@ def _is_gateway_available(cmd: CommandDef, config_overrides: set[str] | None = N
     if not cmd.cli_only:
         return True
     if cmd.gateway_config_gate:
-        overrides = config_overrides if config_overrides is not None else _resolve_config_gates()
+        overrides = (
+            config_overrides
+            if config_overrides is not None
+            else _resolve_config_gates()
+        )
         return cmd.name in overrides
     return False
 
@@ -575,6 +1221,7 @@ _TELEGRAM_MENU_PRIORITY = (
     "background",
     # Lower-priority but still useful operational built-ins.
     "reasoning",
+    "thinking",
     "usage",
     "platforms",
     "platform",
@@ -606,13 +1253,16 @@ def _telegram_command_menu_config() -> dict[str, Any]:
     """
     try:
         from hermes_cli.config import read_raw_config
+
         raw_cfg = read_raw_config() or {}
     except Exception:
         raw_cfg = {}
     if not isinstance(raw_cfg, Mapping):
         raw_cfg = {}
 
-    menu_cfg = dict(_nested_mapping(raw_cfg, "platforms", "telegram", "extra", "command_menu"))
+    menu_cfg = dict(
+        _nested_mapping(raw_cfg, "platforms", "telegram", "extra", "command_menu")
+    )
 
     max_commands = menu_cfg.get("max_commands", _DEFAULT_TELEGRAM_MENU_MAX_COMMANDS)
     try:
@@ -673,22 +1323,23 @@ def _prioritize_telegram_menu_commands(
     commands: list[tuple[str, str]],
 ) -> list[tuple[str, str]]:
     priority = {
-        name: index
-        for index, name in enumerate(_telegram_effective_priority())
+        name: index for index, name in enumerate(_telegram_effective_priority())
     }
     return [
         command
         for _index, command in sorted(
             enumerate(commands),
             key=lambda item: (
-                0,
-                priority[item[1][0]],
-                item[0],
-            )
-            if item[1][0] in priority
-            else (
-                1,
-                item[0],
+                (
+                    0,
+                    priority[item[1][0]],
+                    item[0],
+                )
+                if item[1][0] in priority
+                else (
+                    1,
+                    item[0],
+                )
             ),
         )
     ]
@@ -743,7 +1394,7 @@ def _clamp_command_names(
         if len(name) > _CMD_NAME_LIMIT:
             candidate = name[:_CMD_NAME_LIMIT]
             if candidate in used:
-                prefix = name[:_CMD_NAME_LIMIT - 1]
+                prefix = name[: _CMD_NAME_LIMIT - 1]
                 for digit in range(10):
                     candidate = f"{prefix}{digit}"
                     if candidate not in used:
@@ -766,6 +1417,7 @@ _clamp_telegram_names = _clamp_command_names
 # ---------------------------------------------------------------------------
 # Shared skill/plugin collection for gateway platforms
 # ---------------------------------------------------------------------------
+
 
 def _collect_gateway_skill_entries(
     platform: str,
@@ -808,6 +1460,7 @@ def _collect_gateway_skill_entries(
     plugin_pairs: list[tuple[str, str]] = []
     try:
         from hermes_cli.plugins import get_plugin_commands
+
         plugin_cmds = get_plugin_commands()
         for cmd_name in sorted(plugin_cmds):
             name = sanitize_name(cmd_name) if sanitize_name else cmd_name
@@ -815,7 +1468,7 @@ def _collect_gateway_skill_entries(
                 continue
             desc = plugin_cmds[cmd_name].get("description", "Plugin command")
             if len(desc) > desc_limit:
-                desc = desc[:desc_limit - 3] + "..."
+                desc = desc[: desc_limit - 3] + "..."
             plugin_pairs.append((name, desc))
     except Exception:
         pass
@@ -830,6 +1483,7 @@ def _collect_gateway_skill_entries(
     _platform_disabled: set[str] = set()
     try:
         from agent.skill_utils import get_disabled_skill_names
+
         _platform_disabled = get_disabled_skill_names(platform=platform)
     except Exception:
         pass
@@ -839,6 +1493,7 @@ def _collect_gateway_skill_entries(
         from agent.skill_commands import get_skill_commands
         from tools.skills_tool import SKILLS_DIR
         from agent.skill_utils import get_external_skills_dirs
+
         _skills_dir = str(SKILLS_DIR.resolve())
         _hub_dir = str((SKILLS_DIR / ".hub").resolve()).rstrip("/") + "/"
         # Build set of allowed directory prefixes: local skills dir + any
@@ -870,7 +1525,7 @@ def _collect_gateway_skill_entries(
                 continue
             desc = info.get("description", "")
             if len(desc) > desc_limit:
-                desc = desc[:desc_limit - 3] + "..."
+                desc = desc[: desc_limit - 3] + "..."
             skill_triples.append((name, desc, cmd_key))
     except Exception:
         pass
@@ -892,7 +1547,10 @@ def _collect_gateway_skill_entries(
 # Platform-specific wrappers
 # ---------------------------------------------------------------------------
 
-def telegram_menu_commands(max_commands: int = 100) -> tuple[list[tuple[str, str]], int]:
+
+def telegram_menu_commands(
+    max_commands: int = 100,
+) -> tuple[list[tuple[str, str]], int]:
     """Return Telegram menu commands capped to the Bot API limit.
 
     Priority order (higher priority = never bumped by overflow):
@@ -1000,6 +1658,7 @@ def discord_skill_commands_by_category(
     _platform_disabled: set[str] = set()
     try:
         from agent.skill_utils import get_disabled_skill_names
+
         _platform_disabled = get_disabled_skill_names(platform="discord")
     except Exception:
         pass
@@ -1086,7 +1745,9 @@ def discord_skill_commands_by_category(
                         "skill will not appear in the /skill autocomplete. "
                         "Rename the skill's frontmatter ``name:`` to differ "
                         "in its first 32 chars.",
-                        discord_name, cmd_key, discord_name,
+                        discord_name,
+                        cmd_key,
+                        discord_name,
                     )
                 else:
                     logger.warning(
@@ -1095,7 +1756,10 @@ def discord_skill_commands_by_category(
                         "will appear in the /skill autocomplete. Rename "
                         "one skill's frontmatter ``name:`` to differ in "
                         "its first 32 chars.",
-                        prior, cmd_key, discord_name, prior,
+                        prior,
+                        cmd_key,
+                        discord_name,
+                        prior,
                     )
                 hidden += 1
                 continue
@@ -1133,9 +1797,25 @@ _SLACK_INVALID_CHARS = re.compile(r"[^a-z0-9_\-]")
 _SLACK_RESERVED_COMMANDS = frozenset({
     # Built-in Slack slash commands that cannot be registered by apps.
     # https://slack.com/help/articles/201259356-Use-built-in-slash-commands
-    "me", "status", "away", "dnd", "shrug", "remind", "msg", "feed",
-    "who", "collapse", "expand", "leave", "join", "open", "search",
-    "topic", "mute", "pro", "shortcuts",
+    "me",
+    "status",
+    "away",
+    "dnd",
+    "shrug",
+    "remind",
+    "msg",
+    "feed",
+    "who",
+    "collapse",
+    "expand",
+    "leave",
+    "join",
+    "open",
+    "search",
+    "topic",
+    "mute",
+    "pro",
+    "shortcuts",
 })
 
 # High-value aliases that must survive Slack's 50-slash cap even when the
@@ -1151,6 +1831,21 @@ _SLACK_RESERVED_COMMANDS = frozenset({
 # native slot, the alias spelling stays reachable via /hermes reset).
 _SLACK_PRIORITY_ALIASES = ("btw", "bg")
 
+# Canonical commands that must survive Slack's 50-slash cap. New gateway commands
+# (e.g. hunt) append to COMMAND_REGISTRY and can otherwise clamp these off the
+# manifest even though Telegram still surfaces them — breaking parity tests.
+_SLACK_PRIORITY_CANONICALS = (
+    "help",
+    "restart",
+    "new",
+    "stop",
+    "background",
+    "model",
+    "commands",
+    "reload-skills",
+    "reload-mcp",
+)
+
 # Canonical commands intentionally NOT given a native Slack slash slot. Slack
 # caps apps at 50 slash commands and the registry is at that ceiling; rather
 # than let the clamp silently drop whichever command sorts last (and break
@@ -1159,12 +1854,33 @@ _SLACK_PRIORITY_ALIASES = ("btw", "bg")
 # surface (CLI, TUI, Telegram, Discord). Keep this list TIGHT and intentional —
 # the telegram-parity test reads it so an entry here is a deliberate
 # "Slack-via-/hermes" decision, not a silent clamp.
-#   - topup: the billing/balance surface; reached via /hermes topup on Slack.
-#     (the rehaul folded the old /credits + /billing surfaces into /topup.)
+#   - credits: the billing/top-up surface; reached via /hermes credits on Slack.
+#   - billing: the terminal-billing surface (buy/auto-reload/limit); /hermes billing.
 #   - moa: high-cost slash mode, available through /hermes moa to avoid
 #     displacing existing native Slack slash commands at the 50-command cap.
 #   - debug: the log/report upload surface; reached via /hermes debug on Slack.
-_SLACK_VIA_HERMES_ONLY = frozenset({"topup", "moa", "debug"})
+#   - hunt: operator-heavy hunt stack; reached via /hermes hunt on Slack.
+_SLACK_VIA_HERMES_ONLY = frozenset({
+    "billing",
+    "credits",
+    "ctx",
+    "curator",
+    "debug",
+    "hunt",
+    "insights",
+    "kanban",
+    "mcpvex",
+    "moa",
+    "pentest",
+    "platform",
+    "pwnbox",
+    "sandbox",
+    "swarm",
+    "update",
+    "up",
+    "usage",
+    "version",
+})
 
 
 def _sanitize_slack_name(raw: str) -> str:
@@ -1205,7 +1921,11 @@ def slack_native_slashes() -> list[tuple[str, str, str]]:
     seen: set[str] = set()
 
     # Reserve /hermes as the catch-all top-level command.
-    entries.append(("hermes", "Talk to Hermes or run a subcommand", "[subcommand] [args]"))
+    entries.append((
+        "hermes",
+        "Talk to Hermes or run a subcommand",
+        "[subcommand] [args]",
+    ))
     seen.add("hermes")
 
     def _add(name: str, desc: str, hint: str) -> None:
@@ -1236,7 +1956,15 @@ def slack_native_slashes() -> list[tuple[str, str, str]]:
     for alias in _SLACK_PRIORITY_ALIASES:
         cmd = _alias_to_cmd.get(alias)
         if cmd is not None:
-            _add(alias, f"Alias for /{cmd.name} — {cmd.description}", cmd.args_hint or "")
+            _add(
+                alias, f"Alias for /{cmd.name} — {cmd.description}", cmd.args_hint or ""
+            )
+
+    _cmd_by_name = {cmd.name: cmd for cmd in COMMAND_REGISTRY}
+    for name in _SLACK_PRIORITY_CANONICALS:
+        cmd = _cmd_by_name.get(name)
+        if cmd is not None and _is_gateway_available(cmd, overrides):
+            _add(cmd.name, cmd.description, cmd.args_hint or "")
 
     # First pass: canonical names (so they win slots if we hit the cap).
     for cmd in COMMAND_REGISTRY:
@@ -1251,7 +1979,9 @@ def slack_native_slashes() -> list[tuple[str, str, str]]:
         for alias in cmd.aliases:
             # Skip aliases that only differ from canonical by case/punctuation
             # normalization (already covered by _add dedup).
-            _add(alias, f"Alias for /{cmd.name} — {cmd.description}", cmd.args_hint or "")
+            _add(
+                alias, f"Alias for /{cmd.name} — {cmd.description}", cmd.args_hint or ""
+            )
 
     # Third pass: plugin commands.
     for name, description, args_hint in _iter_plugin_command_entries():
@@ -1260,7 +1990,9 @@ def slack_native_slashes() -> list[tuple[str, str, str]]:
     return entries
 
 
-def slack_app_manifest(request_url: str = "https://hermes-agent.local/slack/commands") -> dict[str, Any]:
+def slack_app_manifest(
+    request_url: str = "https://hermes-agent.local/slack/commands",
+) -> dict[str, Any]:
     """Generate a Slack app manifest with all gateway commands as slashes.
 
     ``request_url`` is required by Slack's manifest schema for every slash
@@ -1320,9 +2052,11 @@ class SlashCommandCompleter(Completer):
 
     def __init__(
         self,
-        skill_commands_provider: Callable[[], Mapping[str, dict[str, Any]]] | None = None,
+        skill_commands_provider: Callable[[], Mapping[str, dict[str, Any]]]
+        | None = None,
         command_filter: Callable[[str], bool] | None = None,
-        skill_bundles_provider: Callable[[], Mapping[str, dict[str, Any]]] | None = None,
+        skill_bundles_provider: Callable[[], Mapping[str, dict[str, Any]]]
+        | None = None,
     ) -> None:
         self._skill_commands_provider = skill_commands_provider
         self._command_filter = command_filter
@@ -1355,77 +2089,6 @@ class SlashCommandCompleter(Completer):
             return self._skill_bundles_provider() or {}
         except Exception:
             return {}
-
-    # -- stacked slash-skill completion helpers ---------------------------
-
-    @staticmethod
-    def _normalize_skill_token(token: str) -> str:
-        """Canonicalize a typed skill token to its hyphenated /slug form.
-
-        Mirrors resolve_skill_command_key() in agent/skill_commands.py:
-        underscores (Telegram bot-command form) are interchangeable with
-        hyphens.
-        """
-        return "/" + token.lstrip("/").replace("_", "-").lower()
-
-    def _is_skill_command(self, token: str) -> bool:
-        return self._normalize_skill_token(token) in self._iter_skill_commands()
-
-    def _stacked_skill_completions(self, text: str):
-        """Offer skill-command completions for stacked invocations.
-
-        After ``/skill-a `` the user may chain more leading skills
-        (``/skill-a /skill-b do XYZ``). While every whitespace-delimited
-        token so far resolves to a distinct skill command and the current
-        word under the cursor starts with ``/``, keep offering the remaining
-        skill commands. The moment the chain is broken (a non-skill token
-        appears, the cap is reached, or the user is typing plain instruction
-        text) we offer nothing — instruction text must never be polluted
-        with skill suggestions.
-        """
-        try:
-            from agent.skill_commands import _MAX_STACKED_SKILLS as _cap
-        except Exception:
-            _cap = 5
-
-        tokens = text.split()
-        if text.endswith(" "):
-            completed, current_word = tokens, ""
-        else:
-            completed, current_word = tokens[:-1], tokens[-1]
-
-        # The chain must be unbroken: every completed token is a distinct
-        # skill command, and there's room left under the cap.
-        seen: set[str] = set()
-        for token in completed:
-            key = self._normalize_skill_token(token)
-            if key not in self._iter_skill_commands() or key in seen:
-                return
-            seen.add(key)
-        if len(seen) >= _cap:
-            return
-
-        # Only suggest while the user is typing another /token — a bare
-        # space after the chain means they may be starting the instruction.
-        if not current_word.startswith("/"):
-            return
-
-        word_key = self._normalize_skill_token(current_word)
-        for cmd, info in self._iter_skill_commands().items():
-            if cmd in seen or not cmd.startswith(word_key):
-                continue
-            description = str(info.get("description", "Skill command"))
-            short_desc = description[:50] + ("..." if len(description) > 50 else "")
-            # Exact match: append a trailing space so the dropdown stays
-            # visible and the next stacked token can be typed immediately
-            # (mirrors _completion_text semantics).
-            replacement = f"{cmd} " if cmd == word_key else cmd
-            yield Completion(
-                replacement,
-                start_position=-len(current_word),
-                display=cmd,
-                display_meta=f"⚡ {short_desc}",
-            )
 
     # Commands that open pickers when run without arguments.
     # These should NOT receive a trailing space in completions because:
@@ -1473,7 +2136,7 @@ class SlashCommandCompleter(Completer):
         i = len(text) - 1
         while i >= 0 and text[i] != " ":
             i -= 1
-        word = text[i + 1:]
+        word = text[i + 1 :]
         if not word:
             return None
         # URLs contain "/" but are not local paths. Treating them as paths fires
@@ -1517,7 +2180,9 @@ class SlashCommandCompleter(Completer):
 
             # Build the completion text (what replaces the typed word)
             if word.startswith("~"):
-                display_path = "~/" + os.path.relpath(full_path, os.path.expanduser("~"))
+                display_path = "~/" + os.path.relpath(
+                    full_path, os.path.expanduser("~")
+                )
             elif os.path.isabs(word):
                 display_path = full_path
             else:
@@ -1547,7 +2212,7 @@ class SlashCommandCompleter(Completer):
         i = len(text) - 1
         while i >= 0 and text[i] != " ":
             i -= 1
-        word = text[i + 1:]
+        word = text[i + 1 :]
         if not word.startswith("@"):
             return None
         return word
@@ -1589,7 +2254,7 @@ class SlashCommandCompleter(Completer):
 
             if word == bare or word.startswith(prefix):
                 want_dir = prefix == "@folder:"
-                path_part = '' if word == bare else word[len(prefix):]
+                path_part = "" if word == bare else word[len(prefix) :]
                 expanded = os.path.expanduser(path_part)
 
                 if not expanded or expanded == ".":
@@ -1661,8 +2326,13 @@ class SlashCommandCompleter(Completer):
                 continue
             try:
                 proc = subprocess.run(
-                    cmd, capture_output=True, text=True, timeout=2,
-                    cwd=cwd, encoding="utf-8", errors="replace",
+                    cmd,
+                    capture_output=True,
+                    text=True,
+                    timeout=2,
+                    cwd=cwd,
+                    encoding="utf-8",
+                    errors="replace",
                 )
                 if proc.returncode == 0 and proc.stdout and proc.stdout.strip():
                     raw = proc.stdout.strip().split("\n")
@@ -1734,8 +2404,8 @@ class SlashCommandCompleter(Completer):
                 is_dir = fp.endswith("/")
                 filename = os.path.basename(fp)
                 kind = "folder" if is_dir else "file"
-                meta = "dir" if is_dir else _file_size_label(
-                    os.path.join(os.getcwd(), fp)
+                meta = (
+                    "dir" if is_dir else _file_size_label(os.path.join(os.getcwd(), fp))
                 )
                 yield Completion(
                     f"@{kind}:{fp}",
@@ -1757,9 +2427,7 @@ class SlashCommandCompleter(Completer):
             is_dir = fp.endswith("/")
             filename = os.path.basename(fp)
             kind = "folder" if is_dir else "file"
-            meta = "dir" if is_dir else _file_size_label(
-                os.path.join(os.getcwd(), fp)
-            )
+            meta = "dir" if is_dir else _file_size_label(os.path.join(os.getcwd(), fp))
             yield Completion(
                 f"@{kind}:{fp}",
                 start_position=-len(word),
@@ -1772,6 +2440,7 @@ class SlashCommandCompleter(Completer):
         """Yield completions for /skin from available skins."""
         try:
             from hermes_cli.skin_engine import list_skins
+
             for s in list_skins():
                 name = s["name"]
                 if name.startswith(sub_lower) and name != sub_lower:
@@ -1822,7 +2491,9 @@ class SlashCommandCompleter(Completer):
             )
 
             config = load_config()
-            enabled = _get_platform_tools(config, "cli", include_default_mcp_servers=False)
+            enabled = _get_platform_tools(
+                config, "cli", include_default_mcp_servers=False
+            )
 
             for ts_key, label, _desc in CONFIGURABLE_TOOLSETS:
                 if ts_key in already or not ts_key.startswith(partial_lower):
@@ -1899,7 +2570,11 @@ class SlashCommandCompleter(Completer):
                 home = gw.get_home_channel(platform)
             except Exception:
                 home = None
-            meta = f"→ {home.name}" if home and getattr(home, "name", None) else "send this session here"
+            meta = (
+                f"→ {home.name}"
+                if home and getattr(home, "name", None)
+                else "send this session here"
+            )
             yield Completion(
                 name,
                 start_position=-len(partial),
@@ -1917,7 +2592,9 @@ class SlashCommandCompleter(Completer):
             # used to come back empty even with personalities available.
             from cli import load_cli_config
 
-            personalities = (load_cli_config().get("agent") or {}).get("personalities", {}) or {}
+            personalities = (load_cli_config().get("agent") or {}).get(
+                "personalities", {}
+            ) or {}
             if "none".startswith(sub_lower) and "none" != sub_lower:
                 yield Completion(
                     "none",
@@ -1928,7 +2605,10 @@ class SlashCommandCompleter(Completer):
             for name, prompt in personalities.items():
                 if name.startswith(sub_lower) and name != sub_lower:
                     if isinstance(prompt, dict):
-                        meta = prompt.get("description") or prompt.get("system_prompt", "")[:50]
+                        meta = (
+                            prompt.get("description")
+                            or prompt.get("system_prompt", "")[:50]
+                        )
                     else:
                         meta = str(prompt)[:50]
                     yield Completion(
@@ -1961,15 +2641,6 @@ class SlashCommandCompleter(Completer):
             sub_text = parts[1] if len(parts) > 1 else ""
             sub_lower = sub_text.lower()
 
-            # Stacked slash-skill invocations: after `/skill-a ` the user may
-            # chain more skills (`/skill-a /skill-b …`), so keep offering
-            # skill-command completions while the leading-skill chain is
-            # unbroken (see split_stacked_skill_commands in
-            # agent/skill_commands.py).
-            if self._is_skill_command(base_cmd):
-                yield from self._stacked_skill_completions(text)
-                return
-
             # Dynamic completions for commands with runtime lists
             if " " not in sub_text:
                 if base_cmd == "/skin":
@@ -1991,7 +2662,11 @@ class SlashCommandCompleter(Completer):
                 return
 
             # Static subcommand completions
-            if " " not in sub_text and base_cmd in SUBCOMMANDS and self._command_allowed(base_cmd):
+            if (
+                " " not in sub_text
+                and base_cmd in SUBCOMMANDS
+                and self._command_allowed(base_cmd)
+            ):
                 for sub in SUBCOMMANDS[base_cmd]:
                     if sub.startswith(sub_lower) and sub != sub_lower:
                         yield Completion(
@@ -2043,6 +2718,7 @@ class SlashCommandCompleter(Completer):
         # Plugin-registered slash commands
         try:
             from hermes_cli.plugins import get_plugin_commands
+
             for cmd_name, cmd_info in get_plugin_commands().items():
                 if cmd_name.startswith(word):
                     desc = str(cmd_info.get("description", "Plugin command"))
@@ -2060,6 +2736,7 @@ class SlashCommandCompleter(Completer):
 # ---------------------------------------------------------------------------
 # Inline auto-suggest (ghost text) for slash commands
 # ---------------------------------------------------------------------------
+
 
 class SlashCommandAutoSuggest(AutoSuggest):
     """Inline ghost-text suggestions for slash commands and their subcommands.
@@ -2092,40 +2769,37 @@ class SlashCommandAutoSuggest(AutoSuggest):
         if len(parts) == 1 and not text.endswith(" "):
             # Still typing the command name: /upd → suggest "ate"
             word = text[1:].lower()
+            candidates = []
             for cmd in COMMANDS:
-                if self._completer is not None and not self._completer._command_allowed(cmd):
+                if self._completer is not None and not self._completer._command_allowed(
+                    cmd
+                ):
                     continue
                 cmd_name = cmd[1:]  # strip leading /
                 if cmd_name.startswith(word) and cmd_name != word:
-                    return Suggestion(cmd_name[len(word):])
+                    candidates.append(cmd_name)
+            if candidates:
+                # Prefer the shortest match so /he completes to /help before
+                # longer siblings like /herens; alphabetical order breaks ties.
+                candidates.sort(key=lambda x: (len(x), x))
+                best = candidates[0]
+                return Suggestion(best[len(word):])
             return None
 
         # Command is complete — suggest subcommands
         sub_text = parts[1] if len(parts) > 1 else ""
         sub_lower = sub_text.lower()
 
-        # Stacked slash-skill invocations: while the leading tokens form an
-        # unbroken skill chain and the user is typing another /token,
-        # ghost-suggest the rest of the next skill name. Otherwise fall
-        # through to the history fallback for instruction text.
-        if (
-            self._completer is not None
-            and self._completer._is_skill_command(base_cmd)
-        ):
-            for completion in self._completer._stacked_skill_completions(text):
-                remainder = completion.text[-completion.start_position:] \
-                    if completion.start_position else completion.text
-                if remainder.strip():
-                    return Suggestion(remainder)
-
         # Static subcommands
-        if self._completer is not None and not self._completer._command_allowed(base_cmd):
+        if self._completer is not None and not self._completer._command_allowed(
+            base_cmd
+        ):
             return None
         if base_cmd in SUBCOMMANDS and SUBCOMMANDS[base_cmd]:
             if " " not in sub_text:
                 for sub in SUBCOMMANDS[base_cmd]:
                     if sub.startswith(sub_lower) and sub != sub_lower:
-                        return Suggestion(sub[len(sub_text):])
+                        return Suggestion(sub[len(sub_text) :])
 
         # Fall back to history
         if self._history:

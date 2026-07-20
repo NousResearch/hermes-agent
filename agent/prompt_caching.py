@@ -6,10 +6,37 @@ Reduces input token costs by ~75% on multi-turn conversations within a
 single session.
 
 Pure functions -- no class state, no AIAgent dependency.
+
+Anthropic enforces a hard maximum of 4 cache breakpoints per request.
+Do not attempt to exceed that without an explicit provider capability
+change — extra markers are silently dropped or rejected.
 """
 
 import copy
 from typing import Any, Dict, List
+
+# Anthropic API hard limit — documented for desk/doctor consumers.
+ANTHROPIC_MAX_CACHE_BREAKPOINTS = 4
+DEFAULT_CACHE_LAYOUT = "system_and_3"
+
+
+def describe_cache_layout(layout: str = DEFAULT_CACHE_LAYOUT) -> Dict[str, Any]:
+    """Describe the active caching layout (for /status, Model Desk, tests)."""
+    name = (layout or DEFAULT_CACHE_LAYOUT).strip() or DEFAULT_CACHE_LAYOUT
+    return {
+        "ok": True,
+        "layout": name,
+        "max_breakpoints": ANTHROPIC_MAX_CACHE_BREAKPOINTS,
+        "strategy": (
+            "Place cache_control on the system message (if present) plus the "
+            "last N non-system messages where N = max_breakpoints - system_used."
+        ),
+        "cache_safe_rules": [
+            "Never mutate the stable system prompt mid-conversation",
+            "Inject volatile context into the user message (pre_llm_call context)",
+            "Defer toolset/skill changes to next session unless --now",
+        ],
+    }
 
 
 def _apply_cache_marker(msg: dict, cache_marker: dict, native_anthropic: bool = False) -> None:
@@ -17,23 +44,12 @@ def _apply_cache_marker(msg: dict, cache_marker: dict, native_anthropic: bool = 
     role = msg.get("role", "")
     content = msg.get("content")
 
-    if role == "tool" and native_anthropic:
-        # Native Anthropic layout: top-level marker; the adapter moves it
-        # inside the tool_result block.
-        msg["cache_control"] = cache_marker
+    if role == "tool":
+        if native_anthropic:
+            msg["cache_control"] = cache_marker
         return
 
     if content is None or content == "":
-        if role == "tool" and not native_anthropic:
-            # OpenRouter rejects top-level cache_control on role:tool (silent
-            # hang) and an empty message has no content part to carry the
-            # marker — skip. Non-empty tool content falls through below and
-            # gets the marker on a content part, which OpenRouter honors.
-            return
-        if role == "assistant" and not native_anthropic:
-            # Empty assistant turns are pure tool_calls. A top-level marker
-            # here is ignored on the envelope layout, so skip.
-            return
         msg["cache_control"] = cache_marker
         return
 
@@ -49,30 +65,6 @@ def _apply_cache_marker(msg: dict, cache_marker: dict, native_anthropic: bool = 
             last["cache_control"] = cache_marker
 
 
-def _can_carry_marker(msg: dict, native_anthropic: bool) -> bool:
-    """True if a marker on this message is actually honored by the provider.
-
-    On the native Anthropic layout every message works (top-level markers are
-    relocated by the adapter). On the envelope layout (OpenRouter et al.) only
-    markers inside content parts are honored: empty-content messages (e.g.
-    assistant turns that are pure tool_calls) and empty tool messages would
-    receive a top-level marker the provider ignores — wasting one of the four
-    breakpoints. Skip those so the breakpoints land on messages that count.
-    """
-    if native_anthropic:
-        return True
-    content = msg.get("content")
-    if content is None or content == "":
-        return False
-    if isinstance(content, list):
-        # _apply_cache_marker only marks the LAST content part, so the carrier
-        # predicate must agree: a list whose last element isn't a dict cannot
-        # actually receive a marker and would waste a breakpoint. Mirror the
-        # `content` truthiness + last-element-dict check in _apply_cache_marker.
-        return bool(content) and isinstance(content[-1], dict)
-    return isinstance(content, str)
-
-
 def _build_marker(ttl: str) -> Dict[str, str]:
     """Build a cache_control marker dict for the given TTL ('5m' or '1h')."""
     marker: Dict[str, str] = {"type": "ephemeral"}
@@ -85,11 +77,14 @@ def apply_anthropic_cache_control(
     api_messages: List[Dict[str, Any]],
     cache_ttl: str = "5m",
     native_anthropic: bool = False,
+    *,
+    max_breakpoints: int = ANTHROPIC_MAX_CACHE_BREAKPOINTS,
 ) -> List[Dict[str, Any]]:
     """Apply system_and_3 caching strategy to messages for Anthropic models.
 
-    Places up to 4 cache_control breakpoints: system prompt + last 3 non-system
-    messages, all at the same TTL.
+    Places up to ``max_breakpoints`` cache_control markers (capped at the
+    Anthropic hard limit of 4): system prompt + last N non-system messages,
+    all at the same TTL.
 
     Returns:
         Deep copy of messages with cache_control breakpoints injected.
@@ -99,6 +94,13 @@ def apply_anthropic_cache_control(
         return messages
 
     marker = _build_marker(cache_ttl)
+    cap = max(
+        1,
+        min(
+            int(max_breakpoints or ANTHROPIC_MAX_CACHE_BREAKPOINTS),
+            ANTHROPIC_MAX_CACHE_BREAKPOINTS,
+        ),
+    )
 
     breakpoints_used = 0
 
@@ -106,14 +108,24 @@ def apply_anthropic_cache_control(
         _apply_cache_marker(messages[0], marker, native_anthropic=native_anthropic)
         breakpoints_used += 1
 
-    remaining = 4 - breakpoints_used
-    non_sys = [
-        i
-        for i in range(len(messages))
-        if messages[i].get("role") != "system"
-        and _can_carry_marker(messages[i], native_anthropic=native_anthropic)
-    ]
+    remaining = cap - breakpoints_used
+    non_sys = [i for i in range(len(messages)) if messages[i].get("role") != "system"]
     for idx in non_sys[-remaining:]:
         _apply_cache_marker(messages[idx], marker, native_anthropic=native_anthropic)
 
     return messages
+
+
+def count_cache_markers(messages: List[Dict[str, Any]]) -> int:
+    """Count cache_control markers in a message list (for tests/diagnostics)."""
+    count = 0
+    for msg in messages or []:
+        if isinstance(msg, dict) and msg.get("cache_control"):
+            count += 1
+        content = msg.get("content") if isinstance(msg, dict) else None
+        if isinstance(content, list):
+            for part in content:
+                if isinstance(part, dict) and part.get("cache_control"):
+                    count += 1
+                    break
+    return count

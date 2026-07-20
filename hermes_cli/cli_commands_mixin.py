@@ -28,14 +28,9 @@ from rich.markup import escape as _escape
 from rich.panel import Panel
 
 from hermes_constants import display_hermes_home, is_termux as _is_termux_environment
-from agent.turn_context import extract_api_content_sidecar
 from hermes_cli.browser_connect import (
     DEFAULT_BROWSER_CDP_URL,
-    discover_local_cdp_url,
-    find_free_debug_port,
     is_browser_debug_ready,
-    launch_chrome_debug,
-    local_port_in_use,
     manual_chrome_debug_command,
 )
 
@@ -59,7 +54,7 @@ class CLICommandsMixin:
         """
         from tools.checkpoint_manager import format_checkpoint_list
 
-        if not hasattr(self, 'agent') or not self.agent:
+        if not hasattr(self, "agent") or not self.agent:
             print("  No active agent session.")
             return
 
@@ -106,7 +101,9 @@ class CLICommandsMixin:
                         diff_lines = diff.splitlines()
                         if len(diff_lines) > 80:
                             print("\n".join(diff_lines[:80]))
-                            print(f"\n  ... ({len(diff_lines) - 80} more lines, showing first 80)")
+                            print(
+                                f"\n  ... ({len(diff_lines) - 80} more lines, showing first 80)"
+                            )
                         else:
                             print(f"\n{diff}")
             else:
@@ -129,9 +126,13 @@ class CLICommandsMixin:
         result = mgr.restore(cwd, target_hash, file_path=file_path)
         if result["success"]:
             if file_path:
-                print(f"  ✅ Restored {file_path} from checkpoint {result['restored_to']}: {result['reason']}")
+                print(
+                    f"  ✅ Restored {file_path} from checkpoint {result['restored_to']}: {result['reason']}"
+                )
             else:
-                print(f"  ✅ Restored to checkpoint {result['restored_to']}: {result['reason']}")
+                print(
+                    f"  ✅ Restored to checkpoint {result['restored_to']}: {result['reason']}"
+                )
             print("  A pre-rollback snapshot was saved automatically.")
 
             # Also undo the last conversation turn so the agent's context
@@ -152,8 +153,10 @@ class CLICommandsMixin:
             /snapshot prune [N]        — prune to N snapshots (default 20)
         """
         from hermes_cli.backup import (
-            create_quick_snapshot, list_quick_snapshots,
-            restore_quick_snapshot, prune_quick_snapshots,
+            create_quick_snapshot,
+            list_quick_snapshots,
+            restore_quick_snapshot,
+            prune_quick_snapshots,
         )
         from hermes_constants import display_hermes_home
 
@@ -168,7 +171,7 @@ class CLICommandsMixin:
                 return
             print(f"  State snapshots ({display_hermes_home()}/state-snapshots/):\n")
             print(f"  {'#':>3}  {'ID':<35} {'Files':>5} {'Size':>10} {'Label'}")
-            print(f"  {'─'*3}  {'─'*35} {'─'*5} {'─'*10} {'─'*20}")
+            print(f"  {'─' * 3}  {'─' * 35} {'─' * 5} {'─' * 10} {'─' * 20}")
             for i, s in enumerate(snaps, 1):
                 size = s.get("total_size", 0)
                 if size < 1024:
@@ -178,7 +181,9 @@ class CLICommandsMixin:
                 else:
                     size_str = f"{size / 1024 / 1024:.1f} MB"
                 label = s.get("label") or ""
-                print(f"  {i:3}  {s['id']:<35} {s.get('file_count', 0):>5} {size_str:>10} {label}")
+                print(
+                    f"  {i:3}  {s['id']:<35} {s.get('file_count', 0):>5} {size_str:>10} {label}"
+                )
 
         elif subcmd == "create":
             label = " ".join(parts[2:]) if len(parts) > 2 else None
@@ -245,6 +250,7 @@ class CLICommandsMixin:
         # live in their own registry, not the process registry.
         try:
             from tools.async_delegation import active_count, interrupt_all
+
             n_async = active_count()
         except Exception:
             n_async = 0
@@ -283,6 +289,7 @@ class CLICommandsMixin:
         # Background (async) delegations — delegate_task(background=true)
         try:
             from tools.async_delegation import list_async_delegations
+
             delegations = list_async_delegations()
         except Exception:
             delegations = []
@@ -299,43 +306,6 @@ class CLICommandsMixin:
         agent_running = getattr(self, "_agent_running", False)
         _cprint(f"  Agent: {'running' if agent_running else 'idle'}")
 
-    def _handle_journey_command(self, cmd_original: str) -> None:
-        """Handle /journey — the learning timeline (see `hermes journey`).
-
-        The read-only views (default + ``list``) render Rich color, which
-        patch_stdout would swallow as raw escapes; capture with forced ANSI and
-        re-emit through ``_cprint``. ``delete``/``edit`` are interactive
-        (confirm prompt / ``$EDITOR``) so they keep the real stdio.
-        """
-        import argparse
-        import io
-        import shlex
-        from contextlib import redirect_stdout
-
-        from cli import _cprint
-        from hermes_cli.journey import register_cli
-
-        parser = argparse.ArgumentParser(prog="/journey", add_help=False)
-        register_cli(parser)
-        rest = cmd_original.split(None, 1)
-        try:
-            args = parser.parse_args(shlex.split(rest[1]) if len(rest) > 1 else [])
-        except SystemExit:
-            return
-
-        interactive = getattr(args, "journey_action", None) in ("delete", "edit")
-        try:
-            if interactive:
-                args.func(args)
-                return
-            args.force_color = True
-            buf = io.StringIO()
-            with redirect_stdout(buf):
-                args.func(args)
-            _cprint(buf.getvalue().rstrip("\n"))
-        except Exception as exc:
-            _cprint(f"  /journey failed: {exc}")
-
     def _handle_paste_command(self):
         """Handle /paste — explicitly check clipboard for an image.
 
@@ -344,6 +314,7 @@ class CLICommandsMixin:
         Windows Terminal with WSL2).
         """
         from cli import _DIM, _RST, _cprint, _termux_example_image_path
+
         if _is_termux_environment():
             _cprint(
                 f"  {_DIM}Clipboard image paste is not available on Termux — "
@@ -353,22 +324,28 @@ class CLICommandsMixin:
             return
 
         from hermes_cli.clipboard import has_clipboard_image
+
         if has_clipboard_image():
             if self._try_attach_clipboard_image():
                 n = len(self._attached_images)
                 _cprint(f"  📎 Image #{n} attached from clipboard")
             else:
-                _cprint(f"  {_DIM}(>_<) Clipboard has an image but extraction failed{_RST}")
+                _cprint(
+                    f"  {_DIM}(>_<) Clipboard has an image but extraction failed{_RST}"
+                )
         else:
             _cprint(f"  {_DIM}(._.) No image found in clipboard{_RST}")
 
     def _handle_copy_command(self, cmd_original: str) -> None:
         """Handle /copy [number] — copy assistant output to clipboard."""
         from cli import _assistant_copy_text, _cprint
+
         parts = cmd_original.split(maxsplit=1)
         arg = parts[1].strip() if len(parts) > 1 else ""
 
-        assistant = [m for m in self.conversation_history if m.get("role") == "assistant"]
+        assistant = [
+            m for m in self.conversation_history if m.get("role") == "assistant"
+        ]
         if not assistant:
             _cprint("  Nothing to copy yet.")
             return
@@ -403,10 +380,23 @@ class CLICommandsMixin:
 
     def _handle_image_command(self, cmd_original: str):
         """Handle /image <path> — attach a local image file for the next prompt."""
-        from cli import _DIM, _IMAGE_EXTENSIONS, _RST, _cprint, _resolve_attachment_path, _split_path_input, _termux_example_image_path
-        raw_args = (cmd_original.split(None, 1)[1].strip() if " " in cmd_original else "")
+        from cli import (
+            _DIM,
+            _IMAGE_EXTENSIONS,
+            _RST,
+            _cprint,
+            _resolve_attachment_path,
+            _split_path_input,
+            _termux_example_image_path,
+        )
+
+        raw_args = cmd_original.split(None, 1)[1].strip() if " " in cmd_original else ""
         if not raw_args:
-            hint = _termux_example_image_path() if _is_termux_environment() else "/path/to/image.png"
+            hint = (
+                _termux_example_image_path()
+                if _is_termux_environment()
+                else "/path/to/image.png"
+            )
             _cprint(f"  {_DIM}Usage: /image <path>  e.g. /image {hint}{_RST}")
             return
 
@@ -416,15 +406,21 @@ class CLICommandsMixin:
             _cprint(f"  {_DIM}(>_<) File not found: {path_token}{_RST}")
             return
         if image_path.suffix.lower() not in _IMAGE_EXTENSIONS:
-            _cprint(f"  {_DIM}(._.) Not a supported image file: {image_path.name}{_RST}")
+            _cprint(
+                f"  {_DIM}(._.) Not a supported image file: {image_path.name}{_RST}"
+            )
             return
 
         self._attached_images.append(image_path)
         _cprint(f"  📎 Attached image: {image_path.name}")
         if _remainder:
-            _cprint(f"  {_DIM}Now type your prompt (or use --image in single-query mode): {_remainder}{_RST}")
+            _cprint(
+                f"  {_DIM}Now type your prompt (or use --image in single-query mode): {_remainder}{_RST}"
+            )
         elif _is_termux_environment():
-            _cprint(f"  {_DIM}Tip: type your next message, or run hermes chat -q --image {_termux_example_image_path(image_path.name)} \"What do you see?\"{_RST}")
+            _cprint(
+                f'  {_DIM}Tip: type your next message, or run hermes chat -q --image {_termux_example_image_path(image_path.name)} "What do you see?"{_RST}'
+            )
 
     def _handle_tools_command(self, cmd: str):
         """Handle /tools [list|disable|enable] slash commands.
@@ -502,6 +498,7 @@ class CLICommandsMixin:
         # Reset session so the new tool config is picked up from a clean state
         from hermes_cli.tools_config import _get_platform_tools
         from hermes_cli.config import load_config
+
         self.enabled_toolsets = _get_platform_tools(load_config(), "cli")
         self.new_session()
         _cprint(f"{_DIM}Session reset. New tool configuration is active.{_RST}")
@@ -569,25 +566,30 @@ class CLICommandsMixin:
 
         pcfg = gw_config.platforms.get(platform)
         if not pcfg or not pcfg.enabled:
-            _cprint(f"  Platform '{platform_name}' is not configured/enabled in the gateway.")
+            _cprint(
+                f"  Platform '{platform_name}' is not configured/enabled in the gateway."
+            )
             return True
 
         home = gw_config.get_home_channel(platform)
         if not home or not home.chat_id:
             _cprint(f"  No home channel configured for {platform_name}.")
-            _cprint("  Set one with /sethome on the destination chat first.")
+            _cprint(f"  Set one with /sethome on the destination chat first.")
             return True
 
         # Refuse mid-turn: an in-flight agent run would race with the
         # gateway's switch_session and the synthetic turn dispatch.
         if getattr(self, "_agent_running", False):
-            _cprint("  Agent is busy. Wait for the current turn to finish, then retry /handoff.")
+            _cprint(
+                "  Agent is busy. Wait for the current turn to finish, then retry /handoff."
+            )
             return True
 
         # Make sure we have a SessionDB handle.
         if not self._session_db:
             try:
                 from hermes_state import SessionDB
+
                 self._session_db = SessionDB()
             except Exception:
                 pass
@@ -626,14 +628,19 @@ class CLICommandsMixin:
         # Mark pending — gateway watcher will pick this up.
         ok = self._session_db.request_handoff(self.session_id, platform_name)
         if not ok:
-            _cprint("  Session is already in flight for handoff. Wait for it to settle, then retry.")
+            _cprint(
+                "  Session is already in flight for handoff. Wait for it to settle, then retry."
+            )
             return True
 
-        _cprint(f"  Queued handoff of '{session_title}' → {platform_name} (home: {home.name}).")
-        _cprint("  Waiting for the gateway to pick it up...")
+        _cprint(
+            f"  Queued handoff of '{session_title}' → {platform_name} (home: {home.name})."
+        )
+        _cprint(f"  Waiting for the gateway to pick it up...")
 
         # Poll-block on terminal state. Tick every 0.5s; bail at ~60s.
         import time as _time
+
         deadline = _time.time() + 60.0
         last_state = "pending"
         while _time.time() < deadline:
@@ -648,7 +655,9 @@ class CLICommandsMixin:
                 last_state = current
             if current == "completed":
                 _cprint("")
-                _cprint(f"  ↻ Handoff complete. The session is now active on {platform_name}.")
+                _cprint(
+                    f"  ↻ Handoff complete. The session is now active on {platform_name}."
+                )
                 _cprint(f"  Resume it on this CLI later with: /resume {session_title}")
                 _cprint("")
                 # End the CLI cleanly — same exit semantics as /quit.
@@ -657,13 +666,17 @@ class CLICommandsMixin:
             if current == "failed":
                 err = (state_row or {}).get("error") or "unknown error"
                 _cprint(f"  Handoff failed: {err}")
-                _cprint("  Your CLI session is intact. Try /handoff again, or /resume on the platform manually.")
+                _cprint(
+                    "  Your CLI session is intact. Try /handoff again, or /resume on the platform manually."
+                )
                 return True
             _time.sleep(0.5)
 
         # Timed out. Clear the pending flag so the user can retry.
         try:
-            self._session_db.fail_handoff(self.session_id, "timed out waiting for gateway")
+            self._session_db.fail_handoff(
+                self.session_id, "timed out waiting for gateway"
+            )
         except Exception:
             pass
         _cprint("  Timed out waiting for the gateway. Is `hermes gateway` running?")
@@ -673,6 +686,7 @@ class CLICommandsMixin:
     def _handle_resume_command(self, cmd_original: str) -> None:
         """Handle /resume <session_id_or_title> — switch to a previous session mid-conversation."""
         from cli import _cprint, _sync_process_session_id
+
         parts = cmd_original.split(None, 1)
         target = parts[1].strip() if len(parts) > 1 else ""
 
@@ -709,6 +723,7 @@ class CLICommandsMixin:
 
         if not self._session_db:
             from hermes_state import format_session_db_unavailable
+
             _cprint(f"  {format_session_db_unavailable()}")
             return
 
@@ -724,13 +739,16 @@ class CLICommandsMixin:
             target_id = selected["id"]
         else:
             from hermes_cli.main import _resolve_session_by_name_or_id
+
             resolved = _resolve_session_by_name_or_id(target)
             target_id = resolved or target
 
         session_meta = self._session_db.get_session(target_id)
         if not session_meta:
             _cprint(f"  Session not found: {target}")
-            _cprint("  Use /history or `hermes sessions list` to see available sessions.")
+            _cprint(
+                "  Use /history or `hermes sessions list` to see available sessions."
+            )
             return
 
         # If the target is the empty head of a compression chain, redirect to
@@ -757,9 +775,7 @@ class CLICommandsMixin:
         # Flush un-persisted messages before ending the old session (#47202).
         if self.agent:
             try:
-                self.agent._flush_messages_to_session_db(
-                    self.conversation_history
-                )
+                self.agent._flush_messages_to_session_db(self.conversation_history)
             except Exception:
                 pass
         # End current session
@@ -774,14 +790,8 @@ class CLICommandsMixin:
         self._pending_title = None
         _sync_process_session_id(target_id)
 
-        # Load conversation history (strip transcript-only metadata entries).
-        # repair_alternation: this /resume feeds LIVE REPLAY — ``restored``
-        # becomes ``self.conversation_history`` for subsequent turns. Heal a
-        # durable ``user;user`` violation once here instead of re-firing the
-        # pre-request repair on every request for the rest of the session.
-        restored = self._session_db.get_messages_as_conversation(
-            target_id, repair_alternation=True
-        )
+        # Load conversation history (strip transcript-only metadata entries)
+        restored = self._session_db.get_messages_as_conversation(target_id)
         restored = [m for m in (restored or []) if m.get("role") != "session_meta"]
         self.conversation_history = restored
 
@@ -800,7 +810,8 @@ class CLICommandsMixin:
             if hasattr(self.agent, "_todo_store"):
                 try:
                     from tools.todo_tool import TodoStore
-                    self.agent._todo_store = TodoStore()
+
+                    self.agent._todo_store = TodoStore(session_id=target_id)
                 except Exception:
                     pass
             if hasattr(self.agent, "_invalidate_system_prompt"):
@@ -822,8 +833,10 @@ class CLICommandsMixin:
             except Exception:
                 pass
 
-        title_part = f" \"{session_meta['title']}\"" if session_meta.get("title") else ""
-        msg_count = len([m for m in self.conversation_history if m.get("role") == "user"])
+        title_part = f' "{session_meta["title"]}"' if session_meta.get("title") else ""
+        msg_count = len([
+            m for m in self.conversation_history if m.get("role") == "user"
+        ])
         if self.conversation_history:
             _cprint(
                 f"  ↻ Resumed session {target_id}{title_part}"
@@ -832,15 +845,9 @@ class CLICommandsMixin:
             )
             self._display_resumed_history()
         else:
-            _cprint(f"  ↻ Resumed session {target_id}{title_part} — no messages, starting fresh.")
-
-        # Retarget the process + tool cwd to where the session was started, so a
-        # mid-chat /resume (and /sessions <id>, which delegates here) lands in the
-        # same directory as a startup `hermes -c`/`--resume`. The startup resume
-        # paths already call this; without it, the terminal/code-exec tools and
-        # relative-path resolution keep operating in the wrong repo. Idempotent
-        # and a no-op when the session recorded no cwd. See #38562.
-        self._restore_session_cwd(session_meta)
+            _cprint(
+                f"  ↻ Resumed session {target_id}{title_part} — no messages, starting fresh."
+            )
 
     def _handle_sessions_command(self, cmd_original: str) -> None:
         """Handle /sessions [list|<id_or_title>] — browse or resume previous sessions.
@@ -858,6 +865,7 @@ class CLICommandsMixin:
         registered in the central COMMAND_REGISTRY.
         """
         from cli import _cprint
+
         parts = cmd_original.split(None, 1)
         arg = parts[1].strip() if len(parts) > 1 else ""
         sub = arg.lower()
@@ -866,6 +874,7 @@ class CLICommandsMixin:
         if not arg or sub in {"list", "ls", "browse"}:
             if not self._session_db:
                 from hermes_state import format_session_db_unavailable
+
                 _cprint(f"  {format_session_db_unavailable()}")
                 return
             if not self._show_recent_sessions(reason="sessions"):
@@ -883,12 +892,14 @@ class CLICommandsMixin:
         Inspired by Claude Code's /branch command.
         """
         from cli import _cprint, _sync_process_session_id
+
         if not self.conversation_history:
             _cprint("  No conversation to branch — send a message first.")
             return
 
         if not self._session_db:
             from hermes_state import format_session_db_unavailable
+
             _cprint(f"  {format_session_db_unavailable()}")
             return
 
@@ -918,9 +929,7 @@ class CLICommandsMixin:
         # Flush un-persisted messages before ending the old session (#47202).
         if self.agent:
             try:
-                self.agent._flush_messages_to_session_db(
-                    self.conversation_history
-                )
+                self.agent._flush_messages_to_session_db(self.conversation_history)
             except Exception:
                 pass
 
@@ -962,10 +971,6 @@ class CLICommandsMixin:
                     tool_calls=msg.get("tool_calls"),
                     tool_call_id=msg.get("tool_call_id"),
                     reasoning=msg.get("reasoning"),
-                    # Keep the api_content sidecar so the branch's first turn
-                    # replays the parent's exact wire bytes (warm provider
-                    # prompt cache) instead of a full cold prefill.
-                    api_content=extract_api_content_sidecar(msg),
                 )
             except Exception:
                 pass  # Best-effort copy
@@ -994,7 +999,8 @@ class CLICommandsMixin:
             if hasattr(self.agent, "_todo_store"):
                 try:
                     from tools.todo_tool import TodoStore
-                    self.agent._todo_store = TodoStore()
+
+                    self.agent._todo_store = TodoStore(session_id=new_session_id)
                 except Exception:
                     pass
             if hasattr(self.agent, "_invalidate_system_prompt"):
@@ -1016,9 +1022,11 @@ class CLICommandsMixin:
             except Exception:
                 pass
 
-        msg_count = len([m for m in self.conversation_history if m.get("role") == "user"])
+        msg_count = len([
+            m for m in self.conversation_history if m.get("role") == "user"
+        ])
         _cprint(
-            f"  ⑂ Branched session \"{branch_title}\""
+            f'  ⑂ Branched session "{branch_title}"'
             f" ({msg_count} user message{'s' if msg_count != 1 else ''})"
         )
         _cprint(f"  Original session: {parent_session_id}")
@@ -1027,12 +1035,13 @@ class CLICommandsMixin:
     def _handle_personality_command(self, cmd: str):
         """Handle the /personality command to set predefined personalities."""
         from cli import save_config_value
+
         parts = cmd.split(maxsplit=1)
-        
+
         if len(parts) > 1:
             # Set personality
             personality_name = parts[1].strip().lower()
-            
+
             if personality_name in {"none", "default", "neutral"}:
                 self.system_prompt = ""
                 self.agent = None  # Force re-init
@@ -1042,13 +1051,21 @@ class CLICommandsMixin:
                     print("(^_^) Personality cleared (session only)")
                 print("  No personality overlay — using base agent behavior.")
             elif personality_name in self.personalities:
-                self.system_prompt = self._resolve_personality_prompt(self.personalities[personality_name])
+                self.system_prompt = self._resolve_personality_prompt(
+                    self.personalities[personality_name]
+                )
                 self.agent = None  # Force re-init
                 if save_config_value("agent.system_prompt", self.system_prompt):
-                    print(f"(^_^)b Personality set to '{personality_name}' (saved to config)")
+                    print(
+                        f"(^_^)b Personality set to '{personality_name}' (saved to config)"
+                    )
                 else:
-                    print(f"(^_^) Personality set to '{personality_name}' (session only)")
-                print(f"  \"{self.system_prompt[:60]}{'...' if len(self.system_prompt) > 60 else ''}\"")
+                    print(
+                        f"(^_^) Personality set to '{personality_name}' (session only)"
+                    )
+                print(
+                    f'  "{self.system_prompt[:60]}{"..." if len(self.system_prompt) > 60 else ""}"'
+                )
             else:
                 print(f"(._.) Unknown personality: {personality_name}")
                 print(f"  Available: none, {', '.join(self.personalities.keys())}")
@@ -1062,7 +1079,10 @@ class CLICommandsMixin:
             print(f"  {'none':<12} - (no personality overlay)")
             for name, prompt in self.personalities.items():
                 if isinstance(prompt, dict):
-                    preview = prompt.get("description") or prompt.get("system_prompt", "")[:50]
+                    preview = (
+                        prompt.get("description")
+                        or prompt.get("system_prompt", "")[:50]
+                    )
                 else:
                     preview = str(prompt)[:50]
                 print(f"  {name:<12} - {preview}")
@@ -1084,7 +1104,13 @@ class CLICommandsMixin:
         """
         from agent.pet import store
         from agent.pet.manifest import ManifestError
-        from hermes_cli.pets import _set_active, _set_enabled, print_pet_gallery, set_pet_scale, toggle_pet_display
+        from hermes_cli.pets import (
+            _set_active,
+            _set_enabled,
+            print_pet_gallery,
+            set_pet_scale,
+            toggle_pet_display,
+        )
 
         parts = cmd.split(maxsplit=1)
         arg = parts[1].strip() if len(parts) > 1 else ""
@@ -1098,7 +1124,9 @@ class CLICommandsMixin:
             if enabled:
                 print(f"(^_^)b {name} is out — it'll pop in shortly.")
             else:
-                print(f"(-_-)zzZ {name} put away." if name else "(-_-)zzZ Pet put away.")
+                print(
+                    f"(-_-)zzZ {name} put away." if name else "(-_-)zzZ Pet put away."
+                )
             return
 
         if low in ("list", "gallery", "browse", "all"):
@@ -1106,7 +1134,7 @@ class CLICommandsMixin:
             return
 
         if low == "scale" or low.startswith("scale "):
-            value = arg[len("scale"):].strip()
+            value = arg[len("scale") :].strip()
             if not value:
                 print("(o_o) Usage: /pet scale <factor>  (e.g. /pet scale 0.5)")
                 return
@@ -1157,7 +1185,9 @@ class CLICommandsMixin:
             return
 
         # A short, friendly display name from the first few words of the concept.
-        display_name = " ".join(w.capitalize() for w in concept.split()[:3])[:28].strip() or "Pet"
+        display_name = (
+            " ".join(w.capitalize() for w in concept.split()[:3])[:28].strip() or "Pet"
+        )
         slug = store.slugify(display_name) or store.slugify(concept) or "pet"
 
         print(f"(o_o) Designing '{concept}'… (a minute of image-model calls)")
@@ -1194,7 +1224,9 @@ class CLICommandsMixin:
             return
 
         _set_active(result.slug)
-        print(f"(^_^)b {result.display_name} hatched and adopted — it'll pop in shortly!")
+        print(
+            f"(^_^)b {result.display_name} hatched and adopted — it'll pop in shortly!"
+        )
 
     def _handle_cron_command(self, cmd: str):
         """Handle the /cron command to manage scheduled tasks."""
@@ -1279,7 +1311,9 @@ class CLICommandsMixin:
             print()
             print("  Commands:")
             print("    /cron list")
-            print('    /cron add "every 2h" "Check server status" [--skill blogwatcher]')
+            print(
+                '    /cron add "every 2h" "Check server status" [--skill blogwatcher]'
+            )
             print('    /cron edit <job_id> --schedule "every 4h" --prompt "New task"')
             print("    /cron edit <job_id> --skill blogwatcher --skill maps")
             print("    /cron edit <job_id> --remove-skill blogwatcher")
@@ -1296,7 +1330,9 @@ class CLICommandsMixin:
                 print("  " + "-" * 63)
                 for job in jobs:
                     repeat_str = job.get("repeat", "?")
-                    print(f"    {job['job_id'][:12]:<12} | {job['schedule']:<15} | {repeat_str:<8}")
+                    print(
+                        f"    {job['job_id'][:12]:<12} | {job['schedule']:<15} | {repeat_str:<8}"
+                    )
                     if job.get("skills"):
                         print(f"      Skills: {', '.join(job['skills'])}")
                     print(f"      {job.get('prompt_preview', '')}")
@@ -1333,7 +1369,9 @@ class CLICommandsMixin:
                     print(f"  Skills: {', '.join(job['skills'])}")
                 print(f"  Prompt: {job.get('prompt_preview', '')}")
                 if job.get("last_run_at"):
-                    print(f"  Last run: {job['last_run_at']} ({job.get('last_status', '?')})")
+                    print(
+                        f"  Last run: {job['last_run_at']} ({job.get('last_status', '?')})"
+                    )
                 print()
             return
 
@@ -1370,7 +1408,9 @@ class CLICommandsMixin:
         if subcommand == "edit":
             positionals = opts["positionals"]
             if not positionals:
-                print("(._.) Usage: /cron edit <job_id> [--schedule ...] [--prompt ...] [--skill ...]")
+                print(
+                    "(._.) Usage: /cron edit <job_id> [--schedule ...] [--prompt ...] [--skill ...]"
+                )
                 return
             job_id = positionals[0]
             existing = get_job(job_id)
@@ -1382,13 +1422,18 @@ class CLICommandsMixin:
             replacement_skills = _normalize_skills(opts["skills"])
             add_skills = _normalize_skills(opts["add_skills"])
             remove_skills = set(_normalize_skills(opts["remove_skills"]))
-            existing_skills = list(existing.get("skills") or ([] if not existing.get("skill") else [existing.get("skill")]))
+            existing_skills = list(
+                existing.get("skills")
+                or ([] if not existing.get("skill") else [existing.get("skill")])
+            )
             if opts["clear_skills"]:
                 final_skills = []
             elif replacement_skills:
                 final_skills = replacement_skills
             elif add_skills or remove_skills:
-                final_skills = [skill for skill in existing_skills if skill not in remove_skills]
+                final_skills = [
+                    skill for skill in existing_skills if skill not in remove_skills
+                ]
                 for skill in add_skills:
                     if skill not in final_skills:
                         final_skills.append(skill)
@@ -1421,8 +1466,14 @@ class CLICommandsMixin:
                 print(f"(._.) Usage: /cron {subcommand} <job_id>")
                 return
             job_id = positionals[0]
-            action = "remove" if subcommand in {"remove", "rm", "delete"} else subcommand
-            result = _cron_api(action=action, job_id=job_id, reason="paused from /cron" if action == "pause" else None)
+            action = (
+                "remove" if subcommand in {"remove", "rm", "delete"} else subcommand
+            )
+            result = _cron_api(
+                action=action,
+                job_id=job_id,
+                reason="paused from /cron" if action == "pause" else None,
+            )
             if not result.get("success"):
                 print(f"(x_x) Failed to {action} job: {result.get('error')}")
                 return
@@ -1458,6 +1509,7 @@ class CLICommandsMixin:
         args = " ".join(tokens)
         try:
             from hermes_cli.suggestions_cmd import handle_suggestions_command
+
             output = handle_suggestions_command(args)
         except Exception as e:
             output = f"Suggestions command failed: {e}"
@@ -1482,6 +1534,7 @@ class CLICommandsMixin:
         args = " ".join(shlex.quote(t) for t in tokens)
         try:
             from hermes_cli.blueprint_cmd import handle_blueprint_command
+
             result = handle_blueprint_command(args)
         except Exception as e:
             self._console_print(f"Cron blueprint command failed: {e}")
@@ -1492,6 +1545,141 @@ class CLICommandsMixin:
             # One-shot: the interactive loop picks this up right after the
             # slash command returns and runs it as a normal agent turn.
             self._pending_agent_seed = seed
+
+    def _handle_pwnbox_command(self, cmd: str):
+        """Handle /pwnbox — programmatic accept or agent seed for PWNBOX hunt."""
+        import shlex
+
+        try:
+            tokens = shlex.split(cmd)[1:] if cmd else []
+        except ValueError:
+            tokens = (cmd or "").split()[1:]
+        args = " ".join(shlex.quote(t) for t in tokens)
+        try:
+            from hermes_cli.pwnbox_slash import handle_pwnbox_slash
+
+            result = handle_pwnbox_slash(args, surface=self._slash_surface())
+        except Exception as exc:
+            self._console_print(f"(._.) pwnbox error: {exc}")
+            return
+        self._console_print(result.text)
+        if result.agent_seed:
+            self._pending_agent_seed = result.agent_seed
+
+    def _handle_pentest_command(self, cmd: str):
+        """Handle /pentest — list, status, watch, doctor, validate-scope (read-only inline)."""
+        import shlex
+
+        try:
+            tokens = shlex.split(cmd)[1:] if cmd else []
+        except ValueError:
+            tokens = (cmd or "").split()[1:]
+        args = " ".join(shlex.quote(t) for t in tokens)
+        try:
+            from hermes_cli.pentest_slash import handle_pentest_slash
+
+            result = handle_pentest_slash(
+                args,
+                surface=self._slash_surface(),
+                **self._slash_session_kwargs(),
+            )
+        except Exception as exc:
+            self._console_print(f"(._.) pentest error: {exc}")
+            return
+        self._console_print(result.text)
+
+    def _handle_mcpvex_command(self, cmd: str):
+        """Handle /mcpvex — doctor, status, scope, wiring, lab, ctf, bb, cron."""
+        import shlex
+
+        try:
+            tokens = shlex.split(cmd)[1:] if cmd else []
+        except ValueError:
+            tokens = (cmd or "").split()[1:]
+        args = " ".join(tokens)
+        try:
+            from hermes_cli.mcpvex_slash import handle_mcpvex_slash
+
+            result = handle_mcpvex_slash(args, surface="cli")
+        except Exception as exc:
+            self._console_print(f"(._.) mcpvex error: {exc}")
+            return
+        self._console_print(result.text)
+
+    def _handle_sandbox_command(self, cmd: str):
+        """Handle /sandbox — isolated Kali sandbox doctor, spawn, exec, ctf."""
+        import shlex
+
+        try:
+            tokens = shlex.split(cmd)[1:] if cmd else []
+        except ValueError:
+            tokens = (cmd or "").split()[1:]
+        args = " ".join(tokens)
+        try:
+            from hermes_cli.sandbox_slash import handle_sandbox_slash
+
+            result = handle_sandbox_slash(args, surface="cli")
+        except Exception as exc:
+            self._console_print(f"(._.) sandbox error: {exc}")
+            return
+        self._console_print(result.text)
+
+    def _slash_surface(self) -> str:
+        from hermes_cli.slash_surface import resolve_slash_surface
+
+        return resolve_slash_surface("cli")
+
+    def _slash_session_context(self) -> dict:
+        return {
+            "session_id": getattr(self, "session_id", None),
+            "session_db": getattr(self, "_session_db", None),
+        }
+
+    def _handle_hunt_command(self, cmd: str):
+        """Handle /hunt — init engagement scope, status, doctor."""
+        import shlex
+
+        try:
+            tokens = shlex.split(cmd)[1:] if cmd else []
+        except ValueError:
+            tokens = (cmd or "").split()[1:]
+        args = " ".join(shlex.quote(t) for t in tokens)
+        try:
+            from hermes_cli.hunt_slash import handle_hunt_slash
+
+            result = handle_hunt_slash(
+                args,
+                surface=self._slash_surface(),
+                **self._slash_session_context(),
+            )
+        except Exception as exc:
+            self._console_print(f"(._.) hunt error: {exc}")
+            return
+        self._console_print(result.text)
+        if result.agent_seed:
+            self._pending_agent_seed = result.agent_seed
+
+    def _handle_ctx_command(self, cmd: str):
+        """Handle /ctx — universal local context stack status, doctor, bench."""
+        import shlex
+
+        try:
+            tokens = shlex.split(cmd)[1:] if cmd else []
+        except ValueError:
+            tokens = (cmd or "").split()[1:]
+        args = " ".join(shlex.quote(t) for t in tokens)
+        try:
+            from hermes_cli.local_ctx_slash import handle_ctx_slash
+
+            result = handle_ctx_slash(
+                args,
+                surface=self._slash_surface(),
+                **self._slash_session_context(),
+            )
+        except Exception as exc:
+            self._console_print(f"(._.) ctx error: {exc}")
+            return
+        self._console_print(result.text)
 
     def _handle_curator_command(self, cmd: str):
         """Handle /curator slash command.
@@ -1507,6 +1695,7 @@ class CLICommandsMixin:
 
         try:
             from hermes_cli.curator import cli_main
+
             cli_main(tokens)
         except SystemExit:
             # argparse calls sys.exit() on --help or errors; swallow so we
@@ -1528,7 +1717,7 @@ class CLICommandsMixin:
         if rest.startswith("/"):
             rest = rest.lstrip("/")
         if rest.startswith("kanban"):
-            rest = rest[len("kanban"):].lstrip()
+            rest = rest[len("kanban") :].lstrip()
         try:
             output = run_slash(rest)
         except Exception as exc:  # pragma: no cover - defensive
@@ -1536,25 +1725,56 @@ class CLICommandsMixin:
         if output:
             print(output)
 
+    def _handle_swarm_command(self, cmd: str):
+        """Handle /swarm — plan or inspect coordinated multi-agent swarms."""
+        from hermes_cli.swarm import run_slash
+
+        rest = cmd.strip()
+        if rest.startswith("/"):
+            rest = rest.lstrip("/")
+        if rest.startswith("swarm"):
+            rest = rest[len("swarm") :].lstrip()
+        try:
+            output = run_slash(rest)
+        except Exception as exc:  # pragma: no cover - defensive
+            output = f"(._.) swarm error: {exc}"
+        if output:
+            print(output)
+
     def _handle_skills_command(self, cmd: str):
         """Handle /skills slash command — delegates to hermes_cli.skills_hub."""
         from cli import ChatConsole
+
         # Intercept write-approval review subcommands first (pending/approve/
         # reject/diff/mode); everything else goes to the skills hub.
         parts = cmd.strip().split()
         args = parts[1:] if len(parts) > 1 else []
-        if args and args[0].lower() in {"pending", "approve", "apply", "reject",
-                                        "deny", "drop", "diff", "approval", "mode"}:
+        if args and args[0].lower() in {
+            "pending",
+            "approve",
+            "apply",
+            "reject",
+            "deny",
+            "drop",
+            "diff",
+            "approval",
+            "mode",
+        }:
             from hermes_cli.write_approval_commands import handle_pending_subcommand
             from tools import write_approval as wa
+
             out = handle_pending_subcommand(
-                wa.SKILLS, args,
-                set_mode_fn=lambda enabled: self._save_write_approval("skills", enabled),
+                wa.SKILLS,
+                args,
+                set_mode_fn=lambda enabled: self._save_write_approval(
+                    "skills", enabled
+                ),
             )
             if out is not None:
                 print(out)
                 return
         from hermes_cli.skills_hub import handle_skills_slash
+
         handle_skills_slash(cmd, ChatConsole())
 
     def _handle_learn_command(self, cmd: str):
@@ -1583,13 +1803,616 @@ class CLICommandsMixin:
         else:  # pragma: no cover - defensive (no live input loop)
             print("  /learn needs an active chat session to run.")
 
+    def _handle_dream_command(self, cmd: str):
+        """Handle /dream — run an offline memory/dream consolidation pass."""
+        import json
+
+        from tools.dream_pass_tool import dream_pass
+
+        parts = cmd.strip().split(None, 1)
+        sub = parts[1].strip().lower() if len(parts) > 1 else "now"
+
+        if sub == "status":
+            try:
+                from hermes_cli.config import load_config
+
+                cfg = load_config().get("brain_networks", {}) or {}
+                enabled = bool(cfg.get("enabled", False))
+                if not enabled:
+                    print(
+                        "  Dream pass is disabled. Enable it with `brain_networks.enabled: true` in config.yaml."
+                    )
+                    return
+                idle = cfg.get("idle_threshold_seconds", 300)
+                print(
+                    f"  Dream pass enabled (idle threshold: {idle}s). Run /dream or /dream now to trigger."
+                )
+            except Exception as exc:
+                print(f"  Could not read dream status: {exc}")
+            return
+
+        print("  Running dream pass...")
+        try:
+            data = json.loads(dream_pass(run_memory_consolidation=True))
+        except Exception as exc:
+            print(f"  Dream pass failed: {exc}")
+            return
+
+        if not data.get("ok"):
+            print(f"  Dream pass skipped: {data.get('error', 'unknown error')}")
+            return
+
+        dream = data.get("dream") or {}
+        print(f"  Narrative: {dream.get('narrative', 'No narrative generated.')}")
+        insights = dream.get("insights", []) or []
+        if insights:
+            print("  Insights:")
+            for insight in insights:
+                print(f"    - {insight}")
+        consolidation = data.get("consolidation", {})
+        if consolidation:
+            patterns = consolidation.get("patterns_detected", 0)
+            lessons = consolidation.get("lessons_extracted", 0)
+            print(f"  Consolidation: {patterns} pattern(s), {lessons} lesson(s).")
+        consolidation_error = data.get("consolidation_error")
+        if consolidation_error:
+            print(f"  Consolidation note: {consolidation_error}")
+
+        suggestions = data.get("skill_suggestions", []) or []
+        if suggestions:
+            print("  Skill suggestions:")
+            for suggestion in suggestions[:5]:
+                name = suggestion.get("name", "learned-lesson")
+                desc = suggestion.get("description", "") or ""
+                print(f"    - /learn {name}: {desc[:100]}")
+
+    def _handle_focus_command(self, cmd: str):
+        """Handle /focus — pin, show, or clear persistent ECN task focus."""
+        parts = cmd.strip().split(None, 1)
+        arg = parts[1].strip() if len(parts) > 1 else "show"
+        sub = arg.lower()
+
+        try:
+            from hermes_cli.config import load_config
+
+            bn = (load_config().get("brain_networks") or {})
+            if not bn.get("enabled", False):
+                print(
+                    "  Focus requires brain_networks.enabled: true in config.yaml."
+                )
+                return
+        except Exception as exc:
+            print(f"  Could not read brain_networks config: {exc}")
+            return
+
+        sid = getattr(getattr(self, "agent", None), "session_id", "") or ""
+        orch = getattr(getattr(self, "agent", None), "_brain_orchestrator", None)
+        if orch is None:
+            try:
+                from agent.brain_networks.runtime import get_orchestrator
+
+                orch = get_orchestrator()
+            except Exception as exc:
+                print(f"  Brain orchestrator unavailable: {exc}")
+                return
+        if orch is None:
+            print("  Brain networks are disabled or failed to initialize.")
+            return
+
+        orch.bind_session(sid)
+
+        if sub in ("show", "status", ""):
+            state = orch.ecn.get_state()
+            task = state.get("current_task") or "(none)"
+            print(f"  Focus: {task}")
+            print(
+                f"  State: {state.get('state')} | level={state.get('focus_level')} "
+                f"| pinned={state.get('pinned')} | stack={state.get('task_stack_depth')}"
+            )
+            return
+
+        if sub == "clear":
+            orch.clear_focus()
+            print("  Focus cleared.")
+            return
+
+        # Anything else is the focus text
+        state = orch.set_focus(arg, pinned=True)
+        print(f"  Focus pinned: {state.get('current_task')}")
+        print(
+            f"  State: {state.get('state')} | level={state.get('focus_level')} "
+            f"| pinned={state.get('pinned')}"
+        )
+
+    def _handle_plan_command(self, cmd: str):
+        """Handle /plan [set|get|phase|validate] — Herens Plan-Execute UI."""
+        import json
+
+        parts = cmd.strip().split(None, 2)
+        sub = parts[1].strip().lower() if len(parts) > 1 else "get"
+        arg = parts[2].strip() if len(parts) > 2 else ""
+        sid = getattr(getattr(self, "agent", None), "session_id", "") or ""
+
+        try:
+            from agent.herens.plan_execute import (
+                advance_phase,
+                get_session_plan,
+                set_session_plan,
+                validate_plan_items,
+            )
+        except ImportError:
+            print("  /plan requires agent.herens (herens.enabled: true)")
+            return
+
+        if sub == "get":
+            plan = get_session_plan(sid)
+            if not plan:
+                print("  No plan set for this session. Use /plan set to create one.")
+                return
+            phase = plan.get("phase", "unknown")
+            items = plan.get("items") or []
+            print(f"\n  Plan (phase: {phase}):")
+            for i, item in enumerate(items, 1):
+                status = item.get("status", "pending")
+                marker = (
+                    "✓"
+                    if status == "completed"
+                    else ("→" if status == "in_progress" else "○")
+                )
+                print(f"    {marker} {i}. {item.get('content', '')}")
+            if plan.get("issues"):
+                print(f"  Issues: {', '.join(plan['issues'])}")
+        elif sub == "set":
+            if not arg:
+                print("  Usage: /plan set <item1> | <item2> | <verify step>")
+                return
+            raw_items = [x.strip() for x in arg.split("|") if x.strip()]
+            items = [
+                {"id": str(i + 1), "content": c, "status": "pending"}
+                for i, c in enumerate(raw_items)
+            ]
+            result = set_session_plan(sid, items)
+            if result.get("ok"):
+                print(
+                    f"  Plan set ({result['item_count']} items, phase: {result.get('phase')})"
+                )
+            else:
+                print(f"  Plan issues: {'; '.join(result.get('issues', []))}")
+        elif sub == "phase":
+            if not arg:
+                print("  Usage: /plan phase <planned|executing|verifying|done>")
+                return
+            result = advance_phase(sid, arg)
+            if result.get("ok"):
+                print(f"  Phase → {result['phase']}")
+            else:
+                print(f"  Error: {result.get('error')}")
+        elif sub == "validate":
+            plan = get_session_plan(sid)
+            items = plan.get("items") or [] if isinstance(plan, dict) else []
+            v = validate_plan_items(items)
+            print(json.dumps(v, indent=2))
+        else:
+            print("  Usage: /plan [get|set <items>|phase <phase>|validate]")
+
+    def _handle_herens_slash_command(self, cmd: str):
+        """Handle /herens [status|strategy|nudge|caduceus|handoff|evolve|metrics|enable]."""
+        import json
+
+        parts = cmd.strip().split(None, 2)
+        sub = parts[1].strip().lower() if len(parts) > 1 else "status"
+        arg = parts[2].strip() if len(parts) > 2 else ""
+
+        def pr(data):
+            if isinstance(data, dict):
+                print(json.dumps(data, indent=2, ensure_ascii=False, default=str))
+            else:
+                print(str(data))
+
+        try:
+            from agent.herens.config import is_herens_enabled
+        except ImportError:
+            print("  Herens not available in this environment.")
+            return
+
+        if sub == "enable":
+            from agent.herens import enable_herens_preset
+
+            pr(enable_herens_preset())
+            return
+
+        if not is_herens_enabled():
+            print("  Herens is disabled. Run /herens enable first.")
+            return
+
+        sid = getattr(getattr(self, "agent", None), "session_id", "") or ""
+
+        if sub == "status" or sub == "metrics":
+            from agent.herens.metrics import metrics_snapshot
+
+            pr(metrics_snapshot())
+        elif sub == "strategy":
+            from agent.herens.strategy import (
+                bind_session_strategy,
+                get_session_strategy,
+            )
+
+            if arg:
+                s = bind_session_strategy(sid, arg)
+                print(
+                    f"  Strategy set → {s} (effective next session for prompt freeze)"
+                )
+            else:
+                print(f"  Active strategy: {get_session_strategy(sid)}")
+        elif sub == "nudge":
+            from agent.herens.nudge import run_nudge
+
+            force = "force" in arg.lower()
+            pr(run_nudge(force=force))
+        elif sub == "caduceus":
+            if not arg:
+                print("  Usage: /herens caduceus <objective>")
+                return
+            from agent.herens.specialists import caduceus_team_plan
+
+            pr(caduceus_team_plan(arg))
+        elif sub == "handoff":
+            sub2 = arg.split(None, 1)[0].lower() if arg else "list"
+            rest = arg.split(None, 1)[1].strip() if " " in arg else ""
+            from agent.herens.handoff import create_handoff, list_handoffs
+
+            if sub2 == "list":
+                pr({"handoffs": list_handoffs()})
+            elif sub2 == "create":
+                pr(create_handoff(objective=rest or "untitled", parent_session_id=sid))
+            else:
+                pr({"handoffs": list_handoffs()})
+        elif sub == "evolve":
+            from agent.herens.skill_evolution import evolve_from_experience_batch
+
+            pr(evolve_from_experience_batch())
+        # ── F2.1: DynamicToolFactory ────────────────────────────────────────
+        elif sub == "tools":
+            sub2 = arg.split(None, 1)[0].lower() if arg else "list"
+            rest = arg.split(None, 1)[1].strip() if " " in arg else ""
+            from agent.herens import dynamic_tool as dt
+
+            if sub2 in ("list", ""):
+                pr({"tools": [t.to_dict() for t in dt.list_dynamic_tools(sid)]})
+            elif sub2 == "stats":
+                pr(dt.factory_stats())
+            elif sub2 == "persist":
+                count = dt.persist_session_tools(sid)
+                pr({"persisted": count})
+            elif sub2 == "restore":
+                count = dt.restore_session_tools(sid)
+                pr({"restored": count})
+            elif sub2 == "clear":
+                count = dt.clear_session_tools(sid)
+                pr({"cleared": count})
+            elif sub2 == "clear_persisted":
+                count = dt.clear_persisted_tools(sid)
+                pr({"cleared_persisted": count})
+            else:
+                print("  Usage: /herens tools [list|stats|persist|restore|clear|clear_persisted]")
+        # ── F2.2: Error recovery ────────────────────────────────────────────
+        elif sub == "errors":
+            sub2 = arg.split(None, 1)[0].lower() if arg else "stats"
+            from agent.herens.error_recovery import recovery_stats
+
+            if sub2 == "stats":
+                pr(recovery_stats())
+            elif sub2 == "log":
+                from agent.herens.error_recovery import _log_path
+                try:
+                    lines = _log_path().read_text(encoding="utf-8").splitlines()
+                except FileNotFoundError:
+                    pr({"records": []})
+                    return
+                except Exception as exc:
+                    print(f"  Error reading log: {exc}")
+                    return
+                limit = 50
+                records = []
+                for line in reversed(lines[-limit:]):
+                    try:
+                        records.append(json.loads(line.strip()))
+                    except Exception:
+                        pass
+                pr({"records": records})
+            else:
+                print("  Usage: /herens errors [stats|log]")
+        # ── F2.3: CoT ─────────────────────────────────────────────────────────
+        elif sub == "cot":
+            if not arg:
+                print("  Usage: /herens cot <objective>")
+                return
+            from agent.herens.cot import build_cot_block
+
+            block = build_cot_block(arg)
+            pr({"cot_block": block})
+        # ── F3.1: ToT ────────────────────────────────────────────────────────
+        elif sub == "tot":
+            sub2 = arg.split(None, 1)[0].lower() if arg else "stats"
+            rest = arg.split(None, 1)[1].strip() if " " in arg else ""
+            if sub2 == "stats":
+                from agent.herens.tot import tot_stats
+                pr(tot_stats())
+            elif sub2 == "log":
+                from agent.herens.tot import _log_path
+                try:
+                    lines = _log_path().read_text(encoding="utf-8").splitlines()
+                except FileNotFoundError:
+                    pr({"records": []})
+                    return
+                except Exception as exc:
+                    print(f"  Error reading log: {exc}")
+                    return
+                limit = 50
+                records = []
+                for line in reversed(lines[-limit:]):
+                    try:
+                        records.append(json.loads(line.strip()))
+                    except Exception:
+                        pass
+                pr({"records": records})
+            elif sub2 == "evaluate":
+                if not rest:
+                    print("  Usage: /herens tot evaluate <objective>")
+                    return
+                from agent.herens.tot import evaluate_tot
+                pr(evaluate_tot(rest, session_id=sid))
+            else:
+                print("  Usage: /herens tot [stats|log|evaluate <objective>]")
+        # ── F3.2: Uncertainty ────────────────────────────────────────────────
+        elif sub == "uncertainty":
+            if not arg:
+                print("  Usage: /herens uncertainty <message>")
+                return
+            from agent.herens.uncertainty import assess_uncertainty
+
+            result = assess_uncertainty(arg)
+            pr(result.to_dict())
+        # ── F3.3: Transfer recall ────────────────────────────────────────────
+        elif sub == "transfer":
+            if not arg:
+                print("  Usage: /herens transfer <objective>")
+                return
+            from agent.herens.transfer_recall import find_transferable_knowledge
+
+            results = find_transferable_knowledge(arg)
+            pr({"results": [r.to_dict() for r in results]})
+        # ── F4.1: InterAgent inbox ──────────────────────────────────────────
+        elif sub == "inbox":
+            sub2 = arg.split(None, 1)[0].lower() if arg else "list"
+            rest = arg.split(None, 1)[1].strip() if " " in arg else ""
+            from agent.herens.inter_agent import (
+                send_message, receive_messages, acknowledge_message,
+                export_persisted_inboxes, clear_persisted_inboxes,
+                inbox_persistence_stats,
+            )
+
+            if sub2 in ("list", ""):
+                agent_id = rest or "self"
+                msgs = receive_messages(agent_id, unacknowledged_only=True)
+                pr({"messages": [m.to_dict() for m in msgs]})
+            elif sub2 == "send":
+                # /herens inbox send <to> <subject> | <body>
+                if not rest:
+                    print("  Usage: /herens inbox send <to_agent> <subject> | <body>")
+                    return
+                if "|" in rest:
+                    head, body = rest.split("|", 1)
+                    head = head.strip()
+                    body = body.strip()
+                else:
+                    head = rest
+                    body = ""
+                head_parts = head.split(None, 1)
+                to_agent = head_parts[0] if head_parts else ""
+                subject = head_parts[1] if len(head_parts) > 1 else "(no subject)"
+                msg = send_message(
+                    from_agent="self", to_agent=to_agent,
+                    message_type="request", subject=subject, body=body,
+                    session_id=sid,
+                )
+                pr(msg.to_dict())
+            elif sub2 == "ack":
+                if not rest:
+                    print("  Usage: /herens inbox ack <message_id>")
+                    return
+                ok = acknowledge_message("self", rest)
+                pr({"acknowledged": ok})
+            elif sub2 == "stats":
+                pr(inbox_persistence_stats())
+            elif sub2 == "export":
+                pr({"messages": export_persisted_inboxes(session_id=sid)})
+            elif sub2 == "clear":
+                count = clear_persisted_inboxes(session_id=sid)
+                pr({"cleared": count})
+            else:
+                print("  Usage: /herens inbox [list|send <to> <subject> | <body>|ack <id>|stats|export|clear]")
+        # ── F4.2: Resource optimizer ─────────────────────────────────────────
+        elif sub == "optimize":
+            sub2 = arg.split(None, 1)[0].lower() if arg else "stats"
+            rest = arg.split(None, 1)[1].strip() if " " in arg else ""
+            from agent.herens.resource_optimizer import (
+                optimizer_stats, recommend_for_task,
+            )
+
+            if sub2 == "stats":
+                pr(optimizer_stats())
+            elif sub2 == "recommend":
+                if not rest:
+                    print("  Usage: /herens optimize recommend <task>")
+                    return
+                pr(recommend_for_task(rest))
+            else:
+                print("  Usage: /herens optimize [stats|recommend <task>]")
+        # ── F4.3: Peer router ───────────────────────────────────────────────
+        elif sub == "peers":
+            sub2 = arg.split(None, 1)[0].lower() if arg else "list"
+            rest = arg.split(None, 1)[1].strip() if " " in arg else ""
+            from agent.herens.peer_router import (
+                list_peers, register_peer, unregister_peer, heartbeat,
+                route_task, export_persisted_routing_table,
+                clear_persisted_routing_table, routing_persistence_stats,
+            )
+
+            if sub2 in ("list", ""):
+                pr({"peers": [p.to_dict() for p in list_peers(sid)]})
+            elif sub2 == "register":
+                # /herens peers register <agent_id> [cap1,cap2,...]
+                if not rest:
+                    print("  Usage: /herens peers register <agent_id> [caps]")
+                    return
+                parts = rest.split(None, 1)
+                agent_id = parts[0]
+                caps = parts[1].split(",") if len(parts) > 1 else []
+                caps = [c.strip() for c in caps if c.strip()]
+                peer = register_peer(
+                    agent_id=agent_id, session_id=sid, capabilities=caps,
+                )
+                pr(peer.to_dict())
+            elif sub2 == "unregister":
+                if not rest:
+                    print("  Usage: /herens peers unregister <agent_id>")
+                    return
+                ok = unregister_peer(rest, sid)
+                pr({"unregistered": ok})
+            elif sub2 == "heartbeat":
+                # /herens peers heartbeat <agent_id> <load>
+                if not rest:
+                    print("  Usage: /herens peers heartbeat <agent_id> <load>")
+                    return
+                parts = rest.split()
+                if len(parts) < 2:
+                    print("  Usage: /herens peers heartbeat <agent_id> <load>")
+                    return
+                agent_id = parts[0]
+                try:
+                    load = float(parts[1])
+                except ValueError:
+                    load = 0.0
+                ok = heartbeat(agent_id, sid, load=load)
+                pr({"heartbeat": ok})
+            elif sub2 == "route":
+                if not rest:
+                    print("  Usage: /herens peers route <task>")
+                    return
+                peer = route_task(rest, session_id=sid)
+                pr(peer.to_dict() if peer else {"routed": None})
+            elif sub2 == "stats":
+                pr(routing_persistence_stats())
+            elif sub2 == "export":
+                pr({"peers": export_persisted_routing_table(session_id=sid)})
+            elif sub2 == "clear":
+                count = clear_persisted_routing_table(session_id=sid)
+                pr({"cleared": count})
+            else:
+                print("  Usage: /herens peers [list|register <id> [caps]|unregister <id>|heartbeat <id> <load>|route <task>|stats|export|clear]")
+        else:
+            print(
+                "  Usage: /herens [status|strategy <name>|nudge [--force]|"
+                "caduceus <obj>|handoff [list|create <obj>]|evolve|metrics|"
+                "tools [list|stats|persist|restore|clear]|"
+                "errors [stats|log]|cot <obj>|tot [stats|log|evaluate <obj>]|"
+                "uncertainty <msg>|transfer <obj>|"
+                "inbox [list|send|ack|stats|export|clear]|"
+                "optimize [stats|recommend <task>]|"
+                "peers [list|register|unregister|heartbeat|route|stats|export|clear]|"
+                "enable]"
+            )
+
+    def _handle_rate_command(self, cmd: str):
+        """Handle /rate <1-10> — explicit feedback on the last assistant response.
+
+        Wires into the Herens FeedbackCollector (F1.2): the score is normalized
+        to 0.0-1.0, persisted to feedback_log.jsonl, propagated to the experience
+        ledger, and used to update skill-factory usage counters. When the score
+        is low (≤0.3) and skills were exercised this session, skill evolution
+        is triggered.
+        """
+        parts = cmd.strip().split(None, 1)
+        arg = parts[1].strip() if len(parts) > 1 else ""
+
+        try:
+            from agent.herens.config import is_herens_enabled
+        except ImportError:
+            print("  Herens not available in this environment.")
+            return
+
+        if not is_herens_enabled():
+            print("  Herens is disabled. Run /herens enable first.")
+            return
+
+        if not arg:
+            print("  Usage: /rate <1-10>  (e.g. /rate 8  or  /rate 3/10)")
+            return
+
+        try:
+            from agent.herens.feedback import submit_feedback
+        except ImportError:
+            print("  Herens feedback module not available.")
+            return
+
+        import re
+
+        match = re.search(r"(\d+(?:\.\d+)?)\s*(?:/\s*10)?", arg)
+        if not match:
+            print("  Please provide a number 1-10.")
+            return
+        val = float(match.group(1))
+        if val <= 0 or val > 10:
+            print("  Score must be between 1 and 10.")
+            return
+        score = round(min(1.0, max(0.0, val / 10)), 3)
+
+        sid = getattr(getattr(self, "agent", None), "session_id", "") or ""
+        # Capture the last assistant response as preview for downstream analysis.
+        prior_response = ""
+        agent = getattr(self, "agent", None)
+        if agent is not None:
+            try:
+                history = getattr(agent, "session_messages", None) or []
+                for msg in reversed(history):
+                    if isinstance(msg, dict) and msg.get("role") == "assistant":
+                        prior_response = str(msg.get("content") or "")[:200]
+                        break
+            except Exception:
+                pass
+
+        record = submit_feedback(
+            session_id=sid,
+            turn_id="",
+            source="explicit_rate",
+            raw_value=arg[:50],
+            score=score,
+            message_preview=prior_response,
+        )
+        # User-facing confirmation.
+        if score >= 0.6:
+            print(f"  Thanks for the feedback! Score {val}/10 recorded.")
+        elif score >= 0.4:
+            print(f"  Feedback noted: {val}/10. I'll try to improve.")
+        else:
+            print(
+                f"  Low score ({val}/10) recorded. The relevant skills will be "
+                "reviewed for improvement."
+            )
+
     def _handle_memory_command(self, cmd: str):
         """Handle /memory slash command — pending review + approval-gate toggle."""
         from hermes_cli.write_approval_commands import handle_pending_subcommand
         from tools import write_approval as wa
+
         parts = cmd.strip().split()
         args = parts[1:] if len(parts) > 1 else []
-        store = getattr(self.agent, "_memory_store", None) if getattr(self, "agent", None) else None
+        store = (
+            getattr(self.agent, "_memory_store", None)
+            if getattr(self, "agent", None)
+            else None
+        )
         if store is None:
             # No live agent store (e.g. /memory approve invoked from the Desktop
             # GUI, or any context without an active agent). Apply against a freshly
@@ -1600,20 +2423,25 @@ class CLICommandsMixin:
             # load_on_disk_store() honors the user's configured char limits, so
             # an approval here enforces the same caps as the live agent would.
             from tools.memory_tool import load_on_disk_store
+
             store = load_on_disk_store()
         out = handle_pending_subcommand(
-            wa.MEMORY, args,
+            wa.MEMORY,
+            args,
             memory_store=store,
             set_mode_fn=lambda enabled: self._save_write_approval("memory", enabled),
         )
         if out is None:
-            out = ("Unknown /memory subcommand. "
-                   "Use: pending, approve <id>, reject <id>, approval <on|off>.")
+            out = (
+                "Unknown /memory subcommand. "
+                "Use: pending, approve <id>, reject <id>, approval <on|off>."
+            )
         print(out)
 
     def _save_write_approval(self, subsystem: str, enabled: bool):
         """Persist <subsystem>.write_approval to config (for /memory|/skills approval)."""
         from cli import save_config_value
+
         save_config_value(f"{subsystem}.write_approval", bool(enabled))
 
     def _handle_background_command(self, cmd: str):
@@ -1623,12 +2451,25 @@ class CLICommandsMixin:
         When it completes, prints the result to the CLI without modifying
         the active session's conversation history.
         """
-        from cli import AIAgent, ChatConsole, _accent_hex, _cprint, _maybe_remap_for_light_mode, _render_final_assistant_content, set_approval_callback, set_secret_capture_callback, set_sudo_password_callback
+        from cli import (
+            AIAgent,
+            ChatConsole,
+            _accent_hex,
+            _cprint,
+            _maybe_remap_for_light_mode,
+            _render_final_assistant_content,
+            set_approval_callback,
+            set_secret_capture_callback,
+            set_sudo_password_callback,
+        )
+
         parts = cmd.strip().split(maxsplit=1)
         if len(parts) < 2 or not parts[1].strip():
             _cprint("  Usage: /background <prompt>")
             _cprint("  Example: /background Summarize the top HN stories today")
-            _cprint("  The task runs in a separate session and results display here when done.")
+            _cprint(
+                "  The task runs in a separate session and results display here when done."
+            )
             return
 
         prompt = parts[1].strip()
@@ -1641,7 +2482,9 @@ class CLICommandsMixin:
             _cprint("  (>_<) Cannot start background task: no valid credentials.")
             return
 
-        _cprint(f"  🔄 Background task #{task_num} started: \"{prompt[:60]}{'...' if len(prompt) > 60 else ''}\"")
+        _cprint(
+            f'  🔄 Background task #{task_num} started: "{prompt[:60]}{"..." if len(prompt) > 60 else ""}"'
+        )
         _cprint(f"  Task ID: {task_id}")
         _cprint("  You can continue chatting — results will appear when done.\n")
 
@@ -1713,31 +2556,40 @@ class CLICommandsMixin:
                 print()
                 ChatConsole().print(f"[{_accent_hex()}]{'─' * 40}[/]")
                 _cprint(f"  ✅ Background task #{task_num} complete")
-                _cprint(f"  Prompt: \"{prompt[:60]}{'...' if len(prompt) > 60 else ''}\"")
+                _cprint(f'  Prompt: "{prompt[:60]}{"..." if len(prompt) > 60 else ""}"')
                 ChatConsole().print(f"[{_accent_hex()}]{'─' * 40}[/]")
                 if response:
                     try:
                         from hermes_cli.skin_engine import get_active_skin
+
                         _skin = get_active_skin()
                         label = _skin.get_branding("response_label", "⚕ Hermes")
-                        _resp_color = _maybe_remap_for_light_mode(_skin.get_color("response_border", "#CD7F32"))
-                        _resp_text = _maybe_remap_for_light_mode(_skin.get_color("banner_text", "#FFF8DC"))
+                        _resp_color = _maybe_remap_for_light_mode(
+                            _skin.get_color("response_border", "#CD7F32")
+                        )
+                        _resp_text = _maybe_remap_for_light_mode(
+                            _skin.get_color("banner_text", "#FFF8DC")
+                        )
                     except Exception:
                         label = "⚕ Hermes"
                         _resp_color = "#CD7F32"
                         _resp_text = "#FFF8DC"
 
                     _chat_console = ChatConsole()
-                    _chat_console.print(Panel(
-                        _render_final_assistant_content(response, mode=self.final_response_markdown),
-                        title=f"[{_resp_color} bold]{label} (background #{task_num})[/]",
-                        title_align="left",
-                        border_style=_resp_color,
-                        style=_resp_text,
-                        box=rich_box.HORIZONTALS,
-                        padding=(1, 4),
-                        width=self._scrollback_box_width(),
-                    ))
+                    _chat_console.print(
+                        Panel(
+                            _render_final_assistant_content(
+                                response, mode=self.final_response_markdown
+                            ),
+                            title=f"[{_resp_color} bold]{label} (background #{task_num})[/]",
+                            title_align="left",
+                            border_style=_resp_color,
+                            style=_resp_text,
+                            box=rich_box.HORIZONTALS,
+                            padding=(1, 4),
+                            width=self._scrollback_box_width(),
+                        )
+                    )
                 else:
                     _cprint("  (No response generated)")
 
@@ -1767,7 +2619,9 @@ class CLICommandsMixin:
                 if self._app:
                     self._invalidate(min_interval=0)
 
-        thread = threading.Thread(target=run_background, daemon=True, name=f"bg-task-{task_id}")
+        thread = threading.Thread(
+            target=run_background, daemon=True, name=f"bg-task-{task_id}"
+        )
         self._background_tasks[task_id] = thread
         thread.start()
 
@@ -1779,6 +2633,7 @@ class CLICommandsMixin:
         of their session. Bundles are loaded via ``/<bundle-name>``.
         """
         from cli import ChatConsole, _BOLD, _DIM, _RST, _accent_hex, _cprint
+
         try:
             from agent.skill_bundles import list_bundles, _bundles_dir
         except Exception as exc:
@@ -1822,8 +2677,12 @@ class CLICommandsMixin:
 
         if sub.startswith("connect"):
             # Optionally accept a custom CDP URL: /browser connect ws://host:port
-            connect_parts = cmd.strip().split(None, 2)  # ["/browser", "connect", "ws://..."]
-            cdp_url = connect_parts[2].strip() if len(connect_parts) > 2 else _DEFAULT_CDP
+            connect_parts = cmd.strip().split(
+                None, 2
+            )  # ["/browser", "connect", "ws://..."]
+            cdp_url = (
+                connect_parts[2].strip() if len(connect_parts) > 2 else _DEFAULT_CDP
+            )
             parsed_cdp = urlparse(cdp_url if "://" in cdp_url else f"http://{cdp_url}")
             if parsed_cdp.scheme not in {"http", "https", "ws", "wss"}:
                 print()
@@ -1834,7 +2693,9 @@ class CLICommandsMixin:
                 print()
                 return
             try:
-                _port = parsed_cdp.port or (443 if parsed_cdp.scheme in {"https", "wss"} else 80)
+                _port = parsed_cdp.port or (
+                    443 if parsed_cdp.scheme in {"https", "wss"} else 80
+                )
             except ValueError:
                 print()
                 print(f"   ⚠ Invalid port in browser url: {cdp_url}")
@@ -1859,73 +2720,63 @@ class CLICommandsMixin:
             # Clear any existing browser sessions so the next tool call uses the new backend
             try:
                 from tools.browser_tool import cleanup_all_browsers
+
                 cleanup_all_browsers()
             except Exception:
                 pass
 
             print()
 
-            # Check if a Chromium-family browser is already serving CDP on the debug port.
-            # For the default-local URL, probe both loopbacks (IPv4 + IPv6): a
-            # squatter on 127.0.0.1:<port> (e.g. an IDE's JS debugger) can push
-            # the debug browser to bind [::1] only.
-            _is_default = cdp_url == _DEFAULT_CDP
-            if _is_default:
-                _found = discover_local_cdp_url(_port, timeout=1.0)
-                _already_open = _found is not None
-                if _found:
-                    cdp_url = _found
-            else:
-                _already_open = is_browser_debug_ready(cdp_url, timeout=1.0)
+            # Check if a Chromium-family browser is already serving CDP on the debug port
+            _already_open = is_browser_debug_ready(cdp_url, timeout=1.0)
 
             if _already_open:
-                print(f"   ✓ Chromium-family browser is already listening at {cdp_url}")
-            elif _is_default:
-                _launch_port = _port
-                if local_port_in_use(_port):
-                    _launch_port = find_free_debug_port(_port)
-                    print(
-                        f"   ⚠ Port {_port} is occupied by another application that isn't a CDP browser"
-                    )
-                    print(
-                        f"     (an IDE debugger or dev server may be using it) — launching on port {_launch_port} instead..."
-                    )
-                else:
-                    # Try to auto-launch a Chromium-family browser with remote debugging
-                    print("   Chromium-family browser isn't running with remote debugging — attempting to launch...")
-                _launch = launch_chrome_debug(_launch_port, _plat.system())
-                if _launch.launched:
+                print(
+                    f"   ✓ Chromium-family browser is already listening on port {_port}"
+                )
+            elif cdp_url == _DEFAULT_CDP:
+                # Try to auto-launch a Chromium-family browser with remote debugging
+                print(
+                    "   Chromium-family browser isn't running with remote debugging — attempting to launch..."
+                )
+                _launched = self._try_launch_chrome_debug(_port, _plat.system())
+                if _launched:
                     # Wait for the DevTools discovery endpoint to come up
                     for _wait in range(10):
-                        _found = discover_local_cdp_url(_launch_port, timeout=1.0)
-                        if _found:
-                            cdp_url = _found
+                        if is_browser_debug_ready(cdp_url, timeout=1.0):
                             _already_open = True
                             break
                         time.sleep(0.5)
                     if _already_open:
-                        print(f"   ✓ Chromium-family browser launched and listening on port {_launch_port}")
+                        print(
+                            f"   ✓ Chromium-family browser launched and listening on port {_port}"
+                        )
                     else:
-                        print(f"   ⚠ Browser launched but port {_launch_port} isn't responding yet")
-                        print("     Try again in a few seconds — the debug instance may still be starting")
+                        print(
+                            f"   ⚠ Browser launched but port {_port} isn't responding yet"
+                        )
+                        print(
+                            "     Try again in a few seconds — the debug instance may still be starting"
+                        )
                 else:
                     print("   ⚠ Could not auto-launch a Chromium-family browser")
-                    _hint = _launch.hint
-                    if _hint:
-                        print(f"     {_hint}")
                     sys_name = _plat.system()
-                    chrome_cmd = manual_chrome_debug_command(_launch_port, sys_name)
+                    chrome_cmd = manual_chrome_debug_command(_port, sys_name)
                     if chrome_cmd:
-                        print("     Launch a Chromium-family browser manually:")
+                        print(f"     Launch a Chromium-family browser manually:")
                         print(f"     {chrome_cmd}")
                     else:
-                        print("     No supported Chromium-family browser executable found in this environment")
+                        print(
+                            "     No supported Chromium-family browser executable found in this environment"
+                        )
             else:
                 print(f"   ⚠ Port {_port} is not reachable at {cdp_url}")
 
             if not _already_open:
                 print()
-                print("Browser not connected — start a Chromium-family browser with remote debugging and retry /browser connect")
+                print(
+                    "Browser not connected — start a Chromium-family browser with remote debugging and retry /browser connect"
+                )
                 print()
                 return
 
@@ -1934,6 +2785,7 @@ class CLICommandsMixin:
             # show up in the next browser_snapshot.  No-op if already started.
             try:
                 from tools.browser_tool import _ensure_cdp_supervisor  # type: ignore[import-not-found]
+
                 _ensure_cdp_supervisor("default")
             except Exception:
                 pass
@@ -1944,7 +2796,7 @@ class CLICommandsMixin:
 
             # Inject context message so the model knows this slash command
             # intentionally makes the dev/debug CDP browser available for use.
-            if hasattr(self, '_pending_input'):
+            if hasattr(self, "_pending_input"):
                 self._pending_input.put(
                     "[System note: The user invoked /browser connect and connected your browser tools to "
                     "a Chromium-family dev/debug browser via Chrome DevTools Protocol. "
@@ -1961,24 +2813,32 @@ class CLICommandsMixin:
             if current:
                 os.environ.pop("BROWSER_CDP_URL", None)
                 try:
-                    from tools.browser_tool import cleanup_all_browsers, _stop_cdp_supervisor
+                    from tools.browser_tool import (
+                        cleanup_all_browsers,
+                        _stop_cdp_supervisor,
+                    )
+
                     _stop_cdp_supervisor("default")
                     cleanup_all_browsers()
                 except Exception:
                     pass
                 print()
                 print("🌐 Browser disconnected from live Chromium-family browser")
-                print("   Browser tools reverted to default mode (local headless or cloud provider)")
+                print(
+                    "   Browser tools reverted to default mode (local headless or cloud provider)"
+                )
                 print()
 
-                if hasattr(self, '_pending_input'):
+                if hasattr(self, "_pending_input"):
                     self._pending_input.put(
                         "[System note: The user has disconnected the browser tools from their live Chromium-family browser. "
                         "Browser tools are back to default mode (headless local browser or cloud provider).]"
                     )
             else:
                 print()
-                print("Browser is not connected to a live Chromium-family browser (already using default mode)")
+                print(
+                    "Browser is not connected to a live Chromium-family browser (already using default mode)"
+                )
                 print()
 
         elif sub == "status":
@@ -1994,6 +2854,7 @@ class CLICommandsMixin:
                     pass
                 try:
                     import socket
+
                     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                     s.settimeout(1)
                     s.connect(("127.0.0.1", _port))
@@ -2004,6 +2865,7 @@ class CLICommandsMixin:
             else:
                 try:
                     from tools.browser_tool import _get_cloud_provider
+
                     provider = _get_cloud_provider()
                 except Exception:
                     provider = None
@@ -2014,19 +2876,30 @@ class CLICommandsMixin:
                     # Show engine info for local mode
                     try:
                         from tools.browser_tool import _get_browser_engine
+
                         engine = _get_browser_engine()
                     except Exception:
                         engine = "auto"
                     if engine == "lightpanda":
-                        print("🌐 Browser: local Lightpanda (agent-browser --engine lightpanda)")
-                        print("   ⚡ Lightpanda: faster navigation, no screenshot support")
-                        print("   Automatic Chromium fallback for screenshots and failed commands")
+                        print(
+                            "🌐 Browser: local Lightpanda (agent-browser --engine lightpanda)"
+                        )
+                        print(
+                            "   ⚡ Lightpanda: faster navigation, no screenshot support"
+                        )
+                        print(
+                            "   Automatic Chromium fallback for screenshots and failed commands"
+                        )
                     elif engine == "chrome":
-                        print("🌐 Browser: local headless Chromium (agent-browser --engine chrome)")
+                        print(
+                            "🌐 Browser: local headless Chromium (agent-browser --engine chrome)"
+                        )
                     else:
                         print("🌐 Browser: local headless Chromium (agent-browser)")
             print()
-            print("   /browser connect      — connect to your live Chromium-family browser")
+            print(
+                "   /browser connect      — connect to your live Chromium-family browser"
+            )
             print("   /browser disconnect   — revert to default")
             print()
 
@@ -2034,7 +2907,9 @@ class CLICommandsMixin:
             print()
             print("Usage: /browser connect|disconnect|status")
             print()
-            print("   connect      Connect browser tools to your live Chromium-family browser session")
+            print(
+                "   connect      Connect browser tools to your live Chromium-family browser session"
+            )
             print("   disconnect   Revert to default browser backend")
             print("   status       Show current browser mode")
             print()
@@ -2042,6 +2917,7 @@ class CLICommandsMixin:
     def _handle_goal_command(self, cmd: str) -> None:
         """Dispatch /goal subcommands: set / draft / show / status / pause / resume / clear."""
         from cli import _DIM, _RST, _cprint
+
         parts = (cmd or "").strip().split(None, 1)
         arg = parts[1].strip() if len(parts) > 1 else ""
 
@@ -2069,7 +2945,7 @@ class CLICommandsMixin:
         # from Codex's "let the agent draft the goal" guidance: the contract
         # makes "done" evidence-based instead of a loose vibe check.
         if lower.startswith("draft"):
-            objective = arg[len("draft"):].strip()
+            objective = arg[len("draft") :].strip()
             if not objective:
                 _cprint("  Usage: /goal draft <objective in plain language>")
                 return
@@ -2109,7 +2985,7 @@ class CLICommandsMixin:
         # it stops re-poking the agent every turn while it waits on CI / a
         # build / a long job. The barrier auto-clears when the PID exits.
         if lower == "wait" or lower.startswith("wait "):
-            wait_arg = arg[len("wait"):].strip()
+            wait_arg = arg[len("wait") :].strip()
             if not wait_arg:
                 _cprint("  Usage: /goal wait <pid> [reason]")
                 return
@@ -2146,7 +3022,9 @@ class CLICommandsMixin:
         headline, contract = parse_contract(arg)
         goal_text = headline or arg
         try:
-            state = mgr.set(goal_text, contract=contract if not contract.is_empty() else None)
+            state = mgr.set(
+                goal_text, contract=contract if not contract.is_empty() else None
+            )
         except ValueError as exc:
             _cprint(f"  Invalid goal: {exc}")
             return
@@ -2186,6 +3064,7 @@ class CLICommandsMixin:
             contract = draft_contract(objective)
         except Exception as exc:
             import logging as _logging
+
             _logging.getLogger(__name__).debug("goal draft failed: %s", exc)
             contract = None
 
@@ -2231,6 +3110,7 @@ class CLICommandsMixin:
         judge call includes them.
         """
         from cli import _DIM, _RST, _cprint
+
         parts = (cmd or "").strip().split(None, 2)
         arg = " ".join(parts[1:]).strip() if len(parts) > 1 else ""
 
@@ -2294,8 +3174,13 @@ class CLICommandsMixin:
     def _handle_skin_command(self, cmd: str):
         """Handle /skin [name] — show or change the display skin."""
         from cli import _ACCENT, save_config_value
+
         try:
-            from hermes_cli.skin_engine import list_skins, set_active_skin, get_active_skin_name
+            from hermes_cli.skin_engine import (
+                list_skins,
+                set_active_skin,
+                get_active_skin_name,
+            )
         except ImportError:
             print("Skin engine not available.")
             return
@@ -2312,7 +3197,9 @@ class CLICommandsMixin:
                 source = f" ({s['source']})" if s["source"] == "user" else ""
                 print(f"   {marker} {s['name']}{source} — {s['description']}")
             print("\n  Usage: /skin <name>")
-            print(f"  Custom skins: drop a YAML file in {display_hermes_home()}/skins/\n")
+            print(
+                f"  Custom skins: drop a YAML file in {display_hermes_home()}/skins/\n"
+            )
             return
 
         new_skin = parts[1].strip().lower()
@@ -2429,7 +3316,7 @@ class CLICommandsMixin:
             arg = ""
 
         cfg = load_config() or {}
-        footer_cfg = ((cfg.get("display") or {}).get("runtime_footer") or {})
+        footer_cfg = (cfg.get("display") or {}).get("runtime_footer") or {}
         current = bool(footer_cfg.get("enabled", False))
         fields = footer_cfg.get("fields") or ["model", "context_pct", "cwd"]
 
@@ -2453,7 +3340,8 @@ class CLICommandsMixin:
 
         if save_config_value("display.runtime_footer.enabled", new_state):
             state = (
-                f"{_Colors.GREEN}ON{_Colors.RESET}" if new_state
+                f"{_Colors.GREEN}ON{_Colors.RESET}"
+                if new_state
                 else f"{_Colors.DIM}OFF{_Colors.RESET}"
             )
             _cprint(f"  Runtime footer: {state}")
@@ -2503,7 +3391,8 @@ class CLICommandsMixin:
         self.show_timestamps = new_state
         if save_config_value("display.timestamps", new_state):
             state = (
-                f"{_Colors.GREEN}ON{_Colors.RESET}" if new_state
+                f"{_Colors.GREEN}ON{_Colors.RESET}"
+                if new_state
                 else f"{_Colors.DIM}OFF{_Colors.RESET}"
             )
             _cprint(f"  Message timestamps: {state}")
@@ -2515,14 +3404,21 @@ class CLICommandsMixin:
 
         Usage:
             /reasoning              Show current effort level and display state
-            /reasoning <level>      Set effort for this session only (none, minimal, low, medium, high, xhigh, max, ultra)
-            /reasoning <level> --global  Persist reasoning effort to config.yaml
+            /reasoning <level>      Set reasoning effort (none, minimal, low, medium, high, xhigh)
             /reasoning show|on      Show model thinking/reasoning in output
             /reasoning hide|off     Hide model thinking/reasoning from output
             /reasoning full         Show complete thinking (no 10-line clamp)
             /reasoning clamp        Collapse long thinking to the first 10 lines
         """
-        from cli import CLI_CONFIG, _ACCENT, _DIM, _RST, _cprint, _parse_reasoning_config, save_config_value
+        from cli import (
+            _ACCENT,
+            _DIM,
+            _RST,
+            _cprint,
+            _parse_reasoning_config,
+            save_config_value,
+        )
+
         parts = cmd.strip().split(maxsplit=1)
 
         if len(parts) < 2:
@@ -2535,23 +3431,21 @@ class CLICommandsMixin:
             else:
                 level = rc.get("effort", "medium")
             display_state = "on ✓" if self.show_reasoning else "off"
-            full_state = "full" if getattr(self, "reasoning_full", False) else "clamped to 10 lines"
+            full_state = (
+                "full"
+                if getattr(self, "reasoning_full", False)
+                else "clamped to 10 lines"
+            )
             _cprint(f"  {_ACCENT}Reasoning effort:  {level}{_RST}")
-            _cprint(f"  {_ACCENT}Reasoning display: {display_state} ({full_state}){_RST}")
-            _cprint(f"  {_DIM}Usage: /reasoning <none|minimal|low|medium|high|xhigh|max|ultra|show|hide|full|clamp> [--global]{_RST}")
+            _cprint(
+                f"  {_ACCENT}Reasoning display: {display_state} ({full_state}){_RST}"
+            )
+            _cprint(
+                f"  {_DIM}Usage: /reasoning <none|minimal|low|medium|high|xhigh|show|hide|full|clamp>{_RST}"
+            )
             return
 
         arg = parts[1].strip().lower()
-        arg_tokens = arg.split()
-        # Session scope is the default; --global opts into persisting to
-        # config.yaml. --session is accepted as an explicit no-op for parity
-        # with /model and the gateway /reasoning handler.
-        explicit_global = "--global" in arg_tokens
-        if explicit_global or "--session" in arg_tokens:
-            arg = " ".join(
-                token for token in arg_tokens
-                if token not in ("--global", "--session")
-            )
 
         # Display toggle
         if arg in {"show", "on"}:
@@ -2560,7 +3454,9 @@ class CLICommandsMixin:
                 self.agent.reasoning_callback = self._current_reasoning_callback()
             save_config_value("display.show_reasoning", True)
             _cprint(f"  {_ACCENT}✓ Reasoning display: ON (saved){_RST}")
-            _cprint(f"  {_DIM}  Model thinking will be shown during and after each response.{_RST}")
+            _cprint(
+                f"  {_DIM}  Model thinking will be shown during and after each response.{_RST}"
+            )
             return
         if arg in {"hide", "off"}:
             self.show_reasoning = False
@@ -2575,39 +3471,43 @@ class CLICommandsMixin:
             self.reasoning_full = True
             save_config_value("display.reasoning_full", True)
             _cprint(f"  {_ACCENT}✓ Reasoning display: FULL (saved){_RST}")
-            _cprint(f"  {_DIM}  The post-response recap box will print complete thinking.{_RST}")
+            _cprint(
+                f"  {_DIM}  The post-response recap box will print complete thinking.{_RST}"
+            )
             if not self.show_reasoning:
-                _cprint(f"  {_DIM}  Note: reasoning display is OFF — run /reasoning show to see it.{_RST}")
+                _cprint(
+                    f"  {_DIM}  Note: reasoning display is OFF — run /reasoning show to see it.{_RST}"
+                )
             return
         if arg in {"clamp", "collapse", "short"}:
             self.reasoning_full = False
             save_config_value("display.reasoning_full", False)
-            _cprint(f"  {_ACCENT}✓ Reasoning display: CLAMPED to 10 lines (saved){_RST}")
+            _cprint(
+                f"  {_ACCENT}✓ Reasoning display: CLAMPED to 10 lines (saved){_RST}"
+            )
             return
 
         # Effort level change
         parsed = _parse_reasoning_config(arg)
         if parsed is None:
             _cprint(f"  {_DIM}(._.) Unknown argument: {arg}{_RST}")
-            _cprint(f"  {_DIM}Valid levels: none, minimal, low, medium, high, xhigh, max, ultra{_RST}")
+            _cprint(
+                f"  {_DIM}Valid levels: none, minimal, low, medium, high, xhigh{_RST}"
+            )
             _cprint(f"  {_DIM}Display:      show, hide{_RST}")
-            _cprint(f"  {_DIM}Scope:        session-scoped by default, --global to persist{_RST}")
             return
 
         self.reasoning_config = parsed
         self.agent = None  # Force agent re-init with new reasoning config
 
-        if explicit_global and save_config_value("agent.reasoning_effort", arg):
-            agent_cfg = CLI_CONFIG.get("agent")
-            if not isinstance(agent_cfg, dict):
-                agent_cfg = {}
-                CLI_CONFIG["agent"] = agent_cfg
-            agent_cfg["reasoning_effort"] = arg
-            _cprint(f"  {_ACCENT}✓ Reasoning effort set to '{arg}' (saved to config){_RST}")
-        elif explicit_global:
-            _cprint(f"  {_ACCENT}✓ Reasoning effort set to '{arg}' (session only; config save failed){_RST}")
+        if save_config_value("agent.reasoning_effort", arg):
+            _cprint(
+                f"  {_ACCENT}✓ Reasoning effort set to '{arg}' (saved to config){_RST}"
+            )
         else:
-            _cprint(f"  {_ACCENT}✓ Reasoning effort set to '{arg}' (this session — use --global to persist){_RST}")
+            _cprint(
+                f"  {_ACCENT}✓ Reasoning effort set to '{arg}' (session only){_RST}"
+            )
 
     def _handle_busy_command(self, cmd: str):
         """Handle /busy — control what Enter does while Hermes is working.
@@ -2620,6 +3520,7 @@ class CLICommandsMixin:
             /busy interrupt     Interrupt the current run on Enter (default)
         """
         from cli import _ACCENT, _DIM, _RST, _cprint, save_config_value
+
         parts = cmd.strip().split(maxsplit=1)
         if len(parts) < 2 or parts[1].strip().lower() == "status":
             _cprint(f"  {_ACCENT}Busy input mode: {self.busy_input_mode}{_RST}")
@@ -2647,28 +3548,34 @@ class CLICommandsMixin:
                 behavior = "Enter will steer your message into the current run (after the next tool call)."
             else:
                 behavior = "Enter will interrupt the current run while Hermes is busy."
-            _cprint(f"  {_ACCENT}✓ Busy input mode set to '{arg}' (saved to config){_RST}")
+            _cprint(
+                f"  {_ACCENT}✓ Busy input mode set to '{arg}' (saved to config){_RST}"
+            )
             _cprint(f"  {_DIM}{behavior}{_RST}")
         else:
             _cprint(f"  {_ACCENT}✓ Busy input mode set to '{arg}' (session only){_RST}")
 
     def _handle_fast_command(self, cmd: str):
-        """Handle /fast — toggle fast mode (OpenAI Priority Processing / Anthropic Fast Mode).
-
-        Session-scoped by default; ``--global`` persists agent.service_tier
-        to config.yaml (parity with /model and /reasoning).
-        """
+        """Handle /fast — toggle fast mode (OpenAI Priority Processing / Anthropic Fast Mode)."""
         from cli import _ACCENT, _DIM, _RST, _cprint, save_config_value
+
         if not self._fast_command_available():
-            _cprint("  (._.) /fast is only available for models that support fast mode (OpenAI Priority Processing or Anthropic Fast Mode).")
+            _cprint(
+                "  (._.) /fast is only available for models that support fast mode (OpenAI Priority Processing or Anthropic Fast Mode)."
+            )
             return
 
         # Determine the branding for the current model
         try:
             from hermes_cli.models import _is_anthropic_fast_model
+
             agent = getattr(self, "agent", None)
             model = getattr(agent, "model", None) or getattr(self, "model", None)
-            feature_name = "Anthropic Fast Mode" if _is_anthropic_fast_model(model) else "Priority Processing"
+            feature_name = (
+                "Anthropic Fast Mode"
+                if _is_anthropic_fast_model(model)
+                else "Priority Processing"
+            )
         except Exception:
             feature_name = "Fast mode"
 
@@ -2676,15 +3583,10 @@ class CLICommandsMixin:
         if len(parts) < 2 or parts[1].strip().lower() == "status":
             status = "fast" if self.service_tier == "priority" else "normal"
             _cprint(f"  {_ACCENT}{feature_name}: {status}{_RST}")
-            _cprint(f"  {_DIM}Usage: /fast [normal|fast|status] [--global]{_RST}")
+            _cprint(f"  {_DIM}Usage: /fast [normal|fast|status]{_RST}")
             return
 
-        arg_tokens = parts[1].strip().lower().split()
-        explicit_global = "--global" in arg_tokens
-        arg = " ".join(
-            token for token in arg_tokens
-            if token not in ("--global", "--session")
-        )
+        arg = parts[1].strip().lower()
 
         if arg in {"fast", "on"}:
             self.service_tier = "priority"
@@ -2696,16 +3598,16 @@ class CLICommandsMixin:
             label = "NORMAL"
         else:
             _cprint(f"  {_DIM}(._.) Unknown argument: {arg}{_RST}")
-            _cprint(f"  {_DIM}Usage: /fast [normal|fast|status] [--global]{_RST}")
+            _cprint(f"  {_DIM}Usage: /fast [normal|fast|status]{_RST}")
             return
 
         self.agent = None  # Force agent re-init with new service-tier config
-        if explicit_global and save_config_value("agent.service_tier", saved_value):
-            _cprint(f"  {_ACCENT}✓ {feature_name} set to {label} (saved to config){_RST}")
-        elif explicit_global:
-            _cprint(f"  {_ACCENT}✓ {feature_name} set to {label} (session only; config save failed){_RST}")
+        if save_config_value("agent.service_tier", saved_value):
+            _cprint(
+                f"  {_ACCENT}✓ {feature_name} set to {label} (saved to config){_RST}"
+            )
         else:
-            _cprint(f"  {_ACCENT}✓ {feature_name} set to {label} (this session — use --global to persist){_RST}")
+            _cprint(f"  {_ACCENT}✓ {feature_name} set to {label} (session only){_RST}")
 
     def _handle_debug_command(self, cmd_original: str = ""):
         """Handle /debug — upload debug report + logs and print share URLs.
@@ -2728,9 +3630,7 @@ class CLICommandsMixin:
         # Typing the /debug slash command is itself the explicit consent to
         # upload, so we pass yes=True to skip run_debug_share's [y/N] prompt.
         # input() would hang inside prompt_toolkit's event loop anyway.
-        args = SimpleNamespace(
-            lines=200, expire=7, local=local, nous=nous, yes=True
-        )
+        args = SimpleNamespace(lines=200, expire=7, local=local, nous=nous, yes=True)
         run_debug_share(args)
 
     def _handle_update_command(self) -> bool:
@@ -2788,6 +3688,7 @@ class CLICommandsMixin:
     def _handle_voice_command(self, command: str):
         """Handle /voice [on|off|tts|status] command."""
         from cli import _cprint
+
         parts = command.strip().split(maxsplit=1)
         subcommand = parts[1].lower().strip() if len(parts) > 1 else ""
 

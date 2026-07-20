@@ -4,11 +4,14 @@ import fs from "node:fs"
 import path from "node:path"
 import https from "node:https"
 import http from "node:http"
+import dns from "node:dns/promises"
+import net from "node:net"
 import { fileURLToPath } from "node:url"
 import { createRequire } from "node:module"
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const REQUEST_TIMEOUT = 30000
+const MAX_REDIRECTS = 5
 
 function fail(message) {
   console.error(`ERROR: ${message}`)
@@ -255,6 +258,26 @@ function validateSafeUrl(value) {
   }
 }
 
+function isBlockedIp(value) {
+  const ip = String(value || "").replace(/^\[|\]$/g, "").toLowerCase().split("%")[0]
+  if (net.isIPv4(ip)) {
+    const parts = ip.split(".").map(Number)
+    const number = (((parts[0] * 256 + parts[1]) * 256 + parts[2]) * 256 + parts[3]) >>> 0
+    return [[0, 0x00ffffff], [0x0a000000, 0x0affffff], [0x7f000000, 0x7fffffff], [0xa9fe0000, 0xa9feffff], [0xac100000, 0xac1fffff], [0xc0a80000, 0xc0a8ffff], [0xe0000000, 0xffffffff]].some(([start, end]) => number >= start && number <= end)
+  }
+  if (!net.isIPv6(ip)) return false
+  return ip === "::" || ip === "::1" || ip.startsWith("fc") || ip.startsWith("fd") || ip.startsWith("fe8") || ip.startsWith("fe9") || ip.startsWith("fea") || ip.startsWith("feb") || (ip.startsWith("::ffff:") && isBlockedIp(ip.slice(7)))
+}
+
+async function resolveSafeAddress(value) {
+  const parsed = new URL(validateSafeUrl(value))
+  if (isBlockedIp(parsed.hostname)) throw new Error(`Access to private address "${parsed.hostname}" is blocked.`)
+  if (net.isIP(parsed.hostname)) return { address: parsed.hostname, family: net.isIP(parsed.hostname) }
+  const addresses = await dns.lookup(parsed.hostname, { all: true, verbatim: true })
+  if (!addresses.length || addresses.some(({ address }) => isBlockedIp(address))) throw new Error(`DNS resolved to a private or local address: ${parsed.hostname}`)
+  return addresses[0]
+}
+
 function validateDownloadUrl(value, targetDomain) {
   validateSafeUrl(value);
   const host = new URL(value).hostname.toLowerCase();
@@ -317,19 +340,16 @@ async function fetchJSON(url) {
   return JSON.parse(text)
 }
 
-function fetchText(url) {
+async function fetchText(url, redirectDepth = 0) {
+  const safeAddress = await resolveSafeAddress(url)
   return new Promise((resolve, reject) => {
-    try {
-      validateSafeUrl(url);
-    } catch (e) {
-      return reject(e);
-    }
     const client = url.startsWith("https") ? https : http
-    const req = client.get(url, { headers: { "User-Agent": "Shopify-Image-Downloader/1.0" } }, (res) => {
+    const req = client.get(url, { headers: { "User-Agent": "Shopify-Image-Downloader/1.0" }, lookup: (_hostname, _options, callback) => callback(null, safeAddress.address, safeAddress.family) }, (res) => {
       if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+        if (redirectDepth >= MAX_REDIRECTS) return reject(new Error(`Too many redirects while fetching ${url}`))
         const redirectUrl = new URL(res.headers.location, url).href
         res.resume()
-        return resolve(fetchText(redirectUrl))
+        return resolve(fetchText(redirectUrl, redirectDepth + 1))
       }
       if (res.statusCode !== 200) {
         res.resume()
@@ -402,19 +422,17 @@ function replaceExt(filename, newExt) {
   return filename.slice(0, dot) + newExt
 }
 
-function downloadFile(url, dest) {
+async function downloadFile(url, dest, redirectDepth = 0) {
+  validateDownloadUrl(url, domain)
+  const safeAddress = await resolveSafeAddress(url)
   return new Promise((resolve, reject) => {
-    try {
-      validateDownloadUrl(url, domain);
-    } catch (e) {
-      return reject(e);
-    }
     const client = url.startsWith("https") ? https : http
-    const req = client.get(url, { headers: { "User-Agent": "Shopify-Image-Downloader/1.0" } }, (res) => {
+    const req = client.get(url, { headers: { "User-Agent": "Shopify-Image-Downloader/1.0" }, lookup: (_hostname, _options, callback) => callback(null, safeAddress.address, safeAddress.family) }, (res) => {
       if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+        if (redirectDepth >= MAX_REDIRECTS) return reject(new Error(`Too many redirects while downloading ${url}`))
         const redirectUrl = new URL(res.headers.location, url).href
         res.resume()
-        return resolve(downloadFile(redirectUrl, dest))
+        return resolve(downloadFile(redirectUrl, dest, redirectDepth + 1))
       }
       if (res.statusCode !== 200) {
         res.resume()
@@ -435,19 +453,17 @@ function downloadFile(url, dest) {
   })
 }
 
-async function downloadAndConvertToWebp(url, dest, sharpInstance) {
+async function downloadAndConvertToWebp(url, dest, sharpInstance, redirectDepth = 0) {
+  validateDownloadUrl(url, domain)
+  const safeAddress = await resolveSafeAddress(url)
   return new Promise((resolve, reject) => {
-    try {
-      validateDownloadUrl(url, domain);
-    } catch (e) {
-      return reject(e);
-    }
     const client = url.startsWith("https") ? https : http
-    const req = client.get(url, { headers: { "User-Agent": "Shopify-Image-Downloader/1.0" } }, (res) => {
+    const req = client.get(url, { headers: { "User-Agent": "Shopify-Image-Downloader/1.0" }, lookup: (_hostname, _options, callback) => callback(null, safeAddress.address, safeAddress.family) }, (res) => {
       if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+        if (redirectDepth >= MAX_REDIRECTS) return reject(new Error(`Too many redirects while converting ${url}`))
         const redirectUrl = new URL(res.headers.location, url).href
         res.resume()
-        return resolve(downloadAndConvertToWebp(redirectUrl, dest, sharpInstance))
+        return resolve(downloadAndConvertToWebp(redirectUrl, dest, sharpInstance, redirectDepth + 1))
       }
       if (res.statusCode !== 200) {
         res.resume()
@@ -479,24 +495,7 @@ async function ensureSharp() {
     require.resolve("sharp")
     return require("sharp")
   } catch {
-    console.log("  Sharp not found. Installing sharp (automatic, one-time)...")
-    const { execSync } = await import("node:child_process")
-    const installDir = path.join(__dirname, "node_modules")
-    fs.mkdirSync(installDir, { recursive: true })
-    try {
-      execSync("npm init -y", { cwd: path.join(__dirname), stdio: "pipe", timeout: 30000 })
-    } catch {}
-    execSync("npm install sharp --no-save --ignore-scripts=false", {
-      cwd: path.join(__dirname),
-      stdio: "pipe",
-      timeout: 120000,
-    })
-    try {
-      require.resolve("sharp")
-      return require("sharp")
-    } catch {
-      fail("Failed to install sharp. Please run manually: cd \"" + __dirname + "\" && npm install sharp")
-    }
+    fail("WEBP_CONVERSION_UNAVAILABLE: install the pinned sharp prerequisite before using --webp; original-format downloads remain available without it.")
   }
 }
 

@@ -1,0 +1,8 @@
+{
+  "name": "shopify-product-images-downloader-runtime",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "sharp": "0.35.3"
+  }
+}

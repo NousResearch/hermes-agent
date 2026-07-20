@@ -819,11 +819,16 @@ def test_oneshot_distinguishes_disabled_mcp_from_unknown(monkeypatch, capsys):
 
 
 def test_oneshot_wires_session_db_for_recall(monkeypatch):
-    """hermes -z bypasses HermesCLI, but recall still needs SessionDB."""
+    """hermes -z owns both SessionDB and the agent lifecycle it bypasses."""
     from hermes_cli.oneshot import _run_agent
 
     captured = {}
-    sentinel_db = object()
+
+    class SentinelDB:
+        def close(self):
+            captured["session_db_closed"] = True
+
+    sentinel_db = SentinelDB()
 
     class FakeAgent:
         def __init__(self, **kwargs):
@@ -831,10 +836,14 @@ def test_oneshot_wires_session_db_for_recall(monkeypatch):
             self.suppress_status_output = False
             self.stream_delta_callback = object()
             self.tool_gen_callback = object()
+            self._session_messages = [{"role": "user", "content": "recall this"}]
 
         def run_conversation(self, prompt, **_kwargs):
             captured["prompt"] = prompt
             return {"final_response": "ok", "failed": False, "partial": False}
+
+        def shutdown_memory_provider(self, messages):
+            captured["memory_shutdown_messages"] = messages
 
     class FakeSessionDB:
         def __new__(cls):
@@ -884,6 +893,10 @@ def test_oneshot_wires_session_db_for_recall(monkeypatch):
     assert captured["session_db"] is sentinel_db
     assert captured["enabled_toolsets"] == ["session_search"]
     assert captured["prompt"] == "recall this"
+    assert captured["memory_shutdown_messages"] == [
+        {"role": "user", "content": "recall this"}
+    ]
+    assert captured["session_db_closed"] is True
 
 
 def test_launch_tui_exports_model_provider_and_toolsets(monkeypatch, main_mod):

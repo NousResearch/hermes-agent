@@ -34,6 +34,20 @@ _TASK_ID_SAFE_RE = re.compile(r"[^A-Za-z0-9._-]+")
 # Screenshot paths printed by capture_screenshot() in the exec output
 _IMAGE_PATH_RE = re.compile(r"(/[^\s\"']+?\.(?:png|jpe?g|webp))", re.IGNORECASE)
 
+# http(s) URL literals in exec code checked against browser_navigate's policy
+_URL_RE = re.compile(r"https?://[^\s'\"\\)]+", re.IGNORECASE)
+
+
+def _blocked_url_in_code(code: str) -> Optional[str]:
+    """Return an error if a URL literal fails the built-in navigation checks."""
+    from tools.browser_tool import evaluate_url_safety
+
+    for url in _URL_RE.findall(code or ""):
+        err = evaluate_url_safety(url)
+        if err:
+            return err.get("error", "Blocked: unsafe URL")
+    return None
+
 
 def _base_subprocess_env() -> dict:
     from tools.browser_tool import _build_browser_env
@@ -174,6 +188,10 @@ def browser_exec(
 
     if not code or not code.strip():
         return tool_error("No code provided. Pass Python that uses the pre-imported helpers, e.g. new_tab(\"https://example.com\") then print(page_info()).")
+
+    blocked = _blocked_url_in_code(code)
+    if blocked:
+        return tool_error(blocked)
 
     cmd = _find_cli()
     if not cmd:

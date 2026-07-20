@@ -261,6 +261,33 @@ _HERMES_SUBCOMMANDS = frozenset({
 # Path helpers
 # ---------------------------------------------------------------------------
 
+
+def get_profile_command(profile_name: Optional[str] = None) -> str:
+    """Return the recommended command used to invoke Hermes for a profile.
+
+    * Default/custom active profile: ``hermes``
+    * Named profile with an alias wrapper: ``<profile>``
+    * Named profile without a wrapper: ``hermes -p <profile>``
+    """
+    if profile_name is None:
+        profile_name = get_active_profile_name()
+
+    if profile_name in (None, "default", "custom"):
+        return "hermes"
+
+    if not _PROFILE_ID_RE.match(profile_name):
+        return "hermes"
+
+    try:
+        alias = find_alias_for_profile(profile_name)
+        if alias:
+            return alias
+    except Exception:
+        pass
+
+    return "hermes -p " + profile_name
+
+
 def _get_profiles_root() -> Path:
     """Return the directory where named profiles are stored.
 

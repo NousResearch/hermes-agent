@@ -65,6 +65,21 @@ from hermes_cli.colors import Colors, color
 
 logger = logging.getLogger(__name__)
 
+def _gateway_cli_command(subcommand: str | None = None) -> str:
+    """Return the current profile-aware gateway command."""
+    from hermes_cli.profiles import get_profile_command
+
+    base = f"{get_profile_command()} gateway"
+    return base if not subcommand else f"{base} {subcommand}"
+
+
+def _gateway_service_command(subcommand: str, *, system: bool = False) -> str:
+    """Return the gateway command shown in service-manager guidance."""
+    if system:
+        return f"sudo hermes gateway {subcommand} --system"
+    return _gateway_cli_command(subcommand)
+
+
 # =============================================================================
 # Process Management (for manual gateway runs)
 # =============================================================================
@@ -1145,7 +1160,7 @@ def _wait_for_systemd_service_restart(
 
     print(
         f"⚠ {scope_label} service did not become active within {int(timeout)}s.\n"
-        f"  Check status: {'sudo ' if system else ''}hermes gateway status\n"
+        f"  Check status: {_gateway_service_command('status', system=system)}\n"
         f"  Check logs:   journalctl {'--user ' if not system else ''}-u {svc} -l --since '2 min ago'"
     )
     return False
@@ -1181,13 +1196,13 @@ def _systemd_service_is_start_limited(system: bool = False) -> bool:
 def _print_systemd_start_limit_wait(system: bool = False) -> None:
     svc = get_service_name()
     scope_label = _service_scope_label(system).capitalize()
-    scope_flag = " --system" if system else ""
     systemctl_prefix = "systemctl " if system else "systemctl --user "
     journal_prefix = "journalctl " if system else "journalctl --user "
     print(f"⏳ {scope_label} service is temporarily rate-limited by systemd.")
     print("  systemd is refusing another immediate start after repeated exits.")
     print(
-        f"  Wait for the start-limit window to expire, then run: {'sudo ' if system else ''}hermes gateway restart{scope_flag}"
+        "  Wait for the start-limit window to expire, then run: "
+        f"{_gateway_service_command('restart', system=system)}"
     )
     print(f"  Or clear the failed state manually: {systemctl_prefix}reset-failed {svc}")
     print(f"  Check logs: {journal_prefix}-u {svc} -l --since '5 min ago'")
@@ -1398,13 +1413,16 @@ def _print_gateway_process_mismatch(snapshot: GatewayRuntimeSnapshot) -> None:
         )
         print(f"  PID(s): {_format_gateway_pids(snapshot.gateway_pids, limit=None)}")
         print("  Auto-start at login and auto-restart on crash are NOT available.")
-        print("  Stop it with: hermes gateway stop")
+        print(f"  Stop it with: {_gateway_cli_command('stop')}")
     else:
         print(
             "⚠ Gateway process is running for this profile, but the service is not active"
         )
         print(f"  PID(s): {_format_gateway_pids(snapshot.gateway_pids, limit=None)}")
-        print("  This is usually a manual foreground/tmux/nohup run, so `hermes gateway`")
+        print(
+            "  This is usually a manual foreground/tmux/nohup run, so "
+            f"`{_gateway_cli_command()}`"
+        )
         print("  can refuse to start another copy until this process stops.")
 
 
@@ -2011,7 +2029,7 @@ def _raise_user_systemd_unavailable(
         "\n"
         "  Alternative: run the gateway in the foreground (stays up until\n"
         "  you exit / close the terminal):\n"
-        "    hermes gateway run"
+        f"    {_gateway_cli_command('run')}"
     )
     raise UserSystemdUnavailableError(msg)
 
@@ -2150,7 +2168,7 @@ def print_legacy_unit_warning() -> None:
     print_info("  These run alongside the current hermes-gateway service and")
     print_info("  cause SIGTERM flap loops — both try to use the same bot token.")
     print_info("  Remove them with:")
-    print_info("    hermes gateway migrate-legacy")
+    print_info(f"    {_gateway_cli_command('migrate-legacy')}")
 
 
 def remove_legacy_hermes_units(
@@ -2193,7 +2211,7 @@ def remove_legacy_hermes_units(
         return 0, [p for _, p, _ in legacy]
 
     if interactive and not prompt_yes_no("Remove these legacy units?", True):
-        print("Skipped. Run again with: hermes gateway migrate-legacy")
+        print(f"Skipped. Run again with: {_gateway_cli_command('migrate-legacy')}")
         return 0, [p for _, p, _ in legacy]
 
     removed = 0
@@ -2269,7 +2287,7 @@ def print_systemd_scope_conflict_warning() -> None:
         "  Default gateway commands target the user service unless you pass --system."
     )
     print_info("  Keep one of these:")
-    print_info("    hermes gateway uninstall")
+    print_info(f"    {_gateway_cli_command('uninstall')}")
     print_info("    sudo hermes gateway uninstall --system")
 
 
@@ -2382,7 +2400,8 @@ def install_linux_gateway_from_setup(force: bool = False, enable_on_startup: boo
             # direct caller — we do NOT print a self-elevation recipe.
             print_warning(
                 "  System service install requires root. Re-run setup from a "
-                "root shell, or install a user service instead: hermes gateway install"
+                "root shell, or install a user service instead: "
+                f"{_gateway_cli_command('install')}"
             )
             return scope, False
 
@@ -3176,8 +3195,8 @@ def _print_system_scope_remediation(action: str) -> None:
         print_info(f"         sudo systemctl {action} {svc}")
     print_info("    2. Switch to a per-user service (recommended for personal use):")
     print_info("         sudo hermes gateway uninstall --system")
-    print_info("         hermes gateway install")
-    print_info("         hermes gateway start")
+    print_info(f"         {_gateway_cli_command('install')}")
+    print_info(f"         {_gateway_cli_command('start')}")
 
 
 def _get_restart_drain_timeout() -> float:
@@ -3218,7 +3237,6 @@ def systemd_install(
             print()
 
     unit_path = get_systemd_unit_path(system=system)
-    scope_flag = " --system" if system else ""
 
     # Existing system units already pin HERMES_HOME; adopt it before any
     # regenerate. This pre-sync is NOT redundant with the systemd_unit_is_current
@@ -3259,15 +3277,9 @@ def systemd_install(
     print(f"✓ {_service_scope_label(system).capitalize()} service {enable_label}!")
     print()
     print("Next steps:")
-    print(
-        f"  {'sudo ' if system else ''}hermes gateway start{scope_flag}              # Start the service"
-    )
-    print(
-        f"  {'sudo ' if system else ''}hermes gateway status{scope_flag}             # Check status"
-    )
-    print(
-        f"  {'journalctl' if system else 'journalctl --user'} -u {get_service_name()} -f  # View logs"
-    )
+    print(f"  {_gateway_service_command('start', system=system)}              # Start the service")
+    print(f"  {_gateway_service_command('status', system=system)}             # Check status")
+    print(f"  {'journalctl' if system else 'journalctl --user'} -u {get_service_name()} -f  # View logs")
     print()
 
     if system:
@@ -3303,9 +3315,8 @@ def systemd_uninstall(system: bool = False):
 def _require_service_installed(action: str, system: bool = False) -> None:
     unit_path = get_systemd_unit_path(system=system)
     if not unit_path.exists():
-        scope_flag = " --system" if system else ""
         print("✗ Gateway service is not installed")
-        print(f"  Run: {'sudo ' if system else ''}hermes gateway install{scope_flag}")
+        print(f"  Run: {_gateway_service_command('install', system=system)}")
         sys.exit(1)
 
 
@@ -3349,7 +3360,8 @@ def systemd_stop(system: bool = False):
         label = _service_scope_label(system)
         print(
             f"Gateway {label} service is still stopping after 90s; "
-            "check `hermes gateway status` or logs for final shutdown state."
+            f"check `{_gateway_service_command('status', system=system)}` or logs "
+            "for final shutdown state."
         )
         return
     print(f"✓ {_service_scope_label(system).capitalize()} service stopped")
@@ -3422,7 +3434,8 @@ def systemd_restart(system: bool = False):
             label = _service_scope_label(system)
             print(
                 f"Gateway {label} service is still restarting after 90s; "
-                "check `hermes gateway status` or logs for final state."
+                f"check `{_gateway_service_command('status', system=system)}` or logs "
+                "for final state."
             )
             return
         _wait_for_systemd_service_restart(system=system, previous_pid=pid)
@@ -3452,7 +3465,8 @@ def systemd_restart(system: bool = False):
         label = _service_scope_label(system)
         print(
             f"Gateway {label} service is still restarting after 90s; "
-            "check `hermes gateway status` or logs for final state."
+            f"check `{_gateway_service_command('status', system=system)}` or logs "
+            "for final state."
         )
         return
     _wait_for_systemd_service_restart(system=system, previous_pid=pid)
@@ -3461,11 +3475,10 @@ def systemd_restart(system: bool = False):
 def systemd_status(deep: bool = False, system: bool = False, full: bool = False):
     system = _select_systemd_scope(system)
     unit_path = get_systemd_unit_path(system=system)
-    scope_flag = " --system" if system else ""
 
     if not unit_path.exists():
         print("✗ Gateway service is not installed")
-        print(f"  Run: {'sudo ' if system else ''}hermes gateway install{scope_flag}")
+        print(f"  Run: {_gateway_service_command('install', system=system)}")
         return
 
     if has_conflicting_systemd_units():
@@ -3478,9 +3491,7 @@ def systemd_status(deep: bool = False, system: bool = False, full: bool = False)
 
     if not systemd_unit_is_current(system=system):
         print("⚠ Installed gateway service definition is outdated")
-        print(
-            f"  Run: {'sudo ' if system else ''}hermes gateway restart{scope_flag}  # auto-refreshes the unit"
-        )
+        print(f"  Run: {_gateway_service_command('restart', system=system)}  # auto-refreshes the unit")
         print()
 
     status_cmd = ["status", get_service_name(), "--no-pager"]
@@ -3512,7 +3523,7 @@ def systemd_status(deep: bool = False, system: bool = False, full: bool = False)
         print(
             f"✗ {_service_scope_label(system).capitalize()} gateway service is stopped"
         )
-        print(f"  Run: {'sudo ' if system else ''}hermes gateway start{scope_flag}")
+        print(f"  Run: {_gateway_service_command('start', system=system)}")
 
     configured_user = _read_systemd_user_from_unit(unit_path) if system else None
     if configured_user:
@@ -3535,7 +3546,8 @@ def systemd_status(deep: bool = False, system: bool = False, full: bool = False)
     elif _systemd_unit_is_start_limited(unit_props):
         print("  ⏳ Restart pending: systemd is temporarily rate-limiting starts")
         print(
-            f"  Run after the start-limit window expires: {'sudo ' if system else ''}hermes gateway restart{scope_flag}"
+            "  Run after the start-limit window expires: "
+            f"{_gateway_service_command('restart', system=system)}"
         )
         print(
             f"  Or clear it manually: systemctl {'--user ' if not system else ''}reset-failed {get_service_name()}"
@@ -3545,7 +3557,8 @@ def systemd_status(deep: bool = False, system: bool = False, full: bool = False)
     ):
         print("  ⚠ Planned restart is stuck in systemd failed state (exit 75)")
         print(
-            f"  Run: systemctl {'--user ' if not system else ''}reset-failed {get_service_name()} && {'sudo ' if system else ''}hermes gateway start{scope_flag}"
+            f"  Run: systemctl {'--user ' if not system else ''}reset-failed {get_service_name()} && "
+            f"{_gateway_service_command('start', system=system)}"
         )
     elif active_state == "failed" and result_code:
         print(f"  ⚠ Systemd unit result: {result_code}")
@@ -3929,11 +3942,11 @@ def _launchd_fallback_to_detached(reason: str, *, exit_on_failure: bool = True) 
         print("✓ Started gateway as a background process instead")
         print("  It will NOT auto-start at login or auto-restart on crash.")
         print(f"  Logs: {_dhh()}/logs/gateway.log")
-        print("  Stop it with: hermes gateway stop")
+        print(f"  Stop it with: {_gateway_cli_command('stop')}")
         return True
     print_error("Failed to start the gateway as a background process.")
     print(
-        f"  Try manually: nohup hermes gateway run --replace "
+        f"  Try manually: nohup {_gateway_cli_command('run --replace')} "
         f"> {_dhh()}/logs/gateway.log 2>&1 &"
     )
     if exit_on_failure:
@@ -4235,7 +4248,7 @@ def launchd_install(force: bool = False):
     _clear_launchd_unsupported_marker()
     print()
     print("Next steps:")
-    print("  hermes gateway status             # Check status")
+    print(f"  {_gateway_cli_command('status')}             # Check status")
     from hermes_constants import display_hermes_home as _dhh
 
     print(f"  tail -f {_dhh()}/logs/gateway.log  # View logs")
@@ -4516,7 +4529,7 @@ def launchd_status(deep: bool = False):
         print("✓ Service definition matches the current Hermes install")
     else:
         print("⚠ Service definition is stale relative to the current Hermes install")
-        print("  Run: hermes gateway start")
+        print(f"  Run: {_gateway_cli_command('start')}")
 
     if service_listed:
         if launchd_pid is not None:
@@ -4529,10 +4542,12 @@ def launchd_status(deep: bool = False):
             print("  launchd cannot manage the gateway on this macOS version.")
             if fallback_pid:
                 print(f"✓ Detached fallback process is running (PID {fallback_pid})")
-                print("  Cron jobs will fire. Stop with: hermes gateway stop")
+                print(
+                    f"  Cron jobs will fire. Stop with: {_gateway_cli_command('stop')}"
+                )
             else:
                 print("✗ No fallback process is running")
-                print("  Run: hermes gateway start")
+                print(f"  Run: {_gateway_cli_command('start')}")
             print("  ⚠ Auto-start at login and auto-restart on crash are NOT available.")
         else:
             print("✓ Gateway service is registered with launchd")
@@ -4542,10 +4557,9 @@ def launchd_status(deep: bool = False):
     else:
         print("✗ Gateway service is not loaded")
         print("  Service definition exists locally but launchd has not loaded it.")
-        print("  Run: hermes gateway start")
+        print(f"  Run: {_gateway_cli_command('start')}")
         if fallback_pid:
             print(f"  Note: a detached gateway process is running (PID {fallback_pid})")
-
     if deep:
         log_file = get_hermes_home() / "logs" / "gateway.log"
         if log_file.exists():
@@ -4712,7 +4726,7 @@ def _guard_supervised_gateway_conflict(force: bool = False) -> None:
         "  instead:"
     )
     print()
-    print("    hermes gateway restart")
+    print(f"    {_gateway_cli_command('restart')}")
     print()
     print(
         "  Pass --force to start a foreground gateway anyway (not recommended\n"
@@ -4747,9 +4761,9 @@ def _guard_existing_gateway_process_conflict(replace: bool = False) -> None:
     print_error(
         f"Another gateway instance is already running (PID {pid})."
     )
-    print("  Use 'hermes gateway restart' to replace it,")
-    print("  or 'hermes gateway stop' first.")
-    print("  Or use 'hermes gateway run --replace' to auto-replace.")
+    print(f"  Use '{_gateway_cli_command('restart')}' to replace it,")
+    print(f"  or '{_gateway_cli_command('stop')}' first.")
+    print(f"  Or use '{_gateway_cli_command('run --replace')}' to auto-replace.")
     sys.exit(1)
 
 
@@ -5543,9 +5557,7 @@ def _setup_standard_platform(platform: dict):
                 elif is_email:
                     print_success("  Unknown email senders will be ignored.")
                 else:
-                    print_info(
-                        "  Skipped — configure later with 'hermes gateway setup'"
-                    )
+                    print_info(f"  Skipped — configure later with '{_gateway_cli_command('setup')}'")
             continue
 
         value = prompt(f"  {var['prompt']}", password=var.get("password", False))
@@ -5687,7 +5699,7 @@ def _setup_weixin():
 
     if not check_weixin_requirements():
         print_error("  Missing dependencies: Weixin needs aiohttp and cryptography.")
-        print_info("  Install them, then rerun `hermes gateway setup`.")
+        print_info(f"  Install them, then rerun `{_gateway_cli_command('setup')}`.")
         return
 
     print()
@@ -6305,7 +6317,7 @@ def gateway_setup():
                         gateway_windows.restart()
                     else:
                         stop_profile_gateway()
-                        print_info("Start manually: hermes gateway")
+                        print_info(f"Start manually: {_gateway_cli_command()}")
                 except UserSystemdUnavailableError as e:
                     print_error("  Restart failed — user systemd not reachable:")
                     for line in str(e).splitlines():
@@ -6389,20 +6401,20 @@ def gateway_setup():
                                 print_error(f"  Start failed: {e}")
                     except subprocess.CalledProcessError as e:
                         print_error(f"  Install failed: {e}")
-                        print_info("  You can try manually: hermes gateway install")
+                        print_info(f"  You can try manually: {_gateway_cli_command('install')}")
                 else:
                     print_info("  Skipped start and auto-start setup.")
-                    print_info("  You can install later: hermes gateway install")
+                    print_info(f"  You can install later: {_gateway_cli_command('install')}")
                     if supports_systemd_services():
                         print_info(
                             "  Or as a boot-time service: sudo hermes gateway install --system"
                         )
-                    print_info("  Or run in foreground:  hermes gateway run")
+                    print_info(f"  Or run in foreground:  {_gateway_cli_command('run')}")
             elif is_wsl():
                 print_info("  WSL detected but systemd is not running.")
-                print_info("  Run in foreground: hermes gateway run")
+                print_info(f"  Run in foreground: {_gateway_cli_command('run')}")
                 print_info(
-                    "  For persistence:   tmux new -s hermes 'hermes gateway run'"
+                    f"  For persistence:   tmux new -s hermes '{_gateway_cli_command('run')}'"
                 )
                 print_info(
                     "  To enable systemd: add systemd=true to /etc/wsl.conf, then 'wsl --shutdown'"
@@ -6411,16 +6423,16 @@ def gateway_setup():
                 from hermes_constants import display_hermes_home as _dhh
 
                 print_info("  Termux does not use systemd/launchd services.")
-                print_info("  Run in foreground: hermes gateway run")
+                print_info(f"  Run in foreground: {_gateway_cli_command('run')}")
                 print_info(
-                    f"  Or start it manually in the background (best effort): nohup hermes gateway run >{_dhh()}/logs/gateway.log 2>&1 &"
+                    f"  Or start it manually in the background (best effort): nohup {_gateway_cli_command('run')} >{_dhh()}/logs/gateway.log 2>&1 &"
                 )
             else:
                 print_info("  Service install not supported on this platform.")
-                print_info("  Run in foreground: hermes gateway run")
+                print_info(f"  Run in foreground: {_gateway_cli_command('run')}")
     else:
         print()
-        print_info("No platforms configured. Run 'hermes gateway setup' when ready.")
+        print_info(f"No platforms configured. Run '{_gateway_cli_command('setup')}' when ready.")
 
     print()
 
@@ -6698,7 +6710,7 @@ def _gateway_command_inner(args):
         run_as_user = getattr(args, "run_as_user", None)
         if is_termux():
             print("Gateway service installation is not supported on Termux.")
-            print("Run manually: hermes gateway")
+            print(f"Run manually: {_gateway_cli_command()}")
             sys.exit(1)
         if supports_systemd_services():
             if is_wsl():
@@ -6706,10 +6718,10 @@ def _gateway_command_inner(args):
                     "WSL detected — systemd services may not survive WSL restarts."
                 )
                 print_info(
-                    "  Consider running in foreground instead: hermes gateway run"
+                    f"  Consider running in foreground instead: {_gateway_cli_command('run')}"
                 )
                 print_info(
-                    "  Or use tmux/screen for persistence: tmux new -s hermes 'hermes gateway run'"
+                    f"  Or use tmux/screen for persistence: tmux new -s hermes '{_gateway_cli_command('run')}'"
                 )
                 print()
             # Honor CLI flags (--start-now / --no-start-now, --start-on-login /
@@ -6759,13 +6771,13 @@ def _gateway_command_inner(args):
             print("or run the gateway in foreground mode:")
             print()
             print(
-                "  hermes gateway run                              # direct foreground"
+                f"  {_gateway_cli_command('run')}                              # direct foreground"
             )
             print(
-                "  tmux new -s hermes 'hermes gateway run'         # persistent via tmux"
+                f"  tmux new -s hermes '{_gateway_cli_command('run')}'         # persistent via tmux"
             )
             print(
-                "  nohup hermes gateway run > ~/.hermes/logs/gateway.log 2>&1 &  # background"
+                f"  nohup {_gateway_cli_command('run')} > ~/.hermes/logs/gateway.log 2>&1 &  # background"
             )
             sys.exit(1)
         elif is_container():
@@ -6794,11 +6806,11 @@ def _gateway_command_inner(args):
             )
             print("  docker restart <container>                # manual restart")
             print()
-            print("To run the gateway: hermes gateway run")
+            print(f"To run the gateway: {_gateway_cli_command('run')}")
             sys.exit(0)
         else:
             print("Service installation not supported on this platform.")
-            print("Run manually: hermes gateway run")
+            print(f"Run manually: {_gateway_cli_command('run')}")
             sys.exit(1)
 
     elif subcmd == "uninstall":
@@ -6810,7 +6822,7 @@ def _gateway_command_inner(args):
             print(
                 "Gateway service uninstall is not supported on Termux because there is no managed service to remove."
             )
-            print("Stop manual runs with: hermes gateway stop")
+            print(f"Stop manual runs with: {_gateway_cli_command('stop')}")
             sys.exit(1)
         if supports_systemd_services():
             systemd_uninstall(system=system)
@@ -6863,7 +6875,7 @@ def _gateway_command_inner(args):
             print(
                 "Gateway service start is not supported on Termux because there is no system service manager."
             )
-            print("Run manually: hermes gateway")
+            print(f"Run manually: {_gateway_cli_command()}")
             sys.exit(1)
         if supports_systemd_services():
             systemd_start(system=system)
@@ -6878,13 +6890,13 @@ def _gateway_command_inner(args):
             print("Run the gateway in foreground mode instead:")
             print()
             print(
-                "  hermes gateway run                              # direct foreground"
+                f"  {_gateway_cli_command('run')}                              # direct foreground"
             )
             print(
-                "  tmux new -s hermes 'hermes gateway run'         # persistent via tmux"
+                f"  tmux new -s hermes '{_gateway_cli_command('run')}'         # persistent via tmux"
             )
             print(
-                "  nohup hermes gateway run > ~/.hermes/logs/gateway.log 2>&1 &  # background"
+                f"  nohup {_gateway_cli_command('run')} > ~/.hermes/logs/gateway.log 2>&1 &  # background"
             )
             print()
             print(
@@ -6903,7 +6915,7 @@ def _gateway_command_inner(args):
             print("  docker start <container>     # start a stopped container")
             print("  docker restart <container>   # restart a running container")
             print()
-            print("Or run the gateway directly: hermes gateway run")
+            print(f"Or run the gateway directly: {_gateway_cli_command('run')}")
             sys.exit(0)
         else:
             print("Not supported on this platform.")
@@ -6916,7 +6928,7 @@ def _gateway_command_inner(args):
             print_error(
                 "Refusing to stop the gateway from inside the gateway process.\n"
                 "This command was blocked to prevent restart loops.\n"
-                "Use `hermes gateway stop` from a shell outside the running gateway."
+                f"Use `{_gateway_cli_command('stop')}` from a shell outside the running gateway."
             )
             sys.exit(1)
 
@@ -7009,7 +7021,7 @@ def _gateway_command_inner(args):
             print_error(
                 "Refusing to restart the gateway from inside the gateway process.\n"
                 "This command was blocked to prevent restart loops.\n"
-                "Use `hermes gateway restart` from a shell outside the running gateway."
+                f"Use `{_gateway_cli_command('restart')}` from a shell outside the running gateway."
             )
             sys.exit(1)
 
@@ -7138,7 +7150,7 @@ def _gateway_command_inner(args):
                     print(f"  Run:  sudo loginctl enable-linger {_username}")
                     print()
                     print("  Then restart the gateway:")
-                    print("    hermes gateway restart")
+                    print(f"    {_gateway_cli_command('restart')}")
                     return
 
             if service_configured:
@@ -7147,7 +7159,7 @@ def _gateway_command_inner(args):
                 print(
                     "  The service definition exists, but the service manager did not recover it."
                 )
-                print("  Fix the service, then retry: hermes gateway start")
+                print(f"  Fix the service, then retry: {_gateway_cli_command('start')}")
                 sys.exit(1)
 
             # Manual restart: stop only this profile's gateway
@@ -7214,10 +7226,10 @@ def _gateway_command_inner(args):
                     print(
                         "To install as a Windows Scheduled Task (auto-start on login):"
                     )
-                    print("  hermes gateway install")
+                    print(f"  {_gateway_cli_command('install')}")
                 else:
                     print("To install as a service:")
-                    print("  hermes gateway install")
+                    print(f"  {_gateway_cli_command('install')}")
                     print("  sudo hermes gateway install --system")
             else:
                 print("✗ Gateway is not running")
@@ -7229,24 +7241,24 @@ def _gateway_command_inner(args):
                         print(f"  {line}")
                 print()
                 print("To start:")
-                print("  hermes gateway run      # Run in foreground")
+                print(f"  {_gateway_cli_command('run')}      # Run in foreground")
                 if is_termux():
                     print(
-                        "  nohup hermes gateway run > ~/.hermes/logs/gateway.log 2>&1 &  # Best-effort background start"
+                        f"  nohup {_gateway_cli_command('run')} > ~/.hermes/logs/gateway.log 2>&1 &  # Best-effort background start"
                     )
                 elif is_wsl():
                     print(
-                        "  tmux new -s hermes 'hermes gateway run'         # persistent via tmux"
+                        f"  tmux new -s hermes '{_gateway_cli_command('run')}'         # persistent via tmux"
                     )
                     print(
-                        "  nohup hermes gateway run > ~/.hermes/logs/gateway.log 2>&1 &  # background"
+                        f"  nohup {_gateway_cli_command('run')} > ~/.hermes/logs/gateway.log 2>&1 &  # background"
                     )
                 elif is_windows():
                     print(
-                        "  hermes gateway install  # Install as Windows Scheduled Task (auto-start on login)"
+                        f"  {_gateway_cli_command('install')}  # Install as Windows Scheduled Task (auto-start on login)"
                     )
                 else:
-                    print("  hermes gateway install  # Install as user service")
+                    print(f"  {_gateway_cli_command('install')}  # Install as user service")
                     print(
                         "  sudo hermes gateway install --system  # Install as boot-time system service"
                     )

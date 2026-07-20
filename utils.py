@@ -54,6 +54,30 @@ def _skip_config_yaml_mode_cap() -> bool:
     return is_managed() or _is_container()
 
 
+def _is_canonical_hermes_config_yaml(path: Path) -> bool:
+    """True when *path* is Hermes's own config.yaml, not just same-named.
+
+    ``atomic_yaml_write()`` is a generic arbitrary-path YAML writer (Docker/NAS
+    installs route other YAML files through it too), so matching on basename
+    alone would also cap the mode of unrelated files that happen to be named
+    ``config.yaml`` elsewhere. Comparing against the profile-aware canonical
+    path (``hermes_cli.config.get_config_path()``, which honors ``HERMES_HOME``
+    and active-profile resolution) scopes the 0600 cap to Hermes's own config.
+    Lazy import avoids a hard dependency from this lower-level module on
+    hermes_cli.config.
+    """
+    if path.name != "config.yaml":
+        return False
+    try:
+        from hermes_cli.config import get_config_path
+    except ImportError:
+        return False
+    try:
+        return path.resolve() == get_config_path().resolve()
+    except OSError:
+        return False
+
+
 def _preserve_file_mode(path: Path) -> "int | None":
     """Capture the permission bits of *path* if it exists, else ``None``."""
     try:
@@ -271,7 +295,7 @@ def atomic_yaml_write(
     original_mode = _preserve_file_mode(path)
     if (
         original_mode is not None
-        and path.name == "config.yaml"
+        and _is_canonical_hermes_config_yaml(path)
         and not _skip_config_yaml_mode_cap()
     ):
         # config.yaml must never round-trip wider than 0600, even if it was

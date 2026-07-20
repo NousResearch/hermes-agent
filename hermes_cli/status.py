@@ -85,8 +85,11 @@ def _effective_provider_label() -> str:
     return provider_label(effective)
 
 
-def _sudo_status() -> tuple[bool, str]:
+def _sudo_status(terminal_backend: str = "local") -> tuple[bool, str]:
     """Return whether sudo is available along with a human-readable label."""
+    if terminal_backend != "local":
+        return False, "unknown (remote backend)"
+
     sudo_password = os.getenv("SUDO_PASSWORD", "")
     if sudo_password:
         return True, "enabled (SUDO_PASSWORD)"
@@ -424,7 +427,7 @@ def show_status(args):
         print(f"  Persistence:  {'snapshot filesystem' if persist_enabled else 'ephemeral filesystem'}")
         print("  Processes:    live processes do not survive cleanup, snapshots, or sandbox recreation")
 
-    sudo_enabled, sudo_label = _sudo_status()
+    sudo_enabled, sudo_label = _sudo_status(terminal_env)
     print(f"  Sudo:         {check_mark(sudo_enabled)} {sudo_label}")
 
     # =========================================================================

@@ -235,6 +235,34 @@ def test_show_status_reports_disabled_when_sudo_is_missing(monkeypatch, capsys, 
     assert "Sudo:         ✗ disabled" in output
 
 
+def test_show_status_reports_remote_backend_sudo_as_unknown_without_host_probe(monkeypatch, capsys, tmp_path):
+    status_mod = _minimal_status_test_setup(monkeypatch, tmp_path)
+
+    monkeypatch.delenv("TERMINAL_ENV", raising=False)
+    monkeypatch.setenv("SUDO_PASSWORD", "secret")
+    monkeypatch.setattr(
+        status_mod,
+        "load_config",
+        lambda: {"model": "gpt-5.4", "terminal": {"backend": "docker"}},
+        raising=False,
+    )
+
+    def _unexpected_which(*args, **kwargs):
+        raise AssertionError("remote backend sudo status must not inspect host sudo")
+
+    def _unexpected_probe(*args, **kwargs):
+        raise AssertionError("remote backend sudo status must not probe host sudo")
+
+    monkeypatch.setattr(status_mod.shutil, "which", _unexpected_which)
+    monkeypatch.setattr(status_mod.subprocess, "run", _unexpected_probe)
+
+    status_mod.show_status(SimpleNamespace(all=False, deep=False))
+
+    output = capsys.readouterr().out
+    assert "Backend:      docker" in output
+    assert "Sudo:         ✗ unknown (remote backend)" in output
+
+
 class TestShowStatusXaiOAuth:
 
 

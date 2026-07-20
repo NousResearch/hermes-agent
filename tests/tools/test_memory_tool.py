@@ -1,6 +1,8 @@
 """Tests for tools/memory_tool.py — MemoryStore, security scanning, and tool dispatcher."""
 
 import json
+import os
+import stat
 import pytest
 from pathlib import Path
 
@@ -501,6 +503,77 @@ class TestMemoryStorePersistence:
         store = MemoryStore()
         store.load_from_disk()
         assert len(store.memory_entries) == 2
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX directory permissions only")
+class TestMemoryDirPermissions:
+    """Regression tests for issue #66183.
+
+    Under a restrictive umask (some Docker / NAS deployments run with 0o777),
+    a plain ``mkdir`` yields a memories directory with no owner permissions
+    (``d---------``), which makes the memory files unreadable and breaks
+    persistence. The directory must always end up owner-accessible.
+    """
+
+    def test_fresh_dir_owner_accessible_under_restrictive_umask(
+        self, tmp_path, monkeypatch
+    ):
+        # Point at a not-yet-created subdir so mkdir actually runs.
+        mem_dir = tmp_path / "memories"
+        monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: mem_dir)
+
+        old_umask = os.umask(0o777)
+        try:
+            store = MemoryStore()
+            store.load_from_disk()  # must not raise PermissionError
+        finally:
+            os.umask(old_umask)
+
+        mode = stat.S_IMODE(mem_dir.stat().st_mode)
+        # Owner must have read+write+execute so the dir is usable.
+        assert mode & 0o700 == 0o700, oct(mode)
+        # Convention: memories dir is owner-only; do not widen to group/other.
+        assert mode & 0o077 == 0
+
+    def test_add_and_save_roundtrip_under_restrictive_umask(
+        self, tmp_path, monkeypatch
+    ):
+        mem_dir = tmp_path / "memories"
+        monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: mem_dir)
+
+        old_umask = os.umask(0o777)
+        try:
+            store = MemoryStore()
+            store.load_from_disk()
+            store.add("memory", "persists under restrictive umask")  # save + lock
+        finally:
+            os.umask(old_umask)
+
+        # The persisted file and lock file must be owner-accessible, not 000.
+        mem_file = mem_dir / "MEMORY.md"
+        file_mode = stat.S_IMODE(mem_file.stat().st_mode)
+        assert file_mode & 0o600 == 0o600, oct(file_mode)
+        assert file_mode & 0o077 == 0
+
+        reloaded = MemoryStore()
+        monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: mem_dir)
+        reloaded.load_from_disk()
+        assert "persists under restrictive umask" in reloaded.memory_entries
+
+    def test_normal_umask_permissions_unchanged(self, tmp_path, monkeypatch):
+        """The fix must not widen perms under a normal umask (no regression)."""
+        mem_dir = tmp_path / "memories"
+        monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: mem_dir)
+
+        old_umask = os.umask(0o022)
+        try:
+            MemoryStore().load_from_disk()
+        finally:
+            os.umask(old_umask)
+
+        mode = stat.S_IMODE(mem_dir.stat().st_mode)
+        # 0o777 & ~0o022 == 0o755; OR-in 0o700 leaves it unchanged.
+        assert mode == 0o755, oct(mode)
 
 
 class TestMemoryStoreSnapshot:

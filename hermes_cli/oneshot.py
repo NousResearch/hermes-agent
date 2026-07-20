@@ -395,6 +395,21 @@ def _run_agent(
     if toolsets_list is None and use_config_toolsets:
         toolsets_list = sorted(_get_platform_tools(cfg, "cli"))
 
+    # CLI startup kicks MCP discovery onto a background thread for the one-shot
+    # command (see hermes_cli.main._should_background_mcp_startup). AIAgent
+    # snapshots the tool registry at construction, so — exactly like the
+    # interactive path (cli_agent_setup_mixin) — we must wait for that discovery
+    # to finish first; otherwise slow stdio MCP servers are silently dropped and
+    # the model runs without their tools. The wait is a no-op when no discovery
+    # is in flight and is bounded by ``mcp_discovery_timeout`` so a dead server
+    # can't hang the one-shot.
+    try:
+        from hermes_cli.mcp_startup import wait_for_mcp_discovery
+
+        wait_for_mcp_discovery()
+    except Exception:
+        logging.debug("oneshot MCP discovery wait failed", exc_info=True)
+
     session_db = _create_session_db_for_oneshot()
     # The try spans agent construction (not just ``chat``) so the SQLite store
     # opened above is always closed — including when ``AIAgent(...)`` itself

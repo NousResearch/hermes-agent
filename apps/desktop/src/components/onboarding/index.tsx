@@ -355,8 +355,14 @@ function ReasonNotice({ reason }: { reason: string }) {
 function Preparing({ boot }: { boot: DesktopBootState }) {
   const { t } = useI18n()
   const progress = Math.max(2, Math.min(100, Math.round(boot.progress)))
-  const hasError = Boolean(boot.error)
   const installing = boot.phase.startsWith('runtime.')
+
+  // When boot fails, BootFailureOverlay (z-1400) owns the screen. Bail out
+  // here so we never paint a progress bar alongside the error overlay —
+  // E2E screenshots can catch the two mid-transition.
+  if (boot.error) {
+    return null
+  }
 
   return (
     <div className="grid gap-3" role="status">
@@ -365,10 +371,7 @@ function Preparing({ boot }: { boot: DesktopBootState }) {
       </p>
       <div className="h-2 overflow-hidden rounded-full bg-muted">
         <div
-          className={cn(
-            'h-full rounded-full bg-primary transition-[width] duration-300 ease-out',
-            hasError && 'bg-destructive'
-          )}
+          className="h-full rounded-full bg-primary transition-[width] duration-300 ease-out"
           style={{ width: `${progress}%` }}
         />
       </div>
@@ -376,7 +379,6 @@ function Preparing({ boot }: { boot: DesktopBootState }) {
         <span className="truncate">{boot.message}</span>
         <span>{progress}%</span>
       </div>
-      {hasError ? <p className="text-xs text-destructive">{boot.error}</p> : null}
     </div>
   )
 }

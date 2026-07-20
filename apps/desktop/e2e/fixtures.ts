@@ -387,12 +387,24 @@ export interface DeadBackendFixture {
   cleanup: () => Promise<void>
 }
 
+export interface DeadBackendOptions {
+  /**
+   * When true, inject a fake boot error via HERMES_DESKTOP_BOOT_FAKE_ERROR
+   * so the backend resolution itself "fails" with a controlled error message.
+   * This is the only reliable way to trigger BootFailureOverlay in dev mode
+   * (the real backend always resolves via SOURCE_REPO_ROOT).
+   */
+  fakeError?: boolean
+}
+
 /**
  * Launch the app with a provider pointing at a dead endpoint (port 1, which
- * nothing listens on). The boot should fail with a connection error,
- * triggering the BootFailureOverlay.
+ * nothing listens on). By default the backend still boots (`hermes serve`
+ * starts fine — the dead endpoint only matters at chat time). Pass
+ * `{ fakeError: true }` to inject a fake boot failure, triggering the
+ * BootFailureOverlay.
  */
-export async function setupDeadBackend(): Promise<DeadBackendFixture> {
+export async function setupDeadBackend(options: DeadBackendOptions = {}): Promise<DeadBackendFixture> {
   const sandbox = createSandbox('dead')
   const configPath = path.join(sandbox.hermesHome, 'config.yaml')
   fs.writeFileSync(
@@ -415,7 +427,7 @@ providers:
   )
   writeEnvFile(sandbox.hermesHome)
 
-  const env = buildAppEnv(sandbox)
+  const env = buildAppEnv(sandbox, options.fakeError ? { HERMES_DESKTOP_BOOT_FAKE_ERROR: 'Failed to connect to Hermes backend: connection refused' } : {})
   const { app, page } = await launchDesktop(env)
 
   return {
@@ -636,25 +648,32 @@ export async function waitForOnboarding(page: Page, timeoutMs = 60_000): Promise
 export async function waitForBootFailure(page: Page, timeoutMs = 60_000): Promise<void> {
   await page.waitForFunction(
     () => {
-      const root = document.getElementById('root')
+      // Boot failure is terminal: the backend gave up. The renderer shows
+      // either BootFailureOverlay (z-1400, with Retry/Repair buttons) or
+      // falls back to the onboarding picker (z-1300) as a recovery path.
+      // Either way, no progress bar should be visible and an error must
+      // have surfaced (toast, boot-failure banner, or the overlay itself).
+      const hasProgressBar = Boolean(
+        document.querySelector('[role="progressbar"], .h-2.rounded-full.bg-muted')
+      )
 
-      if (!root) {
+      if (hasProgressBar) {
         return false
       }
 
-      const text = root.textContent ?? ''
+      const text = document.body.textContent ?? ''
 
-      // A dead provider either produces a boot failure or falls back to the
-      // provider onboarding screen after the runtime check fails.
-      return (
-        text.includes('error') ||
-        text.includes('Error') ||
-        text.includes('failed') ||
-        text.includes('Failed') ||
+      // BootFailureOverlay buttons.
+      const hasFailureUI =
         text.includes('Retry') ||
         text.includes('Repair') ||
-        text.includes("Let's get you setup")
-      )
+        text.includes('Use local gateway') ||
+        text.includes('Connection settings')
+
+      // The error toast / notification that fires on failDesktopBoot().
+      const hasErrorToast = text.includes('Desktop boot failed')
+
+      return hasFailureUI || hasErrorToast
     },
     undefined,
     { timeout: timeoutMs },

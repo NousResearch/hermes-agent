@@ -542,6 +542,7 @@ const DESKTOP_LOG_BACKUP_COUNT = 3
 const DESKTOP_LOG_DISCARD_BYTES = DESKTOP_LOG_MAX_BYTES * 4
 const desktopLogBackupPath = n => `${DESKTOP_LOG_PATH}.${n}`
 const BOOT_FAKE_MODE = process.env.HERMES_DESKTOP_BOOT_FAKE === '1'
+const BOOT_FAKE_ERROR = process.env.HERMES_DESKTOP_BOOT_FAKE_ERROR || ''
 
 const BOOT_FAKE_STEP_MS = (() => {
   const raw = Number.parseInt(String(process.env.HERMES_DESKTOP_BOOT_FAKE_STEP_MS || ''), 10)
@@ -6997,6 +6998,16 @@ async function startHermes() {
 
   if (backendStartFailure) {
     throw backendStartFailure
+  }
+
+  // E2E: simulate a boot failure without breaking the real backend. The boot
+  // progresses a few steps, then fails with the given error message.
+  if (BOOT_FAKE_ERROR) {
+    await advanceBootProgress('backend.resolve', 'Resolving Hermes backend', 8)
+    const error = new Error(BOOT_FAKE_ERROR) as any
+    error.isBootstrapFailure = true
+    bootstrapFailure = error
+    throw error
   }
 
   const existingConnectionPromise = backendConnectionState.getPromise()

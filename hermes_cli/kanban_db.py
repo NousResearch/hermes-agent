@@ -2248,24 +2248,37 @@ def _check_file_length_invariant(conn: sqlite3.Connection) -> None:
             return  # in-memory or unnamed DB; skip
         path = path_str
         page_size = conn.execute("PRAGMA page_size").fetchone()[0]
-        file_size = os.path.getsize(path)
-        with open(path, "rb") as f:
-            f.seek(28)
-            header_bytes = f.read(4)
-        if len(header_bytes) < 4:
-            return  # can't read header; skip
-        header_page_count = int.from_bytes(header_bytes, "big")
-        if header_page_count == 0:
-            return  # new/empty DB; skip
-        actual_pages = file_size // page_size
-        if actual_pages < header_page_count:
-            raise sqlite3.DatabaseError(
-                f"torn-extend detected: page count mismatch on {path}: "
-                f"header claims {header_page_count} pages, "
-                f"file has {actual_pages} pages "
-                f"(missing {header_page_count - actual_pages} pages, "
-                f"file_size={file_size}, page_size={page_size})"
-            )
+        # A commit that extends the database can make the header and file-size
+        # observations briefly disagree even though SQLite has completed the
+        # transaction successfully. Re-sample a bounded number of times before
+        # classifying the mismatch as durable corruption. A genuinely truncated
+        # database remains mismatched and still raises below.
+        observations: tuple[int, int, int] | None = None
+        for attempt in range(5):
+            file_size = os.path.getsize(path)
+            with open(path, "rb") as f:
+                f.seek(28)
+                header_bytes = f.read(4)
+            if len(header_bytes) < 4:
+                return  # can't read header; skip
+            header_page_count = int.from_bytes(header_bytes, "big")
+            if header_page_count == 0:
+                return  # new/empty DB; skip
+            actual_pages = file_size // page_size
+            if actual_pages >= header_page_count:
+                return
+            observations = (header_page_count, actual_pages, file_size)
+            if attempt < 4:
+                time.sleep(0.01 * (attempt + 1))
+        assert observations is not None
+        header_page_count, actual_pages, file_size = observations
+        raise sqlite3.DatabaseError(
+            f"torn-extend detected: page count mismatch on {path}: "
+            f"header claims {header_page_count} pages, "
+            f"file has {actual_pages} pages "
+            f"(missing {header_page_count - actual_pages} pages, "
+            f"file_size={file_size}, page_size={page_size})"
+        )
     except sqlite3.DatabaseError:
         raise
     except Exception:

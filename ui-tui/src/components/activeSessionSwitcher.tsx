@@ -283,6 +283,7 @@ function OrchestratorHintText({ segments, t }: OrchestratorHintTextProps) {
 export function ActiveSessionSwitcher({
   currentSessionId,
   gw,
+  maxWidth,
   onCancel,
   onClose,
   onNew,
@@ -318,7 +319,9 @@ export function ActiveSessionSwitcher({
   const itemsRef = useRef<SessionActiveItem[]>([])
   const historyDisplayRef = useRef<SessionListItem[]>([])
   const { stdout } = useStdout()
-  const width = Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, (stdout?.columns ?? 80) - 6))
+  // Optional maxWidth lets grid layouts hand the switcher its cell budget.
+  const preferredWidth = Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, (stdout?.columns ?? 80) - 6))
+  const width = Math.max(24, Math.min(preferredWidth, Math.trunc(maxWidth ?? preferredWidth)))
   const promptColumns = Math.max(20, width - 11)
 
   // Rows are [new][live…][history…]: the "+ new" row is pinned first (index 0,
@@ -893,6 +896,7 @@ interface OrchestratorHintTextProps {
 interface ActiveSessionSwitcherProps {
   currentSessionId: null | string
   gw: GatewayClient
+  maxWidth?: number
   onCancel: () => void
   onClose: (id: string) => Promise<null | SessionCloseResponse>
   onNew: () => void

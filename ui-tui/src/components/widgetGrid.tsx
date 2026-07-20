@@ -37,7 +37,8 @@ export interface WidgetGridWidget extends WidgetGridItem {
  * neighbouring cell or break the parent border.
  */
 interface WidgetGridProps {
-  columns?: number
+  /** Column count (equal shares) or grid-template-style track list. */
+  columns?: GridTrackSize[] | number
   cols: number
   depth?: number
   gap?: number
@@ -51,12 +52,17 @@ interface WidgetGridProps {
 
 const toInt = (value: number, fallback: number) => (Number.isFinite(value) ? Math.trunc(value) : fallback)
 
-const inferredGap = (cols: number, columns: number | undefined, depth: number) => {
-  if (cols < 36 || (columns ?? 0) >= 8) {
+const columnCountHint = (columns: GridTrackSize[] | number | undefined) =>
+  Array.isArray(columns) ? columns.length : (columns ?? 0)
+
+const inferredGap = (cols: number, columns: GridTrackSize[] | number | undefined, depth: number) => {
+  const count = columnCountHint(columns)
+
+  if (cols < 36 || count >= 8) {
     return 0
   }
 
-  if (depth > 0 || cols < 72 || (columns ?? 0) >= 4) {
+  if (depth > 0 || cols < 72 || count >= 4) {
     return 1
   }
 

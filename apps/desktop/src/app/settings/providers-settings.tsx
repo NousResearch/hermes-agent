@@ -316,18 +316,33 @@ function LocalEndpointRow({ onOpen }: { onOpen: (reason: null | string) => void 
   const copy = t.settings.providers.localEndpoint
 
   return (
-    <RowButton
-      className="group grid grid-cols-[minmax(0,1fr)_auto] items-center gap-1 rounded-[6px] px-3 py-2.5 text-left transition-colors hover:bg-(--ui-control-hover-background)"
+    <div
+      className="@container group/card rounded-[6px] p-3 transition-colors cursor-pointer row-hover"
       onClick={() => onOpen(null)}
+      onKeyDown={e => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault()
+          onOpen(null)
+        }
+      }}
+      role="button"
+      tabIndex={0}
     >
-      <div className="flex min-w-0 flex-col gap-0.5">
-        <span className="truncate text-[length:var(--conversation-text-font-size)] font-semibold">{copy.title}</span>
-        <span className="truncate text-[length:var(--conversation-caption-font-size)] leading-5 text-muted-foreground">
-          {copy.description}
-        </span>
+      <div className="grid grid-cols-1 items-start gap-x-3 gap-y-1.5 @2xl:grid-cols-[minmax(0,1fr)_auto] @2xl:gap-y-3">
+        <div className="flex h-8 min-w-0 items-center gap-2">
+          <span className="size-2 shrink-0 rounded-full bg-(--ui-stroke-secondary)" />
+          <span className="min-w-0 truncate text-[length:var(--conversation-text-font-size)] font-medium text-foreground">
+            {copy.title}
+          </span>
+          <ChevronDown className="size-3.5 shrink-0 text-muted-foreground transition opacity-0 group-hover/card:opacity-100" />
+        </div>
+        <div className="min-w-0 @2xl:col-span-2">
+          <p className="text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
+            {copy.description}
+          </p>
+        </div>
       </div>
-      <ChevronRight className="size-4 text-muted-foreground transition group-hover:text-foreground" />
-    </RowButton>
+    </div>
   )
 }
 

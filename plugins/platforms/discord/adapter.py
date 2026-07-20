@@ -5747,12 +5747,29 @@ class DiscordAdapter(BasePlatformAdapter):
         # tell the difference in the UI.  Treat a mention of OUR integration
         # role as a self-mention — the role's tags.bot_id identifies its
         # owner bot.
+        if self._self_managed_role_mention_ids(message):
+            return True
+        return str(self._client.user.id) in self._raw_mentioned_user_ids(message)
+
+    def _self_managed_role_mention_ids(self, message: Any) -> set:
+        """Return IDs of OUR managed integration role among the message's role
+        mentions.
+
+        The managed role's ``tags.bot_id`` identifies its owner bot, so this
+        matches only the auto-created integration role — never ordinary team
+        roles (no ``tags.bot_id``) or other bots' managed roles.
+        """
+        if not self._client or not self._client.user:
+            return set()
+        own = set()
         for role in getattr(message, "role_mentions", []) or []:
             tags = getattr(role, "tags", None)
             bot_id = getattr(tags, "bot_id", None) if tags is not None else None
             if bot_id is not None and str(bot_id) == str(self._client.user.id):
-                return True
-        return str(self._client.user.id) in self._raw_mentioned_user_ids(message)
+                role_id = getattr(role, "id", None)
+                if role_id is not None:
+                    own.add(str(role_id))
+        return own
 
     def _self_is_raw_mentioned(self, message: Any) -> bool:
         """Return True only when this bot has an inline mention token.
@@ -7114,6 +7131,8 @@ class DiscordAdapter(BasePlatformAdapter):
             if self._client.user:
                 normalized_content = normalized_content.replace(f"<@{self._client.user.id}>", "").strip()
                 normalized_content = normalized_content.replace(f"<@!{self._client.user.id}>", "").strip()
+            for _role_id in self._self_managed_role_mention_ids(message):
+                normalized_content = normalized_content.replace(f"<@&{_role_id}>", "").strip()
             message.content = normalized_content
         if not isinstance(message.channel, discord.DMChannel):
             channel_ids = {str(message.channel.id)}

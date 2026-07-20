@@ -380,6 +380,8 @@ async def test_managed_role_mention_counts_as_self_mention(adapter, monkeypatch)
     await adapter._handle_message(message)
 
     adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.text == "hello via role mention"
 
 
 @pytest.mark.asyncio

@@ -12,6 +12,7 @@ from tools.async_delegation import (
     interrupt_async_delegation,
     list_async_delegations,
 )
+from tools.approval import get_current_session_key
 from tools.delegate_tool import is_spawn_paused, set_spawn_paused
 from tools.registry import registry
 
@@ -41,14 +42,16 @@ def delegation_control(action: str, delegation_id: Optional[str] = None) -> str:
     """List, inspect, cancel, pause, or resume async delegations."""
     normalized_action = str(action or "").strip().lower()
     threshold = _configured_stalled_after_seconds()
+    owner_session_key = get_current_session_key(default="")
 
     if normalized_action == "list":
         return _json(
             {
                 "action": "list",
-                "spawn_paused": is_spawn_paused(),
+                "spawn_paused": is_spawn_paused(owner_session_key),
                 "delegations": list_async_delegations(
-                    stalled_after_seconds=threshold
+                    owner_session_key=owner_session_key,
+                    stalled_after_seconds=threshold,
                 ),
             }
         )
@@ -66,7 +69,9 @@ def delegation_control(action: str, delegation_id: Optional[str] = None) -> str:
     if normalized_action == "status":
         identifier = str(delegation_id).strip()
         record = get_async_delegation(
-            identifier, stalled_after_seconds=threshold
+            identifier,
+            owner_session_key=owner_session_key,
+            stalled_after_seconds=threshold,
         )
         if record is None:
             return _json(
@@ -81,7 +86,9 @@ def delegation_control(action: str, delegation_id: Optional[str] = None) -> str:
     if normalized_action == "cancel":
         identifier = str(delegation_id).strip()
         result = interrupt_async_delegation(
-            identifier, reason="delegation_control tool"
+            identifier,
+            reason="delegation_control tool",
+            owner_session_key=owner_session_key,
         )
         if result.get("status") == "not_found":
             result = {
@@ -92,12 +99,18 @@ def delegation_control(action: str, delegation_id: Optional[str] = None) -> str:
 
     if normalized_action == "pause":
         return _json(
-            {"action": "pause", "spawn_paused": set_spawn_paused(True)}
+            {
+                "action": "pause",
+                "spawn_paused": set_spawn_paused(True, owner_session_key),
+            }
         )
 
     if normalized_action == "resume":
         return _json(
-            {"action": "resume", "spawn_paused": set_spawn_paused(False)}
+            {
+                "action": "resume",
+                "spawn_paused": set_spawn_paused(False, owner_session_key),
+            }
         )
 
     return _json(

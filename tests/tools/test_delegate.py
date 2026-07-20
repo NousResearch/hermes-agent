@@ -2911,5 +2911,47 @@ class TestDelegationLifecycleIntegration:
         run_child.assert_not_called()
 
 
+    def test_delegate_task_honors_session_scoped_pause(self):
+        import tools.delegate_tool as dt
+
+        parent = _make_mock_parent()
+        dt.set_spawn_paused(True, "session:a")
+        try:
+            with patch(
+                "tools.approval.get_current_session_key", return_value="session:a"
+            ), patch.object(dt, "_build_child_agent") as build_child:
+                result = json.loads(dt.delegate_task(
+                    goal="should not start", parent_agent=parent
+                ))
+        finally:
+            dt.set_spawn_paused(False, "session:a")
+
+        assert "spawning is paused" in result["error"]
+        build_child.assert_not_called()
+
+    def test_workspace_rejection_tears_down_child_lifecycle(self):
+        import tools.delegate_tool as dt
+
+        parent = _make_mock_parent()
+        parent.session_id = "parent-session"
+        parent._current_turn_id = "turn-1"
+        child = MagicMock()
+        child.session_id = "child-session"
+        child._delegate_role = "leaf"
+        child.tool_progress_callback = MagicMock()
+
+        with patch("hermes_cli.plugins.invoke_hook") as invoke_hook:
+            dt._teardown_rejected_children(
+                [child], parent, reason="workspace locked"
+            )
+
+        child.tool_progress_callback.assert_called_once()
+        assert child.tool_progress_callback.call_args.args[0] == "subagent.complete"
+        child.close.assert_called_once_with()
+        invoke_hook.assert_called_once()
+        assert invoke_hook.call_args.args[0] == "subagent_stop"
+        assert invoke_hook.call_args.kwargs["child_status"] == "rejected"
+
+
 if __name__ == "__main__":
     unittest.main()

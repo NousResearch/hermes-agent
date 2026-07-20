@@ -89,25 +89,66 @@ def test_cancel_requires_id_and_delegates_to_precise_interrupt(monkeypatch):
     monkeypatch.setattr(
         control,
         "interrupt_async_delegation",
-        lambda delegation_id, reason: calls.append((delegation_id, reason))
+        lambda delegation_id, reason, owner_session_key: calls.append(
+            (delegation_id, reason, owner_session_key)
+        )
         or {"delegation_id": delegation_id, "status": "cancelling"},
     )
     result = json.loads(control.delegation_control("cancel", "deleg_1"))
     assert result["status"] == "cancelling"
-    assert calls == [("deleg_1", "delegation_control tool")]
+    assert calls == [("deleg_1", "delegation_control tool", "")]
 
 
-def test_pause_and_resume_reuse_global_spawn_gate():
+def test_pause_and_resume_are_scoped_to_current_session(monkeypatch):
+    import tools.delegation_control_tool as control
     from tools.delegate_tool import is_spawn_paused
-    from tools.delegation_control_tool import delegation_control
 
-    paused = json.loads(delegation_control("pause"))
+    monkeypatch.setattr(
+        control, "get_current_session_key", lambda default="": "session:a"
+    )
+    paused = json.loads(control.delegation_control("pause"))
     assert paused == {"action": "pause", "spawn_paused": True}
-    assert is_spawn_paused() is True
-
-    resumed = json.loads(delegation_control("resume"))
-    assert resumed == {"action": "resume", "spawn_paused": False}
+    assert is_spawn_paused("session:a") is True
+    assert is_spawn_paused("session:b") is False
     assert is_spawn_paused() is False
+
+    resumed = json.loads(control.delegation_control("resume"))
+    assert resumed == {"action": "resume", "spawn_paused": False}
+    assert is_spawn_paused("session:a") is False
+
+
+def test_control_passes_current_session_owner_to_registry(monkeypatch):
+    import tools.delegation_control_tool as control
+
+    captured = {}
+    monkeypatch.setattr(
+        control, "get_current_session_key", lambda default="": "session:a"
+    )
+    monkeypatch.setattr(
+        control,
+        "list_async_delegations",
+        lambda **kwargs: captured.update(kwargs) or [],
+    )
+    json.loads(control.delegation_control("list"))
+    assert captured["owner_session_key"] == "session:a"
+
+    monkeypatch.setattr(
+        control,
+        "get_async_delegation",
+        lambda delegation_id, **kwargs: captured.update(kwargs)
+        or {"delegation_id": delegation_id},
+    )
+    json.loads(control.delegation_control("status", "deleg_1"))
+    assert captured["owner_session_key"] == "session:a"
+
+    monkeypatch.setattr(
+        control,
+        "interrupt_async_delegation",
+        lambda delegation_id, **kwargs: captured.update(kwargs)
+        or {"delegation_id": delegation_id, "status": "cancelling"},
+    )
+    json.loads(control.delegation_control("cancel", "deleg_1"))
+    assert captured["owner_session_key"] == "session:a"
 
 
 def test_unknown_action_is_rejected():

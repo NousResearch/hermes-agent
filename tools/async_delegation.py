@@ -123,7 +123,15 @@ def _workspace_conflict_locked(
         return None
     requested_mode = "read" if workspace_mode == "read" else "write"
     for record in _records.values():
-        if not _is_active(record) or record.get("workspace_path") != workspace_path:
+        held_path = record.get("workspace_path")
+        if not _is_active(record) or not held_path:
+            continue
+        try:
+            common_path = os.path.commonpath([workspace_path, held_path])
+        except ValueError:
+            continue
+        paths_overlap = common_path in {workspace_path, held_path}
+        if not paths_overlap:
             continue
         held_mode = "read" if record.get("workspace_mode") == "read" else "write"
         if requested_mode == "write" or held_mode == "write":
@@ -156,7 +164,7 @@ def _snapshot_record(
     snapshot = {
         key: value
         for key, value in record.items()
-        if key not in {"interrupt_fn", "activity_fn"}
+        if key not in {"interrupt_fn", "activity_fn", "session_key"}
     }
     activity_fn = record.get("activity_fn")
     if _is_active(record) and callable(activity_fn):
@@ -192,6 +200,87 @@ def _snapshot_record(
         else:
             snapshot["status"] = "running"
     return snapshot
+
+
+def _build_delegation_record(
+    *,
+    delegation_id: str,
+    goal: str,
+    context: Optional[str],
+    toolsets: Optional[List[str]],
+    role: str,
+    model: Optional[str],
+    session_key: str,
+    dispatched_at: float,
+    interrupt_fn: Optional[Callable[[], None]],
+    activity_fn: Optional[Callable[[], Dict[str, Any]]],
+    workspace_path: Optional[str],
+    workspace_mode: Optional[str],
+    extra: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    normalized_workspace = _normalize_workspace_path(workspace_path)
+    record: Dict[str, Any] = {
+        "delegation_id": delegation_id,
+        "goal": goal,
+        "context": context,
+        "toolsets": list(toolsets) if toolsets else None,
+        "role": role,
+        "model": model,
+        "session_key": session_key,
+        "status": "running",
+        "dispatched_at": dispatched_at,
+        "completed_at": None,
+        "interrupt_fn": interrupt_fn,
+        "activity_fn": activity_fn,
+        "last_activity_at": dispatched_at,
+        "cancel_requested": False,
+        "workspace_path": normalized_workspace,
+        "workspace_mode": (
+            ("read" if workspace_mode == "read" else "write")
+            if normalized_workspace else None
+        ),
+    }
+    if extra:
+        record.update(extra)
+    return record
+
+
+def _admit_record(
+    record: Dict[str, Any], max_async_children: int
+) -> Optional[Dict[str, Any]]:
+    """Atomically enforce workspace/capacity limits and insert one record."""
+    with _records_lock:
+        holder = _workspace_conflict_locked(
+            record.get("workspace_path"), record.get("workspace_mode")
+        )
+        if holder is not None:
+            return _workspace_rejection(
+                holder, str(record.get("workspace_path") or "")
+            )
+        running = sum(1 for candidate in _records.values() if _is_active(candidate))
+        if running >= max_async_children:
+            return {
+                "status": "rejected",
+                "reason_code": "capacity_reached",
+                "error": (
+                    f"Async delegation capacity reached ({max_async_children} "
+                    "running). Wait for one to finish or raise "
+                    "delegation.max_async_children in config.yaml."
+                ),
+            }
+        _records[str(record["delegation_id"])] = record
+    return None
+
+
+def _complete_record_locked(record: Dict[str, Any], status: str) -> str:
+    """Apply shared terminal-state transitions while _records_lock is held."""
+    if record.get("cancel_requested"):
+        status = "interrupted"
+    record["status"] = status
+    record["completed_at"] = time.time()
+    record["interrupt_fn"] = None
+    record["activity_fn"] = None
+    return status
 
 
 def _get_executor(max_workers: int) -> ThreadPoolExecutor:
@@ -287,50 +376,23 @@ def dispatch_async_delegation(
     """
     delegation_id = _new_delegation_id()
     dispatched_at = time.time()
-    normalized_workspace = _normalize_workspace_path(workspace_path)
-    normalized_mode = (
-        ("read" if workspace_mode == "read" else "write")
-        if normalized_workspace else None
+    record = _build_delegation_record(
+        delegation_id=delegation_id,
+        goal=goal,
+        context=context,
+        toolsets=toolsets,
+        role=role,
+        model=model,
+        session_key=session_key,
+        dispatched_at=dispatched_at,
+        interrupt_fn=interrupt_fn,
+        activity_fn=activity_fn,
+        workspace_path=workspace_path,
+        workspace_mode=workspace_mode,
     )
-    record: Dict[str, Any] = {
-        "delegation_id": delegation_id,
-        "goal": goal,
-        "context": context,
-        "toolsets": list(toolsets) if toolsets else None,
-        "role": role,
-        "model": model,
-        "session_key": session_key,
-        "status": "running",
-        "dispatched_at": dispatched_at,
-        "completed_at": None,
-        "interrupt_fn": interrupt_fn,
-        "activity_fn": activity_fn,
-        "last_activity_at": dispatched_at,
-        "cancel_requested": False,
-        "workspace_path": normalized_workspace,
-        "workspace_mode": normalized_mode,
-    }
-    # Capacity/workspace checks and insert share ONE lock hold — checking
-    # active_count() separately would let two concurrent dispatches (e.g.
-    # from different gateway sessions) both pass the check and exceed the cap.
-    with _records_lock:
-        holder = _workspace_conflict_locked(normalized_workspace, normalized_mode)
-        if holder is not None:
-            return _workspace_rejection(holder, normalized_workspace or "")
-        running = sum(1 for r in _records.values() if _is_active(r))
-        if running >= max_async_children:
-            return {
-                "status": "rejected",
-                "reason_code": "capacity_reached",
-                "error": (
-                    f"Async delegation capacity reached ({max_async_children} "
-                    f"running). Wait for one to finish (its result will re-enter "
-                    f"the chat), or run this task synchronously "
-                    f"(background=false). Raise delegation.max_async_children in "
-                    f"config.yaml to allow more concurrent background subagents."
-                ),
-            }
-        _records[delegation_id] = record
+    rejection = _admit_record(record, max_async_children)
+    if rejection is not None:
+        return rejection
 
     executor = _get_executor(max_async_children)
 
@@ -376,12 +438,7 @@ def _finalize(delegation_id: str, result: Dict[str, Any], status: str) -> None:
         record = _records.get(delegation_id)
         if record is None:
             return
-        if record.get("cancel_requested"):
-            status = "interrupted"
-        record["status"] = status
-        record["completed_at"] = time.time()
-        record["interrupt_fn"] = None  # drop the closure; child is done
-        record["activity_fn"] = None
+        status = _complete_record_locked(record, status)
         # Snapshot fields needed for the event while holding the lock.
         event_record = dict(record)
         _prune_completed_locked()
@@ -481,53 +538,29 @@ def dispatch_async_delegation_batch(
     """
     delegation_id = _new_delegation_id()
     dispatched_at = time.time()
-    normalized_workspace = _normalize_workspace_path(workspace_path)
-    normalized_mode = (
-        ("read" if workspace_mode == "read" else "write")
-        if normalized_workspace else None
-    )
     n = len(goals)
     # A combined goal label for status listings / the completion header.
     combined_goal = (
         goals[0] if n == 1 else f"{n} parallel subagents: " + "; ".join(g[:40] for g in goals)
     )
-    record: Dict[str, Any] = {
-        "delegation_id": delegation_id,
-        "goal": combined_goal,
-        "goals": list(goals),
-        "context": context,
-        "toolsets": list(toolsets) if toolsets else None,
-        "role": role,
-        "model": model,
-        "session_key": session_key,
-        "status": "running",
-        "dispatched_at": dispatched_at,
-        "completed_at": None,
-        "interrupt_fn": interrupt_fn,
-        "activity_fn": activity_fn,
-        "last_activity_at": dispatched_at,
-        "cancel_requested": False,
-        "workspace_path": normalized_workspace,
-        "workspace_mode": normalized_mode,
-        "is_batch": True,
-    }
-    with _records_lock:
-        holder = _workspace_conflict_locked(normalized_workspace, normalized_mode)
-        if holder is not None:
-            return _workspace_rejection(holder, normalized_workspace or "")
-        running = sum(1 for r in _records.values() if _is_active(r))
-        if running >= max_async_children:
-            return {
-                "status": "rejected",
-                "reason_code": "capacity_reached",
-                "error": (
-                    f"Async delegation capacity reached ({max_async_children} "
-                    f"running). Wait for one to finish (its result will re-enter "
-                    f"the chat), or raise delegation.max_async_children in "
-                    f"config.yaml to allow more concurrent background units."
-                ),
-            }
-        _records[delegation_id] = record
+    record = _build_delegation_record(
+        delegation_id=delegation_id,
+        goal=combined_goal,
+        context=context,
+        toolsets=toolsets,
+        role=role,
+        model=model,
+        session_key=session_key,
+        dispatched_at=dispatched_at,
+        interrupt_fn=interrupt_fn,
+        activity_fn=activity_fn,
+        workspace_path=workspace_path,
+        workspace_mode=workspace_mode,
+        extra={"goals": list(goals), "is_batch": True},
+    )
+    rejection = _admit_record(record, max_async_children)
+    if rejection is not None:
+        return rejection
 
     executor = _get_executor(max_async_children)
 
@@ -581,12 +614,7 @@ def _finalize_batch(
         record = _records.get(delegation_id)
         if record is None:
             return
-        if record.get("cancel_requested"):
-            status = "interrupted"
-        record["status"] = status
-        record["completed_at"] = time.time()
-        record["interrupt_fn"] = None
-        record["activity_fn"] = None
+        status = _complete_record_locked(record, status)
         event_record = dict(record)
         _prune_completed_locked()
 
@@ -634,12 +662,18 @@ def _finalize_batch(
 
 def list_async_delegations(
     *,
+    owner_session_key: Optional[str] = None,
     now: Optional[float] = None,
     stalled_after_seconds: float = _DEFAULT_STALLED_AFTER_SECONDS,
 ) -> List[Dict[str, Any]]:
-    """Snapshot running and recently completed async delegations."""
+    """Snapshot delegations, optionally restricted to one owning session."""
     with _records_lock:
-        records = list(_records.values())
+        records = [
+            dict(record)
+            for record in _records.values()
+            if owner_session_key is None
+            or record.get("session_key") == owner_session_key
+        ]
     return [
         _snapshot_record(
             record, now=now, stalled_after_seconds=stalled_after_seconds
@@ -651,52 +685,69 @@ def list_async_delegations(
 def get_async_delegation(
     delegation_id: str,
     *,
+    owner_session_key: Optional[str] = None,
     now: Optional[float] = None,
     stalled_after_seconds: float = _DEFAULT_STALLED_AFTER_SECONDS,
 ) -> Optional[Dict[str, Any]]:
-    """Return one serialisable delegation snapshot, or None if unknown."""
+    """Return one snapshot, hiding records owned by another session."""
     with _records_lock:
-        record = _records.get(delegation_id)
-    if record is None:
-        return None
+        live_record = _records.get(delegation_id)
+        if live_record is None or (
+            owner_session_key is not None
+            and live_record.get("session_key") != owner_session_key
+        ):
+            return None
+        record = dict(live_record)
     return _snapshot_record(
         record, now=now, stalled_after_seconds=stalled_after_seconds
     )
 
 
 def interrupt_async_delegation(
-    delegation_id: str, reason: str = "explicit cancel"
+    delegation_id: str,
+    reason: str = "explicit cancel",
+    owner_session_key: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Idempotently request cancellation of one active async delegation."""
     with _records_lock:
         record = _records.get(delegation_id)
-        if record is None:
+        if record is None or (
+            owner_session_key is not None
+            and record.get("session_key") != owner_session_key
+        ):
             return {
                 "delegation_id": delegation_id,
                 "status": "not_found",
                 "active": False,
             }
         if not _is_active(record):
-            snapshot = _snapshot_record(record)
-            snapshot["active"] = False
-            return snapshot
-        if record.get("cancel_requested"):
-            return {
-                "delegation_id": delegation_id,
-                "status": "cancelling",
-                "active": True,
-                "already_requested": True,
-            }
-        fn = record.get("interrupt_fn")
-        if not callable(fn):
-            return {
-                "delegation_id": delegation_id,
-                "status": "unavailable",
-                "active": True,
-                "error": "This delegation does not expose an interrupt callback.",
-            }
-        record["cancel_requested"] = True
+            completed_record = dict(record)
+            fn = None
+        else:
+            completed_record = None
+            if record.get("cancel_requested"):
+                return {
+                    "delegation_id": delegation_id,
+                    "status": "cancelling",
+                    "active": True,
+                    "already_requested": True,
+                }
+            fn = record.get("interrupt_fn")
+            if not callable(fn):
+                return {
+                    "delegation_id": delegation_id,
+                    "status": "unavailable",
+                    "active": True,
+                    "error": "This delegation does not expose an interrupt callback.",
+                }
+            record["cancel_requested"] = True
 
+    if completed_record is not None:
+        snapshot = _snapshot_record(completed_record)
+        snapshot["active"] = False
+        return snapshot
+
+    assert callable(fn)
     try:
         fn()
     except Exception as exc:

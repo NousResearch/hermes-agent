@@ -348,6 +348,111 @@ def test_workspace_lock_is_released_after_completion(tmp_path):
     gate.set()
 
 
+def test_session_owner_filters_listing_status_and_cancel(tmp_path):
+    gates = [threading.Event(), threading.Event()]
+    interrupted = [0, 0]
+    handles = []
+
+    for index, owner in enumerate(("session:a", "session:b")):
+        def runner(i=index):
+            gates[i].wait(timeout=5)
+            return {"status": "interrupted" if interrupted[i] else "completed"}
+
+        def interrupt_fn(i=index):
+            interrupted[i] += 1
+            gates[i].set()
+
+        handles.append(ad.dispatch_async_delegation(
+            goal=f"owner-{owner}", context="private", toolsets=["file"],
+            role="leaf", model="m", session_key=owner, runner=runner,
+            interrupt_fn=interrupt_fn, workspace_path=str(tmp_path / owner),
+            workspace_mode="write", max_async_children=3,
+        )["delegation_id"])
+
+    owned = ad.list_async_delegations(owner_session_key="session:a")
+    assert [record["delegation_id"] for record in owned] == [handles[0]]
+    assert "session_key" not in owned[0]
+    assert ad.get_async_delegation(
+        handles[1], owner_session_key="session:a"
+    ) is None
+
+    denied = ad.interrupt_async_delegation(
+        handles[1], owner_session_key="session:a"
+    )
+    assert denied["status"] == "not_found"
+    assert interrupted == [0, 0]
+
+    allowed = ad.interrupt_async_delegation(
+        handles[0], owner_session_key="session:a"
+    )
+    assert allowed["status"] == "cancelling"
+    assert interrupted == [1, 0]
+    assert _drain_one() is not None
+    gates[1].set()
+
+
+def test_snapshot_is_internally_consistent_during_finalize():
+    runner_gate = threading.Event()
+    activity_started = threading.Event()
+    activity_continue = threading.Event()
+
+    def runner():
+        runner_gate.wait(timeout=5)
+        return {"status": "completed"}
+
+    def activity_fn():
+        activity_started.set()
+        activity_continue.wait(timeout=5)
+        return {"last_activity_ts": time.time(), "api_call_count": 1}
+
+    handle = ad.dispatch_async_delegation(
+        goal="race", context=None, toolsets=None, role="leaf", model="m",
+        session_key="session:a", runner=runner, activity_fn=activity_fn,
+    )["delegation_id"]
+    result = {}
+
+    thread = threading.Thread(
+        target=lambda: result.update(ad.get_async_delegation(handle) or {})
+    )
+    thread.start()
+    assert activity_started.wait(timeout=2)
+    runner_gate.set()
+    assert _drain_one() is not None
+    activity_continue.set()
+    thread.join(timeout=2)
+
+    if result["status"] == "running":
+        assert result["active"] is True
+        assert result["completed_at"] is None
+    else:
+        assert result["status"] == "completed"
+        assert result["active"] is False
+        assert result["completed_at"] is not None
+
+
+@pytest.mark.parametrize(("first_suffix", "second_suffix"), [("", "/sub"), ("/sub", "")])
+def test_workspace_lock_rejects_ancestor_descendant_overlap(
+    tmp_path, first_suffix, second_suffix
+):
+    gate = threading.Event()
+    root = str(tmp_path / "repo")
+    kwargs = dict(
+        context=None, toolsets=["file"], role="leaf", model="m", session_key="",
+        runner=lambda: (gate.wait(timeout=5) or {"status": "completed"}),
+        workspace_mode="write", max_async_children=3,
+    )
+    first = ad.dispatch_async_delegation(
+        goal="first", workspace_path=root + first_suffix, **kwargs
+    )
+    second = ad.dispatch_async_delegation(
+        goal="second", workspace_path=root + second_suffix, **kwargs
+    )
+    assert first["status"] == "dispatched"
+    assert second["status"] == "rejected"
+    assert second["reason_code"] == "workspace_locked"
+    gate.set()
+
+
 def test_completed_records_pruned_to_cap():
     # Run more than the retention cap quickly; ensure list doesn't grow forever.
     for i in range(ad._MAX_RETAINED_COMPLETED + 10):

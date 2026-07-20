@@ -159,6 +159,7 @@ _MIN_SPAWN_DEPTH = 1
 
 _spawn_pause_lock = threading.Lock()
 _spawn_paused: bool = False
+_spawn_paused_sessions: set[str] = set()
 
 _active_subagents_lock = threading.Lock()
 # subagent_id -> mutable record tracking the live child agent.  Stays only
@@ -166,21 +167,27 @@ _active_subagents_lock = threading.Lock()
 _active_subagents: Dict[str, Dict[str, Any]] = {}
 
 
-def set_spawn_paused(paused: bool) -> bool:
-    """Globally block/unblock new delegate_task spawns.
-
-    Active children keep running; only NEW calls to delegate_task fail fast
-    with a "spawning paused" error until unblocked.  Returns the new state.
-    """
+def set_spawn_paused(
+    paused: bool, session_key: Optional[str] = None
+) -> bool:
+    """Block/unblock spawns globally or for one owning session."""
     global _spawn_paused
     with _spawn_pause_lock:
-        _spawn_paused = bool(paused)
-        return _spawn_paused
+        if session_key is None:
+            _spawn_paused = bool(paused)
+            return _spawn_paused
+        if paused:
+            _spawn_paused_sessions.add(session_key)
+        else:
+            _spawn_paused_sessions.discard(session_key)
+        return session_key in _spawn_paused_sessions
 
 
-def is_spawn_paused() -> bool:
+def is_spawn_paused(session_key: Optional[str] = None) -> bool:
     with _spawn_pause_lock:
-        return _spawn_paused
+        return _spawn_paused or (
+            session_key is not None and session_key in _spawn_paused_sessions
+        )
 
 
 def _register_subagent(record: Dict[str, Any]) -> None:
@@ -823,6 +830,60 @@ def _build_delegation_activity_fn(children: List[Any]) -> Callable[[], Dict[str,
         }
 
     return _activity
+
+
+def _teardown_rejected_children(
+    children: List[Any], parent_agent: Any, *, reason: str
+) -> None:
+    """Close pre-built children and emit lifecycle completion on admission rejection."""
+    try:
+        from hermes_cli.plugins import invoke_hook
+    except Exception:
+        invoke_hook = None
+
+    for child in children:
+        progress_cb = getattr(child, "tool_progress_callback", None)
+        if callable(progress_cb):
+            try:
+                progress_cb(
+                    "subagent.complete",
+                    preview=reason,
+                    status="rejected",
+                    duration_seconds=0,
+                    summary=reason,
+                )
+            except Exception:
+                logger.warning(
+                    "Failed to emit rejected completion for child %s",
+                    getattr(child, "session_id", "<unknown>"),
+                    exc_info=True,
+                )
+        if invoke_hook is not None:
+            try:
+                invoke_hook(
+                    "subagent_stop",
+                    parent_session_id=getattr(parent_agent, "session_id", None),
+                    parent_turn_id=getattr(parent_agent, "_current_turn_id", "") or "",
+                    child_session_id=getattr(child, "session_id", None),
+                    child_role=getattr(child, "_delegate_role", None),
+                    child_summary=reason,
+                    child_status="rejected",
+                    duration_ms=0,
+                )
+            except Exception:
+                logger.warning("Rejected subagent_stop hook failed", exc_info=True)
+
+        close = getattr(child, "close", None)
+        if not callable(close):
+            logger.warning(
+                "Rejected child %s has no close() method",
+                getattr(child, "session_id", "<unknown>"),
+            )
+            continue
+        try:
+            close()
+        except Exception:
+            logger.warning("Failed to close child after workspace rejection", exc_info=True)
 
 
 def _strip_blocked_tools(toolsets: List[str]) -> List[str]:
@@ -2161,10 +2222,16 @@ def delegate_task(
     if parent_agent is None:
         return tool_error("delegate_task requires a parent agent context.")
 
-    # Operator-controlled kill switch — lets the TUI freeze new fan-out
-    # when a runaway tree is detected, without interrupting already-running
-    # children.  Cleared via the matching `delegation.pause` RPC.
-    if is_spawn_paused():
+    try:
+        from tools.approval import get_current_session_key
+
+        caller_session_key = get_current_session_key(default="")
+    except Exception:
+        caller_session_key = ""
+
+    # The operator gate is global; LLM delegation_control pauses only its own
+    # session so one chat cannot block every other gateway tenant.
+    if is_spawn_paused(caller_session_key):
         return tool_error(
             "Delegation spawning is paused. Clear the pause via the TUI "
             "(`p` in /agents) or the `delegation.pause` RPC before retrying."
@@ -2558,7 +2625,6 @@ def delegate_task(
     # keep chatting, get the combined summaries back together at the end.
     if background:
         from tools.async_delegation import dispatch_async_delegation_batch
-        from tools.approval import get_current_session_key
 
         # Stateless request/response sessions (the API server / WebUI path)
         # cannot route a detached subagent result back to the agent after the
@@ -2588,7 +2654,7 @@ def delegate_task(
                 )
             return json.dumps(_sync_result, ensure_ascii=False)
 
-        _session_key = get_current_session_key(default="")
+        _session_key = caller_session_key
         _child_agents = [c for (_, _, c) in children]
         _workspace_path = _resolve_workspace_hint(parent_agent)
         _workspace_mode = _resolve_workspace_mode(
@@ -2666,13 +2732,11 @@ def delegate_task(
 
         if dispatch.get("reason_code") == "workspace_locked":
             # The async unit never took ownership of these pre-built children.
-            # Close them explicitly; unlike capacity fallback, they will not run.
-            for child in _child_agents:
-                try:
-                    if hasattr(child, "close"):
-                        child.close()
-                except Exception:
-                    logger.debug("Failed to close child after workspace rejection")
+            _teardown_rejected_children(
+                _child_agents,
+                parent_agent,
+                reason=dispatch.get("error", "Workspace is locked."),
+            )
             return json.dumps(
                 {
                     "error": dispatch.get("error", "Workspace is locked."),

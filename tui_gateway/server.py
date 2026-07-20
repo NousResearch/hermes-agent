@@ -476,6 +476,59 @@ def _release_active_session_slot(session: dict | None) -> None:
         logger.debug("Failed to release active session slot", exc_info=True)
 
 
+def _session_key_sync_lock(session: dict):
+    """Return the per-session lock serializing key sync with finalization."""
+    lock = session.get("_session_key_sync_lock")
+    if lock is not None:
+        return lock
+    # CPython's dict.setdefault is atomic under the GIL, so concurrent lazy
+    # creators still converge on the same lock stored on this session record.
+    return session.setdefault("_session_key_sync_lock", threading.Lock())
+
+
+def _session_key_sync_is_live(sid: str, session: dict) -> bool:
+    """Atomically check registry identity and the history finalize fence."""
+    history_lock = session.get("history_lock")
+    with _sessions_lock:
+        if not _session_has_live_identity(sid, session):
+            return False
+        if history_lock is not None:
+            with history_lock:
+                return not bool(session.get("_finalized"))
+        return not bool(session.get("_finalized"))
+
+
+def _commit_session_key_sync(
+    sid: str,
+    session: dict,
+    new_session_id: str,
+    *,
+    clear_pending_title: bool,
+) -> bool:
+    """Publish a rotated key iff identity and finalize fences are still live.
+
+    This is deliberately field-only while holding the registry/history locks;
+    lease, approval, YOLO, and worker operations stay outside both locks.
+    """
+
+    def _commit_fields() -> bool:
+        if session.get("_finalized"):
+            return False
+        session["session_key"] = new_session_id
+        if clear_pending_title:
+            session["pending_title"] = None
+        return True
+
+    history_lock = session.get("history_lock")
+    with _sessions_lock:
+        if not _session_has_live_identity(sid, session):
+            return False
+        if history_lock is not None:
+            with history_lock:
+                return _commit_fields()
+        return _commit_fields()
+
+
 def _transfer_active_session_slot(
     sid: str,
     session: dict,
@@ -575,15 +628,38 @@ def _finalize_session(session: dict | None, end_reason: str = "tui_close") -> No
     force-quit (double Ctrl‑C, terminal‑close, SIGHUP) while the agent
     is mid‑turn.
     """
-    if not session or session.get("_finalized"):
+    if not session:
         return
-    session["_finalized"] = True
+    sync_lock = _session_key_sync_lock(session)
+    lock = session.get("history_lock")
+    if lock is not None:
+        with lock:
+            if session.get("_finalized"):
+                return
+            # Fence any idle compressor before doing persistence, hooks, or
+            # worker cleanup.  The compressor checks this under the same lock
+            # before publishing its snapshot.
+            session["_finalized"] = True
+    else:
+        if session.get("_finalized"):
+            return
+        session["_finalized"] = True
+    # Do not hold the history or registry lock while waiting.  A sync already
+    # inside lease transfer must be able to return, observe the finalize fence,
+    # compensate its lease, and release this per-session handoff lock.
+    with sync_lock:
+        pass
     _release_active_session_slot(session)
     stop_event = session.get("_notif_stop")
     if stop_event is not None:
         stop_event.set()
 
-    sid = session.get("sid") or session.get("tui_session_id") or ""
+    sid = (
+        session.get("_sid")
+        or session.get("sid")
+        or session.get("tui_session_id")
+        or ""
+    )
     if sid:
         with _IDLE_COMPRESSION_LOCK:
             worker = _IDLE_COMPRESSION_THREADS.pop(sid, None)
@@ -592,7 +668,6 @@ def _finalize_session(session: dict | None, end_reason: str = "tui_close") -> No
             idle_stop.set()
 
     agent = session.get("agent")
-    lock = session.get("history_lock")
     if lock is not None:
         with lock:
             history = list(session.get("history", []))
@@ -814,7 +889,7 @@ def _ws_session_is_orphaned(session: dict | None) -> bool:
     """
     if not session or session.get("_finalized"):
         return False
-    if session.get("running"):
+    if _session_busy(session):
         return False
     return session.get("transport") is _detached_ws_transport
 
@@ -917,7 +992,7 @@ def _transport_is_dead(transport) -> bool:
 
 
 def _session_is_evictable(sid: str, session: dict, now: float) -> bool:
-    if session.get("running") or _session_pending_kind(sid):
+    if _session_busy(session) or _session_pending_kind(sid):
         return False
     ready = session.get("agent_ready")
     # Lazy watch sessions (subagent spectator windows) never start a build,
@@ -968,7 +1043,7 @@ def _session_is_lru_evictable(sid: str, session: dict) -> bool:
     # Same hard exemptions as the TTL reaper (never evict a session mid-turn,
     # awaiting input, or still building), but WITHOUT the hours-scale age gate:
     # a detached session is eligible the moment it loses its client.
-    if session.get("running") or _session_pending_kind(sid):
+    if _session_busy(session) or _session_pending_kind(sid):
         return False
     ready = session.get("agent_ready")
     if ready is not None and not ready.is_set() and not session.get("lazy"):
@@ -3458,6 +3533,7 @@ def _compress_session_history(
     before_messages: list | None = None,
     history_version: int | None = None,
     abort_if_running: bool = False,
+    expected_sid: str | None = None,
 ) -> tuple[int, dict]:
     from agent.model_metadata import estimate_request_tokens_rough
 
@@ -3494,6 +3570,12 @@ def _compress_session_history(
         focus_topic=focus_topic or None,
     )
     with session["history_lock"]:
+        if session.get("_finalized") or (
+            expected_sid is not None
+            and not _session_has_live_identity(expected_sid, session)
+        ):
+            usage = _get_usage(agent)
+            return 0, usage
         if abort_if_running and session.get("running"):
             usage = _get_usage(agent)
             return 0, usage
@@ -3508,8 +3590,27 @@ def _compress_session_history(
     return len(history) - len(compressed), usage
 
 
-def _session_busy(session: dict) -> bool:
+def _session_busy(session: dict | None) -> bool:
+    session = session or {}
     return bool(session.get("running") or session.get("idle_compression_running"))
+
+
+def _session_has_live_identity(sid: str, session: dict) -> bool:
+    """Return whether a registry-backed session is still this exact object.
+
+    The live registry object is authoritative because create/deferred records
+    intentionally do not carry a long-lived sid.  Teardown markers fence
+    detached real sessions, while marker-free utility sessions remain usable
+    outside the registry in focused tests and helpers.
+    """
+    registered = _sessions.get(sid)
+    if registered is session:
+        return True
+    if registered is not None:
+        return False
+    if session.get("sid") or session.get("_sid"):
+        return False
+    return True
 
 
 def _coerce_float(value: Any, default: float) -> float:
@@ -3583,13 +3684,25 @@ def _session_compression_threshold_tokens(agent: Any, cfg: dict) -> int:
 
 
 def _run_idle_compression_once(sid: str, session: dict) -> bool:
+    home_token = set_hermes_home_override(session.get("profile_home"))
+    try:
+        return _run_idle_compression_once_scoped(sid, session)
+    finally:
+        reset_hermes_home_override(home_token)
+
+
+def _run_idle_compression_once_scoped(sid: str, session: dict) -> bool:
     """Attempt one safe idle compression pass for a Gateway session."""
     cfg = _load_idle_compression_config()
     if not cfg.get("enabled"):
         return False
     now = time.time()
     with session["history_lock"]:
-        if _session_busy(session) or session.get("_finalized"):
+        if (
+            _session_busy(session)
+            or session.get("_finalized")
+            or not _session_has_live_identity(sid, session)
+        ):
             return False
         last_active = float(session.get("last_active") or 0.0)
         if now - last_active < float(cfg["idle_after_seconds"]):
@@ -3631,7 +3744,12 @@ def _run_idle_compression_once(sid: str, session: dict) -> bool:
         return False
     try:
         with session["history_lock"]:
-            if _session_busy(session) or int(session.get("history_version", 0)) != history_version:
+            if (
+                _session_busy(session)
+                or session.get("_finalized")
+                or not _session_has_live_identity(sid, session)
+                or int(session.get("history_version", 0)) != history_version
+            ):
                 return False
             session["idle_compression_running"] = True
             session["last_idle_compression_attempt_at"] = now
@@ -3648,8 +3766,17 @@ def _run_idle_compression_once(sid: str, session: dict) -> bool:
                 before_messages=history,
                 history_version=history_version,
                 abort_if_running=True,
+                expected_sid=sid,
             )
             if removed > 0:
+                with session["history_lock"]:
+                    can_publish = bool(
+                        not session.get("_finalized")
+                        and not session.get("running")
+                        and _session_has_live_identity(sid, session)
+                    )
+                if not can_publish:
+                    return False
                 _sync_session_key_after_compress(
                     sid,
                     session,
@@ -3670,8 +3797,15 @@ def _run_idle_compression_once(sid: str, session: dict) -> bool:
         finally:
             with session["history_lock"]:
                 session["idle_compression_running"] = False
-            if cfg.get("emit_status"):
+                is_live = bool(
+                    not session.get("_finalized")
+                    and _session_has_live_identity(sid, session)
+                )
+                should_drain = bool(is_live and not session.get("running"))
+            if cfg.get("emit_status") and is_live:
                 _emit("status.update", sid, {"kind": "status", "text": "ready"})
+            if should_drain:
+                _drain_queued_prompt("__idle_compression__", sid, session)
     except Exception as exc:
         logger.warning("idle compression failed for sid=%s: %s", sid, exc)
         return False
@@ -3680,7 +3814,19 @@ def _run_idle_compression_once(sid: str, session: dict) -> bool:
 
 
 def _schedule_idle_compression(sid: str, session: dict) -> None:
-    if session.get("sid") != sid:
+    home_token = set_hermes_home_override(session.get("profile_home"))
+    try:
+        _schedule_idle_compression_scoped(sid, session)
+    finally:
+        reset_hermes_home_override(home_token)
+
+
+def _schedule_idle_compression_scoped(sid: str, session: dict) -> None:
+    # Real create/deferred records are identified by the live registry object
+    # and intentionally do not carry a long-lived sid.  Preserve the original
+    # PR's explicit-sid unit-test helper, but do not start daemon workers for
+    # unrelated marker-free synthetic sessions outside the registry.
+    if _sessions.get(sid) is not session and session.get("sid") != sid:
         return
     cfg = _load_idle_compression_config()
     if not cfg.get("enabled"):
@@ -3693,6 +3839,14 @@ def _schedule_idle_compression(sid: str, session: dict) -> None:
     stop_event = threading.Event()
 
     def _worker() -> None:
+        with _IDLE_COMPRESSION_LOCK:
+            cur = _IDLE_COMPRESSION_THREADS.get(sid)
+            if not cur or cur[0] is not threading.current_thread():
+                # A replaced worker must not run.  Synchronous Thread fakes
+                # also land here instead of blocking their caller in wait().
+                if cur and cur[0] is thread:
+                    _IDLE_COMPRESSION_THREADS.pop(sid, None)
+                return
         try:
             while True:
                 with session["history_lock"]:
@@ -3724,7 +3878,10 @@ def _schedule_idle_compression(sid: str, session: dict) -> None:
             name=f"idle-compress-{sid[:12] or 'session'}",
         )
         _IDLE_COMPRESSION_THREADS[sid] = (thread, stop_event)
-        thread.start()
+    # Start outside the registry lock.  Real threads may otherwise only block
+    # briefly, but synchronous test/embedding thread adapters would re-enter
+    # _worker while this non-reentrant lock is still held and deadlock.
+    thread.start()
 
 
 def _sync_session_key_after_compress(
@@ -3751,69 +3908,152 @@ def _sync_session_key_after_compress(
             auto-compression (worker holds stale session key). False only
             if the caller manages the worker lifecycle separately.
     """
-    agent = session.get("agent")
-    new_session_id = getattr(agent, "session_id", None) or ""
-    old_key = session.get("session_key", "") or ""
-    if not new_session_id or new_session_id == old_key:
-        return
+    sync_lock = _session_key_sync_lock(session)
+    with sync_lock:
+        if not _session_key_sync_is_live(sid, session):
+            return
+        agent = session.get("agent")
+        new_session_id = getattr(agent, "session_id", None) or ""
+        old_key = session.get("session_key", "") or ""
+        if not new_session_id or new_session_id == old_key:
+            return
 
-    lease_reanchored = _transfer_active_session_slot(
-        sid,
-        session,
-        new_session_id=new_session_id,
-    )
-    if not lease_reanchored:
-        logger.warning(
-            "Compression session lease did not re-anchor: sid=%s old_session_id=%s new_session_id=%s",
+        lease_reanchored = _transfer_active_session_slot(
             sid,
-            old_key,
-            new_session_id,
+            session,
+            new_session_id=new_session_id,
         )
-
-    try:
-        from tools.approval import (
-            disable_session_yolo,
-            enable_session_yolo,
-            is_session_yolo_enabled,
-            register_gateway_notify,
-            unregister_gateway_notify,
-        )
-
-        try:
-            unregister_gateway_notify(old_key)
-        except Exception:
-            pass
-        session["session_key"] = new_session_id
-        try:
-            yolo_was_on = is_session_yolo_enabled(old_key)
-        except Exception:
-            yolo_was_on = False
-        if yolo_was_on:
-            try:
-                enable_session_yolo(new_session_id)
-                disable_session_yolo(old_key)
-            except Exception:
-                pass
-        try:
-            register_gateway_notify(
+        if not lease_reanchored:
+            logger.warning(
+                "Compression session lease did not re-anchor: sid=%s old_session_id=%s new_session_id=%s",
+                sid,
+                old_key,
                 new_session_id,
-                lambda data: _emit_approval_request(sid, data),
+            )
+
+        # Transfer can block.  Finalize deliberately marks its fence before it
+        # waits on sync_lock, and registry replacement does not need sync_lock,
+        # so both races must be re-checked before publishing any new identity.
+        if not _session_key_sync_is_live(sid, session):
+            _release_active_session_slot(session)
+            return
+
+        disable_session_yolo = None
+        enable_session_yolo = None
+        is_session_yolo_enabled = None
+        register_gateway_notify = None
+        unregister_gateway_notify = None
+        try:
+            from tools.approval import (
+                disable_session_yolo,
+                enable_session_yolo,
+                is_session_yolo_enabled,
+                register_gateway_notify,
+                unregister_gateway_notify,
             )
         except Exception:
             pass
-    except Exception:
-        # Even if the approval module fails to import, still anchor the
-        # session_key on the new continuation id so downstream lookups
-        # don't keep targeting the ended row.
-        session["session_key"] = new_session_id
 
-    if clear_pending_title:
-        session["pending_title"] = None
-    if restart_slash_worker:
-        try:
-            _restart_slash_worker(sid, session)
-        except Exception:
-            pass
+        new_yolo_attempted = False
+        new_notify_attempted = False
+
+        def _compensate_stale_sync() -> None:
+            if new_notify_attempted and unregister_gateway_notify is not None:
+                try:
+                    unregister_gateway_notify(new_session_id)
+                except Exception:
+                    pass
+            if new_yolo_attempted and disable_session_yolo is not None:
+                try:
+                    disable_session_yolo(new_session_id)
+                except Exception:
+                    pass
+            _release_active_session_slot(session)
+
+        def _continue_if_live() -> bool:
+            if _session_key_sync_is_live(sid, session):
+                return True
+            _compensate_stale_sync()
+            return False
+
+        yolo_was_on = False
+        if is_session_yolo_enabled is not None:
+            if not _continue_if_live():
+                return
+            try:
+                yolo_was_on = bool(is_session_yolo_enabled(old_key))
+            except Exception:
+                yolo_was_on = False
+            if not _continue_if_live():
+                return
+
+        if not _commit_session_key_sync(
+            sid,
+            session,
+            new_session_id,
+            clear_pending_title=clear_pending_title,
+        ):
+            _compensate_stale_sync()
+            return
+        if not _continue_if_live():
+            return
+
+        if yolo_was_on and enable_session_yolo is not None:
+            if not _continue_if_live():
+                return
+            new_yolo_attempted = True
+            try:
+                enable_session_yolo(new_session_id)
+            except Exception:
+                pass
+            if not _continue_if_live():
+                return
+
+            if disable_session_yolo is not None:
+                if not _continue_if_live():
+                    return
+                try:
+                    disable_session_yolo(old_key)
+                except Exception:
+                    pass
+                if not _continue_if_live():
+                    return
+
+        if register_gateway_notify is not None:
+            if not _continue_if_live():
+                return
+            new_notify_attempted = True
+            try:
+                register_gateway_notify(
+                    new_session_id,
+                    lambda data: _emit_approval_request(sid, data),
+                )
+            except Exception:
+                pass
+            if not _continue_if_live():
+                return
+
+        if unregister_gateway_notify is not None:
+            if not _continue_if_live():
+                return
+            try:
+                unregister_gateway_notify(old_key)
+            except Exception:
+                pass
+            if not _continue_if_live():
+                return
+
+        if restart_slash_worker:
+            # This is the final live fence before the external worker restart;
+            # _restart_slash_worker retains _attach_worker's identity guard.
+            if not _continue_if_live():
+                return
+            try:
+                _restart_slash_worker(sid, session)
+            except Exception:
+                pass
+            if not _continue_if_live():
+                return
 
 
 def _get_usage(agent) -> dict:
@@ -5864,13 +6104,20 @@ def _handle_busy_submit(
     without interrupting; ``steer`` → inject into the live turn if accepted,
     else queue.
     """
-    mode = _load_busy_input_mode()
     agent = session.get("agent")
     with session["history_lock"]:
+        if session.get("idle_compression_running"):
+            # An idle compactor already owns the agent.  Accept every busy
+            # input mode through the lossless queue, without steering or
+            # interrupting the compressor and without discarding its result.
+            _enqueue_prompt(session, text, transport)
+            session["last_active"] = time.time()
+            return _ok(rid, {"status": "queued"})
         if not session.get("running"):
             # The turn ended between prompt.submit's first busy check and this
             # helper. Let the caller retry and claim the now-idle session.
             return None
+    mode = _load_busy_input_mode()
     if mode == "steer" and agent is not None and hasattr(agent, "steer"):
         try:
             if agent.steer(text):
@@ -5883,6 +6130,10 @@ def _handle_busy_submit(
     # provider or compute-host method while holding history_lock: an interrupt
     # can wait behind the very operation it is trying to cancel.
     with session["history_lock"]:
+        if session.get("idle_compression_running"):
+            _enqueue_prompt(session, text, transport)
+            session["last_active"] = time.time()
+            return _ok(rid, {"status": "queued"})
         if not session.get("running"):
             return None
         _enqueue_prompt(session, text, transport)
@@ -5902,7 +6153,12 @@ def _drain_queued_prompt(rid, sid: str, session: dict) -> bool:
     """
     with session["history_lock"]:
         queued = session.get("queued_prompt")
-        if not queued or session.get("running"):
+        if (
+            not queued
+            or _session_busy(session)
+            or session.get("_finalized")
+            or not _session_has_live_identity(sid, session)
+        ):
             return False
         session["queued_prompt"] = None
         session["running"] = True
@@ -6736,7 +6992,7 @@ def _(rid, params: dict) -> dict:
     session, err = _sess_nowait(params, rid)
     if err:
         return err
-    if session.get("running"):
+    if _session_busy(session):
         return _err(rid, 4009, "session busy")
     raw = str(params.get("cwd", "") or "").strip()
     if not raw:
@@ -6773,7 +7029,7 @@ def _session_live_status(sid: str, session: dict) -> str:
     # session stuck mid-construction.
     if ready is not None and not ready.is_set() and session.get("agent_build_started"):
         return "starting"
-    if session.get("running"):
+    if _session_busy(session):
         return "working"
     return "idle"
 
@@ -6880,7 +7136,7 @@ def _live_session_payload(
         )
         inflight = _inflight_snapshot(session)
         queued = _queued_prompt_snapshot(session)
-        running = bool(session.get("running"))
+        running = _session_busy(session)
     payload = {
         "info": _fallback_session_info(session),
         "message_count": len(history),
@@ -7178,7 +7434,7 @@ def _(rid, params: dict) -> dict:
     session, err = _sess_nowait(params, rid)
     if err:
         return err
-    if session.get("running"):
+    if _session_busy(session):
         return _err(
             rid,
             4009,
@@ -8975,7 +9231,7 @@ def _(rid, params: dict) -> dict:
     # write would either clobber the undo (version matches) or
     # silently drop the agent's output (version mismatch, see below).
     # Neither is what the user wants — make them /interrupt first.
-    if session.get("running"):
+    if _session_busy(session):
         return _err(
             rid, 4009, "session busy — /interrupt the current turn before /undo"
         )
@@ -9018,7 +9274,7 @@ def _(rid, params: dict) -> dict:
     session, err = _sess(params, rid)
     if err:
         return err
-    if session.get("running"):
+    if _session_busy(session):
         return _err(
             rid, 4009, "session busy — /interrupt the current turn before /compress"
         )
@@ -9569,6 +9825,9 @@ def _(rid, params: dict) -> dict:
     session, err = _sess_nowait(params, rid)
     if err:
         return err
+    with session["history_lock"]:
+        if session.get("idle_compression_running"):
+            return _err(rid, 4009, "session busy — idle compression in progress")
     agent = session.get("agent")
     if agent is None or not hasattr(agent, "steer"):
         return _err(rid, 4010, "agent does not support steer")
@@ -9612,11 +9871,11 @@ def _(rid, params: dict) -> dict:
     while True:
         busy_transport = None
         with session["history_lock"]:
-            if session.get("running"):
+            if _session_busy(session):
                 # Don't reject a mid-turn prompt — queue it (and, by default,
-                # interrupt the live turn) so it runs as the next turn. The
-                # provider interrupt itself must happen after this lock is
-                # released: a non-interruptible tool may keep it waiting.
+                # interrupt the live turn) so it runs as the next turn. Idle
+                # compaction uses the same lossless busy-input contract, but
+                # finishes and syncs before the queued turn is drained.
                 busy_transport = t or session.get("transport")
             else:
                 break
@@ -9951,7 +10210,7 @@ def _notification_poller_loop(
 
         _requeued = False
         with session["history_lock"]:
-            if session.get("running"):
+            if _session_busy(session):
                 process_registry.completion_queue.put(evt)
                 _requeued = True
             else:
@@ -10026,7 +10285,7 @@ def _notification_poller_loop(
             _emitted.add(_dedup_key)
 
         with session["history_lock"]:
-            if session.get("running"):
+            if _session_busy(session):
                 process_registry.completion_queue.put(evt)
                 break
             session["running"] = True
@@ -10590,7 +10849,7 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
         # we check that guard before re-firing.
         if goal_followup:
             with session["history_lock"]:
-                if session.get("running"):
+                if _session_busy(session):
                     # User already sent something — their turn wins,
                     # the judge will re-run on the next turn anyway.
                     return
@@ -10630,7 +10889,7 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
             )
             for index, (_evt, synth) in enumerate(drained):
                 with session["history_lock"]:
-                    if session.get("running"):
+                    if _session_busy(session):
                         for pending_evt, _pending_synth in drained[index:]:
                             process_registry.completion_queue.put(pending_evt)
                         break
@@ -11522,7 +11781,7 @@ def _(rid, params: dict) -> dict:
                 # with the new base_url but old model (or vice versa),
                 # producing 400/404s the user never asked for.  Parity
                 # with the gateway's running-agent /model guard.
-                if session.get("running"):
+                if _session_busy(session):
                     return _err(
                         rid,
                         4009,
@@ -13383,7 +13642,7 @@ def _(rid, params: dict) -> dict:
     if name == "retry":
         if not session:
             return _err(rid, 4001, "no active session to retry")
-        if session.get("running"):
+        if _session_busy(session):
             return _err(
                 rid, 4009, "session busy — /interrupt the current turn before /retry"
             )
@@ -13513,7 +13772,7 @@ def _(rid, params: dict) -> dict:
         # /undo 3 backs up three user turns at once. See issue #21910.
         if not session:
             return _err(rid, 4001, "no active session to undo")
-        if session.get("running"):
+        if _session_busy(session):
             return _err(
                 rid, 4009, "session busy — /interrupt the current turn before /undo"
             )
@@ -13628,7 +13887,7 @@ def _(rid, params: dict) -> dict:
     if name in {"compress", "compact"}:
         if not session:
             return _err(rid, 4001, "no active session to compress")
-        if session.get("running"):
+        if _session_busy(session):
             return _err(
                 rid, 4009, "session busy — /interrupt the current turn before /compress"
             )
@@ -14697,7 +14956,7 @@ def _mirror_slash_side_effects(sid: str, session: dict, command: str) -> str:
             return str(ack.get("message") or f"compute-host {route_name} failed")
         _apply_compute_host_metadata_mirror(session, ack)
         return str(ack.get("output") or "")
-    if name in _MUTATES_WHILE_RUNNING and session.get("running"):
+    if name in _MUTATES_WHILE_RUNNING and _session_busy(session):
         return f"session busy — /interrupt the current turn before running /{name}"
 
     try:
@@ -15231,7 +15490,7 @@ def _(rid, params: dict) -> dict:
     # the agent's output (version mismatch path) or clobbering the
     # rollback (version-matches path).  A file-scoped rollback only
     # touches disk, so we allow it.
-    if not file_path and session.get("running"):
+    if not file_path and _session_busy(session):
         return _err(
             rid,
             4009,

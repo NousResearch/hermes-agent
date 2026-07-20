@@ -5658,11 +5658,15 @@ def test_idle_compression_attempt_cooldown_after_noop(monkeypatch):
         lambda *args, **kwargs: calls.append(kwargs) or (0, {}),
     )
 
-    assert server._run_idle_compression_once("sid", session) is False
-    assert session["last_idle_compression_attempt_at"] == 250.0
-    now["value"] = 300.0
-    assert server._run_idle_compression_once("sid", session) is False
-    assert len(calls) == 1
+    server._sessions["sid"] = session
+    try:
+        assert server._run_idle_compression_once("sid", session) is False
+        assert session["last_idle_compression_attempt_at"] == 250.0
+        now["value"] = 300.0
+        assert server._run_idle_compression_once("sid", session) is False
+        assert len(calls) == 1
+    finally:
+        server._sessions.pop("sid", None)
 
 
 def test_idle_compression_schedule_debounces_to_latest_activity(monkeypatch):

@@ -185,3 +185,124 @@ def test_e2e_disabled_flag_ships_artifact():
     persisted = _last_assistant(result["messages"])
     assert persisted is not None
     assert persisted["content"] == "Doing it.\n\ncourse"
+
+
+# ---------------------------------------------------------------------------
+# Scratch-block variant: a trailing block of leaked "<marker>:" reasoning lines
+# (rather than a single stray word). Same self-reinforcement loop, driven
+# through the real conversation loop. Ground truth: production session
+# 20260720_221918_7f069b (claude-opus-4-8) leaked repeating "count:" blocks.
+# ---------------------------------------------------------------------------
+
+
+def _scratch_contaminated_history(marker="count", n=2):
+    """n assistant turns each ending in a leaked scratch block, alternating with
+    user turns — the loop is already established when the current turn runs."""
+    msgs = []
+    for i in range(n):
+        msgs.append({"role": "user", "content": f"request {i}"})
+        msgs.append(
+            {"role": "assistant", "content": f"Handling step {i}.\n\n{marker}: private note {i}."}
+        )
+    return msgs
+
+
+def test_e2e_scratch_block_delivered_and_persisted_both_scrubbed_and_agree():
+    """Once the scratch-block loop is established, a new turn ending in a
+    trailing 'count:' block must ship clean to the user AND land clean in
+    history, and the two must be identical. Real conversation loop."""
+    agent = _make_agent(max_iterations=10)
+    raw = "Here is the real answer.\n\ncount: double-check X.\ncount: actually Y."
+    agent.client.chat.completions.create.side_effect = [
+        _mock_response(content=raw, finish_reason="stop"),
+    ]
+
+    with (
+        patch.object(agent, "_persist_session"),
+        patch.object(agent, "_save_trajectory"),
+        patch.object(agent, "_cleanup_task_resources"),
+    ):
+        result = agent.run_conversation(
+            "do the thing",
+            conversation_history=_scratch_contaminated_history(n=2),
+        )
+
+    assert result["final_response"] == "Here is the real answer."
+    persisted = _last_assistant(result["messages"])
+    assert persisted is not None
+    assert persisted["content"] == "Here is the real answer."
+    assert result["final_response"] == persisted["content"]
+
+
+def test_e2e_scratch_block_one_off_delivered_intact():
+    """A one-off trailing scratch block with NO established loop is left intact
+    end-to-end (might be legitimate content)."""
+    agent = _make_agent(max_iterations=10)
+    raw = "Here is the answer.\n\nnote: remember to test."
+    agent.client.chat.completions.create.side_effect = [
+        _mock_response(content=raw, finish_reason="stop"),
+    ]
+
+    with (
+        patch.object(agent, "_persist_session"),
+        patch.object(agent, "_save_trajectory"),
+        patch.object(agent, "_cleanup_task_resources"),
+    ):
+        result = agent.run_conversation("do the thing")  # no prior history
+
+    assert result["final_response"] == raw
+    persisted = _last_assistant(result["messages"])
+    assert persisted is not None
+    assert persisted["content"] == raw
+
+
+def test_e2e_scratch_block_mixed_closing_sentence_preserved():
+    """C1 safety guarantee end-to-end: when a normal sentence closes the turn
+    AFTER the scratch block (a 'mixed' leak), nothing is stripped — the block is
+    not trailing, so the closing sentence is never lost."""
+    agent = _make_agent(max_iterations=10)
+    raw = "Analysis done.\n\ncount: check the suffix.\n\n先并行查这三项。"
+    agent.client.chat.completions.create.side_effect = [
+        _mock_response(content=raw, finish_reason="stop"),
+    ]
+
+    with (
+        patch.object(agent, "_persist_session"),
+        patch.object(agent, "_save_trajectory"),
+        patch.object(agent, "_cleanup_task_resources"),
+    ):
+        result = agent.run_conversation(
+            "do the thing",
+            conversation_history=_scratch_contaminated_history(n=3),
+        )
+
+    assert result["final_response"] == raw
+    persisted = _last_assistant(result["messages"])
+    assert persisted is not None
+    assert persisted["content"] == raw
+
+
+def test_e2e_scratch_block_disabled_flag_ships_block():
+    """With the feature disabled, an established scratch-block loop still ships
+    the block both delivered and persisted — proves the scrub is what removes it."""
+    agent = _make_agent(max_iterations=10)
+    agent._strip_trailing_artifacts = False
+    raw = "Doing it.\n\ncount: leaked reasoning."
+    agent.client.chat.completions.create.side_effect = [
+        _mock_response(content=raw, finish_reason="stop"),
+    ]
+
+    with (
+        patch.object(agent, "_persist_session"),
+        patch.object(agent, "_save_trajectory"),
+        patch.object(agent, "_cleanup_task_resources"),
+    ):
+        result = agent.run_conversation(
+            "do the thing",
+            conversation_history=_scratch_contaminated_history(n=3),
+        )
+
+    assert result["final_response"] == raw
+    persisted = _last_assistant(result["messages"])
+    assert persisted is not None
+    assert persisted["content"] == raw

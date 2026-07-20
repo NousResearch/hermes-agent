@@ -5499,6 +5499,7 @@ def run_conversation(
                 # appended to `messages`, so the history window this reads is the
                 # same one _build_assistant_message sees just below.
                 final_response = agent._strip_trailing_artifact(final_response)
+                final_response = agent._strip_trailing_scratch_block(final_response)
 
                 final_msg = agent._build_assistant_message(assistant_message, finish_reason)
 

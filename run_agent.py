@@ -5971,6 +5971,19 @@ class AIAgent:
         from agent.chat_completion_helpers import _strip_trailing_artifact
         return _strip_trailing_artifact(self, content)
 
+    def _strip_trailing_scratch_block(self, content: str) -> str:
+        """Forwarder — see ``agent.chat_completion_helpers._strip_trailing_scratch_block``.
+
+        Sibling of ``_strip_trailing_artifact`` for the multi-line variant: a
+        trailing block of leaked scratchpad lines (each led by the same
+        ``<marker>:``) rather than a single stray word. Exposed on the agent so
+        the conversation loop can run the identical scrub on the user-facing
+        ``final_response`` that ``build_assistant_message`` runs on the persisted
+        message, keeping delivered and stored text in agreement.
+        """
+        from agent.chat_completion_helpers import _strip_trailing_scratch_block
+        return _strip_trailing_scratch_block(self, content)
+
     def _needs_thinking_reasoning_pad(self) -> bool:
         """Return True when the active provider enforces reasoning_content echo-back.
 

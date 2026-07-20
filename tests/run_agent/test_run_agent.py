@@ -2508,6 +2508,157 @@ class TestStripTrailingArtifact:
         assert delivered == persisted
 
 
+class TestStripTrailingScratchBlock:
+    """Sibling of the bare-token loop breaker for the multi-line variant: a
+    trailing block of leaked scratchpad lines (each led by the same
+    ``<marker>:``) rather than a single stray word.
+
+    Ground truth (production, session 20260720_221918_7f069b, claude-opus-4-8):
+    the model leaked its private ``count: …`` reasoning as trailing lines, stored
+    verbatim, then imitated itself so the block recurred and the loop locked in.
+    The leaked marker is discovered dynamically — it is NOT hard-coded to
+    ``count`` — because a hallucinated scratch marker can be any short word.
+    """
+
+    def _history(self, marker="count", n=2):
+        """A recent history where n assistant turns carry the given marker."""
+        return [
+            {"role": "user", "content": "do a thing"},
+            *[
+                {"role": "assistant", "content": f"Prior answer {i}.\n\n{marker}: private thought {i}."}
+                for i in range(n)
+            ],
+        ]
+
+    def test_trailing_block_stripped_once_loop_established(self, agent):
+        """A trailing scratch block is removed once the marker has begun
+        repeating across recent turns; the real answer text is preserved."""
+        agent._session_messages = self._history(n=2)
+        raw = "Here is the real answer.\n\ncount: I should double-check X.\ncount: actually Y is simpler."
+        result = agent._build_assistant_message(_mock_assistant_msg(content=raw), "stop")
+        assert result["content"] == "Here is the real answer."
+
+    def test_single_trailing_line_block_stripped(self, agent):
+        """The block can be a single trailing marker line (not only multi-line)."""
+        agent._session_messages = self._history(n=2)
+        raw = "Answer body.\n\ncount: one stray reasoning line."
+        result = agent._build_assistant_message(_mock_assistant_msg(content=raw), "stop")
+        assert result["content"] == "Answer body."
+
+    def test_one_off_block_not_stripped(self, agent):
+        """A first, one-off scratch block (no repetition in history) is left
+        intact — it might be legitimate content, and there is no active loop."""
+        agent._session_messages = [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "A perfectly normal earlier reply."},
+        ]
+        raw = "The answer.\n\nnote: remember to test."
+        result = agent._build_assistant_message(_mock_assistant_msg(content=raw), "stop")
+        assert result["content"] == raw
+
+    def test_marker_is_dynamic_not_hardcoded(self, agent):
+        """The marker is discovered from the content — a hallucinated marker
+        other than 'count' (here 'plan') is handled identically."""
+        agent._session_messages = self._history(marker="plan", n=2)
+        raw = "Shipping it.\n\nplan: step one.\nplan: step two."
+        result = agent._build_assistant_message(_mock_assistant_msg(content=raw), "stop")
+        assert result["content"] == "Shipping it."
+
+    def test_cjk_marker_stripped(self, agent):
+        """A CJK scratch marker with a fullwidth colon is handled too."""
+        agent._session_messages = self._history(marker="思考", n=2)
+        raw = "结论在此。\n\n思考：先查 A。\n思考：再查 B。"
+        result = agent._build_assistant_message(_mock_assistant_msg(content=raw), "stop")
+        assert result["content"] == "结论在此。"
+
+    def test_mid_content_marker_line_kept(self, agent):
+        """CRITICAL C1 safety guarantee: a marker block that is NOT at the very
+        end (a normal sentence closes the turn after it) is left completely
+        untouched — we only ever strip a TRAILING block, never mid-content."""
+        agent._session_messages = self._history(n=3)
+        raw = "Analysis done.\n\ncount: check the suffix lineage.\n\n先并行查这三项。"
+        result = agent._build_assistant_message(_mock_assistant_msg(content=raw), "stop")
+        assert result["content"] == raw
+
+    def test_different_marker_not_counted(self, agent):
+        """History repeats 'count' but the new turn's trailing block uses a
+        different marker with no history of its own — the gate is marker-specific
+        (mirrors the bare-token behaviour), so it is left intact."""
+        agent._session_messages = self._history(marker="count", n=3)
+        raw = "All set.\n\nokay: this is different."
+        result = agent._build_assistant_message(_mock_assistant_msg(content=raw), "stop")
+        assert result["content"] == raw
+
+    def test_disabled_flag_is_noop(self, agent):
+        """With the shared feature flag disabled, even a contaminated turn is kept."""
+        agent._strip_trailing_artifacts = False
+        agent._session_messages = self._history(n=3)
+        raw = "Doing it.\n\ncount: leaked reasoning."
+        result = agent._build_assistant_message(_mock_assistant_msg(content=raw), "stop")
+        assert result["content"] == raw
+
+    def test_intermittent_history_still_detected(self, agent):
+        """Unlike the bare-token contiguous walk, the scratch gate tolerates gaps:
+        the leak is intermittent early on (block, then a few clean turns, then the
+        block returns). A clean turn between marker turns must NOT reset the gate,
+        as long as min_repeats marker turns fall within the bounded window."""
+        agent._session_messages = [
+            {"role": "assistant", "content": "one\n\ncount: a"},
+            {"role": "assistant", "content": "a perfectly clean intervening reply."},
+            {"role": "assistant", "content": "two\n\ncount: b"},
+        ]
+        raw = "three\n\ncount: c"
+        result = agent._build_assistant_message(_mock_assistant_msg(content=raw), "stop")
+        # Two 'count' turns within the window (gap tolerated) → loop confirmed.
+        assert result["content"] == "three"
+
+    def test_bounded_window_does_not_scan_whole_history(self, agent):
+        """Only a bounded window of recent assistant turns is inspected. With a
+        small window and clean recent turns at the head, an old run of the marker
+        deeper in history stays out of reach and must not license a strip."""
+        agent._trailing_artifact_window = 2
+        agent._session_messages = [
+            {"role": "assistant", "content": f"old {i}\n\ncount: x"} for i in range(10)
+        ]
+        agent._session_messages += [
+            {"role": "assistant", "content": "recent clean reply one."},
+            {"role": "assistant", "content": "recent clean reply two."},
+        ]
+        raw = "new\n\ncount: y"
+        result = agent._build_assistant_message(_mock_assistant_msg(content=raw), "stop")
+        assert result["content"] == raw
+
+    def test_anthropic_content_blocks_trailing_text_scrubbed(self, agent):
+        """The interleaved-thinking verbatim replay path scrubs the trailing text
+        block's scratch block too, leaving thinking/tool_use blocks byte-identical."""
+        agent._session_messages = self._history(n=2)
+        blocks = [
+            {"type": "thinking", "thinking": "reason", "signature": "sig"},
+            {"type": "tool_use", "id": "t1", "name": "terminal", "input": {}},
+            {"type": "text", "text": "Running it.\n\ncount: leaked."},
+        ]
+        msg = _mock_assistant_msg(content="Running it.\n\ncount: leaked.")
+        msg.anthropic_content_blocks = blocks
+        result = agent._build_assistant_message(msg, "tool_calls")
+        out_blocks = result["anthropic_content_blocks"]
+        assert out_blocks[0] == {"type": "thinking", "thinking": "reason", "signature": "sig"}
+        assert out_blocks[1] == {"type": "tool_use", "id": "t1", "name": "terminal", "input": {}}
+        assert out_blocks[2]["text"] == "Running it."
+        # original block dict not mutated (copy-on-write)
+        assert blocks[2]["text"] == "Running it.\n\ncount: leaked."
+
+    def test_delivered_final_response_matches_persisted(self, agent):
+        """The user-facing final_response scrub and the persisted-message scrub
+        produce the same text for the same history, so the delivered response
+        can't retain a scratch block that was cleared from the stored transcript."""
+        agent._session_messages = self._history(n=2)
+        raw = "The real answer.\n\ncount: leaked reasoning line."
+        persisted = agent._build_assistant_message(_mock_assistant_msg(content=raw), "stop")["content"]
+        delivered = agent._strip_trailing_scratch_block(raw)
+        assert delivered == "The real answer."
+        assert delivered == persisted
+
+
 class TestFormatToolsForSystemMessage:
     def test_no_tools_returns_empty_array(self, agent):
         agent.tools = []

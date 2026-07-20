@@ -1345,6 +1345,171 @@ def _strip_trailing_artifact(agent, content: str) -> str:
     return cleaned
 
 
+# Matches a "scratchpad marker" leading a line: a short word (ASCII or CJK)
+# immediately followed by a colon (ASCII ':' or fullwidth '：'). This is the
+# structural signature of a leaked internal-reasoning line — e.g. a model that
+# emits "count: <thought>" / "plan: <thought>" / "思考：<thought>" scratch lines
+# it was meant to keep private. The marker WORD is discovered dynamically from
+# the content; we never hard-code which word leaked, because a hallucinated
+# scratch marker can be ANY short word (see _strip_trailing_scratch_block).
+_SCRATCH_MARKER_RE = re.compile(
+    r"^\s*([A-Za-z][A-Za-z]{0,11}|[\u4e00-\u9fff]{1,6})[:：]"
+)
+
+
+def _scratch_block_marker(content: str):
+    """If ``content`` ENDS with a run of one or more non-blank lines that all
+    begin with the SAME scratch marker word, return that marker word (else None).
+
+    A "trailing scratch block" is the tail of the content where every non-blank
+    line starts with ``<marker>:`` for one fixed ``<marker>`` (blank lines inside
+    the run are tolerated and skipped). This is the sibling of the bare-token
+    artifact handled by :func:`_strip_trailing_artifact`: instead of a single
+    stray word, the upstream leaked a multi-line block of private reasoning at
+    the very end of the turn.
+
+    Returns ``(marker, block_start_index)`` where ``block_start_index`` is the
+    character offset of the first line of the block, so
+    ``content[:block_start_index].rstrip()`` removes the whole trailing block.
+    Returns ``None`` when the content does not end with such a block.
+    """
+    if not isinstance(content, str) or not content:
+        return None
+    lines = content.split("\n")
+    # Locate the last non-blank line — the block, if any, ends here.
+    last = None
+    for i in range(len(lines) - 1, -1, -1):
+        if lines[i].strip():
+            last = i
+            break
+    if last is None:
+        return None
+    m = _SCRATCH_MARKER_RE.match(lines[last])
+    if not m:
+        return None
+    marker = m.group(1)
+    # Walk upward while each non-blank line carries the SAME marker; blank lines
+    # between marker lines are part of the block and skipped. Stop at the first
+    # non-blank line that is NOT a "<marker>:" line for this same marker — that
+    # is real content, and the block starts below it.
+    block_top = last
+    k = last
+    while k >= 0:
+        if not lines[k].strip():
+            k -= 1
+            continue
+        mm = _SCRATCH_MARKER_RE.match(lines[k])
+        if mm and mm.group(1) == marker:
+            block_top = k
+            k -= 1
+        else:
+            break
+    block_start_index = sum(len(l) + 1 for l in lines[:block_top])
+    return marker, block_start_index
+
+
+def _content_has_scratch_marker(content: str, marker: str) -> bool:
+    """True if ANY line of ``content`` begins with ``<marker>:`` (the given
+    scratch marker word).
+
+    Used only for the loop-detection gate. It counts marker occurrences
+    ANYWHERE in a prior turn — including turns where the scratch block sits mid
+    content followed by a normal closing sentence ("mixed" leaks) — because
+    those are equally evidence that the model is in a scratchpad-leaking state,
+    even though we only ever STRIP a trailing block (never mid-content text).
+    """
+    if not isinstance(content, str) or not content or not marker:
+        return False
+    for ln in content.split("\n"):
+        mm = _SCRATCH_MARKER_RE.match(ln)
+        if mm and mm.group(1) == marker:
+            return True
+    return False
+
+
+def _strip_trailing_scratch_block(agent, content: str) -> str:
+    """Remove a self-reinforcing trailing *scratch block* from assistant content.
+
+    Sibling of :func:`_strip_trailing_artifact`. Where that function handles a
+    single stray trailing word (``…sentence.\\n\\ncourse``), this one handles the
+    richer case observed in production: a model leaks a multi-line block of its
+    private reasoning at the very end of a turn — consecutive lines each led by a
+    short "scratch marker" and a colon, e.g.::
+
+        …real answer text.
+
+        count: I should check X before Y.
+        count: actually Z is simpler.
+        count 完.
+
+    Stored verbatim into history, the model then sees prior turns ending in
+    these ``count:`` lines and imitates itself, so the block recurs and the loop
+    locks in — the identical self-reinforcement dynamic documented on
+    :func:`_strip_trailing_artifact`, just with a block instead of a token.
+
+    The leaked marker word is NOT hard-coded: a hallucinated scratch marker can
+    be any short word (``count`` today, ``plan``/``note``/``思考`` tomorrow), so
+    the marker is discovered from the current content and then confirmed against
+    recent history. Conservative by design — ALL must hold before we strip:
+
+      * The content ENDS with a scratch block (a run of trailing lines all led
+        by one fixed ``<marker>:``). Mid-content marker lines are never removed,
+        so a legitimate closing sentence after the block is always preserved.
+      * That SAME marker already appears in at least ``min_repeats`` recent
+        assistant turns within a bounded window. A one-off block is left intact.
+        The gate counts a prior turn as evidence if the marker appears anywhere
+        in it (trailing OR mixed), because both signal the leaking state; but the
+        strip itself only ever touches the trailing block of the current turn.
+
+    Runs at the same storage boundary as ``_strip_trailing_artifact`` so one
+    scrub cleans every downstream consumer (API replay, state.db, gateway
+    delivery, compression, title generation). Returns the content unchanged when
+    the feature is disabled, there is no trailing block, or the gate fails.
+    """
+    if not getattr(agent, "_strip_trailing_artifacts", True):
+        return content
+    if not isinstance(content, str) or not content:
+        return content
+
+    min_repeats = getattr(agent, "_trailing_artifact_min_repeats", 2)
+    window = max(getattr(agent, "_trailing_artifact_window", 8), min_repeats)
+
+    found = _scratch_block_marker(content)
+    if not found:
+        return content
+    marker, block_start_index = found
+
+    # Loop gate: count recent assistant turns (newest-first, bounded window)
+    # that also carry this marker. Unlike the bare-token walk, we do NOT require
+    # strict contiguity — the leak is intermittent early on (it appears, then
+    # several clean turns, then returns), so a contiguity break would miss the
+    # loop before it locks in. A bounded windowed count keeps detection local
+    # while tolerating the gaps. A single occurrence (no priors) is left intact.
+    recent = getattr(agent, "_session_messages", None)
+    if not isinstance(recent, list):
+        return content
+    repeats = 0
+    assistant_turns_seen = 0
+    for prior in reversed(recent):
+        if not isinstance(prior, dict) or prior.get("role") != "assistant":
+            continue
+        prior_content = prior.get("content")
+        if not isinstance(prior_content, str) or not prior_content:
+            continue
+        assistant_turns_seen += 1
+        if assistant_turns_seen > window:
+            break
+        if _content_has_scratch_marker(prior_content, marker):
+            repeats += 1
+            if repeats >= min_repeats:
+                break
+    if repeats < min_repeats:
+        return content
+
+    # Strip the trailing scratch block (and any whitespace it sat on).
+    return content[:block_start_index].rstrip()
+
+
 def build_assistant_message(agent, assistant_message, finish_reason: str) -> dict:
     """Build a normalized assistant message dict from an API response message.
 
@@ -1413,6 +1578,13 @@ def build_assistant_message(agent, assistant_message, finish_reason: str) -> dic
     # _strip_trailing_artifact.
     if isinstance(_san_content, str) and _san_content:
         _san_content = _strip_trailing_artifact(agent, _san_content)
+
+    # Sibling scrub for the multi-line variant: a trailing block of leaked
+    # scratchpad lines (each led by the same "<marker>:") rather than a single
+    # stray word. Same self-reinforcement dynamic, same storage-boundary fix.
+    # See _strip_trailing_scratch_block.
+    if isinstance(_san_content, str) and _san_content:
+        _san_content = _strip_trailing_scratch_block(agent, _san_content)
 
     # Defence-in-depth: redact credentials (PATs, API keys, Bearer tokens)
     # from assistant content BEFORE the message enters conversation history.
@@ -1521,6 +1693,7 @@ def build_assistant_message(agent, assistant_message, finish_reason: str) -> dic
                     and _last["text"]
                 ):
                     _scrubbed = _strip_trailing_artifact(agent, _last["text"])
+                    _scrubbed = _strip_trailing_scratch_block(agent, _scrubbed)
                     if _scrubbed != _last["text"]:
                         # Copy-on-write: don't mutate the block dict shared with
                         # the raw API response object.

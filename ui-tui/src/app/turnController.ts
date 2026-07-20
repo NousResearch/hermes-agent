@@ -555,7 +555,12 @@ class TurnController {
     this.flushPendingNotice()
   }
 
-  recordMessageComplete(payload: { rendered?: string; reasoning?: string; response_previewed?: boolean; text?: string }) {
+  recordMessageComplete(payload: {
+    rendered?: string
+    reasoning?: string
+    response_previewed?: boolean
+    text?: string
+  }) {
     this.closeReasoningSegment()
 
     // Ink renders markdown via <Md>; the gateway's Rich-rendered ANSI
@@ -687,6 +692,7 @@ class TurnController {
     }
 
     const authoritativeText = text.trimStart()
+
     if (!authoritativeText) {
       return
     }

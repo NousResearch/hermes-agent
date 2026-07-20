@@ -7046,20 +7046,33 @@ def _write_custom_endpoint(cfg: Dict[str, Any], body: CustomEndpointUpdate) -> T
     if not isinstance(existing, dict):
         existing = {}
 
-    entry: Dict[str, Any] = {
+    # Merge onto the existing entry rather than replacing it. A providers.<name>
+    # block is not owned by this panel: it can carry hand-written keys the
+    # dashboard has no field for — ``api_mode``, ``key_env``/``api_key_env``,
+    # ``extra_headers`` (which may themselves carry credentials),
+    # ``request_overrides`` — and rebuilding from scratch silently dropped every
+    # one of them on an unrelated edit, leaving a provider that no longer
+    # authenticates or speaks the right protocol.
+    entry: Dict[str, Any] = dict(existing)
+    entry.update({
         "name": name,
         "base_url": base_url,
         "model": model,
-        "models": {model: {}},
         "discover_models": bool(body.discover_models),
-    }
+    })
+    # Same for the model map: the panel names one default model, it does not
+    # enumerate the provider's catalogue. Keep the other models (and their
+    # context lengths) and just ensure this one is present.
+    existing_models = entry.get("models")
+    models_map: Dict[str, Any] = dict(existing_models) if isinstance(existing_models, dict) else {}
+    current_model_entry = models_map.get(model)
+    models_map[model] = dict(current_model_entry) if isinstance(current_model_entry, dict) else {}
+    entry["models"] = models_map
     if body.context_length and body.context_length > 0:
         entry["context_length"] = int(body.context_length)
         entry["models"][model]["context_length"] = int(body.context_length)
     if body.api_key is not None and body.api_key.strip():
         entry["api_key"] = body.api_key.strip()
-    elif isinstance(existing.get("api_key"), str) and existing.get("api_key"):
-        entry["api_key"] = existing["api_key"]
 
     providers[endpoint_id] = entry
     cfg["providers"] = providers

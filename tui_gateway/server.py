@@ -6345,7 +6345,7 @@ def _(rid, params: dict) -> dict:
         # Display keeps the full transcript; the model-fed history drops a
         # dangling/interrupted tool-call tail so a session killed mid-loop does
         # not replay the unanswered call forever (#29086).
-        prefix = display_history[: max(0, len(display_history) - len(raw_history))]
+        prefix = db.get_ancestor_display_prefix(target)
         history = sanitize_replay_history(raw_history)
         # Restore the model/provider/reasoning/tier this chat last used so the
         # deferred build (and the info below) match the eager path — without them
@@ -6421,9 +6421,7 @@ def _(rid, params: dict) -> dict:
         # re-issue the unanswered call forever — the permanent-"thinking" stuck
         # session in #29086.  The messaging gateway already strips this; this is
         # the WebUI/TUI resume path picking up the same cleanup.
-        display_history_prefix = display_history[
-            : max(0, len(display_history) - len(raw_history))
-        ]
+        display_history_prefix = db.get_ancestor_display_prefix(target)
         history = sanitize_replay_history(raw_history)
         messages = _history_to_messages(display_history)
         tokens = _set_session_context(target)

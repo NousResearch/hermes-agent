@@ -4995,3 +4995,76 @@ class TestThreadContextUnverifiedTagging:
         # Renders successfully without trust tag (exception → unknown trust).
         assert "U_X: hello" in content
         assert "[unverified]" not in content
+
+    @pytest.mark.asyncio
+    async def test_thread_context_reads_block_only_alert(self, adapter):
+        """Alerting integrations (Grafana, etc.) post messages whose content
+        lives in Block Kit ``blocks`` with an empty plain ``text`` field. The
+        thread-context loop must fall back to block extraction instead of
+        dropping the message, so the agent can see what it is replying under."""
+        adapter._thread_context_cache.clear()
+        adapter._app.client.conversations_replies = self._make_replies([
+            {
+                "ts": "100.0",
+                "user": "",
+                "username": "Grafana",
+                "bot_id": "B_GRAFANA",
+                "text": "",
+                "blocks": [
+                    {
+                        "type": "rich_text",
+                        "elements": [
+                            {
+                                "type": "rich_text_section",
+                                "elements": [
+                                    {"type": "text", "text": "FIRING: High CPU on prod-db"}
+                                ],
+                            }
+                        ],
+                    }
+                ],
+            },
+            {"ts": "101.0", "user": "U_BOB", "text": "on it"},
+        ])
+
+        with patch.object(
+            adapter, "_resolve_user_name",
+            new=AsyncMock(side_effect=lambda uid, **_: uid),
+        ):
+            content = await adapter._fetch_thread_context(
+                channel_id="C1", thread_ts="100.0", current_ts="999.0",
+            )
+
+        assert "FIRING: High CPU on prod-db" in content
+        assert "U_BOB: on it" in content
+
+    @pytest.mark.asyncio
+    async def test_thread_context_reads_attachment_only_message(self, adapter):
+        """Legacy webhook bots carry content in ``attachments`` (text/fallback)
+        with an empty ``text``. The thread-context loop must fall back to the
+        attachment text rather than skipping the message."""
+        adapter._thread_context_cache.clear()
+        adapter._app.client.conversations_replies = self._make_replies([
+            {
+                "ts": "100.0",
+                "user": "",
+                "username": "LegacyBot",
+                "bot_id": "B_LEGACY",
+                "text": "",
+                "attachments": [
+                    {"text": "Disk usage at 95% on web-01", "fallback": "disk alert"}
+                ],
+            },
+            {"ts": "101.0", "user": "U_BOB", "text": "acking"},
+        ])
+
+        with patch.object(
+            adapter, "_resolve_user_name",
+            new=AsyncMock(side_effect=lambda uid, **_: uid),
+        ):
+            content = await adapter._fetch_thread_context(
+                channel_id="C1", thread_ts="100.0", current_ts="999.0",
+            )
+
+        assert "Disk usage at 95% on web-01" in content
+        assert "U_BOB: acking" in content

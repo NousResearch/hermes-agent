@@ -4390,6 +4390,21 @@ class SlackAdapter(BasePlatformAdapter):
 
                 msg_text = msg.get("text", "").strip()
                 if not msg_text:
+                    # Alerting integrations (Grafana, etc.) and older webhook
+                    # bots carry their content in Block Kit blocks or legacy
+                    # attachments with an empty plain-text field. Fall back the
+                    # same way the main message handler does so these messages
+                    # aren't dropped from thread context.
+                    msg_text = _extract_text_from_slack_blocks(
+                        msg.get("blocks", [])
+                    ).strip()
+                if not msg_text:
+                    for att in msg.get("attachments", []):
+                        att_text = (att.get("text", "") or att.get("fallback", "")).strip()
+                        if att_text:
+                            msg_text = att_text
+                            break
+                if not msg_text:
                     continue
 
                 # Strip bot mentions from context messages

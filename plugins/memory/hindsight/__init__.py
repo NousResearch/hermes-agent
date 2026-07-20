@@ -39,6 +39,7 @@ import os
 import queue
 import sys
 import threading
+import time
 
 from datetime import datetime, timezone
 from typing import Any, Dict, List
@@ -252,6 +253,10 @@ _loop_lock = threading.Lock()
 # Sentinel pushed to the per-provider retain queue to wake the writer for a
 # clean exit. A unique object so it can never collide with a real job.
 _WRITER_SENTINEL = object()
+
+# Durable retain outbox tuning. A retain that fails (e.g. Hindsight down) is
+# otherwise logged and dropped; we persist it to disk and replay it instead.
+_OUTBOX_SWEEP_LIMIT = 25             # max buffered entries re-enqueued per sweep
 
 
 def _get_loop() -> asyncio.AbstractEventLoop:
@@ -669,6 +674,16 @@ class HindsightMemoryProvider(MemoryProvider):
         self._writer_thread: threading.Thread | None = None
         self._shutting_down = threading.Event()
         self._atexit_registered = False
+        # Durable retain outbox: each retain is persisted to disk BEFORE it is
+        # enqueued and deleted only on confirmed success, so a Hindsight outage
+        # buffers writes instead of silently dropping them (the writer otherwise
+        # logs+discards failures). Replayed on writer startup and after each
+        # success; _outbox_inflight prevents double-enqueue across sweeps.
+        self._outbox_dir = str(get_hermes_home() / "hindsight" / "outbox")
+        self._outbox_lock = threading.Lock()
+        self._outbox_inflight: set[str] = set()
+        self._outbox_seq = 0
+        self._outbox_replayed = False
         # Legacy alias — older tests/callers reference _sync_thread directly.
         # Points at _writer_thread once the writer is running.
         self._sync_thread = None
@@ -1103,6 +1118,128 @@ class HindsightMemoryProvider(MemoryProvider):
         # external code that joins _sync_thread keeps working.
         self._sync_thread = thread
         thread.start()
+        # One-time per process: replay anything buffered by a prior outage /
+        # restart. Runs on the fresh writer thread we just started.
+        if not self._outbox_replayed:
+            self._outbox_replayed = True
+            self._outbox_sweep(limit=10_000)
+
+    # ---- Durable retain outbox ------------------------------------------
+    def _run_retain_payload(self, payload: dict) -> None:
+        """Execute one retain from a serialized payload (mirrors _do_retain)."""
+        item = self._build_retain_kwargs(
+            payload["content"],
+            context=payload.get("context"),
+            metadata=payload.get("metadata"),
+            tags=payload.get("tags"),
+        )
+        item.pop("bank_id", None)
+        item.pop("retain_async", None)
+        if payload.get("update_mode") is not None:
+            item["update_mode"] = payload["update_mode"]
+        self._run_hindsight_operation(
+            lambda client: client.aretain_batch(
+                bank_id=payload["bank_id"],
+                items=[item],
+                document_id=payload.get("document_id"),
+                retain_async=payload.get("retain_async", False),
+            )
+        )
+
+    def _queue_durable_retain(self, payload: dict) -> None:
+        """Persist then enqueue one retain payload through the durable outbox."""
+        self._ensure_writer()
+        self._register_atexit()
+        outbox_path = self._outbox_persist(payload)
+        self._outbox_enqueue(payload, outbox_path)
+
+    def _outbox_persist(self, payload: dict):
+        """Write a retain payload to the outbox before it is enqueued. Returns
+        the path, or None if persistence failed (the retain is still enqueued)."""
+        try:
+            os.makedirs(self._outbox_dir, exist_ok=True)
+            with self._outbox_lock:
+                self._outbox_seq += 1
+                seq = self._outbox_seq
+            path = os.path.join(self._outbox_dir, f"{time.time():.6f}-{os.getpid()}-{seq}.json")
+            tmp = path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as fh:
+                json.dump(payload, fh)
+            os.replace(tmp, path)
+            return path
+        except Exception as exc:
+            logger.warning("Hindsight outbox persist failed (retain still queued): %s", exc)
+            return None
+
+    def _outbox_discard(self, path) -> None:
+        if not path:
+            return
+        try:
+            os.unlink(path)
+        except FileNotFoundError:
+            pass
+        except Exception as exc:
+            logger.debug("Hindsight outbox discard failed: %s", exc)
+
+    def _make_retain_job(self, payload: dict, outbox_path):
+        key = str(outbox_path) if outbox_path else None
+
+        def job() -> None:
+            try:
+                self._run_retain_payload(payload)
+            except Exception:
+                # Failure: clear in-flight so a later sweep retries; leave the
+                # outbox file on disk. Re-raise so _writer_loop logs it.
+                if key:
+                    with self._outbox_lock:
+                        self._outbox_inflight.discard(key)
+                raise
+            # Success: durable copy no longer needed; Hindsight is reachable, so
+            # opportunistically drain any backlog from a past outage.
+            self._outbox_discard(outbox_path)
+            if key:
+                with self._outbox_lock:
+                    self._outbox_inflight.discard(key)
+            self._outbox_sweep()
+
+        return job
+
+    def _outbox_enqueue(self, payload: dict, outbox_path) -> None:
+        key = str(outbox_path) if outbox_path else None
+        if key:
+            with self._outbox_lock:
+                if key in self._outbox_inflight:
+                    return
+                self._outbox_inflight.add(key)
+        self._retain_queue.put(self._make_retain_job(payload, outbox_path))
+
+    def _outbox_sweep(self, limit: int = _OUTBOX_SWEEP_LIMIT) -> None:
+        """Re-enqueue buffered retains not already in flight, oldest first."""
+        try:
+            if not os.path.isdir(self._outbox_dir):
+                return
+            entries = sorted(
+                e.path for e in os.scandir(self._outbox_dir)
+                if e.is_file() and e.name.endswith(".json")
+            )
+            count = 0
+            for path in entries:
+                if count >= limit:
+                    break
+                with self._outbox_lock:
+                    if path in self._outbox_inflight:
+                        continue
+                try:
+                    with open(path, encoding="utf-8") as fh:
+                        payload = json.load(fh)
+                except Exception:
+                    continue
+                self._outbox_enqueue(payload, path)
+                count += 1
+            if count:
+                logger.info("Hindsight: re-enqueued %d buffered retain(s) from outbox", count)
+        except Exception as exc:
+            logger.debug("Hindsight outbox sweep failed: %s", exc)
 
     def _writer_loop(self) -> None:
         """Drain the retain queue serially. Exits on sentinel.
@@ -1241,6 +1378,7 @@ class HindsightMemoryProvider(MemoryProvider):
             pass  # packaging not available or other issue — proceed anyway
 
         self._config = _load_config()
+        self._outbox_dir = str(get_hermes_home() / "hindsight" / "outbox")
         self._platform = str(kwargs.get("platform") or "").strip()
         self._user_id = str(kwargs.get("user_id") or "").strip()
         self._user_name = str(kwargs.get("user_name") or "").strip()
@@ -1664,32 +1802,22 @@ class HindsightMemoryProvider(MemoryProvider):
         retain_async_flag = self._retain_async
         retain_context = self._retain_context
 
-        def _do_retain() -> None:
-            item = self._build_retain_kwargs(
-                content,
-                context=retain_context,
-                metadata=metadata_snapshot,
-                tags=lineage_tags or None,
-            )
-            item.pop("bank_id", None)
-            item.pop("retain_async", None)
-            if update_mode is not None:
-                item["update_mode"] = update_mode
-            logger.debug("Hindsight retain: bank=%s, doc=%s, mode=%s, async=%s, content_len=%d, num_turns=%d",
-                         bank_id, document_id, update_mode, retain_async_flag, len(content), num_turns)
-            self._run_hindsight_operation(
-                lambda client: client.aretain_batch(
-                    bank_id=bank_id,
-                    items=[item],
-                    document_id=document_id,
-                    retain_async=retain_async_flag,
-                )
-            )
-            logger.debug("Hindsight retain succeeded")
-
-        self._ensure_writer()
-        self._register_atexit()
-        self._retain_queue.put(_do_retain)
+        payload = {
+            "v": 1,
+            "bank_id": bank_id,
+            "document_id": document_id,
+            "retain_async": retain_async_flag,
+            "content": content,
+            "context": retain_context,
+            "metadata": metadata_snapshot,
+            "tags": lineage_tags or None,
+            "update_mode": update_mode,
+        }
+        logger.debug("Hindsight retain: bank=%s, doc=%s, mode=%s, async=%s, content_len=%d, num_turns=%d",
+                     bank_id, document_id, update_mode, retain_async_flag, len(content), num_turns)
+        # Persist to the durable outbox BEFORE enqueue so a Hindsight outage
+        # buffers the write instead of dropping it. Deleted on confirmed success.
+        self._queue_durable_retain(payload)
         # Advance the append watermark only after the delta is queued, so a
         # later retain doesn't re-ship turns we've already handed to the writer.
         if update_mode == "append":
@@ -1707,19 +1835,25 @@ class HindsightMemoryProvider(MemoryProvider):
                 return tool_error("Missing required parameter: content")
             context = args.get("context")
             try:
-                item = self._build_retain_kwargs(
-                    content,
-                    context=context,
-                    tags=args.get("tags"),
-                )
-                # aretain_batch takes bank_id/retain_async as call args, not item keys.
-                item.pop("bank_id", None)
-                item.pop("retain_async", None)
+                payload = {
+                    "v": 1,
+                    "bank_id": self._bank_id,
+                    "document_id": None,
+                    "retain_async": self._retain_async,
+                    "content": content,
+                    "context": context,
+                    "metadata": self._build_metadata(message_count=1, turn_index=self._turn_index),
+                    "tags": args.get("tags"),
+                    "update_mode": None,
+                }
                 logger.debug("Tool hindsight_retain: bank=%s, content_len=%d, context=%s",
                              self._bank_id, len(content), context)
-                self._run_hindsight_operation(
-                    lambda client: client.aretain_batch(bank_id=self._bank_id, items=[item])
-                )
+                # Tool calls are synchronous by contract: report success only
+                # after Hindsight acknowledges the write. Persist first so a
+                # failed call can still be replayed by the background writer.
+                outbox_path = self._outbox_persist(payload)
+                self._run_retain_payload(payload)
+                self._outbox_discard(outbox_path)
                 logger.debug("Tool hindsight_retain: success")
                 return json.dumps({"result": "Memory stored successfully."})
             except Exception as e:

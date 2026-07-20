@@ -10,6 +10,7 @@ import os
 import re
 import stat
 import sys
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -1121,6 +1122,52 @@ class TestSyncTurn:
         assert "こんにちは" in raw_json
         assert "你好" in raw_json
         assert "👨‍👩‍👧‍👦" in raw_json
+
+
+# ---------------------------------------------------------------------------
+# Durable retain outbox tests
+# ---------------------------------------------------------------------------
+
+
+class TestDurableRetainOutbox:
+    def test_successful_background_retain_removes_outbox_entry(self, provider):
+        provider.sync_turn("remember this", "I will")
+        provider._retain_queue.join()
+
+        assert list(Path(provider._outbox_dir).glob("*.json")) == []
+
+    def test_failed_background_retain_stays_on_disk(self, provider):
+        provider._client.aretain_batch.side_effect = RuntimeError("offline")
+
+        provider.sync_turn("remember this", "I will")
+        provider._retain_queue.join()
+
+        entries = list(Path(provider._outbox_dir).glob("*.json"))
+        assert len(entries) == 1
+        assert json.loads(entries[0].read_text())["content"]
+
+    def test_buffered_retain_replays_after_service_recovers(self, provider):
+        provider._client.aretain_batch.side_effect = RuntimeError("offline")
+        provider.sync_turn("remember this", "I will")
+        provider._retain_queue.join()
+        assert len(list(Path(provider._outbox_dir).glob("*.json"))) == 1
+
+        provider._client.aretain_batch.side_effect = None
+        provider._outbox_sweep()
+        provider._retain_queue.join()
+
+        assert provider._client.aretain_batch.call_count == 2
+        assert list(Path(provider._outbox_dir).glob("*.json")) == []
+
+    def test_failed_tool_retain_is_durable_but_returns_error(self, provider):
+        provider._client.aretain_batch.side_effect = RuntimeError("offline")
+
+        result = json.loads(provider.handle_tool_call("hindsight_retain", {"content": "important"}))
+
+        assert "error" in result
+        entries = list(Path(provider._outbox_dir).glob("*.json"))
+        assert len(entries) == 1
+        assert json.loads(entries[0].read_text())["content"] == "important"
 
 
 # ---------------------------------------------------------------------------

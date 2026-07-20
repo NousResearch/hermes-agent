@@ -17,6 +17,7 @@ from gateway.config import Platform
 from gateway.platforms.base import MessageEvent, MessageType
 from gateway.run import GatewayRunner
 from gateway.session import SessionSource
+from plugins.platforms.feishu.adapter import parse_feishu_post_payload
 
 
 def _make_runner():
@@ -113,3 +114,62 @@ async def test_plain_model_arg_unchanged(tmp_path, monkeypatch):
 
     assert len(switched_models) == 1
     assert switched_models[0] == "deepseek/DeepSeek-V4-Pro"
+
+
+@pytest.mark.asyncio
+async def test_feishu_post_a_tag_through_model_command(tmp_path, monkeypatch):
+    """End-to-end: Feishu post <a> payload → parse → /model → correct model name."""
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    (hermes_home / "config.yaml").write_text(
+        yaml.safe_dump({"model": {"default": "gpt-4o", "provider": "openrouter"}}),
+        encoding="utf-8",
+    )
+
+    import gateway.run as gateway_run
+
+    monkeypatch.setattr(gateway_run, "_hermes_home", hermes_home)
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+
+    switched_models = []
+
+    def fake_switch(**kwargs):
+        switched_models.append(kwargs.get("raw_input"))
+        return ModelSwitchResult(success=False, error_message="test-stop")
+
+    monkeypatch.setattr("hermes_cli.model_switch.switch_model", fake_switch)
+
+    async def passthrough(fn, /, *args, **kwargs):
+        return fn(*args, **kwargs)
+
+    monkeypatch.setattr(asyncio, "to_thread", passthrough)
+
+    # Simulate a real Feishu post payload where the user typed:
+    #   /model new-api.abrdns.com/DeepSeek-V4-Pro
+    # Feishu auto-linked the URL-like text into an <a> element.
+    feishu_post_payload = {
+        "content": [
+            [
+                {"tag": "text", "text": "/model "},
+                {
+                    "tag": "a",
+                    "text": "new-api.abrdns.com/DeepSeek-V4-Pro",
+                    "href": "http://new-api.abrdns.com/DeepSeek-V4-Pro",
+                },
+            ]
+        ]
+    }
+
+    # Parse through the real Feishu adapter post parser
+    parsed = parse_feishu_post_payload(feishu_post_payload)
+    # This produces something like:
+    # "/model [new\-api\.abrdns\.com/DeepSeek\-V4\-Pro](http://...)"
+    assert "[" in parsed.text_content, (
+        "Feishu adapter should render <a> as Markdown link"
+    )
+
+    event = _make_event(parsed.text_content)
+    await _make_runner()._handle_model_command(event)
+
+    assert len(switched_models) == 1
+    assert switched_models[0] == "new-api.abrdns.com/DeepSeek-V4-Pro"

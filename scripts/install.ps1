@@ -412,6 +412,36 @@ function Install-AgentBrowser {
 # Dependency checks
 # ============================================================================
 
+# Resolve the PowerShell host executable used to spawn child PowerShell
+# processes (the astral uv installer below).  We must NOT hardcode the bare
+# name `powershell`: it names *Windows PowerShell* and only resolves when its
+# System32 directory is on PATH.  When install.ps1 is run under PowerShell 7+
+# (`pwsh`) -- or any session where `powershell` isn't on PATH -- a bare
+# `powershell` spawn dies with "The term 'powershell' is not recognized",
+# aborting uv installation (field report: Windows install stuck, uv install
+# failed with exactly that message).  Prefer the absolute path of the host we
+# are already running in (PATH-independent), then fall back to whichever of
+# powershell/pwsh is resolvable, and only then to the bare name.
+function Get-PowerShellHostExe {
+    try {
+        $hostExe = (Get-Process -Id $PID).Path
+        if ($hostExe -and (Test-Path $hostExe)) {
+            $leaf = Split-Path $hostExe -Leaf
+            # Only trust the current host when it is a real PowerShell CLI
+            # (not e.g. powershell_ise.exe or an embedded host that can't take
+            # `-ExecutionPolicy`/`-Command`).
+            if ($leaf -match '^(?i:powershell|pwsh)\.exe$') { return $hostExe }
+        }
+    } catch { }
+    foreach ($candidate in @("powershell", "pwsh")) {
+        $cmd = Get-Command $candidate -CommandType Application -ErrorAction SilentlyContinue |
+            Select-Object -First 1
+        if ($cmd -and $cmd.Source) { return $cmd.Source }
+    }
+    # Last-ditch: hand back the bare name so the spawn surfaces its own error.
+    return "powershell"
+}
+
 function Install-Uv {
     # Hermes owns its own uv at $HermesHome\bin\uv.exe.  Always install there --
     # no PATH probing, no conda guards, no multi-location resolution chains.
@@ -427,72 +457,20 @@ function Install-Uv {
     }
 
     Write-Info "Installing managed uv into $HermesHome\bin ..."
-    $binDir = Join-Path $HermesHome "bin"
-    New-Item -ItemType Directory -Path $binDir -Force | Out-Null
+    New-Item -ItemType Directory -Path (Join-Path $HermesHome "bin") -Force | Out-Null
 
-    # Download the uv binary zip directly from GitHub releases instead of
-    # running the astral installer script (`irm https://astral.sh/uv/install.ps1 | iex`).
-    # The astral installer calls Get-ExecutionPolicy internally (from the
-    # Microsoft.PowerShell.Security module), and on some Windows installs that
-    # module fails to load -- killing the installer before it can download
-    # anything (field report: "The 'Get-ExecutionPolicy' command was found in
-    # the module 'Microsoft.PowerShell.Security', but the module could not be
-    # loaded").  Downloading the zip ourselves sidesteps the broken module
-    # entirely: no child powershell spawn, no execution-policy check, no
-    # script parsing.  The astral installer is just a wrapper around this zip
-    # anyway.
-    $arch = Get-WindowsArch
-    $targetTriple = switch ($arch) {
-        "x64"   { "x86_64-pc-windows-msvc" }
-        "arm64" { "aarch64-pc-windows-msvc" }
-        "x86"   { "i686-pc-windows-msvc" }
-        default { throw "Unsupported Windows architecture for uv: $arch" }
-    }
-    $zipName = "uv-$targetTriple.zip"
-    # The /latest/download/ URL always serves the most recent release zip.
-    $downloadUrls = @(
-        "https://github.com/astral-sh/uv/releases/latest/download/$zipName",
-        "https://releases.astral.sh/github/uv/releases/latest/download/$zipName"
-    )
-
-    $tempZip = [System.IO.Path]::GetTempFileName() + ".zip"
-    $tempExtract = Join-Path ([System.IO.Path]::GetTempPath()) ([System.IO.Path]::GetRandomFileName())
-    $downloaded = $false
-
-    foreach ($url in $downloadUrls) {
-        try {
-            Write-Info "Downloading uv from $url ..."
-            Invoke-WebRequest -Uri $url -OutFile $tempZip -UseBasicParsing -ErrorAction Stop
-            $downloaded = $true
-            break
-        } catch {
-            Write-Warn "Download failed from $url : $_"
-        }
-    }
-
-    if (-not $downloaded) {
-        Write-Err "Failed to download uv from all mirrors"
-        Write-Info "Install manually: https://docs.astral.sh/uv/getting-started/installation/"
-        Remove-Item $tempZip -Force -ErrorAction SilentlyContinue
-        return $false
-    }
-
+    # UV_INSTALL_DIR tells the astral installer to place the binary
+    # directly into $HermesHome\bin instead of ~/.local/bin.
+    $prevEAP = $ErrorActionPreference
     try {
-        New-Item -ItemType Directory -Path $tempExtract -Force | Out-Null
-        Expand-Archive -Path $tempZip -DestinationPath $tempExtract -Force -ErrorAction Stop
-
-        # The zip contains uv.exe (and uvx.exe) either at the root or inside
-        # a subdirectory.  Find and move them to the managed bin dir.
-        $executables = Get-ChildItem -Path $tempExtract -Recurse -Filter "*.exe" -ErrorAction SilentlyContinue
-        if (-not $executables) {
-            Write-Err "uv zip did not contain any executables"
-            Write-Info "Install manually: https://docs.astral.sh/uv/getting-started/installation/"
-            return $false
-        }
-
-        foreach ($exe in $executables) {
-            Copy-Item -Path $exe.FullName -Destination $binDir -Force -ErrorAction Stop
-        }
+        $ErrorActionPreference = "Continue"
+        $env:UV_INSTALL_DIR = Join-Path $HermesHome "bin"
+        # Spawn via the resolved host exe (see Get-PowerShellHostExe) rather
+        # than a bare `powershell`, which isn't guaranteed to be on PATH under
+        # PowerShell 7 / pwsh-only setups.
+        $psHostExe = Get-PowerShellHostExe
+        & $psHostExe -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex" 2>&1 | Out-Null
+        $ErrorActionPreference = $prevEAP
 
         if (Test-Path $managedUv) {
             $script:UvCmd = $managedUv
@@ -501,16 +479,14 @@ function Install-Uv {
             return $true
         }
 
-        Write-Err "uv.exe not found at $managedUv after extraction"
+        Write-Err "uv installed but not found at $managedUv"
         Write-Info "Install manually: https://docs.astral.sh/uv/getting-started/installation/"
         return $false
     } catch {
-        Write-Err "Failed to extract uv: $_"
+        if ($prevEAP) { $ErrorActionPreference = $prevEAP }
+        Write-Err "Failed to install uv: $_"
         Write-Info "Install manually: https://docs.astral.sh/uv/getting-started/installation/"
         return $false
-    } finally {
-        Remove-Item $tempZip -Force -ErrorAction SilentlyContinue
-        Remove-Item $tempExtract -Recurse -Force -ErrorAction SilentlyContinue
     }
 }
 

@@ -1351,6 +1351,14 @@ Each time the event fires, Hermes spawns a subprocess for every matching hook (m
 // Inject context for pre_llm_call:
 {"context": "Today is Friday, 2026-04-17"}
 
+// Replace output for a transform hook (a JSON string is the shortest form):
+"Rewritten assistant response"
+
+// Field-shaped objects are also accepted for scripts that edit the input payload:
+{"response_text": "Rewritten assistant response"}  // transform_llm_output
+{"result": "Rewritten tool result"}                // transform_tool_result
+{"output": "Rewritten terminal output"}            // transform_terminal_output
+
 // Keep the agent going at the verify gate (pre_verify); both shapes accepted:
 {"action": "continue", "message": "Run the formatter, then finish."}
 {"decision": "block",  "reason":  "Run the formatter, then finish."}

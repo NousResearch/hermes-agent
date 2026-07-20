@@ -1290,7 +1290,11 @@ def _handle_unblock(args: dict, **kw) -> str:
     try:
         kb, conn = _connect(board=board)
         try:
-            ok = kb.unblock_task(conn, str(tid))
+            ok = kb.unblock_task(
+                conn,
+                str(tid),
+                active_pr_recovery=args.get("active_pr_recovery"),
+            )
             if not ok:
                 return tool_error(f"could not unblock {tid} (not blocked or unknown)")
             task = kb.get_task(conn, str(tid))
@@ -1886,6 +1890,30 @@ KANBAN_UNBLOCK_SCHEMA = {
             "task_id": {
                 "type": "string",
                 "description": "Blocked task id to move to ready or parent-gated todo.",
+            },
+            "active_pr_recovery": {
+                "type": "object",
+                "description": (
+                    "Optional one-shot bypass for the same canonical task after an "
+                    "independent REQUEST_CHANGES verdict. Every pin is required and "
+                    "validated against the task/comment audit trail; ordinary active-PR "
+                    "duplicate prevention remains the default."
+                ),
+                "properties": {
+                    "pr_url": {"type": "string"},
+                    "reviewed_head": {"type": "string"},
+                    "expected_branch": {"type": "string"},
+                    "expected_workspace": {"type": "string"},
+                    "reviewer": {"type": "string"},
+                },
+                "required": [
+                    "pr_url",
+                    "reviewed_head",
+                    "expected_branch",
+                    "expected_workspace",
+                    "reviewer",
+                ],
+                "additionalProperties": False,
             },
             "board": _board_schema_prop(),
         },

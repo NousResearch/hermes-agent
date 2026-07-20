@@ -603,6 +603,31 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
         default=None,
         help="Optional reason/note — recorded as a comment before unblocking. Quote multi-word reasons.",
     )
+    p_unblock.add_argument(
+        "--active-pr-url",
+        default=None,
+        help="Existing GitHub PR URL for an audited same-task REQUEST_CHANGES recovery.",
+    )
+    p_unblock.add_argument(
+        "--reviewed-head",
+        default=None,
+        help="Full reviewed Git head SHA pinned by the REQUEST_CHANGES verdict.",
+    )
+    p_unblock.add_argument(
+        "--expected-branch",
+        default=None,
+        help="Existing task branch; recovery fails if the task pin differs.",
+    )
+    p_unblock.add_argument(
+        "--expected-workspace",
+        default=None,
+        help="Existing task worktree path; recovery fails if the task pin differs.",
+    )
+    p_unblock.add_argument(
+        "--reviewer",
+        default=None,
+        help="Independent comment author whose latest verdict is REQUEST_CHANGES.",
+    )
     p_unblock.add_argument("task_ids", nargs="+")
 
     p_promote = sub.add_parser(
@@ -2106,12 +2131,45 @@ def _cmd_unblock(args: argparse.Namespace) -> int:
     if reason is not None:
         reason = reason.strip() or None
     author = _profile_author() if reason else None
+    recovery_values: dict[str, Optional[str]] = {
+        "pr_url": getattr(args, "active_pr_url", None),
+        "reviewed_head": getattr(args, "reviewed_head", None),
+        "expected_branch": getattr(args, "expected_branch", None),
+        "expected_workspace": getattr(args, "expected_workspace", None),
+        "reviewer": getattr(args, "reviewer", None),
+    }
+    supplied_recovery = [key for key, value in recovery_values.items() if value]
+    if supplied_recovery and len(supplied_recovery) != len(recovery_values):
+        missing = sorted(set(recovery_values) - set(supplied_recovery))
+        print(
+            "active-PR recovery requires all pins; missing: " + ", ".join(missing),
+            file=sys.stderr,
+        )
+        return 1
+    if supplied_recovery and len(ids) != 1:
+        print("active-PR recovery applies to exactly one canonical task", file=sys.stderr)
+        return 1
+    active_pr_recovery = (
+        {key: str(value) for key, value in recovery_values.items()}
+        if supplied_recovery
+        else None
+    )
     failed: list[str] = []
     with kb.connect_closing() as conn:
         for tid in ids:
             if reason:
                 kb.add_comment(conn, tid, author, f"UNBLOCK: {reason}")
-            if not kb.unblock_task(conn, tid):
+            try:
+                unblocked = kb.unblock_task(
+                    conn,
+                    tid,
+                    active_pr_recovery=active_pr_recovery,
+                )
+            except ValueError as exc:
+                failed.append(tid)
+                print(f"cannot unblock {tid}: {exc}", file=sys.stderr)
+                continue
+            if not unblocked:
                 failed.append(tid)
                 print(f"cannot unblock {tid} (not blocked/scheduled?)", file=sys.stderr)
             else:

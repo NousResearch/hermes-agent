@@ -2938,8 +2938,14 @@ def add_comment(
             "VALUES (?, ?, ?, ?)",
             (task_id, author.strip(), body.strip(), now),
         )
-        _append_event(conn, task_id, "commented", {"author": author, "len": len(body)})
-        return int(cur.lastrowid or 0)
+        comment_id = int(cur.lastrowid or 0)
+        _append_event(
+            conn,
+            task_id,
+            "commented",
+            {"author": author, "len": len(body), "comment_id": comment_id},
+        )
+        return comment_id
 
 
 def list_comments(conn: sqlite3.Connection, task_id: str) -> list[Comment]:
@@ -3481,6 +3487,76 @@ def recompute_ready(
 # Claim / complete / block
 # ---------------------------------------------------------------------------
 
+def _active_pr_recovery_revalidate_for_claim(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    now: int,
+) -> Optional[str]:
+    """Atomic receipt revalidation at claim time.
+
+    Returns ``None`` only when active-PR recovery has never been in scope for
+    this task. The caller then proceeds with the ordinary ``ready -> running``
+    CAS unchanged.
+
+    Once any unblock event carries active-PR recovery evidence, authorization
+    stays fail-closed. A latest plain unblock, malformed/non-v1 receipt, or
+    missing pin is a revocation and returns ``"active_pr"`` rather than
+    restoring the ordinary claim path. A valid latest v1 receipt is rechecked
+    against current task, comment, profile, and one-shot consumption state.
+
+    This MUST be called from inside the same ``write_txn`` as the claim CAS
+    so that a second connection's mutations between the dispatcher's guard
+    read and the claim write cannot race past the receipt check — the
+    SQLite reserved lock acquired by ``BEGIN IMMEDIATE`` serializes the
+    revalidation against any concurrent writer.
+    """
+    events = conn.execute(
+        "SELECT id, payload FROM task_events "
+        "WHERE task_id = ? AND kind = 'unblocked' "
+        "ORDER BY id DESC",
+        (task_id,),
+    ).fetchall()
+    if not events:
+        return None
+
+    parsed_payloads: list[Optional[dict[str, Any]]] = []
+    recovery_existed = False
+    for event in events:
+        raw_payload = event["payload"]
+        try:
+            payload = json.loads(raw_payload) if raw_payload else None
+        except (TypeError, ValueError):
+            payload = None
+        parsed_payloads.append(payload if isinstance(payload, dict) else None)
+        if isinstance(payload, dict) and "active_pr_recovery" in payload:
+            recovery_existed = True
+        elif isinstance(raw_payload, str) and "active_pr_recovery" in raw_payload:
+            # Corrupt JSON that still carries the durable receipt marker is
+            # recovery evidence too; corruption must not restore authority.
+            recovery_existed = True
+
+    if not recovery_existed:
+        return None
+
+    latest_payload = parsed_payloads[0]
+    if latest_payload is None:
+        return "active_pr"
+    receipt = latest_payload.get("active_pr_recovery")
+    if not isinstance(receipt, dict) or receipt.get("version") != 1:
+        return "active_pr"
+    pr_url = receipt.get("pr_url")
+    if not isinstance(pr_url, str) or not pr_url:
+        return "active_pr"
+    return (
+        None
+        if _active_pr_recovery_authorizes_respawn(
+            conn, task_id, pr_url, now=now,
+        )
+        else "active_pr"
+    )
+
+
 def claim_task(
     conn: sqlite3.Connection,
     task_id: str,
@@ -3492,11 +3568,35 @@ def claim_task(
 
     Returns the claimed ``Task`` on success, ``None`` if the task was
     already claimed (or is not in ``ready`` status).
+
+    When active-PR recovery has ever been recorded, its latest authority is
+    revalidated AT THE SAME TIME as the ``ready -> running`` CAS, inside this
+    single ``write_txn``. Any revocation between the dispatcher's pre-claim
+    guard read and this CAS (newer APPROVE, superseding plain unblock,
+    malformed receipt, assignee change to reviewer, branch/workspace drift,
+    profile unresolvable, evidence aged out, comment mutated/deleted, receipt
+    already consumed) causes the CAS to fail with a ``claim_rejected`` event
+    and ``None`` return.
     """
     now = int(time.time())
     lock = claimer or _claimer_id()
     expires = now + _resolve_claim_ttl_seconds(ttl_seconds)
     with write_txn(conn):
+        # Atomic receipt revalidation: closes the guard-read -> claim-write
+        # race where a second connection lands a newer APPROVE or an
+        # assignee -> reviewer change between ``check_respawn_guard`` and
+        # this CAS. The BEGIN IMMEDIATE above ensures we observe the
+        # post-mutation state, not a stale snapshot. When no receipt is in
+        # scope the helper returns None and we proceed unchanged.
+        revocation_reason = _active_pr_recovery_revalidate_for_claim(
+            conn, task_id, now=now,
+        )
+        if revocation_reason is not None:
+            _append_event(
+                conn, task_id, "claim_rejected",
+                {"reason": "active_pr_recovery_revoked", "guard": revocation_reason},
+            )
+            return None
         # Structural invariant: never transition ready -> running while any
         # parent is not yet 'done'. This is the single enforcement point
         # regardless of which writer (create_task, link_tasks, unblock_task,
@@ -5159,7 +5259,12 @@ def promote_task(
     return True, None
 
 
-def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
+def unblock_task(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    active_pr_recovery: Optional[dict[str, str]] = None,
+) -> bool:
     """Transition ``blocked``/``scheduled`` -> ready or todo.
 
     Defensively closes any stale ``current_run_id`` pointer before flipping
@@ -5171,6 +5276,14 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
     """
     now = int(time.time())
     with write_txn(conn):
+        recovery_receipt = None
+        if active_pr_recovery is not None:
+            recovery_receipt = _prepare_active_pr_recovery_receipt(
+                conn,
+                task_id,
+                active_pr_recovery,
+                now=now,
+            )
         stale = conn.execute(
             "SELECT current_run_id FROM tasks WHERE id = ? AND status IN ('blocked', 'scheduled')",
             (task_id,),
@@ -5218,10 +5331,12 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
         )
         if cur.rowcount != 1:
             return False
-        _append_event(
-            conn, task_id, "unblocked",
-            {"status": new_status} if new_status != "ready" else None,
+        payload: dict[str, Any] = (
+            {"status": new_status} if new_status != "ready" else {}
         )
+        if recovery_receipt is not None:
+            payload["active_pr_recovery"] = recovery_receipt
+        _append_event(conn, task_id, "unblocked", payload or None)
         return True
 
 
@@ -6019,6 +6134,381 @@ _RESPAWN_GUARD_PR_URL_RE = re.compile(
     r"https?://github\.com/[^/\s]+/[^/\s]+/pull/\d+",
     re.IGNORECASE,
 )
+_RESPAWN_REVIEW_VERDICT_RE = re.compile(r"\b(APPROVE|REQUEST_CHANGES)\b")
+_RESPAWN_REVIEWED_HEAD_RE = re.compile(r"^[0-9a-f]{40}$", re.IGNORECASE)
+
+
+def _comment_event_id(
+    conn: sqlite3.Connection,
+    task_id: str,
+    comment: sqlite3.Row,
+) -> Optional[int]:
+    """Resolve a comment to its durable audit-event position.
+
+    New comments carry ``comment_id`` in the paired ``commented`` event.  For
+    pre-upgrade rows, accept only a unique author/length/timestamp match; any
+    collision is ambiguous and therefore cannot authorize recovery.
+    """
+    linked = conn.execute(
+        "SELECT id FROM task_events WHERE task_id = ? AND kind = 'commented' "
+        "AND json_extract(payload, '$.comment_id') = ? ORDER BY id ASC",
+        (task_id, int(comment["id"])),
+    ).fetchall()
+    if len(linked) == 1:
+        return int(linked[0]["id"])
+    if linked:
+        return None
+    body = str(comment["body"] or "")
+    legacy = conn.execute(
+        "SELECT id FROM task_events WHERE task_id = ? AND kind = 'commented' "
+        "AND created_at = ? AND json_extract(payload, '$.author') = ? "
+        "AND json_extract(payload, '$.len') = ? ORDER BY id ASC",
+        (
+            task_id,
+            int(comment["created_at"]),
+            str(comment["author"]),
+            len(body),
+        ),
+    ).fetchall()
+    if len(legacy) != 1:
+        return None
+    return int(legacy[0]["id"])
+
+
+def _prepare_active_pr_recovery_receipt(
+    conn: sqlite3.Connection,
+    task_id: str,
+    recovery: dict[str, str],
+    *,
+    now: int,
+) -> dict[str, Any]:
+    """Validate and freeze a one-shot active-PR recovery authorization."""
+    required = {
+        "pr_url",
+        "reviewed_head",
+        "expected_branch",
+        "expected_workspace",
+        "reviewer",
+    }
+    missing = sorted(key for key in required if not str(recovery.get(key, "")).strip())
+    if missing:
+        raise ValueError(
+            "active_pr_recovery requires non-empty " + ", ".join(missing)
+        )
+
+    pr_url = str(recovery["pr_url"]).strip()
+    reviewed_head = str(recovery["reviewed_head"]).strip().lower()
+    expected_branch = str(recovery["expected_branch"]).strip()
+    expected_workspace = str(recovery["expected_workspace"]).strip()
+    reviewer = str(recovery["reviewer"]).strip()
+    if _RESPAWN_GUARD_PR_URL_RE.fullmatch(pr_url) is None:
+        raise ValueError("active_pr_recovery pr_url must be a canonical GitHub PR URL")
+    if _RESPAWN_REVIEWED_HEAD_RE.fullmatch(reviewed_head) is None:
+        raise ValueError("active_pr_recovery reviewed_head must be a full 40-character Git SHA")
+
+    task = conn.execute(
+        "SELECT assignee, status, workspace_kind, workspace_path, branch_name "
+        "FROM tasks WHERE id = ?",
+        (task_id,),
+    ).fetchone()
+    if task is None or task["status"] != "blocked":
+        raise ValueError("active_pr_recovery task must be blocked")
+    if task["workspace_kind"] != "worktree":
+        raise ValueError("active_pr_recovery requires an existing worktree task")
+    if task["branch_name"] != expected_branch:
+        raise ValueError("active_pr_recovery expected_branch does not match the task")
+    if task["workspace_path"] != expected_workspace:
+        raise ValueError("active_pr_recovery expected_workspace does not match the task")
+    assignee = str(task["assignee"] or "").strip()
+    if not assignee:
+        raise ValueError("active_pr_recovery requires a resolvable assignee profile")
+    try:
+        from hermes_cli.profiles import profile_exists  # local import: avoids cycle
+
+        assignee_exists = profile_exists(assignee)
+    except Exception as exc:
+        raise ValueError(
+            "active_pr_recovery could not resolve the assignee profile"
+        ) from exc
+    if not assignee_exists:
+        raise ValueError("active_pr_recovery assignee profile does not exist")
+    if reviewer.casefold() == assignee.casefold():
+        raise ValueError("active_pr_recovery reviewer must be independent of the assignee")
+
+    pr_comment = conn.execute(
+        "SELECT id, created_at FROM task_comments "
+        "WHERE task_id = ? AND instr(body, ?) > 0 AND created_at >= ? "
+        "ORDER BY created_at DESC, id DESC LIMIT 1",
+        (task_id, pr_url, now - _RESPAWN_GUARD_PR_WINDOW),
+    ).fetchone()
+    if pr_comment is None:
+        raise ValueError("active_pr_recovery PR URL is not pinned in a recent task comment")
+
+    latest_block = conn.execute(
+        "SELECT id, created_at, payload FROM task_events "
+        "WHERE task_id = ? AND kind = 'blocked' "
+        "ORDER BY created_at DESC, id DESC LIMIT 1",
+        (task_id,),
+    ).fetchone()
+    if latest_block is None:
+        raise ValueError("active_pr_recovery requires an audited blocked event")
+    verdict_rows = conn.execute(
+        "SELECT id, author, body, created_at FROM task_comments "
+        "WHERE task_id = ? AND created_at >= ? "
+        "ORDER BY created_at DESC, id DESC",
+        (task_id, int(pr_comment["created_at"])),
+    ).fetchall()
+    verdicts = [
+        (row, _RESPAWN_REVIEW_VERDICT_RE.search(row["body"] or ""))
+        for row in verdict_rows
+        if row["author"].casefold() == reviewer.casefold()
+    ]
+    verdicts = [(row, match) for row, match in verdicts if match is not None]
+    if not verdicts:
+        raise ValueError("active_pr_recovery requires an explicit reviewer verdict")
+    review_comment, verdict = verdicts[0]
+    if verdict.group(1) != "REQUEST_CHANGES":
+        raise ValueError("active_pr_recovery latest verdict is not REQUEST_CHANGES")
+    if reviewed_head not in (review_comment["body"] or "").casefold():
+        raise ValueError("active_pr_recovery reviewed_head is not pinned in the verdict")
+    pr_number = pr_url.rsplit("/", 1)[-1]
+    review_body = review_comment["body"] or ""
+    if pr_url not in review_body and re.search(
+        rf"\bPR\s*#\s*{re.escape(pr_number)}\b",
+        review_body,
+        re.IGNORECASE,
+    ) is None:
+        raise ValueError("active_pr_recovery PR is not pinned in the verdict")
+    newer_approval = conn.execute(
+        "SELECT body FROM task_comments "
+        "WHERE task_id = ? AND "
+        "(created_at > ? OR (created_at = ? AND id > ?)) "
+        "ORDER BY created_at DESC, id DESC",
+        (
+            task_id,
+            int(review_comment["created_at"]),
+            int(review_comment["created_at"]),
+            int(review_comment["id"]),
+        ),
+    ).fetchall()
+    if any(
+        (match := _RESPAWN_REVIEW_VERDICT_RE.search(row["body"] or ""))
+        and match.group(1) == "APPROVE"
+        for row in newer_approval
+    ):
+        raise ValueError("active_pr_recovery latest verdict is not REQUEST_CHANGES")
+
+    review_required_block = None
+    for block in conn.execute(
+        "SELECT id, created_at, payload FROM task_events "
+        "WHERE task_id = ? AND kind = 'blocked' AND created_at <= ? "
+        "ORDER BY created_at DESC, id DESC",
+        (task_id, int(review_comment["created_at"])),
+    ).fetchall():
+        try:
+            payload = json.loads(block["payload"] or "{}")
+        except (TypeError, ValueError):
+            continue
+        reason = str(payload.get("reason") or "")
+        if "review-required" not in reason.casefold():
+            continue
+        if pr_url in reason or re.search(
+            rf"\bPR\s*#\s*{re.escape(pr_number)}\b",
+            reason,
+            re.IGNORECASE,
+        ):
+            review_required_block = block
+            break
+    if review_required_block is None:
+        raise ValueError(
+            "active_pr_recovery requires an audited review-required block for this PR"
+        )
+
+    try:
+        latest_block_payload = json.loads(latest_block["payload"] or "{}")
+    except (TypeError, ValueError):
+        latest_block_payload = {}
+    latest_block_reason = str(latest_block_payload.get("reason") or "")
+    latest_is_review_block = int(latest_block["id"]) == int(review_required_block["id"])
+    latest_is_guard_capability = (
+        latest_block_payload.get("kind") == "capability"
+        and "active_pr" in latest_block_reason.casefold()
+    )
+    guarded_event = None
+    if latest_is_guard_capability:
+        for event in conn.execute(
+            "SELECT id, payload FROM task_events "
+            "WHERE task_id = ? AND kind = 'respawn_guarded' "
+            "AND created_at >= ? AND created_at <= ? "
+            "ORDER BY created_at DESC, id DESC",
+            (
+                task_id,
+                int(review_comment["created_at"]),
+                int(latest_block["created_at"]),
+            ),
+        ).fetchall():
+            try:
+                payload = json.loads(event["payload"] or "{}")
+            except (TypeError, ValueError):
+                continue
+            if payload.get("reason") == "active_pr":
+                guarded_event = event
+                break
+        if guarded_event is None:
+            raise ValueError(
+                "active_pr_recovery capability block lacks an audited active_pr guard"
+            )
+    elif not latest_is_review_block:
+        raise ValueError(
+            "active_pr_recovery latest block is unrelated to this review recovery"
+        )
+    newer_claim = None
+    review_event_id = _comment_event_id(conn, task_id, review_comment)
+    if review_event_id is not None:
+        newer_claim = conn.execute(
+            "SELECT 1 FROM task_events "
+            "WHERE task_id = ? AND kind IN ('claimed', 'spawned') AND id > ? "
+            "LIMIT 1",
+            (task_id, review_event_id),
+        ).fetchone()
+    else:
+        # Legacy comments have no durable comment↔event link. They remain
+        # usable only when seconds distinguish the verdict from a later run;
+        # a same-second claim is ambiguous and therefore fails closed.
+        newer_claim = conn.execute(
+            "SELECT 1 FROM task_events "
+            "WHERE task_id = ? AND kind IN ('claimed', 'spawned') "
+            "AND created_at >= ? LIMIT 1",
+            (task_id, int(review_comment["created_at"])),
+        ).fetchone()
+    if newer_claim:
+        raise ValueError("active_pr_recovery reviewer verdict is stale after a newer claim")
+
+    return {
+        "version": 1,
+        "task_id": task_id,
+        "pr_url": pr_url,
+        "reviewed_head": reviewed_head,
+        "branch_name": expected_branch,
+        "workspace_path": expected_workspace,
+        "assignee": assignee,
+        "reviewer": review_comment["author"],
+        "review_comment_id": int(review_comment["id"]),
+        "review_comment_event_id": (
+            int(review_event_id) if review_event_id is not None else None
+        ),
+        "review_comment_sha256": hashlib.sha256(review_body.encode("utf-8")).hexdigest(),
+        "review_required_block_event_id": int(review_required_block["id"]),
+        "prior_guard_event_id": int(guarded_event["id"]) if guarded_event else None,
+    }
+
+
+def _active_pr_recovery_authorizes_respawn(
+    conn: sqlite3.Connection,
+    task_id: str,
+    pr_url: str,
+    *,
+    now: int,
+) -> bool:
+    """Return whether the latest unblock grants one claim for this exact PR."""
+    event = conn.execute(
+        "SELECT id, payload FROM task_events "
+        "WHERE task_id = ? AND kind = 'unblocked' "
+        "ORDER BY id DESC LIMIT 1",
+        (task_id,),
+    ).fetchone()
+    if event is None or not event["payload"]:
+        return False
+    try:
+        payload = json.loads(event["payload"])
+        receipt = payload.get("active_pr_recovery")
+    except (TypeError, ValueError, AttributeError):
+        return False
+    if not isinstance(receipt, dict):
+        return False
+    task = conn.execute(
+        "SELECT assignee, workspace_kind, workspace_path, branch_name "
+        "FROM tasks WHERE id = ?",
+        (task_id,),
+    ).fetchone()
+    if task is None or task["workspace_kind"] != "worktree":
+        return False
+    assignee = str(task["assignee"] or "").strip()
+    reviewer = str(receipt.get("reviewer") or "").strip()
+    if (
+        not assignee
+        or not reviewer
+        or receipt.get("assignee") != assignee
+        or reviewer.casefold() == assignee.casefold()
+    ):
+        return False
+    try:
+        from hermes_cli.profiles import profile_exists  # local import: avoids cycle
+
+        if not profile_exists(assignee):
+            return False
+    except Exception:
+        return False
+    if (
+        receipt.get("version") != 1
+        or receipt.get("task_id") != task_id
+        or receipt.get("pr_url") != pr_url
+        or receipt.get("branch_name") != task["branch_name"]
+        or receipt.get("workspace_path") != task["workspace_path"]
+    ):
+        return False
+    review_comment = conn.execute(
+        "SELECT author, body, created_at FROM task_comments "
+        "WHERE id = ? AND task_id = ?",
+        (receipt.get("review_comment_id"), task_id),
+    ).fetchone()
+    if review_comment is None:
+        return False
+    review_created_at = int(review_comment["created_at"])
+    if now - review_created_at > _RESPAWN_GUARD_PR_WINDOW:
+        return False
+    pr_comment = conn.execute(
+        "SELECT 1 FROM task_comments "
+        "WHERE task_id = ? AND instr(body, ?) > 0 AND created_at >= ? LIMIT 1",
+        (task_id, pr_url, now - _RESPAWN_GUARD_PR_WINDOW),
+    ).fetchone()
+    if pr_comment is None:
+        return False
+    body = review_comment["body"] or ""
+    verdict = _RESPAWN_REVIEW_VERDICT_RE.search(body)
+    if (
+        review_comment["author"] != receipt.get("reviewer")
+        or hashlib.sha256(body.encode("utf-8")).hexdigest()
+        != receipt.get("review_comment_sha256")
+        or receipt.get("reviewed_head", "").casefold() not in body.casefold()
+        or verdict is None
+        or verdict.group(1) != "REQUEST_CHANGES"
+    ):
+        return False
+    newer_approval = conn.execute(
+        "SELECT body FROM task_comments "
+        "WHERE task_id = ? AND "
+        "(created_at > ? OR (created_at = ? AND id > ?)) "
+        "ORDER BY created_at DESC, id DESC",
+        (
+            task_id,
+            review_created_at,
+            review_created_at,
+            int(receipt.get("review_comment_id") or 0),
+        ),
+    ).fetchall()
+    if any(
+        (match := _RESPAWN_REVIEW_VERDICT_RE.search(row["body"] or ""))
+        and match.group(1) == "APPROVE"
+        for row in newer_approval
+    ):
+        return False
+    consumed = conn.execute(
+        "SELECT 1 FROM task_events "
+        "WHERE task_id = ? AND id > ? AND kind IN ('claimed', 'spawned') LIMIT 1",
+        (task_id, int(event["id"])),
+    ).fetchone()
+    return consumed is None
 
 
 @dataclass
@@ -7367,14 +7857,35 @@ def check_respawn_guard(conn: sqlite3.Connection, task_id: str) -> Optional[str]
         if not requeued_after:
             return "recent_success"
 
-    # 4. GitHub PR URL in a recent comment — prior worker already opened a PR.
+    # 4. A receipt makes recent active-PR evidence a fail-closed state: when
+    #    either the PR pin or verdict ages out, keep returning active_pr rather
+    #    than silently falling through to allow.
+    recovery_event = conn.execute(
+        "SELECT 1 FROM task_events WHERE task_id = ? AND kind = 'unblocked' "
+        "AND json_type(payload, '$.active_pr_recovery') = 'object' LIMIT 1",
+        (task_id,),
+    ).fetchone()
+
+    # 5. GitHub PR URL in a recent comment — prior worker already opened a PR.
     pr_cutoff = now - _RESPAWN_GUARD_PR_WINDOW
+    matched_pr = False
     for c in conn.execute(
         "SELECT body FROM task_comments WHERE task_id = ? AND created_at >= ?",
         (task_id, pr_cutoff),
     ).fetchall():
-        if c["body"] and _RESPAWN_GUARD_PR_URL_RE.search(c["body"]):
-            return "active_pr"
+        for match in _RESPAWN_GUARD_PR_URL_RE.finditer(c["body"] or ""):
+            matched_pr = True
+            pr_url = match.group(0)
+            if not _active_pr_recovery_authorizes_respawn(
+                conn,
+                task_id,
+                pr_url,
+                now=now,
+            ):
+                return "active_pr"
+
+    if recovery_event is not None and not matched_pr:
+        return "active_pr"
 
     return None
 

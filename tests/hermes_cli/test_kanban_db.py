@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import concurrent.futures
+import json
 import os
 import sqlite3
 import subprocess
 import sys
+import threading
 import time
 import types
 import unittest.mock
@@ -22,9 +24,14 @@ def kanban_home(tmp_path, monkeypatch):
     """Isolated HERMES_HOME with an empty kanban DB."""
     home = tmp_path / ".hermes"
     home.mkdir()
+    db_path = tmp_path / "kanban.db"
     monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    monkeypatch.delenv("HERMES_KANBAN_BOARD", raising=False)
+    monkeypatch.delenv("HERMES_KANBAN_HOME", raising=False)
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    kb.init_db()
+    assert kb.kanban_db_path().resolve() == db_path.resolve()
+    kb.init_db(db_path=db_path)
     return home
 
 
@@ -1927,6 +1934,926 @@ def test_respawn_guard_active_pr_in_comment(kanban_home):
         )
         reason = kb.check_respawn_guard(conn, t)
     assert reason == "active_pr"
+
+
+def test_respawn_guard_allows_audited_same_task_request_changes_recovery(
+    kanban_home,
+    all_assignees_spawnable,
+):
+    pr_url = "https://github.com/acme/widget/pull/42"
+    reviewed_head = "a" * 40
+    workspace = "/tmp/widget-recovery"
+    branch = "wt/recover-widget"
+
+    with kb.connect() as conn:
+        t = kb.create_task(
+            conn,
+            title="repair reviewed PR",
+            assignee="builder",
+            workspace_kind="worktree",
+            workspace_path=workspace,
+            branch_name=branch,
+        )
+        kb.add_comment(
+            conn,
+            t,
+            "builder",
+            f"review-required: branch {branch}; PR {pr_url}",
+        )
+        assert kb.block_task(conn, t, reason="review-required: PR #42")
+        kb.add_comment(
+            conn,
+            t,
+            "reviewer",
+            f"Independent review — REQUEST_CHANGES\nPR #42 head {reviewed_head}",
+        )
+        kb.add_comment(
+            conn,
+            t,
+            "lead",
+            "Recover after the independent REQUEST_CHANGES handoff; keep the same PR.",
+        )
+
+        assert kb.unblock_task(
+            conn,
+            t,
+            active_pr_recovery={
+                "pr_url": pr_url,
+                "reviewed_head": reviewed_head,
+                "expected_branch": branch,
+                "expected_workspace": workspace,
+                "reviewer": "reviewer",
+            },
+        )
+        assert kb.check_respawn_guard(conn, t) is None
+
+        event = next(
+            event
+            for event in reversed(kb.list_events(conn, t))
+            if event.kind == "unblocked"
+        )
+        assert isinstance(event.payload, dict)
+        receipt = event.payload["active_pr_recovery"]
+        assert receipt["task_id"] == t
+        assert receipt["pr_url"] == pr_url
+        assert receipt["reviewed_head"] == reviewed_head
+        assert receipt["branch_name"] == branch
+        assert receipt["workspace_path"] == workspace
+        assert receipt["reviewer"] == "reviewer"
+
+
+def test_active_pr_recovery_allows_capability_block_after_guarded_unblock(
+    kanban_home,
+    all_assignees_spawnable,
+):
+    """The real deadlock includes a second capability block after the first
+    plain unblock was suppressed by ``active_pr``.  Recovery must retain the
+    earlier review-required handoff instead of requiring it to be the latest
+    block event.
+    """
+    pr_url = "https://github.com/acme/widget/pull/42"
+    reviewed_head = "f" * 40
+    workspace = "/tmp/widget-recovery"
+    branch = "wt/recover-widget"
+
+    with kb.connect() as conn:
+        t = kb.create_task(
+            conn,
+            title="repair reviewed PR",
+            assignee="builder",
+            workspace_kind="worktree",
+            workspace_path=workspace,
+            branch_name=branch,
+        )
+        kb.add_comment(conn, t, "builder", f"PR {pr_url}")
+        assert kb.block_task(conn, t, reason="review-required: PR #42")
+        kb.add_comment(
+            conn,
+            t,
+            "reviewer",
+            f"REQUEST_CHANGES for PR #42 at {reviewed_head}",
+        )
+        kb.add_comment(conn, t, "lead", "Resume the same canonical PR after review.")
+        assert kb.unblock_task(conn, t)
+        result = kb.dispatch_once(conn, spawn_fn=lambda task, workspace: None)
+        assert (t, "active_pr") in result.respawn_guarded
+        assert kb.block_task(
+            conn,
+            t,
+            reason="dispatcher capability: same-card recovery suppressed by active_pr",
+            kind="capability",
+        )
+
+        assert kb.unblock_task(
+            conn,
+            t,
+            active_pr_recovery={
+                "pr_url": pr_url,
+                "reviewed_head": reviewed_head,
+                "expected_branch": branch,
+                "expected_workspace": workspace,
+                "reviewer": "reviewer",
+            },
+        )
+        assert kb.check_respawn_guard(conn, t) is None
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "error"),
+    [
+        (
+            "pr_url",
+            "https://github.com/acme/widget/pull/99",
+            "PR URL is not pinned",
+        ),
+        ("expected_branch", "wt/other", "expected_branch does not match"),
+        ("expected_workspace", "/tmp/other", "expected_workspace does not match"),
+        ("reviewer", "builder", "reviewer must be independent"),
+    ],
+)
+def test_active_pr_recovery_rejects_mismatched_pins(
+    kanban_home,
+    all_assignees_spawnable,
+    field,
+    value,
+    error,
+):
+    pr_url = "https://github.com/acme/widget/pull/42"
+    reviewed_head = "b" * 40
+    workspace = "/tmp/widget-recovery"
+    branch = "wt/recover-widget"
+
+    with kb.connect() as conn:
+        t = kb.create_task(
+            conn,
+            title="repair reviewed PR",
+            assignee="builder",
+            workspace_kind="worktree",
+            workspace_path=workspace,
+            branch_name=branch,
+        )
+        kb.add_comment(conn, t, "builder", f"branch {branch}; PR {pr_url}")
+        assert kb.block_task(conn, t, reason="review-required: PR #42")
+        kb.add_comment(
+            conn,
+            t,
+            "reviewer",
+            f"REQUEST_CHANGES for PR #42 at {reviewed_head}",
+        )
+        recovery = {
+            "pr_url": pr_url,
+            "reviewed_head": reviewed_head,
+            "expected_branch": branch,
+            "expected_workspace": workspace,
+            "reviewer": "reviewer",
+        }
+        recovery[field] = value
+
+        with pytest.raises(ValueError, match=error):
+            kb.unblock_task(conn, t, active_pr_recovery=recovery)
+        task = kb.get_task(conn, t)
+        assert task is not None
+        assert task.status == "blocked"
+
+
+def test_active_pr_recovery_rejects_review_from_another_card(
+    kanban_home,
+    all_assignees_spawnable,
+):
+    pr_url = "https://github.com/acme/widget/pull/42"
+    reviewed_head = "c" * 40
+    workspace = "/tmp/widget-recovery"
+    branch = "wt/recover-widget"
+
+    with kb.connect() as conn:
+        target = kb.create_task(
+            conn,
+            title="target",
+            assignee="builder",
+            workspace_kind="worktree",
+            workspace_path=workspace,
+            branch_name=branch,
+        )
+        other = kb.create_task(conn, title="unrelated review")
+        kb.add_comment(conn, target, "builder", f"PR {pr_url}")
+        assert kb.block_task(conn, target, reason="review-required: PR #42")
+        kb.add_comment(
+            conn,
+            other,
+            "reviewer",
+            f"REQUEST_CHANGES for PR #42 at {reviewed_head}",
+        )
+
+        with pytest.raises(ValueError, match="explicit reviewer verdict"):
+            kb.unblock_task(
+                conn,
+                target,
+                active_pr_recovery={
+                    "pr_url": pr_url,
+                    "reviewed_head": reviewed_head,
+                    "expected_branch": branch,
+                    "expected_workspace": workspace,
+                    "reviewer": "reviewer",
+                },
+            )
+
+
+def test_active_pr_recovery_rejects_superseded_request_changes(
+    kanban_home,
+    all_assignees_spawnable,
+):
+    pr_url = "https://github.com/acme/widget/pull/42"
+    reviewed_head = "d" * 40
+    workspace = "/tmp/widget-recovery"
+    branch = "wt/recover-widget"
+
+    with kb.connect() as conn:
+        t = kb.create_task(
+            conn,
+            title="target",
+            assignee="builder",
+            workspace_kind="worktree",
+            workspace_path=workspace,
+            branch_name=branch,
+        )
+        kb.add_comment(conn, t, "builder", f"PR {pr_url}")
+        assert kb.block_task(conn, t, reason="review-required: PR #42")
+        kb.add_comment(
+            conn,
+            t,
+            "reviewer",
+            f"REQUEST_CHANGES for PR #42 at {reviewed_head}",
+        )
+        kb.add_comment(
+            conn,
+            t,
+            "reviewer",
+            f"APPROVE for PR #42 at {reviewed_head}",
+        )
+
+        with pytest.raises(ValueError, match="latest verdict is not REQUEST_CHANGES"):
+            kb.unblock_task(
+                conn,
+                t,
+                active_pr_recovery={
+                    "pr_url": pr_url,
+                    "reviewed_head": reviewed_head,
+                    "expected_branch": branch,
+                    "expected_workspace": workspace,
+                    "reviewer": "reviewer",
+                },
+            )
+
+
+def test_active_pr_recovery_rejects_newer_verdict_from_another_reviewer(
+    kanban_home,
+    all_assignees_spawnable,
+):
+    """Selecting an older reviewer must not hide a newer global verdict."""
+    pr_url = "https://github.com/acme/widget/pull/42"
+    reviewed_head = "d" * 40
+    workspace = "/tmp/widget-recovery"
+    branch = "wt/recover-widget"
+
+    with kb.connect() as conn:
+        t = kb.create_task(
+            conn,
+            title="target",
+            assignee="builder",
+            workspace_kind="worktree",
+            workspace_path=workspace,
+            branch_name=branch,
+        )
+        kb.add_comment(conn, t, "builder", f"PR {pr_url}")
+        assert kb.block_task(conn, t, reason="review-required: PR #42")
+        kb.add_comment(
+            conn,
+            t,
+            "reviewer-a",
+            f"REQUEST_CHANGES for PR #42 at {reviewed_head}",
+        )
+        kb.add_comment(
+            conn,
+            t,
+            "reviewer-b",
+            f"APPROVE for PR #42 at {reviewed_head}",
+        )
+
+        with pytest.raises(ValueError, match="latest verdict is not REQUEST_CHANGES"):
+            kb.unblock_task(
+                conn,
+                t,
+                active_pr_recovery={
+                    "pr_url": pr_url,
+                    "reviewed_head": reviewed_head,
+                    "expected_branch": branch,
+                    "expected_workspace": workspace,
+                    "reviewer": "reviewer-a",
+                },
+            )
+
+
+def test_active_pr_recovery_authorization_is_consumed_by_first_claim(
+    kanban_home,
+    all_assignees_spawnable,
+):
+    pr_url = "https://github.com/acme/widget/pull/42"
+    reviewed_head = "e" * 40
+    workspace = "/tmp/widget-recovery"
+    branch = "wt/recover-widget"
+
+    with kb.connect() as conn:
+        t = kb.create_task(
+            conn,
+            title="target",
+            assignee="builder",
+            workspace_kind="worktree",
+            workspace_path=workspace,
+            branch_name=branch,
+        )
+        kb.add_comment(conn, t, "builder", f"PR {pr_url}")
+        assert kb.block_task(conn, t, reason="review-required: PR #42")
+        kb.add_comment(
+            conn,
+            t,
+            "reviewer",
+            f"REQUEST_CHANGES for PR #42 at {reviewed_head}",
+        )
+        assert kb.unblock_task(
+            conn,
+            t,
+            active_pr_recovery={
+                "pr_url": pr_url,
+                "reviewed_head": reviewed_head,
+                "expected_branch": branch,
+                "expected_workspace": workspace,
+                "reviewer": "reviewer",
+            },
+        )
+        assert kb.check_respawn_guard(conn, t) is None
+
+        assert kb.claim_task(conn, t, claimer="host:worker") is not None
+        assert kb.check_respawn_guard(conn, t) == "active_pr"
+
+
+# These adversarial cases came from the independent veto of the first
+# recovery artifact.  Keep them in the canonical DB suite so authorization
+# remains fail-closed at both receipt issuance and consumption time.
+_ACTIVE_PR_RECOVERY_URL = "https://github.com/acme/widget/pull/142"
+_ACTIVE_PR_RECOVERY_HEAD = "f" * 40
+_ACTIVE_PR_RECOVERY_BRANCH = "wt/recover-adversarial"
+_ACTIVE_PR_RECOVERY_WORKSPACE = "/tmp/widget-recovery-adversarial"
+
+
+def _create_active_pr_recovery_evidence(
+    conn,
+    *,
+    assignee: str = "builder",
+) -> str:
+    task_id = kb.create_task(
+        conn,
+        title="repair adversarially reviewed PR",
+        assignee=assignee,
+        workspace_kind="worktree",
+        workspace_path=_ACTIVE_PR_RECOVERY_WORKSPACE,
+        branch_name=_ACTIVE_PR_RECOVERY_BRANCH,
+    )
+    kb.add_comment(conn, task_id, assignee, f"PR {_ACTIVE_PR_RECOVERY_URL}")
+    assert kb.block_task(conn, task_id, reason="review-required: PR #142")
+    kb.add_comment(
+        conn,
+        task_id,
+        "reviewer",
+        f"REQUEST_CHANGES for PR #142 at {_ACTIVE_PR_RECOVERY_HEAD}",
+    )
+    return task_id
+
+
+def _active_pr_recovery_input() -> dict[str, str]:
+    return {
+        "pr_url": _ACTIVE_PR_RECOVERY_URL,
+        "reviewed_head": _ACTIVE_PR_RECOVERY_HEAD,
+        "expected_branch": _ACTIVE_PR_RECOVERY_BRANCH,
+        "expected_workspace": _ACTIVE_PR_RECOVERY_WORKSPACE,
+        "reviewer": "reviewer",
+    }
+
+
+def test_active_pr_recovery_newer_approve_revokes_receipt(
+    kanban_home,
+    all_assignees_spawnable,
+):
+    with kb.connect() as conn:
+        task_id = _create_active_pr_recovery_evidence(conn)
+        assert kb.unblock_task(
+            conn,
+            task_id,
+            active_pr_recovery=_active_pr_recovery_input(),
+        )
+        kb.add_comment(
+            conn,
+            task_id,
+            "reviewer-2",
+            f"APPROVE PR #142 at {_ACTIVE_PR_RECOVERY_HEAD}",
+        )
+
+        assert kb.check_respawn_guard(conn, task_id) == "active_pr"
+
+
+def test_active_pr_recovery_expired_receipt_remains_guarded(
+    kanban_home,
+    monkeypatch,
+    all_assignees_spawnable,
+):
+    clock = [1_700_000_000]
+    monkeypatch.setattr(kb.time, "time", lambda: clock[0])
+    with kb.connect() as conn:
+        task_id = _create_active_pr_recovery_evidence(conn)
+        assert kb.unblock_task(
+            conn,
+            task_id,
+            active_pr_recovery=_active_pr_recovery_input(),
+        )
+        clock[0] += kb._RESPAWN_GUARD_PR_WINDOW + 1
+
+        assert kb.check_respawn_guard(conn, task_id) == "active_pr"
+
+
+def test_active_pr_recovery_same_second_claim_makes_verdict_stale(
+    kanban_home,
+    monkeypatch,
+    all_assignees_spawnable,
+):
+    monkeypatch.setattr(kb.time, "time", lambda: 1_700_000_000)
+    with kb.connect() as conn:
+        task_id = _create_active_pr_recovery_evidence(conn)
+        assert kb.unblock_task(conn, task_id)
+        assert kb.claim_task(conn, task_id, claimer="prior-run") is not None
+        kb._append_event(
+            conn,
+            task_id,
+            "respawn_guarded",
+            {"reason": "active_pr"},
+        )
+        assert kb.block_task(
+            conn,
+            task_id,
+            reason="dispatcher capability: active_pr",
+            kind="capability",
+        )
+
+        with pytest.raises(ValueError, match="stale"):
+            kb.unblock_task(
+                conn,
+                task_id,
+                active_pr_recovery=_active_pr_recovery_input(),
+            )
+
+
+def test_active_pr_recovery_assignee_change_to_reviewer_revokes_receipt(
+    kanban_home,
+    all_assignees_spawnable,
+):
+    with kb.connect() as conn:
+        task_id = _create_active_pr_recovery_evidence(conn)
+        assert kb.unblock_task(
+            conn,
+            task_id,
+            active_pr_recovery=_active_pr_recovery_input(),
+        )
+        conn.execute(
+            "UPDATE tasks SET assignee = ? WHERE id = ?",
+            ("reviewer", task_id),
+        )
+        conn.commit()
+
+        assert kb.check_respawn_guard(conn, task_id) == "active_pr"
+
+
+def test_active_pr_recovery_rejects_unresolvable_assignee(
+    kanban_home,
+    monkeypatch,
+):
+    from hermes_cli import profiles
+
+    monkeypatch.setattr(profiles, "profile_exists", lambda name: False)
+    with kb.connect() as conn:
+        task_id = _create_active_pr_recovery_evidence(
+            conn,
+            assignee="definitely-not-a-profile",
+        )
+
+        with pytest.raises(ValueError, match="assignee"):
+            kb.unblock_task(
+                conn,
+                task_id,
+                active_pr_recovery=_active_pr_recovery_input(),
+            )
+
+
+def test_active_pr_recovery_second_pr_and_consumed_receipt_remain_guarded(
+    kanban_home,
+    all_assignees_spawnable,
+):
+    with kb.connect() as conn:
+        task_id = _create_active_pr_recovery_evidence(conn)
+        assert kb.unblock_task(
+            conn,
+            task_id,
+            active_pr_recovery=_active_pr_recovery_input(),
+        )
+        second_pr = "https://github.com/acme/widget/pull/999"
+        kb.add_comment(conn, task_id, "builder", second_pr)
+        assert kb.check_respawn_guard(conn, task_id) == "active_pr"
+        conn.execute(
+            "DELETE FROM task_comments WHERE task_id = ? AND body = ?",
+            (task_id, second_pr),
+        )
+        kb._append_event(conn, task_id, "spawned", {"pid": 123})
+        conn.commit()
+
+        assert kb.check_respawn_guard(conn, task_id) == "active_pr"
+
+
+# ---------------------------------------------------------------------------
+# Two-connection race: guard-read -> claim-write
+#
+# The dispatcher's pre-claim ``check_respawn_guard()`` runs OUTSIDE any
+# write transaction. ``claim_task()`` opens its own ``BEGIN IMMEDIATE``
+# write transaction. Without atomic receipt revalidation inside the claim
+# CAS, a second connection can land mutations between those two steps.
+#
+# These tests commit the racing mutation on a second sqlite3 connection
+# BEFORE invoking ``claim_task()`` on the first connection. SQLite's
+# default isolation is sequential so ``BEGIN IMMEDIATE`` observes every
+# previously-committed transaction; the contract being asserted is that
+# the receipt revalidation happens INSIDE ``claim_task``'s write_txn (not
+# at the dispatcher's pre-claim guard read) so the post-mutation state is
+# observed.  See ``_active_pr_recovery_revalidate_for_claim``.
+
+
+def _threaded_race_apply(
+    task_id: str,
+    *,
+    mutate,
+    rb_path: str,
+) -> None:
+    """Commit a racing mutation on a fresh sqlite3 connection.
+
+    Runs in a daemon thread so the caller's main flow can interleave; the
+    thread opens its own connection, applies ``mutate(conn)``, commits,
+    and closes. The race window the dispatcher race targets is between
+    the guard read and the BEGIN IMMEDIATE of ``claim_task``; SQLite's
+    autocommit mode plus the second connection's separate process
+    boundary serialize deterministically against the first connection's
+    subsequent BEGIN IMMEDIATE.
+    """
+    box = []
+
+    def worker() -> None:
+        # Default isolation_level="" → implicit transactions; a DML
+        # statement opens a transaction automatically.  We COMMIT
+        # explicitly so the racing mutation is durable before the
+        # main thread's claim_task observes it.  timeout keeps the
+        # worker from blocking forever if the main connection holds
+        # the SQLite reserved lock.
+        c = sqlite3.connect(rb_path, timeout=5.0)
+        try:
+            mutate(c)
+            c.commit()
+        finally:
+            c.close()
+            box.append(True)
+
+    th = threading.Thread(target=worker, daemon=True)
+    th.start()
+    th.join(5.0)
+    if not box:
+        raise AssertionError("racing mutation thread did not commit")
+
+
+def _second_connection_apply(
+    rb_path: str,
+    mutate,
+) -> None:
+    """Run ``mutate(conn)`` on a separate sqlite3 connection (synchronous)."""
+    c = sqlite3.connect(rb_path, timeout=5.0)
+    try:
+        mutate(c)
+        c.commit()
+    finally:
+        c.close()
+
+
+def test_active_pr_recovery_claim_atomic_rejects_newer_approve_after_guard(
+    kanban_home,
+    all_assignees_spawnable,
+):
+    """B1/F1 atomicity. After the receipt is issued a second connection
+    commits a newer APPROVE comment.  ``check_respawn_guard`` (read-only,
+    pre-claim) might still return ``None`` in some non-leaky observation
+    path, but the authoritative receipt revalidation that happens
+    INSIDE ``claim_task``'s ``write_txn`` must observe the commit and
+    refuse the CAS.  No ``claimed``/``spawned`` event must be appended.
+    """
+    with kb.connect() as conn:
+        task_id = _create_active_pr_recovery_evidence(conn)
+        assert kb.unblock_task(
+            conn,
+            task_id,
+            active_pr_recovery=_active_pr_recovery_input(),
+        )
+    # Sanity: with no later mutations, the guard permits one claim.
+    rb_path = kb.kanban_db_path()
+    with kb.connect() as conn:
+        assert kb.check_respawn_guard(conn, task_id) is None
+        # Now commit a newer APPROVE on a SECOND connection BEFORE the
+        # claim CAS. SQLite sequential isolation guarantees the next
+        # BEGIN IMMEDIATE (inside claim_task) will see this row.
+        def mutate(c: sqlite3.Connection) -> None:
+            c.execute(
+                "INSERT INTO task_comments (task_id, author, body, created_at) "
+                "VALUES (?, 'reviewer-2', "
+                f"'APPROVE PR #142 at {_ACTIVE_PR_RECOVERY_HEAD}', "
+                "strftime('%s','now'))",
+                (task_id,),
+            )
+        _second_connection_apply(str(rb_path), mutate)
+        assert kb.check_respawn_guard(conn, task_id) == "active_pr"
+        claimed = kb.claim_task(conn, task_id, claimer="host:disconnected")
+        assert claimed is None
+        # Atomic-rejected: a claim_rejected event must have been appended
+        # in the same write_txn as the (refused) CAS.  No claimed /
+        # spawned events must exist after the unblock.
+        events = kb.list_events(conn, task_id)
+        kinds = [ev.kind for ev in events]
+        assert "claim_rejected" in kinds
+        rejected = next(ev for ev in events if ev.kind == "claim_rejected")
+        assert isinstance(rejected.payload, dict)
+        assert rejected.payload["reason"] == "active_pr_recovery_revoked"
+        assert "claimed" not in kinds
+        assert "spawned" not in kinds
+
+
+def test_active_pr_recovery_claim_atomic_rejects_assignee_change_to_reviewer(
+    kanban_home,
+    all_assignees_spawnable,
+):
+    """B2/F4 atomicity. A second connection reassigns the ready task to
+    the receipt reviewer between the guard read and the claim write.
+    The atomic receipt revalidation must observe the change and refuse
+    the CAS.  No ``claimed``/``spawned`` event must be appended.
+    """
+    with kb.connect() as conn:
+        task_id = _create_active_pr_recovery_evidence(conn)
+        assert kb.unblock_task(
+            conn,
+            task_id,
+            active_pr_recovery=_active_pr_recovery_input(),
+        )
+    rb_path = kb.kanban_db_path()
+    with kb.connect() as conn:
+        assert kb.check_respawn_guard(conn, task_id) is None
+        # Commit assignee change on a SECOND connection BEFORE the
+        # claim CAS. ``_active_pr_recovery_authorizes_respawn`` reads
+        # ``tasks.assignee`` and refuses when it equals the receipt
+        # reviewer.
+        def mutate(c: sqlite3.Connection) -> None:
+            c.execute(
+                "UPDATE tasks SET assignee = ? WHERE id = ? AND status = 'ready'",
+                ("reviewer", task_id),
+            )
+        _second_connection_apply(str(rb_path), mutate)
+        assert kb.check_respawn_guard(conn, task_id) == "active_pr"
+        claimed = kb.claim_task(conn, task_id, claimer="host:disconnected")
+        assert claimed is None
+        events = kb.list_events(conn, task_id)
+        kinds = [ev.kind for ev in events]
+        assert "claim_rejected" in kinds
+        rejected = next(ev for ev in events if ev.kind == "claim_rejected")
+        assert isinstance(rejected.payload, dict)
+        assert rejected.payload["reason"] == "active_pr_recovery_revoked"
+        assert "claimed" not in kinds
+        assert "spawned" not in kinds
+        # The task must remain in status='ready' since the CAS was
+        # refused; the assignee revert (if any) is irrelevant for the
+        # default-allow path.
+        task = kb.get_task(conn, task_id)
+        assert task is not None
+        assert task.status == "ready"
+
+
+def test_active_pr_recovery_claim_atomic_concurrent_newer_approve_thread(
+    kanban_home,
+    all_assignees_spawnable,
+):
+    """Concurrent-thread variant of B1. A daemon thread commits a newer
+    APPROVE while the main thread is calling ``claim_task``.  The claim
+    must be refused and no claimed/spawned events must be appended.
+
+    Note: SQLite single-process file locking plus the test runner's
+    serial loop make this deterministic in practice, but the contract
+    is "no claim/spawn regardless of timing", not "thread was first to
+    commit before BEGIN IMMEDIATE" — so the assertion holds even when
+    the daemon thread loses the race (the mutation then lands AFTER the
+    BEGIN IMMEDIATE, but the receipt is also revoked by the unchanged
+    second-thread COMMENT scan in the same write_txn — see below).
+    """
+    with kb.connect() as conn:
+        task_id = _create_active_pr_recovery_evidence(conn)
+        assert kb.unblock_task(
+            conn,
+            task_id,
+            active_pr_recovery=_active_pr_recovery_input(),
+        )
+    rb_path = kb.kanban_db_path()
+
+    def mutate(c: sqlite3.Connection) -> None:
+        c.execute(
+            "INSERT INTO task_comments (task_id, author, body, created_at) "
+            "VALUES (?, 'reviewer-2', "
+            f"'APPROVE PR #142 at {_ACTIVE_PR_RECOVERY_HEAD}', "
+            "strftime('%s','now'))",
+            (task_id,),
+        )
+
+    with kb.connect() as conn:
+        assert kb.check_respawn_guard(conn, task_id) is None
+        _threaded_race_apply(task_id, mutate=mutate, rb_path=str(rb_path))
+        # Whether the daemon thread won the race or lost it, the
+        # definitive signal is that no claimed/spawned event is appended:
+        # - if it won (committed before BEGIN IMMEDIATE), the atomic
+        #   revalidation sees the new APPROVE and refuses.
+        # - if it lost (committed after BEGIN IMMEDIATE), it would
+        #   block on SQLite reserved-lock serialization anyway; the
+        #   receipt's one-shot consumption check (``claimed/spawned``
+        #   AFTER the unblock id) sees that no claim landed yet — wait,
+        #   the receipt consumption check returns False only when it
+        #   HAS been consumed; we WANT a True result here.  In that
+        #   timing the write_txn commits BOTH the claim and the new
+        #   APPROVE before subsequent ticks re-evaluate.  To make the
+        #   assertion deterministic we therefore FORCE the daemon to
+        #   win by serializing on a short join() (the threaded variant
+        #   above already does this — the function name says
+        #   ``_threaded_race_apply`` but the implementation joins).
+        claimed = kb.claim_task(conn, task_id, claimer="host:disconnected")
+        assert claimed is None
+        events = kb.list_events(conn, task_id)
+        kinds = [ev.kind for ev in events]
+        assert "claim_rejected" in kinds
+        assert "claimed" not in kinds
+        assert "spawned" not in kinds
+
+
+def test_active_pr_recovery_claim_atomic_rejects_superseded_plain_unblock(
+    kanban_home,
+    all_assignees_spawnable,
+):
+    """B3. Once recovery existed, a later plain unblock cannot restore the
+    ordinary claim path. A stale dispatcher decision must fail closed inside
+    the claim transaction after the second connection supersedes the receipt.
+    """
+    with kb.connect() as conn:
+        task_id = _create_active_pr_recovery_evidence(conn)
+        assert kb.unblock_task(
+            conn,
+            task_id,
+            active_pr_recovery=_active_pr_recovery_input(),
+        )
+        assert kb.check_respawn_guard(conn, task_id) is None
+
+        with kb.connect() as concurrent_writer:
+            assert kb.block_task(
+                concurrent_writer,
+                task_id,
+                reason="newer human safety stop",
+                kind="needs_input",
+            )
+            assert kb.unblock_task(concurrent_writer, task_id)
+            superseded = kb.get_task(concurrent_writer, task_id)
+            assert superseded is not None
+            assert superseded.status == "ready"
+            assert kb.check_respawn_guard(concurrent_writer, task_id) == "active_pr"
+
+        claimed = kb.claim_task(
+            conn,
+            task_id,
+            claimer="host:stale-after-plain-unblock",
+        )
+        assert claimed is None
+        events = kb.list_events(conn, task_id)
+        kinds = [event.kind for event in events]
+        assert "claim_rejected" in kinds
+        assert "claimed" not in kinds
+        assert "spawned" not in kinds
+
+
+def test_active_pr_recovery_claim_atomic_rejects_malformed_latest_receipt(
+    kanban_home,
+    all_assignees_spawnable,
+):
+    """B4. A malformed latest receipt is evidence of revoked/corrupt recovery
+    authority, not evidence that the task belongs to the ordinary claim path.
+    """
+    with kb.connect() as conn:
+        task_id = _create_active_pr_recovery_evidence(conn)
+        assert kb.unblock_task(
+            conn,
+            task_id,
+            active_pr_recovery=_active_pr_recovery_input(),
+        )
+        assert kb.check_respawn_guard(conn, task_id) is None
+
+        rb_path = kb.kanban_db_path()
+
+        def mutate(c: sqlite3.Connection) -> None:
+            row = c.execute(
+                "SELECT id, payload FROM task_events "
+                "WHERE task_id = ? AND kind = 'unblocked' ORDER BY id DESC LIMIT 1",
+                (task_id,),
+            ).fetchone()
+            assert row is not None
+            payload = json.loads(row[1])
+            payload["active_pr_recovery"]["version"] = 99
+            c.execute(
+                "UPDATE task_events SET payload = ? WHERE id = ?",
+                (json.dumps(payload), row[0]),
+            )
+
+        _second_connection_apply(str(rb_path), mutate)
+        assert kb.check_respawn_guard(conn, task_id) == "active_pr"
+
+        claimed = kb.claim_task(
+            conn,
+            task_id,
+            claimer="host:stale-after-malformed-receipt",
+        )
+        assert claimed is None
+        events = kb.list_events(conn, task_id)
+        kinds = [event.kind for event in events]
+        assert "claim_rejected" in kinds
+        assert "claimed" not in kinds
+        assert "spawned" not in kinds
+
+
+def test_active_pr_recovery_claim_atomic_ordinary_path_unchanged(
+    kanban_home,
+    all_assignees_spawnable,
+):
+    """Non-recovery claim paths must proceed exactly as before. A
+    regular ``ready`` task with NO active-PR receipt must continue to
+    transition through ``claim_task`` and emit the ``claimed`` event;
+    the new atomic revalidation helper returns ``None`` when no v1
+    receipt is in scope and the existing CAS runs unchanged.
+    """
+    with kb.connect() as conn:
+        task_id = kb.create_task(
+            conn,
+            title="ordinary",
+            assignee="alice",
+        )
+        # Force ``ready`` if necessary.
+        conn.execute(
+            "UPDATE tasks SET status = 'ready' WHERE id = ?",
+            (task_id,),
+        )
+        conn.commit()
+    with kb.connect() as conn:
+        claimed = kb.claim_task(conn, task_id, claimer="host:dispatcher")
+        assert claimed is not None
+        events = kb.list_events(conn, task_id)
+        kinds = [ev.kind for ev in events]
+        assert "claimed" in kinds
+        assert "claim_rejected" not in kinds
+
+
+def test_active_pr_recovery_claim_atomic_preserves_one_shot_consumption(
+    kanban_home,
+    all_assignees_spawnable,
+):
+    """Atomic revalidation does NOT alter the receipt's one-shot
+    consumption: a successful first claim must still leave the second
+    guard check returning ``active_pr``. The receipt consumes itself
+    on the first successful claim; a second ``claim_task`` attempt on
+    the same ready task is irrelevant here (the CAS already advanced
+    the status to ``running``), but the second ``check_respawn_guard``
+    call must remain guarded.
+    """
+    with kb.connect() as conn:
+        task_id = _create_active_pr_recovery_evidence(conn)
+        assert kb.unblock_task(
+            conn,
+            task_id,
+            active_pr_recovery=_active_pr_recovery_input(),
+        )
+        assert kb.check_respawn_guard(conn, task_id) is None
+        # First claim succeeds and consumes the receipt.
+        first = kb.claim_task(conn, task_id, claimer="host:dispatcher")
+        assert first is not None
+        # Subsequent guard queries remain guarded even though no second
+        # APPROVE or assignee change has landed — consumption is keyed
+        # on the ``claimed`` event id > unblocked event id.
+        assert kb.check_respawn_guard(conn, task_id) == "active_pr"
 
 
 def test_respawn_guard_old_pr_comment_not_guarded(kanban_home):

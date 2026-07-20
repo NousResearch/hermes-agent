@@ -1328,6 +1328,51 @@ def test_unblock_happy_path(monkeypatch, worker_env):
         conn.close()
 
 
+def test_unblock_active_pr_recovery_passes_audited_pins(monkeypatch, worker_env):
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import profiles
+
+    monkeypatch.setattr(profiles, "profile_exists", lambda name: True)
+
+    pr_url = "https://github.com/acme/widget/pull/42"
+    reviewed_head = "a" * 40
+    workspace = "/tmp/widget-recovery"
+    branch = "wt/recover-widget"
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="repair reviewed PR",
+            assignee="builder",
+            workspace_kind="worktree",
+            workspace_path=workspace,
+            branch_name=branch,
+        )
+        kb.add_comment(conn, tid, "builder", f"PR {pr_url}")
+        kb.block_task(conn, tid, reason="review-required: PR #42")
+        kb.add_comment(
+            conn,
+            tid,
+            "reviewer",
+            f"REQUEST_CHANGES for PR #42 at {reviewed_head}",
+        )
+
+    from tools import kanban_tools as kt
+    out = kt._handle_unblock({
+        "task_id": tid,
+        "active_pr_recovery": {
+            "pr_url": pr_url,
+            "reviewed_head": reviewed_head,
+            "expected_branch": branch,
+            "expected_workspace": workspace,
+            "reviewer": "reviewer",
+        },
+    })
+    assert json.loads(out)["ok"] is True
+    with kb.connect() as conn:
+        assert kb.check_respawn_guard(conn, tid) is None
+
+
 def test_unblock_with_pending_parents_returns_todo(monkeypatch, tmp_path):
     monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
     home = tmp_path / ".hermes"

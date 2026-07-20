@@ -127,14 +127,11 @@ def _owner_alive(pid: Any, started_at: Any) -> bool:
         # No such process (or unreadable) — treat unreadable-but-extant
         # processes as alive only if the pid exists.
         try:
-            os.kill(pid, 0)  # windows-footgun: ok — EPERM counts as alive below
-        except ProcessLookupError:
+            from gateway.status import _pid_exists
+
+            return _pid_exists(pid)
+        except Exception:
             return False
-        except PermissionError:
-            return True
-        except OSError:
-            return False
-        return True
     if started_at is None:
         return True
     try:

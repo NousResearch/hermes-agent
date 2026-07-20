@@ -97,6 +97,27 @@ class TestObligationId:
         assert len(a) == 24
 
 
+class TestOwnerAlive:
+    @pytest.mark.parametrize(("pid_exists", "expected"), [(True, True), (False, False)])
+    def test_missing_start_time_delegates_to_pid_exists(self, pid_exists, expected):
+        with (
+            patch("gateway.status.get_process_start_time", return_value=None),
+            patch("gateway.status._pid_exists", return_value=pid_exists) as exists,
+            patch.object(dl.os, "kill") as kill,
+        ):
+            assert dl._owner_alive(1234, 5678) is expected
+
+        exists.assert_called_once_with(1234)
+        kill.assert_not_called()
+
+    def test_pid_exists_failure_is_fail_safe(self):
+        with (
+            patch("gateway.status.get_process_start_time", return_value=None),
+            patch("gateway.status._pid_exists", side_effect=OSError),
+        ):
+            assert dl._owner_alive(1234, 5678) is False
+
+
 class TestSweep:
     def test_live_owner_rows_never_claimed(self):
         _record()  # owner = this (live) process

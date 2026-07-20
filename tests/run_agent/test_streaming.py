@@ -548,10 +548,15 @@ class TestStreamingCallbacks:
 
         # Text before tool call IS fired (we don't know yet it will have tools)
         assert "thinking..." in deltas
-        # Text after tool call IS still routed to stream_delta_callback so that
-        # reasoning tag extraction can fire (PR #3566).  Display-level suppression
-        # of non-reasoning text happens in the CLI's _stream_delta, not here.
-        assert " more text" in deltas
+        # Text after tool call is NOT routed to stream_delta_callback.
+        # It previously was (PR #3566) so the CLI could re-derive reasoning
+        # tags locally, but that direct call bypassed the shared
+        # StreamingThinkScrubber's on_reasoning sink — the path that fires
+        # reasoning.delta for the TUI gateway.  Tool-suppressed content now
+        # feeds the shared scrubber instead: visible commentary stays
+        # suppressed on every surface and only extracted reasoning escapes
+        # (see test_toolcall_stream_gemma_reasoning.py).
+        assert " more text" not in deltas
         # Content is still accumulated in the response
         assert response.choices[0].message.content == "thinking... more text"
 

@@ -110,6 +110,7 @@ _FRIENDLI_REGISTRY = {
     "friendli": {
         "id": "friendli",
         "name": "Friendli",
+        "api": "https://api.friendli.ai/serverless/v1",
         "models": {
             "zai-org/GLM-5.2": {
                 "id": "zai-org/GLM-5.2",
@@ -133,6 +134,9 @@ def test_mapped_custom_friendli_endpoint_does_not_spuriously_trip(monkeypatch):
     host (``api.friendli.ai``) resolves it to the ``friendli`` catalog instead,
     so a $1.4/M model does NOT trip the $20/M threshold.
     """
+    from agent.models_dev import _reset_upstream_provider_host_index_cache
+
+    _reset_upstream_provider_host_index_cache()
     monkeypatch.setattr(
         "agent.models_dev.fetch_models_dev",
         lambda: _FRIENDLI_REGISTRY,
@@ -152,6 +156,9 @@ def test_mapped_custom_friendli_endpoint_uses_catalog_per_million_pricing(monkey
     warning carries the real per-million value ($50/M), not the $50,000,000/M
     the unit-blind endpoint path would have produced.
     """
+    from agent.models_dev import _reset_upstream_provider_host_index_cache
+
+    _reset_upstream_provider_host_index_cache()
     monkeypatch.setattr(
         "agent.models_dev.fetch_models_dev",
         lambda: _FRIENDLI_REGISTRY,
@@ -175,7 +182,11 @@ def test_imposter_friendli_endpoint_does_not_inherit_friendli_pricing(monkeypatc
     is the base_url, not the display name.  It falls through to the per-token
     endpoint pricing path instead.
     """
-    # No friendli catalog entry is consulted (host does not match).
+    from agent.models_dev import _reset_upstream_provider_host_index_cache
+
+    # The friendli registry is loaded, but the imposter host does not match the
+    # registered ``api.friendli.ai`` host, so no vendor identity is assigned.
+    _reset_upstream_provider_host_index_cache()
     monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: _FRIENDLI_REGISTRY)
     endpoint_meta = {
         # resolve_billing_route strips the "zai-org/" prefix for the slug

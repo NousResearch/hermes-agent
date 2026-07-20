@@ -418,6 +418,7 @@ class TestCustomEndpointProviderValidation:
         "friendli": {
             "id": "friendli",
             "name": "Friendli",
+            "api": "https://api.friendli.ai/serverless/v1",
             "models": {
                 "zai-org/GLM-5.2": {
                     "id": "zai-org/GLM-5.2",
@@ -439,31 +440,62 @@ class TestCustomEndpointProviderValidation:
             assert get_model_info("custom:friendli", "zai-org/GLM-5.2") is None
 
     def test_upstream_provider_resolved_from_base_url_host(self):
-        from agent.models_dev import upstream_provider_id_for_base_url
-
-        assert (
-            upstream_provider_id_for_base_url("https://api.friendli.ai/serverless/v1")
-            == "friendli"
+        from agent.models_dev import (
+            upstream_provider_id_for_base_url,
+            _reset_upstream_provider_host_index_cache,
         )
-        assert upstream_provider_id_for_base_url("https://api.friendli.ai") == "friendli"
+
+        _reset_upstream_provider_host_index_cache()
+        with patch("agent.models_dev.fetch_models_dev", return_value=self.REGISTRY):
+            assert (
+                upstream_provider_id_for_base_url("https://api.friendli.ai/serverless/v1")
+                == "friendli"
+            )
+            assert upstream_provider_id_for_base_url("https://api.friendli.ai") == "friendli"
 
     def test_unrelated_host_is_not_validated_as_friendli(self):
-        from agent.models_dev import upstream_provider_id_for_base_url
+        from agent.models_dev import (
+            upstream_provider_id_for_base_url,
+            _reset_upstream_provider_host_index_cache,
+        )
 
-        # Substring tricks and a same-named-but-different host must not validate.
-        assert upstream_provider_id_for_base_url("https://api.friendli.ai.evil/v1") is None
-        assert upstream_provider_id_for_base_url("https://evil.com/api.friendli.ai/v1") is None
-        assert upstream_provider_id_for_base_url(None) is None
-        assert upstream_provider_id_for_base_url("") is None
+        _reset_upstream_provider_host_index_cache()
+        with patch("agent.models_dev.fetch_models_dev", return_value=self.REGISTRY):
+            # Substring tricks and a same-named-but-different host must not
+            # validate — exact-host match against the registered API host only.
+            assert upstream_provider_id_for_base_url("https://api.friendli.ai.evil/v1") is None
+            assert upstream_provider_id_for_base_url("https://evil.com/api.friendli.ai/v1") is None
+            assert upstream_provider_id_for_base_url(None) is None
+            assert upstream_provider_id_for_base_url("") is None
+
+    def test_shared_aggregator_host_is_not_indexed(self):
+        from agent.models_dev import (
+            upstream_provider_id_for_base_url,
+            _reset_upstream_provider_host_index_cache,
+        )
+
+        # Two providers sharing one API host (an aggregator exposing many
+        # vendors) carry no single upstream identity: unindexed, returns None.
+        shared = {
+            "vendora": {"api": "https://gateway.example/v1", "models": {}},
+            "vendorb": {"api": "https://gateway.example/v1", "models": {}},
+        }
+        _reset_upstream_provider_host_index_cache()
+        with patch("agent.models_dev.fetch_models_dev", return_value=shared):
+            assert upstream_provider_id_for_base_url("https://gateway.example/v1") is None
 
     def test_validated_base_url_resolves_custom_endpoint_to_catalog(self):
-        from agent.models_dev import get_model_info, upstream_provider_id_for_base_url
+        from agent.models_dev import (
+            get_model_info,
+            upstream_provider_id_for_base_url,
+            _reset_upstream_provider_host_index_cache,
+        )
 
         base_url = "https://api.friendli.ai/serverless/v1"
-        resolved = upstream_provider_id_for_base_url(base_url)
-        assert resolved == "friendli"
-
+        _reset_upstream_provider_host_index_cache()
         with patch("agent.models_dev.fetch_models_dev", return_value=self.REGISTRY):
+            resolved = upstream_provider_id_for_base_url(base_url)
+            assert resolved == "friendli"
             info = get_model_info(resolved, "zai-org/GLM-5.2")
 
         assert info is not None

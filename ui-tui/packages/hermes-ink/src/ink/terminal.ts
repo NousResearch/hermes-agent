@@ -172,50 +172,80 @@ export function needsAltScreenResizeScrollbackClear(env: NodeJS.ProcessEnv = pro
   return (env.TERM_PROGRAM ?? '').trim() === 'Apple_Terminal'
 }
 
-// -- OSC-11-detected terminal background (populated async at startup) --
+// -- OSC-detected terminal colors (populated async at startup) --
 //
 // Env heuristics (COLORFGBG, TERM_PROGRAM allow-lists) can't see the actual
-// terminal background — xterm.js hosts (VS Code / Cursor) set neither, so a
+// terminal colors — xterm.js hosts (VS Code / Cursor) set neither, so a
 // light-themed editor terminal reads as "dark" and gets an unreadable
-// palette. OSC 11 asks the terminal directly; App.tsx fires the query in the
-// same startup batch as XTVERSION and calls setTerminalBackgroundHex() when
-// the reply lands. Readers treat undefined as "not yet known / unsupported".
+// palette. OSC 11 (background) and OSC 10 (foreground) ask the terminal
+// directly; App.tsx fires both in the same startup batch as XTVERSION.
+// The foreground matters because transparent profiles LIE about the
+// background (xterm reports the unset default, pure black) while reporting
+// the theme's real foreground — its luminance is the only trustworthy
+// polarity signal on such hosts. Readers treat undefined as "not yet
+// known / unsupported".
 
-let terminalBackground: string | undefined
-const terminalBackgroundListeners = new Set<(hex: string) => void>()
-
-/** Record the OSC 11 response. First writer wins (defend against re-probe). */
-export function setTerminalBackgroundHex(hex: string): void {
-  if (terminalBackground !== undefined) {
-    return
-  }
-
-  terminalBackground = hex
-
-  for (const listener of terminalBackgroundListeners) {
-    listener(hex)
-  }
-
-  terminalBackgroundListeners.clear()
+interface ReportedColorSlot {
+  set(hex: string): void
+  get(): string | undefined
+  on(listener: (hex: string) => void): void
 }
+
+function reportedColorSlot(): ReportedColorSlot {
+  let value: string | undefined
+  const listeners = new Set<(hex: string) => void>()
+
+  return {
+    // First writer wins (defend against re-probe).
+    set(hex) {
+      if (value !== undefined) {
+        return
+      }
+
+      value = hex
+
+      for (const listener of listeners) {
+        listener(hex)
+      }
+
+      listeners.clear()
+    },
+    get: () => value,
+    // Fires immediately when already known, otherwise once on the reply.
+    on(listener) {
+      if (value !== undefined) {
+        listener(value)
+
+        return
+      }
+
+      listeners.add(listener)
+    }
+  }
+}
+
+const background = reportedColorSlot()
+const foreground = reportedColorSlot()
+
+/** Record the OSC 11 response. */
+export const setTerminalBackgroundHex = (hex: string): void => background.set(hex)
 
 /** The terminal's reported background as `#rrggbb`, or undefined if the
  *  reply hasn't arrived (or the terminal ignored the query). */
-export function terminalBackgroundHex(): string | undefined {
-  return terminalBackground
-}
+export const terminalBackgroundHex = (): string | undefined => background.get()
 
-/** Subscribe to the background color. Fires immediately when already known,
- *  otherwise once when the OSC 11 reply arrives. */
-export function onTerminalBackground(listener: (hex: string) => void): void {
-  if (terminalBackground !== undefined) {
-    listener(terminalBackground)
+/** Subscribe to the background color. */
+export const onTerminalBackground = (listener: (hex: string) => void): void => background.on(listener)
 
-    return
-  }
+/** Record the OSC 10 response. */
+export const setTerminalForegroundHex = (hex: string): void => foreground.set(hex)
 
-  terminalBackgroundListeners.add(listener)
-}
+/** The terminal's reported foreground as `#rrggbb`, or undefined if the
+ *  reply hasn't arrived (or the terminal ignored the query). */
+export const terminalForegroundHex = (): string | undefined => foreground.get()
+
+/** Subscribe to the foreground color. */
+export const onTerminalForeground = (listener: (hex: string) => void): void => foreground.on(listener)
 
 /**
  * Parse an OSC color reply payload into `#rrggbb`.

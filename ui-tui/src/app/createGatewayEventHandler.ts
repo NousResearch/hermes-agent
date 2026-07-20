@@ -1,6 +1,6 @@
 import { execFile } from 'child_process'
 
-import { forceRedraw, onTerminalBackground } from '@hermes/ink'
+import { forceRedraw, onTerminalBackground, onTerminalForeground } from '@hermes/ink'
 
 import { STARTUP_IMAGE, STARTUP_QUERY } from '../config/env.js'
 import { STREAM_BATCH_MS } from '../config/timing.js'
@@ -13,6 +13,7 @@ import type {
   GatewaySkin,
   SessionMostRecentResponse
 } from '../gatewayTypes.js'
+import { relativeLuminance } from '../lib/color.js'
 import { isTodoDone } from '../lib/liveProgress.js'
 import { openExternalUrl } from '../lib/openExternalUrl.js'
 import { rpcErrorMessage } from '../lib/rpc.js'
@@ -149,6 +150,31 @@ let themeBackgroundSyncStarted = false
  * HERMES_TUI_LIGHT / HERMES_TUI_THEME overrides still win inside
  * detectLightMode, so users can pin a mode regardless of the probe.
  */
+/** Infer the terminal's polarity from its reported FOREGROUND (OSC 10).
+ *  Transparent profiles lie about the background (unset default = pure
+ *  black) but report the theme's real foreground — a bright foreground
+ *  means a dark theme and vice versa. Returns a representative background
+ *  for the inferred pole, or undefined when the answer is unusable
+ *  (mid-gray foregrounds are ambiguous; #000000/#ffffff can be unset
+ *  defaults themselves, so only clearly-toned answers count). */
+export function polarityBackgroundFromForeground(hex: string): string | undefined {
+  const luminance = relativeLuminance(hex)
+
+  if (luminance === null || hex === '#000000' || hex === '#ffffff') {
+    return undefined
+  }
+
+  if (luminance >= 0.45) {
+    return '#1e1e1e'
+  }
+
+  if (luminance <= 0.2) {
+    return '#ffffff'
+  }
+
+  return undefined
+}
+
 export function syncThemeToTerminalBackground(): void {
   if (themeBackgroundSyncStarted) {
     return
@@ -165,14 +191,35 @@ export function syncThemeToTerminalBackground(): void {
     // answers OSC 11 with its own black fallback regardless of the outer
     // terminal — and tmux also strips TERM_PROGRAM, so no host allow-list
     // can catch it. Real dark themes report their actual surface (#1e1e1e,
-    // #282828, …). Distrusting pure black universally is safe: on a truly
-    // pure-black terminal the fall-through detection lands on dark anyway.
+    // #282828, …). Distrusting pure black universally is safe: the OSC-10
+    // foreground below resolves the pole for transparent hosts, and a truly
+    // pure-black terminal lands on dark either way.
     if (hex === '#000000') {
       return
     }
 
     resolved = true
     process.env.HERMES_TUI_BACKGROUND = hex
+    reapplyTheme()
+  })
+
+  // Foreground tiebreaker for the distrusted-background case. The two OSC
+  // replies arrive in the same startup batch; this listener only commits when
+  // the background didn't (first-writer-wins via `resolved`), and an explicit
+  // user pin still outranks it inside detectLightMode.
+  onTerminalForeground(hex => {
+    if (resolved || process.env.HERMES_TUI_THEME || process.env.HERMES_TUI_LIGHT) {
+      return
+    }
+
+    const inferred = polarityBackgroundFromForeground(hex)
+
+    if (!inferred) {
+      return
+    }
+
+    resolved = true
+    process.env.HERMES_TUI_BACKGROUND = inferred
     reapplyTheme()
   })
 

@@ -75,4 +75,18 @@ describe('terminal background storage', () => {
     t.setTerminalBackgroundHex('#000000')
     expect(t.terminalBackgroundHex()).toBe('#ffffff')
   })
+
+  it('foreground (OSC 10) is an independent slot with the same semantics', async () => {
+    const t = await freshTerminal()
+    const seen: string[] = []
+
+    t.onTerminalForeground(hex => seen.push(hex))
+    t.setTerminalForegroundHex('#cccccc')
+    t.setTerminalForegroundHex('#000000')
+
+    expect(seen).toEqual(['#cccccc'])
+    expect(t.terminalForegroundHex()).toBe('#cccccc')
+    // The background slot is untouched by foreground writes.
+    expect(t.terminalBackgroundHex()).toBeUndefined()
+  })
 })

@@ -27,10 +27,20 @@ import importlib.util
 import logging
 import sys
 from pathlib import Path
-from typing import List, Optional, Tuple
-from hermes_cli.config import cfg_get
+from typing import List, Optional, Tuple, Any
 
 logger = logging.getLogger(__name__)
+
+
+def _cfg_get(config: Any, *keys: str, default: Any = None) -> Any:
+    """Nested dict get without importing hermes_cli.config at module load."""
+    current: Any = config
+    for key in keys:
+        if not isinstance(current, dict) or key not in current:
+            return default
+        current = current[key]
+    return default if current is None else current
+
 
 _MEMORY_PLUGINS_DIR = Path(__file__).parent
 
@@ -357,7 +367,7 @@ def _get_active_memory_provider() -> Optional[str]:
     try:
         from hermes_cli.config import load_config
         config = load_config()
-        return cfg_get(config, "memory", "provider") or None
+        return _cfg_get(config, "memory", "provider") or None
     except Exception:
         return None
 

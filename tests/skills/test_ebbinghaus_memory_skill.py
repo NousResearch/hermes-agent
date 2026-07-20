@@ -84,6 +84,6 @@ def test_ebbinghaus_register_exposes_provider_and_skill(monkeypatch):
         (
             "ebbinghaus-memory",
             SKILL_PATH,
-            "Use Ebbinghaus memory sleep, recall, and decay.",
+            "Use Ebbinghaus memory sleep, recall, dream, and decay.",
         )
     ]

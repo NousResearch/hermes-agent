@@ -9,13 +9,16 @@ import { expect, test, type Page } from "@playwright/test";
 const workspaceRoot = path.resolve(__dirname, "../../..");
 const khashiRocHtml = path.join(workspaceRoot, "khashi-vc/public/roc/index.html");
 const mediaEngineRoot = path.join(workspaceRoot, "media-engine");
+const mediaDashboardBuilder = path.join(mediaEngineRoot, "tasks/build-unified-ops-dashboard.js");
+const externalDashboardFixturesAvailable = fs.existsSync(khashiRocHtml) && fs.existsSync(mediaDashboardBuilder);
 
 let mediaDashboardHtml = "";
 
 test.beforeAll(() => {
+  if (!externalDashboardFixturesAvailable) return;
   const outputDir = fs.mkdtempSync(path.join(os.tmpdir(), "media-engine-v3-playwright-"));
   execFileSync(
-    "node",
+    process.execPath,
     [
       "tasks/build-unified-ops-dashboard.js",
       "--skip-live-stores",
@@ -52,6 +55,8 @@ async function expectNoAxeViolations(page: Page) {
 }
 
 test.describe("V3 static dashboard migrations", () => {
+  test.skip(!externalDashboardFixturesAvailable, "Requires sibling khashi-vc and media-engine workspaces.");
+
   test("Khashi ROC static adapter shell renders", async ({ page }) => {
     await page.goto(pathToFileURL(khashiRocHtml).href);
     await expect(page.locator(".hdk-body")).toBeVisible();

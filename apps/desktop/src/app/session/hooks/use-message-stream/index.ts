@@ -371,7 +371,7 @@ export function useMessageStream({
   )
 
   const completeAssistantMessage = useCallback(
-    (sessionId: string, text: string) => {
+    (sessionId: string, text: string, options?: { status?: 'complete' | 'error' }) => {
       let shouldHydrate = false
 
       const completedState = updateSessionState(sessionId, state => {
@@ -393,7 +393,10 @@ export function useMessageStream({
 
         const streamId = state.streamId
         const finalText = renderMediaTags(text).trim()
-        const completionError = completionErrorText(finalText)
+
+        const completionError =
+          options?.status === 'error' ? finalText || 'Hermes reported an error' : completionErrorText(finalText)
+
         const normalize = (value: string) => value.replace(/\s+/g, ' ').trim()
 
         const replaceTextPart = (parts: ChatMessagePart[]) => {

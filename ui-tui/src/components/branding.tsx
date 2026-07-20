@@ -30,8 +30,13 @@ function InlineLoader({ label, t }: { label: string; t: Theme }) {
 }
 
 export function ArtLines({ lines }: { lines: [string, string][] }) {
+  // No `opaque`: the banner is top-level content with nothing behind it, so
+  // it never needs the opaque space-fill (that's for absolute overlays). On a
+  // transparent terminal (terminal.background #00000000) the fill's "default
+  // background" spaces composite to black bars instead of the intended
+  // see-through — the reported ugly banner. Glyphs paint fine on their own.
   return (
-    <Box flexDirection="column" height={lines.length} opaque width={artWidth(lines)}>
+    <Box flexDirection="column" height={lines.length} width={artWidth(lines)}>
       {lines.map(([c, text], i) => (
         <Text color={c} key={i} wrap="truncate-end">
           {text}
@@ -74,11 +79,18 @@ function CompactBanner({ cols, t }: { cols: number; t: Theme }) {
   // -4 keeps a margin so exact-edge rows don't trip terminal pending-wrap.
   const w = Math.max(28, cols - 4)
 
+  // No `opaque` (see ArtLines): the dashed rules are glyphs and the tagline's
+  // centering spaces carry the text's own fg style, so every cell paints with
+  // a real see-through background. The opaque fill was writing default-bg
+  // spaces that a transparent terminal renders as black bars.
+  // NOT bold: on Cursor's transparent-background terminal, a full-width run
+  // of BOLD box-drawing dashes renders with an opaque black cell background
+  // (the plain-dash rule right below renders clean — pixel-diffed live; the
+  // only stylistic delta was bold). Bold on short label runs is fine; bold on
+  // full-width box-drawing rows is what triggers the slab.
   return (
-    <Box flexDirection="column" height={3} marginBottom={1} opaque width={w}>
-      <Text bold color={t.color.primary}>
-        {ruleIn(t.brand.name, w)}
-      </Text>
+    <Box flexDirection="column" height={3} marginBottom={1} width={w}>
+      <Text color={t.color.primary}>{ruleIn(t.brand.name, w)}</Text>
       <Text color={t.color.muted}>{centerIn(TAG_FULL, w)}</Text>
       <Text color={t.color.primary}>{'─'.repeat(w)}</Text>
     </Box>

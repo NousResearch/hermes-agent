@@ -31,8 +31,6 @@ const { Box, Text, useStdin, useInput, useStdout, stringWidth, useCursorAdvance,
 const ESC = '\x1b'
 const INV = `${ESC}[7m`
 const INV_OFF = `${ESC}[27m`
-const DIM = `${ESC}[2m`
-const DIM_OFF = `${ESC}[22m`
 const FWD_DEL_RE = new RegExp(`${ESC}\\[3(?:[~$^]|;)`)
 const PRINTABLE = /^[ -~\u00a0-\uffff]+$/
 const BRACKET_PASTE = new RegExp(`${ESC}?\\[20[01]~`, 'g')
@@ -41,21 +39,37 @@ const MULTI_CLICK_MS = 500
 type MinimalEnv = Record<string, string | undefined>
 
 const invert = (s: string) => INV + s + INV_OFF
-const dim = (s: string) => DIM + s + DIM_OFF
 
-/** Truecolor foreground wrap; falls back to SGR dim when no hex is given so
- *  the placeholder can follow the THEME's muted color instead of whatever the
- *  terminal's default-foreground dim happens to look like. */
+/** Truecolor foreground wrap. Always emits an EXPLICIT color — never SGR dim
+ *  and never inverse: both are terminal-interpreted relative to the default
+ *  fg/bg, and on transparent profiles (terminal.background #00000000) they
+ *  composite against a black RGB the user never sees elsewhere, rendering the
+ *  hint as a black slab. A fixed mid-gray fallback is deterministic on every
+ *  host when no theme color is provided. */
+const HINT_FALLBACK = '#808080'
+
 const colorizeHint = (s: string, hex?: string) => {
-  const m = hex ? /^#([0-9a-f]{6})$/i.exec(hex) : null
-
-  if (!m) {
-    return dim(s)
-  }
-
+  const m = /^#([0-9a-f]{6})$/i.exec(hex ?? '') ?? /^#([0-9a-f]{6})$/i.exec(HINT_FALLBACK)!
   const n = parseInt(m[1]!, 16)
 
   return `${ESC}[38;2;${(n >> 16) & 0xff};${(n >> 8) & 0xff};${n & 0xff}m${s}${ESC}[39m`
+}
+
+/** Synthetic placeholder cursor: an explicit-truecolor chip (hint-colored
+ *  block, luminance-picked ink) instead of SGR inverse. Inverse swaps
+ *  against the terminal's DEFAULT fg/bg, which on transparent profiles is a
+ *  black RGB the user never sees — the "cursor" rendered as a black slab. */
+const hintCursorCell = (ch: string, hex?: string) => {
+  const m = /^#([0-9a-f]{6})$/i.exec(hex ?? '') ?? /^#([0-9a-f]{6})$/i.exec(HINT_FALLBACK)!
+  const n = parseInt(m[1]!, 16)
+
+  const r = (n >> 16) & 0xff,
+    g = (n >> 8) & 0xff,
+    b = n & 0xff
+
+  const ink = 0.2126 * r + 0.7152 * g + 0.0722 * b > 140 ? '0;0;0' : '255;255;255'
+
+  return `${ESC}[48;2;${r};${g};${b}m${ESC}[38;2;${ink}m${ch}${ESC}[39m${ESC}[49m`
 }
 
 let _seg: Intl.Segmenter | null = null
@@ -658,10 +672,7 @@ export function TextInput({
     }
 
     if (!display && placeholder) {
-      return (
-        colorizeHint(invert(placeholder[0] ?? ' '), placeholderColor) +
-        colorizeHint(placeholder.slice(1), placeholderColor)
-      )
+      return hintCursorCell(placeholder[0] ?? ' ', placeholderColor) + colorizeHint(placeholder.slice(1), placeholderColor)
     }
 
     if (selected) {

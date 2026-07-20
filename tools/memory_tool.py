@@ -298,9 +298,17 @@ class MemoryStore:
         When *skip_drift* is True the round-trip / entry-size check is
         bypassed.  Used by the ``add`` action which appends without
         rewriting, so existing content is never clobbered.
+
+        Invalid UTF-8 is checked regardless of *skip_drift*: _read_file can't
+        recover any entries from undecodable bytes, so even an append would
+        flush over the original content on save_to_disk() (issue #57755).
         """
         path = self._path_for(target)
-        bak = None if skip_drift else self._detect_external_drift(target)
+        bak = self._check_decode_corruption(target)
+        if bak is None and not skip_drift:
+            bak = self._detect_external_drift(target)
+        if bak:
+            return bak
         fresh = self._read_file(path)
         fresh = list(dict.fromkeys(fresh))  # deduplicate
         self._set_entries(target, fresh)
@@ -346,12 +354,17 @@ class MemoryStore:
 
         with self._file_lock(self._path_for(target)):
             # Re-read from disk under lock to pick up writes from other sessions.
-            # For add (append-only), we skip the drift guard — appending never
-            # clobbers existing content, so round-trip mismatches from prior
-            # tool-written entries in the same session are harmless.  The drift
-            # guard remains active for replace/remove where full-file rewrite
-            # would discard un-roundtrippable content (issue #26045).
-            self._reload_target(target, skip_drift=True)
+            # For add (append-only), we skip the round-trip drift guard —
+            # appending never clobbers existing content, so mismatches from
+            # prior tool-written entries in the same session are harmless.
+            # The drift guard remains active for replace/remove where full-file
+            # rewrite would discard un-roundtrippable content (issue #26045).
+            # Invalid UTF-8 is not skippable, though: _read_file can't recover
+            # entries from it, so appending would still flush over the
+            # original bytes on save_to_disk() (issue #57755).
+            bak = self._reload_target(target, skip_drift=True)
+            if bak:
+                return _drift_error(self._path_for(target), bak)
 
             entries = self._entries_for(target)
             limit = self._char_limit(target)
@@ -708,16 +721,59 @@ class MemoryStore:
         entries = [e.strip() for e in raw.split(ENTRY_DELIMITER)]
         return [e for e in entries if e]
 
+    def _check_decode_corruption(self, target: str) -> Optional[str]:
+        """Return a backup-path string if the on-disk file isn't valid UTF-8.
+
+        Split out from _detect_external_drift so it can run even when the
+        caller skips the round-trip/entry-size drift check (add's append-only
+        path, via *skip_drift*). _read_file can't recover any entries from
+        undecodable bytes, so treating the file as "empty" there and then
+        appending would flush over the original content on save_to_disk()
+        (issue #57755) — that must be refused unconditionally, not just for
+        replace/remove.
+        """
+        path = self._path_for(target)
+        if not path.exists():
+            return None
+        try:
+            path.read_text(encoding="utf-8")
+        except (OSError, IOError):
+            return None
+        except UnicodeDecodeError as e:
+            logger.error(
+                "Memory file %s has invalid UTF-8 (%s) -- refusing to write, "
+                "snapshot saved for recovery.",
+                path, e,
+            )
+            return self._backup_corrupt_file(path)
+        return None
+
+    @staticmethod
+    def _backup_corrupt_file(path: Path) -> str:
+        """Snapshot a file with invalid UTF-8 bytes to a .bak.<ts> sibling.
+
+        Mirrors the round-trip-drift backup below, but reads raw bytes since
+        the file doesn't decode as text.
+        """
+        ts = int(time.time())
+        bak_path = path.with_suffix(path.suffix + f".bak.{ts}")
+        try:
+            bak_path.write_bytes(path.read_bytes())
+        except OSError:
+            return str(bak_path) + " (BACKUP FAILED — file unchanged on disk)"
+        return str(bak_path)
+
     def _detect_external_drift(self, target: str) -> Optional[str]:
         """Return a backup-path string if on-disk content shows external drift.
 
         The memory file is supposed to be a list of small entries the tool
-        wrote, joined by §. Detect drift via two signals:
+        wrote, joined by §. Detect drift via three signals:
 
-        1. Round-trip mismatch — re-parsing and re-serializing the file
+        1. Invalid UTF-8 — see _check_decode_corruption.
+        2. Round-trip mismatch — re-parsing and re-serializing the file
            doesn't produce identical bytes (rare; would catch oddly-encoded
            delimiters).
-        2. Entry-size overflow — any single parsed entry exceeds the
+        3. Entry-size overflow — any single parsed entry exceeds the
            store's whole-file char limit. The tool budgets the ENTIRE store
            against that limit; no single tool-written entry can exceed it.
            When we see one entry larger than the limit, an external writer
@@ -730,8 +786,12 @@ class MemoryStore:
         backed up; returns None when the file looks tool-shaped.
 
         Note: this is an INSTANCE method (not static) because we need the
-        per-target char_limit for signal #2.
+        per-target char_limit for signal #3.
         """
+        bak = self._check_decode_corruption(target)
+        if bak:
+            return bak
+
         path = self._path_for(target)
         if not path.exists():
             return None

@@ -810,6 +810,96 @@ class TestExternalDriftGuard:
 
 
 # =========================================================================
+# Invalid UTF-8 guard (#57755)
+#
+# _read_file's strict path.read_text(encoding="utf-8") can hit undecodable
+# bytes (truncated write, wrong-encoding external edit, binary garbage).
+# Pre-fix: MemoryStore.__init__ swallowed the UnicodeDecodeError silently
+# (memory disabled, zero log output); _detect_external_drift's own strict
+# read crashed replace/remove/apply_batch outright; and add()'s
+# skip_drift=True path treated the corrupt file as empty and then
+# overwrote it via save_to_disk(), destroying the original bytes.
+# =========================================================================
+
+
+class TestInvalidUtf8Guard:
+    def _plant_invalid_utf8(self, store, target="memory"):
+        """Append undecodable bytes so the whole file fails strict UTF-8 read."""
+        path = store._path_for(target)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        existing = path.read_bytes() if path.exists() else b""
+        path.write_bytes(existing + b"\n\xff\xfe binary garbage, not valid utf-8")
+        return path
+
+    def test_init_load_degrades_gracefully_and_logs(self, tmp_path, monkeypatch, caplog):
+        monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: tmp_path)
+        (tmp_path / "MEMORY.md").write_bytes(b"\xff\xfe invalid utf8 bytes")
+
+        s = MemoryStore(memory_char_limit=500, user_char_limit=300)
+        with caplog.at_level("ERROR"):
+            s.load_from_disk()
+
+        assert s.memory_entries == []
+        assert any("invalid UTF-8" in r.message for r in caplog.records)
+
+    def test_replace_refuses_on_invalid_utf8(self, store):
+        store.add("memory", "Initial.")
+        path = self._plant_invalid_utf8(store)
+        original = path.read_bytes()
+
+        result = store.replace("memory", "Initial", "Replacement.")
+
+        assert result["success"] is False
+        assert "drift_backup" in result
+        assert path.read_bytes() == original  # untouched
+        bak = Path(result["drift_backup"])
+        assert bak.exists()
+        assert bak.read_bytes() == original
+
+    def test_remove_refuses_on_invalid_utf8(self, store):
+        store.add("memory", "Initial.")
+        path = self._plant_invalid_utf8(store)
+        original = path.read_bytes()
+
+        result = store.remove("memory", "Initial")
+
+        assert result["success"] is False
+        assert "drift_backup" in result
+        assert path.read_bytes() == original
+
+    def test_add_refuses_on_invalid_utf8(self, store):
+        """add()'s append-only exemption must not extend to undecodable files.
+
+        _read_file can't recover any entries from bytes it can't decode, so
+        pre-fix, add() treated the file as empty and then overwrote it via
+        save_to_disk() — silently destroying "Existing entry." below.
+        """
+        store.add("memory", "Existing entry.")
+        path = self._plant_invalid_utf8(store)
+        original = path.read_bytes()
+
+        result = store.add("memory", "New entry.")
+
+        assert result["success"] is False
+        assert "drift_backup" in result
+        # On-disk file is UNTOUCHED, and a byte-for-byte backup exists.
+        assert path.read_bytes() == original
+        bak = Path(result["drift_backup"])
+        assert bak.exists()
+        assert bak.read_bytes() == original
+
+    def test_invalid_utf8_guard_also_protects_user_target(self, store):
+        store.add("user", "Some preference.")
+        path = self._plant_invalid_utf8(store, target="user")
+        original = path.read_bytes()
+
+        result = store.add("user", "New preference.")
+
+        assert result["success"] is False
+        assert path.read_bytes() == original
+
+
+# =========================================================================
 # Load-time snapshot sanitization — promptware defense (#496)
 #
 # Memory entries flow into the FROZEN system-prompt snapshot at load_from_disk()

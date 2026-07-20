@@ -1854,6 +1854,8 @@ browser:
   # Optional CDP override — when set, Hermes attaches directly to your own
   # Chromium-family browser (via /browser connect) rather than starting a headless browser.
   cdp_url: ""
+  # Optional Chrome/Chromium binary used by local agent-browser mode.
+  executable_path: ""
   # Dialog supervisor — controls how native JS dialogs (alert / confirm / prompt)
   # are handled when a CDP backend is attached (Browserbase, local Chromium-family
   # browser via /browser connect). Ignored on Camofox and default local agent-browser mode.
@@ -1865,6 +1867,11 @@ browser:
     session_key: ""              # Optional session key sent when Hermes creates a tab
     adopt_existing_tab: false    # Reuse an existing tab for this identity before creating one
 ```
+
+`browser.executable_path` selects a local Chrome or Chromium binary, which is
+especially useful on ARM64 systems where Chrome for Testing is unavailable.
+The explicit `AGENT_BROWSER_EXECUTABLE_PATH` environment variable takes
+precedence over this config value.
 
 **Dialog policies:**
 

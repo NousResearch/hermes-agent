@@ -383,6 +383,17 @@ See the MCP guide for the practical setup:
 
 If you do **not** set any cloud credentials and don't use `/browser connect`, Hermes can still use the browser tools through a local Chromium install driven by `agent-browser`.
 
+To select a specific Chrome or Chromium binary, set:
+
+```yaml
+browser:
+  executable_path: /usr/bin/chromium
+```
+
+This is useful on ARM64 systems where Chrome for Testing is unavailable. The
+`AGENT_BROWSER_EXECUTABLE_PATH` environment variable is an explicit override
+and takes precedence over `browser.executable_path`.
+
 ### Optional Environment Variables
 
 ```bash
@@ -401,6 +412,9 @@ BROWSERBASE_SESSION_TIMEOUT=1800
 
 # Inactivity timeout before auto-cleanup in seconds (default: 120)
 BROWSER_INACTIVITY_TIMEOUT=120
+
+# Override browser.executable_path for local agent-browser mode
+AGENT_BROWSER_EXECUTABLE_PATH=/usr/bin/chromium
 
 # Extra Chromium launch flags (comma- or newline-separated). Hermes auto-injects
 # `--no-sandbox,--disable-dev-shm-usage` when it detects root or AppArmor-restricted

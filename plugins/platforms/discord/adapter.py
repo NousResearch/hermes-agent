@@ -5742,6 +5742,16 @@ class DiscordAdapter(BasePlatformAdapter):
             return False
         if self._client.user in getattr(message, "mentions", []):
             return True
+        # Discord's mention picker often resolves "@botname" to the bot's
+        # managed integration role (same name as the bot), and users cannot
+        # tell the difference in the UI.  Treat a mention of OUR integration
+        # role as a self-mention — the role's tags.bot_id identifies its
+        # owner bot.
+        for role in getattr(message, "role_mentions", []) or []:
+            tags = getattr(role, "tags", None)
+            bot_id = getattr(tags, "bot_id", None) if tags is not None else None
+            if bot_id is not None and str(bot_id) == str(self._client.user.id):
+                return True
         return str(self._client.user.id) in self._raw_mentioned_user_ids(message)
 
     def _self_is_raw_mentioned(self, message: Any) -> bool:

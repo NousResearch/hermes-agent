@@ -127,12 +127,13 @@ def adapter(monkeypatch):
     return adapter
 
 
-def make_message(*, channel, content: str, mentions=None, msg_type=None):
+def make_message(*, channel, content: str, mentions=None, msg_type=None, role_mentions=None):
     author = SimpleNamespace(id=42, display_name="Jezza", name="Jezza")
     return SimpleNamespace(
         id=123,
         content=content,
         mentions=list(mentions or []),
+        role_mentions=list(role_mentions or []),
         attachments=[],
         reference=None,
         created_at=datetime.now(timezone.utc),
@@ -355,6 +356,64 @@ async def test_discord_accepts_and_strips_bot_mentions_when_required(adapter, mo
     adapter.handle_message.assert_awaited_once()
     event = adapter.handle_message.await_args.args[0]
     assert event.text == "hello with mention"
+
+
+def _managed_role(bot_id, role_id=555, name="Hermes"):
+    """A managed integration role owned by the bot identified by *bot_id*."""
+    return SimpleNamespace(id=role_id, name=name, tags=SimpleNamespace(bot_id=bot_id))
+
+
+@pytest.mark.asyncio
+async def test_managed_role_mention_counts_as_self_mention(adapter, monkeypatch):
+    """Discord's mention picker often resolves "@botname" to the bot's managed
+    integration role instead of the user — the bot must still respond."""
+    monkeypatch.delenv("DISCORD_REQUIRE_MENTION", raising=False)
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
+
+    message = make_message(
+        channel=FakeTextChannel(channel_id=321),
+        content="<@&555> hello via role mention",
+        role_mentions=[_managed_role(bot_id=adapter._client.user.id)],
+    )
+
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_other_bots_managed_role_mention_is_ignored(adapter, monkeypatch):
+    monkeypatch.delenv("DISCORD_REQUIRE_MENTION", raising=False)
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+
+    message = make_message(
+        channel=FakeTextChannel(channel_id=321),
+        content="<@&556> hello other bot",
+        role_mentions=[_managed_role(bot_id=1234, role_id=556, name="OtherBot")],
+    )
+
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_plain_role_mention_without_tags_is_ignored(adapter, monkeypatch):
+    """Ordinary (non-managed) role pings like @everyone-style team roles must
+    not wake the bot: they carry no ``tags.bot_id``."""
+    monkeypatch.delenv("DISCORD_REQUIRE_MENTION", raising=False)
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+
+    message = make_message(
+        channel=FakeTextChannel(channel_id=321),
+        content="<@&557> team ping",
+        role_mentions=[SimpleNamespace(id=557, name="devs", tags=None)],
+    )
+
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_not_awaited()
 
 
 @pytest.mark.asyncio

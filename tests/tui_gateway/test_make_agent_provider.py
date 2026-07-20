@@ -237,8 +237,34 @@ def test_make_agent_honors_tui_launch_env_flags():
         assert kwargs["skip_memory"] is True
 
 
-def test_make_agent_honors_checkpoint_config():
-    """TUI-created agents should match classic CLI checkpoint config loading."""
+def test_make_agent_honors_checkpoint_config(tmp_path, monkeypatch):
+    """A real config.yaml must propagate checkpoint settings to AIAgent."""
+    hermes_home = tmp_path / "hermes-home"
+    hermes_home.mkdir()
+    (hermes_home / "config.yaml").write_text(
+        """\
+agent:
+  system_prompt: ""
+model:
+  default: glm-5
+checkpoints:
+  enabled: true
+  max_snapshots: 37
+  max_total_size_mb: 123
+  max_file_size_mb: 4
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("HERMES_TUI_CHECKPOINTS", "0")
+
+    from tui_gateway import server
+
+    monkeypatch.setattr(server, "_hermes_home", hermes_home)
+    monkeypatch.setattr(server, "_cfg_cache", None)
+    monkeypatch.setattr(server, "_cfg_mtime", None)
+    monkeypatch.setattr(server, "_cfg_path", None)
+
     fake_runtime = {
         "provider": "openrouter",
         "base_url": "https://api.synthetic.new/v1",
@@ -248,20 +274,7 @@ def test_make_agent_honors_checkpoint_config():
         "args": None,
         "credential_pool": None,
     }
-    fake_cfg = {
-        "agent": {"system_prompt": ""},
-        "model": {"default": "glm-5"},
-        "checkpoints": {
-            "enabled": True,
-            "max_snapshots": 37,
-            "max_total_size_mb": 123,
-            "max_file_size_mb": 4,
-        },
-    }
-
     with (
-        patch.dict(os.environ, {"HERMES_TUI_CHECKPOINTS": "0"}),
-        patch("tui_gateway.server._load_cfg", return_value=fake_cfg),
         patch("tui_gateway.server._get_db", return_value=MagicMock()),
         patch(
             "hermes_cli.runtime_provider.resolve_runtime_provider",

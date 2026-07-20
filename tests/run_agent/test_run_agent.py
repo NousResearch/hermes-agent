@@ -6313,7 +6313,7 @@ class TestCredentialPoolRecovery:
         refreshed_entry = SimpleNamespace(label="refreshed-primary", id="abc")
 
         class _Pool:
-            def try_refresh_current(self):
+            def try_refresh_matching(self, api_key_hint=None):
                 return refreshed_entry
 
         agent._credential_pool = _Pool()
@@ -6331,7 +6331,7 @@ class TestCredentialPoolRecovery:
         """Repeated same-entry auth refreshes must eventually fall through.
 
         A single-entry OAuth pool re-mints a fresh token on every 401, so
-        ``try_refresh_current()`` reports success forever. The cap (#26080)
+        ``try_refresh_matching()`` reports success forever. The cap (#26080)
         must let the third consecutive same-entry refresh fall through
         (return not-recovered) so the fallback chain can activate instead of
         looping on the same dead credential.
@@ -6339,7 +6339,7 @@ class TestCredentialPoolRecovery:
         refreshed_entry = SimpleNamespace(label="primary", id="abc")
 
         class _Pool:
-            def try_refresh_current(self):
+            def try_refresh_matching(self, api_key_hint=None):
                 return refreshed_entry
 
         agent._credential_pool = _Pool()
@@ -6363,7 +6363,7 @@ class TestCredentialPoolRecovery:
         sequence = [entry_a, entry_a, entry_b, entry_b]
 
         class _Pool:
-            def try_refresh_current(self):
+            def try_refresh_matching(self, api_key_hint=None):
                 return sequence.pop(0)
 
         agent._credential_pool = _Pool()
@@ -6385,7 +6385,7 @@ class TestCredentialPoolRecovery:
         next_entry = SimpleNamespace(label="secondary", id="def")
 
         class _Pool:
-            def try_refresh_current(self):
+            def try_refresh_matching(self, api_key_hint=None):
                 return None  # refresh failed
 
             def mark_exhausted_and_rotate(self, *, status_code, error_context=None, api_key_hint=None):
@@ -6409,7 +6409,7 @@ class TestCredentialPoolRecovery:
         """401 with failed refresh and no other credentials returns not recovered."""
 
         class _Pool:
-            def try_refresh_current(self):
+            def try_refresh_matching(self, api_key_hint=None):
                 return None
 
             def mark_exhausted_and_rotate(self, *, status_code, error_context=None, api_key_hint=None):

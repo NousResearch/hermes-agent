@@ -35,6 +35,10 @@ declare global {
       // renders the complete app against the shared backend, so the user can run
       // multiple GUI windows at once.
       openWindow: () => Promise<{ ok: boolean; error?: string }>
+      // Claim a one-shot cross-window ambient cue (turn-end sound / spoken
+      // reply). Resolves true for the first window to claim a key, false for
+      // peers — so N open windows don't all fire the same cue.
+      claimAmbientCue: (key: string) => Promise<boolean>
       // The pop-out pet overlay: a transparent always-on-top window hosting only
       // the mascot. The main renderer drives it (open/close/drag + state push);
       // the overlay sends control messages back (pop-in, composer submit).

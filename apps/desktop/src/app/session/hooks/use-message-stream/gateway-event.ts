@@ -483,7 +483,8 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
 
         flushQueuedDeltas(sessionId)
 
-        playCompletionSound()
+        // Keyed by session so only one window beeps when several are open.
+        playCompletionSound(sessionId)
 
         const finalText = coerceGatewayText(payload?.text) || coerceGatewayText(payload?.rendered)
         completeAssistantMessage(sessionId, finalText, payload?.response_previewed)

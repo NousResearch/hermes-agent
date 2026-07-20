@@ -67,6 +67,7 @@ import {
   uninstallArgsForMode
 } from './desktop-uninstall'
 import { installEmbedReferer } from './embed-referer'
+import { createEventDeduper } from './event-dedupe'
 import { readDirForIpc } from './fs-read-dir'
 import { probeGatewayWebSocket } from './gateway-ws-probe'
 import { scanGitRepos } from './git-repo-scan'
@@ -8516,9 +8517,26 @@ ipcMain.handle('hermes:api', async (_event, request) => {
   })
 })
 
+// One deduper per cross-window cue — the choke point every window shares. Main
+// handles IPC serially, so the first window to claim a key wins with no race.
+const isDuplicateNotification = createEventDeduper()
+const claimedAmbientCue = createEventDeduper()
+
+// A window asks "do I own this ambient cue (turn-end sound / spoken reply)?".
+// The first caller within the window gets true; peers get false and stay quiet.
+ipcMain.handle('hermes:ambient:claim', (_event, key) => !claimedAmbientCue(String(key ?? '')))
+
 ipcMain.handle('hermes:notify', (_event, payload) => {
   if (!Notification.isSupported()) {
     return false
+  }
+
+  // Multiple full windows each run their own renderer throttle, so the same
+  // kind+session can arrive here twice. Collapse it at this single choke point.
+  // Return true (not false): a notification for the event IS being shown by the
+  // first caller, so the settings "send test" success probe stays honest.
+  if (isDuplicateNotification(`${payload?.kind ?? ''}:${payload?.sessionId ?? ''}`)) {
+    return true
   }
 
   // Action buttons render only on signed macOS builds; elsewhere they're dropped

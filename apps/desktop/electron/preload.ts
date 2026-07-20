@@ -7,6 +7,7 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   getGatewayWsUrl: profile => ipcRenderer.invoke('hermes:gateway:ws-url', profile),
   openSessionWindow: (sessionId, opts) => ipcRenderer.invoke('hermes:window:openSession', sessionId, opts),
   openWindow: () => ipcRenderer.invoke('hermes:window:openInstance'),
+  claimAmbientCue: key => ipcRenderer.invoke('hermes:ambient:claim', key),
   petOverlay: {
     // Main renderer → main process: window lifecycle + drag. `request` is
     // `{ bounds, screen }`; resolves with the screen bounds it actually used.

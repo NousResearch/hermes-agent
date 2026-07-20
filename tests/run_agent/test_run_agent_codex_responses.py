@@ -260,6 +260,7 @@ def test_api_mode_uses_explicit_provider_when_codex(monkeypatch):
     )
     assert agent.api_mode == "codex_responses"
     assert agent.provider == "openai-codex"
+    assert agent._is_codex_backend() is False
 
 
 def test_api_mode_normalizes_provider_case(monkeypatch):
@@ -1086,6 +1087,91 @@ def test_run_conversation_codex_plain_text(monkeypatch):
     assert result["final_response"] == "OK"
     assert result["messages"][-1]["role"] == "assistant"
     assert result["messages"][-1]["content"] == "OK"
+
+
+def test_codex_preflight_defangs_harmony_tokens_before_and_after_middleware(monkeypatch):
+    """Both mutable request boundaries must reject literal Harmony wire tokens."""
+    agent = _build_agent(monkeypatch)
+    setattr(agent, "_disable_streaming", True)
+    token = f"<\x7cstart\x7c>"
+    captured = {}
+
+    def _request_middleware(request, **_context):
+        # Initial preflight runs before request middleware.
+        assert token not in str(request["input"])
+        replacement = dict(request)
+        replacement["instructions"] = "Inspect source containing " + token
+        replacement["input"] = [{
+            "type": "function_call_output",
+            "call_id": "call_poisoned",
+            "output": "source contains " + token,
+        }]
+        return SimpleNamespace(
+            payload=replacement,
+            original_payload=request,
+            changed=True,
+            trace=[],
+        )
+
+    def _execution_middleware(request, next_call, **_context):
+        # Request middleware can reintroduce a reserved token after initial
+        # preflight, so it must still be present before the dispatch chokepoint.
+        assert token in str(request)
+        return next_call(request)
+
+    def _capture_api_call(api_kwargs):
+        captured.update(api_kwargs)
+        return _codex_message_response("OK")
+
+    monkeypatch.setattr(
+        "hermes_cli.middleware.apply_llm_request_middleware",
+        _request_middleware,
+    )
+    monkeypatch.setattr(
+        "hermes_cli.middleware.run_llm_execution_middleware",
+        _execution_middleware,
+    )
+    monkeypatch.setattr(agent, "_interruptible_api_call", _capture_api_call)
+
+    result = agent.run_conversation("Read " + token)
+
+    assert result["completed"] is True
+    assert token not in captured["instructions"]
+    assert token not in str(captured["input"])
+    assert "<｜start｜>" in captured["instructions"]
+
+
+def test_copilot_responses_preflight_preserves_harmony_tokens(monkeypatch):
+    """Other Responses-compatible providers remain byte-identical."""
+    agent = _build_copilot_agent(monkeypatch)
+    setattr(agent, "_disable_streaming", True)
+    token = f"<\x7cstart\x7c>"
+    captured = {}
+
+    def _capture_api_call(api_kwargs):
+        captured.update(api_kwargs)
+        return _codex_message_response("OK")
+
+    monkeypatch.setattr(agent, "_interruptible_api_call", _capture_api_call)
+
+    result = agent.run_conversation("Read " + token)
+
+    assert result["completed"] is True
+    assert token in str(captured["input"])
+
+
+def test_codex_backend_detection_is_narrow(monkeypatch):
+    codex = _build_agent(monkeypatch)
+    copilot = _build_copilot_agent(monkeypatch)
+
+    assert codex._is_codex_backend() is True
+    assert copilot._is_codex_backend() is False
+
+    # Exact backend URL detection still works for an explicitly custom route.
+    setattr(codex, "provider", "custom")
+    assert codex._is_codex_backend() is True
+    setattr(codex, "api_mode", "chat_completions")
+    assert codex._is_codex_backend() is False
 
 
 def test_copilot_final_preflight_sanitizes_both_middleware_layers(monkeypatch):

@@ -44,7 +44,7 @@ class TestGenerateTitle:
     def test_compact_preferences_and_name_aliases_are_configurable(self):
         mock_response = MagicMock()
         mock_response.choices = [MagicMock()]
-        mock_response.choices[0].message.content = "ProjectAtlas"
+        mock_response.choices[0].message.content = "Planning Flow"
         config = {
             "auxiliary": {
                 "title_generation": {
@@ -62,13 +62,74 @@ class TestGenerateTitle:
             patch("hermes_cli.config.load_config_readonly", return_value=config),
             patch("agent.title_generator.call_llm", return_value=mock_response) as llm,
         ):
-            assert generate_title("Update the Atlas app", "I will inspect it") == "ProjectAtlas"
+            assert generate_title("Update the ATLAS APP", "I will inspect it") == "ProjectAtlas"
 
         system_prompt = llm.call_args.kwargs["messages"][0]["content"]
         assert "1-2 words" in system_prompt
         assert "24 characters" in system_prompt
         assert '\"project atlas\": \"ProjectAtlas\"' in system_prompt
         assert '\"atlas app\": \"ProjectAtlas\"' in system_prompt
+
+    def test_name_aliases_match_whole_terms_not_substrings(self):
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "Atlassian Migration"
+        config = {
+            "auxiliary": {
+                "title_generation": {
+                    "name_aliases": {"atlas": "ProjectAtlas"},
+                }
+            }
+        }
+
+        with (
+            patch("hermes_cli.config.load_config_readonly", return_value=config),
+            patch("agent.title_generator.call_llm", return_value=mock_response),
+        ):
+            title = generate_title("Plan the Atlassian migration", "I will inspect it")
+
+        assert title == "Atlassian Migration"
+
+    def test_canonical_alias_takes_precedence_over_character_preference(self):
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "Atlas"
+        config = {
+            "auxiliary": {
+                "title_generation": {
+                    "max_characters": 12,
+                    "name_aliases": {"atlas app": "ProjectAtlasLongName"},
+                }
+            }
+        }
+
+        with (
+            patch("hermes_cli.config.load_config_readonly", return_value=config),
+            patch("agent.title_generator.call_llm", return_value=mock_response),
+        ):
+            title = generate_title("Open the atlas app", "I will inspect it")
+
+        assert title == "ProjectAtlasLongName"
+
+    def test_name_alias_after_prompt_snippet_is_still_enforced(self):
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "Planning Flow"
+        config = {
+            "auxiliary": {
+                "title_generation": {
+                    "name_aliases": {"atlas app": "ProjectAtlas"},
+                }
+            }
+        }
+
+        with (
+            patch("hermes_cli.config.load_config_readonly", return_value=config),
+            patch("agent.title_generator.call_llm", return_value=mock_response),
+        ):
+            title = generate_title("x" * 550 + " atlas app", "I will inspect it")
+
+        assert title == "ProjectAtlas"
 
     def test_configured_character_limit_is_enforced(self):
         mock_response = MagicMock()

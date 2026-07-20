@@ -799,7 +799,7 @@ auxiliary:
       atlas app: ProjectAtlas
 ```
 
-`name_aliases` is case-insensitive and keeps personal project vocabulary in user config rather than Hermes source code.
+`name_aliases` is case-insensitive and keeps personal project vocabulary in user config rather than Hermes source code. When an alias appears in the opening exchange, Hermes deterministically uses its configured canonical name even if the title model returns something else; explicit canonical names take precedence over the generic character preference.
 
 Telegram can also choose a semantically matching **full-size topic icon** instead of leaving the default colored bubble. This is opt-in because it makes one additional lightweight title-generation call when a new topic is named:
 
@@ -814,7 +814,7 @@ gateway:
           ProjectAtlas: "🔭"
 ```
 
-Hermes fetches the currently allowed icons with `getForumTopicIconStickers`, asks the title model to choose only from that live set, and applies the matching `custom_emoji_id`. `topic_icon_overrides` is optional and uses ordinary emoji characters as portable selectors rather than hard-coded Telegram IDs. With `preserve_manual_topic_icons: true` (the default), a custom icon chosen during topic creation is never replaced; if the gateway did not observe topic creation, it also leaves the existing icon untouched.
+Hermes fetches the currently allowed icons with `getForumTopicIconStickers`, asks the title model to choose only from that live set, and applies the matching `custom_emoji_id`. `topic_icon_overrides` is optional and uses ordinary emoji characters as portable selectors rather than hard-coded Telegram IDs. With `preserve_manual_topic_icons: true` (the default), Hermes preserves a custom icon it positively observed during topic creation or editing. Private DM topics do not always deliver a creation update, so unknown icon state remains eligible during each session's one-shot first-title path, including after `/new` in an existing topic; this never triggers a background scan or mass edit. Because Telegram provides no topic-icon read-back endpoint, preservation can only be guaranteed for state the running gateway observed. Hermes rechecks that state after icon selection so a manual change made while the auxiliary call is running still wins.
 
 The rename and icon assignment are best-effort: failures are logged but don't break the session.
 

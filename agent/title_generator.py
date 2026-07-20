@@ -6,6 +6,7 @@ adds latency to the user-facing reply.
 
 import json
 import logging
+import re
 import threading
 from typing import Callable, Optional
 
@@ -71,6 +72,39 @@ def _title_preferences() -> tuple[int, int, dict[str, str]]:
             if alias and canonical and len(alias) <= 80 and len(canonical) <= 80:
                 aliases[alias] = canonical
     return max_words, max_characters, aliases
+
+
+def _canonical_name_for_exchange(
+    user_message: str,
+    assistant_response: str,
+    name_aliases: dict[str, str],
+) -> Optional[str]:
+    """Return the canonical name for the first configured alias in an exchange.
+
+    The prompt still encourages the model to use configured names, but this
+    post-generation lookup makes the documented case-insensitive behavior
+    deterministic. At the same position, the longest alias wins so a specific
+    alias such as ``atlas app`` takes precedence over ``atlas``.
+    """
+    if not name_aliases:
+        return None
+
+    exchange = re.sub(
+        r"\s+",
+        " ",
+        f"{str(user_message or '')}\n{str(assistant_response or '')}",
+    ).casefold()
+    matches: list[tuple[int, int, int, str]] = []
+    for order, (raw_alias, raw_canonical) in enumerate(name_aliases.items()):
+        alias = re.sub(r"\s+", " ", str(raw_alias or "").strip()).casefold()
+        canonical = str(raw_canonical or "").strip()
+        if not alias or not canonical:
+            continue
+        match = re.search(rf"(?<!\w){re.escape(alias)}(?!\w)", exchange)
+        if match:
+            matches.append((match.start(), -len(alias), order, canonical))
+
+    return min(matches)[3] if matches else None
 
 
 def _build_title_prompt(
@@ -214,8 +248,17 @@ def generate_title(
         title = title.strip('"\'')
         if title.lower().startswith("title:"):
             title = title[6:].strip()
-        # Enforce the configured display budget even when the model ignores it.
-        if len(title) > max_characters:
+        canonical_name = _canonical_name_for_exchange(
+            user_message,
+            assistant_response,
+            name_aliases,
+        )
+        if canonical_name:
+            # Explicit operator vocabulary wins over the generic display budget;
+            # configured canonical names are already bounded to 80 characters.
+            title = canonical_name
+        # Enforce the configured display budget when the model ignores it.
+        elif len(title) > max_characters:
             title = title[: max_characters - 3].rstrip() + "..."
         return title if title else None
     except Exception as e:

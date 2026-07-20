@@ -917,7 +917,7 @@ async def test_auto_generated_title_renames_bound_telegram_topic(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_auto_generated_title_assigns_icon_when_creation_event_was_not_observed(tmp_path):
+async def test_first_auto_title_assigns_icon_when_creation_state_is_unknown(tmp_path):
     db = SessionDB(db_path=tmp_path / "state.db")
     db.apply_telegram_topic_migration()
     db.create_session("sess-topic", source="telegram", user_id="208214988")
@@ -932,6 +932,10 @@ async def test_auto_generated_title_assigns_icon_when_creation_event_was_not_obs
     runner._telegram_topic_mode_enabled = lambda source: True
     adapter = cast(Any, runner.adapters[Platform.TELEGRAM])
     runner.config.platforms[Platform.TELEGRAM].extra["auto_topic_icons"] = True
+    runner.config.platforms[Platform.TELEGRAM].extra["preserve_manual_topic_icons"] = True
+    # Private DM topics do not reliably emit forum_topic_created updates. The
+    # one-shot first-title path must remain eligible when state is unknown, or
+    # every such topic keeps Telegram's default letter bubble.
     adapter.dm_topic_custom_icon_state.return_value = None
     adapter.get_forum_topic_icon_options.return_value = [
         {"emoji": "📊", "custom_emoji_id": "chart-id"},

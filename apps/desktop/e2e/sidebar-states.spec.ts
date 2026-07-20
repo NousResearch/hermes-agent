@@ -94,6 +94,9 @@ test.describe('sidebar states — background process and subagent', () => {
     const bgCount = await page.locator(`[aria-label="${BG_DOT_LABEL}"]`).count()
     expect(bgCount, 'background dot should be gone after auto-dismiss').toBe(0)
 
+    // Evidence: capture the final state — no background dot, final answer visible.
+    await page.screenshot({ path: 'test-results/bg-dot-gone-after-dismiss.png' })
+
     // The final answer text must be in the transcript.
     const viewportText = await page
       .locator('[data-slot="aui_thread-viewport"]')
@@ -147,6 +150,9 @@ test.describe('sidebar states — subagent and background dot coexist', () => {
         { timeout: 30_000, message: 'background dot should appear while subagent runs' },
       )
       .toBeGreaterThan(0)
+
+    // Evidence: the background dot is visible while the subagent runs.
+    await page.screenshot({ path: 'test-results/bg-dot-while-subagent-runs.png' })
 
     // Now wait for the final answer to appear.
     await page.waitForFunction(
@@ -211,6 +217,10 @@ test.describe('sidebar states — cross-session dot transition', () => {
     const bgDuringTurn = await page.locator(`[aria-label="${BG_DOT_LABEL}"]`).count()
     expect(bgDuringTurn, 'background dot should still be visible after turn completes').toBeGreaterThan(0)
 
+    // Evidence: bg dot visible on session A while its turn is done but the
+    // background process hasn't exited yet.
+    await page.screenshot({ path: 'test-results/cross-session-bg-dot-before-switch.png' })
+
     // Create a new session (click "New session" button).
     await page.locator('button:has-text("New session")').first().click()
     await page.waitForTimeout(2000)
@@ -230,5 +240,9 @@ test.describe('sidebar states — cross-session dot transition', () => {
     // (emerald-500 class) or the "Finished — unread" aria-label.
     const unreadCount = await page.locator(`[aria-label="${UNREAD_DOT_LABEL}"]`).count()
     expect(unreadCount, 'original session should show finished-unread dot').toBeGreaterThan(0)
+
+    // Evidence: the green "finished unread" dot on the original session after
+    // switching to a new session — the cross-session dot transition.
+    await page.screenshot({ path: 'test-results/cross-session-unread-dot-after-switch.png' })
   })
 })

@@ -1,6 +1,6 @@
 name: ebbinghaus
-version: 0.1.0
-description: "Local Ebbinghaus memory with cue encoding, SQLite storage, recall scoring, rehearsal, and forgetting-curve decay."
+version: 0.2.0
+description: "Local Ebbinghaus memory with finite active capacity, archive-first sleep, valence-aware rehearsal caps, cue recall, and provenance-backed dream consolidation."
 skills:
   - skills/autonomous-ai-agents/ebbinghaus-memory/SKILL.md
 hooks:

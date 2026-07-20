@@ -579,6 +579,57 @@ memory:
   # For exit/reset, only fires if the session had at least this many user turns.
   flush_min_turns: 6        # Min user turns to trigger flush on exit/reset (0 = disabled)
 
+  # Optional external/local memory provider. Built-in MEMORY.md/USER.md remain.
+  # provider: ebbinghaus
+  #
+  # Idle sleep is lazy maintenance before the next turn after the idle window.
+  # sleep.limit is a review batch size, NOT total memory capacity.
+  # Lower forget_threshold => slower forgetting (wait for lower retention).
+  # prune_mode archive is the normal safe default; delete is explicit-only.
+  # sleep:
+  #   enabled: true
+  #   idle_after_seconds: 21600
+  #   wake_greeting: ""
+  #   sleep:
+  #     limit: 1000
+  #     rehearse_threshold: 0.35
+  #     forget_threshold: 0.10
+  #     salience_keep_threshold: 0.80
+  #     prune_mode: archive
+
+# =============================================================================
+# Plugin-specific non-secret settings (example: Ebbinghaus bounded memory)
+# =============================================================================
+# plugins:
+#   ebbinghaus:
+#     base_stability_days: 3.0
+#     decay_threshold: 0.10
+#     max_prefetch: 5
+#     min_prefetch_score: 0.18
+#     auto_encode_turns: false   # recommended initial default
+#     sleep:
+#       limit: 1000
+#       rehearse_threshold: 0.35
+#       forget_threshold: 0.10
+#       salience_keep_threshold: 0.80
+#       prune_mode: archive
+#       max_sleep_rehearsals: 4
+#       max_negative_sleep_rehearsals: 1
+#       negative_valence_threshold: -0.60
+#       negative_reinforcement_multiplier: 0.25
+#     capacity:
+#       max_active_memories: 5000
+#       max_archived_memories: 20000
+#       archive_retention_days: 365
+#       protected_tags: [pinned, safety-critical, user-profile, consent]
+#     dreaming:
+#       enabled: true
+#       candidate_limit: 24
+#       max_clusters: 8
+#       min_source_count: 2
+#       negative_summary_max_valence: -0.20
+#       archive_sources_after_apply: true
+
 # =============================================================================
 # Session Reset Policy (Messaging Platforms)
 # =============================================================================

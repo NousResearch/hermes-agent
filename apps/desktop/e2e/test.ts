@@ -18,6 +18,18 @@ import { test as base, expect, type Page, type ElectronApplication, _electron } 
 // Track error messages per test so afterEach can assert + report.
 const seenErrors: string[] = []
 let activePage: Page | null = null
+// When true, the afterEach guard skips the error-banner check.
+// Set by tests that deliberately trigger error states (e.g. boot-failure).
+let errorBannersAllowed = false
+
+/**
+ * Opt out of the error-banner guard for the current test. Call in
+ * test.beforeEach or at the top of a test body when error banners are
+ * expected (e.g. boot-failure tests that deliberately trigger errors).
+ */
+export function allowErrorBanners(): void {
+  errorBannersAllowed = true
+}
 
 /**
  * Install the error-banner guard on a page. Watches for `[role="alert"]`
@@ -125,6 +137,16 @@ export const test = base.extend({
 // default `page` fixture — Electron tests create their own page via
 // app.firstWindow(), so the default `page` fixture is undefined.
 base.afterEach(async ({}, testInfo) => {
+  const wasAllowed = errorBannersAllowed
+  // Reset for the next test.
+  errorBannersAllowed = false
+
+  if (wasAllowed) {
+    // Test opted out — clear any collected errors without asserting.
+    seenErrors.length = 0
+    return
+  }
+
   const errors = await collectErrorBanners(activePage)
 
   if (errors.length > 0) {

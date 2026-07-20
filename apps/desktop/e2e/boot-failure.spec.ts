@@ -9,7 +9,7 @@
  * Prerequisite: `npm run build` must have been run so dist/ exists.
  */
 
-import { test } from './test'
+import { allowErrorBanners, test } from './test'
 
 import {
   type DeadBackendFixture,
@@ -26,6 +26,12 @@ test.afterAll(async () => {
 })
 
 test.describe('boot failure with dead backend', () => {
+  test.beforeEach(() => {
+    // These tests deliberately trigger boot errors — error banners
+    // (notifyError → [role="alert"]) are expected, not failures.
+    allowErrorBanners()
+  })
+
   test('app shows error state', async () => {
     // Inject a fake boot error so the backend resolution "fails" with a
     // controlled error message. This is the only reliable way to trigger

@@ -206,6 +206,22 @@ The TUI ships a `/agents` overlay (alias `/tasks`) that turns recursive `delegat
 
 The classic CLI just prints `/agents` as a text summary; the TUI is where the overlay shines. See [TUI — Slash commands](/user-guide/tui#slash-commands).
 
+## Live Transcripts
+
+Every `delegate_task` dispatch also creates one **append-only, human-readable log per task** so you (or the parent agent) can watch a subagent work in real time instead of waiting for the consolidated summary:
+
+```
+<hermes_home>/cache/delegation/live/<delegation_id>/task-<n>.log
+```
+
+The dispatch response includes the paths as `live_transcripts`, and the files are pre-created at dispatch time, so this works immediately:
+
+```bash
+tail -f ~/.hermes/cache/delegation/live/deleg_ab12cd34/task-0.log
+```
+
+Each line is timestamped and shows the child's assistant text, thinking snippets, tool calls (`-> tool_name({args})`), tool results, and a final status marker. A `manifest.json` in the same directory describes the batch (goals, task count, per-task status). The logs persist after completion — they double as the full-fidelity operational record alongside the summary — and directories older than 7 days are pruned automatically on new dispatches. Because they live under `cache/delegation`, they are also readable from remote terminal backends (Docker/Modal/SSH).
+
 ## Depth Limit and Nested Orchestration
 
 By default, delegation is **flat**: a parent (depth 0) spawns children (depth 1), and those children cannot delegate further. This prevents runaway recursive delegation.

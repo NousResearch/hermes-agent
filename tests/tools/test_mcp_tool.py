@@ -1666,6 +1666,103 @@ class TestShutdown:
         # Parallel: ~1s, not ~3s. Allow some margin.
         assert elapsed < 2.5, f"Shutdown took {elapsed:.1f}s, expected ~1s (parallel)"
 
+    def test_run_on_loop_schedules_atomically_with_shutdown_state(self):
+        """The lifecycle lock must cover validation and task submission."""
+        import concurrent.futures
+        import threading
+
+        import agent.async_utils as async_utils
+        import tools.mcp_tool as mcp_mod
+
+        loop = MagicMock()
+        loop.is_running.return_value = True
+        mcp_mod._mcp_loop = loop
+        probe_acquired_lock = []
+
+        async def operation():
+            return "ok"
+
+        def observe_schedule_lock(coro, scheduled_loop, **kwargs):
+            del kwargs
+            assert scheduled_loop is loop
+
+            def probe_lock():
+                acquired = mcp_mod._lock.acquire(blocking=False)
+                probe_acquired_lock.append(acquired)
+                if acquired:
+                    mcp_mod._lock.release()
+
+            probe = threading.Thread(target=probe_lock)
+            probe.start()
+            probe.join(timeout=1)
+            coro.close()
+            future = concurrent.futures.Future()
+            future.set_result("ok")
+            return future
+
+        try:
+            with patch.object(
+                async_utils,
+                "safe_schedule_threadsafe",
+                side_effect=observe_schedule_lock,
+            ):
+                assert mcp_mod._run_on_mcp_loop(operation) == "ok"
+        finally:
+            mcp_mod._mcp_loop = None
+
+        assert probe_acquired_lock == [False]
+
+    def test_shutdown_cancels_connecting_server_task_before_loop_close(self):
+        """A one-shot exit must drain an MCP task still connecting in background.
+
+        CLI startup discovers MCP servers on a daemon thread. A fast one-shot
+        can finish before that thread publishes its server into ``_servers``.
+        Closing the loop while ``MCPServerTask.run`` is still pending leaves the
+        coroutine to be finalized after loop close, producing the observed
+        ``RuntimeError: Event loop is closed`` cleanup traceback.
+        """
+        import concurrent.futures
+        import threading
+
+        import tools.mcp_tool as mcp_mod
+        from tools.mcp_tool import MCPServerTask, shutdown_mcp_servers, _servers
+
+        _servers.clear()
+        entered = threading.Event()
+        cleaned_up = threading.Event()
+        server = MCPServerTask("still-connecting")
+        mcp_mod._server_connecting.add(server.name)
+
+        async def wait_forever(self, config):
+            entered.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                # This must execute while the owning loop is still alive.
+                asyncio.get_running_loop().call_soon(cleaned_up.set)
+
+        mcp_mod._ensure_mcp_loop()
+        loop = mcp_mod._mcp_loop
+        assert loop is not None
+        with patch.object(MCPServerTask, "_run_stdio", wait_forever):
+            future = asyncio.run_coroutine_threadsafe(
+                server.run({"command": "test"}), loop
+            )
+            assert entered.wait(timeout=2)
+
+            try:
+                shutdown_mcp_servers()
+            finally:
+                mcp_mod._stop_mcp_loop()
+                mcp_mod._mcp_loop = None
+                mcp_mod._mcp_thread = None
+
+        assert cleaned_up.wait(timeout=1)
+        assert future.done()
+        with pytest.raises(concurrent.futures.CancelledError):
+            future.result()
+        assert not mcp_mod._server_connecting
+
 
 # ---------------------------------------------------------------------------
 # _build_safe_env

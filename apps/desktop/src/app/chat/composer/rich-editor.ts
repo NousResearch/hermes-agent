@@ -130,6 +130,16 @@ export function appendComposerContents(target: DocumentFragment | HTMLElement, t
 export function renderComposerContents(target: HTMLElement, text: string) {
   target.replaceChildren()
   appendComposerContents(target, text)
+  ensureComposerCaretBreak(target)
+}
+
+/** Empty contentEditable with zero children collapses to near-zero height in
+ *  Chromium even when CSS min-height is set. Keep a caret <br> so the box
+ *  retains a line box; `composerPlainText` treats that lone break as empty. */
+function ensureComposerCaretBreak(editor: HTMLElement) {
+  if (editor.childNodes.length === 0) {
+    editor.append(document.createElement('br'))
+  }
 }
 
 /** Caret range when the selection lives inside `editor`; else null. */
@@ -280,6 +290,16 @@ export function composerPlainText(node: Node): string {
     return '\n'
   }
 
+  // Chromium keeps a lone caret <br> in an empty contentEditable. That is not a
+  // real newline — treat the composer root as empty so draft/isEmpty stay honest.
+  if (el.dataset.slot === RICH_INPUT_SLOT) {
+    const kids = el.childNodes
+
+    if (kids.length === 0 || (kids.length === 1 && kids[0]?.nodeName === 'BR')) {
+      return ''
+    }
+  }
+
   const text = Array.from(node.childNodes).map(composerPlainText).join('')
   const block = el.tagName === 'DIV' || el.tagName === 'P'
 
@@ -360,4 +380,8 @@ export function normalizeComposerEditorDom(editor: HTMLElement) {
       editor.removeChild(last)
     }
   }
+
+  // Phantom-break cleanup above can leave zero children (e.g. sole caret <br>).
+  // Re-seed a caret break so Chromium does not visually collapse the input.
+  ensureComposerCaretBreak(editor)
 }

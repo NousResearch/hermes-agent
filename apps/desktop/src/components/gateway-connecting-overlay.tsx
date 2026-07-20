@@ -83,29 +83,17 @@ export function GatewayConnectingOverlay() {
       return
     }
 
-    if(reduce) {
-      // Under reduced motion, skip straight to gone — no text-out, no hold,
-      // no overlay fade. The overlay unmounts immediately.
-      setPhase('gone')
-    }
-
-      if (previewing) {
-        // Under reduced motion, skip straight to gone — no text-out, no hold,
-        // no overlay fade. The overlay unmounts immediately.
-        if(reduce) {
-          setPhase('gone')
-
-          return
-        }
-
+    if (previewing) {
       const id = window.setTimeout(() => setPhase('text-out'), PREVIEW_CONNECT_MS)
 
       return () => window.clearTimeout(id)
     }
 
     if (gatewayState === 'open' && shownRef.current) {
-      // Under reduced motion, skip straight to gone — no text-out, no hold,
-      // no overlay fade. The overlay unmounts immediately.
+      // Under reduced motion, skip the multi-phase exit choreography
+      // (text-out → hold → overlay fade) and jump straight to gone so the
+      // overlay unmounts the instant the gateway opens. E2E screenshots
+      // rely on this to avoid catching the overlay mid-fade.
       setPhase(reduce ? 'gone' : 'text-out')
     }
   }, [phase, previewing, gatewayState, reduce])

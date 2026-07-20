@@ -7622,9 +7622,9 @@ function createWindow() {
   // Under Playright testing, instantly show the window.
   // `ready-to-show` doesn't fire in some testing envs.
   if (process.env.TEST_WORKER_INDEX !== undefined) {
-      if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.isVisible()) {
-        mainWindow.show()
-      }
+    if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.isVisible()) {
+      mainWindow.show()
+    }
   }
 
   mainWindow.on('will-enter-full-screen', () => sendWindowStateChanged(true))

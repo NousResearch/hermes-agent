@@ -21,6 +21,12 @@
  *     so the test runner's willStartTest doesn't throw "already started".
  *
  * Imported from playwright.config.ts so it runs before any test.
+ *
+ * Pinned dependency: this file reaches into Playwright internals (_playwright,
+ * _allContexts, _context) that have no public contract. @playwright/test is
+ * pinned exact (=1.58.2 in package.json) so a bump can't silently break the
+ * monkeypatch. When bumping, re-verify these private symbols still exist on
+ * the Electron / PlaywrightInternal classes and that tracing still merges.
  */
 
 import { _electron as electron, type BrowserContext } from '@playwright/test'
@@ -31,13 +37,13 @@ const originalLaunch = electron.launch.bind(electron)
 
 electron.launch = async (options: any) => {
   const app = await originalLaunch(options)
-  const ctx = app._context as BrowserContext
+  const ctx = (app as any)._context as BrowserContext
   electronContexts.add(ctx)
   ctx.once('close', () => electronContexts.delete(ctx))
 
   // Patch _allContexts so the test runner sees the electron context
   // (didFinishTest cleanup → _stopTracing → stopChunk → merge into trace.zip).
-  const pw = electron._playwright as any
+  const pw = (electron as any)._playwright as any
   if (pw && !pw.__electronTracingPatched) {
     pw.__electronTracingPatched = true
     const original = pw._allContexts.bind(pw)

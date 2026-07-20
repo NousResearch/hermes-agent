@@ -45,7 +45,9 @@ export default defineConfig({
     // overlay, DecodeText). Without this, screenshots capture the loading bar
     // or overlay at a transient opacity because the text-content check fires
     // before the visual transition finishes.
-    reducedMotion: 'reduce',
+    contextOptions: {
+      reducedMotion: 'reduce',
+    },
   },
   expect: {
     toHaveScreenshot: {

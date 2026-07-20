@@ -62,6 +62,22 @@ class TestFrontmatter:
         assert re.search(r'^author:', frontmatter, re.MULTILINE), \
             'frontmatter must have an author field'
 
+    def test_author_credits_contributor_first(self, frontmatter: str) -> None:
+        m = re.search(r'^author:\s*(.+)$', frontmatter, re.MULTILINE)
+        assert m, 'frontmatter must have an author field'
+        author = m.group(1).strip()
+        assert 'Pierre Brunelle' in author, f'author must credit Pierre Brunelle first: {author}'
+        assert '@pierrebrunelle' in author, f'author must include @pierrebrunelle: {author}'
+        assert author.startswith('Pierre Brunelle'), \
+            f'contributor name must come first in author field: {author}'
+
+    def test_platforms_linux_macos(self, frontmatter: str) -> None:
+        m = re.search(r'^platforms:\s*\[(.+)\]\s*$', frontmatter, re.MULTILINE)
+        assert m, 'frontmatter must declare platforms for Bash-dependent skill'
+        platforms = {p.strip() for p in m.group(1).split(',')}
+        assert platforms == {'linux', 'macos'}, \
+            f'platforms must be [linux, macos], got {sorted(platforms)}'
+
     def test_license_field(self, frontmatter: str) -> None:
         assert re.search(r'^license:', frontmatter, re.MULTILINE), \
             'frontmatter must have a license field'
@@ -99,6 +115,10 @@ class TestSectionStructure:
     def test_has_h1_title(self, body: str) -> None:
         assert re.search(r'^# \w', body, re.MULTILINE), 'SKILL.md must have an H1 title'
 
+    def test_h1_is_pixeltable_skill(self, body: str) -> None:
+        assert re.search(r'^# Pixeltable Skill\s*$', body, re.MULTILINE), \
+            "SKILL.md H1 must be '# Pixeltable Skill' per HARDLINE"
+
     def test_line_count_reasonable(self, skill_text: str) -> None:
         lines = skill_text.strip().split('\n')
         assert 80 <= len(lines) <= 400, f'SKILL.md should be 80-400 lines, got {len(lines)}'
@@ -133,6 +153,17 @@ class TestSupportFiles:
         assert text.startswith('#!/'), 'setup.sh must have a shebang line'
         assert 'set -' in text, 'setup.sh should use strict mode (set -e or similar)'
 
+    def test_setup_uses_python3_m_pip(self) -> None:
+        text = SETUP_SH.read_text()
+        assert 'python3 -m pip' in text, 'setup.sh must install via python3 -m pip'
+        assert not re.search(r'^\s*pip install\b', text, re.MULTILINE), \
+            'setup.sh must not invoke bare pip (wrong interpreter risk)'
+
+    def test_setup_emits_mcp_servers_key(self) -> None:
+        text = SETUP_SH.read_text()
+        assert 'mcp_servers:' in text, 'setup.sh snippet must use mcp_servers:'
+        assert 'mcpServers' not in text, 'setup.sh must not emit mcpServers'
+
     def test_mcp_reference_exists(self) -> None:
         assert MCP_REF.exists(), 'references/mcp-integration.md must exist'
 
@@ -141,12 +172,25 @@ class TestSupportFiles:
 
     def test_mcp_reference_has_config(self) -> None:
         text = MCP_REF.read_text()
-        assert 'mcpServers:' in text, 'MCP reference must contain config.yaml entry'
+        assert 'mcp_servers:' in text, 'MCP reference must contain mcp_servers: config.yaml entry'
+        assert 'mcpServers' not in text, 'MCP reference must not use mcpServers'
         assert 'pixeltable' in text.lower(), 'MCP reference must mention pixeltable'
+
+    def test_mcp_reference_uses_hermes_tool_prefix(self) -> None:
+        text = MCP_REF.read_text()
+        assert 'mcp_pixeltable_' in text, \
+            'MCP reference must document Hermes mcp_pixeltable_ tool prefix'
+        # Reject bare pixeltable_* Hermes names (mcp_pixeltable_* substring is OK).
+        bare = re.findall(r'(?<!mcp_)pixeltable_(?:create_table|insert_data|query_table)\b', text)
+        assert not bare, f'MCP reference must not teach bare pixeltable_* tool names: {bare}'
 
     def test_pipeline_reference_has_examples(self) -> None:
         text = PIPELINE_REF.read_text()
         assert 'import pixeltable' in text, 'Pipeline reference must contain runnable Python examples'
+
+    def test_skill_prerequisites_use_python3_m_pip(self, skill_text: str) -> None:
+        assert 'python3 -m pip install pixeltable' in skill_text, \
+            'SKILL.md Prerequisites must use python3 -m pip install pixeltable'
 
 
 class TestApiCorrectness:

@@ -13,7 +13,7 @@ echo "Python: $PY_VERSION"
 
 echo ""
 echo "--- Installing Pixeltable ---"
-pip install --quiet pixeltable
+python3 -m pip install --quiet pixeltable
 echo "Installed pixeltable"
 
 echo ""
@@ -25,7 +25,7 @@ echo "--- Checking MCP server (optional) ---"
 if command -v uvx &>/dev/null; then
     echo "uvx found. To enable MCP tools, add to ~/.hermes/config.yaml:"
     echo ""
-    echo "  mcpServers:"
+    echo "  mcp_servers:"
     echo "    pixeltable:"
     echo "      command: uvx"
     echo "      args: [mcp-server-pixeltable-developer]"

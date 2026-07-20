@@ -2,8 +2,9 @@
 name: pixeltable
 description: Multimodal data tables with auto-computed AI columns.
 version: 1.0.0
-author: Pixeltable (pixeltable.com)
+author: Pierre Brunelle (@pierrebrunelle), Pixeltable (pixeltable.com)
 license: Apache-2.0
+platforms: [linux, macos]
 prerequisites:
   commands: [python3, pip]
 metadata:
@@ -13,7 +14,7 @@ metadata:
     requires_toolsets: [terminal]
 ---
 
-# Pixeltable
+# Pixeltable Skill
 
 Pixeltable is a Python library for multimodal data infrastructure. Tables store images, video, audio, and documents as native column types. Computed columns declare AI transformations (embedding, transcription, classification) that execute automatically when data is inserted. It is not a vector database — it is a declarative data layer that includes vector search.
 
@@ -33,7 +34,7 @@ Do NOT use for plain text vector search — `chroma`, `qdrant-vector-search`, or
 Install Pixeltable via `terminal`:
 
 ```bash
-pip install pixeltable
+python3 -m pip install pixeltable
 ```
 
 Verify the install:
@@ -165,13 +166,13 @@ print(results)
 
 - **Binary incompatibility warning**: If you see an error like `numpy.dtype size changed, may indicate binary incompatibility`, you need to downgrade numpy:
   ```bash
-  pip install 'numpy>=1.22.4,<2.3.0'
+  python3 -m pip install 'numpy>=1.22.4,<2.3.0'
   ```
 - **HEIF support error**: If `ModuleNotFoundError: No module named 'pillow_heif'`, install it:
   ```bash
-  pip install pillow-heif
+  python3 -m pip install pillow-heif
   ```
-- Always use the python/pip inside your venv: e.g., `.venv/bin/python3` and `.venv/bin/pip` for consistent environments.
+- Always use the same interpreter for install and import: e.g., `.venv/bin/python3 -m pip` then `.venv/bin/python3`.
 
 You can also use public web images for testing by inserting URLs instead of file paths.
 
